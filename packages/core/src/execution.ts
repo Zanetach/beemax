@@ -1,0 +1,45 @@
+import type { BeeMaxRuntimeSource } from "./runtime.ts";
+
+export type ExecutionBackend = "local" | "docker";
+export type SandboxMode = "off" | "all";
+export type WorkspaceAccess = "none" | "ro" | "rw";
+
+export interface ExecutionPolicy {
+	backend: ExecutionBackend;
+	mode: SandboxMode;
+	workspaceAccess: WorkspaceAccess;
+	timeoutMs: number;
+}
+
+export interface ExecutionRequest {
+	source: BeeMaxRuntimeSource;
+	command: string;
+	cwd: string;
+	timeoutMs?: number;
+}
+
+export interface ExecutionFileRequest {
+	source: BeeMaxRuntimeSource;
+	/** Host workspace used to validate and map file access. */
+	cwd: string;
+	/** Absolute path already constrained to cwd by the caller. */
+	path: string;
+}
+
+export interface ExecutionResult {
+	exitCode: number;
+	stdout: string;
+	stderr: string;
+}
+
+/** Infrastructure port: Core asks for execution without knowing Docker or SSH. */
+export interface ExecutionPort {
+	execute(request: ExecutionRequest): Promise<ExecutionResult>;
+	readFile(request: ExecutionFileRequest): Promise<string>;
+	writeFile(request: ExecutionFileRequest, content: string): Promise<void>;
+}
+
+export function resolveExecutionBackend(policy: Pick<ExecutionPolicy, "backend" | "mode">, source: BeeMaxRuntimeSource): ExecutionBackend {
+	if (policy.mode === "off") return "local";
+	return policy.backend;
+}

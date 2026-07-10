@@ -11,8 +11,25 @@ import { parse as parseYaml } from "yaml";
 import { readEnvFileSync } from "./env-file.ts";
 import { beemaxRoot, resolveProfileLocation, validateProfileName } from "./profile-home.ts";
 import { resolveSoul } from "./soul.ts";
+import { providerApiKeyEnv } from "./provider-resolver.ts";
 
 export { beemaxHome, beemaxRoot, validateProfileName } from "./profile-home.ts";
+
+export interface FeishuConfig {
+	appId: string;
+	appSecret: string;
+	domain: "feishu" | "lark";
+	requireMention: boolean;
+	allowedUsers: string[];
+	allowedChats: string[];
+	allowAllUsers: boolean;
+	connectionMode: "websocket" | "webhook";
+	webhookHost: string;
+	webhookPort: number;
+	webhookPath: string;
+	webhookVerificationToken?: string;
+	webhookEncryptKey?: string;
+}
 
 export interface BeeMaxConfig {
 	profile: string;
@@ -26,23 +43,12 @@ export interface BeeMaxConfig {
 		provider: string;
 		model: string;
 		apiKey?: string;
+		apiKeys: Record<string, string>;
 		baseUrl?: string;
 	};
-	feishu: {
-		appId: string;
-		appSecret: string;
-		domain: "feishu" | "lark";
-		requireMention: boolean;
-		allowedUsers: string[];
-		allowedChats: string[];
-		allowAllUsers: boolean;
-		connectionMode: "websocket" | "webhook";
-		webhookHost: string;
-		webhookPort: number;
-		webhookPath: string;
-		webhookVerificationToken?: string;
-		webhookEncryptKey?: string;
-	};
+	models: Array<{ provider: string; model: string; baseUrl?: string }>;
+	/** Profile-owned channel configuration. A Profile may run its own Gateway. */
+	gateway: { feishu: FeishuConfig };
 	memory: {
 		dbPath: string;
 	};
@@ -54,6 +60,13 @@ export interface BeeMaxConfig {
 		provider: "openai-codex";
 		quality: "low" | "medium" | "high";
 		outputDir: string;
+	};
+	execution: {
+		backend: "local" | "docker";
+		mode: "off" | "all";
+		workspaceAccess: "none" | "ro" | "rw";
+		image: string;
+		timeoutMs: number;
 	};
 	subagents: {
 		enabled: boolean;
@@ -93,21 +106,46 @@ export function loadConfig(configPath?: string, profile = "default"): BeeMaxConf
 	} catch {
 		// config file optional; env-only mode
 	}
-	const cfg = (raw ? parseYaml(raw) : {}) as Partial<BeeMaxConfig>;
-	const env = { ...readEnvFileSync(envPath), ...process.env };
+	const cfg = (raw ? parseYaml(raw) : {}) as Partial<BeeMaxConfig> & { feishu?: Partial<FeishuConfig> };
+	// Profile credentials and runtime policy win over ambient shell variables.
+	// BEEMAX_HOME/PROFILE are resolved before this point and remain explicit routing inputs.
+	const profileEnv = readEnvFileSync(envPath);
+	const env = location.isHome ? profileEnv : process.env;
+	const configuredFeishu = cfg.gateway?.feishu ?? cfg.feishu;
 
-	const appId = str(env.FEISHU_APP_ID ?? cfg.feishu?.appId);
-	const appSecret = str(env.FEISHU_APP_SECRET ?? cfg.feishu?.appSecret);
+	const appId = str(env.FEISHU_APP_ID ?? configuredFeishu?.appId);
+	const appSecret = str(env.FEISHU_APP_SECRET ?? configuredFeishu?.appSecret);
 
 	const provider = str(env.BEEMAX_PROVIDER ?? cfg.model?.provider ?? "anthropic");
 	const model = str(env.BEEMAX_MODEL ?? cfg.model?.model ?? "claude-sonnet-4-5");
-	const apiKey = str(env.BEEMAX_API_KEY ?? cfg.model?.apiKey);
+	const apiKey = str(env[providerApiKeyEnv(provider)] ?? env.BEEMAX_API_KEY ?? cfg.model?.apiKey);
+	const configuredModels = modelChoices(cfg.models, { provider, model, baseUrl: cfg.model?.baseUrl });
+	const apiKeys = Object.fromEntries(
+		[...new Set(configuredModels.map((choice) => choice.provider))]
+			.map((candidate) => [candidate, str(env[providerApiKeyEnv(candidate)] ?? (candidate === provider ? env.BEEMAX_API_KEY : ""))])
+			.filter(([, key]) => Boolean(key)),
+	);
 
 	const profileDataRoot = location.isHome
 		? location.homePath
 		: join(root, profile === "default" ? "data" : `data/profiles/${profile}`);
 	const storedSoul = location.isHome && existsSync(location.soulPath) ? readFileSync(location.soulPath, "utf8") : "";
 	const soul = resolveSoul(storedSoul || env.BEEMAX_SYSTEM_PROMPT || cfg.agent?.systemPrompt);
+	const feishu: FeishuConfig = {
+		appId,
+		appSecret,
+		domain: (env.FEISHU_DOMAIN ?? configuredFeishu?.domain ?? "feishu") === "lark" ? "lark" : "feishu",
+		requireMention: parseBool(env.FEISHU_REQUIRE_MENTION ?? configuredFeishu?.requireMention ?? true),
+		allowedUsers: parseList(env.FEISHU_ALLOWED_USERS ?? configuredFeishu?.allowedUsers),
+		allowedChats: parseList(env.FEISHU_ALLOWED_CHATS ?? configuredFeishu?.allowedChats),
+		allowAllUsers: parseBool(env.FEISHU_ALLOW_ALL_USERS ?? configuredFeishu?.allowAllUsers ?? false),
+		connectionMode: (env.FEISHU_CONNECTION_MODE ?? configuredFeishu?.connectionMode ?? "websocket") === "webhook" ? "webhook" : "websocket",
+		webhookHost: str(env.FEISHU_WEBHOOK_HOST ?? configuredFeishu?.webhookHost ?? "127.0.0.1"),
+		webhookPort: Number(env.FEISHU_WEBHOOK_PORT ?? configuredFeishu?.webhookPort ?? 8787),
+		webhookPath: str(env.FEISHU_WEBHOOK_PATH ?? configuredFeishu?.webhookPath ?? "/feishu/events"),
+		webhookVerificationToken: str(env.FEISHU_WEBHOOK_VERIFICATION_TOKEN ?? configuredFeishu?.webhookVerificationToken ?? "") || undefined,
+		webhookEncryptKey: str(env.FEISHU_WEBHOOK_ENCRYPT_KEY ?? configuredFeishu?.webhookEncryptKey ?? "") || undefined,
+	};
 	return {
 		profile,
 		agent: {
@@ -120,23 +158,11 @@ export function loadConfig(configPath?: string, profile = "default"): BeeMaxConf
 			provider,
 			model,
 			apiKey,
+			apiKeys,
 			baseUrl: cfg.model?.baseUrl,
 		},
-		feishu: {
-			appId,
-			appSecret,
-			domain: (env.FEISHU_DOMAIN ?? cfg.feishu?.domain ?? "feishu") === "lark" ? "lark" : "feishu",
-			requireMention: parseBool(env.FEISHU_REQUIRE_MENTION ?? cfg.feishu?.requireMention ?? true),
-			allowedUsers: parseList(env.FEISHU_ALLOWED_USERS ?? cfg.feishu?.allowedUsers),
-			allowedChats: parseList(env.FEISHU_ALLOWED_CHATS ?? cfg.feishu?.allowedChats),
-			allowAllUsers: parseBool(env.FEISHU_ALLOW_ALL_USERS ?? cfg.feishu?.allowAllUsers ?? false),
-			connectionMode: (env.FEISHU_CONNECTION_MODE ?? cfg.feishu?.connectionMode ?? "websocket") === "webhook" ? "webhook" : "websocket",
-			webhookHost: str(env.FEISHU_WEBHOOK_HOST ?? cfg.feishu?.webhookHost ?? "127.0.0.1"),
-			webhookPort: Number(env.FEISHU_WEBHOOK_PORT ?? cfg.feishu?.webhookPort ?? 8787),
-			webhookPath: str(env.FEISHU_WEBHOOK_PATH ?? cfg.feishu?.webhookPath ?? "/feishu/events"),
-			webhookVerificationToken: str(env.FEISHU_WEBHOOK_VERIFICATION_TOKEN ?? cfg.feishu?.webhookVerificationToken ?? "") || undefined,
-			webhookEncryptKey: str(env.FEISHU_WEBHOOK_ENCRYPT_KEY ?? cfg.feishu?.webhookEncryptKey ?? "") || undefined,
-		},
+		models: configuredModels,
+		gateway: { feishu },
 		memory: {
 			dbPath: resolveFrom(location.basePath, str(env.BEEMAX_DB_PATH ?? cfg.memory?.dbPath ?? join(profileDataRoot, location.isHome ? "memory.db" : "beemax.db"))),
 		},
@@ -148,6 +174,13 @@ export function loadConfig(configPath?: string, profile = "default"): BeeMaxConf
 			provider: "openai-codex",
 			quality: parseImageQuality(env.BEEMAX_IMAGE_QUALITY ?? cfg.imageGeneration?.quality),
 			outputDir: resolveFrom(location.basePath, str(env.BEEMAX_IMAGE_OUTPUT_DIR ?? cfg.imageGeneration?.outputDir ?? join(profileDataRoot, "cache/images"))),
+		},
+		execution: {
+			backend: executionBackend(env.BEEMAX_EXECUTION_BACKEND ?? cfg.execution?.backend),
+			mode: sandboxMode(env.BEEMAX_SANDBOX_MODE ?? cfg.execution?.mode),
+			workspaceAccess: workspaceAccess(env.BEEMAX_SANDBOX_WORKSPACE_ACCESS ?? cfg.execution?.workspaceAccess),
+			image: str(env.BEEMAX_SANDBOX_IMAGE ?? cfg.execution?.image ?? "node:22-alpine"),
+			timeoutMs: parseNumber(env.BEEMAX_SANDBOX_TIMEOUT_MS ?? cfg.execution?.timeoutMs, 180_000),
 		},
 		subagents: {
 			enabled: parseBool(env.BEEMAX_SUBAGENTS_ENABLED ?? cfg.subagents?.enabled ?? true),
@@ -202,6 +235,9 @@ function optional(value: unknown): string | undefined {
 function parseImageQuality(value: unknown): "low" | "medium" | "high" {
 	return value === "low" || value === "high" ? value : "medium";
 }
+function executionBackend(value: unknown): "local" | "docker" { return value === "docker" ? "docker" : "local"; }
+function sandboxMode(value: unknown): "off" | "all" { return value === "all" ? "all" : "off"; }
+function workspaceAccess(value: unknown): "none" | "ro" | "rw" { return value === "rw" || value === "ro" ? value : "none"; }
 function parseNumber(value: unknown, fallback: number): number {
 	const number = Number(value);
 	return Number.isFinite(number) && number >= 0 ? number : fallback;
@@ -213,4 +249,16 @@ function parseList(value: unknown): string[] {
 		.split(",")
 		.map((item) => item.trim())
 		.filter(Boolean);
+}
+
+function modelChoices(value: unknown, active: { provider: string; model: string; baseUrl?: string }): Array<{ provider: string; model: string; baseUrl?: string }> {
+	const items = Array.isArray(value) ? value : [];
+	const choices = items.filter(isModelChoice);
+	return [{ ...active }, ...choices.filter((item) => item.provider !== active.provider || item.model !== active.model || item.baseUrl !== active.baseUrl)];
+}
+
+function isModelChoice(value: unknown): value is { provider: string; model: string; baseUrl?: string } {
+	if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+	const candidate = value as Record<string, unknown>;
+	return typeof candidate.provider === "string" && typeof candidate.model === "string" && (candidate.baseUrl === undefined || typeof candidate.baseUrl === "string");
 }

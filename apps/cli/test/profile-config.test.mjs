@@ -57,27 +57,43 @@ test("profile creation and Feishu channel configuration keep secrets in a protec
 	assert.equal((await stat(paths.envPath)).mode & 0o777, 0o600);
 
 	const config = loadConfig(paths.configPath, "personal");
-	assert.equal(config.feishu.appId, "cli_test");
-	assert.equal(config.feishu.appSecret, 'secret-\\-"-value');
-	assert.deepEqual(config.feishu.allowedUsers, ["ou_allowed"]);
-	assert.equal(config.feishu.connectionMode, "webhook");
-	assert.equal(config.feishu.webhookEncryptKey, "test-encryption-key");
+	assert.equal(config.gateway.feishu.appId, "cli_test");
+	assert.equal(config.gateway.feishu.appSecret, 'secret-\\-"-value');
+	assert.deepEqual(config.gateway.feishu.allowedUsers, ["ou_allowed"]);
+	assert.equal(config.gateway.feishu.connectionMode, "webhook");
+	assert.equal(config.gateway.feishu.webhookEncryptKey, "test-encryption-key");
+	assert.match(yaml, /gateway:\n\s+feishu:/);
 	assert.equal(config.subagents.enabled, true);
 	assert.equal(config.subagents.maxConcurrent, 3);
 	assert.equal(config.subagents.maxChildrenPerOwner, 5);
 	assert.equal(config.agent.toolset, "standard");
 	assert.equal(config.agent.maxSessions, 100);
 	assert.equal(config.agent.sessionIdleMs, 30 * 60_000);
+	assert.equal(config.paths.cwd, join(paths.homePath, "workspace"));
 	await configureModel("personal", { provider: "openrouter", model: "openai/gpt-5.2", apiKey: "model-secret" }, options);
 	const modelConfig = loadConfig(paths.configPath, "personal");
 	assert.equal(modelConfig.model.provider, "openrouter");
 	assert.equal(modelConfig.model.model, "openai/gpt-5.2");
 	assert.equal(modelConfig.model.apiKey, "model-secret");
+	process.env.BEEMAX_API_KEY = "ambient-key";
+	try {
+		assert.equal(loadConfig(paths.configPath, "personal").model.apiKey, "model-secret");
+	} finally {
+		delete process.env.BEEMAX_API_KEY;
+	}
+	await createProfile("isolated", options);
+	process.env.BEEMAX_API_KEY = "ambient-key";
+	try {
+		assert.equal(loadConfig(join(home, "profiles", "isolated", "config.yaml"), "isolated").model.apiKey, "");
+	} finally {
+		delete process.env.BEEMAX_API_KEY;
+	}
 
 	await removeFeishuChannel("personal", options);
 	assert.doesNotMatch(await readFile(paths.envPath, "utf8"), /FEISHU_APP_/);
 	assert.doesNotMatch(await readFile(paths.envPath, "utf8"), /FEISHU_WEBHOOK_/);
 	await deleteProfile("personal", options);
+	await deleteProfile("isolated", options);
 	assert.deepEqual(await listProfiles(options), []);
 });
 

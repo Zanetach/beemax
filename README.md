@@ -67,7 +67,7 @@ external integrations. The Feishu card renderer remains in
 On Linux or macOS with Node.js 22.19 or newer:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/Zanetach/beemax/v0.1.0-preview.8/scripts/bootstrap-install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/Zanetach/beemax/v0.1.0-preview.9/scripts/bootstrap-install.sh | bash
 
 # Or, from a source checkout:
 ./scripts/install.sh
@@ -79,21 +79,30 @@ The one-command installer downloads one verified BeeMax release archive, which
 already contains Pi. It keeps executable source files in `~/.beemax/app` and
 the `beemax` command in `~/.local/bin`; Agent Profiles, secrets, memory, and
 sessions remain isolated under `~/.beemax/profiles`. To install another build,
-set `BEEMAX_VERSION`, for example `curl -fsSL https://raw.githubusercontent.com/Zanetach/beemax/v0.1.0-preview.8/scripts/bootstrap-install.sh | BEEMAX_VERSION=v0.1.0-preview.8 bash`.
+set `BEEMAX_VERSION`, for example `curl -fsSL https://raw.githubusercontent.com/Zanetach/beemax/v0.1.0-preview.9/scripts/bootstrap-install.sh | BEEMAX_VERSION=v0.1.0-preview.9 bash`.
 Run the same installer with `--uninstall` to remove application files while
 keeping your Profiles and data.
 
 The setup wizard creates the Profile, configures `SOUL.md`, model credentials,
-the Feishu/Lark channel and allowlist, prints the required Feishu permissions
-and publishing checklist, probes the tenant token and bot identity, then runs
-the full doctor. Use `beemax gateway setup --profile personal` to reconfigure
-only the messaging channel. The lower-level `model`, `channel`, and `doctor`
-commands remain available for automation and focused changes.
+workspace, Skills, and local Agent readiness. It does not require a messaging
+channel: after it finishes, use `beemax chat --profile personal` immediately.
+When ready to connect Feishu/Lark, run `beemax gateway setup --profile personal`;
+that separate wizard configures the channel allowlist, probes the tenant token
+and bot identity, and prints the publishing checklist. Pass `--with-feishu` to
+`beemax setup` only when you deliberately want both wizards in one run.
+
+The local Agent is intentionally first-class: it uses the same Profile, Pi
+runtime, memories, Skills, MCP configuration, and tool approvals as the
+Gateway. Exit it with `/exit` or `/quit`; the Feishu process is not started by
+this command.
 
 The model and Feishu setup commands prompt for missing secrets without writing
 them to YAML. Each Agent is an isolated Profile Home at
 `~/.beemax/profiles/<name>/`; its secrets live in `.env` with mode `0600`, while
-identity lives in `SOUL.md`. Set `BEEMAX_HOME` to relocate all Profile Homes.
+identity lives in `SOUL.md`. New Profiles also receive an isolated `workspace/`
+directory by default; configure a shared workspace explicitly only when that is
+intended. Profile `.env` values take precedence over ambient shell credentials.
+Set `BEEMAX_HOME` to relocate all Profile Homes.
 The release installer requires Node.js 22.19+, `curl`, `tar`, `npm`, and either
 `shasum` (macOS) or `sha256sum` (common Linux). A source checkout normally
 contains Pi; if it does not, source installation also requires Git to initialize

@@ -5,6 +5,7 @@ import { backupSqliteDatabase, verifySqliteDatabase } from "@beemax/memory";
 import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
 import { readEnvFile, writeEnvFile } from "./env-file.ts";
 import { DEFAULT_SOUL, resolveSoul, validateCustomSoul } from "./soul.ts";
+import { providerApiKeyEnv } from "./provider-resolver.ts";
 import {
 	beemaxHome,
 	beemaxRoot,
@@ -57,8 +58,9 @@ export async function createProfile(profile: string, options: ProfileStorageOpti
 			mkdir(join(temp, "skills")),
 			mkdir(join(temp, "cache")),
 			mkdir(join(temp, "state")),
+			mkdir(join(temp, "workspace")),
 		]);
-		await writeFile(join(temp, "config.yaml"), defaultProfileYaml(options.root ?? beemaxRoot()), { encoding: "utf8", mode: 0o600 });
+		await writeFile(join(temp, "config.yaml"), defaultProfileYaml(), { encoding: "utf8", mode: 0o600 });
 		await writeFile(join(temp, "SOUL.md"), `${DEFAULT_SOUL}\n`, { encoding: "utf8", mode: 0o600 });
 		await writeFile(join(temp, "USER.md"), "", { encoding: "utf8", mode: 0o600 });
 		await writeFile(join(temp, "MEMORY.md"), "", { encoding: "utf8", mode: 0o600 });
@@ -139,8 +141,10 @@ export async function configureFeishuChannel(
 		throw new Error(`Agent profile ${profile} does not exist; run beemax agent create ${profile}`);
 	});
 	const config = (parseYaml(raw) ?? {}) as Record<string, unknown>;
-	config.feishu = {
-		...asRecord(config.feishu),
+	config.gateway = {
+		...asRecord(config.gateway),
+		feishu: {
+		...asRecord(asRecord(config.gateway).feishu ?? config.feishu),
 		domain: input.domain ?? "feishu",
 		requireMention: input.requireMention ?? true,
 		allowedChats: input.allowedChats ?? [],
@@ -151,7 +155,9 @@ export async function configureFeishuChannel(
 			webhookPort: input.webhookPort ?? 8787,
 			webhookPath: input.webhookPath ?? "/feishu/events",
 		} : {}),
+		},
 	};
+	delete config.feishu;
 	await writeFile(paths.configPath, stringifyYaml(config), { encoding: "utf8", mode: 0o600 });
 	await writeEnvFile(paths.envPath, {
 		...await readEnvFile(paths.envPath),
@@ -179,11 +185,14 @@ export async function configureModel(profile: string, input: ModelInput, options
 		model: input.model.trim(),
 		...(input.baseUrl?.trim() ? { baseUrl: input.baseUrl.trim() } : {}),
 	};
+	const choices = Array.isArray(config.models) ? config.models : [];
+	const next = { provider: input.provider.trim(), model: input.model.trim(), ...(input.baseUrl?.trim() ? { baseUrl: input.baseUrl.trim() } : {}) };
+	config.models = [next, ...choices.filter((item) => !sameModelChoice(item, next))];
 	await writeFile(paths.configPath, stringifyYaml(config), { encoding: "utf8", mode: 0o600 });
 	if (input.apiKey?.trim()) {
 		await writeEnvFile(paths.envPath, {
 			...await readEnvFile(paths.envPath),
-			BEEMAX_API_KEY: input.apiKey.trim(),
+			[providerApiKeyEnv(input.provider)]: input.apiKey.trim(),
 		});
 	}
 	return paths;
@@ -358,17 +367,18 @@ export async function migrateProfile(profile: string, options: ProfileStorageOpt
 	return target;
 }
 
-function defaultProfileYaml(workspaceRoot: string): string {
+function defaultProfileYaml(): string {
 	return stringifyYaml({
 		agent: { toolset: "standard", maxSessions: 100, sessionIdleMs: 1800000 },
 		model: { provider: "anthropic", model: "claude-sonnet-4-5" },
-		feishu: { domain: "feishu", requireMention: true, allowedUsers: [], allowedChats: [], allowAllUsers: false },
+		gateway: { feishu: { domain: "feishu", requireMention: true, allowedUsers: [], allowedChats: [], allowAllUsers: false } },
 		memory: { dbPath: "memory.db" },
 		mcp: { configPath: "mcp.json" },
 		imageGeneration: { enabled: false, provider: "openai-codex", quality: "medium", outputDir: "cache/images" },
+		execution: { backend: "local", mode: "off", workspaceAccess: "none", image: "node:22-alpine", timeoutMs: 180000 },
 		subagents: { enabled: true, maxConcurrent: 3, maxChildrenPerOwner: 5, timeoutMs: 900000 },
 		automation: { enabled: true, timezone: "Asia/Shanghai", heartbeat: { enabled: true, every: "30m", activeHours: { start: "08:00", end: "23:00", timezone: "Asia/Shanghai" } } },
-		paths: { agentDir: ".", cwd: resolve(workspaceRoot) },
+		paths: { agentDir: ".", cwd: "workspace" },
 	});
 }
 
@@ -473,4 +483,9 @@ const PROFILE_ROUTING_ENV = [
 
 function asRecord(value: unknown): Record<string, unknown> {
 	return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
+}
+
+function sameModelChoice(value: unknown, model: { provider: string; model: string }): boolean {
+	const candidate = asRecord(value);
+	return candidate.provider === model.provider && candidate.model === model.model;
 }

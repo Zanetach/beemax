@@ -1,6 +1,8 @@
 import { access, mkdir, readdir } from "node:fs/promises";
 import { constants } from "node:fs";
+import { execFile } from "node:child_process";
 import { join } from "node:path";
+import { promisify } from "node:util";
 import { AutomationStore, parseDuration } from "@beemax/automation";
 import { validateFeishuWebhookSettings } from "@beemax/gateway";
 import { loadMcpConfig, McpManager } from "@beemax/mcp-capability";
@@ -10,8 +12,11 @@ import type { BeeMaxConfig } from "./config.ts";
 import { configuredApiKey, providerApiKeyEnv } from "./provider-resolver.ts";
 
 interface Check { name: string; status: "PASS" | "WARN" | "FAIL"; detail: string }
+const execFileAsync = promisify(execFile);
 
-export async function runDoctor(config: BeeMaxConfig): Promise<boolean> {
+export interface DoctorOptions { requireGateway?: boolean }
+
+export async function runDoctor(config: BeeMaxConfig, options: DoctorOptions = {}): Promise<boolean> {
 	const checks: Check[] = [];
 	const node = process.versions.node.split(".").map(Number);
 	checks.push({ name: "Node.js", status: node[0] > 22 || (node[0] === 22 && node[1] >= 19) ? "PASS" : "FAIL", detail: process.versions.node });
@@ -19,14 +24,20 @@ export async function runDoctor(config: BeeMaxConfig): Promise<boolean> {
 	const apiKey = configuredApiKey(config.model.provider, config.model.apiKey);
 	checks.push({ name: "Model", status: apiKey ? "PASS" : "FAIL", detail: apiKey ? `${config.model.provider}/${config.model.model}` : `missing ${providerApiKeyEnv(config.model.provider)} or BEEMAX_API_KEY` });
 	checks.push({ name: "Toolset", status: config.agent.toolset === "safe" ? "WARN" : "PASS", detail: config.agent.toolset });
-	checks.push({ name: "Feishu credentials", status: config.feishu.appId && config.feishu.appSecret ? "PASS" : "FAIL", detail: config.feishu.appId && config.feishu.appSecret ? "configured" : "missing FEISHU_APP_ID/FEISHU_APP_SECRET" });
-	const admitted = config.feishu.allowAllUsers || config.feishu.allowedUsers.length > 0;
-	checks.push({ name: "Feishu access", status: admitted ? (config.feishu.allowAllUsers ? "WARN" : "PASS") : "FAIL", detail: config.feishu.allowAllUsers ? "public/dev mode" : `${config.feishu.allowedUsers.length} allowed user(s)` });
-	try {
-		validateFeishuWebhookSettings(config.feishu);
-		checks.push({ name: "Feishu transport", status: "PASS", detail: config.feishu.connectionMode });
-	} catch (error) {
-		checks.push({ name: "Feishu transport", status: "FAIL", detail: error instanceof Error ? error.message : String(error) });
+	await checkExecutionBackend(config, checks);
+	const gatewayRequired = options.requireGateway ?? true;
+	checks.push({ name: "Feishu credentials", status: config.gateway.feishu.appId && config.gateway.feishu.appSecret ? "PASS" : gatewayRequired ? "FAIL" : "WARN", detail: config.gateway.feishu.appId && config.gateway.feishu.appSecret ? "configured" : "not configured" });
+	const admitted = config.gateway.feishu.allowAllUsers || config.gateway.feishu.allowedUsers.length > 0;
+	checks.push({ name: "Feishu access", status: admitted ? (config.gateway.feishu.allowAllUsers ? "WARN" : "PASS") : gatewayRequired ? "FAIL" : "WARN", detail: admitted ? (config.gateway.feishu.allowAllUsers ? "public/dev mode" : `${config.gateway.feishu.allowedUsers.length} allowed user(s)`) : "not configured" });
+	if (config.gateway.feishu.appId && config.gateway.feishu.appSecret) {
+		try {
+			validateFeishuWebhookSettings(config.gateway.feishu);
+			checks.push({ name: "Feishu transport", status: "PASS", detail: config.gateway.feishu.connectionMode });
+		} catch (error) {
+			checks.push({ name: "Feishu transport", status: "FAIL", detail: error instanceof Error ? error.message : String(error) });
+		}
+	} else {
+		checks.push({ name: "Feishu transport", status: gatewayRequired ? "FAIL" : "WARN", detail: "not configured" });
 	}
 
 	try {
@@ -35,6 +46,12 @@ export async function runDoctor(config: BeeMaxConfig): Promise<boolean> {
 	} catch (error) {
 		checks.push({ name: "Workspace", status: "FAIL", detail: error instanceof Error ? error.message : String(error) });
 	}
+	const profileWorkspace = join(config.paths.agentDir, "workspace");
+	checks.push({
+		name: "Profile workspace",
+		status: config.paths.cwd === profileWorkspace ? "PASS" : "WARN",
+		detail: config.paths.cwd === profileWorkspace ? "isolated" : `shared or custom path: ${config.paths.cwd}`,
+	});
 
 	try {
 		const memory = new MemoryStore(config.memory.dbPath);
@@ -107,4 +124,22 @@ export async function runDoctor(config: BeeMaxConfig): Promise<boolean> {
 	const ok = !checks.some((check) => check.status === "FAIL");
 	console.log(ok ? "\nBeeMax configuration is ready to start." : "\nBeeMax is not ready; fix FAIL items before starting.");
 	return ok;
+}
+
+async function checkExecutionBackend(config: BeeMaxConfig, checks: Check[]): Promise<void> {
+	const detail = `${config.execution.backend}; mode=${config.execution.mode}; workspace=${config.execution.workspaceAccess}`;
+	if (config.execution.mode === "off") {
+		checks.push({ name: "Execution sandbox", status: "PASS", detail: `disabled (${detail})` });
+		return;
+	}
+	if (config.execution.backend !== "docker") {
+		checks.push({ name: "Execution sandbox", status: "WARN", detail: `no isolation backend selected (${detail})` });
+		return;
+	}
+	try {
+		const { stdout } = await execFileAsync("docker", ["version", "--format", "{{.Server.Version}}"], { timeout: 5_000 });
+		checks.push({ name: "Execution sandbox", status: "PASS", detail: `Docker ${stdout.trim()}; ${detail}` });
+	} catch (error) {
+		checks.push({ name: "Execution sandbox", status: "FAIL", detail: `Docker unavailable: ${error instanceof Error ? error.message : String(error)}` });
+	}
 }

@@ -18,7 +18,10 @@ import {
 	createAutomationTools,
 	createSkillTools,
 	createWebTools,
+	createExecutionTools,
+	LocalExecutionPort,
 	type MediaOutboxPort,
+	type ExecutionPort,
 } from "@beemax/core";
 import { createCodexImageTool } from "@beemax/codex-image-capability";
 import type { SessionSource, ToolApprovalDecision, ToolApprovalRequest } from "@beemax/gateway";
@@ -26,9 +29,9 @@ import type { SessionSource, ToolApprovalDecision, ToolApprovalRequest } from "@
 export { filterEligibleSkills } from "@beemax/core";
 
 export interface AgentFactoryOptions {
-	provider: string;
-	model: string;
-	baseUrl?: string;
+	provider: string | (() => string);
+	model: string | (() => string);
+	baseUrl?: string | undefined | (() => string | undefined);
 	cwd: string;
 	agentDir: string;
 	getApiKey: (provider: string) => Promise<string | undefined> | string | undefined;
@@ -41,6 +44,9 @@ export interface AgentFactoryOptions {
 	customTools?: ToolDefinition[];
 	sessionTools?: (source: SessionSource) => ToolDefinition[];
 	approvalTools?: Iterable<string>;
+	executionPort?: ExecutionPort;
+	/** Selects a configured execution backend when a session is created. */
+	executionPortForSource?: (source: SessionSource) => ExecutionPort;
 	automationStore?: AutomationStore;
 	wakeAutomation?: () => void;
 	imageGeneration?: {
@@ -62,13 +68,15 @@ const REQUIRES_APPROVAL = new Set([
 export function buildAgentFactory(opts: AgentFactoryOptions) {
 	const webTools = createWebTools();
 	const baseCustomTools = [...webTools, ...(opts.customTools ?? [])];
-	return buildBeeMaxRuntimeFactory({
-		provider: opts.provider, model: opts.model, baseUrl: opts.baseUrl, cwd: opts.cwd, agentDir: opts.agentDir,
+	const execution = opts.executionPort ?? new LocalExecutionPort();
+	return async (sessionId: string, source: SessionSource) => buildBeeMaxRuntimeFactory({
+		provider: valueOf(opts.provider), model: valueOf(opts.model), baseUrl: valueOf(opts.baseUrl), cwd: opts.cwd, agentDir: opts.agentDir,
 		getApiKey: opts.getApiKey, systemPrompt: opts.systemPrompt ?? DEFAULT_SYSTEM_PROMPT, skillToolset: opts.skillToolset ?? "standard",
 		tools: opts.tools,
 		approvalTools: [...REQUIRES_APPROVAL, ...(opts.approvalTools ?? [])],
 		authorizeTool: opts.authorizeTool ? async (source, toolName, args, signal) => opts.authorizeTool!({ source, toolName, args }, signal) : undefined,
 		createTools: (source, onResourcesChanged, getRuntimeApiKey) => {
+			const executionTools = createExecutionTools(source, opts.cwd, opts.executionPortForSource?.(source) ?? execution);
 		const memoryTools = opts.memoryStore ? createMemoryTools(opts.memoryStore, source) : [];
 		const automationTools = opts.automationStore
 			? createAutomationTools(opts.automationStore, source, opts.wakeAutomation ?? (() => undefined))
@@ -83,10 +91,12 @@ export function buildAgentFactory(opts: AgentFactoryOptions) {
 			: [];
 		const skillTools = createSkillTools(opts.agentDir, onResourcesChanged);
 		const scopedTools = opts.sessionTools?.(source) ?? [];
-		return [...baseCustomTools, ...memoryTools, ...automationTools, ...imageTools, ...skillTools, ...scopedTools];
+			return [...executionTools, ...baseCustomTools, ...memoryTools, ...automationTools, ...imageTools, ...skillTools, ...scopedTools];
 		},
-	});
+	})(sessionId, source);
 }
+
+function valueOf<T>(value: T | (() => T)): T { return typeof value === "function" ? (value as () => T)() : value; }
 
 const DEFAULT_SYSTEM_PROMPT = `# BeeMax personal agent
 You are BeeMax, the user's persistent personal assistant accessed through Feishu.

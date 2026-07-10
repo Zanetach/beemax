@@ -72,7 +72,8 @@ test("CLI supports init, model setup, Feishu channel setup, listing, and safe de
 
 	const config = loadConfig(join(home, "profiles", "personal", "config.yaml"), "personal");
 	assert.equal(config.model.apiKey, "model-key");
-	assert.equal(config.feishu.appSecret, "feishu-key");
+	assert.equal(config.gateway.feishu.appSecret, "feishu-key");
+	assert.match(await readFile(join(home, "profiles", "personal", "config.yaml"), "utf8"), /gateway:\n\s+feishu:/);
 	assert.equal(config.paths.agentDir, join(home, "profiles", "personal"));
 
 	assert.match(run(["profile", "delete", "personal", "--yes"]), /Runtime data was preserved/);
@@ -113,7 +114,7 @@ test("unified setup configures an isolated Profile and Feishu gateway non-intera
 			probe: async () => ({ botName: "BeeMax Setup Bot", botOpenId: "ou_bot" }),
 			doctor: async () => true,
 		}), true);
-		await configureModel("assistant", { provider: "custom", model: "private-model", baseUrl: "https://models.example.test/v1" });
+		await configureModel("assistant", { provider: "custom", model: "private-model", apiKey: "custom-secret", baseUrl: "https://models.example.test/v1" });
 		assert.equal(await runSetup({ profile: "assistant", nonInteractive: true }, {
 			probe: async () => ({ botName: "BeeMax Setup Bot" }),
 			doctor: async () => true,
@@ -148,7 +149,7 @@ test("unified setup configures an isolated Profile and Feishu gateway non-intera
 	const profileHome = join(home, "profiles", "assistant");
 	assert.equal((await readFile(join(profileHome, "SOUL.md"), "utf8")).trim(), "You are the dedicated BeeMax operations assistant.");
 	assert.equal(configured.model.provider, "anthropic");
-	assert.equal(configured.feishu.appId, "cli_gateway");
+	assert.equal(configured.gateway.feishu.appId, "cli_gateway");
 	assert.equal(configured.model.baseUrl, undefined);
 	assert.equal((await readFile(join(home, "active-profile"), "utf8")).trim(), "assistant");
 });
@@ -175,6 +176,30 @@ test("setup keeps the generated SOUL unless the user explicitly supplies a custo
 	} finally {
 		process.env.BEEMAX_ROOT = previousRoot;
 		process.env.BEEMAX_HOME = previousHome;
+	}
+});
+
+test("base setup creates a local Agent that can be used before any Gateway exists", async () => {
+	const root = await mkdtemp(join(tmpdir(), "beemax-local-setup-"));
+	const home = await mkdtemp(join(tmpdir(), "beemax-local-home-"));
+	const previousRoot = process.env.BEEMAX_ROOT;
+	const previousHome = process.env.BEEMAX_HOME;
+	process.env.BEEMAX_ROOT = root;
+	process.env.BEEMAX_HOME = home;
+	try {
+		assert.equal(await runSetup({
+			profile: "local",
+			nonInteractive: true,
+			provider: "openrouter",
+			model: "openai/gpt-5.2",
+			apiKey: "model-secret",
+		}, { doctor: async (_config, options) => options.requireGateway === false }), true);
+		const config = loadConfig(join(home, "profiles", "local", "config.yaml"), "local");
+		assert.equal(config.gateway.feishu.appId, "");
+		assert.equal(config.model.provider, "openrouter");
+	} finally {
+		if (previousRoot === undefined) delete process.env.BEEMAX_ROOT; else process.env.BEEMAX_ROOT = previousRoot;
+		if (previousHome === undefined) delete process.env.BEEMAX_HOME; else process.env.BEEMAX_HOME = previousHome;
 	}
 });
 

@@ -2,7 +2,7 @@
 # BeeMax single-package installer for Linux and macOS.
 set -euo pipefail
 
-VERSION="${BEEMAX_VERSION:-v0.1.0-preview.8}"
+VERSION="${BEEMAX_VERSION:-latest}"
 RELEASE_BASE="${BEEMAX_RELEASE_BASE:-https://github.com/Zanetach/beemax/releases/download}"
 INSTALL_DIR="${BEEMAX_INSTALL_DIR:-${HOME}/.beemax/app}"
 BIN_DIR="${BEEMAX_BIN_DIR:-${HOME}/.local/bin}"
@@ -48,6 +48,10 @@ done
 for command in curl tar node npm; do
 	command -v "${command}" >/dev/null 2>&1 || fail "${command} is required; install it and retry"
 done
+if [[ "${VERSION}" == "latest" ]]; then
+	VERSION="$(curl --fail --location --silent --show-error https://api.github.com/repos/Zanetach/beemax/releases/latest | sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -n 1)"
+	[[ "${VERSION}" =~ ^v[0-9] ]] || fail "could not resolve the latest BeeMax release"
+fi
 if command -v shasum >/dev/null 2>&1; then
 	CHECKSUM_COMMAND="shasum -a 256"
 elif command -v sha256sum >/dev/null 2>&1; then

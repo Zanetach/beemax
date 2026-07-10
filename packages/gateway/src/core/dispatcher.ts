@@ -60,6 +60,11 @@ export class Dispatcher {
 	private async handle(msg: InboundMessage): Promise<void> {
 		if (!this.deduplicator.accept(this.profileId, msg.source.platform, msg.source.messageId)) return;
 		if (this.deps.approvalBroker && (await this.deps.approvalBroker.handleMessage(msg))) return;
+		const control = await this.runtime.handleControl({ source: msg.source, text: msg.text });
+		if (control?.handled) {
+			await this.platform.send(msg.source.chatId, control.message);
+			return;
+		}
 		if (msg.text.trim().toLowerCase() === "/stop") {
 			await this.runtime.cancel(msg.source);
 			const cancelled = this.deps.cancelTasks?.(msg.source) ?? 0;

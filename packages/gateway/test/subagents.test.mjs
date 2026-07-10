@@ -164,7 +164,7 @@ test("/stop bypasses the conversation turn lock and cascades Sub-Agent cancellat
 	let cancelled = 0;
 	let aborted = 0;
 	const dispatcher = new Dispatcher({
-		runtime: { run: async () => { throw new Error("should not run for /stop"); }, cancel: async () => (aborted++, true), isBusy: () => false, dispose: () => undefined },
+		runtime: { run: async () => { throw new Error("should not run for /stop"); }, cancel: async () => (aborted++, true), handleControl: async () => undefined, isBusy: () => false, dispose: () => undefined },
 		cancelTasks: () => { cancelled++; return 2; },
 	}, platform);
 	await inbound({
@@ -197,6 +197,7 @@ test("Dispatcher delegates turns to an injected Agent Runtime", async () => {
 		runtime: {
 			run: async (input) => { runs.push(input); return { answer: "ok", model: "test", durationMs: 1, usage: {} }; },
 			cancel: async () => false,
+			handleControl: async () => undefined,
 			isBusy: () => false,
 			dispose: () => { disposed++; },
 		},
@@ -206,4 +207,25 @@ test("Dispatcher delegates turns to an injected Agent Runtime", async () => {
 	assert.equal(runs[0].text, "hello");
 	dispatcher.dispose();
 	assert.equal(disposed, 0);
+});
+
+test("Dispatcher delegates opaque control handling to the Agent Runtime", async () => {
+	let inbound;
+	const sent = [];
+	const platform = {
+		name: "feishu", isConnected: true,
+		onMessage: (handler) => { inbound = handler; }, connect: async () => true, disconnect: async () => undefined,
+		send: async (_chatId, text) => { sent.push(text); return { success: true }; }, editMessage: async () => ({ success: true }),
+		sendCard: async () => ({ success: true, messageId: "card" }), updateCard: async () => ({ success: true }), sendTyping: async () => undefined, stopTyping: async () => undefined,
+	};
+	const dispatcher = new Dispatcher({
+		runtime: {
+			run: async () => { throw new Error("control must not become an Agent prompt"); }, cancel: async () => false,
+			handleControl: async ({ text }) => text === "/anything" ? { handled: true, message: "handled by Core" } : undefined,
+			isBusy: () => false, dispose: () => undefined,
+		},
+	}, platform);
+	await inbound({ text: "/anything", messageType: "command", source, mediaPaths: [], mediaTypes: [], raw: {}, timestamp: Date.now() });
+	assert.deepEqual(sent, ["handled by Core"]);
+	dispatcher.dispose();
 });

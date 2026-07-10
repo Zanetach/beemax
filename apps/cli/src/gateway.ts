@@ -30,31 +30,33 @@ import { curatedMemoryPrompt } from "./curated-memory.ts";
 import { createProfileRuntime } from "./runtime-composition.ts";
 import { workspaceToolsPrompt } from "./workspace-context.ts";
 import { configuredApiKey } from "./provider-resolver.ts";
+import { executionPortFor, executionSafeTools } from "./execution-composition.ts";
+import { createProfileControlHandler } from "./profile-control.ts";
 
 export async function runGateway(config: BeeMaxConfig): Promise<void> {
-	if (!config.feishu.appId || !config.feishu.appSecret) {
+	if (!config.gateway.feishu.appId || !config.gateway.feishu.appSecret) {
 		throw new Error(
 			"Feishu credentials missing. Set FEISHU_APP_ID / FEISHU_APP_SECRET or configure feishu.appId/appSecret in config/beemax.yaml.",
 		);
 	}
 	const feishuSettings: FeishuSettings = {
-		appId: config.feishu.appId,
-		appSecret: config.feishu.appSecret,
-		domain: config.feishu.domain,
-		connectionMode: config.feishu.connectionMode,
-		webhookHost: config.feishu.webhookHost,
-		webhookPort: config.feishu.webhookPort,
-		webhookPath: config.feishu.webhookPath,
-		webhookVerificationToken: config.feishu.webhookVerificationToken,
-		webhookEncryptKey: config.feishu.webhookEncryptKey,
-		requireMention: config.feishu.requireMention,
-		allowedUsers: config.feishu.allowedUsers,
-		allowedChats: config.feishu.allowedChats,
-		allowAllUsers: config.feishu.allowAllUsers,
+		appId: config.gateway.feishu.appId,
+		appSecret: config.gateway.feishu.appSecret,
+		domain: config.gateway.feishu.domain,
+		connectionMode: config.gateway.feishu.connectionMode,
+		webhookHost: config.gateway.feishu.webhookHost,
+		webhookPort: config.gateway.feishu.webhookPort,
+		webhookPath: config.gateway.feishu.webhookPath,
+		webhookVerificationToken: config.gateway.feishu.webhookVerificationToken,
+		webhookEncryptKey: config.gateway.feishu.webhookEncryptKey,
+		requireMention: config.gateway.feishu.requireMention,
+		allowedUsers: config.gateway.feishu.allowedUsers,
+		allowedChats: config.gateway.feishu.allowedChats,
+		allowAllUsers: config.gateway.feishu.allowAllUsers,
 	};
 	const adapter = new FeishuAdapter(feishuSettings);
 	const deliveryPort = new GatewayDeliveryPort(adapter);
-	const releaseChannelLock = await acquireChannelLock(beemaxHome(), config.feishu.appId);
+	const releaseChannelLock = await acquireChannelLock(beemaxHome(), config.gateway.feishu.appId);
 	const startupCleanup: Array<() => void | Promise<void>> = [() => adapter.disconnect()];
 	try {
 
@@ -80,23 +82,24 @@ export async function runGateway(config: BeeMaxConfig): Promise<void> {
 
 	let scheduler: AutomationScheduler | undefined;
 	const profileAgentDefaults = {
-		provider: config.model.provider,
-		model: config.model.model,
-		baseUrl: config.model.baseUrl,
+		provider: () => config.model.provider,
+		model: () => config.model.model,
+		baseUrl: () => config.model.baseUrl,
 		cwd: config.paths.cwd,
 		agentDir: config.paths.agentDir,
-		getApiKey: () => apiKey,
+		getApiKey: (provider: string) => config.model.apiKeys[provider] ?? (provider === config.model.provider ? apiKey : undefined),
 		skillToolset: config.agent.toolset,
 		memoryStore: memory,
+		executionPortForSource: executionPortFor(config),
 	};
 	const createSubagentAgent = buildAgentFactory({
 		...profileAgentDefaults,
 		systemPrompt: () => buildSubagentSystemPrompt(profilePrompt(config)),
 		customTools: readOnlyMcpTools,
-		tools: [
+		tools: executionSafeTools(config, [
 			"read", "grep", "find", "ls", "web_search", "web_extract", "memory_recall", "memory_list",
 			...readOnlyMcpTools.map((tool) => tool.name),
-		],
+		]),
 	});
 	const subagents = config.subagents.enabled ? new SubagentManager({
 		maxConcurrent: config.subagents.maxConcurrent,
@@ -107,7 +110,7 @@ export async function runGateway(config: BeeMaxConfig): Promise<void> {
 	const createAgent = buildAgentFactory({
 		...profileAgentDefaults,
 		systemPrompt: () => profilePrompt(config),
-		tools: mainAgentTools(config.agent.toolset, mainMcpTools.map((tool) => tool.name)),
+		tools: executionSafeTools(config, mainAgentTools(config.agent.toolset, mainMcpTools.map((tool) => tool.name))),
 		customTools: [...mainMcpTools, ...feishuMeetingTools],
 		sessionTools: (source) => subagents ? createSubagentTools(subagents, source) : [],
 		approvalTools: config.agent.toolset === "safe" ? [] : mcp.getApprovalTools(),
@@ -128,17 +131,23 @@ export async function runGateway(config: BeeMaxConfig): Promise<void> {
 		...profileAgentDefaults,
 		automationStore: automation,
 		customTools: [...readOnlyMcpTools, ...feishuMeetingTools],
-		tools: [
+		tools: executionSafeTools(config, [
 			"read", "grep", "find", "ls", "web_search", "web_extract", "memory_recall", "memory_list",
 			"schedule_list", "schedule_runs", "feishu_meeting_get", "feishu_meeting_list",
 			"feishu_meeting_reserve_get", "feishu_meeting_reserve_active_get", "feishu_meeting_recording_get",
 			...readOnlyMcpTools.map((tool) => tool.name),
-		],
+		]),
 	});
 
-	const runtime = createProfileRuntime(
+	let runtime: BeeMaxAgentRuntime<SessionSource>;
+	runtime = createProfileRuntime(
 		{ maxSessions: config.agent.maxSessions, sessionIdleMs: config.agent.sessionIdleMs },
-		{ createAgent, createAutomationAgent, context: new ConversationContext(memory, { recordDirectRoute: (route) => automation.setLastRoute(route) }) },
+		{
+			createAgent,
+			createAutomationAgent,
+			context: new ConversationContext(memory, { recordDirectRoute: (route) => automation.setLastRoute(route) }),
+			controlHandler: (input) => createProfileControlHandler(runtime, config)(input),
+		},
 	);
 	const dispatcher = new Dispatcher(
 		{
@@ -286,7 +295,7 @@ function profilePrompt(config: BeeMaxConfig): string {
 		.join("\n\n");
 }
 
-function mainAgentTools(toolset: "safe" | "standard", mcpTools: string[]): string[] {
+export function mainAgentTools(toolset: "safe" | "standard", mcpTools: string[]): string[] {
 	const readOnly = [
 		"read", "grep", "find", "ls", "web_search", "web_extract",
 		"memory_recall", "memory_list", "memory_status", "memory_candidates",

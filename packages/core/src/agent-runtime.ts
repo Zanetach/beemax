@@ -1,4 +1,5 @@
 import type { Agent } from "@earendil-works/pi-agent-core";
+import type { Api, Model } from "@earendil-works/pi-ai";
 import type { AgentSession, AgentSessionEvent } from "@earendil-works/pi-coding-agent";
 import { ConversationContext } from "./conversation-context.ts";
 import {
@@ -6,6 +7,7 @@ import {
 	type BeeMaxRuntimeSource,
 } from "./runtime.ts";
 import { SessionCoordinator, type RuntimeSessionFactory, type SessionCoordinatorOptions } from "./session-coordinator.ts";
+import type { AgentControlHandler, AgentControlInput, AgentControlResult } from "./agent-control.ts";
 
 export interface AgentRunInput<Source extends BeeMaxRuntimeSource = BeeMaxRuntimeSource> {
 	source: Source;
@@ -29,7 +31,9 @@ export type AgentRunEventSink = (event: AgentSessionEvent) => void | Promise<voi
 export interface AgentRuntimePort<Source extends BeeMaxRuntimeSource = BeeMaxRuntimeSource> {
 	run(input: AgentRunInput<Source>, onEvent?: AgentRunEventSink): Promise<AgentRunResult>;
 	cancel(source: Source): Promise<boolean>;
+	handleControl(input: AgentControlInput<Source>): Promise<AgentControlResult | undefined>;
 	isBusy(): boolean;
+	setModel(source: Source, model: Model<Api>): Promise<boolean>;
 	dispose(): void;
 }
 
@@ -37,6 +41,7 @@ export interface BeeMaxAgentRuntimeOptions<Source extends BeeMaxRuntimeSource = 
 	createAgent: RuntimeSessionFactory<Source>;
 	createAutomationAgent?: RuntimeSessionFactory<Source>;
 	context?: ConversationContext;
+	controlHandler?: AgentControlHandler<Source>;
 }
 
 /**
@@ -49,12 +54,14 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 	private readonly createAgent: RuntimeSessionFactory<Source>;
 	private readonly createAutomationAgent?: RuntimeSessionFactory<Source>;
 	private readonly context?: ConversationContext;
+	private readonly controlHandler?: AgentControlHandler<Source>;
 
 	constructor(options: BeeMaxAgentRuntimeOptions<Source>) {
 		this.sessions = new SessionCoordinator(options);
 		this.createAgent = options.createAgent;
 		this.createAutomationAgent = options.createAutomationAgent;
 		this.context = options.context;
+		this.controlHandler = options.controlHandler;
 	}
 
 	async run(input: AgentRunInput<Source>, onEvent?: AgentRunEventSink): Promise<AgentRunResult> {
@@ -92,6 +99,16 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 	}
 
 	async cancel(source: Source): Promise<boolean> { return this.sessions.abort(source); }
+	async handleControl(input: AgentControlInput<Source>): Promise<AgentControlResult | undefined> {
+		return this.controlHandler?.(input);
+	}
+	async setModel(source: Source, model: Model<Api>): Promise<boolean> {
+		return (await this.sessions.withSession(source, async (session) => {
+			if (session.busy) return false;
+			await session.piSession.setModel(model);
+			return true;
+		})) ?? false;
+	}
 	isBusy(): boolean { return this.sessions.isBusy(); }
 	dispose(): void { this.sessions.dispose(); }
 }

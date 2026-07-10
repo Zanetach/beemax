@@ -68,6 +68,11 @@ export class SessionCoordinator<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 		return true;
 	}
 
+	async withSession<T>(source: Source, action: (session: RuntimeSession) => Promise<T>): Promise<T | undefined> {
+		const session = this.sessions.get(sessionKeyForSource(source));
+		return session ? action(session) : undefined;
+	}
+
 	isBusy(): boolean { return this.locks.size > 0 || [...this.sessions.values()].some((session) => session.busy); }
 
 	dispose(): void {

@@ -14,5 +14,5 @@ export function hasBuiltinProvider(provider: string): boolean {
 }
 
 export function configuredApiKey(provider: string, profileKey?: string): string | undefined {
-	return profileKey || process.env.BEEMAX_API_KEY || process.env[providerApiKeyEnv(provider)];
+	return profileKey;
 }

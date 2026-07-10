@@ -60,6 +60,8 @@ Core depends on ports, never on Feishu or a concrete channel SDK.
 interface AgentRuntimePort<Source> {
   run(input: AgentRunInput<Source>, events?: AgentRunEventSink): Promise<AgentRunResult>;
   cancel(source: Source): Promise<boolean>;
+  handleControl(input: AgentControlInput<Source>): Promise<AgentControlResult | undefined>;
+  setModel(source: Source, model: Model<Api>): Promise<boolean>;
   isBusy(): boolean;
   dispose(): void;
 }
@@ -81,8 +83,10 @@ interface CapabilityPort {
 }
 ```
 
-`AgentRuntimePort` owns session routing, cancellation, tool execution and run
-state transitions. Core's task manager owns child-task lineage. `DeliveryPort`
+`AgentRuntimePort` owns session routing, cancellation, product-control handling,
+model state changes, tool execution and run state transitions. A Gateway passes
+an inbound message to this port but does not parse a model command or select a
+model. Core's task manager owns child-task lineage. `DeliveryPort`
 is an output port supplied by the Gateway.
 Capabilities implement work behind a stable Core-owned interface. Media
 providers persist artifacts through Core's neutral `MediaOutboxPort`; Gateway

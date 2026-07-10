@@ -61,7 +61,13 @@ export {
 	type AgentRuntimePort,
 	type BeeMaxAgentRuntimeOptions,
 } from "./agent-runtime.ts";
+export type { AgentControlHandler, AgentControlInput, AgentControlResult } from "./agent-control.ts";
 export type { DeliveryPort, DeliveryTarget, MediaArtifact } from "./delivery-port.ts";
+export type { ExecutionBackend, ExecutionPolicy, ExecutionPort, ExecutionRequest, ExecutionResult, SandboxMode, WorkspaceAccess } from "./execution.ts";
+export { resolveExecutionBackend } from "./execution.ts";
+export { DockerExecutionPort, type DockerExecutionOptions } from "./docker-execution.ts";
+export { LocalExecutionPort } from "./local-execution.ts";
+export { createExecutionTools } from "./execution-tools.ts";
 export type { MediaOutboxPort } from "./media-outbox-port.ts";
 export { createAutomationTools } from "./automation-tools.ts";
 export { createSkillTools } from "./skill-tools.ts";

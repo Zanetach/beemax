@@ -14,6 +14,8 @@ import {
 export interface SetupOptions {
 	profile: string;
 	gatewayOnly?: boolean;
+	/** Configure Feishu during the initial setup; otherwise use `gateway setup` later. */
+	configureGateway?: boolean;
 	nonInteractive?: boolean;
 	provider?: string;
 	model?: string;
@@ -44,6 +46,7 @@ export async function runSetup(options: SetupOptions, dependencies: SetupDepende
 	const exists = profiles.includes(options.profile);
 	if (!exists && options.gatewayOnly) throw new Error(`Agent profile ${options.profile} does not exist; run beemax profile create ${options.profile}`);
 	const current = loadConfig(undefined, options.profile);
+	const currentFeishu = current.gateway.feishu;
 
 	let soul: string | undefined;
 	let provider: string | undefined;
@@ -71,19 +74,28 @@ export async function runSetup(options: SetupOptions, dependencies: SetupDepende
 		if (!apiKey && !current.model.apiKey) throw new Error("Setup requires a model API key");
 	}
 
-	const appId = options.appId ?? (options.nonInteractive ? current.feishu.appId : await askWithDefault("Feishu App ID", current.feishu.appId));
-	let appSecret = options.appSecret ?? current.feishu.appSecret;
-	if (!appSecret && !options.nonInteractive) appSecret = await askOne("Feishu App Secret: ", true);
-	let allowedUsers = options.allowedUsers ?? current.feishu.allowedUsers;
-	if (allowedUsers.length === 0 && !options.nonInteractive) allowedUsers = splitList(await askOne("Allowed Feishu user IDs (comma-separated): "));
-	if (!appId || !appSecret || allowedUsers.length === 0) {
-		throw new Error("Setup requires Feishu App ID, App Secret, and at least one allowed user");
+	const configureGateway = options.gatewayOnly || options.configureGateway === true
+		|| Boolean(options.appId || options.appSecret || options.allowedUsers);
+	let appId = "";
+	let appSecret = "";
+	let allowedUsers: string[] = [];
+	let domain = currentFeishu.domain;
+	let connectionMode = currentFeishu.connectionMode;
+	let webhookEncryptKey: string | undefined;
+	let probe: Awaited<ReturnType<typeof probeFeishuApp>> | undefined;
+	if (configureGateway) {
+		appId = options.appId ?? (options.nonInteractive ? currentFeishu.appId : await askWithDefault("Feishu App ID", currentFeishu.appId));
+		appSecret = options.appSecret ?? currentFeishu.appSecret;
+		if (!appSecret && !options.nonInteractive) appSecret = await askOne("Feishu App Secret: ", true);
+		allowedUsers = options.allowedUsers ?? currentFeishu.allowedUsers;
+		if (allowedUsers.length === 0 && !options.nonInteractive) allowedUsers = splitList(await askOne("Allowed Feishu user IDs (comma-separated): "));
+		if (!appId || !appSecret || allowedUsers.length === 0) throw new Error("Gateway setup requires Feishu App ID, App Secret, and at least one allowed user");
+		domain = options.domain ?? currentFeishu.domain;
+		connectionMode = options.connectionMode ?? currentFeishu.connectionMode;
+		webhookEncryptKey = options.webhookEncryptKey ?? currentFeishu.webhookEncryptKey;
+		if (connectionMode === "webhook" && !webhookEncryptKey) throw new Error("Webhook setup requires FEISHU_WEBHOOK_ENCRYPT_KEY");
+		probe = await (dependencies.probe ?? probeFeishuApp)({ appId, appSecret, domain });
 	}
-	const domain = options.domain ?? current.feishu.domain;
-	const connectionMode = options.connectionMode ?? current.feishu.connectionMode;
-	const webhookEncryptKey = options.webhookEncryptKey ?? current.feishu.webhookEncryptKey;
-	if (connectionMode === "webhook" && !webhookEncryptKey) throw new Error("Webhook setup requires FEISHU_WEBHOOK_ENCRYPT_KEY");
-	const probe = await (dependencies.probe ?? probeFeishuApp)({ appId, appSecret, domain });
 
 	if (!exists) {
 		await createProfile(options.profile);
@@ -98,34 +110,32 @@ export async function runSetup(options: SetupOptions, dependencies: SetupDepende
 			baseUrl,
 		});
 	}
-	await configureFeishuChannel(options.profile, {
-		appId,
-		appSecret,
-		allowedUsers,
-		allowedChats: options.allowedChats ?? current.feishu.allowedChats,
-		domain,
-		requireMention: options.requireMention ?? current.feishu.requireMention,
-		connectionMode,
-		webhookHost: options.webhookHost ?? current.feishu.webhookHost,
-		webhookPort: options.webhookPort ?? current.feishu.webhookPort,
-		webhookPath: options.webhookPath ?? current.feishu.webhookPath,
-		webhookVerificationToken: options.webhookVerificationToken ?? current.feishu.webhookVerificationToken,
-		webhookEncryptKey,
-	});
-
-	printFeishuChecklist(connectionMode);
-	console.log(probe.botName || probe.botOpenId
-		? `PASS  Feishu live probe       bot=${probe.botName ?? probe.botOpenId}`
-		: `WARN  Feishu live probe       ${probe.warning ?? "credentials valid; bot identity unavailable"}`);
+	if (configureGateway) {
+		await configureFeishuChannel(options.profile, {
+			appId, appSecret, allowedUsers,
+			allowedChats: options.allowedChats ?? currentFeishu.allowedChats,
+			domain, requireMention: options.requireMention ?? currentFeishu.requireMention,
+			connectionMode, webhookHost: options.webhookHost ?? currentFeishu.webhookHost,
+			webhookPort: options.webhookPort ?? currentFeishu.webhookPort,
+			webhookPath: options.webhookPath ?? currentFeishu.webhookPath,
+			webhookVerificationToken: options.webhookVerificationToken ?? currentFeishu.webhookVerificationToken,
+			webhookEncryptKey,
+		});
+		printFeishuChecklist(connectionMode);
+		console.log(probe!.botName || probe!.botOpenId
+			? `PASS  Feishu live probe       bot=${probe!.botName ?? probe!.botOpenId}`
+			: `WARN  Feishu live probe       ${probe!.warning ?? "credentials valid; bot identity unavailable"}`);
+	}
 	if (options.gatewayOnly) {
 		await setActiveProfile(options.profile);
 		console.log(`BeeMax Gateway setup complete for Profile '${options.profile}'.`);
 		return true;
 	}
-	const ready = await (dependencies.doctor ?? runDoctor)(loadConfig(undefined, options.profile));
+	const ready = await (dependencies.doctor ?? runDoctor)(loadConfig(undefined, options.profile), { requireGateway: configureGateway });
 	if (ready) {
 		await setActiveProfile(options.profile);
 		console.log(`BeeMax setup complete for Profile '${options.profile}'.`);
+		if (!configureGateway) console.log(`Start chatting now: beemax chat --profile ${options.profile}\nConnect Feishu later: beemax gateway setup --profile ${options.profile}`);
 	}
 	return ready;
 }

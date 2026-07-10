@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.1.0-preview.9
+
+- Added Hermes-style Profile-owned Gateway configuration, isolated default
+  workspaces, Profile-first provider credentials, and a shared local/Gateway
+  runtime policy.
+- Added Profile-level multi-provider model switching and dynamic new-session
+  model resolution.
+- Added `beemax update`, which verifies and atomically installs the latest
+  release archive without changing Profile data.
+- Added an optional hardened Docker execution backend with explicit workspace
+  access and Doctor validation.
+
 ## 0.1.0-preview.8
 
 - Added a Profile-aware model provider catalog for Anthropic, OpenAI,

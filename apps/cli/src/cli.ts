@@ -8,9 +8,9 @@
  *   beemax model      Show / set the configured model
  */
 
-import { buildSubagentSystemPrompt, executeSubagentTask, runGateway } from "./gateway.ts";
-import { beemaxRoot, loadConfig } from "./config.ts";
-import { dirname, isAbsolute, join, relative } from "node:path";
+import { buildSubagentSystemPrompt, executeSubagentTask, mainAgentTools, runGateway } from "./gateway.ts";
+import { beemaxHome, beemaxRoot, loadConfig } from "./config.ts";
+import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { backupSqliteDatabase, verifySqliteDatabase } from "@beemax/memory";
 import { runDoctor } from "./doctor.ts";
 import {
@@ -30,6 +30,13 @@ import { installSystemdService, runServiceAction, type ServiceAction } from "./s
 import { runSetup, type SetupOptions } from "./setup.ts";
 import { renderModelProviderChoices } from "./model-catalog.ts";
 import { configuredApiKey } from "./provider-resolver.ts";
+import { executionPortFor, executionSafeTools } from "./execution-composition.ts";
+import { createProfileRuntime } from "./runtime-composition.ts";
+import { createProfileControlHandler } from "./profile-control.ts";
+import type { BeeMaxAgentRuntime } from "@beemax/core";
+import type { SessionSource } from "@beemax/gateway";
+import { existsSync } from "node:fs";
+import { spawnSync } from "node:child_process";
 
 async function main(): Promise<void> {
 	const parsed = parseArgs(process.argv.slice(2));
@@ -81,6 +88,9 @@ async function main(): Promise<void> {
 		case "doctor":
 			if (!(await runDoctor(getConfig()))) process.exitCode = 1;
 			break;
+		case "update":
+			await runUpdate(parsed);
+			break;
 		case "profile":
 			await runProfileCommand(parsed);
 			break;
@@ -114,7 +124,7 @@ async function main(): Promise<void> {
 			console.log(`beemax - persistent personal agent (Pi + Feishu)
 
 Commands:
-  setup      Configure one Agent Profile, model, identity, and Gateway
+  setup      Configure one Agent Profile, model, identity, Skills, and local chat
   init       Create the first Agent profile
   agent      create | list | delete
   channel    add | list | remove | test
@@ -122,6 +132,7 @@ Commands:
   chat       Local interactive chat for one profile
   model      show | set <provider> <model>
   doctor     Check profile readiness
+  update     Update the installed BeeMax release, preserving all Profiles
   profile    create | list | show | path | use | migrate | backup | delete
   skills     list | sync (prepackaged Profile Skills)
   mcp        status (probe configured MCP servers)
@@ -139,6 +150,7 @@ Options:
   --config <path>          Use an explicit YAML config file
   --home <path>            Override BEEMAX_HOME for this invocation
   --root <path>            Override the BeeMax installation root for this invocation
+  --with-feishu            Include Feishu/Lark configuration in the initial setup wizard
   --yes                    Confirm destructive configuration changes
 
 Environment:
@@ -202,6 +214,23 @@ async function runInit(parsed: ParsedArgs): Promise<void> {
 	console.log(`Created BeeMax Agent '${profile}' at ${paths.configPath}`);
 	console.log(`Next: beemax model set anthropic claude-sonnet-4-5 --profile ${profile}`);
 	console.log(`Then: beemax channel add feishu --profile ${profile}`);
+}
+
+async function runUpdate(parsed: ParsedArgs): Promise<void> {
+	const root = beemaxRoot();
+	const installDir = resolve(process.env.BEEMAX_INSTALL_DIR?.trim() || join(beemaxHome(), "app"));
+	if (resolve(root) !== installDir) {
+		throw new Error("beemax update is available for release installations only; update a source checkout with Git instead");
+	}
+	const installer = join(root, "scripts", "bootstrap-install.sh");
+	if (!existsSync(installer)) throw new Error("BeeMax installer is missing from this release; reinstall using the official installer");
+	const version = optionString(parsed, "version") ?? "latest";
+	const result = spawnSync("bash", [installer, "--version", version], {
+		stdio: "inherit",
+		env: { ...process.env, BEEMAX_INSTALL_DIR: installDir },
+	});
+	if (result.error) throw result.error;
+	if (result.status !== 0) throw new Error(`BeeMax update failed with exit code ${result.status ?? "unknown"}`);
 }
 
 async function runAgentCommand(parsed: ParsedArgs): Promise<void> {
@@ -270,8 +299,8 @@ async function runChannelCommand(parsed: ParsedArgs): Promise<void> {
 	}
 	if (action === "list") {
 		const config = loadConfig(parsed.configPath, profile);
-		const state = config.feishu.appId && config.feishu.appSecret ? "configured" : "not configured";
-		console.log(`feishu  ${state}  mode=${config.feishu.connectionMode}  domain=${config.feishu.domain}  allowed_users=${config.feishu.allowedUsers.length}`);
+		const state = config.gateway.feishu.appId && config.gateway.feishu.appSecret ? "configured" : "not configured";
+		console.log(`feishu  ${state}  mode=${config.gateway.feishu.connectionMode}  domain=${config.gateway.feishu.domain}  allowed_users=${config.gateway.feishu.allowedUsers.length}`);
 		return;
 	}
 	if (action === "remove") {
@@ -282,18 +311,19 @@ async function runChannelCommand(parsed: ParsedArgs): Promise<void> {
 	}
 	if (action === "test") {
 		const config = loadConfig(parsed.configPath, profile);
-		console.log(await testFeishuCredentials(config.feishu));
+		console.log(await testFeishuCredentials(config.gateway.feishu));
 		return;
 	}
 	if (action !== "add" || parsed.positionals[2] !== "feishu") {
 		throw new Error("Usage: beemax channel add feishu | list | remove | test");
 	}
 	const current = loadConfig(parsed.configPath, profile);
+	const currentFeishu = current.gateway.feishu;
 	const nonInteractive = parsed.options["non-interactive"] === true || !process.stdin.isTTY;
-	let appId = optionString(parsed, "app-id") ?? process.env.FEISHU_APP_ID ?? current.feishu.appId;
-	let appSecret = process.env.FEISHU_APP_SECRET ?? current.feishu.appSecret;
+	let appId = optionString(parsed, "app-id") ?? process.env.FEISHU_APP_ID ?? currentFeishu.appId;
+	let appSecret = process.env.FEISHU_APP_SECRET ?? currentFeishu.appSecret;
 	let allowedUsers = splitList(optionString(parsed, "allowed-users") ?? process.env.FEISHU_ALLOWED_USERS)
-		?? current.feishu.allowedUsers;
+		?? currentFeishu.allowedUsers;
 	if (!nonInteractive) {
 		appId ||= await askOne("Feishu App ID: ");
 		appSecret ||= await askOne("Feishu App Secret: ", true);
@@ -306,17 +336,17 @@ async function runChannelCommand(parsed: ParsedArgs): Promise<void> {
 		appId,
 		appSecret,
 		allowedUsers,
-		allowedChats: splitList(optionString(parsed, "allowed-chats")) ?? current.feishu.allowedChats,
-		domain: channelDomain(parsed, current.feishu.domain),
+		allowedChats: splitList(optionString(parsed, "allowed-chats")) ?? currentFeishu.allowedChats,
+		domain: channelDomain(parsed, currentFeishu.domain),
 		requireMention: parsed.options["no-require-mention"] === true
 			? false
-			: parsed.options["require-mention"] === true ? true : current.feishu.requireMention,
-		connectionMode: channelConnectionMode(parsed, current.feishu.connectionMode),
-		webhookHost: optionString(parsed, "webhook-host") ?? current.feishu.webhookHost,
-		webhookPort: webhookPort(parsed, current.feishu.webhookPort),
-		webhookPath: optionString(parsed, "webhook-path") ?? current.feishu.webhookPath,
-		webhookVerificationToken: process.env.FEISHU_WEBHOOK_VERIFICATION_TOKEN ?? current.feishu.webhookVerificationToken,
-		webhookEncryptKey: process.env.FEISHU_WEBHOOK_ENCRYPT_KEY ?? current.feishu.webhookEncryptKey,
+			: parsed.options["require-mention"] === true ? true : currentFeishu.requireMention,
+		connectionMode: channelConnectionMode(parsed, currentFeishu.connectionMode),
+		webhookHost: optionString(parsed, "webhook-host") ?? currentFeishu.webhookHost,
+		webhookPort: webhookPort(parsed, currentFeishu.webhookPort),
+		webhookPath: optionString(parsed, "webhook-path") ?? currentFeishu.webhookPath,
+		webhookVerificationToken: process.env.FEISHU_WEBHOOK_VERIFICATION_TOKEN ?? currentFeishu.webhookVerificationToken,
+		webhookEncryptKey: process.env.FEISHU_WEBHOOK_ENCRYPT_KEY ?? currentFeishu.webhookEncryptKey,
 	});
 	console.log(`Configured Feishu channel for Agent '${profile}'. Run: beemax channel test --profile ${profile}`);
 }
@@ -344,6 +374,7 @@ function setupOptions(parsed: ParsedArgs, gatewayOnly: boolean): SetupOptions {
 	return {
 		profile: selectedProfile(parsed),
 		gatewayOnly,
+		configureGateway: parsed.options["with-feishu"] === true,
 		nonInteractive: parsed.options["non-interactive"] === true || !process.stdin.isTTY,
 		provider: optionString(parsed, "provider") ?? process.env.BEEMAX_PROVIDER,
 		model: optionString(parsed, "model") ?? process.env.BEEMAX_MODEL,
@@ -626,7 +657,7 @@ async function runChat(config: ReturnType<typeof loadConfig>): Promise<void> {
 	const { loadMcpConfig, McpManager } = await import("@beemax/mcp-capability");
 	const { buildAgentFactory } = await import("./agent-factory.ts");
 	const { MemoryStore } = await import("@beemax/memory");
-	const { BeeMaxAgentRuntime, ConversationContext } = await import("@beemax/core");
+	const { ConversationContext } = await import("@beemax/core");
 	const apiKey = configuredApiKey(config.model.provider, config.model.apiKey) ?? "";
 	const memory = new MemoryStore(config.memory.dbPath);
 	const mcp = new McpManager();
@@ -641,19 +672,20 @@ async function runChat(config: ReturnType<typeof loadConfig>): Promise<void> {
 	const mcpApproval = new Set(mcp.getApprovalTools());
 	const readOnlyMcpTools = mcp.getTools().filter((tool) => !mcpApproval.has(tool.name));
 	const createSubagentAgent = buildAgentFactory({
-		provider: config.model.provider,
-		model: config.model.model,
-		baseUrl: config.model.baseUrl,
+		provider: () => config.model.provider,
+		model: () => config.model.model,
+		baseUrl: () => config.model.baseUrl,
 		cwd: config.paths.cwd,
 		agentDir: config.paths.agentDir,
-		getApiKey: () => apiKey,
+		getApiKey: (provider: string) => config.model.apiKeys[provider] ?? (provider === config.model.provider ? apiKey : undefined),
 		systemPrompt: buildSubagentSystemPrompt(config.agent.systemPrompt),
 		memoryStore: memory,
+		executionPortForSource: executionPortFor(config),
 		customTools: readOnlyMcpTools,
-		tools: [
+		tools: executionSafeTools(config, [
 			"read", "grep", "find", "ls", "web_search", "web_extract", "memory_recall", "memory_list",
 			...readOnlyMcpTools.map((tool) => tool.name),
-		],
+		]),
 	});
 	const subagents = config.subagents.enabled ? new SubagentManager({
 		maxConcurrent: config.subagents.maxConcurrent,
@@ -662,19 +694,29 @@ async function runChat(config: ReturnType<typeof loadConfig>): Promise<void> {
 		execute: (task, signal) => executeSubagentTask(createSubagentAgent, task, signal),
 	}) : undefined;
 	const createAgent = buildAgentFactory({
-		provider: config.model.provider,
-		model: config.model.model,
-		baseUrl: config.model.baseUrl,
+		provider: () => config.model.provider,
+		model: () => config.model.model,
+		baseUrl: () => config.model.baseUrl,
 		cwd: config.paths.cwd,
 		agentDir: config.paths.agentDir,
-		getApiKey: () => apiKey,
+		getApiKey: (provider: string) => config.model.apiKeys[provider] ?? (provider === config.model.provider ? apiKey : undefined),
 		systemPrompt: config.agent.systemPrompt,
 		memoryStore: memory,
+		executionPortForSource: executionPortFor(config),
 		customTools: mcp.getTools(),
+		tools: executionSafeTools(config, mainAgentTools(config.agent.toolset, mcp.getTools().map((tool) => tool.name))),
 		approvalTools: mcp.getApprovalTools(),
 		sessionTools: (sessionSource) => subagents ? createSubagentTools(subagents, sessionSource) : [],
 	});
-	const runtime = new BeeMaxAgentRuntime({ createAgent, context: new ConversationContext(memory) });
+	let runtime: BeeMaxAgentRuntime<SessionSource>;
+	runtime = createProfileRuntime(
+		{ maxSessions: config.agent.maxSessions, sessionIdleMs: config.agent.sessionIdleMs },
+		{
+			createAgent,
+			context: new ConversationContext(memory),
+			controlHandler: (input) => createProfileControlHandler(runtime, config)(input),
+		},
+	);
 
 	try {
 		process.stdout.write("beemax> ");
@@ -685,6 +727,11 @@ async function runChat(config: ReturnType<typeof loadConfig>): Promise<void> {
 				continue;
 			}
 			if (trimmed === "/quit" || trimmed === "/exit") break;
+			const control = await runtime.handleControl({ source, text: trimmed });
+			if (control?.handled) {
+				process.stdout.write(`${control.message}\nbeemax> `);
+				continue;
+			}
 			await runtime.run({ source, text: trimmed, timeoutMs: 10 * 60_000, mode: "interactive" }, (event) => {
 				if (event.type !== "message_update" || event.message.role !== "assistant") return;
 				const text = (event.message.content as Array<{ type?: string; text?: string }>)
