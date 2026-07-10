@@ -1,0 +1,61 @@
+import assert from "node:assert/strict";
+import { createServer, request } from "node:http";
+import test from "node:test";
+import { validateFeishuWebhookSettings } from "../dist/platforms/feishu/settings.js";
+import { FeishuAdapter } from "../dist/index.js";
+
+const base = {
+	appId: "cli_test",
+	appSecret: "secret",
+	domain: "feishu",
+	connectionMode: "webhook",
+	webhookHost: "127.0.0.1",
+	webhookPort: 8787,
+	webhookPath: "/feishu/events",
+	requireMention: true,
+	allowedUsers: ["ou_allowed"],
+	allowedChats: [],
+	allowAllUsers: false,
+};
+
+test("webhook configuration requires encryption and a valid local listener", () => {
+	assert.throws(() => validateFeishuWebhookSettings(base), /FEISHU_WEBHOOK_ENCRYPT_KEY/);
+	assert.throws(() => validateFeishuWebhookSettings({ ...base, webhookEncryptKey: "key", webhookPort: 0 }), /port/);
+	assert.throws(() => validateFeishuWebhookSettings({ ...base, webhookEncryptKey: "key", webhookPath: "events" }), /path/);
+	assert.doesNotThrow(() => validateFeishuWebhookSettings({ ...base, webhookEncryptKey: "key" }));
+});
+
+test("webhook listener rejects non-POST, query paths, and oversized bodies", async () => {
+	const port = await freePort();
+	const adapter = new FeishuAdapter({ ...base, webhookEncryptKey: "key", webhookPort: port, botOpenId: "ou_bot" });
+	try {
+		assert.equal(await adapter.connect(), true);
+		assert.equal((await http(port, "GET", "/feishu/events")).status, 404);
+		assert.equal((await http(port, "POST", "/feishu/events?x=1")).status, 404);
+		assert.equal((await http(port, "POST", "/feishu/events", "x", { "content-length": "1048577" })).status, 413);
+	} finally {
+		await adapter.disconnect();
+	}
+});
+
+function freePort() {
+	return new Promise((resolve, reject) => {
+		const server = createServer();
+		server.once("error", reject).listen(0, "127.0.0.1", () => {
+			const address = server.address();
+			server.close((error) => error ? reject(error) : resolve(address.port));
+		});
+	});
+}
+
+function http(port, method, path, body, headers = {}) {
+	return new Promise((resolve, reject) => {
+		const req = request({ host: "127.0.0.1", port, method, path, headers }, (res) => {
+			res.resume();
+			res.on("end", () => resolve({ status: res.statusCode }));
+		});
+		req.once("error", reject);
+		if (body) req.write(body);
+		req.end();
+	});
+}

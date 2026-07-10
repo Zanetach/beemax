@@ -23,6 +23,12 @@ export interface FeishuChannelInput {
 	requireMention?: boolean;
 	allowedUsers: string[];
 	allowedChats?: string[];
+	connectionMode?: "websocket" | "webhook";
+	webhookHost?: string;
+	webhookPort?: number;
+	webhookPath?: string;
+	webhookVerificationToken?: string;
+	webhookEncryptKey?: string;
 }
 
 export interface ModelInput {
@@ -127,6 +133,12 @@ export async function configureFeishuChannel(
 		requireMention: input.requireMention ?? true,
 		allowedChats: input.allowedChats ?? [],
 		allowAllUsers: false,
+		connectionMode: input.connectionMode ?? "websocket",
+		...(input.connectionMode === "webhook" ? {
+			webhookHost: input.webhookHost ?? "127.0.0.1",
+			webhookPort: input.webhookPort ?? 8787,
+			webhookPath: input.webhookPath ?? "/feishu/events",
+		} : {}),
 	};
 	await writeFile(paths.configPath, stringifyYaml(config), { encoding: "utf8", mode: 0o600 });
 	await writeEnvFile(paths.envPath, {
@@ -134,6 +146,11 @@ export async function configureFeishuChannel(
 		FEISHU_APP_ID: input.appId.trim(),
 		FEISHU_APP_SECRET: input.appSecret.trim(),
 		FEISHU_ALLOWED_USERS: input.allowedUsers.join(","),
+		...(input.connectionMode === "webhook" ? {
+			FEISHU_CONNECTION_MODE: "webhook",
+			FEISHU_WEBHOOK_VERIFICATION_TOKEN: input.webhookVerificationToken ?? "",
+			FEISHU_WEBHOOK_ENCRYPT_KEY: input.webhookEncryptKey ?? "",
+		} : { FEISHU_CONNECTION_MODE: "websocket" }),
 	});
 	return paths;
 }
@@ -180,6 +197,9 @@ export async function removeFeishuChannel(profile: string, options: ProfileStora
 	delete values.FEISHU_APP_ID;
 	delete values.FEISHU_APP_SECRET;
 	delete values.FEISHU_ALLOWED_USERS;
+	delete values.FEISHU_CONNECTION_MODE;
+	delete values.FEISHU_WEBHOOK_VERIFICATION_TOKEN;
+	delete values.FEISHU_WEBHOOK_ENCRYPT_KEY;
 	await writeEnvFile(paths.envPath, values);
 	return paths;
 }

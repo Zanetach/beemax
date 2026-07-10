@@ -44,4 +44,4 @@ export type {
 	SendOptions,
 } from "./core/types.ts";
 export { FeishuAdapter } from "./platforms/feishu/adapter.ts";
-export { loadFeishuSettings, type FeishuSettings } from "./platforms/feishu/settings.ts";
+export { loadFeishuSettings, validateFeishuWebhookSettings, type FeishuSettings } from "./platforms/feishu/settings.ts";

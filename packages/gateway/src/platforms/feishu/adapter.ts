@@ -18,6 +18,7 @@
 import { createReadStream } from "node:fs";
 import { stat } from "node:fs/promises";
 import { createServer, type Server } from "node:http";
+import type { Socket } from "node:net";
 import lark, { adaptDefault, type Client, type EventDispatcher, type WSClient } from "@larksuiteoapi/node-sdk";
 import type {
 	InboundMessage,
@@ -26,12 +27,13 @@ import type {
 	SendResult,
 	SessionSource,
 } from "../../core/types.ts";
-import type { FeishuSettings } from "./settings.ts";
+import { validateFeishuWebhookSettings, type FeishuSettings } from "./settings.ts";
 
 const FEISHU_DOMAIN = lark.Domain.Feishu;
 const LARK_DOMAIN = lark.Domain.Lark;
 
 const MAX_TEXT_LENGTH = 4000; // Feishu text message soft cap; we chunk on this.
+const MAX_WEBHOOK_BODY_BYTES = 1_048_576;
 
 export class FeishuAdapter implements PlatformAdapter {
 	readonly name = "feishu" as const;
@@ -39,6 +41,7 @@ export class FeishuAdapter implements PlatformAdapter {
 	private client!: Client;
 	private wsClient?: WSClient;
 	private webhookServer?: Server;
+	private readonly webhookSockets = new Set<Socket>();
 	private handler?: MessageHandler;
 	private dedup = new Map<string, number>();
 	private readonly dedupTtlMs = 24 * 60 * 60 * 1000;
@@ -100,18 +103,43 @@ export class FeishuAdapter implements PlatformAdapter {
 		});
 
 		if (this.settings.connectionMode === "webhook") {
+			validateFeishuWebhookSettings(this.settings);
 			const handler = adaptDefault(this.settings.webhookPath ?? "/feishu/events", dispatcher, { autoChallenge: true });
 			this.webhookServer = createServer((req, res) => {
-				if (req.url?.split("?", 1)[0] !== (this.settings.webhookPath ?? "/feishu/events")) {
+				if (req.method !== "POST" || req.url !== (this.settings.webhookPath ?? "/feishu/events")) {
 					res.statusCode = 404;
 					res.end("not found");
 					return;
 				}
+				const length = Number(req.headers["content-length"] ?? 0);
+				if (!Number.isFinite(length) || length > MAX_WEBHOOK_BODY_BYTES) {
+					res.writeHead(413).end("payload too large");
+					req.destroy();
+					return;
+				}
+				let bytes = 0;
+				let rejected = false;
+				req.on("data", (chunk: Buffer) => {
+					bytes += chunk.length;
+					if (bytes > MAX_WEBHOOK_BODY_BYTES && !rejected) {
+						rejected = true;
+						res.writeHead(413).end("payload too large");
+						req.destroy();
+					}
+				});
 				void handler(req, res).catch((error) => {
+					if (rejected) return;
 					console.error(`[beemax] Feishu webhook failed: ${String(error)}`);
 					if (!res.headersSent) res.writeHead(500);
 					res.end("internal error");
 				});
+			});
+			this.webhookServer.requestTimeout = 15_000;
+			this.webhookServer.headersTimeout = 10_000;
+			this.webhookServer.keepAliveTimeout = 5_000;
+			this.webhookServer.on("connection", (socket) => {
+				this.webhookSockets.add(socket);
+				socket.once("close", () => this.webhookSockets.delete(socket));
 			});
 			await new Promise<void>((resolve, reject) => {
 				this.webhookServer?.once("error", reject).listen(this.settings.webhookPort ?? 8787, this.settings.webhookHost ?? "127.0.0.1", resolve);
@@ -140,8 +168,10 @@ export class FeishuAdapter implements PlatformAdapter {
 	async disconnect(): Promise<void> {
 		this.connected = false;
 		if (this.webhookServer) {
+			for (const socket of this.webhookSockets) socket.destroy();
 			await new Promise<void>((resolve) => this.webhookServer?.close(() => resolve()));
 			this.webhookServer = undefined;
+			this.webhookSockets.clear();
 		}
 		// The official SDK does not expose a stop() for WSClient in this version;
 		// process exit will close the socket. For graceful shutdown within a

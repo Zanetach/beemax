@@ -24,6 +24,12 @@ export interface SetupOptions {
 	allowedChats?: string[];
 	domain?: "feishu" | "lark";
 	requireMention?: boolean;
+	connectionMode?: "websocket" | "webhook";
+	webhookHost?: string;
+	webhookPort?: number;
+	webhookPath?: string;
+	webhookVerificationToken?: string;
+	webhookEncryptKey?: string;
 }
 
 export interface SetupDependencies {
@@ -61,6 +67,9 @@ export async function runSetup(options: SetupOptions, dependencies: SetupDepende
 		throw new Error("Setup requires Feishu App ID, App Secret, and at least one allowed user");
 	}
 	const domain = options.domain ?? current.feishu.domain;
+	const connectionMode = options.connectionMode ?? current.feishu.connectionMode;
+	const webhookEncryptKey = options.webhookEncryptKey ?? current.feishu.webhookEncryptKey;
+	if (connectionMode === "webhook" && !webhookEncryptKey) throw new Error("Webhook setup requires FEISHU_WEBHOOK_ENCRYPT_KEY");
 	const probe = await (dependencies.probe ?? probeFeishuApp)({ appId, appSecret, domain });
 
 	if (!exists) {
@@ -83,9 +92,15 @@ export async function runSetup(options: SetupOptions, dependencies: SetupDepende
 		allowedChats: options.allowedChats ?? current.feishu.allowedChats,
 		domain,
 		requireMention: options.requireMention ?? current.feishu.requireMention,
+		connectionMode,
+		webhookHost: options.webhookHost ?? current.feishu.webhookHost,
+		webhookPort: options.webhookPort ?? current.feishu.webhookPort,
+		webhookPath: options.webhookPath ?? current.feishu.webhookPath,
+		webhookVerificationToken: options.webhookVerificationToken ?? current.feishu.webhookVerificationToken,
+		webhookEncryptKey,
 	});
 
-	printFeishuChecklist();
+	printFeishuChecklist(connectionMode);
 	console.log(probe.botName || probe.botOpenId
 		? `PASS  Feishu live probe       bot=${probe.botName ?? probe.botOpenId}`
 		: `WARN  Feishu live probe       ${probe.warning ?? "credentials valid; bot identity unavailable"}`);
@@ -102,13 +117,13 @@ export async function runSetup(options: SetupOptions, dependencies: SetupDepende
 	return ready;
 }
 
-function printFeishuChecklist(): void {
+function printFeishuChecklist(connectionMode: "websocket" | "webhook"): void {
 	console.log(`\nRequired Feishu configuration:
 	  1. Enable the Bot capability.
 	  2. Grant im:message.p2p_msg:readonly for direct messages.
 	  3. Grant im:message.group_at_msg:readonly for group @mentions.
 	  4. Grant im:message:send_as_bot for replies.
-	  5. Select Long Connection (WebSocket).
+	  5. ${connectionMode === "webhook" ? "Configure the HTTPS webhook URL and its encryption key." : "Select Long Connection (WebSocket)."}
 	  6. Subscribe to im.message.receive_v1.
 	  7. Publish the app version and obtain administrator approval when required.\n`);
 }

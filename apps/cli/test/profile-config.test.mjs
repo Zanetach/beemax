@@ -38,6 +38,11 @@ test("profile creation and Feishu channel configuration keep secrets in a protec
 		allowedUsers: ["ou_allowed"],
 		domain: "feishu",
 		requireMention: true,
+		connectionMode: "webhook",
+		webhookHost: "127.0.0.1",
+		webhookPort: 8787,
+		webhookPath: "/feishu/events",
+		webhookEncryptKey: "test-encryption-key",
 	}, options);
 
 	const yaml = await readFile(paths.configPath, "utf8");
@@ -50,6 +55,8 @@ test("profile creation and Feishu channel configuration keep secrets in a protec
 	assert.equal(config.feishu.appId, "cli_test");
 	assert.equal(config.feishu.appSecret, 'secret-\\-"-value');
 	assert.deepEqual(config.feishu.allowedUsers, ["ou_allowed"]);
+	assert.equal(config.feishu.connectionMode, "webhook");
+	assert.equal(config.feishu.webhookEncryptKey, "test-encryption-key");
 	assert.equal(config.subagents.enabled, true);
 	assert.equal(config.subagents.maxConcurrent, 3);
 	assert.equal(config.subagents.maxChildrenPerOwner, 5);
@@ -61,6 +68,7 @@ test("profile creation and Feishu channel configuration keep secrets in a protec
 
 	await removeFeishuChannel("personal", options);
 	assert.doesNotMatch(await readFile(paths.envPath, "utf8"), /FEISHU_APP_/);
+	assert.doesNotMatch(await readFile(paths.envPath, "utf8"), /FEISHU_WEBHOOK_/);
 	await deleteProfile("personal", options);
 	assert.deepEqual(await listProfiles(options), []);
 });

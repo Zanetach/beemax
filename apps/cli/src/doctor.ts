@@ -2,7 +2,7 @@ import { access, mkdir } from "node:fs/promises";
 import { constants } from "node:fs";
 import { join } from "node:path";
 import { AutomationStore, parseDuration } from "@beemax/automation";
-import { loadMcpConfig, McpManager } from "@beemax/gateway";
+import { loadMcpConfig, McpManager, validateFeishuWebhookSettings } from "@beemax/gateway";
 import { MemoryStore } from "@beemax/memory";
 import { AuthStorage } from "@earendil-works/pi-coding-agent";
 import type { BeeMaxConfig } from "./config.ts";
@@ -19,6 +19,12 @@ export async function runDoctor(config: BeeMaxConfig): Promise<boolean> {
 	checks.push({ name: "Feishu credentials", status: config.feishu.appId && config.feishu.appSecret ? "PASS" : "FAIL", detail: config.feishu.appId && config.feishu.appSecret ? "configured" : "missing FEISHU_APP_ID/FEISHU_APP_SECRET" });
 	const admitted = config.feishu.allowAllUsers || config.feishu.allowedUsers.length > 0;
 	checks.push({ name: "Feishu access", status: admitted ? (config.feishu.allowAllUsers ? "WARN" : "PASS") : "FAIL", detail: config.feishu.allowAllUsers ? "public/dev mode" : `${config.feishu.allowedUsers.length} allowed user(s)` });
+	try {
+		validateFeishuWebhookSettings(config.feishu);
+		checks.push({ name: "Feishu transport", status: "PASS", detail: config.feishu.connectionMode });
+	} catch (error) {
+		checks.push({ name: "Feishu transport", status: "FAIL", detail: error instanceof Error ? error.message : String(error) });
+	}
 
 	try {
 		await access(config.paths.cwd, constants.R_OK | constants.W_OK);

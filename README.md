@@ -114,6 +114,27 @@ beemax gateway list
 Only one running Profile Gateway may consume a given Feishu App ID. A second
 Profile using the same App is rejected by the per-Home channel lock.
 
+### Feishu webhook deployment
+
+WebSocket is the default. For a public HTTPS webhook deployment, configure a
+reverse proxy to forward the exact event path to BeeMax and use an encryption
+key from the Feishu event-subscription settings. BeeMax refuses to start a
+webhook listener without that key. Put it in `FEISHU_WEBHOOK_ENCRYPT_KEY` in
+the Profile `.env`; never pass it as a command-line argument.
+
+```bash
+beemax gateway setup --profile personal --connection-mode webhook \
+  --webhook-host 127.0.0.1 --webhook-port 8787 \
+  --webhook-path /feishu/events
+beemax gateway health --profile personal
+```
+
+Set Feishu's request URL to your proxy's HTTPS URL ending in `/feishu/events`;
+do not add a query string. BeeMax accepts only POST requests, limits request
+bodies to 1 MiB, and applies short HTTP timeouts. `beemax channel qr --open`
+opens the Feishu Developer Console for the required sign-in/app setup; it does
+not create an app on your behalf.
+
 Use `beemax service install --system` as root only when a machine-wide service
 is required; set `BEEMAX_SERVICE_USER` to the non-root account that should run
 the Agent. For a user service that must start before login on a headless server,

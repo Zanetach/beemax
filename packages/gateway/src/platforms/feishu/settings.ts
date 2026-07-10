@@ -44,6 +44,20 @@ export interface FeishuSettings {
 	botName?: string;
 }
 
+/** Reject webhook settings that would expose an unauthenticated public listener. */
+export function validateFeishuWebhookSettings(settings: FeishuSettings): void {
+	if (settings.connectionMode !== "webhook") return;
+	if (!settings.webhookEncryptKey?.trim()) {
+		throw new Error("Webhook mode requires FEISHU_WEBHOOK_ENCRYPT_KEY so inbound Feishu events can be authenticated");
+	}
+	if (!Number.isInteger(settings.webhookPort) || !settings.webhookPort || settings.webhookPort < 1 || settings.webhookPort > 65_535) {
+		throw new Error("Webhook port must be an integer between 1 and 65535");
+	}
+	if (!settings.webhookPath?.startsWith("/") || settings.webhookPath.includes("?")) {
+		throw new Error("Webhook path must start with '/' and must not include a query string");
+	}
+}
+
 export function loadFeishuSettings(env: NodeJS.ProcessEnv = process.env): FeishuSettings {
 	const appId = (env.FEISHU_APP_ID ?? "").trim();
 	const appSecret = (env.FEISHU_APP_SECRET ?? "").trim();

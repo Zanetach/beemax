@@ -240,15 +240,19 @@ async function runChannelCommand(parsed: ParsedArgs): Promise<void> {
 		console.log("After scanning/signing in, copy App ID and App Secret, then run: beemax setup --profile " + profile);
 		if (parsed.options.open === true) {
 			const { spawn } = await import("node:child_process");
-			const command = process.platform === "darwin" ? "open" : process.platform === "win32" ? "start" : "xdg-open";
-			spawn(command, [url], { detached: true, stdio: "ignore" }).unref();
+			const [command, args] = process.platform === "darwin" ? ["open", [url]]
+				: process.platform === "win32" ? ["cmd.exe", ["/c", "start", "", url]]
+				: ["xdg-open", [url]];
+			const child = spawn(command, args, { detached: true, stdio: "ignore" });
+			child.once("error", (error) => console.warn(`Could not open browser automatically: ${error.message}`));
+			child.unref();
 		}
 		return;
 	}
 	if (action === "list") {
 		const config = loadConfig(parsed.configPath, profile);
 		const state = config.feishu.appId && config.feishu.appSecret ? "configured" : "not configured";
-		console.log(`feishu  ${state}  domain=${config.feishu.domain}  allowed_users=${config.feishu.allowedUsers.length}`);
+		console.log(`feishu  ${state}  mode=${config.feishu.connectionMode}  domain=${config.feishu.domain}  allowed_users=${config.feishu.allowedUsers.length}`);
 		return;
 	}
 	if (action === "remove") {
@@ -288,6 +292,12 @@ async function runChannelCommand(parsed: ParsedArgs): Promise<void> {
 		requireMention: parsed.options["no-require-mention"] === true
 			? false
 			: parsed.options["require-mention"] === true ? true : current.feishu.requireMention,
+		connectionMode: channelConnectionMode(parsed, current.feishu.connectionMode),
+		webhookHost: optionString(parsed, "webhook-host") ?? current.feishu.webhookHost,
+		webhookPort: webhookPort(parsed, current.feishu.webhookPort),
+		webhookPath: optionString(parsed, "webhook-path") ?? current.feishu.webhookPath,
+		webhookVerificationToken: process.env.FEISHU_WEBHOOK_VERIFICATION_TOKEN ?? current.feishu.webhookVerificationToken,
+		webhookEncryptKey: process.env.FEISHU_WEBHOOK_ENCRYPT_KEY ?? current.feishu.webhookEncryptKey,
 	});
 	console.log(`Configured Feishu channel for Agent '${profile}'. Run: beemax channel test --profile ${profile}`);
 }
@@ -325,6 +335,12 @@ function setupOptions(parsed: ParsedArgs, gatewayOnly: boolean): SetupOptions {
 		allowedUsers: splitList(optionString(parsed, "allowed-users") ?? process.env.FEISHU_ALLOWED_USERS),
 		allowedChats: splitList(optionString(parsed, "allowed-chats") ?? process.env.FEISHU_ALLOWED_CHATS),
 		domain: optionString(parsed, "domain") ? channelDomain(parsed, "feishu") : undefined,
+		connectionMode: channelConnectionMode(parsed, undefined),
+		webhookHost: optionString(parsed, "webhook-host"),
+		webhookPort: webhookPort(parsed, undefined),
+		webhookPath: optionString(parsed, "webhook-path"),
+		webhookVerificationToken: process.env.FEISHU_WEBHOOK_VERIFICATION_TOKEN,
+		webhookEncryptKey: process.env.FEISHU_WEBHOOK_ENCRYPT_KEY,
 		requireMention: parsed.options["no-require-mention"] === true
 			? false
 			: parsed.options["require-mention"] === true ? true : undefined,
@@ -346,6 +362,21 @@ function channelDomain(parsed: ParsedArgs, fallback: "feishu" | "lark"): "feishu
 	if (!domain) return fallback;
 	if (domain === "feishu" || domain === "lark") return domain;
 	throw new Error("--domain must be feishu or lark");
+}
+
+function channelConnectionMode(parsed: ParsedArgs, fallback: "websocket" | "webhook" | undefined): "websocket" | "webhook" | undefined {
+	const mode = optionString(parsed, "connection-mode");
+	if (mode === undefined) return fallback;
+	if (mode !== "websocket" && mode !== "webhook") throw new Error("--connection-mode must be websocket or webhook");
+	return mode;
+}
+
+function webhookPort(parsed: ParsedArgs, fallback: number | undefined): number | undefined {
+	const value = optionString(parsed, "webhook-port");
+	if (value === undefined) return fallback;
+	const port = Number(value);
+	if (!Number.isInteger(port) || port < 1 || port > 65_535) throw new Error("--webhook-port must be an integer between 1 and 65535");
+	return port;
 }
 
 async function askOne(prompt: string, secret = false): Promise<string> {
