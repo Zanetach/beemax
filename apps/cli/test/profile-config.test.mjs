@@ -13,6 +13,7 @@ import {
 	deleteProfile,
 	listProfiles,
 	migrateProfile,
+	probeFeishuApp,
 	removeFeishuChannel,
 	testFeishuCredentials,
 } from "../dist/profile-config.js";
@@ -62,6 +63,16 @@ test("profile creation and Feishu channel configuration keep secrets in a protec
 	assert.doesNotMatch(await readFile(paths.envPath, "utf8"), /FEISHU_APP_/);
 	await deleteProfile("personal", options);
 	assert.deepEqual(await listProfiles(options), []);
+});
+
+test("Feishu credential probe reports non-JSON HTTP failures without leaking credentials", async () => {
+	await assert.rejects(
+		() => probeFeishuApp(
+			{ appId: "cli_test", appSecret: "do-not-leak", domain: "feishu" },
+			async () => new Response("<html>rate limited</html>", { status: 429 }),
+		),
+		(error) => error instanceof Error && /Feishu credential check failed: HTTP 429/.test(error.message) && !/do-not-leak/.test(error.message),
+	);
 });
 
 test("profile creation refuses accidental overwrite", async () => {
@@ -141,18 +152,26 @@ test("a corrupt active-profile marker fails closed instead of selecting default"
 });
 
 test("Feishu credential test validates the tenant token response without returning the token", async () => {
-	let request;
+	const requests = [];
 	const message = await testFeishuCredentials(
 		{ appId: "cli_test", appSecret: "secret", domain: "feishu" },
 		async (url, init) => {
-			request = { url, init };
+			requests.push({ url, init });
+			if (String(url).endsWith("/bot/v3/info")) {
+				return new Response(JSON.stringify({ code: 0, bot: { open_id: "ou_bot", app_name: "BeeMax" } }), {
+					status: 200,
+					headers: { "Content-Type": "application/json" },
+				});
+			}
 			return new Response(JSON.stringify({ code: 0, tenant_access_token: "tenant-secret" }), {
 				status: 200,
 				headers: { "Content-Type": "application/json" },
 			});
 		},
 	);
-	assert.equal(message, "Feishu credentials are valid");
-	assert.equal(request.url, "https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal");
+	assert.equal(message, "Feishu credentials are valid; bot=BeeMax");
+	assert.equal(requests[0].url, "https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal");
+	assert.equal(requests[1].url, "https://open.feishu.cn/open-apis/bot/v3/info");
+	assert.equal(requests[1].init.headers.Authorization, "Bearer tenant-secret");
 	assert.doesNotMatch(message, /tenant-secret/);
 });

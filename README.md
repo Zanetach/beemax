@@ -64,12 +64,15 @@ On Linux or macOS with Node.js 22.19 or newer:
 ```bash
 ./scripts/install.sh
 
-beemax init --profile personal
-beemax model set anthropic claude-sonnet-4-5 --profile personal
-beemax channel add feishu --profile personal
-beemax channel test --profile personal
-beemax doctor --profile personal
+beemax setup --profile personal
 ```
+
+The setup wizard creates the Profile, configures `SOUL.md`, model credentials,
+the Feishu/Lark channel and allowlist, prints the required Feishu permissions
+and publishing checklist, probes the tenant token and bot identity, then runs
+the full doctor. Use `beemax gateway setup --profile personal` to reconfigure
+only the messaging channel. The lower-level `model`, `channel`, and `doctor`
+commands remain available for automation and focused changes.
 
 The model and Feishu setup commands prompt for missing secrets without writing
 them to YAML. Each Agent is an isolated Profile Home at
@@ -142,7 +145,10 @@ in Feishu. Reply `1` to allow once, `2` to allow that tool for the current
 process session, or `3` to deny.
 
 Subscribe to the `im.message.receive_v1` event in the Feishu developer console
-and enable "长连接" (WebSocket long-connection). No public HTTPS endpoint needed.
+and enable "长连接" (WebSocket long-connection). Grant
+`im:message.p2p_msg:readonly`, `im:message.group_at_msg:readonly`, and
+`im:message:send_as_bot`; enable the Bot capability and publish an app version
+before testing. No public HTTPS endpoint is needed.
 
 ## Profiles: one Agent per process
 

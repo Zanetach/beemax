@@ -32,6 +32,12 @@ export interface ModelInput {
 	baseUrl?: string;
 }
 
+export interface FeishuProbeResult {
+	botOpenId?: string;
+	botName?: string;
+	warning?: string;
+}
+
 export async function createProfile(profile: string, options: ProfileStorageOptions = {}): Promise<ProfilePaths> {
 	const paths = profilePaths(profile, options);
 	if (await exists(paths.homePath)) throw new Error(`Agent profile ${profile} already exists`);
@@ -154,6 +160,20 @@ export async function configureModel(profile: string, input: ModelInput, options
 	return paths;
 }
 
+export async function configureSoul(profile: string, identity: string, options: ProfileStorageOptions = {}): Promise<ProfilePaths> {
+	const value = identity.trim();
+	if (!value) throw new Error("Agent SOUL.md cannot be empty");
+	const paths = await writableProfilePaths(profile, options);
+	if (paths.configPath === join(paths.homePath, "config.yaml")) {
+		await writeFile(paths.soulPath, `${value}\n`, { encoding: "utf8", mode: 0o600 });
+		return paths;
+	}
+	const config = configFromYaml(await readFile(paths.configPath, "utf8"));
+	config.agent = { ...asRecord(config.agent), systemPrompt: value };
+	await writeFile(paths.configPath, stringifyYaml(config), { encoding: "utf8", mode: 0o600 });
+	return paths;
+}
+
 export async function removeFeishuChannel(profile: string, options: ProfileStorageOptions = {}): Promise<ProfilePaths> {
 	const paths = await writableProfilePaths(profile, options);
 	const values = await readEnvFile(paths.envPath);
@@ -168,18 +188,59 @@ export async function testFeishuCredentials(
 	input: Pick<FeishuChannelInput, "appId" | "appSecret" | "domain">,
 	fetcher: typeof fetch = fetch,
 ): Promise<string> {
+	const result = await probeFeishuApp(input, fetcher);
+	const identity = result.botName || result.botOpenId;
+	return `Feishu credentials are valid${identity ? `; bot=${identity}` : ""}${result.warning ? `; warning=${result.warning}` : ""}`;
+}
+
+export async function probeFeishuApp(
+	input: Pick<FeishuChannelInput, "appId" | "appSecret" | "domain">,
+	fetcher: typeof fetch = fetch,
+): Promise<FeishuProbeResult> {
 	const origin = input.domain === "lark" ? "https://open.larksuite.com" : "https://open.feishu.cn";
-	const response = await fetcher(`${origin}/open-apis/auth/v3/tenant_access_token/internal`, {
-		method: "POST",
-		headers: { "Content-Type": "application/json" },
-		body: JSON.stringify({ app_id: input.appId, app_secret: input.appSecret }),
-		signal: AbortSignal.timeout(15_000),
-	});
-	const body = await response.json() as { code?: number; msg?: string; tenant_access_token?: string };
+	let response: Response;
+	try {
+		response = await fetcher(`${origin}/open-apis/auth/v3/tenant_access_token/internal`, {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ app_id: input.appId, app_secret: input.appSecret }),
+			signal: AbortSignal.timeout(15_000),
+		});
+	} catch (error) {
+		throw new Error(`Feishu credential probe failed: ${error instanceof Error ? error.message : String(error)}`);
+	}
+	const body = await responseJson(response, "Feishu credential probe") as { code?: number; msg?: string; tenant_access_token?: string };
 	if (!response.ok || body.code !== 0 || !body.tenant_access_token) {
 		throw new Error(`Feishu credential check failed: ${body.msg ?? `HTTP ${response.status}`}`);
 	}
-	return "Feishu credentials are valid";
+	try {
+		const botResponse = await fetcher(`${origin}/open-apis/bot/v3/info`, {
+			headers: { Authorization: `Bearer ${body.tenant_access_token}` },
+			signal: AbortSignal.timeout(15_000),
+		});
+		const botBody = await responseJson(botResponse, "Feishu bot identity probe") as {
+			code?: number;
+			msg?: string;
+			bot?: { open_id?: string; app_name?: string; bot_name?: string };
+			data?: { bot?: { open_id?: string; app_name?: string; bot_name?: string } };
+		};
+		if (!botResponse.ok || botBody.code !== 0) return { warning: `bot identity unavailable: ${botBody.msg ?? `HTTP ${botResponse.status}`}` };
+		const bot = botBody.bot ?? botBody.data?.bot;
+		return { botOpenId: bot?.open_id, botName: bot?.app_name ?? bot?.bot_name };
+	} catch (error) {
+		return { warning: `bot identity unavailable: ${error instanceof Error ? error.message : String(error)}` };
+	}
+}
+
+async function responseJson(response: Response, label: string): Promise<Record<string, unknown>> {
+	const text = await response.text();
+	if (!text) return {};
+	try {
+		return JSON.parse(text) as Record<string, unknown>;
+	} catch {
+		if (!response.ok) return { msg: `HTTP ${response.status}` };
+		throw new Error(`${label} returned invalid JSON (HTTP ${response.status})`);
+	}
 }
 
 export async function setActiveProfile(profile: string, options: ProfileStorageOptions = {}): Promise<void> {

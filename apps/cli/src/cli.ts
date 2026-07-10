@@ -24,6 +24,7 @@ import {
 } from "./profile-config.ts";
 import { activeProfile, resolveProfileLocation } from "./profile-home.ts";
 import { installSystemdService, runServiceAction, type ServiceAction } from "./service-manager.ts";
+import { runSetup, type SetupOptions } from "./setup.ts";
 
 async function main(): Promise<void> {
 	const parsed = parseArgs(process.argv.slice(2));
@@ -33,6 +34,11 @@ async function main(): Promise<void> {
 	const getConfig = () => loadConfig(parsed.configPath, profile);
 
 	switch (cmd) {
+		case "setup":
+			if (parsed.configPath) throw new Error("beemax setup does not support --config; select a Profile with --profile");
+			if (parsed.options["api-key"]) throw new Error("Do not pass model secrets in argv; set BEEMAX_API_KEY or use the interactive prompt");
+			if (!(await runSetup(setupOptions(parsed, false)))) process.exitCode = 1;
+			break;
 		case "init":
 			await runInit(parsed);
 			break;
@@ -43,7 +49,11 @@ async function main(): Promise<void> {
 			await runChannelCommand(parsed);
 			break;
 		case "gateway":
-			await runGateway(getConfig());
+			if (parsed.positionals[1] === "setup") {
+			if (parsed.configPath) throw new Error("beemax gateway setup does not support --config; select a Profile with --profile");
+			if (parsed.options["api-key"]) throw new Error("Do not pass model secrets in argv; set BEEMAX_API_KEY or use the interactive prompt");
+				if (!(await runSetup(setupOptions(parsed, true)))) process.exitCode = 1;
+			} else await runGateway(getConfig());
 			break;
 		case "chat":
 			await runChat(getConfig());
@@ -78,10 +88,11 @@ async function main(): Promise<void> {
 			console.log(`beemax - persistent personal agent (Pi + Feishu)
 
 Commands:
+  setup      Configure one Agent Profile, model, identity, and Gateway
   init       Create the first Agent profile
   agent      create | list | delete
   channel    add | list | remove | test
-  gateway    Start one Feishu profile process
+  gateway    Start one Feishu Profile process; gateway setup configures its channel
   chat       Local interactive chat for one profile
   model      show | set <provider> <model>
   doctor     Check profile readiness
@@ -270,6 +281,26 @@ function applyRuntimePaths(parsed: ParsedArgs): void {
 	const root = optionString(parsed, "root");
 	if (home) process.env.BEEMAX_HOME = home;
 	if (root) process.env.BEEMAX_ROOT = root;
+}
+
+function setupOptions(parsed: ParsedArgs, gatewayOnly: boolean): SetupOptions {
+	return {
+		profile: selectedProfile(parsed),
+		gatewayOnly,
+		nonInteractive: parsed.options["non-interactive"] === true || !process.stdin.isTTY,
+		provider: optionString(parsed, "provider") ?? process.env.BEEMAX_PROVIDER,
+		model: optionString(parsed, "model") ?? process.env.BEEMAX_MODEL,
+		apiKey: process.env.BEEMAX_API_KEY,
+		soul: optionString(parsed, "soul") ?? process.env.BEEMAX_SOUL,
+		appId: optionString(parsed, "app-id") ?? process.env.FEISHU_APP_ID,
+		appSecret: process.env.FEISHU_APP_SECRET,
+		allowedUsers: splitList(optionString(parsed, "allowed-users") ?? process.env.FEISHU_ALLOWED_USERS),
+		allowedChats: splitList(optionString(parsed, "allowed-chats") ?? process.env.FEISHU_ALLOWED_CHATS),
+		domain: optionString(parsed, "domain") ? channelDomain(parsed, "feishu") : undefined,
+		requireMention: parsed.options["no-require-mention"] === true
+			? false
+			: parsed.options["require-mention"] === true ? true : undefined,
+	};
 }
 
 function optionString(parsed: ParsedArgs, key: string): string | undefined {
