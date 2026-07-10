@@ -35,6 +35,7 @@ export interface DispatcherDeps {
 	cardOptions?: CardRenderOptions;
 	flushIntervalMs?: number;
 	approvalBroker?: ToolApprovalBroker;
+	cancelTasks?: (source: InboundMessage["source"]) => number;
 }
 
 export class Dispatcher {
@@ -98,6 +99,13 @@ export class Dispatcher {
 
 	private async handle(msg: InboundMessage): Promise<void> {
 		if (this.deps.approvalBroker && (await this.deps.approvalBroker.handleMessage(msg))) return;
+		if (msg.text.trim().toLowerCase() === "/stop") {
+			const existing = this.sessions.get(sessionKeyForSource(msg.source));
+			if (existing) await existing.piSession.abort();
+			const cancelled = this.deps.cancelTasks?.(msg.source) ?? 0;
+			await this.platform.send(msg.source.chatId, `Stopped the active Agent turn and cancelled ${cancelled} Sub-Agent task(s).`);
+			return;
+		}
 		const session = await this.getOrCreateSession(msg);
 		await this.withLock(session.sessionKey, async () => {
 			await this.runTurn(session, msg);

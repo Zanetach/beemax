@@ -10,12 +10,15 @@
 import { AutomationScheduler, AutomationStore, HeartbeatRunner } from "@beemax/automation";
 import {
 	buildAgentFactory,
+	createSubagentTools,
 	Dispatcher,
 	FeishuAdapter,
 	type FeishuSettings,
 	loadMcpConfig,
 	McpManager,
+	SubagentManager,
 	ToolApprovalBroker,
+	type SubagentTask,
 } from "@beemax/gateway";
 import { MemoryStore } from "@beemax/memory";
 import type { SessionSource } from "@beemax/gateway";
@@ -52,8 +55,31 @@ export async function runGateway(config: BeeMaxConfig): Promise<void> {
 		const result = await adapter.send(source.chatId, text);
 		if (!result.success) throw new Error(result.error ?? "Feishu approval message failed");
 	});
+	const mcpApproval = new Set(mcp.getApprovalTools());
+	const readOnlyMcpTools = mcp.getTools().filter((tool) => !mcpApproval.has(tool.name));
 
 	let scheduler: AutomationScheduler | undefined;
+	const createSubagentAgent = buildAgentFactory({
+		provider: config.model.provider,
+		model: config.model.model,
+		baseUrl: config.model.baseUrl,
+		cwd: config.paths.cwd,
+		agentDir: config.paths.agentDir,
+		getApiKey: () => apiKey,
+		systemPrompt: buildSubagentSystemPrompt(config.agent.systemPrompt),
+		memoryStore: memory,
+		customTools: readOnlyMcpTools,
+		tools: [
+			"read", "grep", "find", "ls", "web_search", "web_extract", "memory_recall", "memory_list",
+			...readOnlyMcpTools.map((tool) => tool.name),
+		],
+	});
+	const subagents = config.subagents.enabled ? new SubagentManager({
+		maxConcurrent: config.subagents.maxConcurrent,
+		maxChildrenPerOwner: config.subagents.maxChildrenPerOwner,
+		defaultTimeoutMs: config.subagents.timeoutMs,
+		execute: async (task, signal) => executeSubagentTask(createSubagentAgent, task, signal),
+	}) : undefined;
 	const createAgent = buildAgentFactory({
 		provider: config.model.provider,
 		model: config.model.model,
@@ -65,6 +91,7 @@ export async function runGateway(config: BeeMaxConfig): Promise<void> {
 		getFeishuClient: () => adapter.apiClient,
 		memoryStore: memory,
 		customTools: mcp.getTools(),
+		sessionTools: (source) => subagents ? createSubagentTools(subagents, source) : [],
 		approvalTools: mcp.getApprovalTools(),
 		automationStore: automation,
 		wakeAutomation: () => scheduler?.wake(),
@@ -80,8 +107,6 @@ export async function runGateway(config: BeeMaxConfig): Promise<void> {
 		authorizeTool: (request, signal) => approvalBroker.authorize(request, signal),
 	});
 
-	const mcpApproval = new Set(mcp.getApprovalTools());
-	const readOnlyMcpTools = mcp.getTools().filter((tool) => !mcpApproval.has(tool.name));
 	const createAutomationAgent = buildAgentFactory({
 		provider: config.model.provider,
 		model: config.model.model,
@@ -109,6 +134,7 @@ export async function runGateway(config: BeeMaxConfig): Promise<void> {
 			cardOptions: { title: config.profile === "default" ? "BeeMax Agent" : `BeeMax · ${config.profile}` },
 			flushIntervalMs: 800,
 			approvalBroker,
+			cancelTasks: (source) => subagents?.cancelOwner(source) ?? 0,
 			recall: async (source: SessionSource, text: string) => {
 				const hits = memory.recall(text, {
 					limit: 4,
@@ -202,6 +228,7 @@ export async function runGateway(config: BeeMaxConfig): Promise<void> {
 		console.info("\n[beemax] shutting down...");
 		await heartbeat.stop();
 		await scheduler?.stop();
+		subagents?.dispose();
 		dispatcher.dispose();
 		await adapter.disconnect();
 		await mcp.close();
@@ -211,6 +238,60 @@ export async function runGateway(config: BeeMaxConfig): Promise<void> {
 	};
 	process.on("SIGINT", () => void shutdown());
 	process.on("SIGTERM", () => void shutdown());
+}
+
+export async function executeSubagentTask(
+	factory: ReturnType<typeof buildAgentFactory>,
+	task: SubagentTask,
+	signal: AbortSignal,
+): Promise<string> {
+	const source: SessionSource = {
+		...task.source,
+		threadId: `__subagent:${task.id}`,
+		messageId: undefined,
+	};
+	const session = await factory(`subagent-${task.id}`, source);
+	const abort = () => { void session.abort(); };
+	signal.addEventListener("abort", abort, { once: true });
+	try {
+		if (signal.aborted) await session.abort();
+		await session.prompt([
+			"[Sub-Agent Task]",
+			`Name: ${task.name}`,
+			`Capability: ${task.capability}`,
+			`Goal: ${task.goal}`,
+			task.context ? `Context:\n${task.context}` : "Context: none supplied",
+			"Return a concise structured result with findings, evidence, and unresolved issues. Do not claim actions you could not verify.",
+		].join("\n\n"), { expandPromptTemplates: false, source: "extension" });
+		const answer = lastAssistantAnswer(session.agent.state.messages);
+		if (!answer) throw new Error("Sub-Agent returned no answer");
+		return answer;
+	} finally {
+		signal.removeEventListener("abort", abort);
+		session.dispose();
+	}
+}
+
+function lastAssistantAnswer(messages: ReadonlyArray<{ role: string; content?: unknown }>): string {
+	for (let index = messages.length - 1; index >= 0; index--) {
+		const message = messages[index];
+		if (message.role !== "assistant" || !Array.isArray(message.content)) continue;
+		return message.content
+			.filter((item): item is { type: "text"; text: string } => Boolean(item && typeof item === "object" && (item as { type?: string }).type === "text"))
+			.map((item) => item.text)
+			.join("")
+			.trim();
+	}
+	return "";
+}
+
+export function buildSubagentSystemPrompt(parentPrompt?: string): string {
+	return [
+		parentPrompt ?? "You are a focused BeeMax Sub-Agent working for a parent personal Agent.",
+		"# Sub-Agent isolation",
+		"You have a fresh context and only the task below. Work independently and return evidence to the parent Agent.",
+		"You cannot contact the user, mutate long-term memory, modify files, run shell commands, change Skills, schedule work, or spawn more agents.",
+	].join("\n\n");
 }
 
 function apiKeyEnv(provider: string): string {

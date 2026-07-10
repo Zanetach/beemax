@@ -8,7 +8,7 @@
  *   beemax model      Show / set the configured model
  */
 
-import { runGateway } from "./gateway.ts";
+import { buildSubagentSystemPrompt, executeSubagentTask, runGateway } from "./gateway.ts";
 import { beemaxRoot, loadConfig } from "./config.ts";
 import { runDoctor } from "./doctor.ts";
 import {
@@ -361,7 +361,14 @@ async function promptLine(message: string): Promise<string> {
 }
 
 async function runChat(config: ReturnType<typeof loadConfig>): Promise<void> {
-	const { buildAgentFactory, loadMcpConfig, McpManager, sessionIdForSource } = await import("@beemax/gateway");
+	const {
+		buildAgentFactory,
+		createSubagentTools,
+		loadMcpConfig,
+		McpManager,
+		sessionIdForSource,
+		SubagentManager,
+	} = await import("@beemax/gateway");
 	const { MemoryStore } = await import("@beemax/memory");
 	const apiKey = config.model.apiKey ?? process.env[modelApiKeyEnv(config.model.provider)] ?? "";
 	const memory = new MemoryStore(config.memory.dbPath);
@@ -374,6 +381,29 @@ async function runChat(config: ReturnType<typeof loadConfig>): Promise<void> {
 		chatType: "dm",
 		userId: "local",
 	};
+	const mcpApproval = new Set(mcp.getApprovalTools());
+	const readOnlyMcpTools = mcp.getTools().filter((tool) => !mcpApproval.has(tool.name));
+	const createSubagentAgent = buildAgentFactory({
+		provider: config.model.provider,
+		model: config.model.model,
+		baseUrl: config.model.baseUrl,
+		cwd: config.paths.cwd,
+		agentDir: config.paths.agentDir,
+		getApiKey: () => apiKey,
+		systemPrompt: buildSubagentSystemPrompt(config.agent.systemPrompt),
+		memoryStore: memory,
+		customTools: readOnlyMcpTools,
+		tools: [
+			"read", "grep", "find", "ls", "web_search", "web_extract", "memory_recall", "memory_list",
+			...readOnlyMcpTools.map((tool) => tool.name),
+		],
+	});
+	const subagents = config.subagents.enabled ? new SubagentManager({
+		maxConcurrent: config.subagents.maxConcurrent,
+		maxChildrenPerOwner: config.subagents.maxChildrenPerOwner,
+		defaultTimeoutMs: config.subagents.timeoutMs,
+		execute: (task, signal) => executeSubagentTask(createSubagentAgent, task, signal),
+	}) : undefined;
 	const createAgent = buildAgentFactory({
 		provider: config.model.provider,
 		model: config.model.model,
@@ -385,6 +415,7 @@ async function runChat(config: ReturnType<typeof loadConfig>): Promise<void> {
 		memoryStore: memory,
 		customTools: mcp.getTools(),
 		approvalTools: mcp.getApprovalTools(),
+		sessionTools: (sessionSource) => subagents ? createSubagentTools(subagents, sessionSource) : [],
 	});
 	const session = await createAgent(sessionIdForSource(source), source);
 
@@ -412,6 +443,7 @@ async function runChat(config: ReturnType<typeof loadConfig>): Promise<void> {
 		}
 	} finally {
 		session.dispose();
+		subagents?.dispose();
 		await mcp.close();
 		memory.close();
 	}

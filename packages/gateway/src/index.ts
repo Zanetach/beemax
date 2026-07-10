@@ -7,6 +7,15 @@ export { createCodexImageTool, type CodexImageToolOptions } from "./core/image-t
 export { createMemoryTools, type MemoryToolStore } from "./core/memory-tools.ts";
 export { createSkillTools } from "./core/skill-tools.ts";
 export {
+	SubagentManager,
+	createSubagentTools,
+	type SubagentExecutor,
+	type SubagentManagerOptions,
+	type SubagentTask,
+	type SubagentTaskSnapshot,
+	type SubagentTaskStatus,
+} from "./core/subagent-tools.ts";
+export {
 	McpManager,
 	loadMcpConfig,
 	type McpConfig,

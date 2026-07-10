@@ -42,6 +42,12 @@ export interface BeeMaxConfig {
 		quality: "low" | "medium" | "high";
 		outputDir: string;
 	};
+	subagents: {
+		enabled: boolean;
+		maxConcurrent: number;
+		maxChildrenPerOwner: number;
+		timeoutMs: number;
+	};
 	automation: {
 		enabled: boolean;
 		timezone: string;
@@ -115,6 +121,12 @@ export function loadConfig(configPath?: string, profile = "default"): BeeMaxConf
 			provider: "openai-codex",
 			quality: parseImageQuality(env.BEEMAX_IMAGE_QUALITY ?? cfg.imageGeneration?.quality),
 			outputDir: resolveFrom(root, str(env.BEEMAX_IMAGE_OUTPUT_DIR ?? cfg.imageGeneration?.outputDir ?? join(profileDataRoot, "cache/images"))),
+		},
+		subagents: {
+			enabled: parseBool(env.BEEMAX_SUBAGENTS_ENABLED ?? cfg.subagents?.enabled ?? true),
+			maxConcurrent: parseNumber(env.BEEMAX_SUBAGENTS_MAX_CONCURRENT ?? cfg.subagents?.maxConcurrent, 3),
+			maxChildrenPerOwner: parseNumber(env.BEEMAX_SUBAGENTS_MAX_CHILDREN ?? cfg.subagents?.maxChildrenPerOwner, 5),
+			timeoutMs: parseNumber(env.BEEMAX_SUBAGENTS_TIMEOUT_MS ?? cfg.subagents?.timeoutMs, 15 * 60_000),
 		},
 		automation: {
 			enabled: parseBool(env.BEEMAX_AUTOMATION_ENABLED ?? cfg.automation?.enabled ?? true),

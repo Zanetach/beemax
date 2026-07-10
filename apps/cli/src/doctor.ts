@@ -46,6 +46,14 @@ export async function runDoctor(config: BeeMaxConfig): Promise<boolean> {
 		});
 	}
 
+	checks.push({
+		name: "Sub-Agents",
+		status: config.subagents.enabled ? "PASS" : "WARN",
+		detail: config.subagents.enabled
+			? `concurrency=${config.subagents.maxConcurrent}; children=${config.subagents.maxChildrenPerOwner}; depth=1`
+			: "disabled",
+	});
+
 	try {
 		const automation = new AutomationStore(config.memory.dbPath);
 		parseDuration(config.automation.heartbeat.every);

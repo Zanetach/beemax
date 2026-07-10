@@ -156,6 +156,7 @@ function defaultProfileYaml(profile: string): string {
 		memory: { dbPath: `data/profiles/${profile}/beemax.db` },
 		mcp: { configPath: `config/profiles/${profile}.mcp.json` },
 		imageGeneration: { enabled: false, provider: "openai-codex", quality: "medium", outputDir: `data/profiles/${profile}/cache/images` },
+		subagents: { enabled: true, maxConcurrent: 3, maxChildrenPerOwner: 5, timeoutMs: 900000 },
 		automation: { enabled: true, timezone: "Asia/Shanghai", heartbeat: { enabled: true, every: "30m", activeHours: { start: "08:00", end: "23:00", timezone: "Asia/Shanghai" } } },
 		paths: { agentDir: `data/profiles/${profile}/agent`, cwd: "." },
 	});

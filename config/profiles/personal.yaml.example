@@ -29,6 +29,12 @@ imageGeneration:
   quality: medium
   outputDir: data/profiles/personal/cache/images
 
+subagents:
+  enabled: true
+  maxConcurrent: 3
+  maxChildrenPerOwner: 5
+  timeoutMs: 900000
+
 automation:
   enabled: true
   timezone: Asia/Shanghai

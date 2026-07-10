@@ -24,6 +24,7 @@ An autonomous agent based on [Pi](https://pi.dev), targeting feature parity with
 - [x] OpenClaw-inspired Heartbeat: active hours, busy deferral, isolated read-only turns, `HEARTBEAT_OK` suppression
 - [x] One-profile-per-process isolation with per-profile model, Feishu app, memory, sessions, Skills, MCP, automation, and systemd unit
 - [x] GPT Image 2 generation through profile-local ChatGPT/Codex OAuth with native Feishu image delivery
+- [x] Isolated read-only Sub-Agents with bounded concurrency, status/wait/cancel tools, and cascading `/stop`
 - [x] `beemax doctor` readiness diagnostics
 - [x] Deny-by-default Feishu user/chat allowlists
 - [x] Text approval for `bash/edit/write`: allow once / allow for session / deny
@@ -196,6 +197,34 @@ the last authorized DM unless a fixed chat is configured, defers while the agent
 is busy, reads the small `HEARTBEAT.md` checklist, and suppresses `HEARTBEAT_OK`
 responses. Only actionable output is proactively sent.
 
+## Sub-Agent delegation
+
+BeeMax 0.1 can delegate independent research and analysis to fresh Pi
+AgentSessions without copying the parent conversation. Parent Agents receive:
+
+```text
+task_spawn   task_status   task_wait   task_cancel
+```
+
+Sub-Agents can read workspace files, search/extract the web, recall/list memory,
+and call read-only MCP tools. They cannot run shell commands, modify files,
+write or delete memory, change Skills, schedule work, send Feishu messages, or
+spawn another Agent. Their task tools appear in the parent Feishu card timeline.
+
+```yaml
+subagents:
+  enabled: true
+  maxConcurrent: 3
+  maxChildrenPerOwner: 5
+  timeoutMs: 900000
+```
+
+Tasks above the concurrency limit queue. `/stop` aborts the active parent turn
+and cascades cancellation to its queued/running Sub-Agents. In 0.1, task state
+is process-local: active tasks are cancelled during Gateway shutdown and are
+not resumed after restart; child Pi transcripts remain in the profile session
+directory for audit.
+
 ## Codex image generation
 
 Image generation is configured independently per profile and does not require
@@ -316,6 +345,9 @@ to respect Feishu's 5 QPS patch limit while still showing the final card promptl
 10. **Pure TS card pipeline** - the hermes-feishu-streaming-card rendering logic
    was ported to TypeScript rather than run as a Python sidecar, so the whole
    project is one Node.js runtime.
+11. **Bounded Sub-Agents** - fresh-context, read-only child Pi sessions combine
+   Hermes-style isolation with explicit OpenClaw-style task lifecycle tools.
+   V0.1 is flat (depth 1) and process-local by design.
 
 ## Layout
 
