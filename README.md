@@ -26,6 +26,9 @@ An autonomous agent based on [Pi](https://pi.dev), targeting feature parity with
 - [x] GPT Image 2 generation through profile-local ChatGPT/Codex OAuth with native Feishu image delivery
 - [x] Isolated read-only Sub-Agents with bounded concurrency, status/wait/cancel tools, and cascading `/stop`
 - [x] `beemax doctor` readiness diagnostics
+- [x] `beemax profile doctor` and `beemax gateway health` readiness aliases
+- [x] Multi-profile Gateway service operations with `--all`
+- [x] Profile-home backup via `beemax profile backup`
 - [x] Deny-by-default Feishu user/chat allowlists
 - [x] Text approval for `bash/edit/write`: allow once / allow for session / deny
 - [x] Workspace boundary, sensitive credential path, and destructive-command hard blocks

@@ -17,6 +17,8 @@ Environment=BEEMAX_PROFILE=%i
 ExecStart=/usr/bin/env npm run gateway -- --profile %i --home /var/lib/beemax --root /opt/beemax
 Restart=on-failure
 RestartSec=5s
+StartLimitIntervalSec=60
+StartLimitBurst=5
 TimeoutStopSec=60s
 KillSignal=SIGTERM
 NoNewPrivileges=true
@@ -24,6 +26,8 @@ PrivateTmp=true
 UMask=0077
 StandardOutput=journal
 StandardError=journal
+LogRateLimitIntervalSec=30s
+LogRateLimitBurst=200
 SyslogIdentifier=beemax-%i
 
 [Install]

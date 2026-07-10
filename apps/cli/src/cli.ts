@@ -10,6 +10,7 @@
 
 import { buildSubagentSystemPrompt, executeSubagentTask, runGateway } from "./gateway.ts";
 import { beemaxRoot, loadConfig } from "./config.ts";
+import { join } from "node:path";
 import { runDoctor } from "./doctor.ts";
 import {
 	configureFeishuChannel,
@@ -59,7 +60,10 @@ async function main(): Promise<void> {
 			} else if (parsed.positionals[1] === "list") {
 				console.log((await listProfiles()).map((name) => `${name}  beemax@${name}.service`).join("\n") || "No Agent Profiles configured.");
 			} else if (["start", "stop", "restart", "status", "logs"].includes(parsed.positionals[1] ?? "")) {
-				runServiceAction(parsed.positionals[1] as ServiceAction, gatewayProfile(parsed), undefined, process.platform, parsed.options.system === true ? "system" : "user");
+				const profiles = parsed.options.all === true ? await listProfiles() : [gatewayProfile(parsed)];
+				for (const name of profiles) runServiceAction(parsed.positionals[1] as ServiceAction, name, undefined, process.platform, parsed.options.system === true ? "system" : "user");
+			} else if (parsed.positionals[1] === "health") {
+				if (!(await runDoctor(loadConfig(parsed.configPath, gatewayProfile(parsed))))) process.exitCode = 1;
 			} else if (!parsed.positionals[1] || parsed.positionals[1] === "run") {
 				await runGateway(loadConfig(parsed.configPath, gatewayProfile(parsed)));
 			} else throw new Error(`Unknown gateway action: ${parsed.positionals[1]}`);
@@ -101,11 +105,11 @@ Commands:
   init       Create the first Agent profile
   agent      create | list | delete
   channel    add | list | remove | test
-  gateway    run | setup | install | start | stop | restart | status | logs | list
+  gateway    run | setup | install | start | stop | restart | status | logs | list | health
   chat       Local interactive chat for one profile
   model      show | set <provider> <model>
   doctor     Check profile readiness
-  profile    create | list | show | path | use | migrate | delete
+  profile    create | list | show | path | use | migrate | backup | delete
   auth       codex (stores OAuth only inside the selected profile)
   service    install (Linux systemd)
   start      Start a profile systemd service
@@ -383,6 +387,16 @@ async function runProfileCommand(parsed: ParsedArgs): Promise<void> {
 	if (action === "migrate") {
 		const paths = await migrateProfile(name);
 		console.log(`Migrated legacy Profile '${name}' to ${paths.homePath}. Source files were preserved.`);
+		return;
+	}
+	if (action === "backup") {
+		const destination = args[2];
+		if (!destination) throw new Error("profile backup requires a destination directory");
+		const { cp, mkdir } = await import("node:fs/promises");
+		const source = resolveProfileLocation(name, explicitConfig).homePath;
+		await mkdir(destination, { recursive: true });
+		await cp(source, join(destination, name), { recursive: true, force: false, errorOnExist: false });
+		console.log(`Backed up Agent '${name}' to ${join(destination, name)}.`);
 		return;
 	}
 	if (action === "delete") {

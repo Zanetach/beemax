@@ -35,6 +35,8 @@ Environment=BEEMAX_PROFILE=%i
 ExecStart=${systemdQuote(nodePath)} ${systemdQuote(cliPath)} gateway --profile %i --home ${systemdQuote(absoluteHome)} --root ${systemdQuote(absoluteRoot)}
 Restart=on-failure
 RestartSec=5s
+StartLimitIntervalSec=60
+StartLimitBurst=5
 TimeoutStopSec=60s
 KillSignal=SIGTERM
 NoNewPrivileges=true
@@ -42,6 +44,8 @@ PrivateTmp=true
 UMask=0077
 StandardOutput=journal
 StandardError=journal
+LogRateLimitIntervalSec=30s
+LogRateLimitBurst=200
 SyslogIdentifier=beemax-%i
 
 [Install]
