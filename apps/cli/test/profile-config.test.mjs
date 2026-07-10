@@ -15,6 +15,7 @@ import {
 	migrateProfile,
 	probeFeishuApp,
 	removeFeishuChannel,
+	syncBuiltinSkills,
 	testFeishuCredentials,
 } from "../dist/profile-config.js";
 
@@ -92,6 +93,17 @@ test("profile creation refuses accidental overwrite", async () => {
 	await writeFile(join(home, "profiles", "partial", "SOUL.md"), "existing\n");
 	await assert.rejects(() => createProfile("partial", { root, home }), /already exists/);
 	await assert.rejects(() => readFile(join(home, "profiles", "partial", "config.yaml"), "utf8"));
+});
+
+test("new and migrated Profiles receive bundled skills without overwriting existing skills", async () => {
+	const root = await mkdtemp(join(tmpdir(), "beemax-bundled-skills-"));
+	const home = await mkdtemp(join(tmpdir(), "beemax-home-"));
+	await mkdir(join(root, "skills", "builtin", "business-copywriting"), { recursive: true });
+	await writeFile(join(root, "skills", "builtin", "business-copywriting", "SKILL.md"), "---\nname: business-copywriting\ndescription: Write business copy.\n---\n");
+	const created = await createProfile("personal", { root, home });
+	assert.match(await readFile(join(created.homePath, "skills", "business-copywriting", "SKILL.md"), "utf8"), /Write business copy/);
+	await syncBuiltinSkills("personal", { root, home });
+	assert.match(await readFile(join(created.homePath, "skills", "business-copywriting", "SKILL.md"), "utf8"), /Write business copy/);
 });
 
 test("legacy profiles migrate into an isolated home without deleting their source", async () => {

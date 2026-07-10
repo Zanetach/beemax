@@ -21,6 +21,7 @@ import {
 	migrateProfile,
 	removeFeishuChannel,
 	setActiveProfile,
+	syncBuiltinSkills,
 	testFeishuCredentials,
 } from "./profile-config.ts";
 import { activeProfile, resolveProfileLocation } from "./profile-home.ts";
@@ -80,6 +81,9 @@ async function main(): Promise<void> {
 		case "profile":
 			await runProfileCommand(parsed);
 			break;
+		case "skills":
+			await runSkillsCommand(parsed);
+			break;
 		case "auth":
 			if (parsed.positionals[1] !== "codex") throw new Error("Usage: beemax auth codex --profile <name>");
 			await runCodexAuth(getConfig());
@@ -110,6 +114,7 @@ Commands:
   model      show | set <provider> <model>
   doctor     Check profile readiness
   profile    create | list | show | path | use | migrate | backup | delete
+	  skills     list | sync (prepackaged Profile Skills)
   auth       codex (stores OAuth only inside the selected profile)
   service    install (Linux systemd)
   start      Start a profile systemd service
@@ -470,6 +475,29 @@ async function runProfileCommand(parsed: ParsedArgs): Promise<void> {
 		return;
 	}
 	throw new Error(`Unknown profile action: ${action}`);
+}
+
+async function runSkillsCommand(parsed: ParsedArgs): Promise<void> {
+	const action = parsed.positionals[1] ?? "list";
+	const profile = selectedProfile(parsed);
+	const { readdir, readFile } = await import("node:fs/promises");
+	const paths = resolveProfileLocation(profile, parsed.configPath);
+	if (action === "sync") {
+		await syncBuiltinSkills(profile);
+		console.log(`Synced bundled Skills into Agent '${profile}' without replacing existing skills.`);
+		return;
+	}
+	if (action !== "list") throw new Error("Usage: beemax skills [list | sync] --profile <name>");
+	const skills: string[] = [];
+	try {
+		for (const entry of await readdir(join(paths.homePath, "skills"), { withFileTypes: true })) {
+			if (!entry.isDirectory()) continue;
+			const content = await readFile(join(paths.homePath, "skills", entry.name, "SKILL.md"), "utf8").catch(() => "");
+			const description = content.match(/^description:\s*(.+)$/m)?.[1]?.replaceAll('"', "").trim();
+			if (description) skills.push(`${entry.name}  ${description}`);
+		}
+	} catch { /* no Skills directory yet */ }
+	console.log(skills.sort().join("\n") || "No Profile Skills installed. Run: beemax skills sync --profile " + profile);
 }
 
 async function runCodexAuth(config: ReturnType<typeof loadConfig>): Promise<void> {

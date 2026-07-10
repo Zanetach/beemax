@@ -1,4 +1,4 @@
-import { access, mkdir } from "node:fs/promises";
+import { access, mkdir, readdir } from "node:fs/promises";
 import { constants } from "node:fs";
 import { join } from "node:path";
 import { AutomationStore, parseDuration } from "@beemax/automation";
@@ -76,8 +76,11 @@ export async function runDoctor(config: BeeMaxConfig): Promise<boolean> {
 	}
 
 	try {
-		await mkdir(join(config.paths.agentDir, "skills"), { recursive: true });
-		checks.push({ name: "Skills", status: "PASS", detail: join(config.paths.agentDir, "skills") });
+		const skillsRoot = join(config.paths.agentDir, "skills");
+		await mkdir(skillsRoot, { recursive: true });
+		const entries = await readdir(skillsRoot, { withFileTypes: true });
+		const count = entries.filter((entry) => entry.isDirectory()).length;
+		checks.push({ name: "Skills", status: count ? "PASS" : "WARN", detail: `${count} installed; ${skillsRoot}` });
 	} catch (error) {
 		checks.push({ name: "Skills", status: "FAIL", detail: error instanceof Error ? error.message : String(error) });
 	}

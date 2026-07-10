@@ -60,6 +60,7 @@ export async function createProfile(profile: string, options: ProfileStorageOpti
 		await writeFile(join(temp, "config.yaml"), defaultProfileYaml(options.root ?? beemaxRoot()), { encoding: "utf8", mode: 0o600 });
 		await writeFile(join(temp, "SOUL.md"), `${DEFAULT_SOUL}\n`, { encoding: "utf8", mode: 0o600 });
 		await writeEnvFile(join(temp, ".env"), {});
+		await installBuiltinSkills(temp, options.root ?? beemaxRoot());
 		await rename(temp, paths.homePath);
 	} catch (error) {
 		await rm(temp, { recursive: true, force: true });
@@ -89,6 +90,14 @@ export async function listProfiles(options: ProfileStorageOptions = {}): Promise
 		}
 	} catch { /* no profile home yet */ }
 	return [...profiles].sort();
+}
+
+/** Add missing packaged skills to an existing Profile without replacing its custom skills. */
+export async function syncBuiltinSkills(profile: string, options: ProfileStorageOptions = {}): Promise<ProfilePaths> {
+	const paths = await writableProfilePaths(profile, options);
+	await mkdir(join(paths.homePath, "skills"), { recursive: true });
+	await installBuiltinSkills(paths.homePath, options.root ?? beemaxRoot());
+	return paths;
 }
 
 export async function deleteProfile(profile: string, options: ProfileStorageOptions = {}): Promise<ProfilePaths> {
@@ -327,6 +336,7 @@ export async function migrateProfile(profile: string, options: ProfileStorageOpt
 			}
 		}
 		for (const directory of ["sessions", "skills", "cache", "state"]) await mkdir(join(temp, directory), { recursive: true });
+		await installBuiltinSkills(temp, options.root ?? beemaxRoot());
 		await verifyMigratedProfile(temp, {
 			identity,
 			oldAgent,
@@ -355,6 +365,17 @@ function defaultProfileYaml(workspaceRoot: string): string {
 		automation: { enabled: true, timezone: "Asia/Shanghai", heartbeat: { enabled: true, every: "30m", activeHours: { start: "08:00", end: "23:00", timezone: "Asia/Shanghai" } } },
 		paths: { agentDir: ".", cwd: resolve(workspaceRoot) },
 	});
+}
+
+async function installBuiltinSkills(profileHome: string, root: string): Promise<void> {
+	const source = join(resolve(root), "skills", "builtin");
+	if (!(await exists(source))) return;
+	for (const entry of await readdir(source, { withFileTypes: true })) {
+		if (!entry.isDirectory()) continue;
+		const destination = join(profileHome, "skills", entry.name);
+		if (await exists(destination)) continue;
+		await cp(join(source, entry.name), destination, { recursive: true, force: false, errorOnExist: true });
+	}
 }
 
 async function writableProfilePaths(profile: string, options: ProfileStorageOptions): Promise<ProfilePaths> {

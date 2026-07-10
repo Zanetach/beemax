@@ -308,6 +308,34 @@ or logs. Calls require approval because they consume external generation quota.
 
 ## Memory, MCP, and Skills
 
+### Bundled Profile Skills
+
+Every newly created BeeMax Profile receives the bundled Skills below in its
+own `skills/` directory. Existing Profiles can receive missing packaged Skills
+without replacing custom ones:
+
+```bash
+beemax skills list --profile personal
+beemax skills sync --profile personal
+```
+
+| Skill | Purpose |
+| --- | --- |
+| `business-copywriting` | Campaign, product, sales, and social copy |
+| `business-report` | Decision memos, reports, proposals, and reviews |
+| `ppt-production` | Deck narrative, slide plan, speaker notes, and PPT production guardrails |
+| `research-and-brief` | Sourced research and executive briefs |
+| `feishu-workspace` | Safe Feishu messages, documents, meetings, and permissions |
+| `image-creative` | Creative direction and image-generation workflow |
+| `weekly-review` | Evidence-based weekly reviews and priorities |
+| `humanizer` | Natural-language editing, copied from Hermes Agent under MIT |
+| `arxiv-research` | arXiv paper discovery, copied from Hermes Agent under MIT |
+
+Skills use progressive disclosure: only each Skill's name and description are
+present in the Agent prompt; the Agent reads the relevant `SKILL.md` only after
+the task matches it. See `THIRD_PARTY_NOTICES.md` for Hermes-derived Skill
+attribution and license terms.
+
 BeeMax automatically recalls relevant prior exchanges and exposes explicit
 personal-memory tools:
 
