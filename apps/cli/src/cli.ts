@@ -50,10 +50,19 @@ async function main(): Promise<void> {
 			break;
 		case "gateway":
 			if (parsed.positionals[1] === "setup") {
-			if (parsed.configPath) throw new Error("beemax gateway setup does not support --config; select a Profile with --profile");
-			if (parsed.options["api-key"]) throw new Error("Do not pass model secrets in argv; set BEEMAX_API_KEY or use the interactive prompt");
+				if (parsed.configPath) throw new Error("beemax gateway setup does not support --config; select a Profile with --profile");
+				if (parsed.options["api-key"]) throw new Error("Do not pass model secrets in argv; set BEEMAX_API_KEY or use the interactive prompt");
 				if (!(await runSetup(setupOptions(parsed, true)))) process.exitCode = 1;
-			} else await runGateway(getConfig());
+			} else if (parsed.positionals[1] === "install") {
+				await installSystemdService(beemaxRoot(), parsed.options.system === true ? "system" : "user");
+				console.log(`BeeMax Gateway service installed for Profile '${gatewayProfile(parsed)}'.`);
+			} else if (parsed.positionals[1] === "list") {
+				console.log((await listProfiles()).map((name) => `${name}  beemax@${name}.service`).join("\n") || "No Agent Profiles configured.");
+			} else if (["start", "stop", "restart", "status", "logs"].includes(parsed.positionals[1] ?? "")) {
+				runServiceAction(parsed.positionals[1] as ServiceAction, gatewayProfile(parsed), undefined, process.platform, parsed.options.system === true ? "system" : "user");
+			} else if (!parsed.positionals[1] || parsed.positionals[1] === "run") {
+				await runGateway(loadConfig(parsed.configPath, gatewayProfile(parsed)));
+			} else throw new Error(`Unknown gateway action: ${parsed.positionals[1]}`);
 			break;
 		case "chat":
 			await runChat(getConfig());
@@ -92,7 +101,7 @@ Commands:
   init       Create the first Agent profile
   agent      create | list | delete
   channel    add | list | remove | test
-  gateway    Start one Feishu Profile process; gateway setup configures its channel
+  gateway    run | setup | install | start | stop | restart | status | logs | list
   chat       Local interactive chat for one profile
   model      show | set <provider> <model>
   doctor     Check profile readiness
@@ -270,6 +279,10 @@ async function runChannelCommand(parsed: ParsedArgs): Promise<void> {
 
 function serviceProfile(parsed: ParsedArgs): string {
 	return parsed.positionals[1] ?? selectedProfile(parsed);
+}
+
+function gatewayProfile(parsed: ParsedArgs): string {
+	return parsed.positionals[2] ?? parsed.profile ?? activeProfile();
 }
 
 function selectedProfile(parsed: ParsedArgs): string {

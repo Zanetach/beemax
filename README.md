@@ -95,6 +95,22 @@ beemax status personal
 beemax logs personal
 ```
 
+The Hermes-style Gateway lifecycle aliases are also available:
+
+```text
+beemax gateway run --profile personal
+beemax gateway install --profile personal
+beemax gateway start --profile personal
+beemax gateway stop --profile personal
+beemax gateway restart --profile personal
+beemax gateway status --profile personal
+beemax gateway logs --profile personal
+beemax gateway list
+```
+
+Only one running Profile Gateway may consume a given Feishu App ID. A second
+Profile using the same App is rejected by the per-Home channel lock.
+
 Use `beemax service install --system` as root only when a machine-wide service
 is required; set `BEEMAX_SERVICE_USER` to the non-root account that should run
 the Agent. For a user service that must start before login on a headless server,

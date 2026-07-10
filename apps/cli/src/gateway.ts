@@ -22,7 +22,8 @@ import {
 } from "@beemax/gateway";
 import { MemoryStore } from "@beemax/memory";
 import type { SessionSource } from "@beemax/gateway";
-import type { BeeMaxConfig } from "./config.ts";
+import { beemaxHome, type BeeMaxConfig } from "./config.ts";
+import { acquireChannelLock } from "./channel-lock.ts";
 
 export async function runGateway(config: BeeMaxConfig): Promise<void> {
 	if (!config.feishu.appId || !config.feishu.appSecret) {
@@ -41,6 +42,7 @@ export async function runGateway(config: BeeMaxConfig): Promise<void> {
 		allowAllUsers: config.feishu.allowAllUsers,
 	};
 	const adapter = new FeishuAdapter(feishuSettings);
+	const releaseChannelLock = await acquireChannelLock(beemaxHome(), config.feishu.appId);
 
 	const memory = new MemoryStore(config.memory.dbPath);
 	const automation = new AutomationStore(config.memory.dbPath);
@@ -215,26 +217,39 @@ export async function runGateway(config: BeeMaxConfig): Promise<void> {
 		() => dispatcher.isBusy(),
 	);
 
-	const ok = await adapter.connect();
+	let ok: boolean;
+	try {
+		ok = await adapter.connect();
+	} catch (error) {
+		await releaseChannelLock();
+		throw error;
+	}
 	if (!ok) {
 		console.error("Failed to connect Feishu adapter");
+		await releaseChannelLock();
 		process.exit(1);
 	}
 	console.info(`[beemax:${config.profile}] Feishu gateway connected (model: ${config.model.provider}/${config.model.model})`);
 	if (config.automation.enabled) scheduler.start();
 	heartbeat.start();
 
-	const shutdown = async () => {
-		console.info("\n[beemax] shutting down...");
-		await heartbeat.stop();
-		await scheduler?.stop();
-		await subagents?.dispose();
-		dispatcher.dispose();
-		await adapter.disconnect();
-		await mcp.close();
-		automation.close();
-		memory.close();
-		process.exit(0);
+	let shutdownPromise: Promise<void> | undefined;
+	const shutdown = () => {
+		if (shutdownPromise) return shutdownPromise;
+		shutdownPromise = (async () => {
+			console.info("\n[beemax] shutting down...");
+			try { await heartbeat.stop(); } catch (error) { console.error(`[beemax] heartbeat shutdown failed: ${String(error)}`); }
+			try { await scheduler?.stop(); } catch (error) { console.error(`[beemax] scheduler shutdown failed: ${String(error)}`); }
+			try { await subagents?.dispose(); } catch (error) { console.error(`[beemax] Sub-Agent shutdown failed: ${String(error)}`); }
+			try { dispatcher.dispose(); } catch (error) { console.error(`[beemax] dispatcher shutdown failed: ${String(error)}`); }
+			try { await adapter.disconnect(); } catch (error) { console.error(`[beemax] Feishu disconnect failed: ${String(error)}`); }
+			try { await mcp.close(); } catch (error) { console.error(`[beemax] MCP shutdown failed: ${String(error)}`); }
+			try { automation.close(); } catch (error) { console.error(`[beemax] automation shutdown failed: ${String(error)}`); }
+			try { memory.close(); } catch (error) { console.error(`[beemax] memory shutdown failed: ${String(error)}`); }
+			await releaseChannelLock();
+			process.exit(0);
+		})();
+		return shutdownPromise;
 	};
 	process.on("SIGINT", () => void shutdown());
 	process.on("SIGTERM", () => void shutdown());
