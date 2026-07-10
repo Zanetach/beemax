@@ -240,9 +240,7 @@ async function runChannelCommand(parsed: ParsedArgs): Promise<void> {
 		console.log("After scanning/signing in, copy App ID and App Secret, then run: beemax setup --profile " + profile);
 		if (parsed.options.open === true) {
 			const { spawn } = await import("node:child_process");
-			const [command, args] = process.platform === "darwin" ? ["open", [url]]
-				: process.platform === "win32" ? ["cmd.exe", ["/c", "start", "", url]]
-				: ["xdg-open", [url]];
+			const [command, args] = process.platform === "darwin" ? ["open", [url]] : ["xdg-open", [url]];
 			const child = spawn(command, args, { detached: true, stdio: "ignore" });
 			child.once("error", (error) => console.warn(`Could not open browser automatically: ${error.message}`));
 			child.unref();
