@@ -109,17 +109,19 @@ adopts the same ownership distinction without copying either project verbatim.
 1. **Completed:** establish `@beemax/core` as the runtime seam; move session
    creation, model/auth, resource loading, skill filtering, security hooks and
    session identity/locking/lifecycle.
-2. **Completed:** move `SubagentManager`, task tools and image-job policy from
-   Gateway to Core. Feishu upload/send is injected as a delivery callback.
+2. **Completed:** move `SubagentManager` and task tools to Core. Child runs
+   use the same `BeeMaxAgentRuntime` path as interactive turns; concrete image
+   provider OAuth/HTTP code lives in a separate capability package.
 3. **Completed:** move curated-memory context and candidate capture to Core;
    migrate scheduler and heartbeat policy to Core while Automation retains its
    SQLite store and time calculation capability.
 4. **Completed:** introduce `BeeMaxAgentRuntime` as the one run entry point.
    It owns turn timeout, streaming subscription, context capture and resource
-   reload; Dispatcher only maps ingress and presents events as channel cards.
+   reload; CLI, sub-agents and Gateway all use this path. Dispatcher accepts
+   the `AgentRuntimePort` rather than composing sessions itself.
 5. **Completed:** formalize Core's typed `DeliveryPort`; Gateway implements it
-   for channel text and media. Image jobs, heartbeats and scheduled delivery
-   no longer retain direct Feishu callbacks.
+   for channel text and media. Generated media enters a durable SQLite outbox;
+   Gateway delivery confirms it or retries with bounded exponential backoff.
 6. **Completed:** extract Memory, Automation, Web, Skills, MCP and Feishu
    meeting capabilities from Gateway. The Agent composition factory now lives
    in the CLI application layer; Gateway retains only channel SDK transport

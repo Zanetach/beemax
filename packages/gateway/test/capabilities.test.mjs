@@ -4,7 +4,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
-import { createCodexImageTool } from "../dist/index.js";
+import { createCodexImageTool } from "@beemax/codex-image-capability";
 import { McpManager } from "@beemax/mcp-capability";
 import { filterEligibleSkills } from "@beemax/core";
 import { buildAgentFactory } from "../../../apps/cli/dist/agent-factory.js";
@@ -80,10 +80,10 @@ test("Codex image generation saves and delivers a PNG without exposing OAuth", a
 	try {
 		const tool = createCodexImageTool({ platform:"feishu",chatId:"chat",chatType:"dm" }, {
 			outputDir: root, quality: "medium", getAccessToken: async () => token,
-			deliveryPort: { sendText: async () => undefined, sendMedia: async (_source, media) => { delivered = media.path; } },
+			mediaOutbox: { enqueueMedia: async (_source, media) => { delivered = media.path; } },
 		});
 		const result = await tool.execute("image", { prompt:"a bee", aspectRatio:"square" }, new AbortController().signal);
-		assert.match(result.content[0].text, /delivered/);
+		assert.match(result.content[0].text, /queued for delivery/);
 		assert.equal(delivered, result.details.path);
 		assert.doesNotMatch(JSON.stringify(result), /acct-test|Bearer/);
 	} finally {

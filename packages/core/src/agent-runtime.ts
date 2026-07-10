@@ -11,6 +11,7 @@ export interface AgentRunInput<Source extends BeeMaxRuntimeSource = BeeMaxRuntim
 	source: Source;
 	text: string;
 	timeoutMs: number;
+	signal?: AbortSignal;
 	expandPromptTemplates?: boolean;
 	mode?: "interactive" | "automation";
 }
@@ -24,6 +25,14 @@ export interface AgentRunResult {
 
 export type AgentRunEventSink = (event: AgentSessionEvent) => void | Promise<void>;
 
+/** Gateway-facing runtime contract; implementations may be local or remote. */
+export interface AgentRuntimePort<Source extends BeeMaxRuntimeSource = BeeMaxRuntimeSource> {
+	run(input: AgentRunInput<Source>, onEvent?: AgentRunEventSink): Promise<AgentRunResult>;
+	cancel(source: Source): Promise<boolean>;
+	isBusy(): boolean;
+	dispose(): void;
+}
+
 export interface BeeMaxAgentRuntimeOptions<Source extends BeeMaxRuntimeSource = BeeMaxRuntimeSource> extends SessionCoordinatorOptions {
 	createAgent: RuntimeSessionFactory<Source>;
 	createAutomationAgent?: RuntimeSessionFactory<Source>;
@@ -35,7 +44,7 @@ export interface BeeMaxAgentRuntimeOptions<Source extends BeeMaxRuntimeSource = 
  * persistent session reuse, turn timeout, event subscription, resource reload
  * and candidate-memory capture. Channels only subscribe and present events.
  */
-export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRuntimeSource> {
+export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRuntimeSource> implements AgentRuntimePort<Source> {
 	private readonly sessions: SessionCoordinator<Source>;
 	private readonly createAgent: RuntimeSessionFactory<Source>;
 	private readonly createAutomationAgent?: RuntimeSessionFactory<Source>;
@@ -51,12 +60,18 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 	async run(input: AgentRunInput<Source>, onEvent?: AgentRunEventSink): Promise<AgentRunResult> {
 		const factory = input.mode === "automation" ? this.createAutomationAgent ?? this.createAgent : this.createAgent;
 		return this.sessions.run(input.source, factory, async (session) => {
+			if (input.signal?.aborted) {
+				await session.piSession.abort();
+				throw new AgentRunError("Agent turn was cancelled", false, input.signal.reason);
+			}
 			const startedAt = Date.now();
 			const text = input.mode === "interactive" || !input.mode
 				? this.context?.enrich(input.source, input.text) ?? input.text
 				: input.text;
 			const unsubscribe = onEvent ? session.piSession.subscribe((event) => { void onEvent(event); }) : undefined;
 			let timedOut = false;
+			const abortFromCaller = () => { void session.piSession.abort(); };
+			input.signal?.addEventListener("abort", abortFromCaller, { once: true });
 			const timeout = setTimeout(() => { timedOut = true; void session.piSession.abort(); }, input.timeoutMs);
 			try {
 				await session.piSession.prompt(text, { expandPromptTemplates: input.expandPromptTemplates ?? true, source: input.mode === "automation" ? "extension" : undefined });
@@ -64,6 +79,7 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 				throw new AgentRunError(timedOut ? `Agent turn timed out after ${Math.round(input.timeoutMs / 60_000)} minutes` : errorMessage(cause), timedOut, cause);
 			} finally {
 				clearTimeout(timeout);
+				input.signal?.removeEventListener("abort", abortFromCaller);
 				unsubscribe?.();
 			}
 			const answer = lastAssistantText(session.piSession.agent) || "(no response)";

@@ -51,6 +51,16 @@ export interface AutomationRun {
 	error?: string;
 }
 
+export interface MediaDelivery extends AutomationOwner {
+	id: string;
+	path: string;
+	mimeType?: string;
+	status: "queued" | "delivering" | "delivered";
+	attempts: number;
+	nextAttemptAt: number;
+	createdAt: number;
+}
+
 export class AutomationStore {
 	private readonly db: DatabaseType;
 
@@ -178,6 +188,39 @@ export class AutomationStore {
 			last_status=excluded.last_status, detail=excluded.detail`).run(now, status, detail ?? null);
 	}
 
+	enqueueMedia(owner: AutomationOwner, media: { path: string; mimeType?: string }, now = Date.now()): MediaDelivery {
+		if (!owner.platform || !owner.chatId || !media.path) throw new Error("Media delivery requires a platform, chat ID, and file path");
+		const id = randomId();
+		this.db.prepare(`INSERT INTO media_deliveries(id, platform, chat_id, user_id, path, mime_type, status, attempts, next_attempt_at, created_at)
+			VALUES (?, ?, ?, ?, ?, ?, 'queued', 0, ?, ?)`).run(id, owner.platform, owner.chatId, owner.userId ?? null, media.path, media.mimeType ?? null, now, now);
+		return this.getMediaRequired(id);
+	}
+
+	claimMediaDue(now = Date.now(), limit = 4, leaseMs = 5 * 60_000): MediaDelivery[] {
+		return this.db.transaction(() => {
+			// An expired delivering lease means the previous worker disappeared before
+			// acknowledging the outcome. Reclaim it for at-least-once delivery.
+			const rows = this.db.prepare(`SELECT * FROM media_deliveries
+				WHERE status IN ('queued', 'delivering') AND next_attempt_at <= ?
+				ORDER BY next_attempt_at ASC LIMIT ?`).all(now, clamp(limit, 1, 20)) as MediaRow[];
+			for (const row of rows) {
+				this.db.prepare(`UPDATE media_deliveries
+					SET status = 'delivering', attempts = attempts + ?, next_attempt_at = ? WHERE id = ?`)
+					.run(row.status === "delivering" ? 1 : 0, now + leaseMs, row.id);
+			}
+			return rows.map((row) => this.getMediaRequired(row.id));
+		})();
+	}
+
+	completeMedia(id: string): void { this.db.prepare(`UPDATE media_deliveries SET status = 'delivered' WHERE id = ?`).run(id); }
+	failMedia(id: string, now = Date.now()): void {
+		const row = this.db.prepare(`SELECT attempts FROM media_deliveries WHERE id = ?`).get(id) as { attempts: number } | undefined;
+		if (!row) return;
+		const attempts = row.attempts + 1;
+		const delay = Math.min(60 * 60_000, 30_000 * 2 ** Math.min(attempts - 1, 7));
+		this.db.prepare(`UPDATE media_deliveries SET status = 'queued', attempts = ?, next_attempt_at = ? WHERE id = ?`).run(attempts, now + delay, id);
+	}
+
 	lastHeartbeat(): { lastRunAt: number; status: string; detail?: string } | undefined {
 		const row = this.db.prepare(`SELECT last_run_at, last_status, detail FROM heartbeat_state WHERE id = 1`).get() as
 			{ last_run_at: number; last_status: string; detail: string | null } | undefined;
@@ -190,6 +233,11 @@ export class AutomationStore {
 		const job = this.get(id);
 		if (!job) throw new Error(`Automation job ${id} disappeared`);
 		return job;
+	}
+	private getMediaRequired(id: string): MediaDelivery {
+		const row = this.db.prepare(`SELECT * FROM media_deliveries WHERE id = ?`).get(id) as MediaRow | undefined;
+		if (!row) throw new Error(`Media delivery ${id} disappeared`);
+		return mapMedia(row);
 	}
 
 	private migrate(): void {
@@ -216,6 +264,12 @@ export class AutomationStore {
 				id INTEGER PRIMARY KEY CHECK(id = 1), last_run_at INTEGER NOT NULL,
 				last_status TEXT NOT NULL, detail TEXT
 			);
+			CREATE TABLE IF NOT EXISTS media_deliveries (
+				id TEXT PRIMARY KEY, platform TEXT NOT NULL, chat_id TEXT NOT NULL, user_id TEXT,
+				path TEXT NOT NULL, mime_type TEXT, status TEXT NOT NULL, attempts INTEGER NOT NULL,
+				next_attempt_at INTEGER NOT NULL, created_at INTEGER NOT NULL
+			);
+			CREATE INDEX IF NOT EXISTS idx_media_deliveries_due ON media_deliveries(status, next_attempt_at);
 		`);
 	}
 }
@@ -262,5 +316,7 @@ function randomId(): string { return crypto.randomUUID(); }
 
 interface JobRow { id:string;platform:string;chat_id:string;user_id:string|null;name:string;kind:string;schedule_kind:string;schedule_value:string;timezone:string|null;payload_text:string;enabled:number;delete_after_run:number;next_run_at:number;last_run_at:number|null;last_status:string|null;consecutive_errors:number;created_at:number;updated_at:number }
 interface RunRow { id:string;job_id:string;started_at:number;finished_at:number;status:string;output:string|null;error:string|null }
+interface MediaRow { id:string;platform:string;chat_id:string;user_id:string|null;path:string;mime_type:string|null;status:string;attempts:number;next_attempt_at:number;created_at:number }
 function mapJob(row: JobRow): AutomationJob { return { id:row.id,platform:row.platform,chatId:row.chat_id,userId:row.user_id??undefined,name:row.name,kind:row.kind as AutomationKind,scheduleKind:row.schedule_kind as ScheduleKind,schedule:row.schedule_value,text:row.payload_text,timezone:row.timezone??undefined,enabled:Boolean(row.enabled),deleteAfterRun:Boolean(row.delete_after_run),nextRunAt:row.next_run_at,lastRunAt:row.last_run_at??undefined,lastStatus:row.last_status??undefined,consecutiveErrors:row.consecutive_errors,createdAt:row.created_at,updatedAt:row.updated_at }; }
 function mapRun(row: RunRow): AutomationRun { return { id:row.id,jobId:row.job_id,startedAt:row.started_at,finishedAt:row.finished_at,status:row.status as AutomationRun["status"],output:row.output??undefined,error:row.error??undefined }; }
+function mapMedia(row: MediaRow): MediaDelivery { return { id:row.id,platform:row.platform,chatId:row.chat_id,userId:row.user_id??undefined,path:row.path,mimeType:row.mime_type??undefined,status:row.status as MediaDelivery["status"],attempts:row.attempts,nextAttemptAt:row.next_attempt_at,createdAt:row.created_at }; }

@@ -42,7 +42,6 @@ export {
 	type SubagentTaskSnapshot,
 	type SubagentTaskStatus,
 } from "./task-manager.ts";
-export { createCodexImageTool, type CodexImageToolOptions } from "./image-generation.ts";
 export { ConversationContext, type ConversationContextOptions, type ConversationExchange, type ConversationMemoryPort } from "./conversation-context.ts";
 export {
 	SessionCoordinator,
@@ -58,6 +57,7 @@ export {
 	type AgentRunInput,
 	type AgentRunResult,
 	type AgentRunEventSink,
+	type AgentRuntimePort,
 	type BeeMaxAgentRuntimeOptions,
 } from "./agent-runtime.ts";
 export type { DeliveryPort, DeliveryTarget, MediaArtifact } from "./delivery-port.ts";

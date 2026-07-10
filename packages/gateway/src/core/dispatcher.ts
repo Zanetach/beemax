@@ -12,11 +12,8 @@
 
 import {
 	AgentRunError,
-	BeeMaxAgentRuntime,
-	type AgentSession,
 	type AgentSessionEvent,
-	type ConversationContext,
-	type RuntimeSession,
+	type AgentRuntimePort,
 } from "@beemax/core";
 import type { InboundMessage, PlatformAdapter } from "./types.ts";
 import { CardSession } from "../card/session.ts";
@@ -26,9 +23,7 @@ import type { ToolApprovalBroker } from "./tool-approval.ts";
 import { MessageDeduplicator } from "./message-deduplicator.ts";
 
 export interface DispatcherDeps {
-	createAgent(sessionId: string, source: InboundMessage["source"]): Promise<AgentSession>;
-	createAutomationAgent?(sessionId: string, source: InboundMessage["source"]): Promise<AgentSession>;
-	context?: ConversationContext;
+	runtime: AgentRuntimePort<InboundMessage["source"]>;
 	cardOptions?: CardRenderOptions;
 	flushIntervalMs?: number;
 	/** Bound long-running Gateway memory usage; busy sessions are never evicted. */
@@ -44,11 +39,8 @@ export interface DispatcherDeps {
 	messageDeduplicator?: MessageDeduplicator;
 }
 
-/** @deprecated Runtime session lifecycle is owned by BeeMax Core. */
-export type DispatcherSession = RuntimeSession;
-
 export class Dispatcher {
-	private readonly runtime: BeeMaxAgentRuntime<InboundMessage["source"]>;
+	private readonly runtime: AgentRuntimePort<InboundMessage["source"]>;
 	private readonly deps: DispatcherDeps;
 	private readonly platform: PlatformAdapter;
 	private readonly turnTimeoutMs: number;
@@ -58,13 +50,7 @@ export class Dispatcher {
 	constructor(deps: DispatcherDeps, platform: PlatformAdapter) {
 		this.deps = deps;
 		this.platform = platform;
-		this.runtime = new BeeMaxAgentRuntime({
-			createAgent: deps.createAgent,
-			createAutomationAgent: deps.createAutomationAgent,
-			context: deps.context,
-			maxSessions: deps.maxSessions,
-			sessionIdleMs: deps.sessionIdleMs,
-		});
+		this.runtime = deps.runtime;
 		this.turnTimeoutMs = Math.max(30_000, Math.min(60 * 60_000, deps.turnTimeoutMs ?? 10 * 60_000));
 		this.profileId = deps.profileId ?? "default";
 		this.deduplicator = deps.messageDeduplicator ?? new MessageDeduplicator();
@@ -166,7 +152,6 @@ export class Dispatcher {
 
 	dispose(): void {
 		this.deps.approvalBroker?.dispose();
-		this.runtime.dispose();
 	}
 
 	private async onAgentEvent(

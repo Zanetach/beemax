@@ -85,3 +85,22 @@ test("BeeMax Agent Runtime executes a turn and records context without a Gateway
 		rmSync(root, { recursive: true, force: true });
 	}
 });
+
+test("BeeMax Agent Runtime propagates an external abort signal to the active turn", async () => {
+	const source = { platform: "cli", chatId: "terminal", chatType: "dm", userId: "user" };
+	const controller = new AbortController();
+	let aborts = 0;
+	const runtime = new BeeMaxAgentRuntime({
+		createAgent: async () => ({
+			agent: { state: { model: { id: "test" }, messages: [] } },
+			subscribe: () => () => undefined,
+			prompt: async () => { throw new Error("cancelled turn must not start a prompt"); },
+			abort: async () => { aborts++; },
+			dispose: () => undefined,
+		}),
+	});
+	controller.abort();
+	await assert.rejects(runtime.run({ source, text: "work", timeoutMs: 10_000, signal: controller.signal }), /cancelled/);
+	assert.equal(aborts, 1);
+	runtime.dispose();
+});

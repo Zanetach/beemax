@@ -16,11 +16,10 @@ import {
 	type ToolDefinition,
 	buildBeeMaxRuntimeFactory,
 	createAutomationTools,
-	createCodexImageTool,
 	createSkillTools,
 	createWebTools,
-	type DeliveryPort,
 } from "@beemax/core";
+import { createCodexImageTool, type MediaOutboxPort } from "@beemax/codex-image-capability";
 import type { SessionSource, ToolApprovalDecision, ToolApprovalRequest } from "@beemax/gateway";
 
 export { filterEligibleSkills } from "@beemax/core";
@@ -47,7 +46,7 @@ export interface AgentFactoryOptions {
 		enabled: boolean;
 		quality: "low" | "medium" | "high";
 		outputDir: string;
-		deliveryPort?: DeliveryPort;
+		mediaOutbox?: MediaOutboxPort;
 	};
 }
 
@@ -78,7 +77,7 @@ export function buildAgentFactory(opts: AgentFactoryOptions) {
 				outputDir: opts.imageGeneration.outputDir,
 				quality: opts.imageGeneration.quality,
 				getAccessToken: () => getRuntimeApiKey("openai-codex"),
-				deliveryPort: opts.imageGeneration.deliveryPort,
+				mediaOutbox: opts.imageGeneration.mediaOutbox,
 			})]
 			: [];
 		const skillTools = createSkillTools(opts.agentDir, onResourcesChanged);

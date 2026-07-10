@@ -1,8 +1,7 @@
-export { Dispatcher, type DispatcherDeps, type DispatcherSession } from "./core/dispatcher.ts";
+export { Dispatcher, type DispatcherDeps } from "./core/dispatcher.ts";
 export { GatewayDeliveryPort } from "./core/delivery-port.ts";
 export { MessageDeduplicator } from "./core/message-deduplicator.ts";
 export { sessionKeyForSource, sessionIdForSource, ephemeralSessionId } from "./core/session-router.ts";
-export { createCodexImageTool, type CodexImageToolOptions } from "./core/image-tools.ts";
 export {
 	SubagentManager,
 	createSubagentTools,

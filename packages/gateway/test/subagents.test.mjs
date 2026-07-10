@@ -162,8 +162,9 @@ test("/stop bypasses the conversation turn lock and cascades Sub-Agent cancellat
 		stopTyping: async () => undefined,
 	};
 	let cancelled = 0;
+	let aborted = 0;
 	const dispatcher = new Dispatcher({
-		createAgent: async () => { throw new Error("should not create a session for /stop"); },
+		runtime: { run: async () => { throw new Error("should not run for /stop"); }, cancel: async () => (aborted++, true), isBusy: () => false, dispose: () => undefined },
 		cancelTasks: () => { cancelled++; return 2; },
 	}, platform);
 	await inbound({
@@ -171,13 +172,14 @@ test("/stop bypasses the conversation turn lock and cascades Sub-Agent cancellat
 		mediaPaths: [], mediaTypes: [], raw: {}, timestamp: Date.now(),
 	});
 	assert.equal(cancelled, 1);
+	assert.equal(aborted, 1);
 	assert.match(sent[0], /cancelled 2 Sub-Agent/);
 	dispatcher.dispose();
 });
 
-test("Dispatcher evicts inactive sessions while preserving persisted session ownership", async () => {
+test("Dispatcher delegates turns to an injected Agent Runtime", async () => {
 	let inbound;
-	const disposed = [];
+	const runs = [];
 	const platform = {
 		name: "feishu", isConnected: true,
 		onMessage: (handler) => { inbound = handler; },
@@ -190,22 +192,18 @@ test("Dispatcher evicts inactive sessions while preserving persisted session own
 		sendTyping: async () => undefined,
 		stopTyping: async () => undefined,
 	};
+	let disposed = 0;
 	const dispatcher = new Dispatcher({
-		maxSessions: 1,
-		createAgent: async (sessionId) => {
-			const agent = { state: { model: { id: "test" }, messages: [] } };
-			return {
-				agent,
-				subscribe: () => () => undefined,
-				prompt: async () => { agent.state.messages = [{ role: "assistant", content: [{ type: "text", text: "ok" }], usage: {} }]; },
-				dispose: () => { disposed.push(sessionId); },
-			};
+		runtime: {
+			run: async (input) => { runs.push(input); return { answer: "ok", model: "test", durationMs: 1, usage: {} }; },
+			cancel: async () => false,
+			isBusy: () => false,
+			dispose: () => { disposed++; },
 		},
 	}, platform);
-	const message = (chatId) => ({ text: "hello", messageType: "text", source: { ...source, chatId }, mediaPaths: [], mediaTypes: [], raw: {}, timestamp: Date.now() });
-	await inbound(message("chat-a"));
-	await inbound(message("chat-b"));
-	assert.equal(disposed.length, 1);
-	assert.equal(typeof disposed[0], "string");
+	await inbound({ text: "hello", messageType: "text", source, mediaPaths: [], mediaTypes: [], raw: {}, timestamp: Date.now() });
+	assert.equal(runs.length, 1);
+	assert.equal(runs[0].text, "hello");
 	dispatcher.dispose();
+	assert.equal(disposed, 0);
 });

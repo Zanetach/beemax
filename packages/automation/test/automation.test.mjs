@@ -88,3 +88,25 @@ test("heartbeat stays silent on OK and delivers actionable alerts", async () => 
 	assert.equal(store.lastHeartbeat().status, "alert");
 	await runner.stop();
 }));
+
+test("media deliveries persist across send failures and become claimable for retry", () => withStore((store) => {
+	const delivery = store.enqueueMedia({ platform: "feishu", chatId: "chat", userId: "user" }, { path: "/tmp/generated.png", mimeType: "image/png" }, 1_000);
+	const claimed = store.claimMediaDue(1_000);
+	assert.equal(claimed.length, 1);
+	assert.equal(claimed[0].id, delivery.id);
+	store.failMedia(delivery.id, 1_000);
+	assert.equal(store.claimMediaDue(30_999).length, 0);
+	assert.equal(store.claimMediaDue(31_000).length, 1);
+	store.completeMedia(delivery.id);
+	assert.equal(store.claimMediaDue(1_000_000).length, 0);
+}));
+
+test("expired media delivery leases are reclaimed after a worker crash", () => withStore((store) => {
+	const delivery = store.enqueueMedia({ platform: "feishu", chatId: "chat" }, { path: "/tmp/generated.png" }, 1_000);
+	assert.equal(store.claimMediaDue(1_000, 1, 5_000)[0].id, delivery.id);
+	assert.equal(store.claimMediaDue(5_999).length, 0);
+	const reclaimed = store.claimMediaDue(6_000, 1, 5_000);
+	assert.equal(reclaimed.length, 1);
+	assert.equal(reclaimed[0].id, delivery.id);
+	assert.equal(reclaimed[0].attempts, 1);
+}));

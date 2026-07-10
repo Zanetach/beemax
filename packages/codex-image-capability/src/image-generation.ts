@@ -1,12 +1,15 @@
-/** GPT Image generation through ChatGPT/Codex OAuth, modeled on Hermes' provider. */
+/** GPT Image generation through ChatGPT/Codex OAuth capability. */
 
 import { mkdir, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { defineTool, type ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { StringEnum } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
-import type { BeeMaxRuntimeSource } from "./runtime.ts";
-import type { DeliveryPort } from "./delivery-port.ts";
+import type { BeeMaxRuntimeSource } from "@beemax/core";
+
+export interface MediaOutboxPort {
+	enqueueMedia(owner: BeeMaxRuntimeSource, media: { path: string; mimeType?: string }): Promise<void>;
+}
 
 const CODEX_URL = "https://chatgpt.com/backend-api/codex/responses";
 const SIZE = { landscape: "1536x1024", square: "1024x1024", portrait: "1024x1536" } as const;
@@ -15,7 +18,7 @@ export interface CodexImageToolOptions {
 	outputDir: string;
 	quality: "low" | "medium" | "high";
 	getAccessToken: () => Promise<string | undefined>;
-	deliveryPort?: DeliveryPort;
+	mediaOutbox?: MediaOutboxPort;
 }
 
 export function createCodexImageTool(source: BeeMaxRuntimeSource, options: CodexImageToolOptions): ToolDefinition {
@@ -36,9 +39,9 @@ export function createCodexImageTool(source: BeeMaxRuntimeSource, options: Codex
 			await mkdir(outputDir, { recursive: true, mode: 0o700 });
 			const path = join(outputDir, `gpt-image-2-${Date.now()}-${crypto.randomUUID().slice(0, 8)}.png`);
 			await writeFile(path, image, { mode: 0o600 });
-			await options.deliveryPort?.sendMedia(source, { path, mimeType: "image/png" });
+			if (options.mediaOutbox) await options.mediaOutbox.enqueueMedia(source, { path, mimeType: "image/png" });
 			return {
-				content: [{ type: "text" as const, text: `Generated image: ${path}${options.deliveryPort ? " (delivered to the current chat)" : ""}` }],
+				content: [{ type: "text" as const, text: `Generated image: ${path}${options.mediaOutbox ? " (queued for delivery)" : ""}` }],
 				details: { path, provider: "openai-codex", model: "gpt-image-2", quality: options.quality, aspectRatio: aspect },
 			};
 		},

@@ -614,12 +614,12 @@ async function promptLine(message: string): Promise<string> {
 async function runChat(config: ReturnType<typeof loadConfig>): Promise<void> {
 	const {
 		createSubagentTools,
-		sessionIdForSource,
 		SubagentManager,
 	} = await import("@beemax/gateway");
 	const { loadMcpConfig, McpManager } = await import("@beemax/mcp-capability");
 	const { buildAgentFactory } = await import("./agent-factory.ts");
 	const { MemoryStore } = await import("@beemax/memory");
+	const { BeeMaxAgentRuntime, ConversationContext } = await import("@beemax/core");
 	const apiKey = config.model.apiKey ?? process.env[modelApiKeyEnv(config.model.provider)] ?? "";
 	const memory = new MemoryStore(config.memory.dbPath);
 	const mcp = new McpManager();
@@ -667,17 +667,7 @@ async function runChat(config: ReturnType<typeof loadConfig>): Promise<void> {
 		approvalTools: mcp.getApprovalTools(),
 		sessionTools: (sessionSource) => subagents ? createSubagentTools(subagents, sessionSource) : [],
 	});
-	const session = await createAgent(sessionIdForSource(source), source);
-
-	session.subscribe((event) => {
-		if (event.type === "message_update" && event.message.role === "assistant") {
-			const text = (event.message.content as Array<{ type?: string; text?: string }>)
-				.filter((b) => b.type === "text")
-				.map((b) => b.text ?? "")
-				.join("");
-			if (text) process.stdout.write(`\r${text}`);
-		}
-	});
+	const runtime = new BeeMaxAgentRuntime({ createAgent, context: new ConversationContext(memory) });
 
 	try {
 		process.stdout.write("beemax> ");
@@ -688,11 +678,18 @@ async function runChat(config: ReturnType<typeof loadConfig>): Promise<void> {
 				continue;
 			}
 			if (trimmed === "/quit" || trimmed === "/exit") break;
-			await session.prompt(trimmed);
+			await runtime.run({ source, text: trimmed, timeoutMs: 10 * 60_000, mode: "interactive" }, (event) => {
+				if (event.type !== "message_update" || event.message.role !== "assistant") return;
+				const text = (event.message.content as Array<{ type?: string; text?: string }>)
+					.filter((block) => block.type === "text")
+					.map((block) => block.text ?? "")
+					.join("");
+				if (text) process.stdout.write(`\r${text}`);
+			});
 			process.stdout.write("\nbeemax> ");
 		}
 	} finally {
-		session.dispose();
+		runtime.dispose();
 		await subagents?.dispose();
 		await mcp.close();
 		memory.close();

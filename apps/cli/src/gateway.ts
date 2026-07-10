@@ -8,7 +8,7 @@
  */
 
 import { AutomationStore } from "@beemax/automation";
-import { AutomationScheduler, ConversationContext, HeartbeatRunner } from "@beemax/core";
+import { AutomationScheduler, BeeMaxAgentRuntime, ConversationContext, HeartbeatRunner } from "@beemax/core";
 import {
 	createSubagentTools,
 	Dispatcher,
@@ -118,7 +118,9 @@ export async function runGateway(config: BeeMaxConfig): Promise<void> {
 			enabled: config.imageGeneration.enabled,
 			quality: config.imageGeneration.quality,
 			outputDir: config.imageGeneration.outputDir,
-			deliveryPort,
+			mediaOutbox: {
+				enqueueMedia: async (owner, media) => { automation.enqueueMedia(owner, media); },
+			},
 		},
 		authorizeTool: (request, signal) => approvalBroker.authorize(request, signal),
 	});
@@ -143,16 +145,19 @@ export async function runGateway(config: BeeMaxConfig): Promise<void> {
 		],
 	});
 
+	const runtime = new BeeMaxAgentRuntime({
+		createAgent,
+		createAutomationAgent,
+		context: new ConversationContext(memory, { recordDirectRoute: (route) => automation.setLastRoute(route) }),
+	});
 	const dispatcher = new Dispatcher(
 		{
-			createAgent,
-			createAutomationAgent,
+			runtime,
 			profileId: config.profile,
 			cardOptions: { title: config.profile === "default" ? "BeeMax Agent" : `BeeMax · ${config.profile}` },
 			flushIntervalMs: 800,
 			approvalBroker,
 			cancelTasks: (source) => subagents?.cancelOwner(source) ?? 0,
-			context: new ConversationContext(memory, { recordDirectRoute: (route) => automation.setLastRoute(route) }),
 		},
 		adapter,
 	);
@@ -201,16 +206,22 @@ export async function runGateway(config: BeeMaxConfig): Promise<void> {
 	console.info(`[beemax:${config.profile}] Feishu gateway connected (model: ${config.model.provider}/${config.model.model})`);
 	if (config.automation.enabled) scheduler.start();
 	heartbeat.start();
+	const mediaDeliveryTimer = setInterval(() => {
+		void flushMediaDeliveries(automation, deliveryPort).catch((error) => console.error(`[beemax] media delivery worker failed: ${String(error)}`));
+	}, 5_000);
+	void flushMediaDeliveries(automation, deliveryPort).catch((error) => console.error(`[beemax] media delivery worker failed: ${String(error)}`));
 
 	let shutdownPromise: Promise<void> | undefined;
 	const shutdown = () => {
 		if (shutdownPromise) return shutdownPromise;
 		shutdownPromise = (async () => {
 			console.info("\n[beemax] shutting down...");
+			clearInterval(mediaDeliveryTimer);
 			try { await heartbeat.stop(); } catch (error) { console.error(`[beemax] heartbeat shutdown failed: ${String(error)}`); }
 			try { await scheduler?.stop(); } catch (error) { console.error(`[beemax] scheduler shutdown failed: ${String(error)}`); }
 			try { await subagents?.dispose(); } catch (error) { console.error(`[beemax] Sub-Agent shutdown failed: ${String(error)}`); }
 			try { dispatcher.dispose(); } catch (error) { console.error(`[beemax] dispatcher shutdown failed: ${String(error)}`); }
+			try { runtime.dispose(); } catch (error) { console.error(`[beemax] Agent Runtime shutdown failed: ${String(error)}`); }
 			try { await adapter.disconnect(); } catch (error) { console.error(`[beemax] Feishu disconnect failed: ${String(error)}`); }
 			try { await mcp.close(); } catch (error) { console.error(`[beemax] MCP shutdown failed: ${String(error)}`); }
 			try { automation.close(); } catch (error) { console.error(`[beemax] automation shutdown failed: ${String(error)}`); }
@@ -231,6 +242,17 @@ export async function runGateway(config: BeeMaxConfig): Promise<void> {
 	}
 }
 
+async function flushMediaDeliveries(automation: AutomationStore, deliveryPort: import("@beemax/core").DeliveryPort): Promise<void> {
+	for (const item of automation.claimMediaDue(Date.now(), 4)) {
+		try {
+			await deliveryPort.sendMedia(item, { path: item.path, mimeType: item.mimeType });
+			automation.completeMedia(item.id);
+		} catch {
+			automation.failMedia(item.id);
+		}
+	}
+}
+
 export async function executeSubagentTask(
 	factory: ReturnType<typeof buildAgentFactory>,
 	task: SubagentTask,
@@ -241,39 +263,22 @@ export async function executeSubagentTask(
 		threadId: `__subagent:${task.id}`,
 		messageId: undefined,
 	};
-	const session = await factory(`subagent-${task.id}`, source);
-	const abort = () => { void session.abort(); };
-	signal.addEventListener("abort", abort, { once: true });
+	const runtime = new BeeMaxAgentRuntime({ createAgent: factory });
 	try {
-		if (signal.aborted) await session.abort();
-		await session.prompt([
+		const result = await runtime.run({ source, signal, timeoutMs: task.timeoutMs || 10 * 60_000, expandPromptTemplates: false, mode: "automation", text: [
 			"[Sub-Agent Task]",
 			`Name: ${task.name}`,
 			`Capability: ${task.capability}`,
 			`Goal: ${task.goal}`,
 			task.context ? `Context:\n${task.context}` : "Context: none supplied",
 			"Return a concise structured result with findings, evidence, and unresolved issues. Do not claim actions you could not verify.",
-		].join("\n\n"), { expandPromptTemplates: false, source: "extension" });
-		const answer = lastAssistantAnswer(session.agent.state.messages);
+		].join("\n\n") });
+		const answer = result.answer.trim();
 		if (!answer) throw new Error("Sub-Agent returned no answer");
 		return answer;
 	} finally {
-		signal.removeEventListener("abort", abort);
-		session.dispose();
+		runtime.dispose();
 	}
-}
-
-function lastAssistantAnswer(messages: ReadonlyArray<{ role: string; content?: unknown }>): string {
-	for (let index = messages.length - 1; index >= 0; index--) {
-		const message = messages[index];
-		if (message.role !== "assistant" || !Array.isArray(message.content)) continue;
-		return message.content
-			.filter((item): item is { type: "text"; text: string } => Boolean(item && typeof item === "object" && (item as { type?: string }).type === "text"))
-			.map((item) => item.text)
-			.join("")
-			.trim();
-	}
-	return "";
 }
 
 export function buildSubagentSystemPrompt(parentPrompt?: string): string {

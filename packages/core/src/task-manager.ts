@@ -12,6 +12,7 @@ export interface SubagentTaskSnapshot {
 	capability: "analysis" | "research";
 	status: SubagentTaskStatus;
 	createdAt: number;
+	timeoutMs: number;
 	startedAt?: number;
 	finishedAt?: number;
 	result?: string;
@@ -83,6 +84,7 @@ export class SubagentManager {
 			capability: input.capability ?? "analysis",
 			status: "queued",
 			createdAt: Date.now(),
+			timeoutMs: this.defaultTimeoutMs,
 			waiters: new Set(),
 		};
 		if (!task.goal) throw new Error("Sub-Agent goal is required");
@@ -273,6 +275,7 @@ function snapshot(task: ManagedTask): SubagentTaskSnapshot {
 		capability: task.capability,
 		status: task.status,
 		createdAt: task.createdAt,
+		timeoutMs: task.timeoutMs,
 		startedAt: task.startedAt,
 		finishedAt: task.finishedAt,
 		result: task.result,

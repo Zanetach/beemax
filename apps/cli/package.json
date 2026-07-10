@@ -14,6 +14,7 @@
 	"dependencies": {
 		"@beemax/automation": "0.1.0",
 		"@beemax/core": "0.1.0",
+		"@beemax/codex-image-capability": "0.1.0",
 		"@beemax/feishu-capability": "0.1.0",
 		"@beemax/mcp-capability": "0.1.0",
     "@beemax/gateway": "*",
