@@ -17,12 +17,14 @@ cd "${ROOT}"
 if [[ ! -f "${ROOT}/pi/package.json" ]]; then
   git submodule update --init --recursive
 fi
-npm ci --ignore-scripts
+npm ci
 npm run build
 
 mkdir -p "${BIN_DIR}"
 chmod +x "${CLI}"
-ln -sfn "${CLI}" "${BIN_DIR}/beemax"
+NODE="$(command -v node)"
+printf '#!/usr/bin/env bash\nexport BEEMAX_ROOT=%q\nexec %q %q "$@"\n' "${ROOT}" "${NODE}" "${CLI}" > "${BIN_DIR}/beemax"
+chmod 0755 "${BIN_DIR}/beemax"
 
 echo "BeeMax installed: ${BIN_DIR}/beemax"
 case ":${PATH}:" in

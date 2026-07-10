@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, stat } from "node:fs/promises";
+import { chmod, mkdtemp, readFile, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -19,9 +19,11 @@ test("profile creation and Feishu channel configuration keep secrets in a protec
 	const paths = await createProfile("personal", root);
 	assert.deepEqual(await listProfiles(root), ["personal"]);
 
+	await writeFile(paths.envPath, 'EXISTING="value"\n', { mode: 0o644 });
+	await chmod(paths.envPath, 0o644);
 	await configureFeishuChannel("personal", {
 		appId: "cli_test",
-		appSecret: "secret-value",
+		appSecret: 'secret-\\-"-value',
 		allowedUsers: ["ou_allowed"],
 		domain: "feishu",
 		requireMention: true,
@@ -29,13 +31,13 @@ test("profile creation and Feishu channel configuration keep secrets in a protec
 
 	const yaml = await readFile(paths.configPath, "utf8");
 	const env = await readFile(paths.envPath, "utf8");
-	assert.doesNotMatch(yaml, /secret-value/);
-	assert.match(env, /FEISHU_APP_SECRET="secret-value"/);
+	assert.doesNotMatch(yaml, /secret-\\-/);
+	assert.match(env, /FEISHU_APP_SECRET=/);
 	assert.equal((await stat(paths.envPath)).mode & 0o777, 0o600);
 
 	const config = loadConfig(paths.configPath, "personal");
 	assert.equal(config.feishu.appId, "cli_test");
-	assert.equal(config.feishu.appSecret, "secret-value");
+	assert.equal(config.feishu.appSecret, 'secret-\\-"-value');
 	assert.deepEqual(config.feishu.allowedUsers, ["ou_allowed"]);
 	await configureModel("personal", { provider: "openrouter", model: "openai/gpt-5.2", apiKey: "model-secret" }, root);
 	const modelConfig = loadConfig(paths.configPath, "personal");

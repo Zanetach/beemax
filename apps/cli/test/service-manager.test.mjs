@@ -9,6 +9,9 @@ test("systemd service binds the installed CLI, profile env, and safe runtime def
 	assert.match(unit, /ExecStart="\/usr\/bin\/node" "\/opt\/beemax\/apps\/cli\/dist\/cli\.js" gateway --profile %i/);
 	assert.match(unit, /NoNewPrivileges=true/);
 	assert.match(unit, /UMask=0077/);
+	assert.match(unit, /WantedBy=default\.target/);
+	assert.match(renderSystemdService("/opt/beemax", "/usr/bin/node", "system"), /WantedBy=multi-user\.target/);
+	assert.match(renderSystemdService("/opt/beemax", "/usr/bin/node", "system", "beemax"), /User=beemax/);
 });
 
 test("service actions map profiles to systemctl and journalctl units", () => {
@@ -18,9 +21,15 @@ test("service actions map profiles to systemctl and journalctl units", () => {
 		return { status: 0 };
 	};
 	runServiceAction("start", "personal", runner, "linux");
+	runServiceAction("stop", "personal", runner, "linux");
+	runServiceAction("restart", "personal", runner, "linux");
+	runServiceAction("status", "personal", runner, "linux");
 	runServiceAction("logs", "personal", runner, "linux");
 	assert.deepEqual(calls, [
-		["systemctl", ["--user", "start", "beemax@personal.service"]],
+		["systemctl", ["--user", "enable", "--now", "beemax@personal.service"]],
+		["systemctl", ["--user", "disable", "--now", "beemax@personal.service"]],
+		["systemctl", ["--user", "restart", "beemax@personal.service"]],
+		["systemctl", ["--user", "status", "beemax@personal.service"]],
 		["journalctl", ["--user", "-u", "beemax@personal.service", "-f"]],
 	]);
 });

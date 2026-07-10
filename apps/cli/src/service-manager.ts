@@ -2,13 +2,18 @@ import { mkdir, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { spawnSync, type SpawnSyncReturns } from "node:child_process";
-import { validateProfileName } from "./config.ts";
+import { beemaxRoot, validateProfileName } from "./config.ts";
 
 export type ServiceAction = "start" | "stop" | "restart" | "status" | "logs";
 export type ServiceScope = "user" | "system";
 type Runner = (command: string, args: string[]) => Pick<SpawnSyncReturns<Buffer>, "status" | "error">;
 
-export function renderSystemdService(root = process.cwd(), nodePath = process.execPath): string {
+export function renderSystemdService(
+	root = beemaxRoot(),
+	nodePath = process.execPath,
+	scope: ServiceScope = "user",
+	serviceUser?: string,
+): string {
 	const absoluteRoot = resolve(root);
 	const cliPath = join(absoluteRoot, "apps", "cli", "dist", "cli.js");
 	return `[Unit]
@@ -19,7 +24,7 @@ PartOf=beemax.target
 
 [Service]
 Type=simple
-WorkingDirectory=${systemdQuote(absoluteRoot)}
+${scope === "system" ? `User=${serviceUser ?? "beemax"}\n` : ""}WorkingDirectory=${systemdQuote(absoluteRoot)}
 Environment=NODE_ENV=production
 Environment=BEEMAX_PROFILE=%i
 EnvironmentFile=-${systemdQuote(join(absoluteRoot, "config", "profiles", "%i.env"))}
@@ -37,12 +42,12 @@ StandardError=journal
 SyslogIdentifier=beemax-%i
 
 [Install]
-WantedBy=multi-user.target
+WantedBy=${scope === "user" ? "default.target" : "multi-user.target"}
 `;
 }
 
 export async function installSystemdService(
-	root = process.cwd(),
+	root = beemaxRoot(),
 	scope: ServiceScope = "user",
 	systemdDir = scope === "user" ? join(homedir(), ".config", "systemd", "user") : "/etc/systemd/system",
 	runner: Runner = runInherited,
@@ -51,10 +56,16 @@ export async function installSystemdService(
 	if (scope === "system" && typeof process.getuid === "function" && process.getuid() !== 0) {
 		throw new Error("systemd installation requires root; rerun with sudo");
 	}
+	const serviceUser = scope === "system"
+		? process.env.BEEMAX_SERVICE_USER || process.env.SUDO_USER || (process.env.USER !== "root" ? process.env.USER : undefined)
+		: undefined;
+	if (scope === "system" && !serviceUser) {
+		throw new Error("systemd system service needs a non-root account; set BEEMAX_SERVICE_USER");
+	}
 	await mkdir(systemdDir, { recursive: true });
 	if (scope === "system") await mkdir("/etc/beemax", { recursive: true, mode: 0o700 });
-	await writeFile(join(systemdDir, "beemax@.service"), renderSystemdService(root), { mode: 0o644 });
-	await writeFile(join(systemdDir, "beemax.target"), renderSystemdTarget(), { mode: 0o644 });
+	await writeFile(join(systemdDir, "beemax@.service"), renderSystemdService(root, process.execPath, scope, serviceUser), { mode: 0o644 });
+	await writeFile(join(systemdDir, "beemax.target"), renderSystemdTarget(scope), { mode: 0o644 });
 	const args = scope === "user" ? ["--user", "daemon-reload"] : ["daemon-reload"];
 	assertCommand(runner("systemctl", args), `systemctl ${args.join(" ")}`);
 }
@@ -73,18 +84,21 @@ export function runServiceAction(
 	const unit = `beemax@${profile}.service`;
 	const command = action === "logs" ? "journalctl" : "systemctl";
 	const scopeArgs = scope === "user" ? ["--user"] : [];
-	const args = action === "logs" ? [...scopeArgs, "-u", unit, "-f"] : [...scopeArgs, action, unit];
+	const serviceArgs = action === "start"
+		? ["enable", "--now", unit]
+		: action === "stop" ? ["disable", "--now", unit] : [action, unit];
+	const args = action === "logs" ? [...scopeArgs, "-u", unit, "-f"] : [...scopeArgs, ...serviceArgs];
 	assertCommand(runner(command, args), `${command} ${args.join(" ")}`);
 }
 
-function renderSystemdTarget(): string {
+function renderSystemdTarget(scope: ServiceScope): string {
 	return `[Unit]
 Description=BeeMax Agent profiles
 Wants=network-online.target
 After=network-online.target
 
 [Install]
-WantedBy=multi-user.target
+WantedBy=${scope === "user" ? "default.target" : "multi-user.target"}
 `;
 }
 

@@ -92,7 +92,10 @@ beemax logs personal
 ```
 
 Use `beemax service install --system` as root only when a machine-wide service
-is required. On macOS, WSL without systemd, or containers without a supervisor,
+is required; set `BEEMAX_SERVICE_USER` to the non-root account that should run
+the Agent. For a user service that must start before login on a headless server,
+enable lingering once with `sudo loginctl enable-linger $USER`. On macOS, WSL
+without systemd, or containers without a supervisor,
 keep using the foreground `gateway` command.
 
 Each profile has its own gateway process, model, Feishu application, secrets,
@@ -111,7 +114,7 @@ beemax stop|restart|status|logs <name>
 ### Source-only quick start
 
 ```bash
-npm install --ignore-scripts
+npm install
 npm run build
 
 # Feishu (self-built app: https://open.feishu.cn/app)

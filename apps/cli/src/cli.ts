@@ -9,7 +9,7 @@
  */
 
 import { runGateway } from "./gateway.ts";
-import { loadConfig } from "./config.ts";
+import { beemaxRoot, loadConfig } from "./config.ts";
 import { runDoctor } from "./doctor.ts";
 import {
 	configureFeishuChannel,
@@ -59,7 +59,7 @@ async function main(): Promise<void> {
 			break;
 		case "service":
 			if (parsed.positionals[1] !== "install") throw new Error("Usage: beemax service install");
-			await installSystemdService(process.cwd(), parsed.options.system === true ? "system" : "user");
+			await installSystemdService(beemaxRoot(), parsed.options.system === true ? "system" : "user");
 			console.log("BeeMax systemd service installed. Start an agent with: beemax start <name>");
 			break;
 		case "start":
@@ -242,8 +242,10 @@ async function runChannelCommand(parsed: ParsedArgs): Promise<void> {
 		appSecret,
 		allowedUsers,
 		allowedChats: splitList(optionString(parsed, "allowed-chats")) ?? current.feishu.allowedChats,
-		domain: optionString(parsed, "domain") === "lark" ? "lark" : current.feishu.domain,
-		requireMention: parsed.options["no-require-mention"] === true ? false : true,
+		domain: channelDomain(parsed, current.feishu.domain),
+		requireMention: parsed.options["no-require-mention"] === true
+			? false
+			: parsed.options["require-mention"] === true ? true : current.feishu.requireMention,
 	});
 	console.log(`Configured Feishu channel for Agent '${profile}'. Run: beemax channel test --profile ${profile}`);
 }
@@ -260,6 +262,13 @@ function optionString(parsed: ParsedArgs, key: string): string | undefined {
 function splitList(value: string | undefined): string[] | undefined {
 	if (value === undefined) return undefined;
 	return value.split(",").map((item) => item.trim()).filter(Boolean);
+}
+
+function channelDomain(parsed: ParsedArgs, fallback: "feishu" | "lark"): "feishu" | "lark" {
+	const domain = optionString(parsed, "domain");
+	if (!domain) return fallback;
+	if (domain === "feishu" || domain === "lark") return domain;
+	throw new Error("--domain must be feishu or lark");
 }
 
 async function askOne(prompt: string, secret = false): Promise<string> {

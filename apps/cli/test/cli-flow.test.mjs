@@ -10,10 +10,11 @@ const cli = resolve("apps/cli/dist/cli.js");
 
 test("CLI supports init, model setup, Feishu channel setup, listing, and safe deletion", async () => {
 	const root = await mkdtemp(join(tmpdir(), "beemax-cli-"));
+	const invocationDir = await mkdtemp(join(tmpdir(), "beemax-invoke-"));
 	const run = (args, env = {}) => execFileSync(process.execPath, [cli, ...args], {
-		cwd: root,
+		cwd: invocationDir,
 		encoding: "utf8",
-		env: { ...process.env, ...env },
+		env: { ...process.env, BEEMAX_ROOT: root, ...env },
 	});
 
 	assert.match(run(["init", "--profile", "personal"]), /Created BeeMax Agent 'personal'/);
