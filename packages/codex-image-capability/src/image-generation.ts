@@ -5,11 +5,7 @@ import { join, resolve } from "node:path";
 import { defineTool, type ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { StringEnum } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
-import type { BeeMaxRuntimeSource } from "@beemax/core";
-
-export interface MediaOutboxPort {
-	enqueueMedia(owner: BeeMaxRuntimeSource, media: { path: string; mimeType?: string }): Promise<void>;
-}
+import type { BeeMaxRuntimeSource, MediaOutboxPort } from "@beemax/core";
 
 const CODEX_URL = "https://chatgpt.com/backend-api/codex/responses";
 const SIZE = { landscape: "1536x1024", square: "1024x1024", portrait: "1024x1536" } as const;

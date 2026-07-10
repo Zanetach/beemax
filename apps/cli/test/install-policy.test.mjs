@@ -19,13 +19,20 @@ test("source installer keeps native dependency scripts and pins CLI commands to 
 
 test("bootstrap installer downloads a verified single release archive and preserves Profile data on uninstall", async () => {
 	const installer = await readFile("scripts/bootstrap-install.sh", "utf8");
-	assert.match(installer, /BEEMAX_VERSION:-v0\.1\.0-preview\.5/);
+	assert.match(installer, /BEEMAX_VERSION:-v0\.1\.0-preview\.6/);
 	assert.match(installer, /releases\/download/);
 	assert.match(installer, /checksum verification failed/);
 	assert.doesNotMatch(installer, /git clone/);
 	assert.match(installer, /Node\.js 22\.19\+/);
+	assert.match(installer, /command -v shasum[\s\S]*command -v sha256sum/);
 	assert.match(installer, /Profiles and data under/);
 	assert.match(installer, /BEEMAX_BIN_DIR/);
+});
+
+test("source installer declares Git only when it must initialize the bundled Pi source", async () => {
+	const installer = await readFile("scripts/install.sh", "utf8");
+	assert.match(installer, /Pi source is missing and git is required/);
+	assert.match(installer, /command -v git/);
 });
 
 test("release archive includes Pi and excludes git metadata and dependencies", async () => {

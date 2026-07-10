@@ -67,7 +67,7 @@ external integrations. The Feishu card renderer remains in
 On Linux or macOS with Node.js 22.19 or newer:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/Zanetach/beemax/v0.1.0-preview.5/scripts/bootstrap-install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/Zanetach/beemax/v0.1.0-preview.6/scripts/bootstrap-install.sh | bash
 
 # Or, from a source checkout:
 ./scripts/install.sh
@@ -79,7 +79,7 @@ The one-command installer downloads one verified BeeMax release archive, which
 already contains Pi. It keeps executable source files in `~/.beemax/app` and
 the `beemax` command in `~/.local/bin`; Agent Profiles, secrets, memory, and
 sessions remain isolated under `~/.beemax/profiles`. To install another build,
-set `BEEMAX_VERSION`, for example `curl -fsSL https://raw.githubusercontent.com/Zanetach/beemax/v0.1.0-preview.5/scripts/bootstrap-install.sh | BEEMAX_VERSION=v0.1.0-preview.5 bash`.
+set `BEEMAX_VERSION`, for example `curl -fsSL https://raw.githubusercontent.com/Zanetach/beemax/v0.1.0-preview.6/scripts/bootstrap-install.sh | BEEMAX_VERSION=v0.1.0-preview.6 bash`.
 Run the same installer with `--uninstall` to remove application files while
 keeping your Profiles and data.
 
@@ -94,6 +94,10 @@ The model and Feishu setup commands prompt for missing secrets without writing
 them to YAML. Each Agent is an isolated Profile Home at
 `~/.beemax/profiles/<name>/`; its secrets live in `.env` with mode `0600`, while
 identity lives in `SOUL.md`. Set `BEEMAX_HOME` to relocate all Profile Homes.
+The release installer requires Node.js 22.19+, `curl`, `tar`, `npm`, and either
+`shasum` (macOS) or `sha256sum` (common Linux). A source checkout normally
+contains Pi; if it does not, source installation also requires Git to initialize
+the Pi submodule.
 
 For the first end-to-end test, keep the gateway in the foreground:
 

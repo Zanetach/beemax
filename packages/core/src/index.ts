@@ -61,6 +61,7 @@ export {
 	type BeeMaxAgentRuntimeOptions,
 } from "./agent-runtime.ts";
 export type { DeliveryPort, DeliveryTarget, MediaArtifact } from "./delivery-port.ts";
+export type { MediaOutboxPort } from "./media-outbox-port.ts";
 export { createAutomationTools } from "./automation-tools.ts";
 export { createSkillTools } from "./skill-tools.ts";
 export { createWebTools, type WebToolsOptions } from "./web-tools.ts";

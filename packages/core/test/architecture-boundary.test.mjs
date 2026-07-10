@@ -32,3 +32,10 @@ test("architecture boundary: Gateway contains no Agent capability composition", 
 		assert.doesNotMatch(file.text, /\b(buildAgentFactory|createMemoryTools|createAutomationTools|createSkillTools|createWebTools|McpManager)\b/, file.path);
 	}
 });
+
+test("architecture boundary: capability media delivery uses a Core-owned neutral port", () => {
+	const capability = readFileSync(join(root, "packages/codex-image-capability/src/image-generation.ts"), "utf8");
+	const coreIndex = readFileSync(join(root, "packages/core/src/index.ts"), "utf8");
+	assert.match(capability, /MediaOutboxPort.*from ["']@beemax\/core["']/);
+	assert.match(coreIndex, /MediaOutboxPort/);
+});

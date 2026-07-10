@@ -27,6 +27,7 @@ import type { SessionSource } from "@beemax/gateway";
 import { beemaxHome, type BeeMaxConfig } from "./config.ts";
 import { acquireChannelLock } from "./channel-lock.ts";
 import { curatedMemoryPrompt } from "./curated-memory.ts";
+import { createProfileRuntime } from "./runtime-composition.ts";
 
 export async function runGateway(config: BeeMaxConfig): Promise<void> {
 	if (!config.feishu.appId || !config.feishu.appSecret) {
@@ -76,16 +77,19 @@ export async function runGateway(config: BeeMaxConfig): Promise<void> {
 	const feishuMeetingTools = createFeishuMeetingTools(() => adapter.apiClient);
 
 	let scheduler: AutomationScheduler | undefined;
-	const createSubagentAgent = buildAgentFactory({
+	const profileAgentDefaults = {
 		provider: config.model.provider,
 		model: config.model.model,
 		baseUrl: config.model.baseUrl,
 		cwd: config.paths.cwd,
 		agentDir: config.paths.agentDir,
 		getApiKey: () => apiKey,
-		systemPrompt: () => buildSubagentSystemPrompt(profilePrompt(config)),
 		skillToolset: config.agent.toolset,
 		memoryStore: memory,
+	};
+	const createSubagentAgent = buildAgentFactory({
+		...profileAgentDefaults,
+		systemPrompt: () => buildSubagentSystemPrompt(profilePrompt(config)),
 		customTools: readOnlyMcpTools,
 		tools: [
 			"read", "grep", "find", "ls", "web_search", "web_extract", "memory_recall", "memory_list",
@@ -99,15 +103,8 @@ export async function runGateway(config: BeeMaxConfig): Promise<void> {
 		execute: async (task, signal) => executeSubagentTask(createSubagentAgent, task, signal),
 	}) : undefined;
 	const createAgent = buildAgentFactory({
-		provider: config.model.provider,
-		model: config.model.model,
-		baseUrl: config.model.baseUrl,
-		cwd: config.paths.cwd,
-		agentDir: config.paths.agentDir,
-		getApiKey: () => apiKey,
+		...profileAgentDefaults,
 		systemPrompt: () => profilePrompt(config),
-		skillToolset: config.agent.toolset,
-		memoryStore: memory,
 		tools: mainAgentTools(config.agent.toolset, mainMcpTools.map((tool) => tool.name)),
 		customTools: [...mainMcpTools, ...feishuMeetingTools],
 		sessionTools: (source) => subagents ? createSubagentTools(subagents, source) : [],
@@ -126,15 +123,7 @@ export async function runGateway(config: BeeMaxConfig): Promise<void> {
 	});
 
 	const createAutomationAgent = buildAgentFactory({
-		provider: config.model.provider,
-		model: config.model.model,
-		baseUrl: config.model.baseUrl,
-		cwd: config.paths.cwd,
-		agentDir: config.paths.agentDir,
-		getApiKey: () => apiKey,
-		systemPrompt: () => profilePrompt(config),
-		skillToolset: config.agent.toolset,
-		memoryStore: memory,
+		...profileAgentDefaults,
 		automationStore: automation,
 		customTools: [...readOnlyMcpTools, ...feishuMeetingTools],
 		tools: [
@@ -145,11 +134,10 @@ export async function runGateway(config: BeeMaxConfig): Promise<void> {
 		],
 	});
 
-	const runtime = new BeeMaxAgentRuntime({
-		createAgent,
-		createAutomationAgent,
-		context: new ConversationContext(memory, { recordDirectRoute: (route) => automation.setLastRoute(route) }),
-	});
+	const runtime = createProfileRuntime(
+		{ maxSessions: config.agent.maxSessions, sessionIdleMs: config.agent.sessionIdleMs },
+		{ createAgent, createAutomationAgent, context: new ConversationContext(memory, { recordDirectRoute: (route) => automation.setLastRoute(route) }) },
+	);
 	const dispatcher = new Dispatcher(
 		{
 			runtime,

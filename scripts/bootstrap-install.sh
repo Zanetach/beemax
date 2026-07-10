@@ -2,7 +2,7 @@
 # BeeMax single-package installer for Linux and macOS.
 set -euo pipefail
 
-VERSION="${BEEMAX_VERSION:-v0.1.0-preview.5}"
+VERSION="${BEEMAX_VERSION:-v0.1.0-preview.6}"
 RELEASE_BASE="${BEEMAX_RELEASE_BASE:-https://github.com/Zanetach/beemax/releases/download}"
 INSTALL_DIR="${BEEMAX_INSTALL_DIR:-${HOME}/.beemax/app}"
 BIN_DIR="${BEEMAX_BIN_DIR:-${HOME}/.local/bin}"
@@ -12,7 +12,7 @@ usage() {
 BeeMax installer
 
 Usage:
-  curl -fsSL https://raw.githubusercontent.com/Zanetach/beemax/v0.1.0-preview.4/scripts/bootstrap-install.sh | bash
+  curl -fsSL https://raw.githubusercontent.com/Zanetach/beemax/v0.1.0-preview.6/scripts/bootstrap-install.sh | bash
 
 Options:
   --version <tag>  Install a specific release tag
@@ -45,9 +45,16 @@ while [[ $# -gt 0 ]]; do
 	esac
 done
 
-for command in curl tar node npm shasum; do
+for command in curl tar node npm; do
 	command -v "${command}" >/dev/null 2>&1 || fail "${command} is required; install it and retry"
 done
+if command -v shasum >/dev/null 2>&1; then
+	CHECKSUM_COMMAND="shasum -a 256"
+elif command -v sha256sum >/dev/null 2>&1; then
+	CHECKSUM_COMMAND="sha256sum"
+else
+	fail "shasum or sha256sum is required; install one and retry"
+fi
 node -e '
 const [major, minor] = process.versions.node.split(".").map(Number);
 if (major < 22 || (major === 22 && minor < 19)) process.exit(1);
@@ -61,7 +68,7 @@ trap 'rm -rf "${TEMP}"' EXIT
 curl --fail --location --silent --show-error "${RELEASE_BASE}/${VERSION}/${ARCHIVE}" -o "${TEMP}/${ARCHIVE}"
 curl --fail --location --silent --show-error "${RELEASE_BASE}/${VERSION}/${ARCHIVE}.sha256" -o "${TEMP}/${ARCHIVE}.sha256"
 EXPECTED="$(awk '{print $1}' "${TEMP}/${ARCHIVE}.sha256")"
-ACTUAL="$(shasum -a 256 "${TEMP}/${ARCHIVE}" | awk '{print $1}')"
+ACTUAL="$(${CHECKSUM_COMMAND} "${TEMP}/${ARCHIVE}" | awk '{print $1}')"
 [[ -n "${EXPECTED}" && "${EXPECTED}" == "${ACTUAL}" ]] || fail "release archive checksum verification failed"
 
 tar -xzf "${TEMP}/${ARCHIVE}" -C "${TEMP}"

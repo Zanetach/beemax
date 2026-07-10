@@ -65,6 +65,8 @@ test("profile creation and Feishu channel configuration keep secrets in a protec
 	assert.equal(config.subagents.maxConcurrent, 3);
 	assert.equal(config.subagents.maxChildrenPerOwner, 5);
 	assert.equal(config.agent.toolset, "standard");
+	assert.equal(config.agent.maxSessions, 100);
+	assert.equal(config.agent.sessionIdleMs, 30 * 60_000);
 	await configureModel("personal", { provider: "openrouter", model: "openai/gpt-5.2", apiKey: "model-secret" }, options);
 	const modelConfig = loadConfig(paths.configPath, "personal");
 	assert.equal(modelConfig.model.provider, "openrouter");

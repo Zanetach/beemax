@@ -46,7 +46,7 @@ generates media, recalls memory, or mutates state.
 | Agent loop, model retry, compaction | Core | start a run and render events | select a model, mutate prompt, retry tools |
 | Session and context | Core | map tenant/channel identity to a stable session key; enforce ordering/idempotency | assemble prompt, decide recall, own session policy |
 | Sub-Agent | Core | deliver progress/result events | own task queue, decide toolset, execute or cancel children |
-| Image/media generation | Core + capability adapter | download inbound media; upload/deliver output media | decide to generate, hold provider credentials, run provider job |
+| Image/media generation | Core + capability adapter | download inbound media; upload/deliver acknowledged output media | decide to generate, hold provider credentials, run provider job |
 | Skills and MCP | Core + capability adapter | expose availability status | inject instructions or decide tool authorization |
 | Memory and automation | Core | route inbound trigger; deliver outbound result | select recalled facts, run cron policy, mutate memory |
 | Feishu / other channels | Gateway | authenticate, tenant/profile routing, deduplicate, rate-limit, stream, reconnect, delivery retry and audit | contain agent reasoning or persistent task semantics |
@@ -57,17 +57,21 @@ generates media, recalls memory, or mutates state.
 Core depends on ports, never on Feishu or a concrete channel SDK.
 
 ```ts
-interface AgentRuntime {
-  run(input: AgentInput, events: RunEventSink): Promise<RunResult>;
-  cancel(runId: string): Promise<void>;
-  spawnTask(parentRunId: string, request: TaskRequest): Promise<TaskHandle>;
-  getTask(taskId: string): Promise<TaskSnapshot>;
+interface AgentRuntimePort<Source> {
+  run(input: AgentRunInput<Source>, events?: AgentRunEventSink): Promise<AgentRunResult>;
+  cancel(source: Source): Promise<boolean>;
+  isBusy(): boolean;
+  dispose(): void;
 }
 
 interface DeliveryPort {
   publish(event: AgentEvent): Promise<void>;
   sendText(target: DeliveryTarget, text: string): Promise<void>;
   sendMedia(target: DeliveryTarget, media: MediaArtifact): Promise<void>;
+}
+
+interface MediaOutboxPort {
+  enqueueMedia(owner: BeeMaxRuntimeSource, media: MediaArtifact): Promise<void>;
 }
 
 interface CapabilityPort {
@@ -77,9 +81,13 @@ interface CapabilityPort {
 }
 ```
 
-`AgentRuntime` owns run IDs, cancellation, task lineage, tool execution and
-state transitions. `DeliveryPort` is an output port supplied by the Gateway.
-Capabilities implement work behind a stable Core-owned interface.
+`AgentRuntimePort` owns session routing, cancellation, tool execution and run
+state transitions. Core's task manager owns child-task lineage. `DeliveryPort`
+is an output port supplied by the Gateway.
+Capabilities implement work behind a stable Core-owned interface. Media
+providers persist artifacts through Core's neutral `MediaOutboxPort`; Gateway
+workers claim those jobs and use `DeliveryPort` for channel upload and delivery
+acknowledgement.
 
 ## Reference alignment
 
@@ -100,8 +108,9 @@ adopts the same ownership distinction without copying either project verbatim.
    Agent task, model, prompt, memory, media-job or tool policy.
 3. Channel adapters may not access profile secrets except credentials required
    for their own channel connection.
-4. Capability adapters may not deliver directly to Feishu; they return typed
-   results to Core, which emits events through `DeliveryPort`.
+4. Capability adapters may not deliver directly to Feishu. They may persist a
+   typed artifact through Core's neutral `MediaOutboxPort`; only Gateway workers
+   upload it through `DeliveryPort`.
 5. Operations may inspect runtime health but may not execute Agent tools.
 
 ## Migration plan

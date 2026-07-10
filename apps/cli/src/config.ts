@@ -18,6 +18,8 @@ export interface BeeMaxConfig {
 	agent: {
 		systemPrompt?: string;
 		toolset: "safe" | "standard";
+		maxSessions: number;
+		sessionIdleMs: number;
 	};
 	model: {
 		provider: string;
@@ -109,6 +111,8 @@ export function loadConfig(configPath?: string, profile = "default"): BeeMaxConf
 		agent: {
 			systemPrompt: optional(soul || env.BEEMAX_SYSTEM_PROMPT || cfg.agent?.systemPrompt),
 			toolset: (env.BEEMAX_TOOLSET ?? cfg.agent?.toolset) === "safe" ? "safe" : "standard",
+			maxSessions: parseNumber(env.BEEMAX_MAX_SESSIONS ?? cfg.agent?.maxSessions, 100),
+			sessionIdleMs: parseNumber(env.BEEMAX_SESSION_IDLE_MS ?? cfg.agent?.sessionIdleMs, 30 * 60_000),
 		},
 		model: {
 			provider,

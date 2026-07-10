@@ -26,10 +26,6 @@ export interface DispatcherDeps {
 	runtime: AgentRuntimePort<InboundMessage["source"]>;
 	cardOptions?: CardRenderOptions;
 	flushIntervalMs?: number;
-	/** Bound long-running Gateway memory usage; busy sessions are never evicted. */
-	maxSessions?: number;
-	/** Dispose inactive sessions after this duration; JSONL state remains persistent. */
-	sessionIdleMs?: number;
 	/** Abort an individual interactive turn that exceeds this duration. */
 	turnTimeoutMs?: number;
 	approvalBroker?: ToolApprovalBroker;

@@ -1,1 +1,1 @@
-export { createCodexImageTool, type CodexImageToolOptions, type MediaOutboxPort } from "./image-generation.ts";
+export { createCodexImageTool, type CodexImageToolOptions } from "./image-generation.ts";

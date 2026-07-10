@@ -18,8 +18,9 @@ import {
 	createAutomationTools,
 	createSkillTools,
 	createWebTools,
+	type MediaOutboxPort,
 } from "@beemax/core";
-import { createCodexImageTool, type MediaOutboxPort } from "@beemax/codex-image-capability";
+import { createCodexImageTool } from "@beemax/codex-image-capability";
 import type { SessionSource, ToolApprovalDecision, ToolApprovalRequest } from "@beemax/gateway";
 
 export { filterEligibleSkills } from "@beemax/core";

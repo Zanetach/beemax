@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.1.0-preview.6
+
+- Restored profile-configured Agent session bounds at the Runtime composition
+  root and removed obsolete Dispatcher lifecycle fields.
+- Made the durable media outbox a Core-owned port, with Gateway-only channel
+  delivery and acknowledgement.
+- Updated the single-package installer for `sha256sum` Linux compatibility and
+  documented all installation prerequisites.
+
 ## 0.1.0-preview.5
 
 - Rebuilt the product boundary around `@beemax/core` as the sole Agent Runtime.
