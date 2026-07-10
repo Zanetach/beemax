@@ -60,7 +60,7 @@ export async function runGateway(config: BeeMaxConfig): Promise<void> {
 	startupCleanup.push(() => mcp.close());
 	const mcpStatus = await mcp.connectAll(loadMcpConfig(config.mcp.configPath));
 	for (const status of mcpStatus) {
-		if (status.connected) console.info(`[beemax] MCP ${status.name}: connected (${status.tools.length} tools)`);
+		if (status.connected) console.info(`[beemax] MCP ${status.name}: connected (${status.tools.length} tools, ${status.resources} resources, ${status.prompts} prompts)`);
 		else console.warn(`[beemax] MCP ${status.name}: unavailable (${status.error})`);
 	}
 	const apiKey = config.model.apiKey ?? process.env[apiKeyEnv(config.model.provider)] ?? "";

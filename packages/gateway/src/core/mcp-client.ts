@@ -29,6 +29,8 @@ export interface McpServerStatus {
 	name: string;
 	connected: boolean;
 	tools: string[];
+	resources: number;
+	prompts: number;
 	error?: string;
 }
 
@@ -36,6 +38,8 @@ interface Connection {
 	client: Client;
 	tools: ToolDefinition[];
 	approvalTools: string[];
+	resources: number;
+	prompts: number;
 }
 
 export class McpManager {
@@ -50,10 +54,10 @@ export class McpManager {
 			try {
 				const connection = await this.connectOne(name, server);
 				this.connections.set(name, connection);
-				statuses.push({ name, connected: true, tools: connection.tools.map((tool) => tool.name) });
+				statuses.push({ name, connected: true, tools: connection.tools.map((tool) => tool.name), resources: connection.resources, prompts: connection.prompts });
 			} catch (error) {
 				const message = error instanceof Error ? error.message : String(error);
-				statuses.push({ name, connected: false, tools: [], error: message });
+				statuses.push({ name, connected: false, tools: [], resources: 0, prompts: 0, error: message });
 				if (server.required) {
 					await this.close();
 					throw new Error(`Required MCP server ${name} failed: ${message}`);
@@ -102,6 +106,9 @@ export class McpManager {
 		try {
 			await client.connect(transport);
 			const listed = await client.listTools();
+			const capabilities = client.getServerCapabilities();
+			const resources = capabilities?.resources ? await client.listResources().then((result) => result.resources.length).catch(() => 0) : 0;
+			const prompts = capabilities?.prompts ? await client.listPrompts().then((result) => result.prompts.length).catch(() => 0) : 0;
 			const names = new Set<string>();
 			const approvalTools: string[] = [];
 			const tools = listed.tools.map((tool) => {
@@ -135,7 +142,7 @@ export class McpManager {
 					},
 				});
 			});
-			return { client, tools, approvalTools };
+			return { client, tools, approvalTools, resources, prompts };
 		} catch (error) {
 			await client.close().catch(() => undefined);
 			throw error;

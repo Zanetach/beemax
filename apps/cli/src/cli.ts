@@ -515,7 +515,7 @@ async function runMcpCommand(parsed: ParsedArgs, config: ReturnType<typeof loadC
 			return;
 		}
 		for (const status of statuses) {
-			console.log(`${status.connected ? "PASS" : "FAIL"}  ${status.name}  ${status.connected ? `${status.tools.length} tool(s)` : status.error ?? "unavailable"}`);
+			console.log(`${status.connected ? "PASS" : "FAIL"}  ${status.name}  ${status.connected ? `${status.tools.length} tool(s), ${status.resources} resource(s), ${status.prompts} prompt(s)` : status.error ?? "unavailable"}`);
 		}
 		if (statuses.some((status) => !status.connected)) process.exitCode = 1;
 	} finally {

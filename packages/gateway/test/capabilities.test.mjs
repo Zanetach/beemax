@@ -95,6 +95,8 @@ test("MCP tools are discovered, callable, and mutating tools require approval", 
 		});
 		assert.equal(status[0].connected, true);
 		assert.equal(status[0].tools.length, 2);
+		assert.equal(status[0].resources, 0);
+		assert.equal(status[0].prompts, 0);
 		const tools = new Map(manager.getTools().map((tool) => [tool.name, tool]));
 		const result = await tools.get("mcp_smoke_echo").execute(
 			"echo",
