@@ -22,6 +22,7 @@ tar -C "${ROOT}" \
 	--exclude='./node_modules' \
 	--exclude='./pi/node_modules' \
 	--exclude='./**/dist' \
+	--exclude='./**/*.tsbuildinfo' \
 	--exclude='./docs' \
 	--exclude='./data' \
 	--exclude='./.cursor' \

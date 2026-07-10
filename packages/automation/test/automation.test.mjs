@@ -4,14 +4,11 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import {
-	AutomationScheduler,
 	AutomationStore,
-	HeartbeatRunner,
 	computeNextRun,
-	filterHeartbeatAnswer,
-	isWithinActiveHours,
 	parseDuration,
 } from "../dist/index.js";
+import { AutomationScheduler, HeartbeatRunner, filterHeartbeatAnswer, isWithinActiveHours } from "@beemax/core";
 
 function withStore(run) {
 	const root = mkdtempSync(join(tmpdir(), "beemax-automation-test-"));
@@ -80,7 +77,7 @@ test("heartbeat stays silent on OK and delivers actionable alerts", async () => 
 	let answer = "HEARTBEAT_OK";
 	const runner = new HeartbeatRunner(store, {
 		enabled:true,every:"1h",platform:"feishu",prompt:"check",ackMaxChars:300,timeoutMs:1000,
-	}, async () => answer, async (_route,text) => { deliveries.push(text); }, () => false);
+	}, async () => answer, { sendText: async (_route,text) => { deliveries.push(text); }, sendMedia: async () => undefined }, () => false);
 	runner.start();
 	await runner.wake();
 	assert.equal(deliveries.length, 0);

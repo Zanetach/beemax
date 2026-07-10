@@ -11,8 +11,11 @@
     "build": "tsgo -p tsconfig.build.json",
     "typecheck": "tsgo --noEmit -p tsconfig.build.json"
   },
-  "dependencies": {
-    "@beemax/automation": "0.1.0",
+	"dependencies": {
+		"@beemax/automation": "0.1.0",
+		"@beemax/core": "0.1.0",
+		"@beemax/feishu-capability": "0.1.0",
+		"@beemax/mcp-capability": "0.1.0",
     "@beemax/gateway": "*",
     "@beemax/memory": "*",
     "@earendil-works/pi-agent-core": "^0.80.6",

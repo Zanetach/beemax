@@ -19,7 +19,7 @@ test("source installer keeps native dependency scripts and pins CLI commands to 
 
 test("bootstrap installer downloads a verified single release archive and preserves Profile data on uninstall", async () => {
 	const installer = await readFile("scripts/bootstrap-install.sh", "utf8");
-	assert.match(installer, /BEEMAX_VERSION:-v0\.1\.0-preview\.4/);
+	assert.match(installer, /BEEMAX_VERSION:-v0\.1\.0-preview\.5/);
 	assert.match(installer, /releases\/download/);
 	assert.match(installer, /checksum verification failed/);
 	assert.doesNotMatch(installer, /git clone/);
@@ -33,6 +33,7 @@ test("release archive includes Pi and excludes git metadata and dependencies", a
 	assert.match(packager, /Pi submodule is missing/);
 	assert.match(packager, /--exclude='\.\/pi\/.git'/);
 	assert.match(packager, /--exclude='\.\/node_modules'/);
+	assert.match(packager, /--exclude='\.\/\*\*\/\*\.tsbuildinfo'/);
 	assert.match(packager, /--exclude='\.\/docs'/);
 	assert.match(packager, /--exclude='\.\/data'/);
 	assert.match(packager, /shasum -a 256/);

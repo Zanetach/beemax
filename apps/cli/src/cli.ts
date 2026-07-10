@@ -538,7 +538,7 @@ async function runSkillsCommand(parsed: ParsedArgs): Promise<void> {
 
 async function runMcpCommand(parsed: ParsedArgs, config: ReturnType<typeof loadConfig>): Promise<void> {
 	if ((parsed.positionals[1] ?? "status") !== "status") throw new Error("Usage: beemax mcp status --profile <name>");
-	const { loadMcpConfig, McpManager } = await import("@beemax/gateway");
+	const { loadMcpConfig, McpManager } = await import("@beemax/mcp-capability");
 	const mcp = new McpManager();
 	try {
 		const statuses = await mcp.connectAll(loadMcpConfig(config.mcp.configPath));
@@ -613,13 +613,12 @@ async function promptLine(message: string): Promise<string> {
 
 async function runChat(config: ReturnType<typeof loadConfig>): Promise<void> {
 	const {
-		buildAgentFactory,
 		createSubagentTools,
-		loadMcpConfig,
-		McpManager,
 		sessionIdForSource,
 		SubagentManager,
 	} = await import("@beemax/gateway");
+	const { loadMcpConfig, McpManager } = await import("@beemax/mcp-capability");
+	const { buildAgentFactory } = await import("./agent-factory.ts");
 	const { MemoryStore } = await import("@beemax/memory");
 	const apiKey = config.model.apiKey ?? process.env[modelApiKeyEnv(config.model.provider)] ?? "";
 	const memory = new MemoryStore(config.memory.dbPath);

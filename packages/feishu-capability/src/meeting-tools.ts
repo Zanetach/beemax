@@ -1,7 +1,7 @@
-/** Feishu VC meeting tools backed by @larksuiteoapi/node-sdk. */
+/** Feishu VC capability tools backed by @larksuiteoapi/node-sdk. */
 
 import type { Client } from "@larksuiteoapi/node-sdk";
-import { defineTool, type ToolDefinition } from "@earendil-works/pi-coding-agent";
+import { defineTool, type ToolDefinition } from "@beemax/core";
 import { Type } from "typebox";
 
 export type FeishuClientProvider = () => Client | undefined;

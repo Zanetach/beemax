@@ -2,9 +2,10 @@ import { access, mkdir, readdir } from "node:fs/promises";
 import { constants } from "node:fs";
 import { join } from "node:path";
 import { AutomationStore, parseDuration } from "@beemax/automation";
-import { loadMcpConfig, McpManager, validateFeishuWebhookSettings } from "@beemax/gateway";
+import { validateFeishuWebhookSettings } from "@beemax/gateway";
+import { loadMcpConfig, McpManager } from "@beemax/mcp-capability";
 import { MemoryStore } from "@beemax/memory";
-import { AuthStorage } from "@earendil-works/pi-coding-agent";
+import { AuthStorage } from "@beemax/core";
 import type { BeeMaxConfig } from "./config.ts";
 
 interface Check { name: string; status: "PASS" | "WARN" | "FAIL"; detail: string }

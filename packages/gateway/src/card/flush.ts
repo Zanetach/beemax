@@ -15,13 +15,15 @@ export class FlushController {
 	private closed = false;
 	private lastFlushAt = 0;
 	private readonly intervalMs: number;
+	private delayTimer?: ReturnType<typeof setTimeout>;
+	private resolveDelay?: () => void;
 
 	constructor(intervalMs: number) {
 		this.intervalMs = intervalMs;
 	}
 
 	schedule(renderUpdate: RenderUpdate, terminal = false): Promise<void> {
-		if (this.closed && !terminal) return this.task ?? Promise.resolve();
+		if (this.closed) return this.task ?? Promise.resolve();
 		this.latestRender = renderUpdate;
 		if (this.task) {
 			this.pending = true;
@@ -47,6 +49,13 @@ export class FlushController {
 
 	close(): void {
 		this.closed = true;
+		this.pending = false;
+		this.pendingTerminal = false;
+		this.latestRender = null;
+		if (this.delayTimer) clearTimeout(this.delayTimer);
+		this.delayTimer = undefined;
+		this.resolveDelay?.();
+		this.resolveDelay = undefined;
 	}
 
 	private async run(): Promise<void> {
@@ -55,8 +64,9 @@ export class FlushController {
 				const terminal = this.pendingTerminal;
 				if (!terminal) {
 					const delay = this.intervalMs - (Date.now() - this.lastFlushAt);
-					if (delay > 0) await sleep(delay);
+					if (delay > 0) await this.wait(delay);
 				}
+				if (this.closed) return;
 				const render = this.latestRender;
 				if (!render) return;
 				this.pending = false;
@@ -69,10 +79,17 @@ export class FlushController {
 			this.task = null;
 		}
 	}
-}
 
-function sleep(ms: number): Promise<void> {
-	return new Promise((r) => setTimeout(r, ms));
+	private wait(ms: number): Promise<void> {
+		return new Promise((resolve) => {
+			this.resolveDelay = resolve;
+			this.delayTimer = setTimeout(() => {
+				this.delayTimer = undefined;
+				this.resolveDelay = undefined;
+				resolve();
+			}, ms);
+		});
+	}
 }
 
 function withTimeout<T>(p: Promise<T>, ms: number): Promise<T> {

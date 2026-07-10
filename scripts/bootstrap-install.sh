@@ -2,7 +2,7 @@
 # BeeMax single-package installer for Linux and macOS.
 set -euo pipefail
 
-VERSION="${BEEMAX_VERSION:-v0.1.0-preview.4}"
+VERSION="${BEEMAX_VERSION:-v0.1.0-preview.5}"
 RELEASE_BASE="${BEEMAX_RELEASE_BASE:-https://github.com/Zanetach/beemax/releases/download}"
 INSTALL_DIR="${BEEMAX_INSTALL_DIR:-${HOME}/.beemax/app}"
 BIN_DIR="${BEEMAX_BIN_DIR:-${HOME}/.local/bin}"

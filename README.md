@@ -39,24 +39,26 @@ An autonomous agent based on [Pi](https://pi.dev), targeting feature parity with
 ## Architecture
 
 ```
-Feishu ──WS──▶ FeishuAdapter ──▶ Dispatcher ──▶ AgentSession (Pi SDK) ──▶ pi-ai ──▶ LLM
-                   ▲                   │
-                   │                   ▼
-                   │             CardSession.apply(event)
-                   │                   │
-                   │             renderCard() ──▶ FlushController (throttle)
-                   │                   │
-                   └── sendCard / updateCard (lark SDK) ──┘
-                                       │
-                            MemoryStore (FTS5) ◀── recall / remember
+Feishu today · DingTalk / WeCom / API adapters planned
+              │
+              ▼
+Gateway Control Plane
+  adapters · auth · profile routing · idempotency · delivery · health
+              │
+              ▼
+BeeMax Core Runtime
+  Agent runs · sessions · prompt/context · memory · tools · sub-agents
+              │
+              ▼
+Capability adapters
+  MCP · Web · Memory · Automation · Feishu meetings · image generation
 ```
 
-**Pure TypeScript.** The card rendering (ported from the
-hermes-feishu-streaming-card design) lives in `packages/gateway/src/card/`.
-BeeMax drives a full Pi `AgentSession` in-process, renders the card itself, and
-sends/updates it directly via `@larksuiteoapi/node-sdk`. AgentSession supplies
-Pi's coding tools, extensions/skills, compaction and JSONL persistence. No
-second runtime is required.
+**Pure TypeScript.** `@beemax/core` is the only Agent Runtime; Pi is its
+implementation dependency. Gateway holds channel SDKs and enterprise control
+plane concerns, while capability packages provide MCP, meeting and other
+external integrations. The Feishu card renderer remains in
+`packages/gateway/src/card/` and only presents Core run events.
 
 ## Quick start
 
@@ -65,7 +67,7 @@ second runtime is required.
 On Linux or macOS with Node.js 22.19 or newer:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/Zanetach/beemax/v0.1.0-preview.4/scripts/bootstrap-install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/Zanetach/beemax/v0.1.0-preview.5/scripts/bootstrap-install.sh | bash
 
 # Or, from a source checkout:
 ./scripts/install.sh
@@ -77,7 +79,7 @@ The one-command installer downloads one verified BeeMax release archive, which
 already contains Pi. It keeps executable source files in `~/.beemax/app` and
 the `beemax` command in `~/.local/bin`; Agent Profiles, secrets, memory, and
 sessions remain isolated under `~/.beemax/profiles`. To install another build,
-set `BEEMAX_VERSION`, for example `curl -fsSL https://raw.githubusercontent.com/Zanetach/beemax/v0.1.0-preview.4/scripts/bootstrap-install.sh | BEEMAX_VERSION=v0.1.0-preview.4 bash`.
+set `BEEMAX_VERSION`, for example `curl -fsSL https://raw.githubusercontent.com/Zanetach/beemax/v0.1.0-preview.5/scripts/bootstrap-install.sh | BEEMAX_VERSION=v0.1.0-preview.5 bash`.
 Run the same installer with `--uninstall` to remove application files while
 keeping your Profiles and data.
 

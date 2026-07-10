@@ -3,11 +3,21 @@ import test from "node:test";
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { buildAgentFactory } from "../dist/core/agent-factory.js";
+import { buildAgentFactory } from "../../../apps/cli/dist/agent-factory.js";
 import { Dispatcher } from "../dist/core/dispatcher.js";
-import { createSubagentTools, SubagentManager } from "../dist/core/subagent-tools.js";
+import { MessageDeduplicator } from "../dist/index.js";
+import { createSubagentTools, SubagentManager } from "@beemax/core";
 
 const source = { platform: "feishu", chatId: "chat-1", chatType: "dm", userId: "user-1" };
+
+test("Gateway idempotency is profile-scoped, bounded, and expires", () => {
+	const guard = new MessageDeduplicator({ ttlMs: 1_000, maxEntries: 100 });
+	assert.equal(guard.accept("sales", "feishu", "event-1", 0), true);
+	assert.equal(guard.accept("sales", "feishu", "event-1", 1), false);
+	assert.equal(guard.accept("support", "feishu", "event-1", 1), true);
+	assert.equal(guard.accept("sales", "feishu", "event-1", 1_001), true);
+	assert.equal(guard.accept("sales", "feishu", undefined, 1_001), true);
+});
 
 test("Sub-Agent manager queues above concurrency, preserves ownership, and returns results", async () => {
 	let running = 0;

@@ -1,10 +1,10 @@
-/** MCP client bridge: configured MCP server tools become native Pi tools. */
+/** MCP capability bridge: configured external tools become native Pi tools. */
 
 import { readFileSync } from "node:fs";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport, getDefaultEnvironment } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
-import { defineTool, type ToolDefinition } from "@earendil-works/pi-coding-agent";
+import { defineTool, type ToolDefinition } from "@beemax/core";
 import { Type, type TSchema } from "typebox";
 
 export type McpServerConfig = {

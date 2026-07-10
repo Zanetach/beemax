@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.0-preview.5
+
+- Rebuilt the product boundary around `@beemax/core` as the sole Agent Runtime.
+- Separated Gateway enterprise control-plane transport from MCP, Feishu meeting,
+  Web, Memory, Automation, Skills and image capabilities.
+- Added profile-scoped inbound idempotency, architecture-boundary tests, and
+  clean single-archive build verification.
+
 ## 0.1.0-preview.4
 
 - Switched the Pi submodule to the maintained BeeMax fork so release archives can be reproduced by GitHub Actions.

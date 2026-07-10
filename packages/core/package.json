@@ -1,5 +1,5 @@
 {
-  "name": "@beemax/memory",
+  "name": "@beemax/core",
   "version": "0.1.0",
   "private": true,
   "type": "module",
@@ -16,8 +16,10 @@
     "typecheck": "tsgo --noEmit -p tsconfig.build.json"
   },
   "dependencies": {
-	"@beemax/core": "0.1.0",
-    "better-sqlite3": "11.10.0"
-	,"typebox": "1.1.38"
+	"@beemax/automation": "0.1.0",
+    "@earendil-works/pi-agent-core": "^0.80.6",
+    "@earendil-works/pi-ai": "^0.80.6",
+    "@earendil-works/pi-coding-agent": "^0.80.6",
+    "typebox": "1.1.38"
   }
 }

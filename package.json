@@ -20,13 +20,13 @@
     }
   },
   "scripts": {
-    "build": "npm run build --workspace @earendil-works/pi-tui && tsgo -p pi/packages/ai/tsconfig.build.json && npm run build --workspace @earendil-works/pi-agent-core && npm run build --workspace @earendil-works/pi-coding-agent && npm run build --workspace @beemax/automation && npm run build --workspace @beemax/gateway && npm run build --workspace @beemax/memory && npm run build --workspace @beemax/cli",
+    "build": "npm run build --workspace @earendil-works/pi-tui && tsgo -p pi/packages/ai/tsconfig.build.json && npm run build --workspace @earendil-works/pi-agent-core && npm run build --workspace @earendil-works/pi-coding-agent && npm run build --workspace @beemax/automation && npm run build --workspace @beemax/core && npm run build --workspace @beemax/memory && npm run build --workspace @beemax/feishu-capability && npm run build --workspace @beemax/mcp-capability && npm run build --workspace @beemax/gateway && npm run build --workspace @beemax/cli",
     "models:update": "npm run generate-models --workspace @earendil-works/pi-ai && npm run generate-image-models --workspace @earendil-works/pi-ai",
     "install:local": "bash scripts/install.sh",
     "gateway": "node apps/cli/dist/cli.js gateway",
     "doctor": "node apps/cli/dist/cli.js doctor",
     "chat": "node apps/cli/dist/cli.js chat",
-    "test": "node --test apps/cli/test/*.test.mjs packages/automation/test/*.test.mjs packages/memory/test/*.test.mjs packages/gateway/test/*.test.mjs",
+    "test": "node --test apps/cli/test/*.test.mjs packages/automation/test/*.test.mjs packages/core/test/*.test.mjs packages/memory/test/*.test.mjs packages/gateway/test/*.test.mjs",
     "typecheck": "tsgo --noEmit"
   },
   "devDependencies": {
