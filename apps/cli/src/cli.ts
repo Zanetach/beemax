@@ -443,7 +443,7 @@ async function runChat(config: ReturnType<typeof loadConfig>): Promise<void> {
 		}
 	} finally {
 		session.dispose();
-		subagents?.dispose();
+		await subagents?.dispose();
 		await mcp.close();
 		memory.close();
 	}

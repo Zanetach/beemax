@@ -228,7 +228,7 @@ export async function runGateway(config: BeeMaxConfig): Promise<void> {
 		console.info("\n[beemax] shutting down...");
 		await heartbeat.stop();
 		await scheduler?.stop();
-		subagents?.dispose();
+		await subagents?.dispose();
 		dispatcher.dispose();
 		await adapter.disconnect();
 		await mcp.close();

@@ -45,6 +45,7 @@ const TERMINAL = new Set<SubagentTaskStatus>(["completed", "failed", "cancelled"
 export class SubagentManager {
 	private readonly tasks = new Map<string, ManagedTask>();
 	private readonly queue: string[] = [];
+	private readonly activeRuns = new Set<Promise<void>>();
 	private readonly maxConcurrent: number;
 	private readonly maxChildrenPerOwner: number;
 	private readonly defaultTimeoutMs: number;
@@ -147,7 +148,7 @@ export class SubagentManager {
 		return cancelled;
 	}
 
-	dispose(): void {
+	async dispose(): Promise<void> {
 		this.disposed = true;
 		for (const task of this.tasks.values()) {
 			if (!TERMINAL.has(task.status)) {
@@ -157,6 +158,7 @@ export class SubagentManager {
 			}
 		}
 		this.queue.length = 0;
+		await Promise.allSettled([...this.activeRuns]);
 	}
 
 	private async pump(): Promise<void> {
@@ -166,10 +168,13 @@ export class SubagentManager {
 			const task = this.tasks.get(id);
 			if (!task || task.status !== "queued") continue;
 			this.running++;
-			void this.run(task).finally(() => {
+			const active = this.run(task).finally(() => {
 				this.running--;
+				this.activeRuns.delete(active);
 				void this.pump();
 			});
+			this.activeRuns.add(active);
+			void active;
 		}
 	}
 

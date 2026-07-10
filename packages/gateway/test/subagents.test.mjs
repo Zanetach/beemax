@@ -40,7 +40,7 @@ test("Sub-Agent manager queues above concurrency, preserves ownership, and retur
 	assert.equal(result.result, "done:three");
 	assert.equal(manager.list(source).find((task) => task.id === tasks[2].id).result, undefined);
 	assert.throws(() => manager.get({ ...source, chatId: "other" }, tasks[0].id), /not found/);
-	manager.dispose();
+	await manager.dispose();
 });
 
 test("Sub-Agent cancellation handles queued and running work and cascades by owner", async () => {
@@ -56,15 +56,46 @@ test("Sub-Agent cancellation handles queued and running work and cascades by own
 	assert.equal(manager.cancel(source, queued.id).status, "cancelled");
 	assert.equal(manager.cancelOwner(source), 1);
 	assert.equal((await manager.wait(source, running.id, 1000)).status, "cancelled");
-	manager.dispose();
+	await manager.dispose();
 });
 
-test("Sub-Agent manager enforces the active-child limit", () => {
+test("Sub-Agent manager waits for running work to stop during disposal", { timeout: 1000 }, async () => {
+	let observeAbort;
+	let finishCleanup;
+	const abortObserved = new Promise((resolve) => { observeAbort = resolve; });
+	const cleanupFinished = new Promise((resolve) => { finishCleanup = resolve; });
+	const manager = new SubagentManager({
+		execute: async (_task, signal) => {
+			await new Promise((resolve) => signal.addEventListener("abort", () => {
+				observeAbort();
+				resolve();
+			}, { once: true }));
+			await cleanupFinished;
+			return "done";
+		},
+	});
+	manager.spawn(source, { goal: "running" });
+	await new Promise((resolve) => setImmediate(resolve));
+
+	let disposed = false;
+	const disposal = Promise.resolve(manager.dispose()).then(() => { disposed = true; });
+	await abortObserved;
+	await new Promise((resolve) => setImmediate(resolve));
+	try {
+		assert.equal(disposed, false);
+	} finally {
+		finishCleanup();
+		await disposal;
+	}
+	assert.equal(disposed, true);
+});
+
+test("Sub-Agent manager enforces the active-child limit", async () => {
 	const manager = new SubagentManager({ maxConcurrent: 1, maxChildrenPerOwner: 2, execute: async () => "done" });
 	manager.spawn(source, { goal: "one" });
 	manager.spawn(source, { goal: "two" });
 	assert.throws(() => manager.spawn(source, { goal: "three" }), /2 active/);
-	manager.dispose();
+	await manager.dispose();
 });
 
 test("parent sessions expose orchestration tools while child sessions stay read-only and cannot recurse", async () => {
@@ -100,7 +131,7 @@ test("parent sessions expose orchestration tools while child sessions stay read-
 	} finally {
 		parent.dispose();
 		child.dispose();
-		manager.dispose();
+		await manager.dispose();
 		rmSync(root, { recursive: true, force: true });
 	}
 });
