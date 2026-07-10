@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.1.0
+## 0.1.0-preview.1
 
 - Added installable BeeMax CLI with Agent profile, model, Feishu channel, doctor, and systemd lifecycle commands.
 - Added Feishu streaming Gateway, persistent Pi sessions, FTS5 memory, Skills, MCP, web research, meetings, automation, Heartbeat, and optional GPT Image 2 delivery.
@@ -9,3 +9,8 @@
 - Added isolated Profile Homes under `~/.beemax/profiles`, `SOUL.md` identity, active Profile selection, and non-destructive migration from legacy repository-local Profiles.
 - Added unified `beemax setup` and `beemax gateway setup` flows with Feishu permissions guidance, live credential/bot probing, and readiness diagnostics.
 - Added Hermes-style Gateway lifecycle subcommands and per-Feishu-App Profile locks to prevent duplicate consumers.
+- Added hardened Feishu webhook handling, safe/standard toolsets, bundled progressive Skills, curated profile memory, candidate review commands, MCP resources/prompts, and MCP diagnostics.
+- Fixed model-secret handling so API keys are accepted only from the environment or masked interactive prompt, never CLI arguments.
+- Fixed memory recall so only curated memories enter the model context; pending conversation candidates require explicit promotion.
+- Fixed Profile backups to create and verify a consistent SQLite snapshot while the Gateway is running.
+- Fixed MCP startup with per-server initialization deadlines and optional-server degradation.

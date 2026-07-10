@@ -7,6 +7,7 @@ import test from "node:test";
 import { loadConfig } from "../dist/config.js";
 import { configureModel } from "../dist/profile-config.js";
 import { runSetup } from "../dist/setup.js";
+import { MemoryStore } from "@beemax/memory";
 
 const cli = resolve("apps/cli/dist/cli.js");
 
@@ -34,10 +35,23 @@ test("CLI supports init, model setup, Feishu channel setup, listing, and safe de
 	};
 
 	assert.match(run(["init", "--profile", "personal"]), /Created BeeMax Agent 'personal'/);
+	assert.match(run(["--help"]), /persistent personal agent/);
 	assert.equal(run(["agent", "list"]).trim(), "personal");
+	assert.throws(
+		() => run(["model", "set", "openrouter", "openai/gpt-5.2", "--profile", "personal", "--api-key", "must-not-appear"]),
+		/Do not pass model secrets in argv/,
+	);
 	assert.match(run(["model", "set", "openrouter", "openai/gpt-5.2", "--profile", "personal", "--non-interactive"], {
 		BEEMAX_API_KEY: "model-key",
 	}), /Configured openrouter\/openai\/gpt-5.2/);
+	const liveMemory = new MemoryStore(join(home, "profiles", "personal", "memory.db"));
+	liveMemory.remember({ platform: "feishu", chatId: "chat", userId: "user", role: "memory", content: "Backup must preserve this fact" });
+	const backupDir = await mkdtemp(join(tmpdir(), "beemax-backup-"));
+	assert.match(run(["profile", "backup", "personal", backupDir]), /SQLite snapshot verified/);
+	liveMemory.close();
+	const backupMemory = new MemoryStore(join(backupDir, "personal", "memory.db"));
+	assert.equal(backupMemory.recall("preserve", { platform: "feishu", chatId: "chat", userId: "user" }).length, 1);
+	backupMemory.close();
 	assert.match(run(["channel", "add", "feishu", "--profile", "personal", "--non-interactive"], {
 		FEISHU_APP_ID: "cli_test",
 		FEISHU_APP_SECRET: "feishu-key",
@@ -45,7 +59,7 @@ test("CLI supports init, model setup, Feishu channel setup, listing, and safe de
 	}), /Configured Feishu channel/);
 	assert.match(run(["channel", "list", "--profile", "personal"]), /feishu  configured/);
 	assert.match(run(["mcp", "status", "--profile", "personal"]), /No MCP servers configured/);
-	assert.match(run(["memory", "status", "--profile", "personal"]), /curated=0 pending=0/);
+	assert.match(run(["memory", "status", "--profile", "personal"]), /curated=1 pending=0/);
 	assert.match(run(["channel", "qr", "--profile", "personal"]), /Feishu Developer Console/);
 	assert.match(run(["profile", "use", "personal"]), /active Profile is now 'personal'/);
 	assert.equal(run(["model", "show"]).trim(), "openrouter/openai/gpt-5.2");

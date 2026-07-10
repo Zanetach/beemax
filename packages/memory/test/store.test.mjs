@@ -40,6 +40,7 @@ test("conversation candidates stay pending until explicitly promoted or rejected
 		const scope = { platform: "feishu", chatId: "chat-a", userId: "user-1" };
 		const candidate = store.recordCandidate({ ...scope, role: "user", content: "User prefers monthly strategy reviews" });
 		assert.equal(store.list(scope).length, 0);
+		assert.equal(store.recall("monthly strategy", scope).length, 0);
 		assert.equal(store.listCandidates(scope).length, 1);
 		assert.equal(store.promoteCandidate(candidate, scope), true);
 		assert.equal(store.list(scope).length, 1);

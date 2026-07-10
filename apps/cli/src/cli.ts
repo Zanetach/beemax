@@ -10,7 +10,8 @@
 
 import { buildSubagentSystemPrompt, executeSubagentTask, runGateway } from "./gateway.ts";
 import { beemaxRoot, loadConfig } from "./config.ts";
-import { join } from "node:path";
+import { dirname, isAbsolute, join, relative } from "node:path";
+import { backupSqliteDatabase, verifySqliteDatabase } from "@beemax/memory";
 import { runDoctor } from "./doctor.ts";
 import {
 	configureFeishuChannel,
@@ -31,7 +32,7 @@ import { runSetup, type SetupOptions } from "./setup.ts";
 async function main(): Promise<void> {
 	const parsed = parseArgs(process.argv.slice(2));
 	applyRuntimePaths(parsed);
-	const cmd = parsed.positionals[0] ?? "help";
+	const cmd = parsed.options.help === true ? "help" : parsed.positionals[0] ?? "help";
 	const profile = parsed.profile ?? activeProfile();
 	const getConfig = () => loadConfig(parsed.configPath, profile);
 
@@ -120,9 +121,9 @@ Commands:
   model      show | set <provider> <model>
   doctor     Check profile readiness
   profile    create | list | show | path | use | migrate | backup | delete
-	  skills     list | sync (prepackaged Profile Skills)
-	  mcp        status (probe configured MCP servers)
-	  memory     status | list | candidates | promote <id> | reject <id>
+  skills     list | sync (prepackaged Profile Skills)
+  mcp        status (probe configured MCP servers)
+  memory     status | list | candidates | promote <id> | reject <id>
   auth       codex (stores OAuth only inside the selected profile)
   service    install (Linux systemd)
   start      Start a profile systemd service
@@ -191,7 +192,7 @@ function parseArgs(args: string[]): ParsedArgs {
 	return parsed;
 }
 
-const BOOLEAN_OPTIONS = new Set(["yes", "require-mention", "no-require-mention", "non-interactive", "system", "all", "open"]);
+const BOOLEAN_OPTIONS = new Set(["yes", "require-mention", "no-require-mention", "non-interactive", "system", "all", "open", "help"]);
 
 async function runInit(parsed: ParsedArgs): Promise<void> {
 	const profile = parsed.profile ?? parsed.positionals[1] ?? "personal";
@@ -233,10 +234,11 @@ async function runModelCommand(parsed: ParsedArgs): Promise<void> {
 		return;
 	}
 	if (action !== "set") throw new Error("Usage: beemax model [show | set <provider> <model>] --profile <name>");
+	if (parsed.options["api-key"] !== undefined) throw new Error("Do not pass model secrets in argv; set BEEMAX_API_KEY or use the interactive prompt");
 	const provider = parsed.positionals[2];
 	const model = parsed.positionals[3];
 	if (!provider || !model) throw new Error("model set requires a provider and model ID");
-	let apiKey = optionString(parsed, "api-key") ?? process.env.BEEMAX_API_KEY;
+	let apiKey = process.env.BEEMAX_API_KEY;
 	if (!apiKey && parsed.options["non-interactive"] !== true && process.stdin.isTTY) {
 		apiKey = await askOne("Model API Key (leave empty to configure later): ", true);
 	}
@@ -445,11 +447,37 @@ async function runProfileCommand(parsed: ParsedArgs): Promise<void> {
 	if (action === "backup") {
 		const destination = args[2];
 		if (!destination) throw new Error("profile backup requires a destination directory");
-		const { cp, mkdir } = await import("node:fs/promises");
+		const { access, cp, mkdir, rm, stat } = await import("node:fs/promises");
 		const source = resolveProfileLocation(name, explicitConfig).homePath;
+		const target = join(destination, name);
+		const sourceDb = loadConfig(explicitConfig, name).memory.dbPath;
+		const dbRelativePath = relative(source, sourceDb);
+		const targetDb = dbRelativePath && !dbRelativePath.startsWith("..") && !isAbsolute(dbRelativePath)
+			? join(target, dbRelativePath)
+			: join(target, "external-data", "memory.db");
 		await mkdir(destination, { recursive: true });
-		await cp(source, join(destination, name), { recursive: true, force: false, errorOnExist: false });
-		console.log(`Backed up Agent '${name}' to ${join(destination, name)}.`);
+		try {
+			await access(target);
+			throw new Error(`Backup destination already exists: ${target}`);
+		} catch (error) {
+			if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+		}
+		try {
+			await cp(source, target, {
+				recursive: true,
+				force: false,
+				errorOnExist: true,
+				filter: (path) => path !== sourceDb && path !== `${sourceDb}-wal` && path !== `${sourceDb}-shm`,
+			});
+			await stat(sourceDb);
+			await mkdir(dirname(targetDb), { recursive: true });
+			await backupSqliteDatabase(sourceDb, targetDb);
+			verifySqliteDatabase(targetDb);
+		} catch (error) {
+			await rm(target, { recursive: true, force: true });
+			throw new Error(`Profile backup database snapshot failed: ${error instanceof Error ? error.message : String(error)}`);
+		}
+		console.log(`Backed up Agent '${name}' to ${target} (SQLite snapshot verified).`);
 		return;
 	}
 	if (action === "delete") {

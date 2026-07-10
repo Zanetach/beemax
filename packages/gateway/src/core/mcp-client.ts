@@ -45,26 +45,33 @@ interface Connection {
 export class McpManager {
 	private readonly connections = new Map<string, Connection>();
 	private statuses: McpServerStatus[] = [];
+	private readonly initializationTimeoutMs: number;
+
+	constructor(options: { initializationTimeoutMs?: number } = {}) {
+		this.initializationTimeoutMs = Math.max(100, options.initializationTimeoutMs ?? 15_000);
+	}
 
 	async connectAll(config: McpConfig): Promise<McpServerStatus[]> {
 		await this.close();
-		const statuses: McpServerStatus[] = [];
-		for (const [name, server] of Object.entries(config.servers)) {
+		const attempts = await Promise.all(Object.entries(config.servers).map(async ([name, server]) => {
 			validateServerName(name);
 			try {
 				const connection = await this.connectOne(name, server);
-				this.connections.set(name, connection);
-				statuses.push({ name, connected: true, tools: connection.tools.map((tool) => tool.name), resources: connection.resources, prompts: connection.prompts });
+				return { server, connection, status: { name, connected: true, tools: connection.tools.map((tool) => tool.name), resources: connection.resources, prompts: connection.prompts } satisfies McpServerStatus };
 			} catch (error) {
 				const message = error instanceof Error ? error.message : String(error);
-				statuses.push({ name, connected: false, tools: [], resources: 0, prompts: 0, error: message });
-				if (server.required) {
-					await this.close();
-					throw new Error(`Required MCP server ${name} failed: ${message}`);
-				}
+				return { server, status: { name, connected: false, tools: [], resources: 0, prompts: 0, error: message } satisfies McpServerStatus };
 			}
+		}));
+		const requiredFailure = attempts.find((attempt) => attempt.server.required && !attempt.status.connected);
+		if (requiredFailure) {
+			await Promise.all(attempts.map(async (attempt) => {
+				if ("connection" in attempt && attempt.connection) await attempt.connection.client.close().catch(() => undefined);
+			}));
+			throw new Error(`Required MCP server ${requiredFailure.status.name} failed: ${requiredFailure.status.error}`);
 		}
-		this.statuses = statuses;
+		for (const attempt of attempts) if ("connection" in attempt && attempt.connection) this.connections.set(attempt.status.name, attempt.connection);
+		this.statuses = attempts.map((attempt) => attempt.status);
 		return this.getStatus();
 	}
 
@@ -104,11 +111,15 @@ export class McpManager {
 				requestInit: { headers: mapValues(server.headers ?? {}, expandEnv) },
 			});
 		try {
-			await client.connect(transport);
-			const listed = await client.listTools();
+			await withTimeout(client.connect(transport), this.initializationTimeoutMs, `${name} connection`);
+			const listed = await withTimeout(client.listTools(), this.initializationTimeoutMs, `${name} tool discovery`);
 			const capabilities = client.getServerCapabilities();
-			const resources = capabilities?.resources ? await client.listResources().then((result) => result.resources.length).catch(() => 0) : 0;
-			const prompts = capabilities?.prompts ? await client.listPrompts().then((result) => result.prompts.length).catch(() => 0) : 0;
+			const resources = capabilities?.resources
+				? await withTimeout(client.listResources(), this.initializationTimeoutMs, `${name} resource discovery`).then((result) => result.resources.length).catch(() => 0)
+				: 0;
+			const prompts = capabilities?.prompts
+				? await withTimeout(client.listPrompts(), this.initializationTimeoutMs, `${name} prompt discovery`).then((result) => result.prompts.length).catch(() => 0)
+				: 0;
 			const names = new Set<string>();
 			const approvalTools: string[] = [];
 			const tools: ToolDefinition[] = listed.tools.map((tool) => {
@@ -229,4 +240,18 @@ function mapValues(input: Record<string, string>, fn: (value: string) => string)
 
 function truncate(value: string, max: number): string {
 	return value.length <= max ? value : `${value.slice(0, max)}\n[truncated]`;
+}
+
+async function withTimeout<T>(operation: Promise<T>, timeoutMs: number, description: string): Promise<T> {
+	let timeout: NodeJS.Timeout | undefined;
+	try {
+		return await Promise.race([
+			operation,
+			new Promise<T>((_resolve, reject) => {
+				timeout = setTimeout(() => reject(new Error(`MCP ${description} timed out after ${timeoutMs}ms`)), timeoutMs);
+			}),
+		]);
+	} finally {
+		if (timeout) clearTimeout(timeout);
+	}
 }

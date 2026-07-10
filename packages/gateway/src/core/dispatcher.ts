@@ -25,6 +25,7 @@ export interface DispatcherSession {
 	sessionId: string;
 	piSession: AgentSession;
 	busy: boolean;
+	lastActiveAt: number;
 }
 
 export interface DispatcherDeps {
@@ -34,6 +35,12 @@ export interface DispatcherDeps {
 	remember?: (source: InboundMessage["source"], exchange: { user: string; assistant: string }) => Promise<void>;
 	cardOptions?: CardRenderOptions;
 	flushIntervalMs?: number;
+	/** Bound long-running Gateway memory usage; busy sessions are never evicted. */
+	maxSessions?: number;
+	/** Dispose inactive sessions after this duration; JSONL state remains persistent. */
+	sessionIdleMs?: number;
+	/** Abort an individual interactive turn that exceeds this duration. */
+	turnTimeoutMs?: number;
 	approvalBroker?: ToolApprovalBroker;
 	cancelTasks?: (source: InboundMessage["source"]) => number;
 }
@@ -44,10 +51,16 @@ export class Dispatcher {
 	private readonly lock = new Map<string, Promise<void>>();
 	private readonly deps: DispatcherDeps;
 	private readonly platform: PlatformAdapter;
+	private readonly maxSessions: number;
+	private readonly sessionIdleMs: number;
+	private readonly turnTimeoutMs: number;
 
 	constructor(deps: DispatcherDeps, platform: PlatformAdapter) {
 		this.deps = deps;
 		this.platform = platform;
+		this.maxSessions = clamp(deps.maxSessions ?? 100, 1, 10_000);
+		this.sessionIdleMs = clamp(deps.sessionIdleMs ?? 30 * 60_000, 60_000, 24 * 60 * 60_000);
+		this.turnTimeoutMs = clamp(deps.turnTimeoutMs ?? 10 * 60_000, 30_000, 60 * 60_000);
 		this.platform.onMessage((msg) => {
 			void this.handle(msg).catch((error) => {
 				console.error(`[beemax] message dispatch failed: ${error instanceof Error ? error.message : String(error)}`);
@@ -78,14 +91,18 @@ export class Dispatcher {
 	): Promise<DispatcherSession> {
 		const sessionKey = sessionKeyForSource(msg.source);
 		const existing = this.sessions.get(sessionKey);
-		if (existing) return existing;
+		if (existing) {
+			existing.lastActiveAt = Date.now();
+			return existing;
+		}
 		const pending = this.sessionCreations.get(sessionKey);
 		if (pending) return pending;
+		this.pruneSessions(Date.now(), 1);
 
 		const creation = (async () => {
 			const sessionId = sessionIdForSource(msg.source);
 			const piSession = await factory(sessionId, msg.source);
-			const session: DispatcherSession = { sessionKey, sessionId, piSession, busy: false };
+			const session: DispatcherSession = { sessionKey, sessionId, piSession, busy: false, lastActiveAt: Date.now() };
 			this.sessions.set(sessionKey, session);
 			return session;
 		})();
@@ -106,14 +123,23 @@ export class Dispatcher {
 			await this.platform.send(msg.source.chatId, `Stopped the active Agent turn and cancelled ${cancelled} Sub-Agent task(s).`);
 			return;
 		}
-		const session = await this.getOrCreateSession(msg);
-		await this.withLock(session.sessionKey, async () => {
-			await this.runTurn(session, msg);
+		const sessionKey = sessionKeyForSource(msg.source);
+		await this.withLock(sessionKey, async () => {
+			this.pruneSessions();
+			const session = await this.getOrCreateSession(msg);
+			session.busy = true;
+			try {
+				await this.runTurn(session, msg);
+			} finally {
+				session.busy = false;
+				session.lastActiveAt = Date.now();
+			}
 		});
 	}
 
 	private async runTurn(session: DispatcherSession, msg: InboundMessage): Promise<void> {
 		const startedAt = Date.now();
+		session.lastActiveAt = startedAt;
 		let userInput = msg.text;
 		if (this.deps.recall) {
 			const injected = await this.deps.recall(msg.source, msg.text);
@@ -142,24 +168,29 @@ export class Dispatcher {
 			});
 		});
 
-		await this.platform.sendTyping(chatId);
+		await this.platform.sendTyping(chatId).catch((error) => {
+			console.warn(`[beemax] typing indicator failed: ${error instanceof Error ? error.message : String(error)}`);
+		});
 
+		let timedOut = false;
+		const timeout = setTimeout(() => {
+			timedOut = true;
+			void session.piSession.abort();
+		}, this.turnTimeoutMs);
 		try {
-			session.busy = true;
 			await session.piSession.prompt(userInput);
 		} catch (err) {
-			const errorText = err instanceof Error ? err.message : String(err);
+			const errorText = timedOut ? `Agent turn timed out after ${Math.round(this.turnTimeoutMs / 60_000)} minutes` : err instanceof Error ? err.message : String(err);
 			card.apply("message.failed", { error: errorText });
 			await flush.schedule(renderUpdate, true);
 			await flush.drain(3000);
 			if (!cardMessageId) await this.platform.send(chatId, `❌ ${errorText}`);
-			await this.platform.stopTyping(chatId);
+			await this.platform.stopTyping(chatId).catch(() => undefined);
 			unsubscribe();
-			session.busy = false;
 			flush.close();
 			return;
 		} finally {
-			session.busy = false;
+			clearTimeout(timeout);
 		}
 
 		// Terminal: emit completed with footer stats, drain immediately.
@@ -172,7 +203,7 @@ export class Dispatcher {
 		await flush.schedule(renderUpdate, true);
 		await flush.drain(5000);
 		if (!cardMessageId) await this.platform.send(chatId, card.answerText || "(no response)");
-		await this.platform.stopTyping(chatId);
+		await this.platform.stopTyping(chatId).catch(() => undefined);
 		unsubscribe();
 		flush.close();
 
@@ -212,11 +243,13 @@ export class Dispatcher {
 			timestamp: Date.now(),
 		};
 		const factory = this.deps.createAutomationAgent ?? this.deps.createAgent;
-		const session = await this.getOrCreateSession(msg, factory);
-		return this.withLock(session.sessionKey, async () => {
+		const sessionKey = sessionKeyForSource(msg.source);
+		return this.withLock(sessionKey, async () => {
+			this.pruneSessions();
+			const session = await this.getOrCreateSession(msg, factory);
+			session.busy = true;
 			const timer = setTimeout(() => session.piSession.abort(), options.timeoutMs);
 			try {
-				session.busy = true;
 				await session.piSession.prompt(prompt, { expandPromptTemplates: false, source: "extension" });
 				const answer = lastAssistantText(session.piSession.agent).trim();
 				if (!answer) throw new Error("Automation agent returned no answer");
@@ -224,6 +257,7 @@ export class Dispatcher {
 			} finally {
 				clearTimeout(timer);
 				session.busy = false;
+				session.lastActiveAt = Date.now();
 			}
 		});
 	}
@@ -232,6 +266,17 @@ export class Dispatcher {
 		this.deps.approvalBroker?.dispose();
 		for (const session of this.sessions.values()) session.piSession.dispose();
 		this.sessions.clear();
+	}
+
+	private pruneSessions(now = Date.now(), reserve = 0): void {
+		const idle = [...this.sessions.values()]
+			.filter((session) => !session.busy)
+			.sort((a, b) => a.lastActiveAt - b.lastActiveAt);
+		for (const session of idle) {
+			if (now - session.lastActiveAt < this.sessionIdleMs && this.sessions.size + reserve <= this.maxSessions) break;
+			session.piSession.dispose();
+			this.sessions.delete(session.sessionKey);
+		}
 	}
 
 	private async onAgentEvent(
@@ -311,4 +356,8 @@ function toolResultSummary(result: unknown): string {
 		if (text) return text.slice(0, 200);
 	}
 	return "";
+}
+
+function clamp(value: number, min: number, max: number): number {
+	return Math.max(min, Math.min(max, value));
 }

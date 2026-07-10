@@ -8,6 +8,7 @@ import { buildAgentFactory, createCodexImageTool, createSkillTools, filterEligib
 import { reloadResourcesIfNeeded } from "../dist/core/resource-reload.js";
 
 const fixture = fileURLToPath(new URL("./fixtures/mcp-server.mjs", import.meta.url));
+const hangingMcpFixture = fileURLToPath(new URL("./fixtures/hanging-mcp-server.mjs", import.meta.url));
 
 test("managed skills can evolve without escaping their directory", async () => {
 	const root = mkdtempSync(join(tmpdir(), "beemax-skill-test-"));
@@ -110,6 +111,19 @@ test("MCP tools are discovered, callable, and mutating tools require approval", 
 		const prompt = await tools.get("mcp_smoke_prompt_get").execute("prompt", { name: "brief-template", arguments: { topic: "memory" } }, new AbortController().signal);
 		assert.match(prompt.content[0].text, /Brief memory/);
 		assert.deepEqual(manager.getApprovalTools(), ["mcp_smoke_mutate"]);
+	} finally {
+		await manager.close();
+	}
+});
+
+test("MCP initialization times out and degrades optional servers", async () => {
+	const manager = new McpManager({ initializationTimeoutMs: 100 });
+	try {
+		const status = await manager.connectAll({
+			servers: { hanging: { type: "stdio", command: process.execPath, args: [hangingMcpFixture] } },
+		});
+		assert.equal(status[0].connected, false);
+		assert.match(status[0].error, /timed out/);
 	} finally {
 		await manager.close();
 	}

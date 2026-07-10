@@ -164,3 +164,38 @@ test("/stop bypasses the conversation turn lock and cascades Sub-Agent cancellat
 	assert.match(sent[0], /cancelled 2 Sub-Agent/);
 	dispatcher.dispose();
 });
+
+test("Dispatcher evicts inactive sessions while preserving persisted session ownership", async () => {
+	let inbound;
+	const disposed = [];
+	const platform = {
+		name: "feishu", isConnected: true,
+		onMessage: (handler) => { inbound = handler; },
+		connect: async () => true,
+		disconnect: async () => undefined,
+		send: async () => ({ success: true }),
+		editMessage: async () => ({ success: true }),
+		sendCard: async () => ({ success: true, messageId: "card" }),
+		updateCard: async () => ({ success: true }),
+		sendTyping: async () => undefined,
+		stopTyping: async () => undefined,
+	};
+	const dispatcher = new Dispatcher({
+		maxSessions: 1,
+		createAgent: async (sessionId) => {
+			const agent = { state: { model: { id: "test" }, messages: [] } };
+			return {
+				agent,
+				subscribe: () => () => undefined,
+				prompt: async () => { agent.state.messages = [{ role: "assistant", content: [{ type: "text", text: "ok" }], usage: {} }]; },
+				dispose: () => { disposed.push(sessionId); },
+			};
+		},
+	}, platform);
+	const message = (chatId) => ({ text: "hello", messageType: "text", source: { ...source, chatId }, mediaPaths: [], mediaTypes: [], raw: {}, timestamp: Date.now() });
+	await inbound(message("chat-a"));
+	await inbound(message("chat-b"));
+	assert.equal(disposed.length, 1);
+	assert.equal(typeof disposed[0], "string");
+	dispatcher.dispose();
+});
