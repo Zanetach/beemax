@@ -33,6 +33,10 @@ export interface RecallOptions {
 	userId?: string;
 }
 
+export interface MemoryCandidate extends MemoryRecord {
+	status: "pending" | "promoted" | "rejected";
+}
+
 export class MemoryStore {
 	private readonly db: DatabaseType;
 
@@ -75,6 +79,33 @@ export class MemoryStore {
 
 			CREATE INDEX IF NOT EXISTS idx_memories_chat ON memories(platform, chat_id);
 			CREATE INDEX IF NOT EXISTS idx_memories_user ON memories(platform, user_id);
+
+			CREATE TABLE IF NOT EXISTS memory_candidates (
+				id TEXT PRIMARY KEY,
+				platform TEXT NOT NULL,
+				chat_id TEXT NOT NULL,
+				user_id TEXT,
+				role TEXT NOT NULL,
+				content TEXT NOT NULL,
+				status TEXT NOT NULL DEFAULT 'pending',
+				created_at INTEGER NOT NULL
+			);
+			CREATE VIRTUAL TABLE IF NOT EXISTS memory_candidates_fts USING fts5(
+				content,
+				content='memory_candidates',
+				content_rowid='rowid',
+				tokenize='unicode61 remove_diacritics 2'
+			);
+			CREATE TRIGGER IF NOT EXISTS memory_candidates_ai AFTER INSERT ON memory_candidates BEGIN
+				INSERT INTO memory_candidates_fts(rowid, content) VALUES (new.rowid, new.content);
+			END;
+			CREATE TRIGGER IF NOT EXISTS memory_candidates_ad AFTER DELETE ON memory_candidates BEGIN
+				INSERT INTO memory_candidates_fts(memory_candidates_fts, rowid, content) VALUES('delete', old.rowid, old.content);
+			END;
+			CREATE TRIGGER IF NOT EXISTS memory_candidates_au AFTER UPDATE ON memory_candidates BEGIN
+				INSERT INTO memory_candidates_fts(memory_candidates_fts, rowid, content) VALUES('delete', old.rowid, old.content);
+			END;
+			CREATE INDEX IF NOT EXISTS idx_memory_candidates_scope ON memory_candidates(platform, chat_id, user_id, status);
 		`);
 	}
 
@@ -86,6 +117,19 @@ export class MemoryStore {
 				"INSERT INTO memories (id, platform, chat_id, user_id, role, content, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
 			)
 			.run(id, record.platform, record.chatId, record.userId ?? null, record.role, record.content, createdAt);
+		return id;
+	}
+
+	/** Store a raw turn as a retrievable candidate, not as curated long-term memory. */
+	recordCandidate(record: Omit<MemoryRecord, "id" | "createdAt" | "role"> & { role: "user" | "assistant" }): string {
+		const existing = this.db.prepare(
+			"SELECT id FROM memory_candidates WHERE platform = ? AND chat_id = ? AND user_id IS ? AND role = ? AND content = ? AND status = 'pending' ORDER BY created_at DESC LIMIT 1",
+		).get(record.platform, record.chatId, record.userId ?? null, record.role, record.content) as { id: string } | undefined;
+		if (existing) return existing.id;
+		const id = cryptoRandom();
+		this.db.prepare(
+			"INSERT INTO memory_candidates (id, platform, chat_id, user_id, role, content, status, created_at) VALUES (?, ?, ?, ?, ?, ?, 'pending', ?)",
+		).run(id, record.platform, record.chatId, record.userId ?? null, record.role, record.content, Date.now());
 		return id;
 	}
 
@@ -125,7 +169,9 @@ export class MemoryStore {
 				 LIMIT ?`,
 			)
 			.all(...params, limit) as MemoryRow[];
-		return rows.map(mapRow);
+		const curated = rows.map(mapRow);
+		if (curated.length >= limit) return curated;
+		return [...curated, ...this.recallCandidates(match, opts, limit - curated.length)];
 	}
 
 	list(opts: RecallOptions = {}): MemoryRecord[] {
@@ -143,6 +189,61 @@ export class MemoryStore {
 		return rows.map(mapRow);
 	}
 
+	listCandidates(opts: RecallOptions = {}): MemoryCandidate[] {
+		const limit = Math.max(1, Math.min(opts.limit ?? 20, 100));
+		const conditions = ["status = 'pending'"];
+		const params: unknown[] = [];
+		if (opts.platform) { conditions.push("platform = ?"); params.push(opts.platform); }
+		if (opts.userId) { conditions.push("user_id = ?"); params.push(opts.userId); }
+		else if (opts.chatId) { conditions.push("chat_id = ?"); params.push(opts.chatId); }
+		const rows = this.db.prepare(
+			`SELECT id, platform, chat_id, user_id, role, content, status, created_at FROM memory_candidates WHERE ${conditions.join(" AND ")} ORDER BY created_at DESC LIMIT ?`,
+		).all(...params, limit) as CandidateRow[];
+		return rows.map(mapCandidate);
+	}
+
+	promoteCandidate(id: string, opts: Omit<RecallOptions, "limit"> = {}): boolean {
+		const conditions = ["id = ?", "status = 'pending'"];
+		const params: unknown[] = [id];
+		if (opts.platform) { conditions.push("platform = ?"); params.push(opts.platform); }
+		if (opts.userId) { conditions.push("user_id = ?"); params.push(opts.userId); }
+		else if (opts.chatId) { conditions.push("chat_id = ?"); params.push(opts.chatId); }
+		const row = this.db.prepare(
+			`SELECT id, platform, chat_id, user_id, content FROM memory_candidates WHERE ${conditions.join(" AND ")}`,
+		).get(...params) as Pick<MemoryRow, "id" | "platform" | "chat_id" | "user_id" | "content"> | undefined;
+		if (!row) return false;
+		const candidate = mapRow({ ...row, role: "memory", created_at: Date.now() });
+		this.db.transaction(() => {
+			this.remember({ platform: candidate.platform, chatId: candidate.chatId, userId: candidate.userId, role: "memory", content: candidate.content });
+			this.db.prepare("UPDATE memory_candidates SET status = 'promoted' WHERE id = ?").run(id);
+		})();
+		return true;
+	}
+
+	rejectCandidate(id: string, opts: Omit<RecallOptions, "limit"> = {}): boolean {
+		const conditions = ["id = ?", "status = 'pending'"];
+		const params: unknown[] = [id];
+		if (opts.platform) { conditions.push("platform = ?"); params.push(opts.platform); }
+		if (opts.userId) { conditions.push("user_id = ?"); params.push(opts.userId); }
+		else if (opts.chatId) { conditions.push("chat_id = ?"); params.push(opts.chatId); }
+		return this.db.prepare(`UPDATE memory_candidates SET status = 'rejected' WHERE ${conditions.join(" AND ")}`).run(...params).changes > 0;
+	}
+
+	stats(opts: Omit<RecallOptions, "limit"> = {}): { curated: number; pending: number; promoted: number; rejected: number } {
+		const conditions: string[] = [];
+		const params: unknown[] = [];
+		if (opts.platform) { conditions.push("platform = ?"); params.push(opts.platform); }
+		if (opts.userId) { conditions.push("user_id = ?"); params.push(opts.userId); }
+		else if (opts.chatId) { conditions.push("chat_id = ?"); params.push(opts.chatId); }
+		const where = conditions.length ? `WHERE ${conditions.join(" AND ")}` : "";
+		const curatedWhere = ["role = 'memory'", ...conditions].join(" AND ");
+		const curated = (this.db.prepare(`SELECT count(*) AS value FROM memories WHERE ${curatedWhere}`).get(...params) as { value: number }).value;
+		const rows = this.db.prepare(`SELECT status, count(*) AS value FROM memory_candidates ${where} GROUP BY status`).all(...params) as Array<{ status: string; value: number }>;
+		const result = { curated, pending: 0, promoted: 0, rejected: 0 };
+		for (const row of rows) if (row.status in result) result[row.status as "pending" | "promoted" | "rejected"] = row.value;
+		return result;
+	}
+
 	forget(id: string, opts: Omit<RecallOptions, "limit"> = {}): boolean {
 		const conditions = ["id = ?", "role = 'memory'"];
 		const params: unknown[] = [id];
@@ -154,6 +255,24 @@ export class MemoryStore {
 
 	close(): void {
 		this.db.close();
+	}
+
+	private recallCandidates(match: string, opts: RecallOptions, limit: number): MemoryRecord[] {
+		const conditions = ["c.status = 'pending'"];
+		const params: unknown[] = [match];
+		if (opts.platform) { conditions.push("c.platform = ?"); params.push(opts.platform); }
+		if (opts.chatId && opts.userId) {
+			conditions.push("(c.chat_id = ? OR c.user_id = ?)");
+			params.push(opts.chatId, opts.userId);
+		} else if (opts.chatId) { conditions.push("c.chat_id = ?"); params.push(opts.chatId); }
+		else if (opts.userId) { conditions.push("c.user_id = ?"); params.push(opts.userId); }
+		const rows = this.db.prepare(
+			`SELECT c.id, c.platform, c.chat_id, c.user_id, c.role, c.content, c.created_at
+			 FROM memory_candidates_fts f JOIN memory_candidates c ON c.rowid = f.rowid
+			 WHERE memory_candidates_fts MATCH ? AND ${conditions.join(" AND ")}
+			 ORDER BY rank LIMIT ?`,
+		).all(...params, limit) as MemoryRow[];
+		return rows.map(mapRow);
 	}
 }
 
@@ -186,6 +305,8 @@ interface MemoryRow {
 	created_at: number;
 }
 
+interface CandidateRow extends MemoryRow { status: MemoryCandidate["status"] }
+
 function mapRow(row: MemoryRow): MemoryRecord {
 	return {
 		id: row.id,
@@ -196,6 +317,10 @@ function mapRow(row: MemoryRow): MemoryRecord {
 		content: row.content,
 		createdAt: row.created_at,
 	};
+}
+
+function mapCandidate(row: CandidateRow): MemoryCandidate {
+	return { ...mapRow(row), status: row.status };
 }
 
 function toFtsQuery(query: string): string {

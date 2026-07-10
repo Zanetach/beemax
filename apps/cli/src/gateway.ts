@@ -167,14 +167,14 @@ export async function runGateway(config: BeeMaxConfig): Promise<void> {
 						userId: source.userIdAlt ?? source.userId,
 					});
 				}
-				memory.remember({
+				memory.recordCandidate({
 					platform: source.platform,
 					chatId: source.chatId,
 					userId: source.userIdAlt ?? source.userId,
 					role: "user",
 					content: exchange.user,
 				});
-				memory.remember({
+				memory.recordCandidate({
 					platform: source.platform,
 					chatId: source.chatId,
 					userId: source.userIdAlt ?? source.userId,
