@@ -20,12 +20,23 @@ export async function acquireChannelLock(home: string, channel: string): Promise
 			const ownerPid = Number.parseInt(owner.split(":", 1)[0] ?? "", 10);
 			const stale = Number.isInteger(ownerPid) ? !processAlive(ownerPid) : await oldEmptyLock(path);
 			if (!stale) throw new Error(`Feishu channel '${channel}' is already locked by process ${owner.split(":", 1)[0] || "unknown"}`);
+			const reclaimMutex = `${path}.reclaiming`;
+			try {
+				await mkdir(reclaimMutex, { mode: 0o700 });
+			} catch (mutexError) {
+				if ((mutexError as NodeJS.ErrnoException).code === "EEXIST") continue;
+				throw mutexError;
+			}
 			const claim = `${path}.reclaim-${token.replaceAll(":", "-")}`;
 			try {
+				const current = await readFile(path, "utf8").catch(() => "");
+				if (current !== owner) continue;
 				await rename(path, claim);
 			} catch (claimError) {
 				if ((claimError as NodeJS.ErrnoException).code === "ENOENT") continue;
 				throw claimError;
+			} finally {
+				await rm(reclaimMutex, { recursive: true, force: true });
 			}
 			await rm(claim, { force: true });
 		}
