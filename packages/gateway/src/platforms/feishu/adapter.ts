@@ -4,9 +4,8 @@
  * Modeled on Hermes' gateway/platforms/feishu.py, but in TypeScript on top of
  * the official `@larksuiteoapi/node-sdk`.
  *
- * Connection: WebSocket long-connection (WSClient). This is the default and
- * the only mode implemented - it needs no public HTTPS endpoint, which suits
- * local Linux deployment. (Hermes also supports webhook; we can add it later.)
+ * Connection: WebSocket long-connection by default, with an optional local
+ * webhook listener for deployments fronted by HTTPS/reverse proxy.
  *
  * Identity: self-built (企业内部) app. The bot's own open_id is hydrated at
  * startup via /bot/v3/info (the SDK does this implicitly on first call) and
@@ -18,7 +17,8 @@
 
 import { createReadStream } from "node:fs";
 import { stat } from "node:fs/promises";
-import lark, { type Client, type EventDispatcher, type WSClient } from "@larksuiteoapi/node-sdk";
+import { createServer, type Server } from "node:http";
+import lark, { adaptDefault, type Client, type EventDispatcher, type WSClient } from "@larksuiteoapi/node-sdk";
 import type {
 	InboundMessage,
 	MessageHandler,
@@ -38,6 +38,7 @@ export class FeishuAdapter implements PlatformAdapter {
 	private connected = false;
 	private client!: Client;
 	private wsClient?: WSClient;
+	private webhookServer?: Server;
 	private handler?: MessageHandler;
 	private dedup = new Map<string, number>();
 	private readonly dedupTtlMs = 24 * 60 * 60 * 1000;
@@ -80,7 +81,10 @@ export class FeishuAdapter implements PlatformAdapter {
 			loggerLevel: lark.LoggerLevel.warn,
 		});
 
-		const dispatcher: EventDispatcher = new lark.EventDispatcher({}).register({
+		const dispatcher: EventDispatcher = new lark.EventDispatcher({
+			verificationToken: this.settings.webhookVerificationToken,
+			encryptKey: this.settings.webhookEncryptKey,
+		}).register({
 			"im.message.receive_v1": async (data) => {
 				await this.onReceive(data);
 			},
@@ -94,6 +98,28 @@ export class FeishuAdapter implements PlatformAdapter {
 				this.onMeetingRecordingEvent("ready", data);
 			},
 		});
+
+		if (this.settings.connectionMode === "webhook") {
+			const handler = adaptDefault(this.settings.webhookPath ?? "/feishu/events", dispatcher, { autoChallenge: true });
+			this.webhookServer = createServer((req, res) => {
+				if (req.url?.split("?", 1)[0] !== (this.settings.webhookPath ?? "/feishu/events")) {
+					res.statusCode = 404;
+					res.end("not found");
+					return;
+				}
+				void handler(req, res).catch((error) => {
+					console.error(`[beemax] Feishu webhook failed: ${String(error)}`);
+					if (!res.headersSent) res.writeHead(500);
+					res.end("internal error");
+				});
+			});
+			await new Promise<void>((resolve, reject) => {
+				this.webhookServer?.once("error", reject).listen(this.settings.webhookPort ?? 8787, this.settings.webhookHost ?? "127.0.0.1", resolve);
+			});
+			await this.hydrateBotIdentity();
+			this.connected = true;
+			return true;
+		}
 
 		this.wsClient = new lark.WSClient({
 			appId: this.settings.appId,
@@ -113,6 +139,10 @@ export class FeishuAdapter implements PlatformAdapter {
 
 	async disconnect(): Promise<void> {
 		this.connected = false;
+		if (this.webhookServer) {
+			await new Promise<void>((resolve) => this.webhookServer?.close(() => resolve()));
+			this.webhookServer = undefined;
+		}
 		// The official SDK does not expose a stop() for WSClient in this version;
 		// process exit will close the socket. For graceful shutdown within a
 		// long-running host, we drop references and let the process handle it.

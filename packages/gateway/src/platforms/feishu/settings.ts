@@ -9,8 +9,8 @@
  *   union_id (on_xxx)  - developer-scoped, stable across apps. Preferred for
  *                        session keying when available (userIdAlt).
  *
- * Connection: WebSocket long-connection by default (no public HTTPS needed,
- * friendly to local Linux deployment). Webhook mode is a future option.
+ * Connection: WebSocket long-connection by default; webhook mode is available
+ * when a public HTTPS reverse proxy forwards to the configured local endpoint.
  *
  * Bot identity: this is a self-built (企业内部) app. Credentials app_id +
  * app_secret come from the Feishu developer console. The bot's own open_id
@@ -22,8 +22,12 @@ export interface FeishuSettings {
 	appSecret: string;
 	/** "feishu" (default) or "lark" for international Lark. */
 	domain: "feishu" | "lark";
-	/** Only "websocket" is implemented for now. */
-	connectionMode: "websocket";
+	connectionMode: "websocket" | "webhook";
+	webhookHost?: string;
+	webhookPort?: number;
+	webhookPath?: string;
+	webhookVerificationToken?: string;
+	webhookEncryptKey?: string;
 	/**
 	 * Require @mention of the bot in group chats to respond. DMs always respond.
 	 * Matches Hermes default (FEISHU_REQUIRE_MENTION=true).
@@ -55,7 +59,12 @@ export function loadFeishuSettings(env: NodeJS.ProcessEnv = process.env): Feishu
 		appId,
 		appSecret,
 		domain,
-		connectionMode: "websocket",
+		connectionMode: (env.FEISHU_CONNECTION_MODE ?? "websocket").toLowerCase() === "webhook" ? "webhook" : "websocket",
+		webhookHost: env.FEISHU_WEBHOOK_HOST ?? "127.0.0.1",
+		webhookPort: Number(env.FEISHU_WEBHOOK_PORT ?? 8787),
+		webhookPath: env.FEISHU_WEBHOOK_PATH ?? "/feishu/events",
+		webhookVerificationToken: env.FEISHU_WEBHOOK_VERIFICATION_TOKEN?.trim() || undefined,
+		webhookEncryptKey: env.FEISHU_WEBHOOK_ENCRYPT_KEY?.trim() || undefined,
 		requireMention,
 		allowedUsers: parseCsv(env.FEISHU_ALLOWED_USERS),
 		allowedChats: parseCsv(env.FEISHU_ALLOWED_CHATS),

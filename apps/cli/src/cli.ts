@@ -178,7 +178,7 @@ function parseArgs(args: string[]): ParsedArgs {
 	return parsed;
 }
 
-const BOOLEAN_OPTIONS = new Set(["yes", "require-mention", "no-require-mention", "non-interactive", "system", "all"]);
+const BOOLEAN_OPTIONS = new Set(["yes", "require-mention", "no-require-mention", "non-interactive", "system", "all", "open"]);
 
 async function runInit(parsed: ParsedArgs): Promise<void> {
 	const profile = parsed.profile ?? parsed.positionals[1] ?? "personal";
@@ -234,6 +234,17 @@ async function runModelCommand(parsed: ParsedArgs): Promise<void> {
 async function runChannelCommand(parsed: ParsedArgs): Promise<void> {
 	const action = parsed.positionals[1] ?? "list";
 	const profile = selectedProfile(parsed);
+	if (action === "qr" || action === "create") {
+		const url = "https://open.feishu.cn/app";
+		console.log(`Open Feishu Developer Console to create/configure a self-built app:\n${url}`);
+		console.log("After scanning/signing in, copy App ID and App Secret, then run: beemax setup --profile " + profile);
+		if (parsed.options.open === true) {
+			const { spawn } = await import("node:child_process");
+			const command = process.platform === "darwin" ? "open" : process.platform === "win32" ? "start" : "xdg-open";
+			spawn(command, [url], { detached: true, stdio: "ignore" }).unref();
+		}
+		return;
+	}
 	if (action === "list") {
 		const config = loadConfig(parsed.configPath, profile);
 		const state = config.feishu.appId && config.feishu.appSecret ? "configured" : "not configured";

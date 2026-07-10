@@ -32,6 +32,12 @@ export interface BeeMaxConfig {
 		allowedUsers: string[];
 		allowedChats: string[];
 		allowAllUsers: boolean;
+		connectionMode: "websocket" | "webhook";
+		webhookHost: string;
+		webhookPort: number;
+		webhookPath: string;
+		webhookVerificationToken?: string;
+		webhookEncryptKey?: string;
 	};
 	memory: {
 		dbPath: string;
@@ -116,6 +122,12 @@ export function loadConfig(configPath?: string, profile = "default"): BeeMaxConf
 			allowedUsers: parseList(env.FEISHU_ALLOWED_USERS ?? cfg.feishu?.allowedUsers),
 			allowedChats: parseList(env.FEISHU_ALLOWED_CHATS ?? cfg.feishu?.allowedChats),
 			allowAllUsers: parseBool(env.FEISHU_ALLOW_ALL_USERS ?? cfg.feishu?.allowAllUsers ?? false),
+			connectionMode: (env.FEISHU_CONNECTION_MODE ?? cfg.feishu?.connectionMode ?? "websocket") === "webhook" ? "webhook" : "websocket",
+			webhookHost: str(env.FEISHU_WEBHOOK_HOST ?? cfg.feishu?.webhookHost ?? "127.0.0.1"),
+			webhookPort: Number(env.FEISHU_WEBHOOK_PORT ?? cfg.feishu?.webhookPort ?? 8787),
+			webhookPath: str(env.FEISHU_WEBHOOK_PATH ?? cfg.feishu?.webhookPath ?? "/feishu/events"),
+			webhookVerificationToken: str(env.FEISHU_WEBHOOK_VERIFICATION_TOKEN ?? cfg.feishu?.webhookVerificationToken ?? "") || undefined,
+			webhookEncryptKey: str(env.FEISHU_WEBHOOK_ENCRYPT_KEY ?? cfg.feishu?.webhookEncryptKey ?? "") || undefined,
 		},
 		memory: {
 			dbPath: resolveFrom(location.basePath, str(env.BEEMAX_DB_PATH ?? cfg.memory?.dbPath ?? join(profileDataRoot, location.isHome ? "memory.db" : "beemax.db"))),
