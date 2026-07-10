@@ -29,6 +29,7 @@ import { acquireChannelLock } from "./channel-lock.ts";
 import { curatedMemoryPrompt } from "./curated-memory.ts";
 import { createProfileRuntime } from "./runtime-composition.ts";
 import { workspaceToolsPrompt } from "./workspace-context.ts";
+import { configuredApiKey } from "./provider-resolver.ts";
 
 export async function runGateway(config: BeeMaxConfig): Promise<void> {
 	if (!config.feishu.appId || !config.feishu.appSecret) {
@@ -68,7 +69,7 @@ export async function runGateway(config: BeeMaxConfig): Promise<void> {
 		if (status.connected) console.info(`[beemax] MCP ${status.name}: connected (${status.tools.length} tools, ${status.resources} resources, ${status.prompts} prompts)`);
 		else console.warn(`[beemax] MCP ${status.name}: unavailable (${status.error})`);
 	}
-	const apiKey = config.model.apiKey ?? process.env[apiKeyEnv(config.model.provider)] ?? "";
+	const apiKey = configuredApiKey(config.model.provider, config.model.apiKey) ?? "";
 	const approvalBroker = new ToolApprovalBroker(async (source, text) => {
 		await deliveryPort.sendText(source, text);
 	});
@@ -277,16 +278,6 @@ export function buildSubagentSystemPrompt(parentPrompt?: string): string {
 		"You have a fresh context and only the task below. Work independently and return evidence to the parent Agent.",
 		"You cannot contact the user, mutate long-term memory, modify files, run shell commands, change Skills, schedule work, or spawn more agents.",
 	].join("\n\n");
-}
-
-function apiKeyEnv(provider: string): string {
-	const map: Record<string, string> = {
-		anthropic: "ANTHROPIC_API_KEY",
-		openai: "OPENAI_API_KEY",
-		google: "GOOGLE_GENERATIVE_AI_API_KEY",
-		openrouter: "OPENROUTER_API_KEY",
-	};
-	return map[provider] ?? `${provider.toUpperCase().replace(/-/g, "_")}_API_KEY`;
 }
 
 function profilePrompt(config: BeeMaxConfig): string {

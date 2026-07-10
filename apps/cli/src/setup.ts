@@ -61,7 +61,9 @@ export async function runSetup(options: SetupOptions, dependencies: SetupDepende
 		const preset = presetFor(provider);
 		const suggestedModel = options.model ?? (provider === current.model.provider ? current.model.model : preset?.defaultModel ?? "");
 		model = options.model ?? (options.nonInteractive ? suggestedModel : await askWithDefault("Model ID", suggestedModel));
-		baseUrl = options.baseUrl ?? (provider === current.model.provider ? current.model.baseUrl : preset?.baseUrl);
+		// Pi providers carry their own canonical base URL. Persist only an explicit
+		// Profile override, so switching a built-in provider never pins stale URLs.
+		baseUrl = options.baseUrl ?? (provider === current.model.provider ? current.model.baseUrl : undefined);
 		if (!options.nonInteractive && (preset?.requiresBaseUrl || provider === "custom")) baseUrl = await askWithDefault("OpenAI-compatible Base URL", baseUrl ?? "");
 		apiKey = options.apiKey;
 		if (!apiKey && !options.nonInteractive && !current.model.apiKey) apiKey = await askOne("Model API Key (leave empty to configure later): ", true);

@@ -7,6 +7,7 @@ import { loadMcpConfig, McpManager } from "@beemax/mcp-capability";
 import { MemoryStore } from "@beemax/memory";
 import { AuthStorage } from "@beemax/core";
 import type { BeeMaxConfig } from "./config.ts";
+import { configuredApiKey, providerApiKeyEnv } from "./provider-resolver.ts";
 
 interface Check { name: string; status: "PASS" | "WARN" | "FAIL"; detail: string }
 
@@ -15,8 +16,8 @@ export async function runDoctor(config: BeeMaxConfig): Promise<boolean> {
 	const node = process.versions.node.split(".").map(Number);
 	checks.push({ name: "Node.js", status: node[0] > 22 || (node[0] === 22 && node[1] >= 19) ? "PASS" : "FAIL", detail: process.versions.node });
 
-	const apiKey = config.model.apiKey || process.env[providerKeyEnv(config.model.provider)];
-	checks.push({ name: "Model", status: apiKey ? "PASS" : "FAIL", detail: apiKey ? `${config.model.provider}/${config.model.model}` : `missing ${providerKeyEnv(config.model.provider)} or BEEMAX_API_KEY` });
+	const apiKey = configuredApiKey(config.model.provider, config.model.apiKey);
+	checks.push({ name: "Model", status: apiKey ? "PASS" : "FAIL", detail: apiKey ? `${config.model.provider}/${config.model.model}` : `missing ${providerApiKeyEnv(config.model.provider)} or BEEMAX_API_KEY` });
 	checks.push({ name: "Toolset", status: config.agent.toolset === "safe" ? "WARN" : "PASS", detail: config.agent.toolset });
 	checks.push({ name: "Feishu credentials", status: config.feishu.appId && config.feishu.appSecret ? "PASS" : "FAIL", detail: config.feishu.appId && config.feishu.appSecret ? "configured" : "missing FEISHU_APP_ID/FEISHU_APP_SECRET" });
 	const admitted = config.feishu.allowAllUsers || config.feishu.allowedUsers.length > 0;
@@ -106,14 +107,4 @@ export async function runDoctor(config: BeeMaxConfig): Promise<boolean> {
 	const ok = !checks.some((check) => check.status === "FAIL");
 	console.log(ok ? "\nBeeMax configuration is ready to start." : "\nBeeMax is not ready; fix FAIL items before starting.");
 	return ok;
-}
-
-function providerKeyEnv(provider: string): string {
-	const map: Record<string, string> = {
-		anthropic: "ANTHROPIC_API_KEY",
-		openai: "OPENAI_API_KEY",
-		google: "GOOGLE_GENERATIVE_AI_API_KEY",
-		openrouter: "OPENROUTER_API_KEY",
-	};
-	return map[provider] ?? `${provider.toUpperCase().replace(/-/g, "_")}_API_KEY`;
 }

@@ -29,6 +29,7 @@ import { activeProfile, resolveProfileLocation } from "./profile-home.ts";
 import { installSystemdService, runServiceAction, type ServiceAction } from "./service-manager.ts";
 import { runSetup, type SetupOptions } from "./setup.ts";
 import { renderModelProviderChoices } from "./model-catalog.ts";
+import { configuredApiKey } from "./provider-resolver.ts";
 
 async function main(): Promise<void> {
 	const parsed = parseArgs(process.argv.slice(2));
@@ -626,7 +627,7 @@ async function runChat(config: ReturnType<typeof loadConfig>): Promise<void> {
 	const { buildAgentFactory } = await import("./agent-factory.ts");
 	const { MemoryStore } = await import("@beemax/memory");
 	const { BeeMaxAgentRuntime, ConversationContext } = await import("@beemax/core");
-	const apiKey = config.model.apiKey ?? process.env[modelApiKeyEnv(config.model.provider)] ?? "";
+	const apiKey = configuredApiKey(config.model.provider, config.model.apiKey) ?? "";
 	const memory = new MemoryStore(config.memory.dbPath);
 	const mcp = new McpManager();
 	await mcp.connectAll(loadMcpConfig(config.mcp.configPath));
@@ -700,16 +701,6 @@ async function runChat(config: ReturnType<typeof loadConfig>): Promise<void> {
 		await mcp.close();
 		memory.close();
 	}
-}
-
-function modelApiKeyEnv(provider: string): string {
-	const map: Record<string, string> = {
-		anthropic: "ANTHROPIC_API_KEY",
-		openai: "OPENAI_API_KEY",
-		google: "GOOGLE_GENERATIVE_AI_API_KEY",
-		openrouter: "OPENROUTER_API_KEY",
-	};
-	return map[provider] ?? `${provider.toUpperCase().replace(/-/g, "_")}_API_KEY`;
 }
 
 async function* consoleLines(): AsyncGenerator<string> {
