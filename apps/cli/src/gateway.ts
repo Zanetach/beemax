@@ -43,10 +43,15 @@ export async function runGateway(config: BeeMaxConfig): Promise<void> {
 	};
 	const adapter = new FeishuAdapter(feishuSettings);
 	const releaseChannelLock = await acquireChannelLock(beemaxHome(), config.feishu.appId);
+	const startupCleanup: Array<() => void | Promise<void>> = [() => adapter.disconnect()];
+	try {
 
 	const memory = new MemoryStore(config.memory.dbPath);
+	startupCleanup.push(() => memory.close());
 	const automation = new AutomationStore(config.memory.dbPath);
+	startupCleanup.push(() => automation.close());
 	const mcp = new McpManager();
+	startupCleanup.push(() => mcp.close());
 	const mcpStatus = await mcp.connectAll(loadMcpConfig(config.mcp.configPath));
 	for (const status of mcpStatus) {
 		if (status.connected) console.info(`[beemax] MCP ${status.name}: connected (${status.tools.length} tools)`);
@@ -221,6 +226,9 @@ export async function runGateway(config: BeeMaxConfig): Promise<void> {
 	try {
 		ok = await adapter.connect();
 	} catch (error) {
+		for (const cleanup of startupCleanup.reverse()) {
+			try { await cleanup(); } catch { /* preserve the original startup error */ }
+		}
 		await releaseChannelLock();
 		throw error;
 	}
@@ -253,6 +261,10 @@ export async function runGateway(config: BeeMaxConfig): Promise<void> {
 	};
 	process.on("SIGINT", () => void shutdown());
 	process.on("SIGTERM", () => void shutdown());
+	} catch (error) {
+		await releaseChannelLock();
+		throw error;
+	}
 }
 
 export async function executeSubagentTask(
