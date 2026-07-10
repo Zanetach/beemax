@@ -1,6 +1,9 @@
 ---
 name: image-creative
 description: Develop image concepts and generate business-ready creative images, covers, campaign visuals, and social graphics. Use when the user asks to create an image, poster, cover, visual, 海报, 配图, or creative direction.
+metadata:
+  beemax:
+    toolset: standard
 ---
 
 # Image creative

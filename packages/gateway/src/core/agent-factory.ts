@@ -10,7 +10,7 @@
  * - model/auth resolution through Pi's AuthStorage + ModelRegistry
  */
 
-import { mkdirSync } from "node:fs";
+import { existsSync, mkdirSync } from "node:fs";
 import { readdir } from "node:fs/promises";
 import { basename, isAbsolute, join, relative, resolve, sep } from "node:path";
 import type { AutomationStore } from "@beemax/automation";
@@ -19,6 +19,7 @@ import type { Api, Model } from "@earendil-works/pi-ai";
 import { getBuiltinModel } from "@earendil-works/pi-ai/providers/all";
 import {
 	type AgentSession,
+	type Skill,
 	type ToolDefinition,
 	AuthStorage,
 	createAgentSession,
@@ -46,6 +47,7 @@ export interface AgentFactoryOptions {
 	getApiKey: (provider: string) => Promise<string | undefined> | string | undefined;
 	/** Evaluated when a session is created, enabling a stable per-session memory snapshot. */
 	systemPrompt?: string | (() => string);
+	skillToolset?: "safe" | "standard";
 	tools?: string[];
 	authorizeTool?: (request: ToolApprovalRequest, signal?: AbortSignal) => Promise<ToolApprovalDecision>;
 	getFeishuClient?: () => Client | undefined;
@@ -95,6 +97,7 @@ export function buildAgentFactory(opts: AgentFactoryOptions) {
 			agentDir,
 			settingsManager,
 			appendSystemPromptOverride: (base) => [...base, channelPrompt],
+			skillsOverride: (base) => ({ ...base, skills: filterEligibleSkills(base.skills, opts.skillToolset ?? "standard") }),
 		});
 		await resourceLoader.reload();
 
@@ -254,6 +257,29 @@ function isSensitivePath(path: string): boolean {
 
 function asRecord(value: unknown): Record<string, unknown> {
 	return value && typeof value === "object" ? (value as Record<string, unknown>) : {};
+}
+
+export function filterEligibleSkills(skills: Skill[], toolset: "safe" | "standard"): Skill[] {
+	return skills.filter((skill) => skillEligible(skill, toolset));
+}
+
+function skillEligible(skill: Skill, toolset: "safe" | "standard"): boolean {
+	const metadata = asRecord(skill.metadata);
+	const beemax = asRecord(metadata.beemax);
+	const requiredToolset = beemax.toolset;
+	if (requiredToolset === "standard" && toolset === "safe") return false;
+	const env = arrayOfStrings(beemax.env);
+	if (env.some((key) => !process.env[key]?.trim())) return false;
+	const bins = arrayOfStrings(beemax.bins);
+	return bins.every((bin) => binaryOnPath(bin));
+}
+
+function arrayOfStrings(value: unknown): string[] {
+	return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string" && item.trim().length > 0) : [];
+}
+
+function binaryOnPath(binary: string): boolean {
+	return (process.env.PATH ?? "").split(":").some((directory) => existsSync(join(directory, binary)));
 }
 
 function resolveModel(provider: string, modelId: string): Model<Api> {

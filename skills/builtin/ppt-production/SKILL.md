@@ -1,6 +1,9 @@
 ---
 name: ppt-production
 description: Plan presentation decks, slide narratives, page-by-page content, speaker notes, and visual directions for business, sales, strategy, and reporting presentations. Use when the user asks for PPT, slides, deck, 路演, 演示文稿, or 汇报材料.
+metadata:
+  beemax:
+    toolset: standard
 ---
 
 # PPT production

@@ -4,7 +4,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
-import { buildAgentFactory, createCodexImageTool, createSkillTools, McpManager } from "../dist/index.js";
+import { buildAgentFactory, createCodexImageTool, createSkillTools, filterEligibleSkills, McpManager } from "../dist/index.js";
 import { reloadResourcesIfNeeded } from "../dist/core/resource-reload.js";
 
 const fixture = fileURLToPath(new URL("./fixtures/mcp-server.mjs", import.meta.url));
@@ -113,4 +113,12 @@ test("MCP tools are discovered, callable, and mutating tools require approval", 
 	} finally {
 		await manager.close();
 	}
+});
+
+test("Skill metadata hides unavailable or unsafe Skills before prompt injection", () => {
+	const base = { name: "base", description: "Always available", filePath: "/tmp/base/SKILL.md", baseDir: "/tmp/base", sourceInfo: {}, disableModelInvocation: false };
+	const standard = { ...base, name: "standard", metadata: { beemax: { toolset: "standard" } } };
+	const missingEnv = { ...base, name: "missing-env", metadata: { beemax: { env: ["BEE_MAX_MISSING_FOR_TEST"] } } };
+	assert.deepEqual(filterEligibleSkills([base, standard, missingEnv], "safe").map((skill) => skill.name), ["base"]);
+	assert.deepEqual(filterEligibleSkills([base, standard, missingEnv], "standard").map((skill) => skill.name), ["base", "standard"]);
 });

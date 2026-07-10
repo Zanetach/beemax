@@ -343,6 +343,11 @@ present in the Agent prompt; the Agent reads the relevant `SKILL.md` only after
 the task matches it. See `THIRD_PARTY_NOTICES.md` for Hermes-derived Skill
 attribution and license terms.
 
+Skills may declare `metadata.beemax` requirements. BeeMax hides a Skill when
+its required Toolset, environment variables, or binaries are unavailable. For
+example, `arxiv-research` needs the `standard` Toolset plus `curl` and
+`python3`; `image-creative` and `ppt-production` require `standard`.
+
 BeeMax automatically recalls relevant prior exchanges and exposes explicit
 personal-memory tools:
 

@@ -1,6 +1,10 @@
 ---
 name: arxiv-research
 description: Search arXiv papers by keyword, author, category, or ID, retrieve metadata, and prepare citations. Use when the user asks for arXiv, academic-paper search, paper IDs, or a research literature scan.
+metadata:
+  beemax:
+    toolset: standard
+    bins: [curl, python3]
 ---
 
 # arXiv Research

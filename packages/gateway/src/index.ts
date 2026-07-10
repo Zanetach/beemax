@@ -1,5 +1,5 @@
 export { Dispatcher, type DispatcherDeps, type DispatcherSession } from "./core/dispatcher.ts";
-export { buildAgentFactory, type AgentFactoryOptions } from "./core/agent-factory.ts";
+export { buildAgentFactory, filterEligibleSkills, type AgentFactoryOptions } from "./core/agent-factory.ts";
 export { sessionKeyForSource, sessionIdForSource, ephemeralSessionId } from "./core/session-router.ts";
 export { createWebTools, type WebToolsOptions } from "./core/web-tools.ts";
 export { createAutomationTools } from "./core/automation-tools.ts";

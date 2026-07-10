@@ -81,6 +81,7 @@ export async function runGateway(config: BeeMaxConfig): Promise<void> {
 		agentDir: config.paths.agentDir,
 		getApiKey: () => apiKey,
 		systemPrompt: () => buildSubagentSystemPrompt(profilePrompt(config)),
+		skillToolset: config.agent.toolset,
 		memoryStore: memory,
 		customTools: readOnlyMcpTools,
 		tools: [
@@ -102,6 +103,7 @@ export async function runGateway(config: BeeMaxConfig): Promise<void> {
 		agentDir: config.paths.agentDir,
 		getApiKey: () => apiKey,
 		systemPrompt: () => profilePrompt(config),
+		skillToolset: config.agent.toolset,
 		getFeishuClient: () => adapter.apiClient,
 		memoryStore: memory,
 		tools: mainAgentTools(config.agent.toolset, mainMcpTools.map((tool) => tool.name)),
@@ -130,6 +132,7 @@ export async function runGateway(config: BeeMaxConfig): Promise<void> {
 		agentDir: config.paths.agentDir,
 		getApiKey: () => apiKey,
 		systemPrompt: () => profilePrompt(config),
+		skillToolset: config.agent.toolset,
 		getFeishuClient: () => adapter.apiClient,
 		memoryStore: memory,
 		automationStore: automation,
