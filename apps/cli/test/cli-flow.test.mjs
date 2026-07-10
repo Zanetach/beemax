@@ -44,6 +44,7 @@ test("CLI supports init, model setup, Feishu channel setup, listing, and safe de
 		FEISHU_ALLOWED_USERS: "ou_test",
 	}), /Configured Feishu channel/);
 	assert.match(run(["channel", "list", "--profile", "personal"]), /feishu  configured/);
+	assert.match(run(["mcp", "status", "--profile", "personal"]), /No MCP servers configured/);
 	assert.match(run(["channel", "qr", "--profile", "personal"]), /Feishu Developer Console/);
 	assert.match(run(["profile", "use", "personal"]), /active Profile is now 'personal'/);
 	assert.equal(run(["model", "show"]).trim(), "openrouter/openai/gpt-5.2");

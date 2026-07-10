@@ -355,6 +355,12 @@ secrets rather than writing tokens into JSON. MCP tools are exposed as
 `mcp_<server>_<tool>`; any tool not explicitly annotated read-only by its server
 requires Feishu approval.
 
+Probe a Profile's configured MCP servers before starting its Gateway:
+
+```bash
+beemax mcp status --profile personal
+```
+
 ## Feishu meeting tools
 
 Registered when the gateway is connected:

@@ -84,6 +84,9 @@ async function main(): Promise<void> {
 		case "skills":
 			await runSkillsCommand(parsed);
 			break;
+		case "mcp":
+			await runMcpCommand(parsed, getConfig());
+			break;
 		case "auth":
 			if (parsed.positionals[1] !== "codex") throw new Error("Usage: beemax auth codex --profile <name>");
 			await runCodexAuth(getConfig());
@@ -115,6 +118,7 @@ Commands:
   doctor     Check profile readiness
   profile    create | list | show | path | use | migrate | backup | delete
 	  skills     list | sync (prepackaged Profile Skills)
+	  mcp        status (probe configured MCP servers)
   auth       codex (stores OAuth only inside the selected profile)
   service    install (Linux systemd)
   start      Start a profile systemd service
@@ -498,6 +502,25 @@ async function runSkillsCommand(parsed: ParsedArgs): Promise<void> {
 		}
 	} catch { /* no Skills directory yet */ }
 	console.log(skills.sort().join("\n") || "No Profile Skills installed. Run: beemax skills sync --profile " + profile);
+}
+
+async function runMcpCommand(parsed: ParsedArgs, config: ReturnType<typeof loadConfig>): Promise<void> {
+	if ((parsed.positionals[1] ?? "status") !== "status") throw new Error("Usage: beemax mcp status --profile <name>");
+	const { loadMcpConfig, McpManager } = await import("@beemax/gateway");
+	const mcp = new McpManager();
+	try {
+		const statuses = await mcp.connectAll(loadMcpConfig(config.mcp.configPath));
+		if (statuses.length === 0) {
+			console.log(`No MCP servers configured (${config.mcp.configPath}).`);
+			return;
+		}
+		for (const status of statuses) {
+			console.log(`${status.connected ? "PASS" : "FAIL"}  ${status.name}  ${status.connected ? `${status.tools.length} tool(s)` : status.error ?? "unavailable"}`);
+		}
+		if (statuses.some((status) => !status.connected)) process.exitCode = 1;
+	} finally {
+		await mcp.close();
+	}
 }
 
 async function runCodexAuth(config: ReturnType<typeof loadConfig>): Promise<void> {
