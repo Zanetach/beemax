@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.0-preview.3
+
+- Added a single verified release archive containing BeeMax and Pi; the one-command installer no longer requires Git or clones submodules.
+
 ## 0.1.0-preview.2
 
 - Added a Hermes-style one-command bootstrap installer with version selection, source-install compatibility, and Profile-preserving uninstall support.

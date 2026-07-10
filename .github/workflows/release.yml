@@ -1,0 +1,25 @@
+name: Release archive
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  archive:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - run: bash scripts/create-release-archive.sh "${GITHUB_REF_NAME}"
+      - env:
+          GH_TOKEN: ${{ github.token }}
+        run: >-
+          gh release create "${GITHUB_REF_NAME}"
+          "dist/release/beemax-${GITHUB_REF_NAME}.tar.gz"
+          "dist/release/beemax-${GITHUB_REF_NAME}.tar.gz.sha256"
+          --title "BeeMax Agent ${GITHUB_REF_NAME}"
+          --prerelease

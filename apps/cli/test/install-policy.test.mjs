@@ -17,12 +17,23 @@ test("source installer keeps native dependency scripts and pins CLI commands to 
 	assert.match(installer, /apps\/cli\/dist\/cli\.js/);
 });
 
-test("bootstrap installer pins a versioned checkout and preserves Profile data on uninstall", async () => {
+test("bootstrap installer downloads a verified single release archive and preserves Profile data on uninstall", async () => {
 	const installer = await readFile("scripts/bootstrap-install.sh", "utf8");
-	assert.match(installer, /BEEMAX_VERSION:-v0\.1\.0-preview\.2/);
-	assert.match(installer, /git clone --branch/);
-	assert.match(installer, /--recurse-submodules/);
+	assert.match(installer, /BEEMAX_VERSION:-v0\.1\.0-preview\.3/);
+	assert.match(installer, /releases\/download/);
+	assert.match(installer, /checksum verification failed/);
+	assert.doesNotMatch(installer, /git clone/);
 	assert.match(installer, /Node\.js 22\.19\+/);
 	assert.match(installer, /Profiles and data under/);
 	assert.match(installer, /BEEMAX_BIN_DIR/);
+});
+
+test("release archive includes Pi and excludes git metadata and dependencies", async () => {
+	const packager = await readFile("scripts/create-release-archive.sh", "utf8");
+	assert.match(packager, /Pi submodule is missing/);
+	assert.match(packager, /--exclude='\.\/pi\/.git'/);
+	assert.match(packager, /--exclude='\.\/node_modules'/);
+	assert.match(packager, /--exclude='\.\/docs'/);
+	assert.match(packager, /--exclude='\.\/data'/);
+	assert.match(packager, /shasum -a 256/);
 });

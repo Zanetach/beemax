@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# BeeMax one-command installer for Linux and macOS.
+# BeeMax single-package installer for Linux and macOS.
 set -euo pipefail
 
-REPOSITORY="${BEEMAX_REPOSITORY:-https://github.com/Zanetach/beemax.git}"
-VERSION="${BEEMAX_VERSION:-v0.1.0-preview.2}"
+VERSION="${BEEMAX_VERSION:-v0.1.0-preview.3}"
+RELEASE_BASE="${BEEMAX_RELEASE_BASE:-https://github.com/Zanetach/beemax/releases/download}"
 INSTALL_DIR="${BEEMAX_INSTALL_DIR:-${HOME}/.beemax/app}"
 BIN_DIR="${BEEMAX_BIN_DIR:-${HOME}/.local/bin}"
 
@@ -12,16 +12,16 @@ usage() {
 BeeMax installer
 
 Usage:
-  curl -fsSL https://raw.githubusercontent.com/Zanetach/beemax/v0.1.0-preview.2/scripts/bootstrap-install.sh | bash
+  curl -fsSL https://raw.githubusercontent.com/Zanetach/beemax/v0.1.0-preview.3/scripts/bootstrap-install.sh | bash
 
 Options:
-  --version <tag-or-branch>  Install a specific version
-  --dir <path>               Install application files at this path
-  --uninstall                Remove the BeeMax command and application files (keeps Profiles and data)
-  --help                     Show this help
+  --version <tag>  Install a specific release tag
+  --dir <path>     Install application files at this path
+  --uninstall      Remove application files and command, keeping Profiles and data
+  --help           Show this help
 
 Environment:
-  BEEMAX_VERSION, BEEMAX_INSTALL_DIR, BEEMAX_BIN_DIR, BEEMAX_REPOSITORY
+  BEEMAX_VERSION, BEEMAX_RELEASE_BASE, BEEMAX_INSTALL_DIR, BEEMAX_BIN_DIR
 EOF
 }
 
@@ -36,7 +36,7 @@ while [[ $# -gt 0 ]]; do
 		--dir) INSTALL_DIR="${2:?--dir requires a value}"; shift 2 ;;
 		--uninstall)
 			if [[ -f "${BIN_DIR}/beemax" ]] && grep -Fq "BEEMAX_ROOT=${INSTALL_DIR}" "${BIN_DIR}/beemax"; then rm "${BIN_DIR}/beemax"; fi
-			if [[ -d "${INSTALL_DIR}/.git" ]]; then rm -rf "${INSTALL_DIR}"; fi
+			if [[ -f "${INSTALL_DIR}/package.json" ]] && grep -Fq '"name": "beemax-agent"' "${INSTALL_DIR}/package.json"; then rm -rf "${INSTALL_DIR}"; fi
 			echo "BeeMax application files removed. Profiles and data under ${HOME}/.beemax/profiles were kept."
 			exit 0
 			;;
@@ -45,26 +45,39 @@ while [[ $# -gt 0 ]]; do
 	esac
 done
 
-command -v git >/dev/null 2>&1 || fail "git is required; install git and retry"
-command -v node >/dev/null 2>&1 || fail "Node.js 22.19+ is required; install it and retry"
+for command in curl tar node npm shasum; do
+	command -v "${command}" >/dev/null 2>&1 || fail "${command} is required; install it and retry"
+done
 node -e '
 const [major, minor] = process.versions.node.split(".").map(Number);
 if (major < 22 || (major === 22 && minor < 19)) process.exit(1);
 ' || fail "Node.js 22.19+ is required; found $(node --version)"
 
-if [[ -e "${INSTALL_DIR}" && ! -d "${INSTALL_DIR}/.git" ]]; then
-	fail "install directory exists but is not a BeeMax git checkout: ${INSTALL_DIR}"
-fi
+ARCHIVE="beemax-${VERSION}.tar.gz"
+TEMP="$(mktemp -d)"
+BACKUP="${INSTALL_DIR}.previous-$$"
+trap 'rm -rf "${TEMP}"' EXIT
 
-if [[ -d "${INSTALL_DIR}/.git" ]]; then
-	git -C "${INSTALL_DIR}" diff --quiet || fail "installation directory has uncommitted changes: ${INSTALL_DIR}"
-	git -C "${INSTALL_DIR}" fetch --tags origin
-	git -C "${INSTALL_DIR}" checkout --detach "${VERSION}"
-	git -C "${INSTALL_DIR}" submodule update --init --recursive
-else
-	mkdir -p "$(dirname "${INSTALL_DIR}")"
-	git clone --branch "${VERSION}" --recurse-submodules "${REPOSITORY}" "${INSTALL_DIR}"
-fi
+curl --fail --location --silent --show-error "${RELEASE_BASE}/${VERSION}/${ARCHIVE}" -o "${TEMP}/${ARCHIVE}"
+curl --fail --location --silent --show-error "${RELEASE_BASE}/${VERSION}/${ARCHIVE}.sha256" -o "${TEMP}/${ARCHIVE}.sha256"
+EXPECTED="$(awk '{print $1}' "${TEMP}/${ARCHIVE}.sha256")"
+ACTUAL="$(shasum -a 256 "${TEMP}/${ARCHIVE}" | awk '{print $1}')"
+[[ -n "${EXPECTED}" && "${EXPECTED}" == "${ACTUAL}" ]] || fail "release archive checksum verification failed"
 
-BEEMAX_BIN_DIR="${BIN_DIR}" "${INSTALL_DIR}/scripts/install.sh"
-echo "BeeMax ${VERSION} installed. Next: beemax setup --profile personal"
+tar -xzf "${TEMP}/${ARCHIVE}" -C "${TEMP}"
+[[ -f "${TEMP}/beemax/package.json" ]] || fail "release archive has an invalid layout"
+mkdir -p "$(dirname "${INSTALL_DIR}")"
+
+if [[ -e "${INSTALL_DIR}" ]]; then
+	[[ -f "${INSTALL_DIR}/package.json" ]] && grep -Fq '"name": "beemax-agent"' "${INSTALL_DIR}/package.json" || fail "install directory is not a BeeMax installation: ${INSTALL_DIR}"
+	mv "${INSTALL_DIR}" "${BACKUP}"
+fi
+mv "${TEMP}/beemax" "${INSTALL_DIR}"
+
+if ! BEEMAX_BIN_DIR="${BIN_DIR}" "${INSTALL_DIR}/scripts/install.sh"; then
+	rm -rf "${INSTALL_DIR}"
+	if [[ -d "${BACKUP}" ]]; then mv "${BACKUP}" "${INSTALL_DIR}"; fi
+	fail "application setup failed; previous installation was restored"
+fi
+rm -rf "${BACKUP}"
+echo "BeeMax ${VERSION} installed from one verified release archive. Next: beemax setup --profile personal"
