@@ -355,6 +355,15 @@ personal-memory tools:
 memory_remember  memory_recall  memory_list  memory_forget
 ```
 
+Inspect and curate a Profile's staged memory from the CLI:
+
+```bash
+beemax memory status --profile personal
+beemax memory candidates --profile personal
+beemax memory promote <candidate-id> --profile personal --yes
+beemax memory reject <candidate-id> --profile personal --yes
+```
+
 Pi discovers trusted Skills from its standard global/project locations. BeeMax
 also manages durable instruction-only evolved skills under
 `data/agent/skills/<name>/SKILL.md` through `skill_create` and `skill_update`.

@@ -87,6 +87,9 @@ async function main(): Promise<void> {
 		case "mcp":
 			await runMcpCommand(parsed, getConfig());
 			break;
+		case "memory":
+			await runMemoryCommand(parsed, getConfig());
+			break;
 		case "auth":
 			if (parsed.positionals[1] !== "codex") throw new Error("Usage: beemax auth codex --profile <name>");
 			await runCodexAuth(getConfig());
@@ -119,6 +122,7 @@ Commands:
   profile    create | list | show | path | use | migrate | backup | delete
 	  skills     list | sync (prepackaged Profile Skills)
 	  mcp        status (probe configured MCP servers)
+	  memory     status | list | candidates | promote <id> | reject <id>
   auth       codex (stores OAuth only inside the selected profile)
   service    install (Linux systemd)
   start      Start a profile systemd service
@@ -520,6 +524,32 @@ async function runMcpCommand(parsed: ParsedArgs, config: ReturnType<typeof loadC
 		if (statuses.some((status) => !status.connected)) process.exitCode = 1;
 	} finally {
 		await mcp.close();
+	}
+}
+
+async function runMemoryCommand(parsed: ParsedArgs, config: ReturnType<typeof loadConfig>): Promise<void> {
+	const action = parsed.positionals[1] ?? "status";
+	const { MemoryStore } = await import("@beemax/memory");
+	const store = new MemoryStore(config.memory.dbPath);
+	try {
+		if (action === "status") {
+			const stats = store.stats();
+			console.log(`Profile ${config.profile}: curated=${stats.curated} pending=${stats.pending} promoted=${stats.promoted} rejected=${stats.rejected}`);
+			return;
+		}
+		if (action === "list" || action === "candidates") {
+			const records = action === "list" ? store.list({ limit: 50 }) : store.listCandidates({ limit: 50 });
+			console.log(records.map((record) => `${record.id}  [${record.role}] ${record.content}`).join("\n") || `No ${action === "list" ? "curated memories" : "pending candidates"}.`);
+			return;
+		}
+		const id = parsed.positionals[2];
+		if ((action !== "promote" && action !== "reject") || !id) throw new Error("Usage: beemax memory [status | list | candidates | promote <id> | reject <id>] --profile <name>");
+		if (parsed.options.yes !== true) throw new Error(`memory ${action} requires --yes`);
+		const changed = action === "promote" ? store.promoteCandidate(id) : store.rejectCandidate(id);
+		if (!changed) throw new Error(`Pending memory candidate ${id} was not found`);
+		console.log(`${action === "promote" ? "Promoted" : "Rejected"} memory candidate ${id}.`);
+	} finally {
+		store.close();
 	}
 }
 
