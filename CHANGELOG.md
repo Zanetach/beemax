@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.0-preview.2
+
+- Added a Hermes-style one-command bootstrap installer with version selection, source-install compatibility, and Profile-preserving uninstall support.
+
 ## 0.1.0-preview.1
 
 - Added installable BeeMax CLI with Agent profile, model, Feishu channel, doctor, and systemd lifecycle commands.

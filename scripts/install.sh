@@ -2,7 +2,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-BIN_DIR="${HOME}/.local/bin"
+BIN_DIR="${BEEMAX_BIN_DIR:-${HOME}/.local/bin}"
 CLI="${ROOT}/apps/cli/dist/cli.js"
 
 node -e '

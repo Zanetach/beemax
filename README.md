@@ -65,10 +65,20 @@ second runtime is required.
 On Linux or macOS with Node.js 22.19 or newer:
 
 ```bash
+curl -fsSL https://raw.githubusercontent.com/Zanetach/beemax/v0.1.0-preview.2/scripts/bootstrap-install.sh | bash
+
+# Or, from a source checkout:
 ./scripts/install.sh
 
 beemax setup --profile personal
 ```
+
+The one-command installer keeps executable source files in `~/.beemax/app` and
+the `beemax` command in `~/.local/bin`; Agent Profiles, secrets, memory, and
+sessions remain isolated under `~/.beemax/profiles`. To install another build,
+set `BEEMAX_VERSION`, for example `curl -fsSL https://raw.githubusercontent.com/Zanetach/beemax/v0.1.0-preview.2/scripts/bootstrap-install.sh | BEEMAX_VERSION=v0.1.0-preview.1 bash`.
+Run the same installer with `--uninstall` to remove application files while
+keeping your Profiles and data.
 
 The setup wizard creates the Profile, configures `SOUL.md`, model credentials,
 the Feishu/Lark channel and allowlist, prints the required Feishu permissions
