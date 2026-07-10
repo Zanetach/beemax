@@ -19,7 +19,7 @@ test("source installer keeps native dependency scripts and pins CLI commands to 
 
 test("bootstrap installer downloads a verified single release archive and preserves Profile data on uninstall", async () => {
 	const installer = await readFile("scripts/bootstrap-install.sh", "utf8");
-	assert.match(installer, /BEEMAX_VERSION:-v0\.1\.0-preview\.6/);
+	assert.match(installer, /BEEMAX_VERSION:-v0\.1\.0-preview\.7/);
 	assert.match(installer, /releases\/download/);
 	assert.match(installer, /checksum verification failed/);
 	assert.doesNotMatch(installer, /git clone/);

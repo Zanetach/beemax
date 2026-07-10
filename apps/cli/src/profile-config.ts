@@ -4,6 +4,7 @@ import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { backupSqliteDatabase, verifySqliteDatabase } from "@beemax/memory";
 import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
 import { readEnvFile, writeEnvFile } from "./env-file.ts";
+import { DEFAULT_SOUL, resolveSoul, validateCustomSoul } from "./soul.ts";
 import {
 	beemaxHome,
 	beemaxRoot,
@@ -189,8 +190,7 @@ export async function configureModel(profile: string, input: ModelInput, options
 }
 
 export async function configureSoul(profile: string, identity: string, options: ProfileStorageOptions = {}): Promise<ProfilePaths> {
-	const value = identity.trim();
-	if (!value) throw new Error("Agent SOUL.md cannot be empty");
+	const value = validateCustomSoul(identity);
 	const paths = await writableProfilePaths(profile, options);
 	if (paths.configPath === join(paths.homePath, "config.yaml")) {
 		await writeFile(paths.soulPath, `${value}\n`, { encoding: "utf8", mode: 0o600 });
@@ -304,9 +304,10 @@ export async function migrateProfile(profile: string, options: ProfileStorageOpt
 	const legacyEnv = await readEnvFile(legacy.envPath);
 	const config = structuredClone(originalConfig);
 	const agent = asRecord(config.agent);
-	const identity = legacyEnv.BEEMAX_SYSTEM_PROMPT?.trim()
+	const legacyIdentity = legacyEnv.BEEMAX_SYSTEM_PROMPT?.trim()
 		|| (typeof agent.systemPrompt === "string" ? agent.systemPrompt.trim() : "")
 		|| DEFAULT_SOUL;
+	const identity = resolveSoul(legacyIdentity);
 	delete agent.systemPrompt;
 	config.agent = agent;
 	config.memory = { ...asRecord(config.memory), dbPath: "memory.db" };
@@ -458,7 +459,6 @@ async function treeManifest(root: string): Promise<Map<string, string>> {
 	return manifest;
 }
 
-const DEFAULT_SOUL = "You are my private personal assistant. Keep responses concise and surface only actionable information.";
 const PROFILE_ROUTING_ENV = [
 	"BEEMAX_HOME",
 	"BEEMAX_ROOT",

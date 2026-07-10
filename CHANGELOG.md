@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.0-preview.7
+
+- Added a generated hybrid SOUL template: OpenClaw-style default identity and
+  workspace context, with Hermes-style Profile isolation, bounded loading, and
+  safe fallback for missing or obvious prompt-injected SOUL content.
+- Updated setup so it preserves the generated identity unless the user supplies
+  a custom SOUL explicitly.
+
 ## 0.1.0-preview.6
 
 - Restored profile-configured Agent session bounds at the Runtime composition

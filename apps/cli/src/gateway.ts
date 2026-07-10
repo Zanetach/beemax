@@ -28,6 +28,7 @@ import { beemaxHome, type BeeMaxConfig } from "./config.ts";
 import { acquireChannelLock } from "./channel-lock.ts";
 import { curatedMemoryPrompt } from "./curated-memory.ts";
 import { createProfileRuntime } from "./runtime-composition.ts";
+import { workspaceToolsPrompt } from "./workspace-context.ts";
 
 export async function runGateway(config: BeeMaxConfig): Promise<void> {
 	if (!config.feishu.appId || !config.feishu.appSecret) {
@@ -289,7 +290,7 @@ function apiKeyEnv(provider: string): string {
 }
 
 function profilePrompt(config: BeeMaxConfig): string {
-	return [config.agent.systemPrompt, curatedMemoryPrompt(config.paths.agentDir)]
+	return [config.agent.systemPrompt, curatedMemoryPrompt(config.paths.agentDir), workspaceToolsPrompt(config.paths.cwd)]
 		.filter((part): part is string => Boolean(part?.trim()))
 		.join("\n\n");
 }

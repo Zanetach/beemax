@@ -10,6 +10,7 @@ import { isAbsolute, join, resolve } from "node:path";
 import { parse as parseYaml } from "yaml";
 import { readEnvFileSync } from "./env-file.ts";
 import { beemaxRoot, resolveProfileLocation, validateProfileName } from "./profile-home.ts";
+import { resolveSoul } from "./soul.ts";
 
 export { beemaxHome, beemaxRoot, validateProfileName } from "./profile-home.ts";
 
@@ -105,11 +106,12 @@ export function loadConfig(configPath?: string, profile = "default"): BeeMaxConf
 	const profileDataRoot = location.isHome
 		? location.homePath
 		: join(root, profile === "default" ? "data" : `data/profiles/${profile}`);
-	const soul = location.isHome && existsSync(location.soulPath) ? readFileSync(location.soulPath, "utf8").trim() : "";
+	const storedSoul = location.isHome && existsSync(location.soulPath) ? readFileSync(location.soulPath, "utf8") : "";
+	const soul = resolveSoul(storedSoul || env.BEEMAX_SYSTEM_PROMPT || cfg.agent?.systemPrompt);
 	return {
 		profile,
 		agent: {
-			systemPrompt: optional(soul || env.BEEMAX_SYSTEM_PROMPT || cfg.agent?.systemPrompt),
+			systemPrompt: soul,
 			toolset: (env.BEEMAX_TOOLSET ?? cfg.agent?.toolset) === "safe" ? "safe" : "standard",
 			maxSessions: parseNumber(env.BEEMAX_MAX_SESSIONS ?? cfg.agent?.maxSessions, 100),
 			sessionIdleMs: parseNumber(env.BEEMAX_SESSION_IDLE_MS ?? cfg.agent?.sessionIdleMs, 30 * 60_000),

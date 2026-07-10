@@ -48,12 +48,15 @@ export async function runSetup(options: SetupOptions, dependencies: SetupDepende
 	let model: string | undefined;
 	let apiKey: string | undefined;
 	if (!options.gatewayOnly) {
-		soul = options.soul ?? (options.nonInteractive ? current.agent.systemPrompt : await askWithDefault("Agent identity (SOUL.md)", current.agent.systemPrompt ?? ""));
+		soul = options.soul;
+		if (soul === undefined && !options.nonInteractive) {
+			const customSoul = await askOne("Custom Agent identity (optional; leave empty to keep the generated SOUL.md): ");
+			soul = customSoul.trim() || undefined;
+		}
 		provider = options.provider ?? (options.nonInteractive ? current.model.provider : await askWithDefault("Model provider", current.model.provider));
 		model = options.model ?? (options.nonInteractive ? current.model.model : await askWithDefault("Model ID", current.model.model));
 		apiKey = options.apiKey;
 		if (!apiKey && !options.nonInteractive && !current.model.apiKey) apiKey = await askOne("Model API Key (leave empty to configure later): ", true);
-		if (!soul?.trim()) throw new Error("Setup requires a non-empty Agent identity");
 		if (!provider || !model) throw new Error("Setup requires a model provider and model ID");
 		if (!apiKey && !current.model.apiKey) throw new Error("Setup requires a model API key");
 	}
@@ -77,7 +80,7 @@ export async function runSetup(options: SetupOptions, dependencies: SetupDepende
 		console.log(`Created Agent Profile '${options.profile}'.`);
 	}
 	if (!options.gatewayOnly) {
-		await configureSoul(options.profile, soul!);
+		if (soul?.trim()) await configureSoul(options.profile, soul);
 		await configureModel(options.profile, {
 			provider: provider!,
 			model: model!,

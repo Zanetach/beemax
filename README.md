@@ -67,7 +67,7 @@ external integrations. The Feishu card renderer remains in
 On Linux or macOS with Node.js 22.19 or newer:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/Zanetach/beemax/v0.1.0-preview.6/scripts/bootstrap-install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/Zanetach/beemax/v0.1.0-preview.7/scripts/bootstrap-install.sh | bash
 
 # Or, from a source checkout:
 ./scripts/install.sh
@@ -79,7 +79,7 @@ The one-command installer downloads one verified BeeMax release archive, which
 already contains Pi. It keeps executable source files in `~/.beemax/app` and
 the `beemax` command in `~/.local/bin`; Agent Profiles, secrets, memory, and
 sessions remain isolated under `~/.beemax/profiles`. To install another build,
-set `BEEMAX_VERSION`, for example `curl -fsSL https://raw.githubusercontent.com/Zanetach/beemax/v0.1.0-preview.6/scripts/bootstrap-install.sh | BEEMAX_VERSION=v0.1.0-preview.6 bash`.
+set `BEEMAX_VERSION`, for example `curl -fsSL https://raw.githubusercontent.com/Zanetach/beemax/v0.1.0-preview.7/scripts/bootstrap-install.sh | BEEMAX_VERSION=v0.1.0-preview.7 bash`.
 Run the same installer with `--uninstall` to remove application files while
 keeping your Profiles and data.
 
@@ -221,6 +221,25 @@ A named Profile is a self-contained Agent Home under
 Pi auth/session state, Skills, MCP configuration, caches, schedules, and
 Gateway state. Legacy `config/profiles/<name>.yaml` Profiles remain readable and
 can be copied non-destructively with `beemax profile migrate <name>`.
+
+### Profile identity and workspace context
+
+BeeMax combines an identity layer with a project-work layer:
+
+| Location | Purpose | Managed by |
+| --- | --- | --- |
+| `Profile/SOUL.md` | Long-lived identity, communication style, and safety boundaries | BeeMax creates a safe default; the user may customize it. |
+| `Profile/USER.md` | Stable user preferences and working context | User or reviewed workflows. |
+| `Profile/MEMORY.md` | Reviewed durable memory snapshot | BeeMax memory workflow. |
+| `Profile/skills/` | Profile-scoped reusable Skills | BeeMax Skills system. |
+| `workspace/AGENTS.md` | Project-specific instructions for the active workspace | The workspace owner. |
+| `workspace/TOOLS.md` | Project-specific tool notes, local commands, and operational constraints | The workspace owner. |
+
+Profile files never overwrite a workspace. `beemax setup` keeps the generated
+SOUL by default and only replaces it when you explicitly provide a custom
+identity. Missing, empty, oversized, or obviously prompt-injected SOUL content
+falls back to BeeMax's bounded safe default. `TOOLS.md` is optional and is only
+useful when a workspace has project-specific commands or tool constraints.
 
 ```bash
 beemax profile create personal

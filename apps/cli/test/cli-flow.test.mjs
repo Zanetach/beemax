@@ -152,6 +152,31 @@ test("unified setup configures an isolated Profile and Feishu gateway non-intera
 	assert.equal((await readFile(join(home, "active-profile"), "utf8")).trim(), "assistant");
 });
 
+test("setup keeps the generated SOUL unless the user explicitly supplies a custom identity", async () => {
+	const root = await mkdtemp(join(tmpdir(), "beemax-default-soul-"));
+	const home = await mkdtemp(join(tmpdir(), "beemax-default-soul-home-"));
+	const previousRoot = process.env.BEEMAX_ROOT;
+	const previousHome = process.env.BEEMAX_HOME;
+	process.env.BEEMAX_ROOT = root;
+	process.env.BEEMAX_HOME = home;
+	try {
+		await runSetup({
+			profile: "personal", nonInteractive: true, provider: "openrouter", model: "openai/gpt-5.2", apiKey: "model-secret",
+			appId: "cli_setup", appSecret: "feishu-secret", allowedUsers: ["ou_setup"],
+		}, { probe: async () => ({}), doctor: async () => true });
+		const soulPath = join(home, "profiles", "personal", "SOUL.md");
+		assert.match(await readFile(soulPath, "utf8"), /# BeeMax/);
+		await runSetup({
+			profile: "personal", nonInteractive: true, soul: "You are a custom executive assistant.",
+			appId: "cli_setup", appSecret: "feishu-secret", allowedUsers: ["ou_setup"],
+		}, { probe: async () => ({}), doctor: async () => true });
+		assert.equal((await readFile(soulPath, "utf8")).trim(), "You are a custom executive assistant.");
+	} finally {
+		process.env.BEEMAX_ROOT = previousRoot;
+		process.env.BEEMAX_HOME = previousHome;
+	}
+});
+
 test("setup validates the live Feishu connection before creating a Profile", async () => {
 	const root = await mkdtemp(join(tmpdir(), "beemax-setup-"));
 	const home = await mkdtemp(join(tmpdir(), "beemax-home-"));

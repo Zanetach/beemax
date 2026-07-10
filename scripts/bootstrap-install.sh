@@ -2,7 +2,7 @@
 # BeeMax single-package installer for Linux and macOS.
 set -euo pipefail
 
-VERSION="${BEEMAX_VERSION:-v0.1.0-preview.6}"
+VERSION="${BEEMAX_VERSION:-v0.1.0-preview.7}"
 RELEASE_BASE="${BEEMAX_RELEASE_BASE:-https://github.com/Zanetach/beemax/releases/download}"
 INSTALL_DIR="${BEEMAX_INSTALL_DIR:-${HOME}/.beemax/app}"
 BIN_DIR="${BEEMAX_BIN_DIR:-${HOME}/.local/bin}"
@@ -12,7 +12,7 @@ usage() {
 BeeMax installer
 
 Usage:
-  curl -fsSL https://raw.githubusercontent.com/Zanetach/beemax/v0.1.0-preview.6/scripts/bootstrap-install.sh | bash
+  curl -fsSL https://raw.githubusercontent.com/Zanetach/beemax/v0.1.0-preview.7/scripts/bootstrap-install.sh | bash
 
 Options:
   --version <tag>  Install a specific release tag
