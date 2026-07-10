@@ -70,6 +70,7 @@ export async function runGateway(config: BeeMaxConfig): Promise<void> {
 	});
 	const mcpApproval = new Set(mcp.getApprovalTools());
 	const readOnlyMcpTools = mcp.getTools().filter((tool) => !mcpApproval.has(tool.name));
+	const mainMcpTools = config.agent.toolset === "safe" ? readOnlyMcpTools : mcp.getTools();
 
 	let scheduler: AutomationScheduler | undefined;
 	const createSubagentAgent = buildAgentFactory({
@@ -103,9 +104,10 @@ export async function runGateway(config: BeeMaxConfig): Promise<void> {
 		systemPrompt: () => profilePrompt(config),
 		getFeishuClient: () => adapter.apiClient,
 		memoryStore: memory,
-		customTools: mcp.getTools(),
+		tools: mainAgentTools(config.agent.toolset, mainMcpTools.map((tool) => tool.name)),
+		customTools: mainMcpTools,
 		sessionTools: (source) => subagents ? createSubagentTools(subagents, source) : [],
-		approvalTools: mcp.getApprovalTools(),
+		approvalTools: config.agent.toolset === "safe" ? [] : mcp.getApprovalTools(),
 		automationStore: automation,
 		wakeAutomation: () => scheduler?.wake(),
 		imageGeneration: {
@@ -341,4 +343,24 @@ function profilePrompt(config: BeeMaxConfig): string {
 	return [config.agent.systemPrompt, curatedMemoryPrompt(config.paths.agentDir)]
 		.filter((part): part is string => Boolean(part?.trim()))
 		.join("\n\n");
+}
+
+function mainAgentTools(toolset: "safe" | "standard", mcpTools: string[]): string[] {
+	const readOnly = [
+		"read", "grep", "find", "ls", "web_search", "web_extract",
+		"memory_recall", "memory_list", "memory_status", "memory_candidates",
+		"schedule_list", "schedule_runs", "skill_list", "skill_read", "task_status", "task_wait",
+		"feishu_meeting_get", "feishu_meeting_list", "feishu_meeting_reserve_get", "feishu_meeting_reserve_active_get", "feishu_meeting_recording_get",
+		...mcpTools,
+	];
+	if (toolset === "safe") return readOnly;
+	return [
+		...readOnly,
+		"bash", "edit", "write", "memory_remember", "memory_promote", "memory_reject", "memory_forget",
+		"reminder_create", "schedule_create", "schedule_pause", "schedule_resume", "schedule_delete",
+		"skill_create", "skill_update", "task_spawn", "task_cancel", "image_generate",
+		"feishu_meeting_reserve_create", "feishu_meeting_reserve_update", "feishu_meeting_reserve_delete",
+		"feishu_meeting_end", "feishu_meeting_invite", "feishu_meeting_kickout", "feishu_meeting_set_host",
+		"feishu_meeting_recording_set_permission", "feishu_meeting_recording_start", "feishu_meeting_recording_stop",
+	];
 }

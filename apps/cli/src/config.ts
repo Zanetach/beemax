@@ -17,6 +17,7 @@ export interface BeeMaxConfig {
 	profile: string;
 	agent: {
 		systemPrompt?: string;
+		toolset: "safe" | "standard";
 	};
 	model: {
 		provider: string;
@@ -107,6 +108,7 @@ export function loadConfig(configPath?: string, profile = "default"): BeeMaxConf
 		profile,
 		agent: {
 			systemPrompt: optional(soul || env.BEEMAX_SYSTEM_PROMPT || cfg.agent?.systemPrompt),
+			toolset: (env.BEEMAX_TOOLSET ?? cfg.agent?.toolset) === "safe" ? "safe" : "standard",
 		},
 		model: {
 			provider,

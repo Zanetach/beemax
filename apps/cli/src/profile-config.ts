@@ -359,7 +359,7 @@ export async function migrateProfile(profile: string, options: ProfileStorageOpt
 
 function defaultProfileYaml(workspaceRoot: string): string {
 	return stringifyYaml({
-		agent: {},
+		agent: { toolset: "standard" },
 		model: { provider: "anthropic", model: "claude-sonnet-4-5" },
 		feishu: { domain: "feishu", requireMention: true, allowedUsers: [], allowedChats: [], allowAllUsers: false },
 		memory: { dbPath: "memory.db" },

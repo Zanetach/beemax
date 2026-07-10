@@ -114,6 +114,13 @@ beemax gateway list
 Only one running Profile Gateway may consume a given Feishu App ID. A second
 Profile using the same App is rejected by the per-Home channel lock.
 
+Profiles use the `standard` Toolset by default. For a lower-trust group or
+public-facing Profile, set `agent.toolset: safe` in its `config.yaml` and
+restart the Gateway. `safe` exposes read/search, memory inspection, schedules,
+Skill inspection, task status, and read-only MCP tools only; it excludes shell,
+file writes, memory mutation, scheduling mutation, image generation, and
+mutating MCP tools.
+
 ### Feishu webhook deployment
 
 WebSocket is the default. For a public HTTPS webhook deployment, configure a

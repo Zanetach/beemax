@@ -16,6 +16,7 @@ export async function runDoctor(config: BeeMaxConfig): Promise<boolean> {
 
 	const apiKey = config.model.apiKey || process.env[providerKeyEnv(config.model.provider)];
 	checks.push({ name: "Model", status: apiKey ? "PASS" : "FAIL", detail: apiKey ? `${config.model.provider}/${config.model.model}` : `missing ${providerKeyEnv(config.model.provider)} or BEEMAX_API_KEY` });
+	checks.push({ name: "Toolset", status: config.agent.toolset === "safe" ? "WARN" : "PASS", detail: config.agent.toolset });
 	checks.push({ name: "Feishu credentials", status: config.feishu.appId && config.feishu.appSecret ? "PASS" : "FAIL", detail: config.feishu.appId && config.feishu.appSecret ? "configured" : "missing FEISHU_APP_ID/FEISHU_APP_SECRET" });
 	const admitted = config.feishu.allowAllUsers || config.feishu.allowedUsers.length > 0;
 	checks.push({ name: "Feishu access", status: admitted ? (config.feishu.allowAllUsers ? "WARN" : "PASS") : "FAIL", detail: config.feishu.allowAllUsers ? "public/dev mode" : `${config.feishu.allowedUsers.length} allowed user(s)` });
