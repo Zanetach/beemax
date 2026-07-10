@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.0-preview.8
+
+- Added a Profile-aware model provider catalog for Anthropic, OpenAI,
+  OpenRouter, Gemini, DeepSeek, Ollama, and custom OpenAI-compatible endpoints.
+- `beemax model list` and `beemax setup` now share provider defaults and
+  custom-endpoint Base URL handling.
+
 ## 0.1.0-preview.7
 
 - Added a generated hybrid SOUL template: OpenClaw-style default identity and

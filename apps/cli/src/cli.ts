@@ -28,6 +28,7 @@ import {
 import { activeProfile, resolveProfileLocation } from "./profile-home.ts";
 import { installSystemdService, runServiceAction, type ServiceAction } from "./service-manager.ts";
 import { runSetup, type SetupOptions } from "./setup.ts";
+import { renderModelProviderChoices } from "./model-catalog.ts";
 
 async function main(): Promise<void> {
 	const parsed = parseArgs(process.argv.slice(2));
@@ -233,7 +234,11 @@ async function runModelCommand(parsed: ParsedArgs): Promise<void> {
 		console.log(`${config.model.provider}/${config.model.model}`);
 		return;
 	}
-	if (action !== "set") throw new Error("Usage: beemax model [show | set <provider> <model>] --profile <name>");
+	if (action === "list") {
+		console.log(renderModelProviderChoices());
+		return;
+	}
+	if (action !== "set") throw new Error("Usage: beemax model [show | list | set <provider> <model>] --profile <name>");
 	if (parsed.options["api-key"] !== undefined) throw new Error("Do not pass model secrets in argv; set BEEMAX_API_KEY or use the interactive prompt");
 	const provider = parsed.positionals[2];
 	const model = parsed.positionals[3];
@@ -342,6 +347,7 @@ function setupOptions(parsed: ParsedArgs, gatewayOnly: boolean): SetupOptions {
 		provider: optionString(parsed, "provider") ?? process.env.BEEMAX_PROVIDER,
 		model: optionString(parsed, "model") ?? process.env.BEEMAX_MODEL,
 		apiKey: process.env.BEEMAX_API_KEY,
+		baseUrl: optionString(parsed, "base-url"),
 		soul: optionString(parsed, "soul") ?? process.env.BEEMAX_SOUL,
 		appId: optionString(parsed, "app-id") ?? process.env.FEISHU_APP_ID,
 		appSecret: process.env.FEISHU_APP_SECRET,

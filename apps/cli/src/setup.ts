@@ -1,4 +1,5 @@
 import { loadConfig } from "./config.ts";
+import { presetFor, renderModelProviderChoices } from "./model-catalog.ts";
 import { runDoctor } from "./doctor.ts";
 import {
 	configureFeishuChannel,
@@ -17,6 +18,7 @@ export interface SetupOptions {
 	provider?: string;
 	model?: string;
 	apiKey?: string;
+	baseUrl?: string;
 	soul?: string;
 	appId?: string;
 	appSecret?: string;
@@ -47,14 +49,20 @@ export async function runSetup(options: SetupOptions, dependencies: SetupDepende
 	let provider: string | undefined;
 	let model: string | undefined;
 	let apiKey: string | undefined;
+	let baseUrl: string | undefined;
 	if (!options.gatewayOnly) {
 		soul = options.soul;
 		if (soul === undefined && !options.nonInteractive) {
 			const customSoul = await askOne("Custom Agent identity (optional; leave empty to keep the generated SOUL.md): ");
 			soul = customSoul.trim() || undefined;
 		}
+		if (!options.nonInteractive && !options.provider) console.log(`\nChoose a model provider:\n${renderModelProviderChoices()}\n  Or enter any Pi-supported provider ID.`);
 		provider = options.provider ?? (options.nonInteractive ? current.model.provider : await askWithDefault("Model provider", current.model.provider));
-		model = options.model ?? (options.nonInteractive ? current.model.model : await askWithDefault("Model ID", current.model.model));
+		const preset = presetFor(provider);
+		const suggestedModel = options.model ?? (provider === current.model.provider ? current.model.model : preset?.defaultModel ?? "");
+		model = options.model ?? (options.nonInteractive ? suggestedModel : await askWithDefault("Model ID", suggestedModel));
+		baseUrl = options.baseUrl ?? (provider === current.model.provider ? current.model.baseUrl : preset?.baseUrl);
+		if (!options.nonInteractive && (preset?.requiresBaseUrl || provider === "custom")) baseUrl = await askWithDefault("OpenAI-compatible Base URL", baseUrl ?? "");
 		apiKey = options.apiKey;
 		if (!apiKey && !options.nonInteractive && !current.model.apiKey) apiKey = await askOne("Model API Key (leave empty to configure later): ", true);
 		if (!provider || !model) throw new Error("Setup requires a model provider and model ID");
@@ -85,7 +93,7 @@ export async function runSetup(options: SetupOptions, dependencies: SetupDepende
 			provider: provider!,
 			model: model!,
 			apiKey,
-			baseUrl: current.model.provider === provider ? current.model.baseUrl : undefined,
+			baseUrl,
 		});
 	}
 	await configureFeishuChannel(options.profile, {

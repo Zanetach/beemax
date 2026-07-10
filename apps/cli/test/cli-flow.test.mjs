@@ -36,6 +36,7 @@ test("CLI supports init, model setup, Feishu channel setup, listing, and safe de
 
 	assert.match(run(["init", "--profile", "personal"]), /Created BeeMax Agent 'personal'/);
 	assert.match(run(["--help"]), /persistent personal agent/);
+	assert.match(run(["model", "list"]), /Ollama local/);
 	assert.equal(run(["agent", "list"]).trim(), "personal");
 	assert.throws(
 		() => run(["model", "set", "openrouter", "openai/gpt-5.2", "--profile", "personal", "--api-key", "must-not-appear"]),
