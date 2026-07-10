@@ -49,7 +49,7 @@ for command in curl tar node npm; do
 	command -v "${command}" >/dev/null 2>&1 || fail "${command} is required; install it and retry"
 done
 if [[ "${VERSION}" == "latest" ]]; then
-	VERSION="$(curl --fail --location --silent --show-error https://api.github.com/repos/Zanetach/beemax/releases/latest | sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -n 1)"
+	VERSION="$(curl --fail --location --silent --show-error 'https://api.github.com/repos/Zanetach/beemax/releases?per_page=1' | sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -n 1)"
 	[[ "${VERSION}" =~ ^v[0-9] ]] || fail "could not resolve the latest BeeMax release"
 fi
 if command -v shasum >/dev/null 2>&1; then
