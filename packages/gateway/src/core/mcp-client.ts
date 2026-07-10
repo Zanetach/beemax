@@ -5,7 +5,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport, getDefaultEnvironment } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { defineTool, type ToolDefinition } from "@earendil-works/pi-coding-agent";
-import type { TSchema } from "typebox";
+import { Type, type TSchema } from "typebox";
 
 export type McpServerConfig = {
 	type: "stdio";
@@ -111,7 +111,7 @@ export class McpManager {
 			const prompts = capabilities?.prompts ? await client.listPrompts().then((result) => result.prompts.length).catch(() => 0) : 0;
 			const names = new Set<string>();
 			const approvalTools: string[] = [];
-			const tools = listed.tools.map((tool) => {
+			const tools: ToolDefinition[] = listed.tools.map((tool) => {
 				const toolName = mcpToolName(name, tool.name);
 				if (names.has(toolName)) throw new Error(`MCP tool name collision after normalization: ${tool.name}`);
 				names.add(toolName);
@@ -142,6 +142,47 @@ export class McpManager {
 					},
 				});
 			});
+			const addUtility = (tool: ToolDefinition) => {
+				if (names.has(tool.name)) throw new Error(`MCP utility tool name collision: ${tool.name}`);
+				names.add(tool.name);
+				tools.push(tool);
+			};
+			if (capabilities?.resources) {
+				addUtility(defineTool({
+					name: mcpToolName(name, "resources"), label: `${name}: resources`, description: `[MCP ${name}] List available resources.`,
+					parameters: Type.Object({}),
+					execute: async () => {
+						const result = await client.listResources();
+						return { content: [{ type: "text" as const, text: truncate(JSON.stringify(result.resources), 50_000) }], details: { server: name, resources: result.resources } };
+					},
+				}));
+				addUtility(defineTool({
+					name: mcpToolName(name, "resource_read"), label: `${name}: read resource`, description: `[MCP ${name}] Read one resource by URI.`,
+					parameters: Type.Object({ uri: Type.String({ minLength: 1, maxLength: 4096 }) }),
+					execute: async (_id, params) => {
+						const result = await client.readResource({ uri: params.uri });
+						return { content: [{ type: "text" as const, text: truncate(JSON.stringify(result.contents), 50_000) }], details: { server: name, uri: params.uri, contents: result.contents } };
+					},
+				}));
+			}
+			if (capabilities?.prompts) {
+				addUtility(defineTool({
+					name: mcpToolName(name, "prompts"), label: `${name}: prompts`, description: `[MCP ${name}] List available prompt templates.`,
+					parameters: Type.Object({}),
+					execute: async () => {
+						const result = await client.listPrompts();
+						return { content: [{ type: "text" as const, text: truncate(JSON.stringify(result.prompts), 50_000) }], details: { server: name, prompts: result.prompts } };
+					},
+				}));
+				addUtility(defineTool({
+					name: mcpToolName(name, "prompt_get"), label: `${name}: get prompt`, description: `[MCP ${name}] Get one prompt template with optional string arguments.`,
+					parameters: Type.Object({ name: Type.String({ minLength: 1, maxLength: 256 }), arguments: Type.Optional(Type.Record(Type.String(), Type.String())) }),
+					execute: async (_id, params) => {
+						const result = await client.getPrompt({ name: params.name, arguments: params.arguments });
+						return { content: [{ type: "text" as const, text: truncate(JSON.stringify(result.messages), 50_000) }], details: { server: name, prompt: params.name, messages: result.messages } };
+					},
+				}));
+			}
 			return { client, tools, approvalTools, resources, prompts };
 		} catch (error) {
 			await client.close().catch(() => undefined);

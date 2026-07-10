@@ -94,9 +94,9 @@ test("MCP tools are discovered, callable, and mutating tools require approval", 
 			servers: { smoke: { type: "stdio", command: process.execPath, args: [fixture], required: true } },
 		});
 		assert.equal(status[0].connected, true);
-		assert.equal(status[0].tools.length, 2);
-		assert.equal(status[0].resources, 0);
-		assert.equal(status[0].prompts, 0);
+		assert.equal(status[0].tools.length, 6);
+		assert.equal(status[0].resources, 1);
+		assert.equal(status[0].prompts, 1);
 		const tools = new Map(manager.getTools().map((tool) => [tool.name, tool]));
 		const result = await tools.get("mcp_smoke_echo").execute(
 			"echo",
@@ -105,6 +105,10 @@ test("MCP tools are discovered, callable, and mutating tools require approval", 
 		);
 		assert.equal(result.isError, false);
 		assert.match(result.content[0].text, /echo:ok/);
+		const resource = await tools.get("mcp_smoke_resource_read").execute("read", { uri: "memo://brief" }, new AbortController().signal);
+		assert.match(resource.content[0].text, /Brief resource/);
+		const prompt = await tools.get("mcp_smoke_prompt_get").execute("prompt", { name: "brief-template", arguments: { topic: "memory" } }, new AbortController().signal);
+		assert.match(prompt.content[0].text, /Brief memory/);
 		assert.deepEqual(manager.getApprovalTools(), ["mcp_smoke_mutate"]);
 	} finally {
 		await manager.close();
