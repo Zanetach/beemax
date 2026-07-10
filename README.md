@@ -65,7 +65,7 @@ second runtime is required.
 On Linux or macOS with Node.js 22.19 or newer:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/Zanetach/beemax/v0.1.0-preview.3/scripts/bootstrap-install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/Zanetach/beemax/v0.1.0-preview.4/scripts/bootstrap-install.sh | bash
 
 # Or, from a source checkout:
 ./scripts/install.sh
@@ -77,7 +77,7 @@ The one-command installer downloads one verified BeeMax release archive, which
 already contains Pi. It keeps executable source files in `~/.beemax/app` and
 the `beemax` command in `~/.local/bin`; Agent Profiles, secrets, memory, and
 sessions remain isolated under `~/.beemax/profiles`. To install another build,
-set `BEEMAX_VERSION`, for example `curl -fsSL https://raw.githubusercontent.com/Zanetach/beemax/v0.1.0-preview.3/scripts/bootstrap-install.sh | BEEMAX_VERSION=v0.1.0-preview.3 bash`.
+set `BEEMAX_VERSION`, for example `curl -fsSL https://raw.githubusercontent.com/Zanetach/beemax/v0.1.0-preview.4/scripts/bootstrap-install.sh | BEEMAX_VERSION=v0.1.0-preview.4 bash`.
 Run the same installer with `--uninstall` to remove application files while
 keeping your Profiles and data.
 
