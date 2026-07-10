@@ -1,0 +1,27 @@
+{
+  "name": "@beemax/gateway",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsgo -p tsconfig.build.json",
+    "typecheck": "tsgo --noEmit -p tsconfig.build.json"
+  },
+  "dependencies": {
+    "@beemax/automation": "0.1.0",
+    "@earendil-works/pi-agent-core": "^0.80.6",
+    "@earendil-works/pi-ai": "^0.80.6",
+    "@earendil-works/pi-coding-agent": "^0.80.6",
+    "@larksuiteoapi/node-sdk": "^1.70.0",
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "typebox": "1.1.38"
+  }
+}

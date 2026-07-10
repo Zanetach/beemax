@@ -1,0 +1,49 @@
+# BeeMax Agent config. Copy to config/beemax.yaml, or use env vars.
+# Env vars take precedence over this file.
+# Web search uses one of: TAVILY_API_KEY, BRAVE_SEARCH_API_KEY, SEARXNG_URL.
+
+model:
+  provider: anthropic
+  model: claude-sonnet-4-5
+  # apiKey: sk-...         # or set BEEMAX_API_KEY / ANTHROPIC_API_KEY
+
+feishu:
+  appId: cli_xxxxxxxxxxxxx
+  appSecret: xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+  domain: feishu          # feishu | lark
+  requireMention: true    # require @bot in groups
+  allowedUsers: ou_xxx,on_xxx   # open_id/user_id/union_id, comma-separated
+  allowedChats: ""              # optional chat_id restriction, comma-separated
+  allowAllUsers: false          # explicit insecure override for public/dev bots
+
+memory:
+  dbPath: data/beemax.db
+
+mcp:
+  configPath: config/mcp.json
+
+imageGeneration:
+  enabled: false
+  provider: openai-codex
+  quality: medium
+  outputDir: data/cache/images
+
+automation:
+  enabled: true
+  timezone: Asia/Shanghai
+  heartbeat:
+    enabled: true
+    every: 30m
+    # Optional fixed destination. If omitted, the last authorized DM is used.
+    # chatId: oc_xxx
+    # userId: on_xxx
+    ackMaxChars: 300
+    timeoutMs: 120000
+    activeHours:
+      start: "08:00"
+      end: "23:00"
+      timezone: Asia/Shanghai
+
+paths:
+  agentDir: data/agent
+  cwd: .

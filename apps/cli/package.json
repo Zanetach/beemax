@@ -1,0 +1,23 @@
+{
+  "name": "@beemax/cli",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "beemax": "./dist/cli.js"
+  },
+  "main": "./dist/cli.js",
+  "scripts": {
+    "build": "tsgo -p tsconfig.build.json",
+    "typecheck": "tsgo --noEmit -p tsconfig.build.json"
+  },
+  "dependencies": {
+    "@beemax/automation": "0.1.0",
+    "@beemax/gateway": "*",
+    "@beemax/memory": "*",
+    "@earendil-works/pi-agent-core": "^0.80.6",
+    "@earendil-works/pi-ai": "^0.80.6",
+    "@earendil-works/pi-coding-agent": "^0.80.6",
+    "yaml": "2.9.0"
+  }
+}

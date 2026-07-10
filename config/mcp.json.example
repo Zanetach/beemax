@@ -1,0 +1,18 @@
+{
+  "servers": {
+    "filesystem-example": {
+      "type": "stdio",
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-filesystem", "."],
+      "required": false
+    },
+    "remote-example": {
+      "type": "http",
+      "url": "https://mcp.example.com/mcp",
+      "headers": {
+        "Authorization": "Bearer ${MCP_REMOTE_TOKEN}"
+      },
+      "required": false
+    }
+  }
+}

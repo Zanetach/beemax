@@ -1,0 +1,7 @@
+[Unit]
+Description=BeeMax Agent profiles
+Wants=network-online.target
+After=network-online.target
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,47 @@
+agent:
+  systemPrompt: |
+    You are my private personal assistant. Keep responses concise, remember stable preferences,
+    manage reminders carefully, and proactively surface only actionable information.
+
+model:
+  provider: anthropic
+  model: claude-sonnet-4-5
+
+feishu:
+  # Keep secrets in /etc/beemax/personal.env, not this file.
+  appId: ""
+  appSecret: ""
+  domain: feishu
+  requireMention: true
+  allowedUsers: []
+  allowedChats: []
+  allowAllUsers: false
+
+memory:
+  dbPath: data/profiles/personal/beemax.db
+
+mcp:
+  configPath: config/profiles/personal.mcp.json
+
+imageGeneration:
+  enabled: true
+  provider: openai-codex
+  quality: medium
+  outputDir: data/profiles/personal/cache/images
+
+automation:
+  enabled: true
+  timezone: Asia/Shanghai
+  heartbeat:
+    enabled: true
+    every: 30m
+    ackMaxChars: 300
+    timeoutMs: 120000
+    activeHours:
+      start: "08:00"
+      end: "23:00"
+      timezone: Asia/Shanghai
+
+paths:
+  agentDir: data/profiles/personal/agent
+  cwd: .

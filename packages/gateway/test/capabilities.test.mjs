@@ -1,0 +1,110 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { tmpdir } from "node:os";
+import { buildAgentFactory, createCodexImageTool, createSkillTools, McpManager } from "../dist/index.js";
+import { reloadResourcesIfNeeded } from "../dist/core/resource-reload.js";
+
+const fixture = fileURLToPath(new URL("./fixtures/mcp-server.mjs", import.meta.url));
+
+test("managed skills can evolve without escaping their directory", async () => {
+	const root = mkdtempSync(join(tmpdir(), "beemax-skill-test-"));
+	let reloadNeeded = false;
+	try {
+		const tools = new Map(createSkillTools(join(root, "agent"), () => { reloadNeeded = true; })
+			.map((tool) => [tool.name, tool]));
+		await tools.get("skill_create").execute("create", {
+			name: "weekly-review",
+			description: "Prepare a concise verified weekly review: safely",
+			instructions: "Collect completed tasks, blockers, and next actions. Verify every result before summarizing.",
+		});
+		assert.equal(reloadNeeded, true);
+		const read = await tools.get("skill_read").execute("read", { name: "weekly-review" });
+		assert.match(read.content[0].text, /managed-by: beemax/);
+		assert.match(read.content[0].text, /description: "Prepare a concise verified weekly review: safely"/);
+		await assert.rejects(() => tools.get("skill_read").execute("bad", { name: "../escape" }));
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("Pi discovers managed skills and hot-reloads evolved skills", async () => {
+	const root = mkdtempSync(join(tmpdir(), "beemax-skill-reload-test-"));
+	const agentDir = join(root, "agent");
+	const cwd = join(root, "cwd");
+	mkdirSync(join(agentDir, "skills", "existing"), { recursive: true });
+	mkdirSync(cwd);
+	writeFileSync(join(agentDir, "skills", "existing", "SKILL.md"),
+		"---\nname: existing\ndescription: Existing verified workflow\n---\n\n# Existing\n\nFollow the verified workflow.\n");
+	const memoryStore = { remember: () => "id", recall: () => [], list: () => [], forget: () => true };
+	const factory = buildAgentFactory({
+		provider: "anthropic", model: "claude-sonnet-4-5", cwd, agentDir,
+		getApiKey: () => "test", memoryStore, authorizeTool: async () => ({ allowed: true }),
+	});
+	const session = await factory("skill-test", { platform: "feishu", chatId: "c", chatType: "dm", userId: "u" });
+	try {
+		assert.match(session.agent.state.systemPrompt, /existing/);
+		const create = session.agent.state.tools.find((tool) => tool.name === "skill_create");
+		await create.execute("create", {
+			name: "evolved-test",
+			description: "A durable evolved test workflow",
+			instructions: "Run the verified workflow and report concrete evidence before completion.",
+		});
+		assert.equal(await reloadResourcesIfNeeded(session), true);
+		assert.match(session.agent.state.systemPrompt, /evolved-test/);
+	} finally {
+		session.dispose();
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("Codex image generation saves and delivers a PNG without exposing OAuth", async () => {
+	const root = mkdtempSync(join(tmpdir(), "beemax-image-test-"));
+	const originalFetch = globalThis.fetch;
+	const payload = Buffer.from(JSON.stringify({ "https://api.openai.com/auth": { chatgpt_account_id: "acct-test" } })).toString("base64url");
+	const token = `x.${payload}.y`;
+	let delivered;
+	globalThis.fetch = async (_url, request) => {
+		assert.equal(request.headers.Authorization, `Bearer ${token}`);
+		assert.equal(request.headers["chatgpt-account-id"], "acct-test");
+		const event = { type: "response.output_item.done", item: { type: "image_generation_call", result: Buffer.from("fake-png").toString("base64") } };
+		return new Response(`data: ${JSON.stringify(event)}\n\ndata: [DONE]\n\n`, { status: 200 });
+	};
+	try {
+		const tool = createCodexImageTool({ platform:"feishu",chatId:"chat",chatType:"dm" }, {
+			outputDir: root, quality: "medium", getAccessToken: async () => token,
+			deliver: async (_source, path) => { delivered = path; },
+		});
+		const result = await tool.execute("image", { prompt:"a bee", aspectRatio:"square" }, new AbortController().signal);
+		assert.match(result.content[0].text, /delivered/);
+		assert.equal(delivered, result.details.path);
+		assert.doesNotMatch(JSON.stringify(result), /acct-test|Bearer/);
+	} finally {
+		globalThis.fetch = originalFetch;
+		rmSync(root, { recursive:true, force:true });
+	}
+});
+
+test("MCP tools are discovered, callable, and mutating tools require approval", async () => {
+	const manager = new McpManager();
+	try {
+		const status = await manager.connectAll({
+			servers: { smoke: { type: "stdio", command: process.execPath, args: [fixture], required: true } },
+		});
+		assert.equal(status[0].connected, true);
+		assert.equal(status[0].tools.length, 2);
+		const tools = new Map(manager.getTools().map((tool) => [tool.name, tool]));
+		const result = await tools.get("mcp_smoke_echo").execute(
+			"echo",
+			{ text: "ok" },
+			new AbortController().signal,
+		);
+		assert.equal(result.isError, false);
+		assert.match(result.content[0].text, /echo:ok/);
+		assert.deepEqual(manager.getApprovalTools(), ["mcp_smoke_mutate"]);
+	} finally {
+		await manager.close();
+	}
+});

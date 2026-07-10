@@ -1,0 +1,11 @@
+{
+  "extends": "./pi/tsconfig.base.json",
+  "compilerOptions": {
+    "paths": {
+      "@beemax/gateway": ["./packages/gateway/src/index.ts"],
+      "@beemax/memory": ["./packages/memory/src/index.ts"]
+    }
+  },
+  "include": ["packages/*/src", "apps/*/src"],
+  "exclude": ["node_modules", "pi", "dist"]
+}

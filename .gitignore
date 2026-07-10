@@ -1,0 +1,43 @@
+# dependencies
+node_modules/
+
+# build output
+dist/
+*.tsbuildinfo
+
+# env / secrets
+.env
+.env.local
+*.local
+
+# os
+.DS_Store
+Thumbs.db
+
+# editor
+.vscode/
+.idea/
+.claude/
+.cursor/
+
+# logs
+*.log
+logs/
+
+# data (local runtime state)
+data/
+*.db
+*.db-shm
+*.db-wal
+
+# pi source build artifacts (we reference pi/ as a sibling clone)
+pi/packages/*/dist/
+
+# local config overrides
+config/beemax.local.yaml
+config/mcp.json
+config/profiles/*.env
+
+# vendored sidecar is tracked (do not ignore)
+!vendor/
+.pi/extensions/yoda-hook.ts
