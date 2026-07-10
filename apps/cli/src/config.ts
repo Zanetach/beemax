@@ -5,10 +5,13 @@
  * providers + gateway.feishu), trimmed to what BeeMax needs today.
  */
 
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { isAbsolute, join, resolve } from "node:path";
 import { parse as parseYaml } from "yaml";
 import { readEnvFileSync } from "./env-file.ts";
+import { beemaxRoot, resolveProfileLocation, validateProfileName } from "./profile-home.ts";
+
+export { beemaxHome, beemaxRoot, validateProfileName } from "./profile-home.ts";
 
 export interface BeeMaxConfig {
 	profile: string;
@@ -71,8 +74,9 @@ export interface BeeMaxConfig {
 export function loadConfig(configPath?: string, profile = "default"): BeeMaxConfig {
 	validateProfileName(profile);
 	const root = beemaxRoot();
-	const path = configPath ?? join(root, profile === "default" ? "config/beemax.yaml" : `config/profiles/${profile}.yaml`);
-	const envPath = path.replace(/\.ya?ml$/i, ".env");
+	const location = resolveProfileLocation(profile, configPath);
+	const path = location.configPath;
+	const envPath = location.envPath;
 	let raw = "";
 	try {
 		raw = readFileSync(path, "utf8");
@@ -89,11 +93,14 @@ export function loadConfig(configPath?: string, profile = "default"): BeeMaxConf
 	const model = str(env.BEEMAX_MODEL ?? cfg.model?.model ?? "claude-sonnet-4-5");
 	const apiKey = str(env.BEEMAX_API_KEY ?? cfg.model?.apiKey);
 
-	const profileDataRoot = join(root, profile === "default" ? "data" : `data/profiles/${profile}`);
+	const profileDataRoot = location.isHome
+		? location.homePath
+		: join(root, profile === "default" ? "data" : `data/profiles/${profile}`);
+	const soul = location.isHome && existsSync(location.soulPath) ? readFileSync(location.soulPath, "utf8").trim() : "";
 	return {
 		profile,
 		agent: {
-			systemPrompt: optional(env.BEEMAX_SYSTEM_PROMPT ?? cfg.agent?.systemPrompt),
+			systemPrompt: optional(soul || env.BEEMAX_SYSTEM_PROMPT || cfg.agent?.systemPrompt),
 		},
 		model: {
 			provider,
@@ -111,16 +118,16 @@ export function loadConfig(configPath?: string, profile = "default"): BeeMaxConf
 			allowAllUsers: parseBool(env.FEISHU_ALLOW_ALL_USERS ?? cfg.feishu?.allowAllUsers ?? false),
 		},
 		memory: {
-			dbPath: resolveFrom(root, str(env.BEEMAX_DB_PATH ?? cfg.memory?.dbPath ?? join(profileDataRoot, "beemax.db"))),
+			dbPath: resolveFrom(location.basePath, str(env.BEEMAX_DB_PATH ?? cfg.memory?.dbPath ?? join(profileDataRoot, location.isHome ? "memory.db" : "beemax.db"))),
 		},
 		mcp: {
-			configPath: resolveFrom(root, str(env.BEEMAX_MCP_CONFIG ?? cfg.mcp?.configPath ?? (profile === "default" ? "config/mcp.json" : `config/profiles/${profile}.mcp.json`))),
+			configPath: resolveFrom(location.basePath, str(env.BEEMAX_MCP_CONFIG ?? cfg.mcp?.configPath ?? (location.isHome ? "mcp.json" : profile === "default" ? "config/mcp.json" : `config/profiles/${profile}.mcp.json`))),
 		},
 		imageGeneration: {
 			enabled: parseBool(env.BEEMAX_IMAGE_ENABLED ?? cfg.imageGeneration?.enabled ?? false),
 			provider: "openai-codex",
 			quality: parseImageQuality(env.BEEMAX_IMAGE_QUALITY ?? cfg.imageGeneration?.quality),
-			outputDir: resolveFrom(root, str(env.BEEMAX_IMAGE_OUTPUT_DIR ?? cfg.imageGeneration?.outputDir ?? join(profileDataRoot, "cache/images"))),
+			outputDir: resolveFrom(location.basePath, str(env.BEEMAX_IMAGE_OUTPUT_DIR ?? cfg.imageGeneration?.outputDir ?? join(profileDataRoot, "cache/images"))),
 		},
 		subagents: {
 			enabled: parseBool(env.BEEMAX_SUBAGENTS_ENABLED ?? cfg.subagents?.enabled ?? true),
@@ -147,14 +154,10 @@ export function loadConfig(configPath?: string, profile = "default"): BeeMaxConf
 			},
 		},
 		paths: {
-			agentDir: resolveFrom(root, str(env.BEEMAX_AGENT_DIR ?? cfg.paths?.agentDir ?? join(profileDataRoot, "agent"))),
-			cwd: resolveFrom(root, str(env.BEEMAX_CWD ?? cfg.paths?.cwd ?? ".")),
+			agentDir: resolveFrom(location.basePath, str(env.BEEMAX_AGENT_DIR ?? cfg.paths?.agentDir ?? (location.isHome ? "." : join(profileDataRoot, "agent")))),
+			cwd: resolveFrom(location.basePath, str(env.BEEMAX_CWD ?? cfg.paths?.cwd ?? (location.isHome ? root : "."))),
 		},
 	};
-}
-
-export function beemaxRoot(env: NodeJS.ProcessEnv = process.env): string {
-	return resolve(env.BEEMAX_ROOT?.trim() || process.cwd());
 }
 
 function resolveFrom(root: string, path: string): string {
@@ -163,11 +166,6 @@ function resolveFrom(root: string, path: string): string {
 
 const DEFAULT_HEARTBEAT_PROMPT = "Read HEARTBEAT.md if it exists in the workspace and follow it strictly. Review due reminders, scheduled work, recent failures, and anything that genuinely needs the user's attention. Do not infer or repeat stale tasks from old chats. If nothing needs attention, reply HEARTBEAT_OK.";
 
-export function validateProfileName(profile: string): void {
-	if (!/^[a-z0-9][a-z0-9_-]{0,31}$/.test(profile)) {
-		throw new Error(`Invalid profile name: ${profile}. Use lowercase letters, numbers, hyphens, or underscores.`);
-	}
-}
 
 function str(v: unknown): string {
 	return (typeof v === "string" ? v : "")?.trim();

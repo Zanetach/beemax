@@ -1,8 +1,20 @@
-import { mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
-import { dirname, join, resolve } from "node:path";
+import { constants } from "node:fs";
+import { access, copyFile, cp, lstat, mkdir, readFile, readdir, readlink, rename, rm, stat, writeFile } from "node:fs/promises";
+import { dirname, isAbsolute, join, relative, resolve } from "node:path";
+import { backupSqliteDatabase, verifySqliteDatabase } from "@beemax/memory";
 import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
-import { beemaxRoot, validateProfileName } from "./config.ts";
 import { readEnvFile, writeEnvFile } from "./env-file.ts";
+import {
+	beemaxHome,
+	beemaxRoot,
+	legacyProfilePaths,
+	profilePaths,
+	type ProfilePaths,
+	type ProfileStorageOptions,
+	validateProfileName,
+} from "./profile-home.ts";
+
+export { profilePaths, type ProfilePaths, type ProfileStorageOptions } from "./profile-home.ts";
 
 export interface FeishuChannelInput {
 	appId: string;
@@ -13,12 +25,6 @@ export interface FeishuChannelInput {
 	allowedChats?: string[];
 }
 
-export interface ProfilePaths {
-	configPath: string;
-	envPath: string;
-	dataPath: string;
-}
-
 export interface ModelInput {
 	provider: string;
 	model: string;
@@ -26,57 +32,85 @@ export interface ModelInput {
 	baseUrl?: string;
 }
 
-export function profilePaths(profile: string, root = beemaxRoot()): ProfilePaths {
-	validateProfileName(profile);
-	const configDir = join(resolve(root), "config", "profiles");
-	return {
-		configPath: join(configDir, `${profile}.yaml`),
-		envPath: join(configDir, `${profile}.env`),
-		dataPath: join(resolve(root), "data", "profiles", profile),
-	};
-}
-
-export async function createProfile(profile: string, root = beemaxRoot()): Promise<ProfilePaths> {
-	const paths = profilePaths(profile, root);
-	await mkdir(dirname(paths.configPath), { recursive: true });
+export async function createProfile(profile: string, options: ProfileStorageOptions = {}): Promise<ProfilePaths> {
+	const paths = profilePaths(profile, options);
+	if (await exists(paths.homePath)) throw new Error(`Agent profile ${profile} already exists`);
+	const temp = `${paths.homePath}.creating-${crypto.randomUUID()}`;
+	await mkdir(dirname(paths.homePath), { recursive: true, mode: 0o700 });
+	await mkdir(temp, { recursive: false, mode: 0o700 });
 	try {
-		await writeFile(paths.configPath, defaultProfileYaml(profile), { encoding: "utf8", flag: "wx", mode: 0o600 });
+		await Promise.all([
+			mkdir(join(temp, "sessions")),
+			mkdir(join(temp, "skills")),
+			mkdir(join(temp, "cache")),
+			mkdir(join(temp, "state")),
+		]);
+		await writeFile(join(temp, "config.yaml"), defaultProfileYaml(options.root ?? beemaxRoot()), { encoding: "utf8", mode: 0o600 });
+		await writeFile(join(temp, "SOUL.md"), `${DEFAULT_SOUL}\n`, { encoding: "utf8", mode: 0o600 });
+		await writeEnvFile(join(temp, ".env"), {});
+		await rename(temp, paths.homePath);
 	} catch (error) {
-		if ((error as NodeJS.ErrnoException).code === "EEXIST") throw new Error(`Agent profile ${profile} already exists`);
+		await rm(temp, { recursive: true, force: true });
 		throw error;
 	}
 	return paths;
 }
 
-export async function listProfiles(root = beemaxRoot()): Promise<string[]> {
+export async function listProfiles(options: ProfileStorageOptions = {}): Promise<string[]> {
 	const profiles = new Set<string>();
+	const root = resolve(options.root ?? beemaxRoot());
+	const home = resolve(options.home ?? beemaxHome());
 	try {
-		await readFile(join(resolve(root), "config", "beemax.yaml"), "utf8");
+		await readFile(join(root, "config", "beemax.yaml"), "utf8");
 		profiles.add("default");
 	} catch { /* optional default profile */ }
 	try {
-		for (const entry of await readdir(join(resolve(root), "config", "profiles"))) {
+		for (const entry of await readdir(join(root, "config", "profiles"))) {
 			if (/^[a-z0-9][a-z0-9_-]{0,31}\.ya?ml$/.test(entry)) profiles.add(entry.replace(/\.ya?ml$/, ""));
 		}
 	} catch { /* no profiles yet */ }
+	try {
+		for (const entry of await readdir(join(home, "profiles"), { withFileTypes: true })) {
+			if (entry.isDirectory() && /^[a-z0-9][a-z0-9_-]{0,31}$/.test(entry.name) && await exists(join(home, "profiles", entry.name, "config.yaml"))) {
+				profiles.add(entry.name);
+			}
+		}
+	} catch { /* no profile home yet */ }
 	return [...profiles].sort();
 }
 
-export async function deleteProfile(profile: string, root = beemaxRoot()): Promise<ProfilePaths> {
-	const paths = profilePaths(profile, root);
-	await rm(paths.configPath, { force: true });
-	await rm(paths.envPath, { force: true });
-	return paths;
+export async function deleteProfile(profile: string, options: ProfileStorageOptions = {}): Promise<ProfilePaths> {
+	const paths = await writableProfilePaths(profile, options);
+	const home = resolve(options.home ?? beemaxHome());
+	let preserved = paths.dataPath;
+	if (paths.configPath === join(paths.homePath, "config.yaml")) {
+		const archive = join(home, "deleted", `${profile}-${Date.now()}-${crypto.randomUUID()}`);
+		await mkdir(dirname(archive), { recursive: true, mode: 0o700 });
+		await rename(paths.homePath, archive);
+		await rm(join(archive, "config.yaml"), { force: true });
+		await rm(join(archive, ".env"), { force: true });
+		await rm(join(archive, "SOUL.md"), { force: true });
+		preserved = archive;
+	} else {
+		await rm(paths.configPath, { force: true });
+		await rm(paths.envPath, { force: true });
+	}
+	try {
+		if ((await readFile(join(home, "active-profile"), "utf8")).trim() === profile) {
+			await rm(join(home, "active-profile"), { force: true });
+		}
+	} catch { /* profile was not active */ }
+	return { ...paths, homePath: preserved, dataPath: preserved };
 }
 
 export async function configureFeishuChannel(
 	profile: string,
 	input: FeishuChannelInput,
-	root = beemaxRoot(),
+	options: ProfileStorageOptions = {},
 ): Promise<ProfilePaths> {
 	if (!input.appId.trim() || !input.appSecret.trim()) throw new Error("Feishu App ID and App Secret are required");
 	if (input.allowedUsers.length === 0) throw new Error("At least one allowed Feishu user ID is required");
-	const paths = profilePaths(profile, root);
+	const paths = await writableProfilePaths(profile, options);
 	const raw = await readFile(paths.configPath, "utf8").catch(() => {
 		throw new Error(`Agent profile ${profile} does not exist; run beemax agent create ${profile}`);
 	});
@@ -98,9 +132,9 @@ export async function configureFeishuChannel(
 	return paths;
 }
 
-export async function configureModel(profile: string, input: ModelInput, root = beemaxRoot()): Promise<ProfilePaths> {
+export async function configureModel(profile: string, input: ModelInput, options: ProfileStorageOptions = {}): Promise<ProfilePaths> {
 	if (!input.provider.trim() || !input.model.trim()) throw new Error("Model provider and model ID are required");
-	const paths = profilePaths(profile, root);
+	const paths = await writableProfilePaths(profile, options);
 	const raw = await readFile(paths.configPath, "utf8").catch(() => {
 		throw new Error(`Agent profile ${profile} does not exist; run beemax agent create ${profile}`);
 	});
@@ -120,8 +154,8 @@ export async function configureModel(profile: string, input: ModelInput, root = 
 	return paths;
 }
 
-export async function removeFeishuChannel(profile: string, root = beemaxRoot()): Promise<ProfilePaths> {
-	const paths = profilePaths(profile, root);
+export async function removeFeishuChannel(profile: string, options: ProfileStorageOptions = {}): Promise<ProfilePaths> {
+	const paths = await writableProfilePaths(profile, options);
 	const values = await readEnvFile(paths.envPath);
 	delete values.FEISHU_APP_ID;
 	delete values.FEISHU_APP_SECRET;
@@ -148,19 +182,188 @@ export async function testFeishuCredentials(
 	return "Feishu credentials are valid";
 }
 
-function defaultProfileYaml(profile: string): string {
+export async function setActiveProfile(profile: string, options: ProfileStorageOptions = {}): Promise<void> {
+	validateProfileName(profile);
+	if (!(await listProfiles(options)).includes(profile)) throw new Error(`Agent profile ${profile} does not exist`);
+	const home = resolve(options.home ?? beemaxHome());
+	await mkdir(home, { recursive: true, mode: 0o700 });
+	const target = join(home, "active-profile");
+	const temp = join(home, `.active-profile-${crypto.randomUUID()}`);
+	try {
+		await writeFile(temp, `${profile}\n`, { encoding: "utf8", mode: 0o600 });
+		await rename(temp, target);
+	} catch (error) {
+		await rm(temp, { force: true });
+		throw error;
+	}
+}
+
+export async function migrateProfile(profile: string, options: ProfileStorageOptions = {}): Promise<ProfilePaths> {
+	validateProfileName(profile);
+	const root = resolve(options.root ?? beemaxRoot());
+	const home = resolve(options.home ?? beemaxHome());
+	const legacy = legacyProfilePaths(profile, { root, home });
+	const target = profilePaths(profile, { root, home });
+	if (!(await exists(legacy.configPath))) throw new Error(`Legacy Agent profile ${profile} does not exist`);
+	if (await exists(target.homePath)) throw new Error(`Agent profile ${profile} already exists at ${target.homePath}`);
+
+	const raw = await readFile(legacy.configPath, "utf8");
+	const originalConfig = configFromYaml(raw);
+	const legacyEnv = await readEnvFile(legacy.envPath);
+	const config = structuredClone(originalConfig);
+	const agent = asRecord(config.agent);
+	const identity = legacyEnv.BEEMAX_SYSTEM_PROMPT?.trim()
+		|| (typeof agent.systemPrompt === "string" ? agent.systemPrompt.trim() : "")
+		|| DEFAULT_SOUL;
+	delete agent.systemPrompt;
+	config.agent = agent;
+	config.memory = { ...asRecord(config.memory), dbPath: "memory.db" };
+	config.mcp = { ...asRecord(config.mcp), configPath: "mcp.json" };
+	config.imageGeneration = { ...asRecord(config.imageGeneration), outputDir: "cache/images" };
+	const pathsConfig = asRecord(config.paths);
+	const workspace = absoluteFrom(root, legacyEnv.BEEMAX_CWD || (typeof pathsConfig.cwd === "string" ? pathsConfig.cwd : "."));
+	config.paths = { ...pathsConfig, agentDir: ".", cwd: workspace };
+	const oldMemory = absoluteFrom(root, legacyEnv.BEEMAX_DB_PATH || stringAt(originalConfig, ["memory", "dbPath"]) || join(legacy.dataPath, "beemax.db"));
+	const oldMcp = absoluteFrom(root, legacyEnv.BEEMAX_MCP_CONFIG || stringAt(originalConfig, ["mcp", "configPath"]) || legacy.configPath.replace(/\.ya?ml$/i, ".mcp.json"));
+	const oldImages = absoluteFrom(root, legacyEnv.BEEMAX_IMAGE_OUTPUT_DIR || stringAt(originalConfig, ["imageGeneration", "outputDir"]) || join(legacy.dataPath, "cache", "images"));
+	const oldAgent = absoluteFrom(root, legacyEnv.BEEMAX_AGENT_DIR || stringAt(originalConfig, ["paths", "agentDir"]) || join(legacy.dataPath, "agent"));
+	const migratedEnv = { ...legacyEnv };
+	for (const key of PROFILE_ROUTING_ENV) delete migratedEnv[key];
+
+	const temp = `${target.homePath}.migrating-${crypto.randomUUID()}`;
+	await mkdir(dirname(target.homePath), { recursive: true, mode: 0o700 });
+	await mkdir(temp, { recursive: false, mode: 0o700 });
+	try {
+		await writeFile(join(temp, "config.yaml"), stringifyYaml(config), { encoding: "utf8", mode: 0o600 });
+		await writeFile(join(temp, "SOUL.md"), `${identity}\n`, { encoding: "utf8", mode: 0o600 });
+		await writeEnvFile(join(temp, ".env"), migratedEnv);
+		if (await exists(oldMemory)) await backupSqliteDatabase(oldMemory, join(temp, "memory.db"));
+		if (await exists(oldMcp)) await copyFile(oldMcp, join(temp, "mcp.json"), constants.COPYFILE_EXCL);
+		if (await exists(oldImages)) await cp(oldImages, join(temp, "cache", "images"), { recursive: true, errorOnExist: true, force: false });
+		if (await exists(oldAgent)) {
+			for (const entry of await readdir(oldAgent)) {
+				await cp(join(oldAgent, entry), join(temp, entry), { recursive: true, errorOnExist: true, force: false });
+			}
+		}
+		for (const directory of ["sessions", "skills", "cache", "state"]) await mkdir(join(temp, directory), { recursive: true });
+		await verifyMigratedProfile(temp, {
+			identity,
+			oldAgent,
+			oldImages,
+			oldMcp,
+			sourceHadMemory: await exists(oldMemory),
+			sourceHadMcp: await exists(oldMcp),
+		});
+		await rename(temp, target.homePath);
+	} catch (error) {
+		await rm(temp, { recursive: true, force: true });
+		throw error;
+	}
+	return target;
+}
+
+function defaultProfileYaml(workspaceRoot: string): string {
 	return stringifyYaml({
-		agent: { systemPrompt: "You are my private personal assistant. Keep responses concise and surface only actionable information." },
+		agent: {},
 		model: { provider: "anthropic", model: "claude-sonnet-4-5" },
 		feishu: { domain: "feishu", requireMention: true, allowedUsers: [], allowedChats: [], allowAllUsers: false },
-		memory: { dbPath: `data/profiles/${profile}/beemax.db` },
-		mcp: { configPath: `config/profiles/${profile}.mcp.json` },
-		imageGeneration: { enabled: false, provider: "openai-codex", quality: "medium", outputDir: `data/profiles/${profile}/cache/images` },
+		memory: { dbPath: "memory.db" },
+		mcp: { configPath: "mcp.json" },
+		imageGeneration: { enabled: false, provider: "openai-codex", quality: "medium", outputDir: "cache/images" },
 		subagents: { enabled: true, maxConcurrent: 3, maxChildrenPerOwner: 5, timeoutMs: 900000 },
 		automation: { enabled: true, timezone: "Asia/Shanghai", heartbeat: { enabled: true, every: "30m", activeHours: { start: "08:00", end: "23:00", timezone: "Asia/Shanghai" } } },
-		paths: { agentDir: `data/profiles/${profile}/agent`, cwd: "." },
+		paths: { agentDir: ".", cwd: resolve(workspaceRoot) },
 	});
 }
+
+async function writableProfilePaths(profile: string, options: ProfileStorageOptions): Promise<ProfilePaths> {
+	const modern = profilePaths(profile, options);
+	if (await exists(modern.configPath)) return modern;
+	const legacy = legacyProfilePaths(profile, options);
+	if (await exists(legacy.configPath)) return legacy;
+	throw new Error(`Agent profile ${profile} does not exist; run beemax profile create ${profile}`);
+}
+
+async function exists(path: string): Promise<boolean> {
+	try { await access(path); return true; } catch { return false; }
+}
+
+function absoluteFrom(root: string, path: string): string {
+	return isAbsolute(path) ? path : resolve(root, path);
+}
+
+function configFromYaml(raw: string): Record<string, unknown> {
+	return (parseYaml(raw) ?? {}) as Record<string, unknown>;
+}
+
+function stringAt(config: Record<string, unknown>, path: [string, string]): string | undefined {
+	const value = asRecord(config[path[0]])[path[1]];
+	return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
+async function verifyMigratedProfile(
+	home: string,
+	expected: { identity: string; oldAgent: string; oldImages: string; oldMcp: string; sourceHadMemory: boolean; sourceHadMcp: boolean },
+): Promise<void> {
+	const config = configFromYaml(await readFile(join(home, "config.yaml"), "utf8"));
+	if (stringAt(config, ["memory", "dbPath"]) !== "memory.db"
+		|| stringAt(config, ["mcp", "configPath"]) !== "mcp.json"
+		|| stringAt(config, ["paths", "agentDir"]) !== ".") {
+		throw new Error("Migrated Profile config failed path validation");
+	}
+	if ((await readFile(join(home, "SOUL.md"), "utf8")).trim() !== expected.identity) {
+		throw new Error("Migrated Profile SOUL.md failed validation");
+	}
+	const env = await readEnvFile(join(home, ".env"));
+	for (const key of PROFILE_ROUTING_ENV) if (key in env) throw new Error(`Migrated Profile retained reserved env ${key}`);
+	if (expected.sourceHadMemory) verifySqliteDatabase(join(home, "memory.db"));
+	if (expected.sourceHadMcp && (await stat(expected.oldMcp)).size !== (await stat(join(home, "mcp.json"))).size) {
+		throw new Error("Migrated Profile MCP copy failed validation");
+	}
+	if (await exists(expected.oldAgent)) await verifyTreeCopied(expected.oldAgent, home);
+	if (await exists(expected.oldImages)) await verifyTreeCopied(expected.oldImages, join(home, "cache", "images"));
+}
+
+async function verifyTreeCopied(source: string, destination: string): Promise<void> {
+	const sourceManifest = await treeManifest(source);
+	const destinationManifest = await treeManifest(destination);
+	for (const [path, signature] of sourceManifest) {
+		if (destinationManifest.get(path) !== signature) throw new Error(`Migrated Profile copy failed validation: ${path}`);
+	}
+}
+
+async function treeManifest(root: string): Promise<Map<string, string>> {
+	const manifest = new Map<string, string>();
+	async function visit(path: string): Promise<void> {
+		for (const entry of await readdir(path, { withFileTypes: true })) {
+			const absolute = join(path, entry.name);
+			const key = relative(root, absolute);
+			if (entry.isDirectory()) {
+				manifest.set(key, "directory");
+				await visit(absolute);
+			} else if (entry.isSymbolicLink()) {
+				manifest.set(key, `symlink:${await readlink(absolute)}`);
+			} else {
+				manifest.set(key, `file:${(await lstat(absolute)).size}`);
+			}
+		}
+	}
+	await visit(root);
+	return manifest;
+}
+
+const DEFAULT_SOUL = "You are my private personal assistant. Keep responses concise and surface only actionable information.";
+const PROFILE_ROUTING_ENV = [
+	"BEEMAX_HOME",
+	"BEEMAX_ROOT",
+	"BEEMAX_PROFILE",
+	"BEEMAX_DB_PATH",
+	"BEEMAX_MCP_CONFIG",
+	"BEEMAX_IMAGE_OUTPUT_DIR",
+	"BEEMAX_AGENT_DIR",
+	"BEEMAX_CWD",
+	"BEEMAX_SYSTEM_PROMPT",
+] as const;
 
 function asRecord(value: unknown): Record<string, unknown> {
 	return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};

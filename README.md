@@ -72,9 +72,9 @@ beemax doctor --profile personal
 ```
 
 The model and Feishu setup commands prompt for missing secrets without writing
-them to YAML. Secrets are stored in `config/profiles/<name>.env` with mode
-`0600`, ignored by Git, and loaded automatically for foreground and service
-runs.
+them to YAML. Each Agent is an isolated Profile Home at
+`~/.beemax/profiles/<name>/`; its secrets live in `.env` with mode `0600`, while
+identity lives in `SOUL.md`. Set `BEEMAX_HOME` to relocate all Profile Homes.
 
 For the first end-to-end test, keep the gateway in the foreground:
 
@@ -104,9 +104,12 @@ memory, sessions, Skills, MCP servers, and automation state. Useful management
 commands are:
 
 ```text
-beemax agent create <name>
-beemax agent list
-beemax agent delete <name> --yes
+beemax profile create <name>
+beemax profile list
+beemax profile show <name>
+beemax profile use <name>
+beemax profile migrate <name>
+beemax profile delete <name> --yes
 beemax channel list --profile <name>
 beemax channel remove --profile <name> --yes
 beemax stop|restart|status|logs <name>
@@ -143,14 +146,17 @@ and enable "长连接" (WebSocket long-connection). No public HTTPS endpoint nee
 
 ## Profiles: one Agent per process
 
-A named profile loads `config/profiles/<name>.yaml` and defaults its runtime
-state to `data/profiles/<name>/`. Each profile independently selects its model
-provider/model, Feishu application, API key environment, system prompt, SQLite,
-Pi auth/session state, Skills, MCP servers, workspace, schedules, and heartbeat.
+A named Profile is a self-contained Agent Home under
+`~/.beemax/profiles/<name>/`. It owns `config.yaml`, `.env`, `SOUL.md`, Memory,
+Pi auth/session state, Skills, MCP configuration, caches, schedules, and
+Gateway state. Legacy `config/profiles/<name>.yaml` Profiles remain readable and
+can be copied non-destructively with `beemax profile migrate <name>`.
 
 ```bash
-cp config/profiles/personal.yaml.example config/profiles/personal.yaml
+beemax profile create personal
 beemax profile list
+beemax profile show personal
+beemax profile use personal
 beemax profile doctor personal
 beemax profile start personal
 # equivalent: npm run gateway -- --profile personal
@@ -159,18 +165,22 @@ beemax profile start personal
 Different profiles can use different models:
 
 ```yaml
-# config/profiles/personal.yaml
+# ~/.beemax/profiles/personal/config.yaml
 model: { provider: anthropic, model: claude-sonnet-4-5 }
 
-# config/profiles/work.yaml
+# ~/.beemax/profiles/work/config.yaml
 model: { provider: openrouter, model: openai/gpt-5.2 }
 ```
 
-Under systemd, place per-profile secrets in `/etc/beemax/<profile>.env` and use
-`deploy/systemd/beemax@.service`:
+The user-level service reads each Profile's `.env` directly. For a system-level
+service, set `BEEMAX_HOME` to a directory owned by `BEEMAX_SERVICE_USER` before
+installing; `/etc/beemax/<profile>.env` remains an optional final override:
 
 ```bash
-sudo systemctl enable --now beemax@personal beemax@work
+sudo install -d -o beemax -g beemax /var/lib/beemax
+sudo -u beemax BEEMAX_HOME=/var/lib/beemax beemax profile create personal
+sudo BEEMAX_SERVICE_USER=beemax BEEMAX_HOME=/var/lib/beemax beemax service install --system
+sudo systemctl enable --now beemax@personal
 journalctl -u beemax@personal -f
 ```
 
@@ -236,7 +246,7 @@ imageGeneration:
   enabled: true
   provider: openai-codex
   quality: medium # low | medium | high
-  outputDir: data/profiles/personal/cache/images
+  outputDir: cache/images
 ```
 
 Authenticate once for that profile:

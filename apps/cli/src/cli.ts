@@ -17,15 +17,19 @@ import {
 	createProfile,
 	deleteProfile,
 	listProfiles,
+	migrateProfile,
 	removeFeishuChannel,
+	setActiveProfile,
 	testFeishuCredentials,
 } from "./profile-config.ts";
+import { activeProfile, resolveProfileLocation } from "./profile-home.ts";
 import { installSystemdService, runServiceAction, type ServiceAction } from "./service-manager.ts";
 
 async function main(): Promise<void> {
 	const parsed = parseArgs(process.argv.slice(2));
+	applyRuntimePaths(parsed);
 	const cmd = parsed.positionals[0] ?? "help";
-	const profile = parsed.profile ?? process.env.BEEMAX_PROFILE ?? "default";
+	const profile = parsed.profile ?? activeProfile();
 	const getConfig = () => loadConfig(parsed.configPath, profile);
 
 	switch (cmd) {
@@ -51,7 +55,7 @@ async function main(): Promise<void> {
 			if (!(await runDoctor(getConfig()))) process.exitCode = 1;
 			break;
 		case "profile":
-			await runProfileCommand(parsed.positionals.slice(1), parsed.configPath);
+			await runProfileCommand(parsed);
 			break;
 		case "auth":
 			if (parsed.positionals[1] !== "codex") throw new Error("Usage: beemax auth codex --profile <name>");
@@ -81,7 +85,7 @@ Commands:
   chat       Local interactive chat for one profile
   model      show | set <provider> <model>
   doctor     Check profile readiness
-  profile    list | doctor <name> | start <name> | path <name>
+  profile    create | list | show | path | use | migrate | delete
   auth       codex (stores OAuth only inside the selected profile)
   service    install (Linux systemd)
   start      Start a profile systemd service
@@ -91,12 +95,15 @@ Commands:
   logs       Follow profile systemd logs
 
 Options:
-  --profile <name>         Load config/profiles/<name>.yaml with isolated data defaults
+  --profile <name>         Select an isolated Profile (defaults to the active Profile)
   --config <path>          Use an explicit YAML config file
+  --home <path>            Override BEEMAX_HOME for this invocation
+  --root <path>            Override the BeeMax installation root for this invocation
   --yes                    Confirm destructive configuration changes
 
 Environment:
-  BEEMAX_PROFILE          Profile name (same as --profile)
+  BEEMAX_HOME             Profile home root (default: ~/.beemax)
+  BEEMAX_PROFILE          Profile name (same as --profile; overrides active Profile)
   FEISHU_APP_ID           Feishu self-built app id
   FEISHU_APP_SECRET       Feishu self-built app secret
   FEISHU_ALLOWED_USERS    Authorized IDs, comma-separated (default: deny all)
@@ -107,7 +114,7 @@ Environment:
   BEEMAX_MCP_CONFIG       MCP JSON config path
   BEEMAX_TIMEZONE         Schedule and heartbeat timezone
 
-Config: config/beemax.yaml, or config/profiles/<name>.yaml for named profiles`);
+Profiles: ~/.beemax/profiles/<name>/ (legacy config/profiles/*.yaml remains readable)`);
 			break;
 	}
 }
@@ -182,7 +189,7 @@ async function runAgentCommand(parsed: ParsedArgs): Promise<void> {
 
 async function runModelCommand(parsed: ParsedArgs): Promise<void> {
 	const action = parsed.positionals[1] ?? "show";
-	const profile = parsed.profile ?? process.env.BEEMAX_PROFILE ?? "default";
+	const profile = selectedProfile(parsed);
 	if (action === "show") {
 		const config = loadConfig(parsed.configPath, profile);
 		console.log(`${config.model.provider}/${config.model.model}`);
@@ -202,7 +209,7 @@ async function runModelCommand(parsed: ParsedArgs): Promise<void> {
 
 async function runChannelCommand(parsed: ParsedArgs): Promise<void> {
 	const action = parsed.positionals[1] ?? "list";
-	const profile = parsed.profile ?? process.env.BEEMAX_PROFILE ?? "default";
+	const profile = selectedProfile(parsed);
 	if (action === "list") {
 		const config = loadConfig(parsed.configPath, profile);
 		const state = config.feishu.appId && config.feishu.appSecret ? "configured" : "not configured";
@@ -251,7 +258,18 @@ async function runChannelCommand(parsed: ParsedArgs): Promise<void> {
 }
 
 function serviceProfile(parsed: ParsedArgs): string {
-	return parsed.positionals[1] ?? parsed.profile ?? process.env.BEEMAX_PROFILE ?? "default";
+	return parsed.positionals[1] ?? selectedProfile(parsed);
+}
+
+function selectedProfile(parsed: ParsedArgs): string {
+	return parsed.profile ?? activeProfile();
+}
+
+function applyRuntimePaths(parsed: ParsedArgs): void {
+	const home = optionString(parsed, "home");
+	const root = optionString(parsed, "root");
+	if (home) process.env.BEEMAX_HOME = home;
+	if (root) process.env.BEEMAX_ROOT = root;
 }
 
 function optionString(parsed: ParsedArgs, key: string): string | undefined {
@@ -298,22 +316,38 @@ async function askOne(prompt: string, secret = false): Promise<string> {
 	}
 }
 
-async function runProfileCommand(args: string[], explicitConfig?: string): Promise<void> {
+async function runProfileCommand(parsed: ParsedArgs): Promise<void> {
+	const args = parsed.positionals.slice(1);
+	const explicitConfig = parsed.configPath;
 	const action = args[0] ?? "list";
 	if (action === "list") {
-		const { readdir, access } = await import("node:fs/promises");
-		const profiles: string[] = [];
-		try { await access("config/beemax.yaml"); profiles.push("default"); } catch { /* optional */ }
-		try {
-			for (const entry of await readdir("config/profiles")) {
-				if (entry.endsWith(".yaml") || entry.endsWith(".yml")) profiles.push(entry.replace(/\.ya?ml$/, ""));
-			}
-		} catch { /* no profile directory yet */ }
-		console.log([...new Set(profiles)].sort().join("\n") || "No profiles configured.");
+		console.log((await listProfiles()).join("\n") || "No profiles configured.");
 		return;
 	}
 	const name = args[1];
 	if (!name) throw new Error(`profile ${action} requires a profile name`);
+	if (action === "create") {
+		const paths = await createProfile(name);
+		console.log(`Created Agent '${name}' at ${paths.homePath}`);
+		return;
+	}
+	if (action === "use") {
+		await setActiveProfile(name);
+		console.log(`BeeMax active Profile is now '${name}'.`);
+		return;
+	}
+	if (action === "migrate") {
+		const paths = await migrateProfile(name);
+		console.log(`Migrated legacy Profile '${name}' to ${paths.homePath}. Source files were preserved.`);
+		return;
+	}
+	if (action === "delete") {
+		if (parsed.options.yes !== true) throw new Error("Profile deletion requires --yes; runtime data is preserved");
+		const paths = await deleteProfile(name);
+		console.log(`Deleted Agent configuration '${name}'. Runtime data was preserved at ${paths.dataPath}`);
+		return;
+	}
+	if (!explicitConfig && !(await listProfiles()).includes(name)) throw new Error(`Agent profile ${name} does not exist`);
 	const config = loadConfig(explicitConfig, name);
 	if (action === "doctor") {
 		if (!(await runDoctor(config))) process.exitCode = 1;
@@ -323,8 +357,18 @@ async function runProfileCommand(args: string[], explicitConfig?: string): Promi
 		await runGateway(config);
 		return;
 	}
-	if (action === "path") {
-		console.log(JSON.stringify({ profile: name, config: explicitConfig ?? `config/profiles/${name}.yaml`, data: config.memory.dbPath, agentDir: config.paths.agentDir }, null, 2));
+	if (action === "path" || action === "show") {
+		const location = resolveProfileLocation(name, explicitConfig);
+		console.log(JSON.stringify({
+			profile: name,
+			layout: location.isHome ? "home" : "legacy",
+			home: location.homePath,
+			config: location.configPath,
+			env: location.envPath,
+			soul: location.soulPath,
+			memory: config.memory.dbPath,
+			agentDir: config.paths.agentDir,
+		}, null, 2));
 		return;
 	}
 	throw new Error(`Unknown profile action: ${action}`);

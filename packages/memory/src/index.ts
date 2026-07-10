@@ -1,1 +1,1 @@
-export { MemoryStore, type MemoryRecord, type RecallOptions } from "./store.ts";
+export { backupSqliteDatabase, MemoryStore, verifySqliteDatabase, type MemoryRecord, type RecallOptions } from "./store.ts";

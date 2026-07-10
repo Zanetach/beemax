@@ -3,10 +3,11 @@ import test from "node:test";
 import { renderSystemdService, runServiceAction } from "../dist/service-manager.js";
 
 test("systemd service binds the installed CLI, profile env, and safe runtime defaults", () => {
-	const unit = renderSystemdService("/opt/beemax", "/usr/bin/node");
+	const unit = renderSystemdService("/opt/beemax", "/usr/bin/node", "user", undefined, "/home/beemax/.beemax");
 	assert.match(unit, /WorkingDirectory="\/opt\/beemax"/);
+	assert.match(unit, /EnvironmentFile=-"\/home\/beemax\/\.beemax\/profiles\/%i\/\.env"/);
 	assert.match(unit, /EnvironmentFile=-"\/opt\/beemax\/config\/profiles\/%i\.env"/);
-	assert.match(unit, /ExecStart="\/usr\/bin\/node" "\/opt\/beemax\/apps\/cli\/dist\/cli\.js" gateway --profile %i/);
+	assert.match(unit, /ExecStart="\/usr\/bin\/node" "\/opt\/beemax\/apps\/cli\/dist\/cli\.js" gateway --profile %i --home "\/home\/beemax\/\.beemax" --root "\/opt\/beemax"/);
 	assert.match(unit, /NoNewPrivileges=true/);
 	assert.match(unit, /UMask=0077/);
 	assert.match(unit, /WantedBy=default\.target/);

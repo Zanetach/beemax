@@ -157,6 +157,25 @@ export class MemoryStore {
 	}
 }
 
+export async function backupSqliteDatabase(sourcePath: string, destinationPath: string): Promise<void> {
+	const db = new Database(sourcePath, { readonly: true, fileMustExist: true });
+	try {
+		await db.backup(destinationPath);
+	} finally {
+		db.close();
+	}
+}
+
+export function verifySqliteDatabase(path: string): void {
+	const db = new Database(path, { readonly: true, fileMustExist: true });
+	try {
+		const result = db.pragma("integrity_check", { simple: true });
+		if (result !== "ok") throw new Error(`SQLite integrity check failed: ${String(result)}`);
+	} finally {
+		db.close();
+	}
+}
+
 interface MemoryRow {
 	id: string;
 	platform: string;

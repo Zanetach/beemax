@@ -2,7 +2,7 @@ import { mkdir, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { spawnSync, type SpawnSyncReturns } from "node:child_process";
-import { beemaxRoot, validateProfileName } from "./config.ts";
+import { beemaxHome, beemaxRoot, validateProfileName } from "./config.ts";
 
 export type ServiceAction = "start" | "stop" | "restart" | "status" | "logs";
 export type ServiceScope = "user" | "system";
@@ -13,8 +13,10 @@ export function renderSystemdService(
 	nodePath = process.execPath,
 	scope: ServiceScope = "user",
 	serviceUser?: string,
+	home = beemaxHome(),
 ): string {
 	const absoluteRoot = resolve(root);
+	const absoluteHome = resolve(home);
 	const cliPath = join(absoluteRoot, "apps", "cli", "dist", "cli.js");
 	return `[Unit]
 Description=BeeMax Agent profile %i
@@ -25,11 +27,12 @@ PartOf=beemax.target
 [Service]
 Type=simple
 ${scope === "system" ? `User=${serviceUser ?? "beemax"}\n` : ""}WorkingDirectory=${systemdQuote(absoluteRoot)}
-Environment=NODE_ENV=production
-Environment=BEEMAX_PROFILE=%i
+EnvironmentFile=-${systemdQuote(join(absoluteHome, "profiles", "%i", ".env"))}
 EnvironmentFile=-${systemdQuote(join(absoluteRoot, "config", "profiles", "%i.env"))}
 EnvironmentFile=-/etc/beemax/%i.env
-ExecStart=${systemdQuote(nodePath)} ${systemdQuote(cliPath)} gateway --profile %i
+Environment=NODE_ENV=production
+Environment=BEEMAX_PROFILE=%i
+ExecStart=${systemdQuote(nodePath)} ${systemdQuote(cliPath)} gateway --profile %i --home ${systemdQuote(absoluteHome)} --root ${systemdQuote(absoluteRoot)}
 Restart=on-failure
 RestartSec=5s
 TimeoutStopSec=60s
@@ -62,9 +65,13 @@ export async function installSystemdService(
 	if (scope === "system" && !serviceUser) {
 		throw new Error("systemd system service needs a non-root account; set BEEMAX_SERVICE_USER");
 	}
+	const serviceHome = scope === "system" ? process.env.BEEMAX_HOME?.trim() : beemaxHome();
+	if (!serviceHome) {
+		throw new Error("systemd system service needs an explicit BEEMAX_HOME owned by BEEMAX_SERVICE_USER");
+	}
 	await mkdir(systemdDir, { recursive: true });
 	if (scope === "system") await mkdir("/etc/beemax", { recursive: true, mode: 0o700 });
-	await writeFile(join(systemdDir, "beemax@.service"), renderSystemdService(root, process.execPath, scope, serviceUser), { mode: 0o644 });
+	await writeFile(join(systemdDir, "beemax@.service"), renderSystemdService(root, process.execPath, scope, serviceUser, serviceHome), { mode: 0o644 });
 	await writeFile(join(systemdDir, "beemax.target"), renderSystemdTarget(scope), { mode: 0o644 });
 	const args = scope === "user" ? ["--user", "daemon-reload"] : ["daemon-reload"];
 	assertCommand(runner("systemctl", args), `systemctl ${args.join(" ")}`);

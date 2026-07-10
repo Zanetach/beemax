@@ -9,10 +9,12 @@ Type=simple
 User=beemax
 Group=beemax
 WorkingDirectory=/opt/beemax
+EnvironmentFile=-/var/lib/beemax/profiles/%i/.env
+EnvironmentFile=-/opt/beemax/config/profiles/%i.env
+EnvironmentFile=-/etc/beemax/%i.env
 Environment=NODE_ENV=production
 Environment=BEEMAX_PROFILE=%i
-EnvironmentFile=-/etc/beemax/%i.env
-ExecStart=/usr/bin/env npm run gateway -- --profile %i
+ExecStart=/usr/bin/env npm run gateway -- --profile %i --home /var/lib/beemax --root /opt/beemax
 Restart=on-failure
 RestartSec=5s
 TimeoutStopSec=60s
