@@ -6,6 +6,7 @@ import test from "node:test";
 import { MemoryStore } from "@beemax/memory";
 import { loadConfig } from "../dist/config.js";
 import { activeProfile } from "../dist/profile-home.js";
+import { curatedMemoryPrompt } from "../dist/curated-memory.js";
 import {
 	configureFeishuChannel,
 	configureModel,
@@ -27,6 +28,8 @@ test("profile creation and Feishu channel configuration keep secrets in a protec
 	assert.equal(paths.homePath, join(home, "profiles", "personal"));
 	assert.equal(paths.configPath, join(paths.homePath, "config.yaml"));
 	assert.match(await readFile(paths.soulPath, "utf8"), /private personal assistant/);
+	assert.equal(await readFile(join(paths.homePath, "USER.md"), "utf8"), "");
+	assert.equal(await readFile(join(paths.homePath, "MEMORY.md"), "utf8"), "");
 	assert.equal((await readFile(paths.envPath, "utf8")).trim(), "");
 	assert.equal((await stat(paths.homePath)).mode & 0o777, 0o700);
 	assert.deepEqual(await listProfiles(options), ["personal"]);
@@ -72,6 +75,16 @@ test("profile creation and Feishu channel configuration keep secrets in a protec
 	assert.doesNotMatch(await readFile(paths.envPath, "utf8"), /FEISHU_WEBHOOK_/);
 	await deleteProfile("personal", options);
 	assert.deepEqual(await listProfiles(options), []);
+});
+
+test("curated memory is bounded and rendered as a session snapshot", async () => {
+	const root = await mkdtemp(join(tmpdir(), "beemax-curated-memory-"));
+	await writeFile(join(root, "USER.md"), "Prefers concise Chinese reports.\n");
+	await writeFile(join(root, "MEMORY.md"), "A".repeat(2_300));
+	const prompt = curatedMemoryPrompt(root);
+	assert.match(prompt, /User profile/);
+	assert.match(prompt, /Prefers concise Chinese reports/);
+	assert.match(prompt, /\[truncated\]/);
 });
 
 test("Feishu credential probe reports non-JSON HTTP failures without leaking credentials", async () => {

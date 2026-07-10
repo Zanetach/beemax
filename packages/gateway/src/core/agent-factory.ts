@@ -44,7 +44,8 @@ export interface AgentFactoryOptions {
 	cwd: string;
 	agentDir: string;
 	getApiKey: (provider: string) => Promise<string | undefined> | string | undefined;
-	systemPrompt?: string;
+	/** Evaluated when a session is created, enabling a stable per-session memory snapshot. */
+	systemPrompt?: string | (() => string);
 	tools?: string[];
 	authorizeTool?: (request: ToolApprovalRequest, signal?: AbortSignal) => Promise<ToolApprovalDecision>;
 	getFeishuClient?: () => Client | undefined;
@@ -85,7 +86,8 @@ export function buildAgentFactory(opts: AgentFactoryOptions) {
 		if (apiKey) authStorage.setRuntimeApiKey(opts.provider, apiKey);
 
 		const settingsManager = SettingsManager.create(cwd, agentDir);
-		const channelPrompt = [opts.systemPrompt ?? DEFAULT_SYSTEM_PROMPT, channelContextFor(source)]
+		const configuredPrompt = typeof opts.systemPrompt === "function" ? opts.systemPrompt() : opts.systemPrompt;
+		const channelPrompt = [configuredPrompt ?? DEFAULT_SYSTEM_PROMPT, channelContextFor(source)]
 			.filter((part) => part.trim())
 			.join("\n\n");
 		const resourceLoader = new DefaultResourceLoader({

@@ -59,6 +59,8 @@ export async function createProfile(profile: string, options: ProfileStorageOpti
 		]);
 		await writeFile(join(temp, "config.yaml"), defaultProfileYaml(options.root ?? beemaxRoot()), { encoding: "utf8", mode: 0o600 });
 		await writeFile(join(temp, "SOUL.md"), `${DEFAULT_SOUL}\n`, { encoding: "utf8", mode: 0o600 });
+		await writeFile(join(temp, "USER.md"), "", { encoding: "utf8", mode: 0o600 });
+		await writeFile(join(temp, "MEMORY.md"), "", { encoding: "utf8", mode: 0o600 });
 		await writeEnvFile(join(temp, ".env"), {});
 		await installBuiltinSkills(temp, options.root ?? beemaxRoot());
 		await rename(temp, paths.homePath);
@@ -336,6 +338,8 @@ export async function migrateProfile(profile: string, options: ProfileStorageOpt
 			}
 		}
 		for (const directory of ["sessions", "skills", "cache", "state"]) await mkdir(join(temp, directory), { recursive: true });
+		await writeFile(join(temp, "USER.md"), "", { encoding: "utf8", mode: 0o600 });
+		await writeFile(join(temp, "MEMORY.md"), "", { encoding: "utf8", mode: 0o600 });
 		await installBuiltinSkills(temp, options.root ?? beemaxRoot());
 		await verifyMigratedProfile(temp, {
 			identity,

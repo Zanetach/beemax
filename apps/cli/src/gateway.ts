@@ -24,6 +24,7 @@ import { MemoryStore } from "@beemax/memory";
 import type { SessionSource } from "@beemax/gateway";
 import { beemaxHome, type BeeMaxConfig } from "./config.ts";
 import { acquireChannelLock } from "./channel-lock.ts";
+import { curatedMemoryPrompt } from "./curated-memory.ts";
 
 export async function runGateway(config: BeeMaxConfig): Promise<void> {
 	if (!config.feishu.appId || !config.feishu.appSecret) {
@@ -78,7 +79,7 @@ export async function runGateway(config: BeeMaxConfig): Promise<void> {
 		cwd: config.paths.cwd,
 		agentDir: config.paths.agentDir,
 		getApiKey: () => apiKey,
-		systemPrompt: buildSubagentSystemPrompt(config.agent.systemPrompt),
+		systemPrompt: () => buildSubagentSystemPrompt(profilePrompt(config)),
 		memoryStore: memory,
 		customTools: readOnlyMcpTools,
 		tools: [
@@ -99,7 +100,7 @@ export async function runGateway(config: BeeMaxConfig): Promise<void> {
 		cwd: config.paths.cwd,
 		agentDir: config.paths.agentDir,
 		getApiKey: () => apiKey,
-		systemPrompt: config.agent.systemPrompt,
+		systemPrompt: () => profilePrompt(config),
 		getFeishuClient: () => adapter.apiClient,
 		memoryStore: memory,
 		customTools: mcp.getTools(),
@@ -126,7 +127,7 @@ export async function runGateway(config: BeeMaxConfig): Promise<void> {
 		cwd: config.paths.cwd,
 		agentDir: config.paths.agentDir,
 		getApiKey: () => apiKey,
-		systemPrompt: config.agent.systemPrompt,
+		systemPrompt: () => profilePrompt(config),
 		getFeishuClient: () => adapter.apiClient,
 		memoryStore: memory,
 		automationStore: automation,
@@ -334,4 +335,10 @@ function apiKeyEnv(provider: string): string {
 		openrouter: "OPENROUTER_API_KEY",
 	};
 	return map[provider] ?? `${provider.toUpperCase().replace(/-/g, "_")}_API_KEY`;
+}
+
+function profilePrompt(config: BeeMaxConfig): string {
+	return [config.agent.systemPrompt, curatedMemoryPrompt(config.paths.agentDir)]
+		.filter((part): part is string => Boolean(part?.trim()))
+		.join("\n\n");
 }
