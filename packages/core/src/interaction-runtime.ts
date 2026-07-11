@@ -5,7 +5,7 @@ import { sessionIdForSource, sessionKeyForSource } from "./session-coordinator.t
 import type { ToolApprovalBroker } from "./tool-approval.ts";
 
 export type InteractionSurface = "chat" | "gateway" | "web";
-export type InteractionPhase = "idle" | "running" | "awaiting_approval" | "completed" | "failed" | "cancelled";
+export type InteractionPhase = "idle" | "running" | "queued" | "awaiting_approval" | "completed" | "failed" | "cancelled";
 
 /** Stable visibility and authorization boundary for an interaction session. */
 export interface InteractionScope {
@@ -231,7 +231,8 @@ export class InteractionEventAdapter<Source extends BeeMaxRuntimeSource = BeeMax
 	private async queue(source: Source, text: string, sink?: InteractionEventSink): Promise<InteractionQueueResult> {
 		const key = interactionKey(source);
 		const turnId = this.states.get(key)?.turnId;
-		if (!turnId || this.states.get(key)?.phase !== "running") return { queued: false, position: 0, replaced: false };
+		const phase = this.states.get(key)?.phase;
+		if (!turnId || (phase !== "running" && phase !== "queued")) return { queued: false, position: 0, replaced: false };
 		const replaced = this.queuedInputs.has(key);
 		this.queuedInputs.set(key, text);
 		await this.publish(source, turnId, { type: "turn.queued", position: 1, replaced }, sink);
@@ -285,7 +286,7 @@ export function reduceInteractionEvent(snapshot: InteractionSnapshot, event: Int
 	if (event.type === "turn.cancelled") return { ...snapshot, phase: "cancelled", turnId: event.turnId, updatedAt: event.at };
 	if (event.type === "approval.requested") return { ...snapshot, phase: "awaiting_approval", turnId: event.turnId, updatedAt: event.at };
 	if (event.type === "approval.resolved") return { ...snapshot, phase: "running", turnId: event.turnId, updatedAt: event.at };
-	if (event.type === "turn.queued") return { ...snapshot, updatedAt: event.at };
+	if (event.type === "turn.queued") return { ...snapshot, phase: "queued", turnId: event.turnId, updatedAt: event.at };
 	return { ...snapshot, updatedAt: event.at };
 }
 

@@ -80,6 +80,7 @@ test("interaction runtime owns a one-entry queue and clears it on cancellation",
 	const turn = interaction.dispatch({ type: "message.send", source, text: "first", input: { timeoutMs: 1_000 } });
 	await new Promise((resolve) => setImmediate(resolve));
 	assert.deepEqual(await interaction.dispatch({ type: "turn.queue", source, text: "second" }), { queued: true, position: 1, replaced: false });
+	assert.equal((await interaction.snapshot(source)).phase, "queued");
 	assert.deepEqual(await interaction.dispatch({ type: "turn.queue", source, text: "replacement" }), { queued: true, position: 1, replaced: true });
 	assert.equal((await interaction.snapshot(source)).queueDepth, 1);
 	const cancelled = await interaction.dispatch({ type: "turn.cancel", source });
