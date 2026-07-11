@@ -33,6 +33,7 @@ import { configuredApiKey } from "./provider-resolver.ts";
 import { executionPortFor, executionSafeTools } from "./execution-composition.ts";
 import { createProfileRuntime } from "./runtime-composition.ts";
 import { createProfileControlHandler } from "./profile-control.ts";
+import { localChatTextDelta } from "./local-chat-renderer.ts";
 import type { BeeMaxAgentRuntime } from "@beemax/core";
 import type { SessionSource } from "@beemax/gateway";
 import { existsSync } from "node:fs";
@@ -754,12 +755,8 @@ async function runChat(config: ReturnType<typeof loadConfig>): Promise<void> {
 			}
 			let streamed = "";
 			const result = await runtime.run({ source, text: trimmed, timeoutMs: 10 * 60_000, mode: "interactive" }, (event) => {
-				if (event.type !== "message_update" || event.message.role !== "assistant") return;
-				const text = (event.message.content as Array<{ type?: string; text?: string }>)
-					.filter((block) => block.type === "text")
-					.map((block) => block.text ?? "")
-					.join("");
-				if (text) { streamed = text; process.stdout.write(`\r${text}`); }
+				const delta = localChatTextDelta(event);
+				if (delta) { streamed += delta; process.stdout.write(delta); }
 			});
 			if (!streamed) process.stdout.write(result.answer);
 			process.stdout.write("\nbeemax> ");
