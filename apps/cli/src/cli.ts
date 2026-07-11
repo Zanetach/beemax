@@ -891,16 +891,17 @@ async function runChat(config: ReturnType<typeof loadConfig>, requestedMode: { f
 		sessionTools: (sessionSource) => subagents ? createSubagentTools(subagents, sessionSource) : [],
 	});
 	let runtime: BeeMaxAgentRuntime<SessionSource>;
+	let interactionAdapter: InteractionEventAdapter<SessionSource> | undefined;
 	runtime = createProfileRuntime(
 		{ maxSessions: config.agent.maxSessions, sessionIdleMs: config.agent.sessionIdleMs },
 		{
 			createAgent,
 			sessionCatalog: SessionCatalog.forAgentDir<SessionSource>(config.paths.agentDir),
 			context: createTaskAwareConversationContext(memory, { runtimeSnapshot: () => ({ model: `${config.model.provider}/${config.model.model}`, profile: config.profile }) }),
-			controlHandler: (input) => createProfileControlHandler(runtime, config)(input),
+			controlHandler: (input) => createProfileControlHandler(runtime, config, interactionAdapter)(input),
 		},
 	);
-	const interactionAdapter = new InteractionEventAdapter(runtime, {
+	interactionAdapter = new InteractionEventAdapter(runtime, {
 		profileId: config.profile,
 		approvalBroker: localApproval,
 		cancelSubagents: (sessionSource) => subagents?.cancelOwner(sessionSource) ?? 0,
@@ -1122,8 +1123,8 @@ async function runChat(config: ReturnType<typeof loadConfig>, requestedMode: { f
 			}
 			if (command?.kind === "stop") { await stop(); writePrompt(); return; }
 			if (command?.kind === "compact") {
-				const compacted = await runtime.compact(source);
-				process.stdout.write(`${compacted ? "Context compacted." : "No idle session is available to compact."}\n`);
+				const compacted = await interactionAdapter.dispatch({ type: "session.compact", source });
+				process.stdout.write(`${"compacted" in compacted && compacted.compacted ? "Context compacted." : "No idle session is available to compact."}\n`);
 				writePrompt();
 				return;
 			}

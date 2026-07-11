@@ -58,6 +58,7 @@ export type InteractionAction<Source extends BeeMaxRuntimeSource = BeeMaxRuntime
 	| { type: "approval.decide"; source: Source; choice: ToolApprovalChoice; actionId?: string }
 	| { type: "session.open"; source: Source; actionId?: string }
 	| { type: "session.reset"; source: Source; actionId?: string }
+	| { type: "session.compact"; source: Source; instructions?: string; actionId?: string }
 	| { type: "turn.cancel"; source: Source; actionId?: string };
 
 export interface InteractionCancelResult {
@@ -72,7 +73,8 @@ export interface InteractionQueueResult { queued: boolean; position: number; rep
 export interface InteractionApprovalResult { handled: boolean; }
 export interface InteractionSessionResult { opened: boolean; }
 export interface InteractionSessionResetResult { reset: boolean; }
-export type InteractionActionResult = AgentRunResult | InteractionCancelResult | InteractionQueueResult | InteractionApprovalResult | InteractionSessionResult | InteractionSessionResetResult;
+export interface InteractionSessionCompactResult { compacted: boolean; }
+export type InteractionActionResult = AgentRunResult | InteractionCancelResult | InteractionQueueResult | InteractionApprovalResult | InteractionSessionResult | InteractionSessionResetResult | InteractionSessionCompactResult;
 
 export interface InteractionSnapshot {
 	phase: InteractionPhase;
@@ -167,6 +169,7 @@ export class InteractionEventAdapter<Source extends BeeMaxRuntimeSource = BeeMax
 		if (action.type === "approval.decide") return { handled: await this.approvalBroker?.decide(action.source, action.choice) ?? false };
 		if (action.type === "session.open") return { opened: await this.runtime.open(action.source) };
 		if (action.type === "session.reset") return { reset: this.runtime.reset(action.source) };
+		if (action.type === "session.compact") return { compacted: await this.runtime.compact(action.source, action.instructions) };
 
 		const key = interactionKey(action.source);
 		if (sink) this.sinks.set(key, sink);

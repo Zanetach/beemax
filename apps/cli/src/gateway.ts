@@ -153,16 +153,17 @@ export async function runGateway(config: BeeMaxConfig): Promise<void> {
 	});
 
 	let runtime: BeeMaxAgentRuntime<SessionSource>;
+	let interaction: InteractionEventAdapter<SessionSource> | undefined;
 	runtime = createProfileRuntime(
 		{ maxSessions: config.agent.maxSessions, sessionIdleMs: config.agent.sessionIdleMs },
 		{
 			createAgent,
 			createAutomationAgent,
 			context: createTaskAwareConversationContext(memory, { recordDirectRoute: (route) => automation.setLastRoute(route), runtimeSnapshot: () => ({ model: `${config.model.provider}/${config.model.model}`, profile: config.profile }) }),
-			controlHandler: (input) => createProfileControlHandler(runtime, config)(input),
+			controlHandler: (input) => createProfileControlHandler(runtime, config, interaction)(input),
 		},
 	);
-	const interaction = new InteractionEventAdapter(runtime, {
+	interaction = new InteractionEventAdapter(runtime, {
 		profileId: config.profile,
 		approvalBroker,
 		cancelSubagents: (source) => subagents?.cancelOwner(source) ?? 0,

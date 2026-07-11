@@ -13,6 +13,7 @@ export type ProtocolInteractionAction =
 	| { type: "approval.decide"; choice: ToolApprovalChoice; actionId?: string }
 	| { type: "session.open"; actionId?: string }
 	| { type: "session.reset"; actionId?: string }
+	| { type: "session.compact"; instructions?: string; actionId?: string }
 	| { type: "turn.cancel"; actionId?: string };
 
 export type InteractionProtocolRequest =
@@ -62,7 +63,7 @@ export function parseInteractionProtocolRequest(value: unknown): InteractionProt
 	if (request.type === "events") return request.afterSequence === undefined || Number.isSafeInteger(request.afterSequence) ? request as InteractionProtocolRequest : undefined;
 	if (request.type !== "action" || !request.action || typeof request.action !== "object") return undefined;
 	const action = request.action as Record<string, unknown>;
-	if (!(["message.send", "turn.queue", "turn.steer", "approval.decide", "session.open", "session.reset", "turn.cancel"] as string[]).includes(String(action.type))) return undefined;
+	if (!(["message.send", "turn.queue", "turn.steer", "approval.decide", "session.open", "session.reset", "session.compact", "turn.cancel"] as string[]).includes(String(action.type))) return undefined;
 	if (action.type === "message.send") return typeof action.text === "string" && action.input && typeof action.input === "object" ? request as InteractionProtocolRequest : undefined;
 	if (action.type === "turn.queue" || action.type === "turn.steer") return typeof action.text === "string" ? request as InteractionProtocolRequest : undefined;
 	if (action.type === "approval.decide") return ["once", "session", "deny"].includes(String(action.choice)) ? request as InteractionProtocolRequest : undefined;

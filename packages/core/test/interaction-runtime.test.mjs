@@ -77,6 +77,17 @@ test("session reset is likewise a Core action and remains retry-safe", async () 
 	assert.equal(resets, 1);
 });
 
+test("session compaction is a Core action for all presenters", async () => {
+	let compactions = 0;
+	const runtime = {
+		async run() { return { answer: "ok", model: "test/model", durationMs: 1, usage: {} }; },
+		async compact() { compactions++; return true; }, async open() { return true; }, reset() { return false; }, async cancel() { return false; }, async modelStatus() { return undefined; }, async usage() { return undefined; },
+	};
+	const interaction = new InteractionEventAdapter(runtime);
+	assert.deepEqual(await interaction.dispatch({ type: "session.compact", source, actionId: "compact-1" }), { compacted: true });
+	assert.equal(compactions, 1);
+});
+
 test("interaction telemetry is operational-only and does not contain model content", async () => {
 	const telemetry = [];
 	const runtime = {

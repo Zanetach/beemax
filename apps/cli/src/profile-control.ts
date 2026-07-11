@@ -1,4 +1,4 @@
-import { getBuiltinModel, type AgentControlHandler, type Api, type Model } from "@beemax/core";
+import { getBuiltinModel, type AgentControlHandler, type Api, type InteractionEventAdapter, type Model } from "@beemax/core";
 import type { SessionSource } from "@beemax/gateway";
 import type { BeeMaxAgentRuntime } from "@beemax/core";
 import type { BeeMaxConfig } from "./config.ts";
@@ -10,13 +10,16 @@ import { join } from "node:path";
 export function createProfileControlHandler(
 	runtime: BeeMaxAgentRuntime<SessionSource>,
 	config: BeeMaxConfig,
+	interaction?: InteractionEventAdapter<SessionSource>,
 ): AgentControlHandler<SessionSource> {
 	return async ({ source, text }) => {
 		const command = text.trim().toLowerCase();
 		if (command === "/new" || command === "/reset") {
-			if (command === "/reset") runtime.reset(source);
+			if (command === "/reset") {
+				if (interaction) await interaction.dispatch({ type: "session.reset", source }); else runtime.reset(source);
+			}
 			const nextSource = { ...source, threadId: `conversation-${crypto.randomUUID()}` };
-			await runtime.open(nextSource);
+			if (interaction) await interaction.dispatch({ type: "session.open", source: nextSource }); else await runtime.open(nextSource);
 			return { handled: true, nextSource, message: `${command === "/reset" ? "Reset and started" : "Started"} new session: ${nextSource.threadId}` };
 		}
 		if (command === "/sessions") {
@@ -38,7 +41,7 @@ export function createProfileControlHandler(
 		if (resume) {
 			const nextSource = resume[1] === "default" ? { ...source, threadId: undefined } : { ...source, threadId: resume[1] };
 			if (!await runtime.hasSavedSession(nextSource)) return { handled: true, message: `Unknown session '${resume[1]}'. Use /sessions to list saved sessions.` };
-			await runtime.open(nextSource);
+			if (interaction) await interaction.dispatch({ type: "session.open", source: nextSource }); else await runtime.open(nextSource);
 			return { handled: true, nextSource, message: `Restored session: ${nextSource.threadId ?? "default"}.` };
 		}
 		const history = command.match(/^\/history(?:\s+(\d{1,3}))?$/);
@@ -53,7 +56,10 @@ export function createProfileControlHandler(
 			return { handled: true, message: command === "/usage" ? `Usage: ${usageText}` : `Profile: ${config.profile}\nModel: ${model?.model ?? `${config.model.provider}/${config.model.model}`}\nThinking: ${model?.thinkingLevel ?? "off"}\nRun: ${runtime.isBusy() ? "running" : "idle"}\nUsage: ${usageText}` };
 		}
 		if (command === "/compact") {
-			return { handled: true, message: await runtime.compact(source) ? "Context compacted." : "No idle session is available to compact." };
+			const compacted = interaction
+				? await interaction.dispatch({ type: "session.compact", source })
+				: { compacted: await runtime.compact(source) };
+			return { handled: true, message: "compacted" in compacted && compacted.compacted ? "Context compacted." : "No idle session is available to compact." };
 		}
 		if (!command.startsWith("/model")) return undefined;
 		const global = /\s--global\s*$/i.test(text);
