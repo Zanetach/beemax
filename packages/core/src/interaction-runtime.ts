@@ -94,6 +94,7 @@ export type InteractionTelemetryEvent =
 	| { type: "interaction.approval_resolved"; surface: string; decision: "allowed" | "denied"; latency: number }
 	| { type: "interaction.input_queued"; surface: string; mode: InteractionDeliveryMode; waitMs: number }
 	| { type: "interaction.model_fallback"; surface: string; from: string; to: string; attempt: number }
+	| { type: "interaction.planning_selected"; surface: string; mode: "direct" | "delegate" | "dag"; concurrency: number; maxSubagents: number; requiredToolCount: number }
 	| { type: "interaction.presenter_reconnected"; surface: string; gapEvents: number }
 	| { type: "interaction.session_resumed"; source: string; age: number };
 export type InteractionTelemetrySink = (event: InteractionTelemetryEvent) => void;
@@ -378,6 +379,7 @@ export class InteractionEventAdapter<Source extends BeeMaxRuntimeSource = BeeMax
 			this.telemetry({ type: "interaction.approval_resolved", surface: event.scope.platform, decision: event.allowed ? "allowed" : "denied", latency: Math.max(0, event.at - startedAt) });
 		} else if (event.type === "turn.queued") this.telemetry({ type: "interaction.input_queued", surface: event.scope.platform, mode: event.mode, waitMs: 0 });
 		else if (event.type === "model.fallback") this.telemetry({ type: "interaction.model_fallback", surface: event.scope.platform, from: event.from, to: event.to, attempt: event.attempt });
+		else if (event.type === "planning.selected") this.telemetry({ type: "interaction.planning_selected", surface: event.scope.platform, mode: event.mode, concurrency: event.concurrency, maxSubagents: event.maxSubagents, requiredToolCount: event.requiredTools.length });
 	}
 }
 

@@ -108,6 +108,21 @@ test("interaction telemetry is operational-only and does not contain model conte
 	assert.doesNotMatch(JSON.stringify(telemetry), /private/);
 });
 
+test("planning telemetry records only operational routing fields", async () => {
+	const telemetry = [];
+	const runtime = {
+		async run(_input, sink) {
+			await sink({ type: "planning_decision", mode: "dag", concurrency: 3, maxSubagents: 4, requiredTools: ["task_plan_execute"] });
+			return { answer: "private answer", model: "test/model", durationMs: 1, usage: {} };
+		},
+		async cancel() { return false; }, async modelStatus() { return undefined; }, async usage() { return undefined; },
+	};
+	const adapter = new InteractionEventAdapter(runtime, { telemetry: (event) => telemetry.push(event) });
+	await adapter.dispatch({ type: "message.send", source, text: "private prompt", input: { timeoutMs: 1_000 } });
+	assert.deepEqual(telemetry.filter((event) => event.type === "interaction.planning_selected"), [{ type: "interaction.planning_selected", surface: "cli", mode: "dag", concurrency: 3, maxSubagents: 4, requiredToolCount: 1 }]);
+	assert.doesNotMatch(JSON.stringify(telemetry), /private prompt|private answer/);
+});
+
 test("approval and queue telemetry includes required latency fields without content", async () => {
 	let rejectTurn;
 	const telemetry = [];
