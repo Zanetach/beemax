@@ -1,5 +1,5 @@
 import { readFile, stat } from "node:fs/promises";
-import type { ImageContent } from "@earendil-works/pi-ai";
+import type { ImageContent } from "@beemax/core";
 import type { InboundMessage } from "./types.ts";
 
 const MAX_IMAGE_BYTES = 20 * 1024 * 1024;

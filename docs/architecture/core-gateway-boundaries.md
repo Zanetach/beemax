@@ -116,6 +116,14 @@ adopts the same ownership distinction without copying either project verbatim.
    typed artifact through Core's neutral `MediaOutboxPort`; only Gateway workers
    upload it through `DeliveryPort`.
 5. Operations may inspect runtime health but may not execute Agent tools.
+6. Pi is the execution substrate behind `@beemax/core`. Capability packages,
+   Gateway and non-TUI application code consume Pi Agent/AI/Tool types only
+   through Core. The CLI presenter may depend directly on `pi-tui`, but it may
+   not own Agent execution.
+7. Before adding an Agent primitive, perform a Pi Capability Check: inspect Pi's
+   Agent, session, Tool, Skill, Provider, Images and event registries; reuse an
+   existing extension point when present, extend Pi for a generally reusable
+   primitive, and add BeeMax code only for product governance or durable state.
 
 ## Migration plan
 
@@ -142,7 +150,9 @@ adopts the same ownership distinction without copying either project verbatim.
 7. **Completed:** add architecture-boundary tests that prevent Core from
    importing Gateway/channel SDKs and prevent Gateway from re-absorbing Agent
    capability composition.
-8. **Next:** perform a release audit/package verification and add durable
+8. **Completed:** enforce Pi as a Core-private execution substrate for
+   capabilities and Gateway; allow only the CLI presenter to consume Pi TUI.
+9. **Next:** perform a release audit/package verification and add durable
    idempotency/queue adapters for multi-instance enterprise deployments.
 
 ## Acceptance criteria

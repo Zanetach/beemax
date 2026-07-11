@@ -2,10 +2,8 @@
 
 import { mkdir, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
-import { defineTool, type ToolDefinition } from "@earendil-works/pi-coding-agent";
-import { StringEnum } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
-import { MUTATING_TOOL_POLICY, withToolPolicy, type BeeMaxRuntimeSource, type MediaOutboxPort } from "@beemax/core";
+import { MUTATING_TOOL_POLICY, StringEnum, defineTool, withToolPolicy, type BeeMaxRuntimeSource, type MediaOutboxPort, type ToolDefinition } from "@beemax/core";
 
 const CODEX_URL = "https://chatgpt.com/backend-api/codex/responses";
 const SIZE = { landscape: "1536x1024", square: "1024x1024", portrait: "1024x1536" } as const;

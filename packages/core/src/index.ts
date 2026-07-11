@@ -10,7 +10,7 @@ export { StringEnum } from "@earendil-works/pi-ai";
 export { getSupportedThinkingLevels } from "@earendil-works/pi-ai";
 export { getBuiltinModel } from "@earendil-works/pi-ai/providers/all";
 export { builtinProviders } from "@earendil-works/pi-ai/providers/all";
-export type { Api, Model, ModelThinkingLevel } from "@earendil-works/pi-ai";
+export type { Api, ImageContent, Model, ModelThinkingLevel } from "@earendil-works/pi-ai";
 export {
 	AuthStorage,
 	createAgentSession,
