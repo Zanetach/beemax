@@ -7,7 +7,7 @@ import type { TaskLedger } from "./task-ledger.ts";
 import { MUTATING_TOOL_POLICY, READ_ONLY_TOOL_POLICY, withToolPolicy, type ToolPolicy } from "./tool-runtime.ts";
 import { TaskPlanRuntime } from "./task-plan-runtime.ts";
 
-export interface TaskOrchestrationOptions { maxConcurrent?: number; maxTasks?: number; planRuntime?: TaskPlanRuntime; verify?: TaskGraphVerifier; }
+export interface TaskOrchestrationOptions { maxConcurrent?: number; maxTasks?: number; maxCorrectiveAttempts?: number; planRuntime?: TaskPlanRuntime; verify?: TaskGraphVerifier; }
 
 /** Model-facing structured planning seam; Core owns validation and execution. */
 export function createTaskOrchestrationTools(
@@ -20,6 +20,7 @@ export function createTaskOrchestrationTools(
 	const ownerKey = conversationKey(source);
 	const maxTasks = Math.max(2, Math.min(Math.trunc(options.maxTasks ?? 12), 20));
 	const maxConcurrent = Math.max(1, Math.min(Math.trunc(options.maxConcurrent ?? 3), 10));
+	const maxCorrectiveAttempts = Math.max(0, Math.min(Math.trunc(options.maxCorrectiveAttempts ?? 1), 2));
 	const planRuntime = options.planRuntime ?? new TaskPlanRuntime();
 	const executeTool = defineTool({
 		name: "task_plan_execute",
@@ -51,7 +52,7 @@ export function createTaskOrchestrationTools(
 				tasks: params.tasks.map((task) => ({ id: ids.get(task.key)!, title: task.title, description: task.goal, acceptanceCriteria: task.acceptanceCriteria, kind: "delegated" as const, recoveryPolicy: "safe_retry" as const, idempotencyKey: `${planId}:${task.key}`, executionScope: { ...source } })),
 				dependencies,
 			});
-			const summary = await planRuntime.run(ownerKey, planId, signal, (planSignal) => graph.run([ownerKey], planId, execute, { maxConcurrent, signal: planSignal, executor: "subagent", verify: options.verify }));
+			const summary = await planRuntime.run(ownerKey, planId, signal, (planSignal) => graph.run([ownerKey], planId, execute, { maxConcurrent, maxCorrectiveAttempts, signal: planSignal, executor: "subagent", verify: options.verify }));
 			return result({ planId, ...summary, tasks: ledger.queryTasks({ ownerKeys: [ownerKey], planIds: [planId], limit: maxTasks }) });
 		},
 	});

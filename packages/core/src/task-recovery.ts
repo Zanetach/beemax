@@ -2,7 +2,7 @@ import { TaskGraph, type TaskGraphExecutor, type TaskGraphVerifier } from "./tas
 import type { TaskLedger, TaskRecord } from "./task-ledger.ts";
 import { TaskPlanRuntime } from "./task-plan-runtime.ts";
 
-export interface TaskRecoveryRunnerOptions { maxConcurrent?: number; signal?: AbortSignal; }
+export interface TaskRecoveryRunnerOptions { maxConcurrent?: number; maxCorrectiveAttempts?: number; signal?: AbortSignal; }
 export interface TaskRecoveryRunnerResult { plans: number; succeeded: number; failed: number; cancelled: number; blocked: string[]; }
 export interface TaskPlanRetryResult extends TaskRecoveryRunnerResult { prepared: number; }
 export interface TaskPlanCancelResult { active: number; tasks: number; }
@@ -37,7 +37,7 @@ export class TaskRecoveryRunner {
 		const plans = new Map<string, { ownerKey: string; planId: string }>();
 		for (const task of candidates) if (task.planId) plans.set(`${task.ownerKey}\0${task.planId}`, { ownerKey: task.ownerKey, planId: task.planId });
 		const results = await Promise.all([...plans.values()].map(({ ownerKey, planId }) => this.runtime.run(ownerKey, planId, options.signal, (signal) => new TaskGraph(this.ledger).run([ownerKey], planId, this.execute, {
-			maxConcurrent: options.maxConcurrent, signal, executor: "subagent", canExecute: recoverable, verify: this.verify,
+			maxConcurrent: options.maxConcurrent, maxCorrectiveAttempts: options.maxCorrectiveAttempts ?? 1, signal, executor: "subagent", canExecute: recoverable, verify: this.verify,
 		}))));
 		return results.reduce<TaskRecoveryRunnerResult>((summary, result) => ({
 			plans: summary.plans + 1,

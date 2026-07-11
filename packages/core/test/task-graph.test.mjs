@@ -99,6 +99,64 @@ test("TaskGraph persists accepted verification evidence with the successful Task
 	assert.equal(ledger.tasks.get("task").evidence, "ACCEPT\nPrimary record checked");
 });
 
+test("TaskGraph gives a dependent Task the verified results of its direct dependencies", async () => {
+	const ledger = memoryLedger();
+	const graph = new TaskGraph(ledger);
+	graph.createPlan({
+		id: "context-plan", ownerKey: "cli:local:local",
+		tasks: [{ id: "research", title: "Research" }, { id: "write", title: "Write" }],
+		dependencies: [{ taskId: "write", dependsOn: "research" }],
+	});
+	let dependencyContext;
+	const result = await graph.run(["cli:local:local"], "context-plan", async (task, _signal, context) => {
+		if (task.id === "write") dependencyContext = context.dependencies;
+		if (task.id === "write") assert.deepEqual(context.dependencies, [{ id: "research", title: "Research", result: "verified evidence", evidence: undefined }]);
+		return { output: task.id === "research" ? "verified evidence" : "final answer" };
+	});
+	assert.deepEqual(result, { succeeded: 2, failed: 0, cancelled: 0, blocked: [] });
+	assert.equal(dependencyContext.length, 1);
+});
+
+test("TaskGraph makes one bounded Corrective Attempt after Verification rejection", async () => {
+	const ledger = memoryLedger();
+	const graph = new TaskGraph(ledger);
+	graph.createPlan({ id: "correction-plan", ownerKey: "cli:local:local", tasks: [{ id: "task", title: "Task", acceptanceCriteria: "Cites a source" }] });
+	const contexts = [];
+	const result = await graph.run(["cli:local:local"], "correction-plan", async (_task, _signal, context) => {
+		contexts.push(context);
+		return { output: context.attempt === 1 ? "unsupported" : "supported [source]" };
+	}, {
+		maxCorrectiveAttempts: 1,
+		verify: async (_task, candidate) => candidate.output?.includes("[source]")
+			? { accepted: true, evidence: "source checked" }
+			: { accepted: false, feedback: "Add a primary source" },
+	});
+	assert.deepEqual(result, { succeeded: 1, failed: 0, cancelled: 0, blocked: [] });
+	assert.equal(contexts.length, 2);
+	assert.equal(contexts[0].attempt, 1);
+	assert.equal(contexts[0].verificationFeedback, undefined);
+	assert.equal(contexts[1].attempt, 2);
+	assert.equal(contexts[1].verificationFeedback, "Add a primary source");
+	assert.equal(contexts[1].previousResult, "unsupported");
+	assert.equal(ledger.runs.size, 2);
+	assert.deepEqual([...ledger.runs.values()].map((run) => run.status).sort(), ["failed", "succeeded"]);
+});
+
+test("TaskGraph stops after the configured Corrective Attempt budget is exhausted", async () => {
+	const ledger = memoryLedger();
+	const graph = new TaskGraph(ledger);
+	graph.createPlan({ id: "bounded-plan", ownerKey: "cli:local:local", tasks: [{ id: "task", title: "Task", acceptanceCriteria: "Passes the check" }] });
+	let executions = 0;
+	const result = await graph.run(["cli:local:local"], "bounded-plan", async () => { executions++; return { output: "still wrong" }; }, {
+		maxCorrectiveAttempts: 1,
+		verify: async () => ({ accepted: false, feedback: "Still wrong" }),
+	});
+	assert.deepEqual(result, { succeeded: 0, failed: 1, cancelled: 0, blocked: [] });
+	assert.equal(executions, 2);
+	assert.equal(ledger.runs.size, 2);
+	assert.match(ledger.tasks.get("task").error, /Still wrong/);
+});
+
 test("TaskGraph fails closed when criteria exist but no verifier is available", async () => {
 	const ledger = memoryLedger();
 	const graph = new TaskGraph(ledger);

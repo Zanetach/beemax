@@ -32,6 +32,10 @@ _Avoid_: Prompt, implementation steps, subjective quality
 An independent evaluation of a Task result against its Acceptance Criteria and available evidence; successful execution alone does not imply successful Verification.
 _Avoid_: Execution, self-report, model confidence
 
+**Corrective Attempt**:
+A new Task Run that revises a rejected result using Verification feedback while preserving the identity and responsibility of the original Task.
+_Avoid_: Recovery retry, model continuation, silent rewrite
+
 **Profile Task Scheduler**:
 The Profile-wide admission controller that shares delegated execution capacity across conversations and Task Plans.
 _Avoid_: Task queue, Sub-Agent manager, Task Plan runner

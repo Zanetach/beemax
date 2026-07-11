@@ -10,9 +10,11 @@ export interface TaskPlanInput {
 }
 export interface TaskGraphExecutionResult { output?: string; }
 export interface TaskGraphVerificationResult { accepted: boolean; feedback?: string; evidence?: string; }
-export type TaskGraphExecutor = (task: TaskRecord, signal?: AbortSignal) => Promise<TaskGraphExecutionResult>;
+export interface TaskGraphDependencyResult { id: string; title: string; result?: string; evidence?: string; }
+export interface TaskGraphExecutionContext { attempt: number; verificationFeedback?: string; previousResult?: string; dependencies: TaskGraphDependencyResult[]; }
+export type TaskGraphExecutor = (task: TaskRecord, signal?: AbortSignal, context?: TaskGraphExecutionContext) => Promise<TaskGraphExecutionResult>;
 export type TaskGraphVerifier = (task: TaskRecord, result: TaskGraphExecutionResult, signal?: AbortSignal) => Promise<TaskGraphVerificationResult>;
-export interface TaskGraphRunOptions { maxConcurrent?: number; signal?: AbortSignal; executor?: "agent" | "subagent"; leaseMs?: number; leaseHeartbeatMs?: number; canExecute?: (task: TaskRecord) => boolean; verify?: TaskGraphVerifier; }
+export interface TaskGraphRunOptions { maxConcurrent?: number; signal?: AbortSignal; executor?: "agent" | "subagent"; leaseMs?: number; leaseHeartbeatMs?: number; canExecute?: (task: TaskRecord) => boolean; verify?: TaskGraphVerifier; maxCorrectiveAttempts?: number; }
 export interface TaskGraphResult { succeeded: number; failed: number; cancelled: number; blocked: string[]; }
 interface ActiveTaskResult { execution: Promise<ActiveTaskResult>; outcome: "succeeded" | "failed" | "cancelled"; }
 
@@ -74,8 +76,9 @@ export class TaskGraph {
 			for (const edge of edges) dependencies.set(edge.taskId, [...(dependencies.get(edge.taskId) ?? []), edge.dependsOn]);
 			const ready = pending.filter((task) => (dependencies.get(task.id) ?? []).every((id) => byId.get(id)?.status === "succeeded"));
 			for (const task of ready.slice(0, Math.max(0, concurrency - active.size))) {
+				const dependencyResults = (dependencies.get(task.id) ?? []).map((id) => byId.get(id)!).map(({ id, title, result, evidence }) => ({ id, title, result, evidence }));
 				let execution!: Promise<ActiveTaskResult>;
-				execution = this.executeTask(task, execute, options).then((outcome) => ({ execution, outcome }));
+				execution = this.executeTask(task, dependencyResults, execute, options).then((outcome) => ({ execution, outcome }));
 				active.add(execution);
 			}
 			if (active.size > 0) {
@@ -92,46 +95,65 @@ export class TaskGraph {
 		}
 	}
 
-	private async executeTask(task: TaskRecord, execute: TaskGraphExecutor, options: TaskGraphRunOptions): Promise<"succeeded" | "failed" | "cancelled"> {
-		const startedAt = Date.now();
-		const runId = crypto.randomUUID();
-		this.ledger.transition(task.id, { status: "running", startedAt });
-		const leaseMs = Math.max(1_000, options.leaseMs ?? DEFAULT_EXECUTION_LEASE_MS);
-		this.ledger.recordRun({ id: runId, taskId: task.id, executor: options.executor ?? "agent", status: "running", startedAt, leaseExpiresAt: startedAt + leaseMs });
-		const leaseController = new AbortController();
-		const executionSignal = options.signal ? AbortSignal.any([options.signal, leaseController.signal]) : leaseController.signal;
-		const heartbeatMs = Math.max(1, options.leaseHeartbeatMs ?? Math.min(60_000, Math.max(1_000, Math.trunc(leaseMs / 3))));
-		const heartbeat = this.ledger.renewTaskRunLease ? setInterval(() => {
+	private async executeTask(task: TaskRecord, dependencies: TaskGraphDependencyResult[], execute: TaskGraphExecutor, options: TaskGraphRunOptions): Promise<"succeeded" | "failed" | "cancelled"> {
+		const taskStartedAt = Date.now();
+		this.ledger.transition(task.id, { status: "running", startedAt: taskStartedAt });
+		const maxCorrectiveAttempts = Math.max(0, Math.min(Math.trunc(options.maxCorrectiveAttempts ?? 0), 2));
+		let verificationFeedback: string | undefined;
+		let previousResult: string | undefined;
+		for (let attempt = 1; attempt <= maxCorrectiveAttempts + 1; attempt++) {
+			const startedAt = Date.now();
+			if (attempt > 1) this.ledger.transition(task.id, { status: "running", startedAt });
+			const runId = crypto.randomUUID();
+			const leaseMs = Math.max(1_000, options.leaseMs ?? DEFAULT_EXECUTION_LEASE_MS);
+			this.ledger.recordRun({ id: runId, taskId: task.id, executor: options.executor ?? "agent", status: "running", startedAt, leaseExpiresAt: startedAt + leaseMs });
+			const leaseController = new AbortController();
+			const executionSignal = options.signal ? AbortSignal.any([options.signal, leaseController.signal]) : leaseController.signal;
+			const heartbeatMs = Math.max(1, options.leaseHeartbeatMs ?? Math.min(60_000, Math.max(1_000, Math.trunc(leaseMs / 3))));
+			const heartbeat = this.ledger.renewTaskRunLease ? setInterval(() => {
+				try {
+					if (!this.ledger.renewTaskRunLease?.(runId, Date.now() + leaseMs)) leaseController.abort(new Error("Task Run Execution Lease could not be renewed"));
+				} catch (error) { leaseController.abort(error); }
+			}, heartbeatMs) : undefined;
+			leaseController.signal.addEventListener("abort", () => { if (heartbeat) clearInterval(heartbeat); }, { once: true });
 			try {
-				if (!this.ledger.renewTaskRunLease?.(runId, Date.now() + leaseMs)) leaseController.abort(new Error("Task Run Execution Lease could not be renewed"));
-			} catch (error) { leaseController.abort(error); }
-		}, heartbeatMs) : undefined;
-		leaseController.signal.addEventListener("abort", () => { if (heartbeat) clearInterval(heartbeat); }, { once: true });
-		try {
-			if (executionSignal.aborted) throw executionSignal.reason ?? new Error("Task Plan cancelled");
-			const result = await execute({ ...task, status: "running", startedAt }, executionSignal);
-			if (executionSignal.aborted) throw executionSignal.reason ?? new Error("Task execution interrupted");
-			let verificationEvidence: string | undefined;
-			if (task.acceptanceCriteria) {
-				if (!options.verify) throw new Error("Task verification unavailable for defined Acceptance Criteria");
-				const verification = await options.verify({ ...task, status: "running", startedAt }, result, executionSignal);
-				if (executionSignal.aborted) throw executionSignal.reason ?? new Error("Task verification interrupted");
-				if (!verification.accepted) throw new Error(`Task verification rejected: ${verification.feedback?.trim() || "Acceptance Criteria were not satisfied"}`);
-				verificationEvidence = verification.evidence?.slice(0, 5_000);
-			}
-			const finishedAt = Date.now();
-			const output = result.output?.slice(0, 50_000);
-			this.ledger.transition(task.id, { status: "succeeded", finishedAt, result: output, evidence: verificationEvidence });
-			this.ledger.transitionRun(runId, { status: "succeeded", finishedAt, output });
-			return "succeeded";
-		} catch (error) {
-			const finishedAt = Date.now();
-			const message = (error instanceof Error ? error.message : String(error)).slice(0, 5_000);
-			const status = options.signal?.aborted ? "cancelled" : "failed";
-			this.ledger.transition(task.id, { status, finishedAt, error: message });
-			this.ledger.transitionRun(runId, { status, finishedAt, error: message });
-			return status;
-		} finally { if (heartbeat) clearInterval(heartbeat); }
+				if (executionSignal.aborted) throw executionSignal.reason ?? new Error("Task Plan cancelled");
+				const result = await execute({ ...task, status: "running", startedAt: taskStartedAt }, executionSignal, { attempt, verificationFeedback, previousResult, dependencies });
+				if (executionSignal.aborted) throw executionSignal.reason ?? new Error("Task execution interrupted");
+				let verificationEvidence: string | undefined;
+				if (task.acceptanceCriteria) {
+					if (!options.verify) throw new Error("Task verification unavailable for defined Acceptance Criteria");
+					const verification = await options.verify({ ...task, status: "running", startedAt: taskStartedAt }, result, executionSignal);
+					if (executionSignal.aborted) throw executionSignal.reason ?? new Error("Task verification interrupted");
+					if (!verification.accepted) {
+						verificationFeedback = verification.feedback?.trim() || "Acceptance Criteria were not satisfied";
+						previousResult = result.output?.slice(0, 50_000);
+						const finishedAt = Date.now();
+						this.ledger.transitionRun(runId, { status: "failed", finishedAt, error: `Task verification rejected: ${verificationFeedback}` });
+						if (attempt <= maxCorrectiveAttempts) {
+							this.ledger.transition(task.id, { status: "pending", error: `Task verification rejected: ${verificationFeedback}` });
+							continue;
+						}
+						this.ledger.transition(task.id, { status: "failed", finishedAt, error: `Task verification rejected: ${verificationFeedback}` });
+						return "failed";
+					}
+					verificationEvidence = verification.evidence?.slice(0, 5_000);
+				}
+				const finishedAt = Date.now();
+				const output = result.output?.slice(0, 50_000);
+				this.ledger.transition(task.id, { status: "succeeded", finishedAt, result: output, evidence: verificationEvidence });
+				this.ledger.transitionRun(runId, { status: "succeeded", finishedAt, output });
+				return "succeeded";
+			} catch (error) {
+				const finishedAt = Date.now();
+				const message = (error instanceof Error ? error.message : String(error)).slice(0, 5_000);
+				const status = options.signal?.aborted ? "cancelled" : "failed";
+				this.ledger.transition(task.id, { status, finishedAt, error: message });
+				this.ledger.transitionRun(runId, { status, finishedAt, error: message });
+				return status;
+			} finally { if (heartbeat) clearInterval(heartbeat); }
+		}
+		return "failed";
 	}
 }
 
