@@ -21,19 +21,20 @@ export function localChatThinkingDelta(event: AgentSessionEvent): string | undef
 
 /** OpenClaw-style visibility control: raw thinking is opt-in and stays separate from the answer. */
 export class LocalReasoningPresenter {
-	private chunks = 0;
-	private chars = 0;
 	private visible = false;
 	private answerStarted = false;
 	private readonly display: ReasoningDisplay;
+	private readonly interactive: boolean;
 
-	constructor(display: ReasoningDisplay) { this.display = display; }
+	constructor(display: ReasoningDisplay, interactive = true) {
+		this.display = display;
+		this.interactive = interactive;
+	}
 
 	thinking(delta: string): string {
 		if (!delta || this.display === "off" || this.answerStarted) return "";
-		this.chunks++;
-		this.chars += delta.length;
 		if (this.display === "summary") {
+			if (!this.interactive) return "";
 			if (this.visible) return "";
 			this.visible = true;
 			return "\n思考中…";
@@ -49,7 +50,7 @@ export class LocalReasoningPresenter {
 		this.answerStarted = true;
 		if (!this.visible) return "";
 		if (this.display === "raw") return "\n\n";
-		return `\n思考完成（${this.chunks} 段，${this.chars} 字符；原始推理已隐藏）\n\n`;
+		return "\r\x1b[2K";
 	}
 }
 

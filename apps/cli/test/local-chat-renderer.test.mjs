@@ -28,7 +28,11 @@ test("reasoning visibility keeps raw thought separate and makes summaries opt-in
 	const summary = new LocalReasoningPresenter("summary");
 	assert.equal(summary.thinking("first"), "\n思考中…");
 	assert.equal(summary.thinking("second"), "");
-	assert.equal(summary.beforeAnswer(), "\n思考完成（2 段，11 字符；原始推理已隐藏）\n\n");
+	assert.equal(summary.beforeAnswer(), "\r\x1b[2K");
+
+	const pipedSummary = new LocalReasoningPresenter("summary", false);
+	assert.equal(pipedSummary.thinking("hidden"), "");
+	assert.equal(pipedSummary.beforeAnswer(), "");
 
 	const raw = new LocalReasoningPresenter("raw");
 	assert.equal(raw.thinking("first"), "\n思考：\nfirst");

@@ -823,7 +823,7 @@ async function runChat(config: ReturnType<typeof loadConfig>): Promise<void> {
 				continue;
 			}
 			let streamed = "";
-			const reasoning = new LocalReasoningPresenter(reasoningDisplay);
+			const reasoning = new LocalReasoningPresenter(reasoningDisplay, process.stdout.isTTY === true);
 			let answerStreamStarted = false;
 			const terminal = new StreamingTerminalMarkdown();
 			const result = await runtime.run({ source, text: trimmed, timeoutMs: 10 * 60_000, mode: "interactive" }, (event) => {
