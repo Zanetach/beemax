@@ -2,11 +2,12 @@ import { isIP } from "node:net";
 import { defineTool, type ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { MUTATING_TOOL_POLICY, READ_ONLY_TOOL_POLICY, withToolPolicy, type ToolPolicy } from "./tool-runtime.ts";
+import type { CredentialVault } from "./credential-vault.ts";
 
 const DEFAULT_CDP_URL = "http://127.0.0.1:9222";
 const MAX_TEXT_CHARS = 30_000;
 
-export interface BrowserToolsOptions { cdpUrl?: string; fetchImpl?: typeof fetch; }
+export interface BrowserToolsOptions { cdpUrl?: string; fetchImpl?: typeof fetch; credentials?: { ownerKey: string; vault: Pick<CredentialVault, "withSecret"> }; }
 
 /**
  * First-class, Chrome DevTools Protocol browser capability. Read operations
@@ -45,6 +46,14 @@ export function createBrowserTools(options: BrowserToolsOptions = {}): ToolDefin
 			const value = await evaluate(page.webSocketDebuggerUrl, expression, true) as { ok?: boolean; reason?: string };
 			return { text: value?.ok ? `Filled ${params.selector}` : `Could not fill ${params.selector}: ${value?.reason ?? "unknown error"}`, details: { selector: params.selector, url: page.url, ...value }, isError: !value?.ok };
 		}) }),
+		...(options.credentials ? [defineTool({ name: "browser_fill_credential", label: "Fill Browser Credential", description: "Fill a browser input from an encrypted Credential Ref without exposing its Secret. Requires approval.", parameters: Type.Object({ selector: Type.String({ minLength: 1, maxLength: 512 }), credentialRef: Type.String({ pattern: "^cred_[a-f0-9-]{36}$" }) }), execute: async (_id, params) => browserResult(async () => {
+			const page = await activePage(cdpUrl, fetchImpl);
+			const value = await options.credentials!.vault.withSecret(options.credentials!.ownerKey, params.credentialRef, "browser.fill", async (secret) => {
+				const expression = `(() => { const el = document.querySelector(${JSON.stringify(params.selector)}); if (!(el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement)) return { ok: false, reason: "not an input" }; el.value = ${JSON.stringify(secret)}; el.dispatchEvent(new Event("input", { bubbles: true })); el.dispatchEvent(new Event("change", { bubbles: true })); return { ok: true }; })()`;
+				return await evaluate(page.webSocketDebuggerUrl, expression, true) as { ok?: boolean; reason?: string };
+			});
+			return { text: value?.ok ? `Filled ${params.selector} using Credential Ref` : `Could not fill ${params.selector} using Credential Ref: ${value?.reason ?? "unknown error"}`, details: { selector: params.selector, credentialRef: params.credentialRef, url: page.url, ok: Boolean(value?.ok), reason: value?.reason }, isError: !value?.ok };
+		}) })] : []),
 		defineTool({ name: "browser_cookies", label: "Read Browser Cookies", description: "Read browser cookies for diagnostics. Sensitive: requires approval.", parameters: Type.Object({}), execute: async () => browserResult(async () => {
 			const page = await activePage(cdpUrl, fetchImpl);
 			const result = await cdp(page.webSocketDebuggerUrl, "Network.getAllCookies") as { cookies?: Array<{ name: string; domain: string; httpOnly: boolean; secure: boolean }> };
@@ -58,6 +67,7 @@ export function createBrowserTools(options: BrowserToolsOptions = {}): ToolDefin
 		browser_open: { ...MUTATING_TOOL_POLICY, risk: "medium", reversible: true, impact: "Navigates the managed browser and may contact an external website" },
 		browser_click: { ...MUTATING_TOOL_POLICY, impact: "Clicks a page element and may change external service state" },
 		browser_fill: { ...MUTATING_TOOL_POLICY, impact: "Places user-provided data into an external web page" },
+		browser_fill_credential: { ...MUTATING_TOOL_POLICY, impact: "Injects a protected Profile Credential into an external web page without revealing it to the Agent" },
 		browser_cookies: { ...MUTATING_TOOL_POLICY, sideEffect: "none", reversible: true, impact: "Reads sensitive browser cookie metadata" },
 	};
 	return tools.map((tool) => withToolPolicy(tool, policies[tool.name]!));

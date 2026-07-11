@@ -866,7 +866,7 @@ async function runChat(config: ReturnType<typeof loadConfig>, requestedMode: { f
 	const presentationMode: ChatPresentationMode = resolveChatPresentationMode({
 		...requestedMode, isInputTty: process.stdin.isTTY === true, isOutputTty: process.stdout.isTTY === true, term: process.env.TERM,
 	});
-	const { conversationKey, createSubagentTools, createTaskLedgerTools, createTaskOrchestrationTools, ProfileTaskScheduler, SubagentManager, TaskPlanNoticeDeliveryService, TaskPlanRuntime, TaskRecoveryRunner, TaskRecoveryService } = await import("@beemax/core");
+	const { conversationKey, createSubagentTools, createTaskLedgerTools, createTaskOrchestrationTools, FileCredentialVault, FileCredentialVaultAuditJournal, ProfileTaskScheduler, SubagentManager, TaskPlanNoticeDeliveryService, TaskPlanRuntime, TaskRecoveryRunner, TaskRecoveryService } = await import("@beemax/core");
 	const { loadMcpConfig, McpManager } = await import("@beemax/mcp-capability");
 	const { buildAgentFactory } = await import("./agent-factory.ts");
 	const { MemoryStore } = await import("@beemax/memory");
@@ -880,6 +880,8 @@ async function runChat(config: ReturnType<typeof loadConfig>, requestedMode: { f
 	const memory = new MemoryStore(config.memory.dbPath);
 	const mcp = new McpManager();
 	await mcp.connectAll(loadMcpConfig(config.mcp.configPath));
+	const credentialAudit = new FileCredentialVaultAuditJournal(join(config.paths.agentDir, "credential-audit.jsonl"));
+	const credentialVault = config.credentials.key ? new FileCredentialVault(config.credentials.vaultPath, Buffer.from(config.credentials.key, "base64"), credentialAudit.append.bind(credentialAudit)) : undefined;
 
 	let source: import("@beemax/gateway").SessionSource = {
 		platform: "cli",
@@ -941,6 +943,7 @@ async function runChat(config: ReturnType<typeof loadConfig>, requestedMode: { f
 		customTools: mcp.getTools(),
 		tools: executionSafeTools(config, mainAgentTools(config.agent.toolset, mcp.getTools().map((tool) => tool.name))),
 		authorizeTool: (request, signal) => localApproval.authorize(request, signal),
+		credentials: credentialVault ? { ownerKey: `profile:${config.profile}`, vault: credentialVault } : undefined,
 		sessionTools: (sessionSource) => [
 			...(subagents ? [
 				...createSubagentTools(subagents, sessionSource),

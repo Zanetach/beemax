@@ -44,6 +44,7 @@ export class FileCredentialVault implements CredentialVault {
 	}
 
 	put(input: CredentialInput, now = Date.now()): CredentialMetadata {
+		this.refresh();
 		const ownerKey = required(input.ownerKey, "ownerKey", 512);
 		const label = required(input.label, "label", 256);
 		const purpose = required(input.purpose, "purpose", 512);
@@ -56,10 +57,12 @@ export class FileCredentialVault implements CredentialVault {
 	}
 
 	list(ownerKey: string): CredentialMetadata[] {
+		this.refresh();
 		return this.records.filter((record) => record.ownerKey === ownerKey).map(metadata).sort((left, right) => right.updatedAt - left.updatedAt || left.ref.localeCompare(right.ref));
 	}
 
 	async withSecret<T>(ownerKey: string, ref: string, capability: string, consume: (secret: string) => T | Promise<T>, now = Date.now()): Promise<T> {
+		this.refresh();
 		if (!/^[a-z][a-z0-9._-]{1,63}$/.test(capability)) throw new Error("Credential access capability must be a stable non-sensitive identifier");
 		const record = this.records.find((candidate) => candidate.ref === ref && candidate.ownerKey === ownerKey);
 		if (!record) {
@@ -73,6 +76,7 @@ export class FileCredentialVault implements CredentialVault {
 	}
 
 	remove(ownerKey: string, ref: string, now = Date.now()): boolean {
+		this.refresh();
 		const index = this.records.findIndex((record) => record.ref === ref && record.ownerKey === ownerKey);
 		if (index < 0) return false;
 		this.records.splice(index, 1);
@@ -92,6 +96,8 @@ export class FileCredentialVault implements CredentialVault {
 		renameSync(temporary, this.path);
 		chmodSync(this.path, 0o600);
 	}
+
+	private refresh(): void { if (existsSync(this.path)) this.records = this.decrypt(readFileSync(this.path, "utf8")); }
 
 	private decrypt(serialized: string): StoredCredential[] {
 		try {

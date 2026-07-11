@@ -47,3 +47,15 @@ test("Credential Vault fails closed for a wrong key and invalidates a removed Cr
 		await assert.rejects(() => vault.withSecret("profile:personal", credential.ref, "login", async () => undefined), /not found/i);
 	} finally { rmSync(root, { recursive: true, force: true }); }
 });
+
+test("a long-running Credential Vault observes credentials added by another Profile process", async () => {
+	const root = mkdtempSync(join(tmpdir(), "beemax-credential-refresh-"));
+	const path = join(root, "credentials.vault");
+	try {
+		const gatewayVault = new FileCredentialVault(path, key);
+		const cliVault = new FileCredentialVault(path, key);
+		const credential = cliVault.put({ ownerKey: "profile:personal", label: "New account", purpose: "login", secret: "new-secret" }, 10);
+		assert.equal(gatewayVault.list("profile:personal")[0].ref, credential.ref);
+		assert.equal(await gatewayVault.withSecret("profile:personal", credential.ref, "browser.fill", async (secret) => secret === "new-secret"), true);
+	} finally { rmSync(root, { recursive: true, force: true }); }
+});

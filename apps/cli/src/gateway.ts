@@ -8,7 +8,7 @@
  */
 
 import { AutomationStore } from "@beemax/automation";
-import { AutomationScheduler, BeeMaxAgentRuntime, HeartbeatRunner, ProfileTaskScheduler, SubagentManager, TaskPlanNoticeDeliveryService, TaskPlanRuntime, TaskRecoveryRunner, TaskRecoveryService, ToolApprovalBroker, conversationKey, createSubagentTools, createTaskLedgerTools, createTaskOrchestrationTools, type SubagentTask, type TaskGraphExecutionContext, type TaskGraphVerifier, type TaskRecord } from "@beemax/core";
+import { AutomationScheduler, BeeMaxAgentRuntime, FileCredentialVault, FileCredentialVaultAuditJournal, HeartbeatRunner, ProfileTaskScheduler, SubagentManager, TaskPlanNoticeDeliveryService, TaskPlanRuntime, TaskRecoveryRunner, TaskRecoveryService, ToolApprovalBroker, conversationKey, createSubagentTools, createTaskLedgerTools, createTaskOrchestrationTools, type SubagentTask, type TaskGraphExecutionContext, type TaskGraphVerifier, type TaskRecord } from "@beemax/core";
 import {
 	Dispatcher,
 	FeishuAdapter,
@@ -91,6 +91,8 @@ export async function runGateway(config: BeeMaxConfig): Promise<void> {
 	const readOnlyMcpTools = mcp.getTools().filter((tool) => tool.beemaxPolicy?.sideEffect === "none");
 	const mainMcpTools = config.agent.toolset === "safe" ? readOnlyMcpTools : mcp.getTools();
 	const feishuMeetingTools = createFeishuMeetingTools(() => adapter.apiClient);
+	const credentialAudit = new FileCredentialVaultAuditJournal(join(config.paths.agentDir, "credential-audit.jsonl"));
+	const credentialVault = config.credentials.key ? new FileCredentialVault(config.credentials.vaultPath, Buffer.from(config.credentials.key, "base64"), credentialAudit.append.bind(credentialAudit)) : undefined;
 
 	let scheduler: AutomationScheduler | undefined;
 	const profileAgentDefaults = {
@@ -167,6 +169,7 @@ export async function runGateway(config: BeeMaxConfig): Promise<void> {
 			},
 		},
 		authorizeTool: (request, signal) => approvalBroker.authorize(request, signal),
+		credentials: credentialVault ? { ownerKey: `profile:${config.profile}`, vault: credentialVault } : undefined,
 	});
 
 	const createAutomationAgent = buildAgentFactory({
@@ -440,7 +443,7 @@ export function mainAgentTools(toolset: "safe" | "standard", mcpTools: string[])
 		...readOnly,
 		"bash", "edit", "write", "memory_remember", "memory_promote", "memory_reject", "memory_forget", "memory_understand", "memory_correct",
 		"browser_open", "browser_read",
-		"browser_click", "browser_fill", "browser_cookies",
+		"browser_click", "browser_fill", "browser_fill_credential", "browser_cookies",
 		"reminder_create", "schedule_create", "schedule_pause", "schedule_resume", "schedule_delete",
 		"skill_create", "skill_update", "task_spawn", "task_cancel", "image_generate",
 		"task_plan_execute",
