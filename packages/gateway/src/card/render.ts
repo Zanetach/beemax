@@ -32,7 +32,7 @@ export function renderCard(session: CardSession, opts: CardRenderOptions = {}): 
 	const status = renderStatus(session);
 	let primaryText = normalizeStreamText(session.answerText);
 	if (!primaryText) {
-		primaryText = session.status === "thinking" ? spinnerFrame() : normalizeStreamText(session.visibleMainText);
+		primaryText = session.status === "thinking" ? `处理中 ${spinnerFrame()}` : normalizeStreamText(session.visibleMainText);
 	}
 
 	// Cap tables at MAX_CARD_TABLES to avoid Feishu rejecting huge card payloads.
@@ -74,8 +74,8 @@ export function renderCard(session: CardSession, opts: CardRenderOptions = {}): 
 function renderStatus(session: CardSession): { subtitle: string; template: string; summary?: string } {
 	if (session.status === "completed") return { subtitle: "已完成", template: "green" };
 	if (session.status === "failed") return { subtitle: "处理失败", template: "red" };
-	if (normalizeStreamText(session.answerText).trim()) return { subtitle: "", summary: "生成中", template: "blue" };
-	return { subtitle: "", summary: "思考中", template: "indigo" };
+	if (normalizeStreamText(session.answerText).trim()) return { subtitle: "", summary: "处理中", template: "blue" };
+	return { subtitle: "", summary: "处理中", template: "indigo" };
 }
 
 function renderMainContent(text: string): Record<string, unknown>[] {
@@ -104,24 +104,14 @@ function renderTimeline(session: CardSession): Record<string, unknown>[] {
 		panelElements.push({
 			tag: "markdown",
 			element_id: "auxiliary_timeline_folded",
-			content: `> 已折叠 ${folded} 条早期思考/工具记录`,
+		content: `> 已折叠 ${folded} 条早期执行记录`,
 			text_size: "x-small",
 		});
 	}
 
 	for (let i = 0; i < all.length; i++) {
 		const entry = all[i];
-		if (entry.kind === "reasoning") {
-			const content = limitText(entry.content, MAX_REASONING_CHARS, "思考内容过长，已截断");
-			const lines = [`**${entry.title}** · ${entry.status}`];
-			if (content) lines.push(content);
-			panelElements.push({
-				tag: "markdown",
-				element_id: `auxiliary_timeline_reasoningentry_${i}`,
-				content: lines.join("\n"),
-				text_size: "small",
-			});
-		} else if (entry.kind === "tool") {
+		if (entry.kind === "tool") {
 			const detail = limitText(entry.detail, MAX_TOOL_RESULT_CHARS, "工具详情过长，已截断");
 			const lines = [`\`${entry.title}\` · ${entry.status}`];
 			if (detail) lines.push(detail);
@@ -151,7 +141,7 @@ function renderTimeline(session: CardSession): Record<string, unknown>[] {
 			element_id: "auxiliary_timeline",
 			expanded: false,
 			header: {
-				title: { tag: "plain_text", content: `思考与工具 · ${session.toolCount} 次工具调用` },
+				title: { tag: "plain_text", content: `执行详情 · ${session.toolCount} 次工具调用` },
 				vertical_align: "center",
 			},
 			border: { color: "grey", corner_radius: "5px" },
@@ -187,7 +177,7 @@ function limitText(text: string, limit: number, overflowLabel: string): string {
 
 function renderFooter(session: CardSession, fields?: string[]): string {
 	if (session.status === "failed") return "已停止";
-	if (session.status !== "completed") return `${spinnerFrame()} 生成中`;
+	if (session.status !== "completed") return `${spinnerFrame()} 处理中`;
 	const inputTokens = safeInt(session.tokens.input_tokens);
 	const outputTokens = safeInt(session.tokens.output_tokens);
 	const usedContext = safeInt(session.context.used_tokens);

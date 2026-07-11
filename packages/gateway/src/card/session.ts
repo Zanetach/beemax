@@ -23,6 +23,7 @@ export interface CardEventData {
 
 export class CardSession {
 	status: CardStatus = "thinking";
+	/** Protocol/debug-only reasoning. Never rendered in the default user card. */
 	thinkingText = "";
 	answerText = "";
 	tools = new Map<string, ToolState>();
@@ -40,8 +41,7 @@ export class CardSession {
 	}
 
 	get visibleMainText(): string {
-		if (this.status === "completed" || this.status === "failed") return this.answerText;
-		return this.answerText || this.thinkingText;
+		return this.answerText;
 	}
 
 	apply(event: string, data: CardEventData): boolean {
@@ -51,10 +51,7 @@ export class CardSession {
 			case "thinking.delta": {
 				const raw = String(data.text ?? "");
 				const delta = this.thinkingNormalizer.feed(raw);
-				if (delta) {
-					this.thinkingText += delta;
-					this.timeline.recordReasoning(delta);
-				}
+				if (delta) this.thinkingText += delta;
 				break;
 			}
 			case "answer.delta": {
