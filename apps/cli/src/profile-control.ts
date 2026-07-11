@@ -10,7 +10,16 @@ export function createProfileControlHandler(
 	config: BeeMaxConfig,
 ): AgentControlHandler<SessionSource> {
 	return async ({ source, text }) => {
-		if (!text.trim().toLowerCase().startsWith("/model")) return undefined;
+		const command = text.trim().toLowerCase();
+		if (command === "/status" || command === "/usage") {
+			const [model, usage] = await Promise.all([runtime.modelStatus(source), runtime.usage(source)]);
+			const usageText = usage ? `input=${usage.inputTokens}; output=${usage.outputTokens}; context=${usage.contextTokens ?? "?"}/${usage.contextWindow ?? "?"}` : "no live session";
+			return { handled: true, message: command === "/usage" ? `Usage: ${usageText}` : `Profile: ${config.profile}\nModel: ${model?.model ?? `${config.model.provider}/${config.model.model}`}\nThinking: ${model?.thinkingLevel ?? "off"}\nRun: ${runtime.isBusy() ? "running" : "idle"}\nUsage: ${usageText}` };
+		}
+		if (command === "/compact") {
+			return { handled: true, message: await runtime.compact(source) ? "Context compacted." : "No idle session is available to compact." };
+		}
+		if (!command.startsWith("/model")) return undefined;
 		const global = /\s--global\s*$/i.test(text);
 		const requested = text.trim().slice("/model".length).replace(/\s--global\s*$/i, "").trim();
 		if (!requested) {
