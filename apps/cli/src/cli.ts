@@ -78,7 +78,7 @@ async function main(): Promise<void> {
 				const profiles = parsed.options.all === true ? await listProfiles() : [gatewayProfile(parsed)];
 				for (const name of profiles) runServiceAction(parsed.positionals[1] as ServiceAction, name, undefined, process.platform, parsed.options.system === true ? "system" : "user");
 			} else if (parsed.positionals[1] === "health") {
-				if (!(await runDoctor(loadConfig(parsed.configPath, gatewayProfile(parsed))))) process.exitCode = 1;
+				if (!(await runDoctor(loadConfig(parsed.configPath, gatewayProfile(parsed)), { json: parsed.options.json === true }))) process.exitCode = 1;
 			} else if (!parsed.positionals[1] || parsed.positionals[1] === "run") {
 				await runGateway(loadConfig(parsed.configPath, gatewayProfile(parsed)));
 			} else throw new Error(`Unknown gateway action: ${parsed.positionals[1]}`);
@@ -90,7 +90,7 @@ async function main(): Promise<void> {
 			await runModelCommand(parsed);
 			break;
 		case "doctor":
-			if (!(await runDoctor(getConfig()))) process.exitCode = 1;
+			if (!(await runDoctor(getConfig(), { json: parsed.options.json === true }))) process.exitCode = 1;
 			break;
 		case "update":
 			await runUpdate(parsed);
@@ -581,7 +581,7 @@ async function runProfileCommand(parsed: ParsedArgs): Promise<void> {
 	if (!explicitConfig && !(await listProfiles()).includes(name)) throw new Error(`Agent profile ${name} does not exist`);
 	const config = loadConfig(explicitConfig, name);
 	if (action === "doctor") {
-		if (!(await runDoctor(config))) process.exitCode = 1;
+		if (!(await runDoctor(config, { json: parsed.options.json === true }))) process.exitCode = 1;
 		return;
 	}
 	if (action === "start") {
