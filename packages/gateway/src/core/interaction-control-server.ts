@@ -27,7 +27,12 @@ export class InteractionControlServer<Source extends BeeMaxRuntimeSource> {
 
 	async listen(): Promise<{ host: string; port: number }> {
 		if (this.server) throw new Error("Interaction control server is already listening");
-		this.server = createServer((request, response) => { void this.handle(request, response); });
+		this.server = createServer((request, response) => {
+			void this.handle(request, response).catch(() => {
+				if (!response.headersSent) this.respond(response, 500, { error: "internal_error" });
+				else response.end();
+			});
+		});
 		await new Promise<void>((resolve, reject) => this.server!.once("error", reject).listen(this.options.port, this.options.host, resolve));
 		const address = this.server.address();
 		if (!address || typeof address === "string") throw new Error("Interaction control server did not expose a TCP address");
