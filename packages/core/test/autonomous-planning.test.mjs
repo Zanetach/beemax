@@ -15,6 +15,20 @@ test("planning policy keeps simple conversational requests direct", () => {
 	assert.match(decision.reason, /simple|single/i);
 });
 
+test("planning policy does not over-delegate lightweight English or Chinese review requests", () => {
+	const policy = new AutonomousPlanningPolicy();
+	for (const prompt of ["Review this sentence", "Please look at this code snippet", "帮我看一下这段代码", "检查这句话是否通顺"]) {
+		assert.equal(policy.decide(prompt).mode, "direct", prompt);
+	}
+});
+
+test("planning policy consistently escalates substantial bilingual work", () => {
+	const policy = new AutonomousPlanningPolicy();
+	assert.equal(policy.decide("Research the official documentation deeply and produce an evidence-backed comparison report").mode, "delegate");
+	assert.equal(policy.decide("深入研究官方文档，形成有证据支持的完整报告").mode, "delegate");
+	assert.equal(policy.decide("全面审查 API、CLI 和安全模块，并行验证后汇总报告").mode, "dag");
+});
+
 test("planning policy delegates one substantial isolated work item", () => {
 	const policy = new AutonomousPlanningPolicy({ maxConcurrent: 8 });
 	const decision = policy.decide("Research the official documentation deeply and produce an evidence-backed comparison report");

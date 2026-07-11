@@ -13,6 +13,7 @@ export interface PlanningSignals {
 	requiresResearch: boolean;
 	requiresVerification: boolean;
 	requestsParallelism: boolean;
+	substantialWork: boolean;
 }
 
 export interface AutonomousPlanningDecision {
@@ -61,7 +62,7 @@ export class AutonomousPlanningPolicy {
 		let mode: AutonomousExecutionMode = "direct";
 		let reason = "Simple or single-step request; keep execution in the parent Agent";
 
-		if (signals.complexity >= 3 || signals.requiresResearch) {
+		if (signals.complexity >= 3 || (signals.requiresResearch && signals.substantialWork)) {
 			mode = "delegate";
 			reason = "One substantial isolated work item benefits from a fresh Sub-Agent context";
 		}
@@ -131,6 +132,7 @@ function inspectPrompt(prompt: string): PlanningSignals {
 	const requiresVerification = has(lower, /\b(verify|validate|test|evidence|acceptance|quality)\b|验证|测试|证据|验收|质量/);
 	const requestsParallelism = has(lower, /\b(parallel|concurrent|independent(?:ly)?)\b|并行|并发|独立/);
 	const synthesis = has(lower, /\b(synthesi[sz]e|combine|report|release|implement|build|refactor)\b|汇总|综合|报告|发布|实现|开发|重构/);
+	const substantialWork = has(lower, /\b(deep(?:ly)?|comprehensive|thorough|evidence[- ]backed|official documentation|full (?:audit|review|report)|across (?:the )?(?:project|codebase))\b|深入|深度|全面|完整报告|整个项目|全项目|证据支持/);
 	const orderedSteps = (prompt.match(/(?:^|\s)(?:\d+[.)]|[-*])\s/gm) ?? []).length;
 	const enumeratedItems = estimateIndependentItems(prompt);
 	const independentWorkItems = Math.max(
@@ -146,7 +148,7 @@ function inspectPrompt(prompt: string): PlanningSignals {
 	if (requestsParallelism) complexity += 2;
 	if (synthesis) complexity++;
 	if (independentWorkItems >= 3) complexity += 2;
-	return { complexity, independentWorkItems, requiresResearch, requiresVerification, requestsParallelism };
+	return { complexity, independentWorkItems, requiresResearch, requiresVerification, requestsParallelism, substantialWork };
 }
 
 function estimateIndependentItems(prompt: string): number {
