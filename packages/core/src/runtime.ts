@@ -67,13 +67,13 @@ export function buildBeeMaxRuntimeFactory(opts: BeeMaxRuntimeFactoryOptions) {
 	mkdirSync(sessionDir, { recursive: true });
 	const authStorage = AuthStorage.create(join(agentDir, "auth.json"));
 	const modelRegistry = ModelRegistry.create(authStorage, join(agentDir, "models.json"));
-	const resolvedModel = resolveModel(opts.provider, opts.model);
+	const resolvedModel = resolveModel(opts.provider, opts.model, opts.baseUrl);
 	const model = opts.baseUrl ? { ...resolvedModel, baseUrl: opts.baseUrl } : resolvedModel;
 	const approvalTools = new Set(["bash", "edit", "write", ...(opts.approvalTools ?? [])]);
 
 	return async (sessionId: string, source: BeeMaxRuntimeSource): Promise<AgentSession> => {
 		const apiKey = await opts.getApiKey(opts.provider);
-		if (apiKey) authStorage.setRuntimeApiKey(opts.provider, apiKey);
+		if (apiKey) authStorage.setRuntimeApiKey(model.provider, apiKey);
 		const settingsManager = SettingsManager.create(cwd, agentDir);
 		const configuredPrompt = typeof opts.systemPrompt === "function" ? opts.systemPrompt() : opts.systemPrompt;
 		const channelPrompt = [configuredPrompt, channelContextFor(source)].filter(Boolean).join("\n\n");
@@ -155,7 +155,22 @@ function hardBlockReason(toolName: string, args: unknown, cwd: string): string |
 	return undefined;
 }
 
-function resolveModel(provider: string, modelId: string): Model<Api> {
+function resolveModel(provider: string, modelId: string, baseUrl?: string): Model<Api> {
+	if (provider === "custom") {
+		if (!baseUrl) throw new Error("Custom OpenAI-compatible models require a Base URL");
+		return {
+			id: modelId,
+			name: modelId,
+			api: "openai-completions",
+			provider: "openai",
+			baseUrl,
+			reasoning: false,
+			input: ["text"],
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+			contextWindow: 128_000,
+			maxTokens: 8_192,
+		};
+	}
 	const get = getBuiltinModel as <P extends string, M extends string>(p: P, m: M) => Model<Api>;
 	const model = get(provider, modelId);
 	if (!model) throw new Error(`Could not resolve model ${provider}/${modelId} from the BeeMax runtime catalog`);

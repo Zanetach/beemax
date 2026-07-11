@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.0-preview.12
+
+- Fixed Custom OpenAI-compatible endpoints so Profile model IDs and Base URLs
+  create a Pi OpenAI-completions runtime and use `CUSTOM_API_KEY`.
+
 ## 0.1.0-preview.11
 
 - Fixed interactive provider selection so numeric menu choices resolve to the
