@@ -1,5 +1,6 @@
 /** Managed instruction-only Skill evolution is Core runtime policy. */
 import { mkdir, readFile, readdir, writeFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
 import { resolve, sep } from "node:path";
 import { defineTool, type ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
@@ -25,10 +26,10 @@ export function createSkillTools(agentDir: string, markReloadNeeded: () => void)
 		} }),
 	];
 }
-async function listSkills(root: string): Promise<Array<{ name: string; description: string }>> {
+async function listSkills(root: string): Promise<Array<{ name: string; description: string; sha256: string; managed: boolean }>> {
 	let entries: string[]; try { entries = await readdir(root); } catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return []; throw error; }
-	const result: Array<{ name: string; description: string }> = [];
-	for (const name of entries.sort()) { if (!SKILL_NAME.test(name)) continue; try { const content = await readFile(skillPath(root, name), "utf8"); result.push({ name, description: content.match(/^description:\s*(.+)$/m)?.[1]?.trim() ?? "(no description)" }); } catch { /* Ignore incomplete directories. */ } }
+	const result: Array<{ name: string; description: string; sha256: string; managed: boolean }> = [];
+	for (const name of entries.sort()) { if (!SKILL_NAME.test(name)) continue; try { const content = await readFile(skillPath(root, name), "utf8"); result.push({ name, description: content.match(/^description:\s*(.+)$/m)?.[1]?.trim() ?? "(no description)", sha256: createHash("sha256").update(content).digest("hex"), managed: /managed-by:\s*beemax\b/.test(content) }); } catch { /* Ignore incomplete directories. */ } }
 	return result;
 }
 function skillPath(root: string, name: string): string { if (!SKILL_NAME.test(name) || name.length > 64) throw new Error(`Invalid skill name: ${name}`); const path = resolve(root, name, "SKILL.md"); if (!path.startsWith(`${root}${sep}`)) throw new Error("Skill path escaped managed directory"); return path; }
