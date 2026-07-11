@@ -165,6 +165,11 @@ export class InteractionEventAdapter<Source extends BeeMaxRuntimeSource = BeeMax
 		if (turnId) await this.publish(source, turnId, { type: "approval.resolved", toolName, allowed });
 	}
 
+	/** Forward a presenter's approval reply through the Core interaction boundary. */
+	async handleApprovalReply(source: Source, text: string): Promise<boolean> {
+		return this.approvalBroker?.handleReply(source, text) ?? false;
+	}
+
 	async snapshot(source: Source): Promise<InteractionSnapshot> {
 		const current = this.states.get(interactionKey(source));
 		const [status, usage] = await Promise.all([this.runtime.modelStatus(source), this.runtime.usage(source)]);

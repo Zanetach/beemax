@@ -995,7 +995,7 @@ async function runChat(config: ReturnType<typeof loadConfig>, requestedMode: { f
 			const command = parseChatCommand(trimmed);
 			if (active) {
 				if (command?.kind === "stop") { await stop(); return; }
-				if (await localApproval.handleReply(source, trimmed)) return;
+				if (await interactionAdapter.handleApprovalReply(source, trimmed)) return;
 				if (command?.kind === "status") { process.stdout.write(`\n${await status()}\n`); return; }
 				const queued = await interactionAdapter.dispatch({ type: "turn.queue", source, text: trimmed });
 				if (!("queued" in queued) || !queued.queued) { process.stdout.write("\nCould not queue input because no active turn is available.\n"); return; }

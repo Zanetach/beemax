@@ -77,7 +77,7 @@ export class Dispatcher {
 			await this.platform.send(msg.source.chatId, `${outcome.cancelled ? "Stopped the active Agent turn" : "No active Agent turn"}${outcome.subagentsCancelled ? ` and cancelled ${outcome.subagentsCancelled} Sub-Agent task(s)` : ""}${outcome.approvalCancelled ? "; cancelled pending approval" : ""}.`);
 			return;
 		}
-		if (this.deps.approvalBroker && (await this.deps.approvalBroker.handleReply(effective.source, effective.text))) return;
+		if (await this.interaction.handleApprovalReply(effective.source, effective.text)) return;
 		const control = await this.runtime.handleControl({ source: effective.source, text: effective.text });
 		if (control?.handled) {
 			if (control.nextSource) this.setSessionOverride(msg.source, control.nextSource.threadId);
@@ -111,7 +111,7 @@ export class Dispatcher {
 		let result;
 		try {
 			result = await this.interaction.dispatch({ type: "message.send", source: msg.source, text: msg.text, input: { timeoutMs: this.turnTimeoutMs, mode: "interactive" } }, (event) => this.onInteractionEvent(event, card, flush, renderUpdate));
-			if ("cancelled" in result) throw new Error("Message dispatch did not produce an Agent result");
+			if (!("answer" in result)) throw new Error("Message dispatch did not produce an Agent result");
 		} catch (err) {
 			const errorText = err instanceof AgentRunError ? err.message : err instanceof Error ? err.message : String(err);
 			if (card.status !== "cancelled") card.apply("message.failed", { error: errorText });
