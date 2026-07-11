@@ -105,6 +105,28 @@ test("runtime Task ledger persists delegated lifecycle independently from memory
 	}
 });
 
+test("expired Task Run leases recover only explicitly idempotent safe-retry Tasks", () => {
+	const root = mkdtempSync(join(tmpdir(), "beemax-task-recovery-"));
+	const store = new MemoryStore(join(root, "memory.db"));
+	try {
+		store.record({ id: "safe", ownerKey: "cli:local:local", kind: "delegated", title: "Safe research", status: "running", recoveryPolicy: "safe_retry", idempotencyKey: "plan:safe", createdAt: 10, startedAt: 20 });
+		store.recordRun({ id: "safe-run", taskId: "safe", executor: "subagent", status: "running", startedAt: 20, leaseExpiresAt: 100 });
+		store.record({ id: "unsafe", ownerKey: "cli:local:local", kind: "delegated", title: "Unknown effect", status: "running", recoveryPolicy: "never", createdAt: 10, startedAt: 20 });
+		store.recordRun({ id: "unsafe-run", taskId: "unsafe", executor: "subagent", status: "running", startedAt: 20, leaseExpiresAt: 100 });
+		store.record({ id: "live", ownerKey: "cli:local:local", kind: "delegated", title: "Still leased", status: "running", recoveryPolicy: "safe_retry", idempotencyKey: "plan:live", createdAt: 10, startedAt: 20 });
+		store.recordRun({ id: "live-run", taskId: "live", executor: "subagent", status: "running", startedAt: 20, leaseExpiresAt: 300 });
+		assert.deepEqual(store.reconcileExpiredTaskRuns(200), { retried: 1, failed: 1 });
+		const tasks = new Map(store.queryTasks({ ownerKeys: ["cli:local:local"] }).map((task) => [task.id, task]));
+		assert.equal(tasks.get("safe").status, "pending");
+		store.transition("safe", { status: "running", startedAt: 210 });
+		assert.equal(store.queryTasks({ ownerKeys: ["cli:local:local"], id: "safe" })[0].error, undefined);
+		assert.equal(tasks.get("unsafe").status, "failed");
+		assert.equal(tasks.get("live").status, "running");
+		assert.equal(store.taskRuns("safe")[0].status, "failed");
+		assert.match(store.taskRuns("safe")[0].error, /interrupted/i);
+	} finally { store.close(); rmSync(root, { recursive: true, force: true }); }
+});
+
 test("legacy task facts migrate once into objective Tasks", () => {
 	const root = mkdtempSync(join(tmpdir(), "beemax-legacy-task-migration-"));
 	const path = join(root, "memory.db");

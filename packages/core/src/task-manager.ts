@@ -49,6 +49,7 @@ export interface SubagentManagerOptions {
 }
 
 const TERMINAL = new Set<SubagentTaskStatus>(["completed", "failed", "cancelled"]);
+const EXECUTION_LEASE_GRACE_MS = 60_000;
 
 export class SubagentManager {
 	private readonly tasks = new Map<string, ManagedTask>();
@@ -229,7 +230,7 @@ export class SubagentManager {
 		task.startedAt = Date.now();
 		this.taskLedger?.transition(task.id, { status: "running", startedAt: task.startedAt });
 		task.runId = crypto.randomUUID();
-		this.taskLedger?.recordRun({ id: task.runId, taskId: task.id, executor: "subagent", status: "running", startedAt: task.startedAt });
+		this.taskLedger?.recordRun({ id: task.runId, taskId: task.id, executor: "subagent", status: "running", startedAt: task.startedAt, ...(this.defaultTimeoutMs > 0 ? { leaseExpiresAt: task.startedAt + this.defaultTimeoutMs + EXECUTION_LEASE_GRACE_MS } : {}) });
 		task.controller = suppliedController ?? new AbortController();
 		const timer = this.defaultTimeoutMs > 0 ? setTimeout(() => {
 			task.stopReason = "timeout";

@@ -194,6 +194,9 @@ export class MemoryStore {
 				owner_key TEXT NOT NULL,
 				kind TEXT NOT NULL CHECK (kind IN ('objective', 'delegated', 'automation')),
 				title TEXT NOT NULL,
+				description TEXT,
+				recovery_policy TEXT NOT NULL DEFAULT 'never' CHECK (recovery_policy IN ('never', 'safe_retry')),
+				idempotency_key TEXT,
 				status TEXT NOT NULL CHECK (status IN ('pending', 'running', 'succeeded', 'failed', 'cancelled')),
 				parent_id TEXT,
 				plan_id TEXT,
@@ -212,6 +215,7 @@ export class MemoryStore {
 				executor TEXT NOT NULL CHECK (executor IN ('agent', 'subagent', 'automation')),
 				status TEXT NOT NULL CHECK (status IN ('running', 'succeeded', 'failed', 'cancelled')),
 				started_at INTEGER NOT NULL,
+				lease_expires_at INTEGER,
 				finished_at INTEGER,
 				output TEXT,
 				error TEXT
@@ -283,8 +287,11 @@ export class MemoryStore {
 		`);
 		this.addColumnIfMissing("tasks", "evidence", "TEXT");
 		this.addColumnIfMissing("tasks", "description", "TEXT");
+		this.addColumnIfMissing("tasks", "recovery_policy", "TEXT NOT NULL DEFAULT 'never'");
+		this.addColumnIfMissing("tasks", "idempotency_key", "TEXT");
 		this.addColumnIfMissing("tasks", "plan_id", "TEXT");
 		this.addColumnIfMissing("tasks", "updated_at", "INTEGER NOT NULL DEFAULT 0");
+		this.addColumnIfMissing("task_runs", "lease_expires_at", "INTEGER");
 		this.addColumnIfMissing("memory_claims", "superseded_by", "TEXT REFERENCES memory_claims(id)");
 		this.addColumnIfMissing("memory_evidence", "event_id", "TEXT REFERENCES memory_events(id)");
 		this.db.exec(`INSERT OR IGNORE INTO tasks (id, owner_key, kind, title, status, evidence, created_at, finished_at, updated_at)
@@ -605,20 +612,25 @@ export class MemoryStore {
 	}
 
 	record(task: RuntimeTaskRecord): void {
-		this.db.prepare(`INSERT INTO tasks (id, owner_key, kind, title, description, status, parent_id, plan_id, evidence, created_at, started_at, finished_at, result, error, updated_at)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-			.run(task.id, task.ownerKey, task.kind, task.title, task.description ?? null, task.status, task.parentId ?? null, task.planId ?? null, task.evidence ?? null, task.createdAt, task.startedAt ?? null, task.finishedAt ?? null, task.result ?? null, task.error ?? null, task.createdAt);
+		this.db.prepare(`INSERT INTO tasks (id, owner_key, kind, title, description, recovery_policy, idempotency_key, status, parent_id, plan_id, evidence, created_at, started_at, finished_at, result, error, updated_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+			.run(task.id, task.ownerKey, task.kind, task.title, task.description ?? null, task.recoveryPolicy ?? "never", task.idempotencyKey ?? null, task.status, task.parentId ?? null, task.planId ?? null, task.evidence ?? null, task.createdAt, task.startedAt ?? null, task.finishedAt ?? null, task.result ?? null, task.error ?? null, task.createdAt);
 	}
 
 	transition(id: string, change: TaskTransition): void {
-		const result = this.db.prepare(`UPDATE tasks SET status = ?, started_at = COALESCE(?, started_at), finished_at = COALESCE(?, finished_at), result = COALESCE(?, result), error = COALESCE(?, error), updated_at = ? WHERE id = ?`)
-			.run(change.status, change.startedAt ?? null, change.finishedAt ?? null, change.result ?? null, change.error ?? null, Date.now(), id);
+		const result = this.db.prepare(`UPDATE tasks SET status = ?,
+			started_at = CASE WHEN ? = 'pending' THEN NULL ELSE COALESCE(?, started_at) END,
+			finished_at = CASE WHEN ? IN ('pending', 'running') THEN NULL ELSE COALESCE(?, finished_at) END,
+			result = CASE WHEN ? IN ('pending', 'running') THEN NULL ELSE COALESCE(?, result) END,
+			error = CASE WHEN ? IN ('running', 'succeeded') THEN NULL ELSE COALESCE(?, error) END,
+			updated_at = ? WHERE id = ?`)
+			.run(change.status, change.status, change.startedAt ?? null, change.status, change.finishedAt ?? null, change.status, change.result ?? null, change.status, change.error ?? null, Date.now(), id);
 		if (result.changes !== 1) throw new Error(`Task not found: ${id}`);
 	}
 
 	recordRun(run: TaskRunRecord): void {
-		this.db.prepare("INSERT INTO task_runs (id, task_id, executor, status, started_at, finished_at, output, error) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
-			.run(run.id, run.taskId, run.executor, run.status, run.startedAt, run.finishedAt ?? null, run.output ?? null, run.error ?? null);
+		this.db.prepare("INSERT INTO task_runs (id, task_id, executor, status, started_at, lease_expires_at, finished_at, output, error) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")
+			.run(run.id, run.taskId, run.executor, run.status, run.startedAt, run.leaseExpiresAt ?? null, run.finishedAt ?? null, run.output ?? null, run.error ?? null);
 	}
 
 	transitionRun(id: string, change: TaskRunTransition): void {
@@ -656,6 +668,27 @@ export class MemoryStore {
 		if (taskIds.length === 0) return [];
 		return this.db.prepare(`SELECT task_id, depends_on FROM task_dependencies WHERE task_id IN (${taskIds.map(() => "?").join(", ")})`)
 			.all(...taskIds).map((row) => ({ taskId: (row as { task_id: string }).task_id, dependsOn: (row as { depends_on: string }).depends_on }));
+	}
+
+	reconcileExpiredTaskRuns(now = Date.now()): { retried: number; failed: number } {
+		return this.db.transaction(() => {
+			const rows = this.db.prepare(`SELECT r.id AS run_id, r.task_id, t.recovery_policy, t.idempotency_key
+				FROM task_runs r JOIN tasks t ON t.id = r.task_id
+				WHERE r.status = 'running' AND r.lease_expires_at IS NOT NULL AND r.lease_expires_at <= ?`).all(now) as Array<{ run_id: string; task_id: string; recovery_policy: string; idempotency_key: string | null }>;
+			let retried = 0; let failed = 0;
+			const reason = "Task Run interrupted after its Execution Lease expired";
+			for (const row of rows) {
+				this.db.prepare("UPDATE task_runs SET status = 'failed', finished_at = ?, error = ? WHERE id = ? AND status = 'running'").run(now, reason, row.run_id);
+				if (row.recovery_policy === "safe_retry" && row.idempotency_key) {
+					const changed = this.db.prepare("UPDATE tasks SET status = 'pending', started_at = NULL, finished_at = NULL, result = NULL, error = ?, updated_at = ? WHERE id = ? AND status = 'running'").run(reason, now, row.task_id).changes;
+					retried += changed;
+				} else {
+					const changed = this.db.prepare("UPDATE tasks SET status = 'failed', finished_at = ?, error = ?, updated_at = ? WHERE id = ? AND status = 'running'").run(now, reason, now, row.task_id).changes;
+					failed += changed;
+				}
+			}
+			return { retried, failed };
+		})();
 	}
 
 	forget(id: string, opts: Omit<RecallOptions, "limit"> = {}): boolean {
@@ -760,13 +793,13 @@ interface EventRow {
 }
 
 interface RuntimeTaskRow {
-	id: string; owner_key: string; kind: RuntimeTaskRecord["kind"]; title: string; description: string | null; status: RuntimeTaskRecord["status"];
+	id: string; owner_key: string; kind: RuntimeTaskRecord["kind"]; title: string; description: string | null; recovery_policy: RuntimeTaskRecord["recoveryPolicy"]; idempotency_key: string | null; status: RuntimeTaskRecord["status"];
 	parent_id: string | null; plan_id: string | null; evidence: string | null; created_at: number; started_at: number | null; finished_at: number | null; result: string | null; error: string | null;
 }
 
 interface TaskRunRow {
 	id: string; task_id: string; executor: TaskRunRecord["executor"]; status: TaskRunRecord["status"];
-	started_at: number; finished_at: number | null; output: string | null; error: string | null;
+	started_at: number; lease_expires_at: number | null; finished_at: number | null; output: string | null; error: string | null;
 }
 
 function mapRow(row: MemoryRow): MemoryRecord {
@@ -810,6 +843,8 @@ function mapRuntimeTask(row: RuntimeTaskRow): RuntimeTaskRecord {
 		id: row.id, ownerKey: row.owner_key, kind: row.kind, title: row.title, status: row.status,
 		createdAt: row.created_at,
 		...(row.description === null ? {} : { description: row.description }),
+		...(row.recovery_policy === "never" || row.recovery_policy === undefined ? {} : { recoveryPolicy: row.recovery_policy }),
+		...(row.idempotency_key === null ? {} : { idempotencyKey: row.idempotency_key }),
 		...(row.parent_id === null ? {} : { parentId: row.parent_id }),
 		...(row.plan_id === null ? {} : { planId: row.plan_id }),
 		...(row.evidence === null ? {} : { evidence: row.evidence }),
@@ -823,6 +858,7 @@ function mapRuntimeTask(row: RuntimeTaskRow): RuntimeTaskRecord {
 function mapTaskRun(row: TaskRunRow): TaskRunRecord {
 	return {
 		id: row.id, taskId: row.task_id, executor: row.executor, status: row.status, startedAt: row.started_at,
+		...(row.lease_expires_at === null ? {} : { leaseExpiresAt: row.lease_expires_at }),
 		...(row.finished_at === null ? {} : { finishedAt: row.finished_at }),
 		...(row.output === null ? {} : { output: row.output }),
 		...(row.error === null ? {} : { error: row.error }),

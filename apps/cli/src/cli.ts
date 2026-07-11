@@ -839,6 +839,8 @@ async function runChat(config: ReturnType<typeof loadConfig>, requestedMode: { f
 		if (presentationMode !== "full") process.stdout.write(`\n${text}\n`);
 	});
 	const memory = new MemoryStore(config.memory.dbPath);
+	const recoveredTasks = memory.reconcileExpiredTaskRuns();
+	if (recoveredTasks.retried || recoveredTasks.failed) process.stdout.write(`Recovered interrupted Tasks: retry=${recoveredTasks.retried}; failed=${recoveredTasks.failed}.\n`);
 	const mcp = new McpManager();
 	await mcp.connectAll(loadMcpConfig(config.mcp.configPath));
 

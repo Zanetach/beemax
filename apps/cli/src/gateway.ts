@@ -68,6 +68,8 @@ export async function runGateway(config: BeeMaxConfig): Promise<void> {
 	try {
 
 	const memory = new MemoryStore(config.memory.dbPath);
+	const recoveredTasks = memory.reconcileExpiredTaskRuns();
+	if (recoveredTasks.retried || recoveredTasks.failed) console.info(`[beemax] reconciled interrupted Task Runs: retry=${recoveredTasks.retried}; failed=${recoveredTasks.failed}`);
 	startupCleanup.push(() => memory.close());
 	const automation = new AutomationStore(config.memory.dbPath);
 	startupCleanup.push(() => automation.close());

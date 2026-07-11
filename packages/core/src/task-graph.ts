@@ -1,13 +1,15 @@
 import type { TaskDependency, TaskLedger, TaskRecord } from "./task-ledger.ts";
 
+const DEFAULT_EXECUTION_LEASE_MS = 61 * 60_000;
+
 export interface TaskPlanInput {
 	id: string;
 	ownerKey: string;
-	tasks: Array<{ id: string; title: string; description?: string; kind?: TaskRecord["kind"]; parentId?: string }>;
+	tasks: Array<{ id: string; title: string; description?: string; kind?: TaskRecord["kind"]; parentId?: string; recoveryPolicy?: TaskRecord["recoveryPolicy"]; idempotencyKey?: string }>;
 	dependencies?: TaskDependency[];
 }
 export type TaskGraphExecutor = (task: TaskRecord, signal?: AbortSignal) => Promise<{ output?: string }>;
-export interface TaskGraphRunOptions { maxConcurrent?: number; signal?: AbortSignal; executor?: "agent" | "subagent"; }
+export interface TaskGraphRunOptions { maxConcurrent?: number; signal?: AbortSignal; executor?: "agent" | "subagent"; leaseMs?: number; }
 export interface TaskGraphResult { succeeded: number; failed: number; cancelled: number; blocked: string[]; }
 interface ActiveTaskResult { execution: Promise<ActiveTaskResult>; outcome: "succeeded" | "failed" | "cancelled"; }
 
@@ -40,6 +42,7 @@ export class TaskGraph {
 			id: task.id, ownerKey: input.ownerKey, kind: task.kind ?? "delegated", title: task.title,
 			status: "pending", planId: input.id, createdAt: now,
 			...(task.description ? { description: task.description } : {}), ...(task.parentId ? { parentId: task.parentId } : {}),
+			...(task.recoveryPolicy ? { recoveryPolicy: task.recoveryPolicy } : {}), ...(task.idempotencyKey ? { idempotencyKey: task.idempotencyKey } : {}),
 		}));
 		this.ledger.recordPlan(tasks, dependencies);
 		return tasks;
@@ -88,7 +91,8 @@ export class TaskGraph {
 		const startedAt = Date.now();
 		const runId = crypto.randomUUID();
 		this.ledger.transition(task.id, { status: "running", startedAt });
-		this.ledger.recordRun({ id: runId, taskId: task.id, executor: options.executor ?? "agent", status: "running", startedAt });
+		const leaseMs = Math.max(1_000, options.leaseMs ?? DEFAULT_EXECUTION_LEASE_MS);
+		this.ledger.recordRun({ id: runId, taskId: task.id, executor: options.executor ?? "agent", status: "running", startedAt, leaseExpiresAt: startedAt + leaseMs });
 		try {
 			if (options.signal?.aborted) throw options.signal.reason ?? new Error("Task Plan cancelled");
 			const result = await execute({ ...task, status: "running", startedAt }, options.signal);

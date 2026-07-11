@@ -1,5 +1,6 @@
 export type TaskKind = "objective" | "delegated" | "automation";
 export type TaskStatus = "pending" | "running" | "succeeded" | "failed" | "cancelled";
+export type TaskRecoveryPolicy = "never" | "safe_retry";
 
 /** Durable responsibility, independent of the worker or channel executing it. */
 export interface TaskRecord {
@@ -8,6 +9,8 @@ export interface TaskRecord {
 	kind: TaskKind;
 	title: string;
 	description?: string;
+	recoveryPolicy?: TaskRecoveryPolicy;
+	idempotencyKey?: string;
 	status: TaskStatus;
 	parentId?: string;
 	planId?: string;
@@ -28,11 +31,13 @@ export interface TaskRunRecord {
 	executor: "agent" | "subagent" | "automation";
 	status: TaskRunStatus;
 	startedAt: number;
+	leaseExpiresAt?: number;
 	finishedAt?: number;
 	output?: string;
 	error?: string;
 }
 export type TaskRunTransition = Pick<TaskRunRecord, "status"> & Partial<Pick<TaskRunRecord, "finishedAt" | "output" | "error">>;
+export interface TaskRecoveryResult { retried: number; failed: number; }
 export interface TaskQuery {
 	ownerKeys: string[];
 	id?: string;
@@ -53,4 +58,5 @@ export interface TaskLedger {
 	taskRuns(taskId: string): TaskRunRecord[];
 	recordPlan(tasks: TaskRecord[], dependencies: TaskDependency[]): void;
 	taskDependencies(taskIds: string[]): TaskDependency[];
+	reconcileExpiredTaskRuns(now?: number): TaskRecoveryResult;
 }

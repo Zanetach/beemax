@@ -28,6 +28,22 @@ _Avoid_: Ordering hint, parent Task
 The Profile-wide admission controller that shares delegated execution capacity across conversations and Task Plans.
 _Avoid_: Task queue, Sub-Agent manager, Task Plan runner
 
+**Execution Lease**:
+A time-bounded claim that a live executor is still responsible for a Task Run; expiry means the run was interrupted, not that its outcome is known.
+_Avoid_: Task timeout, lock, deadline
+
+**Recovery Policy**:
+The explicit rule deciding whether an interrupted Task may be retried automatically; automatic retry requires both a safe-retry policy and an Idempotency Key.
+_Avoid_: Retry count, error handling
+
+**Idempotency Key**:
+A stable identity proving repeated execution represents the same intended effect rather than a new Task.
+_Avoid_: Task ID, Run ID, request ID
+
+**Interruption**:
+Loss of a live executor before a Task Run reaches a terminal outcome; reconciliation converts it to a safe retry or a failed Task.
+_Avoid_: Failure, cancellation, timeout
+
 **Schedule**:
 A rule that creates Tasks at a future time or recurring cadence; it is not itself a Task.
 _Avoid_: Scheduled task, cron job
