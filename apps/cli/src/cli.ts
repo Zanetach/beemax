@@ -836,7 +836,11 @@ async function runChat(config: ReturnType<typeof loadConfig>, requestedMode: { f
 	const { buildAgentFactory } = await import("./agent-factory.ts");
 	const { MemoryStore } = await import("@beemax/memory");
 	const apiKey = configuredApiKey(config.model.provider, config.model.apiKey) ?? "";
-	const localApproval = new ToolApprovalBroker(async (_source, text) => { process.stdout.write(`\n${text}\n`); });
+	// Full mode renders approval lifecycle from semantic events in its own panel;
+	// Compact/Plain retain the durable text prompt for SSH and scripts.
+	const localApproval = new ToolApprovalBroker(async (_source, text) => {
+		if (presentationMode !== "full") process.stdout.write(`\n${text}\n`);
+	});
 	const memory = new MemoryStore(config.memory.dbPath);
 	const mcp = new McpManager();
 	await mcp.connectAll(loadMcpConfig(config.mcp.configPath));
