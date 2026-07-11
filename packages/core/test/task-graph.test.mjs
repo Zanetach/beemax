@@ -5,11 +5,13 @@ import { createTaskOrchestrationTools, TaskGraph } from "../dist/index.js";
 function memoryLedger() {
 	const tasks = new Map();
 	const dependencies = [];
+	const runs = new Map();
 	return {
-		tasks, dependencies,
+		tasks, dependencies, runs,
 		record(task) { tasks.set(task.id, { ...task }); },
 		transition(id, change) { tasks.set(id, { ...tasks.get(id), ...change }); },
-		recordRun() {}, transitionRun() {},
+		recordRun(run) { runs.set(run.id, { ...run }); }, transitionRun(id, change) { runs.set(id, { ...runs.get(id), ...change }); },
+		renewTaskRunLease(id, leaseExpiresAt) { const run = runs.get(id); if (!run || run.status !== "running") return false; run.leaseExpiresAt = leaseExpiresAt; return true; },
 		recordPlan(records, edges) { for (const task of records) this.record(task); dependencies.push(...edges); },
 		queryTasks(query) { return [...tasks.values()].filter((task) => query.ownerKeys.includes(task.ownerKey) && (!query.statuses || query.statuses.includes(task.status)) && (!query.planIds || query.planIds.includes(task.planId))); },
 		taskRuns() { return []; },
@@ -40,6 +42,35 @@ test("TaskGraph runs ready Tasks in parallel and waits for all dependencies", as
 	assert.equal(maxRunning, 2);
 	assert.deepEqual(result, { succeeded: 3, failed: 0, cancelled: 0, blocked: [] });
 	assert.equal(ledger.tasks.get("unrelated").status, "pending");
+});
+
+test("TaskGraph renews an active Task Run lease until execution reaches a terminal state", async () => {
+	const ledger = memoryLedger();
+	let renewals = 0;
+	const renew = ledger.renewTaskRunLease.bind(ledger);
+	ledger.renewTaskRunLease = (id, expiresAt) => { renewals++; return renew(id, expiresAt); };
+	const graph = new TaskGraph(ledger);
+	graph.createPlan({ id: "lease-plan", ownerKey: "cli:local:local", tasks: [{ id: "leased", title: "Leased" }] });
+	await graph.run(["cli:local:local"], "lease-plan", async () => {
+		await new Promise((resolve) => setTimeout(resolve, 30));
+		return { output: "done" };
+	}, { leaseMs: 1_000, leaseHeartbeatMs: 5 });
+	assert.ok(renewals >= 2);
+	const afterCompletion = renewals;
+	await new Promise((resolve) => setTimeout(resolve, 15));
+	assert.equal(renewals, afterCompletion);
+});
+
+test("TaskGraph fails execution when its Task Run lease can no longer be renewed", async () => {
+	const ledger = memoryLedger();
+	ledger.renewTaskRunLease = () => false;
+	const graph = new TaskGraph(ledger);
+	graph.createPlan({ id: "lost-lease", ownerKey: "cli:local:local", tasks: [{ id: "task", title: "Task" }] });
+	const result = await graph.run(["cli:local:local"], "lost-lease", async (_task, signal) => new Promise((_resolve, reject) => {
+		signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+	}), { leaseMs: 1_000, leaseHeartbeatMs: 5 });
+	assert.deepEqual(result, { succeeded: 0, failed: 1, cancelled: 0, blocked: [] });
+	assert.match(ledger.tasks.get("task").error, /Lease could not be renewed/);
 });
 
 test("TaskGraph rejects cyclic plans before persisting any Task", () => {

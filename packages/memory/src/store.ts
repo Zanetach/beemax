@@ -641,6 +641,10 @@ export class MemoryStore {
 		if (result.changes !== 1) throw new Error(`Task Run not found: ${id}`);
 	}
 
+	renewTaskRunLease(id: string, leaseExpiresAt: number): boolean {
+		return this.db.prepare("UPDATE task_runs SET lease_expires_at = ? WHERE id = ? AND status = 'running'").run(leaseExpiresAt, id).changes === 1;
+	}
+
 	taskRuns(taskId: string): TaskRunRecord[] {
 		return (this.db.prepare("SELECT * FROM task_runs WHERE task_id = ? ORDER BY started_at DESC").all(taskId) as TaskRunRow[]).map(mapTaskRun);
 	}

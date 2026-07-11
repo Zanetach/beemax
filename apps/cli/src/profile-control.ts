@@ -7,10 +7,15 @@ import { readdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { ProfileModelCatalog } from "./model-catalog.ts";
 
-export interface ProfileOperationalFacts { taskScheduler?: ProfileTaskSchedulerSnapshot; }
+export interface TaskRecoveryStatus { phase: "disabled" | "running" | "completed" | "failed"; plans: number; succeeded: number; failed: number; blocked: number; }
+export interface ProfileOperationalFacts { taskScheduler?: ProfileTaskSchedulerSnapshot; taskRecovery?: TaskRecoveryStatus; }
 
 export function renderTaskSchedulerStatus(snapshot?: ProfileTaskSchedulerSnapshot): string {
 	return snapshot ? `Tasks: running=${snapshot.running}; queued=${snapshot.queued}; queued-owners=${snapshot.queuedOwners}; capacity=${snapshot.maxConcurrent}` : "Tasks: scheduler unavailable";
+}
+
+export function renderTaskRecoveryStatus(status?: TaskRecoveryStatus): string {
+	return status ? `Recovery: ${status.phase}; plans=${status.plans}; succeeded=${status.succeeded}; failed=${status.failed}; blocked=${status.blocked}` : "Recovery: unavailable";
 }
 
 /** Profile control plane shared by local chat and every Gateway channel. */
@@ -62,7 +67,8 @@ export function createProfileControlHandler(
 		if (command === "/status" || command === "/usage") {
 			const [model, usage] = await Promise.all([runtime.modelStatus(source), runtime.usage(source)]);
 			const usageText = usage ? `input=${usage.inputTokens}; output=${usage.outputTokens}; context=${usage.contextTokens ?? "?"}/${usage.contextWindow ?? "?"}` : "no live session";
-			return { handled: true, message: command === "/usage" ? `Usage: ${usageText}` : `Profile: ${config.profile}\nModel: ${model?.model ?? `${config.model.provider}/${config.model.model}`}\nThinking: ${model?.thinkingLevel ?? "off"}\nRun: ${runtime.isBusy() ? "running" : "idle"}\n${renderTaskSchedulerStatus(operationalFacts?.().taskScheduler)}\nUsage: ${usageText}` };
+			const facts = operationalFacts?.();
+			return { handled: true, message: command === "/usage" ? `Usage: ${usageText}` : `Profile: ${config.profile}\nModel: ${model?.model ?? `${config.model.provider}/${config.model.model}`}\nThinking: ${model?.thinkingLevel ?? "off"}\nRun: ${runtime.isBusy() ? "running" : "idle"}\n${renderTaskSchedulerStatus(facts?.taskScheduler)}\n${renderTaskRecoveryStatus(facts?.taskRecovery)}\nUsage: ${usageText}` };
 		}
 		if (command === "/compact") {
 			const compacted = interaction

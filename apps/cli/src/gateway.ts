@@ -27,7 +27,7 @@ import { createProfileAgentRuntime } from "./runtime-composition.ts";
 import { workspaceToolsPrompt } from "./workspace-context.ts";
 import { join } from "node:path";
 import { executionPortFor, executionSafeTools } from "./execution-composition.ts";
-import { createProfileControlHandler } from "./profile-control.ts";
+import { createProfileControlHandler, type TaskRecoveryStatus } from "./profile-control.ts";
 import { recordGatewayEvent, writeGatewayState } from "./gateway-observability.ts";
 import { installedVersion } from "./runtime-facts.ts";
 import { configuredRuntimeModels } from "./model-catalog.ts";
@@ -115,11 +115,12 @@ export async function runGateway(config: BeeMaxConfig): Promise<void> {
 	});
 	const taskScheduler = new ProfileTaskScheduler({ maxConcurrent: config.subagents.maxConcurrent });
 	const recoveryController = new AbortController();
+	let recoveryStatus: TaskRecoveryStatus = { phase: config.subagents.enabled ? "running" : "disabled", plans: 0, succeeded: 0, failed: 0, blocked: 0 };
 	const recoveryRun = (config.subagents.enabled
 		? new TaskRecoveryRunner(memory, (task, signal) => taskScheduler.run(task.ownerKey, () => executePlannedTask(createSubagentAgent, task, task.executionScope as SessionSource, signal, config.subagents.timeoutMs), signal)).run({ maxConcurrent: config.subagents.maxConcurrent, signal: recoveryController.signal })
 		: Promise.resolve({ plans: 0, succeeded: 0, failed: 0, cancelled: 0, blocked: [] as string[] }))
-		.then((summary) => { if (summary.plans) console.info(`[beemax] resumed ${summary.plans} Task Plan(s): succeeded=${summary.succeeded}; failed=${summary.failed}; blocked=${summary.blocked.length}`); })
-		.catch((error) => console.error(`[beemax] Task recovery failed: ${error instanceof Error ? error.message : String(error)}`));
+		.then((summary) => { recoveryStatus = { phase: config.subagents.enabled ? "completed" : "disabled", plans: summary.plans, succeeded: summary.succeeded, failed: summary.failed, blocked: summary.blocked.length }; if (summary.plans) console.info(`[beemax] resumed ${summary.plans} Task Plan(s): succeeded=${summary.succeeded}; failed=${summary.failed}; blocked=${summary.blocked.length}`); })
+		.catch((error) => { recoveryStatus = { ...recoveryStatus, phase: "failed" }; console.error(`[beemax] Task recovery failed: ${error instanceof Error ? error.message : String(error)}`); });
 	startupCleanup.push(async () => { recoveryController.abort(new Error("Gateway shutting down")); await recoveryRun; });
 	const subagents = config.subagents.enabled ? new SubagentManager({
 		maxConcurrent: config.subagents.maxConcurrent,
@@ -177,7 +178,7 @@ export async function runGateway(config: BeeMaxConfig): Promise<void> {
 		},
 		approvalBroker,
 		cancelSubagents: (source) => subagents?.cancelOwner(source) ?? 0,
-		controlHandler: (profileRuntime, profileInteraction) => createProfileControlHandler(profileRuntime, config, profileInteraction, () => ({ taskScheduler: taskScheduler.snapshot() })),
+		controlHandler: (profileRuntime, profileInteraction) => createProfileControlHandler(profileRuntime, config, profileInteraction, () => ({ taskScheduler: taskScheduler.snapshot(), taskRecovery: recoveryStatus })),
 	});
 	const { runtime, interaction } = profileRuntime;
 	startupCleanup.push(() => profileRuntime.dispose());

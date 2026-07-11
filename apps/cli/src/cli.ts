@@ -32,7 +32,7 @@ import { runSetup, type SetupOptions } from "./setup.ts";
 import { configuredRuntimeModels, ProfileModelCatalog, renderModelProviderChoices, resolveProviderSelection } from "./model-catalog.ts";
 import { executionPortFor, executionSafeTools } from "./execution-composition.ts";
 import { createProfileAgentRuntime } from "./runtime-composition.ts";
-import { createProfileControlHandler, renderTaskSchedulerStatus } from "./profile-control.ts";
+import { createProfileControlHandler, renderTaskRecoveryStatus, renderTaskSchedulerStatus, type TaskRecoveryStatus } from "./profile-control.ts";
 import { LocalActivityPresenter, LocalReasoningPresenter, renderChatFooter, type DetailsDisplay, parseReasoningCommand } from "./local-chat-renderer.ts";
 import { renderTerminalMarkdown, StreamingTerminalMarkdown } from "./terminal-markdown.ts";
 import { fullScreenEnter, fullScreenExit, resolveChatPresentationMode, type ChatPresentationMode } from "./chat-mode.ts";
@@ -867,11 +867,12 @@ async function runChat(config: ReturnType<typeof loadConfig>, requestedMode: { f
 	});
 	const taskScheduler = new ProfileTaskScheduler({ maxConcurrent: config.subagents.maxConcurrent });
 	const recoveryController = new AbortController();
+	let recoveryStatus: TaskRecoveryStatus = { phase: config.subagents.enabled ? "running" : "disabled", plans: 0, succeeded: 0, failed: 0, blocked: 0 };
 	const recoveryRun = (config.subagents.enabled
 		? new TaskRecoveryRunner(memory, (task, signal) => taskScheduler.run(task.ownerKey, () => executePlannedTask(createSubagentAgent, task, task.executionScope as import("@beemax/gateway").SessionSource, signal, config.subagents.timeoutMs), signal)).run({ maxConcurrent: config.subagents.maxConcurrent, signal: recoveryController.signal })
 		: Promise.resolve({ plans: 0, succeeded: 0, failed: 0, cancelled: 0, blocked: [] as string[] }))
-		.then((summary) => { if (summary.plans) process.stdout.write(`Resumed ${summary.plans} Task Plan(s): succeeded=${summary.succeeded}; failed=${summary.failed}; blocked=${summary.blocked.length}.\n`); })
-		.catch((error) => process.stderr.write(`Task recovery failed: ${error instanceof Error ? error.message : String(error)}\n`));
+		.then((summary) => { recoveryStatus = { phase: config.subagents.enabled ? "completed" : "disabled", plans: summary.plans, succeeded: summary.succeeded, failed: summary.failed, blocked: summary.blocked.length }; if (summary.plans) process.stdout.write(`Resumed ${summary.plans} Task Plan(s): succeeded=${summary.succeeded}; failed=${summary.failed}; blocked=${summary.blocked.length}.\n`); })
+		.catch((error) => { recoveryStatus = { ...recoveryStatus, phase: "failed" }; process.stderr.write(`Task recovery failed: ${error instanceof Error ? error.message : String(error)}\n`); });
 	const subagents = config.subagents.enabled ? new SubagentManager({
 		maxConcurrent: config.subagents.maxConcurrent,
 		maxChildrenPerOwner: config.subagents.maxChildrenPerOwner,
@@ -914,7 +915,7 @@ async function runChat(config: ReturnType<typeof loadConfig>, requestedMode: { f
 		},
 		approvalBroker: localApproval,
 		cancelSubagents: (sessionSource) => subagents?.cancelOwner(sessionSource) ?? 0,
-		controlHandler: (profileRuntime, profileInteraction) => createProfileControlHandler(profileRuntime, config, profileInteraction, () => ({ taskScheduler: taskScheduler.snapshot() })),
+		controlHandler: (profileRuntime, profileInteraction) => createProfileControlHandler(profileRuntime, config, profileInteraction, () => ({ taskScheduler: taskScheduler.snapshot(), taskRecovery: recoveryStatus })),
 	});
 	const { runtime, interaction: interactionAdapter } = profileRuntime;
 	let fullScreenActive = false;
@@ -964,7 +965,7 @@ async function runChat(config: ReturnType<typeof loadConfig>, requestedMode: { f
 			}
 			process.stdout.write(renderChatFooter({ profile: config.profile, model: `${config.model.provider}/${config.model.model}`, session: source.threadId ?? "default", phase: snapshot.phase, context, lastDurationMs, queued: snapshot.queueDepth, tasksRunning: taskState.running, tasksQueued: taskState.queued, taskCapacity: taskState.maxConcurrent }));
 		};
-		const status = async () => `Profile: ${config.profile}\nModel: ${config.model.provider}/${config.model.model}\nSession: ${source.threadId ?? "default"}\nRun: ${runtime.isBusy() ? "running" : "idle"}\n${renderTaskSchedulerStatus(taskScheduler.snapshot())}\nReasoning: ${reasoningDisplay}\nDetails: ${detailsDisplay}\nToolset: ${config.agent.toolset}\n${await usage()}`;
+		const status = async () => `Profile: ${config.profile}\nModel: ${config.model.provider}/${config.model.model}\nSession: ${source.threadId ?? "default"}\nRun: ${runtime.isBusy() ? "running" : "idle"}\n${renderTaskSchedulerStatus(taskScheduler.snapshot())}\n${renderTaskRecoveryStatus(recoveryStatus)}\nReasoning: ${reasoningDisplay}\nDetails: ${detailsDisplay}\nToolset: ${config.agent.toolset}\n${await usage()}`;
 		const toolsStatus = () => {
 			const tools = mcp.getTools().map((tool) => `${tool.name}${tool.beemaxPolicy?.approval === "always" ? " (approval required)" : ""}`);
 			return `Toolset: ${config.agent.toolset}\nMCP: ${tools.length ? tools.join(", ") : "no MCP tools connected"}`;

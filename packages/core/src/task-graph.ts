@@ -9,7 +9,7 @@ export interface TaskPlanInput {
 	dependencies?: TaskDependency[];
 }
 export type TaskGraphExecutor = (task: TaskRecord, signal?: AbortSignal) => Promise<{ output?: string }>;
-export interface TaskGraphRunOptions { maxConcurrent?: number; signal?: AbortSignal; executor?: "agent" | "subagent"; leaseMs?: number; canExecute?: (task: TaskRecord) => boolean; }
+export interface TaskGraphRunOptions { maxConcurrent?: number; signal?: AbortSignal; executor?: "agent" | "subagent"; leaseMs?: number; leaseHeartbeatMs?: number; canExecute?: (task: TaskRecord) => boolean; }
 export interface TaskGraphResult { succeeded: number; failed: number; cancelled: number; blocked: string[]; }
 interface ActiveTaskResult { execution: Promise<ActiveTaskResult>; outcome: "succeeded" | "failed" | "cancelled"; }
 
@@ -94,9 +94,19 @@ export class TaskGraph {
 		this.ledger.transition(task.id, { status: "running", startedAt });
 		const leaseMs = Math.max(1_000, options.leaseMs ?? DEFAULT_EXECUTION_LEASE_MS);
 		this.ledger.recordRun({ id: runId, taskId: task.id, executor: options.executor ?? "agent", status: "running", startedAt, leaseExpiresAt: startedAt + leaseMs });
+		const leaseController = new AbortController();
+		const executionSignal = options.signal ? AbortSignal.any([options.signal, leaseController.signal]) : leaseController.signal;
+		const heartbeatMs = Math.max(1, options.leaseHeartbeatMs ?? Math.min(60_000, Math.max(1_000, Math.trunc(leaseMs / 3))));
+		const heartbeat = this.ledger.renewTaskRunLease ? setInterval(() => {
+			try {
+				if (!this.ledger.renewTaskRunLease?.(runId, Date.now() + leaseMs)) leaseController.abort(new Error("Task Run Execution Lease could not be renewed"));
+			} catch (error) { leaseController.abort(error); }
+		}, heartbeatMs) : undefined;
+		leaseController.signal.addEventListener("abort", () => { if (heartbeat) clearInterval(heartbeat); }, { once: true });
 		try {
-			if (options.signal?.aborted) throw options.signal.reason ?? new Error("Task Plan cancelled");
-			const result = await execute({ ...task, status: "running", startedAt }, options.signal);
+			if (executionSignal.aborted) throw executionSignal.reason ?? new Error("Task Plan cancelled");
+			const result = await execute({ ...task, status: "running", startedAt }, executionSignal);
+			if (executionSignal.aborted) throw executionSignal.reason ?? new Error("Task execution interrupted");
 			const finishedAt = Date.now();
 			const output = result.output?.slice(0, 50_000);
 			this.ledger.transition(task.id, { status: "succeeded", finishedAt, result: output });
@@ -109,7 +119,7 @@ export class TaskGraph {
 			this.ledger.transition(task.id, { status, finishedAt, error: message });
 			this.ledger.transitionRun(runId, { status, finishedAt, error: message });
 			return status;
-		}
+		} finally { if (heartbeat) clearInterval(heartbeat); }
 	}
 }
 

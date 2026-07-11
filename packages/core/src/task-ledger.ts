@@ -1,3 +1,5 @@
+import type { AgentScope } from "./agent-scope.ts";
+
 export type TaskKind = "objective" | "delegated" | "automation";
 export type TaskStatus = "pending" | "running" | "succeeded" | "failed" | "cancelled";
 export type TaskRecoveryPolicy = "never" | "safe_retry";
@@ -61,5 +63,5 @@ export interface TaskLedger {
 	taskDependencies(taskIds: string[]): TaskDependency[];
 	reconcileExpiredTaskRuns(now?: number): TaskRecoveryResult;
 	recoveryCandidates(limit?: number): TaskRecord[];
+	renewTaskRunLease?(id: string, leaseExpiresAt: number): boolean;
 }
-import type { AgentScope } from "./agent-scope.ts";
