@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { AutonomousPlanningPolicy, BeeMaxAgentRuntime } from "../dist/index.js";
+import { AutonomousPlanningPolicy, BeeMaxAgentRuntime, PlanningBudgetRegistry } from "../dist/index.js";
 
 test("planning policy keeps simple conversational requests direct", () => {
 	const policy = new AutonomousPlanningPolicy({ maxConcurrent: 8 });
@@ -53,9 +53,11 @@ test("Agent runtime injects a deterministic planning directive without changing 
 	const source = { platform: "cli", chatId: "local", chatType: "dm", userId: "local" };
 	let received = "";
 	const recorded = [];
+	const budgets = new PlanningBudgetRegistry();
 	const agent = { state: { model: { id: "test" }, messages: [] } };
 	const runtime = new BeeMaxAgentRuntime({
 		planningPolicy: new AutonomousPlanningPolicy(),
+		planningBudgets: budgets,
 		context: { enrich: (_source, text) => text, record: (_source, exchange) => recorded.push(exchange) },
 		createAgent: async () => ({
 			agent,
@@ -69,5 +71,18 @@ test("Agent runtime injects a deterministic planning directive without changing 
 	assert.match(received, /BeeMax execution policy/);
 	assert.match(received, /mode=(?:dag|delegate)/);
 	assert.deepEqual(recorded, [{ user: "Review frontend and backend independently, then combine the results", assistant: "done" }]);
+	assert.equal(budgets.current("cli:local:local"), undefined);
 	runtime.dispose();
+});
+
+test("planning budget leases cannot be cleared by a stale turn", () => {
+	const registry = new PlanningBudgetRegistry();
+	const policy = new AutonomousPlanningPolicy();
+	const first = registry.begin("conversation", policy.decide("Review frontend and backend independently"));
+	const second = registry.begin("conversation", policy.decide("Research one provider deeply"));
+	assert.equal(registry.current("conversation")?.mode, "delegate");
+	assert.equal(registry.end("conversation", first), false);
+	assert.equal(registry.current("conversation")?.mode, "delegate");
+	assert.equal(registry.end("conversation", second), true);
+	assert.equal(registry.current("conversation"), undefined);
 });

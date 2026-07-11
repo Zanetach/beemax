@@ -98,6 +98,27 @@ export class AutonomousPlanningPolicy {
 	}
 }
 
+/** Scope-bound handoff from turn admission to tools executing inside that turn. */
+export class PlanningBudgetRegistry {
+	private readonly active = new Map<string, { lease: string; decision: AutonomousPlanningDecision }>();
+
+	begin(scopeKey: string, decision: AutonomousPlanningDecision): string {
+		if (!scopeKey.trim()) throw new Error("Planning budget scope is required");
+		const lease = crypto.randomUUID();
+		this.active.set(scopeKey, { lease, decision });
+		return lease;
+	}
+
+	current(scopeKey: string): AutonomousPlanningDecision | undefined {
+		return this.active.get(scopeKey)?.decision;
+	}
+
+	end(scopeKey: string, lease: string): boolean {
+		if (this.active.get(scopeKey)?.lease !== lease) return false;
+		return this.active.delete(scopeKey);
+	}
+}
+
 function inspectPrompt(prompt: string): PlanningSignals {
 	const lower = prompt.toLowerCase();
 	const requiresResearch = has(lower, /\b(research|investigate|audit|review|compare|benchmark)\b|研究|调研|审查|审核|对标|比较/);

@@ -62,7 +62,7 @@ export { TaskRecoveryService, type TaskRecoveryCycleResult, type TaskRecoverySer
 export { TaskPlanRuntime } from "./task-plan-runtime.ts";
 export { TaskPlanNoticeDeliveryService, renderTaskPlanCompletionNotice, type TaskPlanNoticeDeliveryOptions, type TaskPlanNoticeDeliveryResult, type TaskPlanNoticeOutbox } from "./task-plan-notice-delivery.ts";
 export { ProfileTaskScheduler, type ProfileTaskSchedulerOptions, type ProfileTaskSchedulerSnapshot } from "./profile-task-scheduler.ts";
-export { AutonomousPlanningPolicy, type AutonomousExecutionMode, type AutonomousPlanningDecision, type AutonomousPlanningPolicyOptions, type PlanningResourceBudget, type PlanningSignals } from "./autonomous-planning.ts";
+export { AutonomousPlanningPolicy, PlanningBudgetRegistry, type AutonomousExecutionMode, type AutonomousPlanningDecision, type AutonomousPlanningPolicyOptions, type PlanningResourceBudget, type PlanningSignals } from "./autonomous-planning.ts";
 export {
 	SessionCoordinator,
 	sessionIdForSource,

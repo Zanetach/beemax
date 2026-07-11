@@ -11,7 +11,7 @@ import { SessionCatalog, type SavedSessionChoice, type SessionPreferences } from
 import type { AgentControlHandler, AgentControlInput, AgentControlResult } from "./agent-control.ts";
 import { conversationKey, conversationOwnerKey } from "./agent-scope.ts";
 import type { TaskKind, TaskLedger, TaskPlanRecord, TaskPlanStatus, TaskRecord, TaskRunRecord, TaskStatus } from "./task-ledger.ts";
-import type { AutonomousPlanningPolicy } from "./autonomous-planning.ts";
+import type { AutonomousPlanningPolicy, PlanningBudgetRegistry } from "./autonomous-planning.ts";
 
 export interface AgentRunInput<Source extends BeeMaxRuntimeSource = BeeMaxRuntimeSource> {
 	source: Source;
@@ -96,6 +96,7 @@ export interface BeeMaxAgentRuntimeOptions<Source extends BeeMaxRuntimeSource = 
 	taskLedger?: TaskLedger;
 	/** Deterministic per-turn execution admission and resource policy. */
 	planningPolicy?: Pick<AutonomousPlanningPolicy, "decide">;
+	planningBudgets?: PlanningBudgetRegistry;
 }
 
 /**
@@ -114,6 +115,7 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 	private readonly maxModelFallbacks: number;
 	private readonly taskLedger?: TaskLedger;
 	private readonly planningPolicy?: Pick<AutonomousPlanningPolicy, "decide">;
+	private readonly planningBudgets?: PlanningBudgetRegistry;
 
 	constructor(options: BeeMaxAgentRuntimeOptions<Source>) {
 		this.sessions = new SessionCoordinator(options);
@@ -126,6 +128,7 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 		this.maxModelFallbacks = Math.max(0, Math.min(options.maxModelFallbacks ?? 2, 5));
 		this.taskLedger = options.taskLedger;
 		this.planningPolicy = options.planningPolicy;
+		this.planningBudgets = options.planningBudgets;
 	}
 
 	async run(input: AgentRunInput<Source>, onEvent?: BeeMaxAgentRunEventSink): Promise<AgentRunResult> {
@@ -141,6 +144,8 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 				? this.context?.enrich(input.source, input.text, { model: modelOf(session.piSession.agent) }) ?? input.text
 				: input.text;
 			const planning = input.mode === "interactive" || !input.mode ? this.planningPolicy?.decide(input.text) : undefined;
+			const planningScope = conversationKey(input.source);
+			const planningLease = planning && this.planningBudgets ? this.planningBudgets.begin(planningScope, planning) : undefined;
 			const text = planning ? `${enrichedText}\n\n${planning.directive()}` : enrichedText;
 			let observableProgress = false;
 			const unsubscribe = session.piSession.subscribe((event) => {
@@ -173,7 +178,8 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 				if (cause instanceof AgentRunError) throw cause;
 				throw new AgentRunError(timedOut ? `Agent turn timed out after ${Math.round(input.timeoutMs / 60_000)} minutes` : errorMessage(cause), timedOut, cause, timedOut || isRecoverableModelFailure(cause));
 			} finally {
-				clearTimeout(timeout);
+				if (planningLease) this.planningBudgets?.end(planningScope, planningLease);
+				if (timeout) clearTimeout(timeout);
 				input.signal?.removeEventListener("abort", abortFromCaller);
 				unsubscribe?.();
 			}
