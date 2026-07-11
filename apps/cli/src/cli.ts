@@ -904,7 +904,6 @@ async function runChat(config: ReturnType<typeof loadConfig>, requestedMode: { f
 		};
 		await applySessionPreferences();
 		let active: Promise<void> | undefined;
-		let queuedInput: string | undefined;
 		let sessionChoices: string[] = [];
 		let modelChoices: string[] = [];
 		let retryText: string | undefined;
@@ -927,7 +926,7 @@ async function runChat(config: ReturnType<typeof loadConfig>, requestedMode: { f
 			const snapshot = await interactionAdapter.snapshot(source);
 			const usage = snapshot.usage;
 			const context = usage?.contextWindow === null || usage?.contextWindow === undefined ? undefined : usage.contextTokens === null ? `?/${usage.contextWindow}` : `${usage.contextTokens}/${usage.contextWindow}`;
-			process.stdout.write(renderChatFooter({ profile: config.profile, model: `${config.model.provider}/${config.model.model}`, session: source.threadId ?? "default", phase: snapshot.phase, context, lastDurationMs, queued: queuedInput ? 1 : 0 }));
+			process.stdout.write(renderChatFooter({ profile: config.profile, model: `${config.model.provider}/${config.model.model}`, session: source.threadId ?? "default", phase: snapshot.phase, context, lastDurationMs, queued: snapshot.queueDepth }));
 		};
 		const status = async () => `Profile: ${config.profile}\nModel: ${config.model.provider}/${config.model.model}\nSession: ${source.threadId ?? "default"}\nRun: ${runtime.isBusy() ? "running" : "idle"}\nReasoning: ${reasoningDisplay}\nDetails: ${detailsDisplay}\nToolset: ${config.agent.toolset}\n${await usage()}`;
 		const toolsStatus = () => {
@@ -953,10 +952,9 @@ async function runChat(config: ReturnType<typeof loadConfig>, requestedMode: { f
 				: "No live message history. Resume or send a message to load this session.";
 		};
 		const stop = async () => {
-			queuedInput = undefined;
 			const stopped = await interactionAdapter.dispatch({ type: "turn.cancel", source });
 			if (!("cancelled" in stopped)) throw new Error("Cancellation dispatch did not produce a cancellation result");
-			process.stdout.write(`\n${stopped.cancelled ? "Stopped the active Agent turn" : "No active Agent turn"}${stopped.subagentsCancelled ? `; cancelled ${stopped.subagentsCancelled} Sub-Agent task(s)` : ""}${stopped.approvalCancelled ? "; cancelled pending approval" : ""}.\n`);
+			process.stdout.write(`\n${stopped.cancelled ? "Stopped the active Agent turn" : "No active Agent turn"}${stopped.subagentsCancelled ? `; cancelled ${stopped.subagentsCancelled} Sub-Agent task(s)` : ""}${stopped.approvalCancelled ? "; cancelled pending approval" : ""}${stopped.queuedCancelled ? "; cleared queued input" : ""}.\n`);
 		};
 		if (presentationMode === "full") {
 			fullScreenActive = true;
@@ -980,7 +978,7 @@ async function runChat(config: ReturnType<typeof loadConfig>, requestedMode: { f
 					terminal.write(delta, (output) => process.stdout.write(output));
 				}
 			});
-			if ("cancelled" in outcome) throw new Error("Message dispatch did not produce an Agent result");
+			if (!("answer" in outcome)) throw new Error("Message dispatch did not produce an Agent result");
 			const result = outcome;
 			if (streamed) terminal.finish((output) => process.stdout.write(output));
 			else {
@@ -999,9 +997,9 @@ async function runChat(config: ReturnType<typeof loadConfig>, requestedMode: { f
 				if (command?.kind === "stop") { await stop(); return; }
 				if (await localApproval.handleReply(source, trimmed)) return;
 				if (command?.kind === "status") { process.stdout.write(`\n${await status()}\n`); return; }
-				const replaced = Boolean(queuedInput);
-				queuedInput = trimmed;
-				process.stdout.write(`\n${replaced ? "Replaced the queued input." : "Queued the next input."} Use /stop (or Ctrl+C) to cancel the active turn.\n`);
+				const queued = await interactionAdapter.dispatch({ type: "turn.queue", source, text: trimmed });
+				if (!("queued" in queued) || !queued.queued) { process.stdout.write("\nCould not queue input because no active turn is available.\n"); return; }
+				process.stdout.write(`\n${queued.replaced ? "Replaced the queued input." : "Queued the next input."} Use /stop (or Ctrl+C) to cancel the active turn.\n`);
 				return;
 			}
 			if (controlInProgress) {
@@ -1137,8 +1135,7 @@ async function runChat(config: ReturnType<typeof loadConfig>, requestedMode: { f
 			}
 			finally {
 				active = undefined;
-				const next = queuedInput;
-				queuedInput = undefined;
+				const next = interactionAdapter.takeQueuedInput(source);
 				if (next) {
 					process.stdout.write("\n▶ Running queued input…\n");
 					void handleLine(next);

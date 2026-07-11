@@ -61,12 +61,31 @@ test("cancelling a running turn produces a semantic cancellation instead of a fa
 	const turn = interaction.dispatch({ type: "message.send", source, text: "hi", input: { timeoutMs: 1_000 } }, (event) => { events.push(event); });
 	await new Promise((resolve) => setImmediate(resolve));
 	const cancellation = await interaction.dispatch({ type: "turn.cancel", source });
-	assert.deepEqual(cancellation, { cancelled: true, approvalCancelled: true, subagentsCancelled: 2, errors: [] });
+	assert.deepEqual(cancellation, { cancelled: true, approvalCancelled: true, subagentsCancelled: 2, errors: [], queuedCancelled: false });
 	assert.equal(approvalCancelled, 1);
 	assert.equal(childCancelled, 1);
 	await assert.rejects(turn, /aborted/);
 	assert.deepEqual(events.map((event) => event.type), ["turn.started", "turn.cancelled"]);
 	assert.equal((await interaction.snapshot(source)).phase, "cancelled");
+});
+
+test("interaction runtime owns a one-entry queue and clears it on cancellation", async () => {
+	let rejectTurn;
+	const runtime = {
+		run() { return new Promise((_resolve, reject) => { rejectTurn = reject; }); },
+		async cancel() { rejectTurn(new Error("aborted")); return true; },
+		async modelStatus() { return undefined; }, async usage() { return undefined; },
+	};
+	const interaction = new InteractionEventAdapter(runtime);
+	const turn = interaction.dispatch({ type: "message.send", source, text: "first", input: { timeoutMs: 1_000 } });
+	await new Promise((resolve) => setImmediate(resolve));
+	assert.deepEqual(await interaction.dispatch({ type: "turn.queue", source, text: "second" }), { queued: true, position: 1, replaced: false });
+	assert.deepEqual(await interaction.dispatch({ type: "turn.queue", source, text: "replacement" }), { queued: true, position: 1, replaced: true });
+	assert.equal((await interaction.snapshot(source)).queueDepth, 1);
+	const cancelled = await interaction.dispatch({ type: "turn.cancel", source });
+	assert.equal(cancelled.queuedCancelled, true);
+	assert.equal(interaction.takeQueuedInput(source), undefined);
+	await assert.rejects(turn, /aborted/);
 });
 
 test("approval lifecycle is available to presentation without exposing broker internals", async () => {

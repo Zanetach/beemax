@@ -31,6 +31,7 @@ export type InteractionEvent = InteractionEventMeta & (
 	| { type: "tool.changed"; callId: string; name: string; state: "running" | "completed" | "failed"; summary?: string }
 	| { type: "approval.requested"; toolName: string }
 	| { type: "approval.resolved"; toolName: string; allowed: boolean }
+	| { type: "turn.queued"; position: number; replaced: boolean }
 	| { type: "turn.finished"; result: AgentRunResult }
 	| { type: "turn.failed"; error: string }
 	| { type: "turn.cancelled" }
@@ -43,12 +44,14 @@ type InteractionEventPayload =
 	| { type: "tool.changed"; callId: string; name: string; state: "running" | "completed" | "failed"; summary?: string }
 	| { type: "approval.requested"; toolName: string }
 	| { type: "approval.resolved"; toolName: string; allowed: boolean }
+	| { type: "turn.queued"; position: number; replaced: boolean }
 	| { type: "turn.finished"; result: AgentRunResult }
 	| { type: "turn.failed"; error: string }
 	| { type: "turn.cancelled" };
 
 export type InteractionAction<Source extends BeeMaxRuntimeSource = BeeMaxRuntimeSource> =
 	| { type: "message.send"; source: Source; text: string; input: Omit<AgentRunInput<Source>, "source" | "text"> }
+	| { type: "turn.queue"; source: Source; text: string }
 	| { type: "turn.cancel"; source: Source };
 
 export interface InteractionCancelResult {
@@ -56,13 +59,17 @@ export interface InteractionCancelResult {
 	approvalCancelled: boolean;
 	subagentsCancelled: number;
 	errors: string[];
+	queuedCancelled: boolean;
 }
+
+export interface InteractionQueueResult { queued: boolean; position: number; replaced: boolean; }
 
 export interface InteractionSnapshot {
 	phase: InteractionPhase;
 	turnId?: string;
 	model?: string;
 	usage?: AgentSessionUsage;
+	queueDepth?: number;
 	updatedAt: number;
 }
 
@@ -90,6 +97,7 @@ export class InteractionEventAdapter<Source extends BeeMaxRuntimeSource = BeeMax
 	private readonly sequences = new Map<string, number>();
 	private readonly eventHistory = new Map<string, InteractionEvent[]>();
 	private readonly subscribers = new Map<string, Set<InteractionEventSink>>();
+	private readonly queuedInputs = new Map<string, string>();
 	private readonly runtime: AgentRuntimePort<Source>;
 	private readonly approvalBroker?: ToolApprovalBroker;
 	private readonly cancelSubagents?: (source: Source) => number | Promise<number>;
@@ -110,8 +118,9 @@ export class InteractionEventAdapter<Source extends BeeMaxRuntimeSource = BeeMax
 		}) : undefined;
 	}
 
-	async dispatch(action: InteractionAction<Source>, sink?: InteractionEventSink): Promise<AgentRunResult | InteractionCancelResult> {
+	async dispatch(action: InteractionAction<Source>, sink?: InteractionEventSink): Promise<AgentRunResult | InteractionCancelResult | InteractionQueueResult> {
 		if (action.type === "turn.cancel") return this.cancel(action.source, sink);
+		if (action.type === "turn.queue") return this.queue(action.source, action.text, sink);
 
 		const key = interactionKey(action.source);
 		if (sink) this.sinks.set(key, sink);
@@ -159,7 +168,7 @@ export class InteractionEventAdapter<Source extends BeeMaxRuntimeSource = BeeMax
 	async snapshot(source: Source): Promise<InteractionSnapshot> {
 		const current = this.states.get(interactionKey(source));
 		const [status, usage] = await Promise.all([this.runtime.modelStatus(source), this.runtime.usage(source)]);
-		return { phase: current?.phase ?? "idle", turnId: current?.turnId, model: status?.model, usage, updatedAt: current?.updatedAt ?? Date.now() };
+		return { phase: current?.phase ?? "idle", turnId: current?.turnId, model: status?.model, usage, queueDepth: this.queuedInputs.has(interactionKey(source)) ? 1 : 0, updatedAt: current?.updatedAt ?? Date.now() };
 	}
 
 	/** Reconnection-safe semantic events, bounded per interaction session. */
@@ -181,6 +190,14 @@ export class InteractionEventAdapter<Source extends BeeMaxRuntimeSource = BeeMax
 
 	dispose(): void { this.unsubscribeApproval?.(); }
 
+	/** Consume the one-entry queue after a turn reaches a terminal state. */
+	takeQueuedInput(source: Source): string | undefined {
+		const key = interactionKey(source);
+		const text = this.queuedInputs.get(key);
+		this.queuedInputs.delete(key);
+		return text;
+	}
+
 	private async cancel(source: Source, sink?: InteractionEventSink): Promise<InteractionCancelResult> {
 		const key = interactionKey(source);
 		const state = this.states.get(key);
@@ -201,8 +218,19 @@ export class InteractionEventAdapter<Source extends BeeMaxRuntimeSource = BeeMax
 			this.cancellationPublished.add(key);
 			await this.publish(source, state.turnId, { type: "turn.cancelled" }, sink);
 		}
+		const queuedCancelled = this.queuedInputs.delete(key);
 		if (!cancelled) this.cancellationRequested.delete(key);
-		return { cancelled, approvalCancelled, subagentsCancelled, errors };
+		return { cancelled, approvalCancelled, subagentsCancelled, errors, queuedCancelled };
+	}
+
+	private async queue(source: Source, text: string, sink?: InteractionEventSink): Promise<InteractionQueueResult> {
+		const key = interactionKey(source);
+		const turnId = this.states.get(key)?.turnId;
+		if (!turnId || this.states.get(key)?.phase !== "running") return { queued: false, position: 0, replaced: false };
+		const replaced = this.queuedInputs.has(key);
+		this.queuedInputs.set(key, text);
+		await this.publish(source, turnId, { type: "turn.queued", position: 1, replaced }, sink);
+		return { queued: true, position: 1, replaced };
 	}
 
 	private apply(source: Source, event: InteractionEvent): void {
@@ -252,6 +280,7 @@ export function reduceInteractionEvent(snapshot: InteractionSnapshot, event: Int
 	if (event.type === "turn.cancelled") return { ...snapshot, phase: "cancelled", turnId: event.turnId, updatedAt: event.at };
 	if (event.type === "approval.requested") return { ...snapshot, phase: "awaiting_approval", turnId: event.turnId, updatedAt: event.at };
 	if (event.type === "approval.resolved") return { ...snapshot, phase: "running", turnId: event.turnId, updatedAt: event.at };
+	if (event.type === "turn.queued") return { ...snapshot, updatedAt: event.at };
 	return { ...snapshot, updatedAt: event.at };
 }
 
