@@ -26,7 +26,6 @@ import { createFeishuMeetingTools } from "@beemax/feishu-capability";
 import type { SessionSource } from "@beemax/gateway";
 import { beemaxHome, type BeeMaxConfig } from "./config.ts";
 import { acquireChannelLock } from "./channel-lock.ts";
-import { curatedMemoryPrompt } from "./curated-memory.ts";
 import { createTaskAwareConversationContext } from "./runtime-facts.ts";
 import { createProfileRuntime } from "./runtime-composition.ts";
 import { workspaceToolsPrompt } from "./workspace-context.ts";
@@ -309,7 +308,7 @@ export function buildSubagentSystemPrompt(parentPrompt?: string): string {
 }
 
 function profilePrompt(config: BeeMaxConfig): string {
-	return [config.agent.systemPrompt, curatedMemoryPrompt(config.paths.agentDir), workspaceToolsPrompt(config.paths.cwd)]
+	return [config.agent.systemPrompt, workspaceToolsPrompt(config.paths.cwd)]
 		.filter((part): part is string => Boolean(part?.trim()))
 		.join("\n\n");
 }

@@ -44,16 +44,16 @@ export function createMemoryTools(store: MemoryToolStore, source: BeeMaxRuntimeS
 		defineTool({ name: "memory_remember", label: "Remember", description: "Save a durable user fact, preference, decision, relationship, or recurring workflow. Do not save secrets or transient details.", parameters: Type.Object({ content: Type.String({ minLength: 1, maxLength: 2000 }) }), execute: async (_id, params) => {
 			const content = params.content.trim(); const id = store.remember({ ...scope(), role: "memory", content }); return result(`Remembered as ${id}`, { id, content });
 		} }),
-		defineTool({ name: "memory_understand", label: "Record Understanding", description: "Automatically record a stable, source-backed understanding. Never use for secrets, credentials, financial or health details.", parameters: Type.Object({
+		defineTool({ name: "memory_understand", label: "Record Understanding", description: "Automatically record a high-confidence, stable, source-backed understanding. Never use for secrets, credentials, financial or health details.", parameters: Type.Object({
 			kind: Type.Union([Type.Literal("preference"), Type.Literal("fact"), Type.Literal("decision"), Type.Literal("goal"), Type.Literal("project"), Type.Literal("relationship"), Type.Literal("workflow")]),
 			statement: Type.String({ minLength: 1, maxLength: 2000 }),
-			confidence: Type.Optional(Type.Number({ minimum: 0, maximum: 1 })),
-			stability: Type.Optional(Type.Union([Type.Literal("low"), Type.Literal("medium"), Type.Literal("high")])),
+			confidence: Type.Number({ minimum: 0.85, maximum: 1 }),
+			stability: Type.Union([Type.Literal("medium"), Type.Literal("high")]),
 		}), execute: async (_id, params) => {
 			if (!store.upsertClaim || !store.latestEvent) return result("This memory store does not support source-backed understanding yet.", { supported: false });
-			if (containsSensitiveMemory(params.statement)) return result("Refused to store sensitive personal data as automatic long-term memory.", { stored: false, reason: "sensitive" });
 			const event = store.latestEvent(scope(), "user");
 			if (!event) return result("No current user event is available as evidence.", { stored: false, reason: "missing source event" });
+			if (!canAutomaticallyUnderstand(params.statement, params.confidence, params.stability, event.content)) return result("Refused to store this as automatic long-term memory because it is insufficiently stable or sensitive.", { stored: false, reason: "policy" });
 			const claim = store.upsertClaim({ ...scope(), kind: params.kind, statement: params.statement, confidence: params.confidence, stability: params.stability, evidence: { kind: "conversation", eventId: event.id, excerpt: event.content } });
 			return result(`Recorded understanding ${claim.id}`, { claim });
 		} }),
@@ -80,5 +80,8 @@ export function createMemoryTools(store: MemoryToolStore, source: BeeMaxRuntimeS
 
 function format(records: MemoryToolRecord[]): string { return records.length ? records.map((record) => `- [${record.id}] ${record.content}`).join("\n") : "No matching memories."; }
 function formatEvidence(item: MemoryEvidence): string { return `- [${item.eventId ?? "manual"}] ${new Date(item.event?.occurredAt ?? item.createdAt).toISOString()}: ${item.event?.content ?? item.excerpt}`; }
-function containsSensitiveMemory(value: string): boolean { return /\b(password|passcode|token|secret|api[_-]?key|private key)\b|身份证|护照|银行卡|病历|诊断/i.test(value); }
+export function canAutomaticallyUnderstand(statement: string, confidence: number, stability: "medium" | "high", sourceContent: string): boolean {
+	return confidence >= 0.85 && (stability === "medium" || stability === "high") && !containsSensitiveMemory(statement) && !containsSensitiveMemory(sourceContent);
+}
+function containsSensitiveMemory(value: string): boolean { return /\b(password|passcode|token|secret|api[_-]?key|private key)\b|身份证|护照|银行卡|病历|诊断|病史|处方|\b\d{13,19}\b/i.test(value); }
 function result(text: string, details: unknown) { return { content: [{ type: "text" as const, text }], details }; }
