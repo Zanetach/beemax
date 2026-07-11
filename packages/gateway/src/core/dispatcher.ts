@@ -13,6 +13,7 @@
 import {
 	AgentRunError,
 	sessionOwnerKey,
+	type ToolApprovalBroker,
 	type AgentSessionEvent,
 	type AgentRuntimePort,
 } from "@beemax/core";
@@ -20,7 +21,6 @@ import type { InboundMessage, PlatformAdapter } from "./types.ts";
 import { CardSession } from "../card/session.ts";
 import { renderCard, type CardRenderOptions } from "../card/render.ts";
 import { FlushController } from "../card/flush.ts";
-import type { ToolApprovalBroker } from "./tool-approval.ts";
 import { MessageDeduplicator } from "./message-deduplicator.ts";
 
 export interface DispatcherDeps {
@@ -63,7 +63,7 @@ export class Dispatcher {
 	private async handle(msg: InboundMessage): Promise<void> {
 		if (!this.deduplicator.accept(this.profileId, msg.source.platform, msg.source.messageId)) return;
 		const effective = { ...msg, source: this.sessionOverrides.get(sessionOwnerKey(msg.source)) ?? msg.source };
-		if (this.deps.approvalBroker && (await this.deps.approvalBroker.handleMessage(effective))) return;
+		if (this.deps.approvalBroker && (await this.deps.approvalBroker.handleReply(effective.source, effective.text))) return;
 		const control = await this.runtime.handleControl({ source: effective.source, text: effective.text });
 		if (control?.handled) {
 			if (control.nextSource) this.setSessionOverride(msg.source, control.nextSource.threadId);

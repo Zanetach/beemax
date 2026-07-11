@@ -16,7 +16,7 @@ export interface ConversationContextOptions {
 export interface ConversationMemoryPort {
 	recall(query: string, options: { limit: number; platform: string; chatId: string; userId?: string }): Array<{ content: string }>;
 	recordCandidate(record: { platform: string; chatId: string; userId?: string; role: "user" | "assistant"; content: string }): string;
-	/** Optional immutable evidence ledger. Older memory adapters remain compatible. */
+	/** Optional immutable evidence ledger for adapters predating structured memory. */
 	recordEvent?(record: { platform: string; chatId: string; userId?: string; kind: "user" | "assistant"; content: string }): string;
 }
 
@@ -34,6 +34,7 @@ export class ConversationContext {
 
 	enrich(source: BeeMaxRuntimeSource, text: string): string {
 		const userId = source.userIdAlt ?? source.userId;
+		this.memory.recordEvent?.({ platform: source.platform, chatId: source.chatId, userId, kind: "user", content: text });
 		const hits = this.memory.recall(text, { limit: 4, platform: source.platform, chatId: source.chatId, userId });
 		const sections: string[] = [];
 		const facts = this.runtimeFacts?.(text);
@@ -50,7 +51,6 @@ export class ConversationContext {
 		if (source.chatType === "dm") this.recordDirectRoute?.({ platform: source.platform, chatId: source.chatId, userId });
 		this.memory.recordCandidate({ platform: source.platform, chatId: source.chatId, userId, role: "user", content: exchange.user });
 		this.memory.recordCandidate({ platform: source.platform, chatId: source.chatId, userId, role: "assistant", content: exchange.assistant });
-		this.memory.recordEvent?.({ platform: source.platform, chatId: source.chatId, userId, kind: "user", content: exchange.user });
 		this.memory.recordEvent?.({ platform: source.platform, chatId: source.chatId, userId, kind: "assistant", content: exchange.assistant });
 	}
 }

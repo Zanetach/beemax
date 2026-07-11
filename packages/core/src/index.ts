@@ -45,6 +45,7 @@ export {
 	type SubagentTaskStatus,
 } from "./task-manager.ts";
 export { ConversationContext, type ConversationContextOptions, type ConversationExchange, type ConversationMemoryPort } from "./conversation-context.ts";
+export { compileLongTermMemorySnapshot, type LongTermMemoryCompiler } from "./personal-memory.ts";
 export {
 	SessionCoordinator,
 	sessionIdForSource,
@@ -69,6 +70,7 @@ export {
 	type BeeMaxAgentRuntimeOptions,
 } from "./agent-runtime.ts";
 export type { AgentControlHandler, AgentControlInput, AgentControlResult } from "./agent-control.ts";
+export { ToolApprovalBroker, type ApprovalAuditSink, type ApprovalPromptSender, type ToolApprovalDecision, type ToolApprovalRequest } from "./tool-approval.ts";
 export type { RunEvent, RunRecord } from "./run-events.ts";
 export type { DeliveryPort, DeliveryTarget, MediaArtifact } from "./delivery-port.ts";
 export type { ExecutionBackend, ExecutionPolicy, ExecutionPort, ExecutionRequest, ExecutionResult, SandboxMode, WorkspaceAccess } from "./execution.ts";

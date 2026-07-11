@@ -61,7 +61,19 @@ export interface MemoryEvidence {
 	claimId: string;
 	kind: "conversation" | "manual" | "correction";
 	eventId?: string;
+	event?: MemoryEvent;
 	excerpt: string;
+	createdAt: number;
+}
+
+export interface MemoryEvent {
+	id: string;
+	platform: string;
+	chatId: string;
+	userId?: string;
+	kind: "user" | "assistant" | "import" | "feedback";
+	content: string;
+	occurredAt: number;
 	createdAt: number;
 }
 
@@ -247,6 +259,12 @@ export class MemoryStore {
 		return id;
 	}
 
+	latestEvent(opts: Omit<RecallOptions, "limit">, kind: MemoryEvent["kind"] = "user"): MemoryEvent | undefined {
+		const { where, params } = scopeWhere(opts, "e");
+		const row = this.db.prepare(`SELECT * FROM memory_events e WHERE e.kind = ? ${where} ORDER BY e.occurred_at DESC LIMIT 1`).get(kind, ...params) as EventRow | undefined;
+		return row ? mapEvent(row) : undefined;
+	}
+
 	/** Store or reinforce a named understanding with optional provenance. */
 	upsertClaim(input: ClaimInput): MemoryClaim {
 		const statement = input.statement.trim();
@@ -267,22 +285,28 @@ export class MemoryStore {
 				VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?)`)
 				.run(id, input.platform, input.chatId, input.userId ?? null, input.kind, statement, clampConfidence(input.confidence ?? 0.7), input.stability ?? "low", now, now, input.expiresAt ?? null, now, now);
 		}
+		if (input.evidence?.eventId && !this.eventMatchesScope(input.evidence.eventId, input)) throw new Error("Memory evidence event is outside this user scope");
 		if (input.evidence?.excerpt.trim()) this.addEvidence(id, input.evidence.kind ?? "manual", input.evidence.excerpt, input.evidence.eventId);
 		return this.getClaim(id)!;
 	}
 
-	correctClaim(id: string, replacement: Pick<ClaimInput, "statement" | "confidence" | "stability" | "expiresAt">, opts: Omit<RecallOptions, "limit"> = {}): MemoryClaim | undefined {
+	correctClaim(id: string, replacement: Pick<ClaimInput, "statement" | "confidence" | "stability" | "expiresAt" | "evidence">, opts: Omit<RecallOptions, "limit"> = {}): MemoryClaim | undefined {
 		const current = this.getClaim(id, opts);
 		if (!current || current.status !== "active") return undefined;
-		const eventId = this.recordEvent({ platform: current.platform, chatId: current.chatId, userId: current.userId, kind: "feedback", content: `Corrected claim ${id}: ${current.statement} -> ${replacement.statement}` });
+		const evidence = replacement.evidence ?? { kind: "correction" as const, excerpt: `Corrects claim ${id}: ${current.statement}` };
 		const corrected = this.upsertClaim({
 			platform: current.platform, chatId: current.chatId, userId: current.userId, kind: current.kind,
 			statement: replacement.statement, confidence: replacement.confidence ?? Math.max(current.confidence, 0.8),
 			stability: replacement.stability ?? current.stability, expiresAt: replacement.expiresAt,
-			evidence: { kind: "correction", eventId, excerpt: `Corrects claim ${id}: ${current.statement}` },
+			evidence: { ...evidence, kind: "correction" },
 		});
 		this.db.prepare("UPDATE memory_claims SET status = 'superseded', superseded_by = ?, updated_at = ? WHERE id = ?").run(corrected.id, Date.now(), id);
 		return corrected;
+	}
+
+	forgetClaim(id: string, opts: Omit<RecallOptions, "limit"> = {}): boolean {
+		const { where, params } = scopeWhere(opts, "c");
+		return this.db.prepare(`DELETE FROM memory_claims c WHERE c.id = ? ${where}`).run(id, ...params).changes > 0;
 	}
 
 	listClaims(opts: RecallOptions & { status?: MemoryClaim["status"]; limit?: number } = {}): MemoryClaim[] {
@@ -304,7 +328,9 @@ export class MemoryStore {
 	explainClaim(id: string, opts: Omit<RecallOptions, "limit"> = {}): { claim: MemoryClaim; evidence: MemoryEvidence[] } | undefined {
 		const claim = this.getClaim(id, opts);
 		if (!claim) return undefined;
-		const evidence = this.db.prepare("SELECT id, claim_id, event_id, kind, excerpt, created_at FROM memory_evidence WHERE claim_id = ? ORDER BY created_at DESC").all(id) as EvidenceRow[];
+		const evidence = this.db.prepare(`SELECT v.id, v.claim_id, v.event_id, v.kind, v.excerpt, v.created_at,
+			e.id AS event_id_value, e.platform AS event_platform, e.chat_id AS event_chat_id, e.user_id AS event_user_id, e.kind AS event_kind, e.content AS event_content, e.occurred_at AS event_occurred_at, e.created_at AS event_created_at
+			FROM memory_evidence v LEFT JOIN memory_events e ON e.id = v.event_id WHERE v.claim_id = ? ORDER BY v.created_at DESC`).all(id) as EvidenceRow[];
 		return { claim, evidence: evidence.map(mapEvidence) };
 	}
 
@@ -332,6 +358,12 @@ export class MemoryStore {
 	private addEvidence(claimId: string, kind: MemoryEvidence["kind"], excerpt: string, eventId?: string): void {
 		this.db.prepare("INSERT INTO memory_evidence (id, claim_id, event_id, kind, excerpt, created_at) VALUES (?, ?, ?, ?, ?, ?)")
 			.run(cryptoRandom(), claimId, eventId ?? null, kind, excerpt.trim().slice(0, 4000), Date.now());
+	}
+
+	private eventMatchesScope(eventId: string, input: Pick<ClaimInput, "platform" | "chatId" | "userId">): boolean {
+		const row = this.db.prepare("SELECT id FROM memory_events WHERE id = ? AND platform = ? AND (user_id = ? OR (? IS NULL AND chat_id = ?))")
+			.get(eventId, input.platform, input.userId ?? null, input.userId ?? null, input.chatId) as { id: string } | undefined;
+		return Boolean(row);
 	}
 
 	private getClaim(id: string, opts: Omit<RecallOptions, "limit"> = {}): MemoryClaim | undefined {
@@ -605,6 +637,25 @@ interface EvidenceRow {
 	kind: MemoryEvidence["kind"];
 	excerpt: string;
 	created_at: number;
+	event_id_value: string | null;
+	event_platform: string | null;
+	event_chat_id: string | null;
+	event_user_id: string | null;
+	event_kind: MemoryEvent["kind"] | null;
+	event_content: string | null;
+	event_occurred_at: number | null;
+	event_created_at: number | null;
+}
+
+interface EventRow {
+	id: string;
+	platform: string;
+	chat_id: string;
+	user_id: string | null;
+	kind: MemoryEvent["kind"];
+	content: string;
+	occurred_at: number;
+	created_at: number;
 }
 
 function mapRow(row: MemoryRow): MemoryRecord {
@@ -633,7 +684,14 @@ function mapClaim(row: ClaimRow): MemoryClaim {
 }
 
 function mapEvidence(row: EvidenceRow): MemoryEvidence {
-	return { id: row.id, claimId: row.claim_id, eventId: row.event_id ?? undefined, kind: row.kind, excerpt: row.excerpt, createdAt: row.created_at };
+	const event = row.event_id_value && row.event_platform && row.event_chat_id && row.event_kind && row.event_content && row.event_occurred_at && row.event_created_at
+		? { id: row.event_id_value, platform: row.event_platform, chatId: row.event_chat_id, userId: row.event_user_id ?? undefined, kind: row.event_kind, content: row.event_content, occurredAt: row.event_occurred_at, createdAt: row.event_created_at }
+		: undefined;
+	return { id: row.id, claimId: row.claim_id, eventId: row.event_id ?? undefined, kind: row.kind, excerpt: row.excerpt, createdAt: row.created_at, event };
+}
+
+function mapEvent(row: EventRow): MemoryEvent {
+	return { id: row.id, platform: row.platform, chatId: row.chat_id, userId: row.user_id ?? undefined, kind: row.kind, content: row.content, occurredAt: row.occurred_at, createdAt: row.created_at };
 }
 
 function scopeWhere(opts: Omit<RecallOptions, "limit">, alias: string): { where: string; params: unknown[] } {

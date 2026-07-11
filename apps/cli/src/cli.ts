@@ -37,9 +37,9 @@ import { LocalActivityPresenter, LocalReasoningPresenter, type DetailsDisplay, l
 import { renderTerminalMarkdown, StreamingTerminalMarkdown } from "./terminal-markdown.ts";
 import { inspectGateway, readGatewayLogs } from "./gateway-observability.ts";
 import { createTaskAwareConversationContext, ensureBuiltinTasks, installedVersion } from "./runtime-facts.ts";
-import { AgentRunError, SessionCatalog, type BeeMaxAgentRuntime } from "@beemax/core";
-import type { SessionSource, ToolApprovalDecision, ToolApprovalRequest } from "@beemax/gateway";
-import { existsSync, writeFileSync } from "node:fs";
+import { AgentRunError, SessionCatalog, ToolApprovalBroker, compileLongTermMemorySnapshot, type BeeMaxAgentRuntime } from "@beemax/core";
+import type { SessionSource } from "@beemax/gateway";
+import { existsSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 
@@ -150,7 +150,7 @@ Commands:
   profile    create | list | show | path | use | migrate | backup | delete
   skills     list | sync (prepackaged Profile Skills)
   mcp        status (probe configured MCP servers)
-  memory     status | list | candidates | claims | explain <id> | compile | promote <id> | reject <id>
+  memory     status | list | candidates | claims | explain <id> | compile | promote <id> | reject <id> | forget <id>
   task       list | set <id> <open|in_progress|done|cancelled> --title <title> [--evidence <ref>]
   auth       codex (stores OAuth only inside the selected profile)
   service    install (Linux systemd)
@@ -658,10 +658,10 @@ async function runMemoryCommand(parsed: ParsedArgs, config: ReturnType<typeof lo
 	const action = parsed.positionals[1] ?? "status";
 	const { MemoryStore } = await import("@beemax/memory");
 	const store = new MemoryStore(config.memory.dbPath);
-	const localMemoryScope = { platform: "cli", chatId: "local", userId: "local" };
+	const localMemoryScope = { platform: "cli" as const, chatId: "local", userId: "local" };
 	try {
 		if (action === "status") {
-			const stats = store.stats();
+			const stats = store.stats(localMemoryScope);
 			console.log(`Profile ${config.profile}: curated=${stats.curated} pending=${stats.pending} promoted=${stats.promoted} rejected=${stats.rejected}`);
 			return;
 		}
@@ -675,16 +675,15 @@ async function runMemoryCommand(parsed: ParsedArgs, config: ReturnType<typeof lo
 			if (!id) throw new Error("Usage: beemax memory explain <id> --profile <name>");
 			const explanation = store.explainClaim(id, localMemoryScope);
 			if (!explanation) throw new Error(`Memory understanding ${id} was not found`);
-			console.log(`${explanation.claim.statement}\n${explanation.evidence.map((item) => `- [${item.kind}] ${item.excerpt}`).join("\n")}`);
+			console.log(`${explanation.claim.statement}\n${explanation.evidence.map((item) => `- [${item.eventId ?? item.kind}] ${new Date(item.event?.occurredAt ?? item.createdAt).toISOString()}: ${item.event?.content ?? item.excerpt}`).join("\n")}`);
 			return;
 		}
 		if (action === "compile") {
 			if (parsed.options.yes !== true) throw new Error("memory compile writes MEMORY.md; rerun with --yes");
 			// MEMORY.md is profile-global and injected by the Gateway, so never compile
 			// arbitrary channel users into it. Personal CLI memory is the only safe default.
-			const snapshot = store.compileLongTermMemory({ ...localMemoryScope, maxChars: 2200 });
-			writeFileSync(join(config.paths.agentDir, "MEMORY.md"), `${snapshot}\n`, { encoding: "utf8", mode: 0o600 });
-			console.log(`Compiled ${join(config.paths.agentDir, "MEMORY.md")}.`);
+			const path = compileLongTermMemorySnapshot(store, config.paths.agentDir, { ...localMemoryScope, chatType: "dm" });
+			console.log(`Compiled ${path}.`);
 			return;
 		}
 		if (action === "correct") {
@@ -692,22 +691,23 @@ async function runMemoryCommand(parsed: ParsedArgs, config: ReturnType<typeof lo
 			const statement = optionString(parsed, "statement");
 			if (!id || !statement) throw new Error("Usage: beemax memory correct <id> --statement <text> --yes --profile <name>");
 			if (parsed.options.yes !== true) throw new Error("memory correct requires --yes");
-			const claim = store.correctClaim(id, { statement }, localMemoryScope);
+			const eventId = store.recordEvent({ ...localMemoryScope, kind: "feedback", content: statement });
+			const claim = store.correctClaim(id, { statement, evidence: { kind: "correction", eventId, excerpt: statement } }, localMemoryScope);
 			if (!claim) throw new Error(`Memory understanding ${id} was not found`);
 			console.log(`Corrected ${id} as ${claim.id}.`);
 			return;
 		}
 		if (action === "list" || action === "candidates") {
-			const records = action === "list" ? store.list({ limit: 50 }) : store.listCandidates({ limit: 50 });
+			const records = action === "list" ? store.list({ ...localMemoryScope, limit: 50 }) : store.listCandidates({ ...localMemoryScope, limit: 50 });
 			console.log(records.map((record) => `${record.id}  [${record.role}] ${record.content}`).join("\n") || `No ${action === "list" ? "curated memories" : "pending candidates"}.`);
 			return;
 		}
 		const id = parsed.positionals[2];
-		if ((action !== "promote" && action !== "reject") || !id) throw new Error("Usage: beemax memory [status | list | candidates | claims | explain <id> | compile | correct <id> --statement <text> | promote <id> | reject <id>] --profile <name>");
+		if ((action !== "promote" && action !== "reject" && action !== "forget") || !id) throw new Error("Usage: beemax memory [status | list | candidates | claims | explain <id> | compile | correct <id> --statement <text> | promote <id> | reject <id> | forget <id>] --profile <name>");
 		if (parsed.options.yes !== true) throw new Error(`memory ${action} requires --yes`);
-		const changed = action === "promote" ? store.promoteCandidate(id) : store.rejectCandidate(id);
-		if (!changed) throw new Error(`Pending memory candidate ${id} was not found`);
-		console.log(`${action === "promote" ? "Promoted" : "Rejected"} memory candidate ${id}.`);
+		const changed = action === "promote" ? store.promoteCandidate(id, localMemoryScope) : action === "reject" ? store.rejectCandidate(id, localMemoryScope) : store.forget(id, localMemoryScope) || store.forgetClaim(id, localMemoryScope);
+		if (!changed) throw new Error(`${action === "forget" ? "Memory" : "Pending memory candidate"} ${id} was not found`);
+		console.log(`${action === "promote" ? "Promoted" : action === "reject" ? "Rejected" : "Forgot"} ${action === "forget" ? "memory" : "memory candidate"} ${id}.`);
 	} finally {
 		store.close();
 	}
@@ -778,7 +778,7 @@ async function runChat(config: ReturnType<typeof loadConfig>): Promise<void> {
 	const { buildAgentFactory } = await import("./agent-factory.ts");
 	const { MemoryStore } = await import("@beemax/memory");
 	const apiKey = configuredApiKey(config.model.provider, config.model.apiKey) ?? "";
-	const localApproval = new LocalApprovalBroker();
+	const localApproval = new ToolApprovalBroker(async (_source, text) => { process.stdout.write(`\n${text}\n`); });
 	const memory = new MemoryStore(config.memory.dbPath);
 	const mcp = new McpManager();
 	await mcp.connectAll(loadMcpConfig(config.mcp.configPath));
@@ -922,7 +922,7 @@ async function runChat(config: ReturnType<typeof loadConfig>): Promise<void> {
 			if (!trimmed) { writePrompt(); return; }
 			const command = parseChatCommand(trimmed);
 			if (active) {
-				if (await localApproval.handle(source, trimmed)) return;
+			if (await localApproval.handleReply(source, trimmed)) return;
 				if (command?.kind === "stop") { await stop(); return; }
 				if (command?.kind === "status") { process.stdout.write(`\n${await status()}\n`); return; }
 				process.stdout.write("\nAgent is running. Use /stop (or Ctrl+C) before starting another turn.\n");
@@ -1052,53 +1052,10 @@ async function runChat(config: ReturnType<typeof loadConfig>): Promise<void> {
 		runtime.dispose();
 		await subagents?.dispose();
 		await mcp.close();
+		localApproval.dispose();
 		memory.close();
 	}
 }
-
-/** Terminal equivalent of the Gateway's text approval broker. */
-class LocalApprovalBroker {
-	private pending?: { sourceKey: string; toolName: string; resolve: (decision: ToolApprovalDecision) => void; abortCleanup?: () => void };
-	private readonly grants = new Set<string>();
-
-	async authorize(request: ToolApprovalRequest, signal?: AbortSignal): Promise<ToolApprovalDecision> {
-		const sourceKey = localApprovalSourceKey(request.source);
-		const grantKey = `${sourceKey}:${request.toolName}`;
-		if (this.grants.has(grantKey)) return { allowed: true };
-		if (this.pending) return { allowed: false, reason: "Another tool approval is already pending" };
-		process.stdout.write(`\n⚠️ Tool '${request.toolName}' requires approval. Reply 1 (allow once), 2 (allow this session), or 3 (deny).\n`);
-		return new Promise<ToolApprovalDecision>((resolve) => {
-			const pending: NonNullable<LocalApprovalBroker["pending"]> = { sourceKey, toolName: request.toolName, resolve };
-			if (signal) {
-				const abort = () => this.finish({ allowed: false, reason: "Tool approval cancelled" });
-				signal.addEventListener("abort", abort, { once: true });
-				pending.abortCleanup = () => signal.removeEventListener("abort", abort);
-			}
-			this.pending = pending;
-		});
-	}
-
-	async handle(source: SessionSource, input: string): Promise<boolean> {
-		const pending = this.pending;
-		if (!pending || pending.sourceKey !== localApprovalSourceKey(source)) return false;
-		const choice = input.trim().toLowerCase();
-		if (["1", "allow", "允许", "允许一次"].includes(choice)) this.finish({ allowed: true });
-		else if (["2", "allow session", "本会话允许"].includes(choice)) { this.grants.add(`${pending.sourceKey}:${pending.toolName}`); this.finish({ allowed: true }); }
-		else if (["3", "deny", "拒绝"].includes(choice)) this.finish({ allowed: false, reason: "User denied the tool call" });
-		else { process.stdout.write("Reply 1 (allow once), 2 (allow this session), or 3 (deny).\n"); }
-		return true;
-	}
-
-	private finish(decision: ToolApprovalDecision): void {
-		const pending = this.pending;
-		if (!pending) return;
-		this.pending = undefined;
-		pending.abortCleanup?.();
-		pending.resolve(decision);
-	}
-}
-
-function localApprovalSourceKey(source: SessionSource): string { return `${source.platform}:${source.chatId}:${source.threadId ?? ""}:${source.userIdAlt ?? source.userId ?? "anon"}`; }
 
 main().catch((err) => {
 	console.error(err);

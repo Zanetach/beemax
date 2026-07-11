@@ -98,7 +98,8 @@ test("structured understandings retain evidence, support correction, and compile
 		assert.equal(store.recallBrief("用户默认使用中文", scope).claims[0].id, preference.id);
 		assert.equal(store.recall("用户默认使用中文", scope)[0].id, preference.id);
 		assert.equal(store.explainClaim(preference.id, scope).evidence[0].excerpt, "默认中文，先给结论。");
-		const corrected = store.correctClaim(preference.id, { statement: "用户默认使用中文；架构讨论时需要完整方案。" }, scope);
+		const correctionEvent = store.recordEvent({ ...scope, kind: "feedback", content: "架构讨论时需要完整方案。" });
+		const corrected = store.correctClaim(preference.id, { statement: "用户默认使用中文；架构讨论时需要完整方案。", evidence: { kind: "correction", eventId: correctionEvent, excerpt: "架构讨论时需要完整方案。" } }, scope);
 		assert.ok(corrected);
 		assert.equal(store.listClaims(scope).some((claim) => claim.id === preference.id), false);
 		assert.equal(store.explainClaim(preference.id, scope).claim.supersededBy, corrected.id);
@@ -107,6 +108,8 @@ test("structured understandings retain evidence, support correction, and compile
 		assert.match(store.compileLongTermMemory({ ...scope, maxChars: 1000 }), /BeeMax 正在建设/);
 		store.upsertClaim({ ...scope, userId: "another-user", kind: "fact", statement: "Other user's private fact", confidence: 1, stability: "high" });
 		assert.doesNotMatch(store.compileLongTermMemory({ ...scope, maxChars: 1000 }), /Other user's private fact/);
+		const foreignEvent = store.recordEvent({ ...scope, userId: "another-user", kind: "user", content: "Private source" });
+		assert.throws(() => store.upsertClaim({ ...scope, kind: "fact", statement: "Must not cross scopes", evidence: { eventId: foreignEvent, excerpt: "Private source" } }), /outside this user scope/);
 	} finally {
 		store.close();
 		rmSync(root, { recursive: true, force: true });
