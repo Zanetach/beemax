@@ -47,3 +47,18 @@ test("release archive includes Pi and excludes git metadata and dependencies", a
 	assert.match(packager, /RELEASE_VERSION/);
 	assert.match(packager, /shasum -a 256/);
 });
+
+test("tag releases pass build, test, and isolated archive installation gates before publishing", async () => {
+	const workflow = await readFile(".github/workflows/release.yml", "utf8");
+	const verifier = await readFile("scripts/verify-release-archive.sh", "utf8");
+	assert.match(workflow, /actions\/setup-node@v4/);
+	assert.match(workflow, /node-version: 22\.19\.0/);
+	for (const command of ["npm ci", "npm audit --omit=dev --audit-level=high", "npm run build", "npm run typecheck", "npm test", "create-release-archive\.sh", "verify-release-archive\.sh"]) assert.match(workflow, new RegExp(command));
+	assert.ok(workflow.indexOf("verify-release-archive.sh") < workflow.indexOf("gh release create"));
+	assert.match(verifier, /sha256/);
+	assert.match(verifier, /RELEASE_VERSION/);
+	assert.match(verifier, /node_modules/);
+	assert.match(verifier, /BEEMAX_BIN_DIR/);
+	assert.match(verifier, /scripts\/install\.sh/);
+	assert.match(verifier, /beemax.*--help/);
+});

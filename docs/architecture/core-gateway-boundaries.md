@@ -152,11 +152,13 @@ adopts the same ownership distinction without copying either project verbatim.
    capability composition.
 8. **Completed:** enforce Pi as a Core-private execution substrate for
    capabilities and Gateway; allow only the CLI presenter to consume Pi TUI.
-9. **In progress:** durable Task Plan Execution Claims now fence concurrent
+9. **Completed:** durable Task Plan Execution Claims now fence concurrent
    recovery across Agent instances, and a Core recovery service continuously
-   reconciles expired Task Runs without overlapping recovery cycles. Next,
-   perform a release audit/package verification and add an external queue
-   adapter for horizontally scaled enterprise deployments.
+   reconciles expired Task Runs without overlapping recovery cycles. Tag
+   releases require build, typecheck, tests, production dependency audit,
+   archive checksum/layout validation and an isolated installation smoke test.
+   An external queue adapter remains optional future work for horizontally
+   scaled enterprise deployments.
 
 ## Acceptance criteria
 

@@ -208,6 +208,17 @@ npm run doctor     # validates local readiness
 npm run gateway    # starts the long-running Feishu agent
 ```
 
+To reproduce the release gate locally after choosing a version label:
+
+```bash
+bash scripts/create-release-archive.sh v0.1.0-audit
+bash scripts/verify-release-archive.sh v0.1.0-audit
+```
+
+The verifier checks the checksum and source-only archive layout, installs into
+an isolated temporary HOME, rebuilds from the packaged sources, and starts the
+installed `beemax --help` command. It does not modify existing Profiles.
+
 Access is deny-by-default. Set `FEISHU_ALLOWED_USERS` to Feishu union_id,
 user_id, or open_id values. Optionally restrict chats with
 `FEISHU_ALLOWED_CHATS`. `FEISHU_ALLOW_ALL_USERS=true` explicitly disables the
