@@ -37,7 +37,7 @@ import { LocalActivityPresenter, LocalReasoningPresenter, type DetailsDisplay, l
 import { renderTerminalMarkdown, StreamingTerminalMarkdown } from "./terminal-markdown.ts";
 import { inspectGateway, readGatewayLogs } from "./gateway-observability.ts";
 import { createTaskAwareConversationContext, ensureBuiltinTasks, installedVersion } from "./runtime-facts.ts";
-import { SessionCatalog, type BeeMaxAgentRuntime } from "@beemax/core";
+import { AgentRunError, SessionCatalog, type BeeMaxAgentRuntime } from "@beemax/core";
 import type { SessionSource } from "@beemax/gateway";
 import { existsSync } from "node:fs";
 import { spawnSync } from "node:child_process";
@@ -808,6 +808,7 @@ async function runChat(config: ReturnType<typeof loadConfig>): Promise<void> {
 		};
 		await applySessionPreferences();
 		let active: Promise<void> | undefined;
+		let retryText: string | undefined;
 		let controlInProgress = false;
 		let lastDurationMs: number | undefined;
 		let closed = false;
@@ -886,7 +887,7 @@ async function runChat(config: ReturnType<typeof loadConfig>): Promise<void> {
 			}
 			if (trimmed === "/quit" || trimmed === "/exit") { closed = true; rl.close(); return; }
 			if (command?.kind === "help") {
-				process.stdout.write("Commands: /help /status /new /reset /sessions /history [n] /resume <session-id> /usage /stop /compact /model /models /think [level] /reasoning /details [hidden|collapsed|expanded] /quit\n");
+				process.stdout.write("Commands: /help /status /new /reset /sessions /history [n] /resume <session-id> /usage /stop /compact /model /models /think [level] /retry /reasoning /details [hidden|collapsed|expanded] /quit\n");
 				writePrompt();
 				return;
 			}
@@ -915,6 +916,11 @@ async function runChat(config: ReturnType<typeof loadConfig>): Promise<void> {
 			}
 			if (command?.kind === "sessions") { process.stdout.write(`${await sessions()}\n`); writePrompt(); return; }
 			if (command?.kind === "models") { process.stdout.write(`${renderConfiguredModels(config)}\n`); writePrompt(); return; }
+			if (command?.kind === "retry") {
+				if (!retryText) process.stdout.write("No recoverable failed turn to retry.\n");
+				else { const text = retryText; retryText = undefined; active = runTurn(text, source); try { await active; } catch (error) { process.stdout.write(`Agent run failed: ${error instanceof Error ? error.message : String(error)}\n`); } finally { active = undefined; } }
+				writePrompt(); return;
+			}
 			if (command?.kind === "history") { process.stdout.write(`${await history(command.limit)}\n`); writePrompt(); return; }
 			if (command?.kind === "resume") {
 				const resumeSource = command.sessionId === "default" ? { ...source, threadId: undefined } : { ...source, threadId: command.sessionId };
@@ -978,7 +984,16 @@ async function runChat(config: ReturnType<typeof loadConfig>): Promise<void> {
 			const turnSource = source;
 			active = runTurn(trimmed, turnSource);
 			try { await active; }
-			catch (error) { process.stdout.write(`Agent run failed: ${error instanceof Error ? error.message : String(error)}\n`); }
+			catch (error) {
+				if (error instanceof AgentRunError && error.recoverable) {
+					const fallback = config.models.find((choice) => `${choice.provider}/${choice.model}` !== `${config.model.provider}/${config.model.model}`);
+					if (fallback) {
+						const switched = await runtime.handleControl({ source, text: `/model ${fallback.provider}/${fallback.model}` });
+						if (switched?.handled && switched.message.startsWith("Switched this conversation")) { retryText = trimmed; process.stdout.write(`Agent run failed: ${error.message}\nSwitched to fallback ${fallback.provider}/${fallback.model}. Use /retry to retry explicitly.\n`); return; }
+					}
+				}
+				process.stdout.write(`Agent run failed: ${error instanceof Error ? error.message : String(error)}\n`);
+			}
 			finally { active = undefined; writePrompt(); }
 		};
 		writePrompt();
