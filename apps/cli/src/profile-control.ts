@@ -10,6 +10,7 @@ import { ProfileModelCatalog } from "./model-catalog.ts";
 export interface TaskRecoveryStatus { phase: "disabled" | "running" | "completed" | "failed"; plans: number; succeeded: number; failed: number; blocked: number; }
 export interface ProfileOperationalFacts { taskScheduler?: ProfileTaskSchedulerSnapshot; taskRecovery?: TaskRecoveryStatus; }
 export interface ProfileControlActions {
+	verifyTaskPlan?: (source: SessionSource, planId: string) => Promise<{ attempted: number; accepted: number; rejected: number; unavailable: number }>;
 	retryTaskPlan?: (source: SessionSource, planId: string) => Promise<{ prepared: number; succeeded: number; failed: number; blocked: string[] }>;
 	cancelTaskPlan?: (source: SessionSource, planId: string) => { active: number; tasks: number };
 }
@@ -82,7 +83,7 @@ export function createProfileControlHandler(
 			const entries = await runtime.history(source, history[1] ? Number(history[1]) : undefined);
 			return { handled: true, message: entries.length ? entries.map((entry) => `[${entry.role}] ${entry.text.replaceAll("\n", " ")}`).join("\n") : "No live message history." };
 		}
-		if (command === "/help") return { handled: true, message: "Commands: /help /status /usage /compact /sessions /resume <id> /history [n] /skills /tasks [plans|retry|cancel <plan-id>] /new /reset /model [provider/model] [--global] /stop\nCLI also supports local display, tool, and retry controls." };
+		if (command === "/help") return { handled: true, message: "Commands: /help /status /usage /compact /sessions /resume <id> /history [n] /skills /tasks [plans|verify|retry|cancel <plan-id>] /new /reset /model [provider/model] [--global] /stop\nCLI also supports local display, tool, and retry controls." };
 		if (command === "/status" || command === "/usage") {
 			const [model, usage] = await Promise.all([runtime.modelStatus(source), runtime.usage(source)]);
 			const usageText = usage ? `input=${usage.inputTokens}; output=${usage.outputTokens}; context=${usage.contextTokens ?? "?"}/${usage.contextWindow ?? "?"}` : "no live session";
@@ -97,6 +98,11 @@ export function createProfileControlHandler(
 		}
 		const taskCommand = parseInteractionCommand(text);
 		if (taskCommand?.kind === "tasks" && taskCommand.action === "plans") return { handled: true, message: renderTaskPlans(runtime.taskPlans(source, { limit: 200 })) };
+		if (taskCommand?.kind === "tasks" && taskCommand.action === "verify" && taskCommand.planId) {
+			if (!actions?.verifyTaskPlan) return { handled: true, message: "Task Plan Verification Retry is unavailable in this runtime." };
+			const result = await actions.verifyTaskPlan(source, taskCommand.planId);
+			return { handled: true, message: result.attempted ? `Verified Candidate Results for Plan ${taskCommand.planId}: attempted=${result.attempted}; accepted=${result.accepted}; rejected=${result.rejected}; unavailable=${result.unavailable}.` : `No unavailable Candidate Results found in owned Plan ${taskCommand.planId}.` };
+		}
 		if (taskCommand?.kind === "tasks" && taskCommand.action === "retry" && taskCommand.planId) {
 			if (!actions?.retryTaskPlan) return { handled: true, message: "Task Plan retry is unavailable in this runtime." };
 			const result = await actions.retryTaskPlan(source, taskCommand.planId);

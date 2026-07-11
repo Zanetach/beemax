@@ -25,7 +25,7 @@ The durable aggregate lifecycle and quality summary of a Task Plan, derived from
 _Avoid_: Task Graph result, UI summary, final answer
 
 **Terminal Outcome**:
-The first persisted succeeded, failed, or cancelled state of a Task Plan, Task, or Task Run; later executors may observe it but cannot replace it.
+The first persisted succeeded, failed, or cancelled state of a Task Plan, Task, or Task Run; later executors may observe it but cannot replace it, while an explicit safe Retry or Verification Retry may create a new controlled outcome.
 _Avoid_: Latest status, worker report, retry state
 
 **Task Dependency**:
@@ -47,6 +47,10 @@ _Avoid_: Execution, self-report, model confidence
 **Candidate Result**:
 Task execution output retained for Verification; it cannot satisfy dependencies or become an accepted outcome until Verification succeeds.
 _Avoid_: Final answer, successful result, evidence
+
+**Verification Retry**:
+A repeated evaluation of a retained Candidate Result after Verification was unavailable; it does not execute the Task again.
+_Avoid_: Task retry, Corrective Attempt, model replay
 
 **Corrective Attempt**:
 A new Task Run that revises a rejected result using Verification feedback while preserving the identity and responsibility of the original Task.

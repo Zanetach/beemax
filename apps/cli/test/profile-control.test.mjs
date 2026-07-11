@@ -38,3 +38,14 @@ test("shared /tasks plans summarizes owned Task Plans for discovery and control"
 	const result = await control({ source: { platform: "feishu", chatId: "chat", chatType: "dm", userId: "user" }, text: "/tasks plans" });
 	assert.equal(result.message, "plan-b  [running]  Live research · progress=1/3 · verified=1 · corrections=0\nplan-a  [failed]  Write report · progress=2/2 · verified=1 · corrections=2");
 });
+
+test("shared /tasks verify retries Verification without exposing an execution retry", async () => {
+	const config = { profile: "personal", model: { provider: "test", model: "model" }, models: [] };
+	let requested;
+	const control = createProfileControlHandler({}, config, undefined, undefined, {
+		verifyTaskPlan: async (_source, planId) => { requested = planId; return { attempted: 2, accepted: 1, rejected: 1, unavailable: 0 }; },
+	});
+	const result = await control({ source: { platform: "feishu", chatId: "chat", chatType: "dm", userId: "user" }, text: "/tasks verify plan-a" });
+	assert.equal(requested, "plan-a");
+	assert.match(result.message, /attempted=2; accepted=1; rejected=1; unavailable=0/);
+});

@@ -123,6 +123,47 @@ test("Verification unavailable persists across Profile database restarts", async
 	} finally { store.close(); rmSync(root, { recursive: true, force: true }); }
 });
 
+test("Verification Retry promotes a Candidate Result without replaying Task execution", async () => {
+	const root = mkdtempSync(join(tmpdir(), "beemax-verification-retry-"));
+	const store = new MemoryStore(join(root, "memory.db"));
+	try {
+		const graph = new TaskGraph(store);
+		graph.createPlan({ id: "retry-verification-plan", ownerKey: "cli:local:local", tasks: [{ id: "retry-verification-task", title: "Verify", acceptanceCriteria: "Passes an independent check" }] }, 10);
+		await graph.run(["cli:local:local"], "retry-verification-plan", async () => ({ output: "candidate" }), { verify: async () => { throw new Error("verifier offline"); } });
+		let executions = 0;
+		const runner = new TaskRecoveryRunner(store, async () => { executions++; return { output: "replayed" }; }, undefined, async (_task, result) => ({ accepted: result.output === "candidate", evidence: "candidate checked" }));
+		assert.deepEqual(await runner.reverify(["cli:local:local"], "retry-verification-plan"), { attempted: 1, accepted: 1, rejected: 0, unavailable: 0 });
+		assert.equal(executions, 0);
+		const task = store.queryTasks({ ownerKeys: ["cli:local:local"], id: "retry-verification-task" })[0];
+		assert.deepEqual({ status: task.status, verificationStatus: task.verificationStatus, result: task.result, candidateResult: task.candidateResult, evidence: task.evidence }, { status: "succeeded", verificationStatus: "accepted", result: "candidate", candidateResult: undefined, evidence: "candidate checked" });
+		const plan = store.queryTaskPlans({ ownerKeys: ["cli:local:local"], id: "retry-verification-plan" })[0];
+		assert.deepEqual({ status: plan.status, succeeded: plan.succeeded, verified: plan.verified }, { status: "succeeded", succeeded: 1, verified: 1 });
+	} finally { store.close(); rmSync(root, { recursive: true, force: true }); }
+});
+
+test("Verification Retry distinguishes rejected and still-unavailable Candidate Results", async () => {
+	const root = mkdtempSync(join(tmpdir(), "beemax-verification-retry-outcomes-"));
+	const store = new MemoryStore(join(root, "memory.db"));
+	try {
+		const graph = new TaskGraph(store);
+		graph.createPlan({ id: "retry-outcomes-plan", ownerKey: "cli:local:local", tasks: [
+			{ id: "rejected-candidate", title: "Rejected", acceptanceCriteria: "Must be accepted" },
+			{ id: "offline-candidate", title: "Offline", acceptanceCriteria: "Must be checked" },
+		] }, 10);
+		await graph.run(["cli:local:local"], "retry-outcomes-plan", async (task) => ({ output: task.id }), { maxConcurrent: 1, verify: async () => { throw new Error("verifier offline"); } });
+		let executions = 0;
+		const runner = new TaskRecoveryRunner(store, async () => { executions++; return { output: "replayed" }; }, undefined, async (task) => {
+			if (task.id === "offline-candidate") throw new Error("still offline");
+			return { accepted: false, feedback: "Candidate is incomplete" };
+		});
+		assert.deepEqual(await runner.reverify(["cli:local:local"], "retry-outcomes-plan"), { attempted: 2, accepted: 0, rejected: 1, unavailable: 1 });
+		assert.equal(executions, 0);
+		const tasks = new Map(store.queryTasks({ ownerKeys: ["cli:local:local"], planIds: ["retry-outcomes-plan"] }).map((task) => [task.id, task]));
+		assert.deepEqual({ status: tasks.get("rejected-candidate").verificationStatus, candidate: tasks.get("rejected-candidate").candidateResult }, { status: "rejected", candidate: "rejected-candidate" });
+		assert.deepEqual({ status: tasks.get("offline-candidate").verificationStatus, candidate: tasks.get("offline-candidate").candidateResult }, { status: "unavailable", candidate: "offline-candidate" });
+	} finally { store.close(); rmSync(root, { recursive: true, force: true }); }
+});
+
 test("legacy Verification Status migrates additively into Verification Outcome", () => {
 	const root = mkdtempSync(join(tmpdir(), "beemax-verification-migration-"));
 	const path = join(root, "memory.db");

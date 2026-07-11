@@ -4,6 +4,7 @@ export type TaskKind = "objective" | "delegated" | "automation";
 export type TaskStatus = "pending" | "running" | "succeeded" | "failed" | "cancelled";
 export type TaskRecoveryPolicy = "never" | "safe_retry";
 export type TaskVerificationStatus = "pending" | "accepted" | "rejected" | "unavailable";
+export type TaskCandidateVerificationResolution = { accepted: true; evidence?: string } | { accepted: false; feedback: string };
 export type TaskPlanStatus = "pending" | "running" | "succeeded" | "failed" | "cancelled";
 
 export interface TaskPlanRecord {
@@ -92,6 +93,7 @@ export interface TaskLedger {
 	taskDependencies(taskIds: string[]): TaskDependency[];
 	reconcileExpiredTaskRuns(now?: number): TaskRecoveryResult;
 	recoveryCandidates(limit?: number, excludePlanIds?: string[]): TaskRecord[];
+	resolveCandidateVerification?(ownerKeys: string[], taskId: string, resolution: TaskCandidateVerificationResolution, now?: number): boolean;
 	renewTaskRunLease?(id: string, leaseExpiresAt: number): boolean;
 	prepareTaskPlanRetry(ownerKeys: string[], planId: string): number;
 	cancelTaskPlan(ownerKeys: string[], planId: string, now?: number): number;

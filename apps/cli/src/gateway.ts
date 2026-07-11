@@ -185,6 +185,7 @@ export async function runGateway(config: BeeMaxConfig): Promise<void> {
 		approvalBroker,
 		cancelSubagents: (source) => subagents?.cancelOwner(source) ?? 0,
 		controlHandler: (profileRuntime, profileInteraction) => createProfileControlHandler(profileRuntime, config, profileInteraction, () => ({ taskScheduler: taskScheduler.snapshot(), taskRecovery: recoveryStatus }), config.subagents.enabled ? {
+			verifyTaskPlan: (source, planId) => taskRecovery.reverify([conversationKey(source)], planId),
 			retryTaskPlan: (source, planId) => taskRecovery.retry([conversationKey(source)], planId, { maxConcurrent: config.subagents.maxConcurrent }),
 			cancelTaskPlan: (source, planId) => taskRecovery.cancel([conversationKey(source)], planId),
 		} : undefined),

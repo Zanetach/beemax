@@ -922,6 +922,7 @@ async function runChat(config: ReturnType<typeof loadConfig>, requestedMode: { f
 		approvalBroker: localApproval,
 		cancelSubagents: (sessionSource) => subagents?.cancelOwner(sessionSource) ?? 0,
 		controlHandler: (profileRuntime, profileInteraction) => createProfileControlHandler(profileRuntime, config, profileInteraction, () => ({ taskScheduler: taskScheduler.snapshot(), taskRecovery: recoveryStatus }), config.subagents.enabled ? {
+			verifyTaskPlan: (sessionSource, planId) => taskRecovery.reverify([conversationKey(sessionSource)], planId),
 			retryTaskPlan: (sessionSource, planId) => taskRecovery.retry([conversationKey(sessionSource)], planId, { maxConcurrent: config.subagents.maxConcurrent }),
 			cancelTaskPlan: (sessionSource, planId) => taskRecovery.cancel([conversationKey(sessionSource)], planId),
 		} : undefined),
@@ -1122,6 +1123,12 @@ async function runChat(config: ReturnType<typeof loadConfig>, requestedMode: { f
 			if (command?.kind === "tools") { process.stdout.write(`${toolsStatus()}\n`); writePrompt(); return; }
 			if (command?.kind === "tasks") {
 				if (command.action === "plans") { process.stdout.write(`${renderTaskPlans(runtime.taskPlans(source, { limit: 200 }))}\n`); writePrompt(); return; }
+				if (command.action === "verify" && command.planId) {
+					if (!config.subagents.enabled) { process.stdout.write("Task Plan Verification Retry is unavailable because Sub-Agents are disabled.\n"); writePrompt(); return; }
+					const result = await taskRecovery.reverify([conversationKey(source)], command.planId);
+					process.stdout.write(`${result.attempted ? `Verified Candidate Results for Plan ${command.planId}: attempted=${result.attempted}; accepted=${result.accepted}; rejected=${result.rejected}; unavailable=${result.unavailable}.` : `No unavailable Candidate Results found in owned Plan ${command.planId}.`}\n`);
+					writePrompt(); return;
+				}
 				if (command.action === "cancel" && command.planId) {
 					const result = taskRecovery.cancel([conversationKey(source)], command.planId);
 					process.stdout.write(`${result.active || result.tasks ? `Cancelled Task Plan ${command.planId}: active=${result.active}; tasks=${result.tasks}.` : `No active or queued Tasks found in owned Plan ${command.planId}.`}\n`);

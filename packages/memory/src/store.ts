@@ -15,7 +15,7 @@ import Database from "better-sqlite3";
 import type { Database as DatabaseType } from "better-sqlite3";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
-import type { TaskDependency, TaskPlanQuery, TaskPlanRecord, TaskPlanTransition, TaskQuery, TaskRecord as RuntimeTaskRecord, TaskRunRecord, TaskRunTransition, TaskTransition } from "@beemax/core";
+import type { TaskCandidateVerificationResolution, TaskDependency, TaskPlanQuery, TaskPlanRecord, TaskPlanTransition, TaskQuery, TaskRecord as RuntimeTaskRecord, TaskRunRecord, TaskRunTransition, TaskTransition } from "@beemax/core";
 
 export const MEMORY_CLAIM_KINDS = ["preference", "fact", "decision", "goal", "project", "relationship", "workflow"] as const;
 export type MemoryClaimKind = typeof MEMORY_CLAIM_KINDS[number];
@@ -804,6 +804,23 @@ export class MemoryStore {
 			ORDER BY updated_at, created_at LIMIT ?`).all(...(excluded.length ? [JSON.stringify(excluded)] : []), limitOf(limit, 100)) as RuntimeTaskRow[]).map(mapRuntimeTask);
 	}
 
+	resolveCandidateVerification(ownerKeys: string[], taskId: string, resolution: TaskCandidateVerificationResolution, now = Date.now()): boolean {
+		if (!ownerKeys.length || !taskId.trim()) return false;
+		return this.db.transaction(() => {
+			const row = this.db.prepare(`SELECT plan_id FROM tasks WHERE id = ? AND owner_key IN (${ownerKeys.map(() => "?").join(", ")})
+				AND status = 'failed' AND verification_outcome = 'unavailable' AND candidate_result IS NOT NULL`).get(taskId, ...ownerKeys) as { plan_id: string | null } | undefined;
+			if (!row) return false;
+			const changed = resolution.accepted
+				? this.db.prepare(`UPDATE tasks SET status = 'succeeded', result = candidate_result, candidate_result = NULL, evidence = COALESCE(?, evidence),
+					verification_outcome = 'accepted', error = NULL, finished_at = ?, updated_at = ?
+					WHERE id = ? AND status = 'failed' AND verification_outcome = 'unavailable' AND candidate_result IS NOT NULL`).run(resolution.evidence ?? null, now, now, taskId).changes
+				: this.db.prepare(`UPDATE tasks SET verification_outcome = 'rejected', error = ?, updated_at = ?
+					WHERE id = ? AND status = 'failed' AND verification_outcome = 'unavailable' AND candidate_result IS NOT NULL`).run(`Task verification rejected: ${resolution.feedback}`.slice(0, 5_000), now, taskId).changes;
+			if (changed && row.plan_id) this.syncTaskPlanAfterCandidateVerification(row.plan_id, now);
+			return changed === 1;
+		})();
+	}
+
 	prepareTaskPlanRetry(ownerKeys: string[], planId: string): number {
 		if (!ownerKeys.length || !planId.trim()) return 0;
 		const changed = this.db.prepare(`UPDATE tasks SET status = 'pending', started_at = NULL, finished_at = NULL, result = NULL, candidate_result = NULL, error = 'Manual Task Plan retry requested', updated_at = ?
@@ -832,6 +849,17 @@ export class MemoryStore {
 			SUM(status = 'pending') AS pending, SUM(status = 'cancelled') AS cancelled FROM tasks WHERE plan_id = ?`).get(id) as { failed: number; running: number; pending: number; cancelled: number };
 		const status: TaskPlanRecord["status"] = statuses.failed ? "failed" : statuses.running ? "running" : statuses.pending ? "pending" : statuses.cancelled ? "cancelled" : "succeeded";
 		this.syncTaskPlan(id, status, now, status === "pending");
+	}
+
+	private syncTaskPlanAfterCandidateVerification(id: string, now: number): void {
+		const counts = this.db.prepare(`SELECT COUNT(*) AS task_count, SUM(status = 'succeeded') AS succeeded, SUM(status = 'failed') AS failed,
+			SUM(status = 'running') AS running, SUM(status = 'pending') AS pending, SUM(status = 'cancelled') AS cancelled,
+			COALESCE(SUM(verification_outcome = 'accepted'), 0) AS verified, COALESCE(SUM(corrective_attempts), 0) AS corrective_attempts
+			FROM tasks WHERE plan_id = ?`).get(id) as { task_count: number; succeeded: number; failed: number; running: number; pending: number; cancelled: number; verified: number; corrective_attempts: number };
+		const status: TaskPlanRecord["status"] = counts.failed ? "failed" : counts.running ? "running" : counts.pending ? "pending" : counts.cancelled ? "cancelled" : "succeeded";
+		this.db.prepare(`UPDATE task_plans SET status = ?, task_count = ?, succeeded = ?, failed = ?, cancelled = ?, verified = ?, corrective_attempts = ?,
+			finished_at = CASE WHEN ? IN ('succeeded', 'failed', 'cancelled') THEN ? ELSE NULL END WHERE id = ? AND status = 'failed'`)
+			.run(status, counts.task_count, counts.succeeded, counts.failed, counts.cancelled, counts.verified, counts.corrective_attempts, status, now, id);
 	}
 
 	private syncTaskPlan(id: string, status: TaskPlanRecord["status"], now = Date.now(), reopenRunning = false): void {

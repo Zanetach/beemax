@@ -6,6 +6,7 @@ export interface TaskRecoveryRunnerOptions { maxConcurrent?: number; maxCorrecti
 export interface TaskRecoveryRunnerResult { plans: number; succeeded: number; failed: number; cancelled: number; blocked: string[]; }
 export interface TaskPlanRetryResult extends TaskRecoveryRunnerResult { prepared: number; }
 export interface TaskPlanCancelResult { active: number; tasks: number; }
+export interface TaskVerificationRetryResult { attempted: number; accepted: number; rejected: number; unavailable: number; }
 const PLAN_EXECUTION_LEASE_MS = 61 * 60_000;
 const PLAN_EXECUTION_HEARTBEAT_MS = 30_000;
 
@@ -37,6 +38,32 @@ export class TaskRecoveryRunner {
 		return { prepared, ...await this.executePlans(candidates, options) };
 	}
 
+	async reverify(ownerKeys: string[], planId: string, signal?: AbortSignal): Promise<TaskVerificationRetryResult> {
+		const candidates = this.ledger.queryTasks({ ownerKeys, planIds: [planId], statuses: ["failed"], limit: 100 })
+			.filter((task) => task.verificationStatus === "unavailable" && Boolean(task.acceptanceCriteria && task.candidateResult));
+		const summary: TaskVerificationRetryResult = { attempted: 0, accepted: 0, rejected: 0, unavailable: 0 };
+		if (!candidates.length) return summary;
+		const ownerKey = candidates[0]!.ownerKey;
+		const result = await this.withPlanExecutionClaim(ownerKey, planId, signal, async (claimSignal) => {
+			for (const task of candidates) {
+				if (claimSignal.aborted) break;
+				summary.attempted++;
+				if (!this.verify || !this.ledger.resolveCandidateVerification) { summary.unavailable++; continue; }
+				try {
+					const verification = await this.verify(task, { output: task.candidateResult }, claimSignal);
+					if (claimSignal.aborted) break;
+					const resolution = verification.accepted
+						? { accepted: true as const, evidence: verification.evidence?.slice(0, 5_000) }
+						: { accepted: false as const, feedback: verification.feedback?.trim().slice(0, 5_000) || "Acceptance Criteria were not satisfied" };
+					if (!this.ledger.resolveCandidateVerification(ownerKeys, task.id, resolution)) { summary.unavailable++; continue; }
+					if (resolution.accepted) summary.accepted++; else summary.rejected++;
+				} catch { summary.unavailable++; }
+			}
+			return summary;
+		});
+		return result ?? { attempted: 0, accepted: 0, rejected: 0, unavailable: 0 };
+	}
+
 	cancel(ownerKeys: string[], planId: string): TaskPlanCancelResult {
 		const active = this.runtime.cancel(ownerKeys, planId);
 		const tasks = this.ledger.cancelTaskPlan(ownerKeys, planId);
@@ -57,11 +84,17 @@ export class TaskRecoveryRunner {
 	}
 
 	private async executeClaimedPlan(ownerKey: string, planId: string, options: TaskRecoveryRunnerOptions): Promise<TaskGraphResult | undefined> {
+		return this.withPlanExecutionClaim(ownerKey, planId, options.signal, (signal) => new TaskGraph(this.ledger).run([ownerKey], planId, this.execute, {
+			maxConcurrent: options.maxConcurrent, maxCorrectiveAttempts: options.maxCorrectiveAttempts ?? 1, signal, executor: "subagent", canExecute: recoverable, verify: this.verify,
+		}));
+	}
+
+	private async withPlanExecutionClaim<T>(ownerKey: string, planId: string, parentSignal: AbortSignal | undefined, execute: (signal: AbortSignal) => Promise<T>): Promise<T | undefined> {
 		const holderId = crypto.randomUUID();
 		const claimed = this.ledger.claimTaskPlanExecution?.(ownerKey, planId, holderId, Date.now() + PLAN_EXECUTION_LEASE_MS) ?? true;
 		if (!claimed) return undefined;
 		try {
-			return await this.runtime.run(ownerKey, planId, options.signal, async (signal) => {
+			return await this.runtime.run(ownerKey, planId, parentSignal, async (signal) => {
 				const leaseLost = new AbortController();
 				const executionSignal = AbortSignal.any([signal, leaseLost.signal]);
 				const heartbeat = this.ledger.renewTaskPlanExecution ? setInterval(() => {
@@ -70,11 +103,8 @@ export class TaskRecoveryRunner {
 					} catch (error) { leaseLost.abort(error); }
 				}, PLAN_EXECUTION_HEARTBEAT_MS) : undefined;
 				heartbeat?.unref();
-				try {
-					return await new TaskGraph(this.ledger).run([ownerKey], planId, this.execute, {
-						maxConcurrent: options.maxConcurrent, maxCorrectiveAttempts: options.maxCorrectiveAttempts ?? 1, signal: executionSignal, executor: "subagent", canExecute: recoverable, verify: this.verify,
-					});
-				} finally { if (heartbeat) clearInterval(heartbeat); }
+				try { return await execute(executionSignal); }
+				finally { if (heartbeat) clearInterval(heartbeat); }
 			});
 		} finally { this.ledger.releaseTaskPlanExecution?.(ownerKey, planId, holderId); }
 	}
