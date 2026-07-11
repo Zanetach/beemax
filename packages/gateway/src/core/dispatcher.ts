@@ -206,11 +206,21 @@ export class Dispatcher {
 				await flush.schedule(renderUpdate, true);
 				break;
 			case "approval.requested":
-				card.apply("approval.updated", { id: `approval:${event.turnId}`, status: "pending", message: `等待审批：${event.toolName}` });
+				card.apply("approval.updated", {
+					id: `approval:${event.turnId}`,
+					status: "pending",
+					message: event.details
+						? `等待审批：${event.toolName}\n目标：${event.details.target}\n风险：${event.details.risk} · ${event.details.impact}\n可逆性：${event.details.reversibility}\n回复 1（一次）/ 2（本会话）/ 3（拒绝），或 /stop 取消。`
+						: `等待审批：${event.toolName}`,
+				});
 				await flush.schedule(renderUpdate);
 				break;
 			case "approval.resolved":
 				card.apply("approval.updated", { id: `approval:${event.turnId}`, status: event.allowed ? "allowed" : "denied", message: `${event.toolName}：${event.allowed ? "已允许" : "已拒绝"}` });
+				await flush.schedule(renderUpdate);
+				break;
+			case "turn.queued":
+				card.apply("approval.updated", { id: `queue:${event.turnId}`, status: "queued", message: event.replaced ? "已替换下一条排队消息" : `下一条消息已排队（位置 ${event.position}）` });
 				await flush.schedule(renderUpdate);
 				break;
 		}
