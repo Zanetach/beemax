@@ -2,7 +2,7 @@ import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { ConversationContext, type ConversationContextOptions } from "@beemax/core";
-import type { MemoryStore, TaskRecord } from "@beemax/memory";
+import type { MemoryStore, TaskFactRecord } from "@beemax/memory";
 import { beemaxRoot } from "./config.ts";
 
 export interface RuntimeFactSnapshot {
@@ -14,7 +14,7 @@ export interface TaskAwareConversationOptions extends ConversationContextOptions
 	runtimeSnapshot?: () => RuntimeFactSnapshot;
 }
 
-const BUILTIN_TASKS: Array<Pick<TaskRecord, "id" | "title" | "status" | "evidence" | "completedAt">> = [
+const BUILTIN_TASKS: Array<Pick<TaskFactRecord, "id" | "title" | "status" | "evidence" | "completedAt">> = [
 	{ id: "upgrade-preview-13", title: "Upgrade BeeMax to v0.1.0-preview.13", status: "done", evidence: "tag:v0.1.0-preview.13", completedAt: 1783728719000 },
 	{ id: "anthropic-protocol", title: "Support Anthropic Messages protocol", status: "done", evidence: "tag:v0.1.0-preview.15", completedAt: 1783729196000 },
 ];

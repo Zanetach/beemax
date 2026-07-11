@@ -15,6 +15,7 @@ import Database from "better-sqlite3";
 import type { Database as DatabaseType } from "better-sqlite3";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
+import type { TaskRecord as RuntimeTaskRecord, TaskTransition } from "@beemax/core";
 
 export const MEMORY_CLAIM_KINDS = ["preference", "fact", "decision", "goal", "project", "relationship", "workflow"] as const;
 export type MemoryClaimKind = typeof MEMORY_CLAIM_KINDS[number];
@@ -99,7 +100,7 @@ export interface ClaimInput {
 }
 
 /** Durable, verifiable work state. Unlike chat memory, this is a current fact source. */
-export interface TaskRecord {
+export interface TaskFactRecord {
 	id: string;
 	title: string;
 	status: "open" | "in_progress" | "done" | "cancelled";
@@ -187,6 +188,20 @@ export class MemoryStore {
 				completed_at INTEGER,
 				updated_at INTEGER NOT NULL
 			);
+			CREATE TABLE IF NOT EXISTS tasks (
+				id TEXT PRIMARY KEY,
+				owner_key TEXT NOT NULL,
+				kind TEXT NOT NULL CHECK (kind IN ('objective', 'delegated', 'automation')),
+				title TEXT NOT NULL,
+				status TEXT NOT NULL CHECK (status IN ('pending', 'running', 'succeeded', 'failed', 'cancelled')),
+				parent_id TEXT,
+				created_at INTEGER NOT NULL,
+				started_at INTEGER,
+				finished_at INTEGER,
+				result TEXT,
+				error TEXT
+			);
+			CREATE INDEX IF NOT EXISTS idx_tasks_owner_created ON tasks(owner_key, created_at DESC);
 
 			CREATE TABLE IF NOT EXISTS memory_events (
 				id TEXT PRIMARY KEY,
@@ -533,7 +548,7 @@ export class MemoryStore {
 		return result;
 	}
 
-	upsertTask(task: Pick<TaskRecord, "id" | "title" | "status"> & { evidence?: string; completedAt?: number }): void {
+	upsertTask(task: Pick<TaskFactRecord, "id" | "title" | "status"> & { evidence?: string; completedAt?: number }): void {
 		const now = Date.now();
 		const completedAt = task.status === "done" ? task.completedAt ?? now : null;
 		this.db.prepare(`
@@ -548,16 +563,35 @@ export class MemoryStore {
 		`).run(task.id, task.title, task.status, task.evidence ?? null, completedAt, now);
 	}
 
-	listTasks(): TaskRecord[] {
+	listTasks(): TaskFactRecord[] {
 		const rows = this.db.prepare("SELECT id, title, status, evidence, completed_at, updated_at FROM task_ledger ORDER BY updated_at DESC, id").all() as TaskRow[];
 		return rows.map((row) => ({
 			id: row.id,
 			title: row.title,
-			status: row.status as TaskRecord["status"],
+			status: row.status as TaskFactRecord["status"],
 			evidence: row.evidence ?? undefined,
 			completedAt: row.completed_at ?? undefined,
 			updatedAt: row.updated_at,
 		}));
+	}
+
+	record(task: RuntimeTaskRecord): void {
+		this.db.prepare(`INSERT INTO tasks (id, owner_key, kind, title, status, parent_id, created_at, started_at, finished_at, result, error)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+			.run(task.id, task.ownerKey, task.kind, task.title, task.status, task.parentId ?? null, task.createdAt, task.startedAt ?? null, task.finishedAt ?? null, task.result ?? null, task.error ?? null);
+	}
+
+	transition(id: string, change: TaskTransition): void {
+		const result = this.db.prepare(`UPDATE tasks SET status = ?, started_at = COALESCE(?, started_at), finished_at = COALESCE(?, finished_at), result = COALESCE(?, result), error = COALESCE(?, error) WHERE id = ?`)
+			.run(change.status, change.startedAt ?? null, change.finishedAt ?? null, change.result ?? null, change.error ?? null, id);
+		if (result.changes !== 1) throw new Error(`Task not found: ${id}`);
+	}
+
+	listRuntimeTasks(ownerKey?: string, limit = 50): RuntimeTaskRecord[] {
+		const rows = (ownerKey
+			? this.db.prepare("SELECT * FROM tasks WHERE owner_key = ? ORDER BY created_at DESC LIMIT ?").all(ownerKey, limitOf(limit, 50))
+			: this.db.prepare("SELECT * FROM tasks ORDER BY created_at DESC LIMIT ?").all(limitOf(limit, 50))) as RuntimeTaskRow[];
+		return rows.map(mapRuntimeTask);
 	}
 
 	forget(id: string, opts: Omit<RecallOptions, "limit"> = {}): boolean {
@@ -661,6 +695,11 @@ interface EventRow {
 	created_at: number;
 }
 
+interface RuntimeTaskRow {
+	id: string; owner_key: string; kind: RuntimeTaskRecord["kind"]; title: string; status: RuntimeTaskRecord["status"];
+	parent_id: string | null; created_at: number; started_at: number | null; finished_at: number | null; result: string | null; error: string | null;
+}
+
 function mapRow(row: MemoryRow): MemoryRecord {
 	return {
 		id: row.id,
@@ -695,6 +734,18 @@ function mapEvidence(row: EvidenceRow): MemoryEvidence {
 
 function mapEvent(row: EventRow): MemoryEvent {
 	return { id: row.id, platform: row.platform, chatId: row.chat_id, userId: row.user_id ?? undefined, kind: row.kind, content: row.content, occurredAt: row.occurred_at, createdAt: row.created_at };
+}
+
+function mapRuntimeTask(row: RuntimeTaskRow): RuntimeTaskRecord {
+	return {
+		id: row.id, ownerKey: row.owner_key, kind: row.kind, title: row.title, status: row.status,
+		createdAt: row.created_at,
+		...(row.parent_id === null ? {} : { parentId: row.parent_id }),
+		...(row.started_at === null ? {} : { startedAt: row.started_at }),
+		...(row.finished_at === null ? {} : { finishedAt: row.finished_at }),
+		...(row.result === null ? {} : { result: row.result }),
+		...(row.error === null ? {} : { error: row.error }),
+	};
 }
 
 function scopeWhere(opts: Omit<RecallOptions, "limit">, alias: string): { where: string; params: unknown[] } {

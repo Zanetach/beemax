@@ -51,6 +51,7 @@ export {
 export { ConversationContext, type ConversationContextOptions, type ConversationExchange, type ConversationMemoryPort, type VerifiedRuntimeFacts } from "./conversation-context.ts";
 export { compileLongTermMemorySnapshot, type LongTermMemoryCompiler } from "./personal-memory.ts";
 export { curatedMemoryPrompt } from "./curated-memory.ts";
+export type { TaskKind, TaskLedger, TaskRecord, TaskStatus, TaskTransition } from "./task-ledger.ts";
 export {
 	SessionCoordinator,
 	sessionIdForSource,

@@ -115,6 +115,7 @@ export async function runGateway(config: BeeMaxConfig): Promise<void> {
 		maxConcurrent: config.subagents.maxConcurrent,
 		maxChildrenPerOwner: config.subagents.maxChildrenPerOwner,
 		defaultTimeoutMs: config.subagents.timeoutMs,
+		taskLedger: memory,
 		execute: async (task, signal) => executeSubagentTask(createSubagentAgent, task, signal),
 	}) : undefined;
 	const createAgent = buildAgentFactory({

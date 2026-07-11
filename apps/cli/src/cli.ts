@@ -867,6 +867,7 @@ async function runChat(config: ReturnType<typeof loadConfig>, requestedMode: { f
 		maxConcurrent: config.subagents.maxConcurrent,
 		maxChildrenPerOwner: config.subagents.maxChildrenPerOwner,
 		defaultTimeoutMs: config.subagents.timeoutMs,
+		taskLedger: memory,
 		execute: (task, signal) => executeSubagentTask(createSubagentAgent, task, signal),
 	}) : undefined;
 	const createAgent = buildAgentFactory({

@@ -4,6 +4,7 @@ import { Type } from "typebox";
 import type { BeeMaxRuntimeSource } from "./runtime.ts";
 import { MUTATING_TOOL_POLICY, READ_ONLY_TOOL_POLICY, withToolPolicy, type ToolPolicy } from "./tool-runtime.ts";
 import { conversationKey } from "./agent-scope.ts";
+import type { TaskLedger, TaskStatus } from "./task-ledger.ts";
 
 export type SubagentTaskStatus = "queued" | "running" | "completed" | "failed" | "cancelled";
 
@@ -40,6 +41,7 @@ export interface SubagentManagerOptions {
 	maxChildrenPerOwner?: number;
 	defaultTimeoutMs?: number;
 	execute: SubagentExecutor;
+	taskLedger?: TaskLedger;
 }
 
 const TERMINAL = new Set<SubagentTaskStatus>(["completed", "failed", "cancelled"]);
@@ -52,6 +54,7 @@ export class SubagentManager {
 	private readonly maxChildrenPerOwner: number;
 	private readonly defaultTimeoutMs: number;
 	private readonly execute: SubagentExecutor;
+	private readonly taskLedger?: TaskLedger;
 	private running = 0;
 	private disposed = false;
 
@@ -60,6 +63,7 @@ export class SubagentManager {
 		this.maxChildrenPerOwner = positiveInt(options.maxChildrenPerOwner, 5);
 		this.defaultTimeoutMs = Math.max(0, options.defaultTimeoutMs ?? 15 * 60_000);
 		this.execute = options.execute;
+		this.taskLedger = options.taskLedger;
 	}
 
 	spawn(source: BeeMaxRuntimeSource, input: {
@@ -90,6 +94,7 @@ export class SubagentManager {
 			waiters: new Set(),
 		};
 		if (!task.goal) throw new Error("Sub-Agent goal is required");
+		this.taskLedger?.record({ id, ownerKey, kind: "delegated", title: task.name, status: "pending", createdAt: task.createdAt });
 		this.tasks.set(id, task);
 		this.queue.push(id);
 		void this.pump();
@@ -184,6 +189,7 @@ export class SubagentManager {
 	private async run(task: ManagedTask): Promise<void> {
 		task.status = "running";
 		task.startedAt = Date.now();
+		this.taskLedger?.transition(task.id, { status: "running", startedAt: task.startedAt });
 		task.controller = new AbortController();
 		const timer = this.defaultTimeoutMs > 0 ? setTimeout(() => {
 			task.stopReason = "timeout";
@@ -209,7 +215,14 @@ export class SubagentManager {
 		task.finishedAt = Date.now();
 		task.result = result?.slice(0, 50_000);
 		task.error = error;
-		for (const waiter of [...task.waiters]) waiter();
+		const transition = {
+			status: taskLedgerStatus(status),
+			finishedAt: task.finishedAt,
+			...(task.result === undefined ? {} : { result: task.result }),
+			...(task.error === undefined ? {} : { error: task.error }),
+		};
+		try { this.taskLedger?.transition(task.id, transition); }
+		finally { for (const waiter of [...task.waiters]) waiter(); }
 	}
 
 	private ownedTask(source: BeeMaxRuntimeSource, id: string): ManagedTask {
@@ -307,4 +320,10 @@ function toolResult(value: unknown) {
 
 function positiveInt(value: number | undefined, fallback: number): number {
 	return Number.isInteger(value) && Number(value) > 0 ? Number(value) : fallback;
+}
+
+function taskLedgerStatus(status: SubagentTaskStatus): TaskStatus {
+	if (status === "completed") return "succeeded";
+	if (status === "queued") return "pending";
+	return status;
 }

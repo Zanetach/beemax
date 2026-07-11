@@ -82,6 +82,24 @@ test("task ledger stores verifiable profile-scoped task facts independently from
 	}
 });
 
+test("runtime Task ledger persists delegated lifecycle independently from memory facts", () => {
+	const root = mkdtempSync(join(tmpdir(), "beemax-runtime-task-ledger-"));
+	const store = new MemoryStore(join(root, "memory.db"));
+	try {
+		store.record({ id: "child-1", ownerKey: "cli:local:local", kind: "delegated", title: "Research", status: "pending", createdAt: 100 });
+		store.transition("child-1", { status: "running", startedAt: 110 });
+		store.transition("child-1", { status: "succeeded", finishedAt: 120, result: "done" });
+		assert.deepEqual(store.listRuntimeTasks("cli:local:local"), [{
+			id: "child-1", ownerKey: "cli:local:local", kind: "delegated", title: "Research",
+			status: "succeeded", createdAt: 100, startedAt: 110, finishedAt: 120, result: "done",
+		}]);
+		assert.equal(store.listTasks().length, 0);
+	} finally {
+		store.close();
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
 test("structured understandings retain evidence, support correction, and compile a bounded long-term snapshot", () => {
 	const root = mkdtempSync(join(tmpdir(), "beemax-memory-understanding-"));
 	const store = new MemoryStore(join(root, "memory.db"));
