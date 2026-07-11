@@ -13,10 +13,10 @@ export function createProfileControlHandler(
 		if (!text.trim().toLowerCase().startsWith("/model")) return undefined;
 		const global = /\s--global\s*$/i.test(text);
 		const requested = text.trim().slice("/model".length).replace(/\s--global\s*$/i, "").trim();
-		if (!requested) return {
-			handled: true,
-			message: `Current Profile default: ${config.model.provider}/${config.model.model}\nConfigured: ${config.models.map(modelName).join(", ")}`,
-		};
+		if (!requested) {
+			const current = await runtime.modelStatus(source);
+			return { handled: true, message: `Profile default: ${config.model.provider}/${config.model.model}\nSession model: ${current?.model ?? "not loaded"}\nThinking: ${current?.thinkingLevel ?? "not loaded"}${current ? ` (supported: ${current.supportedThinkingLevels.join(", ")})` : ""}\nConfigured: ${config.models.map(modelName).join(", ")}` };
+		}
 		const choice = config.models.find((item) => modelName(item) === requested);
 		if (!choice) return { handled: true, message: `Model is not configured for this Profile. Available: ${config.models.map(modelName).join(", ")}` };
 		const model = (getBuiltinModel as (provider: string, id: string) => Model<Api> | undefined)(choice.provider, choice.model);

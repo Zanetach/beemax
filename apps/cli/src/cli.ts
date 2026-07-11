@@ -28,7 +28,7 @@ import {
 import { activeProfile, resolveProfileLocation } from "./profile-home.ts";
 import { installMacLaunchAgent, installSystemdService, runServiceAction, type ServiceAction } from "./service-manager.ts";
 import { runSetup, type SetupOptions } from "./setup.ts";
-import { renderModelProviderChoices, resolveProviderSelection } from "./model-catalog.ts";
+import { renderConfiguredModels, renderModelProviderChoices, resolveProviderSelection } from "./model-catalog.ts";
 import { configuredApiKey } from "./provider-resolver.ts";
 import { executionPortFor, executionSafeTools } from "./execution-composition.ts";
 import { createProfileRuntime } from "./runtime-composition.ts";
@@ -886,7 +886,7 @@ async function runChat(config: ReturnType<typeof loadConfig>): Promise<void> {
 			}
 			if (trimmed === "/quit" || trimmed === "/exit") { closed = true; rl.close(); return; }
 			if (command?.kind === "help") {
-				process.stdout.write("Commands: /help /status /new /reset /sessions /history [n] /resume <session-id> /usage /stop /compact /model /think [level] /reasoning /details [hidden|collapsed|expanded] /quit\n");
+				process.stdout.write("Commands: /help /status /new /reset /sessions /history [n] /resume <session-id> /usage /stop /compact /model /models /think [level] /reasoning /details [hidden|collapsed|expanded] /quit\n");
 				writePrompt();
 				return;
 			}
@@ -914,6 +914,7 @@ async function runChat(config: ReturnType<typeof loadConfig>): Promise<void> {
 				return;
 			}
 			if (command?.kind === "sessions") { process.stdout.write(`${await sessions()}\n`); writePrompt(); return; }
+			if (command?.kind === "models") { process.stdout.write(`${renderConfiguredModels(config)}\n`); writePrompt(); return; }
 			if (command?.kind === "history") { process.stdout.write(`${await history(command.limit)}\n`); writePrompt(); return; }
 			if (command?.kind === "resume") {
 				const resumeSource = command.sessionId === "default" ? { ...source, threadId: undefined } : { ...source, threadId: command.sessionId };

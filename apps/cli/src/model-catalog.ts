@@ -1,4 +1,5 @@
-import { builtinProviders } from "@beemax/core";
+import { builtinProviders, getBuiltinModel, getSupportedThinkingLevels, type Api, type Model } from "@beemax/core";
+import type { BeeMaxConfig } from "./config.ts";
 
 export interface ModelProviderPreset {
 	id: string;
@@ -33,4 +34,15 @@ export function resolveProviderSelection(value: string): string {
 
 export function renderModelProviderChoices(): string {
 	return modelProviderPresets().map((preset, index) => `  ${index + 1}. ${preset.label} (${preset.id})`).join("\n");
+}
+
+/** Human-readable capabilities for the models configured in this Profile. */
+export function renderConfiguredModels(config: BeeMaxConfig): string {
+	return config.models.map((choice) => {
+		const name = `${choice.provider}/${choice.model}`;
+		const model = choice.provider === "custom" ? undefined : (getBuiltinModel as (provider: string, id: string) => Model<Api> | undefined)(choice.provider, choice.model);
+		if (!model) return `${name}  configured; capability metadata unavailable`;
+		const capabilities = [`input=${model.input.join("+")}`, `context=${model.contextWindow}`, `tools=${model.input.includes("text") ? "yes" : "no"}`, `thinking=${getSupportedThinkingLevels(model).join("/")}`];
+		return `${name}  ${capabilities.join("; ")}`;
+	}).join("\n") || "No models configured for this Profile.";
 }
