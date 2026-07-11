@@ -1064,7 +1064,8 @@ async function runChat(config: ReturnType<typeof loadConfig>, requestedMode: { f
 				return;
 			}
 			if (command?.kind === "reset") {
-				const reset = runtime.reset(source);
+				const resetResult = await interactionAdapter.dispatch({ type: "session.reset", source });
+				const reset = "reset" in resetResult && resetResult.reset;
 				const threadId = `local-${crypto.randomUUID()}`;
 				source = { ...source, threadId };
 				await interactionAdapter.dispatch({ type: "session.open", source });

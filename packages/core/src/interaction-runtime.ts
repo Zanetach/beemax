@@ -57,6 +57,7 @@ export type InteractionAction<Source extends BeeMaxRuntimeSource = BeeMaxRuntime
 	| { type: "turn.steer"; source: Source; text: string; actionId?: string }
 	| { type: "approval.decide"; source: Source; choice: ToolApprovalChoice; actionId?: string }
 	| { type: "session.open"; source: Source; actionId?: string }
+	| { type: "session.reset"; source: Source; actionId?: string }
 	| { type: "turn.cancel"; source: Source; actionId?: string };
 
 export interface InteractionCancelResult {
@@ -70,7 +71,8 @@ export interface InteractionCancelResult {
 export interface InteractionQueueResult { queued: boolean; position: number; replaced: boolean; mode: "queue" | "steer_fallback"; }
 export interface InteractionApprovalResult { handled: boolean; }
 export interface InteractionSessionResult { opened: boolean; }
-export type InteractionActionResult = AgentRunResult | InteractionCancelResult | InteractionQueueResult | InteractionApprovalResult | InteractionSessionResult;
+export interface InteractionSessionResetResult { reset: boolean; }
+export type InteractionActionResult = AgentRunResult | InteractionCancelResult | InteractionQueueResult | InteractionApprovalResult | InteractionSessionResult | InteractionSessionResetResult;
 
 export interface InteractionSnapshot {
 	phase: InteractionPhase;
@@ -164,6 +166,7 @@ export class InteractionEventAdapter<Source extends BeeMaxRuntimeSource = BeeMax
 		if (action.type === "turn.steer") return this.queue(action.source, action.text, "steer_fallback", sink);
 		if (action.type === "approval.decide") return { handled: await this.approvalBroker?.decide(action.source, action.choice) ?? false };
 		if (action.type === "session.open") return { opened: await this.runtime.open(action.source) };
+		if (action.type === "session.reset") return { reset: this.runtime.reset(action.source) };
 
 		const key = interactionKey(action.source);
 		if (sink) this.sinks.set(key, sink);

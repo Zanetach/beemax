@@ -65,6 +65,18 @@ test("session opening is a Core interaction action for every presenter", async (
 	assert.equal(opens, 1);
 });
 
+test("session reset is likewise a Core action and remains retry-safe", async () => {
+	let resets = 0;
+	const runtime = {
+		async run() { return { answer: "ok", model: "test/model", durationMs: 1, usage: {} }; },
+		reset() { resets++; return true; }, async open() { return true; }, async cancel() { return false; }, async modelStatus() { return undefined; }, async usage() { return undefined; },
+	};
+	const interaction = new InteractionEventAdapter(runtime);
+	assert.deepEqual(await interaction.dispatch({ type: "session.reset", source, actionId: "reset-1" }), { reset: true });
+	assert.deepEqual(await interaction.dispatch({ type: "session.reset", source, actionId: "reset-1" }), { reset: true });
+	assert.equal(resets, 1);
+});
+
 test("interaction telemetry is operational-only and does not contain model content", async () => {
 	const telemetry = [];
 	const runtime = {
