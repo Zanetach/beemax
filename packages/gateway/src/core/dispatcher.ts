@@ -212,6 +212,10 @@ export class Dispatcher {
 				card.apply("notice.updated", { id: `model:${event.turnId}:${event.attempt}`, label: "模型回退", status: "running", message: `${event.from} 暂时不可用，已切换到 ${event.to}` });
 				await flush.schedule(renderUpdate);
 				break;
+			case "planning.selected":
+				card.apply("notice.updated", { id: `planning:${event.turnId}`, label: "执行规划", status: "running", message: `${event.mode} · 并发 ${event.concurrency} · 子代理上限 ${event.maxSubagents}${event.requiredTools.length ? ` · ${event.requiredTools.join(" → ")}` : ""}` });
+				await flush.schedule(renderUpdate);
+				break;
 			case "turn.failed":
 				card.apply("message.failed", { error: event.error });
 				await flush.schedule(renderUpdate, true);

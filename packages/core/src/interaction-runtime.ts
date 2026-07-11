@@ -30,6 +30,7 @@ export type InteractionEvent = InteractionEventMeta & (
 	| { type: "approval.requested"; toolName: string; details?: ToolApprovalDetails }
 	| { type: "approval.resolved"; toolName: string; allowed: boolean }
 	| { type: "model.fallback"; from: string; to: string; attempt: number }
+	| { type: "planning.selected"; mode: "direct" | "delegate" | "dag"; concurrency: number; maxSubagents: number; requiredTools: string[] }
 	| { type: "turn.queued"; position: number; replaced: boolean; mode: InteractionDeliveryMode }
 	| { type: "turn.finished"; result: AgentRunResult }
 	| { type: "turn.failed"; error: string }
@@ -44,6 +45,7 @@ type InteractionEventPayload =
 	| { type: "approval.requested"; toolName: string; details?: ToolApprovalDetails }
 	| { type: "approval.resolved"; toolName: string; allowed: boolean }
 	| { type: "model.fallback"; from: string; to: string; attempt: number }
+	| { type: "planning.selected"; mode: "direct" | "delegate" | "dag"; concurrency: number; maxSubagents: number; requiredTools: string[] }
 	| { type: "turn.queued"; position: number; replaced: boolean; mode: InteractionDeliveryMode }
 	| { type: "turn.finished"; result: AgentRunResult }
 	| { type: "turn.failed"; error: string }
@@ -400,6 +402,7 @@ export function reduceInteractionEvent(snapshot: InteractionSnapshot, event: Int
 
 export function mapAgentSessionEvent(event: BeeMaxAgentRunEvent): InteractionEventPayload | undefined {
 	if (event.type === "model_fallback") return { type: "model.fallback", from: event.from, to: event.to, attempt: event.attempt };
+	if (event.type === "planning_decision") return { type: "planning.selected", mode: event.mode, concurrency: event.concurrency, maxSubagents: event.maxSubagents, requiredTools: [...event.requiredTools] };
 	if (event.type === "tool_execution_start") return { type: "tool.changed", callId: event.toolCallId, name: event.toolName, state: "running" };
 	if (event.type === "tool_execution_end") return { type: "tool.changed", callId: event.toolCallId, name: event.toolName, state: event.isError ? "failed" : "completed", summary: typeof event.result === "string" ? event.result.slice(0, 500) : undefined };
 	if (event.type !== "message_update" || event.message.role !== "assistant") return undefined;

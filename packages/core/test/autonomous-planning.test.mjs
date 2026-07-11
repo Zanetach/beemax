@@ -63,6 +63,7 @@ test("Agent runtime injects a deterministic planning directive without changing 
 	let received = "";
 	let runtimeListener;
 	const recorded = [];
+	const runEvents = [];
 	const budgets = new PlanningBudgetRegistry();
 	const agent = { state: { model: { id: "test" }, messages: [] } };
 	const runtime = new BeeMaxAgentRuntime({
@@ -77,11 +78,12 @@ test("Agent runtime injects a deterministic planning directive without changing 
 			dispose: () => undefined,
 		}),
 	});
-	await runtime.run({ source, text: "Review frontend and backend independently, then combine the results", timeoutMs: 1_000 });
+	await runtime.run({ source, text: "Review frontend and backend independently, then combine the results", timeoutMs: 1_000 }, (event) => { runEvents.push(event); });
 	assert.match(received, /BeeMax execution policy/);
 	assert.match(received, /mode=(?:dag|delegate)/);
 	assert.deepEqual(recorded, [{ user: "Review frontend and backend independently, then combine the results", assistant: "done" }]);
 	assert.equal(budgets.current("cli:local:local"), undefined);
+	assert.deepEqual(runEvents.filter((event) => event.type === "planning_decision"), [{ type: "planning_decision", mode: "dag", concurrency: 2, maxSubagents: 2, requiredTools: ["task_plan_execute"] }]);
 	runtime.dispose();
 });
 

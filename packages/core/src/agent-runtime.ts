@@ -53,7 +53,8 @@ export interface AgentModelStatus {
 }
 
 export interface ModelFallbackEvent { type: "model_fallback"; from: string; to: string; attempt: number; }
-export type BeeMaxAgentRunEvent = AgentSessionEvent | ModelFallbackEvent;
+export interface PlanningDecisionEvent { type: "planning_decision"; mode: "direct" | "delegate" | "dag"; concurrency: number; maxSubagents: number; requiredTools: string[]; }
+export type BeeMaxAgentRunEvent = AgentSessionEvent | ModelFallbackEvent | PlanningDecisionEvent;
 export type BeeMaxAgentRunEventSink = (event: BeeMaxAgentRunEvent) => void | Promise<void>;
 /** Gateway-facing runtime contract; implementations may be local or remote. */
 export interface AgentRuntimePort<Source extends BeeMaxRuntimeSource = BeeMaxRuntimeSource> {
@@ -189,6 +190,7 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 			input.signal?.addEventListener("abort", abortFromCaller, { once: true });
 			const timeout = setTimeout(() => { timedOut = true; void session.piSession.abort(); }, input.timeoutMs);
 			try {
+				if (planning) await onEvent?.({ type: "planning_decision", mode: planning.mode, concurrency: planning.suggestedConcurrency, maxSubagents: planning.budget.maxSubagents, requiredTools: [...planning.requiredTools] });
 				await session.piSession.prompt(text, {
 					expandPromptTemplates: input.expandPromptTemplates ?? true,
 					source: input.mode === "automation" ? "extension" : undefined,

@@ -83,6 +83,7 @@ export {
 	type BeeMaxAgentRunEvent,
 	type BeeMaxAgentRunEventSink,
 	type ModelFallbackEvent,
+	type PlanningDecisionEvent,
 	type AgentHistoryEntry,
 	type AgentSessionUsage,
 	type AgentRuntimePort,
