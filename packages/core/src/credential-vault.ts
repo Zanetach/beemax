@@ -5,7 +5,7 @@ import { BoundedJsonlJournal } from "./bounded-jsonl-journal.ts";
 
 export interface CredentialInput { ownerKey: string; label: string; purpose: string; secret: string; }
 export interface CredentialMetadata { ref: string; ownerKey: string; label: string; purpose: string; createdAt: number; updatedAt: number; lastUsedAt?: number; }
-export interface CredentialVaultAuditEvent { action: "stored" | "accessed" | "access_denied" | "removed"; ownerKey: string; ref: string; capability?: string; at: number; }
+export interface CredentialVaultAuditEvent { action: "stored" | "rotated" | "accessed" | "access_denied" | "removed"; ownerKey: string; ref: string; capability?: string; at: number; }
 export type CredentialVaultAuditSink = (event: CredentialVaultAuditEvent) => void;
 
 export class FileCredentialVaultAuditJournal {
@@ -18,6 +18,7 @@ export class FileCredentialVaultAuditJournal {
 }
 export interface CredentialVault {
 	put(input: CredentialInput, now?: number): CredentialMetadata;
+	rotate(ownerKey: string, ref: string, secret: string, now?: number): CredentialMetadata | undefined;
 	list(ownerKey: string): CredentialMetadata[];
 	withSecret<T>(ownerKey: string, ref: string, capability: string, consume: (secret: string) => T | Promise<T>, now?: number): Promise<T>;
 	remove(ownerKey: string, ref: string, now?: number): boolean;
@@ -55,6 +56,18 @@ export class FileCredentialVault implements CredentialVault {
 		this.mutate(() => { this.records.push(record); this.persist(); });
 		this.emit({ action: "stored", ownerKey, ref: record.ref, at: now });
 		return metadata(record);
+	}
+
+	rotate(ownerKey: string, ref: string, secret: string, now = Date.now()): CredentialMetadata | undefined {
+		const nextSecret = required(secret, "secret", 64 * 1024, false);
+		const rotated = this.mutate(() => {
+			const record = this.records.find((candidate) => candidate.ref === ref && candidate.ownerKey === ownerKey);
+			if (!record) return undefined;
+			record.secret = nextSecret; record.updatedAt = now;
+			this.persist(); return metadata(record);
+		});
+		if (rotated) this.emit({ action: "rotated", ownerKey, ref, at: now });
+		return rotated;
 	}
 
 	list(ownerKey: string): CredentialMetadata[] {
@@ -180,7 +193,7 @@ function safeRef(value: string): string { return /^cred_[a-f0-9-]{36}$/.test(val
 function isAuditEvent(value: unknown): value is CredentialVaultAuditEvent {
 	if (!value || typeof value !== "object") return false;
 	const event = value as Partial<CredentialVaultAuditEvent>;
-	return (event.action === "stored" || event.action === "accessed" || event.action === "access_denied" || event.action === "removed")
+	return (event.action === "stored" || event.action === "rotated" || event.action === "accessed" || event.action === "access_denied" || event.action === "removed")
 		&& typeof event.ownerKey === "string" && typeof event.ref === "string" && typeof event.at === "number"
 		&& (event.capability === undefined || /^[a-z][a-z0-9._-]{1,63}$/.test(event.capability));
 }

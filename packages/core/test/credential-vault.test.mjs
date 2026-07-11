@@ -73,3 +73,19 @@ test("Credential Vault fails closed behind an active writer lease and reclaims a
 		assert.equal(vault.list("profile:personal")[0].ref, credential.ref);
 	} finally { rmSync(root, { recursive: true, force: true }); }
 });
+
+test("Credential rotation preserves the Ref and metadata while replacing the Secret", async () => {
+	const root = mkdtempSync(join(tmpdir(), "beemax-credential-rotate-"));
+	const path = join(root, "credentials.vault");
+	try {
+		const events = [];
+		const vault = new FileCredentialVault(path, key, (event) => events.push(event));
+		const original = vault.put({ ownerKey: "profile:personal", label: "Example", purpose: "login", secret: "old-secret" }, 10);
+		assert.equal(vault.rotate("profile:other", original.ref, "wrong-owner", 20), undefined);
+		const rotated = vault.rotate("profile:personal", original.ref, "new-secret", 30);
+		assert.deepEqual(rotated, { ...original, updatedAt: 30 });
+		assert.equal(await vault.withSecret("profile:personal", original.ref, "browser.fill", async (secret) => secret, 40), "new-secret");
+		assert.equal(events.filter((event) => event.action === "rotated").length, 1);
+		assert.doesNotMatch(JSON.stringify(events), /old-secret|new-secret/);
+	} finally { rmSync(root, { recursive: true, force: true }); }
+});

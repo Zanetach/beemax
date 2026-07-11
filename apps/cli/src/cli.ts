@@ -174,7 +174,7 @@ Commands:
   skills     list | sync (prepackaged Profile Skills)
   mcp        status (probe configured MCP servers)
   memory     status | list | candidates | claims | explain <id> | compile | promote <id> | reject <id> | forget <id>
-  credentials add | list | remove (encrypted Profile Credential Vault)
+  credentials add | list | rotate | remove (encrypted Profile Credential Vault)
   task       list | set <id> <open|in_progress|done|cancelled> --title <title> [--evidence <ref>]
   auth       codex (stores OAuth only inside the selected profile)
   service    install (Linux systemd)
@@ -795,7 +795,17 @@ async function runCredentialCommand(parsed: ParsedArgs, config: ReturnType<typeo
 		console.log(`Removed Credential Ref ${ref}.`);
 		return;
 	}
-	if (action !== "add") throw new Error("Usage: beemax credentials [add | list | remove] --profile <name>");
+	if (action === "rotate") {
+		const ref = parsed.positionals[2];
+		if (!ref) throw new Error("Usage: beemax credentials rotate <credential_ref> --profile <name>");
+		let secret = process.env.BEEMAX_CREDENTIAL_SECRET;
+		if (!secret && parsed.options["non-interactive"] !== true && process.stdin.isTTY) secret = await askOne("New Credential Secret: ", true);
+		if (!secret) throw new Error("New Credential Secret is required through the interactive prompt or BEEMAX_CREDENTIAL_SECRET");
+		if (!vault.rotate(ownerKey, ref, secret)) throw new Error(`Credential Ref not found: ${ref}`);
+		console.log(`Rotated Credential Ref ${ref}.`);
+		return;
+	}
+	if (action !== "add") throw new Error("Usage: beemax credentials [add | list | rotate | remove] --profile <name>");
 	const label = optionString(parsed, "label");
 	const purpose = optionString(parsed, "purpose");
 	if (!label || !purpose) throw new Error("credentials add requires --label <label> and --purpose <purpose>");

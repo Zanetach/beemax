@@ -71,6 +71,8 @@ test("CLI supports init, model setup, Feishu channel setup, listing, and safe de
 	assert.ok(credentialRef);
 	assert.doesNotMatch(storedCredential, /correct-horse/);
 	assert.match(run(["credentials", "list", "--profile", "personal"]), new RegExp(`${credentialRef}.*Example account.*example\\.com login`));
+	assert.match(run(["credentials", "rotate", credentialRef, "--profile", "personal", "--non-interactive"], { BEEMAX_CREDENTIAL_SECRET: "rotated-private-value" }), new RegExp(`Rotated Credential Ref ${credentialRef}`));
+	assert.doesNotMatch(run(["credentials", "list", "--profile", "personal"]), /rotated-private-value/);
 	assert.match(run(["credentials", "remove", credentialRef, "--profile", "personal", "--yes"]), /Removed Credential Ref/);
 	assert.match(run(["credentials", "list", "--profile", "personal"]), /No credentials stored/);
 	assert.match(run(["status", "--deep", "--profile", "personal"]), /Gateway: unknown/);
