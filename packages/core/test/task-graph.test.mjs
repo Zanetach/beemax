@@ -99,6 +99,20 @@ test("TaskGraph only succeeds when an independent verifier accepts the result", 
 	assert.match(ledger.tasks.get("task").error, /No primary source was cited/);
 });
 
+test("TaskGraph records Verification as unavailable when the verifier fails", async () => {
+	const ledger = memoryLedger();
+	const graph = new TaskGraph(ledger);
+	graph.createPlan({ id: "verifier-failure-plan", ownerKey: "cli:local:local", tasks: [{ id: "task", title: "Task", acceptanceCriteria: "Passes an independent check" }] });
+	const result = await graph.run(["cli:local:local"], "verifier-failure-plan", async () => ({ output: "candidate" }), {
+		verify: async () => { throw new Error("verification provider unavailable"); },
+	});
+	assert.deepEqual(result, { succeeded: 0, failed: 1, cancelled: 0, blocked: [] });
+	assert.equal(ledger.tasks.get("task").verificationStatus, "unavailable");
+	assert.match(ledger.tasks.get("task").error, /verification provider unavailable/);
+	assert.equal([...ledger.runs.values()][0].status, "failed");
+	assert.equal(ledger.plans.get("verifier-failure-plan").status, "failed");
+});
+
 test("TaskGraph persists accepted verification evidence with the successful Task", async () => {
 	const ledger = memoryLedger();
 	const graph = new TaskGraph(ledger);
@@ -199,6 +213,7 @@ test("TaskGraph fails closed when criteria exist but no verifier is available", 
 	const result = await graph.run(["cli:local:local"], "unverified-plan", async () => ({ output: "done" }));
 	assert.deepEqual(result, { succeeded: 0, failed: 1, cancelled: 0, blocked: [] });
 	assert.match(ledger.tasks.get("task").error, /verification unavailable/i);
+	assert.equal(ledger.tasks.get("task").verificationStatus, "unavailable");
 });
 
 test("TaskGraph rejects cyclic plans before persisting any Task", () => {

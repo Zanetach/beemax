@@ -3,7 +3,7 @@ import type { AgentScope } from "./agent-scope.ts";
 export type TaskKind = "objective" | "delegated" | "automation";
 export type TaskStatus = "pending" | "running" | "succeeded" | "failed" | "cancelled";
 export type TaskRecoveryPolicy = "never" | "safe_retry";
-export type TaskVerificationStatus = "pending" | "accepted" | "rejected";
+export type TaskVerificationStatus = "pending" | "accepted" | "rejected" | "unavailable";
 export type TaskPlanStatus = "pending" | "running" | "succeeded" | "failed" | "cancelled";
 
 export interface TaskPlanRecord {

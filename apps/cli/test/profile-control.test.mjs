@@ -5,8 +5,9 @@ import { createProfileControlHandler, renderTasks } from "../dist/profile-contro
 test("shared Task rendering exposes objective Quality Status without a subjective score", () => {
 	assert.equal(renderTasks([
 		{ id: "verified", title: "Verified", kind: "delegated", status: "succeeded", verificationStatus: "accepted", correctiveAttempts: 1, createdAt: 1 },
+		{ id: "unavailable", title: "Verifier offline", kind: "delegated", status: "failed", verificationStatus: "unavailable", createdAt: 2 },
 		{ id: "plain", title: "Plain", kind: "objective", status: "succeeded", createdAt: 2 },
-	]), "verified  [delegated/succeeded] [quality:verified corrections=1]  Verified\nplain  [objective/succeeded]  Plain");
+	]), "verified  [delegated/succeeded] [quality:verified corrections=1]  Verified\nunavailable  [delegated/failed] [quality:unavailable]  Verifier offline\nplain  [objective/succeeded]  Plain");
 });
 
 test("shared /status reports Profile task admission capacity on every channel", async () => {

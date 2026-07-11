@@ -105,6 +105,37 @@ test("runtime Task ledger persists delegated lifecycle independently from memory
 	}
 });
 
+test("Verification unavailable persists across Profile database restarts", async () => {
+	const root = mkdtempSync(join(tmpdir(), "beemax-verification-unavailable-"));
+	const path = join(root, "memory.db");
+	let store = new MemoryStore(path);
+	try {
+		const graph = new TaskGraph(store);
+		graph.createPlan({ id: "verification-plan", ownerKey: "cli:local:local", tasks: [{ id: "verification-task", title: "Verify", acceptanceCriteria: "Passes an independent check" }] }, 10);
+		await graph.run(["cli:local:local"], "verification-plan", async () => ({ output: "candidate" }), { verify: async () => { throw new Error("verifier offline"); } });
+		store.close();
+		store = new MemoryStore(path);
+		assert.equal(store.queryTasks({ ownerKeys: ["cli:local:local"], id: "verification-task" })[0].verificationStatus, "unavailable");
+	} finally { store.close(); rmSync(root, { recursive: true, force: true }); }
+});
+
+test("legacy Verification Status migrates additively into Verification Outcome", () => {
+	const root = mkdtempSync(join(tmpdir(), "beemax-verification-migration-"));
+	const path = join(root, "memory.db");
+	const legacy = new Database(path);
+	legacy.exec(`CREATE TABLE tasks (
+		id TEXT PRIMARY KEY, owner_key TEXT NOT NULL, kind TEXT NOT NULL, title TEXT NOT NULL, description TEXT, acceptance_criteria TEXT,
+		recovery_policy TEXT NOT NULL DEFAULT 'never', idempotency_key TEXT, execution_scope TEXT, status TEXT NOT NULL, parent_id TEXT, plan_id TEXT,
+		evidence TEXT, verification_status TEXT CHECK (verification_status IN ('pending', 'accepted', 'rejected')), corrective_attempts INTEGER NOT NULL DEFAULT 0,
+		created_at INTEGER NOT NULL, started_at INTEGER, finished_at INTEGER, result TEXT, error TEXT, updated_at INTEGER NOT NULL DEFAULT 0
+	)`);
+	legacy.prepare("INSERT INTO tasks (id, owner_key, kind, title, status, verification_status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)").run("legacy-verified", "cli:local:local", "delegated", "Legacy", "succeeded", "accepted", 1);
+	legacy.close();
+	const store = new MemoryStore(path);
+	try { assert.equal(store.queryTasks({ ownerKeys: ["cli:local:local"], id: "legacy-verified" })[0].verificationStatus, "accepted"); }
+	finally { store.close(); rmSync(root, { recursive: true, force: true }); }
+});
+
 test("expired Task Run leases recover only explicitly idempotent safe-retry Tasks", () => {
 	const root = mkdtempSync(join(tmpdir(), "beemax-task-recovery-"));
 	const store = new MemoryStore(join(root, "memory.db"));

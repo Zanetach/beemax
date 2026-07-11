@@ -227,6 +227,7 @@ export class MemoryStore {
 				plan_id TEXT,
 				evidence TEXT,
 				verification_status TEXT CHECK (verification_status IN ('pending', 'accepted', 'rejected')),
+				verification_outcome TEXT CHECK (verification_outcome IN ('pending', 'accepted', 'rejected', 'unavailable')),
 				corrective_attempts INTEGER NOT NULL DEFAULT 0,
 				created_at INTEGER NOT NULL,
 				started_at INTEGER,
@@ -320,12 +321,14 @@ export class MemoryStore {
 		this.addColumnIfMissing("tasks", "execution_scope", "TEXT");
 		this.addColumnIfMissing("tasks", "plan_id", "TEXT");
 		this.addColumnIfMissing("tasks", "verification_status", "TEXT");
+		this.addColumnIfMissing("tasks", "verification_outcome", "TEXT");
 		this.addColumnIfMissing("tasks", "corrective_attempts", "INTEGER NOT NULL DEFAULT 0");
 		this.addColumnIfMissing("tasks", "updated_at", "INTEGER NOT NULL DEFAULT 0");
 		this.addColumnIfMissing("task_runs", "lease_expires_at", "INTEGER");
 		this.backfillTaskPlans();
 		this.addColumnIfMissing("memory_claims", "superseded_by", "TEXT REFERENCES memory_claims(id)");
 		this.addColumnIfMissing("memory_evidence", "event_id", "TEXT REFERENCES memory_events(id)");
+		this.db.exec("UPDATE tasks SET verification_outcome = verification_status WHERE verification_outcome IS NULL AND verification_status IS NOT NULL");
 		this.db.exec(`INSERT OR IGNORE INTO tasks (id, owner_key, kind, title, status, evidence, created_at, finished_at, updated_at)
 			SELECT id, 'profile', 'objective', title,
 				CASE status WHEN 'open' THEN 'pending' WHEN 'in_progress' THEN 'running' WHEN 'done' THEN 'succeeded' ELSE 'cancelled' END,
@@ -644,7 +647,7 @@ export class MemoryStore {
 	}
 
 	record(task: RuntimeTaskRecord): void {
-		this.db.prepare(`INSERT INTO tasks (id, owner_key, kind, title, description, acceptance_criteria, recovery_policy, idempotency_key, execution_scope, status, parent_id, plan_id, evidence, verification_status, corrective_attempts, created_at, started_at, finished_at, result, error, updated_at)
+		this.db.prepare(`INSERT INTO tasks (id, owner_key, kind, title, description, acceptance_criteria, recovery_policy, idempotency_key, execution_scope, status, parent_id, plan_id, evidence, verification_outcome, corrective_attempts, created_at, started_at, finished_at, result, error, updated_at)
 			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
 			.run(task.id, task.ownerKey, task.kind, task.title, task.description ?? null, task.acceptanceCriteria ?? null, task.recoveryPolicy ?? "never", task.idempotencyKey ?? null, task.executionScope ? JSON.stringify(task.executionScope) : null, task.status, task.parentId ?? null, task.planId ?? null, task.evidence ?? null, task.verificationStatus ?? null, task.correctiveAttempts ?? 0, task.createdAt, task.startedAt ?? null, task.finishedAt ?? null, task.result ?? null, task.error ?? null, task.createdAt);
 	}
@@ -656,7 +659,7 @@ export class MemoryStore {
 			result = CASE WHEN ? IN ('pending', 'running') THEN NULL ELSE COALESCE(?, result) END,
 			error = CASE WHEN ? IN ('running', 'succeeded') THEN NULL ELSE COALESCE(?, error) END,
 			evidence = COALESCE(?, evidence),
-			verification_status = COALESCE(?, verification_status),
+			verification_outcome = COALESCE(?, verification_outcome),
 			corrective_attempts = COALESCE(?, corrective_attempts),
 			updated_at = ? WHERE id = ? AND ((? = 'pending' AND status = 'running') OR (? = 'running' AND status = 'pending') OR (? IN ('succeeded', 'failed', 'cancelled') AND status IN ('pending', 'running')))`)
 			.run(change.status, change.status, change.startedAt ?? null, change.status, change.finishedAt ?? null, change.status, change.result ?? null, change.status, change.error ?? null, change.evidence ?? null, change.verificationStatus ?? null, change.correctiveAttempts ?? null, Date.now(), id, change.status, change.status, change.status);
@@ -744,7 +747,7 @@ export class MemoryStore {
 		const statement = this.db.prepare(`INSERT OR IGNORE INTO task_plans (id, owner_key, title, status, task_count, succeeded, failed, cancelled, verified, corrective_attempts, created_at, started_at, finished_at)
 			SELECT plan_id, owner_key, 'Task Plan',
 				CASE WHEN SUM(status = 'failed') > 0 THEN 'failed' WHEN SUM(status = 'running') > 0 THEN 'running' WHEN SUM(status = 'pending') > 0 THEN 'pending' WHEN SUM(status = 'cancelled') > 0 THEN 'cancelled' ELSE 'succeeded' END,
-				COUNT(*), SUM(status = 'succeeded'), SUM(status = 'failed'), SUM(status = 'cancelled'), COALESCE(SUM(verification_status = 'accepted'), 0), COALESCE(SUM(corrective_attempts), 0),
+				COUNT(*), SUM(status = 'succeeded'), SUM(status = 'failed'), SUM(status = 'cancelled'), COALESCE(SUM(verification_outcome = 'accepted'), 0), COALESCE(SUM(corrective_attempts), 0),
 				MIN(created_at), MIN(started_at), CASE WHEN SUM(status IN ('pending', 'running')) = 0 THEN MAX(finished_at) ELSE NULL END
 			FROM tasks WHERE ${id ? "plan_id = ?" : "plan_id IS NOT NULL"} GROUP BY plan_id, owner_key`);
 		if (id) statement.run(id); else statement.run();
@@ -831,7 +834,7 @@ export class MemoryStore {
 	private syncTaskPlan(id: string, status: TaskPlanRecord["status"], now = Date.now(), reopenRunning = false): void {
 		this.backfillTaskPlans(id);
 		const counts = this.db.prepare(`SELECT COUNT(*) AS task_count, SUM(status = 'succeeded') AS succeeded, SUM(status = 'failed') AS failed,
-			SUM(status = 'cancelled') AS cancelled, COALESCE(SUM(verification_status = 'accepted'), 0) AS verified,
+			SUM(status = 'cancelled') AS cancelled, COALESCE(SUM(verification_outcome = 'accepted'), 0) AS verified,
 			COALESCE(SUM(corrective_attempts), 0) AS corrective_attempts FROM tasks WHERE plan_id = ?`).get(id) as { task_count: number; succeeded: number; failed: number; cancelled: number; verified: number; corrective_attempts: number };
 		const change: TaskPlanTransition = {
 			status, taskCount: counts.task_count, succeeded: counts.succeeded, failed: counts.failed, cancelled: counts.cancelled,
@@ -947,7 +950,7 @@ interface EventRow {
 
 interface RuntimeTaskRow {
 	id: string; owner_key: string; kind: RuntimeTaskRecord["kind"]; title: string; description: string | null; acceptance_criteria: string | null; recovery_policy: RuntimeTaskRecord["recoveryPolicy"]; idempotency_key: string | null; execution_scope: string | null; status: RuntimeTaskRecord["status"];
-	parent_id: string | null; plan_id: string | null; evidence: string | null; verification_status: RuntimeTaskRecord["verificationStatus"] | null; corrective_attempts: number; created_at: number; started_at: number | null; finished_at: number | null; result: string | null; error: string | null;
+	parent_id: string | null; plan_id: string | null; evidence: string | null; verification_outcome: RuntimeTaskRecord["verificationStatus"] | null; corrective_attempts: number; created_at: number; started_at: number | null; finished_at: number | null; result: string | null; error: string | null;
 }
 
 interface TaskRunRow {
@@ -1010,7 +1013,7 @@ function mapRuntimeTask(row: RuntimeTaskRow): RuntimeTaskRecord {
 		...(row.parent_id === null ? {} : { parentId: row.parent_id }),
 		...(row.plan_id === null ? {} : { planId: row.plan_id }),
 		...(row.evidence === null ? {} : { evidence: row.evidence }),
-		...(row.verification_status === null ? {} : { verificationStatus: row.verification_status }),
+		...(row.verification_outcome === null ? {} : { verificationStatus: row.verification_outcome }),
 		...(row.corrective_attempts ? { correctiveAttempts: row.corrective_attempts } : {}),
 		...(row.started_at === null ? {} : { startedAt: row.started_at }),
 		...(row.finished_at === null ? {} : { finishedAt: row.finished_at }),

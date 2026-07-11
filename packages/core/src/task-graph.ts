@@ -147,14 +147,17 @@ export class TaskGraph {
 				} catch (error) { leaseController.abort(error); }
 			}, heartbeatMs) : undefined;
 			leaseController.signal.addEventListener("abort", () => { if (heartbeat) clearInterval(heartbeat); }, { once: true });
+			let verificationUnavailable = false;
 			try {
 				if (executionSignal.aborted) throw executionSignal.reason ?? new Error("Task Plan cancelled");
 				const result = await execute({ ...task, status: "running", startedAt: taskStartedAt }, executionSignal, { attempt, verificationFeedback, previousResult, dependencies });
 				if (executionSignal.aborted) throw executionSignal.reason ?? new Error("Task execution interrupted");
 				let verificationEvidence: string | undefined;
 				if (task.acceptanceCriteria) {
-					if (!options.verify) throw new Error("Task verification unavailable for defined Acceptance Criteria");
-					const verification = await options.verify({ ...task, status: "running", startedAt: taskStartedAt }, result, executionSignal);
+					if (!options.verify) { verificationUnavailable = true; throw new Error("Task verification unavailable for defined Acceptance Criteria"); }
+					let verification: TaskGraphVerificationResult;
+					try { verification = await options.verify({ ...task, status: "running", startedAt: taskStartedAt }, result, executionSignal); }
+					catch (error) { verificationUnavailable = !executionSignal.aborted; throw error; }
 					if (executionSignal.aborted) throw executionSignal.reason ?? new Error("Task verification interrupted");
 					if (!verification.accepted) {
 						verificationFeedback = verification.feedback?.trim() || "Acceptance Criteria were not satisfied";
@@ -182,7 +185,7 @@ export class TaskGraph {
 				const finishedAt = Date.now();
 				const message = (error instanceof Error ? error.message : String(error)).slice(0, 5_000);
 				const status = options.signal?.aborted ? "cancelled" : "failed";
-				const transitioned = this.ledger.transition(task.id, { status, finishedAt, error: message });
+				const transitioned = this.ledger.transition(task.id, { status, finishedAt, error: message, ...(verificationUnavailable && status === "failed" ? { verificationStatus: "unavailable" as const } : {}) });
 				this.ledger.transitionRun(runId, { status, finishedAt, error: message });
 				return transitioned ? status : this.persistedOutcome(task, status);
 			} finally { if (heartbeat) clearInterval(heartbeat); }

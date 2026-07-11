@@ -41,7 +41,7 @@ Observable conditions that a Task result must satisfy before the Task can be acc
 _Avoid_: Prompt, implementation steps, subjective quality
 
 **Verification**:
-An independent evaluation of a Task result against its Acceptance Criteria and available evidence; successful execution alone does not imply successful Verification.
+An independent evaluation of a Task result against its Acceptance Criteria and available evidence; it is unavailable when that evaluation cannot complete, which is distinct from rejecting the result.
 _Avoid_: Execution, self-report, model confidence
 
 **Corrective Attempt**:
