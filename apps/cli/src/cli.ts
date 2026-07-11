@@ -37,7 +37,7 @@ import { LocalActivityPresenter, LocalReasoningPresenter, type DetailsDisplay, l
 import { renderTerminalMarkdown, StreamingTerminalMarkdown } from "./terminal-markdown.ts";
 import { inspectGateway, readGatewayLogs } from "./gateway-observability.ts";
 import { createTaskAwareConversationContext, ensureBuiltinTasks, installedVersion } from "./runtime-facts.ts";
-import type { BeeMaxAgentRuntime } from "@beemax/core";
+import { SessionCatalog, type BeeMaxAgentRuntime } from "@beemax/core";
 import type { SessionSource } from "@beemax/gateway";
 import { existsSync } from "node:fs";
 import { spawnSync } from "node:child_process";
@@ -791,6 +791,7 @@ async function runChat(config: ReturnType<typeof loadConfig>): Promise<void> {
 		{ maxSessions: config.agent.maxSessions, sessionIdleMs: config.agent.sessionIdleMs },
 		{
 			createAgent,
+			sessionCatalog: SessionCatalog.forAgentDir<SessionSource>(config.paths.agentDir),
 			context: createTaskAwareConversationContext(memory, { runtimeSnapshot: () => ({ model: `${config.model.provider}/${config.model.model}`, profile: config.profile }) }),
 			controlHandler: (input) => createProfileControlHandler(runtime, config)(input),
 		},
@@ -799,16 +800,45 @@ async function runChat(config: ReturnType<typeof loadConfig>): Promise<void> {
 	try {
 		let reasoningDisplay = config.agent.reasoningDisplay;
 		let detailsDisplay: DetailsDisplay = "expanded";
+		const reasoningDisplayOverridden = Boolean(process.env.BEEMAX_REASONING_DISPLAY?.trim());
+		const applySessionPreferences = async () => {
+			const preferences = await runtime.sessionPreferences(source);
+			reasoningDisplay = reasoningDisplayOverridden ? config.agent.reasoningDisplay : preferences.reasoningDisplay ?? config.agent.reasoningDisplay;
+			detailsDisplay = preferences.detailsDisplay ?? "expanded";
+		};
+		await applySessionPreferences();
 		let active: Promise<void> | undefined;
 		let controlInProgress = false;
-		let lastUsage: { input?: number; output?: number; durationMs?: number } | undefined;
+		let lastDurationMs: number | undefined;
 		let closed = false;
 		const { createInterface } = await import("node:readline/promises");
 		const rl = createInterface({ input: process.stdin, output: process.stdout });
 		const prompt = () => `beemax [${config.model.provider}/${config.model.model}]> `;
 		const writePrompt = () => { if (!closed) process.stdout.write(prompt()); };
-		const usage = () => lastUsage ? `Usage: input=${lastUsage.input ?? "unknown"}; output=${lastUsage.output ?? "unknown"}; duration=${Math.round((lastUsage.durationMs ?? 0) / 1000)}s` : "Usage: no completed turn in this session.";
-		const status = () => `Profile: ${config.profile}\nModel: ${config.model.provider}/${config.model.model}\nSession: ${source.threadId ?? "default"}\nRun: ${runtime.isBusy() ? "running" : "idle"}\nReasoning: ${reasoningDisplay}\nDetails: ${detailsDisplay}\nToolset: ${config.agent.toolset}\n${usage()}`;
+		const usage = async () => {
+			const current = await runtime.usage(source);
+			if (!current) return "Usage: no live session. Resume or send a message to load one.";
+			const context = current.contextWindow === null ? "unknown" : current.contextTokens === null ? `?/${current.contextWindow}` : `${current.contextTokens}/${current.contextWindow} (${Math.round(current.contextPercent ?? 0)}%)`;
+			return `Usage: input=${current.inputTokens}; output=${current.outputTokens}; cache-read=${current.cacheReadTokens}; cache-write=${current.cacheWriteTokens}; context=${context}${lastDurationMs === undefined ? "" : `; last-turn=${Math.round(lastDurationMs / 1000)}s`}`;
+		};
+		const status = async () => `Profile: ${config.profile}\nModel: ${config.model.provider}/${config.model.model}\nSession: ${source.threadId ?? "default"}\nRun: ${runtime.isBusy() ? "running" : "idle"}\nReasoning: ${reasoningDisplay}\nDetails: ${detailsDisplay}\nToolset: ${config.agent.toolset}\n${await usage()}`;
+		const sessions = async () => {
+			const live = new Map(runtime.listSessions(source).map((candidate) => [candidate.threadId ?? "default", candidate]));
+			const saved = await runtime.listSavedSessions(source);
+			return saved.length
+				? saved.map((record) => {
+					const id = record.threadId ?? "default";
+					const current = live.get(id);
+					return `${id}  ${current?.busy ? "running" : current ? "live" : "saved"}  ${new Date(current?.lastActiveAt ?? record.lastUsedAt).toLocaleString()}`;
+				}).join("\n")
+				: "No saved sessions. Start a conversation to create one.";
+		};
+		const history = async (limit?: number) => {
+			const entries = await runtime.history(source, limit);
+			return entries.length
+				? entries.map((entry) => `[${entry.role}] ${entry.text.replaceAll("\n", " ")}`).join("\n")
+				: "No live message history. Resume or send a message to load this session.";
+		};
 		const stop = async () => {
 			const stopped = await runtime.cancel(source);
 			const cancelled = subagents?.cancelOwner(source) ?? 0;
@@ -837,7 +867,7 @@ async function runChat(config: ReturnType<typeof loadConfig>): Promise<void> {
 				process.stdout.write(reasoning.beforeAnswer());
 				process.stdout.write(renderTerminalMarkdown(result.answer));
 			}
-			lastUsage = { input: result.usage.input_tokens, output: result.usage.output_tokens, durationMs: result.durationMs };
+			lastDurationMs = result.durationMs;
 			process.stdout.write("\n");
 		};
 		const handleLine = async (line: string) => {
@@ -846,7 +876,7 @@ async function runChat(config: ReturnType<typeof loadConfig>): Promise<void> {
 			const command = parseChatCommand(trimmed);
 			if (active) {
 				if (command?.kind === "stop") { await stop(); return; }
-				if (command?.kind === "status") { process.stdout.write(`\n${status()}\n`); return; }
+				if (command?.kind === "status") { process.stdout.write(`\n${await status()}\n`); return; }
 				process.stdout.write("\nAgent is running. Use /stop (or Ctrl+C) before starting another turn.\n");
 				return;
 			}
@@ -856,15 +886,47 @@ async function runChat(config: ReturnType<typeof loadConfig>): Promise<void> {
 			}
 			if (trimmed === "/quit" || trimmed === "/exit") { closed = true; rl.close(); return; }
 			if (command?.kind === "help") {
-				process.stdout.write("Commands: /help /status /new /reset /stop /compact /model /reasoning /details [hidden|collapsed|expanded] /quit\n");
+				process.stdout.write("Commands: /help /status /new /reset /sessions /history [n] /resume <session-id> /usage /stop /compact /model /reasoning /details [hidden|collapsed|expanded] /quit\n");
 				writePrompt();
 				return;
 			}
-			if (command?.kind === "status") { process.stdout.write(`${status()}\n`); writePrompt(); return; }
-			if (command?.kind === "usage") { process.stdout.write(`${usage()}\n`); writePrompt(); return; }
+			if (command?.kind === "status") { process.stdout.write(`${await status()}\n`); writePrompt(); return; }
+			if (command?.kind === "usage") { process.stdout.write(`${await usage()}\n`); writePrompt(); return; }
 			if (command?.kind === "new") {
-				source = { ...source, threadId: `local-${crypto.randomUUID()}` };
-				process.stdout.write(`Started new session: ${source.threadId}\n`);
+				const threadId = `local-${crypto.randomUUID()}`;
+				source = { ...source, threadId };
+				await runtime.open(source);
+				await applySessionPreferences();
+				lastDurationMs = undefined;
+				process.stdout.write(`Started new session: ${threadId}\n`);
+				writePrompt();
+				return;
+			}
+			if (command?.kind === "reset") {
+				const reset = runtime.reset(source);
+				const threadId = `local-${crypto.randomUUID()}`;
+				source = { ...source, threadId };
+				await runtime.open(source);
+				await applySessionPreferences();
+				lastDurationMs = undefined;
+				process.stdout.write(`${reset ? "Discarded the live session and" : "Started"} a fresh session: ${threadId}\n`);
+				writePrompt();
+				return;
+			}
+			if (command?.kind === "sessions") { process.stdout.write(`${await sessions()}\n`); writePrompt(); return; }
+			if (command?.kind === "history") { process.stdout.write(`${await history(command.limit)}\n`); writePrompt(); return; }
+			if (command?.kind === "resume") {
+				const resumeSource = command.sessionId === "default" ? { ...source, threadId: undefined } : { ...source, threadId: command.sessionId };
+				if (!await runtime.hasSavedSession(resumeSource)) {
+					process.stdout.write(`Unknown session '${command.sessionId}'. Run /sessions to choose a saved session.\n`);
+					writePrompt();
+					return;
+				}
+				source = resumeSource;
+				lastDurationMs = undefined;
+				await runtime.open(source);
+				await applySessionPreferences();
+				process.stdout.write(`Restored session: ${source.threadId ?? "default"}. Use /history to inspect it or send a message to continue.\n`);
 				writePrompt();
 				return;
 			}
@@ -877,7 +939,7 @@ async function runChat(config: ReturnType<typeof loadConfig>): Promise<void> {
 			}
 			if (command?.kind === "details") {
 				if (command.mode === "status") process.stdout.write(`Details: ${detailsDisplay}. Use /details hidden|collapsed|expanded.\n`);
-				else { detailsDisplay = command.mode; process.stdout.write(`Details display set to ${detailsDisplay}.\n`); }
+				else { detailsDisplay = command.mode; await runtime.updateSessionPreferences(source, { detailsDisplay }); process.stdout.write(`Details display set to ${detailsDisplay}.\n`); }
 				writePrompt();
 				return;
 			}
@@ -885,6 +947,7 @@ async function runChat(config: ReturnType<typeof loadConfig>): Promise<void> {
 			if (reasoningCommand) {
 				if (reasoningCommand.kind === "set") {
 					reasoningDisplay = reasoningCommand.display;
+					await runtime.updateSessionPreferences(source, { reasoningDisplay });
 					const warning = reasoningDisplay === "raw" ? " Raw reasoning may contain sensitive intermediate content." : "";
 					process.stdout.write(`Reasoning display set to ${reasoningDisplay}.${warning}\n`);
 				} else if (reasoningCommand.kind === "status") process.stdout.write(`Reasoning display: ${reasoningDisplay}. Use /reasoning off|summary|raw.\n`);

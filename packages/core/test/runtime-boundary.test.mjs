@@ -139,3 +139,27 @@ test("BeeMax Agent Runtime exposes explicit context compaction only for an idle 
 	assert.equal(compactions, 1);
 	runtime.dispose();
 });
+
+test("BeeMax Agent Runtime exposes session history, snapshots, and idle reset through Core", async () => {
+	const source = { platform: "cli", chatId: "terminal", chatType: "dm", userId: "user", threadId: "thread-1" };
+	let disposed = 0;
+	const runtime = new BeeMaxAgentRuntime({
+		createAgent: async () => {
+			const agent = { state: { model: { id: "test" }, messages: [{ role: "user", content: "hello" }, { role: "assistant", content: [{ type: "text", text: "hi" }], usage: { input: 1, output: 1, cacheRead: 2, cacheWrite: 3 } }] } };
+			return { agent, subscribe: () => () => undefined, prompt: async () => undefined, abort: async () => undefined, getContextUsage: () => ({ tokens: 10, contextWindow: 100, percent: 10 }), dispose: () => { disposed++; } };
+		},
+	});
+	assert.deepEqual(await runtime.history(source), []);
+	assert.equal(await runtime.open(source), true);
+	assert.deepEqual(await runtime.history(source), [{ role: "user", text: "hello" }, { role: "assistant", text: "hi" }]);
+	assert.equal(runtime.reset(source), true);
+	assert.equal(disposed, 1);
+	await runtime.run({ source, text: "hello", timeoutMs: 1_000 });
+	assert.deepEqual(await runtime.history(source), [{ role: "user", text: "hello" }, { role: "assistant", text: "hi" }]);
+	assert.deepEqual(await runtime.usage(source), { inputTokens: 1, outputTokens: 1, cacheReadTokens: 2, cacheWriteTokens: 3, contextTokens: 10, contextWindow: 100, contextPercent: 10 });
+	assert.equal(runtime.listSessions(source)[0].threadId, "thread-1");
+	assert.equal(runtime.reset(source), true);
+	assert.equal(disposed, 2);
+	assert.deepEqual(runtime.listSessions(source), []);
+	runtime.dispose();
+});

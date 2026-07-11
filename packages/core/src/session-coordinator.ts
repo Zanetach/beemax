@@ -4,6 +4,16 @@ import type { BeeMaxRuntimeSource } from "./runtime.ts";
 
 /** Stable per-conversation identity, independent of a transport adapter. */
 export function sessionKeyForSource(source: BeeMaxRuntimeSource): string {
+	return legacySessionKeyForSource(source);
+}
+
+/** Stable identity for a channel conversation, excluding a particular thread. */
+export function sessionOwnerKey(source: BeeMaxRuntimeSource): string {
+	const userPart = source.userIdAlt ?? source.userId ?? "anon";
+	return `${source.platform}:${source.chatId}:${userPart}`;
+}
+
+function legacySessionKeyForSource(source: BeeMaxRuntimeSource): string {
 	const userPart = source.userIdAlt ?? source.userId ?? "anon";
 	const chatPart = source.threadId ? `${source.chatId}#${source.threadId}` : source.chatId;
 	return `${source.platform}:${chatPart}:${userPart}`;
@@ -11,14 +21,26 @@ export function sessionKeyForSource(source: BeeMaxRuntimeSource): string {
 
 /** A deterministic UUID-shaped id used by the runtime's persisted session store. */
 export function sessionIdForSource(source: BeeMaxRuntimeSource): string {
-	const hex = createHash("sha256").update(sessionKeyForSource(source)).digest("hex").slice(0, 32);
+	// Preserve the pre-R2 stable persisted transcript ids while the catalog adds
+	// a separate owner/thread index for discovery.
+	const hex = createHash("sha256").update(legacySessionKeyForSource(source)).digest("hex").slice(0, 32);
 	return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-4${hex.slice(13, 16)}-a${hex.slice(17, 20)}-${hex.slice(20, 32)}`;
 }
 
 export interface RuntimeSession {
 	sessionKey: string;
 	sessionId: string;
+	source: BeeMaxRuntimeSource;
 	piSession: AgentSession;
+	busy: boolean;
+	lastActiveAt: number;
+}
+
+/** A renderer-safe view of a live runtime session. */
+export interface RuntimeSessionSnapshot {
+	sessionKey: string;
+	sessionId: string;
+	threadId?: string;
 	busy: boolean;
 	lastActiveAt: number;
 }
@@ -73,6 +95,25 @@ export class SessionCoordinator<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 		return session ? action(session) : undefined;
 	}
 
+	/** Returns live sessions only; persisted transcripts are restored lazily by the session factory. */
+	list(source?: Source): RuntimeSessionSnapshot[] {
+		const owner = source ? sessionOwnerKey(source) : undefined;
+		return [...this.sessions.values()]
+			.filter((session) => owner === undefined || sessionOwnerKey(session.source) === owner)
+			.map(({ sessionKey, sessionId, source: sessionSource, busy, lastActiveAt }) => ({ sessionKey, sessionId, threadId: sessionSource.threadId, busy, lastActiveAt }))
+			.sort((a, b) => b.lastActiveAt - a.lastActiveAt);
+	}
+
+	/** Drop an idle loaded session; persistent transcript retention is owned by the session factory. */
+	reset(source: Source): boolean {
+		const key = sessionKeyForSource(source);
+		const session = this.sessions.get(key);
+		if (!session || session.busy) return false;
+		session.piSession.dispose();
+		this.sessions.delete(key);
+		return true;
+	}
+
 	isBusy(): boolean { return this.locks.size > 0 || [...this.sessions.values()].some((session) => session.busy); }
 
 	dispose(): void {
@@ -99,7 +140,7 @@ export class SessionCoordinator<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 		if (pending) return pending;
 		this.prune(Date.now(), 1);
 		const creation = (async () => {
-			const session: RuntimeSession = { sessionKey: key, sessionId: sessionIdForSource(source), piSession: await factory(sessionIdForSource(source), source), busy: false, lastActiveAt: Date.now() };
+			const session: RuntimeSession = { sessionKey: key, sessionId: sessionIdForSource(source), source: { ...source }, piSession: await factory(sessionIdForSource(source), source), busy: false, lastActiveAt: Date.now() };
 			this.sessions.set(key, session);
 			return session;
 		})();
@@ -115,5 +156,6 @@ export class SessionCoordinator<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 		}
 	}
 }
+
 
 function clamp(value: number, min: number, max: number): number { return Math.max(min, Math.min(max, value)); }

@@ -48,16 +48,21 @@ export {
 	SessionCoordinator,
 	sessionIdForSource,
 	sessionKeyForSource,
+	sessionOwnerKey,
 	type RuntimeSession,
+	type RuntimeSessionSnapshot,
 	type RuntimeSessionFactory,
 	type SessionCoordinatorOptions,
 } from "./session-coordinator.ts";
+export { SessionCatalog, type SavedSessionChoice, type SessionPreferences } from "./session-catalog.ts";
 export {
 	BeeMaxAgentRuntime,
 	AgentRunError,
 	type AgentRunInput,
 	type AgentRunResult,
 	type AgentRunEventSink,
+	type AgentHistoryEntry,
+	type AgentSessionUsage,
 	type AgentRuntimePort,
 	type BeeMaxAgentRuntimeOptions,
 } from "./agent-runtime.ts";

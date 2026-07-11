@@ -68,18 +68,26 @@ export function parseReasoningCommand(input: string): ReasoningCommand | undefin
 }
 
 export type ChatCommand =
-	| { kind: "help" | "status" | "new" | "stop" | "usage" }
+	| { kind: "help" | "status" | "new" | "reset" | "stop" | "usage" | "sessions" }
 	| { kind: "compact" }
+	| { kind: "history"; limit?: number }
+	| { kind: "resume"; sessionId: string }
 	| { kind: "details"; mode: DetailsDisplay | "status" };
 
 export function parseChatCommand(input: string): ChatCommand | undefined {
 	const value = input.trim().toLowerCase();
 	if (value === "/help") return { kind: "help" };
 	if (value === "/status") return { kind: "status" };
-	if (value === "/new" || value === "/reset") return { kind: "new" };
+	if (value === "/new") return { kind: "new" };
+	if (value === "/reset") return { kind: "reset" };
 	if (value === "/stop") return { kind: "stop" };
 	if (value === "/compact") return { kind: "compact" };
 	if (value === "/usage") return { kind: "usage" };
+	if (value === "/sessions") return { kind: "sessions" };
+	const history = value.match(/^\/history(?:\s+(\d{1,3}))?$/);
+	if (history) return { kind: "history", limit: history[1] ? Number(history[1]) : undefined };
+	const resume = input.trim().match(/^\/resume\s+([^\s]+)$/i);
+	if (resume) return { kind: "resume", sessionId: resume[1] };
 	const details = value.match(/^\/details(?:\s+(hidden|collapsed|expanded))?$/);
 	if (details) return { kind: "details", mode: details[1] === "hidden" || details[1] === "collapsed" || details[1] === "expanded" ? details[1] : "status" };
 	return undefined;
