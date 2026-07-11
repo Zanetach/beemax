@@ -44,6 +44,7 @@ export class Dispatcher {
 	private readonly profileId: string;
 	private readonly deduplicator: MessageDeduplicator;
 	private readonly sessionOverrides = new Map<string, InboundMessage["source"]>();
+	private static readonly maxSessionOverrides = 10_000;
 
 	constructor(deps: DispatcherDeps, platform: PlatformAdapter) {
 		this.deps = deps;
@@ -65,7 +66,7 @@ export class Dispatcher {
 		if (this.deps.approvalBroker && (await this.deps.approvalBroker.handleMessage(effective))) return;
 		const control = await this.runtime.handleControl({ source: effective.source, text: effective.text });
 		if (control?.handled) {
-			if (control.nextSource) this.sessionOverrides.set(sessionOwnerKey(msg.source), { ...msg.source, threadId: control.nextSource.threadId });
+			if (control.nextSource) this.setSessionOverride(msg.source, control.nextSource.threadId);
 			await this.platform.send(msg.source.chatId, control.message);
 			return;
 		}
@@ -157,6 +158,16 @@ export class Dispatcher {
 
 	dispose(): void {
 		this.deps.approvalBroker?.dispose();
+	}
+
+	private setSessionOverride(source: InboundMessage["source"], threadId: string | undefined): void {
+		const key = sessionOwnerKey(source);
+		this.sessionOverrides.delete(key);
+		if (this.sessionOverrides.size >= Dispatcher.maxSessionOverrides) {
+			const oldest = this.sessionOverrides.keys().next().value;
+			if (oldest) this.sessionOverrides.delete(oldest);
+		}
+		this.sessionOverrides.set(key, { ...source, threadId });
 	}
 
 	private async onAgentEvent(
