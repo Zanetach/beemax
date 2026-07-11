@@ -85,6 +85,7 @@ export async function runGateway(config: BeeMaxConfig): Promise<void> {
 		provider: () => config.model.provider,
 		model: () => config.model.model,
 		baseUrl: () => config.model.baseUrl,
+		customProtocol: () => config.model.customProtocol,
 		cwd: config.paths.cwd,
 		agentDir: config.paths.agentDir,
 		getApiKey: (provider: string) => config.model.apiKeys[provider] ?? (provider === config.model.provider ? apiKey : undefined),

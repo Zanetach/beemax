@@ -35,6 +35,7 @@ export interface BeeMaxRuntimeFactoryOptions {
 	provider: string;
 	model: string;
 	baseUrl?: string;
+	customProtocol?: "openai-completions" | "openai-responses" | "anthropic-messages";
 	cwd: string;
 	agentDir: string;
 	getApiKey: (provider: string) => Promise<string | undefined> | string | undefined;
@@ -67,7 +68,7 @@ export function buildBeeMaxRuntimeFactory(opts: BeeMaxRuntimeFactoryOptions) {
 	mkdirSync(sessionDir, { recursive: true });
 	const authStorage = AuthStorage.create(join(agentDir, "auth.json"));
 	const modelRegistry = ModelRegistry.create(authStorage, join(agentDir, "models.json"));
-	const resolvedModel = resolveModel(opts.provider, opts.model, opts.baseUrl);
+	const resolvedModel = resolveModel(opts.provider, opts.model, opts.baseUrl, opts.customProtocol);
 	const model = opts.baseUrl ? { ...resolvedModel, baseUrl: opts.baseUrl } : resolvedModel;
 	const approvalTools = new Set(["bash", "edit", "write", ...(opts.approvalTools ?? [])]);
 
@@ -155,14 +156,14 @@ function hardBlockReason(toolName: string, args: unknown, cwd: string): string |
 	return undefined;
 }
 
-function resolveModel(provider: string, modelId: string, baseUrl?: string): Model<Api> {
+function resolveModel(provider: string, modelId: string, baseUrl?: string, customProtocol: "openai-completions" | "openai-responses" | "anthropic-messages" = "openai-completions"): Model<Api> {
 	if (provider === "custom") {
 		if (!baseUrl) throw new Error("Custom OpenAI-compatible models require a Base URL");
 		return {
 			id: modelId,
 			name: modelId,
-			api: "openai-completions",
-			provider: "openai",
+			api: customProtocol,
+			provider: customProtocol === "anthropic-messages" ? "anthropic" : "openai",
 			baseUrl,
 			reasoning: false,
 			input: ["text"],

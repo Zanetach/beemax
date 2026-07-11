@@ -32,6 +32,7 @@ export interface AgentFactoryOptions {
 	provider: string | (() => string);
 	model: string | (() => string);
 	baseUrl?: string | undefined | (() => string | undefined);
+	customProtocol?: "openai-completions" | "openai-responses" | "anthropic-messages" | (() => "openai-completions" | "openai-responses" | "anthropic-messages" | undefined);
 	cwd: string;
 	agentDir: string;
 	getApiKey: (provider: string) => Promise<string | undefined> | string | undefined;
@@ -70,7 +71,7 @@ export function buildAgentFactory(opts: AgentFactoryOptions) {
 	const baseCustomTools = [...webTools, ...(opts.customTools ?? [])];
 	const execution = opts.executionPort ?? new LocalExecutionPort();
 	return async (sessionId: string, source: SessionSource) => buildBeeMaxRuntimeFactory({
-		provider: valueOf(opts.provider), model: valueOf(opts.model), baseUrl: valueOf(opts.baseUrl), cwd: opts.cwd, agentDir: opts.agentDir,
+		provider: valueOf(opts.provider), model: valueOf(opts.model), baseUrl: valueOf(opts.baseUrl), customProtocol: valueOf(opts.customProtocol), cwd: opts.cwd, agentDir: opts.agentDir,
 		getApiKey: opts.getApiKey, systemPrompt: opts.systemPrompt ?? DEFAULT_SYSTEM_PROMPT, skillToolset: opts.skillToolset ?? "standard",
 		tools: opts.tools,
 		approvalTools: [...REQUIRES_APPROVAL, ...(opts.approvalTools ?? [])],

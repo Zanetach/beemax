@@ -287,7 +287,7 @@ async function runModelCommand(parsed: ParsedArgs): Promise<void> {
 	if (!apiKey && parsed.options["non-interactive"] !== true && process.stdin.isTTY) {
 		apiKey = await askOne("Model API Key (leave empty to configure later): ", true);
 	}
-	await configureModel(profile, { provider, model, apiKey, baseUrl: optionString(parsed, "base-url") });
+	await configureModel(profile, { provider, model, apiKey, baseUrl: optionString(parsed, "base-url"), customProtocol: customProtocolOption(parsed) });
 	console.log(`Configured ${provider}/${model} for Agent '${profile}'.`);
 }
 
@@ -390,6 +390,7 @@ function setupOptions(parsed: ParsedArgs, gatewayOnly: boolean): SetupOptions {
 		model: optionString(parsed, "model") ?? process.env.BEEMAX_MODEL,
 		apiKey: process.env.BEEMAX_API_KEY,
 		baseUrl: optionString(parsed, "base-url"),
+		customProtocol: customProtocolOption(parsed),
 		soul: optionString(parsed, "soul") ?? process.env.BEEMAX_SOUL,
 		appId: optionString(parsed, "app-id") ?? process.env.FEISHU_APP_ID,
 		appSecret: process.env.FEISHU_APP_SECRET,
@@ -406,6 +407,13 @@ function setupOptions(parsed: ParsedArgs, gatewayOnly: boolean): SetupOptions {
 			? false
 			: parsed.options["require-mention"] === true ? true : undefined,
 	};
+}
+
+function customProtocolOption(parsed: ParsedArgs): "openai-completions" | "openai-responses" | "anthropic-messages" | undefined {
+	const value = optionString(parsed, "protocol");
+	if (!value) return undefined;
+	if (value === "openai-completions" || value === "openai-responses" || value === "anthropic-messages") return value;
+	throw new Error("--protocol must be openai-completions, openai-responses, or anthropic-messages");
 }
 
 function optionString(parsed: ParsedArgs, key: string): string | undefined {
@@ -685,6 +693,7 @@ async function runChat(config: ReturnType<typeof loadConfig>): Promise<void> {
 		provider: () => config.model.provider,
 		model: () => config.model.model,
 		baseUrl: () => config.model.baseUrl,
+		customProtocol: () => config.model.customProtocol,
 		cwd: config.paths.cwd,
 		agentDir: config.paths.agentDir,
 		getApiKey: (provider: string) => config.model.apiKeys[provider] ?? (provider === config.model.provider ? apiKey : undefined),
@@ -707,6 +716,7 @@ async function runChat(config: ReturnType<typeof loadConfig>): Promise<void> {
 		provider: () => config.model.provider,
 		model: () => config.model.model,
 		baseUrl: () => config.model.baseUrl,
+		customProtocol: () => config.model.customProtocol,
 		cwd: config.paths.cwd,
 		agentDir: config.paths.agentDir,
 		getApiKey: (provider: string) => config.model.apiKeys[provider] ?? (provider === config.model.provider ? apiKey : undefined),

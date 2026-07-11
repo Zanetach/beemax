@@ -30,6 +30,7 @@ export interface FeishuConfig {
 	webhookVerificationToken?: string;
 	webhookEncryptKey?: string;
 }
+export type CustomProtocol = "openai-completions" | "openai-responses" | "anthropic-messages";
 
 export interface BeeMaxConfig {
 	profile: string;
@@ -45,8 +46,9 @@ export interface BeeMaxConfig {
 		apiKey?: string;
 		apiKeys: Record<string, string>;
 		baseUrl?: string;
+		customProtocol?: CustomProtocol;
 	};
-	models: Array<{ provider: string; model: string; baseUrl?: string }>;
+	models: Array<{ provider: string; model: string; baseUrl?: string; customProtocol?: CustomProtocol }>;
 	/** Profile-owned channel configuration. A Profile may run its own Gateway. */
 	gateway: { feishu: FeishuConfig };
 	memory: {
@@ -119,7 +121,8 @@ export function loadConfig(configPath?: string, profile = "default"): BeeMaxConf
 	const provider = str(env.BEEMAX_PROVIDER ?? cfg.model?.provider ?? "anthropic");
 	const model = str(env.BEEMAX_MODEL ?? cfg.model?.model ?? "claude-sonnet-4-5");
 	const apiKey = str(env[providerApiKeyEnv(provider)] ?? env.BEEMAX_API_KEY ?? cfg.model?.apiKey);
-	const configuredModels = modelChoices(cfg.models, { provider, model, baseUrl: cfg.model?.baseUrl });
+	const customProtocol = parseCustomProtocol(cfg.model?.customProtocol);
+	const configuredModels = modelChoices(cfg.models, { provider, model, baseUrl: cfg.model?.baseUrl, customProtocol });
 	const apiKeys = Object.fromEntries(
 		[...new Set(configuredModels.map((choice) => choice.provider))]
 			.map((candidate) => [candidate, str(env[providerApiKeyEnv(candidate)] ?? (candidate === provider ? env.BEEMAX_API_KEY : ""))])
@@ -160,6 +163,7 @@ export function loadConfig(configPath?: string, profile = "default"): BeeMaxConf
 			apiKey,
 			apiKeys,
 			baseUrl: cfg.model?.baseUrl,
+			customProtocol: provider === "custom" ? customProtocol : undefined,
 		},
 		models: configuredModels,
 		gateway: { feishu },
@@ -251,14 +255,15 @@ function parseList(value: unknown): string[] {
 		.filter(Boolean);
 }
 
-function modelChoices(value: unknown, active: { provider: string; model: string; baseUrl?: string }): Array<{ provider: string; model: string; baseUrl?: string }> {
+function modelChoices(value: unknown, active: { provider: string; model: string; baseUrl?: string; customProtocol?: CustomProtocol }): Array<{ provider: string; model: string; baseUrl?: string; customProtocol?: CustomProtocol }> {
 	const items = Array.isArray(value) ? value : [];
 	const choices = items.filter(isModelChoice);
 	return [{ ...active }, ...choices.filter((item) => item.provider !== active.provider || item.model !== active.model || item.baseUrl !== active.baseUrl)];
 }
 
-function isModelChoice(value: unknown): value is { provider: string; model: string; baseUrl?: string } {
+function isModelChoice(value: unknown): value is { provider: string; model: string; baseUrl?: string; customProtocol?: CustomProtocol } {
 	if (!value || typeof value !== "object" || Array.isArray(value)) return false;
 	const candidate = value as Record<string, unknown>;
-	return typeof candidate.provider === "string" && typeof candidate.model === "string" && (candidate.baseUrl === undefined || typeof candidate.baseUrl === "string");
+	return typeof candidate.provider === "string" && typeof candidate.model === "string" && (candidate.baseUrl === undefined || typeof candidate.baseUrl === "string") && (candidate.customProtocol === undefined || parseCustomProtocol(candidate.customProtocol) === candidate.customProtocol);
 }
+function parseCustomProtocol(value: unknown): CustomProtocol { return value === "anthropic-messages" || value === "openai-responses" ? value : "openai-completions"; }

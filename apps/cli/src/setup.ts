@@ -1,4 +1,5 @@
 import { loadConfig } from "./config.ts";
+import type { CustomProtocol } from "./config.ts";
 import { presetFor, renderModelProviderChoices, resolveProviderSelection } from "./model-catalog.ts";
 import { runDoctor } from "./doctor.ts";
 import {
@@ -21,6 +22,7 @@ export interface SetupOptions {
 	model?: string;
 	apiKey?: string;
 	baseUrl?: string;
+	customProtocol?: CustomProtocol;
 	soul?: string;
 	appId?: string;
 	appSecret?: string;
@@ -53,6 +55,7 @@ export async function runSetup(options: SetupOptions, dependencies: SetupDepende
 	let model: string | undefined;
 	let apiKey: string | undefined;
 	let baseUrl: string | undefined;
+	let customProtocol: CustomProtocol | undefined;
 	if (!options.gatewayOnly) {
 		soul = options.soul;
 		if (soul === undefined && !options.nonInteractive) {
@@ -68,6 +71,7 @@ export async function runSetup(options: SetupOptions, dependencies: SetupDepende
 		// Profile override, so switching a built-in provider never pins stale URLs.
 		baseUrl = options.baseUrl ?? (provider === current.model.provider ? current.model.baseUrl : undefined);
 		if (!options.nonInteractive && (preset?.requiresBaseUrl || provider === "custom")) baseUrl = await askWithDefault("OpenAI-compatible Base URL", baseUrl ?? "");
+		if (provider === "custom") customProtocol = options.customProtocol ?? (options.nonInteractive ? "openai-completions" : await askCustomProtocol());
 		apiKey = options.apiKey;
 		if (!apiKey && !options.nonInteractive && !current.model.apiKey) apiKey = await askOne("Model API Key (leave empty to configure later): ", true);
 		if (!provider || !model) throw new Error("Setup requires a model provider and model ID");
@@ -108,6 +112,7 @@ export async function runSetup(options: SetupOptions, dependencies: SetupDepende
 			model: model!,
 			apiKey,
 			baseUrl,
+			customProtocol,
 		});
 	}
 	if (configureGateway) {
@@ -138,6 +143,12 @@ export async function runSetup(options: SetupOptions, dependencies: SetupDepende
 		if (!configureGateway) console.log(`Start chatting now: beemax chat --profile ${options.profile}\nConnect Feishu later: beemax gateway setup --profile ${options.profile}`);
 	}
 	return ready;
+}
+
+async function askCustomProtocol(): Promise<CustomProtocol> {
+	const value = await askWithDefault("Custom protocol [openai-completions | openai-responses | anthropic-messages]", "openai-completions");
+	if (value === "openai-responses" || value === "anthropic-messages") return value;
+	return "openai-completions";
 }
 
 function printFeishuChecklist(connectionMode: "websocket" | "webhook"): void {

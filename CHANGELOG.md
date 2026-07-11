@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.0-preview.15
+
+- Added selectable Custom endpoint protocols: OpenAI Chat Completions, OpenAI
+  Responses, and Anthropic Messages.
+
 ## 0.1.0-preview.14
 
 - Added macOS LaunchAgent Gateway lifecycle support, including per-Profile

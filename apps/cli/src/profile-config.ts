@@ -6,6 +6,7 @@ import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
 import { readEnvFile, writeEnvFile } from "./env-file.ts";
 import { DEFAULT_SOUL, resolveSoul, validateCustomSoul } from "./soul.ts";
 import { providerApiKeyEnv } from "./provider-resolver.ts";
+import type { CustomProtocol } from "./config.ts";
 import {
 	beemaxHome,
 	beemaxRoot,
@@ -38,6 +39,7 @@ export interface ModelInput {
 	model: string;
 	apiKey?: string;
 	baseUrl?: string;
+	customProtocol?: CustomProtocol;
 }
 
 export interface FeishuProbeResult {
@@ -184,9 +186,10 @@ export async function configureModel(profile: string, input: ModelInput, options
 		provider: input.provider.trim(),
 		model: input.model.trim(),
 		...(input.baseUrl?.trim() ? { baseUrl: input.baseUrl.trim() } : {}),
+		...(input.provider.trim() === "custom" ? { customProtocol: input.customProtocol ?? "openai-completions" } : {}),
 	};
 	const choices = Array.isArray(config.models) ? config.models : [];
-	const next = { provider: input.provider.trim(), model: input.model.trim(), ...(input.baseUrl?.trim() ? { baseUrl: input.baseUrl.trim() } : {}) };
+	const next = { provider: input.provider.trim(), model: input.model.trim(), ...(input.baseUrl?.trim() ? { baseUrl: input.baseUrl.trim() } : {}), ...(input.provider.trim() === "custom" ? { customProtocol: input.customProtocol ?? "openai-completions" } : {}) };
 	config.models = [next, ...choices.filter((item) => !sameModelChoice(item, next))];
 	await writeFile(paths.configPath, stringifyYaml(config), { encoding: "utf8", mode: 0o600 });
 	if (input.apiKey?.trim()) {
