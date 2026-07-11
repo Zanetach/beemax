@@ -16,6 +16,14 @@ _Avoid_: Task, session, turn
 The durable, owner-scoped record of Tasks and their Task Runs across conversations and restarts.
 _Avoid_: Chat history, memory, process list
 
+**Task Plan**:
+A directed acyclic graph of Tasks whose dependency edges determine which work is ready to run in parallel.
+_Avoid_: Prompt outline, checklist, execution log
+
+**Task Dependency**:
+A requirement that one Task succeed before another Task becomes ready.
+_Avoid_: Ordering hint, parent Task
+
 **Schedule**:
 A rule that creates Tasks at a future time or recurring cadence; it is not itself a Task.
 _Avoid_: Scheduled task, cron job

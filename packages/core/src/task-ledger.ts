@@ -9,6 +9,7 @@ export interface TaskRecord {
 	title: string;
 	status: TaskStatus;
 	parentId?: string;
+	planId?: string;
 	evidence?: string;
 	createdAt: number;
 	startedAt?: number;
@@ -36,8 +37,10 @@ export interface TaskQuery {
 	id?: string;
 	kinds?: TaskKind[];
 	statuses?: TaskStatus[];
+	planIds?: string[];
 	limit?: number;
 }
+export interface TaskDependency { taskId: string; dependsOn: string; }
 
 /** Persistence port used by task producers; storage remains replaceable. */
 export interface TaskLedger {
@@ -47,4 +50,6 @@ export interface TaskLedger {
 	transitionRun(id: string, change: TaskRunTransition): void;
 	queryTasks(query: TaskQuery): TaskRecord[];
 	taskRuns(taskId: string): TaskRunRecord[];
+	recordPlan(tasks: TaskRecord[], dependencies: TaskDependency[]): void;
+	taskDependencies(taskIds: string[]): TaskDependency[];
 }

@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { MemoryStore } from "../dist/index.js";
 import Database from "better-sqlite3";
+import { TaskGraph } from "@beemax/core";
 
 test("natural-language recall is safe and follows a user across chats", () => {
 	const root = mkdtempSync(join(tmpdir(), "beemax-memory-test-"));
@@ -114,6 +115,19 @@ test("legacy task facts migrate once into objective Tasks", () => {
 	const store = new MemoryStore(path);
 	try {
 		assert.deepEqual(store.queryTasks({ ownerKeys: ["profile"] }), [{ id: "release", ownerKey: "profile", kind: "objective", title: "Ship release", status: "succeeded", evidence: "tag:v1", createdAt: 110, finishedAt: 120 }]);
+	} finally { store.close(); rmSync(root, { recursive: true, force: true }); }
+});
+
+test("Task DAG dependencies persist with their Tasks", () => {
+	const root = mkdtempSync(join(tmpdir(), "beemax-task-dag-"));
+	const path = join(root, "memory.db");
+	let store = new MemoryStore(path);
+	new TaskGraph(store).createPlan({ id: "content-plan", ownerKey: "cli:local:local", tasks: [{ id: "research", title: "Research" }, { id: "write", title: "Write" }], dependencies: [{ taskId: "write", dependsOn: "research" }] }, 100);
+	store.close();
+	store = new MemoryStore(path);
+	try {
+		assert.deepEqual(store.taskDependencies(["write"]), [{ taskId: "write", dependsOn: "research" }]);
+		assert.deepEqual(store.queryTasks({ ownerKeys: ["cli:local:local"] }).map((task) => task.id).sort(), ["research", "write"]);
 	} finally { store.close(); rmSync(root, { recursive: true, force: true }); }
 });
 

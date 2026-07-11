@@ -15,7 +15,7 @@ import Database from "better-sqlite3";
 import type { Database as DatabaseType } from "better-sqlite3";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
-import type { TaskQuery, TaskRecord as RuntimeTaskRecord, TaskRunRecord, TaskRunTransition, TaskTransition } from "@beemax/core";
+import type { TaskDependency, TaskQuery, TaskRecord as RuntimeTaskRecord, TaskRunRecord, TaskRunTransition, TaskTransition } from "@beemax/core";
 
 export const MEMORY_CLAIM_KINDS = ["preference", "fact", "decision", "goal", "project", "relationship", "workflow"] as const;
 export type MemoryClaimKind = typeof MEMORY_CLAIM_KINDS[number];
@@ -195,6 +195,7 @@ export class MemoryStore {
 				title TEXT NOT NULL,
 				status TEXT NOT NULL CHECK (status IN ('pending', 'running', 'succeeded', 'failed', 'cancelled')),
 				parent_id TEXT,
+				plan_id TEXT,
 				evidence TEXT,
 				created_at INTEGER NOT NULL,
 				started_at INTEGER,
@@ -215,6 +216,12 @@ export class MemoryStore {
 				error TEXT
 			);
 			CREATE INDEX IF NOT EXISTS idx_task_runs_task_started ON task_runs(task_id, started_at DESC);
+			CREATE TABLE IF NOT EXISTS task_dependencies (
+				task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+				depends_on TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+				PRIMARY KEY (task_id, depends_on)
+			);
+			CREATE INDEX IF NOT EXISTS idx_task_dependencies_upstream ON task_dependencies(depends_on);
 
 			CREATE TABLE IF NOT EXISTS memory_events (
 				id TEXT PRIMARY KEY,
@@ -274,6 +281,7 @@ export class MemoryStore {
 			CREATE INDEX IF NOT EXISTS idx_memory_evidence_claim ON memory_evidence(claim_id, created_at DESC);
 		`);
 		this.addColumnIfMissing("tasks", "evidence", "TEXT");
+		this.addColumnIfMissing("tasks", "plan_id", "TEXT");
 		this.addColumnIfMissing("tasks", "updated_at", "INTEGER NOT NULL DEFAULT 0");
 		this.addColumnIfMissing("memory_claims", "superseded_by", "TEXT REFERENCES memory_claims(id)");
 		this.addColumnIfMissing("memory_evidence", "event_id", "TEXT REFERENCES memory_events(id)");
@@ -595,9 +603,9 @@ export class MemoryStore {
 	}
 
 	record(task: RuntimeTaskRecord): void {
-		this.db.prepare(`INSERT INTO tasks (id, owner_key, kind, title, status, parent_id, evidence, created_at, started_at, finished_at, result, error, updated_at)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-			.run(task.id, task.ownerKey, task.kind, task.title, task.status, task.parentId ?? null, task.evidence ?? null, task.createdAt, task.startedAt ?? null, task.finishedAt ?? null, task.result ?? null, task.error ?? null, task.createdAt);
+		this.db.prepare(`INSERT INTO tasks (id, owner_key, kind, title, status, parent_id, plan_id, evidence, created_at, started_at, finished_at, result, error, updated_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+			.run(task.id, task.ownerKey, task.kind, task.title, task.status, task.parentId ?? null, task.planId ?? null, task.evidence ?? null, task.createdAt, task.startedAt ?? null, task.finishedAt ?? null, task.result ?? null, task.error ?? null, task.createdAt);
 	}
 
 	transition(id: string, change: TaskTransition): void {
@@ -628,9 +636,24 @@ export class MemoryStore {
 		if (query.id) { conditions.push("id = ?"); params.push(query.id); }
 		if (query.kinds?.length) { conditions.push(`kind IN (${query.kinds.map(() => "?").join(", ")})`); params.push(...query.kinds); }
 		if (query.statuses?.length) { conditions.push(`status IN (${query.statuses.map(() => "?").join(", ")})`); params.push(...query.statuses); }
+		if (query.planIds?.length) { conditions.push(`plan_id IN (${query.planIds.map(() => "?").join(", ")})`); params.push(...query.planIds); }
 		params.push(limitOf(query.limit, 50));
 		const rows = this.db.prepare(`SELECT * FROM tasks WHERE ${conditions.join(" AND ")} ORDER BY created_at DESC LIMIT ?`).all(...params) as RuntimeTaskRow[];
 		return rows.map(mapRuntimeTask);
+	}
+
+	recordPlan(tasks: RuntimeTaskRecord[], dependencies: TaskDependency[]): void {
+		this.db.transaction(() => {
+			for (const task of tasks) this.record(task);
+			const insert = this.db.prepare("INSERT INTO task_dependencies (task_id, depends_on) VALUES (?, ?)");
+			for (const edge of dependencies) insert.run(edge.taskId, edge.dependsOn);
+		})();
+	}
+
+	taskDependencies(taskIds: string[]): TaskDependency[] {
+		if (taskIds.length === 0) return [];
+		return this.db.prepare(`SELECT task_id, depends_on FROM task_dependencies WHERE task_id IN (${taskIds.map(() => "?").join(", ")})`)
+			.all(...taskIds).map((row) => ({ taskId: (row as { task_id: string }).task_id, dependsOn: (row as { depends_on: string }).depends_on }));
 	}
 
 	forget(id: string, opts: Omit<RecallOptions, "limit"> = {}): boolean {
@@ -736,7 +759,7 @@ interface EventRow {
 
 interface RuntimeTaskRow {
 	id: string; owner_key: string; kind: RuntimeTaskRecord["kind"]; title: string; status: RuntimeTaskRecord["status"];
-	parent_id: string | null; evidence: string | null; created_at: number; started_at: number | null; finished_at: number | null; result: string | null; error: string | null;
+	parent_id: string | null; plan_id: string | null; evidence: string | null; created_at: number; started_at: number | null; finished_at: number | null; result: string | null; error: string | null;
 }
 
 interface TaskRunRow {
@@ -785,6 +808,7 @@ function mapRuntimeTask(row: RuntimeTaskRow): RuntimeTaskRecord {
 		id: row.id, ownerKey: row.owner_key, kind: row.kind, title: row.title, status: row.status,
 		createdAt: row.created_at,
 		...(row.parent_id === null ? {} : { parentId: row.parent_id }),
+		...(row.plan_id === null ? {} : { planId: row.plan_id }),
 		...(row.evidence === null ? {} : { evidence: row.evidence }),
 		...(row.started_at === null ? {} : { startedAt: row.started_at }),
 		...(row.finished_at === null ? {} : { finishedAt: row.finished_at }),
