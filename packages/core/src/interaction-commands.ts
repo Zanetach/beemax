@@ -5,11 +5,12 @@
 export type InteractionDetailsDisplay = "hidden" | "collapsed" | "expanded";
 
 export type InteractionCommand =
-	| { kind: "help" | "status" | "new" | "reset" | "stop" | "usage" | "sessions" }
+	| { kind: "help" | "status" | "new" | "reset" | "stop" | "usage" }
+	| { kind: "sessions"; query?: string }
 	| { kind: "compact" }
 	| { kind: "history"; limit?: number }
 	| { kind: "resume"; sessionId: string }
-	| { kind: "models" }
+	| { kind: "models"; query?: string }
 	| { kind: "retry" }
 	| { kind: "tools" }
 	| { kind: "think"; level?: "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max" }
@@ -54,8 +55,10 @@ export function parseInteractionCommand(input: string): InteractionCommand | und
 	if (value === "/stop") return { kind: "stop" };
 	if (value === "/compact") return { kind: "compact" };
 	if (value === "/usage") return { kind: "usage" };
-	if (value === "/sessions") return { kind: "sessions" };
-	if (value === "/models") return { kind: "models" };
+	const sessions = input.trim().match(/^\/sessions(?:\s+(.+))?$/i);
+	if (sessions) return sessions[1]?.trim() ? { kind: "sessions", query: sessions[1].trim() } : { kind: "sessions" };
+	const models = input.trim().match(/^\/models(?:\s+(.+))?$/i);
+	if (models) return models[1]?.trim() ? { kind: "models", query: models[1].trim() } : { kind: "models" };
 	if (value === "/retry") return { kind: "retry" };
 	if (value === "/tools") return { kind: "tools" };
 	const history = value.match(/^\/history(?:\s+(\d{1,3}))?$/);

@@ -18,6 +18,7 @@ export class FullWorkbench {
 	private transcript: string[] = [];
 	private activities: string[] = [];
 	private approval: string[] = [];
+	private picker: { title: string; choices: string[] } | undefined;
 	private footer: ChatFooterState;
 
 	constructor(options: FullWorkbenchOptions) {
@@ -47,6 +48,8 @@ export class FullWorkbench {
 	}
 
 	setFooter(footer: Partial<ChatFooterState>): void { this.footer = { ...this.footer, ...footer }; }
+	setPicker(title: string, choices: string[]): void { this.picker = { title, choices: choices.slice(0, 12) }; }
+	clearPicker(): void { this.picker = undefined; }
 
 	render(width = process.stdout.columns || 100, height = process.stdout.rows || 32): string {
 		const inner = Math.max(24, width - 4);
@@ -58,6 +61,7 @@ export class FullWorkbench {
 			divider("Activity", inner),
 			...(this.activities.length ? this.activities.flatMap((entry) => wrap(entry, inner)) : [line("No tool or Sub-Agent activity yet.", inner)]),
 			...(this.approval.length ? [divider("Approval", inner), ...this.approval.flatMap((entry) => wrap(entry, inner))] : []),
+			...(this.picker ? [divider(this.picker.title, inner), ...(this.picker.choices.length ? this.picker.choices.flatMap((entry) => wrap(entry, inner)) : [line("No matching choices.", inner)])] : []),
 			divider("Composer", inner),
 			line("Enter send · /help controls · Ctrl+C or /stop cancel", inner),
 			border("", inner),

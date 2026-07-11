@@ -29,7 +29,7 @@ import {
 import { activeProfile, resolveProfileLocation } from "./profile-home.ts";
 import { installMacLaunchAgent, installSystemdService, runServiceAction, type ServiceAction } from "./service-manager.ts";
 import { runSetup, type SetupOptions } from "./setup.ts";
-import { renderConfiguredModels, renderModelProviderChoices, resolveProviderSelection } from "./model-catalog.ts";
+import { renderModelProviderChoices, resolveProviderSelection } from "./model-catalog.ts";
 import { configuredApiKey } from "./provider-resolver.ts";
 import { executionPortFor, executionSafeTools } from "./execution-composition.ts";
 import { createProfileRuntime } from "./runtime-composition.ts";
@@ -953,17 +953,18 @@ async function runChat(config: ReturnType<typeof loadConfig>, requestedMode: { f
 			const tools = mcp.getTools().map((tool) => `${tool.name}${mcpApproval.has(tool.name) ? " (approval required)" : ""}`);
 			return `Toolset: ${config.agent.toolset}\nMCP: ${tools.length ? tools.join(", ") : "no MCP tools connected"}`;
 		};
-		const sessions = async () => {
+		const sessions = async (query?: string) => {
 			const live = new Map(runtime.listSessions(source).map((candidate) => [candidate.threadId ?? "default", candidate]));
 			const saved = await runtime.listSavedSessions(source);
-			sessionChoices = saved.map((record) => record.threadId ?? "default");
-			return saved.length
-				? saved.map((record, index) => {
+			const filtered = query ? saved.filter((record) => (record.threadId ?? "default").toLowerCase().includes(query.toLowerCase())) : saved;
+			sessionChoices = filtered.map((record) => record.threadId ?? "default");
+			const rendered = filtered.map((record, index) => {
 					const id = record.threadId ?? "default";
 					const current = live.get(id);
 					return `${index + 1}. ${id}  ${current?.busy ? "running" : current ? "live" : "saved"}  ${new Date(current?.lastActiveAt ?? record.lastUsedAt).toLocaleString()}`;
-				}).join("\n") + "\n\nUse /resume <number> or /resume <session-id>."
-				: "No saved sessions. Start a conversation to create one.";
+				});
+			if (workbench) workbench.setPicker("Session Picker · /resume <number>", rendered);
+			return rendered.length ? `${rendered.join("\n")}\n\nUse /resume <number> or /resume <session-id>.` : query ? `No session matches '${query}'.` : "No saved sessions. Start a conversation to create one.";
 		};
 		const history = async (limit?: number) => {
 			const entries = await runtime.history(source, limit);
@@ -1070,11 +1071,18 @@ async function runChat(config: ReturnType<typeof loadConfig>, requestedMode: { f
 				writePrompt();
 				return;
 			}
-			if (command?.kind === "sessions") { process.stdout.write(`${await sessions()}\n`); writePrompt(); return; }
+			if (command?.kind === "sessions") {
+				const output = await sessions(command.query);
+				if (workbench) await writeFooter(); else process.stdout.write(`${output}\n`);
+				writePrompt(); return;
+			}
 			if (command?.kind === "models") {
-				modelChoices = config.models.map((choice) => `${choice.provider}/${choice.model}`);
-				const rendered = renderConfiguredModels(config).split("\n").map((line, index) => `${index + 1}. ${line}`).join("\n");
-				process.stdout.write(`${rendered}\n\nUse /model <number> or /model <provider/model>.\n`);
+				const allChoices = config.models.map((choice) => `${choice.provider}/${choice.model}`);
+				const matching = command.query ? allChoices.filter((choice) => choice.toLowerCase().includes(command.query!.toLowerCase())) : allChoices;
+				modelChoices = matching;
+				const rendered = matching.map((choice, index) => `${index + 1}. ${choice}`).join("\n");
+				if (workbench) { workbench.setPicker("Model Picker · /model <number>", matching.map((choice, index) => `${index + 1}. ${choice}`)); await writeFooter(); }
+				else process.stdout.write(`${rendered || "No matching configured models."}\n\nUse /model <number> or /model <provider/model>.\n`);
 				writePrompt(); return;
 			}
 			if (command?.kind === "tools") { process.stdout.write(`${toolsStatus()}\n`); writePrompt(); return; }
@@ -1098,6 +1106,7 @@ async function runChat(config: ReturnType<typeof loadConfig>, requestedMode: { f
 					return;
 				}
 				source = resumeSource;
+				workbench?.clearPicker();
 				lastDurationMs = undefined;
 				activity = new LocalActivityPresenter(detailsDisplay, presentationMode !== "plain");
 				await runtime.open(source);
