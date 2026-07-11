@@ -16,6 +16,22 @@ export function createProfileControlHandler(
 			const nextSource = { ...source, threadId: `conversation-${crypto.randomUUID()}` };
 			return { handled: true, nextSource, message: `${command === "/reset" ? "Reset and started" : "Started"} new session: ${nextSource.threadId}` };
 		}
+		if (command === "/sessions") {
+			const sessions = await runtime.listSavedSessions(source);
+			return { handled: true, message: sessions.length ? sessions.map((session) => `${session.threadId ?? "default"}  ${new Date(session.lastUsedAt).toLocaleString()}`).join("\n") : "No saved sessions." };
+		}
+		const resume = text.trim().match(/^\/resume\s+([^\s]+)$/i);
+		if (resume) {
+			const nextSource = resume[1] === "default" ? { ...source, threadId: undefined } : { ...source, threadId: resume[1] };
+			if (!await runtime.hasSavedSession(nextSource)) return { handled: true, message: `Unknown session '${resume[1]}'. Use /sessions to list saved sessions.` };
+			await runtime.open(nextSource);
+			return { handled: true, nextSource, message: `Restored session: ${nextSource.threadId ?? "default"}.` };
+		}
+		const history = command.match(/^\/history(?:\s+(\d{1,3}))?$/);
+		if (history) {
+			const entries = await runtime.history(source, history[1] ? Number(history[1]) : undefined);
+			return { handled: true, message: entries.length ? entries.map((entry) => `[${entry.role}] ${entry.text.replaceAll("\n", " ")}`).join("\n") : "No live message history." };
+		}
 		if (command === "/help") return { handled: true, message: "Commands: /help /status /usage /compact /model [provider/model] [--global] /stop\nCLI also supports local session, display, tool, and retry controls." };
 		if (command === "/status" || command === "/usage") {
 			const [model, usage] = await Promise.all([runtime.modelStatus(source), runtime.usage(source)]);
