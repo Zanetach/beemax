@@ -99,6 +99,7 @@ test("fact-sensitive chat questions receive task and installed-version facts, no
 		ensureBuiltinTasks(store);
 		assert.match(taskLedgerContextForQuestion(store, "Was Anthropic support shipped?"), /anthropic-protocol: done/);
 		assert.match(taskLedgerContextForQuestion(store, "What BeeMax version is installed?"), /installed_version=/);
+		assert.match(taskLedgerContextForQuestion(store, "你是什么模型？", { model: "anthropic/claude-sonnet-4-5", profile: "personal" }), /current_model=anthropic\/claude-sonnet-4-5/);
 		await writeFile(join(home, "RELEASE_VERSION"), "v0.1.0-preview.16\n");
 		assert.equal(installedVersion(home), "v0.1.0-preview.16");
 		assert.equal(taskLedgerContextForQuestion(store, "Draft a weekly report"), "");

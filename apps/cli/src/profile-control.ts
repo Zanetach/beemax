@@ -24,9 +24,9 @@ export function createProfileControlHandler(
 		if (!await runtime.setModel(source, choice.baseUrl ? { ...model, baseUrl: choice.baseUrl } : model)) {
 			return { handled: true, message: "No idle Agent session exists yet, or the Agent is busy. Try again after the current turn." };
 		}
+		config.model = { ...choice, apiKey: config.model.apiKeys[choice.provider], apiKeys: config.model.apiKeys };
 		if (global) {
 			await configureModel(config.profile, { provider: choice.provider, model: choice.model, baseUrl: choice.baseUrl, customProtocol: choice.customProtocol });
-			config.model = { ...choice, apiKey: config.model.apiKeys[choice.provider], apiKeys: config.model.apiKeys };
 			return { handled: true, message: `Switched this conversation to ${requested} and saved it as the Profile default.` };
 		}
 		return { handled: true, message: `Switched this conversation to ${requested}.` };

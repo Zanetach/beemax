@@ -152,7 +152,7 @@ export async function runGateway(config: BeeMaxConfig): Promise<void> {
 		{
 			createAgent,
 			createAutomationAgent,
-			context: createTaskAwareConversationContext(memory, { recordDirectRoute: (route) => automation.setLastRoute(route) }),
+			context: createTaskAwareConversationContext(memory, { recordDirectRoute: (route) => automation.setLastRoute(route), runtimeSnapshot: () => ({ model: `${config.model.provider}/${config.model.model}`, profile: config.profile }) }),
 			controlHandler: (input) => createProfileControlHandler(runtime, config)(input),
 		},
 	);

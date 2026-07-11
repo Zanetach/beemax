@@ -33,7 +33,7 @@ import { configuredApiKey } from "./provider-resolver.ts";
 import { executionPortFor, executionSafeTools } from "./execution-composition.ts";
 import { createProfileRuntime } from "./runtime-composition.ts";
 import { createProfileControlHandler } from "./profile-control.ts";
-import { LocalReasoningPresenter, localChatTextDelta, localChatThinkingDelta, parseReasoningCommand } from "./local-chat-renderer.ts";
+import { LocalActivityPresenter, LocalReasoningPresenter, type DetailsDisplay, localChatTextDelta, localChatThinkingDelta, parseChatCommand, parseReasoningCommand } from "./local-chat-renderer.ts";
 import { renderTerminalMarkdown, StreamingTerminalMarkdown } from "./terminal-markdown.ts";
 import { inspectGateway, readGatewayLogs } from "./gateway-observability.ts";
 import { createTaskAwareConversationContext, ensureBuiltinTasks, installedVersion } from "./runtime-facts.ts";
@@ -742,7 +742,7 @@ async function runChat(config: ReturnType<typeof loadConfig>): Promise<void> {
 	const mcp = new McpManager();
 	await mcp.connectAll(loadMcpConfig(config.mcp.configPath));
 
-	const source: import("@beemax/gateway").SessionSource = {
+	let source: import("@beemax/gateway").SessionSource = {
 		platform: "cli",
 		chatId: "local",
 		chatType: "dm",
@@ -791,42 +791,35 @@ async function runChat(config: ReturnType<typeof loadConfig>): Promise<void> {
 		{ maxSessions: config.agent.maxSessions, sessionIdleMs: config.agent.sessionIdleMs },
 		{
 			createAgent,
-			context: createTaskAwareConversationContext(memory),
+			context: createTaskAwareConversationContext(memory, { runtimeSnapshot: () => ({ model: `${config.model.provider}/${config.model.model}`, profile: config.profile }) }),
 			controlHandler: (input) => createProfileControlHandler(runtime, config)(input),
 		},
 	);
 
 	try {
 		let reasoningDisplay = config.agent.reasoningDisplay;
-		process.stdout.write("beemax> ");
-		for await (const line of consoleLines()) {
-			const trimmed = line.trim();
-			if (!trimmed) {
-				process.stdout.write("beemax> ");
-				continue;
-			}
-			if (trimmed === "/quit" || trimmed === "/exit") break;
-			const reasoningCommand = parseReasoningCommand(trimmed);
-			if (reasoningCommand) {
-				if (reasoningCommand.kind === "set") {
-					reasoningDisplay = reasoningCommand.display;
-					const warning = reasoningDisplay === "raw" ? " Raw reasoning may contain sensitive intermediate content." : "";
-					process.stdout.write(`Reasoning display set to ${reasoningDisplay}.${warning}\nbeemax> `);
-				} else if (reasoningCommand.kind === "status") {
-					process.stdout.write(`Reasoning display: ${reasoningDisplay}. Use /reasoning off|summary|raw.\nbeemax> `);
-				} else process.stdout.write("Usage: /reasoning off|summary|raw.\nbeemax> ");
-				continue;
-			}
-			const control = await runtime.handleControl({ source, text: trimmed });
-			if (control?.handled) {
-				process.stdout.write(`${control.message}\nbeemax> `);
-				continue;
-			}
+		let detailsDisplay: DetailsDisplay = "expanded";
+		let active: Promise<void> | undefined;
+		let controlInProgress = false;
+		let closed = false;
+		const { createInterface } = await import("node:readline/promises");
+		const rl = createInterface({ input: process.stdin, output: process.stdout });
+		const prompt = () => `beemax [${config.model.provider}/${config.model.model}]> `;
+		const writePrompt = () => { if (!closed) process.stdout.write(prompt()); };
+		const status = () => `Profile: ${config.profile}\nModel: ${config.model.provider}/${config.model.model}\nSession: ${source.threadId ?? "default"}\nRun: ${runtime.isBusy() ? "running" : "idle"}\nReasoning: ${reasoningDisplay}\nDetails: ${detailsDisplay}\nToolset: ${config.agent.toolset}`;
+		const stop = async () => {
+			const stopped = await runtime.cancel(source);
+			const cancelled = subagents?.cancelOwner(source) ?? 0;
+			process.stdout.write(`\n${stopped ? "Stopped the active Agent turn" : "No active Agent turn"}${cancelled ? `; cancelled ${cancelled} Sub-Agent task(s)` : ""}.\n`);
+		};
+		const runTurn = async (text: string, turnSource: import("@beemax/gateway").SessionSource) => {
 			let streamed = "";
 			const reasoning = new LocalReasoningPresenter(reasoningDisplay, process.stdout.isTTY === true);
+			const activity = new LocalActivityPresenter(detailsDisplay, process.stdout.isTTY === true);
 			let answerStreamStarted = false;
 			const terminal = new StreamingTerminalMarkdown();
-			const result = await runtime.run({ source, text: trimmed, timeoutMs: 10 * 60_000, mode: "interactive" }, (event) => {
+			const result = await runtime.run({ source: turnSource, text, timeoutMs: 10 * 60_000, mode: "interactive" }, (event) => {
+				process.stdout.write(activity.event(event));
 				const thinkingDelta = localChatThinkingDelta(event);
 				if (thinkingDelta) process.stdout.write(reasoning.thinking(thinkingDelta));
 				const delta = localChatTextDelta(event);
@@ -834,31 +827,83 @@ async function runChat(config: ReturnType<typeof loadConfig>): Promise<void> {
 					if (!answerStreamStarted) process.stdout.write(reasoning.beforeAnswer());
 					answerStreamStarted = true;
 					streamed += delta;
-					terminal.write(delta, (text) => process.stdout.write(text));
+					terminal.write(delta, (output) => process.stdout.write(output));
 				}
 			});
-			if (streamed) terminal.finish((text) => process.stdout.write(text));
+			if (streamed) terminal.finish((output) => process.stdout.write(output));
 			else {
 				process.stdout.write(reasoning.beforeAnswer());
 				process.stdout.write(renderTerminalMarkdown(result.answer));
 			}
-			process.stdout.write("\nbeemax> ");
-		}
+			process.stdout.write("\n");
+		};
+		const handleLine = async (line: string) => {
+			const trimmed = line.trim();
+			if (!trimmed) { writePrompt(); return; }
+			const command = parseChatCommand(trimmed);
+			if (active) {
+				if (command?.kind === "stop") { await stop(); return; }
+				if (command?.kind === "status") { process.stdout.write(`\n${status()}\n`); return; }
+				process.stdout.write("\nAgent is running. Use /stop (or Ctrl+C) before starting another turn.\n");
+				return;
+			}
+			if (controlInProgress) {
+				process.stdout.write("\nA control command is still being processed. Please wait.\n");
+				return;
+			}
+			if (trimmed === "/quit" || trimmed === "/exit") { closed = true; rl.close(); return; }
+			if (command?.kind === "help") {
+				process.stdout.write("Commands: /help /status /new /reset /stop /model /reasoning /details [hidden|expanded] /quit\n");
+				writePrompt();
+				return;
+			}
+			if (command?.kind === "status") { process.stdout.write(`${status()}\n`); writePrompt(); return; }
+			if (command?.kind === "new") {
+				source = { ...source, threadId: `local-${crypto.randomUUID()}` };
+				process.stdout.write(`Started new session: ${source.threadId}\n`);
+				writePrompt();
+				return;
+			}
+			if (command?.kind === "stop") { await stop(); writePrompt(); return; }
+			if (command?.kind === "details") {
+				if (command.mode === "status") process.stdout.write(`Details: ${detailsDisplay}. Use /details hidden|collapsed|expanded.\n`);
+				else { detailsDisplay = command.mode; process.stdout.write(`Details display set to ${detailsDisplay}.\n`); }
+				writePrompt();
+				return;
+			}
+			const reasoningCommand = parseReasoningCommand(trimmed);
+			if (reasoningCommand) {
+				if (reasoningCommand.kind === "set") {
+					reasoningDisplay = reasoningCommand.display;
+					const warning = reasoningDisplay === "raw" ? " Raw reasoning may contain sensitive intermediate content." : "";
+					process.stdout.write(`Reasoning display set to ${reasoningDisplay}.${warning}\n`);
+				} else if (reasoningCommand.kind === "status") process.stdout.write(`Reasoning display: ${reasoningDisplay}. Use /reasoning off|summary|raw.\n`);
+				else process.stdout.write("Usage: /reasoning off|summary|raw.\n");
+				writePrompt();
+				return;
+			}
+			if (trimmed.toLowerCase().startsWith("/model")) {
+				controlInProgress = true;
+				try {
+					const control = await runtime.handleControl({ source, text: trimmed });
+					if (control?.handled) { process.stdout.write(`${control.message}\n`); writePrompt(); return; }
+				} finally { controlInProgress = false; }
+			}
+			const turnSource = source;
+			active = runTurn(trimmed, turnSource);
+			try { await active; }
+			catch (error) { process.stdout.write(`Agent run failed: ${error instanceof Error ? error.message : String(error)}\n`); }
+			finally { active = undefined; writePrompt(); }
+		};
+		writePrompt();
+		rl.on("line", (line) => { void handleLine(line); });
+		rl.on("SIGINT", () => { if (active) void stop(); else rl.close(); });
+		await new Promise<void>((resolve) => rl.once("close", resolve));
 	} finally {
 		runtime.dispose();
 		await subagents?.dispose();
 		await mcp.close();
 		memory.close();
-	}
-}
-
-async function* consoleLines(): AsyncGenerator<string> {
-	const { createInterface } = await import("node:readline/promises");
-	const rl = createInterface({ input: process.stdin, output: process.stdout });
-	try {
-		for await (const line of rl) yield line;
-	} finally {
-		rl.close();
 	}
 }
 

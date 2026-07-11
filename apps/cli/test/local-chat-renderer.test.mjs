@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { LocalReasoningPresenter, localChatTextDelta, localChatThinkingDelta, parseReasoningCommand } from "../dist/local-chat-renderer.js";
+import { LocalActivityPresenter, LocalReasoningPresenter, localChatTextDelta, localChatThinkingDelta, parseChatCommand, parseReasoningCommand } from "../dist/local-chat-renderer.js";
 
 test("local chat writes append-only text deltas instead of cumulative message snapshots", () => {
 	const event = (delta, text) => ({
@@ -46,4 +46,26 @@ test("reasoning commands follow the session visibility pattern", () => {
 	assert.deepEqual(parseReasoningCommand("/reason raw"), { kind: "set", display: "raw" });
 	assert.deepEqual(parseReasoningCommand("/reasoning hidden"), { kind: "invalid" });
 	assert.equal(parseReasoningCommand("hello"), undefined);
+});
+
+test("chat controls expose a small, explicit console contract", () => {
+	assert.deepEqual(parseChatCommand("/help"), { kind: "help" });
+	assert.deepEqual(parseChatCommand("/status"), { kind: "status" });
+	assert.deepEqual(parseChatCommand("/new"), { kind: "new" });
+	assert.deepEqual(parseChatCommand("/reset"), { kind: "new" });
+	assert.deepEqual(parseChatCommand("/stop"), { kind: "stop" });
+	assert.deepEqual(parseChatCommand("/details hidden"), { kind: "details", mode: "hidden" });
+	assert.deepEqual(parseChatCommand("/details collapsed"), { kind: "details", mode: "collapsed" });
+	assert.deepEqual(parseChatCommand("/details"), { kind: "details", mode: "status" });
+	assert.deepEqual(parseChatCommand("hello"), undefined);
+});
+
+test("tool activity remains separate from the answer stream", () => {
+	const presenter = new LocalActivityPresenter("expanded");
+	assert.equal(presenter.event({ type: "tool_execution_start", toolCallId: "1", toolName: "web_search", args: {} }), "\n工具 · web_search · 运行中\n");
+	assert.equal(presenter.event({ type: "tool_execution_end", toolCallId: "1", toolName: "web_search", result: {}, isError: false }), "工具 · web_search · 完成\n");
+	assert.equal(presenter.event({ type: "tool_execution_start", toolCallId: "2", toolName: "task_spawn", args: {} }), "\n子代理 · task_spawn · 运行中\n");
+	assert.equal(new LocalActivityPresenter("collapsed").event({ type: "tool_execution_start", toolCallId: "1", toolName: "bash", args: {} }), "");
+	assert.equal(new LocalActivityPresenter("collapsed").event({ type: "tool_execution_end", toolCallId: "1", toolName: "bash", result: {}, isError: false }), "工具 · bash · 完成\n");
+	assert.equal(new LocalActivityPresenter("hidden", false).event({ type: "tool_execution_start", toolCallId: "1", toolName: "bash", args: {} }), "");
 });
