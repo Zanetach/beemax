@@ -953,6 +953,7 @@ async function runChat(config: ReturnType<typeof loadConfig>, requestedMode: { f
 				: "No live message history. Resume or send a message to load this session.";
 		};
 		const stop = async () => {
+			queuedInput = undefined;
 			const stopped = await interactionAdapter.dispatch({ type: "turn.cancel", source });
 			if (!("cancelled" in stopped)) throw new Error("Cancellation dispatch did not produce a cancellation result");
 			process.stdout.write(`\n${stopped.cancelled ? "Stopped the active Agent turn" : "No active Agent turn"}${stopped.subagentsCancelled ? `; cancelled ${stopped.subagentsCancelled} Sub-Agent task(s)` : ""}${stopped.approvalCancelled ? "; cancelled pending approval" : ""}.\n`);
