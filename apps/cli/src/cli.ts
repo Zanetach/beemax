@@ -763,7 +763,7 @@ async function runChat(config: ReturnType<typeof loadConfig>): Promise<void> {
 		executionPortForSource: executionPortFor(config),
 		customTools: readOnlyMcpTools,
 		tools: executionSafeTools(config, [
-			"read", "grep", "find", "ls", "web_search", "web_extract", "memory_recall", "memory_list",
+			"read", "grep", "find", "ls", "web_search", "agent_reach_search", "web_extract", "memory_recall", "memory_list",
 			...readOnlyMcpTools.map((tool) => tool.name),
 		]),
 	});

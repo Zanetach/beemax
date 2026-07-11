@@ -13,6 +13,10 @@
 
 import { lookup } from "node:dns/promises";
 import { isIP } from "node:net";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
+import { homedir } from "node:os";
+import { join } from "node:path";
 import { defineTool, type ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 
@@ -21,6 +25,7 @@ const EXTRACT_TIMEOUT_MS = 20_000;
 const MAX_RESPONSE_BYTES = 2 * 1024 * 1024;
 const MAX_REDIRECTS = 5;
 const USER_AGENT = "BeeMax-Agent/0.1 (+https://pi.dev)";
+const execFileAsync = promisify(execFile);
 
 export interface WebToolsOptions {
 	env?: NodeJS.ProcessEnv;
@@ -96,8 +101,35 @@ export function createWebTools(options: WebToolsOptions = {}): ToolDefinition[] 
 			}
 		},
 	});
+	const agentReachSearch = defineTool({
+		name: "agent_reach_search",
+		label: "Agent Reach Search",
+		description: "Search the live web through Agent-Reach's configured Exa channel. Use for semantic/current web research; falls back with a clear setup message when Agent-Reach is unavailable.",
+		parameters: Type.Object({ query: Type.String({ description: "Semantic web search query" }), maxResults: Type.Optional(Type.Integer({ minimum: 1, maximum: 10 })) }),
+		execute: async (_id, params, signal) => {
+			const query = params.query.trim();
+			if (!query) return textResult("Search query cannot be empty", { provider: "agent-reach" }, true);
+			try {
+				const output = await agentReachSearchText(query, clamp(params.maxResults ?? 5, 1, 10), env, signal);
+				return textResult(output, { provider: "agent-reach-exa" });
+			} catch (error) {
+				return textResult(`Agent-Reach search unavailable: ${errorMessage(error)}. Run 'agent-reach doctor' and configure the Exa channel.`, { provider: "agent-reach-exa" }, true);
+			}
+		},
+	});
 
-	return [webSearch, webExtract];
+	return [webSearch, agentReachSearch, webExtract];
+}
+
+async function agentReachSearchText(query: string, maxResults: number, env: NodeJS.ProcessEnv, signal?: AbortSignal): Promise<string> {
+	const binary = env.BEEMAX_AGENT_REACH_MCPORTER?.trim() || join(homedir(), ".agent-reach", "mcporter", "node_modules", ".bin", "mcporter");
+	const config = env.BEEMAX_AGENT_REACH_CONFIG?.trim() || join(homedir(), ".agent-reach", "mcporter.json");
+	const controller = new AbortController();
+	const timeout = setTimeout(() => controller.abort(), SEARCH_TIMEOUT_MS);
+	try {
+		const { stdout } = await execFileAsync(binary, ["--config", config, "call", "exa.web_search_exa", `query=${query}`, `numResults=${maxResults}`], { signal: signal ?? controller.signal, timeout: SEARCH_TIMEOUT_MS, maxBuffer: MAX_RESPONSE_BYTES });
+		return stdout.trim() || "No Agent-Reach results found.";
+	} finally { clearTimeout(timeout); }
 }
 
 async function searchWeb(
