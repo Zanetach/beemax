@@ -88,11 +88,12 @@ export interface InteractionSnapshot {
 export type InteractionEventSink = (event: InteractionEvent) => void | Promise<void>;
 /** Content-free operational telemetry. Values must never contain prompts, answers, reasoning, or tool args. */
 export type InteractionTelemetryEvent =
-	| { type: "interaction.turn_started"; surface: string }
+	| { type: "interaction.turn_started"; surface: string; model: string; session: string }
 	| { type: "interaction.approval_requested"; surface: string; tool: string; risk?: "低" | "中" | "高" }
-	| { type: "interaction.approval_resolved"; surface: string; decision: "allowed" | "denied" }
-	| { type: "interaction.input_queued"; surface: string; mode: "queue" | "steer_fallback" }
-	| { type: "interaction.presenter_reconnected"; surface: string; gapEvents: number };
+	| { type: "interaction.approval_resolved"; surface: string; decision: "allowed" | "denied"; latency: number }
+	| { type: "interaction.input_queued"; surface: string; mode: "queue" | "steer_fallback"; waitMs: number }
+	| { type: "interaction.presenter_reconnected"; surface: string; gapEvents: number }
+	| { type: "interaction.session_resumed"; source: string; age: number };
 export type InteractionTelemetrySink = (event: InteractionTelemetryEvent) => void;
 
 export interface InteractionEventAdapterOptions<Source extends BeeMaxRuntimeSource = BeeMaxRuntimeSource> {
@@ -122,6 +123,8 @@ export class InteractionEventAdapter<Source extends BeeMaxRuntimeSource = BeeMax
 	private readonly subscribers = new Map<string, Set<InteractionEventSink>>();
 	private readonly queuedInputs = new Map<string, string>();
 	private readonly actions = new Map<string, Map<string, Promise<InteractionActionResult>>>();
+	private readonly approvalStartedAt = new Map<string, number>();
+	private readonly turnModels = new Map<string, string>();
 	private readonly runtime: AgentRuntimePort<Source>;
 	private readonly approvalBroker?: ToolApprovalBroker;
 	private readonly cancelSubagents?: (source: Source) => number | Promise<number>;
@@ -167,13 +170,21 @@ export class InteractionEventAdapter<Source extends BeeMaxRuntimeSource = BeeMax
 		if (action.type === "turn.queue") return this.queue(action.source, action.text, "queue", sink);
 		if (action.type === "turn.steer") return this.queue(action.source, action.text, "steer_fallback", sink);
 		if (action.type === "approval.decide") return { handled: await this.approvalBroker?.decide(action.source, action.choice) ?? false };
-		if (action.type === "session.open") return { opened: await this.runtime.open(action.source) };
+		if (action.type === "session.open") {
+			const saved = await this.runtime.listSavedSessions(action.source);
+			const threadId = action.source.threadId;
+			const previous = saved.find((entry) => entry.threadId === threadId);
+			const opened = await this.runtime.open(action.source);
+			if (opened) this.telemetry?.({ type: "interaction.session_resumed", source: action.source.platform, age: previous ? Math.max(0, Date.now() - previous.lastUsedAt) : 0 });
+			return { opened };
+		}
 		if (action.type === "session.reset") return { reset: this.runtime.reset(action.source) };
 		if (action.type === "session.compact") return { compacted: await this.runtime.compact(action.source, action.instructions) };
 
 		const key = interactionKey(action.source);
 		if (sink) this.sinks.set(key, sink);
 		const turnId = crypto.randomUUID();
+		this.turnModels.set(interactionEventMeta(action.source, "", 0, this.profileId).sessionId, (await this.runtime.modelStatus(action.source))?.model ?? "unresolved");
 		await this.publish(action.source, turnId, { type: "turn.started" }, sink);
 		try {
 			const result = await this.runtime.run({ ...action.input, source: action.source, text: action.text }, (event) => {
@@ -201,6 +212,7 @@ export class InteractionEventAdapter<Source extends BeeMaxRuntimeSource = BeeMax
 			this.sinkFailures.delete(key);
 			this.cancellationRequested.delete(key);
 			this.cancellationPublished.delete(key);
+			this.turnModels.delete(interactionEventMeta(action.source, "", 0, this.profileId).sessionId);
 		}
 	}
 
@@ -302,8 +314,7 @@ export class InteractionEventAdapter<Source extends BeeMaxRuntimeSource = BeeMax
 		const history = [...(this.eventHistory.get(key) ?? []), event];
 		this.eventHistory.set(key, history.slice(-this.eventHistoryLimit));
 		this.eventJournal?.append(event);
-		const telemetry = telemetryEvent(event);
-		if (telemetry) this.telemetry?.(telemetry);
+		this.recordTelemetry(event);
 	}
 
 	private async publish(source: Source, turnId: string, payload: InteractionEventPayload, sink?: InteractionEventSink): Promise<void> {
@@ -330,6 +341,20 @@ export class InteractionEventAdapter<Source extends BeeMaxRuntimeSource = BeeMax
 
 	private async flush(key: string): Promise<void> { await this.eventQueues.get(key); }
 	private throwSinkFailure(key: string): void { const error = this.sinkFailures.get(key); if (error !== undefined) throw error; }
+
+	private recordTelemetry(event: InteractionEvent): void {
+		if (!this.telemetry) return;
+		const key = event.sessionId;
+		if (event.type === "turn.started") this.telemetry({ type: "interaction.turn_started", surface: event.scope.platform, model: this.turnModels.get(key) ?? "unresolved", session: event.sessionId });
+		else if (event.type === "approval.requested") {
+			this.approvalStartedAt.set(key, event.at);
+			this.telemetry({ type: "interaction.approval_requested", surface: event.scope.platform, tool: event.toolName, risk: event.details?.risk });
+		} else if (event.type === "approval.resolved") {
+			const startedAt = this.approvalStartedAt.get(key) ?? event.at;
+			this.approvalStartedAt.delete(key);
+			this.telemetry({ type: "interaction.approval_resolved", surface: event.scope.platform, decision: event.allowed ? "allowed" : "denied", latency: Math.max(0, event.at - startedAt) });
+		} else if (event.type === "turn.queued") this.telemetry({ type: "interaction.input_queued", surface: event.scope.platform, mode: event.mode, waitMs: 0 });
+	}
 }
 
 export function interactionScopeForSource(source: BeeMaxRuntimeSource, profileId = "default"): InteractionScope {
@@ -360,13 +385,6 @@ export function mapAgentSessionEvent(event: AgentSessionEvent): InteractionEvent
 	return undefined;
 }
 
-function telemetryEvent(event: InteractionEvent): InteractionTelemetryEvent | undefined {
-	if (event.type === "turn.started") return { type: "interaction.turn_started", surface: event.scope.platform };
-	if (event.type === "approval.requested") return { type: "interaction.approval_requested", surface: event.scope.platform, tool: event.toolName, risk: event.details?.risk };
-	if (event.type === "approval.resolved") return { type: "interaction.approval_resolved", surface: event.scope.platform, decision: event.allowed ? "allowed" : "denied" };
-	if (event.type === "turn.queued") return { type: "interaction.input_queued", surface: event.scope.platform, mode: event.mode };
-	return undefined;
-}
 
 function interactionKey(source: BeeMaxRuntimeSource): string { return sessionKeyForSource(source); }
 function errorMessage(error: unknown): string { return error instanceof Error ? error.message : String(error); }

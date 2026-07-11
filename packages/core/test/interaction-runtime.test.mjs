@@ -57,7 +57,7 @@ test("session opening is a Core interaction action for every presenter", async (
 	let opens = 0;
 	const runtime = {
 		async run() { return { answer: "ok", model: "test/model", durationMs: 1, usage: {} }; },
-		async open() { opens++; return true; }, async cancel() { return false; }, async modelStatus() { return undefined; }, async usage() { return undefined; },
+		async open() { opens++; return true; }, async listSavedSessions() { return []; }, async cancel() { return false; }, async modelStatus() { return undefined; }, async usage() { return undefined; },
 	};
 	const interaction = new InteractionEventAdapter(runtime);
 	assert.deepEqual(await interaction.dispatch({ type: "session.open", source, actionId: "open-1" }), { opened: true });
@@ -92,16 +92,39 @@ test("interaction telemetry is operational-only and does not contain model conte
 	const telemetry = [];
 	const runtime = {
 		async run(_input, sink) { await sink({ type: "message_update", message: { role: "assistant" }, assistantMessageEvent: { type: "text_delta", delta: "private answer" } }); return { answer: "private answer", model: "test/model", durationMs: 1, usage: {} }; },
-		async cancel() { return false; }, async modelStatus() { return undefined; }, async usage() { return undefined; },
+		async cancel() { return false; }, async modelStatus() { return { model: "test/model", thinkingLevel: "off", supportedThinkingLevels: ["off"] }; }, async usage() { return undefined; },
 	};
 	const interaction = new InteractionEventAdapter(runtime, { telemetry: (event) => telemetry.push(event) });
 	await interaction.dispatch({ type: "message.send", source, text: "private prompt", input: { timeoutMs: 1_000 } });
 	interaction.events(source, 1);
 	assert.deepEqual(telemetry, [
-		{ type: "interaction.turn_started", surface: "cli" },
+		{ type: "interaction.turn_started", surface: "cli", model: "test/model", session: telemetry[0].session },
 		{ type: "interaction.presenter_reconnected", surface: "cli", gapEvents: 2 },
 	]);
+	assert.match(telemetry[0].session, /^default:/);
 	assert.doesNotMatch(JSON.stringify(telemetry), /private/);
+});
+
+test("approval and queue telemetry includes required latency fields without content", async () => {
+	let rejectTurn;
+	const telemetry = [];
+	const runtime = {
+		run() { return new Promise((_resolve, reject) => { rejectTurn = reject; }); },
+		async cancel() { rejectTurn(new Error("aborted")); return true; }, async modelStatus() { return undefined; }, async usage() { return undefined; },
+	};
+	const interaction = new InteractionEventAdapter(runtime, { telemetry: (event) => telemetry.push(event) });
+	const turn = interaction.dispatch({ type: "message.send", source, text: "private prompt", input: { timeoutMs: 1_000 } });
+	await new Promise((resolve) => setImmediate(resolve));
+	await interaction.approvalRequested(source, "write", { target: "secret.txt", risk: "高", impact: "private", reversibility: "private", argsSummary: "private" });
+	await interaction.approvalResolved(source, "write", false);
+	await interaction.dispatch({ type: "turn.queue", source, text: "private queued text" });
+	await interaction.dispatch({ type: "turn.cancel", source });
+	await assert.rejects(turn, /aborted/);
+	const resolved = telemetry.find((event) => event.type === "interaction.approval_resolved");
+	const queued = telemetry.find((event) => event.type === "interaction.input_queued");
+	assert.equal(typeof resolved.latency, "number");
+	assert.equal(typeof queued.waitMs, "number");
+	assert.doesNotMatch(JSON.stringify(telemetry), /secret|private/);
 });
 
 test("interaction reducer preserves a cancelled turn state", () => {
