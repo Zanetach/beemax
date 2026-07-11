@@ -12,6 +12,7 @@ export function createProfileControlHandler(
 	return async ({ source, text }) => {
 		const command = text.trim().toLowerCase();
 		if (command === "/new" || command === "/reset") {
+			if (command === "/reset") runtime.reset(source);
 			const nextSource = { ...source, threadId: `conversation-${crypto.randomUUID()}` };
 			return { handled: true, nextSource, message: `${command === "/reset" ? "Reset and started" : "Started"} new session: ${nextSource.threadId}` };
 		}
