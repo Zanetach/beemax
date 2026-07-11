@@ -32,6 +32,7 @@ test("profile creation and Feishu channel configuration keep secrets in a protec
 	assert.equal(await readFile(join(paths.homePath, "USER.md"), "utf8"), "");
 	assert.equal(await readFile(join(paths.homePath, "MEMORY.md"), "utf8"), "");
 	assert.equal((await readFile(paths.envPath, "utf8")).trim(), "");
+	assert.match(await readFile(join(paths.homePath, "state", "credential-vault.key"), "utf8"), /^[A-Za-z0-9+/]+=*$/);
 	assert.equal((await stat(paths.homePath)).mode & 0o777, 0o700);
 	assert.deepEqual(await listProfiles(options), ["personal"]);
 

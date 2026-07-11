@@ -55,6 +55,7 @@ export interface BeeMaxConfig {
 	memory: {
 		dbPath: string;
 	};
+	credentials: { vaultPath: string; keyPath: string; key?: string };
 	mcp: {
 		configPath: string;
 	};
@@ -172,6 +173,11 @@ export function loadConfig(configPath?: string, profile = "default"): BeeMaxConf
 		memory: {
 			dbPath: resolveFrom(location.basePath, str(env.BEEMAX_DB_PATH ?? cfg.memory?.dbPath ?? join(profileDataRoot, location.isHome ? "memory.db" : "beemax.db"))),
 		},
+		credentials: {
+			vaultPath: resolveFrom(location.basePath, str(env.BEEMAX_CREDENTIAL_VAULT_PATH ?? join(profileDataRoot, "credentials.vault"))),
+			keyPath: join(profileDataRoot, "state", "credential-vault.key"),
+			key: optional(env.BEEMAX_CREDENTIAL_VAULT_KEY) ?? optional(readFileIfPresent(join(profileDataRoot, "state", "credential-vault.key"))),
+		},
 		mcp: {
 			configPath: resolveFrom(location.basePath, str(env.BEEMAX_MCP_CONFIG ?? cfg.mcp?.configPath ?? (location.isHome ? "mcp.json" : profile === "default" ? "config/mcp.json" : `config/profiles/${profile}.mcp.json`))),
 		},
@@ -222,6 +228,8 @@ export function loadConfig(configPath?: string, profile = "default"): BeeMaxConf
 function resolveFrom(root: string, path: string): string {
 	return isAbsolute(path) ? path : resolve(root, path);
 }
+
+function readFileIfPresent(path: string): string { try { return readFileSync(path, "utf8"); } catch { return ""; } }
 
 const DEFAULT_HEARTBEAT_PROMPT = "Read HEARTBEAT.md if it exists in the workspace and follow it strictly. Review due reminders, scheduled work, recent failures, and anything that genuinely needs the user's attention. Do not infer or repeat stale tasks from old chats. If nothing needs attention, reply HEARTBEAT_OK.";
 

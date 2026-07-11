@@ -1,11 +1,21 @@
 import { createCipheriv, createDecipheriv, randomBytes, randomUUID } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
+import { BoundedJsonlJournal } from "./bounded-jsonl-journal.ts";
 
 export interface CredentialInput { ownerKey: string; label: string; purpose: string; secret: string; }
 export interface CredentialMetadata { ref: string; ownerKey: string; label: string; purpose: string; createdAt: number; updatedAt: number; lastUsedAt?: number; }
 export interface CredentialVaultAuditEvent { action: "stored" | "accessed" | "access_denied" | "removed"; ownerKey: string; ref: string; capability?: string; at: number; }
 export type CredentialVaultAuditSink = (event: CredentialVaultAuditEvent) => void;
+
+export class FileCredentialVaultAuditJournal {
+	private readonly journal: BoundedJsonlJournal<CredentialVaultAuditEvent>;
+	constructor(path: string, limit = 5_000) {
+		this.journal = new BoundedJsonlJournal<CredentialVaultAuditEvent>({ path, limit, minLimit: 100, maxLimit: 50_000, isRecord: isAuditEvent });
+	}
+	append(event: CredentialVaultAuditEvent): void { this.journal.append(event); }
+	records(): CredentialVaultAuditEvent[] { return this.journal.records(); }
+}
 export interface CredentialVault {
 	put(input: CredentialInput, now?: number): CredentialMetadata;
 	list(ownerKey: string): CredentialMetadata[];
@@ -111,3 +121,11 @@ function required(value: string, name: string, maxLength: number, trim = true): 
 }
 
 function safeRef(value: string): string { return /^cred_[a-f0-9-]{36}$/.test(value) ? value : "invalid"; }
+
+function isAuditEvent(value: unknown): value is CredentialVaultAuditEvent {
+	if (!value || typeof value !== "object") return false;
+	const event = value as Partial<CredentialVaultAuditEvent>;
+	return (event.action === "stored" || event.action === "accessed" || event.action === "access_denied" || event.action === "removed")
+		&& typeof event.ownerKey === "string" && typeof event.ref === "string" && typeof event.at === "number"
+		&& (event.capability === undefined || /^[a-z][a-z0-9._-]{1,63}$/.test(event.capability));
+}

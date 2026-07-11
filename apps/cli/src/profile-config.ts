@@ -67,6 +67,7 @@ export async function createProfile(profile: string, options: ProfileStorageOpti
 		await writeFile(join(temp, "USER.md"), "", { encoding: "utf8", mode: 0o600 });
 		await writeFile(join(temp, "MEMORY.md"), "", { encoding: "utf8", mode: 0o600 });
 		await writeEnvFile(join(temp, ".env"), {});
+		await writeFile(join(temp, "state", "credential-vault.key"), Buffer.from(crypto.getRandomValues(new Uint8Array(32))).toString("base64"), { encoding: "utf8", mode: 0o600 });
 		await installBuiltinSkills(temp, options.root ?? beemaxRoot());
 		await rename(temp, paths.homePath);
 	} catch (error) {
@@ -102,8 +103,24 @@ export async function listProfiles(options: ProfileStorageOptions = {}): Promise
 /** Add missing packaged skills to an existing Profile without replacing its custom skills. */
 export async function syncBuiltinSkills(profile: string, options: ProfileStorageOptions = {}): Promise<ProfilePaths> {
 	const paths = await writableProfilePaths(profile, options);
+	await ensureCredentialVaultKey(profile, options);
 	await mkdir(join(paths.homePath, "skills"), { recursive: true });
 	await installBuiltinSkills(paths.homePath, options.root ?? beemaxRoot());
+	return paths;
+}
+
+export async function ensureCredentialVaultKey(profile: string, options: ProfileStorageOptions = {}): Promise<ProfilePaths> {
+	const paths = await writableProfilePaths(profile, options);
+	const env = await readEnvFile(paths.envPath);
+	const keyPath = join(paths.dataPath, "state", "credential-vault.key");
+	const configured = env.BEEMAX_CREDENTIAL_VAULT_KEY || await readFile(keyPath, "utf8").catch(() => "");
+	if (configured) {
+		if (Buffer.from(configured, "base64").byteLength !== 32) throw new Error(`Credential Vault key is invalid for Profile '${profile}'`);
+		return paths;
+	}
+	if (await exists(join(paths.dataPath, "credentials.vault"))) throw new Error(`Credential Vault key is missing for Profile '${profile}', but encrypted data already exists; restore the original Profile .env`);
+	await mkdir(dirname(keyPath), { recursive: true, mode: 0o700 });
+	await writeFile(keyPath, Buffer.from(crypto.getRandomValues(new Uint8Array(32))).toString("base64"), { encoding: "utf8", mode: 0o600 });
 	return paths;
 }
 

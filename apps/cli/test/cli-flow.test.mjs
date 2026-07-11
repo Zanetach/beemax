@@ -65,6 +65,14 @@ test("CLI supports init, model setup, Feishu channel setup, listing, and safe de
 	assert.match(run(["channel", "list", "--profile", "personal"]), /feishu  configured/);
 	assert.match(run(["mcp", "status", "--profile", "personal"]), /No MCP servers configured/);
 	assert.match(run(["memory", "status", "--profile", "personal"]), /curated=0 pending=0/);
+	assert.throws(() => run(["credentials", "add", "--profile", "personal", "--label", "Example", "--purpose", "login", "--secret", "must-not-appear"]), /Do not pass Credential Secrets in argv/);
+	const storedCredential = run(["credentials", "add", "--profile", "personal", "--label", "Example account", "--purpose", "example.com login", "--non-interactive"], { BEEMAX_CREDENTIAL_SECRET: "correct-horse-battery-staple" });
+	const credentialRef = storedCredential.match(/cred_[a-f0-9-]{36}/)?.[0];
+	assert.ok(credentialRef);
+	assert.doesNotMatch(storedCredential, /correct-horse/);
+	assert.match(run(["credentials", "list", "--profile", "personal"]), new RegExp(`${credentialRef}.*Example account.*example\\.com login`));
+	assert.match(run(["credentials", "remove", credentialRef, "--profile", "personal", "--yes"]), /Removed Credential Ref/);
+	assert.match(run(["credentials", "list", "--profile", "personal"]), /No credentials stored/);
 	assert.match(run(["status", "--deep", "--profile", "personal"]), /Gateway: unknown/);
 	assert.match(run(["task", "list", "--profile", "personal"]), /anthropic-protocol  \[done\].*tag:v0\.1\.0-preview\.15.*completed_at=2026-07-11T00:19:56\.000Z/);
 	assert.match(run(["task", "set", "release-audit", "in_progress", "--title", "Verify release status", "--profile", "personal"]), /Updated task 'release-audit' to in_progress/);

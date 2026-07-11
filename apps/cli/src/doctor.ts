@@ -7,7 +7,7 @@ import { AutomationStore, parseDuration } from "@beemax/automation";
 import { validateFeishuWebhookSettings } from "@beemax/gateway";
 import { loadMcpConfig, McpManager } from "@beemax/mcp-capability";
 import { MemoryStore } from "@beemax/memory";
-import { AuthStorage } from "@beemax/core";
+import { AuthStorage, FileCredentialVault } from "@beemax/core";
 import type { BeeMaxConfig } from "./config.ts";
 import { providerApiKeyEnv } from "./provider-resolver.ts";
 
@@ -70,6 +70,16 @@ export async function inspectDoctor(config: BeeMaxConfig, options: DoctorOptions
 		checks.push({ name: "Memory", status: "PASS", detail: config.memory.dbPath });
 	} catch (error) {
 		checks.push({ name: "Memory", status: "FAIL", detail: error instanceof Error ? error.message : String(error) });
+	}
+
+	try {
+		if (!config.credentials.key) throw new Error("Profile Vault key is missing");
+		const keyFile = await stat(config.credentials.keyPath).catch(() => undefined);
+		if (keyFile && (keyFile.mode & 0o077) !== 0) throw new Error(`Vault key permissions are broader than 0600: ${config.credentials.keyPath}`);
+		const vault = new FileCredentialVault(config.credentials.vaultPath, Buffer.from(config.credentials.key, "base64"));
+		checks.push({ name: "Credential Vault", status: "PASS", detail: `${vault.list(`profile:${config.profile}`).length} credential(s); encrypted storage; ${keyFile ? "protected Profile key" : "external key"}` });
+	} catch (error) {
+		checks.push({ name: "Credential Vault", status: "FAIL", detail: error instanceof Error ? error.message : String(error) });
 	}
 
 	if (config.imageGeneration.enabled) {

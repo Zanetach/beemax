@@ -19,6 +19,7 @@ import {
 	configureModel,
 	createProfile,
 	deleteProfile,
+	ensureCredentialVaultKey,
 	listProfiles,
 	migrateProfile,
 	removeFeishuChannel,
@@ -125,6 +126,11 @@ async function main(): Promise<void> {
 		case "memory":
 			await runMemoryCommand(parsed, getConfig());
 			break;
+		case "credentials":
+			if (parsed.configPath) throw new Error("beemax credentials does not support --config; select a Profile with --profile");
+			await ensureCredentialVaultKey(profile);
+			await runCredentialCommand(parsed, getConfig());
+			break;
 		case "task":
 			await runTaskCommand(parsed, getConfig());
 			break;
@@ -168,6 +174,7 @@ Commands:
   skills     list | sync (prepackaged Profile Skills)
   mcp        status (probe configured MCP servers)
   memory     status | list | candidates | claims | explain <id> | compile | promote <id> | reject <id> | forget <id>
+  credentials add | list | remove (encrypted Profile Credential Vault)
   task       list | set <id> <open|in_progress|done|cancelled> --title <title> [--evidence <ref>]
   auth       codex (stores OAuth only inside the selected profile)
   service    install (Linux systemd)
@@ -199,6 +206,7 @@ Environment:
   BEEMAX_MODEL            Model id
   BEEMAX_API_KEY          Provider API key
   BEEMAX_DB_PATH          Memory + automation SQLite path
+  BEEMAX_CREDENTIAL_VAULT_KEY  Optional external override for the protected Profile Vault key
   BEEMAX_MCP_CONFIG       MCP JSON config path
   BEEMAX_TIMEZONE         Schedule and heartbeat timezone
 
@@ -765,6 +773,37 @@ async function runMemoryCommand(parsed: ParsedArgs, config: ReturnType<typeof lo
 	} finally {
 		store.close();
 	}
+}
+
+async function runCredentialCommand(parsed: ParsedArgs, config: ReturnType<typeof loadConfig>): Promise<void> {
+	if (parsed.options.secret !== undefined) throw new Error("Do not pass Credential Secrets in argv; use the interactive prompt or BEEMAX_CREDENTIAL_SECRET");
+	if (!config.credentials.key) throw new Error(`Credential Vault key is missing for Profile '${config.profile}'; recreate or migrate the Profile before storing credentials`);
+	const { FileCredentialVault, FileCredentialVaultAuditJournal } = await import("@beemax/core");
+	const audit = new FileCredentialVaultAuditJournal(join(config.paths.agentDir, "credential-audit.jsonl"));
+	const vault = new FileCredentialVault(config.credentials.vaultPath, Buffer.from(config.credentials.key, "base64"), (event) => audit.append(event));
+	const action = parsed.positionals[1] ?? "list";
+	const ownerKey = `profile:${config.profile}`;
+	if (action === "list") {
+		const credentials = vault.list(ownerKey);
+		console.log(credentials.map((credential) => `${credential.ref}  ${credential.label}  ${credential.purpose}${credential.lastUsedAt ? `  last_used=${new Date(credential.lastUsedAt).toISOString()}` : ""}`).join("\n") || "No credentials stored.");
+		return;
+	}
+	if (action === "remove") {
+		const ref = parsed.positionals[2];
+		if (!ref || parsed.options.yes !== true) throw new Error("Usage: beemax credentials remove <credential_ref> --yes --profile <name>");
+		if (!vault.remove(ownerKey, ref)) throw new Error(`Credential Ref not found: ${ref}`);
+		console.log(`Removed Credential Ref ${ref}.`);
+		return;
+	}
+	if (action !== "add") throw new Error("Usage: beemax credentials [add | list | remove] --profile <name>");
+	const label = optionString(parsed, "label");
+	const purpose = optionString(parsed, "purpose");
+	if (!label || !purpose) throw new Error("credentials add requires --label <label> and --purpose <purpose>");
+	let secret = process.env.BEEMAX_CREDENTIAL_SECRET;
+	if (!secret && parsed.options["non-interactive"] !== true && process.stdin.isTTY) secret = await askOne("Credential Secret: ", true);
+	if (!secret) throw new Error("Credential Secret is required through the interactive prompt or BEEMAX_CREDENTIAL_SECRET");
+	const credential = vault.put({ ownerKey, label, purpose, secret });
+	console.log(`Stored Credential Ref ${credential.ref} for ${credential.label}.`);
 }
 
 async function runTaskCommand(parsed: ParsedArgs, config: ReturnType<typeof loadConfig>): Promise<void> {
