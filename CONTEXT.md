@@ -20,6 +20,10 @@ _Avoid_: Chat history, memory, process list
 A directed acyclic graph of Tasks whose dependency edges determine which work is ready to run in parallel.
 _Avoid_: Prompt outline, checklist, execution log
 
+**Task Plan Outcome**:
+The durable aggregate lifecycle and quality summary of a Task Plan, derived from all Tasks in that Plan.
+_Avoid_: Task Graph result, UI summary, final answer
+
 **Task Dependency**:
 A requirement that one Task succeed before another Task becomes ready.
 _Avoid_: Ordering hint, parent Task

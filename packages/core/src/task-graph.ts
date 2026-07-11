@@ -1,10 +1,11 @@
-import type { TaskDependency, TaskLedger, TaskRecord } from "./task-ledger.ts";
+import type { TaskDependency, TaskLedger, TaskPlanRecord, TaskRecord } from "./task-ledger.ts";
 
 const DEFAULT_EXECUTION_LEASE_MS = 61 * 60_000;
 
 export interface TaskPlanInput {
 	id: string;
 	ownerKey: string;
+	title?: string;
 	tasks: Array<{ id: string; title: string; description?: string; acceptanceCriteria?: string; kind?: TaskRecord["kind"]; parentId?: string; recoveryPolicy?: TaskRecord["recoveryPolicy"]; idempotencyKey?: string; executionScope?: TaskRecord["executionScope"] }>;
 	dependencies?: TaskDependency[];
 }
@@ -52,11 +53,14 @@ export class TaskGraph {
 			...(task.recoveryPolicy ? { recoveryPolicy: task.recoveryPolicy } : {}), ...(task.idempotencyKey ? { idempotencyKey: task.idempotencyKey } : {}),
 			...(task.executionScope ? { executionScope: { ...task.executionScope } } : {}),
 		}));
-		this.ledger.recordPlan(tasks, dependencies);
+		const plan: TaskPlanRecord = { id: input.id, ownerKey: input.ownerKey, title: input.title?.trim() || "Task Plan", status: "pending", taskCount: tasks.length, succeeded: 0, failed: 0, cancelled: 0, verified: 0, correctiveAttempts: 0, createdAt: now };
+		this.ledger.recordPlan(tasks, dependencies, plan);
 		return tasks;
 	}
 
 	async run(ownerKeys: string[], planId: string, execute: TaskGraphExecutor, options: TaskGraphRunOptions = {}): Promise<TaskGraphResult> {
+		const initialTasks = this.ledger.queryTasks({ ownerKeys, planIds: [planId], limit: 100 });
+		if (initialTasks.length) this.updatePlanOutcome(planId, initialTasks, "running");
 		const concurrency = Math.max(1, Math.min(Math.trunc(options.maxConcurrent ?? 3), 20));
 		let succeeded = 0;
 		let failed = 0;
@@ -105,8 +109,23 @@ export class TaskGraph {
 			}
 			if (pending.length > 0) return { succeeded, failed, cancelled, blocked: pending.map((task) => task.id) };
 			const staleRunning = tasks.filter((task) => task.status === "running").map((task) => task.id);
+			if (!staleRunning.length) this.updatePlanOutcome(planId, tasks);
 			return { succeeded, failed, cancelled, blocked: staleRunning };
 		}
+	}
+
+	private updatePlanOutcome(planId: string, tasks: TaskRecord[], forcedStatus?: TaskPlanRecord["status"]): void {
+		const succeeded = tasks.filter((task) => task.status === "succeeded").length;
+		const failed = tasks.filter((task) => task.status === "failed").length;
+		const cancelled = tasks.filter((task) => task.status === "cancelled").length;
+		const status = forcedStatus ?? (failed ? "failed" : cancelled ? "cancelled" : "succeeded");
+		const terminal = status === "succeeded" || status === "failed" || status === "cancelled";
+		this.ledger.transitionPlan(planId, {
+			status, taskCount: tasks.length, succeeded, failed, cancelled,
+			verified: tasks.filter((task) => task.verificationStatus === "accepted").length,
+			correctiveAttempts: tasks.reduce((sum, task) => sum + (task.correctiveAttempts ?? 0), 0),
+			...(status === "running" ? { startedAt: Date.now() } : {}), ...(terminal ? { finishedAt: Date.now() } : {}),
+		});
 	}
 
 	private async executeTask(task: TaskRecord, dependencies: TaskGraphDependencyResult[], execute: TaskGraphExecutor, options: TaskGraphRunOptions): Promise<"succeeded" | "failed" | "cancelled"> {

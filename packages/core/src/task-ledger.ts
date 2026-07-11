@@ -4,6 +4,25 @@ export type TaskKind = "objective" | "delegated" | "automation";
 export type TaskStatus = "pending" | "running" | "succeeded" | "failed" | "cancelled";
 export type TaskRecoveryPolicy = "never" | "safe_retry";
 export type TaskVerificationStatus = "pending" | "accepted" | "rejected";
+export type TaskPlanStatus = "pending" | "running" | "succeeded" | "failed" | "cancelled";
+
+export interface TaskPlanRecord {
+	id: string;
+	ownerKey: string;
+	title: string;
+	status: TaskPlanStatus;
+	taskCount: number;
+	succeeded: number;
+	failed: number;
+	cancelled: number;
+	verified: number;
+	correctiveAttempts: number;
+	createdAt: number;
+	startedAt?: number;
+	finishedAt?: number;
+}
+export type TaskPlanTransition = Pick<TaskPlanRecord, "status" | "taskCount" | "succeeded" | "failed" | "cancelled" | "verified" | "correctiveAttempts"> & Partial<Pick<TaskPlanRecord, "startedAt" | "finishedAt">>;
+export interface TaskPlanQuery { ownerKeys: string[]; id?: string; statuses?: TaskPlanStatus[]; limit?: number; }
 
 /** Durable responsibility, independent of the worker or channel executing it. */
 export interface TaskRecord {
@@ -63,7 +82,9 @@ export interface TaskLedger {
 	transitionRun(id: string, change: TaskRunTransition): void;
 	queryTasks(query: TaskQuery): TaskRecord[];
 	taskRuns(taskId: string): TaskRunRecord[];
-	recordPlan(tasks: TaskRecord[], dependencies: TaskDependency[]): void;
+	recordPlan(tasks: TaskRecord[], dependencies: TaskDependency[], plan?: TaskPlanRecord): void;
+	transitionPlan(id: string, change: TaskPlanTransition): void;
+	queryTaskPlans(query: TaskPlanQuery): TaskPlanRecord[];
 	taskDependencies(taskIds: string[]): TaskDependency[];
 	reconcileExpiredTaskRuns(now?: number): TaskRecoveryResult;
 	recoveryCandidates(limit?: number): TaskRecord[];

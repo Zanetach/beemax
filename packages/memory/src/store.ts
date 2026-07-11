@@ -15,7 +15,7 @@ import Database from "better-sqlite3";
 import type { Database as DatabaseType } from "better-sqlite3";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
-import type { TaskDependency, TaskQuery, TaskRecord as RuntimeTaskRecord, TaskRunRecord, TaskRunTransition, TaskTransition } from "@beemax/core";
+import type { TaskDependency, TaskPlanQuery, TaskPlanRecord, TaskPlanTransition, TaskQuery, TaskRecord as RuntimeTaskRecord, TaskRunRecord, TaskRunTransition, TaskTransition } from "@beemax/core";
 
 export const MEMORY_CLAIM_KINDS = ["preference", "fact", "decision", "goal", "project", "relationship", "workflow"] as const;
 export type MemoryClaimKind = typeof MEMORY_CLAIM_KINDS[number];
@@ -189,6 +189,22 @@ export class MemoryStore {
 				completed_at INTEGER,
 				updated_at INTEGER NOT NULL
 			);
+			CREATE TABLE IF NOT EXISTS task_plans (
+				id TEXT PRIMARY KEY,
+				owner_key TEXT NOT NULL,
+				title TEXT NOT NULL,
+				status TEXT NOT NULL CHECK (status IN ('pending', 'running', 'succeeded', 'failed', 'cancelled')),
+				task_count INTEGER NOT NULL,
+				succeeded INTEGER NOT NULL DEFAULT 0,
+				failed INTEGER NOT NULL DEFAULT 0,
+				cancelled INTEGER NOT NULL DEFAULT 0,
+				verified INTEGER NOT NULL DEFAULT 0,
+				corrective_attempts INTEGER NOT NULL DEFAULT 0,
+				created_at INTEGER NOT NULL,
+				started_at INTEGER,
+				finished_at INTEGER
+			);
+			CREATE INDEX IF NOT EXISTS idx_task_plans_owner_created ON task_plans(owner_key, created_at DESC);
 			CREATE TABLE IF NOT EXISTS tasks (
 				id TEXT PRIMARY KEY,
 				owner_key TEXT NOT NULL,
@@ -300,6 +316,7 @@ export class MemoryStore {
 		this.addColumnIfMissing("tasks", "corrective_attempts", "INTEGER NOT NULL DEFAULT 0");
 		this.addColumnIfMissing("tasks", "updated_at", "INTEGER NOT NULL DEFAULT 0");
 		this.addColumnIfMissing("task_runs", "lease_expires_at", "INTEGER");
+		this.backfillTaskPlans();
 		this.addColumnIfMissing("memory_claims", "superseded_by", "TEXT REFERENCES memory_claims(id)");
 		this.addColumnIfMissing("memory_evidence", "event_id", "TEXT REFERENCES memory_events(id)");
 		this.db.exec(`INSERT OR IGNORE INTO tasks (id, owner_key, kind, title, status, evidence, created_at, finished_at, updated_at)
@@ -671,12 +688,45 @@ export class MemoryStore {
 		return rows.map(mapRuntimeTask);
 	}
 
-	recordPlan(tasks: RuntimeTaskRecord[], dependencies: TaskDependency[]): void {
+	recordPlan(tasks: RuntimeTaskRecord[], dependencies: TaskDependency[], plan?: TaskPlanRecord): void {
 		this.db.transaction(() => {
+			if (plan) this.db.prepare(`INSERT INTO task_plans (id, owner_key, title, status, task_count, succeeded, failed, cancelled, verified, corrective_attempts, created_at, started_at, finished_at)
+				VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(plan.id, plan.ownerKey, plan.title, plan.status, plan.taskCount, plan.succeeded, plan.failed, plan.cancelled, plan.verified, plan.correctiveAttempts, plan.createdAt, plan.startedAt ?? null, plan.finishedAt ?? null);
 			for (const task of tasks) this.record(task);
 			const insert = this.db.prepare("INSERT INTO task_dependencies (task_id, depends_on) VALUES (?, ?)");
 			for (const edge of dependencies) insert.run(edge.taskId, edge.dependsOn);
 		})();
+	}
+
+	transitionPlan(id: string, change: TaskPlanTransition): void {
+		const update = this.db.prepare(`UPDATE task_plans SET status = ?, task_count = ?, succeeded = ?, failed = ?, cancelled = ?, verified = ?, corrective_attempts = ?,
+			started_at = COALESCE(?, started_at), finished_at = CASE WHEN ? IN ('pending', 'running') THEN NULL ELSE COALESCE(?, finished_at) END WHERE id = ?`);
+		let result = update.run(change.status, change.taskCount, change.succeeded, change.failed, change.cancelled, change.verified, change.correctiveAttempts, change.startedAt ?? null, change.status, change.finishedAt ?? null, id);
+		if (result.changes !== 1) {
+			this.backfillTaskPlans(id);
+			result = update.run(change.status, change.taskCount, change.succeeded, change.failed, change.cancelled, change.verified, change.correctiveAttempts, change.startedAt ?? null, change.status, change.finishedAt ?? null, id);
+		}
+		if (result.changes !== 1) throw new Error(`Task Plan not found: ${id}`);
+	}
+
+	private backfillTaskPlans(id?: string): void {
+		const statement = this.db.prepare(`INSERT OR IGNORE INTO task_plans (id, owner_key, title, status, task_count, succeeded, failed, cancelled, verified, corrective_attempts, created_at, started_at, finished_at)
+			SELECT plan_id, owner_key, 'Task Plan',
+				CASE WHEN SUM(status = 'failed') > 0 THEN 'failed' WHEN SUM(status = 'running') > 0 THEN 'running' WHEN SUM(status = 'pending') > 0 THEN 'pending' WHEN SUM(status = 'cancelled') > 0 THEN 'cancelled' ELSE 'succeeded' END,
+				COUNT(*), SUM(status = 'succeeded'), SUM(status = 'failed'), SUM(status = 'cancelled'), COALESCE(SUM(verification_status = 'accepted'), 0), COALESCE(SUM(corrective_attempts), 0),
+				MIN(created_at), MIN(started_at), CASE WHEN SUM(status IN ('pending', 'running')) = 0 THEN MAX(finished_at) ELSE NULL END
+			FROM tasks WHERE ${id ? "plan_id = ?" : "plan_id IS NOT NULL"} GROUP BY plan_id, owner_key`);
+		if (id) statement.run(id); else statement.run();
+	}
+
+	queryTaskPlans(query: TaskPlanQuery): TaskPlanRecord[] {
+		if (!query.ownerKeys.length) return [];
+		const conditions = [`owner_key IN (${query.ownerKeys.map(() => "?").join(", ")})`];
+		const params: unknown[] = [...query.ownerKeys];
+		if (query.id) { conditions.push("id = ?"); params.push(query.id); }
+		if (query.statuses?.length) { conditions.push(`status IN (${query.statuses.map(() => "?").join(", ")})`); params.push(...query.statuses); }
+		params.push(limitOf(query.limit, 50));
+		return (this.db.prepare(`SELECT * FROM task_plans WHERE ${conditions.join(" AND ")} ORDER BY created_at DESC LIMIT ?`).all(...params) as TaskPlanRow[]).map(mapTaskPlan);
 	}
 
 	taskDependencies(taskIds: string[]): TaskDependency[] {
@@ -714,10 +764,12 @@ export class MemoryStore {
 
 	prepareTaskPlanRetry(ownerKeys: string[], planId: string): number {
 		if (!ownerKeys.length || !planId.trim()) return 0;
-		return this.db.prepare(`UPDATE tasks SET status = 'pending', started_at = NULL, finished_at = NULL, result = NULL, error = 'Manual Task Plan retry requested', updated_at = ?
+		const changed = this.db.prepare(`UPDATE tasks SET status = 'pending', started_at = NULL, finished_at = NULL, result = NULL, error = 'Manual Task Plan retry requested', updated_at = ?
 			WHERE owner_key IN (${ownerKeys.map(() => "?").join(", ")}) AND plan_id = ? AND status = 'failed'
 			AND recovery_policy = 'safe_retry' AND idempotency_key IS NOT NULL AND execution_scope IS NOT NULL`)
 			.run(Date.now(), ...ownerKeys, planId).changes;
+		if (changed) this.syncTaskPlan(planId, "pending");
+		return changed;
 	}
 
 	cancelTaskPlan(ownerKeys: string[], planId: string, now = Date.now()): number {
@@ -727,8 +779,22 @@ export class MemoryStore {
 			if (!ids.length) return 0;
 			const placeholders = ids.map(() => "?").join(", ");
 			this.db.prepare(`UPDATE task_runs SET status = 'cancelled', finished_at = ?, error = 'Task Plan cancelled by user' WHERE task_id IN (${placeholders}) AND status = 'running'`).run(now, ...ids);
-			return this.db.prepare(`UPDATE tasks SET status = 'cancelled', finished_at = ?, error = 'Task Plan cancelled by user', updated_at = ? WHERE id IN (${placeholders}) AND status IN ('pending', 'running')`).run(now, now, ...ids).changes;
+			const changed = this.db.prepare(`UPDATE tasks SET status = 'cancelled', finished_at = ?, error = 'Task Plan cancelled by user', updated_at = ? WHERE id IN (${placeholders}) AND status IN ('pending', 'running')`).run(now, now, ...ids).changes;
+			if (changed) this.syncTaskPlan(planId, "cancelled", now);
+			return changed;
 		})();
+	}
+
+	private syncTaskPlan(id: string, status: TaskPlanRecord["status"], now = Date.now()): void {
+		this.backfillTaskPlans(id);
+		const counts = this.db.prepare(`SELECT COUNT(*) AS task_count, SUM(status = 'succeeded') AS succeeded, SUM(status = 'failed') AS failed,
+			SUM(status = 'cancelled') AS cancelled, COALESCE(SUM(verification_status = 'accepted'), 0) AS verified,
+			COALESCE(SUM(corrective_attempts), 0) AS corrective_attempts FROM tasks WHERE plan_id = ?`).get(id) as { task_count: number; succeeded: number; failed: number; cancelled: number; verified: number; corrective_attempts: number };
+		this.transitionPlan(id, {
+			status, taskCount: counts.task_count, succeeded: counts.succeeded, failed: counts.failed, cancelled: counts.cancelled,
+			verified: counts.verified, correctiveAttempts: counts.corrective_attempts,
+			...(status === "running" ? { startedAt: now } : {}), ...(["succeeded", "failed", "cancelled"].includes(status) ? { finishedAt: now } : {}),
+		});
 	}
 
 	forget(id: string, opts: Omit<RecallOptions, "limit"> = {}): boolean {
@@ -842,6 +908,12 @@ interface TaskRunRow {
 	started_at: number; lease_expires_at: number | null; finished_at: number | null; output: string | null; error: string | null;
 }
 
+interface TaskPlanRow {
+	id: string; owner_key: string; title: string; status: TaskPlanRecord["status"];
+	task_count: number; succeeded: number; failed: number; cancelled: number; verified: number; corrective_attempts: number;
+	created_at: number; started_at: number | null; finished_at: number | null;
+}
+
 function mapRow(row: MemoryRow): MemoryRecord {
 	return {
 		id: row.id,
@@ -915,6 +987,14 @@ function mapTaskRun(row: TaskRunRow): TaskRunRecord {
 		...(row.finished_at === null ? {} : { finishedAt: row.finished_at }),
 		...(row.output === null ? {} : { output: row.output }),
 		...(row.error === null ? {} : { error: row.error }),
+	};
+}
+
+function mapTaskPlan(row: TaskPlanRow): TaskPlanRecord {
+	return {
+		id: row.id, ownerKey: row.owner_key, title: row.title, status: row.status, taskCount: row.task_count,
+		succeeded: row.succeeded, failed: row.failed, cancelled: row.cancelled, verified: row.verified, correctiveAttempts: row.corrective_attempts,
+		createdAt: row.created_at, ...(row.started_at === null ? {} : { startedAt: row.started_at }), ...(row.finished_at === null ? {} : { finishedAt: row.finished_at }),
 	};
 }
 

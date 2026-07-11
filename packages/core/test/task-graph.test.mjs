@@ -6,13 +6,16 @@ function memoryLedger() {
 	const tasks = new Map();
 	const dependencies = [];
 	const runs = new Map();
+	const plans = new Map();
 	return {
-		tasks, dependencies, runs,
+		tasks, dependencies, runs, plans,
 		record(task) { tasks.set(task.id, { ...task }); },
 		transition(id, change) { tasks.set(id, { ...tasks.get(id), ...change }); },
 		recordRun(run) { runs.set(run.id, { ...run }); }, transitionRun(id, change) { runs.set(id, { ...runs.get(id), ...change }); },
 		renewTaskRunLease(id, leaseExpiresAt) { const run = runs.get(id); if (!run || run.status !== "running") return false; run.leaseExpiresAt = leaseExpiresAt; return true; },
-		recordPlan(records, edges) { for (const task of records) this.record(task); dependencies.push(...edges); },
+		recordPlan(records, edges, plan) { for (const task of records) this.record(task); dependencies.push(...edges); if (plan) plans.set(plan.id, { ...plan }); },
+		transitionPlan(id, change) { plans.set(id, { ...plans.get(id), ...change }); },
+		queryTaskPlans(query) { return [...plans.values()].filter((plan) => query.ownerKeys.includes(plan.ownerKey) && (!query.id || plan.id === query.id) && (!query.statuses || query.statuses.includes(plan.status))); },
 		queryTasks(query) { return [...tasks.values()].filter((task) => query.ownerKeys.includes(task.ownerKey) && (!query.statuses || query.statuses.includes(task.status)) && (!query.planIds || query.planIds.includes(task.planId))); },
 		taskRuns() { return []; },
 		taskDependencies(ids) { return dependencies.filter((edge) => ids.includes(edge.taskId)); },
@@ -42,6 +45,14 @@ test("TaskGraph runs ready Tasks in parallel and waits for all dependencies", as
 	assert.equal(maxRunning, 2);
 	assert.deepEqual(result, { succeeded: 3, failed: 0, cancelled: 0, blocked: [] });
 	assert.equal(ledger.tasks.get("unrelated").status, "pending");
+	const plan = ledger.queryTaskPlans({ ownerKeys: ["cli:local:local"], id: "release-plan" })[0];
+	assert.equal(plan.status, "succeeded");
+	assert.equal(plan.taskCount, 3);
+	assert.equal(plan.succeeded, 3);
+	assert.equal(plan.failed, 0);
+	assert.equal(plan.verified, 0);
+	assert.ok(plan.startedAt >= plan.createdAt);
+	assert.ok(plan.finishedAt >= plan.startedAt);
 });
 
 test("TaskGraph renews an active Task Run lease until execution reaches a terminal state", async () => {
@@ -210,11 +221,13 @@ test("orchestration tool validates a model-authored DAG and dispatches bounded S
 		return { output: `done:${task.title}` };
 	}, { maxConcurrent: 2, verify: async () => ({ accepted: true }) }).map((tool) => [tool.name, tool]));
 	const output = await tools.get("task_plan_execute").execute("plan", {
+		title: "Research and write",
 		tasks: [{ key: "research", title: "Research", goal: "Collect evidence", acceptanceCriteria: "Includes one source" }, { key: "write", title: "Write", goal: "Use the evidence", acceptanceCriteria: "Uses the collected evidence" }],
 		dependencies: [{ task: "write", dependsOn: "research" }],
 	});
 	assert.deepEqual(executed, ["Research", "Write"]);
 	assert.match(output.content[0].text, /"succeeded": 2/);
+	assert.match(output.content[0].text, /"title": "Research and write"/);
 	assert.equal(tools.get("task_plan_execute").beemaxPolicy.approval, "never");
 });
 

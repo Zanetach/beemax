@@ -27,6 +27,7 @@ export function createTaskOrchestrationTools(
 		label: "Plan and Execute Tasks",
 		description: "Create a validated Task DAG and execute independent nodes in parallel with isolated read-only Sub-Agents. Every result must pass independent verification against observable Acceptance Criteria. Use only for 2 or more substantial independent work items.",
 		parameters: Type.Object({
+			title: Type.String({ minLength: 1, maxLength: 120 }),
 			tasks: Type.Array(Type.Object({
 				key: Type.String({ pattern: "^[a-z0-9][a-z0-9_-]{0,31}$" }),
 				title: Type.String({ minLength: 1, maxLength: 120 }),
@@ -48,12 +49,12 @@ export function createTaskOrchestrationTools(
 				return { taskId, dependsOn };
 			});
 			graph.createPlan({
-				id: planId, ownerKey,
+				id: planId, ownerKey, title: params.title,
 				tasks: params.tasks.map((task) => ({ id: ids.get(task.key)!, title: task.title, description: task.goal, acceptanceCriteria: task.acceptanceCriteria, kind: "delegated" as const, recoveryPolicy: "safe_retry" as const, idempotencyKey: `${planId}:${task.key}`, executionScope: { ...source } })),
 				dependencies,
 			});
 			const summary = await planRuntime.run(ownerKey, planId, signal, (planSignal) => graph.run([ownerKey], planId, execute, { maxConcurrent, maxCorrectiveAttempts, signal: planSignal, executor: "subagent", verify: options.verify }));
-			return result({ planId, ...summary, tasks: ledger.queryTasks({ ownerKeys: [ownerKey], planIds: [planId], limit: maxTasks }) });
+			return result({ planId, ...summary, plan: ledger.queryTaskPlans({ ownerKeys: [ownerKey], id: planId, limit: 1 })[0], tasks: ledger.queryTasks({ ownerKeys: [ownerKey], planIds: [planId], limit: maxTasks }) });
 		},
 	});
 	const statusTool = defineTool({
@@ -62,7 +63,7 @@ export function createTaskOrchestrationTools(
 		execute: async (_callId, params) => {
 			const tasks = ledger.queryTasks({ ownerKeys: [ownerKey], planIds: [params.planId], limit: maxTasks });
 			if (!tasks.length) throw new Error(`Task Plan not found: ${params.planId}`);
-			return result({ planId: params.planId, tasks, dependencies: ledger.taskDependencies(tasks.map((task) => task.id)) });
+			return result({ planId: params.planId, plan: ledger.queryTaskPlans({ ownerKeys: [ownerKey], id: params.planId, limit: 1 })[0], tasks, dependencies: ledger.taskDependencies(tasks.map((task) => task.id)) });
 		},
 	});
 	const executePolicy: ToolPolicy = {

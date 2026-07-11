@@ -173,6 +173,7 @@ test("manual Task Plan retry is owner-scoped and requeues only recoverable faile
 		assert.deepEqual(await runner.retry(["cli:other:local"], "retry-plan"), { prepared: 0, plans: 0, succeeded: 0, failed: 0, cancelled: 0, blocked: [] });
 		assert.deepEqual(await runner.retry(["cli:local:local"], "retry-plan"), { prepared: 1, plans: 1, succeeded: 1, failed: 0, cancelled: 0, blocked: [] });
 		assert.equal(store.queryTasks({ ownerKeys: ["cli:local:local"], id: "failed" })[0].result, "retried");
+		assert.equal(store.queryTaskPlans({ ownerKeys: ["cli:local:local"], id: "retry-plan" })[0].status, "succeeded");
 	} finally { store.close(); rmSync(root, { recursive: true, force: true }); }
 });
 
@@ -188,6 +189,11 @@ test("Task Plan cancellation is owner-scoped and persists Tasks and active Runs 
 		assert.deepEqual(runner.cancel(["cli:local:local"], "cancel-plan"), { active: 0, tasks: 2 });
 		assert.deepEqual(store.queryTasks({ ownerKeys: ["cli:local:local"], planIds: ["cancel-plan"] }).map((task) => task.status), ["cancelled", "cancelled"]);
 		assert.equal(store.taskRuns("running")[0].status, "cancelled");
+		const plan = store.queryTaskPlans({ ownerKeys: ["cli:local:local"], id: "cancel-plan" })[0];
+		assert.equal(plan.status, "cancelled");
+		assert.equal(plan.taskCount, 2);
+		assert.equal(plan.cancelled, 2);
+		assert.ok(plan.finishedAt >= plan.startedAt);
 	} finally { store.close(); rmSync(root, { recursive: true, force: true }); }
 });
 
@@ -224,12 +230,16 @@ test("Task DAG dependencies persist with their Tasks", () => {
 	const root = mkdtempSync(join(tmpdir(), "beemax-task-dag-"));
 	const path = join(root, "memory.db");
 	let store = new MemoryStore(path);
-	new TaskGraph(store).createPlan({ id: "content-plan", ownerKey: "cli:local:local", tasks: [{ id: "research", title: "Research" }, { id: "write", title: "Write" }], dependencies: [{ taskId: "write", dependsOn: "research" }] }, 100);
+	new TaskGraph(store).createPlan({ id: "content-plan", ownerKey: "cli:local:local", title: "Create content", tasks: [{ id: "research", title: "Research" }, { id: "write", title: "Write" }], dependencies: [{ taskId: "write", dependsOn: "research" }] }, 100);
 	store.close();
 	store = new MemoryStore(path);
 	try {
 		assert.deepEqual(store.taskDependencies(["write"]), [{ taskId: "write", dependsOn: "research" }]);
 		assert.deepEqual(store.queryTasks({ ownerKeys: ["cli:local:local"] }).map((task) => task.id).sort(), ["research", "write"]);
+		assert.deepEqual(store.queryTaskPlans({ ownerKeys: ["cli:local:local"] }), [{
+			id: "content-plan", ownerKey: "cli:local:local", title: "Create content", status: "pending", taskCount: 2,
+			succeeded: 0, failed: 0, cancelled: 0, verified: 0, correctiveAttempts: 0, createdAt: 100,
+		}]);
 	} finally { store.close(); rmSync(root, { recursive: true, force: true }); }
 });
 
