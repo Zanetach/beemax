@@ -4,17 +4,14 @@ import { sessionIdForSource, sessionKeyForSource } from "./session-coordinator.t
 import type { ToolApprovalBroker, ToolApprovalChoice } from "./tool-approval.ts";
 import type { InteractionEventJournal } from "./interaction-event-journal.ts";
 import type { ToolApprovalDetails } from "./tool-approval.ts";
+import { conversationIdentity, type ConversationIdentity } from "./agent-scope.ts";
 
 export type InteractionSurface = "chat" | "gateway" | "web";
 export type InteractionPhase = "idle" | "running" | "queued" | "awaiting_approval" | "completed" | "failed" | "cancelled";
 
 /** Stable visibility and authorization boundary for an interaction session. */
-export interface InteractionScope {
+export interface InteractionScope extends ConversationIdentity {
 	profileId: string;
-	platform: string;
-	chatId: string;
-	userId?: string;
-	threadId?: string;
 }
 
 export interface InteractionEventMeta {
@@ -383,7 +380,7 @@ export class InteractionEventAdapter<Source extends BeeMaxRuntimeSource = BeeMax
 }
 
 export function interactionScopeForSource(source: BeeMaxRuntimeSource, profileId = "default"): InteractionScope {
-	return { profileId, platform: source.platform, chatId: source.chatId, userId: source.userIdAlt ?? source.userId, threadId: source.threadId };
+	return { profileId, ...conversationIdentity(source) };
 }
 
 function interactionEventMeta(source: BeeMaxRuntimeSource, turnId: string, sequence: number, profileId: string): InteractionEventMeta {

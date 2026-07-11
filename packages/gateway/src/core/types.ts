@@ -7,28 +7,17 @@
  * platform-agnostic.
  */
 
-/** A supported platform. Add entries here as new adapters land. */
+import type { AgentScope } from "@beemax/core";
+
+/** A supported platform adapter. Add entries here as new adapters land. */
 export type PlatformName = "feishu" | "cli";
 
 /** Where a message originated - used for routing and session keying. */
-export interface SessionSource {
+export interface SessionSource extends AgentScope {
 	platform: PlatformName;
 	/** Chat / conversation id on the platform (Feishu chat_id, etc.) */
-	chatId: string;
-	chatName?: string;
-	/** "dm" | "group" | "channel" | "thread" */
-	chatType: "dm" | "group" | "channel" | "thread";
-	/** The sender's stable user id (prefer union_id for Feishu, see adapter). */
-	userId?: string;
-	userName?: string;
-	/** Optional secondary stable id (e.g. Feishu union_id alongside open_id). */
-	userIdAlt?: string;
-	/** For forum topics / Discord threads / etc. */
-	threadId?: string;
 	/** Original triggering message id (for reply / react / pin). */
 	messageId?: string;
-	/** True when the author is a bot/webhook. */
-	isBot?: boolean;
 }
 
 export type MessageType = "text" | "image" | "audio" | "file" | "command";

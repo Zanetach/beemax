@@ -3,6 +3,7 @@ import { StringEnum } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
 import type { BeeMaxRuntimeSource } from "./runtime.ts";
 import { MUTATING_TOOL_POLICY, READ_ONLY_TOOL_POLICY, withToolPolicy, type ToolPolicy } from "./tool-runtime.ts";
+import { conversationKey } from "./agent-scope.ts";
 
 export type SubagentTaskStatus = "queued" | "running" | "completed" | "failed" | "cancelled";
 
@@ -68,7 +69,7 @@ export class SubagentManager {
 		capability?: "analysis" | "research";
 	}): SubagentTaskSnapshot {
 		if (this.disposed) throw new Error("Sub-Agent runtime is shutting down");
-		const ownerKey = runtimeOwnerKey(source);
+		const ownerKey = conversationKey(source);
 		const active = [...this.tasks.values()].filter((task) => task.ownerKey === ownerKey && !TERMINAL.has(task.status));
 		if (active.length >= this.maxChildrenPerOwner) {
 			throw new Error(`This conversation already has ${this.maxChildrenPerOwner} active Sub-Agent tasks`);
@@ -96,7 +97,7 @@ export class SubagentManager {
 	}
 
 	list(source: BeeMaxRuntimeSource): SubagentTaskSnapshot[] {
-		const ownerKey = runtimeOwnerKey(source);
+		const ownerKey = conversationKey(source);
 		return [...this.tasks.values()]
 			.filter((task) => task.ownerKey === ownerKey)
 			.sort((a, b) => b.createdAt - a.createdAt)
@@ -142,7 +143,7 @@ export class SubagentManager {
 	cancelOwner(source: BeeMaxRuntimeSource): number {
 		let cancelled = 0;
 		for (const task of this.tasks.values()) {
-			if (task.ownerKey === runtimeOwnerKey(source) && !TERMINAL.has(task.status)) {
+			if (task.ownerKey === conversationKey(source) && !TERMINAL.has(task.status)) {
 				this.cancel(source, task.id);
 				cancelled++;
 			}
@@ -213,7 +214,7 @@ export class SubagentManager {
 
 	private ownedTask(source: BeeMaxRuntimeSource, id: string): ManagedTask {
 		const task = this.tasks.get(id);
-		if (!task || task.ownerKey !== runtimeOwnerKey(source)) throw new Error(`Sub-Agent task not found: ${id}`);
+		if (!task || task.ownerKey !== conversationKey(source)) throw new Error(`Sub-Agent task not found: ${id}`);
 		return task;
 	}
 
@@ -306,10 +307,4 @@ function toolResult(value: unknown) {
 
 function positiveInt(value: number | undefined, fallback: number): number {
 	return Number.isInteger(value) && Number(value) > 0 ? Number(value) : fallback;
-}
-
-function runtimeOwnerKey(source: BeeMaxRuntimeSource): string {
-	const user = source.userIdAlt ?? source.userId ?? "anon";
-	const chat = source.threadId ? `${source.chatId}#${source.threadId}` : source.chatId;
-	return `${source.platform}:${chat}:${user}`;
 }

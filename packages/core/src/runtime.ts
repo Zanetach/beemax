@@ -16,24 +16,15 @@ import {
 	SettingsManager,
 } from "@earendil-works/pi-coding-agent";
 import { governToolDefinition, ToolPolicyRegistry, type ToolPolicy, type ToolRuntimeAuditSink } from "./tool-runtime.ts";
+import type { AgentScope } from "./agent-scope.ts";
 
-export interface BeeMaxRuntimeSource {
-	platform: "feishu" | "cli";
-	chatId: string;
-	chatType: "dm" | "group" | "channel" | "thread";
-	chatName?: string;
-	userId?: string;
-	userIdAlt?: string;
-	userName?: string;
-	threadId?: string;
-	isBot?: boolean;
+export type BeeMaxRuntimeSource = AgentScope;
+
+export interface BeeMaxRuntimeAuthorization<Source extends BeeMaxRuntimeSource = BeeMaxRuntimeSource> {
+	(source: Source, toolName: string, args: unknown, policy: ToolPolicy, signal?: AbortSignal): Promise<{ allowed: boolean; reason?: string }>;
 }
 
-export interface BeeMaxRuntimeAuthorization {
-	(source: BeeMaxRuntimeSource, toolName: string, args: unknown, policy: ToolPolicy, signal?: AbortSignal): Promise<{ allowed: boolean; reason?: string }>;
-}
-
-export interface BeeMaxRuntimeFactoryOptions {
+export interface BeeMaxRuntimeFactoryOptions<Source extends BeeMaxRuntimeSource = BeeMaxRuntimeSource> {
 	provider: string;
 	model: string;
 	baseUrl?: string;
@@ -44,8 +35,8 @@ export interface BeeMaxRuntimeFactoryOptions {
 	systemPrompt: string | (() => string);
 	skillToolset: "safe" | "standard";
 	tools?: string[];
-	createTools: (source: BeeMaxRuntimeSource, onResourcesChanged: () => void, getRuntimeApiKey: (provider: string) => Promise<string | undefined>) => ToolDefinition[];
-	authorizeTool?: BeeMaxRuntimeAuthorization;
+	createTools: (source: Source, onResourcesChanged: () => void, getRuntimeApiKey: (provider: string) => Promise<string | undefined>) => ToolDefinition[];
+	authorizeTool?: BeeMaxRuntimeAuthorization<Source>;
 	approvalTools?: Iterable<string>;
 	toolAudit?: ToolRuntimeAuditSink;
 }
@@ -64,7 +55,7 @@ export async function reloadRuntimeResourcesIfNeeded(session: AgentSession): Pro
 }
 
 /** Build the BeeMax-owned persistent Agent Runtime; Pi is an internal implementation detail. */
-export function buildBeeMaxRuntimeFactory(opts: BeeMaxRuntimeFactoryOptions) {
+export function buildBeeMaxRuntimeFactory<Source extends BeeMaxRuntimeSource = BeeMaxRuntimeSource>(opts: BeeMaxRuntimeFactoryOptions<Source>) {
 	const cwd = resolve(opts.cwd);
 	const agentDir = resolve(opts.agentDir);
 	const sessionDir = join(agentDir, "sessions", "feishu");
@@ -75,7 +66,7 @@ export function buildBeeMaxRuntimeFactory(opts: BeeMaxRuntimeFactoryOptions) {
 	const model = opts.baseUrl ? { ...resolvedModel, baseUrl: opts.baseUrl } : resolvedModel;
 	const approvalTools = new Set(["bash", "edit", "write", ...(opts.approvalTools ?? [])]);
 
-	return async (sessionId: string, source: BeeMaxRuntimeSource): Promise<AgentSession> => {
+	return async (sessionId: string, source: Source): Promise<AgentSession> => {
 		const apiKey = await opts.getApiKey(opts.provider);
 		if (apiKey) authStorage.setRuntimeApiKey(model.provider, apiKey);
 		const settingsManager = SettingsManager.create(cwd, agentDir);
@@ -131,7 +122,7 @@ async function restoreOrCreateSession(cwd: string, sessionDir: string, sessionId
 	return matchingFiles[0] ? SessionManager.open(join(sessionDir, matchingFiles[0]), sessionDir, cwd) : SessionManager.create(cwd, sessionDir, { id: sessionId });
 }
 
-function installSecurityHook(session: AgentSession, cwd: string, source: BeeMaxRuntimeSource, authorizeTool: BeeMaxRuntimeAuthorization | undefined, policies: ToolPolicyRegistry, audit?: ToolRuntimeAuditSink): void {
+function installSecurityHook<Source extends BeeMaxRuntimeSource>(session: AgentSession, cwd: string, source: Source, authorizeTool: BeeMaxRuntimeAuthorization<Source> | undefined, policies: ToolPolicyRegistry, audit?: ToolRuntimeAuditSink): void {
 	const previous = session.agent.beforeToolCall;
 	session.agent.beforeToolCall = async (context, signal) => {
 		const priorResult = await previous?.(context, signal);

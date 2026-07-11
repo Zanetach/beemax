@@ -1,5 +1,6 @@
 /** Core-owned Agent tools over the Automation persistence capability. */
 import type { AutomationOwner, AutomationStore } from "@beemax/automation";
+import { conversationIdentity } from "./agent-scope.ts";
 import { StringEnum } from "@earendil-works/pi-ai";
 import { defineTool, type ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
@@ -7,7 +8,10 @@ import type { BeeMaxRuntimeSource } from "./runtime.ts";
 import { MUTATING_TOOL_POLICY, READ_ONLY_TOOL_POLICY, withToolPolicy, type ToolPolicy } from "./tool-runtime.ts";
 
 export function createAutomationTools(store: AutomationStore, source: BeeMaxRuntimeSource, wakeScheduler: () => void): ToolDefinition[] {
-	const owner = (): AutomationOwner => ({ platform: source.platform, chatId: source.chatId, userId: source.userIdAlt ?? source.userId });
+	const owner = (): AutomationOwner => {
+		const { platform, chatId, userId } = conversationIdentity(source);
+		return { platform, chatId, userId };
+	};
 	const tools = [
 		defineTool({ name: "reminder_create", label: "Create Reminder", description: "Create a persistent one-shot reminder delivered to the current chat. Requires approval. Use an ISO timestamp with timezone or relative duration like 20m.", parameters: Type.Object({ name: Type.String({ minLength: 1, maxLength: 120 }), when: Type.String({ description: "ISO 8601 timestamp with timezone, or duration like 20m/2h/1d" }), text: Type.String({ minLength: 1, maxLength: 20_000 }) }), execute: async (_id, params) => {
 			const job = store.create({ ...owner(), name: params.name, kind: "reminder", scheduleKind: "at", schedule: params.when, text: params.text }); wakeScheduler(); return result(`Reminder created for ${new Date(job.nextRunAt).toISOString()}`, job);

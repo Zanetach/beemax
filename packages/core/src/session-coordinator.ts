@@ -1,29 +1,23 @@
 import { createHash } from "node:crypto";
 import type { AgentSession } from "@earendil-works/pi-coding-agent";
 import type { BeeMaxRuntimeSource } from "./runtime.ts";
+import { conversationKey, conversationOwnerKey } from "./agent-scope.ts";
 
 /** Stable per-conversation identity, independent of a transport adapter. */
 export function sessionKeyForSource(source: BeeMaxRuntimeSource): string {
-	return legacySessionKeyForSource(source);
+	return conversationKey(source);
 }
 
 /** Stable identity for a channel conversation, excluding a particular thread. */
 export function sessionOwnerKey(source: BeeMaxRuntimeSource): string {
-	const userPart = source.userIdAlt ?? source.userId ?? "anon";
-	return `${source.platform}:${source.chatId}:${userPart}`;
-}
-
-function legacySessionKeyForSource(source: BeeMaxRuntimeSource): string {
-	const userPart = source.userIdAlt ?? source.userId ?? "anon";
-	const chatPart = source.threadId ? `${source.chatId}#${source.threadId}` : source.chatId;
-	return `${source.platform}:${chatPart}:${userPart}`;
+	return conversationOwnerKey(source);
 }
 
 /** A deterministic UUID-shaped id used by the runtime's persisted session store. */
 export function sessionIdForSource(source: BeeMaxRuntimeSource): string {
 	// Preserve the pre-R2 stable persisted transcript ids while the catalog adds
 	// a separate owner/thread index for discovery.
-	const hex = createHash("sha256").update(legacySessionKeyForSource(source)).digest("hex").slice(0, 32);
+	const hex = createHash("sha256").update(conversationKey(source)).digest("hex").slice(0, 32);
 	return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-4${hex.slice(13, 16)}-a${hex.slice(17, 20)}-${hex.slice(20, 32)}`;
 }
 

@@ -287,8 +287,12 @@ export async function executeSubagentTask(
 	task: SubagentTask,
 	signal: AbortSignal,
 ): Promise<string> {
+	if (task.source.platform !== "cli" && task.source.platform !== "feishu") {
+		throw new Error(`No gateway adapter is registered for platform: ${task.source.platform}`);
+	}
 	const source: SessionSource = {
 		...task.source,
+		platform: task.source.platform,
 		threadId: `__subagent:${task.id}`,
 		messageId: undefined,
 	};

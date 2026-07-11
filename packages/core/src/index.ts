@@ -6,6 +6,7 @@
  */
 
 export type { Agent } from "@earendil-works/pi-agent-core";
+export { canonicalUserId, conversationIdentity, conversationKey, conversationOwnerKey, type AgentScope, type ConversationIdentity } from "./agent-scope.ts";
 export { StringEnum } from "@earendil-works/pi-ai";
 export { getSupportedThinkingLevels } from "@earendil-works/pi-ai";
 export { getBuiltinModel } from "@earendil-works/pi-ai/providers/all";
