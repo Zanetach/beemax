@@ -24,6 +24,8 @@ tar -C "${ROOT}" \
 	--exclude='./**/dist' \
 	--exclude='./**/*.tsbuildinfo' \
 	--exclude='./docs' \
+	--exclude='./output' \
+	--exclude='./dist' \
 	--exclude='./data' \
 	--exclude='./.cursor' \
 	--exclude='./.claude' \
