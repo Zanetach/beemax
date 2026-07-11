@@ -81,3 +81,30 @@ test("task ledger stores verifiable profile-scoped task facts independently from
 		rmSync(root, { recursive: true, force: true });
 	}
 });
+
+test("structured understandings retain evidence, support correction, and compile a bounded long-term snapshot", () => {
+	const root = mkdtempSync(join(tmpdir(), "beemax-memory-understanding-"));
+	const store = new MemoryStore(join(root, "memory.db"));
+	try {
+		const scope = { platform: "cli", chatId: "local", userId: "zane" };
+		const preference = store.upsertClaim({
+			...scope, kind: "preference", statement: "用户默认使用中文，并希望先给结论再给依据。",
+			confidence: 0.95, stability: "high", evidence: { kind: "conversation", excerpt: "默认中文，先给结论。" },
+		});
+		store.upsertClaim({
+			...scope, kind: "project", statement: "BeeMax 正在建设可解释的长期记忆系统。",
+			confidence: 0.9, stability: "medium", evidence: { excerpt: "按设计实施记忆系统。" },
+		});
+		assert.equal(store.recallBrief("用户默认使用中文", scope).claims[0].id, preference.id);
+		assert.equal(store.recall("用户默认使用中文", scope)[0].id, preference.id);
+		assert.equal(store.explainClaim(preference.id, scope).evidence[0].excerpt, "默认中文，先给结论。");
+		const corrected = store.correctClaim(preference.id, { statement: "用户默认使用中文；架构讨论时需要完整方案。" }, scope);
+		assert.ok(corrected);
+		assert.equal(store.listClaims(scope).some((claim) => claim.id === preference.id), false);
+		assert.match(store.compileLongTermMemory({ ...scope, maxChars: 1000 }), /架构讨论时需要完整方案/);
+		assert.match(store.compileLongTermMemory({ ...scope, maxChars: 1000 }), /BeeMax 正在建设/);
+	} finally {
+		store.close();
+		rmSync(root, { recursive: true, force: true });
+	}
+});

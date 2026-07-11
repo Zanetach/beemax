@@ -37,6 +37,49 @@ export interface MemoryCandidate extends MemoryRecord {
 	status: "pending" | "promoted" | "rejected";
 }
 
+/** A durable, explainable statement about the user or their work. */
+export interface MemoryClaim {
+	id: string;
+	platform: string;
+	chatId: string;
+	userId?: string;
+	kind: "preference" | "fact" | "decision" | "goal" | "project" | "relationship" | "workflow";
+	statement: string;
+	confidence: number;
+	stability: "low" | "medium" | "high";
+	status: "active" | "superseded" | "rejected" | "archived";
+	firstObservedAt: number;
+	lastConfirmedAt: number;
+	expiresAt?: number;
+	createdAt: number;
+	updatedAt: number;
+}
+
+export interface MemoryEvidence {
+	id: string;
+	claimId: string;
+	kind: "conversation" | "manual" | "correction";
+	excerpt: string;
+	createdAt: number;
+}
+
+export interface MemoryBrief {
+	claims: MemoryClaim[];
+	records: MemoryRecord[];
+}
+
+export interface ClaimInput {
+	platform: string;
+	chatId: string;
+	userId?: string;
+	kind: MemoryClaim["kind"];
+	statement: string;
+	confidence?: number;
+	stability?: MemoryClaim["stability"];
+	expiresAt?: number;
+	evidence?: { kind?: MemoryEvidence["kind"]; excerpt: string };
+}
+
 /** Durable, verifiable work state. Unlike chat memory, this is a current fact source. */
 export interface TaskRecord {
 	id: string;
@@ -125,7 +168,181 @@ export class MemoryStore {
 				completed_at INTEGER,
 				updated_at INTEGER NOT NULL
 			);
+
+			CREATE TABLE IF NOT EXISTS memory_events (
+				id TEXT PRIMARY KEY,
+				platform TEXT NOT NULL,
+				chat_id TEXT NOT NULL,
+				user_id TEXT,
+				kind TEXT NOT NULL,
+				content TEXT NOT NULL,
+				occurred_at INTEGER NOT NULL,
+				created_at INTEGER NOT NULL
+			);
+			CREATE INDEX IF NOT EXISTS idx_memory_events_scope_time ON memory_events(platform, user_id, chat_id, occurred_at DESC);
+
+			CREATE TABLE IF NOT EXISTS memory_claims (
+				id TEXT PRIMARY KEY,
+				platform TEXT NOT NULL,
+				chat_id TEXT NOT NULL,
+				user_id TEXT,
+				kind TEXT NOT NULL,
+				statement TEXT NOT NULL,
+				confidence REAL NOT NULL,
+				stability TEXT NOT NULL,
+				status TEXT NOT NULL,
+				first_observed_at INTEGER NOT NULL,
+				last_confirmed_at INTEGER NOT NULL,
+				expires_at INTEGER,
+				created_at INTEGER NOT NULL,
+				updated_at INTEGER NOT NULL
+			);
+			CREATE VIRTUAL TABLE IF NOT EXISTS memory_claims_fts USING fts5(
+				statement,
+				content='memory_claims',
+				content_rowid='rowid',
+				tokenize='unicode61 remove_diacritics 2'
+			);
+			CREATE TRIGGER IF NOT EXISTS memory_claims_ai AFTER INSERT ON memory_claims BEGIN
+				INSERT INTO memory_claims_fts(rowid, statement) VALUES (new.rowid, new.statement);
+			END;
+			CREATE TRIGGER IF NOT EXISTS memory_claims_ad AFTER DELETE ON memory_claims BEGIN
+				INSERT INTO memory_claims_fts(memory_claims_fts, rowid, statement) VALUES('delete', old.rowid, old.statement);
+			END;
+			CREATE TRIGGER IF NOT EXISTS memory_claims_au AFTER UPDATE ON memory_claims BEGIN
+				INSERT INTO memory_claims_fts(memory_claims_fts, rowid, statement) VALUES('delete', old.rowid, old.statement);
+				INSERT INTO memory_claims_fts(rowid, statement) VALUES (new.rowid, new.statement);
+			END;
+			CREATE INDEX IF NOT EXISTS idx_memory_claims_scope_status ON memory_claims(platform, user_id, chat_id, status, updated_at DESC);
+
+			CREATE TABLE IF NOT EXISTS memory_evidence (
+				id TEXT PRIMARY KEY,
+				claim_id TEXT NOT NULL REFERENCES memory_claims(id) ON DELETE CASCADE,
+				kind TEXT NOT NULL,
+				excerpt TEXT NOT NULL,
+				created_at INTEGER NOT NULL
+			);
+			CREATE INDEX IF NOT EXISTS idx_memory_evidence_claim ON memory_evidence(claim_id, created_at DESC);
 		`);
+	}
+
+	/** Persist an immutable source record. It is evidence, not an inferred user fact. */
+	recordEvent(record: { platform: string; chatId: string; userId?: string; kind: "user" | "assistant" | "import" | "feedback"; content: string; occurredAt?: number }): string {
+		const id = cryptoRandom();
+		const now = Date.now();
+		this.db.prepare("INSERT INTO memory_events (id, platform, chat_id, user_id, kind, content, occurred_at, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
+			.run(id, record.platform, record.chatId, record.userId ?? null, record.kind, record.content, record.occurredAt ?? now, now);
+		return id;
+	}
+
+	/** Store or reinforce a named understanding with optional provenance. */
+	upsertClaim(input: ClaimInput): MemoryClaim {
+		const statement = input.statement.trim();
+		if (!statement) throw new Error("Memory claim statement cannot be empty");
+		const now = Date.now();
+		const scope = [input.platform, input.userId ?? null, input.userId ?? null, input.chatId, input.kind, statement];
+		const existing = this.db.prepare(`SELECT * FROM memory_claims
+			WHERE platform = ? AND (user_id = ? OR (? IS NULL AND chat_id = ?)) AND kind = ? AND statement = ? AND status = 'active'
+			ORDER BY updated_at DESC LIMIT 1`).get(...scope) as ClaimRow | undefined;
+		let id: string;
+		if (existing) {
+			id = existing.id;
+			this.db.prepare("UPDATE memory_claims SET confidence = MAX(confidence, ?), stability = ?, last_confirmed_at = ?, expires_at = ?, updated_at = ? WHERE id = ?")
+				.run(clampConfidence(input.confidence ?? existing.confidence), strongerStability(existing.stability, input.stability ?? "low"), now, input.expiresAt ?? existing.expires_at, now, id);
+		} else {
+			id = cryptoRandom();
+			this.db.prepare(`INSERT INTO memory_claims (id, platform, chat_id, user_id, kind, statement, confidence, stability, status, first_observed_at, last_confirmed_at, expires_at, created_at, updated_at)
+				VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?)`)
+				.run(id, input.platform, input.chatId, input.userId ?? null, input.kind, statement, clampConfidence(input.confidence ?? 0.7), input.stability ?? "low", now, now, input.expiresAt ?? null, now, now);
+		}
+		if (input.evidence?.excerpt.trim()) this.addEvidence(id, input.evidence.kind ?? "manual", input.evidence.excerpt);
+		return this.getClaim(id)!;
+	}
+
+	correctClaim(id: string, replacement: Pick<ClaimInput, "statement" | "confidence" | "stability" | "expiresAt">, opts: Omit<RecallOptions, "limit"> = {}): MemoryClaim | undefined {
+		const current = this.getClaim(id, opts);
+		if (!current || current.status !== "active") return undefined;
+		const now = Date.now();
+		this.db.prepare("UPDATE memory_claims SET status = 'superseded', updated_at = ? WHERE id = ?").run(now, id);
+		return this.upsertClaim({
+			platform: current.platform, chatId: current.chatId, userId: current.userId, kind: current.kind,
+			statement: replacement.statement, confidence: replacement.confidence ?? Math.max(current.confidence, 0.8),
+			stability: replacement.stability ?? current.stability, expiresAt: replacement.expiresAt,
+			evidence: { kind: "correction", excerpt: `Corrects claim ${id}: ${current.statement}` },
+		});
+	}
+
+	listClaims(opts: RecallOptions & { status?: MemoryClaim["status"]; limit?: number } = {}): MemoryClaim[] {
+		const { where, params } = scopeWhere(opts, "c");
+		const status = opts.status ?? "active";
+		const rows = this.db.prepare(`SELECT * FROM memory_claims c WHERE c.status = ? ${where} AND (c.expires_at IS NULL OR c.expires_at > ?)
+			ORDER BY CASE c.stability WHEN 'high' THEN 3 WHEN 'medium' THEN 2 ELSE 1 END DESC, c.confidence DESC, c.updated_at DESC LIMIT ?`)
+			.all(status, ...params, Date.now(), limitOf(opts.limit, 50)) as ClaimRow[];
+		return rows.map(mapClaim);
+	}
+
+	recallBrief(query: string, opts: RecallOptions = {}): MemoryBrief {
+		const match = toFtsQuery(query);
+		const claims = match ? this.searchClaims(match, opts) : [];
+		if (claims.length === 0 && query.trim()) claims.push(...this.searchClaimsLike(query.trim(), opts));
+		return { claims, records: this.recall(query, { ...opts, limit: Math.min(opts.limit ?? 5, 8) }) };
+	}
+
+	explainClaim(id: string, opts: Omit<RecallOptions, "limit"> = {}): { claim: MemoryClaim; evidence: MemoryEvidence[] } | undefined {
+		const claim = this.getClaim(id, opts);
+		if (!claim) return undefined;
+		const evidence = this.db.prepare("SELECT id, claim_id, kind, excerpt, created_at FROM memory_evidence WHERE claim_id = ? ORDER BY created_at DESC").all(id) as EvidenceRow[];
+		return { claim, evidence: evidence.map(mapEvidence) };
+	}
+
+	/** Compile a small, deterministic long-term snapshot. The SQLite ledger remains the source of truth. */
+	compileLongTermMemory(opts: RecallOptions & { maxChars?: number } = {}): string {
+		const limit = Math.max(300, Math.min(opts.maxChars ?? 2200, 8000));
+		const claims = this.listClaims({ ...opts, limit: 100 }).filter((claim) => claim.stability !== "low" || claim.confidence >= 0.85);
+		const grouped = new Map<MemoryClaim["kind"], MemoryClaim[]>();
+		for (const claim of claims) grouped.set(claim.kind, [...(grouped.get(claim.kind) ?? []), claim]);
+		const labels: Record<MemoryClaim["kind"], string> = { preference: "沟通与偏好", fact: "稳定事实", decision: "关键决策", goal: "长期目标", project: "项目", relationship: "重要关系", workflow: "工作方式" };
+		const lines = ["# BeeMax 长期记忆", "", "此文件由记忆账本生成；原始证据与可纠正版本保存在 SQLite。"];
+		for (const kind of Object.keys(labels) as MemoryClaim["kind"][]) {
+			const entries = grouped.get(kind);
+			if (!entries?.length) continue;
+			lines.push("", `## ${labels[kind]}`);
+			for (const claim of entries) {
+				const candidate = `- ${claim.statement}`;
+				if ([...lines, candidate].join("\n").length > limit) return `${lines.join("\n")}\n\n[已按大小截断；请使用记忆检索获取更多内容]`;
+				lines.push(candidate);
+			}
+		}
+		return lines.join("\n");
+	}
+
+	private addEvidence(claimId: string, kind: MemoryEvidence["kind"], excerpt: string): void {
+		this.db.prepare("INSERT INTO memory_evidence (id, claim_id, kind, excerpt, created_at) VALUES (?, ?, ?, ?, ?)")
+			.run(cryptoRandom(), claimId, kind, excerpt.trim().slice(0, 4000), Date.now());
+	}
+
+	private getClaim(id: string, opts: Omit<RecallOptions, "limit"> = {}): MemoryClaim | undefined {
+		const { where, params } = scopeWhere(opts, "c");
+		const row = this.db.prepare(`SELECT * FROM memory_claims c WHERE c.id = ? ${where}`).get(id, ...params) as ClaimRow | undefined;
+		return row ? mapClaim(row) : undefined;
+	}
+
+	private searchClaims(match: string, opts: RecallOptions): MemoryClaim[] {
+		const { where, params } = scopeWhere(opts, "c");
+		const rows = this.db.prepare(`SELECT c.* FROM memory_claims_fts f JOIN memory_claims c ON c.rowid = f.rowid
+			WHERE memory_claims_fts MATCH ? AND c.status = 'active' ${where} AND (c.expires_at IS NULL OR c.expires_at > ?)
+			ORDER BY rank, c.confidence DESC, c.updated_at DESC LIMIT ?`)
+			.all(match, ...params, Date.now(), limitOf(opts.limit, 5)) as ClaimRow[];
+		return rows.map(mapClaim);
+	}
+
+	private searchClaimsLike(query: string, opts: RecallOptions): MemoryClaim[] {
+		const { where, params } = scopeWhere(opts, "c");
+		const rows = this.db.prepare(`SELECT c.* FROM memory_claims c
+			WHERE c.statement LIKE ? AND c.status = 'active' ${where} AND (c.expires_at IS NULL OR c.expires_at > ?)
+			ORDER BY c.confidence DESC, c.updated_at DESC LIMIT ?`)
+			.all(`%${query.replaceAll("%", "\\%").replaceAll("_", "\\_")}%`, ...params, Date.now(), limitOf(opts.limit, 5)) as ClaimRow[];
+		return rows.map(mapClaim);
 	}
 
 	remember(record: Omit<MemoryRecord, "id" | "createdAt">): string {
@@ -188,7 +405,14 @@ export class MemoryStore {
 				 LIMIT ?`,
 			)
 			.all(...params, limit) as MemoryRow[];
-		return rows.map(mapRow);
+		const records = rows.map(mapRow);
+		const claims = this.searchClaims(match, opts);
+		if (claims.length === 0) claims.push(...this.searchClaimsLike(query.trim(), opts));
+		const claimRecords = claims.map((claim) => ({
+			id: claim.id, platform: claim.platform, chatId: claim.chatId, userId: claim.userId,
+			role: "memory" as const, content: claim.statement, createdAt: claim.updatedAt,
+		}));
+		return [...claimRecords, ...records].slice(0, limit);
 	}
 
 	list(opts: RecallOptions = {}): MemoryRecord[] {
@@ -343,6 +567,31 @@ interface TaskRow {
 	updated_at: number;
 }
 
+interface ClaimRow {
+	id: string;
+	platform: string;
+	chat_id: string;
+	user_id: string | null;
+	kind: MemoryClaim["kind"];
+	statement: string;
+	confidence: number;
+	stability: MemoryClaim["stability"];
+	status: MemoryClaim["status"];
+	first_observed_at: number;
+	last_confirmed_at: number;
+	expires_at: number | null;
+	created_at: number;
+	updated_at: number;
+}
+
+interface EvidenceRow {
+	id: string;
+	claim_id: string;
+	kind: MemoryEvidence["kind"];
+	excerpt: string;
+	created_at: number;
+}
+
 function mapRow(row: MemoryRow): MemoryRecord {
 	return {
 		id: row.id,
@@ -358,6 +607,35 @@ function mapRow(row: MemoryRow): MemoryRecord {
 function mapCandidate(row: CandidateRow): MemoryCandidate {
 	return { ...mapRow(row), status: row.status };
 }
+
+function mapClaim(row: ClaimRow): MemoryClaim {
+	return {
+		id: row.id, platform: row.platform, chatId: row.chat_id, userId: row.user_id ?? undefined,
+		kind: row.kind, statement: row.statement, confidence: row.confidence, stability: row.stability,
+		status: row.status, firstObservedAt: row.first_observed_at, lastConfirmedAt: row.last_confirmed_at,
+		expiresAt: row.expires_at ?? undefined, createdAt: row.created_at, updatedAt: row.updated_at,
+	};
+}
+
+function mapEvidence(row: EvidenceRow): MemoryEvidence {
+	return { id: row.id, claimId: row.claim_id, kind: row.kind, excerpt: row.excerpt, createdAt: row.created_at };
+}
+
+function scopeWhere(opts: Omit<RecallOptions, "limit">, alias: string): { where: string; params: unknown[] } {
+	const conditions: string[] = [];
+	const params: unknown[] = [];
+	if (opts.platform) { conditions.push(`${alias}.platform = ?`); params.push(opts.platform); }
+	if (opts.userId) { conditions.push(`${alias}.user_id = ?`); params.push(opts.userId); }
+	else if (opts.chatId) { conditions.push(`${alias}.chat_id = ?`); params.push(opts.chatId); }
+	return { where: conditions.length ? `AND ${conditions.join(" AND ")}` : "", params };
+}
+
+function clampConfidence(value: number): number { return Math.max(0, Math.min(1, value)); }
+function strongerStability(a: MemoryClaim["stability"], b: MemoryClaim["stability"]): MemoryClaim["stability"] {
+	const order = { low: 1, medium: 2, high: 3 } as const;
+	return order[a] >= order[b] ? a : b;
+}
+function limitOf(value: number | undefined, fallback: number): number { return Math.max(1, Math.min(value ?? fallback, 100)); }
 
 function toFtsQuery(query: string): string {
 	return query.trim().split(/\s+/u).filter(Boolean)

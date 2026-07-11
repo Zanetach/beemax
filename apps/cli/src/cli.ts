@@ -39,7 +39,7 @@ import { inspectGateway, readGatewayLogs } from "./gateway-observability.ts";
 import { createTaskAwareConversationContext, ensureBuiltinTasks, installedVersion } from "./runtime-facts.ts";
 import { AgentRunError, SessionCatalog, type BeeMaxAgentRuntime } from "@beemax/core";
 import type { SessionSource, ToolApprovalDecision, ToolApprovalRequest } from "@beemax/gateway";
-import { existsSync } from "node:fs";
+import { existsSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 
@@ -150,7 +150,7 @@ Commands:
   profile    create | list | show | path | use | migrate | backup | delete
   skills     list | sync (prepackaged Profile Skills)
   mcp        status (probe configured MCP servers)
-  memory     status | list | candidates | promote <id> | reject <id>
+  memory     status | list | candidates | claims | explain <id> | compile | promote <id> | reject <id>
   task       list | set <id> <open|in_progress|done|cancelled> --title <title> [--evidence <ref>]
   auth       codex (stores OAuth only inside the selected profile)
   service    install (Linux systemd)
@@ -664,13 +664,43 @@ async function runMemoryCommand(parsed: ParsedArgs, config: ReturnType<typeof lo
 			console.log(`Profile ${config.profile}: curated=${stats.curated} pending=${stats.pending} promoted=${stats.promoted} rejected=${stats.rejected}`);
 			return;
 		}
+		if (action === "claims") {
+			const claims = store.listClaims({ limit: 50 });
+			console.log(claims.map((claim) => `${claim.id}  [${claim.kind}/${claim.stability}/${claim.confidence.toFixed(2)}] ${claim.statement}`).join("\n") || "No active structured memories.");
+			return;
+		}
+		if (action === "explain") {
+			const id = parsed.positionals[2];
+			if (!id) throw new Error("Usage: beemax memory explain <id> --profile <name>");
+			const explanation = store.explainClaim(id);
+			if (!explanation) throw new Error(`Memory understanding ${id} was not found`);
+			console.log(`${explanation.claim.statement}\n${explanation.evidence.map((item) => `- [${item.kind}] ${item.excerpt}`).join("\n")}`);
+			return;
+		}
+		if (action === "compile") {
+			if (parsed.options.yes !== true) throw new Error("memory compile writes MEMORY.md; rerun with --yes");
+			const snapshot = store.compileLongTermMemory({ maxChars: 2200 });
+			writeFileSync(join(config.paths.agentDir, "MEMORY.md"), `${snapshot}\n`, { encoding: "utf8", mode: 0o600 });
+			console.log(`Compiled ${join(config.paths.agentDir, "MEMORY.md")}.`);
+			return;
+		}
+		if (action === "correct") {
+			const id = parsed.positionals[2];
+			const statement = optionString(parsed, "statement");
+			if (!id || !statement) throw new Error("Usage: beemax memory correct <id> --statement <text> --yes --profile <name>");
+			if (parsed.options.yes !== true) throw new Error("memory correct requires --yes");
+			const claim = store.correctClaim(id, { statement });
+			if (!claim) throw new Error(`Memory understanding ${id} was not found`);
+			console.log(`Corrected ${id} as ${claim.id}.`);
+			return;
+		}
 		if (action === "list" || action === "candidates") {
 			const records = action === "list" ? store.list({ limit: 50 }) : store.listCandidates({ limit: 50 });
 			console.log(records.map((record) => `${record.id}  [${record.role}] ${record.content}`).join("\n") || `No ${action === "list" ? "curated memories" : "pending candidates"}.`);
 			return;
 		}
 		const id = parsed.positionals[2];
-		if ((action !== "promote" && action !== "reject") || !id) throw new Error("Usage: beemax memory [status | list | candidates | promote <id> | reject <id>] --profile <name>");
+		if ((action !== "promote" && action !== "reject") || !id) throw new Error("Usage: beemax memory [status | list | candidates | claims | explain <id> | compile | correct <id> --statement <text> | promote <id> | reject <id>] --profile <name>");
 		if (parsed.options.yes !== true) throw new Error(`memory ${action} requires --yes`);
 		const changed = action === "promote" ? store.promoteCandidate(id) : store.rejectCandidate(id);
 		if (!changed) throw new Error(`Pending memory candidate ${id} was not found`);

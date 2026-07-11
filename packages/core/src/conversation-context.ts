@@ -16,6 +16,8 @@ export interface ConversationContextOptions {
 export interface ConversationMemoryPort {
 	recall(query: string, options: { limit: number; platform: string; chatId: string; userId?: string }): Array<{ content: string }>;
 	recordCandidate(record: { platform: string; chatId: string; userId?: string; role: "user" | "assistant"; content: string }): string;
+	/** Optional immutable evidence ledger. Older memory adapters remain compatible. */
+	recordEvent?(record: { platform: string; chatId: string; userId?: string; kind: "user" | "assistant"; content: string }): string;
 }
 
 /** Core-owned policy for memory recall and durable conversation capture. */
@@ -48,5 +50,7 @@ export class ConversationContext {
 		if (source.chatType === "dm") this.recordDirectRoute?.({ platform: source.platform, chatId: source.chatId, userId });
 		this.memory.recordCandidate({ platform: source.platform, chatId: source.chatId, userId, role: "user", content: exchange.user });
 		this.memory.recordCandidate({ platform: source.platform, chatId: source.chatId, userId, role: "assistant", content: exchange.assistant });
+		this.memory.recordEvent?.({ platform: source.platform, chatId: source.chatId, userId, kind: "user", content: exchange.user });
+		this.memory.recordEvent?.({ platform: source.platform, chatId: source.chatId, userId, kind: "assistant", content: exchange.assistant });
 	}
 }

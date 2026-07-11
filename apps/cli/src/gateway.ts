@@ -325,14 +325,14 @@ export function readOnlyAgentTools(mcpTools: string[], additionalTools: string[]
 
 export function mainAgentTools(toolset: "safe" | "standard", mcpTools: string[]): string[] {
 	const readOnly = readOnlyAgentTools(mcpTools, [
-		"memory_status", "memory_candidates",
+		"memory_status", "memory_candidates", "memory_explain",
 		"schedule_list", "schedule_runs", "skill_list", "skill_read", "task_status", "task_wait",
 		"feishu_meeting_get", "feishu_meeting_list", "feishu_meeting_reserve_get", "feishu_meeting_reserve_active_get", "feishu_meeting_recording_get",
 	]);
 	if (toolset === "safe") return readOnly;
 	return [
 		...readOnly,
-		"bash", "edit", "write", "memory_remember", "memory_promote", "memory_reject", "memory_forget",
+		"bash", "edit", "write", "memory_remember", "memory_promote", "memory_reject", "memory_forget", "memory_understand", "memory_correct",
 		"reminder_create", "schedule_create", "schedule_pause", "schedule_resume", "schedule_delete",
 		"skill_create", "skill_update", "task_spawn", "task_cancel", "image_generate",
 		"feishu_meeting_reserve_create", "feishu_meeting_reserve_update", "feishu_meeting_reserve_delete",

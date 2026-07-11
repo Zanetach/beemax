@@ -1,6 +1,7 @@
 /** Agent-facing memory capability. Persistent policy remains in BeeMax Core. */
 import { defineTool, type BeeMaxRuntimeSource, type ToolDefinition } from "@beemax/core";
 import { Type } from "typebox";
+import type { ClaimInput, MemoryClaim, MemoryEvidence } from "./store.ts";
 
 export interface MemoryToolRecord {
 	id: string;
@@ -18,6 +19,9 @@ export interface MemoryToolStore {
 	promoteCandidate(id: string, options: { platform: string; chatId: string; userId?: string }): boolean;
 	rejectCandidate(id: string, options: { platform: string; chatId: string; userId?: string }): boolean;
 	stats(options: { platform: string; chatId: string; userId?: string }): { curated: number; pending: number; promoted: number; rejected: number };
+	upsertClaim?(input: ClaimInput): MemoryClaim;
+	correctClaim?(id: string, replacement: Pick<ClaimInput, "statement" | "confidence" | "stability" | "expiresAt">, options: { platform: string; chatId: string; userId?: string }): MemoryClaim | undefined;
+	explainClaim?(id: string, options: { platform: string; chatId: string; userId?: string }): { claim: MemoryClaim; evidence: MemoryEvidence[] } | undefined;
 }
 
 export function createMemoryTools(store: MemoryToolStore, source: BeeMaxRuntimeSource): ToolDefinition[] {
@@ -37,6 +41,25 @@ export function createMemoryTools(store: MemoryToolStore, source: BeeMaxRuntimeS
 		} }),
 		defineTool({ name: "memory_remember", label: "Remember", description: "Save a durable user fact, preference, decision, relationship, or recurring workflow. Do not save secrets or transient details.", parameters: Type.Object({ content: Type.String({ minLength: 1, maxLength: 2000 }) }), execute: async (_id, params) => {
 			const content = params.content.trim(); const id = store.remember({ ...scope(), role: "memory", content }); return result(`Remembered as ${id}`, { id, content });
+		} }),
+		defineTool({ name: "memory_understand", label: "Record Understanding", description: "Record an explainable long-term understanding with a type, confidence, stability, and source excerpt. Use only for stable, useful user facts; requires approval.", parameters: Type.Object({
+			kind: Type.Union([Type.Literal("preference"), Type.Literal("fact"), Type.Literal("decision"), Type.Literal("goal"), Type.Literal("project"), Type.Literal("relationship"), Type.Literal("workflow")]),
+			statement: Type.String({ minLength: 1, maxLength: 2000 }),
+			confidence: Type.Optional(Type.Number({ minimum: 0, maximum: 1 })),
+			stability: Type.Optional(Type.Union([Type.Literal("low"), Type.Literal("medium"), Type.Literal("high")])),
+			evidence: Type.String({ minLength: 1, maxLength: 2000 }),
+		}), execute: async (_id, params) => {
+			if (!store.upsertClaim) return result("This memory store does not support structured understanding yet.", { supported: false });
+			const claim = store.upsertClaim({ ...scope(), kind: params.kind, statement: params.statement, confidence: params.confidence, stability: params.stability, evidence: { kind: "manual", excerpt: params.evidence } });
+			return result(`Recorded understanding ${claim.id}`, { claim });
+		} }),
+		defineTool({ name: "memory_explain", label: "Explain Memory", description: "Show why a structured memory exists, including its source evidence. Read-only.", parameters: Type.Object({ id: Type.String({ minLength: 1, maxLength: 64 }) }), execute: async (_id, params) => {
+			const explanation = store.explainClaim?.(params.id, scope());
+			return result(explanation ? `${explanation.claim.statement}\n${explanation.evidence.map((item) => `- ${item.excerpt}`).join("\n")}` : `Memory understanding ${params.id} was not found`, { explanation });
+		} }),
+		defineTool({ name: "memory_correct", label: "Correct Memory", description: "Supersede an incorrect structured memory with a corrected version while preserving provenance. Requires approval.", parameters: Type.Object({ id: Type.String({ minLength: 1, maxLength: 64 }), statement: Type.String({ minLength: 1, maxLength: 2000 }), confidence: Type.Optional(Type.Number({ minimum: 0, maximum: 1 })), stability: Type.Optional(Type.Union([Type.Literal("low"), Type.Literal("medium"), Type.Literal("high")])) }), execute: async (_id, params) => {
+			const claim = store.correctClaim?.(params.id, { statement: params.statement, confidence: params.confidence, stability: params.stability }, scope());
+			return result(claim ? `Corrected memory ${params.id} as ${claim.id}` : `Memory understanding ${params.id} was not found`, { claim });
 		} }),
 		defineTool({ name: "memory_recall", label: "Recall Memory", description: "Search durable memories and prior exchanges for relevant personal context.", parameters: Type.Object({ query: Type.String({ minLength: 1, maxLength: 1000 }), limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 20 })) }), execute: async (_id, params) => {
 			const records = store.recall(params.query, { ...scope(), limit: params.limit ?? 8 }); return result(format(records), { records });
