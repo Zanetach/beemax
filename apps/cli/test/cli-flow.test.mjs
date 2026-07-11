@@ -97,7 +97,7 @@ test("fact-sensitive chat questions receive task and installed-version facts, no
 	const store = new MemoryStore(join(home, "memory.db"));
 	try {
 		ensureBuiltinTasks(store);
-		assert.match(taskLedgerContextForQuestion(store, "Was Anthropic support shipped?"), /anthropic-protocol: done/);
+		assert.match(taskLedgerContextForQuestion(store, "Was Anthropic support shipped?"), /anthropic-protocol: succeeded/);
 		assert.match(taskLedgerContextForQuestion(store, "What BeeMax version is installed?"), /installed_version=/);
 		assert.match(taskLedgerContextForQuestion(store, "你是什么模型？", { model: "anthropic/claude-sonnet-4-5", profile: "personal" }), /current_model=anthropic\/claude-sonnet-4-5/);
 		await writeFile(join(home, "RELEASE_VERSION"), "v0.1.0-preview.16\n");

@@ -31,6 +31,13 @@ export interface TaskRunRecord {
 	error?: string;
 }
 export type TaskRunTransition = Pick<TaskRunRecord, "status"> & Partial<Pick<TaskRunRecord, "finishedAt" | "output" | "error">>;
+export interface TaskQuery {
+	ownerKeys: string[];
+	id?: string;
+	kinds?: TaskKind[];
+	statuses?: TaskStatus[];
+	limit?: number;
+}
 
 /** Persistence port used by task producers; storage remains replaceable. */
 export interface TaskLedger {
@@ -38,4 +45,6 @@ export interface TaskLedger {
 	transition(id: string, change: TaskTransition): void;
 	recordRun(run: TaskRunRecord): void;
 	transitionRun(id: string, change: TaskRunTransition): void;
+	queryTasks(query: TaskQuery): TaskRecord[];
+	taskRuns(taskId: string): TaskRunRecord[];
 }

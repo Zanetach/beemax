@@ -1,7 +1,7 @@
 import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { ConversationContext, type ConversationContextOptions } from "@beemax/core";
+import { ConversationContext, conversationKey, conversationOwnerKey, type ConversationContextOptions } from "@beemax/core";
 import type { MemoryStore, TaskFactRecord } from "@beemax/memory";
 import { beemaxRoot } from "./config.ts";
 
@@ -29,11 +29,11 @@ export function ensureBuiltinTasks(store: MemoryStore): void {
 export function createTaskAwareConversationContext(memory: MemoryStore, options: TaskAwareConversationOptions = {}): ConversationContext {
 	ensureBuiltinTasks(memory);
 	const { runtimeSnapshot, ...contextOptions } = options;
-	return new ConversationContext(memory, { ...contextOptions, runtimeFacts: (_source, text, verified) => taskLedgerContextForQuestion(memory, text, { ...runtimeSnapshot?.(), ...verified }) });
+	return new ConversationContext(memory, { ...contextOptions, runtimeFacts: (source, text, verified) => taskLedgerContextForQuestion(memory, text, { ...runtimeSnapshot?.(), ...verified }, [...new Set([conversationKey(source), conversationOwnerKey(source), "profile"])]) });
 }
 
 /** Only task or version questions receive a snapshot; ordinary chat stays unchanged. */
-export function taskLedgerContextForQuestion(store: MemoryStore, text: string, snapshot: RuntimeFactSnapshot = {}): string {
+export function taskLedgerContextForQuestion(store: MemoryStore, text: string, snapshot: RuntimeFactSnapshot = {}, ownerKeys = ["profile"]): string {
 	const asksTasks = /(挂起|待办|任务|进度|完成|已过|升级|更新|协议|anthropic|release|task|todo|pending|outstanding|shipped|completed|complete|upgrade|update|protocol)/iu.test(text);
 	const asksVersion = /(版本|版本号|version|release)/iu.test(text);
 	const asksModel = /(什么模型|哪个模型|当前模型|使用.*模型|模型.*是什么|what model|which model|model.*using)/iu.test(text);
@@ -43,10 +43,10 @@ export function taskLedgerContextForQuestion(store: MemoryStore, text: string, s
 	if (asksModel && snapshot.model) lines.push(`- current_model=${snapshot.model}`);
 	if (asksModel && snapshot.profile) lines.push(`- current_profile=${snapshot.profile}`);
 	if (asksTasks) {
-		const tasks = store.listTasks();
+		const tasks = store.queryTasks({ ownerKeys, limit: 50 });
 		lines.push(...(tasks.length === 0
 			? ["- task_ledger=empty; do not infer task status from chat history"]
-			: tasks.map((task) => `- ${task.id}: ${task.status}; ${task.title}${task.evidence ? `; evidence=${task.evidence}` : ""}${task.completedAt ? `; completed_at=${new Date(task.completedAt).toISOString()}` : ""}`)));
+			: tasks.map((task) => `- ${task.id}: ${task.status}; kind=${task.kind}; ${task.title}${task.evidence ? `; evidence=${task.evidence}` : ""}${task.finishedAt ? `; finished_at=${new Date(task.finishedAt).toISOString()}` : ""}`)));
 	}
 	lines.push("[/Current runtime facts]");
 	return lines.join("\n");

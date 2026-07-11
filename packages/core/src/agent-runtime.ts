@@ -9,6 +9,8 @@ import {
 import { SessionCoordinator, type RuntimeSessionFactory, type RuntimeSessionSnapshot, type SessionCoordinatorOptions } from "./session-coordinator.ts";
 import { SessionCatalog, type SavedSessionChoice, type SessionPreferences } from "./session-catalog.ts";
 import type { AgentControlHandler, AgentControlInput, AgentControlResult } from "./agent-control.ts";
+import { conversationKey, conversationOwnerKey } from "./agent-scope.ts";
+import type { TaskKind, TaskLedger, TaskRecord, TaskRunRecord, TaskStatus } from "./task-ledger.ts";
 
 export interface AgentRunInput<Source extends BeeMaxRuntimeSource = BeeMaxRuntimeSource> {
 	source: Source;
@@ -74,6 +76,8 @@ export interface AgentRuntimePort<Source extends BeeMaxRuntimeSource = BeeMaxRun
 	isBusy(): boolean;
 	setModel(source: Source, model: Model<Api>): Promise<boolean>;
 	modelStatus(source: Source): Promise<AgentModelStatus | undefined>;
+	tasks(source: Source, query?: { kind?: TaskKind; status?: TaskStatus; limit?: number }): TaskRecord[];
+	taskRuns(source: Source, taskId: string): TaskRunRecord[];
 	setThinkingLevel(source: Source, level: ModelThinkingLevel): Promise<AgentModelStatus | undefined>;
 	dispose(): void;
 }
@@ -87,6 +91,7 @@ export interface BeeMaxAgentRuntimeOptions<Source extends BeeMaxRuntimeSource = 
 	/** Ordered failover candidates. The active model is skipped automatically. */
 	fallbackModels?: Model<Api>[];
 	maxModelFallbacks?: number;
+	taskLedger?: TaskLedger;
 }
 
 /**
@@ -103,6 +108,7 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 	private readonly sessionCatalog?: SessionCatalog<Source>;
 	private readonly fallbackModels: Model<Api>[];
 	private readonly maxModelFallbacks: number;
+	private readonly taskLedger?: TaskLedger;
 
 	constructor(options: BeeMaxAgentRuntimeOptions<Source>) {
 		this.sessions = new SessionCoordinator(options);
@@ -113,6 +119,7 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 		this.sessionCatalog = options.sessionCatalog;
 		this.fallbackModels = options.fallbackModels ?? [];
 		this.maxModelFallbacks = Math.max(0, Math.min(options.maxModelFallbacks ?? 2, 5));
+		this.taskLedger = options.taskLedger;
 	}
 
 	async run(input: AgentRunInput<Source>, onEvent?: BeeMaxAgentRunEventSink): Promise<AgentRunResult> {
@@ -227,6 +234,19 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 	}
 	async modelStatus(source: Source): Promise<AgentModelStatus | undefined> {
 		return this.sessions.withSession(source, async (session) => modelStatusOf(session.piSession));
+	}
+	tasks(source: Source, query: { kind?: TaskKind; status?: TaskStatus; limit?: number } = {}): TaskRecord[] {
+		return this.taskLedger?.queryTasks({
+			ownerKeys: [...new Set([conversationKey(source), conversationOwnerKey(source), "profile"])],
+			kinds: query.kind ? [query.kind] : undefined,
+			statuses: query.status ? [query.status] : undefined,
+			limit: query.limit,
+		}) ?? [];
+	}
+	taskRuns(source: Source, taskId: string): TaskRunRecord[] {
+		const ownerKeys = [...new Set([conversationKey(source), conversationOwnerKey(source), "profile"])];
+		if (!this.taskLedger?.queryTasks({ ownerKeys, id: taskId, limit: 1 })[0]) throw new Error(`Task not found: ${taskId}`);
+		return this.taskLedger?.taskRuns(taskId) ?? [];
 	}
 	async setThinkingLevel(source: Source, level: ModelThinkingLevel): Promise<AgentModelStatus | undefined> {
 		return this.sessions.withSession(source, async (session) => {

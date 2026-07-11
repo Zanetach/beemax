@@ -8,7 +8,7 @@
  */
 
 import { AutomationStore } from "@beemax/automation";
-import { AutomationScheduler, BeeMaxAgentRuntime, HeartbeatRunner, SubagentManager, ToolApprovalBroker, createSubagentTools, type SubagentTask } from "@beemax/core";
+import { AutomationScheduler, BeeMaxAgentRuntime, HeartbeatRunner, SubagentManager, ToolApprovalBroker, createSubagentTools, createTaskLedgerTools, type SubagentTask } from "@beemax/core";
 import {
 	Dispatcher,
 	FeishuAdapter,
@@ -123,7 +123,7 @@ export async function runGateway(config: BeeMaxConfig): Promise<void> {
 		systemPrompt: () => profilePrompt(config),
 		tools: executionSafeTools(config, mainAgentTools(config.agent.toolset, mainMcpTools.map((tool) => tool.name))),
 		customTools: [...mainMcpTools, ...feishuMeetingTools],
-		sessionTools: (source) => subagents ? createSubagentTools(subagents, source) : [],
+		sessionTools: (source) => [...(subagents ? createSubagentTools(subagents, source) : []), ...createTaskLedgerTools(memory, source)],
 		automationStore: automation,
 		wakeAutomation: () => scheduler?.wake(),
 		imageGeneration: {
@@ -155,6 +155,7 @@ export async function runGateway(config: BeeMaxConfig): Promise<void> {
 			createAgent,
 			createAutomationAgent,
 			fallbackModels: configuredRuntimeModels(config),
+			taskLedger: memory,
 			context: createTaskAwareConversationContext(memory, { recordDirectRoute: (route) => automation.setLastRoute(route), runtimeSnapshot: () => ({ profile: config.profile }) }),
 		},
 		approvalBroker,
@@ -332,7 +333,7 @@ export function readOnlyAgentTools(mcpTools: string[], additionalTools: string[]
 export function mainAgentTools(toolset: "safe" | "standard", mcpTools: string[]): string[] {
 	const readOnly = readOnlyAgentTools(mcpTools, [
 		"memory_status", "memory_candidates", "memory_explain",
-		"schedule_list", "schedule_runs", "skill_list", "skill_read", "task_status", "task_wait",
+		"schedule_list", "schedule_runs", "skill_list", "skill_read", "task_status", "task_wait", "task_list", "task_get", "task_runs",
 		"feishu_meeting_get", "feishu_meeting_list", "feishu_meeting_reserve_get", "feishu_meeting_reserve_active_get", "feishu_meeting_recording_get",
 	]);
 	if (toolset === "safe") return readOnly;

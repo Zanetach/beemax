@@ -827,7 +827,7 @@ async function runChat(config: ReturnType<typeof loadConfig>, requestedMode: { f
 	const presentationMode: ChatPresentationMode = resolveChatPresentationMode({
 		...requestedMode, isInputTty: process.stdin.isTTY === true, isOutputTty: process.stdout.isTTY === true, term: process.env.TERM,
 	});
-	const { createSubagentTools, SubagentManager } = await import("@beemax/core");
+	const { createSubagentTools, createTaskLedgerTools, SubagentManager } = await import("@beemax/core");
 	const { loadMcpConfig, McpManager } = await import("@beemax/mcp-capability");
 	const { buildAgentFactory } = await import("./agent-factory.ts");
 	const { MemoryStore } = await import("@beemax/memory");
@@ -884,7 +884,7 @@ async function runChat(config: ReturnType<typeof loadConfig>, requestedMode: { f
 		customTools: mcp.getTools(),
 		tools: executionSafeTools(config, mainAgentTools(config.agent.toolset, mcp.getTools().map((tool) => tool.name))),
 		authorizeTool: (request, signal) => localApproval.authorize(request, signal),
-		sessionTools: (sessionSource) => subagents ? createSubagentTools(subagents, sessionSource) : [],
+		sessionTools: (sessionSource) => [...(subagents ? createSubagentTools(subagents, sessionSource) : []), ...createTaskLedgerTools(memory, sessionSource)],
 	});
 	const profileRuntime = createProfileAgentRuntime<SessionSource>({
 		profileId: config.profile,
@@ -893,6 +893,7 @@ async function runChat(config: ReturnType<typeof loadConfig>, requestedMode: { f
 		runtime: {
 			createAgent,
 			fallbackModels: configuredRuntimeModels(config),
+			taskLedger: memory,
 			context: createTaskAwareConversationContext(memory, { runtimeSnapshot: () => ({ profile: config.profile }) }),
 		},
 		approvalBroker: localApproval,
@@ -1087,6 +1088,11 @@ async function runChat(config: ReturnType<typeof loadConfig>, requestedMode: { f
 				writePrompt(); return;
 			}
 			if (command?.kind === "tools") { process.stdout.write(`${toolsStatus()}\n`); writePrompt(); return; }
+			if (command?.kind === "tasks") {
+				const tasks = runtime.tasks(source, { limit: 50 });
+				process.stdout.write(`${tasks.length ? tasks.map((task) => `${task.id}  [${task.kind}/${task.status}]  ${task.title}`).join("\n") : "No durable Tasks are visible to this conversation."}\n`);
+				writePrompt(); return;
+			}
 			if (command?.kind === "retry") {
 				if (!retryText) process.stdout.write("No recoverable failed turn to retry.\n");
 				else { const text = retryText; retryText = undefined; active = runTurn(text, source); try { await active; } catch (error) { process.stdout.write(`Agent run failed: ${error instanceof Error ? error.message : String(error)}\n`); } finally { active = undefined; } }

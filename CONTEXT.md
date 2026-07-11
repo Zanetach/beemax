@@ -12,6 +12,10 @@ _Avoid_: Job, todo, agent run
 One execution attempt for a Task; retries create additional Task Runs without duplicating the Task.
 _Avoid_: Task, session, turn
 
+**Task Ledger**:
+The durable, owner-scoped record of Tasks and their Task Runs across conversations and restarts.
+_Avoid_: Chat history, memory, process list
+
 **Schedule**:
 A rule that creates Tasks at a future time or recurring cadence; it is not itself a Task.
 _Avoid_: Scheduled task, cron job

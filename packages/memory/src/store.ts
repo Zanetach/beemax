@@ -15,7 +15,7 @@ import Database from "better-sqlite3";
 import type { Database as DatabaseType } from "better-sqlite3";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
-import type { TaskRecord as RuntimeTaskRecord, TaskRunRecord, TaskRunTransition, TaskTransition } from "@beemax/core";
+import type { TaskQuery, TaskRecord as RuntimeTaskRecord, TaskRunRecord, TaskRunTransition, TaskTransition } from "@beemax/core";
 
 export const MEMORY_CLAIM_KINDS = ["preference", "fact", "decision", "goal", "project", "relationship", "workflow"] as const;
 export type MemoryClaimKind = typeof MEMORY_CLAIM_KINDS[number];
@@ -617,14 +617,19 @@ export class MemoryStore {
 		if (result.changes !== 1) throw new Error(`Task Run not found: ${id}`);
 	}
 
-	listTaskRuns(taskId: string): TaskRunRecord[] {
+	taskRuns(taskId: string): TaskRunRecord[] {
 		return (this.db.prepare("SELECT * FROM task_runs WHERE task_id = ? ORDER BY started_at DESC").all(taskId) as TaskRunRow[]).map(mapTaskRun);
 	}
 
-	listRuntimeTasks(ownerKey?: string, limit = 50): RuntimeTaskRecord[] {
-		const rows = (ownerKey
-			? this.db.prepare("SELECT * FROM tasks WHERE owner_key = ? ORDER BY created_at DESC LIMIT ?").all(ownerKey, limitOf(limit, 50))
-			: this.db.prepare("SELECT * FROM tasks ORDER BY created_at DESC LIMIT ?").all(limitOf(limit, 50))) as RuntimeTaskRow[];
+	queryTasks(query: TaskQuery): RuntimeTaskRecord[] {
+		if (query.ownerKeys.length === 0) return [];
+		const conditions = [`owner_key IN (${query.ownerKeys.map(() => "?").join(", ")})`];
+		const params: unknown[] = [...query.ownerKeys];
+		if (query.id) { conditions.push("id = ?"); params.push(query.id); }
+		if (query.kinds?.length) { conditions.push(`kind IN (${query.kinds.map(() => "?").join(", ")})`); params.push(...query.kinds); }
+		if (query.statuses?.length) { conditions.push(`status IN (${query.statuses.map(() => "?").join(", ")})`); params.push(...query.statuses); }
+		params.push(limitOf(query.limit, 50));
+		const rows = this.db.prepare(`SELECT * FROM tasks WHERE ${conditions.join(" AND ")} ORDER BY created_at DESC LIMIT ?`).all(...params) as RuntimeTaskRow[];
 		return rows.map(mapRuntimeTask);
 	}
 

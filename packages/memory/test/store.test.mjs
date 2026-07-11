@@ -92,11 +92,11 @@ test("runtime Task ledger persists delegated lifecycle independently from memory
 		store.transition("child-1", { status: "succeeded", finishedAt: 120, result: "done" });
 		store.recordRun({ id: "run-1", taskId: "child-1", executor: "subagent", status: "running", startedAt: 110 });
 		store.transitionRun("run-1", { status: "succeeded", finishedAt: 120, output: "done" });
-		assert.deepEqual(store.listRuntimeTasks("cli:local:local"), [{
+		assert.deepEqual(store.queryTasks({ ownerKeys: ["cli:local:local"] }), [{
 			id: "child-1", ownerKey: "cli:local:local", kind: "delegated", title: "Research",
 			status: "succeeded", createdAt: 100, startedAt: 110, finishedAt: 120, result: "done",
 		}]);
-		assert.deepEqual(store.listTaskRuns("child-1"), [{ id: "run-1", taskId: "child-1", executor: "subagent", status: "succeeded", startedAt: 110, finishedAt: 120, output: "done" }]);
+		assert.deepEqual(store.taskRuns("child-1"), [{ id: "run-1", taskId: "child-1", executor: "subagent", status: "succeeded", startedAt: 110, finishedAt: 120, output: "done" }]);
 		assert.equal(store.listTasks().length, 0);
 	} finally {
 		store.close();
@@ -113,7 +113,7 @@ test("legacy task facts migrate once into objective Tasks", () => {
 	legacy.close();
 	const store = new MemoryStore(path);
 	try {
-		assert.deepEqual(store.listRuntimeTasks("profile"), [{ id: "release", ownerKey: "profile", kind: "objective", title: "Ship release", status: "succeeded", evidence: "tag:v1", createdAt: 110, finishedAt: 120 }]);
+		assert.deepEqual(store.queryTasks({ ownerKeys: ["profile"] }), [{ id: "release", ownerKey: "profile", kind: "objective", title: "Ship release", status: "succeeded", evidence: "tag:v1", createdAt: 110, finishedAt: 120 }]);
 	} finally { store.close(); rmSync(root, { recursive: true, force: true }); }
 });
 
