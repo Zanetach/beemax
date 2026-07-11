@@ -53,6 +53,18 @@ test("action IDs make retried controls and concurrent requests idempotent per se
 	assert.equal(runs, 2);
 });
 
+test("session opening is a Core interaction action for every presenter", async () => {
+	let opens = 0;
+	const runtime = {
+		async run() { return { answer: "ok", model: "test/model", durationMs: 1, usage: {} }; },
+		async open() { opens++; return true; }, async cancel() { return false; }, async modelStatus() { return undefined; }, async usage() { return undefined; },
+	};
+	const interaction = new InteractionEventAdapter(runtime);
+	assert.deepEqual(await interaction.dispatch({ type: "session.open", source, actionId: "open-1" }), { opened: true });
+	assert.deepEqual(await interaction.dispatch({ type: "session.open", source, actionId: "open-1" }), { opened: true });
+	assert.equal(opens, 1);
+});
+
 test("interaction telemetry is operational-only and does not contain model content", async () => {
 	const telemetry = [];
 	const runtime = {

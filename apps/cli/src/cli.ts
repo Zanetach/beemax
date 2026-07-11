@@ -1055,7 +1055,7 @@ async function runChat(config: ReturnType<typeof loadConfig>, requestedMode: { f
 			if (command?.kind === "new") {
 				const threadId = `local-${crypto.randomUUID()}`;
 				source = { ...source, threadId };
-				await runtime.open(source);
+				await interactionAdapter.dispatch({ type: "session.open", source });
 				await applySessionPreferences();
 				lastDurationMs = undefined;
 				activity = new LocalActivityPresenter(detailsDisplay, presentationMode !== "plain");
@@ -1067,7 +1067,7 @@ async function runChat(config: ReturnType<typeof loadConfig>, requestedMode: { f
 				const reset = runtime.reset(source);
 				const threadId = `local-${crypto.randomUUID()}`;
 				source = { ...source, threadId };
-				await runtime.open(source);
+				await interactionAdapter.dispatch({ type: "session.open", source });
 				await applySessionPreferences();
 				lastDurationMs = undefined;
 				activity = new LocalActivityPresenter(detailsDisplay, presentationMode !== "plain");
@@ -1113,7 +1113,7 @@ async function runChat(config: ReturnType<typeof loadConfig>, requestedMode: { f
 				workbench?.clearPicker();
 				lastDurationMs = undefined;
 				activity = new LocalActivityPresenter(detailsDisplay, presentationMode !== "plain");
-				await runtime.open(source);
+				await interactionAdapter.dispatch({ type: "session.open", source });
 				await applySessionPreferences();
 				process.stdout.write(`Restored session: ${source.threadId ?? "default"}. Use /history to inspect it or send a message to continue.\n`);
 				writePrompt();
