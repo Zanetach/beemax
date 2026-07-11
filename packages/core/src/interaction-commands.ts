@@ -12,6 +12,7 @@ export type InteractionCommand =
 	| { kind: "resume"; sessionId: string }
 	| { kind: "models"; query?: string }
 	| { kind: "retry" }
+	| { kind: "steer"; text: string }
 	| { kind: "tools" }
 	| { kind: "think"; level?: "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max" }
 	| { kind: "details"; mode: InteractionDetailsDisplay | "status" };
@@ -38,6 +39,7 @@ export const INTERACTION_COMMANDS: readonly InteractionCommandDefinition[] = [
 	{ name: "think", usage: "/think [level]", description: "Inspect or set reasoning level" },
 	{ name: "tools", usage: "/tools", description: "Show available tools" },
 	{ name: "retry", usage: "/retry", description: "Retry the last recoverable failed turn" },
+	{ name: "steer", usage: "/steer <message>", description: "Guide the active Agent before its next model step" },
 	{ name: "details", usage: "/details [hidden|collapsed|expanded]", description: "Inspect or set activity detail visibility" },
 ] as const;
 
@@ -60,6 +62,8 @@ export function parseInteractionCommand(input: string): InteractionCommand | und
 	const models = input.trim().match(/^\/models(?:\s+(.+))?$/i);
 	if (models) return models[1]?.trim() ? { kind: "models", query: models[1].trim() } : { kind: "models" };
 	if (value === "/retry") return { kind: "retry" };
+	const steer = input.trim().match(/^\/steer\s+(.+)$/is);
+	if (steer) return { kind: "steer", text: steer[1].trim() };
 	if (value === "/tools") return { kind: "tools" };
 	const history = value.match(/^\/history(?:\s+(\d{1,3}))?$/);
 	if (history) return { kind: "history", limit: history[1] ? Number(history[1]) : undefined };

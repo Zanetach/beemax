@@ -86,6 +86,13 @@ export class Dispatcher {
 				await this.platform.send(msg.source.chatId, control.message);
 				return;
 			}
+			const snapshot = await this.interaction.snapshot(effective.source);
+			if (["running", "queued", "awaiting_approval"].includes(snapshot.phase)) {
+				const queued = await this.interaction.dispatch({ type: "turn.queue", source: effective.source, text: effective.text });
+				if (!("queued" in queued) || !queued.queued) throw new Error("Active Agent turn rejected follow-up input");
+				await this.platform.send(msg.source.chatId, queued.mode === "follow_up" ? "Follow-up delivered to the active Agent." : queued.replaced ? "Replaced the queued follow-up." : "Queued the follow-up.");
+				return;
+			}
 			await this.runTurn(effective);
 		} finally {
 			await msg.releaseMedia?.().catch((error) => {

@@ -148,6 +148,34 @@ test("BeeMax Agent Runtime passes native image attachments to Pi without prompt 
 	runtime.dispose();
 });
 
+test("BeeMax Agent Runtime exposes Pi native steer and follow-up only during an active run", async () => {
+	const source = { platform: "cli", chatId: "terminal", chatType: "dm", userId: "user" };
+	let release;
+	const delivered = [];
+	const runtime = new BeeMaxAgentRuntime({
+		createAgent: async () => {
+			const agent = { state: { model: { id: "test" }, messages: [] } };
+			return {
+				agent, isStreaming: true,
+				subscribe: () => () => undefined,
+				prompt: async () => { await new Promise((resolve) => { release = resolve; }); agent.state.messages = [{ role: "assistant", content: [{ type: "text", text: "done" }], usage: { input: 1, output: 1 } }]; },
+				steer: async (text) => { delivered.push(["steer", text]); },
+				followUp: async (text) => { delivered.push(["follow_up", text]); },
+				abort: async () => undefined, dispose: () => undefined,
+			};
+		},
+	});
+	assert.equal(await runtime.steer(source, "too early"), false);
+	const turn = runtime.run({ source, text: "start", timeoutMs: 1_000 });
+	await new Promise((resolve) => setImmediate(resolve));
+	assert.equal(await runtime.steer(source, "focus"), true);
+	assert.equal(await runtime.followUp(source, "summarize"), true);
+	assert.deepEqual(delivered, [["steer", "focus"], ["follow_up", "summarize"]]);
+	release();
+	await turn;
+	runtime.dispose();
+});
+
 test("BeeMax Agent Runtime exposes explicit context compaction only for an idle session", async () => {
 	const source = { platform: "cli", chatId: "terminal", chatType: "dm", userId: "user" };
 	let compactions = 0;

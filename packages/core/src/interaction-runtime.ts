@@ -33,7 +33,7 @@ export type InteractionEvent = InteractionEventMeta & (
 	| { type: "tool.changed"; callId: string; name: string; state: "running" | "completed" | "failed"; summary?: string }
 	| { type: "approval.requested"; toolName: string; details?: ToolApprovalDetails }
 	| { type: "approval.resolved"; toolName: string; allowed: boolean }
-	| { type: "turn.queued"; position: number; replaced: boolean; mode: "queue" | "steer_fallback" }
+	| { type: "turn.queued"; position: number; replaced: boolean; mode: InteractionDeliveryMode }
 	| { type: "turn.finished"; result: AgentRunResult }
 	| { type: "turn.failed"; error: string }
 	| { type: "turn.cancelled" }
@@ -46,7 +46,7 @@ type InteractionEventPayload =
 	| { type: "tool.changed"; callId: string; name: string; state: "running" | "completed" | "failed"; summary?: string }
 	| { type: "approval.requested"; toolName: string; details?: ToolApprovalDetails }
 	| { type: "approval.resolved"; toolName: string; allowed: boolean }
-	| { type: "turn.queued"; position: number; replaced: boolean; mode: "queue" | "steer_fallback" }
+	| { type: "turn.queued"; position: number; replaced: boolean; mode: InteractionDeliveryMode }
 	| { type: "turn.finished"; result: AgentRunResult }
 	| { type: "turn.failed"; error: string }
 	| { type: "turn.cancelled" };
@@ -69,7 +69,8 @@ export interface InteractionCancelResult {
 	queuedCancelled: boolean;
 }
 
-export interface InteractionQueueResult { queued: boolean; position: number; replaced: boolean; mode: "queue" | "steer_fallback"; }
+export type InteractionDeliveryMode = "queue" | "steer_fallback" | "steer" | "follow_up";
+export interface InteractionQueueResult { queued: boolean; position: number; replaced: boolean; mode: InteractionDeliveryMode; }
 export interface InteractionApprovalResult { handled: boolean; }
 export interface InteractionSessionResult { opened: boolean; }
 export interface InteractionSessionResetResult { reset: boolean; }
@@ -91,7 +92,7 @@ export type InteractionTelemetryEvent =
 	| { type: "interaction.turn_started"; surface: string; model: string; session: string }
 	| { type: "interaction.approval_requested"; surface: string; tool: string; risk?: "低" | "中" | "高" }
 	| { type: "interaction.approval_resolved"; surface: string; decision: "allowed" | "denied"; latency: number }
-	| { type: "interaction.input_queued"; surface: string; mode: "queue" | "steer_fallback"; waitMs: number }
+	| { type: "interaction.input_queued"; surface: string; mode: InteractionDeliveryMode; waitMs: number }
 	| { type: "interaction.presenter_reconnected"; surface: string; gapEvents: number }
 	| { type: "interaction.session_resumed"; source: string; age: number };
 export type InteractionTelemetrySink = (event: InteractionTelemetryEvent) => void;
@@ -122,6 +123,7 @@ export class InteractionEventAdapter<Source extends BeeMaxRuntimeSource = BeeMax
 	private readonly eventHistory = new Map<string, InteractionEvent[]>();
 	private readonly subscribers = new Map<string, Set<InteractionEventSink>>();
 	private readonly queuedInputs = new Map<string, string>();
+	private readonly nativeQueuedInputs = new Set<string>();
 	private readonly actions = new Map<string, Map<string, Promise<InteractionActionResult>>>();
 	private readonly approvalStartedAt = new Map<string, number>();
 	private readonly turnModels = new Map<string, string>();
@@ -167,8 +169,8 @@ export class InteractionEventAdapter<Source extends BeeMaxRuntimeSource = BeeMax
 
 	private async dispatchUncached(action: InteractionAction<Source>, sink?: InteractionEventSink): Promise<InteractionActionResult> {
 		if (action.type === "turn.cancel") return this.cancel(action.source, sink);
-		if (action.type === "turn.queue") return this.queue(action.source, action.text, "queue", sink);
-		if (action.type === "turn.steer") return this.queue(action.source, action.text, "steer_fallback", sink);
+		if (action.type === "turn.queue") return this.deliverOrQueue(action.source, action.text, "follow_up", sink);
+		if (action.type === "turn.steer") return this.deliverOrQueue(action.source, action.text, "steer", sink);
 		if (action.type === "approval.decide") return { handled: await this.approvalBroker?.decide(action.source, action.choice) ?? false };
 		if (action.type === "session.open") {
 			const saved = await this.runtime.listSavedSessions(action.source);
@@ -212,6 +214,7 @@ export class InteractionEventAdapter<Source extends BeeMaxRuntimeSource = BeeMax
 			this.sinkFailures.delete(key);
 			this.cancellationRequested.delete(key);
 			this.cancellationPublished.delete(key);
+			this.nativeQueuedInputs.delete(key);
 			this.turnModels.delete(interactionEventMeta(action.source, "", 0, this.profileId).sessionId);
 		}
 	}
@@ -234,7 +237,8 @@ export class InteractionEventAdapter<Source extends BeeMaxRuntimeSource = BeeMax
 	async snapshot(source: Source): Promise<InteractionSnapshot> {
 		const current = this.states.get(interactionKey(source));
 		const [status, usage] = await Promise.all([this.runtime.modelStatus?.(source), this.runtime.usage?.(source)]);
-		return { phase: current?.phase ?? "idle", turnId: current?.turnId, model: status?.model, usage, queueDepth: this.queuedInputs.has(interactionKey(source)) ? 1 : 0, updatedAt: current?.updatedAt ?? Date.now() };
+		const key = interactionKey(source);
+		return { phase: current?.phase ?? "idle", turnId: current?.turnId, model: status?.model, usage, queueDepth: this.queuedInputs.has(key) || this.nativeQueuedInputs.has(key) ? 1 : 0, updatedAt: current?.updatedAt ?? Date.now() };
 	}
 
 	/** Reconnection-safe semantic events, bounded per interaction session. */
@@ -291,7 +295,9 @@ export class InteractionEventAdapter<Source extends BeeMaxRuntimeSource = BeeMax
 			this.cancellationPublished.add(key);
 			await this.publish(source, state.turnId, { type: "turn.cancelled" }, sink);
 		}
-		const queuedCancelled = this.queuedInputs.delete(key);
+		const localQueuedCancelled = this.queuedInputs.delete(key);
+		const nativeQueuedCancelled = this.nativeQueuedInputs.delete(key);
+		const queuedCancelled = localQueuedCancelled || nativeQueuedCancelled;
 		if (!cancelled) this.cancellationRequested.delete(key);
 		return { cancelled, approvalCancelled, subagentsCancelled, errors, queuedCancelled };
 	}
@@ -305,6 +311,22 @@ export class InteractionEventAdapter<Source extends BeeMaxRuntimeSource = BeeMax
 		this.queuedInputs.set(key, text);
 		await this.publish(source, turnId, { type: "turn.queued", position: 1, replaced, mode }, sink);
 		return { queued: true, position: 1, replaced, mode };
+	}
+
+	private async deliverOrQueue(source: Source, text: string, mode: "steer" | "follow_up", sink?: InteractionEventSink): Promise<InteractionQueueResult> {
+		const key = interactionKey(source);
+		const turnId = this.states.get(key)?.turnId;
+		const phase = this.states.get(key)?.phase;
+		if (!turnId || !["running", "queued", "awaiting_approval"].includes(phase ?? "")) return { queued: false, position: 0, replaced: false, mode };
+		const deliver = mode === "steer" ? this.runtime.steer : this.runtime.followUp;
+		if (deliver) {
+			if (await deliver.call(this.runtime, source, text)) {
+				this.nativeQueuedInputs.add(key);
+				await this.publish(source, turnId, { type: "turn.queued", position: 1, replaced: false, mode }, sink);
+				return { queued: true, position: 1, replaced: false, mode };
+			}
+		}
+		return this.queue(source, text, mode === "steer" ? "steer_fallback" : "queue", sink);
 	}
 
 	private apply(source: Source, event: InteractionEvent): void {
@@ -372,7 +394,7 @@ export function reduceInteractionEvent(snapshot: InteractionSnapshot, event: Int
 	if (event.type === "turn.cancelled") return { ...snapshot, phase: "cancelled", turnId: event.turnId, updatedAt: event.at };
 	if (event.type === "approval.requested") return { ...snapshot, phase: "awaiting_approval", turnId: event.turnId, updatedAt: event.at };
 	if (event.type === "approval.resolved") return { ...snapshot, phase: "running", turnId: event.turnId, updatedAt: event.at };
-	if (event.type === "turn.queued") return { ...snapshot, phase: "queued", turnId: event.turnId, updatedAt: event.at };
+	if (event.type === "turn.queued") return { ...snapshot, phase: event.mode === "steer" ? "running" : "queued", turnId: event.turnId, updatedAt: event.at };
 	return { ...snapshot, updatedAt: event.at };
 }
 

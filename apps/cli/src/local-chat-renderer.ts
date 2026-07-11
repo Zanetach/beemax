@@ -104,7 +104,11 @@ export class LocalActivityPresenter {
 		}
 		if (event.type === "turn.failed") return `\n运行失败：${event.error}\n`;
 		if (event.type === "turn.cancelled") return "\n运行已取消。\n";
-		if (event.type === "turn.queued") return `\n${event.mode === "steer_fallback" ? "当前运行时不支持中途引导，已" : "已"}${event.replaced ? "替换" : "加入"}下一条排队消息（位置 ${event.position}）。\n`;
+		if (event.type === "turn.queued") {
+			if (event.mode === "steer") return "\n已向当前 Agent 投递中途引导。\n";
+			if (event.mode === "follow_up") return "\n已向当前 Agent 投递后续消息。\n";
+			return `\n${event.mode === "steer_fallback" ? "当前运行时不支持中途引导，已" : "已"}${event.replaced ? "替换" : "加入"}下一条排队消息（位置 ${event.position}）。\n`;
+		}
 		if (event.type === "approval.requested") {
 			const detail = event.details;
 			if (!detail) return `\n等待审批：工具 ${event.toolName}。可输入 /stop 取消。\n`;

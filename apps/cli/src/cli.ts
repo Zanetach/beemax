@@ -1036,9 +1036,12 @@ async function runChat(config: ReturnType<typeof loadConfig>, requestedMode: { f
 				if (command?.kind === "stop") { await stop(); return; }
 				if (await interactionAdapter.handleApprovalReply(source, trimmed)) return;
 				if (command?.kind === "status") { process.stdout.write(`\n${await status()}\n`); return; }
-				const queued = await interactionAdapter.dispatch({ type: "turn.queue", source, text: trimmed });
+				const queued = command?.kind === "steer"
+					? await interactionAdapter.dispatch({ type: "turn.steer", source, text: command.text })
+					: await interactionAdapter.dispatch({ type: "turn.queue", source, text: trimmed });
 				if (!("queued" in queued) || !queued.queued) { process.stdout.write("\nCould not queue input because no active turn is available.\n"); return; }
-				process.stdout.write(`\n${queued.replaced ? "Replaced the queued input." : "Queued the next input."} Use /stop (or Ctrl+C) to cancel the active turn.\n`);
+				const label = queued.mode === "steer" ? "Guidance delivered to the active Agent." : queued.mode === "follow_up" ? "Follow-up delivered to the active Agent." : queued.replaced ? "Replaced the queued input." : "Queued the next input.";
+				process.stdout.write(`\n${label} Use /stop (or Ctrl+C) to cancel the active turn.\n`);
 				return;
 			}
 			if (controlInProgress) {

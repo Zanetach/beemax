@@ -178,7 +178,30 @@ test("interaction runtime owns a one-entry queue and clears it on cancellation",
 	await assert.rejects(turn, /aborted/);
 });
 
-test("steer is an explicit, honest queue fallback until the runtime supports interruption", async () => {
+test("steer and follow-up use native runtime delivery when available", async () => {
+	let rejectTurn;
+	const delivered = [];
+	const runtime = {
+		run() { return new Promise((_resolve, reject) => { rejectTurn = reject; }); },
+		async steer(_source, text) { delivered.push(["steer", text]); return true; },
+		async followUp(_source, text) { delivered.push(["follow_up", text]); return true; },
+		async cancel() { rejectTurn(new Error("aborted")); return true; },
+		async modelStatus() { return undefined; }, async usage() { return undefined; },
+	};
+	const interaction = new InteractionEventAdapter(runtime);
+	const turn = interaction.dispatch({ type: "message.send", source, text: "first", input: { timeoutMs: 1_000 } });
+	await new Promise((resolve) => setImmediate(resolve));
+	assert.deepEqual(await interaction.dispatch({ type: "turn.steer", source, text: "focus on tests" }), { queued: true, position: 1, replaced: false, mode: "steer" });
+	assert.equal((await interaction.snapshot(source)).phase, "running");
+	assert.deepEqual(await interaction.dispatch({ type: "turn.queue", source, text: "then summarize" }), { queued: true, position: 1, replaced: false, mode: "follow_up" });
+	assert.equal((await interaction.snapshot(source)).queueDepth, 1);
+	assert.deepEqual(delivered, [["steer", "focus on tests"], ["follow_up", "then summarize"]]);
+	assert.equal(interaction.takeQueuedInput(source), undefined, "native Pi queues must not be replayed by the presenter");
+	assert.equal((await interaction.dispatch({ type: "turn.cancel", source })).queuedCancelled, true);
+	await assert.rejects(turn, /aborted/);
+});
+
+test("steer is an explicit, honest queue fallback for legacy runtimes", async () => {
 	let rejectTurn;
 	const runtime = {
 		run() { return new Promise((_resolve, reject) => { rejectTurn = reject; }); },
@@ -190,6 +213,23 @@ test("steer is an explicit, honest queue fallback until the runtime supports int
 	await new Promise((resolve) => setImmediate(resolve));
 	assert.deepEqual(await interaction.dispatch({ type: "turn.steer", source, text: "focus on tests" }), { queued: true, position: 1, replaced: false, mode: "steer_fallback" });
 	assert.equal(interaction.events(source).at(-1).mode, "steer_fallback");
+	await interaction.dispatch({ type: "turn.cancel", source });
+	await assert.rejects(turn, /aborted/);
+});
+
+test("native delivery failures surface instead of being misreported as unsupported", async () => {
+	let rejectTurn;
+	const runtime = {
+		run() { return new Promise((_resolve, reject) => { rejectTurn = reject; }); },
+		async steer() { throw new Error("native steer failed"); },
+		async cancel() { rejectTurn(new Error("aborted")); return true; },
+		async modelStatus() { return undefined; }, async usage() { return undefined; },
+	};
+	const interaction = new InteractionEventAdapter(runtime);
+	const turn = interaction.dispatch({ type: "message.send", source, text: "first", input: { timeoutMs: 1_000 } });
+	await new Promise((resolve) => setImmediate(resolve));
+	await assert.rejects(interaction.dispatch({ type: "turn.steer", source, text: "focus" }), /native steer failed/);
+	assert.equal(interaction.takeQueuedInput(source), undefined);
 	await interaction.dispatch({ type: "turn.cancel", source });
 	await assert.rejects(turn, /aborted/);
 });

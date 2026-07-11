@@ -212,6 +212,33 @@ test("Dispatcher delegates turns to an injected Agent Runtime", async () => {
 	assert.equal(disposed, 0);
 });
 
+test("Dispatcher delivers a second inbound message as a native follow-up to the active turn", async () => {
+	let inbound;
+	let finish;
+	const followUps = [];
+	const sent = [];
+	const platform = {
+		name: "feishu", isConnected: true, onMessage: (handler) => { inbound = handler; }, connect: async () => true, disconnect: async () => undefined,
+		send: async (_chatId, text) => { sent.push(text); return { success: true }; }, editMessage: async () => ({ success: true }),
+		sendCard: async () => ({ success: true, messageId: "card" }), updateCard: async () => ({ success: true }), sendTyping: async () => undefined, stopTyping: async () => undefined,
+	};
+	const runtime = {
+		run: async () => new Promise((resolve) => { finish = resolve; }),
+		followUp: async (_source, text) => { followUps.push(text); return true; },
+		cancel: async () => false, handleControl: async () => undefined, modelStatus: async () => undefined, usage: async () => undefined,
+		isBusy: () => true, dispose: () => undefined,
+	};
+	const dispatcher = new Dispatcher({ runtime }, platform);
+	const first = inbound({ text: "first", messageType: "text", source: { ...source, messageId: "first" }, mediaPaths: [], mediaTypes: [], raw: {}, timestamp: Date.now() });
+	await new Promise((resolve) => setImmediate(resolve));
+	await inbound({ text: "second", messageType: "text", source: { ...source, messageId: "second" }, mediaPaths: [], mediaTypes: [], raw: {}, timestamp: Date.now() });
+	assert.deepEqual(followUps, ["second"]);
+	assert.match(sent.at(-1), /Follow-up delivered/);
+	finish({ answer: "ok", model: "test", durationMs: 1, usage: {} });
+	await first;
+	dispatcher.dispose();
+});
+
 test("Dispatcher delegates opaque control handling to the Agent Runtime", async () => {
 	let inbound;
 	const sent = [];

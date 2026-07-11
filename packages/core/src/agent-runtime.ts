@@ -54,6 +54,10 @@ export type AgentRunEventSink = (event: AgentSessionEvent) => void | Promise<voi
 /** Gateway-facing runtime contract; implementations may be local or remote. */
 export interface AgentRuntimePort<Source extends BeeMaxRuntimeSource = BeeMaxRuntimeSource> {
 	run(input: AgentRunInput<Source>, onEvent?: AgentRunEventSink): Promise<AgentRunResult>;
+	/** Deliver guidance into an active Pi run. Optional for legacy/remote runtimes. */
+	steer?(source: Source, text: string, images?: ImageContent[]): Promise<boolean>;
+	/** Deliver a message after the active Pi run becomes idle. Optional for legacy/remote runtimes. */
+	followUp?(source: Source, text: string, images?: ImageContent[]): Promise<boolean>;
 	cancel(source: Source): Promise<boolean>;
 	compact(source: Source, instructions?: string): Promise<boolean>;
 	open(source: Source): Promise<boolean>;
@@ -143,6 +147,20 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 	}
 
 	async cancel(source: Source): Promise<boolean> { return this.sessions.abort(source); }
+	async steer(source: Source, text: string, images?: ImageContent[]): Promise<boolean> {
+		return (await this.sessions.withSession(source, async (session) => {
+			if (!session.busy || !session.piSession.isStreaming) return false;
+			await session.piSession.steer(text, images);
+			return true;
+		})) ?? false;
+	}
+	async followUp(source: Source, text: string, images?: ImageContent[]): Promise<boolean> {
+		return (await this.sessions.withSession(source, async (session) => {
+			if (!session.busy || !session.piSession.isStreaming) return false;
+			await session.piSession.followUp(text, images);
+			return true;
+		})) ?? false;
+	}
 	async compact(source: Source, instructions?: string): Promise<boolean> {
 		return (await this.sessions.withSession(source, async (session) => {
 			if (session.busy) return false;
