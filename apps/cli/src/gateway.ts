@@ -8,7 +8,7 @@
  */
 
 import { AutomationStore } from "@beemax/automation";
-import { AutomationScheduler, BeeMaxAgentRuntime, HeartbeatRunner, SubagentManager, ToolApprovalBroker, createSubagentTools, createTaskLedgerTools, createTaskOrchestrationTools, type SubagentTask, type TaskRecord } from "@beemax/core";
+import { AutomationScheduler, BeeMaxAgentRuntime, HeartbeatRunner, ProfileTaskScheduler, SubagentManager, ToolApprovalBroker, createSubagentTools, createTaskLedgerTools, createTaskOrchestrationTools, type SubagentTask, type TaskRecord } from "@beemax/core";
 import {
 	Dispatcher,
 	FeishuAdapter,
@@ -111,12 +111,13 @@ export async function runGateway(config: BeeMaxConfig): Promise<void> {
 		customTools: readOnlyMcpTools,
 		tools: executionSafeTools(config, readOnlyAgentTools(readOnlyMcpTools.map((tool) => tool.name))),
 	});
+	const taskScheduler = new ProfileTaskScheduler({ maxConcurrent: config.subagents.maxConcurrent });
 	const subagents = config.subagents.enabled ? new SubagentManager({
 		maxConcurrent: config.subagents.maxConcurrent,
 		maxChildrenPerOwner: config.subagents.maxChildrenPerOwner,
 		defaultTimeoutMs: config.subagents.timeoutMs,
 		taskLedger: memory,
-		execute: async (task, signal) => executeSubagentTask(createSubagentAgent, task, signal),
+		execute: async (task, signal) => taskScheduler.run(task.ownerKey, () => executeSubagentTask(createSubagentAgent, task, signal), signal),
 	}) : undefined;
 	const createAgent = buildAgentFactory({
 		...profileAgentDefaults,
@@ -126,7 +127,7 @@ export async function runGateway(config: BeeMaxConfig): Promise<void> {
 		sessionTools: (source) => [
 			...(subagents ? [
 				...createSubagentTools(subagents, source),
-				...createTaskOrchestrationTools(memory, source, (task, signal) => executePlannedTask(createSubagentAgent, task, source, signal, config.subagents.timeoutMs), { maxConcurrent: config.subagents.maxConcurrent }),
+				...createTaskOrchestrationTools(memory, source, (task, signal) => taskScheduler.run(task.ownerKey, () => executePlannedTask(createSubagentAgent, task, source, signal, config.subagents.timeoutMs), signal), { maxConcurrent: config.subagents.maxConcurrent }),
 			] : []),
 			...createTaskLedgerTools(memory, source),
 		],

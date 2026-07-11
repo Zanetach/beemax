@@ -827,7 +827,7 @@ async function runChat(config: ReturnType<typeof loadConfig>, requestedMode: { f
 	const presentationMode: ChatPresentationMode = resolveChatPresentationMode({
 		...requestedMode, isInputTty: process.stdin.isTTY === true, isOutputTty: process.stdout.isTTY === true, term: process.env.TERM,
 	});
-	const { createSubagentTools, createTaskLedgerTools, createTaskOrchestrationTools, SubagentManager } = await import("@beemax/core");
+	const { createSubagentTools, createTaskLedgerTools, createTaskOrchestrationTools, ProfileTaskScheduler, SubagentManager } = await import("@beemax/core");
 	const { loadMcpConfig, McpManager } = await import("@beemax/mcp-capability");
 	const { buildAgentFactory } = await import("./agent-factory.ts");
 	const { MemoryStore } = await import("@beemax/memory");
@@ -863,12 +863,13 @@ async function runChat(config: ReturnType<typeof loadConfig>, requestedMode: { f
 		customTools: readOnlyMcpTools,
 		tools: executionSafeTools(config, readOnlyAgentTools(readOnlyMcpTools.map((tool) => tool.name))),
 	});
+	const taskScheduler = new ProfileTaskScheduler({ maxConcurrent: config.subagents.maxConcurrent });
 	const subagents = config.subagents.enabled ? new SubagentManager({
 		maxConcurrent: config.subagents.maxConcurrent,
 		maxChildrenPerOwner: config.subagents.maxChildrenPerOwner,
 		defaultTimeoutMs: config.subagents.timeoutMs,
 		taskLedger: memory,
-		execute: (task, signal) => executeSubagentTask(createSubagentAgent, task, signal),
+		execute: (task, signal) => taskScheduler.run(task.ownerKey, () => executeSubagentTask(createSubagentAgent, task, signal), signal),
 	}) : undefined;
 	const createAgent = buildAgentFactory({
 		provider: () => config.model.provider,
@@ -887,7 +888,7 @@ async function runChat(config: ReturnType<typeof loadConfig>, requestedMode: { f
 		sessionTools: (sessionSource) => [
 			...(subagents ? [
 				...createSubagentTools(subagents, sessionSource),
-				...createTaskOrchestrationTools(memory, sessionSource, (task, signal) => executePlannedTask(createSubagentAgent, task, sessionSource, signal, config.subagents.timeoutMs), { maxConcurrent: config.subagents.maxConcurrent }),
+				...createTaskOrchestrationTools(memory, sessionSource, (task, signal) => taskScheduler.run(task.ownerKey, () => executePlannedTask(createSubagentAgent, task, sessionSource, signal, config.subagents.timeoutMs), signal), { maxConcurrent: config.subagents.maxConcurrent }),
 			] : []),
 			...createTaskLedgerTools(memory, sessionSource),
 		],

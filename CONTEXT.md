@@ -24,6 +24,10 @@ _Avoid_: Prompt outline, checklist, execution log
 A requirement that one Task succeed before another Task becomes ready.
 _Avoid_: Ordering hint, parent Task
 
+**Profile Task Scheduler**:
+The Profile-wide admission controller that shares delegated execution capacity across conversations and Task Plans.
+_Avoid_: Task queue, Sub-Agent manager, Task Plan runner
+
 **Schedule**:
 A rule that creates Tasks at a future time or recurring cadence; it is not itself a Task.
 _Avoid_: Scheduled task, cron job
