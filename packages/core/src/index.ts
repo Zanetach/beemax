@@ -85,6 +85,7 @@ export type { MediaOutboxPort } from "./media-outbox-port.ts";
 export { createAutomationTools } from "./automation-tools.ts";
 export { createSkillTools } from "./skill-tools.ts";
 export { createWebTools, type WebToolsOptions } from "./web-tools.ts";
+export { createBrowserTools, type BrowserToolsOptions } from "./browser-tools.ts";
 export {
 	AutomationScheduler,
 	HeartbeatRunner,

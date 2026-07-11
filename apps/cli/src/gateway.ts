@@ -322,7 +322,7 @@ function profilePrompt(config: BeeMaxConfig): string {
 
 export function readOnlyAgentTools(mcpTools: string[], additionalTools: string[] = []): string[] {
 	return [
-		"read", "grep", "find", "ls", "web_search", "agent_reach_search", "web_extract",
+		"read", "grep", "find", "ls", "web_search", "agent_reach_search", "web_extract", "browser_status",
 		"memory_recall", "memory_list",
 		...additionalTools,
 		...mcpTools,
@@ -339,6 +339,8 @@ export function mainAgentTools(toolset: "safe" | "standard", mcpTools: string[])
 	return [
 		...readOnly,
 		"bash", "edit", "write", "memory_remember", "memory_promote", "memory_reject", "memory_forget", "memory_understand", "memory_correct",
+		"browser_open", "browser_read",
+		"browser_click", "browser_fill", "browser_cookies",
 		"reminder_create", "schedule_create", "schedule_pause", "schedule_resume", "schedule_delete",
 		"skill_create", "skill_update", "task_spawn", "task_cancel", "image_generate",
 		"feishu_meeting_reserve_create", "feishu_meeting_reserve_update", "feishu_meeting_reserve_delete",
