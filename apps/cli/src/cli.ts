@@ -906,6 +906,7 @@ async function runChat(config: ReturnType<typeof loadConfig>, requestedMode: { f
 		let active: Promise<void> | undefined;
 		let queuedInput: string | undefined;
 		let sessionChoices: string[] = [];
+		let modelChoices: string[] = [];
 		let retryText: string | undefined;
 		let activity = new LocalActivityPresenter(detailsDisplay, presentationMode !== "plain");
 		let controlInProgress = false;
@@ -1038,7 +1039,12 @@ async function runChat(config: ReturnType<typeof loadConfig>, requestedMode: { f
 				return;
 			}
 			if (command?.kind === "sessions") { process.stdout.write(`${await sessions()}\n`); writePrompt(); return; }
-			if (command?.kind === "models") { process.stdout.write(`${renderConfiguredModels(config)}\n`); writePrompt(); return; }
+			if (command?.kind === "models") {
+				modelChoices = config.models.map((choice) => `${choice.provider}/${choice.model}`);
+				const rendered = renderConfiguredModels(config).split("\n").map((line, index) => `${index + 1}. ${line}`).join("\n");
+				process.stdout.write(`${rendered}\n\nUse /model <number> or /model <provider/model>.\n`);
+				writePrompt(); return;
+			}
 			if (command?.kind === "tools") { process.stdout.write(`${toolsStatus()}\n`); writePrompt(); return; }
 			if (command?.kind === "retry") {
 				if (!retryText) process.stdout.write("No recoverable failed turn to retry.\n");
@@ -1108,7 +1114,10 @@ async function runChat(config: ReturnType<typeof loadConfig>, requestedMode: { f
 			if (trimmed.toLowerCase().startsWith("/model")) {
 				controlInProgress = true;
 				try {
-					const control = await runtime.handleControl({ source, text: trimmed });
+					const numeric = trimmed.match(/^\/model\s+(\d+)\s*$/i);
+					const selected = numeric ? modelChoices[Number(numeric[1]) - 1] : undefined;
+					if (numeric && !selected) { process.stdout.write("Unknown model number. Run /models and choose a listed number.\n"); writePrompt(); return; }
+					const control = await runtime.handleControl({ source, text: selected ? `/model ${selected}` : trimmed });
 					if (control?.handled) { process.stdout.write(`${control.message}\n`); writePrompt(); return; }
 				} finally { controlInProgress = false; }
 			}
