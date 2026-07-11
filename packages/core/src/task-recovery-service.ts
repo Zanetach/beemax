@@ -42,7 +42,7 @@ export class TaskRecoveryService {
 		if (this.active) return this.active;
 		const cycle = (async (): Promise<TaskRecoveryCycleResult> => {
 			const reconciled = this.ledger.reconcileExpiredTaskRuns();
-			const verification = this.runner?.reverifyDue ? await this.runner.reverifyDue(Date.now(), options.signal) : { attempted: 0, accepted: 0, rejected: 0, unavailable: 0 };
+			const verification = this.runner?.reverifyDue ? await this.runner.reverifyDue(Date.now(), options.signal, options.maxConcurrent) : { attempted: 0, accepted: 0, rejected: 0, unavailable: 0 };
 			const recovery = this.runner ? await this.runner.run(options) : { plans: 0, succeeded: 0, failed: 0, cancelled: 0, blocked: [] };
 			return { reconciled, verification, recovery };
 		})();

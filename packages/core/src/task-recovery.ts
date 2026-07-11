@@ -47,20 +47,28 @@ export class TaskRecoveryRunner {
 		return await this.withPlanExecutionClaim(ownerKey, planId, signal, (claimSignal) => this.verifyCandidates(ownerKeys, candidates, claimSignal)) ?? emptyVerificationResult();
 	}
 
-	async reverifyDue(now = Date.now(), signal?: AbortSignal): Promise<TaskVerificationRetryResult> {
-		const candidates = this.ledger.verificationCandidates?.(now, 100) ?? [];
-		const plans = new Map<string, { ownerKey: string; planId: string; tasks: TaskRecord[] }>();
-		for (const task of candidates) {
-			if (!task.planId) continue;
-			const key = `${task.ownerKey}\0${task.planId}`;
-			const plan = plans.get(key) ?? { ownerKey: task.ownerKey, planId: task.planId, tasks: [] };
-			plan.tasks.push(task); plans.set(key, plan);
-		}
+	async reverifyDue(now = Date.now(), signal?: AbortSignal, maxConcurrent = 3): Promise<TaskVerificationRetryResult> {
 		let summary = emptyVerificationResult();
-		for (const plan of plans.values()) {
-			if (signal?.aborted) break;
-			const result = await this.withPlanExecutionClaim(plan.ownerKey, plan.planId, signal, (claimSignal) => this.verifyCandidates([plan.ownerKey], plan.tasks, claimSignal, now));
-			if (result) summary = mergeVerificationResults(summary, result);
+		const attemptedPlanIds = new Set<string>();
+		const concurrency = Math.max(1, Math.min(Math.trunc(maxConcurrent), 20));
+		while (!signal?.aborted) {
+			const candidates = (this.ledger.verificationCandidates?.(now, 100, [...attemptedPlanIds]) ?? [])
+				.filter((task) => task.planId && !attemptedPlanIds.has(task.planId));
+			if (!candidates.length) break;
+			const plans = new Map<string, { ownerKey: string; planId: string; tasks: TaskRecord[] }>();
+			for (const task of candidates) {
+				if (!task.planId) continue;
+				attemptedPlanIds.add(task.planId);
+				const key = `${task.ownerKey}\0${task.planId}`;
+				const plan = plans.get(key) ?? { ownerKey: task.ownerKey, planId: task.planId, tasks: [] };
+				plan.tasks.push(task); plans.set(key, plan);
+			}
+			if (!plans.size) break;
+			const pendingPlans = [...plans.values()];
+			for (let offset = 0; offset < pendingPlans.length && !signal?.aborted; offset += concurrency) {
+				const results = await Promise.all(pendingPlans.slice(offset, offset + concurrency).map((plan) => this.withPlanExecutionClaim(plan.ownerKey, plan.planId, signal, (claimSignal) => this.verifyCandidates([plan.ownerKey], plan.tasks, claimSignal, now))));
+				for (const result of results) if (result) summary = mergeVerificationResults(summary, result);
+			}
 		}
 		return summary;
 	}

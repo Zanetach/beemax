@@ -95,7 +95,7 @@ export interface TaskLedger {
 	taskDependencies(taskIds: string[]): TaskDependency[];
 	reconcileExpiredTaskRuns(now?: number): TaskRecoveryResult;
 	recoveryCandidates(limit?: number, excludePlanIds?: string[]): TaskRecord[];
-	verificationCandidates?(now?: number, limit?: number): TaskRecord[];
+	verificationCandidates?(now?: number, limit?: number, excludePlanIds?: string[]): TaskRecord[];
 	deferCandidateVerification?(ownerKeys: string[], taskId: string, now?: number): boolean;
 	resolveCandidateVerification?(ownerKeys: string[], taskId: string, resolution: TaskCandidateVerificationResolution, now?: number): boolean;
 	renewTaskRunLease?(id: string, leaseExpiresAt: number): boolean;

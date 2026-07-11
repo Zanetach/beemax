@@ -270,6 +270,26 @@ test("unavailable Verification Retry persists exponential backoff across recover
 	} finally { store.close(); rmSync(root, { recursive: true, force: true }); }
 });
 
+test("due Verification Retry does not starve later Plans behind a claimed ledger batch", async () => {
+	const root = mkdtempSync(join(tmpdir(), "beemax-verification-fairness-"));
+	const store = new MemoryStore(join(root, "memory.db"));
+	try {
+		for (let index = 0; index < 101; index++) {
+			const planId = `verification-fairness-plan-${index}`;
+			const taskId = `verification-fairness-task-${index}`;
+			new TaskGraph(store).createPlan({ id: planId, ownerKey: "cli:local:local", tasks: [{ id: taskId, title: `Verify ${index}`, acceptanceCriteria: "Candidate is accepted" }] }, index + 1);
+			store.transition(taskId, { status: "running", startedAt: index + 1, verificationStatus: "pending" });
+			store.transition(taskId, { status: "failed", finishedAt: index + 2, verificationStatus: "unavailable", candidateResult: `candidate-${index}`, error: "verifier offline" });
+			if (index < 100) assert.equal(store.claimTaskPlanExecution("cli:local:local", planId, `other-${index}`, Date.now() + 60_000), true);
+		}
+		let executions = 0;
+		const runner = new TaskRecoveryRunner(store, async () => { executions++; return { output: "replayed" }; }, undefined, async () => ({ accepted: true, evidence: "checked" }));
+		assert.deepEqual(await runner.reverifyDue(Date.now()), { attempted: 1, accepted: 1, rejected: 0, unavailable: 0 });
+		assert.equal(executions, 0);
+		assert.equal(store.queryTasks({ ownerKeys: ["cli:local:local"], id: "verification-fairness-task-100" })[0].status, "succeeded");
+	} finally { store.close(); rmSync(root, { recursive: true, force: true }); }
+});
+
 test("legacy Verification Status migrates additively into Verification Outcome", () => {
 	const root = mkdtempSync(join(tmpdir(), "beemax-verification-migration-"));
 	const path = join(root, "memory.db");

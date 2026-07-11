@@ -809,11 +809,14 @@ export class MemoryStore {
 			ORDER BY updated_at, created_at LIMIT ?`).all(...(excluded.length ? [JSON.stringify(excluded)] : []), limitOf(limit, 100)) as RuntimeTaskRow[]).map(mapRuntimeTask);
 	}
 
-	verificationCandidates(now = Date.now(), limit = 100): RuntimeTaskRecord[] {
+	verificationCandidates(now = Date.now(), limit = 100, excludePlanIds: string[] = []): RuntimeTaskRecord[] {
+		const excluded = [...new Set(excludePlanIds.filter((id) => id.trim()))];
 		return (this.db.prepare(`SELECT * FROM tasks WHERE status = 'failed' AND verification_outcome = 'unavailable'
 			AND candidate_result IS NOT NULL AND acceptance_criteria IS NOT NULL AND plan_id IS NOT NULL
 			AND (verification_retry_at IS NULL OR verification_retry_at <= ?)
-			ORDER BY COALESCE(verification_retry_at, 0), updated_at, created_at LIMIT ?`).all(now, limitOf(limit, 100)) as RuntimeTaskRow[]).map(mapRuntimeTask);
+			${excluded.length ? "AND plan_id NOT IN (SELECT value FROM json_each(?))" : ""}
+			ORDER BY COALESCE(verification_retry_at, 0), updated_at, created_at LIMIT ?`)
+			.all(now, ...(excluded.length ? [JSON.stringify(excluded)] : []), limitOf(limit, 100)) as RuntimeTaskRow[]).map(mapRuntimeTask);
 	}
 
 	deferCandidateVerification(ownerKeys: string[], taskId: string, now = Date.now()): boolean {
