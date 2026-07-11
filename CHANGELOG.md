@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.0-preview.13
+
+- Fixed local chat to render the final Agent answer when a provider does not
+  emit streaming message-update events.
+
 ## 0.1.0-preview.12
 
 - Fixed Custom OpenAI-compatible endpoints so Profile model IDs and Base URLs

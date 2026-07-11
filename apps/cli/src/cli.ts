@@ -732,14 +732,16 @@ async function runChat(config: ReturnType<typeof loadConfig>): Promise<void> {
 				process.stdout.write(`${control.message}\nbeemax> `);
 				continue;
 			}
-			await runtime.run({ source, text: trimmed, timeoutMs: 10 * 60_000, mode: "interactive" }, (event) => {
+			let streamed = "";
+			const result = await runtime.run({ source, text: trimmed, timeoutMs: 10 * 60_000, mode: "interactive" }, (event) => {
 				if (event.type !== "message_update" || event.message.role !== "assistant") return;
 				const text = (event.message.content as Array<{ type?: string; text?: string }>)
 					.filter((block) => block.type === "text")
 					.map((block) => block.text ?? "")
 					.join("");
-				if (text) process.stdout.write(`\r${text}`);
+				if (text) { streamed = text; process.stdout.write(`\r${text}`); }
 			});
+			if (!streamed) process.stdout.write(result.answer);
 			process.stdout.write("\nbeemax> ");
 		}
 	} finally {
