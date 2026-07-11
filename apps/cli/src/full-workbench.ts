@@ -1,5 +1,6 @@
 import type { InteractionEvent } from "@beemax/core";
-import { Editor, ProcessTerminal, TUI, matchesKey, type Component } from "@earendil-works/pi-tui";
+import { Editor, ProcessTerminal, SelectList, TUI, matchesKey, type Component, type OverlayHandle } from "@earendil-works/pi-tui";
+import type { ToolApprovalChoice, ToolApprovalDetails } from "@beemax/core";
 import type { ChatFooterState, DetailsDisplay } from "./local-chat-renderer.ts";
 
 export interface FullWorkbenchOptions {
@@ -20,6 +21,7 @@ export class FullWorkbench {
 	private activities: string[] = [];
 	private approval: string[] = [];
 	private picker: { title: string; choices: string[] } | undefined;
+	private pendingApproval: { turnId: string; toolName: string; details?: ToolApprovalDetails } | undefined;
 	private footer: ChatFooterState;
 
 	constructor(options: FullWorkbenchOptions) {
@@ -40,17 +42,19 @@ export class FullWorkbench {
 		if (event.type === "turn.failed") this.pushTranscript(`Error  ${event.error}`);
 		if (event.type === "turn.cancelled") this.pushTranscript("System  Turn cancelled.");
 		if (event.type === "approval.requested") {
+			this.pendingApproval = { turnId: event.turnId, toolName: event.toolName, details: event.details };
 			this.approval = event.details
 				? [`Approval required · ${event.toolName}`, `Target: ${event.details.target}`, `Risk: ${event.details.risk} · ${event.details.impact}`, `Reversible: ${event.details.reversibility}`, "1 allow once · 2 allow session · 3 deny · /stop cancel"]
 				: [`Approval required · ${event.toolName}`, "1 allow once · 2 allow session · 3 deny · /stop cancel"];
 		}
-		if (event.type === "approval.resolved") this.approval = [`Approval ${event.allowed ? "allowed" : "denied"} · ${event.toolName}`];
+		if (event.type === "approval.resolved") { this.pendingApproval = undefined; this.approval = [`Approval ${event.allowed ? "allowed" : "denied"} · ${event.toolName}`]; }
 		if (event.type === "tool.changed" || event.type === "turn.queued") this.activities = activityDetails.split("\n").filter(Boolean);
 	}
 
 	setFooter(footer: Partial<ChatFooterState>): void { this.footer = { ...this.footer, ...footer }; }
 	setPicker(title: string, choices: string[]): void { this.picker = { title, choices: choices.slice(0, 12) }; }
 	clearPicker(): void { this.picker = undefined; }
+	pendingApprovalRequest(): Readonly<typeof this.pendingApproval> { return this.pendingApproval; }
 
 	render(width = process.stdout.columns || 100, height = process.stdout.rows || 32): string {
 		return this.renderLines(width, height).join("\n");
@@ -92,6 +96,7 @@ export function startFullWorkbenchInput(
 	onSubmit: (text: string) => void,
 	onCancel: () => void,
 	onClose: () => void,
+	onApprovalDecision: (choice: ToolApprovalChoice) => void,
 ): FullWorkbenchInput {
 	const tui = new TUI(new ProcessTerminal(), true);
 	const editor = new Editor(tui, {
@@ -120,13 +125,42 @@ export function startFullWorkbenchInput(
 	};
 	tui.addChild(root);
 	tui.setFocus(editor);
+	let approvalOverlay: OverlayHandle | undefined;
+	let overlayTurnId: string | undefined;
+	const syncApprovalOverlay = () => {
+		const pending = workbench.pendingApprovalRequest();
+		if (!pending) {
+			approvalOverlay?.hide();
+			approvalOverlay = undefined;
+			overlayTurnId = undefined;
+			return;
+		}
+		if (approvalOverlay && overlayTurnId === pending.turnId) return;
+		approvalOverlay?.hide();
+		const choices: Array<{ value: ToolApprovalChoice; label: string; description: string }> = [
+			{ value: "once", label: "Allow once", description: `Run ${pending.toolName} this time` },
+			{ value: "session", label: "Allow for session", description: `Allow ${pending.toolName} until this session ends` },
+			{ value: "deny", label: "Deny", description: "Do not run this tool call" },
+		];
+		const list = new SelectList(choices, 3, {
+			selectedPrefix: (text) => text,
+			selectedText: (text) => text,
+			description: (text) => text,
+			scrollInfo: (text) => text,
+			noMatch: (text) => text,
+		});
+		list.onSelect = (item) => { approvalOverlay?.hide(); approvalOverlay = undefined; overlayTurnId = undefined; onApprovalDecision(item.value as ToolApprovalChoice); };
+		list.onCancel = () => { approvalOverlay?.hide(); approvalOverlay = undefined; overlayTurnId = undefined; onApprovalDecision("deny"); };
+		overlayTurnId = pending.turnId;
+		approvalOverlay = tui.showOverlay(list, { anchor: "center", width: "70%", maxHeight: "40%" });
+	};
 	tui.addInputListener((data) => {
 		if (matchesKey(data, "ctrl+c")) { onCancel(); return { consume: true }; }
 		if (matchesKey(data, "ctrl+d")) { onClose(); return { consume: true }; }
 		return undefined;
 	});
 	tui.start();
-	return { requestRender: () => tui.requestRender(), stop: () => tui.stop() };
+	return { requestRender: () => { syncApprovalOverlay(); tui.requestRender(); }, stop: () => tui.stop() };
 }
 
 function border(title: string, width: number): string { return `┌─ ${title}${"─".repeat(Math.max(0, width - title.length - 3))}┐`; }

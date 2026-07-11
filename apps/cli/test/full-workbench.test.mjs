@@ -16,4 +16,7 @@ test("full workbench renders persistent state, activity, and a structured approv
 	assert.match(screen, /report\.md/);
 	assert.match(screen, /Composer/);
 	assert.match(screen, /Model Picker/);
+	assert.equal(workbench.pendingApprovalRequest()?.toolName, "write");
+	workbench.event({ type: "approval.resolved", turnId: "t", toolName: "write", allowed: false, at: 3, sessionId: "s", scope: { profileId: "personal", platform: "cli", chatId: "local" }, sequence: 3 }, "工具 write · running");
+	assert.equal(workbench.pendingApprovalRequest(), undefined);
 });

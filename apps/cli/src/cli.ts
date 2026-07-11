@@ -1190,7 +1190,13 @@ async function runChat(config: ReturnType<typeof loadConfig>, requestedMode: { f
 		if (workbench) {
 			await new Promise<void>((resolve) => {
 				closeInput = () => { closed = true; const input = fullInput; fullInput = undefined; input?.stop(); resolve(); };
-				fullInput = startFullWorkbenchInput(workbench, (line) => { void handleLine(line); }, () => { if (active) void stop(); else closeInput(); }, closeInput);
+				fullInput = startFullWorkbenchInput(
+					workbench,
+					(line) => { void handleLine(line); },
+					() => { if (active) void stop(); else closeInput(); },
+					closeInput,
+					(choice) => { void interactionAdapter.dispatch({ type: "approval.decide", source, choice }); },
+				);
 			});
 		} else {
 			const rl = createInterface({ input: process.stdin, output: process.stdout });
