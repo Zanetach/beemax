@@ -33,7 +33,7 @@ import { configuredApiKey } from "./provider-resolver.ts";
 import { executionPortFor, executionSafeTools } from "./execution-composition.ts";
 import { createProfileRuntime } from "./runtime-composition.ts";
 import { createProfileControlHandler } from "./profile-control.ts";
-import { LocalActivityPresenter, LocalReasoningPresenter, type DetailsDisplay, parseChatCommand, parseReasoningCommand } from "./local-chat-renderer.ts";
+import { LocalActivityPresenter, LocalReasoningPresenter, renderChatFooter, type DetailsDisplay, parseChatCommand, parseReasoningCommand } from "./local-chat-renderer.ts";
 import { renderTerminalMarkdown, StreamingTerminalMarkdown } from "./terminal-markdown.ts";
 import { fullScreenEnter, fullScreenExit, resolveChatPresentationMode, type ChatPresentationMode } from "./chat-mode.ts";
 import { inspectGateway, readGatewayLogs } from "./gateway-observability.ts";
@@ -918,6 +918,13 @@ async function runChat(config: ReturnType<typeof loadConfig>, requestedMode: { f
 			const context = current.contextWindow === null ? "unknown" : current.contextTokens === null ? `?/${current.contextWindow}` : `${current.contextTokens}/${current.contextWindow} (${Math.round(current.contextPercent ?? 0)}%)`;
 			return `Usage: input=${current.inputTokens}; output=${current.outputTokens}; cache-read=${current.cacheReadTokens}; cache-write=${current.cacheWriteTokens}; context=${context}${lastDurationMs === undefined ? "" : `; last-turn=${Math.round(lastDurationMs / 1000)}s`}`;
 		};
+		const writeFooter = async () => {
+			if (presentationMode === "plain") return;
+			const snapshot = await interactionAdapter.snapshot(source);
+			const usage = snapshot.usage;
+			const context = usage?.contextWindow === null || usage?.contextWindow === undefined ? undefined : usage.contextTokens === null ? `?/${usage.contextWindow}` : `${usage.contextTokens}/${usage.contextWindow}`;
+			process.stdout.write(renderChatFooter({ profile: config.profile, model: `${config.model.provider}/${config.model.model}`, session: source.threadId ?? "default", phase: snapshot.phase, context, lastDurationMs }));
+		};
 		const status = async () => `Profile: ${config.profile}\nModel: ${config.model.provider}/${config.model.model}\nSession: ${source.threadId ?? "default"}\nRun: ${runtime.isBusy() ? "running" : "idle"}\nReasoning: ${reasoningDisplay}\nDetails: ${detailsDisplay}\nToolset: ${config.agent.toolset}\n${await usage()}`;
 		const toolsStatus = () => {
 			const tools = mcp.getTools().map((tool) => `${tool.name}${mcpApproval.has(tool.name) ? " (approval required)" : ""}`);
@@ -977,6 +984,7 @@ async function runChat(config: ReturnType<typeof loadConfig>, requestedMode: { f
 			}
 			lastDurationMs = result.durationMs;
 			process.stdout.write("\n");
+			await writeFooter();
 		};
 		const handleLine = async (line: string) => {
 			const trimmed = line.trim();

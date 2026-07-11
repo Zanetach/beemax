@@ -3,6 +3,25 @@ import type { InteractionEvent } from "@beemax/core";
 export type ReasoningDisplay = "off" | "summary" | "raw";
 export type DetailsDisplay = "hidden" | "collapsed" | "expanded";
 
+export interface ChatFooterState {
+	profile: string;
+	model: string;
+	session: string;
+	phase: string;
+	context?: string;
+	lastDurationMs?: number;
+	queued?: number;
+}
+
+/** Persistent, presenter-owned status summary for Compact and Full chat. */
+export function renderChatFooter(state: ChatFooterState): string {
+	const parts = [state.profile, state.model, `session:${state.session}`, state.phase];
+	if (state.context) parts.push(`ctx:${state.context}`);
+	if (state.lastDurationMs !== undefined) parts.push(`last:${Math.round(state.lastDurationMs / 1000)}s`);
+	if (state.queued) parts.push(`queue:${state.queued}`);
+	return `\n── ${parts.join(" · ")} ──\n`;
+}
+
 /** OpenClaw-style visibility control: raw thinking is opt-in and stays separate from the answer. */
 export class LocalReasoningPresenter {
 	private visible = false;
