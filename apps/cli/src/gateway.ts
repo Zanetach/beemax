@@ -168,7 +168,7 @@ export async function runGateway(config: BeeMaxConfig): Promise<void> {
 		},
 		approvalBroker,
 		cancelSubagents: (source) => subagents?.cancelOwner(source) ?? 0,
-		controlHandler: (profileRuntime, profileInteraction) => createProfileControlHandler(profileRuntime, config, profileInteraction),
+		controlHandler: (profileRuntime, profileInteraction) => createProfileControlHandler(profileRuntime, config, profileInteraction, () => ({ taskScheduler: taskScheduler.snapshot() })),
 	});
 	const { runtime, interaction } = profileRuntime;
 	startupCleanup.push(() => profileRuntime.dispose());

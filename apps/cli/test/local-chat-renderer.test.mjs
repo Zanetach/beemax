@@ -3,7 +3,7 @@ import test from "node:test";
 import { LocalActivityPresenter, LocalReasoningPresenter, parseChatCommand, parseReasoningCommand, renderChatFooter } from "../dist/local-chat-renderer.js";
 
 test("chat footer keeps the operational state visible without exposing answer content", () => {
-	assert.equal(renderChatFooter({ profile: "personal", model: "openai/gpt", session: "local-1", phase: "awaiting_approval", context: "120/1000", lastDurationMs: 2_600, queued: 1 }), "\n── personal · openai/gpt · session:local-1 · awaiting_approval · ctx:120/1000 · last:3s · queue:1 ──\n");
+	assert.equal(renderChatFooter({ profile: "personal", model: "openai/gpt", session: "local-1", phase: "awaiting_approval", context: "120/1000", lastDurationMs: 2_600, queued: 1, tasksRunning: 2, tasksQueued: 3, taskCapacity: 4 }), "\n── personal · openai/gpt · session:local-1 · awaiting_approval · ctx:120/1000 · last:3s · queue:1 · tasks:2+3/4 ──\n");
 });
 
 test("reasoning visibility keeps raw thought separate and makes summaries opt-in", () => {

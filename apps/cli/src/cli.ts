@@ -32,7 +32,7 @@ import { runSetup, type SetupOptions } from "./setup.ts";
 import { configuredRuntimeModels, ProfileModelCatalog, renderModelProviderChoices, resolveProviderSelection } from "./model-catalog.ts";
 import { executionPortFor, executionSafeTools } from "./execution-composition.ts";
 import { createProfileAgentRuntime } from "./runtime-composition.ts";
-import { createProfileControlHandler } from "./profile-control.ts";
+import { createProfileControlHandler, renderTaskSchedulerStatus } from "./profile-control.ts";
 import { LocalActivityPresenter, LocalReasoningPresenter, renderChatFooter, type DetailsDisplay, parseReasoningCommand } from "./local-chat-renderer.ts";
 import { renderTerminalMarkdown, StreamingTerminalMarkdown } from "./terminal-markdown.ts";
 import { fullScreenEnter, fullScreenExit, resolveChatPresentationMode, type ChatPresentationMode } from "./chat-mode.ts";
@@ -906,7 +906,7 @@ async function runChat(config: ReturnType<typeof loadConfig>, requestedMode: { f
 		},
 		approvalBroker: localApproval,
 		cancelSubagents: (sessionSource) => subagents?.cancelOwner(sessionSource) ?? 0,
-		controlHandler: (profileRuntime, profileInteraction) => createProfileControlHandler(profileRuntime, config, profileInteraction),
+		controlHandler: (profileRuntime, profileInteraction) => createProfileControlHandler(profileRuntime, config, profileInteraction, () => ({ taskScheduler: taskScheduler.snapshot() })),
 	});
 	const { runtime, interaction: interactionAdapter } = profileRuntime;
 	let fullScreenActive = false;
@@ -945,17 +945,18 @@ async function runChat(config: ReturnType<typeof loadConfig>, requestedMode: { f
 		const writeFooter = async () => {
 			if (presentationMode === "plain") return;
 			const snapshot = await interactionAdapter.snapshot(source);
+			const taskState = taskScheduler.snapshot();
 			const usage = snapshot.usage;
 			const context = usage?.contextWindow === null || usage?.contextWindow === undefined ? undefined : usage.contextTokens === null ? `?/${usage.contextWindow}` : `${usage.contextTokens}/${usage.contextWindow}`;
 			if (workbench) {
-				workbench.setFooter({ model: `${config.model.provider}/${config.model.model}`, session: source.threadId ?? "default", phase: snapshot.phase, context, lastDurationMs, queued: snapshot.queueDepth });
+				workbench.setFooter({ model: `${config.model.provider}/${config.model.model}`, session: source.threadId ?? "default", phase: snapshot.phase, context, lastDurationMs, queued: snapshot.queueDepth, tasksRunning: taskState.running, tasksQueued: taskState.queued, taskCapacity: taskState.maxConcurrent });
 				if (fullInput) fullInput.requestRender();
 				else process.stdout.write(`\x1b[H\x1b[2J${workbench.render()}\n`);
 				return;
 			}
-			process.stdout.write(renderChatFooter({ profile: config.profile, model: `${config.model.provider}/${config.model.model}`, session: source.threadId ?? "default", phase: snapshot.phase, context, lastDurationMs, queued: snapshot.queueDepth }));
+			process.stdout.write(renderChatFooter({ profile: config.profile, model: `${config.model.provider}/${config.model.model}`, session: source.threadId ?? "default", phase: snapshot.phase, context, lastDurationMs, queued: snapshot.queueDepth, tasksRunning: taskState.running, tasksQueued: taskState.queued, taskCapacity: taskState.maxConcurrent }));
 		};
-		const status = async () => `Profile: ${config.profile}\nModel: ${config.model.provider}/${config.model.model}\nSession: ${source.threadId ?? "default"}\nRun: ${runtime.isBusy() ? "running" : "idle"}\nReasoning: ${reasoningDisplay}\nDetails: ${detailsDisplay}\nToolset: ${config.agent.toolset}\n${await usage()}`;
+		const status = async () => `Profile: ${config.profile}\nModel: ${config.model.provider}/${config.model.model}\nSession: ${source.threadId ?? "default"}\nRun: ${runtime.isBusy() ? "running" : "idle"}\n${renderTaskSchedulerStatus(taskScheduler.snapshot())}\nReasoning: ${reasoningDisplay}\nDetails: ${detailsDisplay}\nToolset: ${config.agent.toolset}\n${await usage()}`;
 		const toolsStatus = () => {
 			const tools = mcp.getTools().map((tool) => `${tool.name}${tool.beemaxPolicy?.approval === "always" ? " (approval required)" : ""}`);
 			return `Toolset: ${config.agent.toolset}\nMCP: ${tools.length ? tools.join(", ") : "no MCP tools connected"}`;

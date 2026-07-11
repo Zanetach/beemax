@@ -11,6 +11,9 @@ export interface ChatFooterState {
 	context?: string;
 	lastDurationMs?: number;
 	queued?: number;
+	tasksRunning?: number;
+	tasksQueued?: number;
+	taskCapacity?: number;
 }
 
 /** Persistent, presenter-owned status summary for Compact and Full chat. */
@@ -19,6 +22,7 @@ export function renderChatFooter(state: ChatFooterState): string {
 	if (state.context) parts.push(`ctx:${state.context}`);
 	if (state.lastDurationMs !== undefined) parts.push(`last:${Math.round(state.lastDurationMs / 1000)}s`);
 	if (state.queued) parts.push(`queue:${state.queued}`);
+	if (state.taskCapacity !== undefined) parts.push(`tasks:${state.tasksRunning ?? 0}+${state.tasksQueued ?? 0}/${state.taskCapacity}`);
 	return `\n── ${parts.join(" · ")} ──\n`;
 }
 

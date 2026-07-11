@@ -73,7 +73,7 @@ export class FullWorkbench {
 		const inner = Math.max(24, width - 4);
 		const rows = [
 			border("BeeMax Workbench", inner),
-			line(`${this.footer.profile} · ${this.footer.model} · session:${this.footer.session} · ${this.footer.phase}${this.footer.context ? ` · ctx:${this.footer.context}` : ""}${this.footer.queued ? ` · queue:${this.footer.queued}` : ""}`, inner),
+			line(`${this.footer.profile} · ${this.footer.model} · session:${this.footer.session} · ${this.footer.phase}${this.footer.context ? ` · ctx:${this.footer.context}` : ""}${this.footer.queued ? ` · queue:${this.footer.queued}` : ""}${this.footer.taskCapacity === undefined ? "" : ` · tasks:${this.footer.tasksRunning ?? 0}+${this.footer.tasksQueued ?? 0}/${this.footer.taskCapacity}`}`, inner),
 			divider("Transcript", inner),
 			...this.transcript.flatMap((entry) => wrap(entry, inner)),
 			divider("Activity", inner),
