@@ -72,6 +72,7 @@ export interface InteractionEventAdapterOptions<Source extends BeeMaxRuntimeSour
 	profileId?: string;
 	approvalBroker?: ToolApprovalBroker;
 	cancelSubagents?: (source: Source) => number | Promise<number>;
+	eventHistoryLimit?: number;
 }
 
 /**
@@ -87,17 +88,21 @@ export class InteractionEventAdapter<Source extends BeeMaxRuntimeSource = BeeMax
 	private readonly cancellationRequested = new Set<string>();
 	private readonly cancellationPublished = new Set<string>();
 	private readonly sequences = new Map<string, number>();
+	private readonly eventHistory = new Map<string, InteractionEvent[]>();
+	private readonly subscribers = new Map<string, Set<InteractionEventSink>>();
 	private readonly runtime: AgentRuntimePort<Source>;
 	private readonly approvalBroker?: ToolApprovalBroker;
 	private readonly cancelSubagents?: (source: Source) => number | Promise<number>;
 	private readonly profileId: string;
 	private readonly unsubscribeApproval?: () => void;
+	private readonly eventHistoryLimit: number;
 
 	constructor(runtime: AgentRuntimePort<Source>, options: InteractionEventAdapterOptions<Source> = {}) {
 		this.runtime = runtime;
 		this.approvalBroker = options.approvalBroker;
 		this.cancelSubagents = options.cancelSubagents;
 		this.profileId = options.profileId ?? "default";
+		this.eventHistoryLimit = Math.max(20, Math.min(options.eventHistoryLimit ?? 500, 10_000));
 		this.unsubscribeApproval = this.approvalBroker && typeof this.approvalBroker.subscribe === "function" ? this.approvalBroker.subscribe((event) => {
 			void (event.type === "requested"
 				? this.approvalRequested(event.source as Source, event.toolName)
@@ -157,6 +162,23 @@ export class InteractionEventAdapter<Source extends BeeMaxRuntimeSource = BeeMax
 		return { phase: current?.phase ?? "idle", turnId: current?.turnId, model: status?.model, usage, updatedAt: current?.updatedAt ?? Date.now() };
 	}
 
+	/** Reconnection-safe semantic events, bounded per interaction session. */
+	events(source: Source, afterSequence = 0): InteractionEvent[] {
+		return (this.eventHistory.get(interactionKey(source)) ?? []).filter((event) => event.sequence > afterSequence);
+	}
+
+	/** Subscribe a presenter without granting it runtime or policy control. */
+	subscribe(source: Source, sink: InteractionEventSink): () => void {
+		const key = interactionKey(source);
+		const listeners = this.subscribers.get(key) ?? new Set<InteractionEventSink>();
+		listeners.add(sink);
+		this.subscribers.set(key, listeners);
+		return () => {
+			listeners.delete(sink);
+			if (!listeners.size) this.subscribers.delete(key);
+		};
+	}
+
 	dispose(): void { this.unsubscribeApproval?.(); }
 
 	private async cancel(source: Source, sink?: InteractionEventSink): Promise<InteractionCancelResult> {
@@ -187,6 +209,8 @@ export class InteractionEventAdapter<Source extends BeeMaxRuntimeSource = BeeMax
 		const key = interactionKey(source);
 		const previous = this.states.get(key) ?? { phase: "idle" as const, updatedAt: Date.now() };
 		this.states.set(key, reduceInteractionEvent(previous, event));
+		const history = [...(this.eventHistory.get(key) ?? []), event];
+		this.eventHistory.set(key, history.slice(-this.eventHistoryLimit));
 	}
 
 	private async publish(source: Source, turnId: string, payload: InteractionEventPayload, sink?: InteractionEventSink): Promise<void> {
@@ -201,6 +225,7 @@ export class InteractionEventAdapter<Source extends BeeMaxRuntimeSource = BeeMax
 		const next = previous.then(async () => {
 			this.apply(source, event);
 			await (sink ?? this.sinks.get(key))?.(event);
+			for (const listener of this.subscribers.get(key) ?? []) await listener(event);
 		}).catch((error: unknown) => {
 			if (!this.sinkFailures.has(key)) this.sinkFailures.set(key, error);
 		});

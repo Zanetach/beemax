@@ -21,7 +21,21 @@ test("interaction runtime translates a turn into presenter-safe semantic events"
 	assert.deepEqual(events.map((event) => event.type), ["turn.started", "tool.changed", "answer.delta", "turn.finished"]);
 	assert.equal(events.every((event) => event.sessionId && event.scope.platform === "cli" && event.turnId && event.at > 0 && event.sequence > 0), true);
 	assert.deepEqual(events.map((event) => event.sequence), [1, 2, 3, 4]);
+	assert.deepEqual(interaction.events(source, 2).map((event) => event.type), ["answer.delta", "turn.finished"]);
 	assert.equal((await interaction.snapshot(source)).phase, "completed");
+});
+
+test("interaction runtime supports a reconnecting presenter subscription", async () => {
+	const runtime = {
+		async run(_input, sink) { await sink({ type: "message_update", message: { role: "assistant" }, assistantMessageEvent: { type: "text_delta", delta: "hello" } }); return { answer: "hello", model: "test/model", durationMs: 1, usage: {} }; },
+		async cancel() { return false; }, async modelStatus() { return undefined; }, async usage() { return undefined; },
+	};
+	const interaction = new InteractionEventAdapter(runtime);
+	const received = [];
+	const unsubscribe = interaction.subscribe(source, (event) => { received.push(event.type); });
+	await interaction.dispatch({ type: "message.send", source, text: "hi", input: { timeoutMs: 1_000 } });
+	unsubscribe();
+	assert.deepEqual(received, ["turn.started", "answer.delta", "turn.finished"]);
 });
 
 test("interaction reducer preserves a cancelled turn state", () => {
