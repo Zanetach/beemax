@@ -54,7 +54,8 @@ export interface AgentModelStatus {
 
 export interface ModelFallbackEvent { type: "model_fallback"; from: string; to: string; attempt: number; }
 export interface PlanningDecisionEvent { type: "planning_decision"; mode: "direct" | "delegate" | "dag"; concurrency: number; maxSubagents: number; requiredTools: string[]; }
-export type BeeMaxAgentRunEvent = AgentSessionEvent | ModelFallbackEvent | PlanningDecisionEvent;
+export interface PlanningOutcomeEvent { type: "planning_outcome"; mode: "direct" | "delegate" | "dag"; compliant: boolean; corrected: boolean; }
+export type BeeMaxAgentRunEvent = AgentSessionEvent | ModelFallbackEvent | PlanningDecisionEvent | PlanningOutcomeEvent;
 export type BeeMaxAgentRunEventSink = (event: BeeMaxAgentRunEvent) => void | Promise<void>;
 /** Gateway-facing runtime contract; implementations may be local or remote. */
 export interface AgentRuntimePort<Source extends BeeMaxRuntimeSource = BeeMaxRuntimeSource> {
@@ -197,11 +198,17 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 					images: input.images,
 				});
 				const missingTools = planning?.requiredTools.slice(requiredToolsUsed.length) ?? [];
+				let planningCorrected = false;
 				if (missingTools.length && !budgetExceeded) {
+					planningCorrected = true;
 					await session.piSession.prompt(`[BeeMax planning correction: complete these tools in order now using the active execution budget: ${missingTools.join(" -> ")}. Do not answer directly.]`, { expandPromptTemplates: false });
 					const stillMissing = planning?.requiredTools.slice(requiredToolsUsed.length) ?? [];
-					if (stillMissing.length) throw new AgentRunError(`Agent did not complete required planning tools: ${stillMissing.join(" -> ")}`, false, undefined);
+					if (stillMissing.length) {
+						await onEvent?.({ type: "planning_outcome", mode: planning!.mode, compliant: false, corrected: true });
+						throw new AgentRunError(`Agent did not complete required planning tools: ${stillMissing.join(" -> ")}`, false, undefined);
+					}
 				}
+				if (planning) await onEvent?.({ type: "planning_outcome", mode: planning.mode, compliant: true, corrected: planningCorrected });
 				if (budgetExceeded) throw new AgentRunError(budgetExceeded, false, undefined);
 				let failure = lastAssistantFailure(session.piSession.agent);
 				let attempt = 0;

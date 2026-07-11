@@ -31,6 +31,7 @@ export type InteractionEvent = InteractionEventMeta & (
 	| { type: "approval.resolved"; toolName: string; allowed: boolean }
 	| { type: "model.fallback"; from: string; to: string; attempt: number }
 	| { type: "planning.selected"; mode: "direct" | "delegate" | "dag"; concurrency: number; maxSubagents: number; requiredTools: string[] }
+	| { type: "planning.completed"; mode: "direct" | "delegate" | "dag"; compliant: boolean; corrected: boolean }
 	| { type: "turn.queued"; position: number; replaced: boolean; mode: InteractionDeliveryMode }
 	| { type: "turn.finished"; result: AgentRunResult }
 	| { type: "turn.failed"; error: string }
@@ -46,6 +47,7 @@ type InteractionEventPayload =
 	| { type: "approval.resolved"; toolName: string; allowed: boolean }
 	| { type: "model.fallback"; from: string; to: string; attempt: number }
 	| { type: "planning.selected"; mode: "direct" | "delegate" | "dag"; concurrency: number; maxSubagents: number; requiredTools: string[] }
+	| { type: "planning.completed"; mode: "direct" | "delegate" | "dag"; compliant: boolean; corrected: boolean }
 	| { type: "turn.queued"; position: number; replaced: boolean; mode: InteractionDeliveryMode }
 	| { type: "turn.finished"; result: AgentRunResult }
 	| { type: "turn.failed"; error: string }
@@ -95,6 +97,7 @@ export type InteractionTelemetryEvent =
 	| { type: "interaction.input_queued"; surface: string; mode: InteractionDeliveryMode; waitMs: number }
 	| { type: "interaction.model_fallback"; surface: string; from: string; to: string; attempt: number }
 	| { type: "interaction.planning_selected"; surface: string; mode: "direct" | "delegate" | "dag"; concurrency: number; maxSubagents: number; requiredToolCount: number }
+	| { type: "interaction.planning_completed"; surface: string; mode: "direct" | "delegate" | "dag"; compliant: boolean; corrected: boolean }
 	| { type: "interaction.presenter_reconnected"; surface: string; gapEvents: number }
 	| { type: "interaction.session_resumed"; source: string; age: number };
 export type InteractionTelemetrySink = (event: InteractionTelemetryEvent) => void;
@@ -380,6 +383,7 @@ export class InteractionEventAdapter<Source extends BeeMaxRuntimeSource = BeeMax
 		} else if (event.type === "turn.queued") this.telemetry({ type: "interaction.input_queued", surface: event.scope.platform, mode: event.mode, waitMs: 0 });
 		else if (event.type === "model.fallback") this.telemetry({ type: "interaction.model_fallback", surface: event.scope.platform, from: event.from, to: event.to, attempt: event.attempt });
 		else if (event.type === "planning.selected") this.telemetry({ type: "interaction.planning_selected", surface: event.scope.platform, mode: event.mode, concurrency: event.concurrency, maxSubagents: event.maxSubagents, requiredToolCount: event.requiredTools.length });
+		else if (event.type === "planning.completed") this.telemetry({ type: "interaction.planning_completed", surface: event.scope.platform, mode: event.mode, compliant: event.compliant, corrected: event.corrected });
 	}
 }
 
@@ -405,6 +409,7 @@ export function reduceInteractionEvent(snapshot: InteractionSnapshot, event: Int
 export function mapAgentSessionEvent(event: BeeMaxAgentRunEvent): InteractionEventPayload | undefined {
 	if (event.type === "model_fallback") return { type: "model.fallback", from: event.from, to: event.to, attempt: event.attempt };
 	if (event.type === "planning_decision") return { type: "planning.selected", mode: event.mode, concurrency: event.concurrency, maxSubagents: event.maxSubagents, requiredTools: [...event.requiredTools] };
+	if (event.type === "planning_outcome") return { type: "planning.completed", mode: event.mode, compliant: event.compliant, corrected: event.corrected };
 	if (event.type === "tool_execution_start") return { type: "tool.changed", callId: event.toolCallId, name: event.toolName, state: "running" };
 	if (event.type === "tool_execution_end") return { type: "tool.changed", callId: event.toolCallId, name: event.toolName, state: event.isError ? "failed" : "completed", summary: typeof event.result === "string" ? event.result.slice(0, 500) : undefined };
 	if (event.type !== "message_update" || event.message.role !== "assistant") return undefined;

@@ -216,6 +216,10 @@ export class Dispatcher {
 				card.apply("notice.updated", { id: `planning:${event.turnId}`, label: "执行规划", status: "running", message: `${event.mode} · 并发 ${event.concurrency} · 子代理上限 ${event.maxSubagents}${event.requiredTools.length ? ` · ${event.requiredTools.join(" → ")}` : ""}` });
 				await flush.schedule(renderUpdate);
 				break;
+			case "planning.completed":
+				card.apply("notice.updated", { id: `planning:${event.turnId}`, label: "执行规划", status: event.compliant ? "completed" : "error", message: `${event.mode}${event.corrected ? " · 已自动纠正" : ""}` });
+				await flush.schedule(renderUpdate);
+				break;
 			case "turn.failed":
 				card.apply("message.failed", { error: event.error });
 				await flush.schedule(renderUpdate, true);

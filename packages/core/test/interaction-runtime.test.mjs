@@ -113,6 +113,7 @@ test("planning telemetry records only operational routing fields", async () => {
 	const runtime = {
 		async run(_input, sink) {
 			await sink({ type: "planning_decision", mode: "dag", concurrency: 3, maxSubagents: 4, requiredTools: ["task_plan_execute"] });
+			await sink({ type: "planning_outcome", mode: "dag", compliant: true, corrected: true });
 			return { answer: "private answer", model: "test/model", durationMs: 1, usage: {} };
 		},
 		async cancel() { return false; }, async modelStatus() { return undefined; }, async usage() { return undefined; },
@@ -120,6 +121,7 @@ test("planning telemetry records only operational routing fields", async () => {
 	const adapter = new InteractionEventAdapter(runtime, { telemetry: (event) => telemetry.push(event) });
 	await adapter.dispatch({ type: "message.send", source, text: "private prompt", input: { timeoutMs: 1_000 } });
 	assert.deepEqual(telemetry.filter((event) => event.type === "interaction.planning_selected"), [{ type: "interaction.planning_selected", surface: "cli", mode: "dag", concurrency: 3, maxSubagents: 4, requiredToolCount: 1 }]);
+	assert.deepEqual(telemetry.filter((event) => event.type === "interaction.planning_completed"), [{ type: "interaction.planning_completed", surface: "cli", mode: "dag", compliant: true, corrected: true }]);
 	assert.doesNotMatch(JSON.stringify(telemetry), /private prompt|private answer/);
 });
 

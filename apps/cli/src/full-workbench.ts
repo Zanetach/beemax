@@ -46,6 +46,7 @@ export class FullWorkbench {
 		if (event.type === "turn.cancelled") this.pushTranscript("System  Turn cancelled.");
 		if (event.type === "model.fallback") this.pushTranscript(`System  Model fallback ${event.from} → ${event.to} · attempt ${event.attempt}`);
 		if (event.type === "planning.selected") this.pushTranscript(`System  Plan ${event.mode} · concurrency ${event.concurrency} · Sub-Agents ${event.maxSubagents}${event.requiredTools.length ? ` · ${event.requiredTools.join(" → ")}` : ""}`);
+		if (event.type === "planning.completed" && (event.corrected || !event.compliant)) this.pushTranscript(`System  Plan ${event.mode} · ${event.compliant ? "corrected and completed" : "not completed"}`);
 		if (event.type === "approval.requested") {
 			this.pendingApproval = { turnId: event.turnId, toolName: event.toolName, details: event.details };
 			this.approval = event.details
