@@ -8,7 +8,7 @@
  */
 
 import { AutomationStore } from "@beemax/automation";
-import { AutomationScheduler, BeeMaxAgentRuntime, FileInteractionEventJournal, HeartbeatRunner, InteractionEventAdapter } from "@beemax/core";
+import { AutomationScheduler, BeeMaxAgentRuntime, HeartbeatRunner } from "@beemax/core";
 import {
 	createSubagentTools,
 	Dispatcher,
@@ -27,7 +27,7 @@ import type { SessionSource } from "@beemax/gateway";
 import { beemaxHome, type BeeMaxConfig } from "./config.ts";
 import { acquireChannelLock } from "./channel-lock.ts";
 import { createTaskAwareConversationContext } from "./runtime-facts.ts";
-import { createProfileRuntime } from "./runtime-composition.ts";
+import { createProfileAgentRuntime } from "./runtime-composition.ts";
 import { workspaceToolsPrompt } from "./workspace-context.ts";
 import { configuredApiKey } from "./provider-resolver.ts";
 import { join } from "node:path";
@@ -153,25 +153,22 @@ export async function runGateway(config: BeeMaxConfig): Promise<void> {
 		])),
 	});
 
-	let runtime: BeeMaxAgentRuntime<SessionSource>;
-	let interaction: InteractionEventAdapter<SessionSource> | undefined;
-	runtime = createProfileRuntime(
-		{ maxSessions: config.agent.maxSessions, sessionIdleMs: config.agent.sessionIdleMs },
-		{
+	const profileRuntime = createProfileAgentRuntime<SessionSource>({
+		profileId: config.profile,
+		agentDir: config.paths.agentDir,
+		policy: { maxSessions: config.agent.maxSessions, sessionIdleMs: config.agent.sessionIdleMs },
+		runtime: {
 			createAgent,
 			createAutomationAgent,
 			fallbackModels: configuredRuntimeModels(config),
 			context: createTaskAwareConversationContext(memory, { recordDirectRoute: (route) => automation.setLastRoute(route), runtimeSnapshot: () => ({ model: `${config.model.provider}/${config.model.model}`, profile: config.profile }) }),
-			controlHandler: (input) => createProfileControlHandler(runtime, config, interaction)(input),
 		},
-	);
-	interaction = new InteractionEventAdapter(runtime, {
-		profileId: config.profile,
 		approvalBroker,
 		cancelSubagents: (source) => subagents?.cancelOwner(source) ?? 0,
-		eventJournal: new FileInteractionEventJournal(join(config.paths.agentDir, "interaction-events.jsonl")),
+		controlHandler: (profileRuntime, profileInteraction) => createProfileControlHandler(profileRuntime, config, profileInteraction),
 	});
-	startupCleanup.push(() => interaction.dispose());
+	const { runtime, interaction } = profileRuntime;
+	startupCleanup.push(() => profileRuntime.dispose());
 	const dispatcher = new Dispatcher(
 		{
 			runtime,
@@ -246,7 +243,7 @@ export async function runGateway(config: BeeMaxConfig): Promise<void> {
 			try { await scheduler?.stop(); } catch (error) { console.error(`[beemax] scheduler shutdown failed: ${String(error)}`); }
 			try { await subagents?.dispose(); } catch (error) { console.error(`[beemax] Sub-Agent shutdown failed: ${String(error)}`); }
 			try { dispatcher.dispose(); } catch (error) { console.error(`[beemax] dispatcher shutdown failed: ${String(error)}`); }
-			try { runtime.dispose(); } catch (error) { console.error(`[beemax] Agent Runtime shutdown failed: ${String(error)}`); }
+			try { profileRuntime.dispose(); } catch (error) { console.error(`[beemax] Agent Runtime shutdown failed: ${String(error)}`); }
 			try { await adapter.disconnect(); } catch (error) { console.error(`[beemax] Feishu disconnect failed: ${String(error)}`); }
 			try { await mcp.close(); } catch (error) { console.error(`[beemax] MCP shutdown failed: ${String(error)}`); }
 			try { automation.close(); } catch (error) { console.error(`[beemax] automation shutdown failed: ${String(error)}`); }

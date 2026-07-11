@@ -32,7 +32,7 @@ import { runSetup, type SetupOptions } from "./setup.ts";
 import { configuredRuntimeModels, renderModelProviderChoices, resolveProviderSelection } from "./model-catalog.ts";
 import { configuredApiKey } from "./provider-resolver.ts";
 import { executionPortFor, executionSafeTools } from "./execution-composition.ts";
-import { createProfileRuntime } from "./runtime-composition.ts";
+import { createProfileAgentRuntime } from "./runtime-composition.ts";
 import { createProfileControlHandler } from "./profile-control.ts";
 import { LocalActivityPresenter, LocalReasoningPresenter, renderChatFooter, type DetailsDisplay, parseReasoningCommand } from "./local-chat-renderer.ts";
 import { renderTerminalMarkdown, StreamingTerminalMarkdown } from "./terminal-markdown.ts";
@@ -40,7 +40,7 @@ import { fullScreenEnter, fullScreenExit, resolveChatPresentationMode, type Chat
 import { FullWorkbench, startFullWorkbenchInput, type FullWorkbenchInput } from "./full-workbench.ts";
 import { inspectGateway, readGatewayLogs } from "./gateway-observability.ts";
 import { createTaskAwareConversationContext, ensureBuiltinTasks, installedVersion } from "./runtime-facts.ts";
-import { AgentRunError, FileInteractionEventJournal, InteractionEventAdapter, SessionCatalog, ToolApprovalBroker, compileLongTermMemorySnapshot, interactionCommandHelp, parseInteractionCommand, type BeeMaxAgentRuntime } from "@beemax/core";
+import { AgentRunError, ToolApprovalBroker, compileLongTermMemorySnapshot, interactionCommandHelp, parseInteractionCommand } from "@beemax/core";
 import type { SessionSource } from "@beemax/gateway";
 import { existsSync } from "node:fs";
 import { spawnSync } from "node:child_process";
@@ -890,24 +890,20 @@ async function runChat(config: ReturnType<typeof loadConfig>, requestedMode: { f
 		authorizeTool: (request, signal) => localApproval.authorize(request, signal),
 		sessionTools: (sessionSource) => subagents ? createSubagentTools(subagents, sessionSource) : [],
 	});
-	let runtime: BeeMaxAgentRuntime<SessionSource>;
-	let interactionAdapter: InteractionEventAdapter<SessionSource> | undefined;
-	runtime = createProfileRuntime(
-		{ maxSessions: config.agent.maxSessions, sessionIdleMs: config.agent.sessionIdleMs },
-		{
+	const profileRuntime = createProfileAgentRuntime<SessionSource>({
+		profileId: config.profile,
+		agentDir: config.paths.agentDir,
+		policy: { maxSessions: config.agent.maxSessions, sessionIdleMs: config.agent.sessionIdleMs },
+		runtime: {
 			createAgent,
 			fallbackModels: configuredRuntimeModels(config),
-			sessionCatalog: SessionCatalog.forAgentDir<SessionSource>(config.paths.agentDir),
 			context: createTaskAwareConversationContext(memory, { runtimeSnapshot: () => ({ model: `${config.model.provider}/${config.model.model}`, profile: config.profile }) }),
-			controlHandler: (input) => createProfileControlHandler(runtime, config, interactionAdapter)(input),
 		},
-	);
-	interactionAdapter = new InteractionEventAdapter(runtime, {
-		profileId: config.profile,
 		approvalBroker: localApproval,
 		cancelSubagents: (sessionSource) => subagents?.cancelOwner(sessionSource) ?? 0,
-		eventJournal: new FileInteractionEventJournal(join(config.paths.agentDir, "interaction-events.jsonl")),
+		controlHandler: (profileRuntime, profileInteraction) => createProfileControlHandler(profileRuntime, config, profileInteraction),
 	});
+	const { runtime, interaction: interactionAdapter } = profileRuntime;
 	let fullScreenActive = false;
 	let fullInput: FullWorkbenchInput | undefined;
 	let subagentRefresh: ReturnType<typeof setInterval> | undefined;
@@ -1220,8 +1216,7 @@ async function runChat(config: ReturnType<typeof loadConfig>, requestedMode: { f
 		if (subagentRefresh) clearInterval(subagentRefresh);
 		fullInput?.stop();
 		if (fullScreenActive) process.stdout.write(fullScreenExit());
-		interactionAdapter.dispose();
-		runtime.dispose();
+		profileRuntime.dispose();
 		await subagents?.dispose();
 		await mcp.close();
 		localApproval.dispose();
