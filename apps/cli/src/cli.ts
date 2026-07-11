@@ -38,7 +38,7 @@ import { renderTerminalMarkdown, StreamingTerminalMarkdown } from "./terminal-ma
 import { inspectGateway, readGatewayLogs } from "./gateway-observability.ts";
 import { createTaskAwareConversationContext, ensureBuiltinTasks, installedVersion } from "./runtime-facts.ts";
 import { AgentRunError, SessionCatalog, type BeeMaxAgentRuntime } from "@beemax/core";
-import type { SessionSource } from "@beemax/gateway";
+import type { SessionSource, ToolApprovalDecision, ToolApprovalRequest } from "@beemax/gateway";
 import { existsSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -745,6 +745,7 @@ async function runChat(config: ReturnType<typeof loadConfig>): Promise<void> {
 	const { buildAgentFactory } = await import("./agent-factory.ts");
 	const { MemoryStore } = await import("@beemax/memory");
 	const apiKey = configuredApiKey(config.model.provider, config.model.apiKey) ?? "";
+	const localApproval = new LocalApprovalBroker();
 	const memory = new MemoryStore(config.memory.dbPath);
 	const mcp = new McpManager();
 	await mcp.connectAll(loadMcpConfig(config.mcp.configPath));
@@ -791,6 +792,7 @@ async function runChat(config: ReturnType<typeof loadConfig>): Promise<void> {
 		customTools: mcp.getTools(),
 		tools: executionSafeTools(config, mainAgentTools(config.agent.toolset, mcp.getTools().map((tool) => tool.name))),
 		approvalTools: mcp.getApprovalTools(),
+		authorizeTool: (request, signal) => localApproval.authorize(request, signal),
 		sessionTools: (sessionSource) => subagents ? createSubagentTools(subagents, sessionSource) : [],
 	});
 	let runtime: BeeMaxAgentRuntime<SessionSource>;
@@ -887,6 +889,7 @@ async function runChat(config: ReturnType<typeof loadConfig>): Promise<void> {
 			if (!trimmed) { writePrompt(); return; }
 			const command = parseChatCommand(trimmed);
 			if (active) {
+				if (await localApproval.handle(source, trimmed)) return;
 				if (command?.kind === "stop") { await stop(); return; }
 				if (command?.kind === "status") { process.stdout.write(`\n${await status()}\n`); return; }
 				process.stdout.write("\nAgent is running. Use /stop (or Ctrl+C) before starting another turn.\n");
@@ -1019,6 +1022,50 @@ async function runChat(config: ReturnType<typeof loadConfig>): Promise<void> {
 		memory.close();
 	}
 }
+
+/** Terminal equivalent of the Gateway's text approval broker. */
+class LocalApprovalBroker {
+	private pending?: { sourceKey: string; toolName: string; resolve: (decision: ToolApprovalDecision) => void; abortCleanup?: () => void };
+	private readonly grants = new Set<string>();
+
+	async authorize(request: ToolApprovalRequest, signal?: AbortSignal): Promise<ToolApprovalDecision> {
+		const sourceKey = localApprovalSourceKey(request.source);
+		const grantKey = `${sourceKey}:${request.toolName}`;
+		if (this.grants.has(grantKey)) return { allowed: true };
+		if (this.pending) return { allowed: false, reason: "Another tool approval is already pending" };
+		process.stdout.write(`\n⚠️ Tool '${request.toolName}' requires approval. Reply 1 (allow once), 2 (allow this session), or 3 (deny).\n`);
+		return new Promise<ToolApprovalDecision>((resolve) => {
+			const pending: NonNullable<LocalApprovalBroker["pending"]> = { sourceKey, toolName: request.toolName, resolve };
+			if (signal) {
+				const abort = () => this.finish({ allowed: false, reason: "Tool approval cancelled" });
+				signal.addEventListener("abort", abort, { once: true });
+				pending.abortCleanup = () => signal.removeEventListener("abort", abort);
+			}
+			this.pending = pending;
+		});
+	}
+
+	async handle(source: SessionSource, input: string): Promise<boolean> {
+		const pending = this.pending;
+		if (!pending || pending.sourceKey !== localApprovalSourceKey(source)) return false;
+		const choice = input.trim().toLowerCase();
+		if (["1", "allow", "允许", "允许一次"].includes(choice)) this.finish({ allowed: true });
+		else if (["2", "allow session", "本会话允许"].includes(choice)) { this.grants.add(`${pending.sourceKey}:${pending.toolName}`); this.finish({ allowed: true }); }
+		else if (["3", "deny", "拒绝"].includes(choice)) this.finish({ allowed: false, reason: "User denied the tool call" });
+		else { process.stdout.write("Reply 1 (allow once), 2 (allow this session), or 3 (deny).\n"); }
+		return true;
+	}
+
+	private finish(decision: ToolApprovalDecision): void {
+		const pending = this.pending;
+		if (!pending) return;
+		this.pending = undefined;
+		pending.abortCleanup?.();
+		pending.resolve(decision);
+	}
+}
+
+function localApprovalSourceKey(source: SessionSource): string { return `${source.platform}:${source.chatId}:${source.threadId ?? ""}:${source.userIdAlt ?? source.userId ?? "anon"}`; }
 
 main().catch((err) => {
 	console.error(err);
