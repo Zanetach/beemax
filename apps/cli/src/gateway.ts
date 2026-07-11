@@ -108,10 +108,7 @@ export async function runGateway(config: BeeMaxConfig): Promise<void> {
 		...profileAgentDefaults,
 		systemPrompt: () => buildSubagentSystemPrompt(profilePrompt(config)),
 		customTools: readOnlyMcpTools,
-		tools: executionSafeTools(config, [
-			"read", "grep", "find", "ls", "web_search", "agent_reach_search", "web_extract", "memory_recall", "memory_list",
-			...readOnlyMcpTools.map((tool) => tool.name),
-		]),
+		tools: executionSafeTools(config, readOnlyAgentTools(readOnlyMcpTools.map((tool) => tool.name))),
 	});
 	const subagents = config.subagents.enabled ? new SubagentManager({
 		maxConcurrent: config.subagents.maxConcurrent,
@@ -143,12 +140,10 @@ export async function runGateway(config: BeeMaxConfig): Promise<void> {
 		...profileAgentDefaults,
 		automationStore: automation,
 		customTools: [...readOnlyMcpTools, ...feishuMeetingTools],
-		tools: executionSafeTools(config, [
-			"read", "grep", "find", "ls", "web_search", "agent_reach_search", "web_extract", "memory_recall", "memory_list",
+		tools: executionSafeTools(config, readOnlyAgentTools(readOnlyMcpTools.map((tool) => tool.name), [
 			"schedule_list", "schedule_runs", "feishu_meeting_get", "feishu_meeting_list",
 			"feishu_meeting_reserve_get", "feishu_meeting_reserve_active_get", "feishu_meeting_recording_get",
-			...readOnlyMcpTools.map((tool) => tool.name),
-		]),
+		])),
 	});
 
 	let runtime: BeeMaxAgentRuntime<SessionSource>;
@@ -313,14 +308,21 @@ function profilePrompt(config: BeeMaxConfig): string {
 		.join("\n\n");
 }
 
-export function mainAgentTools(toolset: "safe" | "standard", mcpTools: string[]): string[] {
-	const readOnly = [
+export function readOnlyAgentTools(mcpTools: string[], additionalTools: string[] = []): string[] {
+	return [
 		"read", "grep", "find", "ls", "web_search", "agent_reach_search", "web_extract",
-		"memory_recall", "memory_list", "memory_status", "memory_candidates",
-		"schedule_list", "schedule_runs", "skill_list", "skill_read", "task_status", "task_wait",
-		"feishu_meeting_get", "feishu_meeting_list", "feishu_meeting_reserve_get", "feishu_meeting_reserve_active_get", "feishu_meeting_recording_get",
+		"memory_recall", "memory_list",
+		...additionalTools,
 		...mcpTools,
 	];
+}
+
+export function mainAgentTools(toolset: "safe" | "standard", mcpTools: string[]): string[] {
+	const readOnly = readOnlyAgentTools(mcpTools, [
+		"memory_status", "memory_candidates",
+		"schedule_list", "schedule_runs", "skill_list", "skill_read", "task_status", "task_wait",
+		"feishu_meeting_get", "feishu_meeting_list", "feishu_meeting_reserve_get", "feishu_meeting_reserve_active_get", "feishu_meeting_recording_get",
+	]);
 	if (toolset === "safe") return readOnly;
 	return [
 		...readOnly,

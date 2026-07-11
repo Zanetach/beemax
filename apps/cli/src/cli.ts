@@ -8,7 +8,7 @@
  *   beemax model      Show / set the configured model
  */
 
-import { buildSubagentSystemPrompt, executeSubagentTask, mainAgentTools, runGateway } from "./gateway.ts";
+import { buildSubagentSystemPrompt, executeSubagentTask, mainAgentTools, readOnlyAgentTools, runGateway } from "./gateway.ts";
 import { beemaxHome, beemaxRoot, loadConfig } from "./config.ts";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { backupSqliteDatabase, verifySqliteDatabase } from "@beemax/memory";
@@ -762,10 +762,7 @@ async function runChat(config: ReturnType<typeof loadConfig>): Promise<void> {
 		memoryStore: memory,
 		executionPortForSource: executionPortFor(config),
 		customTools: readOnlyMcpTools,
-		tools: executionSafeTools(config, [
-			"read", "grep", "find", "ls", "web_search", "agent_reach_search", "web_extract", "memory_recall", "memory_list",
-			...readOnlyMcpTools.map((tool) => tool.name),
-		]),
+		tools: executionSafeTools(config, readOnlyAgentTools(readOnlyMcpTools.map((tool) => tool.name))),
 	});
 	const subagents = config.subagents.enabled ? new SubagentManager({
 		maxConcurrent: config.subagents.maxConcurrent,
