@@ -14,7 +14,7 @@ export type InteractionCommand =
 	| { kind: "retry" }
 	| { kind: "steer"; text: string }
 	| { kind: "tools" }
-	| { kind: "tasks"; action?: "retry" | "cancel"; planId?: string }
+	| { kind: "tasks"; action?: "plans" | "retry" | "cancel"; planId?: string }
 	| { kind: "think"; level?: "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max" }
 	| { kind: "details"; mode: InteractionDetailsDisplay | "status" };
 
@@ -39,7 +39,7 @@ export const INTERACTION_COMMANDS: readonly InteractionCommandDefinition[] = [
 	{ name: "models", usage: "/models", description: "List configured models" },
 	{ name: "think", usage: "/think [level]", description: "Inspect or set reasoning level" },
 	{ name: "tools", usage: "/tools", description: "Show available tools" },
-	{ name: "tasks", usage: "/tasks [retry|cancel <plan-id>]", description: "List durable Tasks, safely retry, or cancel one owned Task Plan" },
+	{ name: "tasks", usage: "/tasks [plans|retry|cancel <plan-id>]", description: "List durable Tasks or Plans, safely retry, or cancel one owned Task Plan" },
 	{ name: "retry", usage: "/retry", description: "Retry the last recoverable failed turn" },
 	{ name: "steer", usage: "/steer <message>", description: "Guide the active Agent before its next model step" },
 	{ name: "details", usage: "/details [hidden|collapsed|expanded]", description: "Inspect or set activity detail visibility" },
@@ -67,6 +67,7 @@ export function parseInteractionCommand(input: string): InteractionCommand | und
 	const steer = input.trim().match(/^\/steer\s+(.+)$/is);
 	if (steer) return { kind: "steer", text: steer[1].trim() };
 	if (value === "/tools") return { kind: "tools" };
+	if (value === "/tasks plans") return { kind: "tasks", action: "plans" };
 	const tasks = input.trim().match(/^\/tasks(?:\s+(retry|cancel)\s+([^\s]+))?$/i);
 	if (tasks) return tasks[1] && tasks[2] ? { kind: "tasks", action: tasks[1].toLowerCase() as "retry" | "cancel", planId: tasks[2] } : { kind: "tasks" };
 	const history = value.match(/^\/history(?:\s+(\d{1,3}))?$/);

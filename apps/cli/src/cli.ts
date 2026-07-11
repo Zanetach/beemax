@@ -32,7 +32,7 @@ import { runSetup, type SetupOptions } from "./setup.ts";
 import { configuredRuntimeModels, ProfileModelCatalog, renderModelProviderChoices, resolveProviderSelection } from "./model-catalog.ts";
 import { executionPortFor, executionSafeTools } from "./execution-composition.ts";
 import { createProfileAgentRuntime } from "./runtime-composition.ts";
-import { createProfileControlHandler, renderTaskRecoveryStatus, renderTaskSchedulerStatus, type TaskRecoveryStatus } from "./profile-control.ts";
+import { createProfileControlHandler, renderTaskPlans, renderTaskRecoveryStatus, renderTaskSchedulerStatus, renderTasks, type TaskRecoveryStatus } from "./profile-control.ts";
 import { LocalActivityPresenter, LocalReasoningPresenter, renderChatFooter, type DetailsDisplay, parseReasoningCommand } from "./local-chat-renderer.ts";
 import { renderTerminalMarkdown, StreamingTerminalMarkdown } from "./terminal-markdown.ts";
 import { fullScreenEnter, fullScreenExit, resolveChatPresentationMode, type ChatPresentationMode } from "./chat-mode.ts";
@@ -1117,6 +1117,7 @@ async function runChat(config: ReturnType<typeof loadConfig>, requestedMode: { f
 			}
 			if (command?.kind === "tools") { process.stdout.write(`${toolsStatus()}\n`); writePrompt(); return; }
 			if (command?.kind === "tasks") {
+				if (command.action === "plans") { process.stdout.write(`${renderTaskPlans(runtime.tasks(source, { limit: 200 }))}\n`); writePrompt(); return; }
 				if (command.action === "cancel" && command.planId) {
 					const result = taskRecovery.cancel([conversationKey(source)], command.planId);
 					process.stdout.write(`${result.active || result.tasks ? `Cancelled Task Plan ${command.planId}: active=${result.active}; tasks=${result.tasks}.` : `No active or queued Tasks found in owned Plan ${command.planId}.`}\n`);
@@ -1129,7 +1130,7 @@ async function runChat(config: ReturnType<typeof loadConfig>, requestedMode: { f
 					writePrompt(); return;
 				}
 				const tasks = runtime.tasks(source, { limit: 50 });
-				process.stdout.write(`${tasks.length ? tasks.map((task) => `${task.id}  [${task.kind}/${task.status}]  ${task.title}`).join("\n") : "No durable Tasks are visible to this conversation."}\n`);
+				process.stdout.write(`${renderTasks(tasks)}\n`);
 				writePrompt(); return;
 			}
 			if (command?.kind === "retry") {
