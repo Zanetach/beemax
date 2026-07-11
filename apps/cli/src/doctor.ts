@@ -92,6 +92,15 @@ export async function inspectDoctor(config: BeeMaxConfig, options: DoctorOptions
 	});
 
 	try {
+		const auditDir = join(config.paths.agentDir, "logs");
+		await mkdir(auditDir, { recursive: true, mode: 0o700 });
+		await access(auditDir, constants.W_OK);
+		checks.push({ name: "Approval audit", status: "PASS", detail: join(auditDir, "gateway.jsonl") });
+	} catch (error) {
+		checks.push({ name: "Approval audit", status: "FAIL", detail: error instanceof Error ? error.message : String(error) });
+	}
+
+	try {
 		const automation = new AutomationStore(config.memory.dbPath);
 		parseDuration(config.automation.heartbeat.every);
 		automation.close();
