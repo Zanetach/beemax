@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.0-preview.11
+
+- Fixed interactive provider selection so numeric menu choices resolve to the
+  corresponding Pi provider ID before credentials are stored.
+
 ## 0.1.0-preview.10
 
 - Added Hermes-style Profile-owned Gateway configuration, isolated default

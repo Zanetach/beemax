@@ -45,6 +45,9 @@ test("CLI supports init, model setup, Feishu channel setup, listing, and safe de
 	assert.match(run(["model", "set", "openrouter", "openai/gpt-5.2", "--profile", "personal", "--non-interactive"], {
 		BEEMAX_API_KEY: "model-key",
 	}), /Configured openrouter\/openai\/gpt-5.2/);
+	assert.match(run(["model", "set", "36", "private-model", "--profile", "personal", "--non-interactive"], {
+		BEEMAX_API_KEY: "custom-key",
+	}), /Configured custom\/private-model/);
 	const liveMemory = new MemoryStore(join(home, "profiles", "personal", "memory.db"));
 	liveMemory.remember({ platform: "feishu", chatId: "chat", userId: "user", role: "memory", content: "Backup must preserve this fact" });
 	const backupDir = await mkdtemp(join(tmpdir(), "beemax-backup-"));
@@ -63,7 +66,7 @@ test("CLI supports init, model setup, Feishu channel setup, listing, and safe de
 	assert.match(run(["memory", "status", "--profile", "personal"]), /curated=1 pending=0/);
 	assert.match(run(["channel", "qr", "--profile", "personal"]), /Feishu Developer Console/);
 	assert.match(run(["profile", "use", "personal"]), /active Profile is now 'personal'/);
-	assert.equal(run(["model", "show"]).trim(), "openrouter/openai/gpt-5.2");
+	assert.equal(run(["model", "show"]).trim(), "custom/private-model");
 	assert.equal(run(["profile", "list", "--home", home, "--root", root], {
 		BEEMAX_HOME: join(home, "wrong"),
 		BEEMAX_ROOT: join(root, "wrong"),
@@ -71,7 +74,7 @@ test("CLI supports init, model setup, Feishu channel setup, listing, and safe de
 	assert.throws(() => run(["profile", "show", "ghost"]), /does not exist/);
 
 	const config = loadConfig(join(home, "profiles", "personal", "config.yaml"), "personal");
-	assert.equal(config.model.apiKey, "model-key");
+	assert.equal(config.model.apiKey, "custom-key");
 	assert.equal(config.gateway.feishu.appSecret, "feishu-key");
 	assert.match(await readFile(join(home, "profiles", "personal", "config.yaml"), "utf8"), /gateway:\n\s+feishu:/);
 	assert.equal(config.paths.agentDir, join(home, "profiles", "personal"));

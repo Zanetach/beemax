@@ -1,5 +1,5 @@
 import { loadConfig } from "./config.ts";
-import { presetFor, renderModelProviderChoices } from "./model-catalog.ts";
+import { presetFor, renderModelProviderChoices, resolveProviderSelection } from "./model-catalog.ts";
 import { runDoctor } from "./doctor.ts";
 import {
 	configureFeishuChannel,
@@ -60,7 +60,7 @@ export async function runSetup(options: SetupOptions, dependencies: SetupDepende
 			soul = customSoul.trim() || undefined;
 		}
 		if (!options.nonInteractive && !options.provider) console.log(`\nChoose a model provider:\n${renderModelProviderChoices()}\n  Or enter any Pi-supported provider ID.`);
-		provider = options.provider ?? (options.nonInteractive ? current.model.provider : await askWithDefault("Model provider", current.model.provider));
+		provider = resolveProviderSelection(options.provider ?? (options.nonInteractive ? current.model.provider : await askWithDefault("Model provider", current.model.provider)));
 		const preset = presetFor(provider);
 		const suggestedModel = options.model ?? (provider === current.model.provider ? current.model.model : preset?.defaultModel ?? "");
 		model = options.model ?? (options.nonInteractive ? suggestedModel : await askWithDefault("Model ID", suggestedModel));

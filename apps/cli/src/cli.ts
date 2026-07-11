@@ -28,7 +28,7 @@ import {
 import { activeProfile, resolveProfileLocation } from "./profile-home.ts";
 import { installSystemdService, runServiceAction, type ServiceAction } from "./service-manager.ts";
 import { runSetup, type SetupOptions } from "./setup.ts";
-import { renderModelProviderChoices } from "./model-catalog.ts";
+import { renderModelProviderChoices, resolveProviderSelection } from "./model-catalog.ts";
 import { configuredApiKey } from "./provider-resolver.ts";
 import { executionPortFor, executionSafeTools } from "./execution-composition.ts";
 import { createProfileRuntime } from "./runtime-composition.ts";
@@ -270,7 +270,7 @@ async function runModelCommand(parsed: ParsedArgs): Promise<void> {
 	}
 	if (action !== "set") throw new Error("Usage: beemax model [show | list | set <provider> <model>] --profile <name>");
 	if (parsed.options["api-key"] !== undefined) throw new Error("Do not pass model secrets in argv; set BEEMAX_API_KEY or use the interactive prompt");
-	const provider = parsed.positionals[2];
+	const provider = parsed.positionals[2] ? resolveProviderSelection(parsed.positionals[2]) : undefined;
 	const model = parsed.positionals[3];
 	if (!provider || !model) throw new Error("model set requires a provider and model ID");
 	let apiKey = process.env.BEEMAX_API_KEY;

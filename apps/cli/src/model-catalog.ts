@@ -24,6 +24,13 @@ export function presetFor(provider: string): ModelProviderPreset | undefined {
 	return modelProviderPresets().find((preset) => preset.id === provider.trim().toLowerCase());
 }
 
+/** Interactive setup displays ordinal choices but persists Pi provider IDs. */
+export function resolveProviderSelection(value: string): string {
+	const input = value.trim().toLowerCase();
+	if (!/^\d+$/.test(input)) return input;
+	return modelProviderPresets()[Number(input) - 1]?.id ?? input;
+}
+
 export function renderModelProviderChoices(): string {
 	return modelProviderPresets().map((preset, index) => `  ${index + 1}. ${preset.label} (${preset.id})`).join("\n");
 }
