@@ -7,6 +7,7 @@ export interface TaskRecord {
 	ownerKey: string;
 	kind: TaskKind;
 	title: string;
+	description?: string;
 	status: TaskStatus;
 	parentId?: string;
 	planId?: string;

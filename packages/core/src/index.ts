@@ -53,7 +53,8 @@ export { compileLongTermMemorySnapshot, type LongTermMemoryCompiler } from "./pe
 export { curatedMemoryPrompt } from "./curated-memory.ts";
 export type { TaskDependency, TaskKind, TaskLedger, TaskQuery, TaskRecord, TaskRunRecord, TaskRunStatus, TaskRunTransition, TaskStatus, TaskTransition } from "./task-ledger.ts";
 export { createTaskLedgerTools } from "./task-ledger-tools.ts";
-export { TaskGraph, type TaskGraphExecutor, type TaskGraphResult, type TaskPlanInput } from "./task-graph.ts";
+export { TaskGraph, type TaskGraphExecutor, type TaskGraphResult, type TaskGraphRunOptions, type TaskPlanInput } from "./task-graph.ts";
+export { createTaskOrchestrationTools, type TaskOrchestrationOptions } from "./task-orchestration-tools.ts";
 export {
 	SessionCoordinator,
 	sessionIdForSource,

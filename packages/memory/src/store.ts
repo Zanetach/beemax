@@ -183,6 +183,7 @@ export class MemoryStore {
 			CREATE TABLE IF NOT EXISTS task_ledger (
 				id TEXT PRIMARY KEY,
 				title TEXT NOT NULL,
+				description TEXT,
 				status TEXT NOT NULL CHECK (status IN ('open', 'in_progress', 'done', 'cancelled')),
 				evidence TEXT,
 				completed_at INTEGER,
@@ -281,6 +282,7 @@ export class MemoryStore {
 			CREATE INDEX IF NOT EXISTS idx_memory_evidence_claim ON memory_evidence(claim_id, created_at DESC);
 		`);
 		this.addColumnIfMissing("tasks", "evidence", "TEXT");
+		this.addColumnIfMissing("tasks", "description", "TEXT");
 		this.addColumnIfMissing("tasks", "plan_id", "TEXT");
 		this.addColumnIfMissing("tasks", "updated_at", "INTEGER NOT NULL DEFAULT 0");
 		this.addColumnIfMissing("memory_claims", "superseded_by", "TEXT REFERENCES memory_claims(id)");
@@ -603,9 +605,9 @@ export class MemoryStore {
 	}
 
 	record(task: RuntimeTaskRecord): void {
-		this.db.prepare(`INSERT INTO tasks (id, owner_key, kind, title, status, parent_id, plan_id, evidence, created_at, started_at, finished_at, result, error, updated_at)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-			.run(task.id, task.ownerKey, task.kind, task.title, task.status, task.parentId ?? null, task.planId ?? null, task.evidence ?? null, task.createdAt, task.startedAt ?? null, task.finishedAt ?? null, task.result ?? null, task.error ?? null, task.createdAt);
+		this.db.prepare(`INSERT INTO tasks (id, owner_key, kind, title, description, status, parent_id, plan_id, evidence, created_at, started_at, finished_at, result, error, updated_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+			.run(task.id, task.ownerKey, task.kind, task.title, task.description ?? null, task.status, task.parentId ?? null, task.planId ?? null, task.evidence ?? null, task.createdAt, task.startedAt ?? null, task.finishedAt ?? null, task.result ?? null, task.error ?? null, task.createdAt);
 	}
 
 	transition(id: string, change: TaskTransition): void {
@@ -758,7 +760,7 @@ interface EventRow {
 }
 
 interface RuntimeTaskRow {
-	id: string; owner_key: string; kind: RuntimeTaskRecord["kind"]; title: string; status: RuntimeTaskRecord["status"];
+	id: string; owner_key: string; kind: RuntimeTaskRecord["kind"]; title: string; description: string | null; status: RuntimeTaskRecord["status"];
 	parent_id: string | null; plan_id: string | null; evidence: string | null; created_at: number; started_at: number | null; finished_at: number | null; result: string | null; error: string | null;
 }
 
@@ -807,6 +809,7 @@ function mapRuntimeTask(row: RuntimeTaskRow): RuntimeTaskRecord {
 	return {
 		id: row.id, ownerKey: row.owner_key, kind: row.kind, title: row.title, status: row.status,
 		createdAt: row.created_at,
+		...(row.description === null ? {} : { description: row.description }),
 		...(row.parent_id === null ? {} : { parentId: row.parent_id }),
 		...(row.plan_id === null ? {} : { planId: row.plan_id }),
 		...(row.evidence === null ? {} : { evidence: row.evidence }),

@@ -9,7 +9,7 @@
  *   beemax model      Show / set the configured model
  */
 
-import { buildSubagentSystemPrompt, executeSubagentTask, mainAgentTools, readOnlyAgentTools, runGateway } from "./gateway.ts";
+import { buildMainAgentSystemPrompt, buildSubagentSystemPrompt, executePlannedTask, executeSubagentTask, mainAgentTools, readOnlyAgentTools, runGateway } from "./gateway.ts";
 import { beemaxHome, beemaxRoot, loadConfig } from "./config.ts";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { backupSqliteDatabase, verifySqliteDatabase } from "@beemax/memory";
@@ -827,7 +827,7 @@ async function runChat(config: ReturnType<typeof loadConfig>, requestedMode: { f
 	const presentationMode: ChatPresentationMode = resolveChatPresentationMode({
 		...requestedMode, isInputTty: process.stdin.isTTY === true, isOutputTty: process.stdout.isTTY === true, term: process.env.TERM,
 	});
-	const { createSubagentTools, createTaskLedgerTools, SubagentManager } = await import("@beemax/core");
+	const { createSubagentTools, createTaskLedgerTools, createTaskOrchestrationTools, SubagentManager } = await import("@beemax/core");
 	const { loadMcpConfig, McpManager } = await import("@beemax/mcp-capability");
 	const { buildAgentFactory } = await import("./agent-factory.ts");
 	const { MemoryStore } = await import("@beemax/memory");
@@ -878,13 +878,19 @@ async function runChat(config: ReturnType<typeof loadConfig>, requestedMode: { f
 		cwd: config.paths.cwd,
 		agentDir: config.paths.agentDir,
 		getApiKey: (provider: string) => config.model.apiKeys[provider] ?? (provider === config.model.provider ? apiKey : undefined),
-		systemPrompt: config.agent.systemPrompt,
+		systemPrompt: buildMainAgentSystemPrompt(config.agent.systemPrompt),
 		memoryStore: memory,
 		executionPortForSource: executionPortFor(config),
 		customTools: mcp.getTools(),
 		tools: executionSafeTools(config, mainAgentTools(config.agent.toolset, mcp.getTools().map((tool) => tool.name))),
 		authorizeTool: (request, signal) => localApproval.authorize(request, signal),
-		sessionTools: (sessionSource) => [...(subagents ? createSubagentTools(subagents, sessionSource) : []), ...createTaskLedgerTools(memory, sessionSource)],
+		sessionTools: (sessionSource) => [
+			...(subagents ? [
+				...createSubagentTools(subagents, sessionSource),
+				...createTaskOrchestrationTools(memory, sessionSource, (task, signal) => executePlannedTask(createSubagentAgent, task, sessionSource, signal, config.subagents.timeoutMs), { maxConcurrent: config.subagents.maxConcurrent }),
+			] : []),
+			...createTaskLedgerTools(memory, sessionSource),
+		],
 	});
 	const profileRuntime = createProfileAgentRuntime<SessionSource>({
 		profileId: config.profile,

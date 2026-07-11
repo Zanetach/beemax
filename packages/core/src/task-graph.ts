@@ -3,12 +3,13 @@ import type { TaskDependency, TaskLedger, TaskRecord } from "./task-ledger.ts";
 export interface TaskPlanInput {
 	id: string;
 	ownerKey: string;
-	tasks: Array<{ id: string; title: string; kind?: TaskRecord["kind"]; parentId?: string }>;
+	tasks: Array<{ id: string; title: string; description?: string; kind?: TaskRecord["kind"]; parentId?: string }>;
 	dependencies?: TaskDependency[];
 }
-export type TaskGraphExecutor = (task: TaskRecord) => Promise<{ output?: string }>;
-export interface TaskGraphResult { succeeded: number; failed: number; blocked: string[]; }
-interface ActiveTaskResult { execution: Promise<ActiveTaskResult>; outcome: boolean; }
+export type TaskGraphExecutor = (task: TaskRecord, signal?: AbortSignal) => Promise<{ output?: string }>;
+export interface TaskGraphRunOptions { maxConcurrent?: number; signal?: AbortSignal; executor?: "agent" | "subagent"; }
+export interface TaskGraphResult { succeeded: number; failed: number; cancelled: number; blocked: string[]; }
+interface ActiveTaskResult { execution: Promise<ActiveTaskResult>; outcome: "succeeded" | "failed" | "cancelled"; }
 
 /** Persistent DAG invariants and bounded ready-task execution. */
 export class TaskGraph {
@@ -37,20 +38,28 @@ export class TaskGraph {
 		assertAcyclic(ids, dependencies);
 		const tasks = input.tasks.map((task): TaskRecord => ({
 			id: task.id, ownerKey: input.ownerKey, kind: task.kind ?? "delegated", title: task.title,
-			status: "pending", planId: input.id, createdAt: now, ...(task.parentId ? { parentId: task.parentId } : {}),
+			status: "pending", planId: input.id, createdAt: now,
+			...(task.description ? { description: task.description } : {}), ...(task.parentId ? { parentId: task.parentId } : {}),
 		}));
 		this.ledger.recordPlan(tasks, dependencies);
 		return tasks;
 	}
 
-	async run(ownerKeys: string[], planId: string, execute: TaskGraphExecutor, maxConcurrent = 3): Promise<TaskGraphResult> {
-		const concurrency = Math.max(1, Math.min(Math.trunc(maxConcurrent), 20));
+	async run(ownerKeys: string[], planId: string, execute: TaskGraphExecutor, options: TaskGraphRunOptions = {}): Promise<TaskGraphResult> {
+		const concurrency = Math.max(1, Math.min(Math.trunc(options.maxConcurrent ?? 3), 20));
 		let succeeded = 0;
 		let failed = 0;
+		let cancelled = 0;
 		const active = new Set<Promise<ActiveTaskResult>>();
 		while (true) {
 			const tasks = this.ledger.queryTasks({ ownerKeys, planIds: [planId], limit: 100 });
-			const pending = tasks.filter((task) => task.status === "pending");
+			let pending = tasks.filter((task) => task.status === "pending");
+			if (options.signal?.aborted && pending.length) {
+				const finishedAt = Date.now();
+				for (const task of pending) this.ledger.transition(task.id, { status: "cancelled", finishedAt, error: "Task Plan cancelled" });
+				cancelled += pending.length;
+				pending = [];
+			}
 			const byId = new Map(tasks.map((task) => [task.id, task]));
 			const edges = this.ledger.taskDependencies(pending.map((task) => task.id));
 			const dependencies = new Map<string, string[]>();
@@ -58,39 +67,43 @@ export class TaskGraph {
 			const ready = pending.filter((task) => (dependencies.get(task.id) ?? []).every((id) => byId.get(id)?.status === "succeeded"));
 			for (const task of ready.slice(0, Math.max(0, concurrency - active.size))) {
 				let execution!: Promise<ActiveTaskResult>;
-				execution = this.executeTask(task, execute).then((outcome) => ({ execution, outcome }));
+				execution = this.executeTask(task, execute, options).then((outcome) => ({ execution, outcome }));
 				active.add(execution);
 			}
 			if (active.size > 0) {
 				const completed = await Promise.race(active);
 				active.delete(completed.execution);
-				if (completed.outcome) succeeded++; else failed++;
+				if (completed.outcome === "succeeded") succeeded++;
+				else if (completed.outcome === "cancelled") cancelled++;
+				else failed++;
 				continue;
 			}
-			if (pending.length > 0) return { succeeded, failed, blocked: pending.map((task) => task.id) };
+			if (pending.length > 0) return { succeeded, failed, cancelled, blocked: pending.map((task) => task.id) };
 			const staleRunning = tasks.filter((task) => task.status === "running").map((task) => task.id);
-			return { succeeded, failed, blocked: staleRunning };
+			return { succeeded, failed, cancelled, blocked: staleRunning };
 		}
 	}
 
-	private async executeTask(task: TaskRecord, execute: TaskGraphExecutor): Promise<boolean> {
+	private async executeTask(task: TaskRecord, execute: TaskGraphExecutor, options: TaskGraphRunOptions): Promise<"succeeded" | "failed" | "cancelled"> {
 		const startedAt = Date.now();
 		const runId = crypto.randomUUID();
 		this.ledger.transition(task.id, { status: "running", startedAt });
-		this.ledger.recordRun({ id: runId, taskId: task.id, executor: "agent", status: "running", startedAt });
+		this.ledger.recordRun({ id: runId, taskId: task.id, executor: options.executor ?? "agent", status: "running", startedAt });
 		try {
-			const result = await execute({ ...task, status: "running", startedAt });
+			if (options.signal?.aborted) throw options.signal.reason ?? new Error("Task Plan cancelled");
+			const result = await execute({ ...task, status: "running", startedAt }, options.signal);
 			const finishedAt = Date.now();
 			const output = result.output?.slice(0, 50_000);
 			this.ledger.transition(task.id, { status: "succeeded", finishedAt, result: output });
 			this.ledger.transitionRun(runId, { status: "succeeded", finishedAt, output });
-			return true;
+			return "succeeded";
 		} catch (error) {
 			const finishedAt = Date.now();
 			const message = (error instanceof Error ? error.message : String(error)).slice(0, 5_000);
-			this.ledger.transition(task.id, { status: "failed", finishedAt, error: message });
-			this.ledger.transitionRun(runId, { status: "failed", finishedAt, error: message });
-			return false;
+			const status = options.signal?.aborted ? "cancelled" : "failed";
+			this.ledger.transition(task.id, { status, finishedAt, error: message });
+			this.ledger.transitionRun(runId, { status, finishedAt, error: message });
+			return status;
 		}
 	}
 }

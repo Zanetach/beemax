@@ -8,7 +8,7 @@
  */
 
 import { AutomationStore } from "@beemax/automation";
-import { AutomationScheduler, BeeMaxAgentRuntime, HeartbeatRunner, SubagentManager, ToolApprovalBroker, createSubagentTools, createTaskLedgerTools, type SubagentTask } from "@beemax/core";
+import { AutomationScheduler, BeeMaxAgentRuntime, HeartbeatRunner, SubagentManager, ToolApprovalBroker, createSubagentTools, createTaskLedgerTools, createTaskOrchestrationTools, type SubagentTask, type TaskRecord } from "@beemax/core";
 import {
 	Dispatcher,
 	FeishuAdapter,
@@ -120,10 +120,16 @@ export async function runGateway(config: BeeMaxConfig): Promise<void> {
 	}) : undefined;
 	const createAgent = buildAgentFactory({
 		...profileAgentDefaults,
-		systemPrompt: () => profilePrompt(config),
+		systemPrompt: () => buildMainAgentSystemPrompt(profilePrompt(config)),
 		tools: executionSafeTools(config, mainAgentTools(config.agent.toolset, mainMcpTools.map((tool) => tool.name))),
 		customTools: [...mainMcpTools, ...feishuMeetingTools],
-		sessionTools: (source) => [...(subagents ? createSubagentTools(subagents, source) : []), ...createTaskLedgerTools(memory, source)],
+		sessionTools: (source) => [
+			...(subagents ? [
+				...createSubagentTools(subagents, source),
+				...createTaskOrchestrationTools(memory, source, (task, signal) => executePlannedTask(createSubagentAgent, task, source, signal, config.subagents.timeoutMs), { maxConcurrent: config.subagents.maxConcurrent }),
+			] : []),
+			...createTaskLedgerTools(memory, source),
+		],
 		automationStore: automation,
 		wakeAutomation: () => scheduler?.wake(),
 		imageGeneration: {
@@ -306,6 +312,21 @@ export async function executeSubagentTask(
 	}
 }
 
+export async function executePlannedTask(
+	factory: ReturnType<typeof buildAgentFactory>,
+	task: TaskRecord,
+	source: SessionSource,
+	signal: AbortSignal | undefined,
+	timeoutMs: number,
+): Promise<{ output?: string }> {
+	const delegated: SubagentTask = {
+		id: task.id, ownerKey: task.ownerKey, source: { ...source }, name: task.title,
+		goal: task.description ?? task.title, capability: "analysis", status: "running",
+		createdAt: task.createdAt, startedAt: task.startedAt, timeoutMs,
+	};
+	return { output: await executeSubagentTask(factory, delegated, signal ?? new AbortController().signal) };
+}
+
 export function buildSubagentSystemPrompt(parentPrompt?: string): string {
 	return [
 		parentPrompt ?? "You are a focused BeeMax Sub-Agent working for a parent personal Agent.",
@@ -313,6 +334,14 @@ export function buildSubagentSystemPrompt(parentPrompt?: string): string {
 		"You have a fresh context and only the task below. Work independently and return evidence to the parent Agent.",
 		"You cannot contact the user, mutate long-term memory, modify files, run shell commands, change Skills, schedule work, or spawn more agents.",
 	].join("\n\n");
+}
+
+export function buildMainAgentSystemPrompt(parentPrompt?: string): string {
+	return [
+		parentPrompt,
+		"# Task orchestration",
+		"For a substantial request with 2 or more independent research or analysis work items, use task_plan_execute to submit a small validated DAG and run isolated Sub-Agents in parallel. Express real dependencies explicitly. Use task_spawn for a single isolated item. Do not create a Task Plan for trivial work, direct user interaction, or steps that mutate files or external systems. Never recursively delegate, and synthesize the verified Task results into one answer.",
+	].filter((part): part is string => Boolean(part?.trim())).join("\n\n");
 }
 
 function profilePrompt(config: BeeMaxConfig): string {
@@ -334,6 +363,7 @@ export function mainAgentTools(toolset: "safe" | "standard", mcpTools: string[])
 	const readOnly = readOnlyAgentTools(mcpTools, [
 		"memory_status", "memory_candidates", "memory_explain",
 		"schedule_list", "schedule_runs", "skill_list", "skill_read", "task_status", "task_wait", "task_list", "task_get", "task_runs",
+		"task_plan_status",
 		"feishu_meeting_get", "feishu_meeting_list", "feishu_meeting_reserve_get", "feishu_meeting_reserve_active_get", "feishu_meeting_recording_get",
 	]);
 	if (toolset === "safe") return readOnly;
@@ -344,6 +374,7 @@ export function mainAgentTools(toolset: "safe" | "standard", mcpTools: string[])
 		"browser_click", "browser_fill", "browser_cookies",
 		"reminder_create", "schedule_create", "schedule_pause", "schedule_resume", "schedule_delete",
 		"skill_create", "skill_update", "task_spawn", "task_cancel", "image_generate",
+		"task_plan_execute",
 		"feishu_meeting_reserve_create", "feishu_meeting_reserve_update", "feishu_meeting_reserve_delete",
 		"feishu_meeting_end", "feishu_meeting_invite", "feishu_meeting_kickout", "feishu_meeting_set_host",
 		"feishu_meeting_recording_set_permission", "feishu_meeting_recording_start", "feishu_meeting_recording_stop",
