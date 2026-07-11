@@ -12,6 +12,7 @@
 
 import {
 	AgentRunError,
+	sessionOwnerKey,
 	type AgentSessionEvent,
 	type AgentRuntimePort,
 } from "@beemax/core";
@@ -60,11 +61,11 @@ export class Dispatcher {
 
 	private async handle(msg: InboundMessage): Promise<void> {
 		if (!this.deduplicator.accept(this.profileId, msg.source.platform, msg.source.messageId)) return;
-		const effective = { ...msg, source: this.sessionOverrides.get(ownerKey(msg.source)) ?? msg.source };
+		const effective = { ...msg, source: this.sessionOverrides.get(sessionOwnerKey(msg.source)) ?? msg.source };
 		if (this.deps.approvalBroker && (await this.deps.approvalBroker.handleMessage(effective))) return;
 		const control = await this.runtime.handleControl({ source: effective.source, text: effective.text });
 		if (control?.handled) {
-			if (control.nextSource) this.sessionOverrides.set(ownerKey(msg.source), control.nextSource);
+			if (control.nextSource) this.sessionOverrides.set(sessionOwnerKey(msg.source), { ...msg.source, threadId: control.nextSource.threadId });
 			await this.platform.send(msg.source.chatId, control.message);
 			return;
 		}
@@ -196,10 +197,6 @@ export class Dispatcher {
 			}
 		}
 	}
-}
-
-function ownerKey(source: InboundMessage["source"]): string {
-	return `${source.platform}:${source.chatId}:${source.userIdAlt ?? source.userId ?? "anon"}`;
 }
 
 function toolResultSummary(result: unknown): string {

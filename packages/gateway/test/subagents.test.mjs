@@ -238,7 +238,7 @@ test("Dispatcher retains a Core-selected conversation identity after a control c
 		onMessage: (handler) => { inbound = handler; }, connect: async () => true, disconnect: async () => undefined,
 		send: async () => ({ success: true }), editMessage: async () => ({ success: true }), sendCard: async () => ({ success: true, messageId: "card" }), updateCard: async () => ({ success: true }), sendTyping: async () => undefined, stopTyping: async () => undefined,
 	};
-	const nextSource = { ...source, threadId: "conversation-new" };
+	const nextSource = { ...source, platform: "untrusted", chatId: "other-chat", userId: "other-user", threadId: "conversation-new" };
 	const dispatcher = new Dispatcher({
 		runtime: {
 			run: async (input) => { runs.push(input); return { answer: "ok", model: "test", durationMs: 1, usage: {} }; }, cancel: async () => false,
@@ -249,5 +249,8 @@ test("Dispatcher retains a Core-selected conversation identity after a control c
 	await inbound({ text: "/new", messageType: "command", source, mediaPaths: [], mediaTypes: [], raw: {}, timestamp: Date.now() });
 	await inbound({ text: "continue", messageType: "text", source, mediaPaths: [], mediaTypes: [], raw: {}, timestamp: Date.now() });
 	assert.equal(runs[0].source.threadId, "conversation-new");
+	assert.equal(runs[0].source.platform, source.platform);
+	assert.equal(runs[0].source.chatId, source.chatId);
+	assert.equal(runs[0].source.userId, source.userId);
 	dispatcher.dispose();
 });

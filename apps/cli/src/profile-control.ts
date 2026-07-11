@@ -3,6 +3,8 @@ import type { SessionSource } from "@beemax/gateway";
 import type { BeeMaxAgentRuntime } from "@beemax/core";
 import type { BeeMaxConfig } from "./config.ts";
 import { configureModel } from "./profile-config.ts";
+import { readdir, readFile } from "node:fs/promises";
+import { join } from "node:path";
 
 /** Profile control plane shared by local chat and every Gateway channel. */
 export function createProfileControlHandler(
@@ -14,11 +16,23 @@ export function createProfileControlHandler(
 		if (command === "/new" || command === "/reset") {
 			if (command === "/reset") runtime.reset(source);
 			const nextSource = { ...source, threadId: `conversation-${crypto.randomUUID()}` };
+			await runtime.open(nextSource);
 			return { handled: true, nextSource, message: `${command === "/reset" ? "Reset and started" : "Started"} new session: ${nextSource.threadId}` };
 		}
 		if (command === "/sessions") {
 			const sessions = await runtime.listSavedSessions(source);
 			return { handled: true, message: sessions.length ? sessions.map((session) => `${session.threadId ?? "default"}  ${new Date(session.lastUsedAt).toLocaleString()}`).join("\n") : "No saved sessions." };
+		}
+		if (command === "/skills") {
+			try {
+				const entries = await readdir(join(config.paths.agentDir, "skills"), { withFileTypes: true });
+				const skills = await Promise.all(entries.filter((entry) => entry.isDirectory()).map(async (entry) => {
+					const content = await readFile(join(config.paths.agentDir, "skills", entry.name, "SKILL.md"), "utf8").catch(() => "");
+					const description = content.match(/^description:\s*(.+)$/m)?.[1]?.replaceAll('"', "").trim();
+					return description ? `${entry.name}  ${description}` : undefined;
+				}));
+				return { handled: true, message: skills.filter((skill): skill is string => Boolean(skill)).sort().join("\n") || "No Profile Skills installed." };
+			} catch { return { handled: true, message: "No Profile Skills installed." }; }
 		}
 		const resume = text.trim().match(/^\/resume\s+([^\s]+)$/i);
 		if (resume) {
@@ -32,7 +46,7 @@ export function createProfileControlHandler(
 			const entries = await runtime.history(source, history[1] ? Number(history[1]) : undefined);
 			return { handled: true, message: entries.length ? entries.map((entry) => `[${entry.role}] ${entry.text.replaceAll("\n", " ")}`).join("\n") : "No live message history." };
 		}
-		if (command === "/help") return { handled: true, message: "Commands: /help /status /usage /compact /model [provider/model] [--global] /stop\nCLI also supports local session, display, tool, and retry controls." };
+		if (command === "/help") return { handled: true, message: "Commands: /help /status /usage /compact /sessions /resume <id> /history [n] /skills /new /reset /model [provider/model] [--global] /stop\nCLI also supports local display, tool, and retry controls." };
 		if (command === "/status" || command === "/usage") {
 			const [model, usage] = await Promise.all([runtime.modelStatus(source), runtime.usage(source)]);
 			const usageText = usage ? `input=${usage.inputTokens}; output=${usage.outputTokens}; context=${usage.contextTokens ?? "?"}/${usage.contextWindow ?? "?"}` : "no live session";
