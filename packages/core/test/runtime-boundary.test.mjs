@@ -125,6 +125,29 @@ test("BeeMax Agent Runtime propagates an external abort signal to the active tur
 	runtime.dispose();
 });
 
+test("BeeMax Agent Runtime passes native image attachments to Pi without prompt serialization", async () => {
+	const source = { platform: "cli", chatId: "terminal", chatType: "dm", userId: "user" };
+	const images = [{ type: "image", mimeType: "image/png", data: "aW1hZ2U=" }];
+	let received;
+	const runtime = new BeeMaxAgentRuntime({
+		createAgent: async () => {
+			const agent = { state: { model: { id: "vision-test" }, messages: [] } };
+			return {
+				agent,
+				subscribe: () => () => undefined,
+				prompt: async (text, options) => { received = { text, options }; agent.state.messages = [{ role: "assistant", content: [{ type: "text", text: "seen" }], usage: { input: 1, output: 1 } }]; },
+				abort: async () => undefined,
+				dispose: () => undefined,
+			};
+		},
+	});
+	await runtime.run({ source, text: "describe this", images, timeoutMs: 1_000 });
+	assert.equal(received.text, "describe this");
+	assert.deepEqual(received.options.images, images);
+	assert.doesNotMatch(received.text, /aW1hZ2U/);
+	runtime.dispose();
+});
+
 test("BeeMax Agent Runtime exposes explicit context compaction only for an idle session", async () => {
 	const source = { platform: "cli", chatId: "terminal", chatType: "dm", userId: "user" };
 	let compactions = 0;

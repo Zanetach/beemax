@@ -15,10 +15,15 @@
  * open_id (userId), matching Hermes.
  */
 
-import { createReadStream } from "node:fs";
-import { stat } from "node:fs/promises";
+import { createReadStream, createWriteStream } from "node:fs";
+import { chmod, mkdir, mkdtemp, rm, stat } from "node:fs/promises";
 import { createServer, type Server } from "node:http";
 import type { Socket } from "node:net";
+import { tmpdir } from "node:os";
+import { extname, join } from "node:path";
+import { Transform } from "node:stream";
+import { pipeline } from "node:stream/promises";
+import { randomUUID } from "node:crypto";
 import lark, { adaptDefault, type Client, type EventDispatcher, type WSClient } from "@larksuiteoapi/node-sdk";
 import type {
 	InboundMessage,
@@ -34,6 +39,7 @@ const LARK_DOMAIN = lark.Domain.Lark;
 
 const MAX_TEXT_LENGTH = 4000; // Feishu text message soft cap; we chunk on this.
 const MAX_WEBHOOK_BODY_BYTES = 1_048_576;
+const MAX_INBOUND_MEDIA_BYTES = 25 * 1024 * 1024;
 
 export class FeishuAdapter implements PlatformAdapter {
 	readonly name = "feishu" as const;
@@ -230,20 +236,57 @@ export class FeishuAdapter implements PlatformAdapter {
 
 		const source = this.buildSource(data);
 		const text = await this.extractText(msg);
-		if (!text && msg.message_type !== "image") return;
+		const media = parseFeishuMediaDescriptor(msg);
+		if (!text && !media) return;
+		const downloaded = media ? await this.downloadMedia(msg.message_id, media) : undefined;
 
 		const inbound: InboundMessage = {
-			text,
+			text: text || media?.displayName || `Received ${msg.message_type} attachment`,
 			messageType: this.mapMessageType(msg.message_type),
 			source,
-			mediaPaths: [],
-			mediaTypes: [],
+			mediaPaths: downloaded ? [downloaded.path] : [],
+			mediaTypes: downloaded ? [downloaded.mimeType] : [],
+			releaseMedia: downloaded?.release,
 			replyToMessageId: msg.root_id ?? msg.parent_id ?? undefined,
 			timestamp: Number.parseInt(msg.create_time, 10) * 1000 || Date.now(),
 			raw: data,
 		};
 
-		await this.handler?.(inbound);
+		try {
+			await this.handler?.(inbound);
+		} finally {
+			// The Dispatcher normally releases during its own finally block. This
+			// adapter-level fallback also covers missing or failing consumers.
+			await downloaded?.release();
+		}
+	}
+
+	private async downloadMedia(messageId: string, media: FeishuMediaDescriptor): Promise<{ path: string; mimeType: string; release: () => Promise<void> }> {
+		const root = join(tmpdir(), "beemax-feishu-media");
+		await mkdir(root, { recursive: true, mode: 0o700 });
+		await chmod(root, 0o700);
+		const directory = await mkdtemp(join(root, "message-"));
+		await chmod(directory, 0o700);
+		const suffix = safeMediaExtension(media.displayName, media.mimeType);
+		const path = join(directory, `${randomUUID()}${suffix}`);
+		try {
+			const resource = await this.client.im.v1.messageResource.get({
+				params: { type: media.resourceType },
+				path: { message_id: messageId, file_key: media.fileKey },
+			});
+			let bytes = 0;
+			const limiter = new Transform({
+				transform(chunk: Buffer, _encoding, callback) {
+					bytes += chunk.byteLength;
+					callback(bytes > MAX_INBOUND_MEDIA_BYTES ? new Error("Feishu attachment exceeds BeeMax's 25MB inbound limit") : undefined, chunk);
+				},
+			});
+			await pipeline(resource.getReadableStream(), limiter, createWriteStream(path, { flags: "wx", mode: 0o600 }));
+			return { path, mimeType: headerMimeType(resource.headers) ?? media.mimeType, release: () => rm(directory, { recursive: true, force: true }) };
+		} catch (error) {
+			await rm(directory, { recursive: true, force: true });
+			throw error;
+		}
 	}
 
 	// --- access policy ---------------------------------------------------
@@ -547,4 +590,45 @@ interface FeishuMessage {
 	content: string;
 	mentions?: Array<{ key: string; id: { open_id?: string; union_id?: string }; name: string }>;
 	create_time: string;
+}
+
+export interface FeishuMediaDescriptor {
+	fileKey: string;
+	resourceType: "image" | "file";
+	mimeType: string;
+	displayName?: string;
+}
+
+export function parseFeishuMediaDescriptor(message: Pick<FeishuMessage, "message_type" | "content">): FeishuMediaDescriptor | undefined {
+	if (!["image", "audio", "file", "media"].includes(message.message_type)) return undefined;
+	let content: { image_key?: unknown; file_key?: unknown; file_name?: unknown };
+	try { content = JSON.parse(message.content) as typeof content; } catch { return undefined; }
+	const key = message.message_type === "image" ? content.image_key : content.file_key;
+	if (typeof key !== "string" || !key) return undefined;
+	const displayName = typeof content.file_name === "string" ? content.file_name : undefined;
+	return {
+		fileKey: key,
+		resourceType: message.message_type === "image" ? "image" : "file",
+		mimeType: inferMediaMimeType(message.message_type, displayName),
+		displayName,
+	};
+}
+
+function inferMediaMimeType(messageType: string, name?: string): string {
+	if (messageType === "image") return "image/jpeg";
+	if (messageType === "audio") return "audio/ogg";
+	const extension = extname(name ?? "").toLowerCase();
+	return ({ ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".gif": "image/gif", ".webp": "image/webp", ".pdf": "application/pdf", ".txt": "text/plain", ".md": "text/markdown", ".mp3": "audio/mpeg", ".wav": "audio/wav", ".ogg": "audio/ogg", ".mp4": "video/mp4" } as Record<string, string>)[extension] ?? "application/octet-stream";
+}
+
+function safeMediaExtension(name: string | undefined, mimeType: string): string {
+	const candidate = extname(name ?? "").toLowerCase();
+	if (/^\.[a-z0-9]{1,8}$/.test(candidate)) return candidate;
+	return ({ "image/png": ".png", "image/jpeg": ".jpg", "image/gif": ".gif", "image/webp": ".webp", "audio/ogg": ".ogg", "audio/mpeg": ".mp3", "audio/wav": ".wav", "application/pdf": ".pdf", "text/plain": ".txt" } as Record<string, string>)[mimeType] ?? ".bin";
+}
+
+function headerMimeType(headers: unknown): string | undefined {
+	if (!headers || typeof headers !== "object") return undefined;
+	const value = (headers as Record<string, unknown>)["content-type"];
+	return typeof value === "string" && value.includes("/") ? value.split(";", 1)[0]?.trim() : undefined;
 }

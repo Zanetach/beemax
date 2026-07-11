@@ -23,6 +23,7 @@ import { CardSession } from "../card/session.ts";
 import { renderCard, type CardRenderOptions } from "../card/render.ts";
 import { FlushController } from "../card/flush.ts";
 import { MessageDeduplicator } from "./message-deduplicator.ts";
+import { prepareAgentMediaInput } from "./media-input.ts";
 
 export interface DispatcherDeps {
 	runtime: AgentRuntimePort<InboundMessage["source"]>;
@@ -69,22 +70,28 @@ export class Dispatcher {
 	}
 
 	private async handle(msg: InboundMessage): Promise<void> {
-		if (!this.deduplicator.accept(this.profileId, msg.source.platform, msg.source.messageId)) return;
-		const effective = { ...msg, source: this.sessionOverrides.get(sessionOwnerKey(msg.source)) ?? msg.source };
-		if (effective.text.trim().toLowerCase() === "/stop") {
-			const outcome = await this.interaction.dispatch({ type: "turn.cancel", source: effective.source });
-			if (!("cancelled" in outcome)) throw new Error("Cancellation dispatch did not produce a cancellation result");
-			await this.platform.send(msg.source.chatId, `${outcome.cancelled ? "Stopped the active Agent turn" : "No active Agent turn"}${outcome.subagentsCancelled ? ` and cancelled ${outcome.subagentsCancelled} Sub-Agent task(s)` : ""}${outcome.approvalCancelled ? "; cancelled pending approval" : ""}.`);
-			return;
+		try {
+			if (!this.deduplicator.accept(this.profileId, msg.source.platform, msg.source.messageId)) return;
+			const effective = { ...msg, source: this.sessionOverrides.get(sessionOwnerKey(msg.source)) ?? msg.source };
+			if (effective.text.trim().toLowerCase() === "/stop") {
+				const outcome = await this.interaction.dispatch({ type: "turn.cancel", source: effective.source });
+				if (!("cancelled" in outcome)) throw new Error("Cancellation dispatch did not produce a cancellation result");
+				await this.platform.send(msg.source.chatId, `${outcome.cancelled ? "Stopped the active Agent turn" : "No active Agent turn"}${outcome.subagentsCancelled ? ` and cancelled ${outcome.subagentsCancelled} Sub-Agent task(s)` : ""}${outcome.approvalCancelled ? "; cancelled pending approval" : ""}.`);
+				return;
+			}
+			if (await this.interaction.handleApprovalReply(effective.source, effective.text)) return;
+			const control = await this.runtime.handleControl({ source: effective.source, text: effective.text });
+			if (control?.handled) {
+				if (control.nextSource) this.setSessionOverride(msg.source, control.nextSource.threadId);
+				await this.platform.send(msg.source.chatId, control.message);
+				return;
+			}
+			await this.runTurn(effective);
+		} finally {
+			await msg.releaseMedia?.().catch((error) => {
+				console.warn(`[beemax] temporary inbound media cleanup failed: ${error instanceof Error ? error.message : String(error)}`);
+			});
 		}
-		if (await this.interaction.handleApprovalReply(effective.source, effective.text)) return;
-		const control = await this.runtime.handleControl({ source: effective.source, text: effective.text });
-		if (control?.handled) {
-			if (control.nextSource) this.setSessionOverride(msg.source, control.nextSource.threadId);
-			await this.platform.send(msg.source.chatId, control.message);
-			return;
-		}
-		await this.runTurn(effective);
 	}
 
 	private async runTurn(msg: InboundMessage): Promise<void> {
@@ -110,7 +117,8 @@ export class Dispatcher {
 
 		let result;
 		try {
-			result = await this.interaction.dispatch({ type: "message.send", source: msg.source, text: msg.text, input: { timeoutMs: this.turnTimeoutMs, mode: "interactive" } }, (event) => this.onInteractionEvent(event, card, flush, renderUpdate));
+			const media = await prepareAgentMediaInput(msg);
+			result = await this.interaction.dispatch({ type: "message.send", source: msg.source, text: media.text, input: { timeoutMs: this.turnTimeoutMs, mode: "interactive", images: media.images } }, (event) => this.onInteractionEvent(event, card, flush, renderUpdate));
 			if (!("answer" in result)) throw new Error("Message dispatch did not produce an Agent result");
 		} catch (err) {
 			const errorText = err instanceof AgentRunError ? err.message : err instanceof Error ? err.message : String(err);

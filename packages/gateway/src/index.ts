@@ -2,6 +2,7 @@ export { Dispatcher, type DispatcherDeps } from "./core/dispatcher.ts";
 export { InteractionControlServer, type InteractionControlServerOptions } from "./core/interaction-control-server.ts";
 export { GatewayDeliveryPort } from "./core/delivery-port.ts";
 export { MessageDeduplicator } from "./core/message-deduplicator.ts";
+export { prepareAgentMediaInput, type AgentMediaInput } from "./core/media-input.ts";
 export { sessionKeyForSource, sessionIdForSource, ephemeralSessionId } from "./core/session-router.ts";
 export {
 	SubagentManager,
@@ -32,5 +33,5 @@ export type {
 	SendResult,
 	SendOptions,
 } from "./core/types.ts";
-export { FeishuAdapter } from "./platforms/feishu/adapter.ts";
+export { FeishuAdapter, parseFeishuMediaDescriptor, type FeishuMediaDescriptor } from "./platforms/feishu/adapter.ts";
 export { loadFeishuSettings, validateFeishuWebhookSettings, type FeishuSettings } from "./platforms/feishu/settings.ts";

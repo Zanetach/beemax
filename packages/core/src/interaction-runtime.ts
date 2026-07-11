@@ -184,7 +184,7 @@ export class InteractionEventAdapter<Source extends BeeMaxRuntimeSource = BeeMax
 		const key = interactionKey(action.source);
 		if (sink) this.sinks.set(key, sink);
 		const turnId = crypto.randomUUID();
-		this.turnModels.set(interactionEventMeta(action.source, "", 0, this.profileId).sessionId, (await this.runtime.modelStatus(action.source))?.model ?? "unresolved");
+		this.turnModels.set(interactionEventMeta(action.source, "", 0, this.profileId).sessionId, (await this.runtime.modelStatus?.(action.source))?.model ?? "unresolved");
 		await this.publish(action.source, turnId, { type: "turn.started" }, sink);
 		try {
 			const result = await this.runtime.run({ ...action.input, source: action.source, text: action.text }, (event) => {
@@ -233,7 +233,7 @@ export class InteractionEventAdapter<Source extends BeeMaxRuntimeSource = BeeMax
 
 	async snapshot(source: Source): Promise<InteractionSnapshot> {
 		const current = this.states.get(interactionKey(source));
-		const [status, usage] = await Promise.all([this.runtime.modelStatus(source), this.runtime.usage(source)]);
+		const [status, usage] = await Promise.all([this.runtime.modelStatus?.(source), this.runtime.usage?.(source)]);
 		return { phase: current?.phase ?? "idle", turnId: current?.turnId, model: status?.model, usage, queueDepth: this.queuedInputs.has(interactionKey(source)) ? 1 : 0, updatedAt: current?.updatedAt ?? Date.now() };
 	}
 

@@ -1,5 +1,5 @@
 import type { Agent } from "@earendil-works/pi-agent-core";
-import { clampThinkingLevel, getSupportedThinkingLevels, type Api, type Model, type ModelThinkingLevel } from "@earendil-works/pi-ai";
+import { clampThinkingLevel, getSupportedThinkingLevels, type Api, type ImageContent, type Model, type ModelThinkingLevel } from "@earendil-works/pi-ai";
 import type { AgentSession, AgentSessionEvent } from "@earendil-works/pi-coding-agent";
 import { ConversationContext } from "./conversation-context.ts";
 import {
@@ -17,6 +17,8 @@ export interface AgentRunInput<Source extends BeeMaxRuntimeSource = BeeMaxRuntim
 	signal?: AbortSignal;
 	expandPromptTemplates?: boolean;
 	mode?: "interactive" | "automation";
+	/** Native vision attachments. Binary data must never be copied into telemetry. */
+	images?: ImageContent[];
 }
 
 export interface AgentRunResult {
@@ -119,7 +121,11 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 			input.signal?.addEventListener("abort", abortFromCaller, { once: true });
 			const timeout = setTimeout(() => { timedOut = true; void session.piSession.abort(); }, input.timeoutMs);
 			try {
-				await session.piSession.prompt(text, { expandPromptTemplates: input.expandPromptTemplates ?? true, source: input.mode === "automation" ? "extension" : undefined });
+				await session.piSession.prompt(text, {
+					expandPromptTemplates: input.expandPromptTemplates ?? true,
+					source: input.mode === "automation" ? "extension" : undefined,
+					images: input.images,
+				});
 			} catch (cause) {
 				throw new AgentRunError(timedOut ? `Agent turn timed out after ${Math.round(input.timeoutMs / 60_000)} minutes` : errorMessage(cause), timedOut, cause, timedOut || isRecoverableModelFailure(cause));
 			} finally {

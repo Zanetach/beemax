@@ -42,6 +42,8 @@ export interface InboundMessage {
 	/** Local file paths for media (downloaded by the adapter for tool/vision use). */
 	mediaPaths: string[];
 	mediaTypes: string[];
+	/** Release adapter-owned temporary media after dispatch completes. */
+	releaseMedia?: () => Promise<void>;
 	/** Message id the reply should anchor to, if any. */
 	replyToMessageId?: string;
 	replyToText?: string;
