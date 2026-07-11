@@ -19,6 +19,7 @@ export interface MemoryToolStore {
 	promoteCandidate(id: string, options: { platform: string; chatId: string; userId?: string }): boolean;
 	rejectCandidate(id: string, options: { platform: string; chatId: string; userId?: string }): boolean;
 	stats(options: { platform: string; chatId: string; userId?: string }): { curated: number; pending: number; promoted: number; rejected: number };
+	recordEvent?(record: { platform: string; chatId: string; userId?: string; kind: "feedback"; content: string }): string;
 	upsertClaim?(input: ClaimInput): MemoryClaim;
 	correctClaim?(id: string, replacement: Pick<ClaimInput, "statement" | "confidence" | "stability" | "expiresAt">, options: { platform: string; chatId: string; userId?: string }): MemoryClaim | undefined;
 	explainClaim?(id: string, options: { platform: string; chatId: string; userId?: string }): { claim: MemoryClaim; evidence: MemoryEvidence[] } | undefined;
@@ -50,7 +51,8 @@ export function createMemoryTools(store: MemoryToolStore, source: BeeMaxRuntimeS
 			evidence: Type.String({ minLength: 1, maxLength: 2000 }),
 		}), execute: async (_id, params) => {
 			if (!store.upsertClaim) return result("This memory store does not support structured understanding yet.", { supported: false });
-			const claim = store.upsertClaim({ ...scope(), kind: params.kind, statement: params.statement, confidence: params.confidence, stability: params.stability, evidence: { kind: "manual", excerpt: params.evidence } });
+			const eventId = store.recordEvent?.({ ...scope(), kind: "feedback", content: params.evidence });
+			const claim = store.upsertClaim({ ...scope(), kind: params.kind, statement: params.statement, confidence: params.confidence, stability: params.stability, evidence: { kind: "manual", eventId, excerpt: params.evidence } });
 			return result(`Recorded understanding ${claim.id}`, { claim });
 		} }),
 		defineTool({ name: "memory_explain", label: "Explain Memory", description: "Show why a structured memory exists, including its source evidence. Read-only.", parameters: Type.Object({ id: Type.String({ minLength: 1, maxLength: 64 }) }), execute: async (_id, params) => {

@@ -658,6 +658,7 @@ async function runMemoryCommand(parsed: ParsedArgs, config: ReturnType<typeof lo
 	const action = parsed.positionals[1] ?? "status";
 	const { MemoryStore } = await import("@beemax/memory");
 	const store = new MemoryStore(config.memory.dbPath);
+	const localMemoryScope = { platform: "cli", chatId: "local", userId: "local" };
 	try {
 		if (action === "status") {
 			const stats = store.stats();
@@ -665,21 +666,23 @@ async function runMemoryCommand(parsed: ParsedArgs, config: ReturnType<typeof lo
 			return;
 		}
 		if (action === "claims") {
-			const claims = store.listClaims({ limit: 50 });
+			const claims = store.listClaims({ ...localMemoryScope, limit: 50 });
 			console.log(claims.map((claim) => `${claim.id}  [${claim.kind}/${claim.stability}/${claim.confidence.toFixed(2)}] ${claim.statement}`).join("\n") || "No active structured memories.");
 			return;
 		}
 		if (action === "explain") {
 			const id = parsed.positionals[2];
 			if (!id) throw new Error("Usage: beemax memory explain <id> --profile <name>");
-			const explanation = store.explainClaim(id);
+			const explanation = store.explainClaim(id, localMemoryScope);
 			if (!explanation) throw new Error(`Memory understanding ${id} was not found`);
 			console.log(`${explanation.claim.statement}\n${explanation.evidence.map((item) => `- [${item.kind}] ${item.excerpt}`).join("\n")}`);
 			return;
 		}
 		if (action === "compile") {
 			if (parsed.options.yes !== true) throw new Error("memory compile writes MEMORY.md; rerun with --yes");
-			const snapshot = store.compileLongTermMemory({ maxChars: 2200 });
+			// MEMORY.md is profile-global and injected by the Gateway, so never compile
+			// arbitrary channel users into it. Personal CLI memory is the only safe default.
+			const snapshot = store.compileLongTermMemory({ ...localMemoryScope, maxChars: 2200 });
 			writeFileSync(join(config.paths.agentDir, "MEMORY.md"), `${snapshot}\n`, { encoding: "utf8", mode: 0o600 });
 			console.log(`Compiled ${join(config.paths.agentDir, "MEMORY.md")}.`);
 			return;
@@ -689,7 +692,7 @@ async function runMemoryCommand(parsed: ParsedArgs, config: ReturnType<typeof lo
 			const statement = optionString(parsed, "statement");
 			if (!id || !statement) throw new Error("Usage: beemax memory correct <id> --statement <text> --yes --profile <name>");
 			if (parsed.options.yes !== true) throw new Error("memory correct requires --yes");
-			const claim = store.correctClaim(id, { statement });
+			const claim = store.correctClaim(id, { statement }, localMemoryScope);
 			if (!claim) throw new Error(`Memory understanding ${id} was not found`);
 			console.log(`Corrected ${id} as ${claim.id}.`);
 			return;

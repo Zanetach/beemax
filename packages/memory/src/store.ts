@@ -48,6 +48,7 @@ export interface MemoryClaim {
 	confidence: number;
 	stability: "low" | "medium" | "high";
 	status: "active" | "superseded" | "rejected" | "archived";
+	supersededBy?: string;
 	firstObservedAt: number;
 	lastConfirmedAt: number;
 	expiresAt?: number;
@@ -59,6 +60,7 @@ export interface MemoryEvidence {
 	id: string;
 	claimId: string;
 	kind: "conversation" | "manual" | "correction";
+	eventId?: string;
 	excerpt: string;
 	createdAt: number;
 }
@@ -77,7 +79,7 @@ export interface ClaimInput {
 	confidence?: number;
 	stability?: MemoryClaim["stability"];
 	expiresAt?: number;
-	evidence?: { kind?: MemoryEvidence["kind"]; excerpt: string };
+	evidence?: { kind?: MemoryEvidence["kind"]; eventId?: string; excerpt: string };
 }
 
 /** Durable, verifiable work state. Unlike chat memory, this is a current fact source. */
@@ -97,6 +99,7 @@ export class MemoryStore {
 		mkdirSync(dirname(dbPath), { recursive: true });
 		this.db = new Database(dbPath);
 		this.db.pragma("journal_mode = WAL");
+		this.db.pragma("foreign_keys = ON");
 		this.migrate();
 	}
 
@@ -191,6 +194,7 @@ export class MemoryStore {
 				confidence REAL NOT NULL,
 				stability TEXT NOT NULL,
 				status TEXT NOT NULL,
+				superseded_by TEXT REFERENCES memory_claims(id),
 				first_observed_at INTEGER NOT NULL,
 				last_confirmed_at INTEGER NOT NULL,
 				expires_at INTEGER,
@@ -218,12 +222,20 @@ export class MemoryStore {
 			CREATE TABLE IF NOT EXISTS memory_evidence (
 				id TEXT PRIMARY KEY,
 				claim_id TEXT NOT NULL REFERENCES memory_claims(id) ON DELETE CASCADE,
+				event_id TEXT REFERENCES memory_events(id),
 				kind TEXT NOT NULL,
 				excerpt TEXT NOT NULL,
 				created_at INTEGER NOT NULL
 			);
 			CREATE INDEX IF NOT EXISTS idx_memory_evidence_claim ON memory_evidence(claim_id, created_at DESC);
 		`);
+		this.addColumnIfMissing("memory_claims", "superseded_by", "TEXT REFERENCES memory_claims(id)");
+		this.addColumnIfMissing("memory_evidence", "event_id", "TEXT REFERENCES memory_events(id)");
+	}
+
+	private addColumnIfMissing(table: string, column: string, definition: string): void {
+		const columns = this.db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>;
+		if (!columns.some((item) => item.name === column)) this.db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
 	}
 
 	/** Persist an immutable source record. It is evidence, not an inferred user fact. */
@@ -255,21 +267,22 @@ export class MemoryStore {
 				VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?)`)
 				.run(id, input.platform, input.chatId, input.userId ?? null, input.kind, statement, clampConfidence(input.confidence ?? 0.7), input.stability ?? "low", now, now, input.expiresAt ?? null, now, now);
 		}
-		if (input.evidence?.excerpt.trim()) this.addEvidence(id, input.evidence.kind ?? "manual", input.evidence.excerpt);
+		if (input.evidence?.excerpt.trim()) this.addEvidence(id, input.evidence.kind ?? "manual", input.evidence.excerpt, input.evidence.eventId);
 		return this.getClaim(id)!;
 	}
 
 	correctClaim(id: string, replacement: Pick<ClaimInput, "statement" | "confidence" | "stability" | "expiresAt">, opts: Omit<RecallOptions, "limit"> = {}): MemoryClaim | undefined {
 		const current = this.getClaim(id, opts);
 		if (!current || current.status !== "active") return undefined;
-		const now = Date.now();
-		this.db.prepare("UPDATE memory_claims SET status = 'superseded', updated_at = ? WHERE id = ?").run(now, id);
-		return this.upsertClaim({
+		const eventId = this.recordEvent({ platform: current.platform, chatId: current.chatId, userId: current.userId, kind: "feedback", content: `Corrected claim ${id}: ${current.statement} -> ${replacement.statement}` });
+		const corrected = this.upsertClaim({
 			platform: current.platform, chatId: current.chatId, userId: current.userId, kind: current.kind,
 			statement: replacement.statement, confidence: replacement.confidence ?? Math.max(current.confidence, 0.8),
 			stability: replacement.stability ?? current.stability, expiresAt: replacement.expiresAt,
-			evidence: { kind: "correction", excerpt: `Corrects claim ${id}: ${current.statement}` },
+			evidence: { kind: "correction", eventId, excerpt: `Corrects claim ${id}: ${current.statement}` },
 		});
+		this.db.prepare("UPDATE memory_claims SET status = 'superseded', superseded_by = ?, updated_at = ? WHERE id = ?").run(corrected.id, Date.now(), id);
+		return corrected;
 	}
 
 	listClaims(opts: RecallOptions & { status?: MemoryClaim["status"]; limit?: number } = {}): MemoryClaim[] {
@@ -291,7 +304,7 @@ export class MemoryStore {
 	explainClaim(id: string, opts: Omit<RecallOptions, "limit"> = {}): { claim: MemoryClaim; evidence: MemoryEvidence[] } | undefined {
 		const claim = this.getClaim(id, opts);
 		if (!claim) return undefined;
-		const evidence = this.db.prepare("SELECT id, claim_id, kind, excerpt, created_at FROM memory_evidence WHERE claim_id = ? ORDER BY created_at DESC").all(id) as EvidenceRow[];
+		const evidence = this.db.prepare("SELECT id, claim_id, event_id, kind, excerpt, created_at FROM memory_evidence WHERE claim_id = ? ORDER BY created_at DESC").all(id) as EvidenceRow[];
 		return { claim, evidence: evidence.map(mapEvidence) };
 	}
 
@@ -316,9 +329,9 @@ export class MemoryStore {
 		return lines.join("\n");
 	}
 
-	private addEvidence(claimId: string, kind: MemoryEvidence["kind"], excerpt: string): void {
-		this.db.prepare("INSERT INTO memory_evidence (id, claim_id, kind, excerpt, created_at) VALUES (?, ?, ?, ?, ?)")
-			.run(cryptoRandom(), claimId, kind, excerpt.trim().slice(0, 4000), Date.now());
+	private addEvidence(claimId: string, kind: MemoryEvidence["kind"], excerpt: string, eventId?: string): void {
+		this.db.prepare("INSERT INTO memory_evidence (id, claim_id, event_id, kind, excerpt, created_at) VALUES (?, ?, ?, ?, ?, ?)")
+			.run(cryptoRandom(), claimId, eventId ?? null, kind, excerpt.trim().slice(0, 4000), Date.now());
 	}
 
 	private getClaim(id: string, opts: Omit<RecallOptions, "limit"> = {}): MemoryClaim | undefined {
@@ -577,6 +590,7 @@ interface ClaimRow {
 	confidence: number;
 	stability: MemoryClaim["stability"];
 	status: MemoryClaim["status"];
+	superseded_by: string | null;
 	first_observed_at: number;
 	last_confirmed_at: number;
 	expires_at: number | null;
@@ -587,6 +601,7 @@ interface ClaimRow {
 interface EvidenceRow {
 	id: string;
 	claim_id: string;
+	event_id: string | null;
 	kind: MemoryEvidence["kind"];
 	excerpt: string;
 	created_at: number;
@@ -612,13 +627,13 @@ function mapClaim(row: ClaimRow): MemoryClaim {
 	return {
 		id: row.id, platform: row.platform, chatId: row.chat_id, userId: row.user_id ?? undefined,
 		kind: row.kind, statement: row.statement, confidence: row.confidence, stability: row.stability,
-		status: row.status, firstObservedAt: row.first_observed_at, lastConfirmedAt: row.last_confirmed_at,
+		status: row.status, supersededBy: row.superseded_by ?? undefined, firstObservedAt: row.first_observed_at, lastConfirmedAt: row.last_confirmed_at,
 		expiresAt: row.expires_at ?? undefined, createdAt: row.created_at, updatedAt: row.updated_at,
 	};
 }
 
 function mapEvidence(row: EvidenceRow): MemoryEvidence {
-	return { id: row.id, claimId: row.claim_id, kind: row.kind, excerpt: row.excerpt, createdAt: row.created_at };
+	return { id: row.id, claimId: row.claim_id, eventId: row.event_id ?? undefined, kind: row.kind, excerpt: row.excerpt, createdAt: row.created_at };
 }
 
 function scopeWhere(opts: Omit<RecallOptions, "limit">, alias: string): { where: string; params: unknown[] } {
