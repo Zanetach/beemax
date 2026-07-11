@@ -39,9 +39,14 @@ test("Task ledger tools query durable work across conversation and Profile scope
 		{ id: "profile", ownerKey: "profile", kind: "objective", title: "Profile task", status: "pending", createdAt: 2 },
 		{ id: "other", ownerKey: "cli:other:other", kind: "delegated", title: "Private", status: "running", createdAt: 3 },
 	];
+	const plans = [
+		{ id: "owned-plan", ownerKey: "cli:local#topic:local", title: "Owned Plan", status: "succeeded", taskCount: 1, succeeded: 1, failed: 0, cancelled: 0, verified: 1, correctiveAttempts: 0, createdAt: 1 },
+		{ id: "other-plan", ownerKey: "cli:other:other", title: "Private Plan", status: "running", taskCount: 1, succeeded: 0, failed: 0, cancelled: 0, verified: 0, correctiveAttempts: 0, createdAt: 1 },
+	];
 	const ledger = {
 		record() {}, transition() {}, recordRun() {}, transitionRun() {},
 		queryTasks(query) { return tasks.filter((task) => query.ownerKeys.includes(task.ownerKey) && (!query.id || task.id === query.id)); },
+		queryTaskPlans(query) { return plans.filter((plan) => query.ownerKeys.includes(plan.ownerKey) && (!query.id || plan.id === query.id)); },
 		taskRuns(taskId) { return [{ id: "run", taskId, executor: "subagent", status: "succeeded", startedAt: 1, finishedAt: 2 }]; },
 	};
 	const tools = new Map(createTaskLedgerTools(ledger, { ...source, threadId: "topic" }).map((tool) => [tool.name, tool]));
@@ -49,5 +54,9 @@ test("Task ledger tools query durable work across conversation and Profile scope
 	assert.match(listed.content[0].text, /Thread task/);
 	assert.match(listed.content[0].text, /Profile task/);
 	assert.doesNotMatch(listed.content[0].text, /Private/);
+	const listedPlans = await tools.get("task_plan_list").execute("plans", {});
+	assert.match(listedPlans.content[0].text, /Owned Plan/);
+	assert.doesNotMatch(listedPlans.content[0].text, /Private Plan/);
+	await assert.rejects(() => tools.get("task_plan_get").execute("plan", { id: "other-plan" }), /not found/i);
 	await assert.rejects(() => tools.get("task_runs").execute("runs", { id: "other" }), /not found/i);
 });

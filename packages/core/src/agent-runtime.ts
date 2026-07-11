@@ -10,7 +10,7 @@ import { SessionCoordinator, type RuntimeSessionFactory, type RuntimeSessionSnap
 import { SessionCatalog, type SavedSessionChoice, type SessionPreferences } from "./session-catalog.ts";
 import type { AgentControlHandler, AgentControlInput, AgentControlResult } from "./agent-control.ts";
 import { conversationKey, conversationOwnerKey } from "./agent-scope.ts";
-import type { TaskKind, TaskLedger, TaskRecord, TaskRunRecord, TaskStatus } from "./task-ledger.ts";
+import type { TaskKind, TaskLedger, TaskPlanRecord, TaskPlanStatus, TaskRecord, TaskRunRecord, TaskStatus } from "./task-ledger.ts";
 
 export interface AgentRunInput<Source extends BeeMaxRuntimeSource = BeeMaxRuntimeSource> {
 	source: Source;
@@ -77,6 +77,7 @@ export interface AgentRuntimePort<Source extends BeeMaxRuntimeSource = BeeMaxRun
 	setModel(source: Source, model: Model<Api>): Promise<boolean>;
 	modelStatus(source: Source): Promise<AgentModelStatus | undefined>;
 	tasks(source: Source, query?: { kind?: TaskKind; status?: TaskStatus; limit?: number }): TaskRecord[];
+	taskPlans(source: Source, query?: { status?: TaskPlanStatus; limit?: number }): TaskPlanRecord[];
 	taskRuns(source: Source, taskId: string): TaskRunRecord[];
 	setThinkingLevel(source: Source, level: ModelThinkingLevel): Promise<AgentModelStatus | undefined>;
 	dispose(): void;
@@ -239,6 +240,13 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 		return this.taskLedger?.queryTasks({
 			ownerKeys: [...new Set([conversationKey(source), conversationOwnerKey(source), "profile"])],
 			kinds: query.kind ? [query.kind] : undefined,
+			statuses: query.status ? [query.status] : undefined,
+			limit: query.limit,
+		}) ?? [];
+	}
+	taskPlans(source: Source, query: { status?: TaskPlanStatus; limit?: number } = {}): TaskPlanRecord[] {
+		return this.taskLedger?.queryTaskPlans({
+			ownerKeys: [...new Set([conversationKey(source), conversationOwnerKey(source), "profile"])],
 			statuses: query.status ? [query.status] : undefined,
 			limit: query.limit,
 		}) ?? [];

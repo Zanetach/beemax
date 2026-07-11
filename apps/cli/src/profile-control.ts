@@ -1,4 +1,4 @@
-import { parseInteractionCommand, type AgentControlHandler, type InteractionEventAdapter, type ProfileTaskSchedulerSnapshot, type TaskRecord } from "@beemax/core";
+import { parseInteractionCommand, type AgentControlHandler, type InteractionEventAdapter, type ProfileTaskSchedulerSnapshot, type TaskPlanRecord, type TaskRecord } from "@beemax/core";
 import type { SessionSource } from "@beemax/gateway";
 import type { BeeMaxAgentRuntime } from "@beemax/core";
 import type { BeeMaxConfig } from "./config.ts";
@@ -22,19 +22,10 @@ export function renderTaskRecoveryStatus(status?: TaskRecoveryStatus): string {
 	return status ? `Recovery: ${status.phase}; plans=${status.plans}; succeeded=${status.succeeded}; failed=${status.failed}; blocked=${status.blocked}` : "Recovery: unavailable";
 }
 
-export function renderTaskPlans(tasks: readonly TaskRecord[]): string {
-	const plans = new Map<string, { latest: number; counts: Record<TaskRecord["status"], number> }>();
-	for (const task of tasks) {
-		if (!task.planId) continue;
-		const plan = plans.get(task.planId) ?? { latest: 0, counts: { pending: 0, running: 0, succeeded: 0, failed: 0, cancelled: 0 } };
-		plan.latest = Math.max(plan.latest, task.createdAt);
-		plan.counts[task.status]++;
-		plans.set(task.planId, plan);
-	}
-	return [...plans.entries()].sort((a, b) => b[1].latest - a[1].latest).map(([planId, plan]) => {
-		const total = Object.values(plan.counts).reduce((sum, count) => sum + count, 0);
-		const states = (["pending", "running", "succeeded", "failed", "cancelled"] as const).filter((status) => plan.counts[status]).map((status) => `${status}=${plan.counts[status]}`);
-		return `${planId}  total=${total}${states.length ? ` · ${states.join(" · ")}` : ""}`;
+export function renderTaskPlans(plans: readonly TaskPlanRecord[]): string {
+	return plans.map((plan) => {
+		const completed = plan.succeeded + plan.failed + plan.cancelled;
+		return `${plan.id}  [${plan.status}]  ${plan.title} · progress=${completed}/${plan.taskCount} · verified=${plan.verified} · corrections=${plan.correctiveAttempts}`;
 	}).join("\n") || "No durable Task Plans are visible to this conversation.";
 }
 
@@ -105,7 +96,7 @@ export function createProfileControlHandler(
 			return { handled: true, message: "compacted" in compacted && compacted.compacted ? "Context compacted." : "No idle session is available to compact." };
 		}
 		const taskCommand = parseInteractionCommand(text);
-		if (taskCommand?.kind === "tasks" && taskCommand.action === "plans") return { handled: true, message: renderTaskPlans(runtime.tasks(source, { limit: 200 })) };
+		if (taskCommand?.kind === "tasks" && taskCommand.action === "plans") return { handled: true, message: renderTaskPlans(runtime.taskPlans(source, { limit: 200 })) };
 		if (taskCommand?.kind === "tasks" && taskCommand.action === "retry" && taskCommand.planId) {
 			if (!actions?.retryTaskPlan) return { handled: true, message: "Task Plan retry is unavailable in this runtime." };
 			const result = await actions.retryTaskPlan(source, taskCommand.planId);

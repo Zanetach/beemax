@@ -19,6 +19,23 @@ test("BeeMax Core owns the runtime primitive boundary", () => {
 	assert.equal(isRecoverableModelFailure(new Error("invalid API key")), false);
 });
 
+test("BeeMax Agent Runtime lists only Task Plans visible to the conversation owners", () => {
+	let query;
+	const runtime = new BeeMaxAgentRuntime({
+		createAgent: async () => { throw new Error("unused"); },
+		taskLedger: {
+			queryTaskPlans(input) { query = input; return [{ id: "plan", ownerKey: input.ownerKeys[0], title: "Plan", status: "running", taskCount: 2, succeeded: 1, failed: 0, cancelled: 0, verified: 1, correctiveAttempts: 0, createdAt: 1 }]; },
+		},
+	});
+	const plans = runtime.taskPlans({ platform: "feishu", chatId: "chat", chatType: "dm", userId: "user" }, { status: "running", limit: 10 });
+	assert.deepEqual(query.statuses, ["running"]);
+	assert.equal(query.limit, 10);
+	assert.ok(query.ownerKeys.includes("feishu:chat:user"));
+	assert.ok(query.ownerKeys.includes("profile"));
+	assert.equal(plans[0].id, "plan");
+	runtime.dispose();
+});
+
 test("Conversation context owns curated recall and candidate capture", () => {
 	const root = mkdtempSync(join(tmpdir(), "beemax-core-context-"));
 	const memory = new MemoryStore(join(root, "memory.db"));

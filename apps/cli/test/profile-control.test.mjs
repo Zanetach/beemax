@@ -27,15 +27,13 @@ test("shared /status reports Profile task admission capacity on every channel", 
 
 test("shared /tasks plans summarizes owned Task Plans for discovery and control", async () => {
 	const runtime = {
-		tasks: () => [
-			{ id: "a", planId: "plan-a", title: "A", kind: "delegated", status: "succeeded", createdAt: 1 },
-			{ id: "b", planId: "plan-a", title: "B", kind: "delegated", status: "failed", createdAt: 2 },
-			{ id: "c", planId: "plan-b", title: "C", kind: "delegated", status: "running", createdAt: 3 },
-			{ id: "objective", title: "No plan", kind: "objective", status: "pending", createdAt: 4 },
+		taskPlans: () => [
+			{ id: "plan-b", ownerKey: "owner", title: "Live research", status: "running", taskCount: 3, succeeded: 1, failed: 0, cancelled: 0, verified: 1, correctiveAttempts: 0, createdAt: 3 },
+			{ id: "plan-a", ownerKey: "owner", title: "Write report", status: "failed", taskCount: 2, succeeded: 1, failed: 1, cancelled: 0, verified: 1, correctiveAttempts: 2, createdAt: 1 },
 		],
 	};
 	const config = { profile: "personal", model: { provider: "test", model: "model" }, models: [] };
 	const control = createProfileControlHandler(runtime, config);
 	const result = await control({ source: { platform: "feishu", chatId: "chat", chatType: "dm", userId: "user" }, text: "/tasks plans" });
-	assert.equal(result.message, "plan-b  total=1 · running=1\nplan-a  total=2 · succeeded=1 · failed=1");
+	assert.equal(result.message, "plan-b  [running]  Live research · progress=1/3 · verified=1 · corrections=0\nplan-a  [failed]  Write report · progress=2/2 · verified=1 · corrections=2");
 });

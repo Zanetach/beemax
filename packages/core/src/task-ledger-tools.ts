@@ -16,6 +16,23 @@ export function createTaskLedgerTools(ledger: TaskLedger, source: BeeMaxRuntimeS
 	};
 	const tools = [
 		defineTool({
+			name: "task_plan_list", label: "List Task Plans", description: "List durable Task Plan Outcomes visible to this conversation.",
+			parameters: Type.Object({
+				status: Type.Optional(Type.Union([Type.Literal("pending"), Type.Literal("running"), Type.Literal("succeeded"), Type.Literal("failed"), Type.Literal("cancelled")])),
+				limit: Type.Optional(Type.Number({ minimum: 1, maximum: 100 })),
+			}),
+			execute: async (_id, params) => result(ledger.queryTaskPlans({ ownerKeys, statuses: params.status ? [params.status] : undefined, limit: params.limit })),
+		}),
+		defineTool({
+			name: "task_plan_get", label: "Get Task Plan", description: "Inspect one durable Task Plan Outcome visible to this conversation.",
+			parameters: Type.Object({ id: Type.String({ minLength: 1, maxLength: 128 }) }),
+			execute: async (_id, params) => {
+				const plan = ledger.queryTaskPlans({ ownerKeys, id: params.id, limit: 1 })[0];
+				if (!plan) throw new Error(`Task Plan not found: ${params.id}`);
+				return result(plan);
+			},
+		}),
+		defineTool({
 			name: "task_list", label: "List Tasks", description: "List durable objective, delegated, and automation Tasks visible to this conversation.",
 			parameters: Type.Object({
 				kind: Type.Optional(Type.Union([Type.Literal("objective"), Type.Literal("delegated"), Type.Literal("automation")])),

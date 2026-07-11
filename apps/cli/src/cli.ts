@@ -1119,7 +1119,7 @@ async function runChat(config: ReturnType<typeof loadConfig>, requestedMode: { f
 			}
 			if (command?.kind === "tools") { process.stdout.write(`${toolsStatus()}\n`); writePrompt(); return; }
 			if (command?.kind === "tasks") {
-				if (command.action === "plans") { process.stdout.write(`${renderTaskPlans(runtime.tasks(source, { limit: 200 }))}\n`); writePrompt(); return; }
+				if (command.action === "plans") { process.stdout.write(`${renderTaskPlans(runtime.taskPlans(source, { limit: 200 }))}\n`); writePrompt(); return; }
 				if (command.action === "cancel" && command.planId) {
 					const result = taskRecovery.cancel([conversationKey(source)], command.planId);
 					process.stdout.write(`${result.active || result.tasks ? `Cancelled Task Plan ${command.planId}: active=${result.active}; tasks=${result.tasks}.` : `No active or queued Tasks found in owned Plan ${command.planId}.`}\n`);

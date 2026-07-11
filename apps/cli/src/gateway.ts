@@ -421,7 +421,7 @@ export function mainAgentTools(toolset: "safe" | "standard", mcpTools: string[])
 	const readOnly = readOnlyAgentTools(mcpTools, [
 		"memory_status", "memory_candidates", "memory_explain",
 		"schedule_list", "schedule_runs", "skill_list", "skill_read", "task_status", "task_wait", "task_list", "task_get", "task_runs",
-		"task_plan_status",
+		"task_plan_list", "task_plan_get", "task_plan_status",
 		"feishu_meeting_get", "feishu_meeting_list", "feishu_meeting_reserve_get", "feishu_meeting_reserve_active_get", "feishu_meeting_recording_get",
 	]);
 	if (toolset === "safe") return readOnly;
