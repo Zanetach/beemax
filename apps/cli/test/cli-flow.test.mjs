@@ -9,6 +9,7 @@ import { configureModel } from "../dist/profile-config.js";
 import { runSetup } from "../dist/setup.js";
 import { ensureBuiltinTasks, installedVersion, taskLedgerContextForQuestion } from "../dist/runtime-facts.js";
 import { MemoryStore } from "@beemax/memory";
+import { FileCredentialVault } from "@beemax/core";
 
 const cli = resolve("apps/cli/dist/cli.js");
 
@@ -49,6 +50,9 @@ test("CLI supports init, model setup, Feishu channel setup, listing, and safe de
 	assert.match(run(["model", "set", "36", "private-model", "--profile", "personal", "--non-interactive"], {
 		BEEMAX_API_KEY: "custom-key",
 	}), /Configured custom\/private-model/);
+	const backupCredentialOutput = run(["credentials", "add", "--profile", "personal", "--label", "Backup account", "--purpose", "backup login", "--non-interactive"], { BEEMAX_CREDENTIAL_SECRET: "backup-private-value" });
+	const backupCredentialRef = backupCredentialOutput.match(/cred_[a-f0-9-]{36}/)?.[0];
+	assert.ok(backupCredentialRef);
 	const liveMemory = new MemoryStore(join(home, "profiles", "personal", "memory.db"));
 	liveMemory.remember({ platform: "feishu", chatId: "chat", userId: "user", role: "memory", content: "Backup must preserve this fact" });
 	const backupDir = await mkdtemp(join(tmpdir(), "beemax-backup-"));
@@ -57,6 +61,18 @@ test("CLI supports init, model setup, Feishu channel setup, listing, and safe de
 	const backupMemory = new MemoryStore(join(backupDir, "personal", "memory.db"));
 	assert.equal(backupMemory.recall("preserve", { platform: "feishu", chatId: "chat", userId: "user" }).length, 1);
 	backupMemory.close();
+	const backupKey = Buffer.from((await readFile(join(backupDir, "personal", "state", "credential-vault.key"), "utf8")).trim(), "base64");
+	const backupVault = new FileCredentialVault(join(backupDir, "personal", "credentials.vault"), backupKey);
+	assert.equal(backupVault.list("profile:personal")[0].ref, backupCredentialRef);
+	assert.equal(await backupVault.withSecret("profile:personal", backupCredentialRef, "backup.verify", async (secret) => secret), "backup-private-value");
+	const sourceVaultPath = join(home, "profiles", "personal", "credentials.vault");
+	const sourceVault = await readFile(sourceVaultPath, "utf8");
+	await writeFile(sourceVaultPath, "corrupt-vault");
+	const failedBackupDir = await mkdtemp(join(tmpdir(), "beemax-bad-backup-"));
+	assert.throws(() => run(["profile", "backup", "personal", failedBackupDir]), /Credential Vault|decrypt|corrupt/i);
+	await assert.rejects(() => readFile(join(failedBackupDir, "personal", "config.yaml"), "utf8"));
+	await writeFile(sourceVaultPath, sourceVault, { mode: 0o600 });
+	assert.match(run(["credentials", "remove", backupCredentialRef, "--profile", "personal", "--yes"]), /Removed Credential Ref/);
 	assert.match(run(["channel", "add", "feishu", "--profile", "personal", "--non-interactive"], {
 		FEISHU_APP_ID: "cli_test",
 		FEISHU_APP_SECRET: "feishu-key",

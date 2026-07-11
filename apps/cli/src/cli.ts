@@ -569,14 +569,22 @@ async function runProfileCommand(parsed: ParsedArgs): Promise<void> {
 	if (action === "backup") {
 		const destination = args[2];
 		if (!destination) throw new Error("profile backup requires a destination directory");
-		const { access, cp, mkdir, rm, stat } = await import("node:fs/promises");
+		const { access, copyFile, cp, mkdir, readFile, rm, stat } = await import("node:fs/promises");
+		const { FileCredentialVault } = await import("@beemax/core");
 		const source = resolveProfileLocation(name, explicitConfig).homePath;
 		const target = join(destination, name);
-		const sourceDb = loadConfig(explicitConfig, name).memory.dbPath;
+		const profileConfig = loadConfig(explicitConfig, name);
+		const sourceDb = profileConfig.memory.dbPath;
 		const dbRelativePath = relative(source, sourceDb);
 		const targetDb = dbRelativePath && !dbRelativePath.startsWith("..") && !isAbsolute(dbRelativePath)
 			? join(target, dbRelativePath)
 			: join(target, "external-data", "memory.db");
+		const backupPathFor = (path: string, fallback: string) => {
+			const relativePath = relative(source, path);
+			return relativePath && !relativePath.startsWith("..") && !isAbsolute(relativePath) ? join(target, relativePath) : join(target, "external-data", fallback);
+		};
+		const targetVault = backupPathFor(profileConfig.credentials.vaultPath, "credentials.vault");
+		const targetVaultKey = backupPathFor(profileConfig.credentials.keyPath, "credential-vault.key");
 		await mkdir(destination, { recursive: true });
 		try {
 			await access(target);
@@ -589,17 +597,30 @@ async function runProfileCommand(parsed: ParsedArgs): Promise<void> {
 				recursive: true,
 				force: false,
 				errorOnExist: true,
-				filter: (path) => path !== sourceDb && path !== `${sourceDb}-wal` && path !== `${sourceDb}-shm`,
+				filter: (path) => path !== sourceDb && path !== `${sourceDb}-wal` && path !== `${sourceDb}-shm`
+					&& !path.startsWith(`${profileConfig.credentials.vaultPath}.`),
 			});
 			await stat(sourceDb);
 			await mkdir(dirname(targetDb), { recursive: true });
 			await backupSqliteDatabase(sourceDb, targetDb);
 			verifySqliteDatabase(targetDb);
+			if (targetVault !== join(target, relative(source, profileConfig.credentials.vaultPath))) {
+				await stat(profileConfig.credentials.vaultPath).then(async () => { await mkdir(dirname(targetVault), { recursive: true }); await copyFile(profileConfig.credentials.vaultPath, targetVault); }).catch((error) => { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; });
+			}
+			if (targetVaultKey !== join(target, relative(source, profileConfig.credentials.keyPath))) {
+				await mkdir(dirname(targetVaultKey), { recursive: true }); await copyFile(profileConfig.credentials.keyPath, targetVaultKey);
+			}
+			const keyInfo = await stat(targetVaultKey);
+			if ((keyInfo.mode & 0o077) !== 0) throw new Error(`Credential Vault key permissions are broader than 0600: ${targetVaultKey}`);
+			const backupKey = Buffer.from((await readFile(targetVaultKey, "utf8")).trim(), "base64");
+			if (backupKey.byteLength !== 32) throw new Error("Credential Vault backup key is invalid");
+			const sourceVaultExists = await stat(profileConfig.credentials.vaultPath).then(() => true).catch((error) => { if ((error as NodeJS.ErrnoException).code === "ENOENT") return false; throw error; });
+			if (sourceVaultExists) new FileCredentialVault(targetVault, backupKey).list(`profile:${name}`);
 		} catch (error) {
 			await rm(target, { recursive: true, force: true });
-			throw new Error(`Profile backup database snapshot failed: ${error instanceof Error ? error.message : String(error)}`);
+			throw new Error(`Profile backup verification failed: ${error instanceof Error ? error.message : String(error)}`);
 		}
-		console.log(`Backed up Agent '${name}' to ${target} (SQLite snapshot verified).`);
+		console.log(`Backed up Agent '${name}' to ${target} (SQLite snapshot verified; Credential Vault verified).`);
 		return;
 	}
 	if (action === "delete") {
