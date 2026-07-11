@@ -907,6 +907,7 @@ async function runChat(config: ReturnType<typeof loadConfig>, requestedMode: { f
 	});
 	let fullScreenActive = false;
 	let fullInput: FullWorkbenchInput | undefined;
+	let subagentRefresh: ReturnType<typeof setInterval> | undefined;
 
 	try {
 		let reasoningDisplay = config.agent.reasoningDisplay;
@@ -994,6 +995,7 @@ async function runChat(config: ReturnType<typeof loadConfig>, requestedMode: { f
 			const outcome = await interactionAdapter.dispatch({ type: "message.send", source: turnSource, text, input: { timeoutMs: 10 * 60_000, mode: "interactive" } }, async (event) => {
 				if (workbench) {
 					activity.event(event);
+					workbench.setSubagents(subagents?.list(turnSource) ?? []);
 					workbench.event(event, activity.renderDetails());
 					if (event.type !== "answer.delta") await writeFooter();
 					else if (fullInput) fullInput.requestRender(); else process.stdout.write(`\x1b[H\x1b[2J${workbench.render()}\n`);
@@ -1197,6 +1199,11 @@ async function runChat(config: ReturnType<typeof loadConfig>, requestedMode: { f
 					closeInput,
 					(choice) => { void interactionAdapter.dispatch({ type: "approval.decide", source, choice }); },
 				);
+				subagentRefresh = setInterval(() => {
+					if (!workbench || !fullInput) return;
+					workbench.setSubagents(subagents?.list(source) ?? []);
+					fullInput.requestRender();
+				}, 1_000);
 			});
 		} else {
 			const rl = createInterface({ input: process.stdin, output: process.stdout });
@@ -1207,6 +1214,7 @@ async function runChat(config: ReturnType<typeof loadConfig>, requestedMode: { f
 			await new Promise<void>((resolve) => rl.once("close", resolve));
 		}
 	} finally {
+		if (subagentRefresh) clearInterval(subagentRefresh);
 		fullInput?.stop();
 		if (fullScreenActive) process.stdout.write(fullScreenExit());
 		interactionAdapter.dispose();

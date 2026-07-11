@@ -1,6 +1,7 @@
 import type { InteractionEvent } from "@beemax/core";
 import { Editor, ProcessTerminal, SelectList, TUI, matchesKey, type Component, type OverlayHandle } from "@earendil-works/pi-tui";
 import type { ToolApprovalChoice, ToolApprovalDetails } from "@beemax/core";
+import type { SubagentTaskSnapshot } from "@beemax/core";
 import type { ChatFooterState, DetailsDisplay } from "./local-chat-renderer.ts";
 
 export interface FullWorkbenchOptions {
@@ -22,6 +23,7 @@ export class FullWorkbench {
 	private approval: string[] = [];
 	private picker: { title: string; choices: string[] } | undefined;
 	private pendingApproval: { turnId: string; toolName: string; details?: ToolApprovalDetails } | undefined;
+	private subagents: string[] = [];
 	private footer: ChatFooterState;
 
 	constructor(options: FullWorkbenchOptions) {
@@ -55,6 +57,12 @@ export class FullWorkbench {
 	setPicker(title: string, choices: string[]): void { this.picker = { title, choices: choices.slice(0, 12) }; }
 	clearPicker(): void { this.picker = undefined; }
 	pendingApprovalRequest(): Readonly<typeof this.pendingApproval> { return this.pendingApproval; }
+	setSubagents(tasks: readonly SubagentTaskSnapshot[]): void {
+		this.subagents = tasks.map((task) => {
+			const elapsed = Math.max(0, (task.finishedAt ?? Date.now()) - (task.startedAt ?? task.createdAt));
+			return `${task.name} · ${task.status} · ${Math.round(elapsed / 1000)}s · ${task.goal}`;
+		});
+	}
 
 	render(width = process.stdout.columns || 100, height = process.stdout.rows || 32): string {
 		return this.renderLines(width, height).join("\n");
@@ -69,6 +77,7 @@ export class FullWorkbench {
 			...this.transcript.flatMap((entry) => wrap(entry, inner)),
 			divider("Activity", inner),
 			...(this.activities.length ? this.activities.flatMap((entry) => wrap(entry, inner)) : [line("No tool or Sub-Agent activity yet.", inner)]),
+			...(this.subagents.length ? [divider("Sub-Agents", inner), ...this.subagents.flatMap((entry) => wrap(entry, inner))] : []),
 			...(this.approval.length ? [divider("Approval", inner), ...this.approval.flatMap((entry) => wrap(entry, inner))] : []),
 			...(this.picker ? [divider(this.picker.title, inner), ...(this.picker.choices.length ? this.picker.choices.flatMap((entry) => wrap(entry, inner)) : [line("No matching choices.", inner)])] : []),
 			divider("Composer", inner),
