@@ -59,6 +59,7 @@ export { SessionCatalog, type SavedSessionChoice, type SessionPreferences } from
 export {
 	BeeMaxAgentRuntime,
 	AgentRunError,
+	isRecoverableModelFailure,
 	type AgentRunInput,
 	type AgentRunResult,
 	type AgentRunEventSink,

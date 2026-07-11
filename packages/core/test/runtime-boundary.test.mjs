@@ -4,13 +4,18 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { MemoryStore } from "@beemax/memory";
-import { AuthStorage, BeeMaxAgentRuntime, buildBeeMaxRuntimeFactory, ConversationContext, defineTool, getBuiltinModel, SessionCoordinator, sessionIdForSource } from "../dist/index.js";
+import { AuthStorage, BeeMaxAgentRuntime, buildBeeMaxRuntimeFactory, ConversationContext, defineTool, getBuiltinModel, isRecoverableModelFailure, SessionCoordinator, sessionIdForSource } from "../dist/index.js";
 
 test("BeeMax Core owns the runtime primitive boundary", () => {
 	assert.equal(typeof AuthStorage.create, "function");
 	assert.equal(typeof defineTool, "function");
 	assert.equal(typeof getBuiltinModel, "function");
 	assert.equal(typeof buildBeeMaxRuntimeFactory, "function");
+	assert.equal(isRecoverableModelFailure({ status: 429 }), true);
+	assert.equal(isRecoverableModelFailure({ statusCode: 503 }), true);
+	assert.equal(isRecoverableModelFailure(new Error("fetch failed")), true);
+	assert.equal(isRecoverableModelFailure({ status: 401 }), false);
+	assert.equal(isRecoverableModelFailure(new Error("invalid API key")), false);
 });
 
 test("Conversation context owns curated recall and candidate capture", () => {

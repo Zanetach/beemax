@@ -121,7 +121,7 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 			try {
 				await session.piSession.prompt(text, { expandPromptTemplates: input.expandPromptTemplates ?? true, source: input.mode === "automation" ? "extension" : undefined });
 			} catch (cause) {
-				throw new AgentRunError(timedOut ? `Agent turn timed out after ${Math.round(input.timeoutMs / 60_000)} minutes` : errorMessage(cause), timedOut, cause);
+				throw new AgentRunError(timedOut ? `Agent turn timed out after ${Math.round(input.timeoutMs / 60_000)} minutes` : errorMessage(cause), timedOut, cause, timedOut || isRecoverableModelFailure(cause));
 			} finally {
 				clearTimeout(timeout);
 				input.signal?.removeEventListener("abort", abortFromCaller);
@@ -193,13 +193,23 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 
 export class AgentRunError extends Error {
 	readonly timedOut: boolean;
+	readonly recoverable: boolean;
 	readonly cause: unknown;
-	constructor(message: string, timedOut: boolean, cause: unknown) {
+	constructor(message: string, timedOut: boolean, cause: unknown, recoverable = false) {
 		super(message);
 		this.name = "AgentRunError";
 		this.timedOut = timedOut;
+		this.recoverable = recoverable;
 		this.cause = cause;
 	}
+}
+
+/** Only transient upstream failures may trigger a configured model fallback. */
+export function isRecoverableModelFailure(error: unknown): boolean {
+	const status = httpStatus(error);
+	if (status === 408 || status === 409 || status === 425 || status === 429 || (status !== undefined && status >= 500 && status <= 599)) return true;
+	const message = errorMessage(error).toLowerCase();
+	return /(?:fetch failed|network error|networkerror|econnreset|econnrefused|etimedout|socket hang up|temporarily unavailable|rate limit|overloaded)/.test(message);
 }
 
 function lastAssistantText(agent: Agent): string {
@@ -247,3 +257,9 @@ function modelStatusOf(session: AgentSession): AgentModelStatus {
 	};
 }
 function errorMessage(error: unknown): string { return error instanceof Error ? error.message : String(error); }
+function httpStatus(error: unknown): number | undefined {
+	if (!error || typeof error !== "object") return undefined;
+	const value = error as { status?: unknown; statusCode?: unknown; response?: { status?: unknown }; $metadata?: { httpStatusCode?: unknown } };
+	for (const candidate of [value.status, value.statusCode, value.response?.status, value.$metadata?.httpStatusCode]) if (typeof candidate === "number") return candidate;
+	return undefined;
+}
