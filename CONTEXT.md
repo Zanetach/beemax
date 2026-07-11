@@ -36,6 +36,10 @@ _Avoid_: Execution, self-report, model confidence
 A new Task Run that revises a rejected result using Verification feedback while preserving the identity and responsibility of the original Task.
 _Avoid_: Recovery retry, model continuation, silent rewrite
 
+**Quality Status**:
+The observable Verification state of a Task result and the number of Corrective Attempts required to reach it; it is not a subjective score.
+_Avoid_: Quality score, model confidence, Task status
+
 **Profile Task Scheduler**:
 The Profile-wide admission controller that shares delegated execution capacity across conversations and Task Plans.
 _Avoid_: Task queue, Sub-Agent manager, Task Plan runner

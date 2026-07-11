@@ -52,7 +52,7 @@ export {
 export { ConversationContext, type ConversationContextOptions, type ConversationExchange, type ConversationMemoryPort, type VerifiedRuntimeFacts } from "./conversation-context.ts";
 export { compileLongTermMemorySnapshot, type LongTermMemoryCompiler } from "./personal-memory.ts";
 export { curatedMemoryPrompt } from "./curated-memory.ts";
-export type { TaskDependency, TaskKind, TaskLedger, TaskQuery, TaskRecord, TaskRecoveryPolicy, TaskRecoveryResult, TaskRunRecord, TaskRunStatus, TaskRunTransition, TaskStatus, TaskTransition } from "./task-ledger.ts";
+export type { TaskDependency, TaskKind, TaskLedger, TaskQuery, TaskRecord, TaskRecoveryPolicy, TaskRecoveryResult, TaskRunRecord, TaskRunStatus, TaskRunTransition, TaskStatus, TaskTransition, TaskVerificationStatus } from "./task-ledger.ts";
 export { createTaskLedgerTools } from "./task-ledger-tools.ts";
 export { TaskGraph, type TaskGraphDependencyResult, type TaskGraphExecutionContext, type TaskGraphExecutionResult, type TaskGraphExecutor, type TaskGraphResult, type TaskGraphRunOptions, type TaskGraphVerificationResult, type TaskGraphVerifier, type TaskPlanInput } from "./task-graph.ts";
 export { createTaskOrchestrationTools, type TaskOrchestrationOptions } from "./task-orchestration-tools.ts";

@@ -3,6 +3,7 @@ import type { AgentScope } from "./agent-scope.ts";
 export type TaskKind = "objective" | "delegated" | "automation";
 export type TaskStatus = "pending" | "running" | "succeeded" | "failed" | "cancelled";
 export type TaskRecoveryPolicy = "never" | "safe_retry";
+export type TaskVerificationStatus = "pending" | "accepted" | "rejected";
 
 /** Durable responsibility, independent of the worker or channel executing it. */
 export interface TaskRecord {
@@ -19,6 +20,8 @@ export interface TaskRecord {
 	parentId?: string;
 	planId?: string;
 	evidence?: string;
+	verificationStatus?: TaskVerificationStatus;
+	correctiveAttempts?: number;
 	createdAt: number;
 	startedAt?: number;
 	finishedAt?: number;
@@ -26,7 +29,7 @@ export interface TaskRecord {
 	error?: string;
 }
 
-export type TaskTransition = Pick<TaskRecord, "status"> & Partial<Pick<TaskRecord, "startedAt" | "finishedAt" | "result" | "error" | "evidence">>;
+export type TaskTransition = Pick<TaskRecord, "status"> & Partial<Pick<TaskRecord, "startedAt" | "finishedAt" | "result" | "error" | "evidence" | "verificationStatus" | "correctiveAttempts">>;
 
 export type TaskRunStatus = "running" | "succeeded" | "failed" | "cancelled";
 export interface TaskRunRecord {

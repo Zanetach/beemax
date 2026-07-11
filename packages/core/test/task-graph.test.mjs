@@ -140,6 +140,8 @@ test("TaskGraph makes one bounded Corrective Attempt after Verification rejectio
 	assert.equal(contexts[1].previousResult, "unsupported");
 	assert.equal(ledger.runs.size, 2);
 	assert.deepEqual([...ledger.runs.values()].map((run) => run.status).sort(), ["failed", "succeeded"]);
+	assert.equal(ledger.tasks.get("task").verificationStatus, "accepted");
+	assert.equal(ledger.tasks.get("task").correctiveAttempts, 1);
 });
 
 test("TaskGraph stops after the configured Corrective Attempt budget is exhausted", async () => {
@@ -155,6 +157,8 @@ test("TaskGraph stops after the configured Corrective Attempt budget is exhauste
 	assert.equal(executions, 2);
 	assert.equal(ledger.runs.size, 2);
 	assert.match(ledger.tasks.get("task").error, /Still wrong/);
+	assert.equal(ledger.tasks.get("task").verificationStatus, "rejected");
+	assert.equal(ledger.tasks.get("task").correctiveAttempts, 1);
 });
 
 test("TaskGraph fails closed when criteria exist but no verifier is available", async () => {

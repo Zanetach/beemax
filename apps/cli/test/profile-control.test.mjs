@@ -1,6 +1,13 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { createProfileControlHandler } from "../dist/profile-control.js";
+import { createProfileControlHandler, renderTasks } from "../dist/profile-control.js";
+
+test("shared Task rendering exposes objective Quality Status without a subjective score", () => {
+	assert.equal(renderTasks([
+		{ id: "verified", title: "Verified", kind: "delegated", status: "succeeded", verificationStatus: "accepted", correctiveAttempts: 1, createdAt: 1 },
+		{ id: "plain", title: "Plain", kind: "objective", status: "succeeded", createdAt: 2 },
+	]), "verified  [delegated/succeeded] [quality:verified corrections=1]  Verified\nplain  [objective/succeeded]  Plain");
+});
 
 test("shared /status reports Profile task admission capacity on every channel", async () => {
 	const runtime = {

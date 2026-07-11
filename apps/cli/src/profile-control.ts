@@ -39,7 +39,10 @@ export function renderTaskPlans(tasks: readonly TaskRecord[]): string {
 }
 
 export function renderTasks(tasks: readonly TaskRecord[]): string {
-	return tasks.length ? tasks.map((task) => `${task.id}  [${task.kind}/${task.status}]${task.planId ? ` [plan:${task.planId}]` : ""}  ${task.title}`).join("\n") : "No durable Tasks are visible to this conversation.";
+	return tasks.length ? tasks.map((task) => {
+		const quality = task.verificationStatus ? ` [quality:${task.verificationStatus === "accepted" ? "verified" : task.verificationStatus}${task.correctiveAttempts ? ` corrections=${task.correctiveAttempts}` : ""}]` : "";
+		return `${task.id}  [${task.kind}/${task.status}]${task.planId ? ` [plan:${task.planId}]` : ""}${quality}  ${task.title}`;
+	}).join("\n") : "No durable Tasks are visible to this conversation.";
 }
 
 /** Profile control plane shared by local chat and every Gateway channel. */

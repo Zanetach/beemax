@@ -88,14 +88,14 @@ test("runtime Task ledger persists delegated lifecycle independently from memory
 	const root = mkdtempSync(join(tmpdir(), "beemax-runtime-task-ledger-"));
 	const store = new MemoryStore(join(root, "memory.db"));
 	try {
-		store.record({ id: "child-1", ownerKey: "cli:local:local", kind: "delegated", title: "Research", acceptanceCriteria: "Includes a source", status: "pending", createdAt: 100 });
+		store.record({ id: "child-1", ownerKey: "cli:local:local", kind: "delegated", title: "Research", acceptanceCriteria: "Includes a source", verificationStatus: "pending", correctiveAttempts: 0, status: "pending", createdAt: 100 });
 		store.transition("child-1", { status: "running", startedAt: 110 });
-		store.transition("child-1", { status: "succeeded", finishedAt: 120, result: "done", evidence: "ACCEPT: source checked" });
+		store.transition("child-1", { status: "succeeded", finishedAt: 120, result: "done", evidence: "ACCEPT: source checked", verificationStatus: "accepted", correctiveAttempts: 1 });
 		store.recordRun({ id: "run-1", taskId: "child-1", executor: "subagent", status: "running", startedAt: 110 });
 		store.transitionRun("run-1", { status: "succeeded", finishedAt: 120, output: "done" });
 		assert.deepEqual(store.queryTasks({ ownerKeys: ["cli:local:local"] }), [{
 			id: "child-1", ownerKey: "cli:local:local", kind: "delegated", title: "Research", acceptanceCriteria: "Includes a source",
-			status: "succeeded", evidence: "ACCEPT: source checked", createdAt: 100, startedAt: 110, finishedAt: 120, result: "done",
+			status: "succeeded", evidence: "ACCEPT: source checked", verificationStatus: "accepted", correctiveAttempts: 1, createdAt: 100, startedAt: 110, finishedAt: 120, result: "done",
 		}]);
 		assert.deepEqual(store.taskRuns("child-1"), [{ id: "run-1", taskId: "child-1", executor: "subagent", status: "succeeded", startedAt: 110, finishedAt: 120, output: "done" }]);
 		assert.equal(store.listTasks().length, 0);

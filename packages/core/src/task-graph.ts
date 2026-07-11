@@ -48,6 +48,7 @@ export class TaskGraph {
 			status: "pending", planId: input.id, createdAt: now,
 			...(task.description ? { description: task.description } : {}), ...(task.parentId ? { parentId: task.parentId } : {}),
 			...(task.acceptanceCriteria ? { acceptanceCriteria: task.acceptanceCriteria } : {}),
+			...(task.acceptanceCriteria ? { verificationStatus: "pending" as const, correctiveAttempts: 0 } : {}),
 			...(task.recoveryPolicy ? { recoveryPolicy: task.recoveryPolicy } : {}), ...(task.idempotencyKey ? { idempotencyKey: task.idempotencyKey } : {}),
 			...(task.executionScope ? { executionScope: { ...task.executionScope } } : {}),
 		}));
@@ -97,13 +98,13 @@ export class TaskGraph {
 
 	private async executeTask(task: TaskRecord, dependencies: TaskGraphDependencyResult[], execute: TaskGraphExecutor, options: TaskGraphRunOptions): Promise<"succeeded" | "failed" | "cancelled"> {
 		const taskStartedAt = Date.now();
-		this.ledger.transition(task.id, { status: "running", startedAt: taskStartedAt });
+		this.ledger.transition(task.id, { status: "running", startedAt: taskStartedAt, ...(task.acceptanceCriteria ? { verificationStatus: "pending" as const, correctiveAttempts: 0 } : {}) });
 		const maxCorrectiveAttempts = Math.max(0, Math.min(Math.trunc(options.maxCorrectiveAttempts ?? 0), 2));
 		let verificationFeedback: string | undefined;
 		let previousResult: string | undefined;
 		for (let attempt = 1; attempt <= maxCorrectiveAttempts + 1; attempt++) {
 			const startedAt = Date.now();
-			if (attempt > 1) this.ledger.transition(task.id, { status: "running", startedAt });
+			if (attempt > 1) this.ledger.transition(task.id, { status: "running", startedAt, verificationStatus: "pending", correctiveAttempts: attempt - 1 });
 			const runId = crypto.randomUUID();
 			const leaseMs = Math.max(1_000, options.leaseMs ?? DEFAULT_EXECUTION_LEASE_MS);
 			this.ledger.recordRun({ id: runId, taskId: task.id, executor: options.executor ?? "agent", status: "running", startedAt, leaseExpiresAt: startedAt + leaseMs });
@@ -131,17 +132,17 @@ export class TaskGraph {
 						const finishedAt = Date.now();
 						this.ledger.transitionRun(runId, { status: "failed", finishedAt, error: `Task verification rejected: ${verificationFeedback}` });
 						if (attempt <= maxCorrectiveAttempts) {
-							this.ledger.transition(task.id, { status: "pending", error: `Task verification rejected: ${verificationFeedback}` });
+							this.ledger.transition(task.id, { status: "pending", error: `Task verification rejected: ${verificationFeedback}`, verificationStatus: "rejected", correctiveAttempts: attempt - 1 });
 							continue;
 						}
-						this.ledger.transition(task.id, { status: "failed", finishedAt, error: `Task verification rejected: ${verificationFeedback}` });
+						this.ledger.transition(task.id, { status: "failed", finishedAt, error: `Task verification rejected: ${verificationFeedback}`, verificationStatus: "rejected", correctiveAttempts: attempt - 1 });
 						return "failed";
 					}
 					verificationEvidence = verification.evidence?.slice(0, 5_000);
 				}
 				const finishedAt = Date.now();
 				const output = result.output?.slice(0, 50_000);
-				this.ledger.transition(task.id, { status: "succeeded", finishedAt, result: output, evidence: verificationEvidence });
+				this.ledger.transition(task.id, { status: "succeeded", finishedAt, result: output, evidence: verificationEvidence, ...(task.acceptanceCriteria ? { verificationStatus: "accepted" as const, correctiveAttempts: attempt - 1 } : {}) });
 				this.ledger.transitionRun(runId, { status: "succeeded", finishedAt, output });
 				return "succeeded";
 			} catch (error) {
