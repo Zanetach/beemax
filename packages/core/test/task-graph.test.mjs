@@ -242,13 +242,25 @@ test("orchestration tool validates a model-authored DAG and dispatches bounded S
 	}, { maxConcurrent: 2, verify: async () => ({ accepted: true }) }).map((tool) => [tool.name, tool]));
 	const output = await tools.get("task_plan_execute").execute("plan", {
 		title: "Research and write",
-		tasks: [{ key: "research", title: "Research", goal: "Collect evidence", acceptanceCriteria: "Includes one source" }, { key: "write", title: "Write", goal: "Use the evidence", acceptanceCriteria: "Uses the collected evidence" }],
-		dependencies: [{ task: "write", dependsOn: "research" }],
+		tasks: [{ key: "research", title: "Research", goal: "Collect evidence", acceptanceCriteria: "Includes one source" }, { key: "examples", title: "Examples", goal: "Collect examples", acceptanceCriteria: "Includes one example" }, { key: "write", title: "Write", goal: "Use the evidence", acceptanceCriteria: "Uses the collected evidence" }],
+		dependencies: [{ task: "write", dependsOn: "research" }, { task: "write", dependsOn: "examples" }],
 	});
-	assert.deepEqual(executed, ["Research", "Write"]);
-	assert.match(output.content[0].text, /"succeeded": 2/);
+	assert.equal(new Set(executed.slice(0, 2)).size, 2);
+	assert.equal(executed[2], "Write");
+	assert.match(output.content[0].text, /"succeeded": 3/);
 	assert.match(output.content[0].text, /"title": "Research and write"/);
 	assert.equal(tools.get("task_plan_execute").beemaxPolicy.approval, "never");
+});
+
+test("orchestration tool rejects a serial checklist that has no Sub-Agent parallelism", async () => {
+	const ledger = memoryLedger();
+	const tool = createTaskOrchestrationTools(ledger, { platform: "cli", chatId: "local", chatType: "dm", userId: "local" }, async () => ({ output: "unused" }))[0];
+	await assert.rejects(() => tool.execute("plan", {
+		title: "Serial checklist",
+		tasks: [{ key: "first", title: "First", goal: "First step", acceptanceCriteria: "First complete" }, { key: "second", title: "Second", goal: "Second step", acceptanceCriteria: "Second complete" }],
+		dependencies: [{ task: "second", dependsOn: "first" }],
+	}), /parallel|directly|independent/i);
+	assert.equal(ledger.tasks.size, 0);
 });
 
 test("TaskGraph cancellation stops active work and cancels nodes that have not started", async () => {

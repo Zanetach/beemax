@@ -48,6 +48,9 @@ export function createTaskOrchestrationTools(
 				if (!taskId || !dependsOn) throw new Error(`Task dependency references an unknown key: ${edge.task} -> ${edge.dependsOn}`);
 				return { taskId, dependsOn };
 			});
+			if (maximumParallelWidth([...ids.values()], dependencies) < 2) {
+				throw new Error("Task Plan has no parallel work: execute the serial checklist directly or split it into at least two genuinely independent Sub-Agent Tasks");
+			}
 			graph.createPlan({
 				id: planId, ownerKey, title: params.title,
 				tasks: params.tasks.map((task) => ({ id: ids.get(task.key)!, title: task.title, description: task.goal, acceptanceCriteria: task.acceptanceCriteria, kind: "delegated" as const, recoveryPolicy: "safe_retry" as const, idempotencyKey: `${planId}:${task.key}`, executionScope: { ...source } })),
@@ -75,6 +78,30 @@ export function createTaskOrchestrationTools(
 		withToolPolicy(executeTool, executePolicy),
 		withToolPolicy(statusTool, { ...READ_ONLY_TOOL_POLICY, impact: "Reads one durable Task Plan without changing it" }),
 	];
+}
+
+function maximumParallelWidth(taskIds: string[], dependencies: Array<{ taskId: string; dependsOn: string }>): number {
+	const indegree = new Map(taskIds.map((id) => [id, 0]));
+	const dependents = new Map<string, string[]>();
+	for (const edge of dependencies) {
+		indegree.set(edge.taskId, (indegree.get(edge.taskId) ?? 0) + 1);
+		dependents.set(edge.dependsOn, [...(dependents.get(edge.dependsOn) ?? []), edge.taskId]);
+	}
+	let wave = [...indegree].filter(([, degree]) => degree === 0).map(([id]) => id);
+	let maximum = wave.length;
+	let visited = 0;
+	while (wave.length) {
+		visited += wave.length;
+		const next: string[] = [];
+		for (const id of wave) for (const dependent of dependents.get(id) ?? []) {
+			const degree = (indegree.get(dependent) ?? 0) - 1;
+			indegree.set(dependent, degree);
+			if (degree === 0) next.push(dependent);
+		}
+		wave = next; maximum = Math.max(maximum, wave.length);
+	}
+	if (visited !== taskIds.length) throw new Error("Task dependency cycle detected");
+	return maximum;
 }
 
 function result(value: unknown) { return { content: [{ type: "text" as const, text: JSON.stringify(value, null, 2) }], details: value }; }
