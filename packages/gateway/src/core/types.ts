@@ -3,7 +3,7 @@
  *
  * Mirrors Hermes' MessageEvent / SessionSource / SendResult design but in
  * TypeScript for the BeeMax gateway. All platform adapters convert their
- * native events into these shapes so the dispatcher and session-router stay
+ * native events into these shapes so the dispatcher stays
  * platform-agnostic.
  */
 

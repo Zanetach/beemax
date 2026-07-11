@@ -6,7 +6,7 @@ import test from "node:test";
 import { MemoryStore } from "@beemax/memory";
 import { loadConfig } from "../dist/config.js";
 import { activeProfile } from "../dist/profile-home.js";
-import { curatedMemoryPrompt } from "../dist/curated-memory.js";
+import { curatedMemoryPrompt } from "@beemax/core";
 import {
 	configureFeishuChannel,
 	configureModel,
@@ -118,7 +118,7 @@ test("curated memory is bounded and rendered as a session snapshot", async () =>
 	const root = await mkdtemp(join(tmpdir(), "beemax-curated-memory-"));
 	await writeFile(join(root, "USER.md"), "Prefers concise Chinese reports.\n");
 	await writeFile(join(root, "MEMORY.md"), "A".repeat(2_300));
-	const prompt = curatedMemoryPrompt(root);
+	const prompt = curatedMemoryPrompt(root, { platform: "cli", chatId: "local", chatType: "dm", userId: "local" });
 	assert.match(prompt, /User profile/);
 	assert.match(prompt, /Prefers concise Chinese reports/);
 	assert.match(prompt, /\[truncated\]/);

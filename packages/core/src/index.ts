@@ -68,7 +68,6 @@ export {
 	isRecoverableModelFailure,
 	type AgentRunInput,
 	type AgentRunResult,
-	type AgentRunEventSink,
 	type BeeMaxAgentRunEvent,
 	type BeeMaxAgentRunEventSink,
 	type ModelFallbackEvent,
@@ -84,7 +83,6 @@ export { InteractionEventAdapter, mapAgentSessionEvent, reduceInteractionEvent, 
 export { FileInteractionEventJournal, durableEvent, type DurableInteractionEvent, type InteractionEventJournal } from "./interaction-event-journal.ts";
 export { INTERACTION_PROTOCOL_VERSION, InteractionProtocol, parseInteractionProtocolRequest, sameScope, type InteractionProtocolOptions, type InteractionProtocolRequest, type InteractionProtocolResponse, type ProtocolInteractionAction } from "./interaction-protocol.ts";
 export { INTERACTION_COMMANDS, interactionCommandHelp, parseInteractionCommand, type InteractionCommand, type InteractionCommandDefinition, type InteractionDetailsDisplay } from "./interaction-commands.ts";
-export type { RunEvent, RunRecord } from "./run-events.ts";
 export type { DeliveryPort, DeliveryTarget, MediaArtifact } from "./delivery-port.ts";
 export type { ExecutionBackend, ExecutionPolicy, ExecutionPort, ExecutionRequest, ExecutionResult, SandboxMode, WorkspaceAccess } from "./execution.ts";
 export { resolveExecutionBackend } from "./execution.ts";

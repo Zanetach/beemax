@@ -7,10 +7,9 @@ import { tmpdir } from "node:os";
 import { createCodexImageTool } from "@beemax/codex-image-capability";
 import { createFeishuMeetingTools } from "@beemax/feishu-capability";
 import { McpManager } from "@beemax/mcp-capability";
-import { filterEligibleSkills } from "@beemax/core";
+import { filterEligibleSkills, reloadRuntimeResourcesIfNeeded } from "@beemax/core";
 import { buildAgentFactory } from "../../../apps/cli/dist/agent-factory.js";
 import { createSkillTools } from "@beemax/core";
-import { reloadResourcesIfNeeded } from "../dist/core/resource-reload.js";
 
 const fixture = fileURLToPath(new URL("./fixtures/mcp-server.mjs", import.meta.url));
 const hangingMcpFixture = fileURLToPath(new URL("./fixtures/hanging-mcp-server.mjs", import.meta.url));
@@ -65,7 +64,7 @@ test("Pi discovers managed skills and hot-reloads evolved skills", async () => {
 			description: "A durable evolved test workflow",
 			instructions: "Run the verified workflow and report concrete evidence before completion.",
 		});
-		assert.equal(await reloadResourcesIfNeeded(session), true);
+		assert.equal(await reloadRuntimeResourcesIfNeeded(session), true);
 		assert.match(session.agent.state.systemPrompt, /evolved-test/);
 	} finally {
 		session.dispose();

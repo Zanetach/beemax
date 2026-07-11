@@ -52,9 +52,6 @@ export interface AgentModelStatus {
 export interface ModelFallbackEvent { type: "model_fallback"; from: string; to: string; attempt: number; }
 export type BeeMaxAgentRunEvent = AgentSessionEvent | ModelFallbackEvent;
 export type BeeMaxAgentRunEventSink = (event: BeeMaxAgentRunEvent) => void | Promise<void>;
-/** Backwards-compatible name for the product-level event sink. */
-export type AgentRunEventSink = BeeMaxAgentRunEventSink;
-
 /** Gateway-facing runtime contract; implementations may be local or remote. */
 export interface AgentRuntimePort<Source extends BeeMaxRuntimeSource = BeeMaxRuntimeSource> {
 	run(input: AgentRunInput<Source>, onEvent?: BeeMaxAgentRunEventSink): Promise<AgentRunResult>;

@@ -8,16 +8,12 @@
  */
 
 import { AutomationStore } from "@beemax/automation";
-import { AutomationScheduler, BeeMaxAgentRuntime, HeartbeatRunner } from "@beemax/core";
+import { AutomationScheduler, BeeMaxAgentRuntime, HeartbeatRunner, SubagentManager, ToolApprovalBroker, createSubagentTools, type SubagentTask } from "@beemax/core";
 import {
-	createSubagentTools,
 	Dispatcher,
 	FeishuAdapter,
 	GatewayDeliveryPort,
 	type FeishuSettings,
-	SubagentManager,
-	ToolApprovalBroker,
-	type SubagentTask,
 } from "@beemax/gateway";
 import { loadMcpConfig, McpManager } from "@beemax/mcp-capability";
 import { buildAgentFactory } from "./agent-factory.ts";
@@ -29,7 +25,6 @@ import { acquireChannelLock } from "./channel-lock.ts";
 import { createTaskAwareConversationContext } from "./runtime-facts.ts";
 import { createProfileAgentRuntime } from "./runtime-composition.ts";
 import { workspaceToolsPrompt } from "./workspace-context.ts";
-import { configuredApiKey } from "./provider-resolver.ts";
 import { join } from "node:path";
 import { executionPortFor, executionSafeTools } from "./execution-composition.ts";
 import { createProfileControlHandler } from "./profile-control.ts";
@@ -83,7 +78,7 @@ export async function runGateway(config: BeeMaxConfig): Promise<void> {
 		if (status.connected) console.info(`[beemax] MCP ${status.name}: connected (${status.tools.length} tools, ${status.resources} resources, ${status.prompts} prompts)`);
 		else console.warn(`[beemax] MCP ${status.name}: unavailable (${status.error})`);
 	}
-	const apiKey = configuredApiKey(config.model.provider, config.model.apiKey) ?? "";
+	const apiKey = config.model.apiKey ?? "";
 	const approvalBroker = new ToolApprovalBroker(async (source, text) => {
 		await deliveryPort.sendText(source, text);
 	}, undefined, (event) => recordGatewayEvent(config.paths.agentDir, "approval", {

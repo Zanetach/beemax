@@ -11,14 +11,6 @@ import {
 } from "@beemax/core";
 import { join } from "node:path";
 
-/** Profile-scoped session policy belongs at the application composition root. */
-export function createProfileRuntime<Source extends BeeMaxRuntimeSource>(
-	policy: SessionCoordinatorOptions,
-	options: Omit<BeeMaxAgentRuntimeOptions<Source>, keyof SessionCoordinatorOptions> & { controlHandler?: AgentControlHandler<Source> },
-): BeeMaxAgentRuntime<Source> {
-	return new BeeMaxAgentRuntime({ ...options, ...policy });
-}
-
 export interface ProfileAgentRuntimeOptions<Source extends BeeMaxRuntimeSource> {
 	profileId: string;
 	agentDir: string;
@@ -45,8 +37,9 @@ export function createProfileAgentRuntime<Source extends BeeMaxRuntimeSource>(
 ): ProfileAgentRuntime<Source> {
 	let runtime!: BeeMaxAgentRuntime<Source>;
 	let interaction!: InteractionEventAdapter<Source>;
-	runtime = createProfileRuntime(options.policy, {
+	runtime = new BeeMaxAgentRuntime({
 		...options.runtime,
+		...options.policy,
 		sessionCatalog: SessionCatalog.forAgentDir<Source>(options.agentDir),
 		controlHandler: options.controlHandler
 			? (input) => options.controlHandler!(runtime, interaction)(input)

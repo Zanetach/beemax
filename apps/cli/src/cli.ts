@@ -30,7 +30,6 @@ import { activeProfile, resolveProfileLocation } from "./profile-home.ts";
 import { installMacLaunchAgent, installSystemdService, runServiceAction, type ServiceAction } from "./service-manager.ts";
 import { runSetup, type SetupOptions } from "./setup.ts";
 import { configuredRuntimeModels, ProfileModelCatalog, renderModelProviderChoices, resolveProviderSelection } from "./model-catalog.ts";
-import { configuredApiKey } from "./provider-resolver.ts";
 import { executionPortFor, executionSafeTools } from "./execution-composition.ts";
 import { createProfileAgentRuntime } from "./runtime-composition.ts";
 import { createProfileControlHandler } from "./profile-control.ts";
@@ -828,14 +827,11 @@ async function runChat(config: ReturnType<typeof loadConfig>, requestedMode: { f
 	const presentationMode: ChatPresentationMode = resolveChatPresentationMode({
 		...requestedMode, isInputTty: process.stdin.isTTY === true, isOutputTty: process.stdout.isTTY === true, term: process.env.TERM,
 	});
-	const {
-		createSubagentTools,
-		SubagentManager,
-	} = await import("@beemax/gateway");
+	const { createSubagentTools, SubagentManager } = await import("@beemax/core");
 	const { loadMcpConfig, McpManager } = await import("@beemax/mcp-capability");
 	const { buildAgentFactory } = await import("./agent-factory.ts");
 	const { MemoryStore } = await import("@beemax/memory");
-	const apiKey = configuredApiKey(config.model.provider, config.model.apiKey) ?? "";
+	const apiKey = config.model.apiKey ?? "";
 	const modelCatalog = new ProfileModelCatalog(config);
 	// Full mode renders approval lifecycle from semantic events in its own panel;
 	// Compact/Plain retain the durable text prompt for SSH and scripts.

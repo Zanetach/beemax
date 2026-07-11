@@ -9,7 +9,7 @@ import { loadMcpConfig, McpManager } from "@beemax/mcp-capability";
 import { MemoryStore } from "@beemax/memory";
 import { AuthStorage } from "@beemax/core";
 import type { BeeMaxConfig } from "./config.ts";
-import { configuredApiKey, providerApiKeyEnv } from "./provider-resolver.ts";
+import { providerApiKeyEnv } from "./provider-resolver.ts";
 
 export interface DoctorCheck { name: string; status: "PASS" | "WARN" | "FAIL"; detail: string }
 export interface DoctorResult { ok: boolean; checks: DoctorCheck[] }
@@ -32,7 +32,7 @@ export async function inspectDoctor(config: BeeMaxConfig, options: DoctorOptions
 	const node = process.versions.node.split(".").map(Number);
 	checks.push({ name: "Node.js", status: node[0] > 22 || (node[0] === 22 && node[1] >= 19) ? "PASS" : "FAIL", detail: process.versions.node });
 
-	const apiKey = configuredApiKey(config.model.provider, config.model.apiKey);
+	const apiKey = config.model.apiKey;
 	checks.push({ name: "Model", status: apiKey ? "PASS" : "FAIL", detail: apiKey ? `${config.model.provider}/${config.model.model}` : `missing ${providerApiKeyEnv(config.model.provider)} or BEEMAX_API_KEY` });
 	checks.push({ name: "Toolset", status: config.agent.toolset === "safe" ? "WARN" : "PASS", detail: config.agent.toolset });
 	await checkExecutionBackend(config, checks);
