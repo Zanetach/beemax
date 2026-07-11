@@ -29,7 +29,7 @@ export function ensureBuiltinTasks(store: MemoryStore): void {
 export function createTaskAwareConversationContext(memory: MemoryStore, options: TaskAwareConversationOptions = {}): ConversationContext {
 	ensureBuiltinTasks(memory);
 	const { runtimeSnapshot, ...contextOptions } = options;
-	return new ConversationContext(memory, { ...contextOptions, runtimeFacts: (text) => taskLedgerContextForQuestion(memory, text, runtimeSnapshot?.()) });
+	return new ConversationContext(memory, { ...contextOptions, runtimeFacts: (_source, text, verified) => taskLedgerContextForQuestion(memory, text, { ...runtimeSnapshot?.(), ...verified }) });
 }
 
 /** Only task or version questions receive a snapshot; ordinary chat stays unchanged. */

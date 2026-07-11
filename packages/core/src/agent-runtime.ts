@@ -128,7 +128,7 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 			}
 			const startedAt = Date.now();
 			const text = input.mode === "interactive" || !input.mode
-				? this.context?.enrich(input.source, input.text) ?? input.text
+				? this.context?.enrich(input.source, input.text, { model: modelOf(session.piSession.agent) }) ?? input.text
 				: input.text;
 			let observableProgress = false;
 			const unsubscribe = session.piSession.subscribe((event) => {

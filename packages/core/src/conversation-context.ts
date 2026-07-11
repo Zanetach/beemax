@@ -10,8 +10,10 @@ export interface ConversationContextOptions {
 	/** Persist a delivery route for proactive work without coupling Core to a channel. */
 	recordDirectRoute?: (route: MemoryScope) => void;
 	/** Supplies verified, volatile facts (for example current task state) for fact-sensitive turns. */
-	runtimeFacts?: (text: string) => string;
+	runtimeFacts?: (source: BeeMaxRuntimeSource, text: string, facts: VerifiedRuntimeFacts) => string;
 }
+
+export interface VerifiedRuntimeFacts { model?: string; }
 
 /** Persistence capability required by Core's context policy. */
 export interface ConversationMemoryPort {
@@ -33,12 +35,12 @@ export class ConversationContext {
 		this.runtimeFacts = options.runtimeFacts;
 	}
 
-	enrich(source: BeeMaxRuntimeSource, text: string): string {
+	enrich(source: BeeMaxRuntimeSource, text: string, runtime: VerifiedRuntimeFacts = {}): string {
 		const scope = memoryScopeForSource(source);
 		this.memory.recordEvent?.({ ...scope, kind: "user", content: text });
 		const hits = this.memory.recall(text, { ...scope, limit: 4 });
 		const sections: string[] = [];
-		const facts = this.runtimeFacts?.(text);
+		const facts = this.runtimeFacts?.(source, text, runtime);
 		if (facts) sections.push(facts);
 		if (hits.length > 0) {
 			const context = hits.map((hit) => `- ${hit.content.slice(0, 500)}`).join("\n");

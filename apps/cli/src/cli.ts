@@ -29,7 +29,7 @@ import {
 import { activeProfile, resolveProfileLocation } from "./profile-home.ts";
 import { installMacLaunchAgent, installSystemdService, runServiceAction, type ServiceAction } from "./service-manager.ts";
 import { runSetup, type SetupOptions } from "./setup.ts";
-import { configuredRuntimeModels, renderModelProviderChoices, resolveProviderSelection } from "./model-catalog.ts";
+import { configuredRuntimeModels, ProfileModelCatalog, renderModelProviderChoices, resolveProviderSelection } from "./model-catalog.ts";
 import { configuredApiKey } from "./provider-resolver.ts";
 import { executionPortFor, executionSafeTools } from "./execution-composition.ts";
 import { createProfileAgentRuntime } from "./runtime-composition.ts";
@@ -836,6 +836,7 @@ async function runChat(config: ReturnType<typeof loadConfig>, requestedMode: { f
 	const { buildAgentFactory } = await import("./agent-factory.ts");
 	const { MemoryStore } = await import("@beemax/memory");
 	const apiKey = configuredApiKey(config.model.provider, config.model.apiKey) ?? "";
+	const modelCatalog = new ProfileModelCatalog(config);
 	// Full mode renders approval lifecycle from semantic events in its own panel;
 	// Compact/Plain retain the durable text prompt for SSH and scripts.
 	const localApproval = new ToolApprovalBroker(async (_source, text) => {
@@ -895,7 +896,7 @@ async function runChat(config: ReturnType<typeof loadConfig>, requestedMode: { f
 		runtime: {
 			createAgent,
 			fallbackModels: configuredRuntimeModels(config),
-			context: createTaskAwareConversationContext(memory, { runtimeSnapshot: () => ({ model: `${config.model.provider}/${config.model.model}`, profile: config.profile }) }),
+			context: createTaskAwareConversationContext(memory, { runtimeSnapshot: () => ({ profile: config.profile }) }),
 		},
 		approvalBroker: localApproval,
 		cancelSubagents: (sessionSource) => subagents?.cancelOwner(sessionSource) ?? 0,
@@ -1081,8 +1082,7 @@ async function runChat(config: ReturnType<typeof loadConfig>, requestedMode: { f
 				writePrompt(); return;
 			}
 			if (command?.kind === "models") {
-				const allChoices = config.models.map((choice) => `${choice.provider}/${choice.model}`);
-				const matching = command.query ? allChoices.filter((choice) => choice.toLowerCase().includes(command.query!.toLowerCase())) : allChoices;
+				const matching = modelCatalog.list(command.query).map((choice) => choice.key);
 				modelChoices = matching;
 				const rendered = matching.map((choice, index) => `${index + 1}. ${choice}`).join("\n");
 				if (workbench) { workbench.setPicker("Model Picker · /model <number>", matching.map((choice, index) => `${index + 1}. ${choice}`)); await writeFooter(); }

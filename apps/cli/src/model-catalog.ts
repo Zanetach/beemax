@@ -9,6 +9,61 @@ export interface ModelProviderPreset {
 	requiresBaseUrl?: boolean;
 }
 
+export interface ProfileModelCapability {
+	key: string;
+	provider: string;
+	modelId: string;
+	available: boolean;
+	capabilities?: {
+		input: string[];
+		contextWindow: number;
+		thinkingLevels: string[];
+	};
+	runtimeModel?: Model<Api>;
+}
+
+type ProfileModelConfig = Pick<BeeMaxConfig, "model" | "models">;
+
+/** Profile-owned model facts derived once from configuration and Pi's registry. */
+export class ProfileModelCatalog {
+	private readonly entries: ProfileModelCapability[];
+
+	constructor(config: ProfileModelConfig) {
+		this.entries = config.models.map((choice) => {
+			const key = `${choice.provider}/${choice.model}`;
+			const known = choice.provider === "custom" ? undefined : (getBuiltinModel as (provider: string, id: string) => Model<Api> | undefined)(choice.provider, choice.model);
+			const runtimeModel = known ? (choice.baseUrl ? { ...known, baseUrl: choice.baseUrl } : known) : undefined;
+			return {
+				key,
+				provider: choice.provider,
+				modelId: choice.model,
+				available: Boolean(runtimeModel && config.model?.apiKeys?.[choice.provider]),
+				capabilities: runtimeModel ? {
+					input: [...runtimeModel.input],
+					contextWindow: runtimeModel.contextWindow,
+					thinkingLevels: [...getSupportedThinkingLevels(runtimeModel)],
+				} : undefined,
+				runtimeModel,
+			};
+		});
+	}
+
+	list(query?: string): ProfileModelCapability[] {
+		const normalized = query?.trim().toLowerCase();
+		return this.entries.filter((entry) => !normalized || entry.key.toLowerCase().includes(normalized)).map(copyEntry);
+	}
+
+	resolve(reference: string): ProfileModelCapability | undefined {
+		const normalized = reference.trim();
+		const entry = /^\d+$/.test(normalized) ? this.entries[Number(normalized) - 1] : this.entries.find((candidate) => candidate.key === normalized);
+		return entry ? copyEntry(entry) : undefined;
+	}
+
+	runtimeModels(): Model<Api>[] {
+		return this.entries.flatMap((entry) => entry.available && entry.runtimeModel ? [entry.runtimeModel] : []);
+	}
+}
+
 export function modelProviderPresets(): readonly ModelProviderPreset[] {
 	return [
 		...builtinProviders().map((provider) => ({
@@ -38,20 +93,18 @@ export function renderModelProviderChoices(): string {
 
 /** Human-readable capabilities for the models configured in this Profile. */
 export function renderConfiguredModels(config: BeeMaxConfig): string {
-	return config.models.map((choice) => {
-		const name = `${choice.provider}/${choice.model}`;
-		const model = choice.provider === "custom" ? undefined : (getBuiltinModel as (provider: string, id: string) => Model<Api> | undefined)(choice.provider, choice.model);
-		if (!model) return `${name}  configured; capability metadata unavailable`;
-		const capabilities = [`input=${model.input.join("+")}`, `context=${model.contextWindow}`, `tools=${model.input.includes("text") ? "yes" : "no"}`, `thinking=${getSupportedThinkingLevels(model).join("/")}`];
-		return `${name}  ${capabilities.join("; ")}`;
+	return new ProfileModelCatalog(config).list().map((entry) => {
+		if (!entry.capabilities) return `${entry.key}  configured; capability metadata unavailable`;
+		const capabilities = [`input=${entry.capabilities.input.join("+")}`, `context=${entry.capabilities.contextWindow}`, `tools=${entry.capabilities.input.includes("text") ? "yes" : "no"}`, `thinking=${entry.capabilities.thinkingLevels.join("/")}`];
+		return `${entry.key}  ${capabilities.join("; ")}`;
 	}).join("\n") || "No models configured for this Profile.";
 }
 
 /** Runtime-ready ordered model candidates; unsupported custom definitions stay out of automatic failover. */
 export function configuredRuntimeModels(config: BeeMaxConfig): Model<Api>[] {
-	return config.models.flatMap((choice) => {
-		const model = choice.provider === "custom" ? undefined : (getBuiltinModel as (provider: string, id: string) => Model<Api> | undefined)(choice.provider, choice.model);
-		if (!model || !config.model.apiKeys[choice.provider]) return [];
-		return [choice.baseUrl ? { ...model, baseUrl: choice.baseUrl } : model];
-	});
+	return new ProfileModelCatalog(config).runtimeModels();
+}
+
+function copyEntry(entry: ProfileModelCapability): ProfileModelCapability {
+	return { ...entry, capabilities: entry.capabilities ? { ...entry.capabilities, input: [...entry.capabilities.input], thinkingLevels: [...entry.capabilities.thinkingLevels] } : undefined };
 }
