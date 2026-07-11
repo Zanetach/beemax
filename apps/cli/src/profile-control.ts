@@ -11,6 +11,7 @@ export function createProfileControlHandler(
 ): AgentControlHandler<SessionSource> {
 	return async ({ source, text }) => {
 		const command = text.trim().toLowerCase();
+		if (command === "/help") return { handled: true, message: "Commands: /help /status /usage /compact /model [provider/model] [--global] /stop\nCLI also supports local session, display, tool, and retry controls." };
 		if (command === "/status" || command === "/usage") {
 			const [model, usage] = await Promise.all([runtime.modelStatus(source), runtime.usage(source)]);
 			const usageText = usage ? `input=${usage.inputTokens}; output=${usage.outputTokens}; context=${usage.contextTokens ?? "?"}/${usage.contextWindow ?? "?"}` : "no live session";
