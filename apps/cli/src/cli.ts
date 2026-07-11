@@ -937,6 +937,7 @@ async function runChat(config: ReturnType<typeof loadConfig>, requestedMode: { f
 	});
 	const taskScheduler = new ProfileTaskScheduler({ maxConcurrent: config.subagents.maxConcurrent });
 	const planningPolicy = new AutonomousPlanningPolicy({ maxConcurrent: config.subagents.maxConcurrent, maxSubagents: config.subagents.maxChildrenPerOwner });
+	const planningBudgets = planningPolicy.createBudgetRegistry();
 	const taskPlanRuntime = new TaskPlanRuntime();
 	const runTaskVerification = createTaskVerifier(createSubagentAgent, config.subagents.timeoutMs);
 	const verifyTask: import("@beemax/core").TaskGraphVerifier = (task, result, signal) => taskScheduler.run(task.ownerKey, () => runTaskVerification(task, result, signal), signal);
@@ -979,7 +980,7 @@ async function runChat(config: ReturnType<typeof loadConfig>, requestedMode: { f
 		sessionTools: (sessionSource) => [
 			...(subagents ? [
 				...createSubagentTools(subagents, sessionSource),
-				...createTaskOrchestrationTools(memory, sessionSource, (task, signal, context) => taskScheduler.run(task.ownerKey, () => executePlannedTask(createSubagentAgent, task, sessionSource, signal, config.subagents.timeoutMs, context), signal), { maxConcurrent: config.subagents.maxConcurrent, planRuntime: taskPlanRuntime, verify: verifyTask }),
+				...createTaskOrchestrationTools(memory, sessionSource, (task, signal, context) => taskScheduler.run(task.ownerKey, () => executePlannedTask(createSubagentAgent, task, sessionSource, signal, config.subagents.timeoutMs, context), signal), { maxConcurrent: config.subagents.maxConcurrent, planRuntime: taskPlanRuntime, verify: verifyTask, planningDecision: () => planningBudgets.current(conversationKey(sessionSource)) }),
 			] : []),
 			...createTaskLedgerTools(memory, sessionSource),
 		],
@@ -991,6 +992,7 @@ async function runChat(config: ReturnType<typeof loadConfig>, requestedMode: { f
 		runtime: {
 			createAgent,
 			planningPolicy,
+			planningBudgets,
 			fallbackModels: configuredRuntimeModels(config),
 			taskLedger: memory,
 			context: createTaskAwareConversationContext(memory, { runtimeSnapshot: () => ({ profile: config.profile }) }),

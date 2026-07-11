@@ -6,8 +6,9 @@ import { TaskGraph, type TaskGraphExecutor, type TaskGraphVerifier } from "./tas
 import type { TaskLedger } from "./task-ledger.ts";
 import { MUTATING_TOOL_POLICY, READ_ONLY_TOOL_POLICY, withToolPolicy, type ToolPolicy } from "./tool-runtime.ts";
 import { TaskPlanRuntime } from "./task-plan-runtime.ts";
+import type { AutonomousPlanningDecision } from "./autonomous-planning.ts";
 
-export interface TaskOrchestrationOptions { maxConcurrent?: number; maxTasks?: number; maxCorrectiveAttempts?: number; planRuntime?: TaskPlanRuntime; verify?: TaskGraphVerifier; }
+export interface TaskOrchestrationOptions { maxConcurrent?: number; maxTasks?: number; maxCorrectiveAttempts?: number; planRuntime?: TaskPlanRuntime; verify?: TaskGraphVerifier; planningDecision?: () => AutonomousPlanningDecision | undefined; }
 
 /** Model-facing structured planning seam; Core owns validation and execution. */
 export function createTaskOrchestrationTools(
@@ -40,6 +41,11 @@ export function createTaskOrchestrationTools(
 			}), { maxItems: maxTasks * maxTasks })),
 		}),
 		execute: async (_callId, params, signal) => {
+			const planning = options.planningDecision?.();
+			if (planning && planning.mode !== "dag") throw new Error(`Task Plan execution is not admitted for ${planning.mode} mode`);
+			if (planning && params.tasks.length > planning.budget.maxSubagents) throw new Error(`Task Plan exceeds Sub-Agent budget (${planning.budget.maxSubagents})`);
+			const admittedConcurrency = planning ? Math.min(maxConcurrent, planning.suggestedConcurrency) : maxConcurrent;
+			const admittedCorrections = planning ? Math.min(maxCorrectiveAttempts, planning.budget.maxCorrectiveAttempts) : maxCorrectiveAttempts;
 			const planId = crypto.randomUUID();
 			const ids = new Map(params.tasks.map((task) => [task.key, `${planId}:${task.key}`]));
 			const dependencies = (params.dependencies ?? []).map((edge) => {
@@ -56,7 +62,7 @@ export function createTaskOrchestrationTools(
 				tasks: params.tasks.map((task) => ({ id: ids.get(task.key)!, title: task.title, description: task.goal, acceptanceCriteria: task.acceptanceCriteria, kind: "delegated" as const, recoveryPolicy: "safe_retry" as const, idempotencyKey: `${planId}:${task.key}`, executionScope: { ...source } })),
 				dependencies,
 			});
-			const summary = await planRuntime.run(ownerKey, planId, signal, (planSignal) => graph.run([ownerKey], planId, execute, { maxConcurrent, maxCorrectiveAttempts, signal: planSignal, executor: "subagent", verify: options.verify }));
+			const summary = await planRuntime.run(ownerKey, planId, signal, (planSignal) => graph.run([ownerKey], planId, execute, { maxConcurrent: admittedConcurrency, maxCorrectiveAttempts: admittedCorrections, signal: planSignal, executor: "subagent", verify: options.verify }));
 			return result({ planId, ...summary, plan: ledger.queryTaskPlans({ ownerKeys: [ownerKey], id: planId, limit: 1 })[0], tasks: ledger.queryTasks({ ownerKeys: [ownerKey], planIds: [planId], limit: maxTasks }) });
 		},
 	});

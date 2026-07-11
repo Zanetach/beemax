@@ -115,6 +115,7 @@ export async function runGateway(config: BeeMaxConfig): Promise<void> {
 	});
 	const taskScheduler = new ProfileTaskScheduler({ maxConcurrent: config.subagents.maxConcurrent });
 	const planningPolicy = new AutonomousPlanningPolicy({ maxConcurrent: config.subagents.maxConcurrent, maxSubagents: config.subagents.maxChildrenPerOwner });
+	const planningBudgets = planningPolicy.createBudgetRegistry();
 	const taskPlanRuntime = new TaskPlanRuntime();
 	const runTaskVerification = createTaskVerifier(createSubagentAgent, config.subagents.timeoutMs);
 	const verifyTask: TaskGraphVerifier = (task, result, signal) => taskScheduler.run(task.ownerKey, () => runTaskVerification(task, result, signal), signal);
@@ -155,7 +156,7 @@ export async function runGateway(config: BeeMaxConfig): Promise<void> {
 		sessionTools: (source) => [
 			...(subagents ? [
 				...createSubagentTools(subagents, source),
-				...createTaskOrchestrationTools(memory, source, (task, signal, context) => taskScheduler.run(task.ownerKey, () => executePlannedTask(createSubagentAgent, task, source, signal, config.subagents.timeoutMs, context), signal), { maxConcurrent: config.subagents.maxConcurrent, planRuntime: taskPlanRuntime, verify: verifyTask }),
+				...createTaskOrchestrationTools(memory, source, (task, signal, context) => taskScheduler.run(task.ownerKey, () => executePlannedTask(createSubagentAgent, task, source, signal, config.subagents.timeoutMs, context), signal), { maxConcurrent: config.subagents.maxConcurrent, planRuntime: taskPlanRuntime, verify: verifyTask, planningDecision: () => planningBudgets.current(conversationKey(source)) }),
 			] : []),
 			...createTaskLedgerTools(memory, source),
 		],
@@ -190,6 +191,7 @@ export async function runGateway(config: BeeMaxConfig): Promise<void> {
 		runtime: {
 			createAgent,
 			planningPolicy,
+			planningBudgets,
 			createAutomationAgent,
 			fallbackModels: configuredRuntimeModels(config),
 			taskLedger: memory,

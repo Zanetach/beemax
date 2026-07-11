@@ -51,6 +51,8 @@ export class AutonomousPlanningPolicy {
 		};
 	}
 
+	createBudgetRegistry(): PlanningBudgetRegistry { return new PlanningBudgetRegistry(); }
+
 	decide(prompt: string): AutonomousPlanningDecision {
 		const normalized = prompt.trim();
 		const signals = inspectPrompt(normalized);
