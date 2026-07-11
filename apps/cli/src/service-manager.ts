@@ -1,9 +1,9 @@
 import { mkdir, writeFile } from "node:fs/promises";
-import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { spawnSync, type SpawnSyncReturns } from "node:child_process";
 import { beemaxHome, beemaxRoot, validateProfileName } from "./config.ts";
+import { readGatewayLogs } from "./gateway-observability.ts";
 
 export type ServiceAction = "start" | "stop" | "restart" | "status" | "logs";
 export type ServiceScope = "user" | "system";
@@ -143,8 +143,7 @@ function runMacServiceAction(action: ServiceAction, profile: string, runner: Run
 	const label = macLabel(profile);
 	const plist = join(homedir(), "Library", "LaunchAgents", `${label}.plist`);
 	if (action === "logs") {
-		const logPath = join(beemaxHome(), "profiles", profile, "logs", "gateway.log");
-		try { process.stdout.write(readFileSync(logPath, "utf8")); } catch { throw new Error(`No Gateway log exists for Profile '${profile}'. Start it first with: beemax start ${profile}`); }
+		process.stdout.write(`${readGatewayLogs(join(beemaxHome(), "profiles", profile))}\n`);
 		return;
 	}
 	if (action === "start") {

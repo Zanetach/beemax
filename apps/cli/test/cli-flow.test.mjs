@@ -65,6 +65,7 @@ test("CLI supports init, model setup, Feishu channel setup, listing, and safe de
 	assert.match(run(["channel", "list", "--profile", "personal"]), /feishu  configured/);
 	assert.match(run(["mcp", "status", "--profile", "personal"]), /No MCP servers configured/);
 	assert.match(run(["memory", "status", "--profile", "personal"]), /curated=1 pending=0/);
+	assert.match(run(["status", "--deep", "--profile", "personal"]), /Gateway: unknown/);
 	assert.match(run(["task", "list", "--profile", "personal"]), /anthropic-protocol  \[done\].*tag:v0\.1\.0-preview\.15.*completed_at=2026-07-11T00:19:56\.000Z/);
 	assert.match(run(["task", "set", "release-audit", "in_progress", "--title", "Verify release status", "--profile", "personal"]), /Updated task 'release-audit' to in_progress/);
 	assert.match(run(["channel", "qr", "--profile", "personal"]), /Feishu Developer Console/);

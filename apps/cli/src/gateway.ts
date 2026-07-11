@@ -33,12 +33,15 @@ import { workspaceToolsPrompt } from "./workspace-context.ts";
 import { configuredApiKey } from "./provider-resolver.ts";
 import { executionPortFor, executionSafeTools } from "./execution-composition.ts";
 import { createProfileControlHandler } from "./profile-control.ts";
+import { recordGatewayEvent, writeGatewayState } from "./gateway-observability.ts";
+import { installedVersion } from "./runtime-facts.ts";
 
 export async function runGateway(config: BeeMaxConfig): Promise<void> {
 	if (!config.gateway.feishu.appId || !config.gateway.feishu.appSecret) {
-		throw new Error(
-			"Feishu credentials missing. Set FEISHU_APP_ID / FEISHU_APP_SECRET or configure feishu.appId/appSecret in config/beemax.yaml.",
-		);
+		const error = "Feishu credentials missing. Set FEISHU_APP_ID / FEISHU_APP_SECRET or configure feishu.appId/appSecret in config/beemax.yaml.";
+		writeGatewayState(config.paths.agentDir, { profile: config.profile, lifecycle: "failed", version: installedVersion(), pid: process.pid, stoppedAt: new Date().toISOString(), lastError: error });
+		recordGatewayEvent(config.paths.agentDir, "failed", { profile: config.profile, error });
+		throw new Error(error);
 	}
 	const feishuSettings: FeishuSettings = {
 		appId: config.gateway.feishu.appId,
@@ -56,8 +59,15 @@ export async function runGateway(config: BeeMaxConfig): Promise<void> {
 		allowAllUsers: config.gateway.feishu.allowAllUsers,
 	};
 	const adapter = new FeishuAdapter(feishuSettings);
+	const gatewayVersion = installedVersion();
 	const deliveryPort = new GatewayDeliveryPort(adapter);
-	const releaseChannelLock = await acquireChannelLock(beemaxHome(), config.gateway.feishu.appId);
+	let releaseChannelLock: () => Promise<void>;
+	try { releaseChannelLock = await acquireChannelLock(beemaxHome(), config.gateway.feishu.appId); }
+	catch (error) {
+		writeGatewayState(config.paths.agentDir, { profile: config.profile, lifecycle: "failed", version: gatewayVersion, pid: process.pid, stoppedAt: new Date().toISOString(), lastError: String(error).slice(0, 500) });
+		recordGatewayEvent(config.paths.agentDir, "failed", { profile: config.profile, error: String(error).slice(0, 500) });
+		throw error;
+	}
 	const startupCleanup: Array<() => void | Promise<void>> = [() => adapter.disconnect()];
 	try {
 
@@ -204,6 +214,8 @@ export async function runGateway(config: BeeMaxConfig): Promise<void> {
 	if (!ok) {
 		throw new Error("Failed to connect Feishu adapter");
 	}
+	writeGatewayState(config.paths.agentDir, { profile: config.profile, lifecycle: "running", version: gatewayVersion, pid: process.pid, startedAt: new Date().toISOString() });
+	recordGatewayEvent(config.paths.agentDir, "started", { profile: config.profile, pid: process.pid, version: gatewayVersion });
 	console.info(`[beemax:${config.profile}] Feishu gateway connected (model: ${config.model.provider}/${config.model.model})`);
 	if (config.automation.enabled) scheduler.start();
 	heartbeat.start();
@@ -228,6 +240,8 @@ export async function runGateway(config: BeeMaxConfig): Promise<void> {
 			try { automation.close(); } catch (error) { console.error(`[beemax] automation shutdown failed: ${String(error)}`); }
 			try { memory.close(); } catch (error) { console.error(`[beemax] memory shutdown failed: ${String(error)}`); }
 			await releaseChannelLock();
+			writeGatewayState(config.paths.agentDir, { profile: config.profile, lifecycle: "stopped", version: gatewayVersion, pid: process.pid, stoppedAt: new Date().toISOString() });
+			recordGatewayEvent(config.paths.agentDir, "stopped", { profile: config.profile, pid: process.pid });
 			process.exit(0);
 		})();
 		return shutdownPromise;
@@ -235,6 +249,8 @@ export async function runGateway(config: BeeMaxConfig): Promise<void> {
 	process.on("SIGINT", () => void shutdown());
 	process.on("SIGTERM", () => void shutdown());
 	} catch (error) {
+		writeGatewayState(config.paths.agentDir, { profile: config.profile, lifecycle: "failed", version: gatewayVersion, pid: process.pid, stoppedAt: new Date().toISOString(), lastError: String(error).slice(0, 500) });
+		recordGatewayEvent(config.paths.agentDir, "failed", { profile: config.profile, error: String(error).slice(0, 500) });
 		for (const cleanup of startupCleanup.reverse()) {
 			try { await cleanup(); } catch { /* preserve the original startup error */ }
 		}

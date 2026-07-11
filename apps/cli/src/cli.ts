@@ -34,7 +34,8 @@ import { executionPortFor, executionSafeTools } from "./execution-composition.ts
 import { createProfileRuntime } from "./runtime-composition.ts";
 import { createProfileControlHandler } from "./profile-control.ts";
 import { localChatTextDelta } from "./local-chat-renderer.ts";
-import { createTaskAwareConversationContext, ensureBuiltinTasks } from "./runtime-facts.ts";
+import { inspectGateway, readGatewayLogs } from "./gateway-observability.ts";
+import { createTaskAwareConversationContext, ensureBuiltinTasks, installedVersion } from "./runtime-facts.ts";
 import type { BeeMaxAgentRuntime } from "@beemax/core";
 import type { SessionSource } from "@beemax/gateway";
 import { existsSync } from "node:fs";
@@ -120,9 +121,15 @@ async function main(): Promise<void> {
 		case "start":
 		case "stop":
 		case "restart":
-		case "status":
-		case "logs":
 			runServiceAction(cmd, serviceProfile(parsed), undefined, process.platform, parsed.options.system === true ? "system" : "user");
+			break;
+		case "status":
+			if (parsed.options.deep === true) { runGatewayStatus(getConfig(), parsed.options.system === true ? "system" : "user"); break; }
+			runServiceAction(cmd, serviceProfile(parsed), undefined, process.platform, parsed.options.system === true ? "system" : "user");
+			break;
+		case "logs":
+			if (parsed.options.follow === true) runServiceAction(cmd, serviceProfile(parsed), undefined, process.platform, parsed.options.system === true ? "system" : "user");
+			else console.log(readProfileLogs(serviceProfile(parsed), getConfig().paths.agentDir, Number(optionString(parsed, "tail")) || 200, parsed.options.system === true ? "system" : "user"));
 			break;
 		case "help":
 		default:
@@ -148,8 +155,8 @@ Commands:
   start      Start a profile systemd service
   stop       Stop a profile systemd service
   restart    Restart a profile systemd service
-  status     Show profile systemd status
-  logs       Follow profile systemd logs
+  status     Show profile service status (use --deep for runtime facts)
+  logs       Read profile Gateway logs (use --tail <n>)
 
 Options:
   --profile <name>         Select an isolated Profile (defaults to the active Profile)
@@ -212,7 +219,29 @@ function parseArgs(args: string[]): ParsedArgs {
 	return parsed;
 }
 
-const BOOLEAN_OPTIONS = new Set(["yes", "require-mention", "no-require-mention", "non-interactive", "system", "all", "open", "help"]);
+const BOOLEAN_OPTIONS = new Set(["yes", "require-mention", "no-require-mention", "non-interactive", "system", "all", "open", "help", "deep", "follow"]);
+
+function runGatewayStatus(config: ReturnType<typeof loadConfig>, scope: "user" | "system"): void {
+	const snapshot = inspectGateway(config.profile, config.paths.agentDir, scope, installedVersion());
+	console.log(`Profile: ${config.profile}`);
+	console.log(`Service: ${snapshot.installation}`);
+	console.log(`Service lifecycle: ${snapshot.service}`);
+	console.log(`Gateway: ${snapshot.lifecycle}`);
+	console.log(`Health: ${snapshot.health}`);
+	console.log(`Runtime state: ${snapshot.state}`);
+	console.log(`Logs: ${snapshot.logs}`);
+	console.log(`Version: cli=${snapshot.cliVersion}; runtime=${snapshot.version}; matches=${snapshot.versionMatches ?? "unverified"}`);
+	if (snapshot.pid) console.log(`PID: ${snapshot.pid}`);
+	if (snapshot.startedAt) console.log(`Started: ${snapshot.startedAt}`);
+	if (snapshot.lastError) console.log(`Last issue: ${snapshot.lastError}`);
+	if (snapshot.logs === "absent") console.log(`Next: beemax start ${config.profile}`);
+}
+
+function readProfileLogs(profile: string, agentDir: string, tail: number, scope: "user" | "system"): string {
+	if (process.platform !== "linux") return readGatewayLogs(agentDir, tail);
+	const result = spawnSync("journalctl", [...(scope === "user" ? ["--user"] : []), "-u", `beemax@${profile}.service`, "-n", String(tail), "--no-pager"], { encoding: "utf8" });
+	return result.status === 0 && result.stdout.trim() ? result.stdout.trim() : readGatewayLogs(agentDir, tail);
+}
 
 async function runInit(parsed: ParsedArgs): Promise<void> {
 	const profile = parsed.profile ?? parsed.positionals[1] ?? "personal";

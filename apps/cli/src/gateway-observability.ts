@@ -1,0 +1,66 @@
+import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
+import { spawnSync } from "node:child_process";
+
+export type GatewayLifecycle = "running" | "stopped" | "failed" | "unknown";
+export interface GatewayState {
+	profile: string;
+	lifecycle: GatewayLifecycle;
+	version: string;
+	pid?: number;
+	startedAt?: string;
+	stoppedAt?: string;
+	lastError?: string;
+}
+
+export function gatewayPaths(agentDir: string): { state: string; events: string; stdout: string; stderr: string } {
+	return { state: join(agentDir, "state", "gateway.json"), events: join(agentDir, "logs", "gateway.jsonl"), stdout: join(agentDir, "logs", "gateway.log"), stderr: join(agentDir, "logs", "gateway.error.log") };
+}
+
+export function writeGatewayState(agentDir: string, state: GatewayState): void {
+	const path = gatewayPaths(agentDir).state;
+	mkdirSync(join(agentDir, "state"), { recursive: true, mode: 0o700 });
+	writeFileSync(path, `${JSON.stringify({ schemaVersion: 1, updatedAt: new Date().toISOString(), ...state })}\n`, { mode: 0o600 });
+}
+
+export function recordGatewayEvent(agentDir: string, event: "started" | "stopped" | "failed", fields: Record<string, unknown> = {}): void {
+	const path = gatewayPaths(agentDir).events;
+	mkdirSync(join(agentDir, "logs"), { recursive: true, mode: 0o700 });
+	appendFileSync(path, `${JSON.stringify({ at: new Date().toISOString(), event, ...fields })}\n`, { mode: 0o600 });
+}
+
+export function inspectGateway(profile: string, agentDir: string, scope: "user" | "system" = "user", cliVersion = "unavailable"): GatewayState & { installation: "installed" | "absent" | "unknown"; service: "running" | "stopped" | "unknown"; health: "healthy" | "degraded" | "unavailable"; logs: "available" | "absent"; state: "available" | "absent"; cliVersion: string; versionMatches: boolean | undefined } {
+	const paths = gatewayPaths(agentDir);
+	let current: GatewayState = { profile, lifecycle: "unknown", version: "unavailable" };
+	try { current = { ...current, ...JSON.parse(readFileSync(paths.state, "utf8")) as GatewayState }; } catch { /* never started or an older install */ }
+	const service = serviceLifecycle(profile, scope);
+	if (current.lifecycle === "running" && (service !== "running" || !current.pid || !pidAlive(current.pid))) {
+		current = { ...current, lifecycle: service === "stopped" ? "stopped" : "failed", stoppedAt: new Date().toISOString(), lastError: service === "stopped" ? "service is no longer active" : "runtime PID is no longer alive" };
+		writeGatewayState(agentDir, current);
+		recordGatewayEvent(agentDir, "failed", { profile, reason: current.lastError });
+	}
+	const installation = process.platform === "darwin"
+		? existsSync(join(homedir(), "Library", "LaunchAgents", `com.beemax.agent.${profile}.plist`)) ? "installed" : "absent"
+		: process.platform === "linux" ? existsSync(scope === "system" ? "/etc/systemd/system/beemax@.service" : join(homedir(), ".config", "systemd", "user", "beemax@.service")) ? "installed" : "absent" : "unknown";
+	const health = current.lifecycle === "running" && service === "running" ? "healthy" : current.lifecycle === "failed" ? "degraded" : "unavailable";
+	return { ...current, installation, service, health, cliVersion, versionMatches: current.version === "unavailable" || cliVersion === "unavailable" ? undefined : current.version === cliVersion, logs: existsSync(paths.events) || existsSync(paths.stdout) || existsSync(paths.stderr) ? "available" : "absent", state: existsSync(paths.state) ? "available" : "absent" };
+}
+
+export function readGatewayLogs(agentDir: string, tail = 200): string {
+	const paths = gatewayPaths(agentDir);
+	const entries = [["events", paths.events], ["stdout", paths.stdout], ["stderr", paths.stderr]].flatMap(([source, path]) => {
+		try { return readFileSync(path, "utf8").trim().split("\n").filter(Boolean).map((line) => `[${source}] ${line}`); } catch { return []; }
+	});
+	return entries.length ? entries.slice(-Math.max(1, tail)).join("\n") : "No Gateway logs have been created yet. The Gateway may not have been started for this Profile.";
+}
+
+function pidAlive(pid: number): boolean {
+	try { process.kill(pid, 0); return true; } catch { return false; }
+}
+
+function serviceLifecycle(profile: string, scope: "user" | "system"): "running" | "stopped" | "unknown" {
+	if (process.platform === "darwin") return spawnSync("launchctl", ["print", `gui/${process.getuid?.() ?? 0}/com.beemax.agent.${profile}`], { stdio: "ignore" }).status === 0 ? "running" : "stopped";
+	if (process.platform === "linux") return spawnSync("systemctl", [...(scope === "user" ? ["--user"] : []), "is-active", "--quiet", `beemax@${profile}.service`], { stdio: "ignore" }).status === 0 ? "running" : "stopped";
+	return "unknown";
+}
