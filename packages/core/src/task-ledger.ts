@@ -99,7 +99,8 @@ export interface TaskLedger {
 	verificationCandidates?(now?: number, limit?: number, excludePlanIds?: string[]): TaskRecord[];
 	deferCandidateVerification?(ownerKeys: string[], taskId: string, now?: number): boolean;
 	resolveCandidateVerification?(ownerKeys: string[], taskId: string, resolution: TaskCandidateVerificationResolution, now?: number): boolean;
+	prepareTaskCorrections?(maxCorrectiveAttempts: number, now?: number): number;
 	renewTaskRunLease?(id: string, leaseExpiresAt: number): boolean;
-	prepareTaskPlanRetry(ownerKeys: string[], planId: string): number;
+	prepareTaskPlanRetry(ownerKeys: string[], planId: string, maxCorrectiveAttempts?: number): number;
 	cancelTaskPlan(ownerKeys: string[], planId: string, now?: number): number;
 }

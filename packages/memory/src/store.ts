@@ -852,13 +852,34 @@ export class MemoryStore {
 		})();
 	}
 
-	prepareTaskPlanRetry(ownerKeys: string[], planId: string): number {
+	prepareTaskCorrections(maxCorrectiveAttempts: number, now = Date.now()): number {
+		const budget = Math.max(0, Math.min(Math.trunc(maxCorrectiveAttempts), 2));
+		if (!budget) return 0;
+		return this.db.transaction(() => {
+			const planIds = this.db.prepare(`SELECT DISTINCT plan_id FROM tasks WHERE status = 'failed' AND verification_outcome = 'rejected'
+				AND verification_feedback IS NOT NULL AND candidate_result IS NOT NULL AND corrective_attempts < ?
+				AND recovery_policy = 'safe_retry' AND idempotency_key IS NOT NULL AND execution_scope IS NOT NULL AND plan_id IS NOT NULL`)
+				.all(budget).map((row) => (row as { plan_id: string }).plan_id);
+			if (!planIds.length) return 0;
+			const changed = this.db.prepare(`UPDATE tasks SET status = 'pending', started_at = NULL, finished_at = NULL, result = NULL,
+				error = 'Automatic Corrective Attempt scheduled', updated_at = ?
+				WHERE status = 'failed' AND verification_outcome = 'rejected' AND verification_feedback IS NOT NULL AND candidate_result IS NOT NULL
+				AND corrective_attempts < ? AND recovery_policy = 'safe_retry' AND idempotency_key IS NOT NULL AND execution_scope IS NOT NULL AND plan_id IS NOT NULL`)
+				.run(now, budget).changes;
+			for (const planId of planIds) this.syncTaskPlan(planId, "pending", now, true);
+			return changed;
+		})();
+	}
+
+	prepareTaskPlanRetry(ownerKeys: string[], planId: string, maxCorrectiveAttempts = 1): number {
 		if (!ownerKeys.length || !planId.trim()) return 0;
+		const budget = Math.max(0, Math.min(Math.trunc(maxCorrectiveAttempts), 2));
 		const changed = this.db.prepare(`UPDATE tasks SET status = 'pending', started_at = NULL, finished_at = NULL, result = NULL, candidate_result = CASE WHEN verification_outcome = 'rejected' THEN candidate_result ELSE NULL END, error = 'Manual Task Plan retry requested', updated_at = ?
 			WHERE owner_key IN (${ownerKeys.map(() => "?").join(", ")}) AND plan_id = ? AND status = 'failed'
 			AND COALESCE(verification_outcome, '') <> 'unavailable'
+			AND (COALESCE(verification_outcome, '') <> 'rejected' OR corrective_attempts < ?)
 			AND recovery_policy = 'safe_retry' AND idempotency_key IS NOT NULL AND execution_scope IS NOT NULL`)
-			.run(Date.now(), ...ownerKeys, planId).changes;
+			.run(Date.now(), ...ownerKeys, planId, budget).changes;
 		if (changed) this.syncTaskPlan(planId, "pending");
 		return changed;
 	}

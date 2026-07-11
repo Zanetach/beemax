@@ -322,6 +322,74 @@ test("one recovery cycle continues a DAG after automatic Verification accepts it
 	} finally { store.close(); rmSync(root, { recursive: true, force: true }); }
 });
 
+test("one recovery cycle automatically corrects a rejected Candidate Result within its durable budget", async () => {
+	const root = mkdtempSync(join(tmpdir(), "beemax-automatic-correction-"));
+	const store = new MemoryStore(join(root, "memory.db"));
+	try {
+		const scope = { platform: "cli", chatId: "local", chatType: "dm", userId: "local" };
+		new TaskGraph(store).createPlan({ id: "automatic-correction-plan", ownerKey: "cli:local:local", tasks: [{
+			id: "automatic-correction-task", title: "Correct candidate", acceptanceCriteria: "Includes a source",
+			recoveryPolicy: "safe_retry", idempotencyKey: "automatic-correction:task", executionScope: scope,
+		}] }, 10);
+		store.transition("automatic-correction-task", { status: "running", startedAt: 11, verificationStatus: "pending" });
+		store.transition("automatic-correction-task", { status: "failed", finishedAt: 12, verificationStatus: "unavailable", candidateResult: "", error: "verifier offline" });
+		const contexts = [];
+		const runner = new TaskRecoveryRunner(store, async (_task, _signal, context) => { contexts.push(context); return { output: "supported [source]" }; }, undefined, async (_task, result) => result.output?.includes("[source]")
+			? { accepted: true, evidence: "source checked" }
+			: { accepted: false, feedback: "Add a primary source" });
+		assert.deepEqual(await new TaskRecoveryService(store, runner).runOnce({ maxCorrectiveAttempts: 1 }), {
+			reconciled: { retried: 0, failed: 0 },
+			verification: { attempted: 1, accepted: 0, rejected: 1, unavailable: 0 },
+			recovery: { plans: 1, succeeded: 1, failed: 0, cancelled: 0, blocked: [] },
+		});
+		assert.deepEqual(contexts.map(({ attempt, verificationFeedback, previousResult }) => ({ attempt, verificationFeedback, previousResult })), [{ attempt: 2, verificationFeedback: "Add a primary source", previousResult: "" }]);
+		const task = store.queryTasks({ ownerKeys: ["cli:local:local"], id: "automatic-correction-task" })[0];
+		assert.deepEqual({ status: task.status, result: task.result, correctiveAttempts: task.correctiveAttempts }, { status: "succeeded", result: "supported [source]", correctiveAttempts: 1 });
+	} finally { store.close(); rmSync(root, { recursive: true, force: true }); }
+});
+
+test("automatic Corrective Attempts stop permanently when the durable budget is exhausted", async () => {
+	const root = mkdtempSync(join(tmpdir(), "beemax-correction-budget-"));
+	const store = new MemoryStore(join(root, "memory.db"));
+	try {
+		const scope = { platform: "cli", chatId: "local", chatType: "dm", userId: "local" };
+		new TaskGraph(store).createPlan({ id: "correction-budget-plan", ownerKey: "cli:local:local", tasks: [{
+			id: "correction-budget-task", title: "Bound correction", acceptanceCriteria: "Must pass",
+			recoveryPolicy: "safe_retry", idempotencyKey: "correction-budget:task", executionScope: scope,
+		}] }, 10);
+		store.transition("correction-budget-task", { status: "running", startedAt: 11, verificationStatus: "pending" });
+		store.transition("correction-budget-task", { status: "failed", finishedAt: 12, verificationStatus: "unavailable", candidateResult: "first candidate", error: "verifier offline" });
+		let executions = 0;
+		const runner = new TaskRecoveryRunner(store, async () => { executions++; return { output: "still rejected" }; }, undefined, async () => ({ accepted: false, feedback: "Still incomplete" }));
+		const service = new TaskRecoveryService(store, runner);
+		const first = await service.runOnce({ maxCorrectiveAttempts: 1 });
+		assert.deepEqual(first.recovery, { plans: 1, succeeded: 0, failed: 1, cancelled: 0, blocked: [] });
+		assert.equal(executions, 1);
+		const exhausted = store.queryTasks({ ownerKeys: ["cli:local:local"], id: "correction-budget-task" })[0];
+		assert.deepEqual({ status: exhausted.status, verificationStatus: exhausted.verificationStatus, correctiveAttempts: exhausted.correctiveAttempts }, { status: "failed", verificationStatus: "rejected", correctiveAttempts: 1 });
+		const second = await service.runOnce({ maxCorrectiveAttempts: 1 });
+		assert.deepEqual(second.recovery, { plans: 0, succeeded: 0, failed: 0, cancelled: 0, blocked: [] });
+		assert.equal(executions, 1);
+	} finally { store.close(); rmSync(root, { recursive: true, force: true }); }
+});
+
+test("automatic correction never executes a rejected Task without complete safe-retry authority", async () => {
+	const root = mkdtempSync(join(tmpdir(), "beemax-unsafe-correction-"));
+	const store = new MemoryStore(join(root, "memory.db"));
+	try {
+		new TaskGraph(store).createPlan({ id: "unsafe-correction-plan", ownerKey: "cli:local:local", tasks: [{ id: "unsafe-correction-task", title: "Unsafe correction", acceptanceCriteria: "Must pass" }] }, 10);
+		store.transition("unsafe-correction-task", { status: "running", startedAt: 11, verificationStatus: "pending" });
+		store.transition("unsafe-correction-task", { status: "failed", finishedAt: 12, verificationStatus: "unavailable", candidateResult: "candidate", error: "verifier offline" });
+		let executions = 0;
+		const runner = new TaskRecoveryRunner(store, async () => { executions++; return { output: "must not run" }; }, undefined, async () => ({ accepted: false, feedback: "Rejected" }));
+		const cycle = await new TaskRecoveryService(store, runner).runOnce({ maxCorrectiveAttempts: 1 });
+		assert.deepEqual(cycle.verification, { attempted: 1, accepted: 0, rejected: 1, unavailable: 0 });
+		assert.deepEqual(cycle.recovery, { plans: 0, succeeded: 0, failed: 0, cancelled: 0, blocked: [] });
+		assert.equal(executions, 0);
+		assert.equal(store.queryTasks({ ownerKeys: ["cli:local:local"], id: "unsafe-correction-task" })[0].status, "failed");
+	} finally { store.close(); rmSync(root, { recursive: true, force: true }); }
+});
+
 test("legacy Verification Status migrates additively into Verification Outcome", () => {
 	const root = mkdtempSync(join(tmpdir(), "beemax-verification-migration-"));
 	const path = join(root, "memory.db");

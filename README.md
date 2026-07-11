@@ -348,7 +348,10 @@ reconciles expired Execution Leases while Chat or Gateway remains online, so
 recovery does not depend on another restart. Candidate Results whose independent
 Verification was unavailable are retained and automatically rechecked with
 durable exponential backoff; this never replays Task execution. `/tasks verify <plan-id>`
-remains available for an immediate user-requested check. Child Pi
+remains available for an immediate user-requested check. If Verification explicitly
+rejects a result, BeeMax may automatically run a feedback-aware Corrective Attempt
+only when safe-retry authority is complete and the durable correction budget remains.
+Child Pi
 transcripts remain in the profile session directory for audit.
 
 ## Codex image generation

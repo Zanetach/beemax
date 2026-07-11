@@ -19,6 +19,7 @@ export class TaskRecoveryRunner {
 	constructor(ledger: TaskLedger, execute: TaskGraphExecutor, runtime = new TaskPlanRuntime(), verify?: TaskGraphVerifier) { this.ledger = ledger; this.execute = execute; this.runtime = runtime; this.verify = verify; }
 
 	async run(options: TaskRecoveryRunnerOptions = {}): Promise<TaskRecoveryRunnerResult> {
+		this.ledger.prepareTaskCorrections?.(boundedCorrectiveAttempts(options.maxCorrectiveAttempts));
 		const attemptedPlanIds = new Set<string>();
 		let summary: TaskRecoveryRunnerResult = { plans: 0, succeeded: 0, failed: 0, cancelled: 0, blocked: [] };
 		while (!options.signal?.aborted) {
@@ -33,7 +34,7 @@ export class TaskRecoveryRunner {
 
 	async retry(ownerKeys: string[], planId: string, options: TaskRecoveryRunnerOptions = {}): Promise<TaskPlanRetryResult> {
 		const verification = await this.reverify(ownerKeys, planId, options.signal);
-		const prepared = this.ledger.prepareTaskPlanRetry(ownerKeys, planId);
+		const prepared = this.ledger.prepareTaskPlanRetry(ownerKeys, planId, boundedCorrectiveAttempts(options.maxCorrectiveAttempts));
 		if (!prepared) return { verification, prepared: 0, plans: 0, succeeded: 0, failed: 0, cancelled: 0, blocked: [] };
 		const candidates = this.ledger.queryTasks({ ownerKeys, planIds: [planId], statuses: ["pending"], limit: 100 }).filter(recoverable);
 		return { verification, prepared, ...await this.executePlans(candidates, options) };
@@ -148,6 +149,8 @@ export class TaskRecoveryRunner {
 function recoverable(task: TaskRecord): boolean {
 	return task.status === "pending" && task.recoveryPolicy === "safe_retry" && Boolean(task.idempotencyKey && task.planId && task.executionScope);
 }
+
+function boundedCorrectiveAttempts(value?: number): number { return Math.max(0, Math.min(Math.trunc(value ?? 1), 2)); }
 
 function mergeRecoveryResults(left: TaskRecoveryRunnerResult, right: TaskRecoveryRunnerResult): TaskRecoveryRunnerResult {
 	return {

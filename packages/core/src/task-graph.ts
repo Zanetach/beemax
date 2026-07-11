@@ -130,11 +130,18 @@ export class TaskGraph {
 		const taskStartedAt = Date.now();
 		let verificationFeedback = task.verificationStatus === "rejected" ? task.verificationFeedback : undefined;
 		let previousResult = task.verificationStatus === "rejected" ? task.candidateResult : undefined;
-		if (!this.ledger.transition(task.id, { status: "running", startedAt: taskStartedAt, ...(task.acceptanceCriteria ? { verificationStatus: "pending" as const, correctiveAttempts: 0 } : {}) })) return this.persistedOutcome(task, "failed");
 		const maxCorrectiveAttempts = Math.max(0, Math.min(Math.trunc(options.maxCorrectiveAttempts ?? 0), 2));
-		for (let attempt = 1; attempt <= maxCorrectiveAttempts + 1; attempt++) {
+		const priorCorrectiveAttempts = task.correctiveAttempts ?? 0;
+		const resumingCorrection = task.verificationStatus === "rejected" && verificationFeedback !== undefined && previousResult !== undefined;
+		const firstAttempt = resumingCorrection ? priorCorrectiveAttempts + 2 : 1;
+		if (firstAttempt > maxCorrectiveAttempts + 1) {
+			const finishedAt = Date.now();
+			return this.ledger.transition(task.id, { status: "failed", finishedAt, error: "Corrective Attempt budget exhausted", verificationStatus: "rejected", verificationFeedback, correctiveAttempts: priorCorrectiveAttempts }) ? "failed" : this.persistedOutcome(task, "failed");
+		}
+		if (!this.ledger.transition(task.id, { status: "running", startedAt: taskStartedAt, ...(task.acceptanceCriteria ? { verificationStatus: "pending" as const, correctiveAttempts: priorCorrectiveAttempts } : {}) })) return this.persistedOutcome(task, "failed");
+		for (let attempt = firstAttempt; attempt <= maxCorrectiveAttempts + 1; attempt++) {
 			const startedAt = Date.now();
-			if (attempt > 1 && !this.ledger.transition(task.id, { status: "running", startedAt, verificationStatus: "pending", correctiveAttempts: attempt - 1 })) return this.persistedOutcome(task, "failed");
+			if (attempt > firstAttempt && !this.ledger.transition(task.id, { status: "running", startedAt, verificationStatus: "pending", correctiveAttempts: attempt - 1 })) return this.persistedOutcome(task, "failed");
 			const runId = crypto.randomUUID();
 			const leaseMs = Math.max(1_000, options.leaseMs ?? DEFAULT_EXECUTION_LEASE_MS);
 			this.ledger.recordRun({ id: runId, taskId: task.id, executor: options.executor ?? "agent", status: "running", startedAt, leaseExpiresAt: startedAt + leaseMs });
@@ -188,7 +195,7 @@ export class TaskGraph {
 				const message = (error instanceof Error ? error.message : String(error)).slice(0, 5_000);
 				const status = options.signal?.aborted ? "cancelled" : "failed";
 				const unavailable = verificationUnavailable && status === "failed";
-				const transitioned = this.ledger.transition(task.id, { status, finishedAt, error: message, ...(unavailable ? { verificationStatus: "unavailable" as const, candidateResult: candidateOutput } : {}) });
+				const transitioned = this.ledger.transition(task.id, { status, finishedAt, error: message, ...(task.acceptanceCriteria ? { correctiveAttempts: attempt - 1 } : {}), ...(unavailable ? { verificationStatus: "unavailable" as const, candidateResult: candidateOutput } : {}) });
 				if (transitioned && unavailable) this.ledger.deferCandidateVerification?.([task.ownerKey], task.id, finishedAt);
 				this.ledger.transitionRun(runId, { status, finishedAt, error: message, ...(unavailable ? { output: candidateOutput } : {}) });
 				return transitioned ? status : this.persistedOutcome(task, status);

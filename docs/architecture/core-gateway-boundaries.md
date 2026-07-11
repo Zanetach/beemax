@@ -156,7 +156,9 @@ adopts the same ownership distinction without copying either project verbatim.
    recovery across Agent instances, and a Core recovery service continuously
    reconciles expired Task Runs without overlapping recovery cycles. The same
    service automatically retries unavailable Verification with durable bounded
-   backoff while retaining Candidate Results and never replaying execution. Tag
+   backoff while retaining Candidate Results and never replaying execution. An
+   explicit rejection may schedule a feedback-aware Corrective Attempt only for
+   safe, idempotent, scoped Tasks and only within the durable correction budget. Tag
    releases require build, typecheck, tests, production dependency audit,
    archive checksum/layout validation and an isolated installation smoke test.
    An external queue adapter remains optional future work for horizontally
