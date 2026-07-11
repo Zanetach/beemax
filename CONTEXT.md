@@ -103,3 +103,15 @@ _Avoid_: Spawn, background chat
 **Turn**:
 One user-to-Agent interaction inside a conversation; a Turn may create, inspect, or advance Tasks.
 _Avoid_: Task, run
+
+**Credential Secret**:
+Sensitive authentication material that a trusted capability may use for an owner but must not return to the Agent, memory, transcript, or ordinary Tool result.
+_Avoid_: Password memory, secret text, account fact
+
+**Credential Ref**:
+An owner-scoped opaque identifier that lets memory and Tasks refer to a Credential Secret without containing it.
+_Avoid_: Password, token, vault path
+
+**Credential Vault**:
+The Profile-local protected store that owns Credential Secrets and injects them only into trusted capability operations while recording content-free access events.
+_Avoid_: MEMORY.md, environment dump, password file

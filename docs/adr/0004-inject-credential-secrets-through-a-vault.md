@@ -1,0 +1,3 @@
+# Inject Credential Secrets through a Vault
+
+BeeMax stores authentication material encrypted in a Profile-local Credential Vault and lets other domains retain only an owner-scoped Credential Ref. Trusted capabilities receive plaintext only inside a short-lived consumer callback; neither the Agent nor a generic Tool can read a Secret as a result. This sacrifices the convenience of a general `credential_get` tool to prevent secrets from entering model context, transcripts, memory, and ordinary audit logs, while keeping account automation possible through purpose-built browser, mail, and channel capabilities.
