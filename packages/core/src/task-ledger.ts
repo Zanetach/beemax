@@ -64,4 +64,5 @@ export interface TaskLedger {
 	reconcileExpiredTaskRuns(now?: number): TaskRecoveryResult;
 	recoveryCandidates(limit?: number): TaskRecord[];
 	renewTaskRunLease?(id: string, leaseExpiresAt: number): boolean;
+	prepareTaskPlanRetry(ownerKeys: string[], planId: string): number;
 }

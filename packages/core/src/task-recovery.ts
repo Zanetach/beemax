@@ -3,6 +3,7 @@ import type { TaskLedger, TaskRecord } from "./task-ledger.ts";
 
 export interface TaskRecoveryRunnerOptions { maxConcurrent?: number; signal?: AbortSignal; }
 export interface TaskRecoveryRunnerResult { plans: number; succeeded: number; failed: number; cancelled: number; blocked: string[]; }
+export interface TaskPlanRetryResult extends TaskRecoveryRunnerResult { prepared: number; }
 
 /** Resumes only durable DAG work that already passed the fail-closed recovery policy. */
 export class TaskRecoveryRunner {
@@ -12,6 +13,17 @@ export class TaskRecoveryRunner {
 
 	async run(options: TaskRecoveryRunnerOptions = {}): Promise<TaskRecoveryRunnerResult> {
 		const candidates = this.ledger.recoveryCandidates(100);
+		return this.executePlans(candidates, options);
+	}
+
+	async retry(ownerKeys: string[], planId: string, options: TaskRecoveryRunnerOptions = {}): Promise<TaskPlanRetryResult> {
+		const prepared = this.ledger.prepareTaskPlanRetry(ownerKeys, planId);
+		if (!prepared) return { prepared: 0, plans: 0, succeeded: 0, failed: 0, cancelled: 0, blocked: [] };
+		const candidates = this.ledger.queryTasks({ ownerKeys, planIds: [planId], statuses: ["pending"], limit: 100 }).filter(recoverable);
+		return { prepared, ...await this.executePlans(candidates, options) };
+	}
+
+	private async executePlans(candidates: TaskRecord[], options: TaskRecoveryRunnerOptions): Promise<TaskRecoveryRunnerResult> {
 		const plans = new Map<string, { ownerKey: string; planId: string }>();
 		for (const task of candidates) if (task.planId) plans.set(`${task.ownerKey}\0${task.planId}`, { ownerKey: task.ownerKey, planId: task.planId });
 		const results = await Promise.all([...plans.values()].map(({ ownerKey, planId }) => new TaskGraph(this.ledger).run([ownerKey], planId, this.execute, {

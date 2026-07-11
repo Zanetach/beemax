@@ -703,6 +703,14 @@ export class MemoryStore {
 			ORDER BY updated_at, created_at LIMIT ?`).all(limitOf(limit, 100)) as RuntimeTaskRow[]).map(mapRuntimeTask);
 	}
 
+	prepareTaskPlanRetry(ownerKeys: string[], planId: string): number {
+		if (!ownerKeys.length || !planId.trim()) return 0;
+		return this.db.prepare(`UPDATE tasks SET status = 'pending', started_at = NULL, finished_at = NULL, result = NULL, error = 'Manual Task Plan retry requested', updated_at = ?
+			WHERE owner_key IN (${ownerKeys.map(() => "?").join(", ")}) AND plan_id = ? AND status = 'failed'
+			AND recovery_policy = 'safe_retry' AND idempotency_key IS NOT NULL AND execution_scope IS NOT NULL`)
+			.run(Date.now(), ...ownerKeys, planId).changes;
+	}
+
 	forget(id: string, opts: Omit<RecallOptions, "limit"> = {}): boolean {
 		const conditions = ["id = ?", "role = 'memory'"];
 		const params: unknown[] = [id];

@@ -1,4 +1,4 @@
-import { type AgentControlHandler, type InteractionEventAdapter, type ProfileTaskSchedulerSnapshot } from "@beemax/core";
+import { parseInteractionCommand, type AgentControlHandler, type InteractionEventAdapter, type ProfileTaskSchedulerSnapshot } from "@beemax/core";
 import type { SessionSource } from "@beemax/gateway";
 import type { BeeMaxAgentRuntime } from "@beemax/core";
 import type { BeeMaxConfig } from "./config.ts";
@@ -9,6 +9,7 @@ import { ProfileModelCatalog } from "./model-catalog.ts";
 
 export interface TaskRecoveryStatus { phase: "disabled" | "running" | "completed" | "failed"; plans: number; succeeded: number; failed: number; blocked: number; }
 export interface ProfileOperationalFacts { taskScheduler?: ProfileTaskSchedulerSnapshot; taskRecovery?: TaskRecoveryStatus; }
+export interface ProfileControlActions { retryTaskPlan?: (source: SessionSource, planId: string) => Promise<{ prepared: number; succeeded: number; failed: number; blocked: string[] }>; }
 
 export function renderTaskSchedulerStatus(snapshot?: ProfileTaskSchedulerSnapshot): string {
 	return snapshot ? `Tasks: running=${snapshot.running}; queued=${snapshot.queued}; queued-owners=${snapshot.queuedOwners}; capacity=${snapshot.maxConcurrent}` : "Tasks: scheduler unavailable";
@@ -24,6 +25,7 @@ export function createProfileControlHandler(
 	config: BeeMaxConfig,
 	interaction?: InteractionEventAdapter<SessionSource>,
 	operationalFacts?: () => ProfileOperationalFacts,
+	actions?: ProfileControlActions,
 ): AgentControlHandler<SessionSource> {
 	return async ({ source, text }) => {
 		const models = new ProfileModelCatalog(config);
@@ -63,7 +65,7 @@ export function createProfileControlHandler(
 			const entries = await runtime.history(source, history[1] ? Number(history[1]) : undefined);
 			return { handled: true, message: entries.length ? entries.map((entry) => `[${entry.role}] ${entry.text.replaceAll("\n", " ")}`).join("\n") : "No live message history." };
 		}
-		if (command === "/help") return { handled: true, message: "Commands: /help /status /usage /compact /sessions /resume <id> /history [n] /skills /tasks /new /reset /model [provider/model] [--global] /stop\nCLI also supports local display, tool, and retry controls." };
+		if (command === "/help") return { handled: true, message: "Commands: /help /status /usage /compact /sessions /resume <id> /history [n] /skills /tasks [retry <plan-id>] /new /reset /model [provider/model] [--global] /stop\nCLI also supports local display, tool, and retry controls." };
 		if (command === "/status" || command === "/usage") {
 			const [model, usage] = await Promise.all([runtime.modelStatus(source), runtime.usage(source)]);
 			const usageText = usage ? `input=${usage.inputTokens}; output=${usage.outputTokens}; context=${usage.contextTokens ?? "?"}/${usage.contextWindow ?? "?"}` : "no live session";
@@ -75,6 +77,12 @@ export function createProfileControlHandler(
 				? await interaction.dispatch({ type: "session.compact", source })
 				: { compacted: await runtime.compact(source) };
 			return { handled: true, message: "compacted" in compacted && compacted.compacted ? "Context compacted." : "No idle session is available to compact." };
+		}
+		const taskCommand = parseInteractionCommand(text);
+		if (taskCommand?.kind === "tasks" && taskCommand.action === "retry" && taskCommand.planId) {
+			if (!actions?.retryTaskPlan) return { handled: true, message: "Task Plan retry is unavailable in this runtime." };
+			const result = await actions.retryTaskPlan(source, taskCommand.planId);
+			return { handled: true, message: result.prepared ? `Retried Task Plan ${taskCommand.planId}: prepared=${result.prepared}; succeeded=${result.succeeded}; failed=${result.failed}; blocked=${result.blocked.length}.` : `No recoverable failed Tasks found in owned Plan ${taskCommand.planId}.` };
 		}
 		if (command === "/tasks") {
 			const tasks = runtime.tasks(source, { limit: 50 });

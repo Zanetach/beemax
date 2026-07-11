@@ -146,6 +146,19 @@ test("Task recovery runner resumes only durable safe DAG candidates with an Exec
 	} finally { store.close(); rmSync(root, { recursive: true, force: true }); }
 });
 
+test("manual Task Plan retry is owner-scoped and requeues only recoverable failed nodes", async () => {
+	const root = mkdtempSync(join(tmpdir(), "beemax-task-manual-retry-"));
+	const store = new MemoryStore(join(root, "memory.db"));
+	try {
+		const scope = { platform: "cli", chatId: "local", chatType: "dm", userId: "local" };
+		store.record({ id: "failed", ownerKey: "cli:local:local", kind: "delegated", title: "Retry", description: "retry safely", status: "failed", planId: "retry-plan", recoveryPolicy: "safe_retry", idempotencyKey: "retry-plan:failed", executionScope: scope, createdAt: 1, finishedAt: 2, error: "model failed" });
+		const runner = new TaskRecoveryRunner(store, async () => ({ output: "retried" }));
+		assert.deepEqual(await runner.retry(["cli:other:local"], "retry-plan"), { prepared: 0, plans: 0, succeeded: 0, failed: 0, cancelled: 0, blocked: [] });
+		assert.deepEqual(await runner.retry(["cli:local:local"], "retry-plan"), { prepared: 1, plans: 1, succeeded: 1, failed: 0, cancelled: 0, blocked: [] });
+		assert.equal(store.queryTasks({ ownerKeys: ["cli:local:local"], id: "failed" })[0].result, "retried");
+	} finally { store.close(); rmSync(root, { recursive: true, force: true }); }
+});
+
 test("legacy task facts migrate once into objective Tasks", () => {
 	const root = mkdtempSync(join(tmpdir(), "beemax-legacy-task-migration-"));
 	const path = join(root, "memory.db");

@@ -827,7 +827,7 @@ async function runChat(config: ReturnType<typeof loadConfig>, requestedMode: { f
 	const presentationMode: ChatPresentationMode = resolveChatPresentationMode({
 		...requestedMode, isInputTty: process.stdin.isTTY === true, isOutputTty: process.stdout.isTTY === true, term: process.env.TERM,
 	});
-	const { createSubagentTools, createTaskLedgerTools, createTaskOrchestrationTools, ProfileTaskScheduler, SubagentManager, TaskRecoveryRunner } = await import("@beemax/core");
+	const { conversationKey, createSubagentTools, createTaskLedgerTools, createTaskOrchestrationTools, ProfileTaskScheduler, SubagentManager, TaskRecoveryRunner } = await import("@beemax/core");
 	const { loadMcpConfig, McpManager } = await import("@beemax/mcp-capability");
 	const { buildAgentFactory } = await import("./agent-factory.ts");
 	const { MemoryStore } = await import("@beemax/memory");
@@ -868,8 +868,9 @@ async function runChat(config: ReturnType<typeof loadConfig>, requestedMode: { f
 	const taskScheduler = new ProfileTaskScheduler({ maxConcurrent: config.subagents.maxConcurrent });
 	const recoveryController = new AbortController();
 	let recoveryStatus: TaskRecoveryStatus = { phase: config.subagents.enabled ? "running" : "disabled", plans: 0, succeeded: 0, failed: 0, blocked: 0 };
+	const taskRecovery = new TaskRecoveryRunner(memory, (task, signal) => taskScheduler.run(task.ownerKey, () => executePlannedTask(createSubagentAgent, task, task.executionScope as import("@beemax/gateway").SessionSource, signal, config.subagents.timeoutMs), signal));
 	const recoveryRun = (config.subagents.enabled
-		? new TaskRecoveryRunner(memory, (task, signal) => taskScheduler.run(task.ownerKey, () => executePlannedTask(createSubagentAgent, task, task.executionScope as import("@beemax/gateway").SessionSource, signal, config.subagents.timeoutMs), signal)).run({ maxConcurrent: config.subagents.maxConcurrent, signal: recoveryController.signal })
+		? taskRecovery.run({ maxConcurrent: config.subagents.maxConcurrent, signal: recoveryController.signal })
 		: Promise.resolve({ plans: 0, succeeded: 0, failed: 0, cancelled: 0, blocked: [] as string[] }))
 		.then((summary) => { recoveryStatus = { phase: config.subagents.enabled ? "completed" : "disabled", plans: summary.plans, succeeded: summary.succeeded, failed: summary.failed, blocked: summary.blocked.length }; if (summary.plans) process.stdout.write(`Resumed ${summary.plans} Task Plan(s): succeeded=${summary.succeeded}; failed=${summary.failed}; blocked=${summary.blocked.length}.\n`); })
 		.catch((error) => { recoveryStatus = { ...recoveryStatus, phase: "failed" }; process.stderr.write(`Task recovery failed: ${error instanceof Error ? error.message : String(error)}\n`); });
@@ -915,7 +916,9 @@ async function runChat(config: ReturnType<typeof loadConfig>, requestedMode: { f
 		},
 		approvalBroker: localApproval,
 		cancelSubagents: (sessionSource) => subagents?.cancelOwner(sessionSource) ?? 0,
-		controlHandler: (profileRuntime, profileInteraction) => createProfileControlHandler(profileRuntime, config, profileInteraction, () => ({ taskScheduler: taskScheduler.snapshot(), taskRecovery: recoveryStatus })),
+		controlHandler: (profileRuntime, profileInteraction) => createProfileControlHandler(profileRuntime, config, profileInteraction, () => ({ taskScheduler: taskScheduler.snapshot(), taskRecovery: recoveryStatus }), config.subagents.enabled ? {
+			retryTaskPlan: (sessionSource, planId) => taskRecovery.retry([conversationKey(sessionSource)], planId, { maxConcurrent: config.subagents.maxConcurrent }),
+		} : undefined),
 	});
 	const { runtime, interaction: interactionAdapter } = profileRuntime;
 	let fullScreenActive = false;
@@ -1107,6 +1110,12 @@ async function runChat(config: ReturnType<typeof loadConfig>, requestedMode: { f
 			}
 			if (command?.kind === "tools") { process.stdout.write(`${toolsStatus()}\n`); writePrompt(); return; }
 			if (command?.kind === "tasks") {
+				if (command.action === "retry" && command.planId) {
+					if (!config.subagents.enabled) { process.stdout.write("Task Plan retry is unavailable because Sub-Agents are disabled.\n"); writePrompt(); return; }
+					const result = await taskRecovery.retry([conversationKey(source)], command.planId, { maxConcurrent: config.subagents.maxConcurrent });
+					process.stdout.write(`${result.prepared ? `Retried Task Plan ${command.planId}: prepared=${result.prepared}; succeeded=${result.succeeded}; failed=${result.failed}; blocked=${result.blocked.length}.` : `No recoverable failed Tasks found in owned Plan ${command.planId}.`}\n`);
+					writePrompt(); return;
+				}
 				const tasks = runtime.tasks(source, { limit: 50 });
 				process.stdout.write(`${tasks.length ? tasks.map((task) => `${task.id}  [${task.kind}/${task.status}]  ${task.title}`).join("\n") : "No durable Tasks are visible to this conversation."}\n`);
 				writePrompt(); return;

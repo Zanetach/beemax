@@ -10,6 +10,7 @@ test("interaction command grammar is surface-neutral and complete", () => {
 	assert.deepEqual(parseInteractionCommand("/models gpt"), { kind: "models", query: "gpt" });
 	assert.deepEqual(parseInteractionCommand("/sessions local"), { kind: "sessions", query: "local" });
 	assert.deepEqual(parseInteractionCommand("/steer focus on tests"), { kind: "steer", text: "focus on tests" });
+	assert.deepEqual(parseInteractionCommand("/tasks retry plan-123"), { kind: "tasks", action: "retry", planId: "plan-123" });
 	assert.equal(parseInteractionCommand("hello"), undefined);
 	assert.equal(INTERACTION_COMMANDS.some((command) => command.name === "stop"), true);
 	assert.equal(INTERACTION_COMMANDS.some((command) => command.name === "steer"), true);
