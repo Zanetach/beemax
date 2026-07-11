@@ -15,7 +15,7 @@ import Database from "better-sqlite3";
 import type { Database as DatabaseType } from "better-sqlite3";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
-import type { TaskCandidateVerificationResolution, TaskDependency, TaskPlanCompletionNotice, TaskPlanQuery, TaskPlanRecord, TaskPlanTransition, TaskQuery, TaskRecord as RuntimeTaskRecord, TaskRunRecord, TaskRunTransition, TaskTransition } from "@beemax/core";
+import type { TaskCandidateVerificationResolution, TaskDependency, TaskPlanCompletionNotice, TaskPlanQuery, TaskPlanRecord, TaskPlanTransition, TaskQuery, TaskRecord as RuntimeTaskRecord, TaskRecoveryResult, TaskRunRecord, TaskRunTransition, TaskTransition } from "@beemax/core";
 
 export const MEMORY_CLAIM_KINDS = ["preference", "fact", "decision", "goal", "project", "relationship", "workflow"] as const;
 export type MemoryClaimKind = typeof MEMORY_CLAIM_KINDS[number];
@@ -791,13 +791,13 @@ export class MemoryStore {
 			.all(...taskIds).map((row) => ({ taskId: (row as { task_id: string }).task_id, dependsOn: (row as { depends_on: string }).depends_on }));
 	}
 
-	reconcileExpiredTaskRuns(now = Date.now()): { retried: number; failed: number } {
+	reconcileExpiredTaskRuns(now = Date.now()): TaskRecoveryResult {
 		return this.db.transaction(() => {
-			const rows = this.db.prepare(`SELECT r.id AS run_id, r.task_id, t.plan_id, t.recovery_policy, t.idempotency_key
+			const rows = this.db.prepare(`SELECT r.id AS run_id, r.task_id, t.owner_key, t.plan_id, t.recovery_policy, t.idempotency_key
 				FROM task_runs r JOIN tasks t ON t.id = r.task_id
-				WHERE r.status = 'running' AND r.lease_expires_at IS NOT NULL AND r.lease_expires_at <= ?`).all(now) as Array<{ run_id: string; task_id: string; plan_id: string | null; recovery_policy: string; idempotency_key: string | null }>;
+				WHERE r.status = 'running' AND r.lease_expires_at IS NOT NULL AND r.lease_expires_at <= ?`).all(now) as Array<{ run_id: string; task_id: string; owner_key: string; plan_id: string | null; recovery_policy: string; idempotency_key: string | null }>;
 			let retried = 0; let failed = 0;
-			const affectedPlanIds = new Set<string>();
+			const affectedPlans = new Map<string, { ownerKey: string; planId: string }>();
 			const reason = "Task Run interrupted after its Execution Lease expired";
 			for (const row of rows) {
 				this.db.prepare("UPDATE task_runs SET status = 'failed', finished_at = ?, error = ? WHERE id = ? AND status = 'running'").run(now, reason, row.run_id);
@@ -808,10 +808,10 @@ export class MemoryStore {
 					const changed = this.db.prepare("UPDATE tasks SET status = 'failed', finished_at = ?, error = ?, updated_at = ? WHERE id = ? AND status = 'running'").run(now, reason, now, row.task_id).changes;
 					failed += changed;
 				}
-				if (row.plan_id) affectedPlanIds.add(row.plan_id);
+				if (row.plan_id) affectedPlans.set(`${row.owner_key}\0${row.plan_id}`, { ownerKey: row.owner_key, planId: row.plan_id });
 			}
-			for (const planId of affectedPlanIds) this.syncTaskPlanFromTasks(planId, now);
-			return { retried, failed };
+			for (const { planId } of affectedPlans.values()) this.syncTaskPlanFromTasks(planId, now);
+			return { retried, failed, affectedPlans: [...affectedPlans.values()].sort((left, right) => left.planId.localeCompare(right.planId)) };
 		})();
 	}
 

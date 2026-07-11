@@ -1,5 +1,5 @@
 import { TaskGraph, type TaskGraphExecutor, type TaskGraphResult, type TaskGraphVerifier } from "./task-graph.ts";
-import type { TaskLedger, TaskRecord } from "./task-ledger.ts";
+import type { TaskLedger, TaskRecord, TaskRecoveryPlanRef } from "./task-ledger.ts";
 import { TaskPlanRuntime } from "./task-plan-runtime.ts";
 
 export interface TaskRecoveryRunnerOptions { maxConcurrent?: number; maxCorrectiveAttempts?: number; signal?: AbortSignal; }
@@ -83,6 +83,12 @@ export class TaskRecoveryRunner {
 		return { active, tasks };
 	}
 
+	enqueueSettledCompletionNotices(plans: readonly TaskRecoveryPlanRef[]): number {
+		let enqueued = 0;
+		for (const plan of plans) if (this.enqueueCompletionNoticeIfSettled(plan.ownerKey, plan.planId)) enqueued++;
+		return enqueued;
+	}
+
 	private async executePlans(candidates: TaskRecord[], options: TaskRecoveryRunnerOptions, enqueueCompletionNotice = false): Promise<TaskRecoveryRunnerResult> {
 		const plans = new Map<string, { ownerKey: string; planId: string }>();
 		for (const task of candidates) if (task.planId) plans.set(`${task.ownerKey}\0${task.planId}`, { ownerKey: task.ownerKey, planId: task.planId });
@@ -130,11 +136,12 @@ export class TaskRecoveryRunner {
 		return result;
 	}
 
-	private enqueueCompletionNoticeIfSettled(ownerKey: string, planId: string): void {
+	private enqueueCompletionNoticeIfSettled(ownerKey: string, planId: string): boolean {
 		const plan = this.ledger.queryTaskPlans({ ownerKeys: [ownerKey], id: planId, limit: 1 })[0];
-		if (!plan || (plan.status !== "succeeded" && plan.status !== "failed" && plan.status !== "cancelled")) return;
-		const unsettled = this.ledger.queryTasks({ ownerKeys: [ownerKey], planIds: [planId], statuses: ["failed"], limit: 100 }).some((task) => task.verificationStatus === "unavailable");
-		if (!unsettled) this.ledger.enqueueTaskPlanCompletionNotice?.(ownerKey, planId);
+		if (!plan || (plan.status !== "succeeded" && plan.status !== "failed" && plan.status !== "cancelled")) return false;
+		const unsettled = this.ledger.queryTasks({ ownerKeys: [ownerKey], planIds: [planId], limit: 100 })
+			.some((task) => task.status === "pending" || task.status === "running" || task.verificationStatus === "unavailable");
+		return unsettled ? false : (this.ledger.enqueueTaskPlanCompletionNotice?.(ownerKey, planId) ?? false);
 	}
 
 	private async withPlanExecutionClaim<T>(ownerKey: string, planId: string, parentSignal: AbortSignal | undefined, execute: (signal: AbortSignal) => Promise<T>): Promise<T | undefined> {

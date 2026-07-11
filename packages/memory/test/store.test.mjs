@@ -313,7 +313,7 @@ test("one recovery cycle continues a DAG after automatic Verification accepts it
 		const runner = new TaskRecoveryRunner(store, async (task) => { executed.push(task.id); return { output: "final report" }; }, undefined, async () => ({ accepted: true, evidence: "independent check passed" }));
 		const cycle = await new TaskRecoveryService(store, runner).runOnce({ maxConcurrent: 2 });
 		assert.deepEqual(cycle, {
-			reconciled: { retried: 0, failed: 0 },
+			reconciled: { retried: 0, failed: 0, affectedPlans: [] },
 			verification: { attempted: 1, accepted: 1, rejected: 0, unavailable: 0 },
 			recovery: { plans: 1, succeeded: 1, failed: 0, cancelled: 0, blocked: [] },
 		});
@@ -339,7 +339,7 @@ test("one recovery cycle automatically corrects a rejected Candidate Result with
 			? { accepted: true, evidence: "source checked" }
 			: { accepted: false, feedback: "Add a primary source" });
 		assert.deepEqual(await new TaskRecoveryService(store, runner).runOnce({ maxCorrectiveAttempts: 1 }), {
-			reconciled: { retried: 0, failed: 0 },
+			reconciled: { retried: 0, failed: 0, affectedPlans: [] },
 			verification: { attempted: 1, accepted: 0, rejected: 1, unavailable: 0 },
 			recovery: { plans: 1, succeeded: 1, failed: 0, cancelled: 0, blocked: [] },
 		});
@@ -447,7 +447,7 @@ test("expired Task Run leases recover only explicitly idempotent safe-retry Task
 		store.recordRun({ id: "unsafe-run", taskId: "unsafe", executor: "subagent", status: "running", startedAt: 20, leaseExpiresAt: 100 });
 		store.record({ id: "live", ownerKey: "cli:local:local", kind: "delegated", title: "Still leased", status: "running", recoveryPolicy: "safe_retry", idempotencyKey: "plan:live", createdAt: 10, startedAt: 20 });
 		store.recordRun({ id: "live-run", taskId: "live", executor: "subagent", status: "running", startedAt: 20, leaseExpiresAt: 300 });
-		assert.deepEqual(store.reconcileExpiredTaskRuns(200), { retried: 1, failed: 1 });
+		assert.deepEqual(store.reconcileExpiredTaskRuns(200), { retried: 1, failed: 1, affectedPlans: [] });
 		const tasks = new Map(store.queryTasks({ ownerKeys: ["cli:local:local"] }).map((task) => [task.id, task]));
 		assert.equal(tasks.get("safe").status, "pending");
 		store.transition("safe", { status: "running", startedAt: 210 });
@@ -456,6 +456,39 @@ test("expired Task Run leases recover only explicitly idempotent safe-retry Task
 		assert.equal(tasks.get("live").status, "running");
 		assert.equal(store.taskRuns("safe")[0].status, "failed");
 		assert.match(store.taskRuns("safe")[0].error, /interrupted/i);
+	} finally { store.close(); rmSync(root, { recursive: true, force: true }); }
+});
+
+test("recovery reconciliation notifies an owner when an unsafe interrupted Plan settles without replay", async () => {
+	const root = mkdtempSync(join(tmpdir(), "beemax-interruption-notice-"));
+	const store = new MemoryStore(join(root, "memory.db"));
+	try {
+		const scope = { platform: "feishu", chatId: "chat", chatType: "dm", userId: "user" };
+		new TaskGraph(store).createPlan({ id: "interruption-notice-plan", ownerKey: "feishu:chat:user", title: "Unsafe background work", tasks: [{ id: "interruption-notice-task", title: "External mutation", recoveryPolicy: "never", executionScope: scope }] }, 10);
+		store.transition("interruption-notice-task", { status: "running", startedAt: 20 });
+		store.recordRun({ id: "interruption-notice-run", taskId: "interruption-notice-task", executor: "subagent", status: "running", startedAt: 20, leaseExpiresAt: 100 });
+		const runner = new TaskRecoveryRunner(store, async () => { throw new Error("must not replay"); });
+		const cycle = await new TaskRecoveryService(store, runner).runOnce({ maxConcurrent: 2 });
+		assert.equal(cycle.reconciled.failed, 1);
+		assert.deepEqual(store.claimTaskPlanCompletionNotices("feishu", Date.now(), 10).map(({ planId, planStatus }) => ({ planId, planStatus })), [{ planId: "interruption-notice-plan", planStatus: "failed" }]);
+	} finally { store.close(); rmSync(root, { recursive: true, force: true }); }
+});
+
+test("recovery reconciliation does not notify while an affected Plan still has pending work", () => {
+	const root = mkdtempSync(join(tmpdir(), "beemax-interruption-pending-"));
+	const store = new MemoryStore(join(root, "memory.db"));
+	try {
+		const scope = { platform: "feishu", chatId: "chat", chatType: "dm", userId: "user" };
+		new TaskGraph(store).createPlan({ id: "mixed-plan", ownerKey: "feishu:chat:user", tasks: [
+			{ id: "mixed-failed", title: "Unsafe mutation", recoveryPolicy: "never", executionScope: scope },
+			{ id: "mixed-pending", title: "Later work", recoveryPolicy: "safe_retry", idempotencyKey: "mixed:pending", executionScope: scope },
+		] }, 10);
+		store.transition("mixed-failed", { status: "failed", finishedAt: 20, error: "interrupted" });
+		store.transitionPlan("mixed-plan", { status: "failed", taskCount: 2, succeeded: 0, failed: 1, cancelled: 0, verified: 0, correctiveAttempts: 0, finishedAt: 20 });
+		const enqueued = new TaskRecoveryRunner(store, async () => ({ output: "unused" }))
+			.enqueueSettledCompletionNotices([{ ownerKey: "feishu:chat:user", planId: "mixed-plan" }]);
+		assert.equal(enqueued, 0);
+		assert.deepEqual(store.claimTaskPlanCompletionNotices("feishu", Date.now(), 10), []);
 	} finally { store.close(); rmSync(root, { recursive: true, force: true }); }
 });
 
@@ -472,7 +505,10 @@ test("expired Task Run reconciliation keeps Task Plan Outcomes consistent", () =
 			assert.equal(store.transition(taskId, { status: "running", startedAt: 20 }), true);
 			store.recordRun({ id: runId, taskId, executor: "subagent", status: "running", startedAt: 20, leaseExpiresAt: 100 });
 		}
-		assert.deepEqual(store.reconcileExpiredTaskRuns(200), { retried: 1, failed: 1 });
+		assert.deepEqual(store.reconcileExpiredTaskRuns(200), { retried: 1, failed: 1, affectedPlans: [
+			{ ownerKey: "cli:local:local", planId: "safe-plan" },
+			{ ownerKey: "cli:local:local", planId: "unsafe-plan" },
+		] });
 		const safePlan = store.queryTaskPlans({ ownerKeys: ["cli:local:local"], id: "safe-plan" })[0];
 		const unsafePlan = store.queryTaskPlans({ ownerKeys: ["cli:local:local"], id: "unsafe-plan" })[0];
 		assert.deepEqual({ status: safePlan.status, failed: safePlan.failed }, { status: "pending", failed: 0 });

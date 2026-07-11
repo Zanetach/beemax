@@ -75,7 +75,8 @@ export interface TaskRunRecord {
 	error?: string;
 }
 export type TaskRunTransition = Pick<TaskRunRecord, "status"> & Partial<Pick<TaskRunRecord, "finishedAt" | "output" | "error">>;
-export interface TaskRecoveryResult { retried: number; failed: number; }
+export interface TaskRecoveryPlanRef { ownerKey: string; planId: string; }
+export interface TaskRecoveryResult { retried: number; failed: number; affectedPlans: TaskRecoveryPlanRef[]; }
 export interface TaskQuery {
 	ownerKeys: string[];
 	id?: string;

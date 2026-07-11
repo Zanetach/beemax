@@ -15,7 +15,7 @@ export interface TaskRecoveryServiceOptions {
 }
 
 type RecoveryLedger = Pick<TaskLedger, "reconcileExpiredTaskRuns">;
-type RecoveryRunner = Pick<TaskRecoveryRunner, "run"> & Partial<Pick<TaskRecoveryRunner, "reverifyDue">>;
+type RecoveryRunner = Pick<TaskRecoveryRunner, "run"> & Partial<Pick<TaskRecoveryRunner, "reverifyDue" | "enqueueSettledCompletionNotices">>;
 
 /** Continuously reconciles expired Task Runs and resumes only safe durable work. */
 export class TaskRecoveryService {
@@ -44,6 +44,7 @@ export class TaskRecoveryService {
 			const reconciled = this.ledger.reconcileExpiredTaskRuns();
 			const verification = this.runner?.reverifyDue ? await this.runner.reverifyDue(Date.now(), options.signal, options.maxConcurrent) : { attempted: 0, accepted: 0, rejected: 0, unavailable: 0 };
 			const recovery = this.runner ? await this.runner.run(options) : { plans: 0, succeeded: 0, failed: 0, cancelled: 0, blocked: [] };
+			this.runner?.enqueueSettledCompletionNotices?.(reconciled.affectedPlans);
 			return { reconciled, verification, recovery };
 		})();
 		this.active = cycle;

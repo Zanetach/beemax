@@ -6,10 +6,12 @@ test("TaskRecoveryService reconciles expired runs before one coalesced recovery 
 	const order = [];
 	let release;
 	const blocked = new Promise((resolve) => { release = resolve; });
-	const ledger = { reconcileExpiredTaskRuns() { order.push("reconcile"); return { retried: 2, failed: 1 }; } };
+	const affectedPlans = [{ ownerKey: "feishu:chat:user", planId: "plan" }];
+	const ledger = { reconcileExpiredTaskRuns() { order.push("reconcile"); return { retried: 2, failed: 1, affectedPlans }; } };
 	const runner = {
 		async reverifyDue() { order.push("verify"); return { attempted: 1, accepted: 1, rejected: 0, unavailable: 0 }; },
 		async run() { order.push("recover"); await blocked; return { plans: 2, succeeded: 2, failed: 0, cancelled: 0, blocked: [] }; },
+		enqueueSettledCompletionNotices(plans) { order.push("notify"); assert.deepEqual(plans, affectedPlans); return 1; },
 	};
 	const service = new TaskRecoveryService(ledger, runner);
 	const first = service.runOnce();
@@ -17,17 +19,17 @@ test("TaskRecoveryService reconciles expired runs before one coalesced recovery 
 	await new Promise((resolve) => setImmediate(resolve));
 	assert.deepEqual(order, ["reconcile", "verify", "recover"]);
 	release();
-	const expected = { reconciled: { retried: 2, failed: 1 }, verification: { attempted: 1, accepted: 1, rejected: 0, unavailable: 0 }, recovery: { plans: 2, succeeded: 2, failed: 0, cancelled: 0, blocked: [] } };
+	const expected = { reconciled: { retried: 2, failed: 1, affectedPlans }, verification: { attempted: 1, accepted: 1, rejected: 0, unavailable: 0 }, recovery: { plans: 2, succeeded: 2, failed: 0, cancelled: 0, blocked: [] } };
 	assert.deepEqual(await first, expected);
 	assert.deepEqual(await second, expected);
-	assert.deepEqual(order, ["reconcile", "verify", "recover"]);
+	assert.deepEqual(order, ["reconcile", "verify", "recover", "notify"]);
 });
 
 test("TaskRecoveryService stop aborts and joins the active recovery cycle", async () => {
 	let reconciliations = 0;
 	let started;
 	const running = new Promise((resolve) => { started = resolve; });
-	const ledger = { reconcileExpiredTaskRuns() { reconciliations++; return { retried: 0, failed: 0 }; } };
+	const ledger = { reconcileExpiredTaskRuns() { reconciliations++; return { retried: 0, failed: 0, affectedPlans: [] }; } };
 	const runner = { run({ signal }) {
 		started();
 		return new Promise((_resolve, reject) => signal.addEventListener("abort", () => reject(signal.reason), { once: true }));
@@ -51,7 +53,7 @@ test("TaskRecoveryService schedules the next cycle only after the previous cycle
 	let maxRunning = 0;
 	let secondCycle;
 	const completed = new Promise((resolve) => { secondCycle = resolve; });
-	const ledger = { reconcileExpiredTaskRuns() { reconciliations++; return { retried: 0, failed: 0 }; } };
+	const ledger = { reconcileExpiredTaskRuns() { reconciliations++; return { retried: 0, failed: 0, affectedPlans: [] }; } };
 	const runner = { async run() {
 		running++;
 		maxRunning = Math.max(maxRunning, running);
