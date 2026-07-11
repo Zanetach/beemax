@@ -80,5 +80,5 @@ export function createMemoryTools(store: MemoryToolStore, source: BeeMaxRuntimeS
 
 function format(records: MemoryToolRecord[]): string { return records.length ? records.map((record) => `- [${record.id}] ${record.content}`).join("\n") : "No matching memories."; }
 function formatEvidence(item: MemoryEvidence): string { return `- [${item.eventId ?? "manual"}] ${new Date(item.event?.occurredAt ?? item.createdAt).toISOString()}: ${item.event?.content ?? item.excerpt}`; }
-function containsSensitiveMemory(value: string): boolean { return /\b(password|passcode|token|secret|api[_-]?key|private key|身份证|护照|银行卡|病历|诊断)\b/i.test(value); }
+function containsSensitiveMemory(value: string): boolean { return /\b(password|passcode|token|secret|api[_-]?key|private key)\b|身份证|护照|银行卡|病历|诊断/i.test(value); }
 function result(text: string, details: unknown) { return { content: [{ type: "text" as const, text }], details }; }
