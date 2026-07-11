@@ -18,11 +18,11 @@ test("shared /status reports Profile task admission capacity on every channel", 
 	};
 	const config = { profile: "personal", model: { provider: "test", model: "model" }, models: [] };
 	const control = createProfileControlHandler(runtime, config, undefined, () => ({
-		taskScheduler: { running: 2, queued: 3, queuedOwners: 2, maxConcurrent: 4 },
+		taskScheduler: { running: 2, queued: 3, queuedOwners: 2, maxConcurrent: 4, currentConcurrent: 2, overloadReductions: 3 },
 		taskRecovery: { phase: "completed", plans: 2, succeeded: 3, failed: 1, blocked: 1, verification: { attempted: 2, accepted: 1, rejected: 0, unavailable: 1 } },
 	}));
 	const result = await control({ source: { platform: "feishu", chatId: "chat", chatType: "dm", userId: "user" }, text: "/status" });
-	assert.match(result.message, /Tasks: running=2; queued=3; queued-owners=2; capacity=4/);
+	assert.match(result.message, /Tasks: running=2; queued=3; queued-owners=2; capacity=2\/4; overload-reductions=3/);
 	assert.match(result.message, /Recovery: completed; plans=2; succeeded=3; failed=1; blocked=1/);
 	assert.match(result.message, /verification=2\/1\/0\/1/);
 });

@@ -16,7 +16,10 @@ export interface ProfileControlActions {
 }
 
 export function renderTaskSchedulerStatus(snapshot?: ProfileTaskSchedulerSnapshot): string {
-	return snapshot ? `Tasks: running=${snapshot.running}; queued=${snapshot.queued}; queued-owners=${snapshot.queuedOwners}; capacity=${snapshot.maxConcurrent}` : "Tasks: scheduler unavailable";
+	if (!snapshot) return "Tasks: scheduler unavailable";
+	const current = snapshot.currentConcurrent ?? snapshot.maxConcurrent;
+	const reductions = snapshot.overloadReductions ?? 0;
+	return `Tasks: running=${snapshot.running}; queued=${snapshot.queued}; queued-owners=${snapshot.queuedOwners}; capacity=${current}/${snapshot.maxConcurrent}; overload-reductions=${reductions}`;
 }
 
 export function renderTaskRecoveryStatus(status?: TaskRecoveryStatus): string {
