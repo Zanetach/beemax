@@ -987,6 +987,22 @@ export class MemoryStore {
 		})();
 	}
 
+	failTaskPlan(ownerKeys: string[], planId: string, holderId: string, error: string, now = Date.now()): number {
+		if (!ownerKeys.length || !planId.trim() || !holderId.trim()) return 0;
+		return this.db.transaction(() => {
+			const claim = this.db.prepare(`SELECT 1 FROM task_plan_execution_claims WHERE plan_id = ? AND owner_key IN (${ownerKeys.map(() => "?").join(", ")}) AND holder_id = ? AND lease_expires_at > ?`).get(planId, ...ownerKeys, holderId, now);
+			if (!claim) return 0;
+			const ids = this.db.prepare(`SELECT id FROM tasks WHERE owner_key IN (${ownerKeys.map(() => "?").join(", ")}) AND plan_id = ? AND status IN ('pending', 'running')`).all(...ownerKeys, planId).map((row) => (row as { id: string }).id);
+			if (!ids.length) return 0;
+			const placeholders = ids.map(() => "?").join(", ");
+			const message = safeTaskText(error) ?? "Background Task Plan execution failed";
+			this.db.prepare(`UPDATE task_runs SET status = 'failed', finished_at = ?, error = ? WHERE task_id IN (${placeholders}) AND status = 'running'`).run(now, message, ...ids);
+			const changed = this.db.prepare(`UPDATE tasks SET status = 'failed', finished_at = ?, error = ?, updated_at = ? WHERE id IN (${placeholders}) AND status IN ('pending', 'running')`).run(now, message, now, ...ids).changes;
+			if (changed) this.syncTaskPlan(planId, "failed", now);
+			return changed;
+		})();
+	}
+
 	private syncTaskPlanFromTasks(id: string, now: number): void {
 		const statuses = this.db.prepare(`SELECT SUM(status = 'failed') AS failed, SUM(status = 'running') AS running,
 			SUM(status = 'pending') AS pending, SUM(status = 'cancelled') AS cancelled FROM tasks WHERE plan_id = ?`).get(id) as { failed: number; running: number; pending: number; cancelled: number };

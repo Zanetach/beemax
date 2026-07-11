@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { MemoryStore } from "../dist/index.js";
 import Database from "better-sqlite3";
-import { TaskGraph, TaskRecoveryRunner, TaskRecoveryService } from "@beemax/core";
+import { TaskGraph, TaskPlanRuntime, TaskRecoveryRunner, TaskRecoveryService } from "@beemax/core";
 
 test("natural-language recall is safe and follows a user across chats", () => {
 	const root = mkdtempSync(join(tmpdir(), "beemax-memory-test-"));
@@ -724,6 +724,37 @@ test("Task Plan pause and checkpoints survive process restart and resume owner-s
 		const runner = new TaskRecoveryRunner(store, async (_task, _signal, context) => ({ output: `resumed:${context.checkpoint}` }));
 		assert.deepEqual(await runner.resume(["cli:local:local"], "long-plan"), { plans: 1, succeeded: 1, failed: 0, cancelled: 0, blocked: [] });
 		assert.equal(store.queryTasks({ ownerKeys: ["cli:local:local"], id: "long-task" })[0].result, "resumed:page=42");
+	} finally { store.close(); rmSync(root, { recursive: true, force: true }); }
+});
+
+test("a supervised background failure terminalizes its Task Plan instead of leaving running work", async () => {
+	const root = mkdtempSync(join(tmpdir(), "beemax-task-background-failure-"));
+	const store = new MemoryStore(join(root, "memory.db"));
+	try {
+		new TaskGraph(store).createPlan({ id: "failed-background", ownerKey: "cli:local:local", tasks: [{ id: "failed-task", title: "Long work", recoveryPolicy: "safe_retry", idempotencyKey: "failed-background:task", executionScope: { platform: "cli", chatId: "local", chatType: "dm", userId: "local" } }] });
+		const runtime = new TaskPlanRuntime();
+		assert.equal(runtime.startClaimed(store, "cli:local:local", "failed-background", async () => { throw new Error("password=must-not-persist"); }, () => store.enqueueTaskPlanCompletionNotice("cli:local:local", "failed-background")), true);
+		await new Promise((resolve) => setImmediate(resolve));
+		await runtime.shutdown();
+		const task = store.queryTasks({ ownerKeys: ["cli:local:local"], id: "failed-task" })[0];
+		const plan = store.queryTaskPlans({ ownerKeys: ["cli:local:local"], id: "failed-background" })[0];
+		assert.equal(task.status, "failed");
+		assert.equal(task.error, "[credential details redacted]");
+		assert.equal(plan.status, "failed");
+	} finally { store.close(); rmSync(root, { recursive: true, force: true }); }
+});
+
+test("a stale execution holder cannot terminalize a Plan after lease takeover", () => {
+	const root = mkdtempSync(join(tmpdir(), "beemax-task-stale-failure-"));
+	const store = new MemoryStore(join(root, "memory.db"));
+	try {
+		new TaskGraph(store).createPlan({ id: "takeover-plan", ownerKey: "owner", tasks: [{ id: "takeover-task", title: "Work" }] });
+		assert.equal(store.claimTaskPlanExecution("owner", "takeover-plan", "old-holder", 100, 0), true);
+		assert.equal(store.claimTaskPlanExecution("owner", "takeover-plan", "new-holder", 300, 101), true);
+		assert.equal(store.failTaskPlan(["owner"], "takeover-plan", "old-holder", "late failure", 110), 0);
+		assert.equal(store.queryTasks({ ownerKeys: ["owner"], id: "takeover-task" })[0].status, "pending");
+		assert.equal(store.failTaskPlan(["owner"], "takeover-plan", "new-holder", "current failure", 110), 1);
+		assert.equal(store.queryTaskPlans({ ownerKeys: ["owner"], id: "takeover-plan" })[0].status, "failed");
 	} finally { store.close(); rmSync(root, { recursive: true, force: true }); }
 });
 

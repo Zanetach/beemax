@@ -38,6 +38,10 @@ export class TaskPlanRuntime {
 			}, EXECUTION_CLAIM_HEARTBEAT_MS) : undefined;
 			heartbeat?.unref();
 			try { await execute(executionSignal); }
+			catch (error) {
+				ledger.failTaskPlan?.([ownerKey], planId, holderId, error instanceof Error ? error.message : String(error));
+				throw error;
+			}
 			finally { if (heartbeat) clearInterval(heartbeat); ledger.releaseTaskPlanExecution?.(ownerKey, planId, holderId); }
 		}, onSettled);
 		if (!started) ledger.releaseTaskPlanExecution?.(ownerKey, planId, holderId);

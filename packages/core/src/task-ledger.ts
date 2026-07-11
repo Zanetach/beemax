@@ -124,4 +124,5 @@ export interface TaskLedger {
 	renewTaskRunLease?(id: string, leaseExpiresAt: number): boolean;
 	prepareTaskPlanRetry(ownerKeys: string[], planId: string, maxCorrectiveAttempts?: number): number;
 	cancelTaskPlan(ownerKeys: string[], planId: string, now?: number): number;
+	failTaskPlan?(ownerKeys: string[], planId: string, holderId: string, error: string, now?: number): number;
 }
