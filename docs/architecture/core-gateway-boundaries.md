@@ -158,7 +158,10 @@ adopts the same ownership distinction without copying either project verbatim.
    service automatically retries unavailable Verification with durable bounded
    backoff while retaining Candidate Results and never replaying execution. An
    explicit rejection may schedule a feedback-aware Corrective Attempt only for
-   safe, idempotent, scoped Tasks and only within the durable correction budget. Tag
+   safe, idempotent, scoped Tasks and only within the durable correction budget.
+   Settled background outcomes create result-free Completion Notices in a durable,
+   holder-fenced Outbox; CLI and Gateway delivery workers acknowledge or retry them
+   without coupling Core to a channel SDK. Tag
    releases require build, typecheck, tests, production dependency audit,
    archive checksum/layout validation and an isolated installation smoke test.
    An external queue adapter remains optional future work for horizontally

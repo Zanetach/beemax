@@ -26,7 +26,7 @@ export class TaskRecoveryRunner {
 			const candidates = this.ledger.recoveryCandidates(100, [...attemptedPlanIds]).filter((task) => task.planId && !attemptedPlanIds.has(task.planId));
 			if (!candidates.length) break;
 			for (const task of candidates) if (task.planId) attemptedPlanIds.add(task.planId);
-			const batch = await this.executePlans(candidates, options);
+			const batch = await this.executePlans(candidates, options, true);
 			summary = mergeRecoveryResults(summary, batch);
 		}
 		return summary;
@@ -67,8 +67,11 @@ export class TaskRecoveryRunner {
 			if (!plans.size) break;
 			const pendingPlans = [...plans.values()];
 			for (let offset = 0; offset < pendingPlans.length && !signal?.aborted; offset += concurrency) {
-				const results = await Promise.all(pendingPlans.slice(offset, offset + concurrency).map((plan) => this.withPlanExecutionClaim(plan.ownerKey, plan.planId, signal, (claimSignal) => this.verifyCandidates([plan.ownerKey], plan.tasks, claimSignal, now))));
-				for (const result of results) if (result) summary = mergeVerificationResults(summary, result);
+				const results = await Promise.all(pendingPlans.slice(offset, offset + concurrency).map(async (plan) => ({ plan, result: await this.withPlanExecutionClaim(plan.ownerKey, plan.planId, signal, (claimSignal) => this.verifyCandidates([plan.ownerKey], plan.tasks, claimSignal, now)) })));
+				for (const { plan, result } of results) if (result) {
+					summary = mergeVerificationResults(summary, result);
+					if (result.accepted || result.rejected) this.enqueueCompletionNoticeIfSettled(plan.ownerKey, plan.planId);
+				}
 			}
 		}
 		return summary;
@@ -80,10 +83,10 @@ export class TaskRecoveryRunner {
 		return { active, tasks };
 	}
 
-	private async executePlans(candidates: TaskRecord[], options: TaskRecoveryRunnerOptions): Promise<TaskRecoveryRunnerResult> {
+	private async executePlans(candidates: TaskRecord[], options: TaskRecoveryRunnerOptions, enqueueCompletionNotice = false): Promise<TaskRecoveryRunnerResult> {
 		const plans = new Map<string, { ownerKey: string; planId: string }>();
 		for (const task of candidates) if (task.planId) plans.set(`${task.ownerKey}\0${task.planId}`, { ownerKey: task.ownerKey, planId: task.planId });
-		const results = (await Promise.all([...plans.values()].map((plan) => this.executeClaimedPlan(plan.ownerKey, plan.planId, options)))).filter((result) => result !== undefined);
+		const results = (await Promise.all([...plans.values()].map((plan) => this.executeClaimedPlan(plan.ownerKey, plan.planId, options, enqueueCompletionNotice)))).filter((result) => result !== undefined);
 		return results.reduce<TaskRecoveryRunnerResult>((summary, result) => ({
 			plans: summary.plans + 1,
 			succeeded: summary.succeeded + result.succeeded,
@@ -119,10 +122,19 @@ export class TaskRecoveryRunner {
 		return summary;
 	}
 
-	private async executeClaimedPlan(ownerKey: string, planId: string, options: TaskRecoveryRunnerOptions): Promise<TaskGraphResult | undefined> {
-		return this.withPlanExecutionClaim(ownerKey, planId, options.signal, (signal) => new TaskGraph(this.ledger).run([ownerKey], planId, this.execute, {
+	private async executeClaimedPlan(ownerKey: string, planId: string, options: TaskRecoveryRunnerOptions, enqueueCompletionNotice: boolean): Promise<TaskGraphResult | undefined> {
+		const result = await this.withPlanExecutionClaim(ownerKey, planId, options.signal, (signal) => new TaskGraph(this.ledger).run([ownerKey], planId, this.execute, {
 			maxConcurrent: options.maxConcurrent, maxCorrectiveAttempts: options.maxCorrectiveAttempts ?? 1, signal, executor: "subagent", canExecute: recoverable, verify: this.verify,
 		}));
+		if (result && enqueueCompletionNotice) this.enqueueCompletionNoticeIfSettled(ownerKey, planId);
+		return result;
+	}
+
+	private enqueueCompletionNoticeIfSettled(ownerKey: string, planId: string): void {
+		const plan = this.ledger.queryTaskPlans({ ownerKeys: [ownerKey], id: planId, limit: 1 })[0];
+		if (!plan || (plan.status !== "succeeded" && plan.status !== "failed" && plan.status !== "cancelled")) return;
+		const unsettled = this.ledger.queryTasks({ ownerKeys: [ownerKey], planIds: [planId], statuses: ["failed"], limit: 100 }).some((task) => task.verificationStatus === "unavailable");
+		if (!unsettled) this.ledger.enqueueTaskPlanCompletionNotice?.(ownerKey, planId);
 	}
 
 	private async withPlanExecutionClaim<T>(ownerKey: string, planId: string, parentSignal: AbortSignal | undefined, execute: (signal: AbortSignal) => Promise<T>): Promise<T | undefined> {

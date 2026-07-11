@@ -52,13 +52,14 @@ export {
 export { ConversationContext, type ConversationContextOptions, type ConversationExchange, type ConversationMemoryPort, type VerifiedRuntimeFacts } from "./conversation-context.ts";
 export { compileLongTermMemorySnapshot, type LongTermMemoryCompiler } from "./personal-memory.ts";
 export { curatedMemoryPrompt } from "./curated-memory.ts";
-export type { TaskCandidateVerificationResolution, TaskDependency, TaskKind, TaskLedger, TaskPlanQuery, TaskPlanRecord, TaskPlanStatus, TaskPlanTransition, TaskQuery, TaskRecord, TaskRecoveryPolicy, TaskRecoveryResult, TaskRunRecord, TaskRunStatus, TaskRunTransition, TaskStatus, TaskTransition, TaskVerificationStatus } from "./task-ledger.ts";
+export type { TaskCandidateVerificationResolution, TaskDependency, TaskKind, TaskLedger, TaskPlanCompletionNotice, TaskPlanQuery, TaskPlanRecord, TaskPlanStatus, TaskPlanTransition, TaskQuery, TaskRecord, TaskRecoveryPolicy, TaskRecoveryResult, TaskRunRecord, TaskRunStatus, TaskRunTransition, TaskStatus, TaskTransition, TaskVerificationStatus } from "./task-ledger.ts";
 export { createTaskLedgerTools } from "./task-ledger-tools.ts";
 export { TaskGraph, type TaskGraphDependencyResult, type TaskGraphExecutionContext, type TaskGraphExecutionResult, type TaskGraphExecutor, type TaskGraphResult, type TaskGraphRunOptions, type TaskGraphVerificationResult, type TaskGraphVerifier, type TaskPlanInput } from "./task-graph.ts";
 export { createTaskOrchestrationTools, type TaskOrchestrationOptions } from "./task-orchestration-tools.ts";
 export { TaskRecoveryRunner, type TaskPlanCancelResult, type TaskPlanRetryResult, type TaskRecoveryRunnerOptions, type TaskRecoveryRunnerResult, type TaskVerificationRetryResult } from "./task-recovery.ts";
 export { TaskRecoveryService, type TaskRecoveryCycleResult, type TaskRecoveryServiceOptions } from "./task-recovery-service.ts";
 export { TaskPlanRuntime } from "./task-plan-runtime.ts";
+export { TaskPlanNoticeDeliveryService, renderTaskPlanCompletionNotice, type TaskPlanNoticeDeliveryOptions, type TaskPlanNoticeDeliveryResult, type TaskPlanNoticeOutbox } from "./task-plan-notice-delivery.ts";
 export { ProfileTaskScheduler, type ProfileTaskSchedulerOptions, type ProfileTaskSchedulerSnapshot } from "./profile-task-scheduler.ts";
 export {
 	SessionCoordinator,
@@ -93,6 +94,7 @@ export { FileInteractionEventJournal, durableEvent, type DurableInteractionEvent
 export { INTERACTION_PROTOCOL_VERSION, InteractionProtocol, parseInteractionProtocolRequest, sameScope, type InteractionProtocolOptions, type InteractionProtocolRequest, type InteractionProtocolResponse, type ProtocolInteractionAction } from "./interaction-protocol.ts";
 export { INTERACTION_COMMANDS, interactionCommandHelp, parseInteractionCommand, type InteractionCommand, type InteractionCommandDefinition, type InteractionDetailsDisplay } from "./interaction-commands.ts";
 export type { DeliveryPort, DeliveryTarget, MediaArtifact } from "./delivery-port.ts";
+export { sanitizeDisplayText } from "./display-text.ts";
 export type { ExecutionBackend, ExecutionPolicy, ExecutionPort, ExecutionRequest, ExecutionResult, SandboxMode, WorkspaceAccess } from "./execution.ts";
 export { resolveExecutionBackend } from "./execution.ts";
 export { DockerExecutionPort, type DockerExecutionOptions } from "./docker-execution.ts";

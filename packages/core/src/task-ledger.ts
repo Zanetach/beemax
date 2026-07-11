@@ -1,4 +1,5 @@
 import type { AgentScope } from "./agent-scope.ts";
+import type { DeliveryTarget } from "./delivery-port.ts";
 
 export type TaskKind = "objective" | "delegated" | "automation";
 export type TaskStatus = "pending" | "running" | "succeeded" | "failed" | "cancelled";
@@ -21,6 +22,12 @@ export interface TaskPlanRecord {
 	createdAt: number;
 	startedAt?: number;
 	finishedAt?: number;
+}
+export interface TaskPlanCompletionNotice {
+	id: string; planId: string; ownerKey: string; target: DeliveryTarget;
+	planStatus: Extract<TaskPlanStatus, "succeeded" | "failed" | "cancelled">;
+	title: string; taskCount: number; succeeded: number; failed: number; cancelled: number;
+	status: "queued" | "delivering" | "delivered"; claimToken?: string; attempts: number; nextAttemptAt: number; createdAt: number;
 }
 export type TaskPlanTransition = Pick<TaskPlanRecord, "status" | "taskCount" | "succeeded" | "failed" | "cancelled" | "verified" | "correctiveAttempts"> & Partial<Pick<TaskPlanRecord, "startedAt" | "finishedAt">>;
 export interface TaskPlanQuery { ownerKeys: string[]; id?: string; statuses?: TaskPlanStatus[]; limit?: number; }
@@ -100,6 +107,10 @@ export interface TaskLedger {
 	deferCandidateVerification?(ownerKeys: string[], taskId: string, now?: number): boolean;
 	resolveCandidateVerification?(ownerKeys: string[], taskId: string, resolution: TaskCandidateVerificationResolution, now?: number): boolean;
 	prepareTaskCorrections?(maxCorrectiveAttempts: number, now?: number): number;
+	enqueueTaskPlanCompletionNotice?(ownerKey: string, planId: string, now?: number): boolean;
+	claimTaskPlanCompletionNotices?(platform: string, now?: number, limit?: number, leaseMs?: number): TaskPlanCompletionNotice[];
+	completeTaskPlanCompletionNotice?(id: string, claimToken: string): boolean;
+	failTaskPlanCompletionNotice?(id: string, claimToken: string, now?: number): boolean;
 	renewTaskRunLease?(id: string, leaseExpiresAt: number): boolean;
 	prepareTaskPlanRetry(ownerKeys: string[], planId: string, maxCorrectiveAttempts?: number): number;
 	cancelTaskPlan(ownerKeys: string[], planId: string, now?: number): number;

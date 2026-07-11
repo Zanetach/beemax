@@ -353,6 +353,10 @@ rejects a result, BeeMax may automatically run a feedback-aware Corrective Attem
 only when safe-retry authority is complete and the durable correction budget remains.
 Use `/tasks plans` to discover owned Plans and `/tasks show <plan-id>` to inspect
 bounded node results, Verification evidence, and errors without invoking the model.
+When background recovery reaches a settled Terminal Outcome, BeeMax writes a
+result-free Completion Notice to a durable Outbox and delivers it to the originating
+CLI or Gateway with a fenced lease and bounded retry. The notice links back to
+`/tasks show` instead of copying Task results into the delivery queue.
 Child Pi
 transcripts remain in the profile session directory for audit.
 

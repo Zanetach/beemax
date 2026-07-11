@@ -24,6 +24,10 @@ _Avoid_: Prompt outline, checklist, execution log
 The durable aggregate lifecycle and quality summary of a Task Plan, derived from all Tasks in that Plan.
 _Avoid_: Task Graph result, UI summary, final answer
 
+**Task Plan Completion Notice**:
+A durable owner-directed announcement that a background Task Plan reached a Terminal Outcome and its details are available; it is not the outcome itself and contains no Task result payload.
+_Avoid_: Task result, chat reply, delivery attempt
+
 **Terminal Outcome**:
 The first persisted succeeded, failed, or cancelled state of a Task Plan, Task, or Task Run; later executors may observe it but cannot replace it, while an explicit safe Retry or Verification Retry may create a new controlled outcome.
 _Avoid_: Latest status, worker report, retry state

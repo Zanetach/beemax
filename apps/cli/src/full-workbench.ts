@@ -32,6 +32,7 @@ export class FullWorkbench {
 	}
 
 	user(text: string): void { this.pushTranscript(`You  ${text}`); }
+	notice(text: string): void { this.pushTranscript(`System  ${text}`); }
 	answer(text: string): void {
 		const last = this.transcript.at(-1);
 		if (last?.startsWith("BeeMax  ")) this.transcript[this.transcript.length - 1] = `${last}${text}`;

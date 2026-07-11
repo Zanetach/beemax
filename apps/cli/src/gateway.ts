@@ -8,7 +8,7 @@
  */
 
 import { AutomationStore } from "@beemax/automation";
-import { AutomationScheduler, BeeMaxAgentRuntime, HeartbeatRunner, ProfileTaskScheduler, SubagentManager, TaskPlanRuntime, TaskRecoveryRunner, TaskRecoveryService, ToolApprovalBroker, conversationKey, createSubagentTools, createTaskLedgerTools, createTaskOrchestrationTools, type SubagentTask, type TaskGraphExecutionContext, type TaskGraphVerifier, type TaskRecord } from "@beemax/core";
+import { AutomationScheduler, BeeMaxAgentRuntime, HeartbeatRunner, ProfileTaskScheduler, SubagentManager, TaskPlanNoticeDeliveryService, TaskPlanRuntime, TaskRecoveryRunner, TaskRecoveryService, ToolApprovalBroker, conversationKey, createSubagentTools, createTaskLedgerTools, createTaskOrchestrationTools, type SubagentTask, type TaskGraphExecutionContext, type TaskGraphVerifier, type TaskRecord } from "@beemax/core";
 import {
 	Dispatcher,
 	FeishuAdapter,
@@ -129,6 +129,13 @@ export async function runGateway(config: BeeMaxConfig): Promise<void> {
 	});
 	recoveryService.start();
 	startupCleanup.push(() => recoveryService.stop(new Error("Gateway shutting down")));
+	const taskPlanNotices = new TaskPlanNoticeDeliveryService(memory, deliveryPort, {
+		platform: "feishu",
+		onCycle: (result) => { if (result.claimed) console.info(`[beemax] Task Plan notices: delivered=${result.delivered}; failed=${result.failed}`); },
+		onError: (error) => console.error(`[beemax] Task Plan notice delivery failed: ${error instanceof Error ? error.message : String(error)}`),
+	});
+	taskPlanNotices.start();
+	startupCleanup.push(() => taskPlanNotices.stop());
 	const subagents = config.subagents.enabled ? new SubagentManager({
 		maxConcurrent: config.subagents.maxConcurrent,
 		maxChildrenPerOwner: config.subagents.maxChildrenPerOwner,

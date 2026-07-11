@@ -827,7 +827,7 @@ async function runChat(config: ReturnType<typeof loadConfig>, requestedMode: { f
 	const presentationMode: ChatPresentationMode = resolveChatPresentationMode({
 		...requestedMode, isInputTty: process.stdin.isTTY === true, isOutputTty: process.stdout.isTTY === true, term: process.env.TERM,
 	});
-	const { conversationKey, createSubagentTools, createTaskLedgerTools, createTaskOrchestrationTools, ProfileTaskScheduler, SubagentManager, TaskPlanRuntime, TaskRecoveryRunner, TaskRecoveryService } = await import("@beemax/core");
+	const { conversationKey, createSubagentTools, createTaskLedgerTools, createTaskOrchestrationTools, ProfileTaskScheduler, SubagentManager, TaskPlanNoticeDeliveryService, TaskPlanRuntime, TaskRecoveryRunner, TaskRecoveryService } = await import("@beemax/core");
 	const { loadMcpConfig, McpManager } = await import("@beemax/mcp-capability");
 	const { buildAgentFactory } = await import("./agent-factory.ts");
 	const { MemoryStore } = await import("@beemax/memory");
@@ -932,6 +932,7 @@ async function runChat(config: ReturnType<typeof loadConfig>, requestedMode: { f
 	let fullScreenActive = false;
 	let fullInput: FullWorkbenchInput | undefined;
 	let subagentRefresh: ReturnType<typeof setInterval> | undefined;
+	let taskPlanNotices: { start(): void; stop(): Promise<void> } | undefined;
 
 	try {
 		let reasoningDisplay = config.agent.reasoningDisplay;
@@ -955,6 +956,11 @@ async function runChat(config: ReturnType<typeof loadConfig>, requestedMode: { f
 		const { createInterface } = await import("node:readline/promises");
 		const prompt = () => presentationMode === "plain" ? "beemax> " : presentationMode === "compact" ? `beemax [${config.model.model}]> ` : `beemax [${config.profile} · ${config.model.provider}/${config.model.model} · ${source.threadId ?? "default"}]> `;
 		const writePrompt = () => { if (!closed && !workbench) process.stdout.write(prompt()); };
+		taskPlanNotices = new TaskPlanNoticeDeliveryService(memory, { sendText: async (target, text) => {
+			if (target.platform !== "cli") throw new Error(`Cannot deliver ${target.platform} Task Plan notice through local Chat`);
+			if (workbench) { workbench.notice(text); fullInput?.requestRender(); }
+			else { process.stdout.write(`\n${text}\n`); writePrompt(); }
+		} }, { platform: "cli" });
 		let closeInput = () => { closed = true; };
 		const usage = async () => {
 			const current = await runtime.usage(source);
@@ -1010,6 +1016,7 @@ async function runChat(config: ReturnType<typeof loadConfig>, requestedMode: { f
 			workbench = new FullWorkbench({ profile: config.profile, model: `${config.model.provider}/${config.model.model}`, session: source.threadId ?? "default", details: detailsDisplay });
 			process.stdout.write(fullScreenEnter(""));
 		}
+		taskPlanNotices.start();
 		const runTurn = async (text: string, turnSource: import("@beemax/gateway").SessionSource) => {
 			workbench?.user(text);
 			let streamed = "";
@@ -1271,6 +1278,7 @@ async function runChat(config: ReturnType<typeof loadConfig>, requestedMode: { f
 			await new Promise<void>((resolve) => rl.once("close", resolve));
 		}
 	} finally {
+		await taskPlanNotices?.stop();
 		await recoveryService.stop(new Error("Chat shutting down"));
 		if (subagentRefresh) clearInterval(subagentRefresh);
 		fullInput?.stop();

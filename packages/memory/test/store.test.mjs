@@ -241,13 +241,14 @@ test("due Verification Retry evaluates retained Candidate Results without replay
 	const store = new MemoryStore(join(root, "memory.db"));
 	try {
 		const graph = new TaskGraph(store);
-		graph.createPlan({ id: "due-verification-plan", ownerKey: "cli:local:local", tasks: [{ id: "due-verification-task", title: "Verify later", acceptanceCriteria: "Passes an independent check" }] }, 10);
+		graph.createPlan({ id: "due-verification-plan", ownerKey: "cli:local:local", tasks: [{ id: "due-verification-task", title: "Verify later", acceptanceCriteria: "Passes an independent check", executionScope: { platform: "cli", chatId: "local", chatType: "dm", userId: "local" } }] }, 10);
 		await graph.run(["cli:local:local"], "due-verification-plan", async () => ({ output: "candidate" }), { verify: async () => { throw new Error("verifier offline"); } });
 		let executions = 0;
 		const runner = new TaskRecoveryRunner(store, async () => { executions++; return { output: "replayed" }; }, undefined, async (_task, result) => ({ accepted: result.output === "candidate", evidence: "candidate checked later" }));
 		assert.deepEqual(await runner.reverifyDue(Date.now() + 24 * 60 * 60_000), { attempted: 1, accepted: 1, rejected: 0, unavailable: 0 });
 		assert.equal(executions, 0);
 		assert.equal(store.queryTasks({ ownerKeys: ["cli:local:local"], id: "due-verification-task" })[0].result, "candidate");
+		assert.deepEqual(store.claimTaskPlanCompletionNotices("cli", Date.now() + 24 * 60 * 60_000, 10).map((notice) => notice.planId), ["due-verification-plan"]);
 	} finally { store.close(); rmSync(root, { recursive: true, force: true }); }
 });
 
@@ -345,6 +346,8 @@ test("one recovery cycle automatically corrects a rejected Candidate Result with
 		assert.deepEqual(contexts.map(({ attempt, verificationFeedback, previousResult }) => ({ attempt, verificationFeedback, previousResult })), [{ attempt: 2, verificationFeedback: "Add a primary source", previousResult: "" }]);
 		const task = store.queryTasks({ ownerKeys: ["cli:local:local"], id: "automatic-correction-task" })[0];
 		assert.deepEqual({ status: task.status, result: task.result, correctiveAttempts: task.correctiveAttempts }, { status: "succeeded", result: "supported [source]", correctiveAttempts: 1 });
+		const notices = store.claimTaskPlanCompletionNotices("cli", Date.now(), 10, 1_000);
+		assert.deepEqual(notices.map(({ planId, planStatus, target }) => ({ planId, planStatus, target })), [{ planId: "automatic-correction-plan", planStatus: "succeeded", target: { platform: "cli", chatId: "local", userId: "local" } }]);
 	} finally { store.close(); rmSync(root, { recursive: true, force: true }); }
 });
 
@@ -387,6 +390,33 @@ test("automatic correction never executes a rejected Task without complete safe-
 		assert.deepEqual(cycle.recovery, { plans: 0, succeeded: 0, failed: 0, cancelled: 0, blocked: [] });
 		assert.equal(executions, 0);
 		assert.equal(store.queryTasks({ ownerKeys: ["cli:local:local"], id: "unsafe-correction-task" })[0].status, "failed");
+	} finally { store.close(); rmSync(root, { recursive: true, force: true }); }
+});
+
+test("Task Plan Completion Notice Outbox is idempotent and reclaims an expired delivery lease", async () => {
+	const root = mkdtempSync(join(tmpdir(), "beemax-plan-notice-outbox-"));
+	const store = new MemoryStore(join(root, "memory.db"));
+	try {
+		const scope = { platform: "feishu", chatId: "chat", chatType: "dm", userId: "user", threadId: "thread" };
+		const graph = new TaskGraph(store);
+		graph.createPlan({ id: "notice-plan", ownerKey: "feishu:chat:user", title: "Background report", tasks: [{ id: "notice-task", title: "Report", executionScope: scope }] }, 10);
+		await graph.run(["feishu:chat:user"], "notice-plan", async () => ({ output: "private result" }));
+		assert.equal(store.enqueueTaskPlanCompletionNotice("feishu:chat:user", "notice-plan", 100), true);
+		assert.equal(store.enqueueTaskPlanCompletionNotice("feishu:chat:user", "notice-plan", 101), false);
+		assert.deepEqual(store.claimTaskPlanCompletionNotices("cli", 100, 10, 50), []);
+		const first = store.claimTaskPlanCompletionNotices("feishu", 100, 10, 50);
+		assert.equal(first.length, 1);
+		assert.deepEqual({ planId: first[0].planId, planStatus: first[0].planStatus, title: first[0].title, target: first[0].target, attempts: first[0].attempts }, {
+			planId: "notice-plan", planStatus: "succeeded", title: "Background report", target: { platform: "feishu", chatId: "chat", userId: "user", threadId: "thread" }, attempts: 1,
+		});
+		assert.equal(JSON.stringify(first[0]).includes("private result"), false);
+		assert.deepEqual(store.claimTaskPlanCompletionNotices("feishu", 149, 10, 50), []);
+		const reclaimed = store.claimTaskPlanCompletionNotices("feishu", 150, 10, 50);
+		assert.equal(reclaimed.length, 1);
+		assert.notEqual(reclaimed[0].claimToken, first[0].claimToken);
+		assert.equal(store.failTaskPlanCompletionNotice(first[0].id, first[0].claimToken, 150), false);
+		assert.equal(store.completeTaskPlanCompletionNotice(reclaimed[0].id, reclaimed[0].claimToken), true);
+		assert.deepEqual(store.claimTaskPlanCompletionNotices("feishu", 1_000, 10, 50), []);
 	} finally { store.close(); rmSync(root, { recursive: true, force: true }); }
 });
 

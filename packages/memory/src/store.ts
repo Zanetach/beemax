@@ -15,7 +15,7 @@ import Database from "better-sqlite3";
 import type { Database as DatabaseType } from "better-sqlite3";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
-import type { TaskCandidateVerificationResolution, TaskDependency, TaskPlanQuery, TaskPlanRecord, TaskPlanTransition, TaskQuery, TaskRecord as RuntimeTaskRecord, TaskRunRecord, TaskRunTransition, TaskTransition } from "@beemax/core";
+import type { TaskCandidateVerificationResolution, TaskDependency, TaskPlanCompletionNotice, TaskPlanQuery, TaskPlanRecord, TaskPlanTransition, TaskQuery, TaskRecord as RuntimeTaskRecord, TaskRunRecord, TaskRunTransition, TaskTransition } from "@beemax/core";
 
 export const MEMORY_CLAIM_KINDS = ["preference", "fact", "decision", "goal", "project", "relationship", "workflow"] as const;
 export type MemoryClaimKind = typeof MEMORY_CLAIM_KINDS[number];
@@ -212,6 +212,16 @@ export class MemoryStore {
 				lease_expires_at INTEGER NOT NULL
 			);
 			CREATE INDEX IF NOT EXISTS idx_task_plan_execution_claims_expiry ON task_plan_execution_claims(lease_expires_at);
+			CREATE TABLE IF NOT EXISTS task_plan_completion_notices (
+				id TEXT PRIMARY KEY, plan_id TEXT NOT NULL, owner_key TEXT NOT NULL,
+				platform TEXT NOT NULL, chat_id TEXT NOT NULL, user_id TEXT, thread_id TEXT,
+				plan_status TEXT NOT NULL CHECK (plan_status IN ('succeeded', 'failed', 'cancelled')),
+				title TEXT NOT NULL, task_count INTEGER NOT NULL, succeeded INTEGER NOT NULL,
+				failed INTEGER NOT NULL, cancelled INTEGER NOT NULL,
+				status TEXT NOT NULL CHECK (status IN ('queued', 'delivering', 'delivered')), claim_token TEXT,
+				attempts INTEGER NOT NULL DEFAULT 0, next_attempt_at INTEGER NOT NULL, created_at INTEGER NOT NULL
+			);
+			CREATE INDEX IF NOT EXISTS idx_task_plan_completion_notices_due ON task_plan_completion_notices(status, next_attempt_at);
 			CREATE TABLE IF NOT EXISTS tasks (
 				id TEXT PRIMARY KEY,
 				owner_key TEXT NOT NULL,
@@ -333,6 +343,7 @@ export class MemoryStore {
 		this.addColumnIfMissing("tasks", "corrective_attempts", "INTEGER NOT NULL DEFAULT 0");
 		this.addColumnIfMissing("tasks", "updated_at", "INTEGER NOT NULL DEFAULT 0");
 		this.addColumnIfMissing("task_runs", "lease_expires_at", "INTEGER");
+		this.addColumnIfMissing("task_plan_completion_notices", "claim_token", "TEXT");
 		this.db.exec("CREATE INDEX IF NOT EXISTS idx_tasks_verification_due ON tasks(verification_outcome, verification_retry_at)");
 		this.backfillTaskPlans();
 		this.addColumnIfMissing("memory_claims", "superseded_by", "TEXT REFERENCES memory_claims(id)");
@@ -871,6 +882,42 @@ export class MemoryStore {
 		})();
 	}
 
+	enqueueTaskPlanCompletionNotice(ownerKey: string, planId: string, now = Date.now()): boolean {
+		if (!ownerKey.trim() || !planId.trim()) return false;
+		const plan = this.db.prepare(`SELECT * FROM task_plans WHERE id = ? AND owner_key = ? AND status IN ('succeeded', 'failed', 'cancelled')`).get(planId, ownerKey) as TaskPlanRow | undefined;
+		if (!plan) return false;
+		const scopeRow = this.db.prepare("SELECT execution_scope FROM tasks WHERE plan_id = ? AND owner_key = ? AND execution_scope IS NOT NULL ORDER BY created_at LIMIT 1").get(planId, ownerKey) as { execution_scope: string } | undefined;
+		const target = parseExecutionScope(scopeRow?.execution_scope ?? null);
+		if (!target?.platform || !target.chatId) return false;
+		const id = `${plan.id}:${plan.finished_at ?? now}:${plan.status}`;
+		return this.db.prepare(`INSERT OR IGNORE INTO task_plan_completion_notices
+			(id, plan_id, owner_key, platform, chat_id, user_id, thread_id, plan_status, title, task_count, succeeded, failed, cancelled, status, attempts, next_attempt_at, created_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', 0, ?, ?)`)
+			.run(id, plan.id, plan.owner_key, target.platform, target.chatId, target.userId ?? null, target.threadId ?? null, plan.status, plan.title, plan.task_count, plan.succeeded, plan.failed, plan.cancelled, now, now).changes === 1;
+	}
+
+	claimTaskPlanCompletionNotices(platform: string, now = Date.now(), limit = 10, leaseMs = 5 * 60_000): TaskPlanCompletionNotice[] {
+		if (!platform.trim()) return [];
+		return this.db.transaction(() => {
+			const rows = this.db.prepare(`SELECT id FROM task_plan_completion_notices
+				WHERE platform = ? AND (status = 'queued' OR status = 'delivering') AND next_attempt_at <= ?
+				ORDER BY next_attempt_at, created_at LIMIT ?`).all(platform, now, limitOf(limit, 10)) as Array<{ id: string }>;
+			for (const row of rows) this.db.prepare("UPDATE task_plan_completion_notices SET status = 'delivering', claim_token = ?, attempts = attempts + 1, next_attempt_at = ? WHERE id = ?").run(crypto.randomUUID(), now + Math.max(1, leaseMs), row.id);
+			return rows.map((row) => mapTaskPlanCompletionNotice(this.db.prepare("SELECT * FROM task_plan_completion_notices WHERE id = ?").get(row.id) as TaskPlanCompletionNoticeRow));
+		})();
+	}
+
+	completeTaskPlanCompletionNotice(id: string, claimToken: string): boolean {
+		return this.db.prepare("UPDATE task_plan_completion_notices SET status = 'delivered', claim_token = NULL WHERE id = ? AND status = 'delivering' AND claim_token = ?").run(id, claimToken).changes === 1;
+	}
+
+	failTaskPlanCompletionNotice(id: string, claimToken: string, now = Date.now()): boolean {
+		const row = this.db.prepare("SELECT attempts FROM task_plan_completion_notices WHERE id = ? AND status = 'delivering' AND claim_token = ?").get(id, claimToken) as { attempts: number } | undefined;
+		if (!row) return false;
+		const delay = Math.min(60 * 60_000, 30_000 * (2 ** Math.min(Math.max(0, row.attempts - 1), 7)));
+		return this.db.prepare("UPDATE task_plan_completion_notices SET status = 'queued', claim_token = NULL, next_attempt_at = ? WHERE id = ? AND status = 'delivering' AND claim_token = ?").run(now + delay, id, claimToken).changes === 1;
+	}
+
 	prepareTaskPlanRetry(ownerKeys: string[], planId: string, maxCorrectiveAttempts = 1): number {
 		if (!ownerKeys.length || !planId.trim()) return 0;
 		const budget = Math.max(0, Math.min(Math.trunc(maxCorrectiveAttempts), 2));
@@ -1048,6 +1095,12 @@ interface TaskPlanRow {
 	created_at: number; started_at: number | null; finished_at: number | null;
 }
 
+interface TaskPlanCompletionNoticeRow {
+	id: string; plan_id: string; owner_key: string; platform: string; chat_id: string; user_id: string | null; thread_id: string | null;
+	plan_status: TaskPlanCompletionNotice["planStatus"]; title: string; task_count: number; succeeded: number; failed: number; cancelled: number;
+	status: TaskPlanCompletionNotice["status"]; claim_token: string | null; attempts: number; next_attempt_at: number; created_at: number;
+}
+
 function mapRow(row: MemoryRow): MemoryRecord {
 	return {
 		id: row.id,
@@ -1107,6 +1160,15 @@ function mapRuntimeTask(row: RuntimeTaskRow): RuntimeTaskRecord {
 		...(row.result === null ? {} : { result: row.result }),
 		...(row.candidate_result === null ? {} : { candidateResult: row.candidate_result }),
 		...(row.error === null ? {} : { error: row.error }),
+	};
+}
+
+function mapTaskPlanCompletionNotice(row: TaskPlanCompletionNoticeRow): TaskPlanCompletionNotice {
+	return {
+		id: row.id, planId: row.plan_id, ownerKey: row.owner_key,
+		target: { platform: row.platform, chatId: row.chat_id, ...(row.user_id ? { userId: row.user_id } : {}), ...(row.thread_id ? { threadId: row.thread_id } : {}) },
+		planStatus: row.plan_status, title: row.title, taskCount: row.task_count, succeeded: row.succeeded, failed: row.failed, cancelled: row.cancelled,
+		status: row.status, ...(row.claim_token ? { claimToken: row.claim_token } : {}), attempts: row.attempts, nextAttemptAt: row.next_attempt_at, createdAt: row.created_at,
 	};
 }
 

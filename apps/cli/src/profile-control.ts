@@ -1,4 +1,4 @@
-import { parseInteractionCommand, type AgentControlHandler, type InteractionEventAdapter, type ProfileTaskSchedulerSnapshot, type TaskPlanRecord, type TaskPlanRetryResult, type TaskRecord, type TaskVerificationRetryResult } from "@beemax/core";
+import { parseInteractionCommand, sanitizeDisplayText, type AgentControlHandler, type InteractionEventAdapter, type ProfileTaskSchedulerSnapshot, type TaskPlanRecord, type TaskPlanRetryResult, type TaskRecord, type TaskVerificationRetryResult } from "@beemax/core";
 import type { SessionSource } from "@beemax/gateway";
 import type { BeeMaxAgentRuntime } from "@beemax/core";
 import type { BeeMaxConfig } from "./config.ts";
@@ -26,33 +26,28 @@ export function renderTaskRecoveryStatus(status?: TaskRecoveryStatus): string {
 export function renderTaskPlans(plans: readonly TaskPlanRecord[]): string {
 	return plans.map((plan) => {
 		const completed = plan.succeeded + plan.failed + plan.cancelled;
-		return `${boundedTaskText(plan.id, 128)}  [${plan.status}]  ${boundedTaskText(plan.title, 120)} · progress=${completed}/${plan.taskCount} · verified=${plan.verified} · corrections=${plan.correctiveAttempts}`;
+		return `${sanitizeDisplayText(plan.id, 128)}  [${plan.status}]  ${sanitizeDisplayText(plan.title, 120)} · progress=${completed}/${plan.taskCount} · verified=${plan.verified} · corrections=${plan.correctiveAttempts}`;
 	}).join("\n") || "No durable Task Plans are visible to this conversation.";
 }
 
 export function renderTasks(tasks: readonly TaskRecord[]): string {
 	return tasks.length ? tasks.map((task) => {
 		const quality = task.verificationStatus ? ` [quality:${task.verificationStatus === "accepted" ? "verified" : task.verificationStatus}${task.correctiveAttempts ? ` corrections=${task.correctiveAttempts}` : ""}${task.verificationAttempts ? ` verify-attempts=${task.verificationAttempts}` : ""}${task.verificationRetryAt ? ` retry=${new Date(task.verificationRetryAt).toISOString()}` : ""}]` : "";
-		return `${boundedTaskText(task.id, 160)}  [${task.kind}/${task.status}]${task.planId ? ` [plan:${boundedTaskText(task.planId, 128)}]` : ""}${quality}  ${boundedTaskText(task.title, 120)}`;
+		return `${sanitizeDisplayText(task.id, 160)}  [${task.kind}/${task.status}]${task.planId ? ` [plan:${sanitizeDisplayText(task.planId, 128)}]` : ""}${quality}  ${sanitizeDisplayText(task.title, 120)}`;
 	}).join("\n") : "No durable Tasks are visible to this conversation.";
 }
 
 export function renderTaskPlanDetails(plan: TaskPlanRecord, tasks: readonly TaskRecord[]): string {
 	const details = tasks.map((task) => [
 		renderTasks([task]),
-		task.result !== undefined ? `  Result: ${boundedTaskText(task.result, 1_000)}` : undefined,
-		task.evidence !== undefined ? `  Evidence: ${boundedTaskText(task.evidence, 500)}` : undefined,
-		task.error !== undefined ? `  Error: ${boundedTaskText(task.error, 500)}` : undefined,
+		task.result !== undefined ? `  Result: ${sanitizeDisplayText(task.result, 1_000)}` : undefined,
+		task.evidence !== undefined ? `  Evidence: ${sanitizeDisplayText(task.evidence, 500)}` : undefined,
+		task.error !== undefined ? `  Error: ${sanitizeDisplayText(task.error, 500)}` : undefined,
 	].filter((line): line is string => Boolean(line)).join("\n")).join("\n");
 	return `${renderTaskPlans([plan])}${details ? `\n${details}` : ""}`;
 }
 
-export function renderTaskPlanNotFound(planId: string): string { return `Task Plan not found or not visible: ${boundedTaskText(planId, 128)}.`; }
-
-function boundedTaskText(value: string, limit: number): string {
-	const safe = value.replace(/\u001b\[[0-?]*[ -/]*[@-~]/g, "").replace(/[\u0000-\u001f\u007f-\u009f]/g, " ").replace(/\s+/g, " ").trim();
-	return safe.length > limit ? `${safe.slice(0, limit)}…` : safe;
-}
+export function renderTaskPlanNotFound(planId: string): string { return `Task Plan not found or not visible: ${sanitizeDisplayText(planId, 128)}.`; }
 
 export function renderTaskPlanRetryResult(planId: string, result: TaskPlanRetryResult): string {
 	const verification = result.verification;
