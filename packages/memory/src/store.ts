@@ -228,6 +228,7 @@ export class MemoryStore {
 				evidence TEXT,
 				verification_status TEXT CHECK (verification_status IN ('pending', 'accepted', 'rejected')),
 				verification_outcome TEXT CHECK (verification_outcome IN ('pending', 'accepted', 'rejected', 'unavailable')),
+				verification_feedback TEXT,
 				verification_attempts INTEGER NOT NULL DEFAULT 0,
 				verification_retry_at INTEGER,
 				corrective_attempts INTEGER NOT NULL DEFAULT 0,
@@ -325,6 +326,7 @@ export class MemoryStore {
 		this.addColumnIfMissing("tasks", "plan_id", "TEXT");
 		this.addColumnIfMissing("tasks", "verification_status", "TEXT");
 		this.addColumnIfMissing("tasks", "verification_outcome", "TEXT");
+		this.addColumnIfMissing("tasks", "verification_feedback", "TEXT");
 		this.addColumnIfMissing("tasks", "verification_attempts", "INTEGER NOT NULL DEFAULT 0");
 		this.addColumnIfMissing("tasks", "verification_retry_at", "INTEGER");
 		this.addColumnIfMissing("tasks", "candidate_result", "TEXT");
@@ -654,9 +656,9 @@ export class MemoryStore {
 	}
 
 	record(task: RuntimeTaskRecord): void {
-		this.db.prepare(`INSERT INTO tasks (id, owner_key, kind, title, description, acceptance_criteria, recovery_policy, idempotency_key, execution_scope, status, parent_id, plan_id, evidence, verification_outcome, corrective_attempts, created_at, started_at, finished_at, result, candidate_result, error, updated_at)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-			.run(task.id, task.ownerKey, task.kind, task.title, task.description ?? null, task.acceptanceCriteria ?? null, task.recoveryPolicy ?? "never", task.idempotencyKey ?? null, task.executionScope ? JSON.stringify(task.executionScope) : null, task.status, task.parentId ?? null, task.planId ?? null, task.evidence ?? null, task.verificationStatus ?? null, task.correctiveAttempts ?? 0, task.createdAt, task.startedAt ?? null, task.finishedAt ?? null, task.result ?? null, task.candidateResult ?? null, task.error ?? null, task.createdAt);
+		this.db.prepare(`INSERT INTO tasks (id, owner_key, kind, title, description, acceptance_criteria, recovery_policy, idempotency_key, execution_scope, status, parent_id, plan_id, evidence, verification_outcome, verification_feedback, corrective_attempts, created_at, started_at, finished_at, result, candidate_result, error, updated_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+			.run(task.id, task.ownerKey, task.kind, task.title, task.description ?? null, task.acceptanceCriteria ?? null, task.recoveryPolicy ?? "never", task.idempotencyKey ?? null, task.executionScope ? JSON.stringify(task.executionScope) : null, task.status, task.parentId ?? null, task.planId ?? null, task.evidence ?? null, task.verificationStatus ?? null, task.verificationFeedback ?? null, task.correctiveAttempts ?? 0, task.createdAt, task.startedAt ?? null, task.finishedAt ?? null, task.result ?? null, task.candidateResult ?? null, task.error ?? null, task.createdAt);
 	}
 
 	transition(id: string, change: TaskTransition): boolean {
@@ -668,9 +670,10 @@ export class MemoryStore {
 			error = CASE WHEN ? IN ('running', 'succeeded') THEN NULL ELSE COALESCE(?, error) END,
 			evidence = COALESCE(?, evidence),
 			verification_outcome = COALESCE(?, verification_outcome),
+			verification_feedback = CASE WHEN ? = 'succeeded' THEN NULL ELSE COALESCE(?, verification_feedback) END,
 			corrective_attempts = COALESCE(?, corrective_attempts),
 			updated_at = ? WHERE id = ? AND ((? = 'pending' AND status = 'running') OR (? = 'running' AND status = 'pending') OR (? IN ('succeeded', 'failed', 'cancelled') AND status IN ('pending', 'running')))`)
-			.run(change.status, change.status, change.startedAt ?? null, change.status, change.finishedAt ?? null, change.status, change.result ?? null, change.status, change.candidateResult ?? null, change.status, change.error ?? null, change.evidence ?? null, change.verificationStatus ?? null, change.correctiveAttempts ?? null, Date.now(), id, change.status, change.status, change.status);
+			.run(change.status, change.status, change.startedAt ?? null, change.status, change.finishedAt ?? null, change.status, change.result ?? null, change.status, change.candidateResult ?? null, change.status, change.error ?? null, change.evidence ?? null, change.verificationStatus ?? null, change.status, change.verificationFeedback ?? null, change.correctiveAttempts ?? null, Date.now(), id, change.status, change.status, change.status);
 		return result.changes === 1;
 	}
 
@@ -839,10 +842,11 @@ export class MemoryStore {
 			if (!row) return false;
 			const changed = resolution.accepted
 				? this.db.prepare(`UPDATE tasks SET status = 'succeeded', result = candidate_result, candidate_result = NULL, evidence = COALESCE(?, evidence),
-					verification_outcome = 'accepted', verification_retry_at = NULL, error = NULL, finished_at = ?, updated_at = ?
+					verification_outcome = 'accepted', verification_feedback = NULL, verification_retry_at = NULL, error = NULL, finished_at = ?, updated_at = ?
 					WHERE id = ? AND status = 'failed' AND verification_outcome = 'unavailable' AND candidate_result IS NOT NULL`).run(resolution.evidence ?? null, now, now, taskId).changes
-				: this.db.prepare(`UPDATE tasks SET verification_outcome = 'rejected', verification_retry_at = NULL, error = ?, updated_at = ?
-					WHERE id = ? AND status = 'failed' AND verification_outcome = 'unavailable' AND candidate_result IS NOT NULL`).run(`Task verification rejected: ${resolution.feedback}`.slice(0, 5_000), now, taskId).changes;
+				: this.db.prepare(`UPDATE tasks SET verification_outcome = 'rejected', verification_feedback = ?, verification_retry_at = NULL, error = ?, updated_at = ?
+					WHERE id = ? AND status = 'failed' AND verification_outcome = 'unavailable' AND candidate_result IS NOT NULL`)
+					.run(resolution.feedback.slice(0, 5_000), `Task verification rejected: ${resolution.feedback}`.slice(0, 5_000), now, taskId).changes;
 			if (changed && row.plan_id) this.syncTaskPlanAfterCandidateVerification(row.plan_id, now);
 			return changed === 1;
 		})();
@@ -850,7 +854,7 @@ export class MemoryStore {
 
 	prepareTaskPlanRetry(ownerKeys: string[], planId: string): number {
 		if (!ownerKeys.length || !planId.trim()) return 0;
-		const changed = this.db.prepare(`UPDATE tasks SET status = 'pending', started_at = NULL, finished_at = NULL, result = NULL, candidate_result = NULL, error = 'Manual Task Plan retry requested', updated_at = ?
+		const changed = this.db.prepare(`UPDATE tasks SET status = 'pending', started_at = NULL, finished_at = NULL, result = NULL, candidate_result = CASE WHEN verification_outcome = 'rejected' THEN candidate_result ELSE NULL END, error = 'Manual Task Plan retry requested', updated_at = ?
 			WHERE owner_key IN (${ownerKeys.map(() => "?").join(", ")}) AND plan_id = ? AND status = 'failed'
 			AND COALESCE(verification_outcome, '') <> 'unavailable'
 			AND recovery_policy = 'safe_retry' AND idempotency_key IS NOT NULL AND execution_scope IS NOT NULL`)
@@ -1009,7 +1013,7 @@ interface EventRow {
 
 interface RuntimeTaskRow {
 	id: string; owner_key: string; kind: RuntimeTaskRecord["kind"]; title: string; description: string | null; acceptance_criteria: string | null; recovery_policy: RuntimeTaskRecord["recoveryPolicy"]; idempotency_key: string | null; execution_scope: string | null; status: RuntimeTaskRecord["status"];
-	parent_id: string | null; plan_id: string | null; evidence: string | null; verification_outcome: RuntimeTaskRecord["verificationStatus"] | null; verification_attempts: number; verification_retry_at: number | null; corrective_attempts: number; created_at: number; started_at: number | null; finished_at: number | null; result: string | null; candidate_result: string | null; error: string | null;
+	parent_id: string | null; plan_id: string | null; evidence: string | null; verification_outcome: RuntimeTaskRecord["verificationStatus"] | null; verification_feedback: string | null; verification_attempts: number; verification_retry_at: number | null; corrective_attempts: number; created_at: number; started_at: number | null; finished_at: number | null; result: string | null; candidate_result: string | null; error: string | null;
 }
 
 interface TaskRunRow {
@@ -1073,6 +1077,7 @@ function mapRuntimeTask(row: RuntimeTaskRow): RuntimeTaskRecord {
 		...(row.plan_id === null ? {} : { planId: row.plan_id }),
 		...(row.evidence === null ? {} : { evidence: row.evidence }),
 		...(row.verification_outcome === null ? {} : { verificationStatus: row.verification_outcome }),
+		...(row.verification_feedback === null ? {} : { verificationFeedback: row.verification_feedback }),
 		...(row.verification_attempts ? { verificationAttempts: row.verification_attempts } : {}),
 		...(row.verification_retry_at === null ? {} : { verificationRetryAt: row.verification_retry_at }),
 		...(row.corrective_attempts ? { correctiveAttempts: row.corrective_attempts } : {}),

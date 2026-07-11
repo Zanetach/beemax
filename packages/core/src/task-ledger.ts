@@ -41,6 +41,7 @@ export interface TaskRecord {
 	planId?: string;
 	evidence?: string;
 	verificationStatus?: TaskVerificationStatus;
+	verificationFeedback?: string;
 	verificationAttempts?: number;
 	verificationRetryAt?: number;
 	correctiveAttempts?: number;
@@ -52,7 +53,7 @@ export interface TaskRecord {
 	error?: string;
 }
 
-export type TaskTransition = Pick<TaskRecord, "status"> & Partial<Pick<TaskRecord, "startedAt" | "finishedAt" | "result" | "candidateResult" | "error" | "evidence" | "verificationStatus" | "correctiveAttempts">>;
+export type TaskTransition = Pick<TaskRecord, "status"> & Partial<Pick<TaskRecord, "startedAt" | "finishedAt" | "result" | "candidateResult" | "error" | "evidence" | "verificationStatus" | "verificationFeedback" | "correctiveAttempts">>;
 
 export type TaskRunStatus = "running" | "succeeded" | "failed" | "cancelled";
 export interface TaskRunRecord {

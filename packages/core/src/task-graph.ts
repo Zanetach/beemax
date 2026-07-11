@@ -128,10 +128,10 @@ export class TaskGraph {
 
 	private async executeTask(task: TaskRecord, dependencies: TaskGraphDependencyResult[], execute: TaskGraphExecutor, options: TaskGraphRunOptions): Promise<"succeeded" | "failed" | "cancelled"> {
 		const taskStartedAt = Date.now();
+		let verificationFeedback = task.verificationStatus === "rejected" ? task.verificationFeedback : undefined;
+		let previousResult = task.verificationStatus === "rejected" ? task.candidateResult : undefined;
 		if (!this.ledger.transition(task.id, { status: "running", startedAt: taskStartedAt, ...(task.acceptanceCriteria ? { verificationStatus: "pending" as const, correctiveAttempts: 0 } : {}) })) return this.persistedOutcome(task, "failed");
 		const maxCorrectiveAttempts = Math.max(0, Math.min(Math.trunc(options.maxCorrectiveAttempts ?? 0), 2));
-		let verificationFeedback: string | undefined;
-		let previousResult: string | undefined;
 		for (let attempt = 1; attempt <= maxCorrectiveAttempts + 1; attempt++) {
 			const startedAt = Date.now();
 			if (attempt > 1 && !this.ledger.transition(task.id, { status: "running", startedAt, verificationStatus: "pending", correctiveAttempts: attempt - 1 })) return this.persistedOutcome(task, "failed");
@@ -167,16 +167,16 @@ export class TaskGraph {
 						const finishedAt = Date.now();
 						if (!this.ledger.transitionRun(runId, { status: "failed", finishedAt, error: `Task verification rejected: ${verificationFeedback}` })) return this.persistedOutcome(task, "failed");
 						if (attempt <= maxCorrectiveAttempts) {
-							if (!this.ledger.transition(task.id, { status: "pending", error: `Task verification rejected: ${verificationFeedback}`, verificationStatus: "rejected", correctiveAttempts: attempt - 1 })) return this.persistedOutcome(task, "failed");
+							if (!this.ledger.transition(task.id, { status: "pending", error: `Task verification rejected: ${verificationFeedback}`, verificationStatus: "rejected", verificationFeedback, correctiveAttempts: attempt - 1 })) return this.persistedOutcome(task, "failed");
 							continue;
 						}
-						return this.ledger.transition(task.id, { status: "failed", finishedAt, error: `Task verification rejected: ${verificationFeedback}`, verificationStatus: "rejected", correctiveAttempts: attempt - 1 }) ? "failed" : this.persistedOutcome(task, "failed");
+						return this.ledger.transition(task.id, { status: "failed", finishedAt, error: `Task verification rejected: ${verificationFeedback}`, verificationStatus: "rejected", verificationFeedback, correctiveAttempts: attempt - 1 }) ? "failed" : this.persistedOutcome(task, "failed");
 					}
 					verificationEvidence = verification.evidence?.slice(0, 5_000);
 				}
 				const finishedAt = Date.now();
 				const output = candidateOutput;
-				if (!this.ledger.transition(task.id, { status: "succeeded", finishedAt, result: output, evidence: verificationEvidence, ...(task.acceptanceCriteria ? { verificationStatus: "accepted" as const, correctiveAttempts: attempt - 1 } : {}) })) {
+				if (!this.ledger.transition(task.id, { status: "succeeded", finishedAt, result: output, evidence: verificationEvidence, ...(task.acceptanceCriteria ? { verificationStatus: "accepted" as const, verificationFeedback: undefined, correctiveAttempts: attempt - 1 } : {}) })) {
 					const outcome = this.persistedOutcome(task, "failed");
 					this.ledger.transitionRun(runId, { status: outcome, finishedAt, error: outcome === "succeeded" ? undefined : `Task already reached Terminal Outcome: ${outcome}` });
 					return outcome;

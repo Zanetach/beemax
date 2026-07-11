@@ -163,12 +163,14 @@ test("TaskGraph makes one bounded Corrective Attempt after Verification rejectio
 	assert.equal(contexts.length, 2);
 	assert.equal(contexts[0].attempt, 1);
 	assert.equal(contexts[0].verificationFeedback, undefined);
+	assert.equal(contexts[0].previousResult, undefined);
 	assert.equal(contexts[1].attempt, 2);
 	assert.equal(contexts[1].verificationFeedback, "Add a primary source");
 	assert.equal(contexts[1].previousResult, "unsupported");
 	assert.equal(ledger.runs.size, 2);
 	assert.deepEqual([...ledger.runs.values()].map((run) => run.status).sort(), ["failed", "succeeded"]);
 	assert.equal(ledger.tasks.get("task").verificationStatus, "accepted");
+	assert.equal(ledger.tasks.get("task").verificationFeedback, undefined);
 	assert.equal(ledger.tasks.get("task").correctiveAttempts, 1);
 });
 

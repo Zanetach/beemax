@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { MemoryStore } from "../dist/index.js";
 import Database from "better-sqlite3";
-import { TaskGraph, TaskRecoveryRunner } from "@beemax/core";
+import { TaskGraph, TaskRecoveryRunner, TaskRecoveryService } from "@beemax/core";
 
 test("natural-language recall is safe and follows a user across chats", () => {
 	const root = mkdtempSync(join(tmpdir(), "beemax-memory-test-"));
@@ -222,14 +222,17 @@ test("ordinary Task Plan retry replays execution after Candidate Result rejectio
 		}] }, 10);
 		await graph.run(["cli:local:local"], "rejected-retry-plan", async () => ({ output: "candidate" }), { verify: async () => { throw new Error("verifier offline"); } });
 		let executions = 0;
-		const runner = new TaskRecoveryRunner(store, async () => { executions++; return { output: "corrected" }; }, undefined, async (_task, result) => result.output === "corrected" ? { accepted: true, evidence: "corrected output checked" } : { accepted: false, feedback: "candidate is incomplete" });
+		const contexts = [];
+		const runner = new TaskRecoveryRunner(store, async (_task, _signal, context) => { executions++; contexts.push(context); return { output: "corrected" }; }, undefined, async (_task, result) => result.output === "corrected" ? { accepted: true, evidence: "corrected output checked" } : { accepted: false, feedback: "candidate is incomplete" });
 		assert.deepEqual(await runner.retry(["cli:local:local"], "rejected-retry-plan"), {
 			verification: { attempted: 1, accepted: 0, rejected: 1, unavailable: 0 },
 			prepared: 1, plans: 1, succeeded: 1, failed: 0, cancelled: 0, blocked: [],
 		});
 		assert.equal(executions, 1);
+		assert.equal(contexts[0].verificationFeedback, "candidate is incomplete");
+		assert.equal(contexts[0].previousResult, "candidate");
 		const task = store.queryTasks({ ownerKeys: ["cli:local:local"], id: "rejected-retry-task" })[0];
-		assert.deepEqual({ status: task.status, verificationStatus: task.verificationStatus, result: task.result }, { status: "succeeded", verificationStatus: "accepted", result: "corrected" });
+		assert.deepEqual({ status: task.status, verificationStatus: task.verificationStatus, verificationFeedback: task.verificationFeedback, result: task.result, candidateResult: task.candidateResult }, { status: "succeeded", verificationStatus: "accepted", verificationFeedback: undefined, result: "corrected", candidateResult: undefined });
 	} finally { store.close(); rmSync(root, { recursive: true, force: true }); }
 });
 
@@ -287,6 +290,35 @@ test("due Verification Retry does not starve later Plans behind a claimed ledger
 		assert.deepEqual(await runner.reverifyDue(Date.now()), { attempted: 1, accepted: 1, rejected: 0, unavailable: 0 });
 		assert.equal(executions, 0);
 		assert.equal(store.queryTasks({ ownerKeys: ["cli:local:local"], id: "verification-fairness-task-100" })[0].status, "succeeded");
+	} finally { store.close(); rmSync(root, { recursive: true, force: true }); }
+});
+
+test("one recovery cycle continues a DAG after automatic Verification accepts its upstream Candidate Result", async () => {
+	const root = mkdtempSync(join(tmpdir(), "beemax-verification-continuation-"));
+	const store = new MemoryStore(join(root, "memory.db"));
+	try {
+		const scope = { platform: "cli", chatId: "local", chatType: "dm", userId: "local" };
+		new TaskGraph(store).createPlan({
+			id: "verification-continuation-plan", ownerKey: "cli:local:local",
+			tasks: [
+				{ id: "verified-upstream", title: "Research", acceptanceCriteria: "Research is verified", recoveryPolicy: "safe_retry", idempotencyKey: "continuation:upstream", executionScope: scope },
+				{ id: "continued-downstream", title: "Write", recoveryPolicy: "safe_retry", idempotencyKey: "continuation:downstream", executionScope: scope },
+			],
+			dependencies: [{ taskId: "continued-downstream", dependsOn: "verified-upstream" }],
+		}, 10);
+		store.transition("verified-upstream", { status: "running", startedAt: 11, verificationStatus: "pending" });
+		store.transition("verified-upstream", { status: "failed", finishedAt: 12, verificationStatus: "unavailable", candidateResult: "verified research", error: "verifier offline" });
+		const executed = [];
+		const runner = new TaskRecoveryRunner(store, async (task) => { executed.push(task.id); return { output: "final report" }; }, undefined, async () => ({ accepted: true, evidence: "independent check passed" }));
+		const cycle = await new TaskRecoveryService(store, runner).runOnce({ maxConcurrent: 2 });
+		assert.deepEqual(cycle, {
+			reconciled: { retried: 0, failed: 0 },
+			verification: { attempted: 1, accepted: 1, rejected: 0, unavailable: 0 },
+			recovery: { plans: 1, succeeded: 1, failed: 0, cancelled: 0, blocked: [] },
+		});
+		assert.deepEqual(executed, ["continued-downstream"]);
+		assert.deepEqual(store.queryTasks({ ownerKeys: ["cli:local:local"], planIds: ["verification-continuation-plan"] }).map((task) => task.status), ["succeeded", "succeeded"]);
+		assert.equal(store.queryTaskPlans({ ownerKeys: ["cli:local:local"], id: "verification-continuation-plan" })[0].status, "succeeded");
 	} finally { store.close(); rmSync(root, { recursive: true, force: true }); }
 });
 
