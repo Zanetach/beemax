@@ -1,4 +1,5 @@
 export { Dispatcher, type DispatcherDeps } from "./core/dispatcher.ts";
+export { InteractionControlServer, type InteractionControlServerOptions } from "./core/interaction-control-server.ts";
 export { GatewayDeliveryPort } from "./core/delivery-port.ts";
 export { MessageDeduplicator } from "./core/message-deduplicator.ts";
 export { sessionKeyForSource, sessionIdForSource, ephemeralSessionId } from "./core/session-router.ts";
