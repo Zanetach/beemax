@@ -29,8 +29,10 @@ export interface ToolApprovalDecision {
 }
 
 export type ApprovalPromptSender = (source: SessionSource, text: string) => Promise<void>;
+export type ApprovalAuditSink = (event: { source: SessionSource; toolName: string; allowed: boolean; reason?: string }) => void;
 
 interface PendingApproval {
+	source: SessionSource;
 	toolName: string;
 	resolve: (decision: ToolApprovalDecision) => void;
 	timer: ReturnType<typeof setTimeout>;
@@ -42,17 +44,22 @@ export class ToolApprovalBroker {
 	private readonly sessionGrants = new Set<string>();
 	private readonly sendPrompt: ApprovalPromptSender;
 	private readonly timeoutMs: number;
+	private readonly audit?: ApprovalAuditSink;
 
-	constructor(sendPrompt: ApprovalPromptSender, timeoutMs = DEFAULT_TIMEOUT_MS) {
+	constructor(sendPrompt: ApprovalPromptSender, timeoutMs = DEFAULT_TIMEOUT_MS, audit?: ApprovalAuditSink) {
 		this.sendPrompt = sendPrompt;
 		this.timeoutMs = timeoutMs;
+		this.audit = audit;
 	}
 
 	async authorize(request: ToolApprovalRequest, signal?: AbortSignal): Promise<ToolApprovalDecision> {
 		if (signal?.aborted) return { allowed: false, reason: "Tool approval cancelled" };
 		const sourceKey = sessionKeyForSource(request.source);
 		const grantKey = `${sourceKey}:${request.toolName}`;
-		if (this.sessionGrants.has(grantKey)) return { allowed: true };
+		if (this.sessionGrants.has(grantKey)) {
+			this.audit?.({ source: request.source, toolName: request.toolName, allowed: true, reason: "session grant" });
+			return { allowed: true };
+		}
 		if (this.pending.has(sourceKey)) {
 			return { allowed: false, reason: "Another tool approval is already pending for this conversation" };
 		}
@@ -64,7 +71,7 @@ export class ToolApprovalBroker {
 		const timer = setTimeout(() => {
 			this.finish(sourceKey, { allowed: false, reason: "Tool approval timed out" });
 		}, this.timeoutMs);
-		const pending: PendingApproval = { toolName: request.toolName, resolve: settle, timer };
+		const pending: PendingApproval = { source: request.source, toolName: request.toolName, resolve: settle, timer };
 		if (signal) {
 			const abort = () => this.finish(sourceKey, { allowed: false, reason: "Tool approval cancelled" });
 			signal.addEventListener("abort", abort, { once: true });
@@ -126,6 +133,7 @@ export class ToolApprovalBroker {
 		clearTimeout(pending.timer);
 		pending.abortCleanup?.();
 		pending.resolve(decision);
+		this.audit?.({ source: pending.source, toolName: pending.toolName, ...decision });
 	}
 }
 

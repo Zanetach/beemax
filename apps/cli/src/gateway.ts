@@ -85,7 +85,13 @@ export async function runGateway(config: BeeMaxConfig): Promise<void> {
 	const apiKey = configuredApiKey(config.model.provider, config.model.apiKey) ?? "";
 	const approvalBroker = new ToolApprovalBroker(async (source, text) => {
 		await deliveryPort.sendText(source, text);
-	});
+	}, undefined, (event) => recordGatewayEvent(config.paths.agentDir, "approval", {
+		profile: config.profile,
+		tool: event.toolName,
+		allowed: event.allowed,
+		reason: event.reason,
+		conversation: `${event.source.platform}:${event.source.chatId}`,
+	}));
 	const mcpApproval = new Set(mcp.getApprovalTools());
 	const readOnlyMcpTools = mcp.getTools().filter((tool) => !mcpApproval.has(tool.name));
 	const mainMcpTools = config.agent.toolset === "safe" ? readOnlyMcpTools : mcp.getTools();

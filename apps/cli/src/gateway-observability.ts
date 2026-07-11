@@ -24,7 +24,7 @@ export function writeGatewayState(agentDir: string, state: GatewayState): void {
 	writeFileSync(path, `${JSON.stringify({ schemaVersion: 1, updatedAt: new Date().toISOString(), ...state })}\n`, { mode: 0o600 });
 }
 
-export function recordGatewayEvent(agentDir: string, event: "started" | "stopped" | "failed", fields: Record<string, unknown> = {}): void {
+export function recordGatewayEvent(agentDir: string, event: "started" | "stopped" | "failed" | "approval", fields: Record<string, unknown> = {}): void {
 	const path = gatewayPaths(agentDir).events;
 	mkdirSync(join(agentDir, "logs"), { recursive: true, mode: 0o700 });
 	appendFileSync(path, `${JSON.stringify({ at: new Date().toISOString(), event, ...fields })}\n`, { mode: 0o600 });
