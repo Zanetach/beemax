@@ -73,8 +73,9 @@ export {
 export type { AgentControlHandler, AgentControlInput, AgentControlResult } from "./agent-control.ts";
 export { ToolApprovalBroker, approvalDetails, type ApprovalAuditSink, type ApprovalPromptSender, type ToolApprovalChoice, type ToolApprovalDecision, type ToolApprovalDetails, type ToolApprovalEvent, type ToolApprovalRequest } from "./tool-approval.ts";
 export { memoryScopeForSource, type MemoryScope } from "./memory-scope.ts";
-export { InteractionEventAdapter, mapAgentSessionEvent, reduceInteractionEvent, type InteractionAction, type InteractionActionResult, type InteractionApprovalResult, type InteractionEvent, type InteractionEventSink, type InteractionPhase, type InteractionSnapshot, type InteractionSurface } from "./interaction-runtime.ts";
+export { InteractionEventAdapter, mapAgentSessionEvent, reduceInteractionEvent, interactionScopeForSource, type InteractionAction, type InteractionActionResult, type InteractionApprovalResult, type InteractionEvent, type InteractionEventSink, type InteractionPhase, type InteractionScope, type InteractionSnapshot, type InteractionSurface } from "./interaction-runtime.ts";
 export { FileInteractionEventJournal, durableEvent, type DurableInteractionEvent, type InteractionEventJournal } from "./interaction-event-journal.ts";
+export { INTERACTION_PROTOCOL_VERSION, InteractionProtocol, parseInteractionProtocolRequest, sameScope, type InteractionProtocolOptions, type InteractionProtocolRequest, type InteractionProtocolResponse, type ProtocolInteractionAction } from "./interaction-protocol.ts";
 export { INTERACTION_COMMANDS, interactionCommandHelp, parseInteractionCommand, type InteractionCommand, type InteractionCommandDefinition, type InteractionDetailsDisplay } from "./interaction-commands.ts";
 export type { RunEvent, RunRecord } from "./run-events.ts";
 export type { DeliveryPort, DeliveryTarget, MediaArtifact } from "./delivery-port.ts";
