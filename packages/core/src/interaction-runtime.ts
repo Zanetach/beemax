@@ -3,6 +3,7 @@ import type { AgentRunInput, AgentRunResult, AgentRuntimePort, AgentSessionUsage
 import type { BeeMaxRuntimeSource } from "./runtime.ts";
 import { sessionIdForSource, sessionKeyForSource } from "./session-coordinator.ts";
 import type { ToolApprovalBroker, ToolApprovalChoice } from "./tool-approval.ts";
+import type { InteractionEventJournal } from "./interaction-event-journal.ts";
 import type { ToolApprovalDetails } from "./tool-approval.ts";
 
 export type InteractionSurface = "chat" | "gateway" | "web";
@@ -86,6 +87,7 @@ export interface InteractionEventAdapterOptions<Source extends BeeMaxRuntimeSour
 	cancelSubagents?: (source: Source) => number | Promise<number>;
 	eventHistoryLimit?: number;
 	actionHistoryLimit?: number;
+	eventJournal?: InteractionEventJournal;
 }
 
 /**
@@ -112,6 +114,7 @@ export class InteractionEventAdapter<Source extends BeeMaxRuntimeSource = BeeMax
 	private readonly unsubscribeApproval?: () => void;
 	private readonly eventHistoryLimit: number;
 	private readonly actionHistoryLimit: number;
+	private readonly eventJournal?: InteractionEventJournal;
 
 	constructor(runtime: AgentRuntimePort<Source>, options: InteractionEventAdapterOptions<Source> = {}) {
 		this.runtime = runtime;
@@ -120,6 +123,7 @@ export class InteractionEventAdapter<Source extends BeeMaxRuntimeSource = BeeMax
 		this.profileId = options.profileId ?? "default";
 		this.eventHistoryLimit = Math.max(20, Math.min(options.eventHistoryLimit ?? 500, 10_000));
 		this.actionHistoryLimit = Math.max(20, Math.min(options.actionHistoryLimit ?? 200, 10_000));
+		this.eventJournal = options.eventJournal;
 		this.unsubscribeApproval = this.approvalBroker && typeof this.approvalBroker.subscribe === "function" ? this.approvalBroker.subscribe((event) => {
 			void (event.type === "requested"
 				? this.approvalRequested(event.source as Source, event.toolName, event.details)
@@ -203,7 +207,12 @@ export class InteractionEventAdapter<Source extends BeeMaxRuntimeSource = BeeMax
 
 	/** Reconnection-safe semantic events, bounded per interaction session. */
 	events(source: Source, afterSequence = 0): InteractionEvent[] {
-		return (this.eventHistory.get(interactionKey(source)) ?? []).filter((event) => event.sequence > afterSequence);
+		const key = interactionKey(source);
+		const sessionId = interactionEventMeta(source, "", 0, this.profileId).sessionId;
+		const merged = new Map<number, InteractionEvent>();
+		for (const event of this.eventJournal?.events(sessionId, afterSequence) ?? []) merged.set(event.sequence, event);
+		for (const event of this.eventHistory.get(key) ?? []) if (event.sequence > afterSequence) merged.set(event.sequence, event);
+		return [...merged.values()].sort((a, b) => a.sequence - b.sequence);
 	}
 
 	/** Subscribe a presenter without granting it runtime or policy control. */
@@ -270,6 +279,7 @@ export class InteractionEventAdapter<Source extends BeeMaxRuntimeSource = BeeMax
 		this.states.set(key, reduceInteractionEvent(previous, event));
 		const history = [...(this.eventHistory.get(key) ?? []), event];
 		this.eventHistory.set(key, history.slice(-this.eventHistoryLimit));
+		this.eventJournal?.append(event);
 	}
 
 	private async publish(source: Source, turnId: string, payload: InteractionEventPayload, sink?: InteractionEventSink): Promise<void> {
@@ -278,7 +288,9 @@ export class InteractionEventAdapter<Source extends BeeMaxRuntimeSource = BeeMax
 
 	private enqueue(source: Source, turnId: string, payload: InteractionEventPayload, sink?: InteractionEventSink): Promise<void> {
 		const key = interactionKey(source);
-		const event = { ...payload, ...interactionEventMeta(source, turnId, (this.sequences.get(key) ?? 0) + 1, this.profileId) } as InteractionEvent;
+		const sessionId = interactionEventMeta(source, "", 0, this.profileId).sessionId;
+		const persistedSequence = this.eventJournal?.events(sessionId).at(-1)?.sequence ?? 0;
+		const event = { ...payload, ...interactionEventMeta(source, turnId, Math.max(this.sequences.get(key) ?? 0, persistedSequence) + 1, this.profileId) } as InteractionEvent;
 		this.sequences.set(key, event.sequence);
 		const previous = this.eventQueues.get(key) ?? Promise.resolve();
 		const next = previous.then(async () => {

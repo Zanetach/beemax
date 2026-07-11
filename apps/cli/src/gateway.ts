@@ -8,7 +8,7 @@
  */
 
 import { AutomationStore } from "@beemax/automation";
-import { AutomationScheduler, BeeMaxAgentRuntime, HeartbeatRunner, InteractionEventAdapter } from "@beemax/core";
+import { AutomationScheduler, BeeMaxAgentRuntime, FileInteractionEventJournal, HeartbeatRunner, InteractionEventAdapter } from "@beemax/core";
 import {
 	createSubagentTools,
 	Dispatcher,
@@ -30,6 +30,7 @@ import { createTaskAwareConversationContext } from "./runtime-facts.ts";
 import { createProfileRuntime } from "./runtime-composition.ts";
 import { workspaceToolsPrompt } from "./workspace-context.ts";
 import { configuredApiKey } from "./provider-resolver.ts";
+import { join } from "node:path";
 import { executionPortFor, executionSafeTools } from "./execution-composition.ts";
 import { createProfileControlHandler } from "./profile-control.ts";
 import { recordGatewayEvent, writeGatewayState } from "./gateway-observability.ts";
@@ -165,6 +166,7 @@ export async function runGateway(config: BeeMaxConfig): Promise<void> {
 		profileId: config.profile,
 		approvalBroker,
 		cancelSubagents: (source) => subagents?.cancelOwner(source) ?? 0,
+		eventJournal: new FileInteractionEventJournal(join(config.paths.agentDir, "interaction-events.jsonl")),
 	});
 	startupCleanup.push(() => interaction.dispose());
 	const dispatcher = new Dispatcher(
