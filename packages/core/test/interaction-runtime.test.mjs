@@ -38,6 +38,21 @@ test("interaction runtime supports a reconnecting presenter subscription", async
 	assert.deepEqual(received, ["turn.started", "answer.delta", "turn.finished"]);
 });
 
+test("action IDs make retried controls and concurrent requests idempotent per session", async () => {
+	let runs = 0;
+	const runtime = {
+		async run() { runs++; return { answer: "ok", model: "test/model", durationMs: 1, usage: {} }; },
+		async cancel() { return false; }, async modelStatus() { return undefined; }, async usage() { return undefined; },
+	};
+	const interaction = new InteractionEventAdapter(runtime);
+	const action = { type: "message.send", source, text: "hi", input: { timeoutMs: 1_000 }, actionId: "retry-safe-1" };
+	const [first, retry] = await Promise.all([interaction.dispatch(action), interaction.dispatch(action)]);
+	assert.equal(runs, 1);
+	assert.deepEqual(first, retry);
+	await interaction.dispatch({ ...action, actionId: "retry-safe-2" });
+	assert.equal(runs, 2);
+});
+
 test("interaction reducer preserves a cancelled turn state", () => {
 	const snapshot = reduceInteractionEvent({ phase: "running", turnId: "turn-1", updatedAt: 1 }, { type: "turn.cancelled", turnId: "turn-1", at: 2 });
 	assert.equal(snapshot.phase, "cancelled");

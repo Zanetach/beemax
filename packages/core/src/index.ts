@@ -73,7 +73,7 @@ export {
 export type { AgentControlHandler, AgentControlInput, AgentControlResult } from "./agent-control.ts";
 export { ToolApprovalBroker, approvalDetails, type ApprovalAuditSink, type ApprovalPromptSender, type ToolApprovalChoice, type ToolApprovalDecision, type ToolApprovalDetails, type ToolApprovalEvent, type ToolApprovalRequest } from "./tool-approval.ts";
 export { memoryScopeForSource, type MemoryScope } from "./memory-scope.ts";
-export { InteractionEventAdapter, mapAgentSessionEvent, reduceInteractionEvent, type InteractionAction, type InteractionApprovalResult, type InteractionEvent, type InteractionEventSink, type InteractionPhase, type InteractionSnapshot, type InteractionSurface } from "./interaction-runtime.ts";
+export { InteractionEventAdapter, mapAgentSessionEvent, reduceInteractionEvent, type InteractionAction, type InteractionActionResult, type InteractionApprovalResult, type InteractionEvent, type InteractionEventSink, type InteractionPhase, type InteractionSnapshot, type InteractionSurface } from "./interaction-runtime.ts";
 export { INTERACTION_COMMANDS, interactionCommandHelp, parseInteractionCommand, type InteractionCommand, type InteractionCommandDefinition, type InteractionDetailsDisplay } from "./interaction-commands.ts";
 export type { RunEvent, RunRecord } from "./run-events.ts";
 export type { DeliveryPort, DeliveryTarget, MediaArtifact } from "./delivery-port.ts";

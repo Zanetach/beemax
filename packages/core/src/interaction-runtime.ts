@@ -51,11 +51,11 @@ type InteractionEventPayload =
 	| { type: "turn.cancelled" };
 
 export type InteractionAction<Source extends BeeMaxRuntimeSource = BeeMaxRuntimeSource> =
-	| { type: "message.send"; source: Source; text: string; input: Omit<AgentRunInput<Source>, "source" | "text"> }
-	| { type: "turn.queue"; source: Source; text: string }
-	| { type: "turn.steer"; source: Source; text: string }
-	| { type: "approval.decide"; source: Source; choice: ToolApprovalChoice }
-	| { type: "turn.cancel"; source: Source };
+	| { type: "message.send"; source: Source; text: string; input: Omit<AgentRunInput<Source>, "source" | "text">; actionId?: string }
+	| { type: "turn.queue"; source: Source; text: string; actionId?: string }
+	| { type: "turn.steer"; source: Source; text: string; actionId?: string }
+	| { type: "approval.decide"; source: Source; choice: ToolApprovalChoice; actionId?: string }
+	| { type: "turn.cancel"; source: Source; actionId?: string };
 
 export interface InteractionCancelResult {
 	cancelled: boolean;
@@ -67,6 +67,7 @@ export interface InteractionCancelResult {
 
 export interface InteractionQueueResult { queued: boolean; position: number; replaced: boolean; mode: "queue" | "steer_fallback"; }
 export interface InteractionApprovalResult { handled: boolean; }
+export type InteractionActionResult = AgentRunResult | InteractionCancelResult | InteractionQueueResult | InteractionApprovalResult;
 
 export interface InteractionSnapshot {
 	phase: InteractionPhase;
@@ -84,6 +85,7 @@ export interface InteractionEventAdapterOptions<Source extends BeeMaxRuntimeSour
 	approvalBroker?: ToolApprovalBroker;
 	cancelSubagents?: (source: Source) => number | Promise<number>;
 	eventHistoryLimit?: number;
+	actionHistoryLimit?: number;
 }
 
 /**
@@ -102,12 +104,14 @@ export class InteractionEventAdapter<Source extends BeeMaxRuntimeSource = BeeMax
 	private readonly eventHistory = new Map<string, InteractionEvent[]>();
 	private readonly subscribers = new Map<string, Set<InteractionEventSink>>();
 	private readonly queuedInputs = new Map<string, string>();
+	private readonly actions = new Map<string, Map<string, Promise<InteractionActionResult>>>();
 	private readonly runtime: AgentRuntimePort<Source>;
 	private readonly approvalBroker?: ToolApprovalBroker;
 	private readonly cancelSubagents?: (source: Source) => number | Promise<number>;
 	private readonly profileId: string;
 	private readonly unsubscribeApproval?: () => void;
 	private readonly eventHistoryLimit: number;
+	private readonly actionHistoryLimit: number;
 
 	constructor(runtime: AgentRuntimePort<Source>, options: InteractionEventAdapterOptions<Source> = {}) {
 		this.runtime = runtime;
@@ -115,6 +119,7 @@ export class InteractionEventAdapter<Source extends BeeMaxRuntimeSource = BeeMax
 		this.cancelSubagents = options.cancelSubagents;
 		this.profileId = options.profileId ?? "default";
 		this.eventHistoryLimit = Math.max(20, Math.min(options.eventHistoryLimit ?? 500, 10_000));
+		this.actionHistoryLimit = Math.max(20, Math.min(options.actionHistoryLimit ?? 200, 10_000));
 		this.unsubscribeApproval = this.approvalBroker && typeof this.approvalBroker.subscribe === "function" ? this.approvalBroker.subscribe((event) => {
 			void (event.type === "requested"
 				? this.approvalRequested(event.source as Source, event.toolName, event.details)
@@ -122,7 +127,21 @@ export class InteractionEventAdapter<Source extends BeeMaxRuntimeSource = BeeMax
 		}) : undefined;
 	}
 
-	async dispatch(action: InteractionAction<Source>, sink?: InteractionEventSink): Promise<AgentRunResult | InteractionCancelResult | InteractionQueueResult | InteractionApprovalResult> {
+	async dispatch(action: InteractionAction<Source>, sink?: InteractionEventSink): Promise<InteractionActionResult> {
+		const actionId = action.actionId?.trim();
+		if (!actionId) return this.dispatchUncached(action, sink);
+		const key = interactionKey(action.source);
+		const known = this.actions.get(key)?.get(actionId);
+		if (known) return known;
+		const result = this.dispatchUncached(action, sink);
+		const history = this.actions.get(key) ?? new Map<string, Promise<InteractionActionResult>>();
+		history.set(actionId, result);
+		while (history.size > this.actionHistoryLimit) history.delete(history.keys().next().value!);
+		this.actions.set(key, history);
+		return result;
+	}
+
+	private async dispatchUncached(action: InteractionAction<Source>, sink?: InteractionEventSink): Promise<InteractionActionResult> {
 		if (action.type === "turn.cancel") return this.cancel(action.source, sink);
 		if (action.type === "turn.queue") return this.queue(action.source, action.text, "queue", sink);
 		if (action.type === "turn.steer") return this.queue(action.source, action.text, "steer_fallback", sink);
