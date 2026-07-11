@@ -787,10 +787,12 @@ export class MemoryStore {
 		})();
 	}
 
-	recoveryCandidates(limit = 100): RuntimeTaskRecord[] {
+	recoveryCandidates(limit = 100, excludePlanIds: string[] = []): RuntimeTaskRecord[] {
+		const excluded = [...new Set(excludePlanIds.filter((id) => id.trim()))];
 		return (this.db.prepare(`SELECT * FROM tasks WHERE status = 'pending' AND recovery_policy = 'safe_retry'
 			AND idempotency_key IS NOT NULL AND plan_id IS NOT NULL AND execution_scope IS NOT NULL
-			ORDER BY updated_at, created_at LIMIT ?`).all(limitOf(limit, 100)) as RuntimeTaskRow[]).map(mapRuntimeTask);
+			${excluded.length ? "AND plan_id NOT IN (SELECT value FROM json_each(?))" : ""}
+			ORDER BY updated_at, created_at LIMIT ?`).all(...(excluded.length ? [JSON.stringify(excluded)] : []), limitOf(limit, 100)) as RuntimeTaskRow[]).map(mapRuntimeTask);
 	}
 
 	prepareTaskPlanRetry(ownerKeys: string[], planId: string): number {

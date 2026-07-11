@@ -162,6 +162,43 @@ test("a recovery runner skips a durable Task Plan claimed by another executor", 
 	} finally { second.close(); first.close(); rmSync(root, { recursive: true, force: true }); }
 });
 
+test("startup recovery drains more Task Plans than one ledger batch", async () => {
+	const root = mkdtempSync(join(tmpdir(), "beemax-task-recovery-batches-"));
+	const store = new MemoryStore(join(root, "memory.db"));
+	try {
+		const scope = { platform: "cli", chatId: "local", chatType: "dm", userId: "local" };
+		const graph = new TaskGraph(store);
+		for (let index = 0; index < 101; index++) graph.createPlan({
+			id: `batch-plan-${index}`, ownerKey: "cli:local:local",
+			tasks: [{ id: `batch-task-${index}`, title: `Task ${index}`, recoveryPolicy: "safe_retry", idempotencyKey: `batch:${index}`, executionScope: scope }],
+		}, index + 1);
+		const result = await new TaskRecoveryRunner(store, async () => ({ output: "recovered" })).run({ maxConcurrent: 20 });
+		assert.deepEqual(result, { plans: 101, succeeded: 101, failed: 0, cancelled: 0, blocked: [] });
+	} finally { store.close(); rmSync(root, { recursive: true, force: true }); }
+});
+
+test("blocked Task Plans do not starve later startup recovery batches", async () => {
+	const root = mkdtempSync(join(tmpdir(), "beemax-task-recovery-blocked-batch-"));
+	const store = new MemoryStore(join(root, "memory.db"));
+	try {
+		const scope = { platform: "cli", chatId: "local", chatType: "dm", userId: "local" };
+		const graph = new TaskGraph(store);
+		for (let index = 0; index < 100; index++) graph.createPlan({
+			id: `blocked-plan-${index}`, ownerKey: "cli:local:local",
+			tasks: [
+				{ id: `unsafe-${index}`, title: "Unsafe prerequisite" },
+				{ id: `blocked-${index}`, title: "Blocked recovery", recoveryPolicy: "safe_retry", idempotencyKey: `blocked:${index}`, executionScope: scope },
+			], dependencies: [{ taskId: `blocked-${index}`, dependsOn: `unsafe-${index}` }],
+		}, index + 1);
+		graph.createPlan({ id: "later-plan", ownerKey: "cli:local:local", tasks: [{ id: "later-task", title: "Later", recoveryPolicy: "safe_retry", idempotencyKey: "later", executionScope: scope }] }, 101);
+		const result = await new TaskRecoveryRunner(store, async () => ({ output: "recovered" })).run({ maxConcurrent: 20 });
+		assert.equal(result.plans, 101);
+		assert.equal(result.succeeded, 1);
+		assert.equal(result.blocked.length, 100);
+		assert.equal(store.queryTasks({ ownerKeys: ["cli:local:local"], id: "later-task" })[0].status, "succeeded");
+	} finally { store.close(); rmSync(root, { recursive: true, force: true }); }
+});
+
 test("Task recovery terminalizes a pending Task whose dependency already failed", async () => {
 	const root = mkdtempSync(join(tmpdir(), "beemax-task-dependency-failure-"));
 	const store = new MemoryStore(join(root, "memory.db"));

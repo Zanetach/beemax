@@ -18,8 +18,16 @@ export class TaskRecoveryRunner {
 	constructor(ledger: TaskLedger, execute: TaskGraphExecutor, runtime = new TaskPlanRuntime(), verify?: TaskGraphVerifier) { this.ledger = ledger; this.execute = execute; this.runtime = runtime; this.verify = verify; }
 
 	async run(options: TaskRecoveryRunnerOptions = {}): Promise<TaskRecoveryRunnerResult> {
-		const candidates = this.ledger.recoveryCandidates(100);
-		return this.executePlans(candidates, options);
+		const attemptedPlanIds = new Set<string>();
+		let summary: TaskRecoveryRunnerResult = { plans: 0, succeeded: 0, failed: 0, cancelled: 0, blocked: [] };
+		while (!options.signal?.aborted) {
+			const candidates = this.ledger.recoveryCandidates(100, [...attemptedPlanIds]).filter((task) => task.planId && !attemptedPlanIds.has(task.planId));
+			if (!candidates.length) break;
+			for (const task of candidates) if (task.planId) attemptedPlanIds.add(task.planId);
+			const batch = await this.executePlans(candidates, options);
+			summary = mergeRecoveryResults(summary, batch);
+		}
+		return summary;
 	}
 
 	async retry(ownerKeys: string[], planId: string, options: TaskRecoveryRunnerOptions = {}): Promise<TaskPlanRetryResult> {
@@ -74,4 +82,14 @@ export class TaskRecoveryRunner {
 
 function recoverable(task: TaskRecord): boolean {
 	return task.status === "pending" && task.recoveryPolicy === "safe_retry" && Boolean(task.idempotencyKey && task.planId && task.executionScope);
+}
+
+function mergeRecoveryResults(left: TaskRecoveryRunnerResult, right: TaskRecoveryRunnerResult): TaskRecoveryRunnerResult {
+	return {
+		plans: left.plans + right.plans,
+		succeeded: left.succeeded + right.succeeded,
+		failed: left.failed + right.failed,
+		cancelled: left.cancelled + right.cancelled,
+		blocked: [...left.blocked, ...right.blocked],
+	};
 }

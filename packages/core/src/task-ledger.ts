@@ -90,7 +90,7 @@ export interface TaskLedger {
 	queryTaskPlans(query: TaskPlanQuery): TaskPlanRecord[];
 	taskDependencies(taskIds: string[]): TaskDependency[];
 	reconcileExpiredTaskRuns(now?: number): TaskRecoveryResult;
-	recoveryCandidates(limit?: number): TaskRecord[];
+	recoveryCandidates(limit?: number, excludePlanIds?: string[]): TaskRecord[];
 	renewTaskRunLease?(id: string, leaseExpiresAt: number): boolean;
 	prepareTaskPlanRetry(ownerKeys: string[], planId: string): number;
 	cancelTaskPlan(ownerKeys: string[], planId: string, now?: number): number;
