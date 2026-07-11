@@ -34,12 +34,12 @@ import { configuredApiKey } from "./provider-resolver.ts";
 import { executionPortFor, executionSafeTools } from "./execution-composition.ts";
 import { createProfileRuntime } from "./runtime-composition.ts";
 import { createProfileControlHandler } from "./profile-control.ts";
-import { LocalActivityPresenter, LocalReasoningPresenter, renderChatFooter, type DetailsDisplay, parseChatCommand, parseReasoningCommand } from "./local-chat-renderer.ts";
+import { LocalActivityPresenter, LocalReasoningPresenter, renderChatFooter, type DetailsDisplay, parseReasoningCommand } from "./local-chat-renderer.ts";
 import { renderTerminalMarkdown, StreamingTerminalMarkdown } from "./terminal-markdown.ts";
 import { fullScreenEnter, fullScreenExit, resolveChatPresentationMode, type ChatPresentationMode } from "./chat-mode.ts";
 import { inspectGateway, readGatewayLogs } from "./gateway-observability.ts";
 import { createTaskAwareConversationContext, ensureBuiltinTasks, installedVersion } from "./runtime-facts.ts";
-import { AgentRunError, InteractionEventAdapter, SessionCatalog, ToolApprovalBroker, compileLongTermMemorySnapshot, type BeeMaxAgentRuntime } from "@beemax/core";
+import { AgentRunError, InteractionEventAdapter, SessionCatalog, ToolApprovalBroker, compileLongTermMemorySnapshot, interactionCommandHelp, parseInteractionCommand, type BeeMaxAgentRuntime } from "@beemax/core";
 import type { SessionSource } from "@beemax/gateway";
 import { existsSync } from "node:fs";
 import { spawnSync } from "node:child_process";
@@ -1001,7 +1001,7 @@ async function runChat(config: ReturnType<typeof loadConfig>, requestedMode: { f
 		const handleLine = async (line: string) => {
 			const trimmed = line.trim();
 			if (!trimmed) { writePrompt(); return; }
-			const command = parseChatCommand(trimmed);
+			const command = parseInteractionCommand(trimmed);
 			if (active) {
 				if (command?.kind === "stop") { await stop(); return; }
 				if (await interactionAdapter.handleApprovalReply(source, trimmed)) return;
@@ -1017,7 +1017,7 @@ async function runChat(config: ReturnType<typeof loadConfig>, requestedMode: { f
 			}
 			if (trimmed === "/quit" || trimmed === "/exit") { closed = true; rl.close(); return; }
 			if (command?.kind === "help") {
-				process.stdout.write("Commands: /help /status /new /reset /sessions /history [n] /resume <session-id> /usage /stop /compact /model /models /think [level] /tools /retry /reasoning /details [hidden|collapsed|expanded] /quit\n");
+				process.stdout.write(`${interactionCommandHelp()}\n`);
 				writePrompt();
 				return;
 			}

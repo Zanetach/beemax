@@ -24,3 +24,18 @@ test("Core approval broker owns one-time and session grants", async () => {
 		broker.dispose();
 	}
 });
+
+test("approval lifecycle exposes only redacted presenter-safe card details", async () => {
+	const events = [];
+	const broker = new ToolApprovalBroker(async () => {}, 1_000);
+	broker.subscribe((event) => events.push(event));
+	const waiting = broker.authorize({ source, toolName: "browser_fill", args: { url: "https://alice:pw@example.com/?token=secret-value", selector: "#email", password: "secret-value" } });
+	await new Promise((resolve) => setImmediate(resolve));
+	assert.equal(events[0].type, "requested");
+	assert.equal(events[0].details.risk, "高");
+	assert.doesNotMatch(events[0].details.target, /secret-value|alice|:pw@/);
+	assert.match(events[0].details.argsSummary, /\[REDACTED\]/);
+	assert.doesNotMatch(events[0].details.argsSummary, /secret-value/);
+	await broker.handleReply(source, "3");
+	assert.deepEqual(await waiting, { allowed: false, reason: "User denied the tool call" });
+});

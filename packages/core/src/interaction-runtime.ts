@@ -3,6 +3,7 @@ import type { AgentRunInput, AgentRunResult, AgentRuntimePort, AgentSessionUsage
 import type { BeeMaxRuntimeSource } from "./runtime.ts";
 import { sessionIdForSource, sessionKeyForSource } from "./session-coordinator.ts";
 import type { ToolApprovalBroker } from "./tool-approval.ts";
+import type { ToolApprovalDetails } from "./tool-approval.ts";
 
 export type InteractionSurface = "chat" | "gateway" | "web";
 export type InteractionPhase = "idle" | "running" | "queued" | "awaiting_approval" | "completed" | "failed" | "cancelled";
@@ -29,7 +30,7 @@ export type InteractionEvent = InteractionEventMeta & (
 	| { type: "answer.delta"; text: string }
 	| { type: "reasoning.delta"; text: string }
 	| { type: "tool.changed"; callId: string; name: string; state: "running" | "completed" | "failed"; summary?: string }
-	| { type: "approval.requested"; toolName: string }
+	| { type: "approval.requested"; toolName: string; details?: ToolApprovalDetails }
 	| { type: "approval.resolved"; toolName: string; allowed: boolean }
 	| { type: "turn.queued"; position: number; replaced: boolean }
 	| { type: "turn.finished"; result: AgentRunResult }
@@ -42,7 +43,7 @@ type InteractionEventPayload =
 	| { type: "answer.delta"; text: string }
 	| { type: "reasoning.delta"; text: string }
 	| { type: "tool.changed"; callId: string; name: string; state: "running" | "completed" | "failed"; summary?: string }
-	| { type: "approval.requested"; toolName: string }
+	| { type: "approval.requested"; toolName: string; details?: ToolApprovalDetails }
 	| { type: "approval.resolved"; toolName: string; allowed: boolean }
 	| { type: "turn.queued"; position: number; replaced: boolean }
 	| { type: "turn.finished"; result: AgentRunResult }
@@ -113,7 +114,7 @@ export class InteractionEventAdapter<Source extends BeeMaxRuntimeSource = BeeMax
 		this.eventHistoryLimit = Math.max(20, Math.min(options.eventHistoryLimit ?? 500, 10_000));
 		this.unsubscribeApproval = this.approvalBroker && typeof this.approvalBroker.subscribe === "function" ? this.approvalBroker.subscribe((event) => {
 			void (event.type === "requested"
-				? this.approvalRequested(event.source as Source, event.toolName)
+				? this.approvalRequested(event.source as Source, event.toolName, event.details)
 				: this.approvalResolved(event.source as Source, event.toolName, event.allowed));
 		}) : undefined;
 	}
@@ -155,9 +156,9 @@ export class InteractionEventAdapter<Source extends BeeMaxRuntimeSource = BeeMax
 		}
 	}
 
-	async approvalRequested(source: Source, toolName: string): Promise<void> {
+	async approvalRequested(source: Source, toolName: string, details?: ToolApprovalDetails): Promise<void> {
 		const turnId = this.states.get(interactionKey(source))?.turnId;
-		if (turnId) await this.publish(source, turnId, { type: "approval.requested", toolName });
+		if (turnId) await this.publish(source, turnId, { type: "approval.requested", toolName, details });
 	}
 
 	async approvalResolved(source: Source, toolName: string, allowed: boolean): Promise<void> {

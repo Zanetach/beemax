@@ -5,11 +5,19 @@ const DEFAULT_TIMEOUT_MS = 5 * 60 * 1000;
 const SENSITIVE_KEY_RE = /(token|secret|password|api[_-]?key|authorization|cookie|credential)/i;
 
 export interface ToolApprovalRequest { source: BeeMaxRuntimeSource; toolName: string; args: unknown; }
+/** Redacted, presenter-safe context for an approval card or overlay. */
+export interface ToolApprovalDetails {
+	target: string;
+	risk: "低" | "中" | "高";
+	impact: string;
+	reversibility: string;
+	argsSummary: string;
+}
 export interface ToolApprovalDecision { allowed: boolean; reason?: string; }
 export type ApprovalPromptSender = (source: BeeMaxRuntimeSource, text: string) => Promise<void>;
 export type ApprovalAuditSink = (event: { source: BeeMaxRuntimeSource; toolName: string; allowed: boolean; reason?: string }) => void;
 export type ToolApprovalEvent =
-	| { type: "requested"; source: BeeMaxRuntimeSource; toolName: string }
+	| { type: "requested"; source: BeeMaxRuntimeSource; toolName: string; details: ToolApprovalDetails }
 	| { type: "resolved"; source: BeeMaxRuntimeSource; toolName: string; allowed: boolean; reason?: string };
 
 interface PendingApproval {
@@ -55,7 +63,7 @@ export class ToolApprovalBroker {
 			pending.abortCleanup = () => signal.removeEventListener("abort", abort);
 		}
 		this.pending.set(sourceKey, pending);
-		this.emit({ type: "requested", source: request.source, toolName: request.toolName });
+		this.emit({ type: "requested", source: request.source, toolName: request.toolName, details: approvalDetails(request) });
 		try { await this.sendPrompt(request.source, renderApprovalPrompt(request)); }
 		catch (error) { this.finish(sourceKey, { allowed: false, reason: `Could not deliver approval request: ${error instanceof Error ? error.message : String(error)}` }); }
 		return decision;
@@ -129,7 +137,7 @@ function parseChoice(text: string): "once" | "session" | "deny" | undefined {
 }
 
 function renderApprovalPrompt(request: ToolApprovalRequest): string {
-	const assessment = assessApproval(request);
+	const assessment = approvalDetails(request);
 	return [
 		"⚠️ 工具调用需要审批",
 		`工具：\`${request.toolName}\``,
@@ -137,17 +145,18 @@ function renderApprovalPrompt(request: ToolApprovalRequest): string {
 		`风险：${assessment.risk}`,
 		`影响：${assessment.impact}`,
 		`可逆性：${assessment.reversibility}`,
-		"参数：", "```json", formatArgs(request.args), "```",
+		"参数：", "```json", assessment.argsSummary, "```",
 		"请回复：", "1 — 允许一次", "2 — 本会话允许此工具", "3 — 拒绝",
 	].join("\n");
 }
 
-function assessApproval(request: ToolApprovalRequest): { target: string; risk: "低" | "中" | "高"; impact: string; reversibility: string } {
+export function approvalDetails(request: ToolApprovalRequest): ToolApprovalDetails {
 	const args = request.args && typeof request.args === "object" ? request.args as Record<string, unknown> : {};
-	const target = [args.path, args.url, args.selector, args.command].find((value): value is string => typeof value === "string" && value.trim().length > 0) ?? "由工具参数决定";
-	if (["bash", "write", "edit", "browser_click", "browser_fill", "browser_cookies"].includes(request.toolName)) return { target, risk: "高", impact: "可能修改本机文件、外部服务或读取敏感浏览器数据", reversibility: "执行前请确认；部分操作不可逆" };
-	if (/delete|forget|remove|end|kick|recording_stop/i.test(request.toolName)) return { target, risk: "高", impact: "可能删除数据或终止外部资源", reversibility: "通常不可逆或需要额外恢复步骤" };
-	return { target, risk: "中", impact: "可能改变当前 Profile 或外部资源状态", reversibility: "请根据参数确认是否可恢复" };
+	const target = approvalTarget(args);
+	const argsSummary = formatArgs(request.args);
+	if (["bash", "write", "edit", "browser_click", "browser_fill", "browser_cookies"].includes(request.toolName)) return { target, risk: "高", impact: "可能修改本机文件、外部服务或读取敏感浏览器数据", reversibility: "执行前请确认；部分操作不可逆", argsSummary };
+	if (/delete|forget|remove|end|kick|recording_stop/i.test(request.toolName)) return { target, risk: "高", impact: "可能删除数据或终止外部资源", reversibility: "通常不可逆或需要额外恢复步骤", argsSummary };
+	return { target, risk: "中", impact: "可能改变当前 Profile 或外部资源状态", reversibility: "请根据参数确认是否可恢复", argsSummary };
 }
 
 function formatArgs(args: unknown): string {
@@ -158,7 +167,28 @@ function formatArgs(args: unknown): string {
 
 function redact(value: unknown, key = ""): unknown {
 	if (SENSITIVE_KEY_RE.test(key)) return "[REDACTED]";
+	if (key === "url" && typeof value === "string") return redactUrl(value);
 	if (Array.isArray(value)) return value.map((item) => redact(item));
 	if (value && typeof value === "object") return Object.fromEntries(Object.entries(value as Record<string, unknown>).map(([childKey, childValue]) => [childKey, redact(childValue, childKey)]));
 	return value;
+}
+
+function approvalTarget(args: Record<string, unknown>): string {
+	if (typeof args.path === "string" && args.path.trim()) return args.path;
+	if (typeof args.url === "string" && args.url.trim()) return redactUrl(args.url);
+	if (typeof args.selector === "string" && args.selector.trim()) return args.selector;
+	// Commands often embed credentials; the complete redacted command remains in
+	// the parameter summary, while the card header never repeats it verbatim.
+	if (typeof args.command === "string" && args.command.trim()) return "shell command";
+	return "由工具参数决定";
+}
+
+function redactUrl(value: string): string {
+	try {
+		const url = new URL(value);
+		if (url.username) url.username = "[REDACTED]";
+		if (url.password) url.password = "[REDACTED]";
+		for (const key of [...url.searchParams.keys()]) if (SENSITIVE_KEY_RE.test(key)) url.searchParams.set(key, "[REDACTED]");
+		return url.toString();
+	} catch { return value.replace(/([?&](?:token|secret|password|api[_-]?key|authorization|cookie|credential)=)[^&\s]+/gi, "$1[REDACTED]"); }
 }
