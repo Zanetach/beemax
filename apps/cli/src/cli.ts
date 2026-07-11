@@ -827,7 +827,7 @@ async function runChat(config: ReturnType<typeof loadConfig>, requestedMode: { f
 	const presentationMode: ChatPresentationMode = resolveChatPresentationMode({
 		...requestedMode, isInputTty: process.stdin.isTTY === true, isOutputTty: process.stdout.isTTY === true, term: process.env.TERM,
 	});
-	const { conversationKey, createSubagentTools, createTaskLedgerTools, createTaskOrchestrationTools, ProfileTaskScheduler, SubagentManager, TaskPlanRuntime, TaskRecoveryRunner } = await import("@beemax/core");
+	const { conversationKey, createSubagentTools, createTaskLedgerTools, createTaskOrchestrationTools, ProfileTaskScheduler, SubagentManager, TaskPlanRuntime, TaskRecoveryRunner, TaskRecoveryService } = await import("@beemax/core");
 	const { loadMcpConfig, McpManager } = await import("@beemax/mcp-capability");
 	const { buildAgentFactory } = await import("./agent-factory.ts");
 	const { MemoryStore } = await import("@beemax/memory");
@@ -839,8 +839,6 @@ async function runChat(config: ReturnType<typeof loadConfig>, requestedMode: { f
 		if (presentationMode !== "full") process.stdout.write(`\n${text}\n`);
 	});
 	const memory = new MemoryStore(config.memory.dbPath);
-	const recoveredTasks = memory.reconcileExpiredTaskRuns();
-	if (recoveredTasks.retried || recoveredTasks.failed) process.stdout.write(`Recovered interrupted Tasks: retry=${recoveredTasks.retried}; failed=${recoveredTasks.failed}.\n`);
 	const mcp = new McpManager();
 	await mcp.connectAll(loadMcpConfig(config.mcp.configPath));
 
@@ -869,14 +867,18 @@ async function runChat(config: ReturnType<typeof loadConfig>, requestedMode: { f
 	const taskPlanRuntime = new TaskPlanRuntime();
 	const runTaskVerification = createTaskVerifier(createSubagentAgent, config.subagents.timeoutMs);
 	const verifyTask: import("@beemax/core").TaskGraphVerifier = (task, result, signal) => taskScheduler.run(task.ownerKey, () => runTaskVerification(task, result, signal), signal);
-	const recoveryController = new AbortController();
 	let recoveryStatus: TaskRecoveryStatus = { phase: config.subagents.enabled ? "running" : "disabled", plans: 0, succeeded: 0, failed: 0, blocked: 0 };
 	const taskRecovery = new TaskRecoveryRunner(memory, (task, signal, context) => taskScheduler.run(task.ownerKey, () => executePlannedTask(createSubagentAgent, task, task.executionScope as import("@beemax/gateway").SessionSource, signal, config.subagents.timeoutMs, context), signal), taskPlanRuntime, verifyTask);
-	const recoveryRun = (config.subagents.enabled
-		? taskRecovery.run({ maxConcurrent: config.subagents.maxConcurrent, signal: recoveryController.signal })
-		: Promise.resolve({ plans: 0, succeeded: 0, failed: 0, cancelled: 0, blocked: [] as string[] }))
-		.then((summary) => { recoveryStatus = { phase: config.subagents.enabled ? "completed" : "disabled", plans: summary.plans, succeeded: summary.succeeded, failed: summary.failed, blocked: summary.blocked.length }; if (summary.plans) process.stdout.write(`Resumed ${summary.plans} Task Plan(s): succeeded=${summary.succeeded}; failed=${summary.failed}; blocked=${summary.blocked.length}.\n`); })
-		.catch((error) => { recoveryStatus = { ...recoveryStatus, phase: "failed" }; process.stderr.write(`Task recovery failed: ${error instanceof Error ? error.message : String(error)}\n`); });
+	const recoveryService = new TaskRecoveryService(memory, config.subagents.enabled ? taskRecovery : undefined, {
+		runnerOptions: { maxConcurrent: config.subagents.maxConcurrent },
+		onCycle: ({ reconciled, recovery: summary }) => {
+			if (reconciled.retried || reconciled.failed) process.stdout.write(`Recovered interrupted Tasks: retry=${reconciled.retried}; failed=${reconciled.failed}.\n`);
+			recoveryStatus = { phase: config.subagents.enabled ? "completed" : "disabled", plans: summary.plans, succeeded: summary.succeeded, failed: summary.failed, blocked: summary.blocked.length };
+			if (summary.plans) process.stdout.write(`Resumed ${summary.plans} Task Plan(s): succeeded=${summary.succeeded}; failed=${summary.failed}; blocked=${summary.blocked.length}.\n`);
+		},
+		onError: (error) => { recoveryStatus = { ...recoveryStatus, phase: "failed" }; process.stderr.write(`Task recovery failed: ${error instanceof Error ? error.message : String(error)}\n`); },
+	});
+	recoveryService.start();
 	const subagents = config.subagents.enabled ? new SubagentManager({
 		maxConcurrent: config.subagents.maxConcurrent,
 		maxChildrenPerOwner: config.subagents.maxChildrenPerOwner,
@@ -1256,8 +1258,7 @@ async function runChat(config: ReturnType<typeof loadConfig>, requestedMode: { f
 			await new Promise<void>((resolve) => rl.once("close", resolve));
 		}
 	} finally {
-		recoveryController.abort(new Error("Chat shutting down"));
-		await recoveryRun;
+		await recoveryService.stop(new Error("Chat shutting down"));
 		if (subagentRefresh) clearInterval(subagentRefresh);
 		fullInput?.stop();
 		if (fullScreenActive) process.stdout.write(fullScreenExit());

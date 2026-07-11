@@ -8,7 +8,7 @@
  */
 
 import { AutomationStore } from "@beemax/automation";
-import { AutomationScheduler, BeeMaxAgentRuntime, HeartbeatRunner, ProfileTaskScheduler, SubagentManager, TaskPlanRuntime, TaskRecoveryRunner, ToolApprovalBroker, conversationKey, createSubagentTools, createTaskLedgerTools, createTaskOrchestrationTools, type SubagentTask, type TaskGraphExecutionContext, type TaskGraphVerifier, type TaskRecord } from "@beemax/core";
+import { AutomationScheduler, BeeMaxAgentRuntime, HeartbeatRunner, ProfileTaskScheduler, SubagentManager, TaskPlanRuntime, TaskRecoveryRunner, TaskRecoveryService, ToolApprovalBroker, conversationKey, createSubagentTools, createTaskLedgerTools, createTaskOrchestrationTools, type SubagentTask, type TaskGraphExecutionContext, type TaskGraphVerifier, type TaskRecord } from "@beemax/core";
 import {
 	Dispatcher,
 	FeishuAdapter,
@@ -68,8 +68,6 @@ export async function runGateway(config: BeeMaxConfig): Promise<void> {
 	try {
 
 	const memory = new MemoryStore(config.memory.dbPath);
-	const recoveredTasks = memory.reconcileExpiredTaskRuns();
-	if (recoveredTasks.retried || recoveredTasks.failed) console.info(`[beemax] reconciled interrupted Task Runs: retry=${recoveredTasks.retried}; failed=${recoveredTasks.failed}`);
 	startupCleanup.push(() => memory.close());
 	const automation = new AutomationStore(config.memory.dbPath);
 	startupCleanup.push(() => automation.close());
@@ -117,15 +115,19 @@ export async function runGateway(config: BeeMaxConfig): Promise<void> {
 	const taskPlanRuntime = new TaskPlanRuntime();
 	const runTaskVerification = createTaskVerifier(createSubagentAgent, config.subagents.timeoutMs);
 	const verifyTask: TaskGraphVerifier = (task, result, signal) => taskScheduler.run(task.ownerKey, () => runTaskVerification(task, result, signal), signal);
-	const recoveryController = new AbortController();
 	let recoveryStatus: TaskRecoveryStatus = { phase: config.subagents.enabled ? "running" : "disabled", plans: 0, succeeded: 0, failed: 0, blocked: 0 };
 	const taskRecovery = new TaskRecoveryRunner(memory, (task, signal, context) => taskScheduler.run(task.ownerKey, () => executePlannedTask(createSubagentAgent, task, task.executionScope as SessionSource, signal, config.subagents.timeoutMs, context), signal), taskPlanRuntime, verifyTask);
-	const recoveryRun = (config.subagents.enabled
-		? taskRecovery.run({ maxConcurrent: config.subagents.maxConcurrent, signal: recoveryController.signal })
-		: Promise.resolve({ plans: 0, succeeded: 0, failed: 0, cancelled: 0, blocked: [] as string[] }))
-		.then((summary) => { recoveryStatus = { phase: config.subagents.enabled ? "completed" : "disabled", plans: summary.plans, succeeded: summary.succeeded, failed: summary.failed, blocked: summary.blocked.length }; if (summary.plans) console.info(`[beemax] resumed ${summary.plans} Task Plan(s): succeeded=${summary.succeeded}; failed=${summary.failed}; blocked=${summary.blocked.length}`); })
-		.catch((error) => { recoveryStatus = { ...recoveryStatus, phase: "failed" }; console.error(`[beemax] Task recovery failed: ${error instanceof Error ? error.message : String(error)}`); });
-	startupCleanup.push(async () => { recoveryController.abort(new Error("Gateway shutting down")); await recoveryRun; });
+	const recoveryService = new TaskRecoveryService(memory, config.subagents.enabled ? taskRecovery : undefined, {
+		runnerOptions: { maxConcurrent: config.subagents.maxConcurrent },
+		onCycle: ({ reconciled, recovery: summary }) => {
+			if (reconciled.retried || reconciled.failed) console.info(`[beemax] reconciled interrupted Task Runs: retry=${reconciled.retried}; failed=${reconciled.failed}`);
+			recoveryStatus = { phase: config.subagents.enabled ? "completed" : "disabled", plans: summary.plans, succeeded: summary.succeeded, failed: summary.failed, blocked: summary.blocked.length };
+			if (summary.plans) console.info(`[beemax] resumed ${summary.plans} Task Plan(s): succeeded=${summary.succeeded}; failed=${summary.failed}; blocked=${summary.blocked.length}`);
+		},
+		onError: (error) => { recoveryStatus = { ...recoveryStatus, phase: "failed" }; console.error(`[beemax] Task recovery failed: ${error instanceof Error ? error.message : String(error)}`); },
+	});
+	recoveryService.start();
+	startupCleanup.push(() => recoveryService.stop(new Error("Gateway shutting down")));
 	const subagents = config.subagents.enabled ? new SubagentManager({
 		maxConcurrent: config.subagents.maxConcurrent,
 		maxChildrenPerOwner: config.subagents.maxChildrenPerOwner,

@@ -332,7 +332,9 @@ and cascades cancellation to its queued/running Sub-Agents. Delegated DAG Tasks,
 Task Runs, outcomes, recovery policy and Task Plan Execution Claims are durable.
 After restart, BeeMax resumes only explicitly safe, idempotent Tasks; interrupted
 unsafe work fails closed. Concurrent instances cannot recover the same Plan
-while its holder-fenced claim remains live. Child Pi transcripts remain in the
+while its holder-fenced claim remains live. A continuous recovery service also
+reconciles expired Execution Leases while Chat or Gateway remains online, so
+recovery does not depend on another restart. Child Pi transcripts remain in the
 profile session directory for audit.
 
 ## Codex image generation
