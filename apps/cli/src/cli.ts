@@ -33,7 +33,7 @@ import { configuredApiKey } from "./provider-resolver.ts";
 import { executionPortFor, executionSafeTools } from "./execution-composition.ts";
 import { createProfileRuntime } from "./runtime-composition.ts";
 import { createProfileControlHandler } from "./profile-control.ts";
-import { localChatTextDelta } from "./local-chat-renderer.ts";
+import { LocalReasoningPresenter, localChatTextDelta, localChatThinkingDelta, parseReasoningCommand } from "./local-chat-renderer.ts";
 import { renderTerminalMarkdown, StreamingTerminalMarkdown } from "./terminal-markdown.ts";
 import { inspectGateway, readGatewayLogs } from "./gateway-observability.ts";
 import { createTaskAwareConversationContext, ensureBuiltinTasks, installedVersion } from "./runtime-facts.ts";
@@ -797,6 +797,7 @@ async function runChat(config: ReturnType<typeof loadConfig>): Promise<void> {
 	);
 
 	try {
+		let reasoningDisplay = config.agent.reasoningDisplay;
 		process.stdout.write("beemax> ");
 		for await (const line of consoleLines()) {
 			const trimmed = line.trim();
@@ -805,19 +806,42 @@ async function runChat(config: ReturnType<typeof loadConfig>): Promise<void> {
 				continue;
 			}
 			if (trimmed === "/quit" || trimmed === "/exit") break;
+			const reasoningCommand = parseReasoningCommand(trimmed);
+			if (reasoningCommand) {
+				if (reasoningCommand.kind === "set") {
+					reasoningDisplay = reasoningCommand.display;
+					const warning = reasoningDisplay === "raw" ? " Raw reasoning may contain sensitive intermediate content." : "";
+					process.stdout.write(`Reasoning display set to ${reasoningDisplay}.${warning}\nbeemax> `);
+				} else if (reasoningCommand.kind === "status") {
+					process.stdout.write(`Reasoning display: ${reasoningDisplay}. Use /reasoning off|summary|raw.\nbeemax> `);
+				} else process.stdout.write("Usage: /reasoning off|summary|raw.\nbeemax> ");
+				continue;
+			}
 			const control = await runtime.handleControl({ source, text: trimmed });
 			if (control?.handled) {
 				process.stdout.write(`${control.message}\nbeemax> `);
 				continue;
 			}
 			let streamed = "";
+			const reasoning = new LocalReasoningPresenter(reasoningDisplay);
+			let answerStreamStarted = false;
 			const terminal = new StreamingTerminalMarkdown();
 			const result = await runtime.run({ source, text: trimmed, timeoutMs: 10 * 60_000, mode: "interactive" }, (event) => {
+				const thinkingDelta = localChatThinkingDelta(event);
+				if (thinkingDelta) process.stdout.write(reasoning.thinking(thinkingDelta));
 				const delta = localChatTextDelta(event);
-				if (delta) { streamed += delta; terminal.write(delta, (text) => process.stdout.write(text)); }
+				if (delta) {
+					if (!answerStreamStarted) process.stdout.write(reasoning.beforeAnswer());
+					answerStreamStarted = true;
+					streamed += delta;
+					terminal.write(delta, (text) => process.stdout.write(text));
+				}
 			});
 			if (streamed) terminal.finish((text) => process.stdout.write(text));
-			else process.stdout.write(renderTerminalMarkdown(result.answer));
+			else {
+				process.stdout.write(reasoning.beforeAnswer());
+				process.stdout.write(renderTerminalMarkdown(result.answer));
+			}
 			process.stdout.write("\nbeemax> ");
 		}
 	} finally {
