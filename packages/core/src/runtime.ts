@@ -37,7 +37,6 @@ export interface BeeMaxRuntimeFactoryOptions<Source extends BeeMaxRuntimeSource 
 	tools?: string[];
 	createTools: (source: Source, onResourcesChanged: () => void, getRuntimeApiKey: (provider: string) => Promise<string | undefined>) => ToolDefinition[];
 	authorizeTool?: BeeMaxRuntimeAuthorization<Source>;
-	approvalTools?: Iterable<string>;
 	toolAudit?: ToolRuntimeAuditSink;
 }
 
@@ -64,8 +63,6 @@ export function buildBeeMaxRuntimeFactory<Source extends BeeMaxRuntimeSource = B
 	const modelRegistry = ModelRegistry.create(authStorage, join(agentDir, "models.json"));
 	const resolvedModel = resolveModel(opts.provider, opts.model, opts.baseUrl, opts.customProtocol);
 	const model = opts.baseUrl ? { ...resolvedModel, baseUrl: opts.baseUrl } : resolvedModel;
-	const approvalTools = new Set(["bash", "edit", "write", ...(opts.approvalTools ?? [])]);
-
 	return async (sessionId: string, source: Source): Promise<AgentSession> => {
 		const apiKey = await opts.getApiKey(opts.provider);
 		if (apiKey) authStorage.setRuntimeApiKey(model.provider, apiKey);
@@ -87,14 +84,15 @@ export function buildBeeMaxRuntimeFactory<Source extends BeeMaxRuntimeSource = B
 			() => markRuntimeResourcesChanged(sessionRef),
 			(provider) => authStorage.getApiKey(provider, { includeFallback: false }),
 		);
-		const policies = new ToolPolicyRegistry(customTools, approvalTools);
+		const policies = new ToolPolicyRegistry(customTools);
+		policies.enable(opts.tools ?? [
+			"read", "bash", "edit", "write", "grep", "find", "ls", "web_search", "web_extract",
+			...customTools.map((tool) => tool.name),
+		]);
 		const governedTools = customTools.map((tool) => governToolDefinition(tool, policies.get(tool.name), source, opts.toolAudit));
 		const { session, modelFallbackMessage } = await createAgentSession({
 			cwd, agentDir, model,
-			tools: opts.tools ?? [
-				"read", "bash", "edit", "write", "grep", "find", "ls", "web_search", "web_extract",
-				...governedTools.map((tool) => tool.name),
-			],
+			tools: policies.enabledNames(),
 			customTools: governedTools, authStorage, modelRegistry, settingsManager, resourceLoader, sessionManager,
 		});
 		sessionRef = session;

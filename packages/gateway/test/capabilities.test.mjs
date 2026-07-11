@@ -127,7 +127,6 @@ test("MCP tools are discovered, callable, and mutating tools require approval", 
 		assert.match(resource.content[0].text, /Brief resource/);
 		const prompt = await tools.get("mcp_smoke_prompt_get").execute("prompt", { name: "brief-template", arguments: { topic: "memory" } }, new AbortController().signal);
 		assert.match(prompt.content[0].text, /Brief memory/);
-		assert.deepEqual(manager.getApprovalTools(), ["mcp_smoke_mutate"]);
 	} finally {
 		await manager.close();
 	}

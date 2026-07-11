@@ -93,8 +93,7 @@ export async function runGateway(config: BeeMaxConfig): Promise<void> {
 		reason: event.reason,
 		conversation: `${event.source.platform}:${event.source.chatId}`,
 	}));
-	const mcpApproval = new Set(mcp.getApprovalTools());
-	const readOnlyMcpTools = mcp.getTools().filter((tool) => !mcpApproval.has(tool.name));
+	const readOnlyMcpTools = mcp.getTools().filter((tool) => tool.beemaxPolicy?.sideEffect === "none");
 	const mainMcpTools = config.agent.toolset === "safe" ? readOnlyMcpTools : mcp.getTools();
 	const feishuMeetingTools = createFeishuMeetingTools(() => adapter.apiClient);
 
@@ -129,7 +128,6 @@ export async function runGateway(config: BeeMaxConfig): Promise<void> {
 		tools: executionSafeTools(config, mainAgentTools(config.agent.toolset, mainMcpTools.map((tool) => tool.name))),
 		customTools: [...mainMcpTools, ...feishuMeetingTools],
 		sessionTools: (source) => subagents ? createSubagentTools(subagents, source) : [],
-		approvalTools: config.agent.toolset === "safe" ? [] : mcp.getApprovalTools(),
 		automationStore: automation,
 		wakeAutomation: () => scheduler?.wake(),
 		imageGeneration: {

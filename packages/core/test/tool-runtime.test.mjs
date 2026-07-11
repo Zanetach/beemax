@@ -8,18 +8,34 @@ import { join } from "node:path";
 
 const source = { platform: "cli", chatId: "local", chatType: "dm", userId: "local" };
 
-test("Tool policy registry prefers first-class metadata and keeps legacy tools conservative", () => {
+test("Tool policy registry prefers first-class metadata and keeps unclassified tools conservative", () => {
 	const explicit = withToolPolicy(defineTool({
 		name: "calendar_create", label: "Create Calendar Event", description: "Create an event", parameters: Type.Object({}),
 		execute: async () => ({ content: [{ type: "text", text: "ok" }], details: {} }),
 	}), { ...MUTATING_TOOL_POLICY, risk: "medium", reversible: true, impact: "Creates a calendar event that can be deleted" });
 	const legacy = defineTool({ name: "legacy_read", label: "Legacy Read", description: "Read", parameters: Type.Object({}), execute: async () => ({ content: [], details: {} }) });
-	const registry = new ToolPolicyRegistry([explicit, legacy], ["unknown_mutation"]);
+	const registry = new ToolPolicyRegistry([explicit, legacy]);
 	assert.equal(registry.get("calendar_create").risk, "medium");
 	assert.equal(registry.get("calendar_create").approval, "always");
-	assert.deepEqual(registry.get("legacy_read"), READ_ONLY_TOOL_POLICY);
-	assert.equal(registry.get("unknown_mutation").risk, "high");
+	assert.equal(registry.get("legacy_read").approval, "always");
+	assert.equal(registry.get("legacy_read").risk, "medium");
 	assert.equal(registry.get("unregistered").approval, "always");
+});
+
+test("Tool capability grants combine availability and policy in one catalog", () => {
+	const external = withToolPolicy(defineTool({
+		name: "calendar_create", label: "Create", description: "Create", parameters: Type.Object({}),
+		execute: async () => ({ content: [], details: {} }),
+	}), { ...MUTATING_TOOL_POLICY, risk: "medium" });
+	const catalog = new ToolPolicyRegistry([external]);
+	catalog.enable(["read", "calendar_create"]);
+	assert.deepEqual(catalog.enabledNames(), ["calendar_create", "read"]);
+	assert.deepEqual(catalog.grant("calendar_create"), {
+		name: "calendar_create",
+		enabled: true,
+		policy: catalog.get("calendar_create"),
+	});
+	assert.equal(catalog.grant("write").enabled, false);
 });
 
 test("governed read-only tools retry safely, truncate output, and emit lifecycle audit", async () => {

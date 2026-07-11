@@ -49,7 +49,6 @@ export interface AgentFactoryOptions {
 	memoryStore?: MemoryToolStore;
 	customTools?: ToolDefinition[];
 	sessionTools?: (source: SessionSource) => ToolDefinition[];
-	approvalTools?: Iterable<string>;
 	executionPort?: ExecutionPort;
 	/** Selects a configured execution backend when a session is created. */
 	executionPortForSource?: (source: SessionSource) => ExecutionPort;
@@ -63,11 +62,6 @@ export interface AgentFactoryOptions {
 	};
 }
 
-const REQUIRES_APPROVAL = new Set([
-	// Pi built-ins remain here for compatibility; first-class capabilities declare beemaxPolicy at their source.
-	"bash", "edit", "write",
-]);
-
 export function buildAgentFactory(opts: AgentFactoryOptions) {
 	const webTools = createWebTools();
 	const browserTools = createBrowserTools();
@@ -78,7 +72,6 @@ export function buildAgentFactory(opts: AgentFactoryOptions) {
 		provider: valueOf(opts.provider), model: valueOf(opts.model), baseUrl: valueOf(opts.baseUrl), customProtocol: valueOf(opts.customProtocol), cwd: opts.cwd, agentDir: opts.agentDir,
 		getApiKey: opts.getApiKey, systemPrompt: opts.systemPrompt ?? DEFAULT_SYSTEM_PROMPT, skillToolset: opts.skillToolset ?? "standard",
 		tools: opts.tools,
-		approvalTools: [...REQUIRES_APPROVAL, ...(opts.approvalTools ?? [])],
 		toolAudit: toolAudit.append,
 		authorizeTool: opts.authorizeTool ? async (source, toolName, args, policy, signal) => opts.authorizeTool!({ source, toolName, args, policy }, signal) : undefined,
 		createTools: (source, onResourcesChanged, getRuntimeApiKey) => {

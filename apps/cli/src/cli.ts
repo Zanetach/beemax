@@ -851,8 +851,7 @@ async function runChat(config: ReturnType<typeof loadConfig>, requestedMode: { f
 		chatType: "dm",
 		userId: "local",
 	};
-	const mcpApproval = new Set(mcp.getApprovalTools());
-	const readOnlyMcpTools = mcp.getTools().filter((tool) => !mcpApproval.has(tool.name));
+	const readOnlyMcpTools = mcp.getTools().filter((tool) => tool.beemaxPolicy?.sideEffect === "none");
 	const createSubagentAgent = buildAgentFactory({
 		provider: () => config.model.provider,
 		model: () => config.model.model,
@@ -886,7 +885,6 @@ async function runChat(config: ReturnType<typeof loadConfig>, requestedMode: { f
 		executionPortForSource: executionPortFor(config),
 		customTools: mcp.getTools(),
 		tools: executionSafeTools(config, mainAgentTools(config.agent.toolset, mcp.getTools().map((tool) => tool.name))),
-		approvalTools: mcp.getApprovalTools(),
 		authorizeTool: (request, signal) => localApproval.authorize(request, signal),
 		sessionTools: (sessionSource) => subagents ? createSubagentTools(subagents, sessionSource) : [],
 	});
@@ -952,7 +950,7 @@ async function runChat(config: ReturnType<typeof loadConfig>, requestedMode: { f
 		};
 		const status = async () => `Profile: ${config.profile}\nModel: ${config.model.provider}/${config.model.model}\nSession: ${source.threadId ?? "default"}\nRun: ${runtime.isBusy() ? "running" : "idle"}\nReasoning: ${reasoningDisplay}\nDetails: ${detailsDisplay}\nToolset: ${config.agent.toolset}\n${await usage()}`;
 		const toolsStatus = () => {
-			const tools = mcp.getTools().map((tool) => `${tool.name}${mcpApproval.has(tool.name) ? " (approval required)" : ""}`);
+			const tools = mcp.getTools().map((tool) => `${tool.name}${tool.beemaxPolicy?.approval === "always" ? " (approval required)" : ""}`);
 			return `Toolset: ${config.agent.toolset}\nMCP: ${tools.length ? tools.join(", ") : "no MCP tools connected"}`;
 		};
 		const sessions = async (query?: string) => {

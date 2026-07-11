@@ -4,7 +4,7 @@ import { readFileSync } from "node:fs";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport, getDefaultEnvironment } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
-import { MUTATING_TOOL_POLICY, READ_ONLY_TOOL_POLICY, defineTool, withToolPolicy, type ToolDefinition, type ToolPolicy } from "@beemax/core";
+import { MUTATING_TOOL_POLICY, READ_ONLY_TOOL_POLICY, defineTool, withToolPolicy, type GovernedToolDefinition, type ToolPolicy } from "@beemax/core";
 import { Type, type TSchema } from "typebox";
 
 export type McpServerConfig = {
@@ -36,8 +36,7 @@ export interface McpServerStatus {
 
 interface Connection {
 	client: Client;
-	tools: ToolDefinition[];
-	approvalTools: string[];
+	tools: GovernedToolDefinition[];
 	resources: number;
 	prompts: number;
 }
@@ -75,12 +74,8 @@ export class McpManager {
 		return this.getStatus();
 	}
 
-	getTools(): ToolDefinition[] {
+	getTools(): GovernedToolDefinition[] {
 		return [...this.connections.values()].flatMap((connection) => connection.tools);
-	}
-
-	getApprovalTools(): string[] {
-		return [...this.connections.values()].flatMap((connection) => connection.approvalTools);
 	}
 
 	getStatus(): McpServerStatus[] {
@@ -121,12 +116,10 @@ export class McpManager {
 				? await withTimeout(client.listPrompts(), this.initializationTimeoutMs, `${name} prompt discovery`).then((result) => result.prompts.length).catch(() => 0)
 				: 0;
 			const names = new Set<string>();
-			const approvalTools: string[] = [];
-			const tools: ToolDefinition[] = listed.tools.map((tool) => {
+			const tools: GovernedToolDefinition[] = listed.tools.map((tool) => {
 				const toolName = mcpToolName(name, tool.name);
 				if (names.has(toolName)) throw new Error(`MCP tool name collision after normalization: ${tool.name}`);
 				names.add(toolName);
-				if (tool.annotations?.readOnlyHint !== true) approvalTools.push(toolName);
 				const policy: ToolPolicy = tool.annotations?.readOnlyHint === true
 					? { ...READ_ONLY_TOOL_POLICY, timeoutMs: 130_000, impact: `Reads data through MCP server ${name}` }
 					: {
@@ -162,7 +155,7 @@ export class McpManager {
 					},
 				}), policy);
 			});
-			const addUtility = (tool: ToolDefinition) => {
+			const addUtility = (tool: GovernedToolDefinition) => {
 				if (names.has(tool.name)) throw new Error(`MCP utility tool name collision: ${tool.name}`);
 				names.add(tool.name);
 				tools.push(tool);
@@ -203,7 +196,7 @@ export class McpManager {
 					},
 				}), { ...READ_ONLY_TOOL_POLICY, impact: `Reads one prompt template exposed by MCP server ${name}` }));
 			}
-			return { client, tools, approvalTools, resources, prompts };
+			return { client, tools, resources, prompts };
 		} catch (error) {
 			await client.close().catch(() => undefined);
 			throw error;

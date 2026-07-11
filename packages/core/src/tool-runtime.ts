@@ -16,6 +16,12 @@ export interface ToolPolicy {
 	impact: string;
 }
 
+export interface ToolCapabilityGrant {
+	name: string;
+	enabled: boolean;
+	policy: ToolPolicy;
+}
+
 export type GovernedToolDefinition = ToolDefinition & { beemaxPolicy?: ToolPolicy };
 export type ToolRuntimeAuditEvent = {
 	phase: "requested" | "allowed" | "blocked" | "started" | "completed" | "failed";
@@ -49,19 +55,38 @@ const BUILTIN_POLICIES = new Map<string, ToolPolicy>([
 /** Core-owned policy catalog used by execution, approval, audit, and future health reporting. */
 export class ToolPolicyRegistry {
 	private readonly policies = new Map<string, ToolPolicy>();
+	private readonly enabledTools = new Set<string>();
 
-	constructor(tools: Iterable<ToolDefinition> = [], legacyApprovalTools: Iterable<string> = []) {
+	constructor(tools: Iterable<ToolDefinition> = []) {
 		for (const [name, policy] of BUILTIN_POLICIES) this.policies.set(name, policy);
-		const approval = new Set(legacyApprovalTools);
 		for (const tool of tools) {
 			const explicit = (tool as GovernedToolDefinition).beemaxPolicy;
-			this.policies.set(tool.name, normalizeToolPolicy(explicit ?? (approval.has(tool.name) ? MUTATING_TOOL_POLICY : READ_ONLY_TOOL_POLICY)));
+			this.policies.set(tool.name, normalizeToolPolicy(explicit ?? {
+				...MUTATING_TOOL_POLICY,
+				risk: "medium",
+				impact: "Tool capability has no first-class policy; treat it conservatively",
+			}));
 		}
-		for (const name of approval) if (!this.policies.has(name)) this.policies.set(name, { ...MUTATING_TOOL_POLICY });
 	}
 
 	get(name: string): ToolPolicy {
 		return this.policies.get(name) ?? { ...MUTATING_TOOL_POLICY, risk: "medium", impact: "Tool capability is not yet registered; treat it conservatively" };
+	}
+
+	enable(names: Iterable<string>): void {
+		for (const name of names) this.enabledTools.add(name);
+	}
+
+	disable(names: Iterable<string>): void {
+		for (const name of names) this.enabledTools.delete(name);
+	}
+
+	grant(name: string): ToolCapabilityGrant {
+		return { name, enabled: this.enabledTools.has(name), policy: { ...this.get(name) } };
+	}
+
+	enabledNames(): string[] {
+		return [...this.enabledTools].sort((a, b) => a.localeCompare(b));
 	}
 
 	list(): Array<{ name: string; policy: ToolPolicy }> {

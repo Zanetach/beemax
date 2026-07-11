@@ -36,7 +36,7 @@ export {
 	type BeeMaxRuntimeFactoryOptions,
 	type BeeMaxRuntimeSource,
 } from "./runtime.ts";
-export { ToolPolicyRegistry, READ_ONLY_TOOL_POLICY, MUTATING_TOOL_POLICY, governToolDefinition, withToolPolicy, type GovernedToolDefinition, type ToolApprovalMode, type ToolPolicy, type ToolRisk, type ToolRuntimeAuditEvent, type ToolRuntimeAuditSink, type ToolSideEffect } from "./tool-runtime.ts";
+export { ToolPolicyRegistry, READ_ONLY_TOOL_POLICY, MUTATING_TOOL_POLICY, governToolDefinition, withToolPolicy, type GovernedToolDefinition, type ToolApprovalMode, type ToolCapabilityGrant, type ToolPolicy, type ToolRisk, type ToolRuntimeAuditEvent, type ToolRuntimeAuditSink, type ToolSideEffect } from "./tool-runtime.ts";
 export { FileToolAuditJournal, type DurableToolAuditEvent } from "./tool-audit-journal.ts";
 export { getRuntimeCapabilitySnapshot, type RuntimeCapabilitySnapshot, type RuntimeModelCapability, type RuntimeProviderCapability } from "./runtime-capabilities.ts";
 export {
