@@ -32,7 +32,7 @@ import { runSetup, type SetupOptions } from "./setup.ts";
 import { configuredRuntimeModels, ProfileModelCatalog, renderModelProviderChoices, resolveProviderSelection } from "./model-catalog.ts";
 import { executionPortFor, executionSafeTools } from "./execution-composition.ts";
 import { createProfileAgentRuntime } from "./runtime-composition.ts";
-import { createProfileControlHandler, renderTaskPlans, renderTaskRecoveryStatus, renderTaskSchedulerStatus, renderTasks, type TaskRecoveryStatus } from "./profile-control.ts";
+import { createProfileControlHandler, renderTaskPlanRetryResult, renderTaskPlans, renderTaskRecoveryStatus, renderTaskSchedulerStatus, renderTasks, type TaskRecoveryStatus } from "./profile-control.ts";
 import { LocalActivityPresenter, LocalReasoningPresenter, renderChatFooter, type DetailsDisplay, parseReasoningCommand } from "./local-chat-renderer.ts";
 import { renderTerminalMarkdown, StreamingTerminalMarkdown } from "./terminal-markdown.ts";
 import { fullScreenEnter, fullScreenExit, resolveChatPresentationMode, type ChatPresentationMode } from "./chat-mode.ts";
@@ -1137,7 +1137,7 @@ async function runChat(config: ReturnType<typeof loadConfig>, requestedMode: { f
 				if (command.action === "retry" && command.planId) {
 					if (!config.subagents.enabled) { process.stdout.write("Task Plan retry is unavailable because Sub-Agents are disabled.\n"); writePrompt(); return; }
 					const result = await taskRecovery.retry([conversationKey(source)], command.planId, { maxConcurrent: config.subagents.maxConcurrent });
-					process.stdout.write(`${result.prepared ? `Retried Task Plan ${command.planId}: prepared=${result.prepared}; succeeded=${result.succeeded}; failed=${result.failed}; blocked=${result.blocked.length}.` : `No recoverable failed Tasks found in owned Plan ${command.planId}.`}\n`);
+					process.stdout.write(`${renderTaskPlanRetryResult(command.planId, result)}\n`);
 					writePrompt(); return;
 				}
 				const tasks = runtime.tasks(source, { limit: 50 });

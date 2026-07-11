@@ -1,4 +1,4 @@
-import { parseInteractionCommand, type AgentControlHandler, type InteractionEventAdapter, type ProfileTaskSchedulerSnapshot, type TaskPlanRecord, type TaskRecord } from "@beemax/core";
+import { parseInteractionCommand, type AgentControlHandler, type InteractionEventAdapter, type ProfileTaskSchedulerSnapshot, type TaskPlanRecord, type TaskPlanRetryResult, type TaskRecord } from "@beemax/core";
 import type { SessionSource } from "@beemax/gateway";
 import type { BeeMaxAgentRuntime } from "@beemax/core";
 import type { BeeMaxConfig } from "./config.ts";
@@ -11,7 +11,7 @@ export interface TaskRecoveryStatus { phase: "disabled" | "running" | "completed
 export interface ProfileOperationalFacts { taskScheduler?: ProfileTaskSchedulerSnapshot; taskRecovery?: TaskRecoveryStatus; }
 export interface ProfileControlActions {
 	verifyTaskPlan?: (source: SessionSource, planId: string) => Promise<{ attempted: number; accepted: number; rejected: number; unavailable: number }>;
-	retryTaskPlan?: (source: SessionSource, planId: string) => Promise<{ prepared: number; succeeded: number; failed: number; blocked: string[] }>;
+	retryTaskPlan?: (source: SessionSource, planId: string) => Promise<TaskPlanRetryResult>;
 	cancelTaskPlan?: (source: SessionSource, planId: string) => { active: number; tasks: number };
 }
 
@@ -35,6 +35,12 @@ export function renderTasks(tasks: readonly TaskRecord[]): string {
 		const quality = task.verificationStatus ? ` [quality:${task.verificationStatus === "accepted" ? "verified" : task.verificationStatus}${task.correctiveAttempts ? ` corrections=${task.correctiveAttempts}` : ""}]` : "";
 		return `${task.id}  [${task.kind}/${task.status}]${task.planId ? ` [plan:${task.planId}]` : ""}${quality}  ${task.title}`;
 	}).join("\n") : "No durable Tasks are visible to this conversation.";
+}
+
+export function renderTaskPlanRetryResult(planId: string, result: TaskPlanRetryResult): string {
+	const verification = result.verification;
+	if (!verification.attempted && !result.prepared) return `No recoverable failed Tasks or unavailable Candidate Results found in owned Plan ${planId}.`;
+	return `Retried Task Plan ${planId}: verification attempted=${verification.attempted}; accepted=${verification.accepted}; rejected=${verification.rejected}; unavailable=${verification.unavailable}; execution prepared=${result.prepared}; succeeded=${result.succeeded}; failed=${result.failed}; blocked=${result.blocked.length}.`;
 }
 
 /** Profile control plane shared by local chat and every Gateway channel. */
@@ -106,7 +112,7 @@ export function createProfileControlHandler(
 		if (taskCommand?.kind === "tasks" && taskCommand.action === "retry" && taskCommand.planId) {
 			if (!actions?.retryTaskPlan) return { handled: true, message: "Task Plan retry is unavailable in this runtime." };
 			const result = await actions.retryTaskPlan(source, taskCommand.planId);
-			return { handled: true, message: result.prepared ? `Retried Task Plan ${taskCommand.planId}: prepared=${result.prepared}; succeeded=${result.succeeded}; failed=${result.failed}; blocked=${result.blocked.length}.` : `No recoverable failed Tasks found in owned Plan ${taskCommand.planId}.` };
+			return { handled: true, message: renderTaskPlanRetryResult(taskCommand.planId, result) };
 		}
 		if (taskCommand?.kind === "tasks" && taskCommand.action === "cancel" && taskCommand.planId) {
 			if (!actions?.cancelTaskPlan) return { handled: true, message: "Task Plan cancellation is unavailable in this runtime." };

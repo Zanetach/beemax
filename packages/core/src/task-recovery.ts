@@ -4,7 +4,7 @@ import { TaskPlanRuntime } from "./task-plan-runtime.ts";
 
 export interface TaskRecoveryRunnerOptions { maxConcurrent?: number; maxCorrectiveAttempts?: number; signal?: AbortSignal; }
 export interface TaskRecoveryRunnerResult { plans: number; succeeded: number; failed: number; cancelled: number; blocked: string[]; }
-export interface TaskPlanRetryResult extends TaskRecoveryRunnerResult { prepared: number; }
+export interface TaskPlanRetryResult extends TaskRecoveryRunnerResult { prepared: number; verification: TaskVerificationRetryResult; }
 export interface TaskPlanCancelResult { active: number; tasks: number; }
 export interface TaskVerificationRetryResult { attempted: number; accepted: number; rejected: number; unavailable: number; }
 const PLAN_EXECUTION_LEASE_MS = 61 * 60_000;
@@ -32,10 +32,11 @@ export class TaskRecoveryRunner {
 	}
 
 	async retry(ownerKeys: string[], planId: string, options: TaskRecoveryRunnerOptions = {}): Promise<TaskPlanRetryResult> {
+		const verification = await this.reverify(ownerKeys, planId, options.signal);
 		const prepared = this.ledger.prepareTaskPlanRetry(ownerKeys, planId);
-		if (!prepared) return { prepared: 0, plans: 0, succeeded: 0, failed: 0, cancelled: 0, blocked: [] };
+		if (!prepared) return { verification, prepared: 0, plans: 0, succeeded: 0, failed: 0, cancelled: 0, blocked: [] };
 		const candidates = this.ledger.queryTasks({ ownerKeys, planIds: [planId], statuses: ["pending"], limit: 100 }).filter(recoverable);
-		return { prepared, ...await this.executePlans(candidates, options) };
+		return { verification, prepared, ...await this.executePlans(candidates, options) };
 	}
 
 	async reverify(ownerKeys: string[], planId: string, signal?: AbortSignal): Promise<TaskVerificationRetryResult> {

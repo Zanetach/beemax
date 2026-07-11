@@ -49,3 +49,16 @@ test("shared /tasks verify retries Verification without exposing an execution re
 	assert.equal(requested, "plan-a");
 	assert.match(result.message, /attempted=2; accepted=1; rejected=1; unavailable=0/);
 });
+
+test("shared /tasks retry reports Candidate verification separately from corrective execution", async () => {
+	const config = { profile: "personal", model: { provider: "test", model: "model" }, models: [] };
+	const control = createProfileControlHandler({}, config, undefined, undefined, {
+		retryTaskPlan: async () => ({
+			verification: { attempted: 2, accepted: 1, rejected: 1, unavailable: 0 },
+			prepared: 1, plans: 1, succeeded: 1, failed: 0, cancelled: 0, blocked: [],
+		}),
+	});
+	const result = await control({ source: { platform: "feishu", chatId: "chat", chatType: "dm", userId: "user" }, text: "/tasks retry plan-a" });
+	assert.match(result.message, /verification attempted=2; accepted=1; rejected=1; unavailable=0/);
+	assert.match(result.message, /execution prepared=1; succeeded=1; failed=0; blocked=0/);
+});

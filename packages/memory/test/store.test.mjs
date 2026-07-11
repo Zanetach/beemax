@@ -164,6 +164,75 @@ test("Verification Retry distinguishes rejected and still-unavailable Candidate 
 	} finally { store.close(); rmSync(root, { recursive: true, force: true }); }
 });
 
+test("ordinary Task Plan retry verifies unavailable Candidate Results before execution replay", async () => {
+	const root = mkdtempSync(join(tmpdir(), "beemax-smart-task-retry-"));
+	const store = new MemoryStore(join(root, "memory.db"));
+	try {
+		const scope = { platform: "cli", chatId: "local", chatType: "dm", userId: "local" };
+		const graph = new TaskGraph(store);
+		graph.createPlan({ id: "smart-retry-plan", ownerKey: "cli:local:local", tasks: [{
+			id: "smart-retry-task", title: "Verify first", acceptanceCriteria: "Passes an independent check",
+			recoveryPolicy: "safe_retry", idempotencyKey: "smart-retry-plan:task", executionScope: scope,
+		}] }, 10);
+		await graph.run(["cli:local:local"], "smart-retry-plan", async () => ({ output: "candidate" }), { verify: async () => { throw new Error("verifier offline"); } });
+		let executions = 0;
+		const runner = new TaskRecoveryRunner(store, async () => { executions++; return { output: "replayed" }; }, undefined, async (_task, result) => ({ accepted: result.output === "candidate", evidence: "candidate checked" }));
+		assert.deepEqual(await runner.retry(["cli:local:local"], "smart-retry-plan"), {
+			verification: { attempted: 1, accepted: 1, rejected: 0, unavailable: 0 },
+			prepared: 0, plans: 0, succeeded: 0, failed: 0, cancelled: 0, blocked: [],
+		});
+		assert.equal(executions, 0);
+		const task = store.queryTasks({ ownerKeys: ["cli:local:local"], id: "smart-retry-task" })[0];
+		assert.deepEqual({ status: task.status, verificationStatus: task.verificationStatus, result: task.result }, { status: "succeeded", verificationStatus: "accepted", result: "candidate" });
+	} finally { store.close(); rmSync(root, { recursive: true, force: true }); }
+});
+
+test("ordinary Task Plan retry never replays a Candidate Result while verification remains unavailable", async () => {
+	const root = mkdtempSync(join(tmpdir(), "beemax-unavailable-task-retry-"));
+	const store = new MemoryStore(join(root, "memory.db"));
+	try {
+		const scope = { platform: "cli", chatId: "local", chatType: "dm", userId: "local" };
+		const graph = new TaskGraph(store);
+		graph.createPlan({ id: "unavailable-retry-plan", ownerKey: "cli:local:local", tasks: [{
+			id: "unavailable-retry-task", title: "Wait for verifier", acceptanceCriteria: "Passes an independent check",
+			recoveryPolicy: "safe_retry", idempotencyKey: "unavailable-retry-plan:task", executionScope: scope,
+		}] }, 10);
+		await graph.run(["cli:local:local"], "unavailable-retry-plan", async () => ({ output: "candidate" }), { verify: async () => { throw new Error("verifier offline"); } });
+		let executions = 0;
+		const runner = new TaskRecoveryRunner(store, async () => { executions++; return { output: "replayed" }; }, undefined, async () => { throw new Error("still offline"); });
+		assert.deepEqual(await runner.retry(["cli:local:local"], "unavailable-retry-plan"), {
+			verification: { attempted: 1, accepted: 0, rejected: 0, unavailable: 1 },
+			prepared: 0, plans: 0, succeeded: 0, failed: 0, cancelled: 0, blocked: [],
+		});
+		assert.equal(executions, 0);
+		const task = store.queryTasks({ ownerKeys: ["cli:local:local"], id: "unavailable-retry-task" })[0];
+		assert.deepEqual({ status: task.status, verificationStatus: task.verificationStatus, candidateResult: task.candidateResult }, { status: "failed", verificationStatus: "unavailable", candidateResult: "candidate" });
+	} finally { store.close(); rmSync(root, { recursive: true, force: true }); }
+});
+
+test("ordinary Task Plan retry replays execution after Candidate Result rejection", async () => {
+	const root = mkdtempSync(join(tmpdir(), "beemax-rejected-task-retry-"));
+	const store = new MemoryStore(join(root, "memory.db"));
+	try {
+		const scope = { platform: "cli", chatId: "local", chatType: "dm", userId: "local" };
+		const graph = new TaskGraph(store);
+		graph.createPlan({ id: "rejected-retry-plan", ownerKey: "cli:local:local", tasks: [{
+			id: "rejected-retry-task", title: "Correct rejected work", acceptanceCriteria: "Output is corrected",
+			recoveryPolicy: "safe_retry", idempotencyKey: "rejected-retry-plan:task", executionScope: scope,
+		}] }, 10);
+		await graph.run(["cli:local:local"], "rejected-retry-plan", async () => ({ output: "candidate" }), { verify: async () => { throw new Error("verifier offline"); } });
+		let executions = 0;
+		const runner = new TaskRecoveryRunner(store, async () => { executions++; return { output: "corrected" }; }, undefined, async (_task, result) => result.output === "corrected" ? { accepted: true, evidence: "corrected output checked" } : { accepted: false, feedback: "candidate is incomplete" });
+		assert.deepEqual(await runner.retry(["cli:local:local"], "rejected-retry-plan"), {
+			verification: { attempted: 1, accepted: 0, rejected: 1, unavailable: 0 },
+			prepared: 1, plans: 1, succeeded: 1, failed: 0, cancelled: 0, blocked: [],
+		});
+		assert.equal(executions, 1);
+		const task = store.queryTasks({ ownerKeys: ["cli:local:local"], id: "rejected-retry-task" })[0];
+		assert.deepEqual({ status: task.status, verificationStatus: task.verificationStatus, result: task.result }, { status: "succeeded", verificationStatus: "accepted", result: "corrected" });
+	} finally { store.close(); rmSync(root, { recursive: true, force: true }); }
+});
+
 test("legacy Verification Status migrates additively into Verification Outcome", () => {
 	const root = mkdtempSync(join(tmpdir(), "beemax-verification-migration-"));
 	const path = join(root, "memory.db");
@@ -320,8 +389,8 @@ test("manual Task Plan retry is owner-scoped and requeues only recoverable faile
 		const scope = { platform: "cli", chatId: "local", chatType: "dm", userId: "local" };
 		store.record({ id: "failed", ownerKey: "cli:local:local", kind: "delegated", title: "Retry", description: "retry safely", status: "failed", planId: "retry-plan", recoveryPolicy: "safe_retry", idempotencyKey: "retry-plan:failed", executionScope: scope, createdAt: 1, finishedAt: 2, error: "model failed" });
 		const runner = new TaskRecoveryRunner(store, async () => ({ output: "retried" }));
-		assert.deepEqual(await runner.retry(["cli:other:local"], "retry-plan"), { prepared: 0, plans: 0, succeeded: 0, failed: 0, cancelled: 0, blocked: [] });
-		assert.deepEqual(await runner.retry(["cli:local:local"], "retry-plan"), { prepared: 1, plans: 1, succeeded: 1, failed: 0, cancelled: 0, blocked: [] });
+		assert.deepEqual(await runner.retry(["cli:other:local"], "retry-plan"), { verification: { attempted: 0, accepted: 0, rejected: 0, unavailable: 0 }, prepared: 0, plans: 0, succeeded: 0, failed: 0, cancelled: 0, blocked: [] });
+		assert.deepEqual(await runner.retry(["cli:local:local"], "retry-plan"), { verification: { attempted: 0, accepted: 0, rejected: 0, unavailable: 0 }, prepared: 1, plans: 1, succeeded: 1, failed: 0, cancelled: 0, blocked: [] });
 		assert.equal(store.queryTasks({ ownerKeys: ["cli:local:local"], id: "failed" })[0].result, "retried");
 		assert.equal(store.queryTaskPlans({ ownerKeys: ["cli:local:local"], id: "retry-plan" })[0].status, "succeeded");
 	} finally { store.close(); rmSync(root, { recursive: true, force: true }); }
@@ -344,7 +413,7 @@ test("Task Plan cancellation is owner-scoped and persists Tasks and active Runs 
 		assert.equal(plan.taskCount, 2);
 		assert.equal(plan.cancelled, 2);
 		assert.ok(plan.finishedAt >= plan.startedAt);
-		assert.deepEqual(await runner.retry(["cli:local:local"], "cancel-plan"), { prepared: 0, plans: 0, succeeded: 0, failed: 0, cancelled: 0, blocked: [] });
+		assert.deepEqual(await runner.retry(["cli:local:local"], "cancel-plan"), { verification: { attempted: 0, accepted: 0, rejected: 0, unavailable: 0 }, prepared: 0, plans: 0, succeeded: 0, failed: 0, cancelled: 0, blocked: [] });
 		assert.equal(store.queryTaskPlans({ ownerKeys: ["cli:local:local"], id: "cancel-plan" })[0].status, "cancelled");
 	} finally { store.close(); rmSync(root, { recursive: true, force: true }); }
 });
