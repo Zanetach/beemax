@@ -44,6 +44,8 @@ import { existsSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 
+const PI_SKILLS_BROWSER_TOOLS_COMMIT = "90bb51cae36515a648515b633a81c0c6efc8c74d";
+
 async function main(): Promise<void> {
 	const parsed = parseArgs(process.argv.slice(2));
 	applyRuntimePaths(parsed);
@@ -619,22 +621,55 @@ async function runProfileCommand(parsed: ParsedArgs): Promise<void> {
 async function runSkillsCommand(parsed: ParsedArgs): Promise<void> {
 	const action = parsed.positionals[1] ?? "list";
 	const profile = selectedProfile(parsed);
-	const { readdir, readFile } = await import("node:fs/promises");
+	const { lstat, mkdir, readdir, readFile, realpath } = await import("node:fs/promises");
 	const paths = resolveProfileLocation(profile, parsed.configPath);
 	if (action === "sync") {
 		await syncBuiltinSkills(profile);
 		console.log(`Synced bundled Skills into Agent '${profile}' without replacing existing skills.`);
 		return;
 	}
-	if (action !== "list") throw new Error("Usage: beemax skills [list | sync] --profile <name>");
-	const skills: Array<{ name: string; description: string; sha256: string }> = [];
-	try {
-		for (const entry of await readdir(join(paths.homePath, "skills"), { withFileTypes: true })) {
-			if (!entry.isDirectory()) continue;
-			const content = await readFile(join(paths.homePath, "skills", entry.name, "SKILL.md"), "utf8").catch(() => "");
-			const description = content.match(/^description:\s*(.+)$/m)?.[1]?.replaceAll('"', "").trim();
-			if (description) skills.push({ name: entry.name, description, sha256: createHash("sha256").update(content).digest("hex") });
+	if (action === "install") {
+		const name = parsed.positionals[2];
+		if (name !== "pi-web-access") throw new Error("Usage: beemax skills install pi-web-access --profile <name>");
+		const skillsRoot = join(paths.homePath, "skills");
+		const piSkillsRoot = join(skillsRoot, "pi-skills");
+		const browserTools = join(piSkillsRoot, "browser-tools");
+		const directoryExists = async (path: string): Promise<boolean> => {
+			const info = await lstat(path).catch(() => undefined);
+			return Boolean(info?.isDirectory() && !info.isSymbolicLink());
+		};
+		const rootExists = await lstat(piSkillsRoot).then(() => true).catch(() => false);
+		if (!await directoryExists(browserTools)) {
+			if (rootExists) throw new Error(`Untrusted or incomplete Pi Skills directory at ${piSkillsRoot}; remove it before reinstalling.`);
+			await mkdir(skillsRoot, { recursive: true, mode: 0o700 });
+			const clone = spawnSync("git", ["clone", "--depth", "1", "https://github.com/badlogic/pi-skills.git", piSkillsRoot], { stdio: "inherit" });
+			if (clone.status !== 0) throw new Error("Could not install official Pi Web Access skill. Ensure git and network access are available.");
 		}
+		const [resolvedSkillsRoot, resolvedBrowserTools] = await Promise.all([realpath(skillsRoot), realpath(browserTools)]);
+		if (!resolvedBrowserTools.startsWith(`${resolvedSkillsRoot}/`)) throw new Error("Pi Web Access skill path escapes this Profile's Skills directory.");
+		const revision = spawnSync("git", ["-C", piSkillsRoot, "rev-parse", "HEAD"], { encoding: "utf8" });
+		const origin = spawnSync("git", ["-C", piSkillsRoot, "remote", "get-url", "origin"], { encoding: "utf8" });
+		if (revision.status !== 0 || revision.stdout.trim() !== PI_SKILLS_BROWSER_TOOLS_COMMIT || origin.status !== 0 || origin.stdout.trim() !== "https://github.com/badlogic/pi-skills.git") throw new Error(`Pi Skills installation is not the approved official revision ${PI_SKILLS_BROWSER_TOOLS_COMMIT}.`);
+		const install = spawnSync("npm", ["ci", "--omit=dev", "--ignore-scripts"], { cwd: resolvedBrowserTools, stdio: "inherit" });
+		if (install.status !== 0) throw new Error("Pi Web Access skill was downloaded but its npm dependencies could not be installed.");
+		console.log(`Installed official Pi Web Access (browser-tools) revision ${PI_SKILLS_BROWSER_TOOLS_COMMIT.slice(0, 12)} for Profile '${profile}'. Start Chrome with:\n${join(resolvedBrowserTools, "browser-start.js")} --profile`);
+		return;
+	}
+	if (action !== "list") throw new Error("Usage: beemax skills [list | sync | install pi-web-access] --profile <name>");
+	const skills: Array<{ name: string; description: string; sha256: string }> = [];
+	const visit = async (directory: string, prefix = ""): Promise<void> => {
+		for (const entry of await readdir(directory, { withFileTypes: true })) {
+			if (!entry.isDirectory() || entry.name === "node_modules" || entry.name === ".git") continue;
+			const relativeName = prefix ? `${prefix}/${entry.name}` : entry.name;
+			const child = join(directory, entry.name);
+			const content = await readFile(join(child, "SKILL.md"), "utf8").catch(() => "");
+			const description = content.match(/^description:\s*(.+)$/m)?.[1]?.replaceAll('"', "").trim();
+			if (description) { skills.push({ name: relativeName, description, sha256: createHash("sha256").update(content).digest("hex") }); continue; }
+			await visit(child, relativeName);
+		}
+	};
+	try {
+		await visit(join(paths.homePath, "skills"));
 	} catch { /* no Skills directory yet */ }
 	if (parsed.options.json === true) { console.log(JSON.stringify({ profile, skills: skills.sort((a, b) => a.name.localeCompare(b.name)) })); return; }
 	console.log(skills.sort((a, b) => a.name.localeCompare(b.name)).map((skill) => `${skill.name}  sha256=${skill.sha256.slice(0, 12)}  ${skill.description}`).join("\n") || "No Profile Skills installed. Run: beemax skills sync --profile " + profile);

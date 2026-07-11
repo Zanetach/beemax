@@ -369,6 +369,8 @@ without replacing custom ones:
 ```bash
 beemax skills list --profile personal
 beemax skills sync --profile personal
+# Install official Pi browser automation (Chrome DevTools Protocol) for this Profile.
+beemax skills install pi-web-access --profile personal
 ```
 
 | Skill | Purpose |
