@@ -109,3 +109,24 @@ test("Agent runtime aborts a turn that exceeds its planned tool-call budget", as
 	assert.equal(aborts, 1);
 	runtime.dispose();
 });
+
+test("Agent runtime aborts a turn when cumulative model usage exceeds its token budget", async () => {
+	const source = { platform: "cli", chatId: "tokens", chatType: "dm", userId: "local" };
+	let listener;
+	let aborts = 0;
+	const agent = { state: { model: { id: "test" }, messages: [] } };
+	const runtime = new BeeMaxAgentRuntime({
+		planningPolicy: new AutonomousPlanningPolicy(),
+		createAgent: async () => ({
+			agent, subscribe: (next) => { listener = next; return () => undefined; },
+			prompt: async () => {
+				listener({ type: "message_end", message: { role: "assistant", content: [], usage: { input: 12_001, output: 0, cacheRead: 0, cacheWrite: 0 } } });
+				agent.state.messages = [{ role: "assistant", content: [{ type: "text", text: "over budget" }], usage: { input: 12_001, output: 0 } }];
+			},
+			abort: async () => { aborts++; }, dispose: () => undefined,
+		}),
+	});
+	await assert.rejects(runtime.run({ source, text: "Read this file", timeoutMs: 1_000 }), /token budget exceeded.*12000/i);
+	assert.equal(aborts, 1);
+	runtime.dispose();
+});

@@ -149,6 +149,7 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 			const text = planning ? `${enrichedText}\n\n${planning.directive()}` : enrichedText;
 			let observableProgress = false;
 			let toolCalls = 0;
+			let consumedTokens = 0;
 			let budgetExceeded: string | undefined;
 			const unsubscribe = session.piSession.subscribe((event) => {
 				if (event.type === "tool_execution_start") {
@@ -156,6 +157,13 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 					toolCalls++;
 					if (planning && toolCalls > planning.budget.maxToolCalls && !budgetExceeded) {
 						budgetExceeded = `Agent tool-call budget exceeded (${planning.budget.maxToolCalls})`;
+						void session.piSession.abort();
+					}
+				} else if (event.type === "message_end" && event.message.role === "assistant") {
+					const usage = event.message.usage;
+					consumedTokens += usage.input + usage.output + usage.cacheRead + usage.cacheWrite;
+					if (planning && consumedTokens > planning.budget.maxTokens && !budgetExceeded) {
+						budgetExceeded = `Agent token budget exceeded (${planning.budget.maxTokens})`;
 						void session.piSession.abort();
 					}
 				} else if (event.type === "message_update" && event.assistantMessageEvent.type === "text_delta" && event.assistantMessageEvent.delta.length > 0) observableProgress = true;
