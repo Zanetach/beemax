@@ -32,7 +32,7 @@ export type InteractionEvent = InteractionEventMeta & (
 	| { type: "tool.changed"; callId: string; name: string; state: "running" | "completed" | "failed"; summary?: string }
 	| { type: "approval.requested"; toolName: string; details?: ToolApprovalDetails }
 	| { type: "approval.resolved"; toolName: string; allowed: boolean }
-	| { type: "turn.queued"; position: number; replaced: boolean }
+	| { type: "turn.queued"; position: number; replaced: boolean; mode: "queue" | "steer_fallback" }
 	| { type: "turn.finished"; result: AgentRunResult }
 	| { type: "turn.failed"; error: string }
 	| { type: "turn.cancelled" }
@@ -45,7 +45,7 @@ type InteractionEventPayload =
 	| { type: "tool.changed"; callId: string; name: string; state: "running" | "completed" | "failed"; summary?: string }
 	| { type: "approval.requested"; toolName: string; details?: ToolApprovalDetails }
 	| { type: "approval.resolved"; toolName: string; allowed: boolean }
-	| { type: "turn.queued"; position: number; replaced: boolean }
+	| { type: "turn.queued"; position: number; replaced: boolean; mode: "queue" | "steer_fallback" }
 	| { type: "turn.finished"; result: AgentRunResult }
 	| { type: "turn.failed"; error: string }
 	| { type: "turn.cancelled" };
@@ -53,6 +53,7 @@ type InteractionEventPayload =
 export type InteractionAction<Source extends BeeMaxRuntimeSource = BeeMaxRuntimeSource> =
 	| { type: "message.send"; source: Source; text: string; input: Omit<AgentRunInput<Source>, "source" | "text"> }
 	| { type: "turn.queue"; source: Source; text: string }
+	| { type: "turn.steer"; source: Source; text: string }
 	| { type: "turn.cancel"; source: Source };
 
 export interface InteractionCancelResult {
@@ -63,7 +64,7 @@ export interface InteractionCancelResult {
 	queuedCancelled: boolean;
 }
 
-export interface InteractionQueueResult { queued: boolean; position: number; replaced: boolean; }
+export interface InteractionQueueResult { queued: boolean; position: number; replaced: boolean; mode: "queue" | "steer_fallback"; }
 
 export interface InteractionSnapshot {
 	phase: InteractionPhase;
@@ -121,7 +122,8 @@ export class InteractionEventAdapter<Source extends BeeMaxRuntimeSource = BeeMax
 
 	async dispatch(action: InteractionAction<Source>, sink?: InteractionEventSink): Promise<AgentRunResult | InteractionCancelResult | InteractionQueueResult> {
 		if (action.type === "turn.cancel") return this.cancel(action.source, sink);
-		if (action.type === "turn.queue") return this.queue(action.source, action.text, sink);
+		if (action.type === "turn.queue") return this.queue(action.source, action.text, "queue", sink);
+		if (action.type === "turn.steer") return this.queue(action.source, action.text, "steer_fallback", sink);
 
 		const key = interactionKey(action.source);
 		if (sink) this.sinks.set(key, sink);
@@ -229,15 +231,15 @@ export class InteractionEventAdapter<Source extends BeeMaxRuntimeSource = BeeMax
 		return { cancelled, approvalCancelled, subagentsCancelled, errors, queuedCancelled };
 	}
 
-	private async queue(source: Source, text: string, sink?: InteractionEventSink): Promise<InteractionQueueResult> {
+	private async queue(source: Source, text: string, mode: InteractionQueueResult["mode"], sink?: InteractionEventSink): Promise<InteractionQueueResult> {
 		const key = interactionKey(source);
 		const turnId = this.states.get(key)?.turnId;
 		const phase = this.states.get(key)?.phase;
-		if (!turnId || (phase !== "running" && phase !== "queued")) return { queued: false, position: 0, replaced: false };
+		if (!turnId || (phase !== "running" && phase !== "queued")) return { queued: false, position: 0, replaced: false, mode };
 		const replaced = this.queuedInputs.has(key);
 		this.queuedInputs.set(key, text);
-		await this.publish(source, turnId, { type: "turn.queued", position: 1, replaced }, sink);
-		return { queued: true, position: 1, replaced };
+		await this.publish(source, turnId, { type: "turn.queued", position: 1, replaced, mode }, sink);
+		return { queued: true, position: 1, replaced, mode };
 	}
 
 	private apply(source: Source, event: InteractionEvent): void {

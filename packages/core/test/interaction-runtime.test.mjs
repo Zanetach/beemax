@@ -79,13 +79,29 @@ test("interaction runtime owns a one-entry queue and clears it on cancellation",
 	const interaction = new InteractionEventAdapter(runtime);
 	const turn = interaction.dispatch({ type: "message.send", source, text: "first", input: { timeoutMs: 1_000 } });
 	await new Promise((resolve) => setImmediate(resolve));
-	assert.deepEqual(await interaction.dispatch({ type: "turn.queue", source, text: "second" }), { queued: true, position: 1, replaced: false });
+	assert.deepEqual(await interaction.dispatch({ type: "turn.queue", source, text: "second" }), { queued: true, position: 1, replaced: false, mode: "queue" });
 	assert.equal((await interaction.snapshot(source)).phase, "queued");
-	assert.deepEqual(await interaction.dispatch({ type: "turn.queue", source, text: "replacement" }), { queued: true, position: 1, replaced: true });
+	assert.deepEqual(await interaction.dispatch({ type: "turn.queue", source, text: "replacement" }), { queued: true, position: 1, replaced: true, mode: "queue" });
 	assert.equal((await interaction.snapshot(source)).queueDepth, 1);
 	const cancelled = await interaction.dispatch({ type: "turn.cancel", source });
 	assert.equal(cancelled.queuedCancelled, true);
 	assert.equal(interaction.takeQueuedInput(source), undefined);
+	await assert.rejects(turn, /aborted/);
+});
+
+test("steer is an explicit, honest queue fallback until the runtime supports interruption", async () => {
+	let rejectTurn;
+	const runtime = {
+		run() { return new Promise((_resolve, reject) => { rejectTurn = reject; }); },
+		async cancel() { rejectTurn(new Error("aborted")); return true; },
+		async modelStatus() { return undefined; }, async usage() { return undefined; },
+	};
+	const interaction = new InteractionEventAdapter(runtime);
+	const turn = interaction.dispatch({ type: "message.send", source, text: "first", input: { timeoutMs: 1_000 } });
+	await new Promise((resolve) => setImmediate(resolve));
+	assert.deepEqual(await interaction.dispatch({ type: "turn.steer", source, text: "focus on tests" }), { queued: true, position: 1, replaced: false, mode: "steer_fallback" });
+	assert.equal(interaction.events(source).at(-1).mode, "steer_fallback");
+	await interaction.dispatch({ type: "turn.cancel", source });
 	await assert.rejects(turn, /aborted/);
 });
 

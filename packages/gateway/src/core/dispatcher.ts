@@ -220,7 +220,7 @@ export class Dispatcher {
 				await flush.schedule(renderUpdate);
 				break;
 			case "turn.queued":
-				card.apply("approval.updated", { id: `queue:${event.turnId}`, status: "queued", message: event.replaced ? "已替换下一条排队消息" : `下一条消息已排队（位置 ${event.position}）` });
+				card.apply("approval.updated", { id: `queue:${event.turnId}`, status: "queued", message: `${event.mode === "steer_fallback" ? "当前运行时不支持中途引导，" : ""}${event.replaced ? "已替换下一条排队消息" : `下一条消息已排队（位置 ${event.position}）`}` });
 				await flush.schedule(renderUpdate);
 				break;
 		}
