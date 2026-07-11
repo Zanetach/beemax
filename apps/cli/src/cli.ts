@@ -635,6 +635,11 @@ async function runMcpCommand(parsed: ParsedArgs, config: ReturnType<typeof loadC
 	const mcp = new McpManager();
 	try {
 		const statuses = await mcp.connectAll(loadMcpConfig(config.mcp.configPath));
+		if (parsed.options.json === true) {
+			console.log(JSON.stringify({ profile: config.profile, servers: statuses }));
+			if (statuses.some((status) => !status.connected)) process.exitCode = 1;
+			return;
+		}
 		if (statuses.length === 0) {
 			console.log(`No MCP servers configured (${config.mcp.configPath}).`);
 			return;
