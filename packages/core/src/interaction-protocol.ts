@@ -1,6 +1,6 @@
 import type { AgentRunInput } from "./agent-runtime.ts";
 import type { BeeMaxRuntimeSource } from "./runtime.ts";
-import { InteractionEventAdapter, type InteractionActionResult, type InteractionEvent, type InteractionScope, type InteractionSnapshot } from "./interaction-runtime.ts";
+import { InteractionEventAdapter, interactionScopeForSource, type InteractionActionResult, type InteractionEvent, type InteractionScope, type InteractionSnapshot } from "./interaction-runtime.ts";
 import type { ToolApprovalChoice } from "./tool-approval.ts";
 
 /** Transport-neutral contract for authenticated Web/remote presenters. */
@@ -44,6 +44,7 @@ export class InteractionProtocol<Source extends BeeMaxRuntimeSource> {
 		if (request.version !== INTERACTION_PROTOCOL_VERSION) return failure(request.id, "unsupported_version", `Expected protocol version ${INTERACTION_PROTOCOL_VERSION}`);
 		if (!sameScope(request.scope, authenticatedScope)) return failure(request.id, "unauthorized_scope", "Request scope does not match the authenticated scope");
 		const source = this.resolveSource(authenticatedScope);
+		if (!sameScope(interactionScopeForSource(source, authenticatedScope.profileId), authenticatedScope)) return failure(request.id, "unauthorized_scope", "Resolved source does not match the authenticated scope");
 		if (request.type === "snapshot") return { version: INTERACTION_PROTOCOL_VERSION, id: request.id, ok: true, type: "snapshot", snapshot: await this.adapter.snapshot(source) };
 		if (request.type === "events") return { version: INTERACTION_PROTOCOL_VERSION, id: request.id, ok: true, type: "events", events: this.adapter.events(source, clampSequence(request.afterSequence)) };
 		return { version: INTERACTION_PROTOCOL_VERSION, id: request.id, ok: true, type: "action", result: await this.adapter.dispatch(hydrateAction(request.action, source)) };

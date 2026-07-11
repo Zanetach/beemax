@@ -22,6 +22,11 @@ test("versioned interaction protocol rejects scope substitution and delegates va
 	assert.equal(events.ok, true);
 	assert.equal(events.type, "events");
 	assert.deepEqual(events.events.map((event) => event.type), ["turn.started", "turn.finished"]);
+
+	const unsafeResolver = new InteractionProtocol({ adapter: new InteractionEventAdapter(runtime, { profileId: "personal" }), resolveSource: () => ({ ...source, userId: "other" }) });
+	const resolverDenied = await unsafeResolver.handle({ version: 1, id: "resolver", type: "snapshot", scope }, scope);
+	assert.equal(resolverDenied.ok, false);
+	assert.equal(resolverDenied.error, "unauthorized_scope");
 });
 
 test("protocol parser rejects malformed JSON transport input before authorization", () => {
