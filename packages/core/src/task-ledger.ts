@@ -11,6 +11,7 @@ export interface TaskRecord {
 	description?: string;
 	recoveryPolicy?: TaskRecoveryPolicy;
 	idempotencyKey?: string;
+	executionScope?: AgentScope;
 	status: TaskStatus;
 	parentId?: string;
 	planId?: string;
@@ -59,4 +60,6 @@ export interface TaskLedger {
 	recordPlan(tasks: TaskRecord[], dependencies: TaskDependency[]): void;
 	taskDependencies(taskIds: string[]): TaskDependency[];
 	reconcileExpiredTaskRuns(now?: number): TaskRecoveryResult;
+	recoveryCandidates(limit?: number): TaskRecord[];
 }
+import type { AgentScope } from "./agent-scope.ts";

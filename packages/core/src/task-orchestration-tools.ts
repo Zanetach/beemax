@@ -45,7 +45,7 @@ export function createTaskOrchestrationTools(
 			});
 			graph.createPlan({
 				id: planId, ownerKey,
-				tasks: params.tasks.map((task) => ({ id: ids.get(task.key)!, title: task.title, description: task.goal, kind: "delegated" as const, recoveryPolicy: "safe_retry" as const, idempotencyKey: `${planId}:${task.key}` })),
+				tasks: params.tasks.map((task) => ({ id: ids.get(task.key)!, title: task.title, description: task.goal, kind: "delegated" as const, recoveryPolicy: "safe_retry" as const, idempotencyKey: `${planId}:${task.key}`, executionScope: { ...source } })),
 				dependencies,
 			});
 			const summary = await graph.run([ownerKey], planId, execute, { maxConcurrent, signal, executor: "subagent" });

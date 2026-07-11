@@ -827,7 +827,7 @@ async function runChat(config: ReturnType<typeof loadConfig>, requestedMode: { f
 	const presentationMode: ChatPresentationMode = resolveChatPresentationMode({
 		...requestedMode, isInputTty: process.stdin.isTTY === true, isOutputTty: process.stdout.isTTY === true, term: process.env.TERM,
 	});
-	const { createSubagentTools, createTaskLedgerTools, createTaskOrchestrationTools, ProfileTaskScheduler, SubagentManager } = await import("@beemax/core");
+	const { createSubagentTools, createTaskLedgerTools, createTaskOrchestrationTools, ProfileTaskScheduler, SubagentManager, TaskRecoveryRunner } = await import("@beemax/core");
 	const { loadMcpConfig, McpManager } = await import("@beemax/mcp-capability");
 	const { buildAgentFactory } = await import("./agent-factory.ts");
 	const { MemoryStore } = await import("@beemax/memory");
@@ -866,6 +866,12 @@ async function runChat(config: ReturnType<typeof loadConfig>, requestedMode: { f
 		tools: executionSafeTools(config, readOnlyAgentTools(readOnlyMcpTools.map((tool) => tool.name))),
 	});
 	const taskScheduler = new ProfileTaskScheduler({ maxConcurrent: config.subagents.maxConcurrent });
+	const recoveryController = new AbortController();
+	const recoveryRun = (config.subagents.enabled
+		? new TaskRecoveryRunner(memory, (task, signal) => taskScheduler.run(task.ownerKey, () => executePlannedTask(createSubagentAgent, task, task.executionScope as import("@beemax/gateway").SessionSource, signal, config.subagents.timeoutMs), signal)).run({ maxConcurrent: config.subagents.maxConcurrent, signal: recoveryController.signal })
+		: Promise.resolve({ plans: 0, succeeded: 0, failed: 0, cancelled: 0, blocked: [] as string[] }))
+		.then((summary) => { if (summary.plans) process.stdout.write(`Resumed ${summary.plans} Task Plan(s): succeeded=${summary.succeeded}; failed=${summary.failed}; blocked=${summary.blocked.length}.\n`); })
+		.catch((error) => process.stderr.write(`Task recovery failed: ${error instanceof Error ? error.message : String(error)}\n`));
 	const subagents = config.subagents.enabled ? new SubagentManager({
 		maxConcurrent: config.subagents.maxConcurrent,
 		maxChildrenPerOwner: config.subagents.maxChildrenPerOwner,
@@ -1225,6 +1231,8 @@ async function runChat(config: ReturnType<typeof loadConfig>, requestedMode: { f
 			await new Promise<void>((resolve) => rl.once("close", resolve));
 		}
 	} finally {
+		recoveryController.abort(new Error("Chat shutting down"));
+		await recoveryRun;
 		if (subagentRefresh) clearInterval(subagentRefresh);
 		fullInput?.stop();
 		if (fullScreenActive) process.stdout.write(fullScreenExit());

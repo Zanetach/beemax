@@ -5,11 +5,11 @@ const DEFAULT_EXECUTION_LEASE_MS = 61 * 60_000;
 export interface TaskPlanInput {
 	id: string;
 	ownerKey: string;
-	tasks: Array<{ id: string; title: string; description?: string; kind?: TaskRecord["kind"]; parentId?: string; recoveryPolicy?: TaskRecord["recoveryPolicy"]; idempotencyKey?: string }>;
+	tasks: Array<{ id: string; title: string; description?: string; kind?: TaskRecord["kind"]; parentId?: string; recoveryPolicy?: TaskRecord["recoveryPolicy"]; idempotencyKey?: string; executionScope?: TaskRecord["executionScope"] }>;
 	dependencies?: TaskDependency[];
 }
 export type TaskGraphExecutor = (task: TaskRecord, signal?: AbortSignal) => Promise<{ output?: string }>;
-export interface TaskGraphRunOptions { maxConcurrent?: number; signal?: AbortSignal; executor?: "agent" | "subagent"; leaseMs?: number; }
+export interface TaskGraphRunOptions { maxConcurrent?: number; signal?: AbortSignal; executor?: "agent" | "subagent"; leaseMs?: number; canExecute?: (task: TaskRecord) => boolean; }
 export interface TaskGraphResult { succeeded: number; failed: number; cancelled: number; blocked: string[]; }
 interface ActiveTaskResult { execution: Promise<ActiveTaskResult>; outcome: "succeeded" | "failed" | "cancelled"; }
 
@@ -43,6 +43,7 @@ export class TaskGraph {
 			status: "pending", planId: input.id, createdAt: now,
 			...(task.description ? { description: task.description } : {}), ...(task.parentId ? { parentId: task.parentId } : {}),
 			...(task.recoveryPolicy ? { recoveryPolicy: task.recoveryPolicy } : {}), ...(task.idempotencyKey ? { idempotencyKey: task.idempotencyKey } : {}),
+			...(task.executionScope ? { executionScope: { ...task.executionScope } } : {}),
 		}));
 		this.ledger.recordPlan(tasks, dependencies);
 		return tasks;
@@ -56,7 +57,7 @@ export class TaskGraph {
 		const active = new Set<Promise<ActiveTaskResult>>();
 		while (true) {
 			const tasks = this.ledger.queryTasks({ ownerKeys, planIds: [planId], limit: 100 });
-			let pending = tasks.filter((task) => task.status === "pending");
+			let pending = tasks.filter((task) => task.status === "pending" && (options.canExecute?.(task) ?? true));
 			if (options.signal?.aborted && pending.length) {
 				const finishedAt = Date.now();
 				for (const task of pending) this.ledger.transition(task.id, { status: "cancelled", finishedAt, error: "Task Plan cancelled" });

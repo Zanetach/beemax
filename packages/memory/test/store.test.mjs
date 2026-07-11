@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { MemoryStore } from "../dist/index.js";
 import Database from "better-sqlite3";
-import { TaskGraph } from "@beemax/core";
+import { TaskGraph, TaskRecoveryRunner } from "@beemax/core";
 
 test("natural-language recall is safe and follows a user across chats", () => {
 	const root = mkdtempSync(join(tmpdir(), "beemax-memory-test-"));
@@ -124,6 +124,25 @@ test("expired Task Run leases recover only explicitly idempotent safe-retry Task
 		assert.equal(tasks.get("live").status, "running");
 		assert.equal(store.taskRuns("safe")[0].status, "failed");
 		assert.match(store.taskRuns("safe")[0].error, /interrupted/i);
+	} finally { store.close(); rmSync(root, { recursive: true, force: true }); }
+});
+
+test("Task recovery runner resumes only durable safe DAG candidates with an Execution Scope", async () => {
+	const root = mkdtempSync(join(tmpdir(), "beemax-task-resume-"));
+	const store = new MemoryStore(join(root, "memory.db"));
+	try {
+		const scope = { platform: "cli", chatId: "local", chatType: "dm", userId: "local", threadId: "recovery" };
+		store.recordPlan([
+			{ id: "done", ownerKey: "cli:local#recovery:local", kind: "delegated", title: "Done", status: "succeeded", planId: "plan", createdAt: 1, finishedAt: 2 },
+			{ id: "resume", ownerKey: "cli:local#recovery:local", kind: "delegated", title: "Resume", description: "finish research", status: "pending", planId: "plan", recoveryPolicy: "safe_retry", idempotencyKey: "plan:resume", executionScope: scope, createdAt: 1 },
+			{ id: "unsafe", ownerKey: "cli:local#recovery:local", kind: "delegated", title: "Do not resume", status: "pending", planId: "plan", createdAt: 1 },
+		], [{ taskId: "resume", dependsOn: "done" }]);
+		const executed = [];
+		const result = await new TaskRecoveryRunner(store, async (task) => { executed.push(task.description); return { output: "recovered" }; }).run();
+		assert.deepEqual(result, { plans: 1, succeeded: 1, failed: 0, cancelled: 0, blocked: [] });
+		assert.deepEqual(executed, ["finish research"]);
+		assert.equal(store.queryTasks({ ownerKeys: ["cli:local#recovery:local"], id: "resume" })[0].result, "recovered");
+		assert.equal(store.queryTasks({ ownerKeys: ["cli:local#recovery:local"], id: "unsafe" })[0].status, "pending");
 	} finally { store.close(); rmSync(root, { recursive: true, force: true }); }
 });
 

@@ -8,7 +8,7 @@
  */
 
 import { AutomationStore } from "@beemax/automation";
-import { AutomationScheduler, BeeMaxAgentRuntime, HeartbeatRunner, ProfileTaskScheduler, SubagentManager, ToolApprovalBroker, createSubagentTools, createTaskLedgerTools, createTaskOrchestrationTools, type SubagentTask, type TaskRecord } from "@beemax/core";
+import { AutomationScheduler, BeeMaxAgentRuntime, HeartbeatRunner, ProfileTaskScheduler, SubagentManager, TaskRecoveryRunner, ToolApprovalBroker, createSubagentTools, createTaskLedgerTools, createTaskOrchestrationTools, type SubagentTask, type TaskRecord } from "@beemax/core";
 import {
 	Dispatcher,
 	FeishuAdapter,
@@ -114,6 +114,13 @@ export async function runGateway(config: BeeMaxConfig): Promise<void> {
 		tools: executionSafeTools(config, readOnlyAgentTools(readOnlyMcpTools.map((tool) => tool.name))),
 	});
 	const taskScheduler = new ProfileTaskScheduler({ maxConcurrent: config.subagents.maxConcurrent });
+	const recoveryController = new AbortController();
+	const recoveryRun = (config.subagents.enabled
+		? new TaskRecoveryRunner(memory, (task, signal) => taskScheduler.run(task.ownerKey, () => executePlannedTask(createSubagentAgent, task, task.executionScope as SessionSource, signal, config.subagents.timeoutMs), signal)).run({ maxConcurrent: config.subagents.maxConcurrent, signal: recoveryController.signal })
+		: Promise.resolve({ plans: 0, succeeded: 0, failed: 0, cancelled: 0, blocked: [] as string[] }))
+		.then((summary) => { if (summary.plans) console.info(`[beemax] resumed ${summary.plans} Task Plan(s): succeeded=${summary.succeeded}; failed=${summary.failed}; blocked=${summary.blocked.length}`); })
+		.catch((error) => console.error(`[beemax] Task recovery failed: ${error instanceof Error ? error.message : String(error)}`));
+	startupCleanup.push(async () => { recoveryController.abort(new Error("Gateway shutting down")); await recoveryRun; });
 	const subagents = config.subagents.enabled ? new SubagentManager({
 		maxConcurrent: config.subagents.maxConcurrent,
 		maxChildrenPerOwner: config.subagents.maxChildrenPerOwner,
