@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { buildAgentFactory } from "../../../apps/cli/dist/agent-factory.js";
 import { Dispatcher } from "../dist/core/dispatcher.js";
 import { MessageDeduplicator } from "../dist/index.js";
-import { createSubagentTools, SubagentManager } from "@beemax/core";
+import { createSubagentTools, ProfileTaskScheduler, SubagentManager } from "@beemax/core";
 
 const source = { platform: "feishu", chatId: "chat-1", chatType: "dm", userId: "user-1" };
 
@@ -50,6 +50,57 @@ test("Sub-Agent manager queues above concurrency, preserves ownership, and retur
 	assert.equal(result.result, "done:three");
 	assert.equal(manager.list(source).find((task) => task.id === tasks[2].id).result, undefined);
 	assert.throws(() => manager.get({ ...source, chatId: "other" }, tasks[0].id), /not found/);
+	await manager.dispose();
+});
+
+test("Sub-Agent manager leaves Profile admission to the fair shared scheduler", async () => {
+	const scheduler = new ProfileTaskScheduler({ maxConcurrent: 1 });
+	const starts = [];
+	const releases = [];
+	const manager = new SubagentManager({
+		maxConcurrent: 1,
+		maxChildrenPerOwner: 5,
+		admit: (ownerKey, work, signal) => scheduler.run(ownerKey, work, signal),
+		execute: async (task) => {
+			starts.push(task.goal);
+			await new Promise((resolve) => releases.push(resolve));
+			return `done:${task.goal}`;
+		},
+	});
+	const sourceB = { ...source, chatId: "chat-2" };
+	const a1 = manager.spawn(source, { goal: "a1" });
+	const a2 = manager.spawn(source, { goal: "a2" });
+	const b1 = manager.spawn(sourceB, { goal: "b1" });
+	await new Promise((resolve) => setImmediate(resolve));
+	assert.deepEqual(starts, ["a1"]);
+	assert.equal(manager.get(source, a2.id).status, "queued");
+	releases.shift()();
+	await new Promise((resolve) => setImmediate(resolve));
+	assert.deepEqual(starts, ["a1", "b1"]);
+	assert.equal(manager.get(sourceB, b1.id).status, "running");
+	releases.shift()();
+	await new Promise((resolve) => setImmediate(resolve));
+	assert.deepEqual(starts, ["a1", "b1", "a2"]);
+	releases.shift()();
+	await Promise.all([manager.wait(source, a1.id), manager.wait(source, a2.id), manager.wait(sourceB, b1.id)]);
+	await manager.dispose();
+});
+
+test("Sub-Agent cancellation removes work waiting for Profile admission", async () => {
+	const scheduler = new ProfileTaskScheduler({ maxConcurrent: 1 });
+	let release;
+	const manager = new SubagentManager({
+		admit: (ownerKey, work, signal) => scheduler.run(ownerKey, work, signal),
+		execute: async (task) => task.goal === "active" ? new Promise((resolve) => { release = () => resolve("done"); }) : "must-not-run",
+	});
+	const active = manager.spawn(source, { goal: "active" });
+	const queued = manager.spawn({ ...source, chatId: "chat-2" }, { goal: "queued" });
+	await new Promise((resolve) => setImmediate(resolve));
+	assert.equal(scheduler.snapshot().queued, 1);
+	assert.equal(manager.cancel({ ...source, chatId: "chat-2" }, queued.id).status, "cancelled");
+	assert.equal(scheduler.snapshot().queued, 0);
+	release();
+	assert.equal((await manager.wait(source, active.id)).status, "completed");
 	await manager.dispose();
 });
 

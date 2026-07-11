@@ -30,6 +30,7 @@ export interface SubagentTask extends SubagentTaskSnapshot {
 }
 
 export type SubagentExecutor = (task: SubagentTask, signal: AbortSignal) => Promise<string>;
+export type SubagentAdmission = <T>(ownerKey: string, work: (signal?: AbortSignal) => Promise<T>, signal?: AbortSignal) => Promise<T>;
 
 interface ManagedTask extends SubagentTask {
 	controller?: AbortController;
@@ -43,6 +44,7 @@ export interface SubagentManagerOptions {
 	maxChildrenPerOwner?: number;
 	defaultTimeoutMs?: number;
 	execute: SubagentExecutor;
+	admit?: SubagentAdmission;
 	taskLedger?: TaskLedger;
 }
 
@@ -56,6 +58,7 @@ export class SubagentManager {
 	private readonly maxChildrenPerOwner: number;
 	private readonly defaultTimeoutMs: number;
 	private readonly execute: SubagentExecutor;
+	private readonly admit?: SubagentAdmission;
 	private readonly taskLedger?: TaskLedger;
 	private running = 0;
 	private disposed = false;
@@ -65,6 +68,7 @@ export class SubagentManager {
 		this.maxChildrenPerOwner = positiveInt(options.maxChildrenPerOwner, 5);
 		this.defaultTimeoutMs = Math.max(0, options.defaultTimeoutMs ?? 15 * 60_000);
 		this.execute = options.execute;
+		this.admit = options.admit;
 		this.taskLedger = options.taskLedger;
 	}
 
@@ -140,6 +144,7 @@ export class SubagentManager {
 		task.stopReason = "cancelled";
 		if (task.status === "queued") {
 			this.removeFromQueue(id);
+			task.controller?.abort(new Error("Cancelled by parent Agent"));
 			this.finish(task, "cancelled", undefined, "Cancelled by parent Agent");
 		} else {
 			task.controller?.abort();
@@ -172,6 +177,15 @@ export class SubagentManager {
 	}
 
 	private async pump(): Promise<void> {
+		if (this.admit) {
+			while (!this.disposed) {
+				const id = this.queue.shift();
+				if (!id) return;
+				const task = this.tasks.get(id);
+				if (!task || task.status !== "queued") continue;
+				this.submitForAdmission(task);
+			}
+		}
 		while (!this.disposed && this.running < this.maxConcurrent) {
 			const id = this.queue.shift();
 			if (!id) return;
@@ -190,13 +204,33 @@ export class SubagentManager {
 		}
 	}
 
-	private async run(task: ManagedTask): Promise<void> {
+	private submitForAdmission(task: ManagedTask): void {
+		const controller = new AbortController();
+		task.controller = controller;
+		const active = this.admit!(task.ownerKey, async () => {
+			if (TERMINAL.has(task.status)) return;
+			this.running++;
+			try { await this.run(task, controller); }
+			finally { this.running--; }
+		}, controller.signal).catch((error) => {
+			if (TERMINAL.has(task.status)) return;
+			const message = error instanceof Error ? error.message : String(error);
+			this.finish(task, task.stopReason === "cancelled" ? "cancelled" : "failed", undefined, message);
+		}).finally(() => {
+			task.controller = undefined;
+			this.activeRuns.delete(active);
+		});
+		this.activeRuns.add(active);
+		void active;
+	}
+
+	private async run(task: ManagedTask, suppliedController?: AbortController): Promise<void> {
 		task.status = "running";
 		task.startedAt = Date.now();
 		this.taskLedger?.transition(task.id, { status: "running", startedAt: task.startedAt });
 		task.runId = crypto.randomUUID();
 		this.taskLedger?.recordRun({ id: task.runId, taskId: task.id, executor: "subagent", status: "running", startedAt: task.startedAt });
-		task.controller = new AbortController();
+		task.controller = suppliedController ?? new AbortController();
 		const timer = this.defaultTimeoutMs > 0 ? setTimeout(() => {
 			task.stopReason = "timeout";
 			task.controller?.abort();
@@ -212,7 +246,7 @@ export class SubagentManager {
 			else this.finish(task, "failed", undefined, error instanceof Error ? error.message : String(error));
 		} finally {
 			if (timer) clearTimeout(timer);
-			task.controller = undefined;
+			if (!suppliedController) task.controller = undefined;
 		}
 	}
 

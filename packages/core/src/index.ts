@@ -42,6 +42,7 @@ export { getRuntimeCapabilitySnapshot, type RuntimeCapabilitySnapshot, type Runt
 export {
 	SubagentManager,
 	createSubagentTools,
+	type SubagentAdmission,
 	type SubagentExecutor,
 	type SubagentManagerOptions,
 	type SubagentTask,

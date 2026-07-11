@@ -869,7 +869,8 @@ async function runChat(config: ReturnType<typeof loadConfig>, requestedMode: { f
 		maxChildrenPerOwner: config.subagents.maxChildrenPerOwner,
 		defaultTimeoutMs: config.subagents.timeoutMs,
 		taskLedger: memory,
-		execute: (task, signal) => taskScheduler.run(task.ownerKey, () => executeSubagentTask(createSubagentAgent, task, signal), signal),
+		admit: (ownerKey, work, signal) => taskScheduler.run(ownerKey, work, signal),
+		execute: (task, signal) => executeSubagentTask(createSubagentAgent, task, signal),
 	}) : undefined;
 	const createAgent = buildAgentFactory({
 		provider: () => config.model.provider,

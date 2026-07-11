@@ -31,7 +31,7 @@ export class ProfileTaskScheduler {
 				item.abort = () => {
 					if (!this.remove(item as ScheduledWork<unknown>)) return;
 					reject(abortReason(signal));
-			};
+				};
 				signal.addEventListener("abort", item.abort, { once: true });
 			}
 			const queue = this.queues.get(ownerKey) ?? [];
