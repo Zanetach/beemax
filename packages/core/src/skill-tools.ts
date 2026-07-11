@@ -4,12 +4,13 @@ import { createHash } from "node:crypto";
 import { resolve, sep } from "node:path";
 import { defineTool, type ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
+import { MUTATING_TOOL_POLICY, READ_ONLY_TOOL_POLICY, withToolPolicy, type ToolPolicy } from "./tool-runtime.ts";
 
 const SKILL_NAME = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 
 export function createSkillTools(agentDir: string, markReloadNeeded: () => void): ToolDefinition[] {
 	const root = resolve(agentDir, "skills");
-	return [
+	const tools = [
 		defineTool({ name: "skill_list", label: "List Evolved Skills", description: "List instruction-only skills created in BeeMax's managed skill directory. Pi also loads trusted global and project skills automatically.", parameters: Type.Object({}), execute: async () => {
 			const skills = await listSkills(root); return result(skills.length ? skills.map((item) => `- ${item.name}: ${item.description}`).join("\n") : "No evolved skills yet.", { skills });
 		} }),
@@ -25,6 +26,14 @@ export function createSkillTools(agentDir: string, markReloadNeeded: () => void)
 			const path = skillPath(root, params.name); await readFile(path, "utf8"); await writeFile(path, renderSkill(params), "utf8"); markReloadNeeded(); return result(`Updated and queued skill ${params.name} for hot reload after this turn.`, { name: params.name, path });
 		} }),
 	];
+	const evolveSkill: ToolPolicy = { ...MUTATING_TOOL_POLICY, sideEffect: "local", risk: "high", reversible: "unknown", impact: "Changes durable instructions that influence future Agent behavior" };
+	const policies: Record<string, ToolPolicy> = {
+		skill_list: { ...READ_ONLY_TOOL_POLICY },
+		skill_read: { ...READ_ONLY_TOOL_POLICY },
+		skill_create: { ...evolveSkill, reversible: true },
+		skill_update: evolveSkill,
+	};
+	return tools.map((tool) => withToolPolicy(tool, policies[tool.name]!));
 }
 async function listSkills(root: string): Promise<Array<{ name: string; description: string; sha256: string; managed: boolean }>> {
 	let entries: string[]; try { entries = await readdir(root); } catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return []; throw error; }

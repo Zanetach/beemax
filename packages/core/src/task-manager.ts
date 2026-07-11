@@ -2,6 +2,7 @@ import { defineTool, type ToolDefinition } from "@earendil-works/pi-coding-agent
 import { StringEnum } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
 import type { BeeMaxRuntimeSource } from "./runtime.ts";
+import { MUTATING_TOOL_POLICY, READ_ONLY_TOOL_POLICY, withToolPolicy, type ToolPolicy } from "./tool-runtime.ts";
 
 export type SubagentTaskStatus = "queued" | "running" | "completed" | "failed" | "cancelled";
 
@@ -230,7 +231,7 @@ export class SubagentManager {
 }
 
 export function createSubagentTools(manager: SubagentManager, source: BeeMaxRuntimeSource): ToolDefinition[] {
-	return [
+	const tools = [
 		defineTool({
 			name: "task_spawn",
 			label: "Spawn Sub-Agent",
@@ -265,6 +266,14 @@ export function createSubagentTools(manager: SubagentManager, source: BeeMaxRunt
 			execute: async (_id, params) => toolResult(manager.cancel(source, params.id)),
 		}),
 	];
+	const localControl: ToolPolicy = { ...MUTATING_TOOL_POLICY, sideEffect: "local", risk: "low", approval: "never", reversible: true, impact: "Changes only the current conversation's bounded Sub-Agent tasks" };
+	const policies: Record<string, ToolPolicy> = {
+		task_spawn: { ...localControl, risk: "medium", impact: "Starts one bounded read-only Sub-Agent task" },
+		task_status: { ...READ_ONLY_TOOL_POLICY },
+		task_wait: { ...READ_ONLY_TOOL_POLICY, timeoutMs: 130_000, maxAttempts: 1, impact: "Waits for an existing Sub-Agent without changing its state" },
+		task_cancel: { ...localControl, reversible: false, impact: "Cancels one bounded Sub-Agent task in the current conversation" },
+	};
+	return tools.map((tool) => withToolPolicy(tool, policies[tool.name]!));
 }
 
 function snapshot(task: ManagedTask): SubagentTaskSnapshot {

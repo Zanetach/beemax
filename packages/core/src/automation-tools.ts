@@ -4,10 +4,11 @@ import { StringEnum } from "@earendil-works/pi-ai";
 import { defineTool, type ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import type { BeeMaxRuntimeSource } from "./runtime.ts";
+import { MUTATING_TOOL_POLICY, READ_ONLY_TOOL_POLICY, withToolPolicy, type ToolPolicy } from "./tool-runtime.ts";
 
 export function createAutomationTools(store: AutomationStore, source: BeeMaxRuntimeSource, wakeScheduler: () => void): ToolDefinition[] {
 	const owner = (): AutomationOwner => ({ platform: source.platform, chatId: source.chatId, userId: source.userIdAlt ?? source.userId });
-	return [
+	const tools = [
 		defineTool({ name: "reminder_create", label: "Create Reminder", description: "Create a persistent one-shot reminder delivered to the current chat. Requires approval. Use an ISO timestamp with timezone or relative duration like 20m.", parameters: Type.Object({ name: Type.String({ minLength: 1, maxLength: 120 }), when: Type.String({ description: "ISO 8601 timestamp with timezone, or duration like 20m/2h/1d" }), text: Type.String({ minLength: 1, maxLength: 20_000 }) }), execute: async (_id, params) => {
 			const job = store.create({ ...owner(), name: params.name, kind: "reminder", scheduleKind: "at", schedule: params.when, text: params.text }); wakeScheduler(); return result(`Reminder created for ${new Date(job.nextRunAt).toISOString()}`, job);
 		} }),
@@ -24,6 +25,17 @@ export function createAutomationTools(store: AutomationStore, source: BeeMaxRunt
 			const runs = store.runs(params.id, owner(), params.limit ?? 20); return result(runs.length ? runs.map((run) => `- ${new Date(run.startedAt).toISOString()} ${run.status}${run.error ? `: ${run.error}` : ""}`).join("\n") : "No run history.", runs);
 		} }),
 	];
+	const changeSchedule: ToolPolicy = { ...MUTATING_TOOL_POLICY, sideEffect: "local", risk: "medium", reversible: true, impact: "Changes a Profile-scoped reminder or scheduled task" };
+	const policies: Record<string, ToolPolicy> = {
+		reminder_create: changeSchedule,
+		schedule_create: changeSchedule,
+		schedule_list: { ...READ_ONLY_TOOL_POLICY },
+		schedule_pause: changeSchedule,
+		schedule_resume: changeSchedule,
+		schedule_delete: { ...changeSchedule, risk: "high", reversible: false, impact: "Permanently deletes a Profile-scoped scheduled task" },
+		schedule_runs: { ...READ_ONLY_TOOL_POLICY },
+	};
+	return tools.map((tool) => withToolPolicy(tool, policies[tool.name]!));
 }
 function formatJob(job: { id:string; name:string; enabled:boolean; kind:string; scheduleKind:string; schedule:string; nextRunAt:number }): string { return `- [${job.id}] ${job.enabled ? "enabled" : "paused"} ${job.name} (${job.kind}, ${job.scheduleKind}:${job.schedule}) next=${new Date(job.nextRunAt).toISOString()}`; }
 function result(text: string, details: unknown) { return { content: [{ type: "text" as const, text }], details }; }
