@@ -1,6 +1,6 @@
 export {
 	backupSqliteDatabase, MemoryStore, verifySqliteDatabase,
-	type ClaimInput, type MemoryBrief, type MemoryCandidate, type MemoryClaim, type MemoryEvidence, type MemoryEvent,
+	MEMORY_CLAIM_KINDS, MEMORY_CLAIM_KIND_LABELS, type ClaimInput, type MemoryBrief, type MemoryCandidate, type MemoryClaim, type MemoryClaimKind, type MemoryEvidence, type MemoryEvent,
 	type MemoryRecord, type RecallOptions, type TaskRecord,
 } from "./store.ts";
 export { canAutomaticallyUnderstand, createMemoryTools, type MemoryToolRecord, type MemoryToolStore } from "./tools.ts";

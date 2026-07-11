@@ -1,7 +1,7 @@
 /** Agent-facing memory capability. Persistent policy remains in BeeMax Core. */
 import { defineTool, memoryScopeForSource, type BeeMaxRuntimeSource, type MemoryScope, type ToolDefinition } from "@beemax/core";
 import { Type } from "typebox";
-import type { ClaimInput, MemoryClaim, MemoryEvidence } from "./store.ts";
+import { MEMORY_CLAIM_KINDS, type ClaimInput, type MemoryClaim, type MemoryEvidence } from "./store.ts";
 
 export interface MemoryToolRecord {
 	id: string;
@@ -45,7 +45,7 @@ export function createMemoryTools(store: MemoryToolStore, source: BeeMaxRuntimeS
 			const content = params.content.trim(); const id = store.remember({ ...scope(), role: "memory", content }); return result(`Remembered as ${id}`, { id, content });
 		} }),
 		defineTool({ name: "memory_understand", label: "Record Understanding", description: "Automatically record a high-confidence, stable, source-backed understanding. Never use for secrets, credentials, financial or health details.", parameters: Type.Object({
-			kind: Type.Union([Type.Literal("preference"), Type.Literal("fact"), Type.Literal("decision"), Type.Literal("goal"), Type.Literal("project"), Type.Literal("relationship"), Type.Literal("workflow")]),
+			kind: Type.Union(MEMORY_CLAIM_KINDS.map((kind) => Type.Literal(kind))),
 			statement: Type.String({ minLength: 1, maxLength: 2000 }),
 			confidence: Type.Number({ minimum: 0.85, maximum: 1 }),
 			stability: Type.Union([Type.Literal("medium"), Type.Literal("high")]),

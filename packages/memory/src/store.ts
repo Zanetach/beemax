@@ -16,6 +16,10 @@ import type { Database as DatabaseType } from "better-sqlite3";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 
+export const MEMORY_CLAIM_KINDS = ["preference", "fact", "decision", "goal", "project", "relationship", "workflow"] as const;
+export type MemoryClaimKind = typeof MEMORY_CLAIM_KINDS[number];
+export const MEMORY_CLAIM_KIND_LABELS: Record<MemoryClaimKind, string> = { preference: "沟通与偏好", fact: "稳定事实", decision: "关键决策", goal: "长期目标", project: "项目", relationship: "重要关系", workflow: "工作方式" };
+
 export interface MemoryRecord {
 	id: string;
 	platform: string;
@@ -43,7 +47,7 @@ export interface MemoryClaim {
 	platform: string;
 	chatId: string;
 	userId?: string;
-	kind: "preference" | "fact" | "decision" | "goal" | "project" | "relationship" | "workflow";
+	kind: MemoryClaimKind;
 	statement: string;
 	confidence: number;
 	stability: "low" | "medium" | "high";
@@ -340,12 +344,11 @@ export class MemoryStore {
 		const claims = this.listClaims({ ...opts, limit: 100 }).filter((claim) => claim.stability !== "low" || claim.confidence >= 0.85);
 		const grouped = new Map<MemoryClaim["kind"], MemoryClaim[]>();
 		for (const claim of claims) grouped.set(claim.kind, [...(grouped.get(claim.kind) ?? []), claim]);
-		const labels: Record<MemoryClaim["kind"], string> = { preference: "沟通与偏好", fact: "稳定事实", decision: "关键决策", goal: "长期目标", project: "项目", relationship: "重要关系", workflow: "工作方式" };
 		const lines = ["# BeeMax 长期记忆", "", "此文件由记忆账本生成；原始证据与可纠正版本保存在 SQLite。"];
-		for (const kind of Object.keys(labels) as MemoryClaim["kind"][]) {
+		for (const kind of MEMORY_CLAIM_KINDS) {
 			const entries = grouped.get(kind);
 			if (!entries?.length) continue;
-			lines.push("", `## ${labels[kind]}`);
+			lines.push("", `## ${MEMORY_CLAIM_KIND_LABELS[kind]}`);
 			for (const claim of entries) {
 				const candidate = `- ${claim.statement}`;
 				if ([...lines, candidate].join("\n").length > limit) return `${lines.join("\n")}\n\n[已按大小截断；请使用记忆检索获取更多内容]`;
