@@ -17,6 +17,7 @@ export interface PlanningSignals {
 
 export interface AutonomousPlanningDecision {
 	mode: AutonomousExecutionMode;
+	requiredTool?: "task_spawn" | "task_plan_execute";
 	suggestedConcurrency: number;
 	budget: PlanningResourceBudget;
 	signals: PlanningSignals;
@@ -92,10 +93,11 @@ export class AutonomousPlanningPolicy {
 			maxTokens: Math.min(this.capacity.maxTokens, mode === "direct" ? 12_000 : Math.max(20_000, scale * 16_000)),
 			maxCorrectiveAttempts: mode === "direct" ? 0 : this.capacity.maxCorrectiveAttempts,
 		};
-		const decision = { mode, suggestedConcurrency, budget, signals, reason };
+		const requiredTool = mode === "dag" ? "task_plan_execute" as const : mode === "delegate" ? "task_spawn" as const : undefined;
+		const decision = { mode, requiredTool, suggestedConcurrency, budget, signals, reason };
 		return {
 			...decision,
-			directive: () => `[BeeMax execution policy: mode=${mode}; concurrency=${suggestedConcurrency}; maxSubagents=${budget.maxSubagents}; maxToolCalls=${budget.maxToolCalls}; maxTokens=${budget.maxTokens}; correctiveAttempts=${budget.maxCorrectiveAttempts}]`,
+			directive: () => `[BeeMax execution policy: mode=${mode}; requiredTool=${requiredTool ?? "none"}; concurrency=${suggestedConcurrency}; maxSubagents=${budget.maxSubagents}; maxToolCalls=${budget.maxToolCalls}; maxTokens=${budget.maxTokens}; correctiveAttempts=${budget.maxCorrectiveAttempts}. When requiredTool is not none, call it before giving a final answer.]`,
 		};
 	}
 }

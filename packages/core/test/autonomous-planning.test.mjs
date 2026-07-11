@@ -6,6 +6,7 @@ test("planning policy keeps simple conversational requests direct", () => {
 	const policy = new AutonomousPlanningPolicy({ maxConcurrent: 8 });
 	const decision = policy.decide("What model are you using?");
 	assert.equal(decision.mode, "direct");
+	assert.equal(decision.requiredTool, undefined);
 	assert.equal(decision.suggestedConcurrency, 1);
 	assert.equal(decision.budget.maxSubagents, 0);
 	assert.match(decision.reason, /simple|single/i);
@@ -15,6 +16,7 @@ test("planning policy delegates one substantial isolated work item", () => {
 	const policy = new AutonomousPlanningPolicy({ maxConcurrent: 8 });
 	const decision = policy.decide("Research the official documentation deeply and produce an evidence-backed comparison report");
 	assert.equal(decision.mode, "delegate");
+	assert.equal(decision.requiredTool, "task_spawn");
 	assert.equal(decision.suggestedConcurrency, 1);
 	assert.equal(decision.budget.maxSubagents, 1);
 	assert.ok(decision.budget.maxToolCalls > 0);
@@ -24,6 +26,7 @@ test("planning policy selects a DAG and derives bounded parallel resources for i
 	const policy = new AutonomousPlanningPolicy({ maxConcurrent: 8, maxSubagents: 6, maxToolCalls: 60, maxTokens: 120_000 });
 	const decision = policy.decide("Review the API, CLI, memory, security, and operations modules in parallel; compare each independently, then synthesize and verify a release report");
 	assert.equal(decision.mode, "dag");
+	assert.equal(decision.requiredTool, "task_plan_execute");
 	assert.ok(decision.suggestedConcurrency >= 2);
 	assert.ok(decision.suggestedConcurrency <= 6);
 	assert.ok(decision.budget.maxSubagents >= decision.suggestedConcurrency);
@@ -52,6 +55,7 @@ test("planning policy exposes a content-free directive for the Agent runtime", (
 test("Agent runtime injects a deterministic planning directive without changing the user exchange", async () => {
 	const source = { platform: "cli", chatId: "local", chatType: "dm", userId: "local" };
 	let received = "";
+	let runtimeListener;
 	const recorded = [];
 	const budgets = new PlanningBudgetRegistry();
 	const agent = { state: { model: { id: "test" }, messages: [] } };
@@ -61,8 +65,8 @@ test("Agent runtime injects a deterministic planning directive without changing 
 		context: { enrich: (_source, text) => text, record: (_source, exchange) => recorded.push(exchange) },
 		createAgent: async () => ({
 			agent,
-			subscribe: () => () => undefined,
-			prompt: async (text) => { received = text; agent.state.messages = [{ role: "assistant", content: [{ type: "text", text: "done" }], usage: { input: 1, output: 1 } }]; },
+			subscribe: (next) => { runtimeListener = next; return () => undefined; },
+			prompt: async (text) => { received = text; runtimeListener({ type: "tool_execution_start", toolCallId: "plan", toolName: "task_plan_execute" }); agent.state.messages = [{ role: "assistant", content: [{ type: "text", text: "done" }], usage: { input: 1, output: 1 } }]; },
 			abort: async () => undefined,
 			dispose: () => undefined,
 		}),
@@ -128,5 +132,25 @@ test("Agent runtime aborts a turn when cumulative model usage exceeds its token 
 	});
 	await assert.rejects(runtime.run({ source, text: "Read this file", timeoutMs: 1_000 }), /token budget exceeded.*12000/i);
 	assert.equal(aborts, 1);
+	runtime.dispose();
+});
+
+test("Agent runtime performs one content-free correction when a complex turn skips its required planner", async () => {
+	const source = { platform: "cli", chatId: "planner", chatType: "dm", userId: "local" };
+	let listener;
+	const prompts = [];
+	const agent = { state: { model: { id: "test" }, messages: [] } };
+	const runtime = new BeeMaxAgentRuntime({ planningPolicy: new AutonomousPlanningPolicy(), createAgent: async () => ({
+		agent, subscribe: (next) => { listener = next; return () => undefined; },
+		prompt: async (text) => {
+			prompts.push(text);
+			if (prompts.length === 2) listener({ type: "tool_execution_start", toolCallId: "plan", toolName: "task_plan_execute" });
+			agent.state.messages = [{ role: "assistant", content: [{ type: "text", text: "done" }], usage: { input: 1, output: 1 } }];
+		}, abort: async () => undefined, dispose: () => undefined,
+	}) });
+	await runtime.run({ source, text: "Review frontend and backend independently, then combine and verify the results", timeoutMs: 1_000 });
+	assert.equal(prompts.length, 2);
+	assert.match(prompts[1], /task_plan_execute/);
+	assert.doesNotMatch(prompts[1], /frontend|backend/);
 	runtime.dispose();
 });

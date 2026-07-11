@@ -151,9 +151,11 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 			let toolCalls = 0;
 			let consumedTokens = 0;
 			let budgetExceeded: string | undefined;
+			let requiredToolUsed = false;
 			const unsubscribe = session.piSession.subscribe((event) => {
 				if (event.type === "tool_execution_start") {
 					observableProgress = true;
+					if (event.toolName === planning?.requiredTool) requiredToolUsed = true;
 					toolCalls++;
 					if (planning && toolCalls > planning.budget.maxToolCalls && !budgetExceeded) {
 						budgetExceeded = `Agent tool-call budget exceeded (${planning.budget.maxToolCalls})`;
@@ -179,6 +181,10 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 					source: input.mode === "automation" ? "extension" : undefined,
 					images: input.images,
 				});
+				if (planning?.requiredTool && !requiredToolUsed && !budgetExceeded) {
+					await session.piSession.prompt(`[BeeMax planning correction: call ${planning.requiredTool} now using the active execution budget. Do not answer directly.]`, { expandPromptTemplates: false });
+					if (!requiredToolUsed) throw new AgentRunError(`Agent did not use required planning tool: ${planning.requiredTool}`, false, undefined);
+				}
 				if (budgetExceeded) throw new AgentRunError(budgetExceeded, false, undefined);
 				let failure = lastAssistantFailure(session.piSession.agent);
 				let attempt = 0;
