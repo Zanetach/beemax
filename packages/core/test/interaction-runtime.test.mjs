@@ -53,6 +53,22 @@ test("action IDs make retried controls and concurrent requests idempotent per se
 	assert.equal(runs, 2);
 });
 
+test("interaction telemetry is operational-only and does not contain model content", async () => {
+	const telemetry = [];
+	const runtime = {
+		async run(_input, sink) { await sink({ type: "message_update", message: { role: "assistant" }, assistantMessageEvent: { type: "text_delta", delta: "private answer" } }); return { answer: "private answer", model: "test/model", durationMs: 1, usage: {} }; },
+		async cancel() { return false; }, async modelStatus() { return undefined; }, async usage() { return undefined; },
+	};
+	const interaction = new InteractionEventAdapter(runtime, { telemetry: (event) => telemetry.push(event) });
+	await interaction.dispatch({ type: "message.send", source, text: "private prompt", input: { timeoutMs: 1_000 } });
+	interaction.events(source, 1);
+	assert.deepEqual(telemetry, [
+		{ type: "interaction.turn_started", surface: "cli" },
+		{ type: "interaction.presenter_reconnected", surface: "cli", gapEvents: 2 },
+	]);
+	assert.doesNotMatch(JSON.stringify(telemetry), /private/);
+});
+
 test("interaction reducer preserves a cancelled turn state", () => {
 	const snapshot = reduceInteractionEvent({ phase: "running", turnId: "turn-1", updatedAt: 1 }, { type: "turn.cancelled", turnId: "turn-1", at: 2 });
 	assert.equal(snapshot.phase, "cancelled");

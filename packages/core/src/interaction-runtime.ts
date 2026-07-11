@@ -80,6 +80,14 @@ export interface InteractionSnapshot {
 }
 
 export type InteractionEventSink = (event: InteractionEvent) => void | Promise<void>;
+/** Content-free operational telemetry. Values must never contain prompts, answers, reasoning, or tool args. */
+export type InteractionTelemetryEvent =
+	| { type: "interaction.turn_started"; surface: string }
+	| { type: "interaction.approval_requested"; surface: string; tool: string; risk?: "低" | "中" | "高" }
+	| { type: "interaction.approval_resolved"; surface: string; decision: "allowed" | "denied" }
+	| { type: "interaction.input_queued"; surface: string; mode: "queue" | "steer_fallback" }
+	| { type: "interaction.presenter_reconnected"; surface: string; gapEvents: number };
+export type InteractionTelemetrySink = (event: InteractionTelemetryEvent) => void;
 
 export interface InteractionEventAdapterOptions<Source extends BeeMaxRuntimeSource = BeeMaxRuntimeSource> {
 	profileId?: string;
@@ -88,6 +96,7 @@ export interface InteractionEventAdapterOptions<Source extends BeeMaxRuntimeSour
 	eventHistoryLimit?: number;
 	actionHistoryLimit?: number;
 	eventJournal?: InteractionEventJournal;
+	telemetry?: InteractionTelemetrySink;
 }
 
 /**
@@ -115,6 +124,7 @@ export class InteractionEventAdapter<Source extends BeeMaxRuntimeSource = BeeMax
 	private readonly eventHistoryLimit: number;
 	private readonly actionHistoryLimit: number;
 	private readonly eventJournal?: InteractionEventJournal;
+	private readonly telemetry?: InteractionTelemetrySink;
 
 	constructor(runtime: AgentRuntimePort<Source>, options: InteractionEventAdapterOptions<Source> = {}) {
 		this.runtime = runtime;
@@ -124,6 +134,7 @@ export class InteractionEventAdapter<Source extends BeeMaxRuntimeSource = BeeMax
 		this.eventHistoryLimit = Math.max(20, Math.min(options.eventHistoryLimit ?? 500, 10_000));
 		this.actionHistoryLimit = Math.max(20, Math.min(options.actionHistoryLimit ?? 200, 10_000));
 		this.eventJournal = options.eventJournal;
+		this.telemetry = options.telemetry;
 		this.unsubscribeApproval = this.approvalBroker && typeof this.approvalBroker.subscribe === "function" ? this.approvalBroker.subscribe((event) => {
 			void (event.type === "requested"
 				? this.approvalRequested(event.source as Source, event.toolName, event.details)
@@ -212,7 +223,9 @@ export class InteractionEventAdapter<Source extends BeeMaxRuntimeSource = BeeMax
 		const merged = new Map<number, InteractionEvent>();
 		for (const event of this.eventJournal?.events(sessionId, afterSequence) ?? []) merged.set(event.sequence, event);
 		for (const event of this.eventHistory.get(key) ?? []) if (event.sequence > afterSequence) merged.set(event.sequence, event);
-		return [...merged.values()].sort((a, b) => a.sequence - b.sequence);
+		const events = [...merged.values()].sort((a, b) => a.sequence - b.sequence);
+		if (afterSequence > 0) this.telemetry?.({ type: "interaction.presenter_reconnected", surface: source.platform, gapEvents: events.length });
+		return events;
 	}
 
 	/** Subscribe a presenter without granting it runtime or policy control. */
@@ -280,6 +293,8 @@ export class InteractionEventAdapter<Source extends BeeMaxRuntimeSource = BeeMax
 		const history = [...(this.eventHistory.get(key) ?? []), event];
 		this.eventHistory.set(key, history.slice(-this.eventHistoryLimit));
 		this.eventJournal?.append(event);
+		const telemetry = telemetryEvent(event);
+		if (telemetry) this.telemetry?.(telemetry);
 	}
 
 	private async publish(source: Source, turnId: string, payload: InteractionEventPayload, sink?: InteractionEventSink): Promise<void> {
@@ -333,6 +348,14 @@ export function mapAgentSessionEvent(event: AgentSessionEvent): InteractionEvent
 	if (event.type !== "message_update" || event.message.role !== "assistant") return undefined;
 	if (event.assistantMessageEvent.type === "text_delta") return { type: "answer.delta", text: event.assistantMessageEvent.delta };
 	if (event.assistantMessageEvent.type === "thinking_delta") return { type: "reasoning.delta", text: event.assistantMessageEvent.delta };
+	return undefined;
+}
+
+function telemetryEvent(event: InteractionEvent): InteractionTelemetryEvent | undefined {
+	if (event.type === "turn.started") return { type: "interaction.turn_started", surface: event.scope.platform };
+	if (event.type === "approval.requested") return { type: "interaction.approval_requested", surface: event.scope.platform, tool: event.toolName, risk: event.details?.risk };
+	if (event.type === "approval.resolved") return { type: "interaction.approval_resolved", surface: event.scope.platform, decision: event.allowed ? "allowed" : "denied" };
+	if (event.type === "turn.queued") return { type: "interaction.input_queued", surface: event.scope.platform, mode: event.mode };
 	return undefined;
 }
 
