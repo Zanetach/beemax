@@ -906,6 +906,7 @@ async function runChat(config: ReturnType<typeof loadConfig>, requestedMode: { f
 		let active: Promise<void> | undefined;
 		let queuedInput: string | undefined;
 		let retryText: string | undefined;
+		let activity = new LocalActivityPresenter(detailsDisplay, presentationMode !== "plain");
 		let controlInProgress = false;
 		let lastDurationMs: number | undefined;
 		let closed = false;
@@ -961,7 +962,6 @@ async function runChat(config: ReturnType<typeof loadConfig>, requestedMode: { f
 			let streamed = "";
 			const richOutput = presentationMode !== "plain";
 			const reasoning = new LocalReasoningPresenter(reasoningDisplay, richOutput);
-			const activity = new LocalActivityPresenter(detailsDisplay, richOutput);
 			let answerStreamStarted = false;
 			const terminal = new StreamingTerminalMarkdown();
 			const outcome = await interactionAdapter.dispatch({ type: "message.send", source: turnSource, text, input: { timeoutMs: 10 * 60_000, mode: "interactive" } }, (event) => {
@@ -1018,6 +1018,7 @@ async function runChat(config: ReturnType<typeof loadConfig>, requestedMode: { f
 				await runtime.open(source);
 				await applySessionPreferences();
 				lastDurationMs = undefined;
+				activity = new LocalActivityPresenter(detailsDisplay, presentationMode !== "plain");
 				process.stdout.write(`Started new session: ${threadId}\n`);
 				writePrompt();
 				return;
@@ -1029,6 +1030,7 @@ async function runChat(config: ReturnType<typeof loadConfig>, requestedMode: { f
 				await runtime.open(source);
 				await applySessionPreferences();
 				lastDurationMs = undefined;
+				activity = new LocalActivityPresenter(detailsDisplay, presentationMode !== "plain");
 				process.stdout.write(`${reset ? "Discarded the live session and" : "Started"} a fresh session: ${threadId}\n`);
 				writePrompt();
 				return;
@@ -1051,6 +1053,7 @@ async function runChat(config: ReturnType<typeof loadConfig>, requestedMode: { f
 				}
 				source = resumeSource;
 				lastDurationMs = undefined;
+				activity = new LocalActivityPresenter(detailsDisplay, presentationMode !== "plain");
 				await runtime.open(source);
 				await applySessionPreferences();
 				process.stdout.write(`Restored session: ${source.threadId ?? "default"}. Use /history to inspect it or send a message to continue.\n`);
@@ -1077,8 +1080,8 @@ async function runChat(config: ReturnType<typeof loadConfig>, requestedMode: { f
 				return;
 			}
 			if (command?.kind === "details") {
-				if (command.mode === "status") process.stdout.write(`Details: ${detailsDisplay}. Use /details hidden|collapsed|expanded.\n`);
-				else { detailsDisplay = command.mode; await runtime.updateSessionPreferences(source, { detailsDisplay }); process.stdout.write(`Details display set to ${detailsDisplay}.\n`); }
+				if (command.mode === "status") process.stdout.write(`Details: ${detailsDisplay}. Use /details hidden|collapsed|expanded.\n\n${activity.renderDetails()}\n`);
+				else { detailsDisplay = command.mode; activity.setDetails(detailsDisplay); await runtime.updateSessionPreferences(source, { detailsDisplay }); process.stdout.write(`Details display set to ${detailsDisplay}.\n\n${activity.renderDetails()}\n`); }
 				writePrompt();
 				return;
 			}

@@ -106,15 +106,28 @@ export function parseChatCommand(input: string): ChatCommand | undefined {
 
 /** Compact tool lifecycle lines for a terminal activity stream. */
 export class LocalActivityPresenter {
-	private readonly details: DetailsDisplay;
+	private details: DetailsDisplay;
 	private readonly interactive: boolean;
+	private readonly activities = new Map<string, { name: string; state: "running" | "completed" | "failed"; summary?: string }>();
 
 	constructor(details: DetailsDisplay, interactive = true) {
 		this.details = details;
 		this.interactive = interactive;
 	}
 
+	setDetails(details: DetailsDisplay): void { this.details = details; }
+
+	/** Re-render the current turn/session activity as a recoverable detail card. */
+	renderDetails(): string {
+		if (!this.activities.size) return "No tool or Sub-Agent activity in this session yet.";
+		return [...this.activities.values()].map((activity) => {
+			const label = activity.name === "task_spawn" || activity.name === "task_status" || activity.name === "task_wait" ? "子代理" : "工具";
+			return `${label} ${activity.name} · ${activity.state}${activity.summary ? `\n${activity.summary}` : ""}`;
+		}).join("\n\n");
+	}
+
 	event(event: InteractionEvent): string {
+		if (event.type === "tool.changed") this.activities.set(event.callId, { name: event.name, state: event.state, summary: event.summary });
 		if (this.details === "hidden" || !this.interactive) return "";
 		if (event.type === "tool.changed") {
 			const label = event.name === "task_spawn" || event.name === "task_status" || event.name === "task_wait" ? "子代理" : "工具";

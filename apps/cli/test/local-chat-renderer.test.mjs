@@ -67,4 +67,6 @@ test("tool activity remains separate from the answer stream", () => {
 	assert.equal(new LocalActivityPresenter("hidden", false).event({ type: "tool.changed", turnId: "t", callId: "1", name: "bash", state: "running" }), "");
 	assert.equal(presenter.event({ type: "approval.requested", turnId: "t", toolName: "write", at: 1 }), "\n等待审批：工具 write。可输入 /stop 取消。\n");
 	assert.equal(presenter.event({ type: "approval.resolved", turnId: "t", toolName: "write", allowed: true, at: 2 }), "\n审批已允许，继续执行。\n");
+	assert.match(presenter.renderDetails(), /工具 web_search · completed/);
+	assert.match(presenter.renderDetails(), /子代理 task_spawn · running/);
 });
