@@ -108,8 +108,11 @@ test("TaskGraph records Verification as unavailable when the verifier fails", as
 	});
 	assert.deepEqual(result, { succeeded: 0, failed: 1, cancelled: 0, blocked: [] });
 	assert.equal(ledger.tasks.get("task").verificationStatus, "unavailable");
+	assert.equal(ledger.tasks.get("task").result, undefined);
+	assert.equal(ledger.tasks.get("task").candidateResult, "candidate");
 	assert.match(ledger.tasks.get("task").error, /verification provider unavailable/);
-	assert.equal([...ledger.runs.values()][0].status, "failed");
+	const failedRun = [...ledger.runs.values()][0];
+	assert.deepEqual({ status: failedRun.status, output: failedRun.output }, { status: "failed", output: "candidate" });
 	assert.equal(ledger.plans.get("verifier-failure-plan").status, "failed");
 });
 

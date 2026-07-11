@@ -233,6 +233,7 @@ export class MemoryStore {
 				started_at INTEGER,
 				finished_at INTEGER,
 				result TEXT,
+				candidate_result TEXT,
 				error TEXT,
 				updated_at INTEGER NOT NULL DEFAULT 0
 			);
@@ -322,6 +323,7 @@ export class MemoryStore {
 		this.addColumnIfMissing("tasks", "plan_id", "TEXT");
 		this.addColumnIfMissing("tasks", "verification_status", "TEXT");
 		this.addColumnIfMissing("tasks", "verification_outcome", "TEXT");
+		this.addColumnIfMissing("tasks", "candidate_result", "TEXT");
 		this.addColumnIfMissing("tasks", "corrective_attempts", "INTEGER NOT NULL DEFAULT 0");
 		this.addColumnIfMissing("tasks", "updated_at", "INTEGER NOT NULL DEFAULT 0");
 		this.addColumnIfMissing("task_runs", "lease_expires_at", "INTEGER");
@@ -647,9 +649,9 @@ export class MemoryStore {
 	}
 
 	record(task: RuntimeTaskRecord): void {
-		this.db.prepare(`INSERT INTO tasks (id, owner_key, kind, title, description, acceptance_criteria, recovery_policy, idempotency_key, execution_scope, status, parent_id, plan_id, evidence, verification_outcome, corrective_attempts, created_at, started_at, finished_at, result, error, updated_at)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-			.run(task.id, task.ownerKey, task.kind, task.title, task.description ?? null, task.acceptanceCriteria ?? null, task.recoveryPolicy ?? "never", task.idempotencyKey ?? null, task.executionScope ? JSON.stringify(task.executionScope) : null, task.status, task.parentId ?? null, task.planId ?? null, task.evidence ?? null, task.verificationStatus ?? null, task.correctiveAttempts ?? 0, task.createdAt, task.startedAt ?? null, task.finishedAt ?? null, task.result ?? null, task.error ?? null, task.createdAt);
+		this.db.prepare(`INSERT INTO tasks (id, owner_key, kind, title, description, acceptance_criteria, recovery_policy, idempotency_key, execution_scope, status, parent_id, plan_id, evidence, verification_outcome, corrective_attempts, created_at, started_at, finished_at, result, candidate_result, error, updated_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+			.run(task.id, task.ownerKey, task.kind, task.title, task.description ?? null, task.acceptanceCriteria ?? null, task.recoveryPolicy ?? "never", task.idempotencyKey ?? null, task.executionScope ? JSON.stringify(task.executionScope) : null, task.status, task.parentId ?? null, task.planId ?? null, task.evidence ?? null, task.verificationStatus ?? null, task.correctiveAttempts ?? 0, task.createdAt, task.startedAt ?? null, task.finishedAt ?? null, task.result ?? null, task.candidateResult ?? null, task.error ?? null, task.createdAt);
 	}
 
 	transition(id: string, change: TaskTransition): boolean {
@@ -657,12 +659,13 @@ export class MemoryStore {
 			started_at = CASE WHEN ? = 'pending' THEN NULL ELSE COALESCE(?, started_at) END,
 			finished_at = CASE WHEN ? IN ('pending', 'running') THEN NULL ELSE COALESCE(?, finished_at) END,
 			result = CASE WHEN ? IN ('pending', 'running') THEN NULL ELSE COALESCE(?, result) END,
+			candidate_result = CASE WHEN ? IN ('pending', 'running', 'succeeded') THEN NULL ELSE COALESCE(?, candidate_result) END,
 			error = CASE WHEN ? IN ('running', 'succeeded') THEN NULL ELSE COALESCE(?, error) END,
 			evidence = COALESCE(?, evidence),
 			verification_outcome = COALESCE(?, verification_outcome),
 			corrective_attempts = COALESCE(?, corrective_attempts),
 			updated_at = ? WHERE id = ? AND ((? = 'pending' AND status = 'running') OR (? = 'running' AND status = 'pending') OR (? IN ('succeeded', 'failed', 'cancelled') AND status IN ('pending', 'running')))`)
-			.run(change.status, change.status, change.startedAt ?? null, change.status, change.finishedAt ?? null, change.status, change.result ?? null, change.status, change.error ?? null, change.evidence ?? null, change.verificationStatus ?? null, change.correctiveAttempts ?? null, Date.now(), id, change.status, change.status, change.status);
+			.run(change.status, change.status, change.startedAt ?? null, change.status, change.finishedAt ?? null, change.status, change.result ?? null, change.status, change.candidateResult ?? null, change.status, change.error ?? null, change.evidence ?? null, change.verificationStatus ?? null, change.correctiveAttempts ?? null, Date.now(), id, change.status, change.status, change.status);
 		return result.changes === 1;
 	}
 
@@ -780,7 +783,7 @@ export class MemoryStore {
 			for (const row of rows) {
 				this.db.prepare("UPDATE task_runs SET status = 'failed', finished_at = ?, error = ? WHERE id = ? AND status = 'running'").run(now, reason, row.run_id);
 				if (row.recovery_policy === "safe_retry" && row.idempotency_key) {
-					const changed = this.db.prepare("UPDATE tasks SET status = 'pending', started_at = NULL, finished_at = NULL, result = NULL, error = ?, updated_at = ? WHERE id = ? AND status = 'running'").run(reason, now, row.task_id).changes;
+					const changed = this.db.prepare("UPDATE tasks SET status = 'pending', started_at = NULL, finished_at = NULL, result = NULL, candidate_result = NULL, error = ?, updated_at = ? WHERE id = ? AND status = 'running'").run(reason, now, row.task_id).changes;
 					retried += changed;
 				} else {
 					const changed = this.db.prepare("UPDATE tasks SET status = 'failed', finished_at = ?, error = ?, updated_at = ? WHERE id = ? AND status = 'running'").run(now, reason, now, row.task_id).changes;
@@ -803,7 +806,7 @@ export class MemoryStore {
 
 	prepareTaskPlanRetry(ownerKeys: string[], planId: string): number {
 		if (!ownerKeys.length || !planId.trim()) return 0;
-		const changed = this.db.prepare(`UPDATE tasks SET status = 'pending', started_at = NULL, finished_at = NULL, result = NULL, error = 'Manual Task Plan retry requested', updated_at = ?
+		const changed = this.db.prepare(`UPDATE tasks SET status = 'pending', started_at = NULL, finished_at = NULL, result = NULL, candidate_result = NULL, error = 'Manual Task Plan retry requested', updated_at = ?
 			WHERE owner_key IN (${ownerKeys.map(() => "?").join(", ")}) AND plan_id = ? AND status = 'failed'
 			AND recovery_policy = 'safe_retry' AND idempotency_key IS NOT NULL AND execution_scope IS NOT NULL`)
 			.run(Date.now(), ...ownerKeys, planId).changes;
@@ -950,7 +953,7 @@ interface EventRow {
 
 interface RuntimeTaskRow {
 	id: string; owner_key: string; kind: RuntimeTaskRecord["kind"]; title: string; description: string | null; acceptance_criteria: string | null; recovery_policy: RuntimeTaskRecord["recoveryPolicy"]; idempotency_key: string | null; execution_scope: string | null; status: RuntimeTaskRecord["status"];
-	parent_id: string | null; plan_id: string | null; evidence: string | null; verification_outcome: RuntimeTaskRecord["verificationStatus"] | null; corrective_attempts: number; created_at: number; started_at: number | null; finished_at: number | null; result: string | null; error: string | null;
+	parent_id: string | null; plan_id: string | null; evidence: string | null; verification_outcome: RuntimeTaskRecord["verificationStatus"] | null; corrective_attempts: number; created_at: number; started_at: number | null; finished_at: number | null; result: string | null; candidate_result: string | null; error: string | null;
 }
 
 interface TaskRunRow {
@@ -1018,6 +1021,7 @@ function mapRuntimeTask(row: RuntimeTaskRow): RuntimeTaskRecord {
 		...(row.started_at === null ? {} : { startedAt: row.started_at }),
 		...(row.finished_at === null ? {} : { finishedAt: row.finished_at }),
 		...(row.result === null ? {} : { result: row.result }),
+		...(row.candidate_result === null ? {} : { candidateResult: row.candidate_result }),
 		...(row.error === null ? {} : { error: row.error }),
 	};
 }

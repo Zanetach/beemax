@@ -115,7 +115,11 @@ test("Verification unavailable persists across Profile database restarts", async
 		await graph.run(["cli:local:local"], "verification-plan", async () => ({ output: "candidate" }), { verify: async () => { throw new Error("verifier offline"); } });
 		store.close();
 		store = new MemoryStore(path);
-		assert.equal(store.queryTasks({ ownerKeys: ["cli:local:local"], id: "verification-task" })[0].verificationStatus, "unavailable");
+		const task = store.queryTasks({ ownerKeys: ["cli:local:local"], id: "verification-task" })[0];
+		assert.equal(task.verificationStatus, "unavailable");
+		assert.equal(task.result, undefined);
+		assert.equal(task.candidateResult, "candidate");
+		assert.equal(store.taskRuns("verification-task")[0].output, "candidate");
 	} finally { store.close(); rmSync(root, { recursive: true, force: true }); }
 });
 

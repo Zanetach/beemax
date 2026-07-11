@@ -44,6 +44,10 @@ _Avoid_: Prompt, implementation steps, subjective quality
 An independent evaluation of a Task result against its Acceptance Criteria and available evidence; it is unavailable when that evaluation cannot complete, which is distinct from rejecting the result.
 _Avoid_: Execution, self-report, model confidence
 
+**Candidate Result**:
+Task execution output retained for Verification; it cannot satisfy dependencies or become an accepted outcome until Verification succeeds.
+_Avoid_: Final answer, successful result, evidence
+
 **Corrective Attempt**:
 A new Task Run that revises a rejected result using Verification feedback while preserving the identity and responsibility of the original Task.
 _Avoid_: Recovery retry, model continuation, silent rewrite

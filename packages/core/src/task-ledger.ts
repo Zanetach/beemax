@@ -45,10 +45,11 @@ export interface TaskRecord {
 	startedAt?: number;
 	finishedAt?: number;
 	result?: string;
+	candidateResult?: string;
 	error?: string;
 }
 
-export type TaskTransition = Pick<TaskRecord, "status"> & Partial<Pick<TaskRecord, "startedAt" | "finishedAt" | "result" | "error" | "evidence" | "verificationStatus" | "correctiveAttempts">>;
+export type TaskTransition = Pick<TaskRecord, "status"> & Partial<Pick<TaskRecord, "startedAt" | "finishedAt" | "result" | "candidateResult" | "error" | "evidence" | "verificationStatus" | "correctiveAttempts">>;
 
 export type TaskRunStatus = "running" | "succeeded" | "failed" | "cancelled";
 export interface TaskRunRecord {
