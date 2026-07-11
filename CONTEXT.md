@@ -60,6 +60,10 @@ _Avoid_: Task queue, Sub-Agent manager, Task Plan runner
 A time-bounded claim that a live executor is still responsible for a Task Run; expiry means the run was interrupted, not that its outcome is known.
 _Avoid_: Task timeout, lock, deadline
 
+**Task Plan Execution Claim**:
+A time-bounded, holder-fenced right to recover one Task Plan so concurrent Agent instances do not schedule the same Plan at once.
+_Avoid_: Task lock, Plan ownership, scheduler slot
+
 **Recovery Policy**:
 The explicit rule deciding whether an interrupted Task may be retried automatically; automatic retry requires both a safe-retry policy and an Idempotency Key.
 _Avoid_: Retry count, error handling

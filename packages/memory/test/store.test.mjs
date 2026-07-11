@@ -146,6 +146,22 @@ test("Task recovery runner resumes only durable safe DAG candidates with an Exec
 	} finally { store.close(); rmSync(root, { recursive: true, force: true }); }
 });
 
+test("a recovery runner skips a durable Task Plan claimed by another executor", async () => {
+	const root = mkdtempSync(join(tmpdir(), "beemax-task-recovery-claim-"));
+	const path = join(root, "memory.db");
+	const first = new MemoryStore(path);
+	const second = new MemoryStore(path);
+	try {
+		const scope = { platform: "cli", chatId: "local", chatType: "dm", userId: "local" };
+		new TaskGraph(first).createPlan({ id: "claimed-recovery-plan", ownerKey: "cli:local:local", tasks: [{ id: "claimed", title: "Claimed", recoveryPolicy: "safe_retry", idempotencyKey: "claimed-recovery-plan:claimed", executionScope: scope }] }, 1);
+		assert.equal(first.claimTaskPlanExecution("cli:local:local", "claimed-recovery-plan", "other-executor", Date.now() + 60_000), true);
+		let executions = 0;
+		assert.deepEqual(await new TaskRecoveryRunner(second, async () => { executions++; return { output: "duplicate" }; }).run(), { plans: 0, succeeded: 0, failed: 0, cancelled: 0, blocked: [] });
+		assert.equal(executions, 0);
+		assert.equal(second.queryTasks({ ownerKeys: ["cli:local:local"], id: "claimed" })[0].status, "pending");
+	} finally { second.close(); first.close(); rmSync(root, { recursive: true, force: true }); }
+});
+
 test("Task recovery terminalizes a pending Task whose dependency already failed", async () => {
 	const root = mkdtempSync(join(tmpdir(), "beemax-task-dependency-failure-"));
 	const store = new MemoryStore(join(root, "memory.db"));
@@ -272,7 +288,24 @@ test("a Task Plan Terminal Outcome rejects late lifecycle updates", () => {
 		assert.equal(store.transitionPlan("terminal-plan", { ...counts, status: "failed", failed: 1, finishedAt: 130 }), false);
 		assert.equal(store.transitionPlan("terminal-plan", { ...counts, status: "running", startedAt: 130 }), false);
 		assert.equal(store.queryTaskPlans({ ownerKeys: ["cli:local:local"], id: "terminal-plan" })[0].status, "cancelled");
+		assert.equal(store.claimTaskPlanExecution("cli:local:local", "terminal-plan", "late-worker", 300, 200), false);
 	} finally { store.close(); rmSync(root, { recursive: true, force: true }); }
+});
+
+test("a Task Plan Execution Claim admits one holder and fences a stale holder after takeover", () => {
+	const root = mkdtempSync(join(tmpdir(), "beemax-plan-execution-claim-"));
+	const path = join(root, "memory.db");
+	const first = new MemoryStore(path);
+	const second = new MemoryStore(path);
+	try {
+		new TaskGraph(first).createPlan({ id: "claimed-plan", ownerKey: "cli:local:local", tasks: [{ id: "task", title: "Task" }] }, 100);
+		assert.equal(first.claimTaskPlanExecution("cli:local:local", "claimed-plan", "worker-a", 200, 100), true);
+		assert.equal(second.claimTaskPlanExecution("cli:local:local", "claimed-plan", "worker-b", 250, 150), false);
+		assert.equal(second.claimTaskPlanExecution("cli:local:local", "claimed-plan", "worker-b", 350, 200), true);
+		assert.equal(first.releaseTaskPlanExecution("cli:local:local", "claimed-plan", "worker-a"), false);
+		assert.equal(second.renewTaskPlanExecution("cli:local:local", "claimed-plan", "worker-b", 400, 300), true);
+		assert.equal(second.releaseTaskPlanExecution("cli:local:local", "claimed-plan", "worker-b"), true);
+	} finally { second.close(); first.close(); rmSync(root, { recursive: true, force: true }); }
 });
 
 test("structured understandings retain evidence, support correction, and compile a bounded long-term snapshot", () => {

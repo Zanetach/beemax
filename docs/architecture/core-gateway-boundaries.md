@@ -152,8 +152,10 @@ adopts the same ownership distinction without copying either project verbatim.
    capability composition.
 8. **Completed:** enforce Pi as a Core-private execution substrate for
    capabilities and Gateway; allow only the CLI presenter to consume Pi TUI.
-9. **Next:** perform a release audit/package verification and add durable
-   idempotency/queue adapters for multi-instance enterprise deployments.
+9. **In progress:** durable Task Plan Execution Claims now fence concurrent
+   recovery across Agent instances. Next, perform a release audit/package
+   verification and add an external queue adapter for horizontally scaled
+   enterprise deployments.
 
 ## Acceptance criteria
 

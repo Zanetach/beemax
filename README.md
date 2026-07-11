@@ -328,10 +328,12 @@ subagents:
 ```
 
 Tasks above the concurrency limit queue. `/stop` aborts the active parent turn
-and cascades cancellation to its queued/running Sub-Agents. In 0.1, task state
-is process-local: active tasks are cancelled during Gateway shutdown and are
-not resumed after restart; child Pi transcripts remain in the profile session
-directory for audit.
+and cascades cancellation to its queued/running Sub-Agents. Delegated DAG Tasks,
+Task Runs, outcomes, recovery policy and Task Plan Execution Claims are durable.
+After restart, BeeMax resumes only explicitly safe, idempotent Tasks; interrupted
+unsafe work fails closed. Concurrent instances cannot recover the same Plan
+while its holder-fenced claim remains live. Child Pi transcripts remain in the
+profile session directory for audit.
 
 ## Codex image generation
 

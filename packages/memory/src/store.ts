@@ -205,6 +205,13 @@ export class MemoryStore {
 				finished_at INTEGER
 			);
 			CREATE INDEX IF NOT EXISTS idx_task_plans_owner_created ON task_plans(owner_key, created_at DESC);
+			CREATE TABLE IF NOT EXISTS task_plan_execution_claims (
+				plan_id TEXT PRIMARY KEY REFERENCES task_plans(id) ON DELETE CASCADE,
+				owner_key TEXT NOT NULL,
+				holder_id TEXT NOT NULL,
+				lease_expires_at INTEGER NOT NULL
+			);
+			CREATE INDEX IF NOT EXISTS idx_task_plan_execution_claims_expiry ON task_plan_execution_claims(lease_expires_at);
 			CREATE TABLE IF NOT EXISTS tasks (
 				id TEXT PRIMARY KEY,
 				owner_key TEXT NOT NULL,
@@ -708,6 +715,29 @@ export class MemoryStore {
 			result = update.run(change.status, change.taskCount, change.succeeded, change.failed, change.cancelled, change.verified, change.correctiveAttempts, change.startedAt ?? null, change.status, change.finishedAt ?? null, id, change.status, change.status);
 		}
 		return result.changes === 1;
+	}
+
+	claimTaskPlanExecution(ownerKey: string, planId: string, holderId: string, leaseExpiresAt: number, now = Date.now()): boolean {
+		if (!ownerKey.trim() || !planId.trim() || !holderId.trim() || leaseExpiresAt <= now) return false;
+		this.backfillTaskPlans(planId);
+		return this.db.prepare(`INSERT INTO task_plan_execution_claims (plan_id, owner_key, holder_id, lease_expires_at)
+			SELECT id, owner_key, ?, ? FROM task_plans WHERE id = ? AND owner_key = ? AND status IN ('pending', 'running', 'failed')
+			ON CONFLICT(plan_id) DO UPDATE SET owner_key = excluded.owner_key, holder_id = excluded.holder_id, lease_expires_at = excluded.lease_expires_at
+			WHERE task_plan_execution_claims.owner_key = excluded.owner_key
+				AND (task_plan_execution_claims.holder_id = excluded.holder_id OR task_plan_execution_claims.lease_expires_at <= ?)`)
+			.run(holderId, leaseExpiresAt, planId, ownerKey, now).changes === 1;
+	}
+
+	renewTaskPlanExecution(ownerKey: string, planId: string, holderId: string, leaseExpiresAt: number, now = Date.now()): boolean {
+		if (leaseExpiresAt <= now) return false;
+		return this.db.prepare(`UPDATE task_plan_execution_claims SET lease_expires_at = ?
+			WHERE plan_id = ? AND owner_key = ? AND holder_id = ? AND lease_expires_at > ?`)
+			.run(leaseExpiresAt, planId, ownerKey, holderId, now).changes === 1;
+	}
+
+	releaseTaskPlanExecution(ownerKey: string, planId: string, holderId: string): boolean {
+		return this.db.prepare("DELETE FROM task_plan_execution_claims WHERE plan_id = ? AND owner_key = ? AND holder_id = ?")
+			.run(planId, ownerKey, holderId).changes === 1;
 	}
 
 	private backfillTaskPlans(id?: string): void {
