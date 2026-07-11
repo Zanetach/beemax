@@ -37,7 +37,7 @@ import { createProfileControlHandler } from "./profile-control.ts";
 import { LocalActivityPresenter, LocalReasoningPresenter, renderChatFooter, type DetailsDisplay, parseReasoningCommand } from "./local-chat-renderer.ts";
 import { renderTerminalMarkdown, StreamingTerminalMarkdown } from "./terminal-markdown.ts";
 import { fullScreenEnter, fullScreenExit, resolveChatPresentationMode, type ChatPresentationMode } from "./chat-mode.ts";
-import { FullWorkbench } from "./full-workbench.ts";
+import { FullWorkbench, startFullWorkbenchInput, type FullWorkbenchInput } from "./full-workbench.ts";
 import { inspectGateway, readGatewayLogs } from "./gateway-observability.ts";
 import { createTaskAwareConversationContext, ensureBuiltinTasks, installedVersion } from "./runtime-facts.ts";
 import { AgentRunError, InteractionEventAdapter, SessionCatalog, ToolApprovalBroker, compileLongTermMemorySnapshot, interactionCommandHelp, parseInteractionCommand, type BeeMaxAgentRuntime } from "@beemax/core";
@@ -906,6 +906,7 @@ async function runChat(config: ReturnType<typeof loadConfig>, requestedMode: { f
 		cancelSubagents: (sessionSource) => subagents?.cancelOwner(sessionSource) ?? 0,
 	});
 	let fullScreenActive = false;
+	let fullInput: FullWorkbenchInput | undefined;
 
 	try {
 		let reasoningDisplay = config.agent.reasoningDisplay;
@@ -927,9 +928,9 @@ async function runChat(config: ReturnType<typeof loadConfig>, requestedMode: { f
 		let closed = false;
 		let workbench: FullWorkbench | undefined;
 		const { createInterface } = await import("node:readline/promises");
-		const rl = createInterface({ input: process.stdin, output: process.stdout });
 		const prompt = () => presentationMode === "plain" ? "beemax> " : presentationMode === "compact" ? `beemax [${config.model.model}]> ` : `beemax [${config.profile} · ${config.model.provider}/${config.model.model} · ${source.threadId ?? "default"}]> `;
-		const writePrompt = () => { if (!closed) process.stdout.write(prompt()); };
+		const writePrompt = () => { if (!closed && !workbench) process.stdout.write(prompt()); };
+		let closeInput = () => { closed = true; };
 		const usage = async () => {
 			const current = await runtime.usage(source);
 			if (!current) return "Usage: no live session. Resume or send a message to load one.";
@@ -943,7 +944,8 @@ async function runChat(config: ReturnType<typeof loadConfig>, requestedMode: { f
 			const context = usage?.contextWindow === null || usage?.contextWindow === undefined ? undefined : usage.contextTokens === null ? `?/${usage.contextWindow}` : `${usage.contextTokens}/${usage.contextWindow}`;
 			if (workbench) {
 				workbench.setFooter({ model: `${config.model.provider}/${config.model.model}`, session: source.threadId ?? "default", phase: snapshot.phase, context, lastDurationMs, queued: snapshot.queueDepth });
-				process.stdout.write(`\x1b[H\x1b[2J${workbench.render()}\n`);
+				if (fullInput) fullInput.requestRender();
+				else process.stdout.write(`\x1b[H\x1b[2J${workbench.render()}\n`);
 				return;
 			}
 			process.stdout.write(renderChatFooter({ profile: config.profile, model: `${config.model.provider}/${config.model.model}`, session: source.threadId ?? "default", phase: snapshot.phase, context, lastDurationMs, queued: snapshot.queueDepth }));
@@ -981,7 +983,6 @@ async function runChat(config: ReturnType<typeof loadConfig>, requestedMode: { f
 			fullScreenActive = true;
 			workbench = new FullWorkbench({ profile: config.profile, model: `${config.model.provider}/${config.model.model}`, session: source.threadId ?? "default", details: detailsDisplay });
 			process.stdout.write(fullScreenEnter(""));
-			await writeFooter();
 		}
 		const runTurn = async (text: string, turnSource: import("@beemax/gateway").SessionSource) => {
 			workbench?.user(text);
@@ -995,7 +996,7 @@ async function runChat(config: ReturnType<typeof loadConfig>, requestedMode: { f
 					activity.event(event);
 					workbench.event(event, activity.renderDetails());
 					if (event.type !== "answer.delta") await writeFooter();
-					else process.stdout.write(`\x1b[H\x1b[2J${workbench.render()}\n`);
+					else if (fullInput) fullInput.requestRender(); else process.stdout.write(`\x1b[H\x1b[2J${workbench.render()}\n`);
 					return;
 				}
 				process.stdout.write(activity.event(event));
@@ -1040,7 +1041,7 @@ async function runChat(config: ReturnType<typeof loadConfig>, requestedMode: { f
 				process.stdout.write("\nA control command is still being processed. Please wait.\n");
 				return;
 			}
-			if (trimmed === "/quit" || trimmed === "/exit") { closed = true; rl.close(); return; }
+			if (trimmed === "/quit" || trimmed === "/exit") { closeInput(); return; }
 			if (command?.kind === "help") {
 				process.stdout.write(`${interactionCommandHelp()}\n`);
 				writePrompt();
@@ -1186,11 +1187,21 @@ async function runChat(config: ReturnType<typeof loadConfig>, requestedMode: { f
 				writePrompt();
 			}
 		};
-		writePrompt();
-		rl.on("line", (line) => { void handleLine(line); });
-		rl.on("SIGINT", () => { if (active) void stop(); else rl.close(); });
-		await new Promise<void>((resolve) => rl.once("close", resolve));
+		if (workbench) {
+			await new Promise<void>((resolve) => {
+				closeInput = () => { closed = true; const input = fullInput; fullInput = undefined; input?.stop(); resolve(); };
+				fullInput = startFullWorkbenchInput(workbench, (line) => { void handleLine(line); }, () => { if (active) void stop(); else closeInput(); }, closeInput);
+			});
+		} else {
+			const rl = createInterface({ input: process.stdin, output: process.stdout });
+			closeInput = () => { closed = true; rl.close(); };
+			writePrompt();
+			rl.on("line", (line) => { void handleLine(line); });
+			rl.on("SIGINT", () => { if (active) void stop(); else closeInput(); });
+			await new Promise<void>((resolve) => rl.once("close", resolve));
+		}
 	} finally {
+		fullInput?.stop();
 		if (fullScreenActive) process.stdout.write(fullScreenExit());
 		interactionAdapter.dispose();
 		runtime.dispose();

@@ -1,4 +1,5 @@
 import type { InteractionEvent } from "@beemax/core";
+import { Editor, ProcessTerminal, TUI, matchesKey, type Component } from "@earendil-works/pi-tui";
 import type { ChatFooterState, DetailsDisplay } from "./local-chat-renderer.ts";
 
 export interface FullWorkbenchOptions {
@@ -52,6 +53,10 @@ export class FullWorkbench {
 	clearPicker(): void { this.picker = undefined; }
 
 	render(width = process.stdout.columns || 100, height = process.stdout.rows || 32): string {
+		return this.renderLines(width, height).join("\n");
+	}
+
+	renderLines(width = process.stdout.columns || 100, height = process.stdout.rows || 32): string[] {
 		const inner = Math.max(24, width - 4);
 		const rows = [
 			border("BeeMax Workbench", inner),
@@ -67,13 +72,61 @@ export class FullWorkbench {
 			border("", inner),
 		];
 		const available = Math.max(10, height - 1);
-		return rows.length > available ? [rows[0], line("… transcript condensed …", inner), ...rows.slice(-(available - 2)), rows.at(-1)!].join("\n") : rows.join("\n");
+		return rows.length > available ? [rows[0], line("… transcript condensed …", inner), ...rows.slice(-(available - 2)), rows.at(-1)!] : rows;
 	}
 
 	private pushTranscript(text: string): void {
 		this.transcript.push(text.replaceAll("\r", ""));
 		if (this.transcript.length > 80) this.transcript.splice(0, this.transcript.length - 80);
 	}
+}
+
+export interface FullWorkbenchInput {
+	requestRender(): void;
+	stop(): void;
+}
+
+/** Pi-backed multiline Composer. It delegates submitted text to the shared chat action path. */
+export function startFullWorkbenchInput(
+	workbench: FullWorkbench,
+	onSubmit: (text: string) => void,
+	onCancel: () => void,
+	onClose: () => void,
+): FullWorkbenchInput {
+	const tui = new TUI(new ProcessTerminal(), true);
+	const editor = new Editor(tui, {
+		borderColor: (text) => text,
+		selectList: {
+			selectedPrefix: (text) => text,
+			selectedText: (text) => text,
+			description: (text) => text,
+			scrollInfo: (text) => text,
+			noMatch: (text) => text,
+		},
+	}, { paddingX: 1 });
+	const root: Component = {
+		invalidate: () => editor.invalidate(),
+		render: (width) => {
+			const frame = workbench.renderLines(width, tui.terminal.rows);
+			const composer = frame.findIndex((row) => row.includes("Composer"));
+			if (composer < 0) return [...frame, ...editor.render(width)];
+			return [...frame.slice(0, composer + 1), ...editor.render(width), frame.at(-1)!];
+		},
+	};
+	editor.onSubmit = (text) => {
+		if (!text.trim()) return;
+		editor.addToHistory(text);
+		onSubmit(text);
+	};
+	tui.addChild(root);
+	tui.setFocus(editor);
+	tui.addInputListener((data) => {
+		if (matchesKey(data, "ctrl+c")) { onCancel(); return { consume: true }; }
+		if (matchesKey(data, "ctrl+d")) { onClose(); return { consume: true }; }
+		return undefined;
+	});
+	tui.start();
+	return { requestRender: () => tui.requestRender(), stop: () => tui.stop() };
 }
 
 function border(title: string, width: number): string { return `┌─ ${title}${"─".repeat(Math.max(0, width - title.length - 3))}┐`; }
