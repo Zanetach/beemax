@@ -897,7 +897,7 @@ async function runChat(config: ReturnType<typeof loadConfig>, requestedMode: { f
 	const presentationMode: ChatPresentationMode = resolveChatPresentationMode({
 		...requestedMode, isInputTty: process.stdin.isTTY === true, isOutputTty: process.stdout.isTTY === true, term: process.env.TERM,
 	});
-	const { conversationKey, createSubagentTools, createTaskLedgerTools, createTaskOrchestrationTools, FileCredentialVault, FileCredentialVaultAuditJournal, ProfileTaskScheduler, SubagentManager, TaskPlanNoticeDeliveryService, TaskPlanRuntime, TaskRecoveryRunner, TaskRecoveryService } = await import("@beemax/core");
+	const { AutonomousPlanningPolicy, conversationKey, createSubagentTools, createTaskLedgerTools, createTaskOrchestrationTools, FileCredentialVault, FileCredentialVaultAuditJournal, ProfileTaskScheduler, SubagentManager, TaskPlanNoticeDeliveryService, TaskPlanRuntime, TaskRecoveryRunner, TaskRecoveryService } = await import("@beemax/core");
 	const { loadMcpConfig, McpManager } = await import("@beemax/mcp-capability");
 	const { buildAgentFactory } = await import("./agent-factory.ts");
 	const { MemoryStore } = await import("@beemax/memory");
@@ -936,6 +936,7 @@ async function runChat(config: ReturnType<typeof loadConfig>, requestedMode: { f
 		tools: executionSafeTools(config, readOnlyAgentTools(readOnlyMcpTools.map((tool) => tool.name))),
 	});
 	const taskScheduler = new ProfileTaskScheduler({ maxConcurrent: config.subagents.maxConcurrent });
+	const planningPolicy = new AutonomousPlanningPolicy({ maxConcurrent: config.subagents.maxConcurrent, maxSubagents: config.subagents.maxChildrenPerOwner });
 	const taskPlanRuntime = new TaskPlanRuntime();
 	const runTaskVerification = createTaskVerifier(createSubagentAgent, config.subagents.timeoutMs);
 	const verifyTask: import("@beemax/core").TaskGraphVerifier = (task, result, signal) => taskScheduler.run(task.ownerKey, () => runTaskVerification(task, result, signal), signal);
@@ -989,6 +990,7 @@ async function runChat(config: ReturnType<typeof loadConfig>, requestedMode: { f
 		policy: { maxSessions: config.agent.maxSessions, sessionIdleMs: config.agent.sessionIdleMs },
 		runtime: {
 			createAgent,
+			planningPolicy,
 			fallbackModels: configuredRuntimeModels(config),
 			taskLedger: memory,
 			context: createTaskAwareConversationContext(memory, { runtimeSnapshot: () => ({ profile: config.profile }) }),

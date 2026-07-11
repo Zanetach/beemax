@@ -8,7 +8,7 @@
  */
 
 import { AutomationStore } from "@beemax/automation";
-import { AutomationScheduler, BeeMaxAgentRuntime, FileCredentialVault, FileCredentialVaultAuditJournal, HeartbeatRunner, ProfileTaskScheduler, SubagentManager, TaskPlanNoticeDeliveryService, TaskPlanRuntime, TaskRecoveryRunner, TaskRecoveryService, ToolApprovalBroker, conversationKey, createSubagentTools, createTaskLedgerTools, createTaskOrchestrationTools, type SubagentTask, type TaskGraphExecutionContext, type TaskGraphVerifier, type TaskRecord } from "@beemax/core";
+import { AutonomousPlanningPolicy, AutomationScheduler, BeeMaxAgentRuntime, FileCredentialVault, FileCredentialVaultAuditJournal, HeartbeatRunner, ProfileTaskScheduler, SubagentManager, TaskPlanNoticeDeliveryService, TaskPlanRuntime, TaskRecoveryRunner, TaskRecoveryService, ToolApprovalBroker, conversationKey, createSubagentTools, createTaskLedgerTools, createTaskOrchestrationTools, type SubagentTask, type TaskGraphExecutionContext, type TaskGraphVerifier, type TaskRecord } from "@beemax/core";
 import {
 	Dispatcher,
 	FeishuAdapter,
@@ -114,6 +114,7 @@ export async function runGateway(config: BeeMaxConfig): Promise<void> {
 		tools: executionSafeTools(config, readOnlyAgentTools(readOnlyMcpTools.map((tool) => tool.name))),
 	});
 	const taskScheduler = new ProfileTaskScheduler({ maxConcurrent: config.subagents.maxConcurrent });
+	const planningPolicy = new AutonomousPlanningPolicy({ maxConcurrent: config.subagents.maxConcurrent, maxSubagents: config.subagents.maxChildrenPerOwner });
 	const taskPlanRuntime = new TaskPlanRuntime();
 	const runTaskVerification = createTaskVerifier(createSubagentAgent, config.subagents.timeoutMs);
 	const verifyTask: TaskGraphVerifier = (task, result, signal) => taskScheduler.run(task.ownerKey, () => runTaskVerification(task, result, signal), signal);
@@ -188,6 +189,7 @@ export async function runGateway(config: BeeMaxConfig): Promise<void> {
 		policy: { maxSessions: config.agent.maxSessions, sessionIdleMs: config.agent.sessionIdleMs },
 		runtime: {
 			createAgent,
+			planningPolicy,
 			createAutomationAgent,
 			fallbackModels: configuredRuntimeModels(config),
 			taskLedger: memory,

@@ -11,6 +11,7 @@ import { SessionCatalog, type SavedSessionChoice, type SessionPreferences } from
 import type { AgentControlHandler, AgentControlInput, AgentControlResult } from "./agent-control.ts";
 import { conversationKey, conversationOwnerKey } from "./agent-scope.ts";
 import type { TaskKind, TaskLedger, TaskPlanRecord, TaskPlanStatus, TaskRecord, TaskRunRecord, TaskStatus } from "./task-ledger.ts";
+import type { AutonomousPlanningPolicy } from "./autonomous-planning.ts";
 
 export interface AgentRunInput<Source extends BeeMaxRuntimeSource = BeeMaxRuntimeSource> {
 	source: Source;
@@ -93,6 +94,8 @@ export interface BeeMaxAgentRuntimeOptions<Source extends BeeMaxRuntimeSource = 
 	fallbackModels?: Model<Api>[];
 	maxModelFallbacks?: number;
 	taskLedger?: TaskLedger;
+	/** Deterministic per-turn execution admission and resource policy. */
+	planningPolicy?: Pick<AutonomousPlanningPolicy, "decide">;
 }
 
 /**
@@ -110,6 +113,7 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 	private readonly fallbackModels: Model<Api>[];
 	private readonly maxModelFallbacks: number;
 	private readonly taskLedger?: TaskLedger;
+	private readonly planningPolicy?: Pick<AutonomousPlanningPolicy, "decide">;
 
 	constructor(options: BeeMaxAgentRuntimeOptions<Source>) {
 		this.sessions = new SessionCoordinator(options);
@@ -121,6 +125,7 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 		this.fallbackModels = options.fallbackModels ?? [];
 		this.maxModelFallbacks = Math.max(0, Math.min(options.maxModelFallbacks ?? 2, 5));
 		this.taskLedger = options.taskLedger;
+		this.planningPolicy = options.planningPolicy;
 	}
 
 	async run(input: AgentRunInput<Source>, onEvent?: BeeMaxAgentRunEventSink): Promise<AgentRunResult> {
@@ -132,9 +137,11 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 				throw new AgentRunError("Agent turn was cancelled", false, input.signal.reason);
 			}
 			const startedAt = Date.now();
-			const text = input.mode === "interactive" || !input.mode
+			const enrichedText = input.mode === "interactive" || !input.mode
 				? this.context?.enrich(input.source, input.text, { model: modelOf(session.piSession.agent) }) ?? input.text
 				: input.text;
+			const planning = input.mode === "interactive" || !input.mode ? this.planningPolicy?.decide(input.text) : undefined;
+			const text = planning ? `${enrichedText}\n\n${planning.directive()}` : enrichedText;
 			let observableProgress = false;
 			const unsubscribe = session.piSession.subscribe((event) => {
 				if (event.type === "tool_execution_start" || (event.type === "message_update" && event.assistantMessageEvent.type === "text_delta" && event.assistantMessageEvent.delta.length > 0)) observableProgress = true;

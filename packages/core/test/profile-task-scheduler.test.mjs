@@ -55,3 +55,21 @@ test("ProfileTaskScheduler removes an aborted queued task without consuming capa
 	release();
 	await active;
 });
+
+test("ProfileTaskScheduler reduces admission after overload and recovers capacity gradually", async () => {
+	const scheduler = new ProfileTaskScheduler({ maxConcurrent: 4, increaseAfterSuccesses: 2 });
+	await assert.rejects(scheduler.run("conversation-a", async () => { throw Object.assign(new Error("rate limited"), { status: 429 }); }), /rate limited/);
+	assert.equal(scheduler.snapshot().currentConcurrent, 2);
+	assert.equal(scheduler.snapshot().overloadReductions, 1);
+	await scheduler.run("conversation-a", async () => "ok");
+	assert.equal(scheduler.snapshot().currentConcurrent, 2);
+	await scheduler.run("conversation-b", async () => "ok");
+	assert.equal(scheduler.snapshot().currentConcurrent, 3);
+	assert.equal(scheduler.snapshot().maxConcurrent, 4);
+});
+
+test("ProfileTaskScheduler does not shrink capacity for ordinary task failures", async () => {
+	const scheduler = new ProfileTaskScheduler({ maxConcurrent: 3 });
+	await assert.rejects(scheduler.run("conversation-a", async () => { throw new Error("acceptance criteria rejected"); }), /acceptance/);
+	assert.equal(scheduler.snapshot().currentConcurrent, 3);
+});
