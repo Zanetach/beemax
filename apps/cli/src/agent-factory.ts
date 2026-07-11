@@ -21,6 +21,7 @@ import {
 	createBrowserTools,
 	createExecutionTools,
 	LocalExecutionPort,
+	FileToolAuditJournal,
 	type MediaOutboxPort,
 	type ExecutionPort,
 	type ToolApprovalDecision,
@@ -28,6 +29,7 @@ import {
 } from "@beemax/core";
 import { createCodexImageTool } from "@beemax/codex-image-capability";
 import type { SessionSource } from "@beemax/gateway";
+import { join } from "node:path";
 
 export { filterEligibleSkills } from "@beemax/core";
 
@@ -74,11 +76,13 @@ export function buildAgentFactory(opts: AgentFactoryOptions) {
 	const browserTools = createBrowserTools();
 	const baseCustomTools = [...webTools, ...browserTools, ...(opts.customTools ?? [])];
 	const execution = opts.executionPort ?? new LocalExecutionPort();
+	const toolAudit = new FileToolAuditJournal(join(opts.agentDir, "tool-audit.jsonl"));
 	return async (sessionId: string, source: SessionSource) => buildBeeMaxRuntimeFactory({
 		provider: valueOf(opts.provider), model: valueOf(opts.model), baseUrl: valueOf(opts.baseUrl), customProtocol: valueOf(opts.customProtocol), cwd: opts.cwd, agentDir: opts.agentDir,
 		getApiKey: opts.getApiKey, systemPrompt: opts.systemPrompt ?? DEFAULT_SYSTEM_PROMPT, skillToolset: opts.skillToolset ?? "standard",
 		tools: opts.tools,
 		approvalTools: [...REQUIRES_APPROVAL, ...(opts.approvalTools ?? [])],
+		toolAudit: toolAudit.append,
 		authorizeTool: opts.authorizeTool ? async (source, toolName, args, policy, signal) => opts.authorizeTool!({ source, toolName, args, policy }, signal) : undefined,
 		createTools: (source, onResourcesChanged, getRuntimeApiKey) => {
 			const executionTools = createExecutionTools(source, opts.cwd, opts.executionPortForSource?.(source) ?? execution);

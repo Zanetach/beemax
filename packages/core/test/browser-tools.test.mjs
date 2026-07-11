@@ -7,6 +7,9 @@ test("browser capability exposes read and explicitly mutating operations separat
 		fetchImpl: async () => new Response(JSON.stringify([{ id: "page-1", type: "page", title: "Example", url: "https://example.com", webSocketDebuggerUrl: "ws://127.0.0.1:9222/devtools/page/1" }]), { status: 200 }),
 	});
 	assert.deepEqual(tools.map((tool) => tool.name), ["browser_status", "browser_open", "browser_read", "browser_click", "browser_fill", "browser_cookies"]);
+	assert.equal(tools.find((tool) => tool.name === "browser_read").beemaxPolicy.approval, "never");
+	assert.equal(tools.find((tool) => tool.name === "browser_click").beemaxPolicy.risk, "high");
+	assert.equal(tools.find((tool) => tool.name === "browser_cookies").beemaxPolicy.sideEffect, "none");
 	const status = await tools[0].execute("call", {}, new AbortController().signal);
 	assert.match(status.content[0].text, /Example/);
 });

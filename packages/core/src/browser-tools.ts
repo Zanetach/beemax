@@ -1,6 +1,7 @@
 import { isIP } from "node:net";
 import { defineTool, type ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
+import { MUTATING_TOOL_POLICY, READ_ONLY_TOOL_POLICY, withToolPolicy, type ToolPolicy } from "./tool-runtime.ts";
 
 const DEFAULT_CDP_URL = "http://127.0.0.1:9222";
 const MAX_TEXT_CHARS = 30_000;
@@ -14,7 +15,7 @@ export interface BrowserToolsOptions { cdpUrl?: string; fetchImpl?: typeof fetch
 export function createBrowserTools(options: BrowserToolsOptions = {}): ToolDefinition[] {
 	const cdpUrl = validateLocalCdpUrl(options.cdpUrl ?? DEFAULT_CDP_URL);
 	const fetchImpl = options.fetchImpl ?? fetch;
-	return [
+	const tools = [
 		defineTool({ name: "browser_status", label: "Browser Status", description: "List pages available in the local managed Chrome browser.", parameters: Type.Object({}), execute: async () => browserResult(async () => {
 			const pages = await listPages(cdpUrl, fetchImpl);
 			return { text: pages.length ? pages.map((page, index) => `${index + 1}. ${page.title || "Untitled"}\n${page.url}`).join("\n\n") : "No browser pages are open.", details: { pages } };
@@ -51,6 +52,15 @@ export function createBrowserTools(options: BrowserToolsOptions = {}): ToolDefin
 			return { text: cookies.length ? cookies.map((cookie) => `${cookie.name} · ${cookie.domain}${cookie.httpOnly ? " · HttpOnly" : ""}${cookie.secure ? " · Secure" : ""}`).join("\n") : "No cookies found.", details: { cookies } };
 		}) }),
 	];
+	const policies: Record<string, ToolPolicy> = {
+		browser_status: { ...READ_ONLY_TOOL_POLICY },
+		browser_read: { ...READ_ONLY_TOOL_POLICY },
+		browser_open: { ...MUTATING_TOOL_POLICY, risk: "medium", reversible: true, impact: "Navigates the managed browser and may contact an external website" },
+		browser_click: { ...MUTATING_TOOL_POLICY, impact: "Clicks a page element and may change external service state" },
+		browser_fill: { ...MUTATING_TOOL_POLICY, impact: "Places user-provided data into an external web page" },
+		browser_cookies: { ...MUTATING_TOOL_POLICY, sideEffect: "none", reversible: true, impact: "Reads sensitive browser cookie metadata" },
+	};
+	return tools.map((tool) => withToolPolicy(tool, policies[tool.name]!));
 }
 
 interface BrowserPage { id: string; title: string; url: string; type: string; webSocketDebuggerUrl: string; }

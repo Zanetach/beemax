@@ -1,7 +1,10 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { MUTATING_TOOL_POLICY, READ_ONLY_TOOL_POLICY, ToolPolicyRegistry, approvalDetails, defineTool, governToolDefinition, withToolPolicy } from "../dist/index.js";
+import { FileToolAuditJournal, MUTATING_TOOL_POLICY, READ_ONLY_TOOL_POLICY, ToolPolicyRegistry, approvalDetails, defineTool, governToolDefinition, withToolPolicy } from "../dist/index.js";
 import { Type } from "typebox";
+import { mkdtempSync, rmSync, statSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 const source = { platform: "cli", chatId: "local", chatType: "dm", userId: "local" };
 
@@ -57,4 +60,21 @@ test("approval cards derive risk and reversibility from Tool policy rather than 
 	assert.equal(details.risk, "中");
 	assert.equal(details.impact, "Creates a reversible calendar event");
 	assert.equal(details.reversibility, "可逆或只读");
+});
+
+test("Profile Tool audit journal persists bounded operational events without arguments or results", () => {
+	const root = mkdtempSync(join(tmpdir(), "beemax-tool-audit-"));
+	try {
+		const path = join(root, "tool-audit.jsonl");
+		const journal = new FileToolAuditJournal(path, 100);
+		journal.append({ phase: "started", source, toolName: "write", policy: { ...MUTATING_TOOL_POLICY }, at: 10, attempt: 1 });
+		journal.append({ phase: "completed", source, toolName: "write", policy: { ...MUTATING_TOOL_POLICY }, at: 20, attempt: 1, durationMs: 10 });
+		journal.append({ phase: "failed", source, toolName: "write", policy: { ...MUTATING_TOOL_POLICY }, at: 30, reason: "token=private-secret and user content" });
+		const events = journal.events();
+		assert.deepEqual(events.map((event) => event.phase), ["started", "completed", "failed"]);
+		assert.equal(events[2].hasReason, true);
+		assert.equal(events[0].scope.userId, "local");
+		assert.doesNotMatch(JSON.stringify(events), /args|result|private-secret|user content/);
+		assert.equal(statSync(path).mode & 0o777, 0o600);
+	} finally { rmSync(root, { recursive: true, force: true }); }
 });

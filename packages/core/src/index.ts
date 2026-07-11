@@ -36,6 +36,7 @@ export {
 	type BeeMaxRuntimeSource,
 } from "./runtime.ts";
 export { ToolPolicyRegistry, READ_ONLY_TOOL_POLICY, MUTATING_TOOL_POLICY, governToolDefinition, withToolPolicy, type GovernedToolDefinition, type ToolApprovalMode, type ToolPolicy, type ToolRisk, type ToolRuntimeAuditEvent, type ToolRuntimeAuditSink, type ToolSideEffect } from "./tool-runtime.ts";
+export { FileToolAuditJournal, type DurableToolAuditEvent } from "./tool-audit-journal.ts";
 export {
 	SubagentManager,
 	createSubagentTools,

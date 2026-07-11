@@ -1,5 +1,5 @@
 /** Agent-facing memory capability. Persistent policy remains in BeeMax Core. */
-import { defineTool, memoryScopeForSource, type BeeMaxRuntimeSource, type MemoryScope, type ToolDefinition } from "@beemax/core";
+import { MUTATING_TOOL_POLICY, READ_ONLY_TOOL_POLICY, defineTool, memoryScopeForSource, withToolPolicy, type BeeMaxRuntimeSource, type MemoryScope, type ToolDefinition, type ToolPolicy } from "@beemax/core";
 import { Type } from "typebox";
 import { MEMORY_CLAIM_KINDS, type ClaimInput, type MemoryClaim, type MemoryEvidence } from "./store.ts";
 
@@ -28,7 +28,7 @@ export interface MemoryToolStore {
 
 export function createMemoryTools(store: MemoryToolStore, source: BeeMaxRuntimeSource): ToolDefinition[] {
 	const scope = () => memoryScopeForSource(source);
-	return [
+	const tools = [
 		defineTool({ name: "memory_status", label: "Memory Status", description: "Show curated-memory and candidate-memory counts for this user scope.", parameters: Type.Object({}), execute: async () => {
 			const stats = store.stats(scope()); return result(`Curated: ${stats.curated}; pending: ${stats.pending}; promoted: ${stats.promoted}; rejected: ${stats.rejected}`, stats);
 		} }),
@@ -42,7 +42,9 @@ export function createMemoryTools(store: MemoryToolStore, source: BeeMaxRuntimeS
 			const rejected = store.rejectCandidate(params.id, scope()); return result(rejected ? `Rejected memory candidate ${params.id}` : `Memory candidate ${params.id} was not found`, { id: params.id, rejected });
 		} }),
 		defineTool({ name: "memory_remember", label: "Remember", description: "Save a durable user fact, preference, decision, relationship, or recurring workflow. Do not save secrets or transient details.", parameters: Type.Object({ content: Type.String({ minLength: 1, maxLength: 2000 }) }), execute: async (_id, params) => {
-			const content = params.content.trim(); const id = store.remember({ ...scope(), role: "memory", content }); return result(`Remembered as ${id}`, { id, content });
+			const content = params.content.trim();
+			if (containsSensitiveMemory(content)) return result("Refused to store sensitive personal or credential data in long-term memory.", { stored: false, reason: "sensitive" });
+			const id = store.remember({ ...scope(), role: "memory", content }); return result(`Remembered as ${id}`, { id, content });
 		} }),
 		defineTool({ name: "memory_understand", label: "Record Understanding", description: "Automatically record a high-confidence, stable, source-backed understanding. Never use for secrets, credentials, financial or health details.", parameters: Type.Object({
 			kind: Type.Union(MEMORY_CLAIM_KINDS.map((kind) => Type.Literal(kind))),
@@ -76,6 +78,15 @@ export function createMemoryTools(store: MemoryToolStore, source: BeeMaxRuntimeS
 			const deleted = store.forget(params.id, scope()) || store.forgetClaim?.(params.id, scope()) || false; return result(deleted ? `Forgot memory ${params.id}` : `Memory ${params.id} was not found in this user scope`, { id: params.id, deleted });
 		} }),
 	];
+	const localMemoryWrite: ToolPolicy = { ...MUTATING_TOOL_POLICY, sideEffect: "local", risk: "medium", reversible: true, impact: "Changes Profile-scoped memory and preserves provenance" };
+	const policies: Record<string, ToolPolicy> = {
+		memory_status: { ...READ_ONLY_TOOL_POLICY }, memory_candidates: { ...READ_ONLY_TOOL_POLICY }, memory_explain: { ...READ_ONLY_TOOL_POLICY }, memory_recall: { ...READ_ONLY_TOOL_POLICY }, memory_list: { ...READ_ONLY_TOOL_POLICY },
+		memory_promote: localMemoryWrite, memory_reject: localMemoryWrite, memory_correct: localMemoryWrite,
+		memory_remember: { ...localMemoryWrite, risk: "low", approval: "never", impact: "Stores an explicit non-sensitive user memory that can be forgotten" },
+		memory_understand: { ...localMemoryWrite, risk: "low", approval: "never", impact: "Stores a stable non-sensitive understanding with source evidence" },
+		memory_forget: { ...localMemoryWrite, risk: "high", reversible: false, impact: "Permanently deletes a scoped memory or understanding" },
+	};
+	return tools.map((tool) => withToolPolicy(tool, policies[tool.name]!));
 }
 
 function format(records: MemoryToolRecord[]): string { return records.length ? records.map((record) => `- [${record.id}] ${record.content}`).join("\n") : "No matching memories."; }
