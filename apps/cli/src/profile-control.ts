@@ -1,4 +1,4 @@
-import { parseInteractionCommand, type AgentControlHandler, type InteractionEventAdapter, type ProfileTaskSchedulerSnapshot, type TaskPlanRecord, type TaskPlanRetryResult, type TaskRecord } from "@beemax/core";
+import { parseInteractionCommand, type AgentControlHandler, type InteractionEventAdapter, type ProfileTaskSchedulerSnapshot, type TaskPlanRecord, type TaskPlanRetryResult, type TaskRecord, type TaskVerificationRetryResult } from "@beemax/core";
 import type { SessionSource } from "@beemax/gateway";
 import type { BeeMaxAgentRuntime } from "@beemax/core";
 import type { BeeMaxConfig } from "./config.ts";
@@ -7,7 +7,7 @@ import { readdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { ProfileModelCatalog } from "./model-catalog.ts";
 
-export interface TaskRecoveryStatus { phase: "disabled" | "running" | "completed" | "failed"; plans: number; succeeded: number; failed: number; blocked: number; }
+export interface TaskRecoveryStatus { phase: "disabled" | "running" | "completed" | "failed"; plans: number; succeeded: number; failed: number; blocked: number; verification: TaskVerificationRetryResult; }
 export interface ProfileOperationalFacts { taskScheduler?: ProfileTaskSchedulerSnapshot; taskRecovery?: TaskRecoveryStatus; }
 export interface ProfileControlActions {
 	verifyTaskPlan?: (source: SessionSource, planId: string) => Promise<{ attempted: number; accepted: number; rejected: number; unavailable: number }>;
@@ -20,7 +20,7 @@ export function renderTaskSchedulerStatus(snapshot?: ProfileTaskSchedulerSnapsho
 }
 
 export function renderTaskRecoveryStatus(status?: TaskRecoveryStatus): string {
-	return status ? `Recovery: ${status.phase}; plans=${status.plans}; succeeded=${status.succeeded}; failed=${status.failed}; blocked=${status.blocked}` : "Recovery: unavailable";
+	return status ? `Recovery: ${status.phase}; plans=${status.plans}; succeeded=${status.succeeded}; failed=${status.failed}; blocked=${status.blocked}; verification=${status.verification.attempted}/${status.verification.accepted}/${status.verification.rejected}/${status.verification.unavailable}` : "Recovery: unavailable";
 }
 
 export function renderTaskPlans(plans: readonly TaskPlanRecord[]): string {
@@ -32,7 +32,7 @@ export function renderTaskPlans(plans: readonly TaskPlanRecord[]): string {
 
 export function renderTasks(tasks: readonly TaskRecord[]): string {
 	return tasks.length ? tasks.map((task) => {
-		const quality = task.verificationStatus ? ` [quality:${task.verificationStatus === "accepted" ? "verified" : task.verificationStatus}${task.correctiveAttempts ? ` corrections=${task.correctiveAttempts}` : ""}]` : "";
+		const quality = task.verificationStatus ? ` [quality:${task.verificationStatus === "accepted" ? "verified" : task.verificationStatus}${task.correctiveAttempts ? ` corrections=${task.correctiveAttempts}` : ""}${task.verificationAttempts ? ` verify-attempts=${task.verificationAttempts}` : ""}${task.verificationRetryAt ? ` retry=${new Date(task.verificationRetryAt).toISOString()}` : ""}]` : "";
 		return `${task.id}  [${task.kind}/${task.status}]${task.planId ? ` [plan:${task.planId}]` : ""}${quality}  ${task.title}`;
 	}).join("\n") : "No durable Tasks are visible to this conversation.";
 }

@@ -42,27 +42,27 @@ export class TaskRecoveryRunner {
 	async reverify(ownerKeys: string[], planId: string, signal?: AbortSignal): Promise<TaskVerificationRetryResult> {
 		const candidates = this.ledger.queryTasks({ ownerKeys, planIds: [planId], statuses: ["failed"], limit: 100 })
 			.filter((task) => task.verificationStatus === "unavailable" && Boolean(task.acceptanceCriteria && task.candidateResult));
-		const summary: TaskVerificationRetryResult = { attempted: 0, accepted: 0, rejected: 0, unavailable: 0 };
-		if (!candidates.length) return summary;
+		if (!candidates.length) return emptyVerificationResult();
 		const ownerKey = candidates[0]!.ownerKey;
-		const result = await this.withPlanExecutionClaim(ownerKey, planId, signal, async (claimSignal) => {
-			for (const task of candidates) {
-				if (claimSignal.aborted) break;
-				summary.attempted++;
-				if (!this.verify || !this.ledger.resolveCandidateVerification) { summary.unavailable++; continue; }
-				try {
-					const verification = await this.verify(task, { output: task.candidateResult }, claimSignal);
-					if (claimSignal.aborted) break;
-					const resolution = verification.accepted
-						? { accepted: true as const, evidence: verification.evidence?.slice(0, 5_000) }
-						: { accepted: false as const, feedback: verification.feedback?.trim().slice(0, 5_000) || "Acceptance Criteria were not satisfied" };
-					if (!this.ledger.resolveCandidateVerification(ownerKeys, task.id, resolution)) { summary.unavailable++; continue; }
-					if (resolution.accepted) summary.accepted++; else summary.rejected++;
-				} catch { summary.unavailable++; }
-			}
-			return summary;
-		});
-		return result ?? { attempted: 0, accepted: 0, rejected: 0, unavailable: 0 };
+		return await this.withPlanExecutionClaim(ownerKey, planId, signal, (claimSignal) => this.verifyCandidates(ownerKeys, candidates, claimSignal)) ?? emptyVerificationResult();
+	}
+
+	async reverifyDue(now = Date.now(), signal?: AbortSignal): Promise<TaskVerificationRetryResult> {
+		const candidates = this.ledger.verificationCandidates?.(now, 100) ?? [];
+		const plans = new Map<string, { ownerKey: string; planId: string; tasks: TaskRecord[] }>();
+		for (const task of candidates) {
+			if (!task.planId) continue;
+			const key = `${task.ownerKey}\0${task.planId}`;
+			const plan = plans.get(key) ?? { ownerKey: task.ownerKey, planId: task.planId, tasks: [] };
+			plan.tasks.push(task); plans.set(key, plan);
+		}
+		let summary = emptyVerificationResult();
+		for (const plan of plans.values()) {
+			if (signal?.aborted) break;
+			const result = await this.withPlanExecutionClaim(plan.ownerKey, plan.planId, signal, (claimSignal) => this.verifyCandidates([plan.ownerKey], plan.tasks, claimSignal, now));
+			if (result) summary = mergeVerificationResults(summary, result);
+		}
+		return summary;
 	}
 
 	cancel(ownerKeys: string[], planId: string): TaskPlanCancelResult {
@@ -82,6 +82,32 @@ export class TaskRecoveryRunner {
 			cancelled: summary.cancelled + result.cancelled,
 			blocked: [...summary.blocked, ...result.blocked],
 		}), { plans: 0, succeeded: 0, failed: 0, cancelled: 0, blocked: [] } satisfies TaskRecoveryRunnerResult);
+	}
+
+	private async verifyCandidates(ownerKeys: string[], candidates: TaskRecord[], signal: AbortSignal, attemptedAt?: number): Promise<TaskVerificationRetryResult> {
+		const summary = emptyVerificationResult();
+		for (const task of candidates) {
+			if (signal.aborted) break;
+			summary.attempted++;
+			if (!this.verify || !this.ledger.resolveCandidateVerification) {
+				summary.unavailable++; this.ledger.deferCandidateVerification?.(ownerKeys, task.id, attemptedAt); continue;
+			}
+			try {
+				const verification = await this.verify(task, { output: task.candidateResult }, signal);
+				if (signal.aborted) break;
+				const resolution = verification.accepted
+					? { accepted: true as const, evidence: verification.evidence?.slice(0, 5_000) }
+					: { accepted: false as const, feedback: verification.feedback?.trim().slice(0, 5_000) || "Acceptance Criteria were not satisfied" };
+				if (!this.ledger.resolveCandidateVerification(ownerKeys, task.id, resolution)) {
+					summary.unavailable++; this.ledger.deferCandidateVerification?.(ownerKeys, task.id, attemptedAt); continue;
+				}
+				if (resolution.accepted) summary.accepted++; else summary.rejected++;
+			} catch {
+				summary.unavailable++;
+				this.ledger.deferCandidateVerification?.(ownerKeys, task.id, attemptedAt);
+			}
+		}
+		return summary;
 	}
 
 	private async executeClaimedPlan(ownerKey: string, planId: string, options: TaskRecoveryRunnerOptions): Promise<TaskGraphResult | undefined> {
@@ -123,4 +149,10 @@ function mergeRecoveryResults(left: TaskRecoveryRunnerResult, right: TaskRecover
 		cancelled: left.cancelled + right.cancelled,
 		blocked: [...left.blocked, ...right.blocked],
 	};
+}
+
+function emptyVerificationResult(): TaskVerificationRetryResult { return { attempted: 0, accepted: 0, rejected: 0, unavailable: 0 }; }
+
+function mergeVerificationResults(left: TaskVerificationRetryResult, right: TaskVerificationRetryResult): TaskVerificationRetryResult {
+	return { attempted: left.attempted + right.attempted, accepted: left.accepted + right.accepted, rejected: left.rejected + right.rejected, unavailable: left.unavailable + right.unavailable };
 }

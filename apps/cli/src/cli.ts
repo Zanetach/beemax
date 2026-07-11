@@ -867,13 +867,14 @@ async function runChat(config: ReturnType<typeof loadConfig>, requestedMode: { f
 	const taskPlanRuntime = new TaskPlanRuntime();
 	const runTaskVerification = createTaskVerifier(createSubagentAgent, config.subagents.timeoutMs);
 	const verifyTask: import("@beemax/core").TaskGraphVerifier = (task, result, signal) => taskScheduler.run(task.ownerKey, () => runTaskVerification(task, result, signal), signal);
-	let recoveryStatus: TaskRecoveryStatus = { phase: config.subagents.enabled ? "running" : "disabled", plans: 0, succeeded: 0, failed: 0, blocked: 0 };
+	let recoveryStatus: TaskRecoveryStatus = { phase: config.subagents.enabled ? "running" : "disabled", plans: 0, succeeded: 0, failed: 0, blocked: 0, verification: { attempted: 0, accepted: 0, rejected: 0, unavailable: 0 } };
 	const taskRecovery = new TaskRecoveryRunner(memory, (task, signal, context) => taskScheduler.run(task.ownerKey, () => executePlannedTask(createSubagentAgent, task, task.executionScope as import("@beemax/gateway").SessionSource, signal, config.subagents.timeoutMs, context), signal), taskPlanRuntime, verifyTask);
 	const recoveryService = new TaskRecoveryService(memory, config.subagents.enabled ? taskRecovery : undefined, {
 		runnerOptions: { maxConcurrent: config.subagents.maxConcurrent },
-		onCycle: ({ reconciled, recovery: summary }) => {
+		onCycle: ({ reconciled, verification, recovery: summary }) => {
 			if (reconciled.retried || reconciled.failed) process.stdout.write(`Recovered interrupted Tasks: retry=${reconciled.retried}; failed=${reconciled.failed}.\n`);
-			recoveryStatus = { phase: config.subagents.enabled ? "completed" : "disabled", plans: summary.plans, succeeded: summary.succeeded, failed: summary.failed, blocked: summary.blocked.length };
+			recoveryStatus = { phase: config.subagents.enabled ? "completed" : "disabled", plans: summary.plans, succeeded: summary.succeeded, failed: summary.failed, blocked: summary.blocked.length, verification };
+			if (verification.attempted) process.stdout.write(`Retried Candidate Verification: attempted=${verification.attempted}; accepted=${verification.accepted}; rejected=${verification.rejected}; unavailable=${verification.unavailable}.\n`);
 			if (summary.plans) process.stdout.write(`Resumed ${summary.plans} Task Plan(s): succeeded=${summary.succeeded}; failed=${summary.failed}; blocked=${summary.blocked.length}.\n`);
 		},
 		onError: (error) => { recoveryStatus = { ...recoveryStatus, phase: "failed" }; process.stderr.write(`Task recovery failed: ${error instanceof Error ? error.message : String(error)}\n`); },

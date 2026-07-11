@@ -189,6 +189,7 @@ export class TaskGraph {
 				const status = options.signal?.aborted ? "cancelled" : "failed";
 				const unavailable = verificationUnavailable && status === "failed";
 				const transitioned = this.ledger.transition(task.id, { status, finishedAt, error: message, ...(unavailable ? { verificationStatus: "unavailable" as const, candidateResult: candidateOutput } : {}) });
+				if (transitioned && unavailable) this.ledger.deferCandidateVerification?.([task.ownerKey], task.id, finishedAt);
 				this.ledger.transitionRun(runId, { status, finishedAt, error: message, ...(unavailable ? { output: candidateOutput } : {}) });
 				return transitioned ? status : this.persistedOutcome(task, status);
 			} finally { if (heartbeat) clearInterval(heartbeat); }

@@ -41,6 +41,8 @@ export interface TaskRecord {
 	planId?: string;
 	evidence?: string;
 	verificationStatus?: TaskVerificationStatus;
+	verificationAttempts?: number;
+	verificationRetryAt?: number;
 	correctiveAttempts?: number;
 	createdAt: number;
 	startedAt?: number;
@@ -93,6 +95,8 @@ export interface TaskLedger {
 	taskDependencies(taskIds: string[]): TaskDependency[];
 	reconcileExpiredTaskRuns(now?: number): TaskRecoveryResult;
 	recoveryCandidates(limit?: number, excludePlanIds?: string[]): TaskRecord[];
+	verificationCandidates?(now?: number, limit?: number): TaskRecord[];
+	deferCandidateVerification?(ownerKeys: string[], taskId: string, now?: number): boolean;
 	resolveCandidateVerification?(ownerKeys: string[], taskId: string, resolution: TaskCandidateVerificationResolution, now?: number): boolean;
 	renewTaskRunLease?(id: string, leaseExpiresAt: number): boolean;
 	prepareTaskPlanRetry(ownerKeys: string[], planId: string): number;

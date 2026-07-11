@@ -345,8 +345,11 @@ After restart, BeeMax resumes only explicitly safe, idempotent Tasks; interrupte
 unsafe work fails closed. Concurrent instances cannot recover the same Plan
 while its holder-fenced claim remains live. A continuous recovery service also
 reconciles expired Execution Leases while Chat or Gateway remains online, so
-recovery does not depend on another restart. Child Pi transcripts remain in the
-profile session directory for audit.
+recovery does not depend on another restart. Candidate Results whose independent
+Verification was unavailable are retained and automatically rechecked with
+durable exponential backoff; this never replays Task execution. `/tasks verify <plan-id>`
+remains available for an immediate user-requested check. Child Pi
+transcripts remain in the profile session directory for audit.
 
 ## Codex image generation
 

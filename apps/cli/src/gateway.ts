@@ -115,13 +115,14 @@ export async function runGateway(config: BeeMaxConfig): Promise<void> {
 	const taskPlanRuntime = new TaskPlanRuntime();
 	const runTaskVerification = createTaskVerifier(createSubagentAgent, config.subagents.timeoutMs);
 	const verifyTask: TaskGraphVerifier = (task, result, signal) => taskScheduler.run(task.ownerKey, () => runTaskVerification(task, result, signal), signal);
-	let recoveryStatus: TaskRecoveryStatus = { phase: config.subagents.enabled ? "running" : "disabled", plans: 0, succeeded: 0, failed: 0, blocked: 0 };
+	let recoveryStatus: TaskRecoveryStatus = { phase: config.subagents.enabled ? "running" : "disabled", plans: 0, succeeded: 0, failed: 0, blocked: 0, verification: { attempted: 0, accepted: 0, rejected: 0, unavailable: 0 } };
 	const taskRecovery = new TaskRecoveryRunner(memory, (task, signal, context) => taskScheduler.run(task.ownerKey, () => executePlannedTask(createSubagentAgent, task, task.executionScope as SessionSource, signal, config.subagents.timeoutMs, context), signal), taskPlanRuntime, verifyTask);
 	const recoveryService = new TaskRecoveryService(memory, config.subagents.enabled ? taskRecovery : undefined, {
 		runnerOptions: { maxConcurrent: config.subagents.maxConcurrent },
-		onCycle: ({ reconciled, recovery: summary }) => {
+		onCycle: ({ reconciled, verification, recovery: summary }) => {
 			if (reconciled.retried || reconciled.failed) console.info(`[beemax] reconciled interrupted Task Runs: retry=${reconciled.retried}; failed=${reconciled.failed}`);
-			recoveryStatus = { phase: config.subagents.enabled ? "completed" : "disabled", plans: summary.plans, succeeded: summary.succeeded, failed: summary.failed, blocked: summary.blocked.length };
+			recoveryStatus = { phase: config.subagents.enabled ? "completed" : "disabled", plans: summary.plans, succeeded: summary.succeeded, failed: summary.failed, blocked: summary.blocked.length, verification };
+			if (verification.attempted) console.info(`[beemax] retried Candidate Verification: attempted=${verification.attempted}; accepted=${verification.accepted}; rejected=${verification.rejected}; unavailable=${verification.unavailable}`);
 			if (summary.plans) console.info(`[beemax] resumed ${summary.plans} Task Plan(s): succeeded=${summary.succeeded}; failed=${summary.failed}; blocked=${summary.blocked.length}`);
 		},
 		onError: (error) => { recoveryStatus = { ...recoveryStatus, phase: "failed" }; console.error(`[beemax] Task recovery failed: ${error instanceof Error ? error.message : String(error)}`); },

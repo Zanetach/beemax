@@ -228,6 +228,8 @@ export class MemoryStore {
 				evidence TEXT,
 				verification_status TEXT CHECK (verification_status IN ('pending', 'accepted', 'rejected')),
 				verification_outcome TEXT CHECK (verification_outcome IN ('pending', 'accepted', 'rejected', 'unavailable')),
+				verification_attempts INTEGER NOT NULL DEFAULT 0,
+				verification_retry_at INTEGER,
 				corrective_attempts INTEGER NOT NULL DEFAULT 0,
 				created_at INTEGER NOT NULL,
 				started_at INTEGER,
@@ -323,10 +325,13 @@ export class MemoryStore {
 		this.addColumnIfMissing("tasks", "plan_id", "TEXT");
 		this.addColumnIfMissing("tasks", "verification_status", "TEXT");
 		this.addColumnIfMissing("tasks", "verification_outcome", "TEXT");
+		this.addColumnIfMissing("tasks", "verification_attempts", "INTEGER NOT NULL DEFAULT 0");
+		this.addColumnIfMissing("tasks", "verification_retry_at", "INTEGER");
 		this.addColumnIfMissing("tasks", "candidate_result", "TEXT");
 		this.addColumnIfMissing("tasks", "corrective_attempts", "INTEGER NOT NULL DEFAULT 0");
 		this.addColumnIfMissing("tasks", "updated_at", "INTEGER NOT NULL DEFAULT 0");
 		this.addColumnIfMissing("task_runs", "lease_expires_at", "INTEGER");
+		this.db.exec("CREATE INDEX IF NOT EXISTS idx_tasks_verification_due ON tasks(verification_outcome, verification_retry_at)");
 		this.backfillTaskPlans();
 		this.addColumnIfMissing("memory_claims", "superseded_by", "TEXT REFERENCES memory_claims(id)");
 		this.addColumnIfMissing("memory_evidence", "event_id", "TEXT REFERENCES memory_events(id)");
@@ -804,6 +809,25 @@ export class MemoryStore {
 			ORDER BY updated_at, created_at LIMIT ?`).all(...(excluded.length ? [JSON.stringify(excluded)] : []), limitOf(limit, 100)) as RuntimeTaskRow[]).map(mapRuntimeTask);
 	}
 
+	verificationCandidates(now = Date.now(), limit = 100): RuntimeTaskRecord[] {
+		return (this.db.prepare(`SELECT * FROM tasks WHERE status = 'failed' AND verification_outcome = 'unavailable'
+			AND candidate_result IS NOT NULL AND acceptance_criteria IS NOT NULL AND plan_id IS NOT NULL
+			AND (verification_retry_at IS NULL OR verification_retry_at <= ?)
+			ORDER BY COALESCE(verification_retry_at, 0), updated_at, created_at LIMIT ?`).all(now, limitOf(limit, 100)) as RuntimeTaskRow[]).map(mapRuntimeTask);
+	}
+
+	deferCandidateVerification(ownerKeys: string[], taskId: string, now = Date.now()): boolean {
+		if (!ownerKeys.length || !taskId.trim()) return false;
+		const row = this.db.prepare(`SELECT verification_attempts FROM tasks WHERE id = ? AND owner_key IN (${ownerKeys.map(() => "?").join(", ")})
+			AND status = 'failed' AND verification_outcome = 'unavailable' AND candidate_result IS NOT NULL`).get(taskId, ...ownerKeys) as { verification_attempts: number } | undefined;
+		if (!row) return false;
+		const attempts = Math.max(0, row.verification_attempts) + 1;
+		const delay = Math.min(60 * 60_000, 60_000 * (2 ** Math.min(attempts - 1, 6)));
+		return this.db.prepare(`UPDATE tasks SET verification_attempts = ?, verification_retry_at = ?, updated_at = ?
+			WHERE id = ? AND status = 'failed' AND verification_outcome = 'unavailable' AND candidate_result IS NOT NULL AND verification_attempts = ?`)
+			.run(attempts, now + delay, now, taskId, row.verification_attempts).changes === 1;
+	}
+
 	resolveCandidateVerification(ownerKeys: string[], taskId: string, resolution: TaskCandidateVerificationResolution, now = Date.now()): boolean {
 		if (!ownerKeys.length || !taskId.trim()) return false;
 		return this.db.transaction(() => {
@@ -812,9 +836,9 @@ export class MemoryStore {
 			if (!row) return false;
 			const changed = resolution.accepted
 				? this.db.prepare(`UPDATE tasks SET status = 'succeeded', result = candidate_result, candidate_result = NULL, evidence = COALESCE(?, evidence),
-					verification_outcome = 'accepted', error = NULL, finished_at = ?, updated_at = ?
+					verification_outcome = 'accepted', verification_retry_at = NULL, error = NULL, finished_at = ?, updated_at = ?
 					WHERE id = ? AND status = 'failed' AND verification_outcome = 'unavailable' AND candidate_result IS NOT NULL`).run(resolution.evidence ?? null, now, now, taskId).changes
-				: this.db.prepare(`UPDATE tasks SET verification_outcome = 'rejected', error = ?, updated_at = ?
+				: this.db.prepare(`UPDATE tasks SET verification_outcome = 'rejected', verification_retry_at = NULL, error = ?, updated_at = ?
 					WHERE id = ? AND status = 'failed' AND verification_outcome = 'unavailable' AND candidate_result IS NOT NULL`).run(`Task verification rejected: ${resolution.feedback}`.slice(0, 5_000), now, taskId).changes;
 			if (changed && row.plan_id) this.syncTaskPlanAfterCandidateVerification(row.plan_id, now);
 			return changed === 1;
@@ -982,7 +1006,7 @@ interface EventRow {
 
 interface RuntimeTaskRow {
 	id: string; owner_key: string; kind: RuntimeTaskRecord["kind"]; title: string; description: string | null; acceptance_criteria: string | null; recovery_policy: RuntimeTaskRecord["recoveryPolicy"]; idempotency_key: string | null; execution_scope: string | null; status: RuntimeTaskRecord["status"];
-	parent_id: string | null; plan_id: string | null; evidence: string | null; verification_outcome: RuntimeTaskRecord["verificationStatus"] | null; corrective_attempts: number; created_at: number; started_at: number | null; finished_at: number | null; result: string | null; candidate_result: string | null; error: string | null;
+	parent_id: string | null; plan_id: string | null; evidence: string | null; verification_outcome: RuntimeTaskRecord["verificationStatus"] | null; verification_attempts: number; verification_retry_at: number | null; corrective_attempts: number; created_at: number; started_at: number | null; finished_at: number | null; result: string | null; candidate_result: string | null; error: string | null;
 }
 
 interface TaskRunRow {
@@ -1046,6 +1070,8 @@ function mapRuntimeTask(row: RuntimeTaskRow): RuntimeTaskRecord {
 		...(row.plan_id === null ? {} : { planId: row.plan_id }),
 		...(row.evidence === null ? {} : { evidence: row.evidence }),
 		...(row.verification_outcome === null ? {} : { verificationStatus: row.verification_outcome }),
+		...(row.verification_attempts ? { verificationAttempts: row.verification_attempts } : {}),
+		...(row.verification_retry_at === null ? {} : { verificationRetryAt: row.verification_retry_at }),
 		...(row.corrective_attempts ? { correctiveAttempts: row.corrective_attempts } : {}),
 		...(row.started_at === null ? {} : { startedAt: row.started_at }),
 		...(row.finished_at === null ? {} : { finishedAt: row.finished_at }),

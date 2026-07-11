@@ -5,9 +5,9 @@ import { createProfileControlHandler, renderTasks } from "../dist/profile-contro
 test("shared Task rendering exposes objective Quality Status without a subjective score", () => {
 	assert.equal(renderTasks([
 		{ id: "verified", title: "Verified", kind: "delegated", status: "succeeded", verificationStatus: "accepted", correctiveAttempts: 1, createdAt: 1 },
-		{ id: "unavailable", title: "Verifier offline", kind: "delegated", status: "failed", verificationStatus: "unavailable", createdAt: 2 },
+		{ id: "unavailable", title: "Verifier offline", kind: "delegated", status: "failed", verificationStatus: "unavailable", verificationAttempts: 2, verificationRetryAt: 1_893_456_000_000, createdAt: 2 },
 		{ id: "plain", title: "Plain", kind: "objective", status: "succeeded", createdAt: 2 },
-	]), "verified  [delegated/succeeded] [quality:verified corrections=1]  Verified\nunavailable  [delegated/failed] [quality:unavailable]  Verifier offline\nplain  [objective/succeeded]  Plain");
+	]), "verified  [delegated/succeeded] [quality:verified corrections=1]  Verified\nunavailable  [delegated/failed] [quality:unavailable verify-attempts=2 retry=2030-01-01T00:00:00.000Z]  Verifier offline\nplain  [objective/succeeded]  Plain");
 });
 
 test("shared /status reports Profile task admission capacity on every channel", async () => {
@@ -19,11 +19,12 @@ test("shared /status reports Profile task admission capacity on every channel", 
 	const config = { profile: "personal", model: { provider: "test", model: "model" }, models: [] };
 	const control = createProfileControlHandler(runtime, config, undefined, () => ({
 		taskScheduler: { running: 2, queued: 3, queuedOwners: 2, maxConcurrent: 4 },
-		taskRecovery: { phase: "completed", plans: 2, succeeded: 3, failed: 1, blocked: 1 },
+		taskRecovery: { phase: "completed", plans: 2, succeeded: 3, failed: 1, blocked: 1, verification: { attempted: 2, accepted: 1, rejected: 0, unavailable: 1 } },
 	}));
 	const result = await control({ source: { platform: "feishu", chatId: "chat", chatType: "dm", userId: "user" }, text: "/status" });
 	assert.match(result.message, /Tasks: running=2; queued=3; queued-owners=2; capacity=4/);
 	assert.match(result.message, /Recovery: completed; plans=2; succeeded=3; failed=1; blocked=1/);
+	assert.match(result.message, /verification=2\/1\/0\/1/);
 });
 
 test("shared /tasks plans summarizes owned Task Plans for discovery and control", async () => {

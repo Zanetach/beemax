@@ -7,17 +7,20 @@ test("TaskRecoveryService reconciles expired runs before one coalesced recovery 
 	let release;
 	const blocked = new Promise((resolve) => { release = resolve; });
 	const ledger = { reconcileExpiredTaskRuns() { order.push("reconcile"); return { retried: 2, failed: 1 }; } };
-	const runner = { async run() { order.push("recover"); await blocked; return { plans: 2, succeeded: 2, failed: 0, cancelled: 0, blocked: [] }; } };
+	const runner = {
+		async reverifyDue() { order.push("verify"); return { attempted: 1, accepted: 1, rejected: 0, unavailable: 0 }; },
+		async run() { order.push("recover"); await blocked; return { plans: 2, succeeded: 2, failed: 0, cancelled: 0, blocked: [] }; },
+	};
 	const service = new TaskRecoveryService(ledger, runner);
 	const first = service.runOnce();
 	const second = service.runOnce();
 	await new Promise((resolve) => setImmediate(resolve));
-	assert.deepEqual(order, ["reconcile", "recover"]);
+	assert.deepEqual(order, ["reconcile", "verify", "recover"]);
 	release();
-	const expected = { reconciled: { retried: 2, failed: 1 }, recovery: { plans: 2, succeeded: 2, failed: 0, cancelled: 0, blocked: [] } };
+	const expected = { reconciled: { retried: 2, failed: 1 }, verification: { attempted: 1, accepted: 1, rejected: 0, unavailable: 0 }, recovery: { plans: 2, succeeded: 2, failed: 0, cancelled: 0, blocked: [] } };
 	assert.deepEqual(await first, expected);
 	assert.deepEqual(await second, expected);
-	assert.deepEqual(order, ["reconcile", "recover"]);
+	assert.deepEqual(order, ["reconcile", "verify", "recover"]);
 });
 
 test("TaskRecoveryService stop aborts and joins the active recovery cycle", async () => {

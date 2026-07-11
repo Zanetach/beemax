@@ -233,6 +233,43 @@ test("ordinary Task Plan retry replays execution after Candidate Result rejectio
 	} finally { store.close(); rmSync(root, { recursive: true, force: true }); }
 });
 
+test("due Verification Retry evaluates retained Candidate Results without replaying Task execution", async () => {
+	const root = mkdtempSync(join(tmpdir(), "beemax-due-verification-retry-"));
+	const store = new MemoryStore(join(root, "memory.db"));
+	try {
+		const graph = new TaskGraph(store);
+		graph.createPlan({ id: "due-verification-plan", ownerKey: "cli:local:local", tasks: [{ id: "due-verification-task", title: "Verify later", acceptanceCriteria: "Passes an independent check" }] }, 10);
+		await graph.run(["cli:local:local"], "due-verification-plan", async () => ({ output: "candidate" }), { verify: async () => { throw new Error("verifier offline"); } });
+		let executions = 0;
+		const runner = new TaskRecoveryRunner(store, async () => { executions++; return { output: "replayed" }; }, undefined, async (_task, result) => ({ accepted: result.output === "candidate", evidence: "candidate checked later" }));
+		assert.deepEqual(await runner.reverifyDue(Date.now() + 24 * 60 * 60_000), { attempted: 1, accepted: 1, rejected: 0, unavailable: 0 });
+		assert.equal(executions, 0);
+		assert.equal(store.queryTasks({ ownerKeys: ["cli:local:local"], id: "due-verification-task" })[0].result, "candidate");
+	} finally { store.close(); rmSync(root, { recursive: true, force: true }); }
+});
+
+test("unavailable Verification Retry persists exponential backoff across recovery cycles", async () => {
+	const root = mkdtempSync(join(tmpdir(), "beemax-verification-backoff-"));
+	const store = new MemoryStore(join(root, "memory.db"));
+	try {
+		const graph = new TaskGraph(store);
+		graph.createPlan({ id: "backoff-plan", ownerKey: "cli:local:local", tasks: [{ id: "backoff-task", title: "Back off", acceptanceCriteria: "Verifier is online" }] }, 10);
+		await graph.run(["cli:local:local"], "backoff-plan", async () => ({ output: "candidate" }), { verify: async () => { throw new Error("verifier offline"); } });
+		const first = store.queryTasks({ ownerKeys: ["cli:local:local"], id: "backoff-task" })[0];
+		assert.equal(first.verificationAttempts, 1);
+		assert.ok(first.verificationRetryAt > first.finishedAt);
+		let executions = 0;
+		const runner = new TaskRecoveryRunner(store, async () => { executions++; return { output: "replayed" }; }, undefined, async () => { throw new Error("still offline"); });
+		assert.deepEqual(await runner.reverifyDue(first.verificationRetryAt - 1), { attempted: 0, accepted: 0, rejected: 0, unavailable: 0 });
+		assert.deepEqual(await runner.reverifyDue(first.verificationRetryAt), { attempted: 1, accepted: 0, rejected: 0, unavailable: 1 });
+		const second = store.queryTasks({ ownerKeys: ["cli:local:local"], id: "backoff-task" })[0];
+		assert.equal(second.verificationAttempts, 2);
+		assert.equal(second.verificationRetryAt, first.verificationRetryAt + 2 * 60_000);
+		assert.deepEqual(await runner.reverifyDue(first.verificationRetryAt + 1), { attempted: 0, accepted: 0, rejected: 0, unavailable: 0 });
+		assert.equal(executions, 0);
+	} finally { store.close(); rmSync(root, { recursive: true, force: true }); }
+});
+
 test("legacy Verification Status migrates additively into Verification Outcome", () => {
 	const root = mkdtempSync(join(tmpdir(), "beemax-verification-migration-"));
 	const path = join(root, "memory.db");

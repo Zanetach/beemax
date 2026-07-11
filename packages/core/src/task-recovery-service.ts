@@ -1,8 +1,9 @@
 import type { TaskLedger, TaskRecoveryResult } from "./task-ledger.ts";
-import type { TaskRecoveryRunner, TaskRecoveryRunnerOptions, TaskRecoveryRunnerResult } from "./task-recovery.ts";
+import type { TaskRecoveryRunner, TaskRecoveryRunnerOptions, TaskRecoveryRunnerResult, TaskVerificationRetryResult } from "./task-recovery.ts";
 
 export interface TaskRecoveryCycleResult {
 	reconciled: TaskRecoveryResult;
+	verification: TaskVerificationRetryResult;
 	recovery: TaskRecoveryRunnerResult;
 }
 
@@ -14,7 +15,7 @@ export interface TaskRecoveryServiceOptions {
 }
 
 type RecoveryLedger = Pick<TaskLedger, "reconcileExpiredTaskRuns">;
-type RecoveryRunner = Pick<TaskRecoveryRunner, "run">;
+type RecoveryRunner = Pick<TaskRecoveryRunner, "run"> & Partial<Pick<TaskRecoveryRunner, "reverifyDue">>;
 
 /** Continuously reconciles expired Task Runs and resumes only safe durable work. */
 export class TaskRecoveryService {
@@ -41,8 +42,9 @@ export class TaskRecoveryService {
 		if (this.active) return this.active;
 		const cycle = (async (): Promise<TaskRecoveryCycleResult> => {
 			const reconciled = this.ledger.reconcileExpiredTaskRuns();
+			const verification = this.runner?.reverifyDue ? await this.runner.reverifyDue(Date.now(), options.signal) : { attempted: 0, accepted: 0, rejected: 0, unavailable: 0 };
 			const recovery = this.runner ? await this.runner.run(options) : { plans: 0, succeeded: 0, failed: 0, cancelled: 0, blocked: [] };
-			return { reconciled, recovery };
+			return { reconciled, verification, recovery };
 		})();
 		this.active = cycle;
 		try { return await cycle; }

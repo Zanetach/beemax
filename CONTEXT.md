@@ -52,6 +52,10 @@ _Avoid_: Final answer, successful result, evidence
 A repeated evaluation of a retained Candidate Result after Verification was unavailable; it does not execute the Task again.
 _Avoid_: Task retry, Corrective Attempt, model replay
 
+**Verification Backoff**:
+The durable wait before an unavailable Verification may be attempted again; it delays evaluation of the retained Candidate Result and never authorizes Task execution.
+_Avoid_: Task timeout, execution retry delay, Corrective Attempt
+
 **Corrective Attempt**:
 A new Task Run that revises a rejected result using Verification feedback while preserving the identity and responsibility of the original Task.
 _Avoid_: Recovery retry, model continuation, silent rewrite

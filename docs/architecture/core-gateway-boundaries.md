@@ -154,7 +154,9 @@ adopts the same ownership distinction without copying either project verbatim.
    capabilities and Gateway; allow only the CLI presenter to consume Pi TUI.
 9. **Completed:** durable Task Plan Execution Claims now fence concurrent
    recovery across Agent instances, and a Core recovery service continuously
-   reconciles expired Task Runs without overlapping recovery cycles. Tag
+   reconciles expired Task Runs without overlapping recovery cycles. The same
+   service automatically retries unavailable Verification with durable bounded
+   backoff while retaining Candidate Results and never replaying execution. Tag
    releases require build, typecheck, tests, production dependency audit,
    archive checksum/layout validation and an isolated installation smoke test.
    An external queue adapter remains optional future work for horizontally
