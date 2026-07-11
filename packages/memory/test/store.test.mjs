@@ -127,6 +127,27 @@ test("expired Task Run leases recover only explicitly idempotent safe-retry Task
 	} finally { store.close(); rmSync(root, { recursive: true, force: true }); }
 });
 
+test("expired Task Run reconciliation keeps Task Plan Outcomes consistent", () => {
+	const root = mkdtempSync(join(tmpdir(), "beemax-task-plan-reconciliation-"));
+	const store = new MemoryStore(join(root, "memory.db"));
+	try {
+		const graph = new TaskGraph(store);
+		graph.createPlan({ id: "safe-plan", ownerKey: "cli:local:local", tasks: [{ id: "safe-plan-task", title: "Safe", recoveryPolicy: "safe_retry", idempotencyKey: "safe-plan:task" }] }, 10);
+		graph.createPlan({ id: "unsafe-plan", ownerKey: "cli:local:local", tasks: [{ id: "unsafe-plan-task", title: "Unsafe" }] }, 10);
+		const counts = { taskCount: 1, succeeded: 0, failed: 0, cancelled: 0, verified: 0, correctiveAttempts: 0 };
+		for (const [planId, taskId, runId] of [["safe-plan", "safe-plan-task", "safe-plan-run"], ["unsafe-plan", "unsafe-plan-task", "unsafe-plan-run"]]) {
+			assert.equal(store.transitionPlan(planId, { ...counts, status: "running", startedAt: 20 }), true);
+			assert.equal(store.transition(taskId, { status: "running", startedAt: 20 }), true);
+			store.recordRun({ id: runId, taskId, executor: "subagent", status: "running", startedAt: 20, leaseExpiresAt: 100 });
+		}
+		assert.deepEqual(store.reconcileExpiredTaskRuns(200), { retried: 1, failed: 1 });
+		const safePlan = store.queryTaskPlans({ ownerKeys: ["cli:local:local"], id: "safe-plan" })[0];
+		const unsafePlan = store.queryTaskPlans({ ownerKeys: ["cli:local:local"], id: "unsafe-plan" })[0];
+		assert.deepEqual({ status: safePlan.status, failed: safePlan.failed }, { status: "pending", failed: 0 });
+		assert.deepEqual({ status: unsafePlan.status, failed: unsafePlan.failed }, { status: "failed", failed: 1 });
+	} finally { store.close(); rmSync(root, { recursive: true, force: true }); }
+});
+
 test("Task recovery runner resumes only durable safe DAG candidates with an Execution Scope", async () => {
 	const root = mkdtempSync(join(tmpdir(), "beemax-task-resume-"));
 	const store = new MemoryStore(join(root, "memory.db"));

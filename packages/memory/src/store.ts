@@ -768,10 +768,11 @@ export class MemoryStore {
 
 	reconcileExpiredTaskRuns(now = Date.now()): { retried: number; failed: number } {
 		return this.db.transaction(() => {
-			const rows = this.db.prepare(`SELECT r.id AS run_id, r.task_id, t.recovery_policy, t.idempotency_key
+			const rows = this.db.prepare(`SELECT r.id AS run_id, r.task_id, t.plan_id, t.recovery_policy, t.idempotency_key
 				FROM task_runs r JOIN tasks t ON t.id = r.task_id
-				WHERE r.status = 'running' AND r.lease_expires_at IS NOT NULL AND r.lease_expires_at <= ?`).all(now) as Array<{ run_id: string; task_id: string; recovery_policy: string; idempotency_key: string | null }>;
+				WHERE r.status = 'running' AND r.lease_expires_at IS NOT NULL AND r.lease_expires_at <= ?`).all(now) as Array<{ run_id: string; task_id: string; plan_id: string | null; recovery_policy: string; idempotency_key: string | null }>;
 			let retried = 0; let failed = 0;
+			const affectedPlanIds = new Set<string>();
 			const reason = "Task Run interrupted after its Execution Lease expired";
 			for (const row of rows) {
 				this.db.prepare("UPDATE task_runs SET status = 'failed', finished_at = ?, error = ? WHERE id = ? AND status = 'running'").run(now, reason, row.run_id);
@@ -782,7 +783,9 @@ export class MemoryStore {
 					const changed = this.db.prepare("UPDATE tasks SET status = 'failed', finished_at = ?, error = ?, updated_at = ? WHERE id = ? AND status = 'running'").run(now, reason, now, row.task_id).changes;
 					failed += changed;
 				}
+				if (row.plan_id) affectedPlanIds.add(row.plan_id);
 			}
+			for (const planId of affectedPlanIds) this.syncTaskPlanFromTasks(planId, now);
 			return { retried, failed };
 		})();
 	}
@@ -818,7 +821,14 @@ export class MemoryStore {
 		})();
 	}
 
-	private syncTaskPlan(id: string, status: TaskPlanRecord["status"], now = Date.now()): void {
+	private syncTaskPlanFromTasks(id: string, now: number): void {
+		const statuses = this.db.prepare(`SELECT SUM(status = 'failed') AS failed, SUM(status = 'running') AS running,
+			SUM(status = 'pending') AS pending, SUM(status = 'cancelled') AS cancelled FROM tasks WHERE plan_id = ?`).get(id) as { failed: number; running: number; pending: number; cancelled: number };
+		const status: TaskPlanRecord["status"] = statuses.failed ? "failed" : statuses.running ? "running" : statuses.pending ? "pending" : statuses.cancelled ? "cancelled" : "succeeded";
+		this.syncTaskPlan(id, status, now, status === "pending");
+	}
+
+	private syncTaskPlan(id: string, status: TaskPlanRecord["status"], now = Date.now(), reopenRunning = false): void {
 		this.backfillTaskPlans(id);
 		const counts = this.db.prepare(`SELECT COUNT(*) AS task_count, SUM(status = 'succeeded') AS succeeded, SUM(status = 'failed') AS failed,
 			SUM(status = 'cancelled') AS cancelled, COALESCE(SUM(verification_status = 'accepted'), 0) AS verified,
@@ -830,7 +840,7 @@ export class MemoryStore {
 		};
 		if (status === "pending") {
 			this.db.prepare(`UPDATE task_plans SET status = 'pending', task_count = ?, succeeded = ?, failed = ?, cancelled = ?, verified = ?, corrective_attempts = ?, finished_at = NULL
-				WHERE id = ? AND status IN ('pending', 'failed')`).run(change.taskCount, change.succeeded, change.failed, change.cancelled, change.verified, change.correctiveAttempts, id);
+				WHERE id = ? AND status IN (${reopenRunning ? "'pending', 'running', 'failed'" : "'pending', 'failed'"})`).run(change.taskCount, change.succeeded, change.failed, change.cancelled, change.verified, change.correctiveAttempts, id);
 		} else this.transitionPlan(id, change);
 	}
 
