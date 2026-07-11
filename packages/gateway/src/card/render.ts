@@ -21,6 +21,8 @@ const SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", 
 export interface CardRenderOptions {
 	title?: string;
 	footerFields?: string[];
+	/** Raw reasoning is for an explicitly trusted diagnostic profile only. */
+	reasoningDisplay?: "off" | "summary" | "raw";
 }
 
 export function spinnerFrame(): string {
@@ -43,7 +45,7 @@ export function renderCard(session: CardSession, opts: CardRenderOptions = {}): 
 	const elements: Record<string, unknown>[] = [];
 	elements.push(...renderMainContent(primaryText));
 
-	const timelineElements = renderTimeline(session);
+	const timelineElements = renderTimeline(session, opts.reasoningDisplay === "raw");
 	elements.push(...timelineElements);
 
 	elements.push({ tag: "hr", element_id: "main_divider" });
@@ -94,8 +96,8 @@ function renderToolSummary(session: CardSession): string {
 	return lines.join("\n");
 }
 
-function renderTimeline(session: CardSession): Record<string, unknown>[] {
-	const all = session.timeline.snapshot(MAX_TIMELINE_ITEMS);
+function renderTimeline(session: CardSession, showRawReasoning: boolean): Record<string, unknown>[] {
+	const all = session.timeline.snapshot(MAX_TIMELINE_ITEMS).filter((entry) => showRawReasoning || entry.kind !== "reasoning");
 	const folded = session.timeline.foldedCount(MAX_TIMELINE_ITEMS);
 	if (!all.length && !folded) return [];
 
@@ -111,7 +113,10 @@ function renderTimeline(session: CardSession): Record<string, unknown>[] {
 
 	for (let i = 0; i < all.length; i++) {
 		const entry = all[i];
-		if (entry.kind === "tool") {
+		if (entry.kind === "reasoning") {
+			const content = limitText(entry.content, MAX_REASONING_CHARS, "思考内容过长，已截断");
+			panelElements.push({ tag: "markdown", element_id: `auxiliary_timeline_reasoningentry_${i}`, content: `**${entry.title}** · ${entry.status}\n${content}`, text_size: "small" });
+		} else if (entry.kind === "tool") {
 			const detail = limitText(entry.detail, MAX_TOOL_RESULT_CHARS, "工具详情过长，已截断");
 			const lines = [`\`${entry.title}\` · ${entry.status}`];
 			if (detail) lines.push(detail);

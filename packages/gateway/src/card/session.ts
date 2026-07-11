@@ -51,7 +51,10 @@ export class CardSession {
 			case "thinking.delta": {
 				const raw = String(data.text ?? "");
 				const delta = this.thinkingNormalizer.feed(raw);
-				if (delta) this.thinkingText += delta;
+				if (delta) {
+					this.thinkingText += delta;
+					this.timeline.recordReasoning(delta);
+				}
 				break;
 			}
 			case "answer.delta": {

@@ -36,6 +36,7 @@ export interface BeeMaxConfig {
 	profile: string;
 	agent: {
 		systemPrompt?: string;
+		reasoningDisplay: "off" | "summary" | "raw";
 		toolset: "safe" | "standard";
 		maxSessions: number;
 		sessionIdleMs: number;
@@ -153,6 +154,7 @@ export function loadConfig(configPath?: string, profile = "default"): BeeMaxConf
 		profile,
 		agent: {
 			systemPrompt: soul,
+			reasoningDisplay: reasoningDisplay(env.BEEMAX_REASONING_DISPLAY ?? cfg.agent?.reasoningDisplay),
 			toolset: (env.BEEMAX_TOOLSET ?? cfg.agent?.toolset) === "safe" ? "safe" : "standard",
 			maxSessions: parseNumber(env.BEEMAX_MAX_SESSIONS ?? cfg.agent?.maxSessions, 100),
 			sessionIdleMs: parseNumber(env.BEEMAX_SESSION_IDLE_MS ?? cfg.agent?.sessionIdleMs, 30 * 60_000),
@@ -238,6 +240,9 @@ function optional(value: unknown): string | undefined {
 }
 function parseImageQuality(value: unknown): "low" | "medium" | "high" {
 	return value === "low" || value === "high" ? value : "medium";
+}
+function reasoningDisplay(value: unknown): "off" | "summary" | "raw" {
+	return value === "raw" || value === "summary" ? value : "off";
 }
 function executionBackend(value: unknown): "local" | "docker" { return value === "docker" ? "docker" : "local"; }
 function sandboxMode(value: unknown): "off" | "all" { return value === "all" ? "all" : "off"; }

@@ -165,7 +165,7 @@ export async function runGateway(config: BeeMaxConfig): Promise<void> {
 		{
 			runtime,
 			profileId: config.profile,
-			cardOptions: { title: config.profile === "default" ? "BeeMax Agent" : `BeeMax · ${config.profile}` },
+			cardOptions: { title: config.profile === "default" ? "BeeMax Agent" : `BeeMax · ${config.profile}`, reasoningDisplay: config.agent.reasoningDisplay },
 			flushIntervalMs: 800,
 			approvalBroker,
 			cancelTasks: (source) => subagents?.cancelOwner(source) ?? 0,

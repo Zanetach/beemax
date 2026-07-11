@@ -10,4 +10,5 @@ test("default cards keep raw reasoning out of the user-visible answer and execut
 	assert.doesNotMatch(rendered, /secret model reasoning/);
 	assert.match(rendered, /执行详情/);
 	assert.match(rendered, /web_search/);
+	assert.match(JSON.stringify(renderCard(card, { reasoningDisplay: "raw" })), /secret model reasoning/);
 });

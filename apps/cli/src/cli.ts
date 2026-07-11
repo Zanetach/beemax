@@ -34,6 +34,7 @@ import { executionPortFor, executionSafeTools } from "./execution-composition.ts
 import { createProfileRuntime } from "./runtime-composition.ts";
 import { createProfileControlHandler } from "./profile-control.ts";
 import { localChatTextDelta } from "./local-chat-renderer.ts";
+import { renderTerminalMarkdown, StreamingTerminalMarkdown } from "./terminal-markdown.ts";
 import { inspectGateway, readGatewayLogs } from "./gateway-observability.ts";
 import { createTaskAwareConversationContext, ensureBuiltinTasks, installedVersion } from "./runtime-facts.ts";
 import type { BeeMaxAgentRuntime } from "@beemax/core";
@@ -813,11 +814,13 @@ async function runChat(config: ReturnType<typeof loadConfig>): Promise<void> {
 				continue;
 			}
 			let streamed = "";
+			const terminal = new StreamingTerminalMarkdown();
 			const result = await runtime.run({ source, text: trimmed, timeoutMs: 10 * 60_000, mode: "interactive" }, (event) => {
 				const delta = localChatTextDelta(event);
-				if (delta) { streamed += delta; process.stdout.write(delta); }
+				if (delta) { streamed += delta; terminal.write(delta, (text) => process.stdout.write(text)); }
 			});
-			if (!streamed) process.stdout.write(result.answer);
+			if (streamed) terminal.finish((text) => process.stdout.write(text));
+			else process.stdout.write(renderTerminalMarkdown(result.answer));
 			process.stdout.write("\nbeemax> ");
 		}
 	} finally {

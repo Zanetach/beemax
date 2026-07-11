@@ -62,6 +62,7 @@ export {
 	type BeeMaxAgentRuntimeOptions,
 } from "./agent-runtime.ts";
 export type { AgentControlHandler, AgentControlInput, AgentControlResult } from "./agent-control.ts";
+export type { RunEvent, RunRecord } from "./run-events.ts";
 export type { DeliveryPort, DeliveryTarget, MediaArtifact } from "./delivery-port.ts";
 export type { ExecutionBackend, ExecutionPolicy, ExecutionPort, ExecutionRequest, ExecutionResult, SandboxMode, WorkspaceAccess } from "./execution.ts";
 export { resolveExecutionBackend } from "./execution.ts";
