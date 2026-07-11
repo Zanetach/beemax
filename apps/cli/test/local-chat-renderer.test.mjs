@@ -1,24 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { LocalActivityPresenter, LocalReasoningPresenter, localChatTextDelta, localChatThinkingDelta, parseChatCommand, parseReasoningCommand } from "../dist/local-chat-renderer.js";
-
-test("local chat writes append-only text deltas instead of cumulative message snapshots", () => {
-	const event = (delta, text) => ({
-		type: "message_update",
-		message: { role: "assistant", content: [{ type: "text", text }] },
-		assistantMessageEvent: { type: "text_delta", delta },
-	});
-
-	assert.equal(localChatTextDelta(event("Hello", "Hello")), "Hello");
-	assert.equal(localChatTextDelta(event(" world", "Hello world")), " world");
-	const thinkingEvent = {
-		type: "message_update",
-		message: { role: "assistant", content: [] },
-		assistantMessageEvent: { type: "thinking_delta", delta: "reasoning" },
-	};
-	assert.equal(localChatTextDelta(thinkingEvent), undefined);
-	assert.equal(localChatThinkingDelta(thinkingEvent), "reasoning");
-});
+import { LocalActivityPresenter, LocalReasoningPresenter, parseChatCommand, parseReasoningCommand } from "../dist/local-chat-renderer.js";
 
 test("reasoning visibility keeps raw thought separate and makes summaries opt-in", () => {
 	const off = new LocalReasoningPresenter("off");
@@ -73,10 +55,12 @@ test("chat controls expose a small, explicit console contract", () => {
 
 test("tool activity remains separate from the answer stream", () => {
 	const presenter = new LocalActivityPresenter("expanded");
-	assert.equal(presenter.event({ type: "tool_execution_start", toolCallId: "1", toolName: "web_search", args: {} }), "\n工具 · web_search · 运行中\n");
-	assert.equal(presenter.event({ type: "tool_execution_end", toolCallId: "1", toolName: "web_search", result: {}, isError: false }), "工具 · web_search · 完成\n");
-	assert.equal(presenter.event({ type: "tool_execution_start", toolCallId: "2", toolName: "task_spawn", args: {} }), "\n子代理 · task_spawn · 运行中\n");
-	assert.equal(new LocalActivityPresenter("collapsed").event({ type: "tool_execution_start", toolCallId: "1", toolName: "bash", args: {} }), "");
-	assert.equal(new LocalActivityPresenter("collapsed").event({ type: "tool_execution_end", toolCallId: "1", toolName: "bash", result: {}, isError: false }), "工具 · bash · 完成\n");
-	assert.equal(new LocalActivityPresenter("hidden", false).event({ type: "tool_execution_start", toolCallId: "1", toolName: "bash", args: {} }), "");
+	assert.equal(presenter.event({ type: "tool.changed", turnId: "t", callId: "1", name: "web_search", state: "running" }), "\n工具 web_search 运行中…\n");
+	assert.equal(presenter.event({ type: "tool.changed", turnId: "t", callId: "1", name: "web_search", state: "completed" }), "\n工具 web_search 完成\n");
+	assert.equal(presenter.event({ type: "tool.changed", turnId: "t", callId: "2", name: "task_spawn", state: "running" }), "\n子代理 task_spawn 运行中…\n");
+	assert.equal(new LocalActivityPresenter("collapsed").event({ type: "tool.changed", turnId: "t", callId: "1", name: "bash", state: "running" }), "");
+	assert.equal(new LocalActivityPresenter("collapsed").event({ type: "tool.changed", turnId: "t", callId: "1", name: "bash", state: "completed" }), "\n工具 bash 完成\n");
+	assert.equal(new LocalActivityPresenter("hidden", false).event({ type: "tool.changed", turnId: "t", callId: "1", name: "bash", state: "running" }), "");
+	assert.equal(presenter.event({ type: "approval.requested", turnId: "t", toolName: "write", at: 1 }), "\n等待审批：工具 write。可输入 /stop 取消。\n");
+	assert.equal(presenter.event({ type: "approval.resolved", turnId: "t", toolName: "write", allowed: true, at: 2 }), "\n审批已允许，继续执行。\n");
 });

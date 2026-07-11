@@ -35,10 +35,10 @@ import { createProfileRuntime } from "./runtime-composition.ts";
 import { createProfileControlHandler } from "./profile-control.ts";
 import { LocalActivityPresenter, LocalReasoningPresenter, type DetailsDisplay, parseChatCommand, parseReasoningCommand } from "./local-chat-renderer.ts";
 import { renderTerminalMarkdown, StreamingTerminalMarkdown } from "./terminal-markdown.ts";
-import { resolveChatPresentationMode, type ChatPresentationMode } from "./chat-mode.ts";
+import { fullScreenEnter, fullScreenExit, resolveChatPresentationMode, type ChatPresentationMode } from "./chat-mode.ts";
 import { inspectGateway, readGatewayLogs } from "./gateway-observability.ts";
 import { createTaskAwareConversationContext, ensureBuiltinTasks, installedVersion } from "./runtime-facts.ts";
-import { AgentRunError, InteractionRuntime, SessionCatalog, ToolApprovalBroker, compileLongTermMemorySnapshot, type BeeMaxAgentRuntime } from "@beemax/core";
+import { AgentRunError, InteractionEventAdapter, SessionCatalog, ToolApprovalBroker, compileLongTermMemorySnapshot, type BeeMaxAgentRuntime } from "@beemax/core";
 import type { SessionSource } from "@beemax/gateway";
 import { existsSync } from "node:fs";
 import { spawnSync } from "node:child_process";
@@ -792,6 +792,7 @@ async function runChat(config: ReturnType<typeof loadConfig>, requestedMode: { f
 	const { MemoryStore } = await import("@beemax/memory");
 	const apiKey = configuredApiKey(config.model.provider, config.model.apiKey) ?? "";
 	const localApproval = new ToolApprovalBroker(async (_source, text) => { process.stdout.write(`\n${text}\n`); });
+	let interaction: InteractionEventAdapter<SessionSource> | undefined;
 	const memory = new MemoryStore(config.memory.dbPath);
 	const mcp = new McpManager();
 	await mcp.connectAll(loadMcpConfig(config.mcp.configPath));
@@ -838,7 +839,12 @@ async function runChat(config: ReturnType<typeof loadConfig>, requestedMode: { f
 		customTools: mcp.getTools(),
 		tools: executionSafeTools(config, mainAgentTools(config.agent.toolset, mcp.getTools().map((tool) => tool.name))),
 		approvalTools: mcp.getApprovalTools(),
-		authorizeTool: (request, signal) => localApproval.authorize(request, signal),
+		authorizeTool: async (request, signal) => {
+			await interaction?.approvalRequested(request.source, request.toolName);
+			const decision = await localApproval.authorize(request, signal);
+			await interaction?.approvalResolved(request.source, request.toolName, decision.allowed);
+			return decision;
+		},
 		sessionTools: (sessionSource) => subagents ? createSubagentTools(subagents, sessionSource) : [],
 	});
 	let runtime: BeeMaxAgentRuntime<SessionSource>;
@@ -851,7 +857,9 @@ async function runChat(config: ReturnType<typeof loadConfig>, requestedMode: { f
 			controlHandler: (input) => createProfileControlHandler(runtime, config)(input),
 		},
 	);
-	const interaction = new InteractionRuntime(runtime);
+	const interactionAdapter = new InteractionEventAdapter(runtime);
+	interaction = interactionAdapter;
+	let fullScreenActive = false;
 
 	try {
 		let reasoningDisplay = config.agent.reasoningDisplay;
@@ -901,11 +909,14 @@ async function runChat(config: ReturnType<typeof loadConfig>, requestedMode: { f
 				: "No live message history. Resume or send a message to load this session.";
 		};
 		const stop = async () => {
-			const stopped = await runtime.cancel(source);
+			const stopped = await interactionAdapter.dispatch({ type: "turn.cancel", source });
 			const cancelled = subagents?.cancelOwner(source) ?? 0;
 			process.stdout.write(`\n${stopped ? "Stopped the active Agent turn" : "No active Agent turn"}${cancelled ? `; cancelled ${cancelled} Sub-Agent task(s)` : ""}.\n`);
 		};
-		if (presentationMode === "full") process.stdout.write(`BeeMax Workbench · ${config.profile} · ${config.model.provider}/${config.model.model}\nType /help for controls.\n\n`);
+		if (presentationMode === "full") {
+			fullScreenActive = true;
+			process.stdout.write(fullScreenEnter(`BeeMax Chat · ${config.profile} · ${config.model.provider}/${config.model.model}\nType /help for controls.`));
+		}
 		const runTurn = async (text: string, turnSource: import("@beemax/gateway").SessionSource) => {
 			let streamed = "";
 			const richOutput = presentationMode !== "plain";
@@ -913,7 +924,7 @@ async function runChat(config: ReturnType<typeof loadConfig>, requestedMode: { f
 			const activity = new LocalActivityPresenter(detailsDisplay, richOutput);
 			let answerStreamStarted = false;
 			const terminal = new StreamingTerminalMarkdown();
-			const outcome = await interaction.dispatch({ type: "message.send", source: turnSource, text, input: { timeoutMs: 10 * 60_000, mode: "interactive" } }, (event) => {
+			const outcome = await interactionAdapter.dispatch({ type: "message.send", source: turnSource, text, input: { timeoutMs: 10 * 60_000, mode: "interactive" } }, (event) => {
 				process.stdout.write(activity.event(event));
 				const thinkingDelta = event.type === "reasoning.delta" ? event.text : undefined;
 				if (thinkingDelta) process.stdout.write(reasoning.thinking(thinkingDelta));
@@ -1067,6 +1078,7 @@ async function runChat(config: ReturnType<typeof loadConfig>, requestedMode: { f
 		rl.on("SIGINT", () => { if (active) void stop(); else rl.close(); });
 		await new Promise<void>((resolve) => rl.once("close", resolve));
 	} finally {
+		if (fullScreenActive) process.stdout.write(fullScreenExit());
 		runtime.dispose();
 		await subagents?.dispose();
 		await mcp.close();
