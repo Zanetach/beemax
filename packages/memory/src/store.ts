@@ -711,6 +711,17 @@ export class MemoryStore {
 			.run(Date.now(), ...ownerKeys, planId).changes;
 	}
 
+	cancelTaskPlan(ownerKeys: string[], planId: string, now = Date.now()): number {
+		if (!ownerKeys.length || !planId.trim()) return 0;
+		return this.db.transaction(() => {
+			const ids = this.db.prepare(`SELECT id FROM tasks WHERE owner_key IN (${ownerKeys.map(() => "?").join(", ")}) AND plan_id = ? AND status IN ('pending', 'running')`).all(...ownerKeys, planId).map((row) => (row as { id: string }).id);
+			if (!ids.length) return 0;
+			const placeholders = ids.map(() => "?").join(", ");
+			this.db.prepare(`UPDATE task_runs SET status = 'cancelled', finished_at = ?, error = 'Task Plan cancelled by user' WHERE task_id IN (${placeholders}) AND status = 'running'`).run(now, ...ids);
+			return this.db.prepare(`UPDATE tasks SET status = 'cancelled', finished_at = ?, error = 'Task Plan cancelled by user', updated_at = ? WHERE id IN (${placeholders}) AND status IN ('pending', 'running')`).run(now, now, ...ids).changes;
+		})();
+	}
+
 	forget(id: string, opts: Omit<RecallOptions, "limit"> = {}): boolean {
 		const conditions = ["id = ?", "role = 'memory'"];
 		const params: unknown[] = [id];

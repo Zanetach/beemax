@@ -159,6 +159,37 @@ test("manual Task Plan retry is owner-scoped and requeues only recoverable faile
 	} finally { store.close(); rmSync(root, { recursive: true, force: true }); }
 });
 
+test("Task Plan cancellation is owner-scoped and persists Tasks and active Runs atomically", () => {
+	const root = mkdtempSync(join(tmpdir(), "beemax-task-plan-cancel-"));
+	const store = new MemoryStore(join(root, "memory.db"));
+	try {
+		store.record({ id: "running", ownerKey: "cli:local:local", kind: "delegated", title: "Running", status: "running", planId: "cancel-plan", createdAt: 1, startedAt: 2 });
+		store.recordRun({ id: "run", taskId: "running", executor: "subagent", status: "running", startedAt: 2, leaseExpiresAt: 1000 });
+		store.record({ id: "pending", ownerKey: "cli:local:local", kind: "delegated", title: "Pending", status: "pending", planId: "cancel-plan", createdAt: 1 });
+		const runner = new TaskRecoveryRunner(store, async () => ({ output: "unused" }));
+		assert.deepEqual(runner.cancel(["cli:other:local"], "cancel-plan"), { active: 0, tasks: 0 });
+		assert.deepEqual(runner.cancel(["cli:local:local"], "cancel-plan"), { active: 0, tasks: 2 });
+		assert.deepEqual(store.queryTasks({ ownerKeys: ["cli:local:local"], planIds: ["cancel-plan"] }).map((task) => task.status), ["cancelled", "cancelled"]);
+		assert.equal(store.taskRuns("running")[0].status, "cancelled");
+	} finally { store.close(); rmSync(root, { recursive: true, force: true }); }
+});
+
+test("Task Plan cancellation aborts a live recovery and leaves no running Task or Run", async () => {
+	const root = mkdtempSync(join(tmpdir(), "beemax-live-plan-cancel-"));
+	const store = new MemoryStore(join(root, "memory.db"));
+	try {
+		const scope = { platform: "cli", chatId: "local", chatType: "dm", userId: "local" };
+		store.record({ id: "live", ownerKey: "cli:local:local", kind: "delegated", title: "Live", status: "pending", planId: "live-plan", recoveryPolicy: "safe_retry", idempotencyKey: "live-plan:live", executionScope: scope, createdAt: 1 });
+		const runner = new TaskRecoveryRunner(store, async (_task, signal) => new Promise((_resolve, reject) => signal.addEventListener("abort", () => reject(signal.reason), { once: true })));
+		const running = runner.run();
+		await new Promise((resolve) => setImmediate(resolve));
+		assert.deepEqual(runner.cancel(["cli:local:local"], "live-plan"), { active: 1, tasks: 1 });
+		assert.deepEqual(await running, { plans: 1, succeeded: 0, failed: 0, cancelled: 1, blocked: [] });
+		assert.equal(store.queryTasks({ ownerKeys: ["cli:local:local"], id: "live" })[0].status, "cancelled");
+		assert.equal(store.taskRuns("live")[0].status, "cancelled");
+	} finally { store.close(); rmSync(root, { recursive: true, force: true }); }
+});
+
 test("legacy task facts migrate once into objective Tasks", () => {
 	const root = mkdtempSync(join(tmpdir(), "beemax-legacy-task-migration-"));
 	const path = join(root, "memory.db");

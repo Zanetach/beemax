@@ -56,7 +56,8 @@ export type { TaskDependency, TaskKind, TaskLedger, TaskQuery, TaskRecord, TaskR
 export { createTaskLedgerTools } from "./task-ledger-tools.ts";
 export { TaskGraph, type TaskGraphExecutor, type TaskGraphResult, type TaskGraphRunOptions, type TaskPlanInput } from "./task-graph.ts";
 export { createTaskOrchestrationTools, type TaskOrchestrationOptions } from "./task-orchestration-tools.ts";
-export { TaskRecoveryRunner, type TaskPlanRetryResult, type TaskRecoveryRunnerOptions, type TaskRecoveryRunnerResult } from "./task-recovery.ts";
+export { TaskRecoveryRunner, type TaskPlanCancelResult, type TaskPlanRetryResult, type TaskRecoveryRunnerOptions, type TaskRecoveryRunnerResult } from "./task-recovery.ts";
+export { TaskPlanRuntime } from "./task-plan-runtime.ts";
 export { ProfileTaskScheduler, type ProfileTaskSchedulerOptions, type ProfileTaskSchedulerSnapshot } from "./profile-task-scheduler.ts";
 export {
 	SessionCoordinator,

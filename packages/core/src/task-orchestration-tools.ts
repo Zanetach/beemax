@@ -5,8 +5,9 @@ import type { BeeMaxRuntimeSource } from "./runtime.ts";
 import { TaskGraph, type TaskGraphExecutor } from "./task-graph.ts";
 import type { TaskLedger } from "./task-ledger.ts";
 import { MUTATING_TOOL_POLICY, READ_ONLY_TOOL_POLICY, withToolPolicy, type ToolPolicy } from "./tool-runtime.ts";
+import { TaskPlanRuntime } from "./task-plan-runtime.ts";
 
-export interface TaskOrchestrationOptions { maxConcurrent?: number; maxTasks?: number; }
+export interface TaskOrchestrationOptions { maxConcurrent?: number; maxTasks?: number; planRuntime?: TaskPlanRuntime; }
 
 /** Model-facing structured planning seam; Core owns validation and execution. */
 export function createTaskOrchestrationTools(
@@ -19,6 +20,7 @@ export function createTaskOrchestrationTools(
 	const ownerKey = conversationKey(source);
 	const maxTasks = Math.max(2, Math.min(Math.trunc(options.maxTasks ?? 12), 20));
 	const maxConcurrent = Math.max(1, Math.min(Math.trunc(options.maxConcurrent ?? 3), 10));
+	const planRuntime = options.planRuntime ?? new TaskPlanRuntime();
 	const executeTool = defineTool({
 		name: "task_plan_execute",
 		label: "Plan and Execute Tasks",
@@ -48,7 +50,7 @@ export function createTaskOrchestrationTools(
 				tasks: params.tasks.map((task) => ({ id: ids.get(task.key)!, title: task.title, description: task.goal, kind: "delegated" as const, recoveryPolicy: "safe_retry" as const, idempotencyKey: `${planId}:${task.key}`, executionScope: { ...source } })),
 				dependencies,
 			});
-			const summary = await graph.run([ownerKey], planId, execute, { maxConcurrent, signal, executor: "subagent" });
+			const summary = await planRuntime.run(ownerKey, planId, signal, (planSignal) => graph.run([ownerKey], planId, execute, { maxConcurrent, signal: planSignal, executor: "subagent" }));
 			return result({ planId, ...summary, tasks: ledger.queryTasks({ ownerKeys: [ownerKey], planIds: [planId], limit: maxTasks }) });
 		},
 	});

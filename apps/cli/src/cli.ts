@@ -827,7 +827,7 @@ async function runChat(config: ReturnType<typeof loadConfig>, requestedMode: { f
 	const presentationMode: ChatPresentationMode = resolveChatPresentationMode({
 		...requestedMode, isInputTty: process.stdin.isTTY === true, isOutputTty: process.stdout.isTTY === true, term: process.env.TERM,
 	});
-	const { conversationKey, createSubagentTools, createTaskLedgerTools, createTaskOrchestrationTools, ProfileTaskScheduler, SubagentManager, TaskRecoveryRunner } = await import("@beemax/core");
+	const { conversationKey, createSubagentTools, createTaskLedgerTools, createTaskOrchestrationTools, ProfileTaskScheduler, SubagentManager, TaskPlanRuntime, TaskRecoveryRunner } = await import("@beemax/core");
 	const { loadMcpConfig, McpManager } = await import("@beemax/mcp-capability");
 	const { buildAgentFactory } = await import("./agent-factory.ts");
 	const { MemoryStore } = await import("@beemax/memory");
@@ -866,9 +866,10 @@ async function runChat(config: ReturnType<typeof loadConfig>, requestedMode: { f
 		tools: executionSafeTools(config, readOnlyAgentTools(readOnlyMcpTools.map((tool) => tool.name))),
 	});
 	const taskScheduler = new ProfileTaskScheduler({ maxConcurrent: config.subagents.maxConcurrent });
+	const taskPlanRuntime = new TaskPlanRuntime();
 	const recoveryController = new AbortController();
 	let recoveryStatus: TaskRecoveryStatus = { phase: config.subagents.enabled ? "running" : "disabled", plans: 0, succeeded: 0, failed: 0, blocked: 0 };
-	const taskRecovery = new TaskRecoveryRunner(memory, (task, signal) => taskScheduler.run(task.ownerKey, () => executePlannedTask(createSubagentAgent, task, task.executionScope as import("@beemax/gateway").SessionSource, signal, config.subagents.timeoutMs), signal));
+	const taskRecovery = new TaskRecoveryRunner(memory, (task, signal) => taskScheduler.run(task.ownerKey, () => executePlannedTask(createSubagentAgent, task, task.executionScope as import("@beemax/gateway").SessionSource, signal, config.subagents.timeoutMs), signal), taskPlanRuntime);
 	const recoveryRun = (config.subagents.enabled
 		? taskRecovery.run({ maxConcurrent: config.subagents.maxConcurrent, signal: recoveryController.signal })
 		: Promise.resolve({ plans: 0, succeeded: 0, failed: 0, cancelled: 0, blocked: [] as string[] }))
@@ -899,7 +900,7 @@ async function runChat(config: ReturnType<typeof loadConfig>, requestedMode: { f
 		sessionTools: (sessionSource) => [
 			...(subagents ? [
 				...createSubagentTools(subagents, sessionSource),
-				...createTaskOrchestrationTools(memory, sessionSource, (task, signal) => taskScheduler.run(task.ownerKey, () => executePlannedTask(createSubagentAgent, task, sessionSource, signal, config.subagents.timeoutMs), signal), { maxConcurrent: config.subagents.maxConcurrent }),
+				...createTaskOrchestrationTools(memory, sessionSource, (task, signal) => taskScheduler.run(task.ownerKey, () => executePlannedTask(createSubagentAgent, task, sessionSource, signal, config.subagents.timeoutMs), signal), { maxConcurrent: config.subagents.maxConcurrent, planRuntime: taskPlanRuntime }),
 			] : []),
 			...createTaskLedgerTools(memory, sessionSource),
 		],
@@ -918,6 +919,7 @@ async function runChat(config: ReturnType<typeof loadConfig>, requestedMode: { f
 		cancelSubagents: (sessionSource) => subagents?.cancelOwner(sessionSource) ?? 0,
 		controlHandler: (profileRuntime, profileInteraction) => createProfileControlHandler(profileRuntime, config, profileInteraction, () => ({ taskScheduler: taskScheduler.snapshot(), taskRecovery: recoveryStatus }), config.subagents.enabled ? {
 			retryTaskPlan: (sessionSource, planId) => taskRecovery.retry([conversationKey(sessionSource)], planId, { maxConcurrent: config.subagents.maxConcurrent }),
+			cancelTaskPlan: (sessionSource, planId) => taskRecovery.cancel([conversationKey(sessionSource)], planId),
 		} : undefined),
 	});
 	const { runtime, interaction: interactionAdapter } = profileRuntime;
@@ -1049,6 +1051,11 @@ async function runChat(config: ReturnType<typeof loadConfig>, requestedMode: { f
 			const command = parseInteractionCommand(trimmed);
 			if (active) {
 				if (command?.kind === "stop") { await stop(); return; }
+				if (command?.kind === "tasks" && command.action === "cancel" && command.planId) {
+					const result = taskRecovery.cancel([conversationKey(source)], command.planId);
+					process.stdout.write(`\n${result.active || result.tasks ? `Cancelled Task Plan ${command.planId}: active=${result.active}; tasks=${result.tasks}.` : `No active or queued Tasks found in owned Plan ${command.planId}.`}\n`);
+					return;
+				}
 				if (await interactionAdapter.handleApprovalReply(source, trimmed)) return;
 				if (command?.kind === "status") { process.stdout.write(`\n${await status()}\n`); return; }
 				const queued = command?.kind === "steer"
@@ -1110,6 +1117,11 @@ async function runChat(config: ReturnType<typeof loadConfig>, requestedMode: { f
 			}
 			if (command?.kind === "tools") { process.stdout.write(`${toolsStatus()}\n`); writePrompt(); return; }
 			if (command?.kind === "tasks") {
+				if (command.action === "cancel" && command.planId) {
+					const result = taskRecovery.cancel([conversationKey(source)], command.planId);
+					process.stdout.write(`${result.active || result.tasks ? `Cancelled Task Plan ${command.planId}: active=${result.active}; tasks=${result.tasks}.` : `No active or queued Tasks found in owned Plan ${command.planId}.`}\n`);
+					writePrompt(); return;
+				}
 				if (command.action === "retry" && command.planId) {
 					if (!config.subagents.enabled) { process.stdout.write("Task Plan retry is unavailable because Sub-Agents are disabled.\n"); writePrompt(); return; }
 					const result = await taskRecovery.retry([conversationKey(source)], command.planId, { maxConcurrent: config.subagents.maxConcurrent });
