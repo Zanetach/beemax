@@ -40,6 +40,27 @@ test("shared /tasks plans summarizes owned Task Plans for discovery and control"
 	assert.equal(result.message, "plan-b  [running]  Live research · progress=1/3 · verified=1 · corrections=0\nplan-a  [failed]  Write report · progress=2/2 · verified=1 · corrections=2");
 });
 
+test("shared /tasks show renders bounded owned Plan results and quality evidence", async () => {
+	const queries = [];
+	const runtime = {
+		taskPlans: (_source, query) => query.id === "plan-a" ? [{ id: "plan-a", ownerKey: "owner", title: "Write\u001b[31m report\u001b[0m", status: "failed", taskCount: 2, succeeded: 1, failed: 1, cancelled: 0, verified: 1, correctiveAttempts: 1, createdAt: 1 }] : [],
+		tasks: (_source, query) => { queries.push(query); return [
+			{ id: "research", planId: "plan-a", title: "Research", kind: "delegated", status: "succeeded", verificationStatus: "accepted", result: "facts\u001b[31mred\u001b[0m", evidence: "sources checked", createdAt: 1 },
+			{ id: "write", planId: "plan-a", title: "Write", kind: "delegated", status: "failed", error: "verification failed", createdAt: 2 },
+		]; },
+	};
+	const config = { profile: "personal", model: { provider: "test", model: "model" }, models: [] };
+	const control = createProfileControlHandler(runtime, config);
+	const result = await control({ source: { platform: "feishu", chatId: "chat", chatType: "dm", userId: "user" }, text: "/tasks show plan-a" });
+	assert.deepEqual(queries, [{ planId: "plan-a", limit: 100 }]);
+	assert.match(result.message, /plan-a  \[failed\]  Write report/);
+	assert.match(result.message, /research  \[delegated\/succeeded\] \[plan:plan-a\] \[quality:verified\]/);
+	assert.match(result.message, /Result: factsred/);
+	assert.doesNotMatch(result.message, /\u001b|\[31m/);
+	assert.match(result.message, /Evidence: sources checked/);
+	assert.match(result.message, /Error: verification failed/);
+});
+
 test("shared /tasks verify retries Verification without exposing an execution retry", async () => {
 	const config = { profile: "personal", model: { provider: "test", model: "model" }, models: [] };
 	let requested;

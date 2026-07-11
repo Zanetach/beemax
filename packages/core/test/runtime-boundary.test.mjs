@@ -21,18 +21,25 @@ test("BeeMax Core owns the runtime primitive boundary", () => {
 
 test("BeeMax Agent Runtime lists only Task Plans visible to the conversation owners", () => {
 	let query;
+	let taskQuery;
 	const runtime = new BeeMaxAgentRuntime({
 		createAgent: async () => { throw new Error("unused"); },
 		taskLedger: {
 			queryTaskPlans(input) { query = input; return [{ id: "plan", ownerKey: input.ownerKeys[0], title: "Plan", status: "running", taskCount: 2, succeeded: 1, failed: 0, cancelled: 0, verified: 1, correctiveAttempts: 0, createdAt: 1 }]; },
+			queryTasks(input) { taskQuery = input; return []; },
 		},
 	});
-	const plans = runtime.taskPlans({ platform: "feishu", chatId: "chat", chatType: "dm", userId: "user" }, { status: "running", limit: 10 });
+	const source = { platform: "feishu", chatId: "chat", chatType: "dm", userId: "user" };
+	const plans = runtime.taskPlans(source, { id: "plan", status: "running", limit: 10 });
+	runtime.tasks(source, { planId: "plan", limit: 100 });
+	assert.equal(query.id, "plan");
 	assert.deepEqual(query.statuses, ["running"]);
 	assert.equal(query.limit, 10);
 	assert.ok(query.ownerKeys.includes("feishu:chat:user"));
 	assert.ok(query.ownerKeys.includes("profile"));
 	assert.equal(plans[0].id, "plan");
+	assert.deepEqual(taskQuery.planIds, ["plan"]);
+	assert.ok(taskQuery.ownerKeys.includes("feishu:chat:user"));
 	runtime.dispose();
 });
 

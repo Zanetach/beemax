@@ -76,8 +76,8 @@ export interface AgentRuntimePort<Source extends BeeMaxRuntimeSource = BeeMaxRun
 	isBusy(): boolean;
 	setModel(source: Source, model: Model<Api>): Promise<boolean>;
 	modelStatus(source: Source): Promise<AgentModelStatus | undefined>;
-	tasks(source: Source, query?: { kind?: TaskKind; status?: TaskStatus; limit?: number }): TaskRecord[];
-	taskPlans(source: Source, query?: { status?: TaskPlanStatus; limit?: number }): TaskPlanRecord[];
+	tasks(source: Source, query?: { kind?: TaskKind; status?: TaskStatus; planId?: string; limit?: number }): TaskRecord[];
+	taskPlans(source: Source, query?: { id?: string; status?: TaskPlanStatus; limit?: number }): TaskPlanRecord[];
 	taskRuns(source: Source, taskId: string): TaskRunRecord[];
 	setThinkingLevel(source: Source, level: ModelThinkingLevel): Promise<AgentModelStatus | undefined>;
 	dispose(): void;
@@ -236,17 +236,19 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 	async modelStatus(source: Source): Promise<AgentModelStatus | undefined> {
 		return this.sessions.withSession(source, async (session) => modelStatusOf(session.piSession));
 	}
-	tasks(source: Source, query: { kind?: TaskKind; status?: TaskStatus; limit?: number } = {}): TaskRecord[] {
+	tasks(source: Source, query: { kind?: TaskKind; status?: TaskStatus; planId?: string; limit?: number } = {}): TaskRecord[] {
 		return this.taskLedger?.queryTasks({
 			ownerKeys: [...new Set([conversationKey(source), conversationOwnerKey(source), "profile"])],
 			kinds: query.kind ? [query.kind] : undefined,
 			statuses: query.status ? [query.status] : undefined,
+			planIds: query.planId ? [query.planId] : undefined,
 			limit: query.limit,
 		}) ?? [];
 	}
-	taskPlans(source: Source, query: { status?: TaskPlanStatus; limit?: number } = {}): TaskPlanRecord[] {
+	taskPlans(source: Source, query: { id?: string; status?: TaskPlanStatus; limit?: number } = {}): TaskPlanRecord[] {
 		return this.taskLedger?.queryTaskPlans({
 			ownerKeys: [...new Set([conversationKey(source), conversationOwnerKey(source), "profile"])],
+			id: query.id,
 			statuses: query.status ? [query.status] : undefined,
 			limit: query.limit,
 		}) ?? [];

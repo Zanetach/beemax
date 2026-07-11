@@ -26,15 +26,32 @@ export function renderTaskRecoveryStatus(status?: TaskRecoveryStatus): string {
 export function renderTaskPlans(plans: readonly TaskPlanRecord[]): string {
 	return plans.map((plan) => {
 		const completed = plan.succeeded + plan.failed + plan.cancelled;
-		return `${plan.id}  [${plan.status}]  ${plan.title} · progress=${completed}/${plan.taskCount} · verified=${plan.verified} · corrections=${plan.correctiveAttempts}`;
+		return `${boundedTaskText(plan.id, 128)}  [${plan.status}]  ${boundedTaskText(plan.title, 120)} · progress=${completed}/${plan.taskCount} · verified=${plan.verified} · corrections=${plan.correctiveAttempts}`;
 	}).join("\n") || "No durable Task Plans are visible to this conversation.";
 }
 
 export function renderTasks(tasks: readonly TaskRecord[]): string {
 	return tasks.length ? tasks.map((task) => {
 		const quality = task.verificationStatus ? ` [quality:${task.verificationStatus === "accepted" ? "verified" : task.verificationStatus}${task.correctiveAttempts ? ` corrections=${task.correctiveAttempts}` : ""}${task.verificationAttempts ? ` verify-attempts=${task.verificationAttempts}` : ""}${task.verificationRetryAt ? ` retry=${new Date(task.verificationRetryAt).toISOString()}` : ""}]` : "";
-		return `${task.id}  [${task.kind}/${task.status}]${task.planId ? ` [plan:${task.planId}]` : ""}${quality}  ${task.title}`;
+		return `${boundedTaskText(task.id, 160)}  [${task.kind}/${task.status}]${task.planId ? ` [plan:${boundedTaskText(task.planId, 128)}]` : ""}${quality}  ${boundedTaskText(task.title, 120)}`;
 	}).join("\n") : "No durable Tasks are visible to this conversation.";
+}
+
+export function renderTaskPlanDetails(plan: TaskPlanRecord, tasks: readonly TaskRecord[]): string {
+	const details = tasks.map((task) => [
+		renderTasks([task]),
+		task.result !== undefined ? `  Result: ${boundedTaskText(task.result, 1_000)}` : undefined,
+		task.evidence !== undefined ? `  Evidence: ${boundedTaskText(task.evidence, 500)}` : undefined,
+		task.error !== undefined ? `  Error: ${boundedTaskText(task.error, 500)}` : undefined,
+	].filter((line): line is string => Boolean(line)).join("\n")).join("\n");
+	return `${renderTaskPlans([plan])}${details ? `\n${details}` : ""}`;
+}
+
+export function renderTaskPlanNotFound(planId: string): string { return `Task Plan not found or not visible: ${boundedTaskText(planId, 128)}.`; }
+
+function boundedTaskText(value: string, limit: number): string {
+	const safe = value.replace(/\u001b\[[0-?]*[ -/]*[@-~]/g, "").replace(/[\u0000-\u001f\u007f-\u009f]/g, " ").replace(/\s+/g, " ").trim();
+	return safe.length > limit ? `${safe.slice(0, limit)}…` : safe;
 }
 
 export function renderTaskPlanRetryResult(planId: string, result: TaskPlanRetryResult): string {
@@ -89,7 +106,7 @@ export function createProfileControlHandler(
 			const entries = await runtime.history(source, history[1] ? Number(history[1]) : undefined);
 			return { handled: true, message: entries.length ? entries.map((entry) => `[${entry.role}] ${entry.text.replaceAll("\n", " ")}`).join("\n") : "No live message history." };
 		}
-		if (command === "/help") return { handled: true, message: "Commands: /help /status /usage /compact /sessions /resume <id> /history [n] /skills /tasks [plans|verify|retry|cancel <plan-id>] /new /reset /model [provider/model] [--global] /stop\nCLI also supports local display, tool, and retry controls." };
+		if (command === "/help") return { handled: true, message: "Commands: /help /status /usage /compact /sessions /resume <id> /history [n] /skills /tasks [plans|show|verify|retry|cancel <plan-id>] /new /reset /model [provider/model] [--global] /stop\nCLI also supports local display, tool, and retry controls." };
 		if (command === "/status" || command === "/usage") {
 			const [model, usage] = await Promise.all([runtime.modelStatus(source), runtime.usage(source)]);
 			const usageText = usage ? `input=${usage.inputTokens}; output=${usage.outputTokens}; context=${usage.contextTokens ?? "?"}/${usage.contextWindow ?? "?"}` : "no live session";
@@ -104,6 +121,11 @@ export function createProfileControlHandler(
 		}
 		const taskCommand = parseInteractionCommand(text);
 		if (taskCommand?.kind === "tasks" && taskCommand.action === "plans") return { handled: true, message: renderTaskPlans(runtime.taskPlans(source, { limit: 200 })) };
+		if (taskCommand?.kind === "tasks" && taskCommand.action === "show" && taskCommand.planId) {
+			const plan = runtime.taskPlans(source, { id: taskCommand.planId, limit: 1 })[0];
+			if (!plan) return { handled: true, message: renderTaskPlanNotFound(taskCommand.planId) };
+			return { handled: true, message: renderTaskPlanDetails(plan, runtime.tasks(source, { planId: taskCommand.planId, limit: 100 })) };
+		}
 		if (taskCommand?.kind === "tasks" && taskCommand.action === "verify" && taskCommand.planId) {
 			if (!actions?.verifyTaskPlan) return { handled: true, message: "Task Plan Verification Retry is unavailable in this runtime." };
 			const result = await actions.verifyTaskPlan(source, taskCommand.planId);

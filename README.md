@@ -351,6 +351,8 @@ durable exponential backoff; this never replays Task execution. `/tasks verify <
 remains available for an immediate user-requested check. If Verification explicitly
 rejects a result, BeeMax may automatically run a feedback-aware Corrective Attempt
 only when safe-retry authority is complete and the durable correction budget remains.
+Use `/tasks plans` to discover owned Plans and `/tasks show <plan-id>` to inspect
+bounded node results, Verification evidence, and errors without invoking the model.
 Child Pi
 transcripts remain in the profile session directory for audit.
 

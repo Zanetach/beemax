@@ -32,7 +32,7 @@ import { runSetup, type SetupOptions } from "./setup.ts";
 import { configuredRuntimeModels, ProfileModelCatalog, renderModelProviderChoices, resolveProviderSelection } from "./model-catalog.ts";
 import { executionPortFor, executionSafeTools } from "./execution-composition.ts";
 import { createProfileAgentRuntime } from "./runtime-composition.ts";
-import { createProfileControlHandler, renderTaskPlanRetryResult, renderTaskPlans, renderTaskRecoveryStatus, renderTaskSchedulerStatus, renderTasks, type TaskRecoveryStatus } from "./profile-control.ts";
+import { createProfileControlHandler, renderTaskPlanDetails, renderTaskPlanNotFound, renderTaskPlanRetryResult, renderTaskPlans, renderTaskRecoveryStatus, renderTaskSchedulerStatus, renderTasks, type TaskRecoveryStatus } from "./profile-control.ts";
 import { LocalActivityPresenter, LocalReasoningPresenter, renderChatFooter, type DetailsDisplay, parseReasoningCommand } from "./local-chat-renderer.ts";
 import { renderTerminalMarkdown, StreamingTerminalMarkdown } from "./terminal-markdown.ts";
 import { fullScreenEnter, fullScreenExit, resolveChatPresentationMode, type ChatPresentationMode } from "./chat-mode.ts";
@@ -1124,6 +1124,11 @@ async function runChat(config: ReturnType<typeof loadConfig>, requestedMode: { f
 			if (command?.kind === "tools") { process.stdout.write(`${toolsStatus()}\n`); writePrompt(); return; }
 			if (command?.kind === "tasks") {
 				if (command.action === "plans") { process.stdout.write(`${renderTaskPlans(runtime.taskPlans(source, { limit: 200 }))}\n`); writePrompt(); return; }
+				if (command.action === "show" && command.planId) {
+					const plan = runtime.taskPlans(source, { id: command.planId, limit: 1 })[0];
+					process.stdout.write(`${plan ? renderTaskPlanDetails(plan, runtime.tasks(source, { planId: command.planId, limit: 100 })) : renderTaskPlanNotFound(command.planId)}\n`);
+					writePrompt(); return;
+				}
 				if (command.action === "verify" && command.planId) {
 					if (!config.subagents.enabled) { process.stdout.write("Task Plan Verification Retry is unavailable because Sub-Agents are disabled.\n"); writePrompt(); return; }
 					const result = await taskRecovery.reverify([conversationKey(source)], command.planId);
