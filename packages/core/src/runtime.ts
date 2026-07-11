@@ -15,6 +15,7 @@ import {
 	SessionManager,
 	SettingsManager,
 } from "@earendil-works/pi-coding-agent";
+import { governToolDefinition, ToolPolicyRegistry, type ToolPolicy, type ToolRuntimeAuditSink } from "./tool-runtime.ts";
 
 export interface BeeMaxRuntimeSource {
 	platform: "feishu" | "cli";
@@ -29,7 +30,7 @@ export interface BeeMaxRuntimeSource {
 }
 
 export interface BeeMaxRuntimeAuthorization {
-	(source: BeeMaxRuntimeSource, toolName: string, args: unknown, signal?: AbortSignal): Promise<{ allowed: boolean; reason?: string }>;
+	(source: BeeMaxRuntimeSource, toolName: string, args: unknown, policy: ToolPolicy, signal?: AbortSignal): Promise<{ allowed: boolean; reason?: string }>;
 }
 
 export interface BeeMaxRuntimeFactoryOptions {
@@ -46,6 +47,7 @@ export interface BeeMaxRuntimeFactoryOptions {
 	createTools: (source: BeeMaxRuntimeSource, onResourcesChanged: () => void, getRuntimeApiKey: (provider: string) => Promise<string | undefined>) => ToolDefinition[];
 	authorizeTool?: BeeMaxRuntimeAuthorization;
 	approvalTools?: Iterable<string>;
+	toolAudit?: ToolRuntimeAuditSink;
 }
 
 const reloadPending = new WeakSet<AgentSession>();
@@ -94,17 +96,19 @@ export function buildBeeMaxRuntimeFactory(opts: BeeMaxRuntimeFactoryOptions) {
 			() => markRuntimeResourcesChanged(sessionRef),
 			(provider) => authStorage.getApiKey(provider, { includeFallback: false }),
 		);
+		const policies = new ToolPolicyRegistry(customTools, approvalTools);
+		const governedTools = customTools.map((tool) => governToolDefinition(tool, policies.get(tool.name), source, opts.toolAudit));
 		const { session, modelFallbackMessage } = await createAgentSession({
 			cwd, agentDir, model,
 			tools: opts.tools ?? [
 				"read", "bash", "edit", "write", "grep", "find", "ls", "web_search", "web_extract",
-				...customTools.map((tool) => tool.name),
+				...governedTools.map((tool) => tool.name),
 			],
-			customTools, authStorage, modelRegistry, settingsManager, resourceLoader, sessionManager,
+			customTools: governedTools, authStorage, modelRegistry, settingsManager, resourceLoader, sessionManager,
 		});
 		sessionRef = session;
 		if (modelFallbackMessage) console.warn(`[beemax] ${modelFallbackMessage}`);
-		installSecurityHook(session, cwd, source, opts.authorizeTool, approvalTools);
+		installSecurityHook(session, cwd, source, opts.authorizeTool, policies, opts.toolAudit);
 		return session;
 	};
 }
@@ -127,16 +131,19 @@ async function restoreOrCreateSession(cwd: string, sessionDir: string, sessionId
 	return matchingFiles[0] ? SessionManager.open(join(sessionDir, matchingFiles[0]), sessionDir, cwd) : SessionManager.create(cwd, sessionDir, { id: sessionId });
 }
 
-function installSecurityHook(session: AgentSession, cwd: string, source: BeeMaxRuntimeSource, authorizeTool: BeeMaxRuntimeAuthorization | undefined, approvalTools: ReadonlySet<string>): void {
+function installSecurityHook(session: AgentSession, cwd: string, source: BeeMaxRuntimeSource, authorizeTool: BeeMaxRuntimeAuthorization | undefined, policies: ToolPolicyRegistry, audit?: ToolRuntimeAuditSink): void {
 	const previous = session.agent.beforeToolCall;
 	session.agent.beforeToolCall = async (context, signal) => {
 		const priorResult = await previous?.(context, signal);
 		if (priorResult?.block) return priorResult;
 		const hardBlock = hardBlockReason(context.toolCall.name, context.args, cwd);
-		if (hardBlock) return { block: true, reason: hardBlock };
-		if (!approvalTools.has(context.toolCall.name)) return priorResult;
-		if (!authorizeTool) return { block: true, reason: "This mutating tool requires an approval handler in the current channel" };
-		const decision = await authorizeTool(source, context.toolCall.name, context.args, signal);
+		const policy = policies.get(context.toolCall.name);
+		if (hardBlock) { audit?.({ phase: "blocked", source, toolName: context.toolCall.name, policy, at: Date.now(), reason: hardBlock }); return { block: true, reason: hardBlock }; }
+		if (policy.approval === "never") return priorResult;
+		audit?.({ phase: "requested", source, toolName: context.toolCall.name, policy, at: Date.now() });
+		if (!authorizeTool) { const reason = "This mutating tool requires an approval handler in the current channel"; audit?.({ phase: "blocked", source, toolName: context.toolCall.name, policy, at: Date.now(), reason }); return { block: true, reason }; }
+		const decision = await authorizeTool(source, context.toolCall.name, context.args, policy, signal);
+		audit?.({ phase: decision.allowed ? "allowed" : "blocked", source, toolName: context.toolCall.name, policy, at: Date.now(), reason: decision.reason });
 		return decision.allowed ? priorResult : { block: true, reason: decision.reason ?? "Tool call was not approved" };
 	};
 }

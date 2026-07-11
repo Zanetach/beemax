@@ -1,10 +1,11 @@
 import { sessionKeyForSource } from "./session-coordinator.ts";
 import type { BeeMaxRuntimeSource } from "./runtime.ts";
+import { MUTATING_TOOL_POLICY, type ToolPolicy } from "./tool-runtime.ts";
 
 const DEFAULT_TIMEOUT_MS = 5 * 60 * 1000;
 const SENSITIVE_KEY_RE = /(token|secret|password|api[_-]?key|authorization|cookie|credential)/i;
 
-export interface ToolApprovalRequest { source: BeeMaxRuntimeSource; toolName: string; args: unknown; }
+export interface ToolApprovalRequest { source: BeeMaxRuntimeSource; toolName: string; args: unknown; policy?: ToolPolicy; }
 /** Redacted, presenter-safe context for an approval card or overlay. */
 export interface ToolApprovalDetails {
 	target: string;
@@ -161,9 +162,14 @@ export function approvalDetails(request: ToolApprovalRequest): ToolApprovalDetai
 	const args = request.args && typeof request.args === "object" ? request.args as Record<string, unknown> : {};
 	const target = approvalTarget(args);
 	const argsSummary = formatArgs(request.args);
-	if (["bash", "write", "edit", "browser_click", "browser_fill", "browser_cookies"].includes(request.toolName)) return { target, risk: "高", impact: "可能修改本机文件、外部服务或读取敏感浏览器数据", reversibility: "执行前请确认；部分操作不可逆", argsSummary };
-	if (/delete|forget|remove|end|kick|recording_stop/i.test(request.toolName)) return { target, risk: "高", impact: "可能删除数据或终止外部资源", reversibility: "通常不可逆或需要额外恢复步骤", argsSummary };
-	return { target, risk: "中", impact: "可能改变当前 Profile 或外部资源状态", reversibility: "请根据参数确认是否可恢复", argsSummary };
+	const policy = request.policy ?? { ...MUTATING_TOOL_POLICY, risk: "medium" as const, impact: "未注册工具按保守策略处理" };
+	return {
+		target,
+		risk: policy.risk === "high" ? "高" : policy.risk === "medium" ? "中" : "低",
+		impact: policy.impact,
+		reversibility: policy.reversible === true ? "可逆或只读" : policy.reversible === false ? "不可逆" : "可逆性未知，请确认恢复方式",
+		argsSummary,
+	};
 }
 
 function formatArgs(args: unknown): string {

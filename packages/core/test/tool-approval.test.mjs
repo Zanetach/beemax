@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { ToolApprovalBroker } from "../dist/index.js";
+import { MUTATING_TOOL_POLICY, ToolApprovalBroker } from "../dist/index.js";
 
 const source = { platform: "cli", chatId: "local", chatType: "dm", userId: "local" };
 
@@ -8,7 +8,7 @@ test("Core approval broker owns one-time and session grants", async () => {
 	const prompts = [];
 	const broker = new ToolApprovalBroker(async (_source, text) => { prompts.push(text); }, 1_000);
 	try {
-		const once = broker.authorize({ source, toolName: "write", args: { path: "a.txt", token: "hidden" } });
+		const once = broker.authorize({ source, toolName: "write", args: { path: "a.txt", token: "hidden" }, policy: MUTATING_TOOL_POLICY });
 		assert.match(prompts[0], /\[REDACTED\]/);
 		assert.match(prompts[0], /目标：a.txt/);
 		assert.match(prompts[0], /风险：高/);
@@ -16,10 +16,10 @@ test("Core approval broker owns one-time and session grants", async () => {
 		assert.equal(await broker.handleReply(source, "1"), true);
 		assert.deepEqual(await once, { allowed: true });
 
-		const granted = broker.authorize({ source, toolName: "write", args: {} });
+		const granted = broker.authorize({ source, toolName: "write", args: {}, policy: MUTATING_TOOL_POLICY });
 		assert.equal(await broker.handleReply(source, "2"), true);
 		assert.deepEqual(await granted, { allowed: true });
-		assert.deepEqual(await broker.authorize({ source, toolName: "write", args: {} }), { allowed: true });
+		assert.deepEqual(await broker.authorize({ source, toolName: "write", args: {}, policy: MUTATING_TOOL_POLICY }), { allowed: true });
 	} finally {
 		broker.dispose();
 	}
@@ -29,7 +29,7 @@ test("approval lifecycle exposes only redacted presenter-safe card details", asy
 	const events = [];
 	const broker = new ToolApprovalBroker(async () => {}, 1_000);
 	broker.subscribe((event) => events.push(event));
-	const waiting = broker.authorize({ source, toolName: "browser_fill", args: { url: "https://alice:pw@example.com/?token=secret-value", selector: "#email", password: "secret-value" } });
+	const waiting = broker.authorize({ source, toolName: "browser_fill", args: { url: "https://alice:pw@example.com/?token=secret-value", selector: "#email", password: "secret-value" }, policy: MUTATING_TOOL_POLICY });
 	await new Promise((resolve) => setImmediate(resolve));
 	assert.equal(events[0].type, "requested");
 	assert.equal(events[0].details.risk, "高");
@@ -42,7 +42,7 @@ test("approval lifecycle exposes only redacted presenter-safe card details", asy
 
 test("semantic approval decisions share the same policy and audit path as text replies", async () => {
 	const broker = new ToolApprovalBroker(async () => {}, 1_000);
-	const waiting = broker.authorize({ source, toolName: "write", args: { path: "report.md" } });
+	const waiting = broker.authorize({ source, toolName: "write", args: { path: "report.md" }, policy: MUTATING_TOOL_POLICY });
 	await new Promise((resolve) => setImmediate(resolve));
 	assert.equal(await broker.decide(source, "once"), true);
 	assert.deepEqual(await waiting, { allowed: true });

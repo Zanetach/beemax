@@ -79,7 +79,7 @@ export function buildAgentFactory(opts: AgentFactoryOptions) {
 		getApiKey: opts.getApiKey, systemPrompt: opts.systemPrompt ?? DEFAULT_SYSTEM_PROMPT, skillToolset: opts.skillToolset ?? "standard",
 		tools: opts.tools,
 		approvalTools: [...REQUIRES_APPROVAL, ...(opts.approvalTools ?? [])],
-		authorizeTool: opts.authorizeTool ? async (source, toolName, args, signal) => opts.authorizeTool!({ source, toolName, args }, signal) : undefined,
+		authorizeTool: opts.authorizeTool ? async (source, toolName, args, policy, signal) => opts.authorizeTool!({ source, toolName, args, policy }, signal) : undefined,
 		createTools: (source, onResourcesChanged, getRuntimeApiKey) => {
 			const executionTools = createExecutionTools(source, opts.cwd, opts.executionPortForSource?.(source) ?? execution);
 		const memoryTools = opts.memoryStore ? createMemoryTools(opts.memoryStore, source) : [];
