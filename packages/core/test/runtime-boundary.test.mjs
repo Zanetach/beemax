@@ -119,3 +119,23 @@ test("BeeMax Agent Runtime propagates an external abort signal to the active tur
 	assert.equal(aborts, 1);
 	runtime.dispose();
 });
+
+test("BeeMax Agent Runtime exposes explicit context compaction only for an idle session", async () => {
+	const source = { platform: "cli", chatId: "terminal", chatType: "dm", userId: "user" };
+	let compactions = 0;
+	const runtime = new BeeMaxAgentRuntime({
+		createAgent: async () => ({
+			agent: { state: { model: { id: "test" }, messages: [] } },
+			subscribe: () => () => undefined,
+			prompt: async () => undefined,
+			abort: async () => undefined,
+			compact: async () => { compactions++; return { summary: "compacted" }; },
+			dispose: () => undefined,
+		}),
+	});
+	assert.equal(await runtime.compact(source), false);
+	await runtime.run({ source, text: "hello", timeoutMs: 1_000 });
+	assert.equal(await runtime.compact(source), true);
+	assert.equal(compactions, 1);
+	runtime.dispose();
+});

@@ -801,12 +801,14 @@ async function runChat(config: ReturnType<typeof loadConfig>): Promise<void> {
 		let detailsDisplay: DetailsDisplay = "expanded";
 		let active: Promise<void> | undefined;
 		let controlInProgress = false;
+		let lastUsage: { input?: number; output?: number; durationMs?: number } | undefined;
 		let closed = false;
 		const { createInterface } = await import("node:readline/promises");
 		const rl = createInterface({ input: process.stdin, output: process.stdout });
 		const prompt = () => `beemax [${config.model.provider}/${config.model.model}]> `;
 		const writePrompt = () => { if (!closed) process.stdout.write(prompt()); };
-		const status = () => `Profile: ${config.profile}\nModel: ${config.model.provider}/${config.model.model}\nSession: ${source.threadId ?? "default"}\nRun: ${runtime.isBusy() ? "running" : "idle"}\nReasoning: ${reasoningDisplay}\nDetails: ${detailsDisplay}\nToolset: ${config.agent.toolset}`;
+		const usage = () => lastUsage ? `Usage: input=${lastUsage.input ?? "unknown"}; output=${lastUsage.output ?? "unknown"}; duration=${Math.round((lastUsage.durationMs ?? 0) / 1000)}s` : "Usage: no completed turn in this session.";
+		const status = () => `Profile: ${config.profile}\nModel: ${config.model.provider}/${config.model.model}\nSession: ${source.threadId ?? "default"}\nRun: ${runtime.isBusy() ? "running" : "idle"}\nReasoning: ${reasoningDisplay}\nDetails: ${detailsDisplay}\nToolset: ${config.agent.toolset}\n${usage()}`;
 		const stop = async () => {
 			const stopped = await runtime.cancel(source);
 			const cancelled = subagents?.cancelOwner(source) ?? 0;
@@ -835,6 +837,7 @@ async function runChat(config: ReturnType<typeof loadConfig>): Promise<void> {
 				process.stdout.write(reasoning.beforeAnswer());
 				process.stdout.write(renderTerminalMarkdown(result.answer));
 			}
+			lastUsage = { input: result.usage.input_tokens, output: result.usage.output_tokens, durationMs: result.durationMs };
 			process.stdout.write("\n");
 		};
 		const handleLine = async (line: string) => {
@@ -853,11 +856,12 @@ async function runChat(config: ReturnType<typeof loadConfig>): Promise<void> {
 			}
 			if (trimmed === "/quit" || trimmed === "/exit") { closed = true; rl.close(); return; }
 			if (command?.kind === "help") {
-				process.stdout.write("Commands: /help /status /new /reset /stop /model /reasoning /details [hidden|expanded] /quit\n");
+				process.stdout.write("Commands: /help /status /new /reset /stop /compact /model /reasoning /details [hidden|collapsed|expanded] /quit\n");
 				writePrompt();
 				return;
 			}
 			if (command?.kind === "status") { process.stdout.write(`${status()}\n`); writePrompt(); return; }
+			if (command?.kind === "usage") { process.stdout.write(`${usage()}\n`); writePrompt(); return; }
 			if (command?.kind === "new") {
 				source = { ...source, threadId: `local-${crypto.randomUUID()}` };
 				process.stdout.write(`Started new session: ${source.threadId}\n`);
@@ -865,6 +869,12 @@ async function runChat(config: ReturnType<typeof loadConfig>): Promise<void> {
 				return;
 			}
 			if (command?.kind === "stop") { await stop(); writePrompt(); return; }
+			if (command?.kind === "compact") {
+				const compacted = await runtime.compact(source);
+				process.stdout.write(`${compacted ? "Context compacted." : "No idle session is available to compact."}\n`);
+				writePrompt();
+				return;
+			}
 			if (command?.kind === "details") {
 				if (command.mode === "status") process.stdout.write(`Details: ${detailsDisplay}. Use /details hidden|collapsed|expanded.\n`);
 				else { detailsDisplay = command.mode; process.stdout.write(`Details display set to ${detailsDisplay}.\n`); }

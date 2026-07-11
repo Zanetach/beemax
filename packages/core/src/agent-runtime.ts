@@ -31,6 +31,7 @@ export type AgentRunEventSink = (event: AgentSessionEvent) => void | Promise<voi
 export interface AgentRuntimePort<Source extends BeeMaxRuntimeSource = BeeMaxRuntimeSource> {
 	run(input: AgentRunInput<Source>, onEvent?: AgentRunEventSink): Promise<AgentRunResult>;
 	cancel(source: Source): Promise<boolean>;
+	compact(source: Source, instructions?: string): Promise<boolean>;
 	handleControl(input: AgentControlInput<Source>): Promise<AgentControlResult | undefined>;
 	isBusy(): boolean;
 	setModel(source: Source, model: Model<Api>): Promise<boolean>;
@@ -99,6 +100,13 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 	}
 
 	async cancel(source: Source): Promise<boolean> { return this.sessions.abort(source); }
+	async compact(source: Source, instructions?: string): Promise<boolean> {
+		return (await this.sessions.withSession(source, async (session) => {
+			if (session.busy) return false;
+			await session.piSession.compact(instructions);
+			return true;
+		})) ?? false;
+	}
 	async handleControl(input: AgentControlInput<Source>): Promise<AgentControlResult | undefined> {
 		return this.controlHandler?.(input);
 	}
