@@ -75,6 +75,19 @@ export class TaskGraph {
 			const edges = this.ledger.taskDependencies(pending.map((task) => task.id));
 			const dependencies = new Map<string, string[]>();
 			for (const edge of edges) dependencies.set(edge.taskId, [...(dependencies.get(edge.taskId) ?? []), edge.dependsOn]);
+			const dependencyFailures = pending.map((task) => ({
+				task,
+				failed: (dependencies.get(task.id) ?? []).map((id) => byId.get(id)).filter((dependency): dependency is TaskRecord => dependency?.status === "failed" || dependency?.status === "cancelled"),
+			})).filter((entry) => entry.failed.length > 0);
+			if (dependencyFailures.length) {
+				const finishedAt = Date.now();
+				for (const { task, failed: failedDependencies } of dependencyFailures) {
+					const reason = failedDependencies.map((dependency) => `${dependency.id} is ${dependency.status}`).join(", ");
+					this.ledger.transition(task.id, { status: "failed", finishedAt, error: `Dependency Failure: ${reason}` });
+				}
+				failed += dependencyFailures.length;
+				continue;
+			}
 			const ready = pending.filter((task) => (dependencies.get(task.id) ?? []).every((id) => byId.get(id)?.status === "succeeded"));
 			for (const task of ready.slice(0, Math.max(0, concurrency - active.size))) {
 				const dependencyResults = (dependencies.get(task.id) ?? []).map((id) => byId.get(id)!).map(({ id, title, result, evidence }) => ({ id, title, result, evidence }));

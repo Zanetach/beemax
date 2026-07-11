@@ -24,6 +24,10 @@ _Avoid_: Prompt outline, checklist, execution log
 A requirement that one Task succeed before another Task becomes ready.
 _Avoid_: Ordering hint, parent Task
 
+**Dependency Failure**:
+A Task failure caused by a required upstream Task reaching a failed or cancelled outcome before the dependent Task could run.
+_Avoid_: Task Run failure, blocked queue, cancellation
+
 **Acceptance Criteria**:
 Observable conditions that a Task result must satisfy before the Task can be accepted as complete.
 _Avoid_: Prompt, implementation steps, subjective quality

@@ -161,6 +161,26 @@ test("TaskGraph stops after the configured Corrective Attempt budget is exhauste
 	assert.equal(ledger.tasks.get("task").correctiveAttempts, 1);
 });
 
+test("TaskGraph terminalizes downstream Tasks after a Dependency Failure", async () => {
+	const ledger = memoryLedger();
+	const graph = new TaskGraph(ledger);
+	graph.createPlan({
+		id: "failed-chain", ownerKey: "cli:local:local",
+		tasks: [{ id: "a", title: "A" }, { id: "b", title: "B" }, { id: "c", title: "C" }],
+		dependencies: [{ taskId: "b", dependsOn: "a" }, { taskId: "c", dependsOn: "b" }],
+	});
+	const executed = [];
+	const result = await graph.run(["cli:local:local"], "failed-chain", async (task) => {
+		executed.push(task.id);
+		throw new Error("A failed");
+	});
+	assert.deepEqual(executed, ["a"]);
+	assert.deepEqual(result, { succeeded: 0, failed: 3, cancelled: 0, blocked: [] });
+	assert.match(ledger.tasks.get("b").error, /Dependency Failure.*a.*failed/i);
+	assert.match(ledger.tasks.get("c").error, /Dependency Failure.*b.*failed/i);
+	assert.equal(ledger.runs.size, 1);
+});
+
 test("TaskGraph fails closed when criteria exist but no verifier is available", async () => {
 	const ledger = memoryLedger();
 	const graph = new TaskGraph(ledger);

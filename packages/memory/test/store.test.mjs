@@ -146,6 +146,23 @@ test("Task recovery runner resumes only durable safe DAG candidates with an Exec
 	} finally { store.close(); rmSync(root, { recursive: true, force: true }); }
 });
 
+test("Task recovery terminalizes a pending Task whose dependency already failed", async () => {
+	const root = mkdtempSync(join(tmpdir(), "beemax-task-dependency-failure-"));
+	const store = new MemoryStore(join(root, "memory.db"));
+	try {
+		const scope = { platform: "cli", chatId: "local", chatType: "dm", userId: "local" };
+		store.recordPlan([
+			{ id: "upstream", ownerKey: "cli:local:local", kind: "delegated", title: "Upstream", status: "failed", planId: "plan", recoveryPolicy: "safe_retry", idempotencyKey: "plan:upstream", executionScope: scope, createdAt: 1, finishedAt: 2, error: "failed" },
+			{ id: "downstream", ownerKey: "cli:local:local", kind: "delegated", title: "Downstream", status: "pending", planId: "plan", recoveryPolicy: "safe_retry", idempotencyKey: "plan:downstream", executionScope: scope, createdAt: 1 },
+		], [{ taskId: "downstream", dependsOn: "upstream" }]);
+		let executions = 0;
+		const result = await new TaskRecoveryRunner(store, async () => { executions++; return { output: "unused" }; }).run();
+		assert.deepEqual(result, { plans: 1, succeeded: 0, failed: 1, cancelled: 0, blocked: [] });
+		assert.equal(executions, 0);
+		assert.match(store.queryTasks({ ownerKeys: ["cli:local:local"], id: "downstream" })[0].error, /Dependency Failure/);
+	} finally { store.close(); rmSync(root, { recursive: true, force: true }); }
+});
+
 test("manual Task Plan retry is owner-scoped and requeues only recoverable failed nodes", async () => {
 	const root = mkdtempSync(join(tmpdir(), "beemax-task-manual-retry-"));
 	const store = new MemoryStore(join(root, "memory.db"));
