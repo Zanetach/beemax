@@ -904,6 +904,7 @@ async function runChat(config: ReturnType<typeof loadConfig>, requestedMode: { f
 		};
 		await applySessionPreferences();
 		let active: Promise<void> | undefined;
+		let queuedInput: string | undefined;
 		let retryText: string | undefined;
 		let controlInProgress = false;
 		let lastDurationMs: number | undefined;
@@ -923,7 +924,7 @@ async function runChat(config: ReturnType<typeof loadConfig>, requestedMode: { f
 			const snapshot = await interactionAdapter.snapshot(source);
 			const usage = snapshot.usage;
 			const context = usage?.contextWindow === null || usage?.contextWindow === undefined ? undefined : usage.contextTokens === null ? `?/${usage.contextWindow}` : `${usage.contextTokens}/${usage.contextWindow}`;
-			process.stdout.write(renderChatFooter({ profile: config.profile, model: `${config.model.provider}/${config.model.model}`, session: source.threadId ?? "default", phase: snapshot.phase, context, lastDurationMs }));
+			process.stdout.write(renderChatFooter({ profile: config.profile, model: `${config.model.provider}/${config.model.model}`, session: source.threadId ?? "default", phase: snapshot.phase, context, lastDurationMs, queued: queuedInput ? 1 : 0 }));
 		};
 		const status = async () => `Profile: ${config.profile}\nModel: ${config.model.provider}/${config.model.model}\nSession: ${source.threadId ?? "default"}\nRun: ${runtime.isBusy() ? "running" : "idle"}\nReasoning: ${reasoningDisplay}\nDetails: ${detailsDisplay}\nToolset: ${config.agent.toolset}\n${await usage()}`;
 		const toolsStatus = () => {
@@ -994,7 +995,9 @@ async function runChat(config: ReturnType<typeof loadConfig>, requestedMode: { f
 				if (command?.kind === "stop") { await stop(); return; }
 				if (await localApproval.handleReply(source, trimmed)) return;
 				if (command?.kind === "status") { process.stdout.write(`\n${await status()}\n`); return; }
-				process.stdout.write("\nAgent is running. Use /stop (or Ctrl+C) before starting another turn.\n");
+				const replaced = Boolean(queuedInput);
+				queuedInput = trimmed;
+				process.stdout.write(`\n${replaced ? "Replaced the queued input." : "Queued the next input."} Use /stop (or Ctrl+C) to cancel the active turn.\n`);
 				return;
 			}
 			if (controlInProgress) {
@@ -1111,7 +1114,17 @@ async function runChat(config: ReturnType<typeof loadConfig>, requestedMode: { f
 				}
 				process.stdout.write(`Agent run failed: ${error instanceof Error ? error.message : String(error)}\n`);
 			}
-			finally { active = undefined; writePrompt(); }
+			finally {
+				active = undefined;
+				const next = queuedInput;
+				queuedInput = undefined;
+				if (next) {
+					process.stdout.write("\n▶ Running queued input…\n");
+					void handleLine(next);
+					return;
+				}
+				writePrompt();
+			}
 		};
 		writePrompt();
 		rl.on("line", (line) => { void handleLine(line); });
