@@ -52,12 +52,22 @@ test("scheduler claims due work, records completion, and stops cleanly", async (
 		nextDueAt: () => undefined,
 		complete: (_job, result) => { completed = result; resolveComplete(); },
 	};
-	const scheduler = new AutomationScheduler(store, async () => ({ output:"sent" }), 1);
+	const tasks = new Map();
+	const runs = new Map();
+	const ledger = {
+		record: (task) => tasks.set(task.id, { ...task }),
+		transition: (id, change) => tasks.set(id, { ...tasks.get(id), ...change }),
+		recordRun: (run) => runs.set(run.id, { ...run }),
+		transitionRun: (id, change) => runs.set(id, { ...runs.get(id), ...change }),
+	};
+	const scheduler = new AutomationScheduler(store, async () => ({ output:"sent" }), 1, ledger);
 	scheduler.start();
 	await completion;
 	await scheduler.stop();
 	assert.equal(completed.status, "ok");
 	assert.equal(completed.output, "sent");
+	assert.deepEqual([...tasks.values()].map(({ kind, title, status }) => ({ kind, title, status })), [{ kind:"automation",title:"Test",status:"succeeded" }]);
+	assert.deepEqual([...runs.values()].map(({ executor, status, output }) => ({ executor, status, output })), [{ executor:"automation",status:"succeeded",output:"sent" }]);
 });
 
 test("duration, cron timezone, heartbeat ack, and overnight active hours", () => {

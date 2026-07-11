@@ -6,6 +6,8 @@ import {
 	type AutomationStore,
 } from "@beemax/automation";
 import type { DeliveryPort } from "./delivery-port.ts";
+import { conversationOwnerKey } from "./agent-scope.ts";
+import type { TaskLedger } from "./task-ledger.ts";
 
 export type AutomationExecutor = (job: AutomationJob) => Promise<{ output?: string }>;
 
@@ -17,15 +19,18 @@ export class AutomationScheduler {
 	private readonly store: AutomationStore;
 	private readonly execute: AutomationExecutor;
 	private readonly maxConcurrent: number;
+	private readonly taskLedger?: TaskLedger;
 
 	constructor(
 		store: AutomationStore,
 		execute: AutomationExecutor,
 		maxConcurrent = 4,
+		taskLedger?: TaskLedger,
 	) {
 		this.store = store;
 		this.execute = execute;
 		this.maxConcurrent = maxConcurrent;
+		this.taskLedger = taskLedger;
 	}
 
 	start(): void { if (this.stopped) { this.stopped = false; this.schedule(0); } }
@@ -52,6 +57,9 @@ export class AutomationScheduler {
 	}
 	private launch(job: AutomationJob): void {
 		const startedAt = Date.now();
+		const taskId = crypto.randomUUID();
+		const runId = crypto.randomUUID();
+		this.recordAutomationStart(job, taskId, runId, startedAt);
 		const promise = (async () => {
 			let result: Omit<AutomationRun, "id" | "jobId">;
 			try {
@@ -61,8 +69,29 @@ export class AutomationScheduler {
 				result = { startedAt, finishedAt: Date.now(), status: "error", error: error instanceof Error ? error.message : String(error) };
 			}
 			this.store.complete(job, result);
+			this.recordAutomationFinish(taskId, runId, result);
 		})().finally(() => { this.running.delete(promise); this.wake(); });
 		this.running.add(promise);
+	}
+
+	private recordAutomationStart(job: AutomationJob, taskId: string, runId: string, startedAt: number): void {
+		if (!this.taskLedger) return;
+		try {
+			const ownerKey = conversationOwnerKey({ platform: job.platform, chatId: job.chatId, chatType: "dm", userId: job.userId });
+			this.taskLedger.record({ id: taskId, ownerKey, kind: "automation", title: job.name, status: "running", evidence: `schedule:${job.id}`, createdAt: startedAt, startedAt });
+			this.taskLedger.recordRun({ id: runId, taskId, executor: "automation", status: "running", startedAt });
+		} catch (error) { console.error(`[beemax] could not record automation Task start: ${error instanceof Error ? error.message : String(error)}`); }
+	}
+
+	private recordAutomationFinish(taskId: string, runId: string, result: Omit<AutomationRun, "id" | "jobId">): void {
+		if (!this.taskLedger) return;
+		const succeeded = result.status === "ok";
+		const output = result.output?.slice(0, 50_000);
+		const errorText = result.error?.slice(0, 5_000);
+		try {
+			this.taskLedger.transition(taskId, { status: succeeded ? "succeeded" : "failed", finishedAt: result.finishedAt, result: output, error: errorText });
+			this.taskLedger.transitionRun(runId, { status: succeeded ? "succeeded" : "failed", finishedAt: result.finishedAt, output, error: errorText });
+		} catch (error) { console.error(`[beemax] could not record automation Task completion: ${error instanceof Error ? error.message : String(error)}`); }
 	}
 }
 

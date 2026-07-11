@@ -15,7 +15,7 @@ import Database from "better-sqlite3";
 import type { Database as DatabaseType } from "better-sqlite3";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
-import type { TaskRecord as RuntimeTaskRecord, TaskTransition } from "@beemax/core";
+import type { TaskRecord as RuntimeTaskRecord, TaskRunRecord, TaskRunTransition, TaskTransition } from "@beemax/core";
 
 export const MEMORY_CLAIM_KINDS = ["preference", "fact", "decision", "goal", "project", "relationship", "workflow"] as const;
 export type MemoryClaimKind = typeof MEMORY_CLAIM_KINDS[number];
@@ -195,13 +195,26 @@ export class MemoryStore {
 				title TEXT NOT NULL,
 				status TEXT NOT NULL CHECK (status IN ('pending', 'running', 'succeeded', 'failed', 'cancelled')),
 				parent_id TEXT,
+				evidence TEXT,
 				created_at INTEGER NOT NULL,
 				started_at INTEGER,
 				finished_at INTEGER,
 				result TEXT,
-				error TEXT
+				error TEXT,
+				updated_at INTEGER NOT NULL DEFAULT 0
 			);
 			CREATE INDEX IF NOT EXISTS idx_tasks_owner_created ON tasks(owner_key, created_at DESC);
+			CREATE TABLE IF NOT EXISTS task_runs (
+				id TEXT PRIMARY KEY,
+				task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+				executor TEXT NOT NULL CHECK (executor IN ('agent', 'subagent', 'automation')),
+				status TEXT NOT NULL CHECK (status IN ('running', 'succeeded', 'failed', 'cancelled')),
+				started_at INTEGER NOT NULL,
+				finished_at INTEGER,
+				output TEXT,
+				error TEXT
+			);
+			CREATE INDEX IF NOT EXISTS idx_task_runs_task_started ON task_runs(task_id, started_at DESC);
 
 			CREATE TABLE IF NOT EXISTS memory_events (
 				id TEXT PRIMARY KEY,
@@ -260,8 +273,14 @@ export class MemoryStore {
 			);
 			CREATE INDEX IF NOT EXISTS idx_memory_evidence_claim ON memory_evidence(claim_id, created_at DESC);
 		`);
+		this.addColumnIfMissing("tasks", "evidence", "TEXT");
+		this.addColumnIfMissing("tasks", "updated_at", "INTEGER NOT NULL DEFAULT 0");
 		this.addColumnIfMissing("memory_claims", "superseded_by", "TEXT REFERENCES memory_claims(id)");
 		this.addColumnIfMissing("memory_evidence", "event_id", "TEXT REFERENCES memory_events(id)");
+		this.db.exec(`INSERT OR IGNORE INTO tasks (id, owner_key, kind, title, status, evidence, created_at, finished_at, updated_at)
+			SELECT id, 'profile', 'objective', title,
+				CASE status WHEN 'open' THEN 'pending' WHEN 'in_progress' THEN 'running' WHEN 'done' THEN 'succeeded' ELSE 'cancelled' END,
+				evidence, updated_at, completed_at, updated_at FROM task_ledger`);
 	}
 
 	private addColumnIfMissing(table: string, column: string, definition: string): void {
@@ -552,23 +571,23 @@ export class MemoryStore {
 		const now = Date.now();
 		const completedAt = task.status === "done" ? task.completedAt ?? now : null;
 		this.db.prepare(`
-			INSERT INTO task_ledger (id, title, status, evidence, completed_at, updated_at)
-			VALUES (?, ?, ?, ?, ?, ?)
+			INSERT INTO tasks (id, owner_key, kind, title, status, evidence, created_at, finished_at, updated_at)
+			VALUES (?, 'profile', 'objective', ?, ?, ?, ?, ?, ?)
 			ON CONFLICT(id) DO UPDATE SET
 				title = excluded.title,
 				status = excluded.status,
 				evidence = excluded.evidence,
-				completed_at = CASE WHEN excluded.status = 'done' THEN COALESCE(task_ledger.completed_at, excluded.completed_at) ELSE NULL END,
+				finished_at = CASE WHEN excluded.status = 'succeeded' THEN COALESCE(tasks.finished_at, excluded.finished_at) ELSE NULL END,
 				updated_at = excluded.updated_at
-		`).run(task.id, task.title, task.status, task.evidence ?? null, completedAt, now);
+		`).run(task.id, task.title, legacyTaskStatus(task.status), task.evidence ?? null, now, completedAt, now);
 	}
 
 	listTasks(): TaskFactRecord[] {
-		const rows = this.db.prepare("SELECT id, title, status, evidence, completed_at, updated_at FROM task_ledger ORDER BY updated_at DESC, id").all() as TaskRow[];
+		const rows = this.db.prepare("SELECT id, title, status, evidence, finished_at AS completed_at, updated_at FROM tasks WHERE kind = 'objective' ORDER BY updated_at DESC, id").all() as TaskRow[];
 		return rows.map((row) => ({
 			id: row.id,
 			title: row.title,
-			status: row.status as TaskFactRecord["status"],
+			status: legacyTaskFactStatus(row.status),
 			evidence: row.evidence ?? undefined,
 			completedAt: row.completed_at ?? undefined,
 			updatedAt: row.updated_at,
@@ -576,15 +595,30 @@ export class MemoryStore {
 	}
 
 	record(task: RuntimeTaskRecord): void {
-		this.db.prepare(`INSERT INTO tasks (id, owner_key, kind, title, status, parent_id, created_at, started_at, finished_at, result, error)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-			.run(task.id, task.ownerKey, task.kind, task.title, task.status, task.parentId ?? null, task.createdAt, task.startedAt ?? null, task.finishedAt ?? null, task.result ?? null, task.error ?? null);
+		this.db.prepare(`INSERT INTO tasks (id, owner_key, kind, title, status, parent_id, evidence, created_at, started_at, finished_at, result, error, updated_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+			.run(task.id, task.ownerKey, task.kind, task.title, task.status, task.parentId ?? null, task.evidence ?? null, task.createdAt, task.startedAt ?? null, task.finishedAt ?? null, task.result ?? null, task.error ?? null, task.createdAt);
 	}
 
 	transition(id: string, change: TaskTransition): void {
-		const result = this.db.prepare(`UPDATE tasks SET status = ?, started_at = COALESCE(?, started_at), finished_at = COALESCE(?, finished_at), result = COALESCE(?, result), error = COALESCE(?, error) WHERE id = ?`)
-			.run(change.status, change.startedAt ?? null, change.finishedAt ?? null, change.result ?? null, change.error ?? null, id);
+		const result = this.db.prepare(`UPDATE tasks SET status = ?, started_at = COALESCE(?, started_at), finished_at = COALESCE(?, finished_at), result = COALESCE(?, result), error = COALESCE(?, error), updated_at = ? WHERE id = ?`)
+			.run(change.status, change.startedAt ?? null, change.finishedAt ?? null, change.result ?? null, change.error ?? null, Date.now(), id);
 		if (result.changes !== 1) throw new Error(`Task not found: ${id}`);
+	}
+
+	recordRun(run: TaskRunRecord): void {
+		this.db.prepare("INSERT INTO task_runs (id, task_id, executor, status, started_at, finished_at, output, error) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
+			.run(run.id, run.taskId, run.executor, run.status, run.startedAt, run.finishedAt ?? null, run.output ?? null, run.error ?? null);
+	}
+
+	transitionRun(id: string, change: TaskRunTransition): void {
+		const result = this.db.prepare("UPDATE task_runs SET status = ?, finished_at = COALESCE(?, finished_at), output = COALESCE(?, output), error = COALESCE(?, error) WHERE id = ?")
+			.run(change.status, change.finishedAt ?? null, change.output ?? null, change.error ?? null, id);
+		if (result.changes !== 1) throw new Error(`Task Run not found: ${id}`);
+	}
+
+	listTaskRuns(taskId: string): TaskRunRecord[] {
+		return (this.db.prepare("SELECT * FROM task_runs WHERE task_id = ? ORDER BY started_at DESC").all(taskId) as TaskRunRow[]).map(mapTaskRun);
 	}
 
 	listRuntimeTasks(ownerKey?: string, limit = 50): RuntimeTaskRecord[] {
@@ -697,7 +731,12 @@ interface EventRow {
 
 interface RuntimeTaskRow {
 	id: string; owner_key: string; kind: RuntimeTaskRecord["kind"]; title: string; status: RuntimeTaskRecord["status"];
-	parent_id: string | null; created_at: number; started_at: number | null; finished_at: number | null; result: string | null; error: string | null;
+	parent_id: string | null; evidence: string | null; created_at: number; started_at: number | null; finished_at: number | null; result: string | null; error: string | null;
+}
+
+interface TaskRunRow {
+	id: string; task_id: string; executor: TaskRunRecord["executor"]; status: TaskRunRecord["status"];
+	started_at: number; finished_at: number | null; output: string | null; error: string | null;
 }
 
 function mapRow(row: MemoryRow): MemoryRecord {
@@ -741,9 +780,19 @@ function mapRuntimeTask(row: RuntimeTaskRow): RuntimeTaskRecord {
 		id: row.id, ownerKey: row.owner_key, kind: row.kind, title: row.title, status: row.status,
 		createdAt: row.created_at,
 		...(row.parent_id === null ? {} : { parentId: row.parent_id }),
+		...(row.evidence === null ? {} : { evidence: row.evidence }),
 		...(row.started_at === null ? {} : { startedAt: row.started_at }),
 		...(row.finished_at === null ? {} : { finishedAt: row.finished_at }),
 		...(row.result === null ? {} : { result: row.result }),
+		...(row.error === null ? {} : { error: row.error }),
+	};
+}
+
+function mapTaskRun(row: TaskRunRow): TaskRunRecord {
+	return {
+		id: row.id, taskId: row.task_id, executor: row.executor, status: row.status, startedAt: row.started_at,
+		...(row.finished_at === null ? {} : { finishedAt: row.finished_at }),
+		...(row.output === null ? {} : { output: row.output }),
 		...(row.error === null ? {} : { error: row.error }),
 	};
 }
@@ -763,6 +812,18 @@ function strongerStability(a: MemoryClaim["stability"], b: MemoryClaim["stabilit
 	return order[a] >= order[b] ? a : b;
 }
 function limitOf(value: number | undefined, fallback: number): number { return Math.max(1, Math.min(value ?? fallback, 100)); }
+function legacyTaskStatus(status: TaskFactRecord["status"]): RuntimeTaskRecord["status"] {
+	if (status === "open") return "pending";
+	if (status === "in_progress") return "running";
+	if (status === "done") return "succeeded";
+	return "cancelled";
+}
+function legacyTaskFactStatus(status: string): TaskFactRecord["status"] {
+	if (status === "pending") return "open";
+	if (status === "running") return "in_progress";
+	if (status === "succeeded") return "done";
+	return "cancelled";
+}
 
 function toFtsQuery(query: string): string {
 	return query.trim().split(/\s+/u).filter(Boolean)

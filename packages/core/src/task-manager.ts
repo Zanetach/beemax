@@ -5,6 +5,7 @@ import type { BeeMaxRuntimeSource } from "./runtime.ts";
 import { MUTATING_TOOL_POLICY, READ_ONLY_TOOL_POLICY, withToolPolicy, type ToolPolicy } from "./tool-runtime.ts";
 import { conversationKey } from "./agent-scope.ts";
 import type { TaskLedger, TaskStatus } from "./task-ledger.ts";
+import type { TaskRunStatus } from "./task-ledger.ts";
 
 export type SubagentTaskStatus = "queued" | "running" | "completed" | "failed" | "cancelled";
 
@@ -32,6 +33,7 @@ export type SubagentExecutor = (task: SubagentTask, signal: AbortSignal) => Prom
 
 interface ManagedTask extends SubagentTask {
 	controller?: AbortController;
+	runId?: string;
 	stopReason?: "cancelled" | "timeout";
 	waiters: Set<() => void>;
 }
@@ -176,7 +178,9 @@ export class SubagentManager {
 			const task = this.tasks.get(id);
 			if (!task || task.status !== "queued") continue;
 			this.running++;
-			const active = this.run(task).finally(() => {
+			const active = this.run(task).catch((error) => {
+				console.error(`[beemax] Sub-Agent Task lifecycle failed: ${error instanceof Error ? error.message : String(error)}`);
+			}).finally(() => {
 				this.running--;
 				this.activeRuns.delete(active);
 				void this.pump();
@@ -190,6 +194,8 @@ export class SubagentManager {
 		task.status = "running";
 		task.startedAt = Date.now();
 		this.taskLedger?.transition(task.id, { status: "running", startedAt: task.startedAt });
+		task.runId = crypto.randomUUID();
+		this.taskLedger?.recordRun({ id: task.runId, taskId: task.id, executor: "subagent", status: "running", startedAt: task.startedAt });
 		task.controller = new AbortController();
 		const timer = this.defaultTimeoutMs > 0 ? setTimeout(() => {
 			task.stopReason = "timeout";
@@ -222,7 +228,16 @@ export class SubagentManager {
 			...(task.error === undefined ? {} : { error: task.error }),
 		};
 		try { this.taskLedger?.transition(task.id, transition); }
-		finally { for (const waiter of [...task.waiters]) waiter(); }
+		finally {
+			try {
+				if (task.runId) this.taskLedger?.transitionRun(task.runId, {
+					status: taskRunStatus(status),
+					finishedAt: task.finishedAt,
+					...(task.result === undefined ? {} : { output: task.result }),
+					...(task.error === undefined ? {} : { error: task.error }),
+				});
+			} finally { for (const waiter of [...task.waiters]) waiter(); }
+		}
 	}
 
 	private ownedTask(source: BeeMaxRuntimeSource, id: string): ManagedTask {
@@ -326,4 +341,10 @@ function taskLedgerStatus(status: SubagentTaskStatus): TaskStatus {
 	if (status === "completed") return "succeeded";
 	if (status === "queued") return "pending";
 	return status;
+}
+
+function taskRunStatus(status: SubagentTaskStatus): TaskRunStatus {
+	if (status === "completed") return "succeeded";
+	if (status === "failed") return "failed";
+	return "cancelled";
 }

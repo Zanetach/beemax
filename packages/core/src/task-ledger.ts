@@ -9,6 +9,7 @@ export interface TaskRecord {
 	title: string;
 	status: TaskStatus;
 	parentId?: string;
+	evidence?: string;
 	createdAt: number;
 	startedAt?: number;
 	finishedAt?: number;
@@ -18,8 +19,23 @@ export interface TaskRecord {
 
 export type TaskTransition = Pick<TaskRecord, "status"> & Partial<Pick<TaskRecord, "startedAt" | "finishedAt" | "result" | "error">>;
 
+export type TaskRunStatus = "running" | "succeeded" | "failed" | "cancelled";
+export interface TaskRunRecord {
+	id: string;
+	taskId: string;
+	executor: "agent" | "subagent" | "automation";
+	status: TaskRunStatus;
+	startedAt: number;
+	finishedAt?: number;
+	output?: string;
+	error?: string;
+}
+export type TaskRunTransition = Pick<TaskRunRecord, "status"> & Partial<Pick<TaskRunRecord, "finishedAt" | "output" | "error">>;
+
 /** Persistence port used by task producers; storage remains replaceable. */
 export interface TaskLedger {
 	record(task: TaskRecord): void;
 	transition(id: string, change: TaskTransition): void;
+	recordRun(run: TaskRunRecord): void;
+	transitionRun(id: string, change: TaskRunTransition): void;
 }

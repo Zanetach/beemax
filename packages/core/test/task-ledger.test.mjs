@@ -6,9 +6,12 @@ const source = { platform: "cli", chatId: "local", chatType: "dm", userId: "loca
 
 test("delegated work records one durable Task and advances its lifecycle", async () => {
 	const records = new Map();
+	const runs = new Map();
 	const ledger = {
 		record(task) { records.set(task.id, { ...task }); },
 		transition(id, change) { records.set(id, { ...records.get(id), ...change }); },
+		recordRun(run) { runs.set(run.id, { ...run }); },
+		transitionRun(id, change) { runs.set(id, { ...runs.get(id), ...change }); },
 	};
 	const manager = new SubagentManager({ taskLedger: ledger, execute: async () => "verified result" });
 	const delegated = manager.spawn(source, { goal: "Review the release", name: "release-review" });
@@ -26,5 +29,6 @@ test("delegated work records one durable Task and advances its lifecycle", async
 		result: "verified result",
 	});
 	assert.equal(typeof records.get(delegated.id).startedAt, "number");
+	assert.deepEqual([...runs.values()].map(({ taskId, executor, status, output }) => ({ taskId, executor, status, output })), [{ taskId: delegated.id, executor: "subagent", status: "succeeded", output: "verified result" }]);
 	await manager.dispose();
 });

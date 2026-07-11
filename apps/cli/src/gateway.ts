@@ -190,7 +190,7 @@ export async function runGateway(config: BeeMaxConfig): Promise<void> {
 		const answer = await dispatcher.runAutomation(source, job.text, { key: `schedule:${job.id}`, timeoutMs: 10 * 60_000 });
 		await deliveryPort.sendText(job, `🗓️ ${job.name}\n\n${answer}`);
 		return { output: answer };
-	});
+	}, 4, memory);
 	const heartbeat = new HeartbeatRunner(
 		automation,
 		{

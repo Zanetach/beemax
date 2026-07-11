@@ -4,6 +4,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { MemoryStore } from "../dist/index.js";
+import Database from "better-sqlite3";
 
 test("natural-language recall is safe and follows a user across chats", () => {
 	const root = mkdtempSync(join(tmpdir(), "beemax-memory-test-"));
@@ -89,15 +90,31 @@ test("runtime Task ledger persists delegated lifecycle independently from memory
 		store.record({ id: "child-1", ownerKey: "cli:local:local", kind: "delegated", title: "Research", status: "pending", createdAt: 100 });
 		store.transition("child-1", { status: "running", startedAt: 110 });
 		store.transition("child-1", { status: "succeeded", finishedAt: 120, result: "done" });
+		store.recordRun({ id: "run-1", taskId: "child-1", executor: "subagent", status: "running", startedAt: 110 });
+		store.transitionRun("run-1", { status: "succeeded", finishedAt: 120, output: "done" });
 		assert.deepEqual(store.listRuntimeTasks("cli:local:local"), [{
 			id: "child-1", ownerKey: "cli:local:local", kind: "delegated", title: "Research",
 			status: "succeeded", createdAt: 100, startedAt: 110, finishedAt: 120, result: "done",
 		}]);
+		assert.deepEqual(store.listTaskRuns("child-1"), [{ id: "run-1", taskId: "child-1", executor: "subagent", status: "succeeded", startedAt: 110, finishedAt: 120, output: "done" }]);
 		assert.equal(store.listTasks().length, 0);
 	} finally {
 		store.close();
 		rmSync(root, { recursive: true, force: true });
 	}
+});
+
+test("legacy task facts migrate once into objective Tasks", () => {
+	const root = mkdtempSync(join(tmpdir(), "beemax-legacy-task-migration-"));
+	const path = join(root, "memory.db");
+	const legacy = new Database(path);
+	legacy.exec("CREATE TABLE task_ledger (id TEXT PRIMARY KEY, title TEXT NOT NULL, status TEXT NOT NULL, evidence TEXT, completed_at INTEGER, updated_at INTEGER NOT NULL)");
+	legacy.prepare("INSERT INTO task_ledger VALUES (?, ?, ?, ?, ?, ?)").run("release", "Ship release", "done", "tag:v1", 120, 110);
+	legacy.close();
+	const store = new MemoryStore(path);
+	try {
+		assert.deepEqual(store.listRuntimeTasks("profile"), [{ id: "release", ownerKey: "profile", kind: "objective", title: "Ship release", status: "succeeded", evidence: "tag:v1", createdAt: 110, finishedAt: 120 }]);
+	} finally { store.close(); rmSync(root, { recursive: true, force: true }); }
 });
 
 test("structured understandings retain evidence, support correction, and compile a bounded long-term snapshot", () => {
