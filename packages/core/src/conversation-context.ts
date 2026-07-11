@@ -1,4 +1,5 @@
 import type { BeeMaxRuntimeSource } from "./runtime.ts";
+import { memoryScopeForSource, type MemoryScope } from "./memory-scope.ts";
 
 export interface ConversationExchange {
 	user: string;
@@ -7,17 +8,17 @@ export interface ConversationExchange {
 
 export interface ConversationContextOptions {
 	/** Persist a delivery route for proactive work without coupling Core to a channel. */
-	recordDirectRoute?: (route: { platform: string; chatId: string; userId?: string }) => void;
+	recordDirectRoute?: (route: MemoryScope) => void;
 	/** Supplies verified, volatile facts (for example current task state) for fact-sensitive turns. */
 	runtimeFacts?: (text: string) => string;
 }
 
 /** Persistence capability required by Core's context policy. */
 export interface ConversationMemoryPort {
-	recall(query: string, options: { limit: number; platform: string; chatId: string; userId?: string }): Array<{ content: string }>;
-	recordCandidate(record: { platform: string; chatId: string; userId?: string; role: "user" | "assistant"; content: string }): string;
+	recall(query: string, options: MemoryScope & { limit: number }): Array<{ content: string }>;
+	recordCandidate(record: MemoryScope & { role: "user" | "assistant"; content: string }): string;
 	/** Optional immutable evidence ledger for adapters predating structured memory. */
-	recordEvent?(record: { platform: string; chatId: string; userId?: string; kind: "user" | "assistant"; content: string }): string;
+	recordEvent?(record: MemoryScope & { kind: "user" | "assistant"; content: string }): string;
 }
 
 /** Core-owned policy for memory recall and durable conversation capture. */
@@ -33,9 +34,9 @@ export class ConversationContext {
 	}
 
 	enrich(source: BeeMaxRuntimeSource, text: string): string {
-		const userId = source.userIdAlt ?? source.userId;
-		this.memory.recordEvent?.({ platform: source.platform, chatId: source.chatId, userId, kind: "user", content: text });
-		const hits = this.memory.recall(text, { limit: 4, platform: source.platform, chatId: source.chatId, userId });
+		const scope = memoryScopeForSource(source);
+		this.memory.recordEvent?.({ ...scope, kind: "user", content: text });
+		const hits = this.memory.recall(text, { ...scope, limit: 4 });
 		const sections: string[] = [];
 		const facts = this.runtimeFacts?.(text);
 		if (facts) sections.push(facts);
@@ -47,10 +48,10 @@ export class ConversationContext {
 	}
 
 	record(source: BeeMaxRuntimeSource, exchange: ConversationExchange): void {
-		const userId = source.userIdAlt ?? source.userId;
-		if (source.chatType === "dm") this.recordDirectRoute?.({ platform: source.platform, chatId: source.chatId, userId });
-		this.memory.recordCandidate({ platform: source.platform, chatId: source.chatId, userId, role: "user", content: exchange.user });
-		this.memory.recordCandidate({ platform: source.platform, chatId: source.chatId, userId, role: "assistant", content: exchange.assistant });
-		this.memory.recordEvent?.({ platform: source.platform, chatId: source.chatId, userId, kind: "assistant", content: exchange.assistant });
+		const scope = memoryScopeForSource(source);
+		if (source.chatType === "dm") this.recordDirectRoute?.(scope);
+		this.memory.recordCandidate({ ...scope, role: "user", content: exchange.user });
+		this.memory.recordCandidate({ ...scope, role: "assistant", content: exchange.assistant });
+		this.memory.recordEvent?.({ ...scope, kind: "assistant", content: exchange.assistant });
 	}
 }

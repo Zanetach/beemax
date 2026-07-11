@@ -8,7 +8,7 @@
  */
 
 import { AutomationStore } from "@beemax/automation";
-import { AutomationScheduler, BeeMaxAgentRuntime, HeartbeatRunner } from "@beemax/core";
+import { AutomationScheduler, BeeMaxAgentRuntime, HeartbeatRunner, InteractionEventAdapter } from "@beemax/core";
 import {
 	createSubagentTools,
 	Dispatcher,
@@ -161,9 +161,16 @@ export async function runGateway(config: BeeMaxConfig): Promise<void> {
 			controlHandler: (input) => createProfileControlHandler(runtime, config)(input),
 		},
 	);
+	const interaction = new InteractionEventAdapter(runtime, {
+		profileId: config.profile,
+		approvalBroker,
+		cancelSubagents: (source) => subagents?.cancelOwner(source) ?? 0,
+	});
+	startupCleanup.push(() => interaction.dispose());
 	const dispatcher = new Dispatcher(
 		{
 			runtime,
+			interaction,
 			profileId: config.profile,
 			cardOptions: { title: config.profile === "default" ? "BeeMax Agent" : `BeeMax · ${config.profile}`, reasoningDisplay: config.agent.reasoningDisplay },
 			flushIntervalMs: 800,

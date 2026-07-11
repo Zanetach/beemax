@@ -12,9 +12,10 @@
 
 import {
 	AgentRunError,
+	InteractionEventAdapter,
 	sessionOwnerKey,
 	type ToolApprovalBroker,
-	type AgentSessionEvent,
+	type InteractionEvent,
 	type AgentRuntimePort,
 } from "@beemax/core";
 import type { InboundMessage, PlatformAdapter } from "./types.ts";
@@ -25,6 +26,8 @@ import { MessageDeduplicator } from "./message-deduplicator.ts";
 
 export interface DispatcherDeps {
 	runtime: AgentRuntimePort<InboundMessage["source"]>;
+	/** Core semantic boundary. When omitted, legacy callers get a local adapter. */
+	interaction?: InteractionEventAdapter<InboundMessage["source"]>;
 	cardOptions?: CardRenderOptions;
 	flushIntervalMs?: number;
 	/** Abort an individual interactive turn that exceeds this duration. */
@@ -38,6 +41,7 @@ export interface DispatcherDeps {
 
 export class Dispatcher {
 	private readonly runtime: AgentRuntimePort<InboundMessage["source"]>;
+	private readonly interaction: InteractionEventAdapter<InboundMessage["source"]>;
 	private readonly deps: DispatcherDeps;
 	private readonly platform: PlatformAdapter;
 	private readonly turnTimeoutMs: number;
@@ -50,6 +54,10 @@ export class Dispatcher {
 		this.deps = deps;
 		this.platform = platform;
 		this.runtime = deps.runtime;
+		this.interaction = deps.interaction ?? new InteractionEventAdapter(deps.runtime, {
+			approvalBroker: deps.approvalBroker,
+			cancelSubagents: deps.cancelTasks,
+		});
 		this.turnTimeoutMs = Math.max(30_000, Math.min(60 * 60_000, deps.turnTimeoutMs ?? 10 * 60_000));
 		this.profileId = deps.profileId ?? "default";
 		this.deduplicator = deps.messageDeduplicator ?? new MessageDeduplicator();
@@ -64,9 +72,9 @@ export class Dispatcher {
 		if (!this.deduplicator.accept(this.profileId, msg.source.platform, msg.source.messageId)) return;
 		const effective = { ...msg, source: this.sessionOverrides.get(sessionOwnerKey(msg.source)) ?? msg.source };
 		if (effective.text.trim().toLowerCase() === "/stop") {
-			await this.runtime.cancel(effective.source);
-			const cancelled = this.deps.cancelTasks?.(effective.source) ?? 0;
-			await this.platform.send(msg.source.chatId, `Stopped the active Agent turn and cancelled ${cancelled} Sub-Agent task(s).`);
+			const outcome = await this.interaction.dispatch({ type: "turn.cancel", source: effective.source });
+			if (!("cancelled" in outcome)) throw new Error("Cancellation dispatch did not produce a cancellation result");
+			await this.platform.send(msg.source.chatId, `${outcome.cancelled ? "Stopped the active Agent turn" : "No active Agent turn"}${outcome.subagentsCancelled ? ` and cancelled ${outcome.subagentsCancelled} Sub-Agent task(s)` : ""}${outcome.approvalCancelled ? "; cancelled pending approval" : ""}.`);
 			return;
 		}
 		if (this.deps.approvalBroker && (await this.deps.approvalBroker.handleReply(effective.source, effective.text))) return;
@@ -102,14 +110,11 @@ export class Dispatcher {
 
 		let result;
 		try {
-			result = await this.runtime.run({ source: msg.source, text: msg.text, timeoutMs: this.turnTimeoutMs, mode: "interactive" }, (event: AgentSessionEvent) => {
-				void this.onAgentEvent(event, card, flush, renderUpdate).catch((error) => {
-					console.error(`[beemax] card update failed: ${error instanceof Error ? error.message : String(error)}`);
-				});
-			});
+			result = await this.interaction.dispatch({ type: "message.send", source: msg.source, text: msg.text, input: { timeoutMs: this.turnTimeoutMs, mode: "interactive" } }, (event) => this.onInteractionEvent(event, card, flush, renderUpdate));
+			if ("cancelled" in result) throw new Error("Message dispatch did not produce an Agent result");
 		} catch (err) {
 			const errorText = err instanceof AgentRunError ? err.message : err instanceof Error ? err.message : String(err);
-			card.apply("message.failed", { error: errorText });
+			if (card.status !== "cancelled") card.apply("message.failed", { error: errorText });
 			await flush.schedule(renderUpdate, true);
 			await flush.drain(3000);
 			if (!cardMessageId) await this.platform.send(chatId, `❌ ${errorText}`);
@@ -118,13 +123,7 @@ export class Dispatcher {
 			return;
 		}
 
-		// Terminal: emit completed with footer stats, drain immediately.
-		card.apply("message.completed", {
-			answer: card.answerText || result.answer,
-			model: result.model,
-			duration: result.durationMs / 1000,
-			tokens: result.usage,
-		});
+		// Terminal event already owns completion; only drain its final card patch.
 		await flush.schedule(renderUpdate, true);
 		await flush.drain(5000);
 		if (!cardMessageId) await this.platform.send(chatId, card.answerText || result.answer);
@@ -170,52 +169,50 @@ export class Dispatcher {
 		this.sessionOverrides.set(key, { ...source, threadId });
 	}
 
-	private async onAgentEvent(
-		event: AgentSessionEvent,
+	private async onInteractionEvent(
+		event: InteractionEvent,
 		card: CardSession,
 		flush: FlushController,
 		renderUpdate: () => Promise<boolean>,
 	): Promise<void> {
 		switch (event.type) {
-			case "tool_execution_start":
+			case "tool.changed":
 				card.apply("tool.updated", {
-					tool_id: event.toolCallId,
-					name: event.toolName,
-					status: "running",
+					tool_id: event.callId,
+					name: event.name,
+					status: event.state === "failed" ? "error" : event.state,
+					detail: event.summary,
 				});
 				await flush.schedule(renderUpdate);
 				break;
-			case "tool_execution_end": {
-				const status = event.isError ? "error" : "completed";
-				card.apply("tool.updated", {
-					tool_id: event.toolCallId,
-					name: event.toolName,
-					status,
-					detail: toolResultSummary(event.result),
-				});
+			case "answer.delta":
+				card.apply("answer.delta", { text: event.text });
 				await flush.schedule(renderUpdate);
 				break;
-			}
-			case "message_update": {
-				if (event.assistantMessageEvent.type === "text_delta") {
-					card.apply("answer.delta", { text: event.assistantMessageEvent.delta });
-					await flush.schedule(renderUpdate);
-				} else if (event.assistantMessageEvent.type === "thinking_delta") {
-					card.apply("thinking.delta", { text: event.assistantMessageEvent.delta });
-					await flush.schedule(renderUpdate);
-				}
+			case "reasoning.delta":
+				card.apply("thinking.delta", { text: event.text });
+				await flush.schedule(renderUpdate);
 				break;
-			}
+			case "turn.failed":
+				card.apply("message.failed", { error: event.error });
+				await flush.schedule(renderUpdate, true);
+				break;
+			case "turn.cancelled":
+				card.apply("message.cancelled", { message: "运行已取消" });
+				await flush.schedule(renderUpdate, true);
+				break;
+			case "turn.finished":
+				card.apply("message.completed", { answer: card.answerText || event.result.answer, model: event.result.model, duration: event.result.durationMs / 1000, tokens: event.result.usage });
+				await flush.schedule(renderUpdate, true);
+				break;
+			case "approval.requested":
+				card.apply("approval.updated", { id: `approval:${event.turnId}`, status: "pending", message: `等待审批：${event.toolName}` });
+				await flush.schedule(renderUpdate);
+				break;
+			case "approval.resolved":
+				card.apply("approval.updated", { id: `approval:${event.turnId}`, status: event.allowed ? "allowed" : "denied", message: `${event.toolName}：${event.allowed ? "已允许" : "已拒绝"}` });
+				await flush.schedule(renderUpdate);
+				break;
 		}
 	}
-}
-
-function toolResultSummary(result: unknown): string {
-	if (typeof result === "string") return result.slice(0, 200);
-	if (result && typeof result === "object") {
-		const r = result as { content?: Array<{ text?: string }> };
-		const text = r.content?.map((c) => c.text ?? "").join("");
-		if (text) return text.slice(0, 200);
-	}
-	return "";
 }

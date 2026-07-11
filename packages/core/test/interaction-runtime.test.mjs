@@ -19,6 +19,8 @@ test("interaction runtime translates a turn into presenter-safe semantic events"
 	const events = [];
 	await interaction.dispatch({ type: "message.send", source, text: "hi", input: { timeoutMs: 1_000 } }, (event) => { events.push(event); });
 	assert.deepEqual(events.map((event) => event.type), ["turn.started", "tool.changed", "answer.delta", "turn.finished"]);
+	assert.equal(events.every((event) => event.sessionId && event.scope.platform === "cli" && event.turnId && event.at > 0 && event.sequence > 0), true);
+	assert.deepEqual(events.map((event) => event.sequence), [1, 2, 3, 4]);
 	assert.equal((await interaction.snapshot(source)).phase, "completed");
 });
 
@@ -35,11 +37,19 @@ test("cancelling a running turn produces a semantic cancellation instead of a fa
 		async modelStatus() { return undefined; },
 		async usage() { return undefined; },
 	};
-	const interaction = new InteractionEventAdapter(runtime);
+	let approvalCancelled = 0;
+	let childCancelled = 0;
+	const interaction = new InteractionEventAdapter(runtime, {
+		approvalBroker: { cancel: () => (approvalCancelled++, true) },
+		cancelSubagents: () => (childCancelled++, 2),
+	});
 	const events = [];
 	const turn = interaction.dispatch({ type: "message.send", source, text: "hi", input: { timeoutMs: 1_000 } }, (event) => { events.push(event); });
 	await new Promise((resolve) => setImmediate(resolve));
-	await interaction.dispatch({ type: "turn.cancel", source });
+	const cancellation = await interaction.dispatch({ type: "turn.cancel", source });
+	assert.deepEqual(cancellation, { cancelled: true, approvalCancelled: true, subagentsCancelled: 2, errors: [] });
+	assert.equal(approvalCancelled, 1);
+	assert.equal(childCancelled, 1);
 	await assert.rejects(turn, /aborted/);
 	assert.deepEqual(events.map((event) => event.type), ["turn.started", "turn.cancelled"]);
 	assert.equal((await interaction.snapshot(source)).phase, "cancelled");

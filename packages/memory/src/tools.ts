@@ -1,5 +1,5 @@
 /** Agent-facing memory capability. Persistent policy remains in BeeMax Core. */
-import { defineTool, type BeeMaxRuntimeSource, type ToolDefinition } from "@beemax/core";
+import { defineTool, memoryScopeForSource, type BeeMaxRuntimeSource, type MemoryScope, type ToolDefinition } from "@beemax/core";
 import { Type } from "typebox";
 import type { ClaimInput, MemoryClaim, MemoryEvidence } from "./store.ts";
 
@@ -11,23 +11,23 @@ export interface MemoryToolRecord {
 }
 
 export interface MemoryToolStore {
-	remember(record: { platform: string; chatId: string; userId?: string; role: "memory"; content: string }): string;
-	recall(query: string, options: { limit: number; platform: string; chatId: string; userId?: string }): MemoryToolRecord[];
-	list(options: { limit: number; platform: string; chatId: string; userId?: string }): MemoryToolRecord[];
-	forget(id: string, options: { platform: string; chatId: string; userId?: string }): boolean;
-	listCandidates(options: { limit: number; platform: string; chatId: string; userId?: string }): MemoryToolRecord[];
-	promoteCandidate(id: string, options: { platform: string; chatId: string; userId?: string }): boolean;
-	rejectCandidate(id: string, options: { platform: string; chatId: string; userId?: string }): boolean;
-	stats(options: { platform: string; chatId: string; userId?: string }): { curated: number; pending: number; promoted: number; rejected: number };
-	latestEvent?(options: { platform: string; chatId: string; userId?: string }, kind?: "user"): { id: string; content: string } | undefined;
+	remember(record: MemoryScope & { role: "memory"; content: string }): string;
+	recall(query: string, options: MemoryScope & { limit: number }): MemoryToolRecord[];
+	list(options: MemoryScope & { limit: number }): MemoryToolRecord[];
+	forget(id: string, options: MemoryScope): boolean;
+	listCandidates(options: MemoryScope & { limit: number }): MemoryToolRecord[];
+	promoteCandidate(id: string, options: MemoryScope): boolean;
+	rejectCandidate(id: string, options: MemoryScope): boolean;
+	stats(options: MemoryScope): { curated: number; pending: number; promoted: number; rejected: number };
+	latestEvent?(options: MemoryScope, kind?: "user"): { id: string; content: string } | undefined;
 	upsertClaim?(input: ClaimInput): MemoryClaim;
-	correctClaim?(id: string, replacement: Pick<ClaimInput, "statement" | "confidence" | "stability" | "expiresAt" | "evidence">, options: { platform: string; chatId: string; userId?: string }): MemoryClaim | undefined;
-	explainClaim?(id: string, options: { platform: string; chatId: string; userId?: string }): { claim: MemoryClaim; evidence: MemoryEvidence[] } | undefined;
-	forgetClaim?(id: string, options: { platform: string; chatId: string; userId?: string }): boolean;
+	correctClaim?(id: string, replacement: Pick<ClaimInput, "statement" | "confidence" | "stability" | "expiresAt" | "evidence">, options: MemoryScope): MemoryClaim | undefined;
+	explainClaim?(id: string, options: MemoryScope): { claim: MemoryClaim; evidence: MemoryEvidence[] } | undefined;
+	forgetClaim?(id: string, options: MemoryScope): boolean;
 }
 
 export function createMemoryTools(store: MemoryToolStore, source: BeeMaxRuntimeSource): ToolDefinition[] {
-	const scope = () => ({ platform: source.platform, chatId: source.chatId, userId: source.userIdAlt ?? source.userId });
+	const scope = () => memoryScopeForSource(source);
 	return [
 		defineTool({ name: "memory_status", label: "Memory Status", description: "Show curated-memory and candidate-memory counts for this user scope.", parameters: Type.Object({}), execute: async () => {
 			const stats = store.stats(scope()); return result(`Curated: ${stats.curated}; pending: ${stats.pending}; promoted: ${stats.promoted}; rejected: ${stats.rejected}`, stats);

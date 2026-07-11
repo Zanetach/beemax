@@ -792,7 +792,6 @@ async function runChat(config: ReturnType<typeof loadConfig>, requestedMode: { f
 	const { MemoryStore } = await import("@beemax/memory");
 	const apiKey = configuredApiKey(config.model.provider, config.model.apiKey) ?? "";
 	const localApproval = new ToolApprovalBroker(async (_source, text) => { process.stdout.write(`\n${text}\n`); });
-	let interaction: InteractionEventAdapter<SessionSource> | undefined;
 	const memory = new MemoryStore(config.memory.dbPath);
 	const mcp = new McpManager();
 	await mcp.connectAll(loadMcpConfig(config.mcp.configPath));
@@ -839,12 +838,7 @@ async function runChat(config: ReturnType<typeof loadConfig>, requestedMode: { f
 		customTools: mcp.getTools(),
 		tools: executionSafeTools(config, mainAgentTools(config.agent.toolset, mcp.getTools().map((tool) => tool.name))),
 		approvalTools: mcp.getApprovalTools(),
-		authorizeTool: async (request, signal) => {
-			await interaction?.approvalRequested(request.source, request.toolName);
-			const decision = await localApproval.authorize(request, signal);
-			await interaction?.approvalResolved(request.source, request.toolName, decision.allowed);
-			return decision;
-		},
+		authorizeTool: (request, signal) => localApproval.authorize(request, signal),
 		sessionTools: (sessionSource) => subagents ? createSubagentTools(subagents, sessionSource) : [],
 	});
 	let runtime: BeeMaxAgentRuntime<SessionSource>;
@@ -857,8 +851,11 @@ async function runChat(config: ReturnType<typeof loadConfig>, requestedMode: { f
 			controlHandler: (input) => createProfileControlHandler(runtime, config)(input),
 		},
 	);
-	const interactionAdapter = new InteractionEventAdapter(runtime);
-	interaction = interactionAdapter;
+	const interactionAdapter = new InteractionEventAdapter(runtime, {
+		profileId: config.profile,
+		approvalBroker: localApproval,
+		cancelSubagents: (sessionSource) => subagents?.cancelOwner(sessionSource) ?? 0,
+	});
 	let fullScreenActive = false;
 
 	try {
@@ -910,8 +907,8 @@ async function runChat(config: ReturnType<typeof loadConfig>, requestedMode: { f
 		};
 		const stop = async () => {
 			const stopped = await interactionAdapter.dispatch({ type: "turn.cancel", source });
-			const cancelled = subagents?.cancelOwner(source) ?? 0;
-			process.stdout.write(`\n${stopped ? "Stopped the active Agent turn" : "No active Agent turn"}${cancelled ? `; cancelled ${cancelled} Sub-Agent task(s)` : ""}.\n`);
+			if (!("cancelled" in stopped)) throw new Error("Cancellation dispatch did not produce a cancellation result");
+			process.stdout.write(`\n${stopped.cancelled ? "Stopped the active Agent turn" : "No active Agent turn"}${stopped.subagentsCancelled ? `; cancelled ${stopped.subagentsCancelled} Sub-Agent task(s)` : ""}${stopped.approvalCancelled ? "; cancelled pending approval" : ""}.\n`);
 		};
 		if (presentationMode === "full") {
 			fullScreenActive = true;
@@ -936,7 +933,7 @@ async function runChat(config: ReturnType<typeof loadConfig>, requestedMode: { f
 					terminal.write(delta, (output) => process.stdout.write(output));
 				}
 			});
-			if (typeof outcome === "boolean") throw new Error("Message dispatch did not produce an Agent result");
+			if ("cancelled" in outcome) throw new Error("Message dispatch did not produce an Agent result");
 			const result = outcome;
 			if (streamed) terminal.finish((output) => process.stdout.write(output));
 			else {
@@ -1079,6 +1076,7 @@ async function runChat(config: ReturnType<typeof loadConfig>, requestedMode: { f
 		await new Promise<void>((resolve) => rl.once("close", resolve));
 	} finally {
 		if (fullScreenActive) process.stdout.write(fullScreenExit());
+		interactionAdapter.dispose();
 		runtime.dispose();
 		await subagents?.dispose();
 		await mcp.close();

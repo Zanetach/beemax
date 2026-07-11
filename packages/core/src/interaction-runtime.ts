@@ -1,25 +1,62 @@
 import type { AgentSessionEvent } from "@earendil-works/pi-coding-agent";
 import type { AgentRunInput, AgentRunResult, AgentRuntimePort, AgentSessionUsage } from "./agent-runtime.ts";
 import type { BeeMaxRuntimeSource } from "./runtime.ts";
-import { sessionKeyForSource } from "./session-coordinator.ts";
+import { sessionIdForSource, sessionKeyForSource } from "./session-coordinator.ts";
+import type { ToolApprovalBroker } from "./tool-approval.ts";
 
 export type InteractionSurface = "chat" | "gateway" | "web";
 export type InteractionPhase = "idle" | "running" | "awaiting_approval" | "completed" | "failed" | "cancelled";
 
-export type InteractionEvent =
-	| { type: "turn.started"; turnId: string; at: number }
-	| { type: "answer.delta"; turnId: string; text: string }
-	| { type: "reasoning.delta"; turnId: string; text: string }
-	| { type: "tool.changed"; turnId: string; callId: string; name: string; state: "running" | "completed" | "failed"; summary?: string }
-	| { type: "approval.requested"; turnId: string; toolName: string; at: number }
-	| { type: "approval.resolved"; turnId: string; toolName: string; allowed: boolean; at: number }
-	| { type: "turn.finished"; turnId: string; result: AgentRunResult; at: number }
-	| { type: "turn.failed"; turnId: string; error: string; at: number }
-	| { type: "turn.cancelled"; turnId: string; at: number };
+/** Stable visibility and authorization boundary for an interaction session. */
+export interface InteractionScope {
+	profileId: string;
+	platform: string;
+	chatId: string;
+	userId?: string;
+	threadId?: string;
+}
+
+export interface InteractionEventMeta {
+	sessionId: string;
+	scope: InteractionScope;
+	turnId: string;
+	at: number;
+	sequence: number;
+}
+
+export type InteractionEvent = InteractionEventMeta & (
+	| { type: "turn.started" }
+	| { type: "answer.delta"; text: string }
+	| { type: "reasoning.delta"; text: string }
+	| { type: "tool.changed"; callId: string; name: string; state: "running" | "completed" | "failed"; summary?: string }
+	| { type: "approval.requested"; toolName: string }
+	| { type: "approval.resolved"; toolName: string; allowed: boolean }
+	| { type: "turn.finished"; result: AgentRunResult }
+	| { type: "turn.failed"; error: string }
+	| { type: "turn.cancelled" }
+);
+
+type InteractionEventPayload =
+	| { type: "turn.started" }
+	| { type: "answer.delta"; text: string }
+	| { type: "reasoning.delta"; text: string }
+	| { type: "tool.changed"; callId: string; name: string; state: "running" | "completed" | "failed"; summary?: string }
+	| { type: "approval.requested"; toolName: string }
+	| { type: "approval.resolved"; toolName: string; allowed: boolean }
+	| { type: "turn.finished"; result: AgentRunResult }
+	| { type: "turn.failed"; error: string }
+	| { type: "turn.cancelled" };
 
 export type InteractionAction<Source extends BeeMaxRuntimeSource = BeeMaxRuntimeSource> =
 	| { type: "message.send"; source: Source; text: string; input: Omit<AgentRunInput<Source>, "source" | "text"> }
 	| { type: "turn.cancel"; source: Source };
+
+export interface InteractionCancelResult {
+	cancelled: boolean;
+	approvalCancelled: boolean;
+	subagentsCancelled: number;
+	errors: string[];
+}
 
 export interface InteractionSnapshot {
 	phase: InteractionPhase;
@@ -31,9 +68,16 @@ export interface InteractionSnapshot {
 
 export type InteractionEventSink = (event: InteractionEvent) => void | Promise<void>;
 
+export interface InteractionEventAdapterOptions<Source extends BeeMaxRuntimeSource = BeeMaxRuntimeSource> {
+	profileId?: string;
+	approvalBroker?: ToolApprovalBroker;
+	cancelSubagents?: (source: Source) => number | Promise<number>;
+}
+
 /**
- * Narrow Core-owned adapter between an Agent runtime and presentation code.
- * Presenters consume semantic events instead of coupling to Pi's event vocabulary.
+ * Core-owned action and event boundary. Channels render semantic events only;
+ * runtime cancellation, approval cancellation and child-task cancellation stay
+ * in one atomic Core operation.
  */
 export class InteractionEventAdapter<Source extends BeeMaxRuntimeSource = BeeMaxRuntimeSource> {
 	private readonly states = new Map<string, InteractionSnapshot>();
@@ -42,35 +86,50 @@ export class InteractionEventAdapter<Source extends BeeMaxRuntimeSource = BeeMax
 	private readonly sinkFailures = new Map<string, unknown>();
 	private readonly cancellationRequested = new Set<string>();
 	private readonly cancellationPublished = new Set<string>();
+	private readonly sequences = new Map<string, number>();
 	private readonly runtime: AgentRuntimePort<Source>;
+	private readonly approvalBroker?: ToolApprovalBroker;
+	private readonly cancelSubagents?: (source: Source) => number | Promise<number>;
+	private readonly profileId: string;
+	private readonly unsubscribeApproval?: () => void;
 
-	constructor(runtime: AgentRuntimePort<Source>) { this.runtime = runtime; }
+	constructor(runtime: AgentRuntimePort<Source>, options: InteractionEventAdapterOptions<Source> = {}) {
+		this.runtime = runtime;
+		this.approvalBroker = options.approvalBroker;
+		this.cancelSubagents = options.cancelSubagents;
+		this.profileId = options.profileId ?? "default";
+		this.unsubscribeApproval = this.approvalBroker && typeof this.approvalBroker.subscribe === "function" ? this.approvalBroker.subscribe((event) => {
+			void (event.type === "requested"
+				? this.approvalRequested(event.source as Source, event.toolName)
+				: this.approvalResolved(event.source as Source, event.toolName, event.allowed));
+		}) : undefined;
+	}
 
-	async dispatch(action: InteractionAction<Source>, sink?: InteractionEventSink): Promise<AgentRunResult | boolean> {
+	async dispatch(action: InteractionAction<Source>, sink?: InteractionEventSink): Promise<AgentRunResult | InteractionCancelResult> {
 		if (action.type === "turn.cancel") return this.cancel(action.source, sink);
 
 		const key = interactionKey(action.source);
 		if (sink) this.sinks.set(key, sink);
 		const turnId = crypto.randomUUID();
-		await this.publish(action.source, { type: "turn.started", turnId, at: Date.now() }, sink);
+		await this.publish(action.source, turnId, { type: "turn.started" }, sink);
 		try {
 			const result = await this.runtime.run({ ...action.input, source: action.source, text: action.text }, (event) => {
-				const mapped = mapAgentSessionEvent(turnId, event);
-				return mapped ? this.enqueue(action.source, mapped, sink) : undefined;
+				const mapped = mapAgentSessionEvent(event);
+				return mapped ? this.enqueue(action.source, turnId, mapped, sink) : undefined;
 			});
 			await this.flush(key);
 			this.throwSinkFailure(key);
-			await this.publish(action.source, { type: "turn.finished", turnId, result, at: Date.now() }, sink);
+			await this.publish(action.source, turnId, { type: "turn.finished", result }, sink);
 			return result;
 		} catch (error) {
 			if (this.cancellationRequested.has(key)) {
 				if (!this.cancellationPublished.has(key)) {
 					this.cancellationPublished.add(key);
-					await this.publish(action.source, { type: "turn.cancelled", turnId, at: Date.now() }, sink);
+					await this.publish(action.source, turnId, { type: "turn.cancelled" }, sink);
 				}
 				throw error;
 			}
-			await this.publish(action.source, { type: "turn.failed", turnId, error: error instanceof Error ? error.message : String(error), at: Date.now() }, sink);
+			await this.publish(action.source, turnId, { type: "turn.failed", error: error instanceof Error ? error.message : String(error) }, sink);
 			throw error;
 		} finally {
 			await this.flush(key);
@@ -82,16 +141,14 @@ export class InteractionEventAdapter<Source extends BeeMaxRuntimeSource = BeeMax
 		}
 	}
 
-	/** Called by an approval transport when a tool pauses the current turn. */
 	async approvalRequested(source: Source, toolName: string): Promise<void> {
 		const turnId = this.states.get(interactionKey(source))?.turnId;
-		if (turnId) await this.publish(source, { type: "approval.requested", turnId, toolName, at: Date.now() });
+		if (turnId) await this.publish(source, turnId, { type: "approval.requested", toolName });
 	}
 
-	/** Called after the approval transport resolves the user's decision. */
 	async approvalResolved(source: Source, toolName: string, allowed: boolean): Promise<void> {
 		const turnId = this.states.get(interactionKey(source))?.turnId;
-		if (turnId) await this.publish(source, { type: "approval.resolved", turnId, toolName, allowed, at: Date.now() });
+		if (turnId) await this.publish(source, turnId, { type: "approval.resolved", toolName, allowed });
 	}
 
 	async snapshot(source: Source): Promise<InteractionSnapshot> {
@@ -100,17 +157,30 @@ export class InteractionEventAdapter<Source extends BeeMaxRuntimeSource = BeeMax
 		return { phase: current?.phase ?? "idle", turnId: current?.turnId, model: status?.model, usage, updatedAt: current?.updatedAt ?? Date.now() };
 	}
 
-	private async cancel(source: Source, sink?: InteractionEventSink): Promise<boolean> {
+	dispose(): void { this.unsubscribeApproval?.(); }
+
+	private async cancel(source: Source, sink?: InteractionEventSink): Promise<InteractionCancelResult> {
 		const key = interactionKey(source);
 		const state = this.states.get(key);
 		if (state?.turnId) this.cancellationRequested.add(key);
-		const cancelled = await this.runtime.cancel(source);
+		const cancelApproval = this.approvalBroker && typeof this.approvalBroker.cancel === "function"
+			? this.approvalBroker.cancel(source)
+			: false;
+		const results = await Promise.allSettled([
+			this.runtime.cancel(source),
+			cancelApproval,
+			Promise.resolve(this.cancelSubagents?.(source) ?? 0),
+		]);
+		const errors = results.flatMap((result) => result.status === "rejected" ? [errorMessage(result.reason)] : []);
+		const cancelled = results[0].status === "fulfilled" ? results[0].value : false;
+		const approvalCancelled = results[1].status === "fulfilled" ? results[1].value : false;
+		const subagentsCancelled = results[2].status === "fulfilled" ? results[2].value : 0;
 		if (cancelled && state?.turnId && !this.cancellationPublished.has(key)) {
 			this.cancellationPublished.add(key);
-			await this.publish(source, { type: "turn.cancelled", turnId: state.turnId, at: Date.now() }, sink);
+			await this.publish(source, state.turnId, { type: "turn.cancelled" }, sink);
 		}
 		if (!cancelled) this.cancellationRequested.delete(key);
-		return cancelled;
+		return { cancelled, approvalCancelled, subagentsCancelled, errors };
 	}
 
 	private apply(source: Source, event: InteractionEvent): void {
@@ -119,12 +189,14 @@ export class InteractionEventAdapter<Source extends BeeMaxRuntimeSource = BeeMax
 		this.states.set(key, reduceInteractionEvent(previous, event));
 	}
 
-	private async publish(source: Source, event: InteractionEvent, sink?: InteractionEventSink): Promise<void> {
-		await this.enqueue(source, event, sink);
+	private async publish(source: Source, turnId: string, payload: InteractionEventPayload, sink?: InteractionEventSink): Promise<void> {
+		await this.enqueue(source, turnId, payload, sink);
 	}
 
-	private enqueue(source: Source, event: InteractionEvent, sink?: InteractionEventSink): Promise<void> {
+	private enqueue(source: Source, turnId: string, payload: InteractionEventPayload, sink?: InteractionEventSink): Promise<void> {
 		const key = interactionKey(source);
+		const event = { ...payload, ...interactionEventMeta(source, turnId, (this.sequences.get(key) ?? 0) + 1, this.profileId) } as InteractionEvent;
+		this.sequences.set(key, event.sequence);
 		const previous = this.eventQueues.get(key) ?? Promise.resolve();
 		const next = previous.then(async () => {
 			this.apply(source, event);
@@ -137,11 +209,15 @@ export class InteractionEventAdapter<Source extends BeeMaxRuntimeSource = BeeMax
 	}
 
 	private async flush(key: string): Promise<void> { await this.eventQueues.get(key); }
+	private throwSinkFailure(key: string): void { const error = this.sinkFailures.get(key); if (error !== undefined) throw error; }
+}
 
-	private throwSinkFailure(key: string): void {
-		const error = this.sinkFailures.get(key);
-		if (error !== undefined) throw error;
-	}
+export function interactionScopeForSource(source: BeeMaxRuntimeSource, profileId = "default"): InteractionScope {
+	return { profileId, platform: source.platform, chatId: source.chatId, userId: source.userIdAlt ?? source.userId, threadId: source.threadId };
+}
+
+function interactionEventMeta(source: BeeMaxRuntimeSource, turnId: string, sequence: number, profileId: string): InteractionEventMeta {
+	return { sessionId: `${profileId}:${sessionIdForSource(source)}`, scope: interactionScopeForSource(source, profileId), turnId, at: Date.now(), sequence };
 }
 
 export function reduceInteractionEvent(snapshot: InteractionSnapshot, event: InteractionEvent): InteractionSnapshot {
@@ -151,16 +227,17 @@ export function reduceInteractionEvent(snapshot: InteractionSnapshot, event: Int
 	if (event.type === "turn.cancelled") return { ...snapshot, phase: "cancelled", turnId: event.turnId, updatedAt: event.at };
 	if (event.type === "approval.requested") return { ...snapshot, phase: "awaiting_approval", turnId: event.turnId, updatedAt: event.at };
 	if (event.type === "approval.resolved") return { ...snapshot, phase: "running", turnId: event.turnId, updatedAt: event.at };
-	return { ...snapshot, updatedAt: Date.now() };
+	return { ...snapshot, updatedAt: event.at };
 }
 
-export function mapAgentSessionEvent(turnId: string, event: AgentSessionEvent): InteractionEvent | undefined {
-	if (event.type === "tool_execution_start") return { type: "tool.changed", turnId, callId: event.toolCallId, name: event.toolName, state: "running" };
-	if (event.type === "tool_execution_end") return { type: "tool.changed", turnId, callId: event.toolCallId, name: event.toolName, state: event.isError ? "failed" : "completed", summary: typeof event.result === "string" ? event.result.slice(0, 500) : undefined };
+export function mapAgentSessionEvent(event: AgentSessionEvent): InteractionEventPayload | undefined {
+	if (event.type === "tool_execution_start") return { type: "tool.changed", callId: event.toolCallId, name: event.toolName, state: "running" };
+	if (event.type === "tool_execution_end") return { type: "tool.changed", callId: event.toolCallId, name: event.toolName, state: event.isError ? "failed" : "completed", summary: typeof event.result === "string" ? event.result.slice(0, 500) : undefined };
 	if (event.type !== "message_update" || event.message.role !== "assistant") return undefined;
-	if (event.assistantMessageEvent.type === "text_delta") return { type: "answer.delta", turnId, text: event.assistantMessageEvent.delta };
-	if (event.assistantMessageEvent.type === "thinking_delta") return { type: "reasoning.delta", turnId, text: event.assistantMessageEvent.delta };
+	if (event.assistantMessageEvent.type === "text_delta") return { type: "answer.delta", text: event.assistantMessageEvent.delta };
+	if (event.assistantMessageEvent.type === "thinking_delta") return { type: "reasoning.delta", text: event.assistantMessageEvent.delta };
 	return undefined;
 }
 
 function interactionKey(source: BeeMaxRuntimeSource): string { return sessionKeyForSource(source); }
+function errorMessage(error: unknown): string { return error instanceof Error ? error.message : String(error); }

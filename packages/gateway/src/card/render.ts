@@ -76,6 +76,7 @@ export function renderCard(session: CardSession, opts: CardRenderOptions = {}): 
 function renderStatus(session: CardSession): { subtitle: string; template: string; summary?: string } {
 	if (session.status === "completed") return { subtitle: "已完成", template: "green" };
 	if (session.status === "failed") return { subtitle: "处理失败", template: "red" };
+	if (session.status === "cancelled") return { subtitle: "已取消", template: "grey" };
 	if (normalizeStreamText(session.answerText).trim()) return { subtitle: "", summary: "处理中", template: "blue" };
 	return { subtitle: "", summary: "处理中", template: "indigo" };
 }
@@ -181,7 +182,7 @@ function limitText(text: string, limit: number, overflowLabel: string): string {
 }
 
 function renderFooter(session: CardSession, fields?: string[]): string {
-	if (session.status === "failed") return "已停止";
+	if (session.status === "failed" || session.status === "cancelled") return "已停止";
 	if (session.status !== "completed") return `${spinnerFrame()} 处理中`;
 	const inputTokens = safeInt(session.tokens.input_tokens);
 	const outputTokens = safeInt(session.tokens.output_tokens);

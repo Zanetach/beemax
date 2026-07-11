@@ -71,7 +71,8 @@ export {
 	type BeeMaxAgentRuntimeOptions,
 } from "./agent-runtime.ts";
 export type { AgentControlHandler, AgentControlInput, AgentControlResult } from "./agent-control.ts";
-export { ToolApprovalBroker, type ApprovalAuditSink, type ApprovalPromptSender, type ToolApprovalDecision, type ToolApprovalRequest } from "./tool-approval.ts";
+export { ToolApprovalBroker, type ApprovalAuditSink, type ApprovalPromptSender, type ToolApprovalDecision, type ToolApprovalEvent, type ToolApprovalRequest } from "./tool-approval.ts";
+export { memoryScopeForSource, type MemoryScope } from "./memory-scope.ts";
 export { InteractionEventAdapter, mapAgentSessionEvent, reduceInteractionEvent, type InteractionAction, type InteractionEvent, type InteractionEventSink, type InteractionPhase, type InteractionSnapshot, type InteractionSurface } from "./interaction-runtime.ts";
 export type { RunEvent, RunRecord } from "./run-events.ts";
 export type { DeliveryPort, DeliveryTarget, MediaArtifact } from "./delivery-port.ts";

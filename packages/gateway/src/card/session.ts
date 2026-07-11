@@ -14,7 +14,7 @@ export interface ToolState {
 	detail: string;
 }
 
-export type CardStatus = "thinking" | "completed" | "failed";
+export type CardStatus = "thinking" | "completed" | "failed" | "cancelled";
 
 export interface CardEventData {
 	/** answer (message.completed) | text (thinking/answer delta) | error (failed) */
@@ -45,7 +45,7 @@ export class CardSession {
 	}
 
 	apply(event: string, data: CardEventData): boolean {
-		if (this.status === "completed" || this.status === "failed") return false;
+		if (this.status === "completed" || this.status === "failed" || this.status === "cancelled") return false;
 
 		switch (event) {
 			case "thinking.delta": {
@@ -93,6 +93,16 @@ export class CardSession {
 				this.timeline.complete();
 				this.status = "failed";
 				this.answerText = typeof data.error === "string" ? data.error : "消息处理失败";
+				break;
+			}
+			case "message.cancelled": {
+				this.timeline.complete();
+				this.status = "cancelled";
+				this.answerText = typeof data.message === "string" ? data.message : "运行已取消";
+				break;
+			}
+			case "approval.updated": {
+				this.timeline.recordNotice(String(data.id ?? "approval"), "工具审批", String(data.status ?? "pending"), String(data.message ?? ""));
 				break;
 			}
 		}

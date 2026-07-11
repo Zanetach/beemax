@@ -8,6 +8,9 @@ export interface ToolApprovalRequest { source: BeeMaxRuntimeSource; toolName: st
 export interface ToolApprovalDecision { allowed: boolean; reason?: string; }
 export type ApprovalPromptSender = (source: BeeMaxRuntimeSource, text: string) => Promise<void>;
 export type ApprovalAuditSink = (event: { source: BeeMaxRuntimeSource; toolName: string; allowed: boolean; reason?: string }) => void;
+export type ToolApprovalEvent =
+	| { type: "requested"; source: BeeMaxRuntimeSource; toolName: string }
+	| { type: "resolved"; source: BeeMaxRuntimeSource; toolName: string; allowed: boolean; reason?: string };
 
 interface PendingApproval {
 	source: BeeMaxRuntimeSource;
@@ -24,6 +27,7 @@ export class ToolApprovalBroker {
 	private readonly sendPrompt: ApprovalPromptSender;
 	private readonly timeoutMs: number;
 	private readonly audit?: ApprovalAuditSink;
+	private readonly listeners = new Set<(event: ToolApprovalEvent) => void>();
 
 	constructor(sendPrompt: ApprovalPromptSender, timeoutMs = DEFAULT_TIMEOUT_MS, audit?: ApprovalAuditSink) {
 		this.sendPrompt = sendPrompt;
@@ -51,9 +55,16 @@ export class ToolApprovalBroker {
 			pending.abortCleanup = () => signal.removeEventListener("abort", abort);
 		}
 		this.pending.set(sourceKey, pending);
+		this.emit({ type: "requested", source: request.source, toolName: request.toolName });
 		try { await this.sendPrompt(request.source, renderApprovalPrompt(request)); }
 		catch (error) { this.finish(sourceKey, { allowed: false, reason: `Could not deliver approval request: ${error instanceof Error ? error.message : String(error)}` }); }
 		return decision;
+	}
+
+	/** Subscribe to lifecycle notifications without giving a presenter policy control. */
+	subscribe(listener: (event: ToolApprovalEvent) => void): () => void {
+		this.listeners.add(listener);
+		return () => this.listeners.delete(listener);
 	}
 
 	/** Returns true when text belongs to a pending approval for this conversation. */
@@ -80,6 +91,14 @@ export class ToolApprovalBroker {
 		return true;
 	}
 
+	/** Cancel a pending approval when its owning interaction is cancelled. */
+	cancel(source: BeeMaxRuntimeSource, reason = "Tool approval cancelled"): boolean {
+		const key = sessionKeyForSource(source);
+		if (!this.pending.has(key)) return false;
+		this.finish(key, { allowed: false, reason });
+		return true;
+	}
+
 	dispose(reason = "Approval broker is shutting down"): void {
 		for (const key of [...this.pending.keys()]) this.finish(key, { allowed: false, reason });
 		this.sessionGrants.clear();
@@ -93,6 +112,11 @@ export class ToolApprovalBroker {
 		pending.abortCleanup?.();
 		pending.resolve(decision);
 		this.audit?.({ source: pending.source, toolName: pending.toolName, ...decision });
+		this.emit({ type: "resolved", source: pending.source, toolName: pending.toolName, ...decision });
+	}
+
+	private emit(event: ToolApprovalEvent): void {
+		for (const listener of this.listeners) listener(event);
 	}
 }
 
