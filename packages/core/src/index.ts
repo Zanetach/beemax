@@ -46,6 +46,7 @@ export {
 } from "./task-manager.ts";
 export { ConversationContext, type ConversationContextOptions, type ConversationExchange, type ConversationMemoryPort } from "./conversation-context.ts";
 export { compileLongTermMemorySnapshot, type LongTermMemoryCompiler } from "./personal-memory.ts";
+export { curatedMemoryPrompt } from "./curated-memory.ts";
 export {
 	SessionCoordinator,
 	sessionIdForSource,

@@ -83,5 +83,5 @@ function formatEvidence(item: MemoryEvidence): string { return `- [${item.eventI
 export function canAutomaticallyUnderstand(statement: string, confidence: number, stability: "medium" | "high", sourceContent: string): boolean {
 	return confidence >= 0.85 && (stability === "medium" || stability === "high") && !containsSensitiveMemory(statement) && !containsSensitiveMemory(sourceContent);
 }
-function containsSensitiveMemory(value: string): boolean { return /\b(password|passcode|token|secret|api[_-]?key|private key)\b|身份证|护照|银行卡|病历|诊断|病史|处方|\b\d{13,19}\b/i.test(value); }
+function containsSensitiveMemory(value: string): boolean { return /\b(password|passcode|token|secret|api[_-]?key|private key)\b|密码|密钥|令牌|身份证|护照|银行卡|手机号|电话号码|住址|地址|工资|薪资|病历|诊断|病史|处方|高血压|糖尿病|\b1\d{10}\b|\b\d{13,19}\b/i.test(value); }
 function result(text: string, details: unknown) { return { content: [{ type: "text" as const, text }], details }; }

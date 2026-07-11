@@ -3,6 +3,7 @@ import { readdir } from "node:fs/promises";
 import { basename, isAbsolute, join, relative, resolve, sep } from "node:path";
 import type { Api, Model } from "@earendil-works/pi-ai";
 import { getBuiltinModel } from "@earendil-works/pi-ai/providers/all";
+import { curatedMemoryPrompt } from "./curated-memory.ts";
 import {
 	type AgentSession,
 	type Skill,
@@ -77,7 +78,7 @@ export function buildBeeMaxRuntimeFactory(opts: BeeMaxRuntimeFactoryOptions) {
 		if (apiKey) authStorage.setRuntimeApiKey(model.provider, apiKey);
 		const settingsManager = SettingsManager.create(cwd, agentDir);
 		const configuredPrompt = typeof opts.systemPrompt === "function" ? opts.systemPrompt() : opts.systemPrompt;
-		const channelPrompt = [configuredPrompt, channelContextFor(source)].filter(Boolean).join("\n\n");
+		const channelPrompt = [configuredPrompt, curatedMemoryPrompt(agentDir, source), channelContextFor(source)].filter(Boolean).join("\n\n");
 		const resourceLoader = new DefaultResourceLoader({
 			cwd,
 			agentDir,

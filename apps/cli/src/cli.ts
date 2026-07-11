@@ -37,7 +37,6 @@ import { LocalActivityPresenter, LocalReasoningPresenter, type DetailsDisplay, l
 import { renderTerminalMarkdown, StreamingTerminalMarkdown } from "./terminal-markdown.ts";
 import { inspectGateway, readGatewayLogs } from "./gateway-observability.ts";
 import { createTaskAwareConversationContext, ensureBuiltinTasks, installedVersion } from "./runtime-facts.ts";
-import { curatedMemoryPrompt } from "./curated-memory.ts";
 import { AgentRunError, SessionCatalog, ToolApprovalBroker, compileLongTermMemorySnapshot, type BeeMaxAgentRuntime } from "@beemax/core";
 import type { SessionSource } from "@beemax/gateway";
 import { existsSync } from "node:fs";
@@ -820,7 +819,7 @@ async function runChat(config: ReturnType<typeof loadConfig>): Promise<void> {
 		cwd: config.paths.cwd,
 		agentDir: config.paths.agentDir,
 		getApiKey: (provider: string) => config.model.apiKeys[provider] ?? (provider === config.model.provider ? apiKey : undefined),
-		systemPrompt: [config.agent.systemPrompt, curatedMemoryPrompt(config.paths.agentDir)].filter(Boolean).join("\n\n"),
+		systemPrompt: config.agent.systemPrompt,
 		memoryStore: memory,
 		executionPortForSource: executionPortFor(config),
 		customTools: mcp.getTools(),
