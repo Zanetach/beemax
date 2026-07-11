@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { MemoryStore } from "@beemax/memory";
-import { AuthStorage, BeeMaxAgentRuntime, buildBeeMaxRuntimeFactory, ConversationContext, defineTool, getBuiltinModel, isRecoverableModelFailure, SessionCoordinator, sessionIdForSource } from "../dist/index.js";
+import { AgentRunError, AuthStorage, BeeMaxAgentRuntime, buildBeeMaxRuntimeFactory, ConversationContext, defineTool, getBuiltinModel, isRecoverableModelFailure, SessionCoordinator, sessionIdForSource } from "../dist/index.js";
 
 test("BeeMax Core owns the runtime primitive boundary", () => {
 	assert.equal(typeof AuthStorage.create, "function");
@@ -13,6 +13,7 @@ test("BeeMax Core owns the runtime primitive boundary", () => {
 	assert.equal(typeof buildBeeMaxRuntimeFactory, "function");
 	assert.equal(isRecoverableModelFailure({ status: 429 }), true);
 	assert.equal(isRecoverableModelFailure({ statusCode: 503 }), true);
+	assert.equal(isRecoverableModelFailure(new Error("upstream returned 503")), true);
 	assert.equal(isRecoverableModelFailure(new Error("fetch failed")), true);
 	assert.equal(isRecoverableModelFailure({ status: 401 }), false);
 	assert.equal(isRecoverableModelFailure(new Error("invalid API key")), false);
@@ -173,6 +174,50 @@ test("BeeMax Agent Runtime exposes Pi native steer and follow-up only during an 
 	assert.deepEqual(delivered, [["steer", "focus"], ["follow_up", "summarize"]]);
 	release();
 	await turn;
+	runtime.dispose();
+});
+
+test("BeeMax Agent Runtime automatically continues a safe transient failure on a configured fallback model", async () => {
+	const source = { platform: "cli", chatId: "terminal", chatType: "dm", userId: "user" };
+	const fallback = { provider: "test", id: "fallback", input: ["text"], reasoning: false };
+	const events = [];
+	let retriedWith;
+	const runtime = new BeeMaxAgentRuntime({
+		fallbackModels: [fallback],
+		createAgent: async () => {
+			const agent = { state: { model: { provider: "test", id: "primary" }, messages: [] } };
+			return {
+				agent, subscribe: () => () => undefined,
+				prompt: async () => { agent.state.messages = [{ role: "user", content: "work" }, { role: "assistant", stopReason: "error", errorMessage: "429 rate limit", content: [], usage: { input: 1, output: 0 } }]; },
+				retryWithModel: async (model) => { retriedWith = model.id; agent.state.model = model; agent.state.messages = [{ role: "user", content: "work" }, { role: "assistant", stopReason: "stop", content: [{ type: "text", text: "recovered" }], usage: { input: 2, output: 1 } }]; return true; },
+				abort: async () => undefined, dispose: () => undefined,
+			};
+		},
+	});
+	const result = await runtime.run({ source, text: "work", timeoutMs: 1_000 }, (event) => { events.push(event); });
+	assert.equal(retriedWith, "fallback");
+	assert.equal(result.answer, "recovered");
+	assert.deepEqual(events.filter((event) => event.type === "model_fallback"), [{ type: "model_fallback", from: "primary", to: "fallback", attempt: 1 }]);
+	runtime.dispose();
+});
+
+test("BeeMax Agent Runtime refuses automatic model replay after observable output or tool execution", async () => {
+	const source = { platform: "cli", chatId: "terminal", chatType: "dm", userId: "user" };
+	let listener;
+	let retries = 0;
+	const runtime = new BeeMaxAgentRuntime({
+		fallbackModels: [{ provider: "test", id: "fallback", input: ["text"], reasoning: false }],
+		createAgent: async () => {
+			const agent = { state: { model: { provider: "test", id: "primary" }, messages: [] } };
+			return {
+				agent, subscribe: (next) => { listener = next; return () => undefined; },
+				prompt: async () => { listener({ type: "tool_execution_start", toolCallId: "write-1", toolName: "write" }); agent.state.messages = [{ role: "assistant", stopReason: "error", errorMessage: "503 overloaded", content: [], usage: { input: 1, output: 0 } }]; },
+				retryWithModel: async () => { retries++; return true; }, abort: async () => undefined, dispose: () => undefined,
+			};
+		},
+	});
+	await assert.rejects(runtime.run({ source, text: "work", timeoutMs: 1_000 }), (error) => error instanceof AgentRunError && error.recoverable);
+	assert.equal(retries, 0);
 	runtime.dispose();
 });
 

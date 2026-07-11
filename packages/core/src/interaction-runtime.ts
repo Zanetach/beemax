@@ -1,5 +1,4 @@
-import type { AgentSessionEvent } from "@earendil-works/pi-coding-agent";
-import type { AgentRunInput, AgentRunResult, AgentRuntimePort, AgentSessionUsage } from "./agent-runtime.ts";
+import type { AgentRunInput, AgentRunResult, AgentRuntimePort, AgentSessionUsage, BeeMaxAgentRunEvent } from "./agent-runtime.ts";
 import type { BeeMaxRuntimeSource } from "./runtime.ts";
 import { sessionIdForSource, sessionKeyForSource } from "./session-coordinator.ts";
 import type { ToolApprovalBroker, ToolApprovalChoice } from "./tool-approval.ts";
@@ -33,6 +32,7 @@ export type InteractionEvent = InteractionEventMeta & (
 	| { type: "tool.changed"; callId: string; name: string; state: "running" | "completed" | "failed"; summary?: string }
 	| { type: "approval.requested"; toolName: string; details?: ToolApprovalDetails }
 	| { type: "approval.resolved"; toolName: string; allowed: boolean }
+	| { type: "model.fallback"; from: string; to: string; attempt: number }
 	| { type: "turn.queued"; position: number; replaced: boolean; mode: InteractionDeliveryMode }
 	| { type: "turn.finished"; result: AgentRunResult }
 	| { type: "turn.failed"; error: string }
@@ -46,6 +46,7 @@ type InteractionEventPayload =
 	| { type: "tool.changed"; callId: string; name: string; state: "running" | "completed" | "failed"; summary?: string }
 	| { type: "approval.requested"; toolName: string; details?: ToolApprovalDetails }
 	| { type: "approval.resolved"; toolName: string; allowed: boolean }
+	| { type: "model.fallback"; from: string; to: string; attempt: number }
 	| { type: "turn.queued"; position: number; replaced: boolean; mode: InteractionDeliveryMode }
 	| { type: "turn.finished"; result: AgentRunResult }
 	| { type: "turn.failed"; error: string }
@@ -93,6 +94,7 @@ export type InteractionTelemetryEvent =
 	| { type: "interaction.approval_requested"; surface: string; tool: string; risk?: "低" | "中" | "高" }
 	| { type: "interaction.approval_resolved"; surface: string; decision: "allowed" | "denied"; latency: number }
 	| { type: "interaction.input_queued"; surface: string; mode: InteractionDeliveryMode; waitMs: number }
+	| { type: "interaction.model_fallback"; surface: string; from: string; to: string; attempt: number }
 	| { type: "interaction.presenter_reconnected"; surface: string; gapEvents: number }
 	| { type: "interaction.session_resumed"; source: string; age: number };
 export type InteractionTelemetrySink = (event: InteractionTelemetryEvent) => void;
@@ -376,6 +378,7 @@ export class InteractionEventAdapter<Source extends BeeMaxRuntimeSource = BeeMax
 			this.approvalStartedAt.delete(key);
 			this.telemetry({ type: "interaction.approval_resolved", surface: event.scope.platform, decision: event.allowed ? "allowed" : "denied", latency: Math.max(0, event.at - startedAt) });
 		} else if (event.type === "turn.queued") this.telemetry({ type: "interaction.input_queued", surface: event.scope.platform, mode: event.mode, waitMs: 0 });
+		else if (event.type === "model.fallback") this.telemetry({ type: "interaction.model_fallback", surface: event.scope.platform, from: event.from, to: event.to, attempt: event.attempt });
 	}
 }
 
@@ -398,7 +401,8 @@ export function reduceInteractionEvent(snapshot: InteractionSnapshot, event: Int
 	return { ...snapshot, updatedAt: event.at };
 }
 
-export function mapAgentSessionEvent(event: AgentSessionEvent): InteractionEventPayload | undefined {
+export function mapAgentSessionEvent(event: BeeMaxAgentRunEvent): InteractionEventPayload | undefined {
+	if (event.type === "model_fallback") return { type: "model.fallback", from: event.from, to: event.to, attempt: event.attempt };
 	if (event.type === "tool_execution_start") return { type: "tool.changed", callId: event.toolCallId, name: event.toolName, state: "running" };
 	if (event.type === "tool_execution_end") return { type: "tool.changed", callId: event.toolCallId, name: event.toolName, state: event.isError ? "failed" : "completed", summary: typeof event.result === "string" ? event.result.slice(0, 500) : undefined };
 	if (event.type !== "message_update" || event.message.role !== "assistant") return undefined;

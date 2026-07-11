@@ -35,6 +35,7 @@ import { executionPortFor, executionSafeTools } from "./execution-composition.ts
 import { createProfileControlHandler } from "./profile-control.ts";
 import { recordGatewayEvent, writeGatewayState } from "./gateway-observability.ts";
 import { installedVersion } from "./runtime-facts.ts";
+import { configuredRuntimeModels } from "./model-catalog.ts";
 
 export async function runGateway(config: BeeMaxConfig): Promise<void> {
 	if (!config.gateway.feishu.appId || !config.gateway.feishu.appSecret) {
@@ -159,6 +160,7 @@ export async function runGateway(config: BeeMaxConfig): Promise<void> {
 		{
 			createAgent,
 			createAutomationAgent,
+			fallbackModels: configuredRuntimeModels(config),
 			context: createTaskAwareConversationContext(memory, { recordDirectRoute: (route) => automation.setLastRoute(route), runtimeSnapshot: () => ({ model: `${config.model.provider}/${config.model.model}`, profile: config.profile }) }),
 			controlHandler: (input) => createProfileControlHandler(runtime, config, interaction)(input),
 		},

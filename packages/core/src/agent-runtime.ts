@@ -49,11 +49,15 @@ export interface AgentModelStatus {
 	supportedThinkingLevels: ModelThinkingLevel[];
 }
 
-export type AgentRunEventSink = (event: AgentSessionEvent) => void | Promise<void>;
+export interface ModelFallbackEvent { type: "model_fallback"; from: string; to: string; attempt: number; }
+export type BeeMaxAgentRunEvent = AgentSessionEvent | ModelFallbackEvent;
+export type BeeMaxAgentRunEventSink = (event: BeeMaxAgentRunEvent) => void | Promise<void>;
+/** Backwards-compatible name for the product-level event sink. */
+export type AgentRunEventSink = BeeMaxAgentRunEventSink;
 
 /** Gateway-facing runtime contract; implementations may be local or remote. */
 export interface AgentRuntimePort<Source extends BeeMaxRuntimeSource = BeeMaxRuntimeSource> {
-	run(input: AgentRunInput<Source>, onEvent?: AgentRunEventSink): Promise<AgentRunResult>;
+	run(input: AgentRunInput<Source>, onEvent?: BeeMaxAgentRunEventSink): Promise<AgentRunResult>;
 	/** Deliver guidance into an active Pi run. Optional for legacy/remote runtimes. */
 	steer?(source: Source, text: string, images?: ImageContent[]): Promise<boolean>;
 	/** Deliver a message after the active Pi run becomes idle. Optional for legacy/remote runtimes. */
@@ -83,6 +87,9 @@ export interface BeeMaxAgentRuntimeOptions<Source extends BeeMaxRuntimeSource = 
 	context?: ConversationContext;
 	controlHandler?: AgentControlHandler<Source>;
 	sessionCatalog?: SessionCatalog<Source>;
+	/** Ordered failover candidates. The active model is skipped automatically. */
+	fallbackModels?: Model<Api>[];
+	maxModelFallbacks?: number;
 }
 
 /**
@@ -97,6 +104,8 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 	private readonly context?: ConversationContext;
 	private readonly controlHandler?: AgentControlHandler<Source>;
 	private readonly sessionCatalog?: SessionCatalog<Source>;
+	private readonly fallbackModels: Model<Api>[];
+	private readonly maxModelFallbacks: number;
 
 	constructor(options: BeeMaxAgentRuntimeOptions<Source>) {
 		this.sessions = new SessionCoordinator(options);
@@ -105,9 +114,11 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 		this.context = options.context;
 		this.controlHandler = options.controlHandler;
 		this.sessionCatalog = options.sessionCatalog;
+		this.fallbackModels = options.fallbackModels ?? [];
+		this.maxModelFallbacks = Math.max(0, Math.min(options.maxModelFallbacks ?? 2, 5));
 	}
 
-	async run(input: AgentRunInput<Source>, onEvent?: AgentRunEventSink): Promise<AgentRunResult> {
+	async run(input: AgentRunInput<Source>, onEvent?: BeeMaxAgentRunEventSink): Promise<AgentRunResult> {
 		const factory = input.mode === "automation" ? this.createAutomationAgent ?? this.createAgent : this.createAgent;
 		return this.sessions.run(input.source, factory, async (session) => {
 			await this.sessionCatalog?.touch(input.source);
@@ -119,7 +130,11 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 			const text = input.mode === "interactive" || !input.mode
 				? this.context?.enrich(input.source, input.text) ?? input.text
 				: input.text;
-			const unsubscribe = onEvent ? session.piSession.subscribe((event) => { void onEvent(event); }) : undefined;
+			let observableProgress = false;
+			const unsubscribe = session.piSession.subscribe((event) => {
+				if (event.type === "tool_execution_start" || (event.type === "message_update" && event.assistantMessageEvent.type === "text_delta" && event.assistantMessageEvent.delta.length > 0)) observableProgress = true;
+				void onEvent?.(event);
+			});
 			let timedOut = false;
 			const abortFromCaller = () => { void session.piSession.abort(); };
 			input.signal?.addEventListener("abort", abortFromCaller, { once: true });
@@ -130,7 +145,20 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 					source: input.mode === "automation" ? "extension" : undefined,
 					images: input.images,
 				});
+				let failure = lastAssistantFailure(session.piSession.agent);
+				let attempt = 0;
+				for (const fallback of this.fallbackModels) {
+					if (!failure || !isRecoverableModelFailure(failure) || observableProgress || attempt >= this.maxModelFallbacks) break;
+					const current = session.piSession.agent.state.model;
+					if (sameModel(current, fallback) || (input.images?.length && !fallback.input.includes("image"))) continue;
+					attempt++;
+					await onEvent?.({ type: "model_fallback", from: current?.id ?? "Unknown", to: fallback.id, attempt });
+					if (!await session.piSession.retryWithModel(fallback)) break;
+					failure = lastAssistantFailure(session.piSession.agent);
+				}
+				if (failure) throw new AgentRunError(errorMessage(failure), false, failure, isRecoverableModelFailure(failure));
 			} catch (cause) {
+				if (cause instanceof AgentRunError) throw cause;
 				throw new AgentRunError(timedOut ? `Agent turn timed out after ${Math.round(input.timeoutMs / 60_000)} minutes` : errorMessage(cause), timedOut, cause, timedOut || isRecoverableModelFailure(cause));
 			} finally {
 				clearTimeout(timeout);
@@ -233,7 +261,7 @@ export function isRecoverableModelFailure(error: unknown): boolean {
 	const status = httpStatus(error);
 	if (status === 408 || status === 409 || status === 425 || status === 429 || (status !== undefined && status >= 500 && status <= 599)) return true;
 	const message = errorMessage(error).toLowerCase();
-	return /(?:fetch failed|network error|networkerror|econnreset|econnrefused|etimedout|socket hang up|temporarily unavailable|rate limit|overloaded)/.test(message);
+	return /(?:\b(?:408|409|425|429|5\d\d)\b|fetch failed|network error|networkerror|econnreset|econnrefused|etimedout|socket hang up|temporarily unavailable|rate limit|overloaded)/.test(message);
 }
 
 function lastAssistantText(agent: Agent): string {
@@ -246,6 +274,12 @@ function lastAssistantText(agent: Agent): string {
 	return text.join("");
 }
 function modelOf(agent: Agent): string { return agent.state.model?.id ?? "Unknown"; }
+function sameModel(left: Model<Api> | undefined, right: Model<Api>): boolean { return left?.provider === right.provider && left.id === right.id; }
+function lastAssistantFailure(agent: Agent): unknown | undefined {
+	const last = agent.state.messages.at(-1);
+	if (!last || last.role !== "assistant" || last.stopReason !== "error") return undefined;
+	return new Error(last.errorMessage ?? "Model request failed");
+}
 function usageOf(agent: Agent): { input_tokens?: number; output_tokens?: number } {
 	const last = agent.state.messages[agent.state.messages.length - 1];
 	return last?.role === "assistant" ? { input_tokens: last.usage.input, output_tokens: last.usage.output } : {};

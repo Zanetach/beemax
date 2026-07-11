@@ -104,6 +104,7 @@ export class LocalActivityPresenter {
 		}
 		if (event.type === "turn.failed") return `\n运行失败：${event.error}\n`;
 		if (event.type === "turn.cancelled") return "\n运行已取消。\n";
+		if (event.type === "model.fallback") return `\n模型 ${event.from} 暂时不可用，已自动切换到 ${event.to}（第 ${event.attempt} 次回退）。\n`;
 		if (event.type === "turn.queued") {
 			if (event.mode === "steer") return "\n已向当前 Agent 投递中途引导。\n";
 			if (event.mode === "follow_up") return "\n已向当前 Agent 投递后续消息。\n";

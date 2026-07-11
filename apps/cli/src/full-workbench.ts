@@ -43,6 +43,7 @@ export class FullWorkbench {
 		if (event.type === "answer.delta") this.answer(event.text);
 		if (event.type === "turn.failed") this.pushTranscript(`Error  ${event.error}`);
 		if (event.type === "turn.cancelled") this.pushTranscript("System  Turn cancelled.");
+		if (event.type === "model.fallback") this.pushTranscript(`System  Model fallback ${event.from} → ${event.to} · attempt ${event.attempt}`);
 		if (event.type === "approval.requested") {
 			this.pendingApproval = { turnId: event.turnId, toolName: event.toolName, details: event.details };
 			this.approval = event.details

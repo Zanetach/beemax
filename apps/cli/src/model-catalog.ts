@@ -46,3 +46,12 @@ export function renderConfiguredModels(config: BeeMaxConfig): string {
 		return `${name}  ${capabilities.join("; ")}`;
 	}).join("\n") || "No models configured for this Profile.";
 }
+
+/** Runtime-ready ordered model candidates; unsupported custom definitions stay out of automatic failover. */
+export function configuredRuntimeModels(config: BeeMaxConfig): Model<Api>[] {
+	return config.models.flatMap((choice) => {
+		const model = choice.provider === "custom" ? undefined : (getBuiltinModel as (provider: string, id: string) => Model<Api> | undefined)(choice.provider, choice.model);
+		if (!model || !config.model.apiKeys[choice.provider]) return [];
+		return [choice.baseUrl ? { ...model, baseUrl: choice.baseUrl } : model];
+	});
+}

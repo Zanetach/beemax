@@ -29,7 +29,7 @@ import {
 import { activeProfile, resolveProfileLocation } from "./profile-home.ts";
 import { installMacLaunchAgent, installSystemdService, runServiceAction, type ServiceAction } from "./service-manager.ts";
 import { runSetup, type SetupOptions } from "./setup.ts";
-import { renderModelProviderChoices, resolveProviderSelection } from "./model-catalog.ts";
+import { configuredRuntimeModels, renderModelProviderChoices, resolveProviderSelection } from "./model-catalog.ts";
 import { configuredApiKey } from "./provider-resolver.ts";
 import { executionPortFor, executionSafeTools } from "./execution-composition.ts";
 import { createProfileRuntime } from "./runtime-composition.ts";
@@ -896,6 +896,7 @@ async function runChat(config: ReturnType<typeof loadConfig>, requestedMode: { f
 		{ maxSessions: config.agent.maxSessions, sessionIdleMs: config.agent.sessionIdleMs },
 		{
 			createAgent,
+			fallbackModels: configuredRuntimeModels(config),
 			sessionCatalog: SessionCatalog.forAgentDir<SessionSource>(config.paths.agentDir),
 			context: createTaskAwareConversationContext(memory, { runtimeSnapshot: () => ({ model: `${config.model.provider}/${config.model.model}`, profile: config.profile }) }),
 			controlHandler: (input) => createProfileControlHandler(runtime, config, interactionAdapter)(input),
@@ -1175,14 +1176,10 @@ async function runChat(config: ReturnType<typeof loadConfig>, requestedMode: { f
 			active = runTurn(trimmed, turnSource);
 			try { await active; }
 			catch (error) {
-				if (error instanceof AgentRunError && error.recoverable) {
-					const fallback = config.models.find((choice) => `${choice.provider}/${choice.model}` !== `${config.model.provider}/${config.model.model}`);
-					if (fallback) {
-						const switched = await runtime.handleControl({ source, text: `/model ${fallback.provider}/${fallback.model}` });
-						if (switched?.handled && switched.message.startsWith("Switched this conversation")) { retryText = trimmed; process.stdout.write(`Agent run failed: ${error.message}\nSwitched to fallback ${fallback.provider}/${fallback.model}. Use /retry to retry explicitly.\n`); return; }
-					}
-				}
+				const manualRetryAvailable = error instanceof AgentRunError && error.recoverable;
+				if (manualRetryAvailable) retryText = trimmed;
 				process.stdout.write(`Agent run failed: ${error instanceof Error ? error.message : String(error)}\n`);
+				if (manualRetryAvailable) process.stdout.write("Automatic fallback was unsafe or unavailable. Use /retry to retry explicitly.\n");
 			}
 			finally {
 				active = undefined;

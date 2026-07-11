@@ -105,6 +105,10 @@ export class CardSession {
 				this.timeline.recordNotice(String(data.id ?? "approval"), "工具审批", String(data.status ?? "pending"), String(data.message ?? ""));
 				break;
 			}
+			case "notice.updated": {
+				this.timeline.recordNotice(String(data.id ?? "notice"), String(data.label ?? "状态"), String(data.status ?? "info"), String(data.message ?? ""));
+				break;
+			}
 		}
 		return true;
 	}

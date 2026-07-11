@@ -208,6 +208,10 @@ export class Dispatcher {
 				card.apply("thinking.delta", { text: event.text });
 				await flush.schedule(renderUpdate);
 				break;
+			case "model.fallback":
+				card.apply("notice.updated", { id: `model:${event.turnId}:${event.attempt}`, label: "模型回退", status: "running", message: `${event.from} 暂时不可用，已切换到 ${event.to}` });
+				await flush.schedule(renderUpdate);
+				break;
 			case "turn.failed":
 				card.apply("message.failed", { error: event.error });
 				await flush.schedule(renderUpdate, true);

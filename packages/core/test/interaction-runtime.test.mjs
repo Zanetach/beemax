@@ -7,6 +7,7 @@ const source = { platform: "cli", chatId: "local", chatType: "dm", userId: "loca
 test("interaction runtime translates a turn into presenter-safe semantic events", async () => {
 	const runtime = {
 		async run(_input, sink) {
+			await sink({ type: "model_fallback", from: "primary", to: "fallback", attempt: 1 });
 			await sink({ type: "tool_execution_start", toolCallId: "call-1", toolName: "read" });
 			await sink({ type: "message_update", message: { role: "assistant" }, assistantMessageEvent: { type: "text_delta", delta: "hello" } });
 			return { answer: "hello", model: "test/model", durationMs: 1, usage: {} };
@@ -18,10 +19,11 @@ test("interaction runtime translates a turn into presenter-safe semantic events"
 	const interaction = new InteractionEventAdapter(runtime);
 	const events = [];
 	await interaction.dispatch({ type: "message.send", source, text: "hi", input: { timeoutMs: 1_000 } }, (event) => { events.push(event); });
-	assert.deepEqual(events.map((event) => event.type), ["turn.started", "tool.changed", "answer.delta", "turn.finished"]);
+	assert.deepEqual(events.map((event) => event.type), ["turn.started", "model.fallback", "tool.changed", "answer.delta", "turn.finished"]);
+	assert.deepEqual({ type: events[1].type, from: events[1].from, to: events[1].to, attempt: events[1].attempt }, { type: "model.fallback", from: "primary", to: "fallback", attempt: 1 });
 	assert.equal(events.every((event) => event.sessionId && event.scope.platform === "cli" && event.turnId && event.at > 0 && event.sequence > 0), true);
-	assert.deepEqual(events.map((event) => event.sequence), [1, 2, 3, 4]);
-	assert.deepEqual(interaction.events(source, 2).map((event) => event.type), ["answer.delta", "turn.finished"]);
+	assert.deepEqual(events.map((event) => event.sequence), [1, 2, 3, 4, 5]);
+	assert.deepEqual(interaction.events(source, 2).map((event) => event.type), ["tool.changed", "answer.delta", "turn.finished"]);
 	assert.equal((await interaction.snapshot(source)).phase, "completed");
 });
 
@@ -91,7 +93,7 @@ test("session compaction is a Core action for all presenters", async () => {
 test("interaction telemetry is operational-only and does not contain model content", async () => {
 	const telemetry = [];
 	const runtime = {
-		async run(_input, sink) { await sink({ type: "message_update", message: { role: "assistant" }, assistantMessageEvent: { type: "text_delta", delta: "private answer" } }); return { answer: "private answer", model: "test/model", durationMs: 1, usage: {} }; },
+		async run(_input, sink) { await sink({ type: "model_fallback", from: "primary", to: "fallback", attempt: 1 }); await sink({ type: "message_update", message: { role: "assistant" }, assistantMessageEvent: { type: "text_delta", delta: "private answer" } }); return { answer: "private answer", model: "test/model", durationMs: 1, usage: {} }; },
 		async cancel() { return false; }, async modelStatus() { return { model: "test/model", thinkingLevel: "off", supportedThinkingLevels: ["off"] }; }, async usage() { return undefined; },
 	};
 	const interaction = new InteractionEventAdapter(runtime, { telemetry: (event) => telemetry.push(event) });
@@ -99,7 +101,8 @@ test("interaction telemetry is operational-only and does not contain model conte
 	interaction.events(source, 1);
 	assert.deepEqual(telemetry, [
 		{ type: "interaction.turn_started", surface: "cli", model: "test/model", session: telemetry[0].session },
-		{ type: "interaction.presenter_reconnected", surface: "cli", gapEvents: 2 },
+		{ type: "interaction.model_fallback", surface: "cli", from: "primary", to: "fallback", attempt: 1 },
+		{ type: "interaction.presenter_reconnected", surface: "cli", gapEvents: 3 },
 	]);
 	assert.match(telemetry[0].session, /^default:/);
 	assert.doesNotMatch(JSON.stringify(telemetry), /private/);
