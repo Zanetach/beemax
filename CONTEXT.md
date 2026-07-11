@@ -25,7 +25,7 @@ The durable aggregate lifecycle and quality summary of a Task Plan, derived from
 _Avoid_: Task Graph result, UI summary, final answer
 
 **Terminal Outcome**:
-The first persisted succeeded, failed, or cancelled state of a Task or Task Run; later executors may observe it but cannot replace it.
+The first persisted succeeded, failed, or cancelled state of a Task Plan, Task, or Task Run; later executors may observe it but cannot replace it.
 _Avoid_: Latest status, worker report, retry state
 
 **Task Dependency**:

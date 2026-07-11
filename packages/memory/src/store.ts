@@ -698,15 +698,16 @@ export class MemoryStore {
 		})();
 	}
 
-	transitionPlan(id: string, change: TaskPlanTransition): void {
+	transitionPlan(id: string, change: TaskPlanTransition): boolean {
 		const update = this.db.prepare(`UPDATE task_plans SET status = ?, task_count = ?, succeeded = ?, failed = ?, cancelled = ?, verified = ?, corrective_attempts = ?,
-			started_at = COALESCE(?, started_at), finished_at = CASE WHEN ? IN ('pending', 'running') THEN NULL ELSE COALESCE(?, finished_at) END WHERE id = ?`);
-		let result = update.run(change.status, change.taskCount, change.succeeded, change.failed, change.cancelled, change.verified, change.correctiveAttempts, change.startedAt ?? null, change.status, change.finishedAt ?? null, id);
+			started_at = COALESCE(?, started_at), finished_at = CASE WHEN ? IN ('pending', 'running') THEN NULL ELSE COALESCE(?, finished_at) END
+			WHERE id = ? AND ((? = 'running' AND status IN ('pending', 'running')) OR (? IN ('succeeded', 'failed', 'cancelled') AND status IN ('pending', 'running')))`);
+		let result = update.run(change.status, change.taskCount, change.succeeded, change.failed, change.cancelled, change.verified, change.correctiveAttempts, change.startedAt ?? null, change.status, change.finishedAt ?? null, id, change.status, change.status);
 		if (result.changes !== 1) {
 			this.backfillTaskPlans(id);
-			result = update.run(change.status, change.taskCount, change.succeeded, change.failed, change.cancelled, change.verified, change.correctiveAttempts, change.startedAt ?? null, change.status, change.finishedAt ?? null, id);
+			result = update.run(change.status, change.taskCount, change.succeeded, change.failed, change.cancelled, change.verified, change.correctiveAttempts, change.startedAt ?? null, change.status, change.finishedAt ?? null, id, change.status, change.status);
 		}
-		if (result.changes !== 1) throw new Error(`Task Plan not found: ${id}`);
+		return result.changes === 1;
 	}
 
 	private backfillTaskPlans(id?: string): void {
@@ -790,11 +791,15 @@ export class MemoryStore {
 		const counts = this.db.prepare(`SELECT COUNT(*) AS task_count, SUM(status = 'succeeded') AS succeeded, SUM(status = 'failed') AS failed,
 			SUM(status = 'cancelled') AS cancelled, COALESCE(SUM(verification_status = 'accepted'), 0) AS verified,
 			COALESCE(SUM(corrective_attempts), 0) AS corrective_attempts FROM tasks WHERE plan_id = ?`).get(id) as { task_count: number; succeeded: number; failed: number; cancelled: number; verified: number; corrective_attempts: number };
-		this.transitionPlan(id, {
+		const change: TaskPlanTransition = {
 			status, taskCount: counts.task_count, succeeded: counts.succeeded, failed: counts.failed, cancelled: counts.cancelled,
 			verified: counts.verified, correctiveAttempts: counts.corrective_attempts,
 			...(status === "running" ? { startedAt: now } : {}), ...(["succeeded", "failed", "cancelled"].includes(status) ? { finishedAt: now } : {}),
-		});
+		};
+		if (status === "pending") {
+			this.db.prepare(`UPDATE task_plans SET status = 'pending', task_count = ?, succeeded = ?, failed = ?, cancelled = ?, verified = ?, corrective_attempts = ?, finished_at = NULL
+				WHERE id = ? AND status IN ('pending', 'failed')`).run(change.taskCount, change.succeeded, change.failed, change.cancelled, change.verified, change.correctiveAttempts, id);
+		} else this.transitionPlan(id, change);
 	}
 
 	forget(id: string, opts: Omit<RecallOptions, "limit"> = {}): boolean {

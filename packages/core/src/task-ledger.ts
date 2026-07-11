@@ -83,7 +83,7 @@ export interface TaskLedger {
 	queryTasks(query: TaskQuery): TaskRecord[];
 	taskRuns(taskId: string): TaskRunRecord[];
 	recordPlan(tasks: TaskRecord[], dependencies: TaskDependency[], plan?: TaskPlanRecord): void;
-	transitionPlan(id: string, change: TaskPlanTransition): void;
+	transitionPlan(id: string, change: TaskPlanTransition): boolean;
 	queryTaskPlans(query: TaskPlanQuery): TaskPlanRecord[];
 	taskDependencies(taskIds: string[]): TaskDependency[];
 	reconcileExpiredTaskRuns(now?: number): TaskRecoveryResult;

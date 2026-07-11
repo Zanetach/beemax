@@ -177,7 +177,7 @@ test("manual Task Plan retry is owner-scoped and requeues only recoverable faile
 	} finally { store.close(); rmSync(root, { recursive: true, force: true }); }
 });
 
-test("Task Plan cancellation is owner-scoped and persists Tasks and active Runs atomically", () => {
+test("Task Plan cancellation is owner-scoped and persists Tasks and active Runs atomically", async () => {
 	const root = mkdtempSync(join(tmpdir(), "beemax-task-plan-cancel-"));
 	const store = new MemoryStore(join(root, "memory.db"));
 	try {
@@ -194,6 +194,8 @@ test("Task Plan cancellation is owner-scoped and persists Tasks and active Runs 
 		assert.equal(plan.taskCount, 2);
 		assert.equal(plan.cancelled, 2);
 		assert.ok(plan.finishedAt >= plan.startedAt);
+		assert.deepEqual(await runner.retry(["cli:local:local"], "cancel-plan"), { prepared: 0, plans: 0, succeeded: 0, failed: 0, cancelled: 0, blocked: [] });
+		assert.equal(store.queryTaskPlans({ ownerKeys: ["cli:local:local"], id: "cancel-plan" })[0].status, "cancelled");
 	} finally { store.close(); rmSync(root, { recursive: true, force: true }); }
 });
 
@@ -256,6 +258,20 @@ test("Task DAG dependencies persist with their Tasks", () => {
 			id: "content-plan", ownerKey: "cli:local:local", title: "Create content", status: "pending", taskCount: 2,
 			succeeded: 0, failed: 0, cancelled: 0, verified: 0, correctiveAttempts: 0, createdAt: 100,
 		}]);
+	} finally { store.close(); rmSync(root, { recursive: true, force: true }); }
+});
+
+test("a Task Plan Terminal Outcome rejects late lifecycle updates", () => {
+	const root = mkdtempSync(join(tmpdir(), "beemax-plan-terminal-outcome-"));
+	const store = new MemoryStore(join(root, "memory.db"));
+	try {
+		new TaskGraph(store).createPlan({ id: "terminal-plan", ownerKey: "cli:local:local", tasks: [{ id: "task", title: "Task" }] }, 100);
+		const counts = { taskCount: 1, succeeded: 0, failed: 0, cancelled: 0, verified: 0, correctiveAttempts: 0 };
+		assert.equal(store.transitionPlan("terminal-plan", { ...counts, status: "running", startedAt: 110 }), true);
+		assert.equal(store.transitionPlan("terminal-plan", { ...counts, status: "cancelled", cancelled: 1, finishedAt: 120 }), true);
+		assert.equal(store.transitionPlan("terminal-plan", { ...counts, status: "failed", failed: 1, finishedAt: 130 }), false);
+		assert.equal(store.transitionPlan("terminal-plan", { ...counts, status: "running", startedAt: 130 }), false);
+		assert.equal(store.queryTaskPlans({ ownerKeys: ["cli:local:local"], id: "terminal-plan" })[0].status, "cancelled");
 	} finally { store.close(); rmSync(root, { recursive: true, force: true }); }
 });
 
