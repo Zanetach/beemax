@@ -86,3 +86,26 @@ test("planning budget leases cannot be cleared by a stale turn", () => {
 	assert.equal(registry.end("conversation", second), true);
 	assert.equal(registry.current("conversation"), undefined);
 });
+
+test("Agent runtime aborts a turn that exceeds its planned tool-call budget", async () => {
+	const source = { platform: "cli", chatId: "budget", chatType: "dm", userId: "local" };
+	let listener;
+	let aborts = 0;
+	const agent = { state: { model: { id: "test" }, messages: [] } };
+	const runtime = new BeeMaxAgentRuntime({
+		planningPolicy: new AutonomousPlanningPolicy(),
+		createAgent: async () => ({
+			agent,
+			subscribe: (next) => { listener = next; return () => undefined; },
+			prompt: async () => {
+				for (let index = 0; index < 9; index++) listener({ type: "tool_execution_start", toolCallId: `tool-${index}`, toolName: "read" });
+				agent.state.messages = [{ role: "assistant", content: [{ type: "text", text: "should not succeed" }], usage: { input: 1, output: 1 } }];
+			},
+			abort: async () => { aborts++; },
+			dispose: () => undefined,
+		}),
+	});
+	await assert.rejects(runtime.run({ source, text: "Read this file", timeoutMs: 1_000 }), /tool-call budget exceeded.*8/i);
+	assert.equal(aborts, 1);
+	runtime.dispose();
+});

@@ -148,8 +148,17 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 			const planningLease = planning && this.planningBudgets ? this.planningBudgets.begin(planningScope, planning) : undefined;
 			const text = planning ? `${enrichedText}\n\n${planning.directive()}` : enrichedText;
 			let observableProgress = false;
+			let toolCalls = 0;
+			let budgetExceeded: string | undefined;
 			const unsubscribe = session.piSession.subscribe((event) => {
-				if (event.type === "tool_execution_start" || (event.type === "message_update" && event.assistantMessageEvent.type === "text_delta" && event.assistantMessageEvent.delta.length > 0)) observableProgress = true;
+				if (event.type === "tool_execution_start") {
+					observableProgress = true;
+					toolCalls++;
+					if (planning && toolCalls > planning.budget.maxToolCalls && !budgetExceeded) {
+						budgetExceeded = `Agent tool-call budget exceeded (${planning.budget.maxToolCalls})`;
+						void session.piSession.abort();
+					}
+				} else if (event.type === "message_update" && event.assistantMessageEvent.type === "text_delta" && event.assistantMessageEvent.delta.length > 0) observableProgress = true;
 				void onEvent?.(event);
 			});
 			let timedOut = false;
@@ -162,6 +171,7 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 					source: input.mode === "automation" ? "extension" : undefined,
 					images: input.images,
 				});
+				if (budgetExceeded) throw new AgentRunError(budgetExceeded, false, undefined);
 				let failure = lastAssistantFailure(session.piSession.agent);
 				let attempt = 0;
 				for (const fallback of this.fallbackModels) {
