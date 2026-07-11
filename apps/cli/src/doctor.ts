@@ -11,13 +11,24 @@ import { AuthStorage } from "@beemax/core";
 import type { BeeMaxConfig } from "./config.ts";
 import { configuredApiKey, providerApiKeyEnv } from "./provider-resolver.ts";
 
-interface Check { name: string; status: "PASS" | "WARN" | "FAIL"; detail: string }
+export interface DoctorCheck { name: string; status: "PASS" | "WARN" | "FAIL"; detail: string }
+export interface DoctorResult { ok: boolean; checks: DoctorCheck[] }
 const execFileAsync = promisify(execFile);
 
-export interface DoctorOptions { requireGateway?: boolean }
+export interface DoctorOptions { requireGateway?: boolean; json?: boolean }
 
 export async function runDoctor(config: BeeMaxConfig, options: DoctorOptions = {}): Promise<boolean> {
-	const checks: Check[] = [];
+	const result = await inspectDoctor(config, options);
+	if (options.json) console.log(JSON.stringify(result));
+	else {
+		for (const check of result.checks) console.log(`${check.status.padEnd(4)}  ${check.name.padEnd(22)} ${check.detail}`);
+		console.log(result.ok ? "\nBeeMax configuration is ready to start." : "\nBeeMax is not ready; fix FAIL items before starting.");
+	}
+	return result.ok;
+}
+
+export async function inspectDoctor(config: BeeMaxConfig, options: DoctorOptions = {}): Promise<DoctorResult> {
+	const checks: DoctorCheck[] = [];
 	const node = process.versions.node.split(".").map(Number);
 	checks.push({ name: "Node.js", status: node[0] > 22 || (node[0] === 22 && node[1] >= 19) ? "PASS" : "FAIL", detail: process.versions.node });
 
@@ -120,13 +131,11 @@ export async function runDoctor(config: BeeMaxConfig, options: DoctorOptions = {
 		await mcp.close();
 	}
 
-	for (const check of checks) console.log(`${check.status.padEnd(4)}  ${check.name.padEnd(22)} ${check.detail}`);
 	const ok = !checks.some((check) => check.status === "FAIL");
-	console.log(ok ? "\nBeeMax configuration is ready to start." : "\nBeeMax is not ready; fix FAIL items before starting.");
-	return ok;
+	return { ok, checks };
 }
 
-async function checkExecutionBackend(config: BeeMaxConfig, checks: Check[]): Promise<void> {
+async function checkExecutionBackend(config: BeeMaxConfig, checks: DoctorCheck[]): Promise<void> {
 	const detail = `${config.execution.backend}; mode=${config.execution.mode}; workspace=${config.execution.workspaceAccess}`;
 	if (config.execution.mode === "off") {
 		checks.push({ name: "Execution sandbox", status: "PASS", detail: `disabled (${detail})` });
