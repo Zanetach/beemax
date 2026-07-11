@@ -823,6 +823,10 @@ async function runChat(config: ReturnType<typeof loadConfig>): Promise<void> {
 			return `Usage: input=${current.inputTokens}; output=${current.outputTokens}; cache-read=${current.cacheReadTokens}; cache-write=${current.cacheWriteTokens}; context=${context}${lastDurationMs === undefined ? "" : `; last-turn=${Math.round(lastDurationMs / 1000)}s`}`;
 		};
 		const status = async () => `Profile: ${config.profile}\nModel: ${config.model.provider}/${config.model.model}\nSession: ${source.threadId ?? "default"}\nRun: ${runtime.isBusy() ? "running" : "idle"}\nReasoning: ${reasoningDisplay}\nDetails: ${detailsDisplay}\nToolset: ${config.agent.toolset}\n${await usage()}`;
+		const toolsStatus = () => {
+			const tools = mcp.getTools().map((tool) => `${tool.name}${mcpApproval.has(tool.name) ? " (approval required)" : ""}`);
+			return `Toolset: ${config.agent.toolset}\nMCP: ${tools.length ? tools.join(", ") : "no MCP tools connected"}`;
+		};
 		const sessions = async () => {
 			const live = new Map(runtime.listSessions(source).map((candidate) => [candidate.threadId ?? "default", candidate]));
 			const saved = await runtime.listSavedSessions(source);
@@ -887,7 +891,7 @@ async function runChat(config: ReturnType<typeof loadConfig>): Promise<void> {
 			}
 			if (trimmed === "/quit" || trimmed === "/exit") { closed = true; rl.close(); return; }
 			if (command?.kind === "help") {
-				process.stdout.write("Commands: /help /status /new /reset /sessions /history [n] /resume <session-id> /usage /stop /compact /model /models /think [level] /retry /reasoning /details [hidden|collapsed|expanded] /quit\n");
+				process.stdout.write("Commands: /help /status /new /reset /sessions /history [n] /resume <session-id> /usage /stop /compact /model /models /think [level] /tools /retry /reasoning /details [hidden|collapsed|expanded] /quit\n");
 				writePrompt();
 				return;
 			}
@@ -916,6 +920,7 @@ async function runChat(config: ReturnType<typeof loadConfig>): Promise<void> {
 			}
 			if (command?.kind === "sessions") { process.stdout.write(`${await sessions()}\n`); writePrompt(); return; }
 			if (command?.kind === "models") { process.stdout.write(`${renderConfiguredModels(config)}\n`); writePrompt(); return; }
+			if (command?.kind === "tools") { process.stdout.write(`${toolsStatus()}\n`); writePrompt(); return; }
 			if (command?.kind === "retry") {
 				if (!retryText) process.stdout.write("No recoverable failed turn to retry.\n");
 				else { const text = retryText; retryText = undefined; active = runTurn(text, source); try { await active; } catch (error) { process.stdout.write(`Agent run failed: ${error instanceof Error ? error.message : String(error)}\n`); } finally { active = undefined; } }

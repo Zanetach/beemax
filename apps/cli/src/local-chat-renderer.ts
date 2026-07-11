@@ -74,6 +74,7 @@ export type ChatCommand =
 	| { kind: "resume"; sessionId: string }
 	| { kind: "models" }
 	| { kind: "retry" }
+	| { kind: "tools" }
 	| { kind: "think"; level?: "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max" }
 	| { kind: "details"; mode: DetailsDisplay | "status" };
 
@@ -89,6 +90,7 @@ export function parseChatCommand(input: string): ChatCommand | undefined {
 	if (value === "/sessions") return { kind: "sessions" };
 	if (value === "/models") return { kind: "models" };
 	if (value === "/retry") return { kind: "retry" };
+	if (value === "/tools") return { kind: "tools" };
 	const history = value.match(/^\/history(?:\s+(\d{1,3}))?$/);
 	if (history) return { kind: "history", limit: history[1] ? Number(history[1]) : undefined };
 	const resume = input.trim().match(/^\/resume\s+([^\s]+)$/i);
