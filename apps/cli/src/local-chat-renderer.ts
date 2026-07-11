@@ -72,6 +72,7 @@ export type ChatCommand =
 	| { kind: "compact" }
 	| { kind: "history"; limit?: number }
 	| { kind: "resume"; sessionId: string }
+	| { kind: "think"; level?: "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max" }
 	| { kind: "details"; mode: DetailsDisplay | "status" };
 
 export function parseChatCommand(input: string): ChatCommand | undefined {
@@ -88,6 +89,8 @@ export function parseChatCommand(input: string): ChatCommand | undefined {
 	if (history) return { kind: "history", limit: history[1] ? Number(history[1]) : undefined };
 	const resume = input.trim().match(/^\/resume\s+([^\s]+)$/i);
 	if (resume) return { kind: "resume", sessionId: resume[1] };
+	const think = value.match(/^\/think(?:\s+(off|minimal|low|medium|high|xhigh|max))?$/);
+	if (think) return { kind: "think", level: think[1] as "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max" | undefined };
 	const details = value.match(/^\/details(?:\s+(hidden|collapsed|expanded))?$/);
 	if (details) return { kind: "details", mode: details[1] === "hidden" || details[1] === "collapsed" || details[1] === "expanded" ? details[1] : "status" };
 	return undefined;

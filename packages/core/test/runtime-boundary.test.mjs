@@ -146,7 +146,8 @@ test("BeeMax Agent Runtime exposes session history, snapshots, and idle reset th
 	const runtime = new BeeMaxAgentRuntime({
 		createAgent: async () => {
 			const agent = { state: { model: { id: "test" }, messages: [{ role: "user", content: "hello" }, { role: "assistant", content: [{ type: "text", text: "hi" }], usage: { input: 1, output: 1, cacheRead: 2, cacheWrite: 3 } }] } };
-			return { agent, subscribe: () => () => undefined, prompt: async () => undefined, abort: async () => undefined, getContextUsage: () => ({ tokens: 10, contextWindow: 100, percent: 10 }), dispose: () => { disposed++; } };
+			let thinkingLevel = "off";
+			return { agent, subscribe: () => () => undefined, prompt: async () => undefined, abort: async () => undefined, get thinkingLevel() { return thinkingLevel; }, setThinkingLevel: (level) => { thinkingLevel = level; }, getContextUsage: () => ({ tokens: 10, contextWindow: 100, percent: 10 }), dispose: () => { disposed++; } };
 		},
 	});
 	assert.deepEqual(await runtime.history(source), []);
@@ -157,6 +158,8 @@ test("BeeMax Agent Runtime exposes session history, snapshots, and idle reset th
 	await runtime.run({ source, text: "hello", timeoutMs: 1_000 });
 	assert.deepEqual(await runtime.history(source), [{ role: "user", text: "hello" }, { role: "assistant", text: "hi" }]);
 	assert.deepEqual(await runtime.usage(source), { inputTokens: 1, outputTokens: 1, cacheReadTokens: 2, cacheWriteTokens: 3, contextTokens: 10, contextWindow: 100, contextPercent: 10 });
+	assert.deepEqual(await runtime.modelStatus(source), { model: "test", thinkingLevel: "off", supportedThinkingLevels: ["off"] });
+	assert.deepEqual(await runtime.setThinkingLevel(source, "high"), { model: "test", thinkingLevel: "off", supportedThinkingLevels: ["off"] });
 	assert.equal(runtime.listSessions(source)[0].threadId, "thread-1");
 	assert.equal(runtime.reset(source), true);
 	assert.equal(disposed, 2);

@@ -1,5 +1,5 @@
 import type { Agent } from "@earendil-works/pi-agent-core";
-import type { Api, Model } from "@earendil-works/pi-ai";
+import { clampThinkingLevel, getSupportedThinkingLevels, type Api, type Model, type ModelThinkingLevel } from "@earendil-works/pi-ai";
 import type { AgentSession, AgentSessionEvent } from "@earendil-works/pi-coding-agent";
 import { ConversationContext } from "./conversation-context.ts";
 import {
@@ -41,6 +41,12 @@ export interface AgentSessionUsage {
 	contextPercent: number | null;
 }
 
+export interface AgentModelStatus {
+	model: string;
+	thinkingLevel: ModelThinkingLevel;
+	supportedThinkingLevels: ModelThinkingLevel[];
+}
+
 export type AgentRunEventSink = (event: AgentSessionEvent) => void | Promise<void>;
 
 /** Gateway-facing runtime contract; implementations may be local or remote. */
@@ -60,6 +66,8 @@ export interface AgentRuntimePort<Source extends BeeMaxRuntimeSource = BeeMaxRun
 	handleControl(input: AgentControlInput<Source>): Promise<AgentControlResult | undefined>;
 	isBusy(): boolean;
 	setModel(source: Source, model: Model<Api>): Promise<boolean>;
+	modelStatus(source: Source): Promise<AgentModelStatus | undefined>;
+	setThinkingLevel(source: Source, level: ModelThinkingLevel): Promise<AgentModelStatus | undefined>;
 	dispose(): void;
 }
 
@@ -168,6 +176,17 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 			return true;
 		})) ?? false;
 	}
+	async modelStatus(source: Source): Promise<AgentModelStatus | undefined> {
+		return this.sessions.withSession(source, async (session) => modelStatusOf(session.piSession));
+	}
+	async setThinkingLevel(source: Source, level: ModelThinkingLevel): Promise<AgentModelStatus | undefined> {
+		return this.sessions.withSession(source, async (session) => {
+			if (session.busy) return undefined;
+			const model = session.piSession.agent.state.model;
+			session.piSession.setThinkingLevel(model ? clampThinkingLevel(model, level) : "off");
+			return modelStatusOf(session.piSession);
+		});
+	}
 	isBusy(): boolean { return this.sessions.isBusy(); }
 	dispose(): void { this.sessions.dispose(); }
 }
@@ -218,5 +237,13 @@ function sessionUsage(session: AgentSession): AgentSessionUsage {
 		: total, { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 });
 	const context = session.getContextUsage();
 	return { ...totals, contextTokens: context?.tokens ?? null, contextWindow: context?.contextWindow ?? null, contextPercent: context?.percent ?? null };
+}
+function modelStatusOf(session: AgentSession): AgentModelStatus {
+	const model = session.agent.state.model;
+	return {
+		model: model?.id ?? "Unknown",
+		thinkingLevel: session.thinkingLevel,
+		supportedThinkingLevels: model ? getSupportedThinkingLevels(model) : ["off"],
+	};
 }
 function errorMessage(error: unknown): string { return error instanceof Error ? error.message : String(error); }

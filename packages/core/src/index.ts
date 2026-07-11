@@ -7,9 +7,10 @@
 
 export type { Agent } from "@earendil-works/pi-agent-core";
 export { StringEnum } from "@earendil-works/pi-ai";
+export { getSupportedThinkingLevels } from "@earendil-works/pi-ai";
 export { getBuiltinModel } from "@earendil-works/pi-ai/providers/all";
 export { builtinProviders } from "@earendil-works/pi-ai/providers/all";
-export type { Api, Model } from "@earendil-works/pi-ai";
+export type { Api, Model, ModelThinkingLevel } from "@earendil-works/pi-ai";
 export {
 	AuthStorage,
 	createAgentSession,

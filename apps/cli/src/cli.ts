@@ -886,7 +886,7 @@ async function runChat(config: ReturnType<typeof loadConfig>): Promise<void> {
 			}
 			if (trimmed === "/quit" || trimmed === "/exit") { closed = true; rl.close(); return; }
 			if (command?.kind === "help") {
-				process.stdout.write("Commands: /help /status /new /reset /sessions /history [n] /resume <session-id> /usage /stop /compact /model /reasoning /details [hidden|collapsed|expanded] /quit\n");
+				process.stdout.write("Commands: /help /status /new /reset /sessions /history [n] /resume <session-id> /usage /stop /compact /model /think [level] /reasoning /details [hidden|collapsed|expanded] /quit\n");
 				writePrompt();
 				return;
 			}
@@ -934,6 +934,18 @@ async function runChat(config: ReturnType<typeof loadConfig>): Promise<void> {
 			if (command?.kind === "compact") {
 				const compacted = await runtime.compact(source);
 				process.stdout.write(`${compacted ? "Context compacted." : "No idle session is available to compact."}\n`);
+				writePrompt();
+				return;
+			}
+			if (command?.kind === "think") {
+				const current = await runtime.modelStatus(source);
+				if (!current) process.stdout.write("No live session. Resume or send a message first.\n");
+				else if (!command.level) process.stdout.write(`Thinking: ${current.thinkingLevel}. Supported: ${current.supportedThinkingLevels.join(", ")}.\n`);
+				else {
+					const updated = await runtime.setThinkingLevel(source, command.level);
+					if (!updated) process.stdout.write("The Agent is busy. Try again after the current turn.\n");
+					else process.stdout.write(`Thinking set to ${updated.thinkingLevel}. Supported: ${updated.supportedThinkingLevels.join(", ")}.\n`);
+				}
 				writePrompt();
 				return;
 			}

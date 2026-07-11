@@ -60,6 +60,8 @@ test("chat controls expose a small, explicit console contract", () => {
 	assert.deepEqual(parseChatCommand("/history"), { kind: "history", limit: undefined });
 	assert.deepEqual(parseChatCommand("/history 12"), { kind: "history", limit: 12 });
 	assert.deepEqual(parseChatCommand("/resume local-123"), { kind: "resume", sessionId: "local-123" });
+	assert.deepEqual(parseChatCommand("/think high"), { kind: "think", level: "high" });
+	assert.deepEqual(parseChatCommand("/think"), { kind: "think", level: undefined });
 	assert.deepEqual(parseChatCommand("/details hidden"), { kind: "details", mode: "hidden" });
 	assert.deepEqual(parseChatCommand("/details collapsed"), { kind: "details", mode: "collapsed" });
 	assert.deepEqual(parseChatCommand("/details"), { kind: "details", mode: "status" });
