@@ -7,6 +7,7 @@ import type { TaskLedger } from "./task-ledger.ts";
 import { MUTATING_TOOL_POLICY, READ_ONLY_TOOL_POLICY, withToolPolicy, type ToolPolicy } from "./tool-runtime.ts";
 import { TaskPlanRuntime } from "./task-plan-runtime.ts";
 import type { AutonomousPlanningDecision } from "./autonomous-planning.ts";
+import { assessTaskPlanQuality } from "./task-plan-quality.ts";
 
 export interface TaskOrchestrationOptions { maxConcurrent?: number; maxTasks?: number; maxCorrectiveAttempts?: number; planRuntime?: TaskPlanRuntime; verify?: TaskGraphVerifier; planningDecision?: () => AutonomousPlanningDecision | undefined; }
 
@@ -46,6 +47,8 @@ export function createTaskOrchestrationTools(
 			if (planning && params.tasks.length > planning.budget.maxSubagents) throw new Error(`Task Plan exceeds Sub-Agent budget (${planning.budget.maxSubagents})`);
 			const admittedConcurrency = planning ? Math.min(maxConcurrent, planning.suggestedConcurrency) : maxConcurrent;
 			const admittedCorrections = planning ? Math.min(maxCorrectiveAttempts, planning.budget.maxCorrectiveAttempts) : maxCorrectiveAttempts;
+			const quality = assessTaskPlanQuality(params.tasks);
+			if (!quality.accepted) throw new Error(`Task Plan quality rejected:\n- ${quality.issues.join("\n- ")}`);
 			const planId = crypto.randomUUID();
 			const ids = new Map(params.tasks.map((task) => [task.key, `${planId}:${task.key}`]));
 			const dependencies = (params.dependencies ?? []).map((edge) => {
