@@ -1,5 +1,5 @@
 import { createCipheriv, createDecipheriv, randomBytes, randomUUID } from "node:crypto";
-import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { chmodSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { BoundedJsonlJournal } from "./bounded-jsonl-journal.ts";
 
@@ -26,6 +26,8 @@ export interface CredentialVault {
 interface StoredCredential extends CredentialMetadata { secret: string; }
 interface VaultPayload { records: StoredCredential[]; }
 interface VaultEnvelope { version: 1; algorithm: "aes-256-gcm"; iv: string; tag: string; ciphertext: string; }
+interface VaultWriteLease { token: string; acquiredAt: number; }
+const WRITE_LEASE_MS = 30_000;
 
 /** Encrypted Profile-local Secret storage. Plaintext only crosses the trusted consumer callback. */
 export class FileCredentialVault implements CredentialVault {
@@ -33,6 +35,7 @@ export class FileCredentialVault implements CredentialVault {
 	private readonly key: Buffer;
 	private readonly audit?: CredentialVaultAuditSink;
 	private records: StoredCredential[];
+	private writeLease?: VaultWriteLease;
 
 	constructor(path: string, key: Uint8Array, audit?: CredentialVaultAuditSink) {
 		if (key.byteLength !== 32) throw new Error("Credential Vault key must contain exactly 32 bytes");
@@ -44,14 +47,12 @@ export class FileCredentialVault implements CredentialVault {
 	}
 
 	put(input: CredentialInput, now = Date.now()): CredentialMetadata {
-		this.refresh();
 		const ownerKey = required(input.ownerKey, "ownerKey", 512);
 		const label = required(input.label, "label", 256);
 		const purpose = required(input.purpose, "purpose", 512);
 		const secret = required(input.secret, "secret", 64 * 1024, false);
 		const record: StoredCredential = { ref: `cred_${randomUUID()}`, ownerKey, label, purpose, secret, createdAt: now, updatedAt: now };
-		this.records.push(record);
-		this.persist();
+		this.mutate(() => { this.records.push(record); this.persist(); });
 		this.emit({ action: "stored", ownerKey, ref: record.ref, at: now });
 		return metadata(record);
 	}
@@ -62,30 +63,36 @@ export class FileCredentialVault implements CredentialVault {
 	}
 
 	async withSecret<T>(ownerKey: string, ref: string, capability: string, consume: (secret: string) => T | Promise<T>, now = Date.now()): Promise<T> {
-		this.refresh();
 		if (!/^[a-z][a-z0-9._-]{1,63}$/.test(capability)) throw new Error("Credential access capability must be a stable non-sensitive identifier");
-		const record = this.records.find((candidate) => candidate.ref === ref && candidate.ownerKey === ownerKey);
-		if (!record) {
+		const secret = this.mutate(() => {
+			const record = this.records.find((candidate) => candidate.ref === ref && candidate.ownerKey === ownerKey);
+			if (!record) return undefined;
+			record.lastUsedAt = now; record.updatedAt = now;
+			this.persist();
+			return record.secret;
+		});
+		if (secret === undefined) {
 			this.emit({ action: "access_denied", ownerKey, ref: safeRef(ref), capability, at: now });
 			throw new Error(`Credential Ref not found: ${ref}`);
 		}
-		record.lastUsedAt = now; record.updatedAt = now;
-		this.persist();
 		this.emit({ action: "accessed", ownerKey, ref, capability, at: now });
-		return await consume(record.secret);
+		return await consume(secret);
 	}
 
 	remove(ownerKey: string, ref: string, now = Date.now()): boolean {
-		this.refresh();
-		const index = this.records.findIndex((record) => record.ref === ref && record.ownerKey === ownerKey);
-		if (index < 0) return false;
-		this.records.splice(index, 1);
-		this.persist();
+		const removed = this.mutate(() => {
+			const index = this.records.findIndex((record) => record.ref === ref && record.ownerKey === ownerKey);
+			if (index < 0) return false;
+			this.records.splice(index, 1); this.persist(); return true;
+		});
+		if (!removed) return false;
 		this.emit({ action: "removed", ownerKey, ref, at: now });
 		return true;
 	}
 
 	private persist(): void {
+		if (!this.writeLease) throw new Error("Credential Vault persistence requires a write lease");
+		this.assertWriteLease(this.writeLease);
 		mkdirSync(dirname(this.path), { recursive: true, mode: 0o700 });
 		const iv = randomBytes(12);
 		const cipher = createCipheriv("aes-256-gcm", this.key, iv);
@@ -98,6 +105,43 @@ export class FileCredentialVault implements CredentialVault {
 	}
 
 	private refresh(): void { if (existsSync(this.path)) this.records = this.decrypt(readFileSync(this.path, "utf8")); }
+
+	private mutate<T>(change: () => T): T {
+		const lease = this.acquireWriteLease();
+		this.writeLease = lease;
+		try { this.refresh(); return change(); }
+		finally { this.writeLease = undefined; this.releaseWriteLease(lease); }
+	}
+
+	private acquireWriteLease(): VaultWriteLease {
+		mkdirSync(dirname(this.path), { recursive: true, mode: 0o700 });
+		const lockPath = `${this.path}.lock`;
+		for (let attempt = 0; attempt < 2; attempt++) {
+			const lease = { token: randomUUID(), acquiredAt: Date.now() };
+			try {
+				const fd = openSync(lockPath, "wx", 0o600);
+				try { writeFileSync(fd, JSON.stringify(lease), "utf8"); } finally { closeSync(fd); }
+				return lease;
+			} catch (error) {
+				if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+				const existing = readLease(lockPath);
+				const acquiredAt = existing?.acquiredAt ?? statSync(lockPath).mtimeMs;
+				if (Date.now() - acquiredAt <= WRITE_LEASE_MS) throw new Error("Credential Vault is busy behind an active write lease");
+				const stale = `${lockPath}.stale.${randomUUID()}`;
+				try { renameSync(lockPath, stale); unlinkSync(stale); } catch { /* another process recovered it; retry */ }
+			}
+		}
+		throw new Error("Credential Vault write lease could not be acquired");
+	}
+
+	private assertWriteLease(lease: VaultWriteLease): void {
+		if (readLease(`${this.path}.lock`)?.token !== lease.token) throw new Error("Credential Vault write lease was lost");
+	}
+
+	private releaseWriteLease(lease: VaultWriteLease): void {
+		const lockPath = `${this.path}.lock`;
+		if (readLease(lockPath)?.token === lease.token) try { unlinkSync(lockPath); } catch { /* already released */ }
+	}
 
 	private decrypt(serialized: string): StoredCredential[] {
 		try {
@@ -112,6 +156,11 @@ export class FileCredentialVault implements CredentialVault {
 	}
 
 	private emit(event: CredentialVaultAuditEvent): void { this.audit?.(event); }
+}
+
+function readLease(path: string): VaultWriteLease | undefined {
+	try { const value = JSON.parse(readFileSync(path, "utf8")) as Partial<VaultWriteLease>; return typeof value.token === "string" && typeof value.acquiredAt === "number" ? value as VaultWriteLease : undefined; }
+	catch { return undefined; }
 }
 
 function metadata(record: StoredCredential): CredentialMetadata {

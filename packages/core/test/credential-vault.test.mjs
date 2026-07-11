@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { FileCredentialVault } from "../dist/index.js";
@@ -57,5 +57,19 @@ test("a long-running Credential Vault observes credentials added by another Prof
 		const credential = cliVault.put({ ownerKey: "profile:personal", label: "New account", purpose: "login", secret: "new-secret" }, 10);
 		assert.equal(gatewayVault.list("profile:personal")[0].ref, credential.ref);
 		assert.equal(await gatewayVault.withSecret("profile:personal", credential.ref, "browser.fill", async (secret) => secret === "new-secret"), true);
+	} finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("Credential Vault fails closed behind an active writer lease and reclaims a stale lease", () => {
+	const root = mkdtempSync(join(tmpdir(), "beemax-credential-lease-"));
+	const path = join(root, "credentials.vault");
+	try {
+		const vault = new FileCredentialVault(path, key);
+		writeFileSync(`${path}.lock`, JSON.stringify({ token: "active", acquiredAt: Date.now() }), { mode: 0o600 });
+		assert.throws(() => vault.put({ ownerKey: "profile:personal", label: "Blocked", purpose: "login", secret: "blocked" }), /busy|lease/i);
+		assert.deepEqual(vault.list("profile:personal"), []);
+		writeFileSync(`${path}.lock`, JSON.stringify({ token: "stale", acquiredAt: 1 }), { mode: 0o600 });
+		const credential = vault.put({ ownerKey: "profile:personal", label: "Recovered", purpose: "login", secret: "saved" });
+		assert.equal(vault.list("profile:personal")[0].ref, credential.ref);
 	} finally { rmSync(root, { recursive: true, force: true }); }
 });
