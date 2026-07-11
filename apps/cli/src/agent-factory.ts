@@ -64,11 +64,8 @@ export interface AgentFactoryOptions {
 }
 
 const REQUIRES_APPROVAL = new Set([
-	"bash", "edit", "write", "feishu_meeting_reserve_create", "feishu_meeting_reserve_update", "feishu_meeting_reserve_delete",
-	"feishu_meeting_end", "feishu_meeting_invite", "feishu_meeting_kickout", "feishu_meeting_set_host",
-	"feishu_meeting_recording_set_permission", "feishu_meeting_recording_start", "feishu_meeting_recording_stop",
-	"memory_forget", "memory_remember", "memory_promote", "memory_reject", "memory_correct", "skill_create", "skill_update", "browser_open", "browser_read", "browser_click", "browser_fill", "browser_cookies",
-	"reminder_create", "schedule_create", "schedule_pause", "schedule_resume", "schedule_delete", "image_generate",
+	// Pi built-ins remain here for compatibility; first-class capabilities declare beemaxPolicy at their source.
+	"bash", "edit", "write",
 ]);
 
 export function buildAgentFactory(opts: AgentFactoryOptions) {

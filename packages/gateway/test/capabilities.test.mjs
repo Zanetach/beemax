@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
 import { createCodexImageTool } from "@beemax/codex-image-capability";
+import { createFeishuMeetingTools } from "@beemax/feishu-capability";
 import { McpManager } from "@beemax/mcp-capability";
 import { filterEligibleSkills } from "@beemax/core";
 import { buildAgentFactory } from "../../../apps/cli/dist/agent-factory.js";
@@ -13,6 +14,13 @@ import { reloadResourcesIfNeeded } from "../dist/core/resource-reload.js";
 
 const fixture = fileURLToPath(new URL("./fixtures/mcp-server.mjs", import.meta.url));
 const hangingMcpFixture = fileURLToPath(new URL("./fixtures/hanging-mcp-server.mjs", import.meta.url));
+
+test("Feishu meeting tools publish read, mutation, and destructive policies", () => {
+	const tools = new Map(createFeishuMeetingTools(() => undefined).map((tool) => [tool.name, tool]));
+	assert.equal(tools.get("feishu_meeting_reserve_active_get").beemaxPolicy.approval, "never");
+	assert.equal(tools.get("feishu_meeting_reserve_create").beemaxPolicy.risk, "medium");
+	assert.equal(tools.get("feishu_meeting_end").beemaxPolicy.reversible, false);
+});
 
 test("managed skills can evolve without escaping their directory", async () => {
 	const root = mkdtempSync(join(tmpdir(), "beemax-skill-test-"));
@@ -82,6 +90,8 @@ test("Codex image generation saves and delivers a PNG without exposing OAuth", a
 			outputDir: root, quality: "medium", getAccessToken: async () => token,
 			mediaOutbox: { enqueueMedia: async (_source, media) => { delivered = media.path; } },
 		});
+		assert.equal(tool.beemaxPolicy.approval, "always");
+		assert.equal(tool.beemaxPolicy.maxAttempts, 1);
 		const result = await tool.execute("image", { prompt:"a bee", aspectRatio:"square" }, new AbortController().signal);
 		assert.match(result.content[0].text, /queued for delivery/);
 		assert.equal(delivered, result.details.path);
@@ -103,6 +113,9 @@ test("MCP tools are discovered, callable, and mutating tools require approval", 
 		assert.equal(status[0].resources, 1);
 		assert.equal(status[0].prompts, 1);
 		const tools = new Map(manager.getTools().map((tool) => [tool.name, tool]));
+		assert.equal(tools.get("mcp_smoke_echo").beemaxPolicy.approval, "never");
+		assert.equal(tools.get("mcp_smoke_mutate").beemaxPolicy.approval, "always");
+		assert.equal(tools.get("mcp_smoke_resource_read").beemaxPolicy.sideEffect, "none");
 		const result = await tools.get("mcp_smoke_echo").execute(
 			"echo",
 			{ text: "ok" },

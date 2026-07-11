@@ -1,7 +1,7 @@
 /** Feishu VC capability tools backed by @larksuiteoapi/node-sdk. */
 
 import type { Client } from "@larksuiteoapi/node-sdk";
-import { defineTool, type ToolDefinition } from "@beemax/core";
+import { MUTATING_TOOL_POLICY, READ_ONLY_TOOL_POLICY, defineTool, withToolPolicy, type ToolDefinition, type ToolPolicy } from "@beemax/core";
 import { Type } from "typebox";
 
 export type FeishuClientProvider = () => Client | undefined;
@@ -289,7 +289,7 @@ export function createFeishuMeetingTools(getClient: FeishuClientProvider): ToolD
 		}),
 	});
 
-	return [
+	const tools = [
 		meetingGet,
 		meetingList,
 		reserveCreate,
@@ -306,6 +306,11 @@ export function createFeishuMeetingTools(getClient: FeishuClientProvider): ToolD
 		recordingStart,
 		recordingStop,
 	];
+	const changeMeeting: ToolPolicy = { ...MUTATING_TOOL_POLICY, risk: "medium", reversible: "unknown", impact: "Changes meeting state or participants in Feishu" };
+	const destructiveMeeting: ToolPolicy = { ...changeMeeting, risk: "high", reversible: false, impact: "Performs a non-reversible meeting or recording operation in Feishu" };
+	const readOnly = new Set(["feishu_meeting_get", "feishu_meeting_list", "feishu_meeting_reserve_get", "feishu_meeting_reserve_active_get", "feishu_meeting_recording_get"]);
+	const destructive = new Set(["feishu_meeting_reserve_delete", "feishu_meeting_end", "feishu_meeting_kickout", "feishu_meeting_recording_stop"]);
+	return tools.map((tool) => withToolPolicy(tool, readOnly.has(tool.name) ? { ...READ_ONLY_TOOL_POLICY } : destructive.has(tool.name) ? destructiveMeeting : changeMeeting));
 }
 
 async function withClient(

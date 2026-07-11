@@ -5,7 +5,7 @@ import { join, resolve } from "node:path";
 import { defineTool, type ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { StringEnum } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
-import type { BeeMaxRuntimeSource, MediaOutboxPort } from "@beemax/core";
+import { MUTATING_TOOL_POLICY, withToolPolicy, type BeeMaxRuntimeSource, type MediaOutboxPort } from "@beemax/core";
 
 const CODEX_URL = "https://chatgpt.com/backend-api/codex/responses";
 const SIZE = { landscape: "1536x1024", square: "1024x1024", portrait: "1024x1536" } as const;
@@ -18,7 +18,7 @@ export interface CodexImageToolOptions {
 }
 
 export function createCodexImageTool(source: BeeMaxRuntimeSource, options: CodexImageToolOptions): ToolDefinition {
-	return defineTool({
+	return withToolPolicy(defineTool({
 		name: "image_generate",
 		label: "Generate Image",
 		description: "Generate one PNG with GPT Image 2 through this profile's ChatGPT/Codex OAuth. Requires approval because it consumes an external image-generation quota.",
@@ -41,6 +41,13 @@ export function createCodexImageTool(source: BeeMaxRuntimeSource, options: Codex
 				details: { path, provider: "openai-codex", model: "gpt-image-2", quality: options.quality, aspectRatio: aspect },
 			};
 		},
+	}), {
+		...MUTATING_TOOL_POLICY,
+		risk: "medium",
+		reversible: false,
+		timeoutMs: 360_000,
+		maxResultBytes: 32 * 1024,
+		impact: "Consumes external image-generation quota and writes a generated image to the Profile output directory",
 	});
 }
 
