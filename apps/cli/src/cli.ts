@@ -975,8 +975,9 @@ async function runChat(config: ReturnType<typeof loadConfig>, requestedMode: { f
 			const reasoning = new LocalReasoningPresenter(reasoningDisplay, richOutput);
 			let answerStreamStarted = false;
 			const terminal = new StreamingTerminalMarkdown();
-			const outcome = await interactionAdapter.dispatch({ type: "message.send", source: turnSource, text, input: { timeoutMs: 10 * 60_000, mode: "interactive" } }, (event) => {
+			const outcome = await interactionAdapter.dispatch({ type: "message.send", source: turnSource, text, input: { timeoutMs: 10 * 60_000, mode: "interactive" } }, async (event) => {
 				process.stdout.write(activity.event(event));
+				if (event.type === "turn.started" || event.type === "approval.requested" || event.type === "turn.queued") await writeFooter();
 				const thinkingDelta = event.type === "reasoning.delta" ? event.text : undefined;
 				if (thinkingDelta) process.stdout.write(reasoning.thinking(thinkingDelta));
 				const delta = event.type === "answer.delta" ? event.text : undefined;

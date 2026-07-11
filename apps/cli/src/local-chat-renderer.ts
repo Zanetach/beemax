@@ -104,6 +104,7 @@ export class LocalActivityPresenter {
 		}
 		if (event.type === "turn.failed") return `\n运行失败：${event.error}\n`;
 		if (event.type === "turn.cancelled") return "\n运行已取消。\n";
+		if (event.type === "turn.queued") return `\n${event.replaced ? "已替换" : "已加入"}下一条排队消息（位置 ${event.position}）。\n`;
 		if (event.type === "approval.requested") {
 			const detail = event.details;
 			if (!detail) return `\n等待审批：工具 ${event.toolName}。可输入 /stop 取消。\n`;
