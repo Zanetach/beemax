@@ -160,7 +160,7 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 					const expected = planning?.requiredTools[requiredToolsUsed.length];
 					if (event.toolName === expected) requiredToolCalls.set(event.toolCallId, { name: event.toolName, args: event.args });
 					toolCalls++;
-					if (planning && toolCalls > planning.budget.maxToolCalls && !budgetExceeded) {
+					if (planning?.budget.maxToolCalls !== null && planning && toolCalls > planning.budget.maxToolCalls && !budgetExceeded) {
 						budgetExceeded = `Agent tool-call budget exceeded (${planning.budget.maxToolCalls})`;
 						void session.piSession.abort();
 					}
@@ -177,7 +177,7 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 				} else if (event.type === "message_end" && event.message.role === "assistant") {
 					const usage = event.message.usage;
 					consumedTokens += usage.input + usage.output + usage.cacheRead + usage.cacheWrite;
-					if (planning && consumedTokens > planning.budget.maxTokens && !budgetExceeded) {
+					if (planning?.budget.maxTokens !== null && planning && consumedTokens > planning.budget.maxTokens && !budgetExceeded) {
 						budgetExceeded = `Agent token budget exceeded (${planning.budget.maxTokens})`;
 						void session.piSession.abort();
 					}

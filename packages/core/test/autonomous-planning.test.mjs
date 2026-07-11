@@ -10,6 +10,8 @@ test("planning policy keeps simple conversational requests direct", () => {
 	assert.deepEqual(decision.requiredTools, []);
 	assert.equal(decision.suggestedConcurrency, 1);
 	assert.equal(decision.budget.maxSubagents, 0);
+	assert.equal(decision.budget.maxToolCalls, null);
+	assert.equal(decision.budget.maxTokens, null);
 	assert.match(decision.reason, /simple|single/i);
 });
 
@@ -21,7 +23,8 @@ test("planning policy delegates one substantial isolated work item", () => {
 	assert.deepEqual(decision.requiredTools, ["task_spawn", "task_wait"]);
 	assert.equal(decision.suggestedConcurrency, 1);
 	assert.equal(decision.budget.maxSubagents, 1);
-	assert.ok(decision.budget.maxToolCalls > 0);
+	assert.equal(decision.budget.maxToolCalls, null);
+	assert.equal(decision.budget.maxTokens, null);
 });
 
 test("planning policy selects a DAG and derives bounded parallel resources for independent deliverables", () => {
@@ -100,7 +103,7 @@ test("Agent runtime aborts a turn that exceeds its planned tool-call budget", as
 	let aborts = 0;
 	const agent = { state: { model: { id: "test" }, messages: [] } };
 	const runtime = new BeeMaxAgentRuntime({
-		planningPolicy: new AutonomousPlanningPolicy(),
+		planningPolicy: new AutonomousPlanningPolicy({ maxToolCalls: 8 }),
 		createAgent: async () => ({
 			agent,
 			subscribe: (next) => { listener = next; return () => undefined; },
@@ -123,7 +126,7 @@ test("Agent runtime aborts a turn when cumulative model usage exceeds its token 
 	let aborts = 0;
 	const agent = { state: { model: { id: "test" }, messages: [] } };
 	const runtime = new BeeMaxAgentRuntime({
-		planningPolicy: new AutonomousPlanningPolicy(),
+		planningPolicy: new AutonomousPlanningPolicy({ maxTokens: 12_000 }),
 		createAgent: async () => ({
 			agent, subscribe: (next) => { listener = next; return () => undefined; },
 			prompt: async () => {

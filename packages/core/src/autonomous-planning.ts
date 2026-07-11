@@ -2,8 +2,8 @@ export type AutonomousExecutionMode = "direct" | "delegate" | "dag";
 
 export interface PlanningResourceBudget {
 	maxSubagents: number;
-	maxToolCalls: number;
-	maxTokens: number;
+	maxToolCalls: number | null;
+	maxTokens: number | null;
 	maxCorrectiveAttempts: number;
 }
 
@@ -47,8 +47,8 @@ export class AutonomousPlanningPolicy {
 		this.capacity = {
 			maxConcurrent: boundedInt(options.maxConcurrent, 3, 1, 20),
 			maxSubagents: boundedInt(options.maxSubagents, 5, 0, 20),
-			maxToolCalls: boundedInt(options.maxToolCalls, 40, 1, 1_000),
-			maxTokens: boundedInt(options.maxTokens, 80_000, 1_000, 10_000_000),
+			maxToolCalls: optionalBoundedInt(options.maxToolCalls, 1, 1_000),
+			maxTokens: optionalBoundedInt(options.maxTokens, 1_000, 10_000_000),
 			maxCorrectiveAttempts: boundedInt(options.maxCorrectiveAttempts, 1, 0, 5),
 		};
 	}
@@ -71,7 +71,7 @@ export class AutonomousPlanningPolicy {
 		}
 
 		const dagCapacity = Math.min(this.capacity.maxConcurrent, this.capacity.maxSubagents);
-		if (mode === "dag" && (dagCapacity < 2 || this.capacity.maxToolCalls < 10 || this.capacity.maxTokens < 12_000)) {
+		if (mode === "dag" && (dagCapacity < 2 || (this.capacity.maxToolCalls !== null && this.capacity.maxToolCalls < 10) || (this.capacity.maxTokens !== null && this.capacity.maxTokens < 12_000))) {
 			mode = this.capacity.maxSubagents > 0 ? "delegate" : "direct";
 			reason = "DAG demand exceeds the configured resource budget or parallel capacity; degrade safely";
 		}
@@ -90,8 +90,8 @@ export class AutonomousPlanningPolicy {
 		const scale = mode === "dag" ? Math.max(2, maxSubagents) : mode === "delegate" ? 1 : 0;
 		const budget: PlanningResourceBudget = {
 			maxSubagents,
-			maxToolCalls: Math.min(this.capacity.maxToolCalls, mode === "direct" ? 8 : Math.max(12, scale * 8)),
-			maxTokens: Math.min(this.capacity.maxTokens, mode === "direct" ? 12_000 : Math.max(20_000, scale * 16_000)),
+			maxToolCalls: this.capacity.maxToolCalls === null ? null : Math.min(this.capacity.maxToolCalls, mode === "direct" ? 8 : Math.max(12, scale * 8)),
+			maxTokens: this.capacity.maxTokens === null ? null : Math.min(this.capacity.maxTokens, mode === "direct" ? 12_000 : Math.max(20_000, scale * 16_000)),
 			maxCorrectiveAttempts: mode === "direct" ? 0 : this.capacity.maxCorrectiveAttempts,
 		};
 		const requiredTools = mode === "dag" ? ["task_plan_execute"] as const : mode === "delegate" ? ["task_spawn", "task_wait"] as const : [];
@@ -99,7 +99,7 @@ export class AutonomousPlanningPolicy {
 		const decision = { mode, requiredTool, requiredTools, suggestedConcurrency, budget, signals, reason };
 		return {
 			...decision,
-			directive: () => `[BeeMax execution policy: mode=${mode}; requiredTools=${requiredTools.length ? requiredTools.join("->") : "none"}; concurrency=${suggestedConcurrency}; maxSubagents=${budget.maxSubagents}; maxToolCalls=${budget.maxToolCalls}; maxTokens=${budget.maxTokens}; correctiveAttempts=${budget.maxCorrectiveAttempts}. Complete requiredTools in order before giving a final answer.]`,
+			directive: () => `[BeeMax execution policy: mode=${mode}; requiredTools=${requiredTools.length ? requiredTools.join("->") : "none"}; concurrency=${suggestedConcurrency}; maxSubagents=${budget.maxSubagents}; maxToolCalls=${budget.maxToolCalls ?? "unbounded"}; maxTokens=${budget.maxTokens ?? "unbounded"}; correctiveAttempts=${budget.maxCorrectiveAttempts}. Complete requiredTools in order before giving a final answer.]`,
 		};
 	}
 }
@@ -159,4 +159,7 @@ function estimateIndependentItems(prompt: string): number {
 function has(value: string, pattern: RegExp): boolean { return pattern.test(value); }
 function boundedInt(value: number | undefined, fallback: number, minimum: number, maximum: number): number {
 	return Math.max(minimum, Math.min(maximum, Number.isFinite(value) ? Math.trunc(value!) : fallback));
+}
+function optionalBoundedInt(value: number | undefined, minimum: number, maximum: number): number | null {
+	return value === undefined ? null : Math.max(minimum, Math.min(maximum, Number.isFinite(value) ? Math.trunc(value) : maximum));
 }
