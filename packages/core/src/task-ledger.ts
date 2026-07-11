@@ -77,9 +77,9 @@ export interface TaskDependency { taskId: string; dependsOn: string; }
 /** Persistence port used by task producers; storage remains replaceable. */
 export interface TaskLedger {
 	record(task: TaskRecord): void;
-	transition(id: string, change: TaskTransition): void;
+	transition(id: string, change: TaskTransition): boolean;
 	recordRun(run: TaskRunRecord): void;
-	transitionRun(id: string, change: TaskRunTransition): void;
+	transitionRun(id: string, change: TaskRunTransition): boolean;
 	queryTasks(query: TaskQuery): TaskRecord[];
 	taskRuns(taskId: string): TaskRunRecord[];
 	recordPlan(tasks: TaskRecord[], dependencies: TaskDependency[], plan?: TaskPlanRecord): void;

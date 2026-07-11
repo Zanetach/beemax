@@ -642,7 +642,7 @@ export class MemoryStore {
 			.run(task.id, task.ownerKey, task.kind, task.title, task.description ?? null, task.acceptanceCriteria ?? null, task.recoveryPolicy ?? "never", task.idempotencyKey ?? null, task.executionScope ? JSON.stringify(task.executionScope) : null, task.status, task.parentId ?? null, task.planId ?? null, task.evidence ?? null, task.verificationStatus ?? null, task.correctiveAttempts ?? 0, task.createdAt, task.startedAt ?? null, task.finishedAt ?? null, task.result ?? null, task.error ?? null, task.createdAt);
 	}
 
-	transition(id: string, change: TaskTransition): void {
+	transition(id: string, change: TaskTransition): boolean {
 		const result = this.db.prepare(`UPDATE tasks SET status = ?,
 			started_at = CASE WHEN ? = 'pending' THEN NULL ELSE COALESCE(?, started_at) END,
 			finished_at = CASE WHEN ? IN ('pending', 'running') THEN NULL ELSE COALESCE(?, finished_at) END,
@@ -651,9 +651,9 @@ export class MemoryStore {
 			evidence = COALESCE(?, evidence),
 			verification_status = COALESCE(?, verification_status),
 			corrective_attempts = COALESCE(?, corrective_attempts),
-			updated_at = ? WHERE id = ?`)
-			.run(change.status, change.status, change.startedAt ?? null, change.status, change.finishedAt ?? null, change.status, change.result ?? null, change.status, change.error ?? null, change.evidence ?? null, change.verificationStatus ?? null, change.correctiveAttempts ?? null, Date.now(), id);
-		if (result.changes !== 1) throw new Error(`Task not found: ${id}`);
+			updated_at = ? WHERE id = ? AND ((? = 'pending' AND status = 'running') OR (? = 'running' AND status = 'pending') OR (? IN ('succeeded', 'failed', 'cancelled') AND status IN ('pending', 'running')))`)
+			.run(change.status, change.status, change.startedAt ?? null, change.status, change.finishedAt ?? null, change.status, change.result ?? null, change.status, change.error ?? null, change.evidence ?? null, change.verificationStatus ?? null, change.correctiveAttempts ?? null, Date.now(), id, change.status, change.status, change.status);
+		return result.changes === 1;
 	}
 
 	recordRun(run: TaskRunRecord): void {
@@ -661,10 +661,10 @@ export class MemoryStore {
 			.run(run.id, run.taskId, run.executor, run.status, run.startedAt, run.leaseExpiresAt ?? null, run.finishedAt ?? null, run.output ?? null, run.error ?? null);
 	}
 
-	transitionRun(id: string, change: TaskRunTransition): void {
-		const result = this.db.prepare("UPDATE task_runs SET status = ?, finished_at = COALESCE(?, finished_at), output = COALESCE(?, output), error = COALESCE(?, error) WHERE id = ?")
+	transitionRun(id: string, change: TaskRunTransition): boolean {
+		const result = this.db.prepare("UPDATE task_runs SET status = ?, finished_at = COALESCE(?, finished_at), output = COALESCE(?, output), error = COALESCE(?, error) WHERE id = ? AND status = 'running'")
 			.run(change.status, change.finishedAt ?? null, change.output ?? null, change.error ?? null, id);
-		if (result.changes !== 1) throw new Error(`Task Run not found: ${id}`);
+		return result.changes === 1;
 	}
 
 	renewTaskRunLease(id: string, leaseExpiresAt: number): boolean {

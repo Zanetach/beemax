@@ -9,9 +9,9 @@ test("delegated work records one durable Task and advances its lifecycle", async
 	const runs = new Map();
 	const ledger = {
 		record(task) { records.set(task.id, { ...task }); },
-		transition(id, change) { records.set(id, { ...records.get(id), ...change }); },
+		transition(id, change) { records.set(id, { ...records.get(id), ...change }); return true; },
 		recordRun(run) { runs.set(run.id, { ...run }); },
-		transitionRun(id, change) { runs.set(id, { ...runs.get(id), ...change }); },
+		transitionRun(id, change) { runs.set(id, { ...runs.get(id), ...change }); return true; },
 	};
 	const manager = new SubagentManager({ taskLedger: ledger, execute: async () => "verified result" });
 	const delegated = manager.spawn(source, { goal: "Review the release", name: "release-review" });

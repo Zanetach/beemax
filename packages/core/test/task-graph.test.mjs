@@ -10,8 +10,8 @@ function memoryLedger() {
 	return {
 		tasks, dependencies, runs, plans,
 		record(task) { tasks.set(task.id, { ...task }); },
-		transition(id, change) { tasks.set(id, { ...tasks.get(id), ...change }); },
-		recordRun(run) { runs.set(run.id, { ...run }); }, transitionRun(id, change) { runs.set(id, { ...runs.get(id), ...change }); },
+		transition(id, change) { tasks.set(id, { ...tasks.get(id), ...change }); return true; },
+		recordRun(run) { runs.set(run.id, { ...run }); }, transitionRun(id, change) { runs.set(id, { ...runs.get(id), ...change }); return true; },
 		renewTaskRunLease(id, leaseExpiresAt) { const run = runs.get(id); if (!run || run.status !== "running") return false; run.leaseExpiresAt = leaseExpiresAt; return true; },
 		recordPlan(records, edges, plan) { for (const task of records) this.record(task); dependencies.push(...edges); if (plan) plans.set(plan.id, { ...plan }); },
 		transitionPlan(id, change) { plans.set(id, { ...plans.get(id), ...change }); },

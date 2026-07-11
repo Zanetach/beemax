@@ -213,6 +213,22 @@ test("Task Plan cancellation aborts a live recovery and leaves no running Task o
 	} finally { store.close(); rmSync(root, { recursive: true, force: true }); }
 });
 
+test("a cross-process cancellation remains the Terminal Outcome when a late executor exits", async () => {
+	const root = mkdtempSync(join(tmpdir(), "beemax-terminal-outcome-"));
+	const store = new MemoryStore(join(root, "memory.db"));
+	try {
+		const graph = new TaskGraph(store);
+		graph.createPlan({ id: "race-plan", ownerKey: "cli:local:local", tasks: [{ id: "race", title: "Race" }] });
+		const running = graph.run(["cli:local:local"], "race-plan", async (_task, signal) => new Promise((_resolve, reject) => signal.addEventListener("abort", () => reject(signal.reason), { once: true })), { leaseMs: 1_000, leaseHeartbeatMs: 5 });
+		await new Promise((resolve) => setImmediate(resolve));
+		assert.equal(store.cancelTaskPlan(["cli:local:local"], "race-plan"), 1);
+		assert.deepEqual(await running, { succeeded: 0, failed: 0, cancelled: 1, blocked: [] });
+		assert.equal(store.queryTasks({ ownerKeys: ["cli:local:local"], id: "race" })[0].status, "cancelled");
+		assert.equal(store.taskRuns("race")[0].status, "cancelled");
+		assert.equal(store.queryTaskPlans({ ownerKeys: ["cli:local:local"], id: "race-plan" })[0].status, "cancelled");
+	} finally { store.close(); rmSync(root, { recursive: true, force: true }); }
+});
+
 test("legacy task facts migrate once into objective Tasks", () => {
 	const root = mkdtempSync(join(tmpdir(), "beemax-legacy-task-migration-"));
 	const path = join(root, "memory.db");
