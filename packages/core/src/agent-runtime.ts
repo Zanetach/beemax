@@ -152,15 +152,27 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 			let consumedTokens = 0;
 			let budgetExceeded: string | undefined;
 			const requiredToolsUsed: string[] = [];
+			const requiredToolCalls = new Map<string, { name: string; args?: unknown }>();
+			let delegatedTaskId: string | undefined;
 			const unsubscribe = session.piSession.subscribe((event) => {
 				if (event.type === "tool_execution_start") {
 					observableProgress = true;
 					const expected = planning?.requiredTools[requiredToolsUsed.length];
-					if (event.toolName === expected) requiredToolsUsed.push(event.toolName);
+					if (event.toolName === expected) requiredToolCalls.set(event.toolCallId, { name: event.toolName, args: event.args });
 					toolCalls++;
 					if (planning && toolCalls > planning.budget.maxToolCalls && !budgetExceeded) {
 						budgetExceeded = `Agent tool-call budget exceeded (${planning.budget.maxToolCalls})`;
 						void session.piSession.abort();
+					}
+				} else if (event.type === "tool_execution_end") {
+					const pending = requiredToolCalls.get(event.toolCallId);
+					requiredToolCalls.delete(event.toolCallId);
+					if (pending && pending.name === event.toolName && !event.isError) {
+						const completed = completedPlanningTool(event.toolName, event.result, pending.args, delegatedTaskId);
+						if (completed.accepted) {
+							requiredToolsUsed.push(event.toolName);
+							delegatedTaskId = completed.delegatedTaskId ?? delegatedTaskId;
+						}
 					}
 				} else if (event.type === "message_end" && event.message.role === "assistant") {
 					const usage = event.message.usage;
@@ -308,6 +320,20 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 	}
 	isBusy(): boolean { return this.sessions.isBusy(); }
 	dispose(): void { this.sessions.dispose(); }
+}
+
+function completedPlanningTool(toolName: string, result: unknown, args: unknown, delegatedTaskId?: string): { accepted: boolean; delegatedTaskId?: string } {
+	const details = result && typeof result === "object" ? (result as { details?: unknown }).details : undefined;
+	const record = details && typeof details === "object" ? details as Record<string, unknown> : undefined;
+	if (toolName === "task_spawn") return typeof record?.id === "string" ? { accepted: true, delegatedTaskId: record.id } : { accepted: false };
+	if (toolName === "task_wait") {
+		const requestedId = args && typeof args === "object" ? (args as { id?: unknown }).id : undefined;
+		return { accepted: Boolean(delegatedTaskId && requestedId === delegatedTaskId && record?.id === delegatedTaskId && record.status === "completed") };
+	}
+	if (toolName === "task_plan_execute") {
+		return { accepted: record?.failed === 0 && record?.cancelled === 0 && Array.isArray(record.blocked) && record.blocked.length === 0 };
+	}
+	return { accepted: false };
 }
 
 export class AgentRunError extends Error {

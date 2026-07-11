@@ -69,7 +69,7 @@ test("Agent runtime injects a deterministic planning directive without changing 
 		createAgent: async () => ({
 			agent,
 			subscribe: (next) => { runtimeListener = next; return () => undefined; },
-			prompt: async (text) => { received = text; runtimeListener({ type: "tool_execution_start", toolCallId: "plan", toolName: "task_plan_execute" }); agent.state.messages = [{ role: "assistant", content: [{ type: "text", text: "done" }], usage: { input: 1, output: 1 } }]; },
+			prompt: async (text) => { received = text; runtimeListener({ type: "tool_execution_start", toolCallId: "plan", toolName: "task_plan_execute", args: {} }); runtimeListener({ type: "tool_execution_end", toolCallId: "plan", toolName: "task_plan_execute", result: { details: { failed: 0, cancelled: 0, blocked: [] } }, isError: false }); agent.state.messages = [{ role: "assistant", content: [{ type: "text", text: "done" }], usage: { input: 1, output: 1 } }]; },
 			abort: async () => undefined,
 			dispose: () => undefined,
 		}),
@@ -147,7 +147,7 @@ test("Agent runtime performs one content-free correction when a complex turn ski
 		agent, subscribe: (next) => { listener = next; return () => undefined; },
 		prompt: async (text) => {
 			prompts.push(text);
-			if (prompts.length === 2) listener({ type: "tool_execution_start", toolCallId: "plan", toolName: "task_plan_execute" });
+			if (prompts.length === 2) { listener({ type: "tool_execution_start", toolCallId: "plan", toolName: "task_plan_execute", args: {} }); listener({ type: "tool_execution_end", toolCallId: "plan", toolName: "task_plan_execute", result: { details: { failed: 0, cancelled: 0, blocked: [] } }, isError: false }); }
 			agent.state.messages = [{ role: "assistant", content: [{ type: "text", text: "done" }], usage: { input: 1, output: 1 } }];
 		}, abort: async () => undefined, dispose: () => undefined,
 	}) });
@@ -167,7 +167,7 @@ test("delegated execution cannot finish after spawn without waiting for its Sub-
 		agent, subscribe: (next) => { listener = next; return () => undefined; },
 		prompt: async () => {
 			prompts++;
-			if (prompts === 1) listener({ type: "tool_execution_start", toolCallId: "spawn", toolName: "task_spawn" });
+			if (prompts === 1) { listener({ type: "tool_execution_start", toolCallId: "spawn", toolName: "task_spawn", args: {} }); listener({ type: "tool_execution_end", toolCallId: "spawn", toolName: "task_spawn", result: { details: { id: "child-1", status: "queued" } }, isError: false }); }
 			agent.state.messages = [{ role: "assistant", content: [{ type: "text", text: "premature" }], usage: { input: 1, output: 1 } }];
 		}, abort: async () => undefined, dispose: () => undefined,
 	}) });
