@@ -37,6 +37,7 @@ import { createProfileControlHandler } from "./profile-control.ts";
 import { LocalActivityPresenter, LocalReasoningPresenter, renderChatFooter, type DetailsDisplay, parseReasoningCommand } from "./local-chat-renderer.ts";
 import { renderTerminalMarkdown, StreamingTerminalMarkdown } from "./terminal-markdown.ts";
 import { fullScreenEnter, fullScreenExit, resolveChatPresentationMode, type ChatPresentationMode } from "./chat-mode.ts";
+import { FullWorkbench } from "./full-workbench.ts";
 import { inspectGateway, readGatewayLogs } from "./gateway-observability.ts";
 import { createTaskAwareConversationContext, ensureBuiltinTasks, installedVersion } from "./runtime-facts.ts";
 import { AgentRunError, InteractionEventAdapter, SessionCatalog, ToolApprovalBroker, compileLongTermMemorySnapshot, interactionCommandHelp, parseInteractionCommand, type BeeMaxAgentRuntime } from "@beemax/core";
@@ -920,6 +921,7 @@ async function runChat(config: ReturnType<typeof loadConfig>, requestedMode: { f
 		let controlInProgress = false;
 		let lastDurationMs: number | undefined;
 		let closed = false;
+		let workbench: FullWorkbench | undefined;
 		const { createInterface } = await import("node:readline/promises");
 		const rl = createInterface({ input: process.stdin, output: process.stdout });
 		const prompt = () => presentationMode === "plain" ? "beemax> " : presentationMode === "compact" ? `beemax [${config.model.model}]> ` : `beemax [${config.profile} · ${config.model.provider}/${config.model.model} · ${source.threadId ?? "default"}]> `;
@@ -935,6 +937,11 @@ async function runChat(config: ReturnType<typeof loadConfig>, requestedMode: { f
 			const snapshot = await interactionAdapter.snapshot(source);
 			const usage = snapshot.usage;
 			const context = usage?.contextWindow === null || usage?.contextWindow === undefined ? undefined : usage.contextTokens === null ? `?/${usage.contextWindow}` : `${usage.contextTokens}/${usage.contextWindow}`;
+			if (workbench) {
+				workbench.setFooter({ model: `${config.model.provider}/${config.model.model}`, session: source.threadId ?? "default", phase: snapshot.phase, context, lastDurationMs, queued: snapshot.queueDepth });
+				process.stdout.write(`\x1b[H\x1b[2J${workbench.render()}\n`);
+				return;
+			}
 			process.stdout.write(renderChatFooter({ profile: config.profile, model: `${config.model.provider}/${config.model.model}`, session: source.threadId ?? "default", phase: snapshot.phase, context, lastDurationMs, queued: snapshot.queueDepth }));
 		};
 		const status = async () => `Profile: ${config.profile}\nModel: ${config.model.provider}/${config.model.model}\nSession: ${source.threadId ?? "default"}\nRun: ${runtime.isBusy() ? "running" : "idle"}\nReasoning: ${reasoningDisplay}\nDetails: ${detailsDisplay}\nToolset: ${config.agent.toolset}\n${await usage()}`;
@@ -967,15 +974,25 @@ async function runChat(config: ReturnType<typeof loadConfig>, requestedMode: { f
 		};
 		if (presentationMode === "full") {
 			fullScreenActive = true;
-			process.stdout.write(fullScreenEnter(`BeeMax Chat · ${config.profile} · ${config.model.provider}/${config.model.model}\nType /help for controls.`));
+			workbench = new FullWorkbench({ profile: config.profile, model: `${config.model.provider}/${config.model.model}`, session: source.threadId ?? "default", details: detailsDisplay });
+			process.stdout.write(fullScreenEnter(""));
+			await writeFooter();
 		}
 		const runTurn = async (text: string, turnSource: import("@beemax/gateway").SessionSource) => {
+			workbench?.user(text);
 			let streamed = "";
 			const richOutput = presentationMode !== "plain";
 			const reasoning = new LocalReasoningPresenter(reasoningDisplay, richOutput);
 			let answerStreamStarted = false;
 			const terminal = new StreamingTerminalMarkdown();
 			const outcome = await interactionAdapter.dispatch({ type: "message.send", source: turnSource, text, input: { timeoutMs: 10 * 60_000, mode: "interactive" } }, async (event) => {
+				if (workbench) {
+					activity.event(event);
+					workbench.event(event, activity.renderDetails());
+					if (event.type !== "answer.delta") await writeFooter();
+					else process.stdout.write(`\x1b[H\x1b[2J${workbench.render()}\n`);
+					return;
+				}
 				process.stdout.write(activity.event(event));
 				if (event.type === "turn.started" || event.type === "approval.requested" || event.type === "turn.queued") await writeFooter();
 				const thinkingDelta = event.type === "reasoning.delta" ? event.text : undefined;
@@ -990,13 +1007,15 @@ async function runChat(config: ReturnType<typeof loadConfig>, requestedMode: { f
 			});
 			if (!("answer" in outcome)) throw new Error("Message dispatch did not produce an Agent result");
 			const result = outcome;
-			if (streamed) terminal.finish((output) => process.stdout.write(output));
+			if (workbench) {
+				if (!streamed) workbench.answer(result.answer);
+			} else if (streamed) terminal.finish((output) => process.stdout.write(output));
 			else {
 				process.stdout.write(reasoning.beforeAnswer());
 				process.stdout.write(renderTerminalMarkdown(result.answer));
 			}
 			lastDurationMs = result.durationMs;
-			process.stdout.write("\n");
+			if (!workbench) process.stdout.write("\n");
 			await writeFooter();
 		};
 		const handleLine = async (line: string) => {
