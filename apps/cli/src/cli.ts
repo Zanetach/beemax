@@ -905,6 +905,7 @@ async function runChat(config: ReturnType<typeof loadConfig>, requestedMode: { f
 		await applySessionPreferences();
 		let active: Promise<void> | undefined;
 		let queuedInput: string | undefined;
+		let sessionChoices: string[] = [];
 		let retryText: string | undefined;
 		let activity = new LocalActivityPresenter(detailsDisplay, presentationMode !== "plain");
 		let controlInProgress = false;
@@ -935,12 +936,13 @@ async function runChat(config: ReturnType<typeof loadConfig>, requestedMode: { f
 		const sessions = async () => {
 			const live = new Map(runtime.listSessions(source).map((candidate) => [candidate.threadId ?? "default", candidate]));
 			const saved = await runtime.listSavedSessions(source);
+			sessionChoices = saved.map((record) => record.threadId ?? "default");
 			return saved.length
-				? saved.map((record) => {
+				? saved.map((record, index) => {
 					const id = record.threadId ?? "default";
 					const current = live.get(id);
-					return `${id}  ${current?.busy ? "running" : current ? "live" : "saved"}  ${new Date(current?.lastActiveAt ?? record.lastUsedAt).toLocaleString()}`;
-				}).join("\n")
+					return `${index + 1}. ${id}  ${current?.busy ? "running" : current ? "live" : "saved"}  ${new Date(current?.lastActiveAt ?? record.lastUsedAt).toLocaleString()}`;
+				}).join("\n") + "\n\nUse /resume <number> or /resume <session-id>."
 				: "No saved sessions. Start a conversation to create one.";
 		};
 		const history = async (limit?: number) => {
@@ -1045,7 +1047,13 @@ async function runChat(config: ReturnType<typeof loadConfig>, requestedMode: { f
 			}
 			if (command?.kind === "history") { process.stdout.write(`${await history(command.limit)}\n`); writePrompt(); return; }
 			if (command?.kind === "resume") {
-				const resumeSource = command.sessionId === "default" ? { ...source, threadId: undefined } : { ...source, threadId: command.sessionId };
+				const selected = /^\d+$/.test(command.sessionId) ? sessionChoices[Number(command.sessionId) - 1] : command.sessionId;
+				if (!selected) {
+					process.stdout.write("Unknown session number. Run /sessions and choose a listed number.\n");
+					writePrompt();
+					return;
+				}
+				const resumeSource = selected === "default" ? { ...source, threadId: undefined } : { ...source, threadId: selected };
 				if (!await runtime.hasSavedSession(resumeSource)) {
 					process.stdout.write(`Unknown session '${command.sessionId}'. Run /sessions to choose a saved session.\n`);
 					writePrompt();
