@@ -33,11 +33,12 @@ import { configuredApiKey } from "./provider-resolver.ts";
 import { executionPortFor, executionSafeTools } from "./execution-composition.ts";
 import { createProfileRuntime } from "./runtime-composition.ts";
 import { createProfileControlHandler } from "./profile-control.ts";
-import { LocalActivityPresenter, LocalReasoningPresenter, type DetailsDisplay, localChatTextDelta, localChatThinkingDelta, parseChatCommand, parseReasoningCommand } from "./local-chat-renderer.ts";
+import { LocalActivityPresenter, LocalReasoningPresenter, type DetailsDisplay, parseChatCommand, parseReasoningCommand } from "./local-chat-renderer.ts";
 import { renderTerminalMarkdown, StreamingTerminalMarkdown } from "./terminal-markdown.ts";
+import { resolveChatPresentationMode, type ChatPresentationMode } from "./chat-mode.ts";
 import { inspectGateway, readGatewayLogs } from "./gateway-observability.ts";
 import { createTaskAwareConversationContext, ensureBuiltinTasks, installedVersion } from "./runtime-facts.ts";
-import { AgentRunError, SessionCatalog, ToolApprovalBroker, compileLongTermMemorySnapshot, type BeeMaxAgentRuntime } from "@beemax/core";
+import { AgentRunError, InteractionRuntime, SessionCatalog, ToolApprovalBroker, compileLongTermMemorySnapshot, type BeeMaxAgentRuntime } from "@beemax/core";
 import type { SessionSource } from "@beemax/gateway";
 import { existsSync } from "node:fs";
 import { spawnSync } from "node:child_process";
@@ -85,7 +86,12 @@ async function main(): Promise<void> {
 			} else throw new Error(`Unknown gateway action: ${parsed.positionals[1]}`);
 			break;
 		case "chat":
-			await runChat(getConfig());
+			await runChat(getConfig(), {
+				full: parsed.options.full === true,
+				compact: parsed.options.compact === true,
+				plain: parsed.options.plain === true,
+				noAltScreen: parsed.options["no-alt-screen"] === true,
+			});
 			break;
 		case "model":
 			await runModelCommand(parsed);
@@ -143,7 +149,7 @@ Commands:
   agent      create | list | delete
   channel    add | list | remove | test
   gateway    run | setup | install | start | stop | restart | status | logs | list | health
-  chat       Local interactive chat for one profile
+  chat       Adaptive terminal Agent (Full / Compact / Plain)
   model      show | set <provider> <model>
   doctor     Check profile readiness
   update     Update the installed BeeMax release, preserving all Profiles
@@ -166,6 +172,10 @@ Options:
   --home <path>            Override BEEMAX_HOME for this invocation
   --root <path>            Override the BeeMax installation root for this invocation
   --with-feishu            Include Feishu/Lark configuration in the initial setup wizard
+  --full                   Force Full workbench presentation when interactive
+  --compact                Force compact terminal presentation
+  --plain                  Force pipe/log-friendly text presentation
+  --no-alt-screen          Disable full-screen terminal behavior
   --yes                    Confirm destructive configuration changes
 
 Environment:
@@ -221,7 +231,7 @@ function parseArgs(args: string[]): ParsedArgs {
 	return parsed;
 }
 
-const BOOLEAN_OPTIONS = new Set(["yes", "require-mention", "no-require-mention", "non-interactive", "system", "all", "open", "help", "deep", "follow"]);
+const BOOLEAN_OPTIONS = new Set(["yes", "require-mention", "no-require-mention", "non-interactive", "system", "all", "open", "help", "deep", "follow", "full", "compact", "plain", "no-alt-screen"]);
 
 function runGatewayStatus(config: ReturnType<typeof loadConfig>, scope: "user" | "system"): void {
 	const snapshot = inspectGateway(config.profile, config.paths.agentDir, scope, installedVersion());
@@ -769,7 +779,10 @@ async function promptLine(message: string): Promise<string> {
 	try { return await rl.question(message); } finally { rl.close(); }
 }
 
-async function runChat(config: ReturnType<typeof loadConfig>): Promise<void> {
+async function runChat(config: ReturnType<typeof loadConfig>, requestedMode: { full: boolean; compact: boolean; plain: boolean; noAltScreen: boolean }): Promise<void> {
+	const presentationMode: ChatPresentationMode = resolveChatPresentationMode({
+		...requestedMode, isInputTty: process.stdin.isTTY === true, isOutputTty: process.stdout.isTTY === true, term: process.env.TERM,
+	});
 	const {
 		createSubagentTools,
 		SubagentManager,
@@ -838,6 +851,7 @@ async function runChat(config: ReturnType<typeof loadConfig>): Promise<void> {
 			controlHandler: (input) => createProfileControlHandler(runtime, config)(input),
 		},
 	);
+	const interaction = new InteractionRuntime(runtime);
 
 	try {
 		let reasoningDisplay = config.agent.reasoningDisplay;
@@ -856,7 +870,7 @@ async function runChat(config: ReturnType<typeof loadConfig>): Promise<void> {
 		let closed = false;
 		const { createInterface } = await import("node:readline/promises");
 		const rl = createInterface({ input: process.stdin, output: process.stdout });
-		const prompt = () => `beemax [${config.model.provider}/${config.model.model}]> `;
+		const prompt = () => presentationMode === "plain" ? "beemax> " : presentationMode === "compact" ? `beemax [${config.model.model}]> ` : `beemax [${config.profile} · ${config.model.provider}/${config.model.model} · ${source.threadId ?? "default"}]> `;
 		const writePrompt = () => { if (!closed) process.stdout.write(prompt()); };
 		const usage = async () => {
 			const current = await runtime.usage(source);
@@ -891,17 +905,19 @@ async function runChat(config: ReturnType<typeof loadConfig>): Promise<void> {
 			const cancelled = subagents?.cancelOwner(source) ?? 0;
 			process.stdout.write(`\n${stopped ? "Stopped the active Agent turn" : "No active Agent turn"}${cancelled ? `; cancelled ${cancelled} Sub-Agent task(s)` : ""}.\n`);
 		};
+		if (presentationMode === "full") process.stdout.write(`BeeMax Workbench · ${config.profile} · ${config.model.provider}/${config.model.model}\nType /help for controls.\n\n`);
 		const runTurn = async (text: string, turnSource: import("@beemax/gateway").SessionSource) => {
 			let streamed = "";
-			const reasoning = new LocalReasoningPresenter(reasoningDisplay, process.stdout.isTTY === true);
-			const activity = new LocalActivityPresenter(detailsDisplay, process.stdout.isTTY === true);
+			const richOutput = presentationMode !== "plain";
+			const reasoning = new LocalReasoningPresenter(reasoningDisplay, richOutput);
+			const activity = new LocalActivityPresenter(detailsDisplay, richOutput);
 			let answerStreamStarted = false;
 			const terminal = new StreamingTerminalMarkdown();
-			const result = await runtime.run({ source: turnSource, text, timeoutMs: 10 * 60_000, mode: "interactive" }, (event) => {
+			const outcome = await interaction.dispatch({ type: "message.send", source: turnSource, text, input: { timeoutMs: 10 * 60_000, mode: "interactive" } }, (event) => {
 				process.stdout.write(activity.event(event));
-				const thinkingDelta = localChatThinkingDelta(event);
+				const thinkingDelta = event.type === "reasoning.delta" ? event.text : undefined;
 				if (thinkingDelta) process.stdout.write(reasoning.thinking(thinkingDelta));
-				const delta = localChatTextDelta(event);
+				const delta = event.type === "answer.delta" ? event.text : undefined;
 				if (delta) {
 					if (!answerStreamStarted) process.stdout.write(reasoning.beforeAnswer());
 					answerStreamStarted = true;
@@ -909,6 +925,8 @@ async function runChat(config: ReturnType<typeof loadConfig>): Promise<void> {
 					terminal.write(delta, (output) => process.stdout.write(output));
 				}
 			});
+			if (typeof outcome === "boolean") throw new Error("Message dispatch did not produce an Agent result");
+			const result = outcome;
 			if (streamed) terminal.finish((output) => process.stdout.write(output));
 			else {
 				process.stdout.write(reasoning.beforeAnswer());
@@ -922,8 +940,8 @@ async function runChat(config: ReturnType<typeof loadConfig>): Promise<void> {
 			if (!trimmed) { writePrompt(); return; }
 			const command = parseChatCommand(trimmed);
 			if (active) {
-			if (await localApproval.handleReply(source, trimmed)) return;
 				if (command?.kind === "stop") { await stop(); return; }
+				if (await localApproval.handleReply(source, trimmed)) return;
 				if (command?.kind === "status") { process.stdout.write(`\n${await status()}\n`); return; }
 				process.stdout.write("\nAgent is running. Use /stop (or Ctrl+C) before starting another turn.\n");
 				return;

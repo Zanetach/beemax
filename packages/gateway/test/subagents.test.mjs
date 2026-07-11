@@ -163,9 +163,11 @@ test("/stop bypasses the conversation turn lock and cascades Sub-Agent cancellat
 	};
 	let cancelled = 0;
 	let aborted = 0;
+	let approvalReplies = 0;
 	const dispatcher = new Dispatcher({
 		runtime: { run: async () => { throw new Error("should not run for /stop"); }, cancel: async () => (aborted++, true), handleControl: async () => undefined, isBusy: () => false, dispose: () => undefined },
 		cancelTasks: () => { cancelled++; return 2; },
+		approvalBroker: { handleReply: async () => { approvalReplies++; return true; }, dispose: () => undefined },
 	}, platform);
 	await inbound({
 		text: "/stop", messageType: "command", source,
@@ -173,6 +175,7 @@ test("/stop bypasses the conversation turn lock and cascades Sub-Agent cancellat
 	});
 	assert.equal(cancelled, 1);
 	assert.equal(aborted, 1);
+	assert.equal(approvalReplies, 0, "/stop must not be consumed as an approval reply");
 	assert.match(sent[0], /cancelled 2 Sub-Agent/);
 	dispatcher.dispose();
 });

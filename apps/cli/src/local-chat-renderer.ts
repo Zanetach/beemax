@@ -1,4 +1,5 @@
 import type { AgentSessionEvent } from "@earendil-works/pi-coding-agent";
+import type { InteractionEvent } from "@beemax/core";
 
 export type ReasoningDisplay = "off" | "summary" | "raw";
 export type DetailsDisplay = "hidden" | "collapsed" | "expanded";
@@ -112,8 +113,16 @@ export class LocalActivityPresenter {
 		this.interactive = interactive;
 	}
 
-	event(event: AgentSessionEvent): string {
+	event(event: AgentSessionEvent | InteractionEvent): string {
 		if (this.details === "hidden" || !this.interactive) return "";
+		if (event.type === "tool.changed") {
+			const label = event.name === "task_spawn" || event.name === "task_status" || event.name === "task_wait" ? "子代理" : "工具";
+			if (event.state === "running") return this.details === "collapsed" ? "" : `\n${label} ${event.name} 运行中…\n`;
+			return `\n${label} ${event.name} ${event.state === "completed" ? "完成" : "失败"}${event.summary ? `：${event.summary}` : ""}\n`;
+		}
+		if (event.type === "turn.failed") return `\n运行失败：${event.error}\n`;
+		if (event.type === "turn.cancelled") return "\n运行已取消。\n";
+		if (event.type.startsWith("turn.") || event.type === "answer.delta" || event.type === "reasoning.delta") return "";
 		const isSubagent = event.type === "tool_execution_start" || event.type === "tool_execution_end"
 			? event.toolName === "task_spawn" || event.toolName === "task_status" || event.toolName === "task_wait"
 			: false;

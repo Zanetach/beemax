@@ -63,17 +63,17 @@ export class Dispatcher {
 	private async handle(msg: InboundMessage): Promise<void> {
 		if (!this.deduplicator.accept(this.profileId, msg.source.platform, msg.source.messageId)) return;
 		const effective = { ...msg, source: this.sessionOverrides.get(sessionOwnerKey(msg.source)) ?? msg.source };
+		if (effective.text.trim().toLowerCase() === "/stop") {
+			await this.runtime.cancel(effective.source);
+			const cancelled = this.deps.cancelTasks?.(effective.source) ?? 0;
+			await this.platform.send(msg.source.chatId, `Stopped the active Agent turn and cancelled ${cancelled} Sub-Agent task(s).`);
+			return;
+		}
 		if (this.deps.approvalBroker && (await this.deps.approvalBroker.handleReply(effective.source, effective.text))) return;
 		const control = await this.runtime.handleControl({ source: effective.source, text: effective.text });
 		if (control?.handled) {
 			if (control.nextSource) this.setSessionOverride(msg.source, control.nextSource.threadId);
 			await this.platform.send(msg.source.chatId, control.message);
-			return;
-		}
-		if (effective.text.trim().toLowerCase() === "/stop") {
-			await this.runtime.cancel(effective.source);
-			const cancelled = this.deps.cancelTasks?.(effective.source) ?? 0;
-			await this.platform.send(msg.source.chatId, `Stopped the active Agent turn and cancelled ${cancelled} Sub-Agent task(s).`);
 			return;
 		}
 		await this.runTurn(effective);
