@@ -5,6 +5,7 @@
  * Usage:
  *   beemax gateway    Start the Feishu gateway (long-running)
  *   beemax chat       Local interactive chat on stdout (no Feishu)
+ *   beemax tui        Compatibility alias for beemax chat --full
  *   beemax model      Show / set the configured model
  */
 
@@ -92,6 +93,14 @@ async function main(): Promise<void> {
 				full: parsed.options.full === true,
 				compact: parsed.options.compact === true,
 				plain: parsed.options.plain === true,
+				noAltScreen: parsed.options["no-alt-screen"] === true,
+			});
+			break;
+		case "tui":
+			await runChat(getConfig(), {
+				full: true,
+				compact: false,
+				plain: false,
 				noAltScreen: parsed.options["no-alt-screen"] === true,
 			});
 			break;
