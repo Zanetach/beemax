@@ -125,6 +125,22 @@ test("approval lifecycle is available to presentation without exposing broker in
 	assert.deepEqual(events.map((event) => event.type), ["turn.started", "approval.requested", "approval.resolved", "turn.finished"]);
 });
 
+test("approval decisions are Core actions, not presenter-specific reply parsing", async () => {
+	let resolveTurn;
+	const runtime = {
+		run() { return new Promise((resolve) => { resolveTurn = resolve; }); },
+		async cancel() { return false; }, async modelStatus() { return undefined; }, async usage() { return undefined; },
+	};
+	let decision;
+	const interaction = new InteractionEventAdapter(runtime, { approvalBroker: { decide: async (_source, choice) => (decision = choice, true) } });
+	const turn = interaction.dispatch({ type: "message.send", source, text: "hi", input: { timeoutMs: 1_000 } });
+	await new Promise((resolve) => setImmediate(resolve));
+	assert.deepEqual(await interaction.dispatch({ type: "approval.decide", source, choice: "session" }), { handled: true });
+	assert.equal(decision, "session");
+	resolveTurn({ answer: "ok", model: "test/model", durationMs: 1, usage: {} });
+	await turn;
+});
+
 test("asynchronous presentation events stay ordered and surface a renderer failure", async () => {
 	let releaseFirst;
 	const firstGate = new Promise((resolve) => { releaseFirst = resolve; });

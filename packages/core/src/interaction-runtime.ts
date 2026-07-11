@@ -2,7 +2,7 @@ import type { AgentSessionEvent } from "@earendil-works/pi-coding-agent";
 import type { AgentRunInput, AgentRunResult, AgentRuntimePort, AgentSessionUsage } from "./agent-runtime.ts";
 import type { BeeMaxRuntimeSource } from "./runtime.ts";
 import { sessionIdForSource, sessionKeyForSource } from "./session-coordinator.ts";
-import type { ToolApprovalBroker } from "./tool-approval.ts";
+import type { ToolApprovalBroker, ToolApprovalChoice } from "./tool-approval.ts";
 import type { ToolApprovalDetails } from "./tool-approval.ts";
 
 export type InteractionSurface = "chat" | "gateway" | "web";
@@ -54,6 +54,7 @@ export type InteractionAction<Source extends BeeMaxRuntimeSource = BeeMaxRuntime
 	| { type: "message.send"; source: Source; text: string; input: Omit<AgentRunInput<Source>, "source" | "text"> }
 	| { type: "turn.queue"; source: Source; text: string }
 	| { type: "turn.steer"; source: Source; text: string }
+	| { type: "approval.decide"; source: Source; choice: ToolApprovalChoice }
 	| { type: "turn.cancel"; source: Source };
 
 export interface InteractionCancelResult {
@@ -65,6 +66,7 @@ export interface InteractionCancelResult {
 }
 
 export interface InteractionQueueResult { queued: boolean; position: number; replaced: boolean; mode: "queue" | "steer_fallback"; }
+export interface InteractionApprovalResult { handled: boolean; }
 
 export interface InteractionSnapshot {
 	phase: InteractionPhase;
@@ -120,10 +122,11 @@ export class InteractionEventAdapter<Source extends BeeMaxRuntimeSource = BeeMax
 		}) : undefined;
 	}
 
-	async dispatch(action: InteractionAction<Source>, sink?: InteractionEventSink): Promise<AgentRunResult | InteractionCancelResult | InteractionQueueResult> {
+	async dispatch(action: InteractionAction<Source>, sink?: InteractionEventSink): Promise<AgentRunResult | InteractionCancelResult | InteractionQueueResult | InteractionApprovalResult> {
 		if (action.type === "turn.cancel") return this.cancel(action.source, sink);
 		if (action.type === "turn.queue") return this.queue(action.source, action.text, "queue", sink);
 		if (action.type === "turn.steer") return this.queue(action.source, action.text, "steer_fallback", sink);
+		if (action.type === "approval.decide") return { handled: await this.approvalBroker?.decide(action.source, action.choice) ?? false };
 
 		const key = interactionKey(action.source);
 		if (sink) this.sinks.set(key, sink);

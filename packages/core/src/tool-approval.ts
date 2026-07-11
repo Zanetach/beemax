@@ -14,6 +14,7 @@ export interface ToolApprovalDetails {
 	argsSummary: string;
 }
 export interface ToolApprovalDecision { allowed: boolean; reason?: string; }
+export type ToolApprovalChoice = "once" | "session" | "deny";
 export type ApprovalPromptSender = (source: BeeMaxRuntimeSource, text: string) => Promise<void>;
 export type ApprovalAuditSink = (event: { source: BeeMaxRuntimeSource; toolName: string; allowed: boolean; reason?: string }) => void;
 export type ToolApprovalEvent =
@@ -77,14 +78,20 @@ export class ToolApprovalBroker {
 
 	/** Returns true when text belongs to a pending approval for this conversation. */
 	async handleReply(source: BeeMaxRuntimeSource, text: string): Promise<boolean> {
-		const sourceKey = sessionKeyForSource(source);
-		const pending = this.pending.get(sourceKey);
-		if (!pending) return false;
 		const choice = parseChoice(text);
 		if (!choice) {
+			if (!this.pending.has(sessionKeyForSource(source))) return false;
 			await this.sendPrompt(source, "存在待审批工具调用。请回复：1（允许一次）、2（本会话允许）或 3（拒绝）。");
 			return true;
 		}
+		return this.decide(source, choice);
+	}
+
+	/** Semantic approval action for cards, TUI buttons, and Web controls. */
+	async decide(source: BeeMaxRuntimeSource, choice: ToolApprovalChoice): Promise<boolean> {
+		const sourceKey = sessionKeyForSource(source);
+		const pending = this.pending.get(sourceKey);
+		if (!pending) return false;
 		if (choice === "session") {
 			this.sessionGrants.add(`${sourceKey}:${pending.toolName}`);
 			this.finish(sourceKey, { allowed: true });
@@ -128,7 +135,7 @@ export class ToolApprovalBroker {
 	}
 }
 
-function parseChoice(text: string): "once" | "session" | "deny" | undefined {
+function parseChoice(text: string): ToolApprovalChoice | undefined {
 	const choice = text.trim().toLowerCase();
 	if (["1", "允许", "允许一次", "allow", "allow once", "yes", "y"].includes(choice)) return "once";
 	if (["2", "本会话允许", "会话允许", "allow session", "always this session"].includes(choice)) return "session";

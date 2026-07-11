@@ -39,3 +39,11 @@ test("approval lifecycle exposes only redacted presenter-safe card details", asy
 	await broker.handleReply(source, "3");
 	assert.deepEqual(await waiting, { allowed: false, reason: "User denied the tool call" });
 });
+
+test("semantic approval decisions share the same policy and audit path as text replies", async () => {
+	const broker = new ToolApprovalBroker(async () => {}, 1_000);
+	const waiting = broker.authorize({ source, toolName: "write", args: { path: "report.md" } });
+	await new Promise((resolve) => setImmediate(resolve));
+	assert.equal(await broker.decide(source, "once"), true);
+	assert.deepEqual(await waiting, { allowed: true });
+});
