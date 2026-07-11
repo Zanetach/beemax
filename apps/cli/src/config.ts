@@ -242,7 +242,7 @@ function parseImageQuality(value: unknown): "low" | "medium" | "high" {
 	return value === "low" || value === "high" ? value : "medium";
 }
 function reasoningDisplay(value: unknown): "off" | "summary" | "raw" {
-	return value === "raw" || value === "summary" ? value : "off";
+	return value === "off" || value === "raw" ? value : "summary";
 }
 function executionBackend(value: unknown): "local" | "docker" { return value === "docker" ? "docker" : "local"; }
 function sandboxMode(value: unknown): "off" | "all" { return value === "all" ? "all" : "off"; }

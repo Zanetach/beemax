@@ -67,6 +67,7 @@ test("profile creation and Feishu channel configuration keep secrets in a protec
 	assert.equal(config.subagents.maxConcurrent, 3);
 	assert.equal(config.subagents.maxChildrenPerOwner, 5);
 	assert.equal(config.agent.toolset, "standard");
+	assert.equal(config.agent.reasoningDisplay, "summary");
 	assert.equal(config.agent.maxSessions, 100);
 	assert.equal(config.agent.sessionIdleMs, 30 * 60_000);
 	assert.equal(config.paths.cwd, join(paths.homePath, "workspace"));
