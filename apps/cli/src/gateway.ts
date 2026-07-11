@@ -443,7 +443,7 @@ export function mainAgentTools(toolset: "safe" | "standard", mcpTools: string[])
 		...readOnly,
 		"bash", "edit", "write", "memory_remember", "memory_promote", "memory_reject", "memory_forget", "memory_understand", "memory_correct",
 		"browser_open", "browser_read",
-		"browser_click", "browser_fill", "browser_fill_credential", "browser_cookies",
+		"browser_click", "browser_fill", "browser_fill_credential", "browser_generate_credential", "browser_cookies",
 		"reminder_create", "schedule_create", "schedule_pause", "schedule_resume", "schedule_delete",
 		"skill_create", "skill_update", "task_spawn", "task_cancel", "image_generate",
 		"task_plan_execute",

@@ -1,4 +1,5 @@
 import { isIP } from "node:net";
+import { randomInt } from "node:crypto";
 import { defineTool, type ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { MUTATING_TOOL_POLICY, READ_ONLY_TOOL_POLICY, withToolPolicy, type ToolPolicy } from "./tool-runtime.ts";
@@ -7,7 +8,7 @@ import type { CredentialVault } from "./credential-vault.ts";
 const DEFAULT_CDP_URL = "http://127.0.0.1:9222";
 const MAX_TEXT_CHARS = 30_000;
 
-export interface BrowserToolsOptions { cdpUrl?: string; fetchImpl?: typeof fetch; credentials?: { ownerKey: string; vault: Pick<CredentialVault, "withSecret"> }; }
+export interface BrowserToolsOptions { cdpUrl?: string; fetchImpl?: typeof fetch; credentials?: { ownerKey: string; vault: Pick<CredentialVault, "put" | "remove" | "withSecret"> }; }
 
 /**
  * First-class, Chrome DevTools Protocol browser capability. Read operations
@@ -42,17 +43,33 @@ export function createBrowserTools(options: BrowserToolsOptions = {}): ToolDefin
 		}) }),
 		defineTool({ name: "browser_fill", label: "Fill Browser Field", description: "Fill a CSS-selected browser input and dispatch input/change events. Requires approval.", parameters: Type.Object({ selector: Type.String({ minLength: 1, maxLength: 512 }), text: Type.String({ maxLength: 10_000 }) }), execute: async (_id, params) => browserResult(async () => {
 			const page = await activePage(cdpUrl, fetchImpl);
-			const expression = `(() => { const el = document.querySelector(${JSON.stringify(params.selector)}); if (!(el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement)) return { ok: false, reason: "not an input" }; el.value = ${JSON.stringify(params.text)}; el.dispatchEvent(new Event("input", { bubbles: true })); el.dispatchEvent(new Event("change", { bubbles: true })); return { ok: true }; })()`;
+			const expression = fillExpression(params.selector, params.text);
 			const value = await evaluate(page.webSocketDebuggerUrl, expression, true) as { ok?: boolean; reason?: string };
 			return { text: value?.ok ? `Filled ${params.selector}` : `Could not fill ${params.selector}: ${value?.reason ?? "unknown error"}`, details: { selector: params.selector, url: page.url, ...value }, isError: !value?.ok };
 		}) }),
 		...(options.credentials ? [defineTool({ name: "browser_fill_credential", label: "Fill Browser Credential", description: "Fill a browser input from an encrypted Credential Ref without exposing its Secret. Requires approval.", parameters: Type.Object({ selector: Type.String({ minLength: 1, maxLength: 512 }), credentialRef: Type.String({ pattern: "^cred_[a-f0-9-]{36}$" }) }), execute: async (_id, params) => browserResult(async () => {
 			const page = await activePage(cdpUrl, fetchImpl);
 			const value = await options.credentials!.vault.withSecret(options.credentials!.ownerKey, params.credentialRef, "browser.fill", async (secret) => {
-				const expression = `(() => { const el = document.querySelector(${JSON.stringify(params.selector)}); if (!(el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement)) return { ok: false, reason: "not an input" }; el.value = ${JSON.stringify(secret)}; el.dispatchEvent(new Event("input", { bubbles: true })); el.dispatchEvent(new Event("change", { bubbles: true })); return { ok: true }; })()`;
+				const expression = fillExpression(params.selector, secret);
 				return await evaluate(page.webSocketDebuggerUrl, expression, true) as { ok?: boolean; reason?: string };
 			});
 			return { text: value?.ok ? `Filled ${params.selector} using Credential Ref` : `Could not fill ${params.selector} using Credential Ref: ${value?.reason ?? "unknown error"}`, details: { selector: params.selector, credentialRef: params.credentialRef, url: page.url, ok: Boolean(value?.ok), reason: value?.reason }, isError: !value?.ok };
+		}) })] : []),
+		...(options.credentials ? [defineTool({ name: "browser_generate_credential", label: "Generate Browser Credential", description: "Generate a strong password locally, save it in the encrypted Profile Vault, and fill a browser input without exposing the Secret. Requires approval.", parameters: Type.Object({ selector: Type.String({ minLength: 1, maxLength: 512 }), label: Type.String({ minLength: 1, maxLength: 256 }), purpose: Type.String({ minLength: 1, maxLength: 512 }), length: Type.Optional(Type.Integer({ minimum: 16, maximum: 64 })) }), execute: async (_id, params) => browserResult(async () => {
+			const page = await activePage(cdpUrl, fetchImpl);
+			const secret = generateBrowserSecret(params.length ?? 24);
+			const credential = options.credentials!.vault.put({ ownerKey: options.credentials!.ownerKey, label: params.label, purpose: params.purpose, secret });
+			try {
+				const value = await evaluate(page.webSocketDebuggerUrl, fillExpression(params.selector, secret), true) as { ok?: boolean; reason?: string };
+				if (!value?.ok) {
+					const rolledBack = options.credentials!.vault.remove(options.credentials!.ownerKey, credential.ref);
+					return { text: rolledBack ? `Could not generate and fill ${params.selector}: ${value?.reason ?? "unknown error"}; the new Credential was removed` : `Could not generate and fill ${params.selector}: ${value?.reason ?? "unknown error"}; remove Credential Ref ${credential.ref} manually`, details: { selector: params.selector, ...(rolledBack ? {} : { credentialRef: credential.ref }), url: page.url, ok: false, reason: value?.reason, rolledBack }, isError: true };
+				}
+				return { text: `Generated and filled ${params.selector}; saved as Credential Ref ${credential.ref}`, details: { selector: params.selector, credentialRef: credential.ref, url: page.url, ok: true } };
+			} catch (error) {
+				options.credentials!.vault.remove(options.credentials!.ownerKey, credential.ref);
+				throw error;
+			}
 		}) })] : []),
 		defineTool({ name: "browser_cookies", label: "Read Browser Cookies", description: "Read browser cookies for diagnostics. Sensitive: requires approval.", parameters: Type.Object({}), execute: async () => browserResult(async () => {
 			const page = await activePage(cdpUrl, fetchImpl);
@@ -68,6 +85,7 @@ export function createBrowserTools(options: BrowserToolsOptions = {}): ToolDefin
 		browser_click: { ...MUTATING_TOOL_POLICY, impact: "Clicks a page element and may change external service state" },
 		browser_fill: { ...MUTATING_TOOL_POLICY, impact: "Places user-provided data into an external web page" },
 		browser_fill_credential: { ...MUTATING_TOOL_POLICY, impact: "Injects a protected Profile Credential into an external web page without revealing it to the Agent" },
+		browser_generate_credential: { ...MUTATING_TOOL_POLICY, impact: "Creates a new protected Profile Credential and injects it into an external web page" },
 		browser_cookies: { ...MUTATING_TOOL_POLICY, sideEffect: "none", reversible: true, impact: "Reads sensitive browser cookie metadata" },
 	};
 	return tools.map((tool) => withToolPolicy(tool, policies[tool.name]!));
@@ -130,6 +148,19 @@ function isLocalDebuggerUrl(input: string): boolean {
 }
 
 function isLoopbackHost(host: string): boolean { return host === "127.0.0.1" || host === "::1" || host === "localhost"; }
+
+function fillExpression(selector: string, value: string): string {
+	return `(() => { const el = document.querySelector(${JSON.stringify(selector)}); if (!(el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement)) return { ok: false, reason: "not an input" }; el.value = ${JSON.stringify(value)}; el.dispatchEvent(new Event("input", { bubbles: true })); el.dispatchEvent(new Event("change", { bubbles: true })); return { ok: true }; })()`;
+}
+
+function generateBrowserSecret(length: number): string {
+	const groups = ["ABCDEFGHJKLMNPQRSTUVWXYZ", "abcdefghijkmnopqrstuvwxyz", "23456789", "!@#$%^&*_-" ];
+	const alphabet = groups.join("");
+	const characters = groups.map((group) => group[randomInt(group.length)]!);
+	while (characters.length < length) characters.push(alphabet[randomInt(alphabet.length)]!);
+	for (let index = characters.length - 1; index > 0; index--) { const swap = randomInt(index + 1); [characters[index], characters[swap]] = [characters[swap]!, characters[index]!]; }
+	return characters.join("");
+}
 
 async function browserResult(run: () => Promise<{ text: string; details: unknown; isError?: boolean }>) {
 	try { const result = await run(); return { content: [{ type: "text" as const, text: result.text }], details: result.details, isError: result.isError }; }
