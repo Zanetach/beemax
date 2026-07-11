@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { createTaskOrchestrationTools, TaskGraph } from "../dist/index.js";
+import { createTaskLedgerTools, createTaskOrchestrationTools, TaskGraph, TaskPlanRuntime } from "../dist/index.js";
 
 function memoryLedger() {
 	const tasks = new Map();
@@ -16,11 +16,79 @@ function memoryLedger() {
 		recordPlan(records, edges, plan) { for (const task of records) this.record(task); dependencies.push(...edges); if (plan) plans.set(plan.id, { ...plan }); },
 		transitionPlan(id, change) { plans.set(id, { ...plans.get(id), ...change }); return true; },
 		queryTaskPlans(query) { return [...plans.values()].filter((plan) => query.ownerKeys.includes(plan.ownerKey) && (!query.id || plan.id === query.id) && (!query.statuses || query.statuses.includes(plan.status))); },
-		queryTasks(query) { return [...tasks.values()].filter((task) => query.ownerKeys.includes(task.ownerKey) && (!query.statuses || query.statuses.includes(task.status)) && (!query.planIds || query.planIds.includes(task.planId))); },
+		queryTasks(query) { return [...tasks.values()].filter((task) => query.ownerKeys.includes(task.ownerKey) && (!query.id || task.id === query.id) && (!query.statuses || query.statuses.includes(task.status)) && (!query.planIds || query.planIds.includes(task.planId))); },
 		taskRuns() { return []; },
 		taskDependencies(ids) { return dependencies.filter((edge) => ids.includes(edge.taskId)); },
+		checkpointTask(ownerKey, taskId, checkpoint, now = Date.now()) { const task = tasks.get(taskId); if (!task || task.ownerKey !== ownerKey || task.status !== "running") return false; tasks.set(taskId, { ...task, checkpoint, checkpointAt: now }); return true; },
+		advanceTaskRoute(ownerKey, taskId, error) { const task = tasks.get(taskId); if (!task || task.ownerKey !== ownerKey || task.status !== "running" || !task.routes?.[task.routeIndex + 1]) return false; tasks.set(taskId, { ...task, status: "pending", routeIndex: task.routeIndex + 1, error }); return true; },
+		pauseTaskPlan() { return false; }, resumeTaskPlan() { return false; },
 	};
 }
+
+test("a delegated Sub-Agent can checkpoint only its bound Task", async () => {
+	const ledger = memoryLedger();
+	ledger.record({ id: "bound", ownerKey: "feishu:chat#thread:user", kind: "delegated", title: "Bound", status: "running", createdAt: 1 });
+	ledger.record({ id: "other", ownerKey: "feishu:chat#thread:user", kind: "delegated", title: "Other", status: "running", createdAt: 1 });
+	const source = { platform: "feishu", chatId: "chat", chatType: "thread", userId: "user", threadId: "__subagent:bound", delegatedTask: { id: "bound", ownerKey: "feishu:chat#thread:user" } };
+	const tools = new Map(createTaskLedgerTools(ledger, source).map((tool) => [tool.name, tool]));
+	await tools.get("task_checkpoint_save").execute("save", { id: "bound", checkpoint: "milestone one" });
+	assert.equal(ledger.tasks.get("bound").checkpoint, "milestone one");
+	await assert.rejects(() => tools.get("task_checkpoint_save").execute("escape", { id: "other", checkpoint: "not allowed" }), /bound Task/i);
+	await assert.rejects(() => tools.get("task_checkpoint_save").execute("secret", { id: "bound", checkpoint: "OPENAI_API_KEY=must-not-persist" }), /credential|secret|sensitive/i);
+});
+
+test("TaskPlanRuntime starts durable work without blocking the caller and remains cancellable", async () => {
+	const runtime = new TaskPlanRuntime();
+	let observedAbort = false;
+	const started = runtime.start("owner", "background", async (signal) => {
+		if (signal.aborted) { observedAbort = true; return; }
+		await new Promise((resolve) => signal.addEventListener("abort", () => { observedAbort = true; resolve(); }, { once: true }));
+	});
+	assert.equal(started, true);
+	assert.deepEqual(runtime.snapshot(), { active: 1 });
+	assert.equal(runtime.cancel(["owner"], "background"), 1);
+	await new Promise((resolve) => setImmediate(resolve));
+	assert.equal(observedAbort, true);
+	assert.deepEqual(runtime.snapshot(), { active: 0 });
+});
+
+test("TaskPlanRuntime shutdown aborts and drains supervised background work", async () => {
+	const runtime = new TaskPlanRuntime();
+	let drained = false;
+	runtime.start("owner", "shutdown", async (signal) => {
+		if (!signal.aborted) await new Promise((resolve) => signal.addEventListener("abort", resolve, { once: true }));
+		drained = true;
+	});
+	await runtime.shutdown();
+	assert.equal(drained, true);
+	assert.deepEqual(runtime.snapshot(), { active: 0 });
+});
+
+test("TaskPlanRuntime reports background failures without an unhandled rejection", async () => {
+	const failures = [];
+	const runtime = new TaskPlanRuntime((event) => failures.push(event));
+	runtime.start("owner", "failed", async () => { throw new Error("executor failed"); });
+	await runtime.shutdown();
+	assert.equal(failures.length, 1);
+	assert.equal(failures[0].planId, "failed");
+	assert.match(failures[0].error.message, /executor failed/);
+});
+
+test("TaskPlanRuntime durable claims prevent two runtimes from executing one Plan", async () => {
+	let holder;
+	const ledger = {
+		claimTaskPlanExecution(_owner, _plan, candidate) { if (holder) return false; holder = candidate; return true; },
+		releaseTaskPlanExecution(_owner, _plan, candidate) { if (holder !== candidate) return false; holder = undefined; return true; },
+	};
+	const first = new TaskPlanRuntime();
+	const second = new TaskPlanRuntime();
+	let executions = 0;
+	first.startClaimed(ledger, "owner", "claimed", async (signal) => { executions++; if (!signal.aborted) await new Promise((resolve) => signal.addEventListener("abort", resolve, { once: true })); });
+	second.startClaimed(ledger, "owner", "claimed", async () => { executions++; });
+	await new Promise((resolve) => setImmediate(resolve));
+	assert.equal(executions, 1);
+	await Promise.all([first.shutdown(), second.shutdown()]);
+});
 
 test("TaskGraph runs ready Tasks in parallel and waits for all dependencies", async () => {
 	const ledger = memoryLedger();
@@ -245,11 +313,17 @@ test("orchestration tool validates a model-authored DAG and dispatches bounded S
 		tasks: [{ key: "research", title: "Research", goal: "Collect evidence", acceptanceCriteria: "Includes one source" }, { key: "examples", title: "Examples", goal: "Collect examples", acceptanceCriteria: "Includes one example" }, { key: "write", title: "Write", goal: "Use the evidence", acceptanceCriteria: "Uses the collected evidence" }],
 		dependencies: [{ task: "write", dependsOn: "research" }, { task: "write", dependsOn: "examples" }],
 	});
+	assert.match(output.content[0].text, /"accepted": true/);
+	assert.match(output.content[0].text, /"status": "running"/);
+	for (let attempt = 0; attempt < 20 && executed.length < 3; attempt++) await new Promise((resolve) => setImmediate(resolve));
 	assert.equal(new Set(executed.slice(0, 2)).size, 2);
 	assert.equal(executed[2], "Write");
-	assert.match(output.content[0].text, /"succeeded": 3/);
-	assert.match(output.content[0].text, /"title": "Research and write"/);
+	const planId = output.details.planId;
+	assert.equal(ledger.queryTaskPlans({ ownerKeys: ["cli:local:local"], id: planId })[0].status, "succeeded");
 	assert.equal(tools.get("task_plan_execute").beemaxPolicy.approval, "never");
+	assert.equal(tools.get("task_plan_execute").beemaxPolicy.timeoutMs, 60_000);
+	assert.equal(tools.get("task_plan_pause").beemaxPolicy.approval, "never");
+	assert.equal(tools.get("task_plan_resume").beemaxPolicy.timeoutMs, 60_000);
 });
 
 test("orchestration tool rejects a serial checklist that has no Sub-Agent parallelism", async () => {
@@ -274,4 +348,71 @@ test("TaskGraph cancellation stops active work and cancels nodes that have not s
 	await new Promise((resolve) => setImmediate(resolve));
 	controller.abort(new Error("stopped"));
 	assert.deepEqual(await running, { succeeded: 0, failed: 0, cancelled: 2, blocked: [] });
+});
+
+test("TaskGraph persists checkpoints and switches to the next route after a recoverable failure", async () => {
+	const ledger = memoryLedger();
+	const graph = new TaskGraph(ledger);
+	graph.createPlan({ id: "autonomous", ownerKey: "owner", tasks: [{ id: "work", title: "Work", recoveryPolicy: "safe_retry", idempotencyKey: "autonomous:work", routes: ["primary", "fallback"] }] });
+	const seen = [];
+	const result = await graph.run(["owner"], "autonomous", async (_task, _signal, context) => {
+		seen.push({ route: context.route, checkpoint: context.checkpoint });
+		if (context.route === "primary") {
+			assert.equal(context.saveCheckpoint("primary evidence collected"), true);
+			throw new Error("primary unavailable");
+		}
+		return { output: `continued from ${context.checkpoint}` };
+	});
+	assert.deepEqual(seen, [{ route: "primary", checkpoint: undefined }, { route: "fallback", checkpoint: "primary evidence collected" }]);
+	assert.deepEqual(result, { succeeded: 1, failed: 0, cancelled: 0, blocked: [] });
+	assert.equal(ledger.queryTasks({ ownerKeys: ["owner"], id: "work" })[0].result, "continued from primary evidence collected");
+});
+
+test("TaskGraph refuses to persist credential material as a checkpoint", async () => {
+	const ledger = memoryLedger();
+	const graph = new TaskGraph(ledger);
+	graph.createPlan({ id: "safe-checkpoint", ownerKey: "owner", tasks: [{ id: "work", title: "Work" }] });
+	await graph.run(["owner"], "safe-checkpoint", async (_task, _signal, context) => {
+		assert.equal(context.saveCheckpoint("Bearer abcdefghijklmnopqrstuvwxyz"), false);
+		return { output: "done" };
+	});
+	assert.equal(ledger.tasks.get("work").checkpoint, undefined);
+});
+
+test("TaskGraph redacts credential material from durable failure details", async () => {
+	const ledger = memoryLedger();
+	const graph = new TaskGraph(ledger);
+	graph.createPlan({ id: "safe-error", ownerKey: "owner", tasks: [{ id: "work", title: "Work" }] });
+	await graph.run(["owner"], "safe-error", async () => { throw new Error('{"password":"must-not-persist"}'); });
+	assert.equal(ledger.tasks.get("work").error, "[credential details redacted]");
+});
+
+test("TaskGraph changes route after correction cannot satisfy final Acceptance Criteria", async () => {
+	const ledger = memoryLedger();
+	const graph = new TaskGraph(ledger);
+	graph.createPlan({ id: "quality-route", ownerKey: "owner", tasks: [{ id: "work", title: "Work", acceptanceCriteria: "accepted", recoveryPolicy: "safe_retry", idempotencyKey: "quality-route:work", routes: ["primary", "fallback"] }] });
+	const routes = [];
+	const result = await graph.run(["owner"], "quality-route", async (_task, _signal, context) => { routes.push(context.route); return { output: context.route }; }, {
+		verify: async (_task, output) => output.output === "fallback" ? { accepted: true, evidence: "fallback accepted" } : { accepted: false, feedback: "primary incomplete" },
+	});
+	assert.deepEqual(routes, ["primary", "fallback"]);
+	assert.deepEqual(result, { succeeded: 1, failed: 0, cancelled: 0, blocked: [] });
+});
+
+test("orchestration enforces the active planning Sub-Agent and concurrency budgets", async () => {
+	const ledger = memoryLedger();
+	let running = 0;
+	let peak = 0;
+	const decision = { mode: "dag", suggestedConcurrency: 1, budget: { maxSubagents: 2, maxToolCalls: 20, maxTokens: 20_000, maxCorrectiveAttempts: 0 }, signals: { complexity: 6, independentWorkItems: 2, requiresResearch: true, requiresVerification: true, requestsParallelism: true }, reason: "test", directive: () => "test" };
+	const tool = createTaskOrchestrationTools(ledger, { platform: "cli", chatId: "budget", chatType: "dm", userId: "local" }, async (task) => {
+		running++; peak = Math.max(peak, running);
+		await new Promise((resolve) => setTimeout(resolve, 5));
+		running--;
+		return { output: task.title };
+	}, { maxConcurrent: 5, planningDecision: () => decision, verify: async () => ({ accepted: true }) })[0];
+	const task = (key) => ({ key, title: key, goal: `Complete ${key}`, acceptanceCriteria: `${key} is complete` });
+	await assert.rejects(() => tool.execute("over-budget", { title: "Too large", tasks: [task("one"), task("two"), task("three")] }), /Sub-Agent budget \(2\)/);
+	assert.equal(ledger.tasks.size, 0);
+	await tool.execute("admitted", { title: "Bounded", tasks: [task("one"), task("two")] });
+	assert.equal(peak, 1);
 });

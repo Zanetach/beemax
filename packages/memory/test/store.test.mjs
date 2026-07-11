@@ -703,6 +703,30 @@ test("Task DAG dependencies persist with their Tasks", () => {
 	} finally { store.close(); rmSync(root, { recursive: true, force: true }); }
 });
 
+test("Task Plan pause and checkpoints survive process restart and resume owner-scoped work", async () => {
+	const root = mkdtempSync(join(tmpdir(), "beemax-task-pause-"));
+	const path = join(root, "memory.db");
+	const scope = { platform: "cli", chatId: "local", chatType: "dm", userId: "local" };
+	let store = new MemoryStore(path);
+	new TaskGraph(store).createPlan({ id: "long-plan", ownerKey: "cli:local:local", tasks: [{ id: "long-task", title: "Long work", recoveryPolicy: "safe_retry", idempotencyKey: "long-plan:task", executionScope: scope, routes: ["primary", "fallback"] }] });
+	store.transition("long-task", { status: "running", startedAt: 10 });
+	assert.equal(store.checkpointTask("cli:local:local", "long-task", "page=42", 20), true);
+	assert.equal(store.checkpointTask("cli:local:local", "long-task", "access_token=must-not-persist", 21), false);
+	assert.equal(store.queryTasks({ ownerKeys: ["cli:local:local"], id: "long-task" })[0].checkpoint, "page=42");
+	store.transition("long-task", { status: "pending" });
+	assert.equal(store.pauseTaskPlan(["cli:local:local"], "long-plan", 30), true);
+	store.close();
+	store = new MemoryStore(path);
+	try {
+		assert.equal(store.queryTaskPlans({ ownerKeys: ["cli:local:local"], id: "long-plan" })[0].pausedAt, 30);
+		assert.equal(store.queryTasks({ ownerKeys: ["cli:local:local"], id: "long-task" })[0].checkpoint, "page=42");
+		assert.deepEqual(await new TaskRecoveryRunner(store, async () => ({ output: "must not run" })).run(), { plans: 0, succeeded: 0, failed: 0, cancelled: 0, blocked: [] });
+		const runner = new TaskRecoveryRunner(store, async (_task, _signal, context) => ({ output: `resumed:${context.checkpoint}` }));
+		assert.deepEqual(await runner.resume(["cli:local:local"], "long-plan"), { plans: 1, succeeded: 1, failed: 0, cancelled: 0, blocked: [] });
+		assert.equal(store.queryTasks({ ownerKeys: ["cli:local:local"], id: "long-task" })[0].result, "resumed:page=42");
+	} finally { store.close(); rmSync(root, { recursive: true, force: true }); }
+});
+
 test("a Task Plan Terminal Outcome rejects late lifecycle updates", () => {
 	const root = mkdtempSync(join(tmpdir(), "beemax-plan-terminal-outcome-"));
 	const store = new MemoryStore(join(root, "memory.db"));

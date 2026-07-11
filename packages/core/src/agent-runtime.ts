@@ -16,7 +16,7 @@ import type { AutonomousPlanningPolicy, PlanningBudgetRegistry } from "./autonom
 export interface AgentRunInput<Source extends BeeMaxRuntimeSource = BeeMaxRuntimeSource> {
 	source: Source;
 	text: string;
-	timeoutMs: number;
+	timeoutMs: number | null;
 	signal?: AbortSignal;
 	expandPromptTemplates?: boolean;
 	mode?: "interactive" | "automation";
@@ -189,7 +189,7 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 			let timedOut = false;
 			const abortFromCaller = () => { void session.piSession.abort(); };
 			input.signal?.addEventListener("abort", abortFromCaller, { once: true });
-			const timeout = setTimeout(() => { timedOut = true; void session.piSession.abort(); }, input.timeoutMs);
+			const timeout = input.timeoutMs === null ? undefined : setTimeout(() => { timedOut = true; void session.piSession.abort(); }, input.timeoutMs);
 			try {
 				if (planning) await onEvent?.({ type: "planning_decision", mode: planning.mode, concurrency: planning.suggestedConcurrency, maxSubagents: planning.budget.maxSubagents, requiredTools: [...planning.requiredTools] });
 				await session.piSession.prompt(text, {
@@ -224,7 +224,7 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 				if (failure) throw new AgentRunError(errorMessage(failure), false, failure, isRecoverableModelFailure(failure));
 			} catch (cause) {
 				if (cause instanceof AgentRunError) throw cause;
-				throw new AgentRunError(timedOut ? `Agent turn timed out after ${Math.round(input.timeoutMs / 60_000)} minutes` : errorMessage(cause), timedOut, cause, timedOut || isRecoverableModelFailure(cause));
+				throw new AgentRunError(timedOut && input.timeoutMs !== null ? `Agent turn timed out after ${Math.round(input.timeoutMs / 60_000)} minutes` : errorMessage(cause), timedOut, cause, timedOut || isRecoverableModelFailure(cause));
 			} finally {
 				if (planningLease) this.planningBudgets?.end(planningScope, planningLease);
 				if (timeout) clearTimeout(timeout);
@@ -340,7 +340,9 @@ function completedPlanningTool(toolName: string, result: unknown, args: unknown,
 		return { accepted: Boolean(delegatedTaskId && requestedId === delegatedTaskId && record?.id === delegatedTaskId && record.status === "completed") };
 	}
 	if (toolName === "task_plan_execute") {
-		return { accepted: record?.failed === 0 && record?.cancelled === 0 && Array.isArray(record.blocked) && record.blocked.length === 0 };
+		const backgroundAccepted = record?.accepted === true && record.status === "running" && typeof record.planId === "string";
+		const terminalAccepted = record?.failed === 0 && record?.cancelled === 0 && Array.isArray(record.blocked) && record.blocked.length === 0;
+		return { accepted: backgroundAccepted || terminalAccepted };
 	}
 	return { accepted: false };
 }

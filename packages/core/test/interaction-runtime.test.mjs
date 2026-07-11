@@ -162,17 +162,20 @@ test("cancelling a running turn produces a semantic cancellation instead of a fa
 	};
 	let approvalCancelled = 0;
 	let childCancelled = 0;
+	let plansCancelled = 0;
 	const interaction = new InteractionEventAdapter(runtime, {
 		approvalBroker: { cancel: () => (approvalCancelled++, true) },
 		cancelSubagents: () => (childCancelled++, 2),
+		cancelTaskPlans: () => (plansCancelled++, 1),
 	});
 	const events = [];
 	const turn = interaction.dispatch({ type: "message.send", source, text: "hi", input: { timeoutMs: 1_000 } }, (event) => { events.push(event); });
 	await new Promise((resolve) => setImmediate(resolve));
 	const cancellation = await interaction.dispatch({ type: "turn.cancel", source });
-	assert.deepEqual(cancellation, { cancelled: true, approvalCancelled: true, subagentsCancelled: 2, errors: [], queuedCancelled: false });
+	assert.deepEqual(cancellation, { cancelled: true, approvalCancelled: true, subagentsCancelled: 2, taskPlansCancelled: 1, errors: [], queuedCancelled: false });
 	assert.equal(approvalCancelled, 1);
 	assert.equal(childCancelled, 1);
+	assert.equal(plansCancelled, 1);
 	await assert.rejects(turn, /aborted/);
 	assert.deepEqual(events.map((event) => event.type), ["turn.started", "turn.cancelled"]);
 	assert.equal((await interaction.snapshot(source)).phase, "cancelled");

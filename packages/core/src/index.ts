@@ -58,7 +58,8 @@ export { createTaskLedgerTools } from "./task-ledger-tools.ts";
 export { TaskGraph, type TaskGraphDependencyResult, type TaskGraphExecutionContext, type TaskGraphExecutionResult, type TaskGraphExecutor, type TaskGraphResult, type TaskGraphRunOptions, type TaskGraphVerificationResult, type TaskGraphVerifier, type TaskPlanInput } from "./task-graph.ts";
 export { createTaskOrchestrationTools, type TaskOrchestrationOptions } from "./task-orchestration-tools.ts";
 export { assessTaskPlanQuality, type TaskPlanQualityInput, type TaskPlanQualityResult } from "./task-plan-quality.ts";
-export { TaskRecoveryRunner, type TaskPlanCancelResult, type TaskPlanRetryResult, type TaskRecoveryRunnerOptions, type TaskRecoveryRunnerResult, type TaskVerificationRetryResult } from "./task-recovery.ts";
+export { assertNoCredentialMaterial, containsCredentialMaterial, redactCredentialMaterial } from "./credential-material.ts";
+export { TaskRecoveryRunner, type TaskPlanCancelResult, type TaskPlanPauseResult, type TaskPlanRetryResult, type TaskRecoveryRunnerOptions, type TaskRecoveryRunnerResult, type TaskVerificationRetryResult } from "./task-recovery.ts";
 export { TaskRecoveryService, type TaskRecoveryCycleResult, type TaskRecoveryServiceOptions } from "./task-recovery-service.ts";
 export { TaskPlanRuntime } from "./task-plan-runtime.ts";
 export { TaskPlanNoticeDeliveryService, renderTaskPlanCompletionNotice, type TaskPlanNoticeDeliveryOptions, type TaskPlanNoticeDeliveryResult, type TaskPlanNoticeOutbox } from "./task-plan-notice-delivery.ts";
@@ -107,7 +108,7 @@ export { LocalExecutionPort } from "./local-execution.ts";
 export { createExecutionTools } from "./execution-tools.ts";
 export type { MediaOutboxPort } from "./media-outbox-port.ts";
 export { createAutomationTools } from "./automation-tools.ts";
-export { createSkillTools } from "./skill-tools.ts";
+export { createSkillTools, type SkillCandidateTrialInput, type SkillCandidateTrialResult, type SkillCandidateVerifier, type SkillTrialAssertion, type SkillTrialToolCall } from "./skill-tools.ts";
 export { createWebTools, type WebToolsOptions } from "./web-tools.ts";
 export { createBrowserTools, type BrowserToolsOptions } from "./browser-tools.ts";
 export {

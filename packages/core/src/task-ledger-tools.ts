@@ -3,11 +3,12 @@ import { defineTool, type ToolDefinition } from "@earendil-works/pi-coding-agent
 import { conversationKey, conversationOwnerKey } from "./agent-scope.ts";
 import type { BeeMaxRuntimeSource } from "./runtime.ts";
 import type { TaskLedger, TaskQuery } from "./task-ledger.ts";
-import { READ_ONLY_TOOL_POLICY, withToolPolicy } from "./tool-runtime.ts";
+import { MUTATING_TOOL_POLICY, READ_ONLY_TOOL_POLICY, withToolPolicy } from "./tool-runtime.ts";
+import { assertNoCredentialMaterial } from "./credential-material.ts";
 
 /** Read-only durable Task discovery shared by every Agent surface. */
 export function createTaskLedgerTools(ledger: TaskLedger, source: BeeMaxRuntimeSource): ToolDefinition[] {
-	const ownerKeys = [...new Set([conversationKey(source), conversationOwnerKey(source), "profile"])];
+	const ownerKeys = [...new Set([conversationKey(source), conversationOwnerKey(source), source.delegatedTask?.ownerKey, "profile"].filter((value): value is string => Boolean(value)))];
 	const query = (input: Omit<TaskQuery, "ownerKeys"> = {}) => ledger.queryTasks({ ...input, ownerKeys });
 	const owned = (id: string) => {
 		const task = query({ id, limit: 1 })[0];
@@ -51,8 +52,21 @@ export function createTaskLedgerTools(ledger: TaskLedger, source: BeeMaxRuntimeS
 			parameters: Type.Object({ id: Type.String({ minLength: 1, maxLength: 128 }) }),
 			execute: async (_id, params) => { owned(params.id); return result(ledger.taskRuns(params.id)); },
 		}),
+		defineTool({
+			name: "task_checkpoint_save", label: "Save Task Checkpoint", description: "Persist bounded progress for a running owned Task so a later route or restart can continue safely.",
+			parameters: Type.Object({ id: Type.String({ minLength: 1, maxLength: 128 }), checkpoint: Type.String({ minLength: 1, maxLength: 50_000 }) }),
+			execute: async (_id, params) => {
+				if (source.delegatedTask && params.id !== source.delegatedTask.id) throw new Error(`Checkpoint access is restricted to bound Task ${source.delegatedTask.id}`);
+				assertNoCredentialMaterial(params.checkpoint, "Task checkpoint");
+				const task = owned(params.id);
+				if (!ledger.checkpointTask(task.ownerKey, task.id, params.checkpoint)) throw new Error(`Running Task not found: ${params.id}`);
+				return result({ id: task.id, checkpointSaved: true });
+			},
+		}),
 	];
-	return tools.map((tool) => withToolPolicy(tool, { ...READ_ONLY_TOOL_POLICY, impact: "Reads durable Task lifecycle without changing execution state" }));
+	return tools.map((tool) => tool.name === "task_checkpoint_save"
+		? withToolPolicy(tool, { ...MUTATING_TOOL_POLICY, sideEffect: "local", risk: "low", approval: "never", reversible: true, impact: "Persists bounded progress for one owned running Task" })
+		: withToolPolicy(tool, { ...READ_ONLY_TOOL_POLICY, impact: "Reads durable Task lifecycle without changing execution state" }));
 }
 
 function result(value: unknown) {

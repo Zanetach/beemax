@@ -15,7 +15,7 @@ import Database from "better-sqlite3";
 import type { Database as DatabaseType } from "better-sqlite3";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
-import type { TaskCandidateVerificationResolution, TaskDependency, TaskPlanCompletionNotice, TaskPlanQuery, TaskPlanRecord, TaskPlanTransition, TaskQuery, TaskRecord as RuntimeTaskRecord, TaskRecoveryResult, TaskRunRecord, TaskRunTransition, TaskTransition } from "@beemax/core";
+import { containsCredentialMaterial, redactCredentialMaterial, type TaskCandidateVerificationResolution, type TaskDependency, type TaskPlanCompletionNotice, type TaskPlanQuery, type TaskPlanRecord, type TaskPlanTransition, type TaskQuery, type TaskRecord as RuntimeTaskRecord, type TaskRecoveryResult, type TaskRunRecord, type TaskRunTransition, type TaskTransition } from "@beemax/core";
 
 export const MEMORY_CLAIM_KINDS = ["preference", "fact", "decision", "goal", "project", "relationship", "workflow"] as const;
 export type MemoryClaimKind = typeof MEMORY_CLAIM_KINDS[number];
@@ -203,6 +203,7 @@ export class MemoryStore {
 				created_at INTEGER NOT NULL,
 				started_at INTEGER,
 				finished_at INTEGER
+				,paused_at INTEGER
 			);
 			CREATE INDEX IF NOT EXISTS idx_task_plans_owner_created ON task_plans(owner_key, created_at DESC);
 			CREATE TABLE IF NOT EXISTS task_plan_execution_claims (
@@ -248,6 +249,10 @@ export class MemoryStore {
 				result TEXT,
 				candidate_result TEXT,
 				error TEXT,
+				checkpoint TEXT,
+				checkpoint_at INTEGER,
+				routes TEXT,
+				route_index INTEGER NOT NULL DEFAULT 0,
 				updated_at INTEGER NOT NULL DEFAULT 0
 			);
 			CREATE INDEX IF NOT EXISTS idx_tasks_owner_created ON tasks(owner_key, created_at DESC);
@@ -342,6 +347,11 @@ export class MemoryStore {
 		this.addColumnIfMissing("tasks", "candidate_result", "TEXT");
 		this.addColumnIfMissing("tasks", "corrective_attempts", "INTEGER NOT NULL DEFAULT 0");
 		this.addColumnIfMissing("tasks", "updated_at", "INTEGER NOT NULL DEFAULT 0");
+		this.addColumnIfMissing("tasks", "checkpoint", "TEXT");
+		this.addColumnIfMissing("tasks", "checkpoint_at", "INTEGER");
+		this.addColumnIfMissing("tasks", "routes", "TEXT");
+		this.addColumnIfMissing("tasks", "route_index", "INTEGER NOT NULL DEFAULT 0");
+		this.addColumnIfMissing("task_plans", "paused_at", "INTEGER");
 		this.addColumnIfMissing("task_runs", "lease_expires_at", "INTEGER");
 		this.addColumnIfMissing("task_plan_completion_notices", "claim_token", "TEXT");
 		this.db.exec("CREATE INDEX IF NOT EXISTS idx_tasks_verification_due ON tasks(verification_outcome, verification_retry_at)");
@@ -667,12 +677,17 @@ export class MemoryStore {
 	}
 
 	record(task: RuntimeTaskRecord): void {
-		this.db.prepare(`INSERT INTO tasks (id, owner_key, kind, title, description, acceptance_criteria, recovery_policy, idempotency_key, execution_scope, status, parent_id, plan_id, evidence, verification_outcome, verification_feedback, corrective_attempts, created_at, started_at, finished_at, result, candidate_result, error, updated_at)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-			.run(task.id, task.ownerKey, task.kind, task.title, task.description ?? null, task.acceptanceCriteria ?? null, task.recoveryPolicy ?? "never", task.idempotencyKey ?? null, task.executionScope ? JSON.stringify(task.executionScope) : null, task.status, task.parentId ?? null, task.planId ?? null, task.evidence ?? null, task.verificationStatus ?? null, task.verificationFeedback ?? null, task.correctiveAttempts ?? 0, task.createdAt, task.startedAt ?? null, task.finishedAt ?? null, task.result ?? null, task.candidateResult ?? null, task.error ?? null, task.createdAt);
+		this.db.prepare(`INSERT INTO tasks (id, owner_key, kind, title, description, acceptance_criteria, recovery_policy, idempotency_key, execution_scope, status, parent_id, plan_id, evidence, verification_outcome, verification_feedback, corrective_attempts, created_at, started_at, finished_at, result, candidate_result, error, checkpoint, checkpoint_at, routes, route_index, updated_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+			.run(task.id, task.ownerKey, task.kind, task.title, safeTaskText(task.description), task.acceptanceCriteria ?? null, task.recoveryPolicy ?? "never", task.idempotencyKey ?? null, task.executionScope ? JSON.stringify(task.executionScope) : null, task.status, task.parentId ?? null, task.planId ?? null, safeTaskText(task.evidence), task.verificationStatus ?? null, safeTaskText(task.verificationFeedback), task.correctiveAttempts ?? 0, task.createdAt, task.startedAt ?? null, task.finishedAt ?? null, safeTaskText(task.result), safeTaskText(task.candidateResult), safeTaskText(task.error), task.checkpoint ?? null, task.checkpointAt ?? null, task.routes ? JSON.stringify(task.routes) : null, task.routeIndex ?? 0, task.createdAt);
 	}
 
 	transition(id: string, change: TaskTransition): boolean {
+		const resultText = safeTaskText(change.result);
+		const candidateResult = safeTaskText(change.candidateResult);
+		const error = safeTaskText(change.error);
+		const evidence = safeTaskText(change.evidence);
+		const verificationFeedback = safeTaskText(change.verificationFeedback);
 		const result = this.db.prepare(`UPDATE tasks SET status = ?,
 			started_at = CASE WHEN ? = 'pending' THEN NULL ELSE COALESCE(?, started_at) END,
 			finished_at = CASE WHEN ? IN ('pending', 'running') THEN NULL ELSE COALESCE(?, finished_at) END,
@@ -684,18 +699,18 @@ export class MemoryStore {
 			verification_feedback = CASE WHEN ? = 'succeeded' THEN NULL ELSE COALESCE(?, verification_feedback) END,
 			corrective_attempts = COALESCE(?, corrective_attempts),
 			updated_at = ? WHERE id = ? AND ((? = 'pending' AND status = 'running') OR (? = 'running' AND status = 'pending') OR (? IN ('succeeded', 'failed', 'cancelled') AND status IN ('pending', 'running')))`)
-			.run(change.status, change.status, change.startedAt ?? null, change.status, change.finishedAt ?? null, change.status, change.result ?? null, change.status, change.candidateResult ?? null, change.status, change.error ?? null, change.evidence ?? null, change.verificationStatus ?? null, change.status, change.verificationFeedback ?? null, change.correctiveAttempts ?? null, Date.now(), id, change.status, change.status, change.status);
+			.run(change.status, change.status, change.startedAt ?? null, change.status, change.finishedAt ?? null, change.status, resultText, change.status, candidateResult, change.status, error, evidence, change.verificationStatus ?? null, change.status, verificationFeedback, change.correctiveAttempts ?? null, Date.now(), id, change.status, change.status, change.status);
 		return result.changes === 1;
 	}
 
 	recordRun(run: TaskRunRecord): void {
 		this.db.prepare("INSERT INTO task_runs (id, task_id, executor, status, started_at, lease_expires_at, finished_at, output, error) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")
-			.run(run.id, run.taskId, run.executor, run.status, run.startedAt, run.leaseExpiresAt ?? null, run.finishedAt ?? null, run.output ?? null, run.error ?? null);
+			.run(run.id, run.taskId, run.executor, run.status, run.startedAt, run.leaseExpiresAt ?? null, run.finishedAt ?? null, safeTaskText(run.output), safeTaskText(run.error));
 	}
 
 	transitionRun(id: string, change: TaskRunTransition): boolean {
 		const result = this.db.prepare("UPDATE task_runs SET status = ?, finished_at = COALESCE(?, finished_at), output = COALESCE(?, output), error = COALESCE(?, error) WHERE id = ? AND status = 'running'")
-			.run(change.status, change.finishedAt ?? null, change.output ?? null, change.error ?? null, id);
+			.run(change.status, change.finishedAt ?? null, safeTaskText(change.output), safeTaskText(change.error), id);
 		return result.changes === 1;
 	}
 
@@ -791,6 +806,32 @@ export class MemoryStore {
 			.all(...taskIds).map((row) => ({ taskId: (row as { task_id: string }).task_id, dependsOn: (row as { depends_on: string }).depends_on }));
 	}
 
+	checkpointTask(ownerKey: string, taskId: string, checkpoint: string, now = Date.now()): boolean {
+		if (containsCredentialMaterial(checkpoint)) return false;
+		return this.db.prepare("UPDATE tasks SET checkpoint = ?, checkpoint_at = ?, updated_at = ? WHERE id = ? AND owner_key = ? AND status = 'running'")
+			.run(checkpoint.slice(0, 50_000), now, now, taskId, ownerKey).changes === 1;
+	}
+
+	advanceTaskRoute(ownerKey: string, taskId: string, error: string, now = Date.now()): boolean {
+		return this.db.prepare(`UPDATE tasks SET status = 'pending', started_at = NULL, finished_at = NULL, error = ?, route_index = route_index + 1,
+			verification_outcome = CASE WHEN acceptance_criteria IS NULL THEN NULL ELSE 'pending' END, verification_feedback = NULL,
+			candidate_result = NULL, corrective_attempts = 0, updated_at = ?
+			WHERE id = ? AND owner_key = ? AND status = 'running' AND routes IS NOT NULL AND route_index + 1 < json_array_length(routes)`)
+			.run(redactCredentialMaterial(`Route failed; switching strategy: ${error}`.slice(0, 5_000)), now, taskId, ownerKey).changes === 1;
+	}
+
+	pauseTaskPlan(ownerKeys: string[], planId: string, now = Date.now()): boolean {
+		if (!ownerKeys.length || !planId.trim()) return false;
+		return this.db.prepare(`UPDATE task_plans SET paused_at = ? WHERE id = ? AND owner_key IN (${ownerKeys.map(() => "?").join(", ")}) AND status IN ('pending', 'running') AND paused_at IS NULL`)
+			.run(now, planId, ...ownerKeys).changes === 1;
+	}
+
+	resumeTaskPlan(ownerKeys: string[], planId: string): boolean {
+		if (!ownerKeys.length || !planId.trim()) return false;
+		return this.db.prepare(`UPDATE task_plans SET paused_at = NULL WHERE id = ? AND owner_key IN (${ownerKeys.map(() => "?").join(", ")}) AND paused_at IS NOT NULL`)
+			.run(planId, ...ownerKeys).changes === 1;
+	}
+
 	reconcileExpiredTaskRuns(now = Date.now()): TaskRecoveryResult {
 		return this.db.transaction(() => {
 			const rows = this.db.prepare(`SELECT r.id AS run_id, r.task_id, t.owner_key, t.plan_id, t.recovery_policy, t.idempotency_key
@@ -817,16 +858,18 @@ export class MemoryStore {
 
 	recoveryCandidates(limit = 100, excludePlanIds: string[] = []): RuntimeTaskRecord[] {
 		const excluded = [...new Set(excludePlanIds.filter((id) => id.trim()))];
-		return (this.db.prepare(`SELECT * FROM tasks WHERE status = 'pending' AND recovery_policy = 'safe_retry'
+		return (this.db.prepare(`SELECT tasks.* FROM tasks LEFT JOIN task_plans ON task_plans.id = tasks.plan_id WHERE tasks.status = 'pending' AND tasks.recovery_policy = 'safe_retry'
 			AND idempotency_key IS NOT NULL AND plan_id IS NOT NULL AND execution_scope IS NOT NULL
+			AND task_plans.paused_at IS NULL
 			${excluded.length ? "AND plan_id NOT IN (SELECT value FROM json_each(?))" : ""}
 			ORDER BY updated_at, created_at LIMIT ?`).all(...(excluded.length ? [JSON.stringify(excluded)] : []), limitOf(limit, 100)) as RuntimeTaskRow[]).map(mapRuntimeTask);
 	}
 
 	verificationCandidates(now = Date.now(), limit = 100, excludePlanIds: string[] = []): RuntimeTaskRecord[] {
 		const excluded = [...new Set(excludePlanIds.filter((id) => id.trim()))];
-		return (this.db.prepare(`SELECT * FROM tasks WHERE status = 'failed' AND verification_outcome = 'unavailable'
+		return (this.db.prepare(`SELECT tasks.* FROM tasks LEFT JOIN task_plans ON task_plans.id = tasks.plan_id WHERE tasks.status = 'failed' AND verification_outcome = 'unavailable'
 			AND candidate_result IS NOT NULL AND acceptance_criteria IS NOT NULL AND plan_id IS NOT NULL
+			AND task_plans.paused_at IS NULL
 			AND (verification_retry_at IS NULL OR verification_retry_at <= ?)
 			${excluded.length ? "AND plan_id NOT IN (SELECT value FROM json_each(?))" : ""}
 			ORDER BY COALESCE(verification_retry_at, 0), updated_at, created_at LIMIT ?`)
@@ -1082,6 +1125,7 @@ interface EventRow {
 interface RuntimeTaskRow {
 	id: string; owner_key: string; kind: RuntimeTaskRecord["kind"]; title: string; description: string | null; acceptance_criteria: string | null; recovery_policy: RuntimeTaskRecord["recoveryPolicy"]; idempotency_key: string | null; execution_scope: string | null; status: RuntimeTaskRecord["status"];
 	parent_id: string | null; plan_id: string | null; evidence: string | null; verification_outcome: RuntimeTaskRecord["verificationStatus"] | null; verification_feedback: string | null; verification_attempts: number; verification_retry_at: number | null; corrective_attempts: number; created_at: number; started_at: number | null; finished_at: number | null; result: string | null; candidate_result: string | null; error: string | null;
+	checkpoint: string | null; checkpoint_at: number | null; routes: string | null; route_index: number;
 }
 
 interface TaskRunRow {
@@ -1093,6 +1137,7 @@ interface TaskPlanRow {
 	id: string; owner_key: string; title: string; status: TaskPlanRecord["status"];
 	task_count: number; succeeded: number; failed: number; cancelled: number; verified: number; corrective_attempts: number;
 	created_at: number; started_at: number | null; finished_at: number | null;
+	paused_at: number | null;
 }
 
 interface TaskPlanCompletionNoticeRow {
@@ -1160,6 +1205,9 @@ function mapRuntimeTask(row: RuntimeTaskRow): RuntimeTaskRecord {
 		...(row.result === null ? {} : { result: row.result }),
 		...(row.candidate_result === null ? {} : { candidateResult: row.candidate_result }),
 		...(row.error === null ? {} : { error: row.error }),
+		...(row.checkpoint === null ? {} : { checkpoint: row.checkpoint }),
+		...(row.checkpoint_at === null ? {} : { checkpointAt: row.checkpoint_at }),
+		...(row.routes === null ? {} : { routes: JSON.parse(row.routes) as string[], routeIndex: row.route_index }),
 	};
 }
 
@@ -1194,8 +1242,13 @@ function mapTaskPlan(row: TaskPlanRow): TaskPlanRecord {
 	return {
 		id: row.id, ownerKey: row.owner_key, title: row.title, status: row.status, taskCount: row.task_count,
 		succeeded: row.succeeded, failed: row.failed, cancelled: row.cancelled, verified: row.verified, correctiveAttempts: row.corrective_attempts,
+		...(row.paused_at === null ? {} : { pausedAt: row.paused_at }),
 		createdAt: row.created_at, ...(row.started_at === null ? {} : { startedAt: row.started_at }), ...(row.finished_at === null ? {} : { finishedAt: row.finished_at }),
 	};
+}
+
+function safeTaskText(value: string | undefined): string | null {
+	return value === undefined ? null : redactCredentialMaterial(value);
 }
 
 function scopeWhere(opts: Omit<RecallOptions, "limit">, alias: string): { where: string; params: unknown[] } {

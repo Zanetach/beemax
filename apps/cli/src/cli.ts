@@ -9,7 +9,7 @@
  *   beemax model      Show / set the configured model
  */
 
-import { buildMainAgentSystemPrompt, buildSubagentSystemPrompt, createTaskVerifier, executePlannedTask, executeSubagentTask, mainAgentTools, readOnlyAgentTools, runGateway } from "./gateway.ts";
+import { buildMainAgentSystemPrompt, buildSubagentSystemPrompt, createSkillCandidateVerifier, createTaskVerifier, executePlannedTask, executeSubagentTask, mainAgentTools, readOnlyAgentTools, runGateway } from "./gateway.ts";
 import { beemaxHome, beemaxRoot, loadConfig } from "./config.ts";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { backupSqliteDatabase, verifySqliteDatabase } from "@beemax/memory";
@@ -897,7 +897,7 @@ async function runChat(config: ReturnType<typeof loadConfig>, requestedMode: { f
 	const presentationMode: ChatPresentationMode = resolveChatPresentationMode({
 		...requestedMode, isInputTty: process.stdin.isTTY === true, isOutputTty: process.stdout.isTTY === true, term: process.env.TERM,
 	});
-	const { AutonomousPlanningPolicy, conversationKey, createSubagentTools, createTaskLedgerTools, createTaskOrchestrationTools, FileCredentialVault, FileCredentialVaultAuditJournal, ProfileTaskScheduler, SubagentManager, TaskPlanNoticeDeliveryService, TaskPlanRuntime, TaskRecoveryRunner, TaskRecoveryService } = await import("@beemax/core");
+	const { AutonomousPlanningPolicy, conversationKey, createSubagentTools, createTaskLedgerTools, createTaskOrchestrationTools, FileCredentialVault, FileCredentialVaultAuditJournal, ProfileTaskScheduler, redactCredentialMaterial, SubagentManager, TaskPlanNoticeDeliveryService, TaskPlanRuntime, TaskRecoveryRunner, TaskRecoveryService } = await import("@beemax/core");
 	const { loadMcpConfig, McpManager } = await import("@beemax/mcp-capability");
 	const { buildAgentFactory } = await import("./agent-factory.ts");
 	const { MemoryStore } = await import("@beemax/memory");
@@ -933,12 +933,13 @@ async function runChat(config: ReturnType<typeof loadConfig>, requestedMode: { f
 		memoryStore: memory,
 		executionPortForSource: executionPortFor(config),
 		customTools: readOnlyMcpTools,
-		tools: executionSafeTools(config, readOnlyAgentTools(readOnlyMcpTools.map((tool) => tool.name))),
+		tools: executionSafeTools(config, readOnlyAgentTools(readOnlyMcpTools.map((tool) => tool.name), ["task_checkpoint_save"])),
+		sessionTools: (sessionSource) => createTaskLedgerTools(memory, sessionSource),
 	});
 	const taskScheduler = new ProfileTaskScheduler({ maxConcurrent: config.subagents.maxConcurrent });
 	const planningPolicy = new AutonomousPlanningPolicy({ maxConcurrent: config.subagents.maxConcurrent, maxSubagents: config.subagents.maxChildrenPerOwner });
 	const planningBudgets = planningPolicy.createBudgetRegistry();
-	const taskPlanRuntime = new TaskPlanRuntime();
+	const taskPlanRuntime = new TaskPlanRuntime(({ planId, error }) => process.stderr.write(`Background Task Plan ${planId} failed: ${redactCredentialMaterial(error instanceof Error ? error.message : String(error))}\n`));
 	const runTaskVerification = createTaskVerifier(createSubagentAgent, config.subagents.timeoutMs);
 	const verifyTask: import("@beemax/core").TaskGraphVerifier = (task, result, signal) => taskScheduler.run(task.ownerKey, () => runTaskVerification(task, result, signal), signal);
 	let recoveryStatus: TaskRecoveryStatus = { phase: config.subagents.enabled ? "running" : "disabled", plans: 0, succeeded: 0, failed: 0, blocked: 0, verification: { attempted: 0, accepted: 0, rejected: 0, unavailable: 0 } };
@@ -975,6 +976,7 @@ async function runChat(config: ReturnType<typeof loadConfig>, requestedMode: { f
 		executionPortForSource: executionPortFor(config),
 		customTools: mcp.getTools(),
 		tools: executionSafeTools(config, mainAgentTools(config.agent.toolset, mcp.getTools().map((tool) => tool.name))),
+		verifySkillCandidate: createSkillCandidateVerifier(createSubagentAgent, config.subagents.timeoutMs, memory),
 		authorizeTool: (request, signal) => localApproval.authorize(request, signal),
 		credentials: credentialVault ? { ownerKey: `profile:${config.profile}`, vault: credentialVault } : undefined,
 		sessionTools: (sessionSource) => [
@@ -999,6 +1001,7 @@ async function runChat(config: ReturnType<typeof loadConfig>, requestedMode: { f
 		},
 		approvalBroker: localApproval,
 		cancelSubagents: (sessionSource) => subagents?.cancelOwner(sessionSource) ?? 0,
+		cancelTaskPlans: (sessionSource) => taskPlanRuntime.activePlanIds([conversationKey(sessionSource)]).reduce((count, planId) => count + (taskRecovery.cancel([conversationKey(sessionSource)], planId).tasks > 0 ? 1 : 0), 0),
 		controlHandler: (profileRuntime, profileInteraction) => createProfileControlHandler(profileRuntime, config, profileInteraction, () => ({ taskScheduler: taskScheduler.snapshot(), taskRecovery: recoveryStatus }), config.subagents.enabled ? {
 			verifyTaskPlan: (sessionSource, planId) => taskRecovery.reverify([conversationKey(sessionSource)], planId),
 			retryTaskPlan: (sessionSource, planId) => taskRecovery.retry([conversationKey(sessionSource)], planId, { maxConcurrent: config.subagents.maxConcurrent }),
@@ -1086,7 +1089,7 @@ async function runChat(config: ReturnType<typeof loadConfig>, requestedMode: { f
 		const stop = async () => {
 			const stopped = await interactionAdapter.dispatch({ type: "turn.cancel", source });
 			if (!("cancelled" in stopped)) throw new Error("Cancellation dispatch did not produce a cancellation result");
-			process.stdout.write(`\n${stopped.cancelled ? "Stopped the active Agent turn" : "No active Agent turn"}${stopped.subagentsCancelled ? `; cancelled ${stopped.subagentsCancelled} Sub-Agent task(s)` : ""}${stopped.approvalCancelled ? "; cancelled pending approval" : ""}${stopped.queuedCancelled ? "; cleared queued input" : ""}.\n`);
+			process.stdout.write(`\n${stopped.cancelled ? "Stopped the active Agent turn" : "No active Agent turn"}${stopped.subagentsCancelled ? `; cancelled ${stopped.subagentsCancelled} Sub-Agent task(s)` : ""}${stopped.taskPlansCancelled ? `; cancelled ${stopped.taskPlansCancelled} Task Plan(s)` : ""}${stopped.approvalCancelled ? "; cancelled pending approval" : ""}${stopped.queuedCancelled ? "; cleared queued input" : ""}.\n`);
 		};
 		if (presentationMode === "full") {
 			fullScreenActive = true;
@@ -1354,9 +1357,10 @@ async function runChat(config: ReturnType<typeof loadConfig>, requestedMode: { f
 			rl.on("SIGINT", () => { if (active) void stop(); else closeInput(); });
 			await new Promise<void>((resolve) => rl.once("close", resolve));
 		}
-	} finally {
-		await taskPlanNotices?.stop();
-		await recoveryService.stop(new Error("Chat shutting down"));
+		} finally {
+			await taskPlanNotices?.stop();
+			await recoveryService.stop(new Error("Chat shutting down"));
+			await taskPlanRuntime.shutdown(new Error("Chat shutting down"));
 		if (subagentRefresh) clearInterval(subagentRefresh);
 		fullInput?.stop();
 		if (fullScreenActive) process.stdout.write(fullScreenExit());

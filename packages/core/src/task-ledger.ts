@@ -22,6 +22,7 @@ export interface TaskPlanRecord {
 	createdAt: number;
 	startedAt?: number;
 	finishedAt?: number;
+	pausedAt?: number;
 }
 export interface TaskPlanCompletionNotice {
 	id: string; planId: string; ownerKey: string; target: DeliveryTarget;
@@ -58,6 +59,10 @@ export interface TaskRecord {
 	result?: string;
 	candidateResult?: string;
 	error?: string;
+	checkpoint?: string;
+	checkpointAt?: number;
+	routes?: string[];
+	routeIndex?: number;
 }
 
 export type TaskTransition = Pick<TaskRecord, "status"> & Partial<Pick<TaskRecord, "startedAt" | "finishedAt" | "result" | "candidateResult" | "error" | "evidence" | "verificationStatus" | "verificationFeedback" | "correctiveAttempts">>;
@@ -102,6 +107,10 @@ export interface TaskLedger {
 	releaseTaskPlanExecution?(ownerKey: string, planId: string, holderId: string): boolean;
 	queryTaskPlans(query: TaskPlanQuery): TaskPlanRecord[];
 	taskDependencies(taskIds: string[]): TaskDependency[];
+	checkpointTask(ownerKey: string, taskId: string, checkpoint: string, now?: number): boolean;
+	advanceTaskRoute(ownerKey: string, taskId: string, error: string, now?: number): boolean;
+	pauseTaskPlan(ownerKeys: string[], planId: string, now?: number): boolean;
+	resumeTaskPlan(ownerKeys: string[], planId: string, now?: number): boolean;
 	reconcileExpiredTaskRuns(now?: number): TaskRecoveryResult;
 	recoveryCandidates(limit?: number, excludePlanIds?: string[]): TaskRecord[];
 	verificationCandidates?(now?: number, limit?: number, excludePlanIds?: string[]): TaskRecord[];

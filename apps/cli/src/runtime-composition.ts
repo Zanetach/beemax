@@ -18,6 +18,7 @@ export interface ProfileAgentRuntimeOptions<Source extends BeeMaxRuntimeSource> 
 	runtime: Omit<BeeMaxAgentRuntimeOptions<Source>, keyof SessionCoordinatorOptions | "controlHandler" | "sessionCatalog">;
 	approvalBroker?: ToolApprovalBroker;
 	cancelSubagents?: (source: Source) => number | Promise<number>;
+	cancelTaskPlans?: (source: Source) => number | Promise<number>;
 	controlHandler?: (runtime: BeeMaxAgentRuntime<Source>, interaction: InteractionEventAdapter<Source>) => AgentControlHandler<Source>;
 }
 
@@ -49,6 +50,7 @@ export function createProfileAgentRuntime<Source extends BeeMaxRuntimeSource>(
 		profileId: options.profileId,
 		approvalBroker: options.approvalBroker,
 		cancelSubagents: options.cancelSubagents,
+		cancelTaskPlans: options.cancelTaskPlans,
 		eventJournal: new FileInteractionEventJournal(join(options.agentDir, "interaction-events.jsonl")),
 	});
 	return {

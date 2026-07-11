@@ -10,6 +10,8 @@ export interface AgentScope {
 	userName?: string;
 	threadId?: string;
 	isBot?: boolean;
+	/** Internal execution binding for a delegated Task; never accepted from a transport payload. */
+	delegatedTask?: { id: string; ownerKey: string };
 }
 
 /** Canonical, transport-free identity used to derive scoped runtime views. */

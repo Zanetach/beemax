@@ -87,7 +87,7 @@ test("Agent runtime injects a deterministic planning directive without changing 
 		createAgent: async () => ({
 			agent,
 			subscribe: (next) => { runtimeListener = next; return () => undefined; },
-			prompt: async (text) => { received = text; runtimeListener({ type: "tool_execution_start", toolCallId: "plan", toolName: "task_plan_execute", args: {} }); runtimeListener({ type: "tool_execution_end", toolCallId: "plan", toolName: "task_plan_execute", result: { details: { failed: 0, cancelled: 0, blocked: [] } }, isError: false }); agent.state.messages = [{ role: "assistant", content: [{ type: "text", text: "done" }], usage: { input: 1, output: 1 } }]; },
+			prompt: async (text) => { received = text; runtimeListener({ type: "tool_execution_start", toolCallId: "plan", toolName: "task_plan_execute", args: {} }); runtimeListener({ type: "tool_execution_end", toolCallId: "plan", toolName: "task_plan_execute", result: { details: { planId: "plan-1", accepted: true, status: "running" } }, isError: false }); agent.state.messages = [{ role: "assistant", content: [{ type: "text", text: "done" }], usage: { input: 1, output: 1 } }]; },
 			abort: async () => undefined,
 			dispose: () => undefined,
 		}),
@@ -166,7 +166,7 @@ test("Agent runtime performs one content-free correction when a complex turn ski
 		agent, subscribe: (next) => { listener = next; return () => undefined; },
 		prompt: async (text) => {
 			prompts.push(text);
-			if (prompts.length === 2) { listener({ type: "tool_execution_start", toolCallId: "plan", toolName: "task_plan_execute", args: {} }); listener({ type: "tool_execution_end", toolCallId: "plan", toolName: "task_plan_execute", result: { details: { failed: 0, cancelled: 0, blocked: [] } }, isError: false }); }
+			if (prompts.length === 2) { listener({ type: "tool_execution_start", toolCallId: "plan", toolName: "task_plan_execute", args: {} }); listener({ type: "tool_execution_end", toolCallId: "plan", toolName: "task_plan_execute", result: { details: { planId: "plan-1", accepted: true, status: "running" } }, isError: false }); }
 			agent.state.messages = [{ role: "assistant", content: [{ type: "text", text: "done" }], usage: { input: 1, output: 1 } }];
 		}, abort: async () => undefined, dispose: () => undefined,
 	}) });

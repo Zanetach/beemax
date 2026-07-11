@@ -67,6 +67,7 @@ export interface InteractionCancelResult {
 	cancelled: boolean;
 	approvalCancelled: boolean;
 	subagentsCancelled: number;
+	taskPlansCancelled: number;
 	errors: string[];
 	queuedCancelled: boolean;
 }
@@ -106,6 +107,7 @@ export interface InteractionEventAdapterOptions<Source extends BeeMaxRuntimeSour
 	profileId?: string;
 	approvalBroker?: ToolApprovalBroker;
 	cancelSubagents?: (source: Source) => number | Promise<number>;
+	cancelTaskPlans?: (source: Source) => number | Promise<number>;
 	eventHistoryLimit?: number;
 	actionHistoryLimit?: number;
 	eventJournal?: InteractionEventJournal;
@@ -135,6 +137,7 @@ export class InteractionEventAdapter<Source extends BeeMaxRuntimeSource = BeeMax
 	private readonly runtime: AgentRuntimePort<Source>;
 	private readonly approvalBroker?: ToolApprovalBroker;
 	private readonly cancelSubagents?: (source: Source) => number | Promise<number>;
+	private readonly cancelTaskPlans?: (source: Source) => number | Promise<number>;
 	private readonly profileId: string;
 	private readonly unsubscribeApproval?: () => void;
 	private readonly eventHistoryLimit: number;
@@ -146,6 +149,7 @@ export class InteractionEventAdapter<Source extends BeeMaxRuntimeSource = BeeMax
 		this.runtime = runtime;
 		this.approvalBroker = options.approvalBroker;
 		this.cancelSubagents = options.cancelSubagents;
+		this.cancelTaskPlans = options.cancelTaskPlans;
 		this.profileId = options.profileId ?? "default";
 		this.eventHistoryLimit = Math.max(20, Math.min(options.eventHistoryLimit ?? 500, 10_000));
 		this.actionHistoryLimit = Math.max(20, Math.min(options.actionHistoryLimit ?? 200, 10_000));
@@ -291,11 +295,13 @@ export class InteractionEventAdapter<Source extends BeeMaxRuntimeSource = BeeMax
 			this.runtime.cancel(source),
 			cancelApproval,
 			Promise.resolve(this.cancelSubagents?.(source) ?? 0),
+			Promise.resolve(this.cancelTaskPlans?.(source) ?? 0),
 		]);
 		const errors = results.flatMap((result) => result.status === "rejected" ? [errorMessage(result.reason)] : []);
 		const cancelled = results[0].status === "fulfilled" ? results[0].value : false;
 		const approvalCancelled = results[1].status === "fulfilled" ? results[1].value : false;
 		const subagentsCancelled = results[2].status === "fulfilled" ? results[2].value : 0;
+		const taskPlansCancelled = results[3].status === "fulfilled" ? results[3].value : 0;
 		if (cancelled && state?.turnId && !this.cancellationPublished.has(key)) {
 			this.cancellationPublished.add(key);
 			await this.publish(source, state.turnId, { type: "turn.cancelled" }, sink);
@@ -304,7 +310,7 @@ export class InteractionEventAdapter<Source extends BeeMaxRuntimeSource = BeeMax
 		const nativeQueuedCancelled = this.nativeQueuedInputs.delete(key);
 		const queuedCancelled = localQueuedCancelled || nativeQueuedCancelled;
 		if (!cancelled) this.cancellationRequested.delete(key);
-		return { cancelled, approvalCancelled, subagentsCancelled, errors, queuedCancelled };
+		return { cancelled, approvalCancelled, subagentsCancelled, taskPlansCancelled, errors, queuedCancelled };
 	}
 
 	private async queue(source: Source, text: string, mode: InteractionQueueResult["mode"], sink?: InteractionEventSink): Promise<InteractionQueueResult> {

@@ -6,6 +6,7 @@ export interface TaskRecoveryRunnerOptions { maxConcurrent?: number; maxCorrecti
 export interface TaskRecoveryRunnerResult { plans: number; succeeded: number; failed: number; cancelled: number; blocked: string[]; }
 export interface TaskPlanRetryResult extends TaskRecoveryRunnerResult { prepared: number; verification: TaskVerificationRetryResult; }
 export interface TaskPlanCancelResult { active: number; tasks: number; }
+export interface TaskPlanPauseResult { paused: boolean; }
 export interface TaskVerificationRetryResult { attempted: number; accepted: number; rejected: number; unavailable: number; }
 const PLAN_EXECUTION_LEASE_MS = 61 * 60_000;
 const PLAN_EXECUTION_HEARTBEAT_MS = 30_000;
@@ -81,6 +82,14 @@ export class TaskRecoveryRunner {
 		const active = this.runtime.cancel(ownerKeys, planId);
 		const tasks = this.ledger.cancelTaskPlan(ownerKeys, planId);
 		return { active, tasks };
+	}
+
+	pause(ownerKeys: string[], planId: string): TaskPlanPauseResult { return { paused: this.ledger.pauseTaskPlan(ownerKeys, planId) }; }
+
+	async resume(ownerKeys: string[], planId: string, options: TaskRecoveryRunnerOptions = {}): Promise<TaskRecoveryRunnerResult> {
+		if (!this.ledger.resumeTaskPlan(ownerKeys, planId)) return { plans: 0, succeeded: 0, failed: 0, cancelled: 0, blocked: [] };
+		const candidates = this.ledger.queryTasks({ ownerKeys, planIds: [planId], statuses: ["pending"], limit: 100 }).filter(recoverable);
+		return this.executePlans(candidates, options);
 	}
 
 	enqueueSettledCompletionNotices(plans: readonly TaskRecoveryPlanRef[]): number {

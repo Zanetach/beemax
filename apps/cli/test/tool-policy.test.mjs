@@ -18,4 +18,10 @@ test("shared read-only policy includes Agent-Reach for every session type", () =
 	assert.ok(mainTools.includes("task_plan_status"));
 	assert.equal(mainTools.includes("task_plan_execute"), false);
 	assert.ok(mainAgentTools("standard", mcpTools).includes("task_plan_execute"));
+	assert.ok(mainAgentTools("standard", mcpTools).includes("task_plan_pause"));
+	assert.ok(mainAgentTools("standard", mcpTools).includes("task_plan_resume"));
+	assert.ok(readOnlyAgentTools(mcpTools, ["task_checkpoint_save"]).includes("task_checkpoint_save"));
+	assert.ok(mainAgentTools("safe", mcpTools).includes("capability_discover"));
+	assert.equal(mainAgentTools("safe", mcpTools).includes("skill_candidate_install"), false);
+	assert.ok(mainAgentTools("standard", mcpTools).includes("skill_candidate_promote"));
 });

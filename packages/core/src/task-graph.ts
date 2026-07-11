@@ -1,4 +1,5 @@
 import type { TaskDependency, TaskLedger, TaskPlanRecord, TaskRecord } from "./task-ledger.ts";
+import { containsCredentialMaterial, redactCredentialMaterial } from "./credential-material.ts";
 
 const DEFAULT_EXECUTION_LEASE_MS = 61 * 60_000;
 
@@ -6,18 +7,18 @@ export interface TaskPlanInput {
 	id: string;
 	ownerKey: string;
 	title?: string;
-	tasks: Array<{ id: string; title: string; description?: string; acceptanceCriteria?: string; kind?: TaskRecord["kind"]; parentId?: string; recoveryPolicy?: TaskRecord["recoveryPolicy"]; idempotencyKey?: string; executionScope?: TaskRecord["executionScope"] }>;
+	tasks: Array<{ id: string; title: string; description?: string; acceptanceCriteria?: string; kind?: TaskRecord["kind"]; parentId?: string; recoveryPolicy?: TaskRecord["recoveryPolicy"]; idempotencyKey?: string; executionScope?: TaskRecord["executionScope"]; routes?: string[] }>;
 	dependencies?: TaskDependency[];
 }
 export interface TaskGraphExecutionResult { output?: string; }
 export interface TaskGraphVerificationResult { accepted: boolean; feedback?: string; evidence?: string; }
 export interface TaskGraphDependencyResult { id: string; title: string; result?: string; evidence?: string; }
-export interface TaskGraphExecutionContext { attempt: number; verificationFeedback?: string; previousResult?: string; dependencies: TaskGraphDependencyResult[]; }
+export interface TaskGraphExecutionContext { attempt: number; verificationFeedback?: string; previousResult?: string; dependencies: TaskGraphDependencyResult[]; checkpoint?: string; route?: string; saveCheckpoint(value: string): boolean; }
 export type TaskGraphExecutor = (task: TaskRecord, signal?: AbortSignal, context?: TaskGraphExecutionContext) => Promise<TaskGraphExecutionResult>;
 export type TaskGraphVerifier = (task: TaskRecord, result: TaskGraphExecutionResult, signal?: AbortSignal) => Promise<TaskGraphVerificationResult>;
 export interface TaskGraphRunOptions { maxConcurrent?: number; signal?: AbortSignal; executor?: "agent" | "subagent"; leaseMs?: number; leaseHeartbeatMs?: number; canExecute?: (task: TaskRecord) => boolean; verify?: TaskGraphVerifier; maxCorrectiveAttempts?: number; }
 export interface TaskGraphResult { succeeded: number; failed: number; cancelled: number; blocked: string[]; }
-interface ActiveTaskResult { execution: Promise<ActiveTaskResult>; outcome: "succeeded" | "failed" | "cancelled"; }
+interface ActiveTaskResult { execution: Promise<ActiveTaskResult>; outcome: "succeeded" | "failed" | "cancelled" | "routed"; }
 
 /** Persistent DAG invariants and bounded ready-task execution. */
 export class TaskGraph {
@@ -52,6 +53,7 @@ export class TaskGraph {
 			...(task.acceptanceCriteria ? { verificationStatus: "pending" as const, correctiveAttempts: 0 } : {}),
 			...(task.recoveryPolicy ? { recoveryPolicy: task.recoveryPolicy } : {}), ...(task.idempotencyKey ? { idempotencyKey: task.idempotencyKey } : {}),
 			...(task.executionScope ? { executionScope: { ...task.executionScope } } : {}),
+			...(task.routes?.length ? { routes: task.routes.map((route) => route.trim()).filter(Boolean).slice(0, 5), routeIndex: 0 } : {}),
 		}));
 		const plan: TaskPlanRecord = { id: input.id, ownerKey: input.ownerKey, title: input.title?.trim() || "Task Plan", status: "pending", taskCount: tasks.length, succeeded: 0, failed: 0, cancelled: 0, verified: 0, correctiveAttempts: 0, createdAt: now };
 		this.ledger.recordPlan(tasks, dependencies, plan);
@@ -68,6 +70,9 @@ export class TaskGraph {
 		const active = new Set<Promise<ActiveTaskResult>>();
 		while (true) {
 			const tasks = this.ledger.queryTasks({ ownerKeys, planIds: [planId], limit: 100 });
+			const plan = this.ledger.queryTaskPlans({ ownerKeys, id: planId, limit: 1 })[0];
+			const paused = Boolean(plan?.pausedAt);
+			if (paused && active.size === 0) return { succeeded, failed, cancelled, blocked: tasks.filter((task) => task.status === "pending").map((task) => task.id) };
 			let pending = tasks.filter((task) => task.status === "pending" && (options.canExecute?.(task) ?? true));
 			if (options.signal?.aborted && pending.length) {
 				const finishedAt = Date.now();
@@ -91,7 +96,7 @@ export class TaskGraph {
 				continue;
 			}
 			const ready = pending.filter((task) => (dependencies.get(task.id) ?? []).every((id) => byId.get(id)?.status === "succeeded"));
-			for (const task of ready.slice(0, Math.max(0, concurrency - active.size))) {
+			for (const task of ready.slice(0, paused ? 0 : Math.max(0, concurrency - active.size))) {
 				const dependencyResults = (dependencies.get(task.id) ?? []).map((id) => byId.get(id)!).map(({ id, title, result, evidence }) => ({ id, title, result, evidence }));
 				let execution!: Promise<ActiveTaskResult>;
 				execution = this.executeTask(task, dependencyResults, execute, options).then((outcome) => ({ execution, outcome }));
@@ -102,7 +107,7 @@ export class TaskGraph {
 				active.delete(completed.execution);
 				if (completed.outcome === "succeeded") succeeded++;
 				else if (completed.outcome === "cancelled") cancelled++;
-				else failed++;
+				else if (completed.outcome === "failed") failed++;
 				continue;
 			}
 			if (pending.length > 0) return { succeeded, failed, cancelled, blocked: pending.map((task) => task.id) };
@@ -126,7 +131,7 @@ export class TaskGraph {
 		});
 	}
 
-	private async executeTask(task: TaskRecord, dependencies: TaskGraphDependencyResult[], execute: TaskGraphExecutor, options: TaskGraphRunOptions): Promise<"succeeded" | "failed" | "cancelled"> {
+	private async executeTask(task: TaskRecord, dependencies: TaskGraphDependencyResult[], execute: TaskGraphExecutor, options: TaskGraphRunOptions): Promise<"succeeded" | "failed" | "cancelled" | "routed"> {
 		const taskStartedAt = Date.now();
 		let verificationFeedback = task.verificationStatus === "rejected" ? task.verificationFeedback : undefined;
 		let previousResult = task.verificationStatus === "rejected" ? task.candidateResult : undefined;
@@ -158,7 +163,12 @@ export class TaskGraph {
 			let candidateOutput: string | undefined;
 			try {
 				if (executionSignal.aborted) throw executionSignal.reason ?? new Error("Task Plan cancelled");
-				const result = await execute({ ...task, status: "running", startedAt: taskStartedAt }, executionSignal, { attempt, verificationFeedback, previousResult, dependencies });
+				const current = this.ledger.queryTasks({ ownerKeys: [task.ownerKey], id: task.id, limit: 1 })[0] ?? task;
+				const result = await execute({ ...current, status: "running", startedAt: taskStartedAt }, executionSignal, {
+					attempt, verificationFeedback, previousResult, dependencies, checkpoint: current.checkpoint,
+					route: current.routes?.[current.routeIndex ?? 0],
+					saveCheckpoint: (value) => !containsCredentialMaterial(value) && this.ledger.checkpointTask(task.ownerKey, task.id, value.slice(0, 50_000)),
+				});
 				if (executionSignal.aborted) throw executionSignal.reason ?? new Error("Task execution interrupted");
 				candidateOutput = result.output?.slice(0, 50_000);
 				let verificationEvidence: string | undefined;
@@ -169,7 +179,7 @@ export class TaskGraph {
 					catch (error) { verificationUnavailable = !executionSignal.aborted; throw error; }
 					if (executionSignal.aborted) throw executionSignal.reason ?? new Error("Task verification interrupted");
 					if (!verification.accepted) {
-						verificationFeedback = verification.feedback?.trim() || "Acceptance Criteria were not satisfied";
+						verificationFeedback = redactCredentialMaterial(verification.feedback?.trim() || "Acceptance Criteria were not satisfied");
 						previousResult = result.output?.slice(0, 50_000);
 						const finishedAt = Date.now();
 						if (!this.ledger.transitionRun(runId, { status: "failed", finishedAt, error: `Task verification rejected: ${verificationFeedback}` })) return this.persistedOutcome(task, "failed");
@@ -177,6 +187,8 @@ export class TaskGraph {
 							if (!this.ledger.transition(task.id, { status: "pending", error: `Task verification rejected: ${verificationFeedback}`, verificationStatus: "rejected", verificationFeedback, correctiveAttempts: attempt - 1 })) return this.persistedOutcome(task, "failed");
 							continue;
 						}
+						if (previousResult && !containsCredentialMaterial(previousResult)) this.ledger.checkpointTask(task.ownerKey, task.id, previousResult);
+						if (this.ledger.advanceTaskRoute(task.ownerKey, task.id, `Verification rejected: ${verificationFeedback}`, finishedAt)) return "routed";
 						return this.ledger.transition(task.id, { status: "failed", finishedAt, error: `Task verification rejected: ${verificationFeedback}`, verificationStatus: "rejected", verificationFeedback, correctiveAttempts: attempt - 1 }) ? "failed" : this.persistedOutcome(task, "failed");
 					}
 					verificationEvidence = verification.evidence?.slice(0, 5_000);
@@ -192,7 +204,11 @@ export class TaskGraph {
 				return "succeeded";
 			} catch (error) {
 				const finishedAt = Date.now();
-				const message = (error instanceof Error ? error.message : String(error)).slice(0, 5_000);
+				const message = redactCredentialMaterial((error instanceof Error ? error.message : String(error)).slice(0, 5_000));
+				if (!executionSignal.aborted && this.ledger.advanceTaskRoute(task.ownerKey, task.id, message, finishedAt)) {
+					this.ledger.transitionRun(runId, { status: "failed", finishedAt, error: message });
+					return "routed";
+				}
 				const status = options.signal?.aborted ? "cancelled" : "failed";
 				const unavailable = verificationUnavailable && status === "failed";
 				const transitioned = this.ledger.transition(task.id, { status, finishedAt, error: message, ...(task.acceptanceCriteria ? { correctiveAttempts: attempt - 1 } : {}), ...(unavailable ? { verificationStatus: "unavailable" as const, candidateResult: candidateOutput } : {}) });
