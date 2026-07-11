@@ -37,6 +37,16 @@ export interface MemoryCandidate extends MemoryRecord {
 	status: "pending" | "promoted" | "rejected";
 }
 
+/** Durable, verifiable work state. Unlike chat memory, this is a current fact source. */
+export interface TaskRecord {
+	id: string;
+	title: string;
+	status: "open" | "in_progress" | "done" | "cancelled";
+	evidence?: string;
+	completedAt?: number;
+	updatedAt: number;
+}
+
 export class MemoryStore {
 	private readonly db: DatabaseType;
 
@@ -106,6 +116,15 @@ export class MemoryStore {
 				INSERT INTO memory_candidates_fts(memory_candidates_fts, rowid, content) VALUES('delete', old.rowid, old.content);
 			END;
 			CREATE INDEX IF NOT EXISTS idx_memory_candidates_scope ON memory_candidates(platform, chat_id, user_id, status);
+
+			CREATE TABLE IF NOT EXISTS task_ledger (
+				id TEXT PRIMARY KEY,
+				title TEXT NOT NULL,
+				status TEXT NOT NULL CHECK (status IN ('open', 'in_progress', 'done', 'cancelled')),
+				evidence TEXT,
+				completed_at INTEGER,
+				updated_at INTEGER NOT NULL
+			);
 		`);
 	}
 
@@ -242,6 +261,33 @@ export class MemoryStore {
 		return result;
 	}
 
+	upsertTask(task: Pick<TaskRecord, "id" | "title" | "status"> & { evidence?: string; completedAt?: number }): void {
+		const now = Date.now();
+		const completedAt = task.status === "done" ? task.completedAt ?? now : null;
+		this.db.prepare(`
+			INSERT INTO task_ledger (id, title, status, evidence, completed_at, updated_at)
+			VALUES (?, ?, ?, ?, ?, ?)
+			ON CONFLICT(id) DO UPDATE SET
+				title = excluded.title,
+				status = excluded.status,
+				evidence = excluded.evidence,
+				completed_at = CASE WHEN excluded.status = 'done' THEN COALESCE(task_ledger.completed_at, excluded.completed_at) ELSE NULL END,
+				updated_at = excluded.updated_at
+		`).run(task.id, task.title, task.status, task.evidence ?? null, completedAt, now);
+	}
+
+	listTasks(): TaskRecord[] {
+		const rows = this.db.prepare("SELECT id, title, status, evidence, completed_at, updated_at FROM task_ledger ORDER BY updated_at DESC, id").all() as TaskRow[];
+		return rows.map((row) => ({
+			id: row.id,
+			title: row.title,
+			status: row.status as TaskRecord["status"],
+			evidence: row.evidence ?? undefined,
+			completedAt: row.completed_at ?? undefined,
+			updatedAt: row.updated_at,
+		}));
+	}
+
 	forget(id: string, opts: Omit<RecallOptions, "limit"> = {}): boolean {
 		const conditions = ["id = ?", "role = 'memory'"];
 		const params: unknown[] = [id];
@@ -287,6 +333,15 @@ interface MemoryRow {
 }
 
 interface CandidateRow extends MemoryRow { status: MemoryCandidate["status"] }
+
+interface TaskRow {
+	id: string;
+	title: string;
+	status: string;
+	evidence: string | null;
+	completed_at: number | null;
+	updated_at: number;
+}
 
 function mapRow(row: MemoryRow): MemoryRecord {
 	return {

@@ -1,12 +1,13 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtemp, readFile } from "node:fs/promises";
+import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import test from "node:test";
 import { loadConfig } from "../dist/config.js";
 import { configureModel } from "../dist/profile-config.js";
 import { runSetup } from "../dist/setup.js";
+import { ensureBuiltinTasks, installedVersion, taskLedgerContextForQuestion } from "../dist/runtime-facts.js";
 import { MemoryStore } from "@beemax/memory";
 
 const cli = resolve("apps/cli/dist/cli.js");
@@ -64,6 +65,8 @@ test("CLI supports init, model setup, Feishu channel setup, listing, and safe de
 	assert.match(run(["channel", "list", "--profile", "personal"]), /feishu  configured/);
 	assert.match(run(["mcp", "status", "--profile", "personal"]), /No MCP servers configured/);
 	assert.match(run(["memory", "status", "--profile", "personal"]), /curated=1 pending=0/);
+	assert.match(run(["task", "list", "--profile", "personal"]), /anthropic-protocol  \[done\].*tag:v0\.1\.0-preview\.15.*completed_at=2026-07-11T00:19:56\.000Z/);
+	assert.match(run(["task", "set", "release-audit", "in_progress", "--title", "Verify release status", "--profile", "personal"]), /Updated task 'release-audit' to in_progress/);
 	assert.match(run(["channel", "qr", "--profile", "personal"]), /Feishu Developer Console/);
 	assert.match(run(["profile", "use", "personal"]), /active Profile is now 'personal'/);
 	assert.equal(run(["model", "show"]).trim(), "custom/private-model");
@@ -86,6 +89,21 @@ test("CLI supports init, model setup, Feishu channel setup, listing, and safe de
 	assert.match(run(["gateway", "list"]), /personal  beemax@personal\.service/);
 	assert.throws(() => run(["gateway", "unknown"]), /Unknown gateway action/);
 	assert.match(run(["profile", "delete", "personal", "--yes"]), /Runtime data was preserved/);
+});
+
+test("fact-sensitive chat questions receive task and installed-version facts, not restored transcript claims", async () => {
+	const home = await mkdtemp(join(tmpdir(), "beemax-runtime-facts-"));
+	const store = new MemoryStore(join(home, "memory.db"));
+	try {
+		ensureBuiltinTasks(store);
+		assert.match(taskLedgerContextForQuestion(store, "Was Anthropic support shipped?"), /anthropic-protocol: done/);
+		assert.match(taskLedgerContextForQuestion(store, "What BeeMax version is installed?"), /installed_version=/);
+		await writeFile(join(home, "RELEASE_VERSION"), "v0.1.0-preview.16\n");
+		assert.equal(installedVersion(home), "v0.1.0-preview.16");
+		assert.equal(taskLedgerContextForQuestion(store, "Draft a weekly report"), "");
+	} finally {
+		store.close();
+	}
 });
 
 test("unified setup configures an isolated Profile and Feishu gateway non-interactively", async () => {

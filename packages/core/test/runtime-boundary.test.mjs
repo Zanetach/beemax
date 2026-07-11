@@ -31,6 +31,21 @@ test("Conversation context owns curated recall and candidate capture", () => {
 	}
 });
 
+test("Conversation context gives supplied volatile facts precedence over restored chat context", () => {
+	const root = mkdtempSync(join(tmpdir(), "beemax-core-facts-"));
+	const memory = new MemoryStore(join(root, "memory.db"));
+	try {
+		const context = new ConversationContext(memory, { runtimeFacts: () => "[Task ledger]\n- release: done\n[/Task ledger]" });
+		const source = { platform: "cli", chatId: "terminal", chatType: "dm", userId: "user" };
+		const enriched = context.enrich(source, "Is the release still pending?");
+		assert.match(enriched, /\[Task ledger\]/);
+		assert.match(enriched, /Current user request/);
+	} finally {
+		memory.close();
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
 test("Session coordinator owns serial execution, cancellation, and bounded lifecycle", async () => {
 	const source = { platform: "feishu", chatId: "chat", chatType: "dm", userId: "user" };
 	const source2 = { ...source, chatId: "other" };

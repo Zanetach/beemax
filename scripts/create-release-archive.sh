@@ -32,6 +32,9 @@ tar -C "${ROOT}" \
 	--exclude='./.beemax' \
 	-cf - . | tar -C "${STAGING}/beemax" -xf -
 
+# Release archives omit Git metadata, so retain the exact release identity for runtime status checks.
+printf '%s\n' "${VERSION}" > "${STAGING}/beemax/RELEASE_VERSION"
+
 tar -C "${STAGING}" -czf "${OUTPUT_DIR}/${ARCHIVE_NAME}" beemax
 shasum -a 256 "${OUTPUT_DIR}/${ARCHIVE_NAME}" > "${OUTPUT_DIR}/${ARCHIVE_NAME}.sha256"
 echo "Created ${OUTPUT_DIR}/${ARCHIVE_NAME}"

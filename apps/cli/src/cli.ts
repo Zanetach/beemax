@@ -34,6 +34,7 @@ import { executionPortFor, executionSafeTools } from "./execution-composition.ts
 import { createProfileRuntime } from "./runtime-composition.ts";
 import { createProfileControlHandler } from "./profile-control.ts";
 import { localChatTextDelta } from "./local-chat-renderer.ts";
+import { createTaskAwareConversationContext, ensureBuiltinTasks } from "./runtime-facts.ts";
 import type { BeeMaxAgentRuntime } from "@beemax/core";
 import type { SessionSource } from "@beemax/gateway";
 import { existsSync } from "node:fs";
@@ -104,6 +105,9 @@ async function main(): Promise<void> {
 		case "memory":
 			await runMemoryCommand(parsed, getConfig());
 			break;
+		case "task":
+			await runTaskCommand(parsed, getConfig());
+			break;
 		case "auth":
 			if (parsed.positionals[1] !== "codex") throw new Error("Usage: beemax auth codex --profile <name>");
 			await runCodexAuth(getConfig());
@@ -138,6 +142,7 @@ Commands:
   skills     list | sync (prepackaged Profile Skills)
   mcp        status (probe configured MCP servers)
   memory     status | list | candidates | promote <id> | reject <id>
+  task       list | set <id> <open|in_progress|done|cancelled> --title <title> [--evidence <ref>]
   auth       codex (stores OAuth only inside the selected profile)
   service    install (Linux systemd)
   start      Start a profile systemd service
@@ -638,6 +643,32 @@ async function runMemoryCommand(parsed: ParsedArgs, config: ReturnType<typeof lo
 	}
 }
 
+async function runTaskCommand(parsed: ParsedArgs, config: ReturnType<typeof loadConfig>): Promise<void> {
+	const action = parsed.positionals[1] ?? "list";
+	const { MemoryStore } = await import("@beemax/memory");
+	const store = new MemoryStore(config.memory.dbPath);
+	try {
+		ensureBuiltinTasks(store);
+		if (action === "list") {
+			const tasks = store.listTasks();
+			console.log(tasks.map((task) => `${task.id}  [${task.status}]  ${task.title}${task.evidence ? `  (${task.evidence})` : ""}${task.completedAt ? `  completed_at=${new Date(task.completedAt).toISOString()}` : ""}`).join("\n") || "No task records.");
+			return;
+		}
+		const [id, status] = [parsed.positionals[2], parsed.positionals[3]];
+		if (action !== "set" || !id || !isTaskStatus(status)) throw new Error("Usage: beemax task set <id> <open|in_progress|done|cancelled> --title <title> [--evidence <ref>] --profile <name>");
+		const title = optionString(parsed, "title");
+		if (!title) throw new Error("beemax task set requires --title <title>");
+		store.upsertTask({ id, title, status, evidence: optionString(parsed, "evidence") });
+		console.log(`Updated task '${id}' to ${status}.`);
+	} finally {
+		store.close();
+	}
+}
+
+function isTaskStatus(value: string | undefined): value is "open" | "in_progress" | "done" | "cancelled" {
+	return value === "open" || value === "in_progress" || value === "done" || value === "cancelled";
+}
+
 async function runCodexAuth(config: ReturnType<typeof loadConfig>): Promise<void> {
 	const { join } = await import("node:path");
 	const { AuthStorage } = await import("@earendil-works/pi-coding-agent");
@@ -676,7 +707,6 @@ async function runChat(config: ReturnType<typeof loadConfig>): Promise<void> {
 	const { loadMcpConfig, McpManager } = await import("@beemax/mcp-capability");
 	const { buildAgentFactory } = await import("./agent-factory.ts");
 	const { MemoryStore } = await import("@beemax/memory");
-	const { ConversationContext } = await import("@beemax/core");
 	const apiKey = configuredApiKey(config.model.provider, config.model.apiKey) ?? "";
 	const memory = new MemoryStore(config.memory.dbPath);
 	const mcp = new McpManager();
@@ -734,7 +764,7 @@ async function runChat(config: ReturnType<typeof loadConfig>): Promise<void> {
 		{ maxSessions: config.agent.maxSessions, sessionIdleMs: config.agent.sessionIdleMs },
 		{
 			createAgent,
-			context: new ConversationContext(memory),
+			context: createTaskAwareConversationContext(memory),
 			controlHandler: (input) => createProfileControlHandler(runtime, config)(input),
 		},
 	);

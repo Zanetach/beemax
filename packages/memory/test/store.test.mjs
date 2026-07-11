@@ -53,3 +53,31 @@ test("conversation candidates stay pending until explicitly promoted or rejected
 		rmSync(root, { recursive: true, force: true });
 	}
 });
+
+test("task ledger stores verifiable profile-scoped task facts independently from chat memory", () => {
+	const root = mkdtempSync(join(tmpdir(), "beemax-task-ledger-"));
+	const store = new MemoryStore(join(root, "memory.db"));
+	try {
+		store.upsertTask({
+			id: "anthropic-protocol",
+			title: "Support Anthropic Messages protocol",
+			status: "done",
+			evidence: "tag:v0.1.0-preview.15", completedAt: 1_700_000_000_000,
+		});
+		assert.deepEqual(store.listTasks(), [{
+			id: "anthropic-protocol",
+			title: "Support Anthropic Messages protocol",
+			status: "done",
+			evidence: "tag:v0.1.0-preview.15",
+			completedAt: 1_700_000_000_000,
+			updatedAt: store.listTasks()[0].updatedAt,
+		}]);
+		store.upsertTask({ id: "anthropic-protocol", title: "Support Anthropic Messages protocol", status: "open" });
+		assert.equal(store.listTasks()[0].status, "open");
+		assert.equal(store.listTasks()[0].evidence, undefined);
+		assert.equal(store.listTasks()[0].completedAt, undefined);
+	} finally {
+		store.close();
+		rmSync(root, { recursive: true, force: true });
+	}
+});

@@ -8,7 +8,7 @@
  */
 
 import { AutomationStore } from "@beemax/automation";
-import { AutomationScheduler, BeeMaxAgentRuntime, ConversationContext, HeartbeatRunner } from "@beemax/core";
+import { AutomationScheduler, BeeMaxAgentRuntime, HeartbeatRunner } from "@beemax/core";
 import {
 	createSubagentTools,
 	Dispatcher,
@@ -27,6 +27,7 @@ import type { SessionSource } from "@beemax/gateway";
 import { beemaxHome, type BeeMaxConfig } from "./config.ts";
 import { acquireChannelLock } from "./channel-lock.ts";
 import { curatedMemoryPrompt } from "./curated-memory.ts";
+import { createTaskAwareConversationContext } from "./runtime-facts.ts";
 import { createProfileRuntime } from "./runtime-composition.ts";
 import { workspaceToolsPrompt } from "./workspace-context.ts";
 import { configuredApiKey } from "./provider-resolver.ts";
@@ -146,7 +147,7 @@ export async function runGateway(config: BeeMaxConfig): Promise<void> {
 		{
 			createAgent,
 			createAutomationAgent,
-			context: new ConversationContext(memory, { recordDirectRoute: (route) => automation.setLastRoute(route) }),
+			context: createTaskAwareConversationContext(memory, { recordDirectRoute: (route) => automation.setLastRoute(route) }),
 			controlHandler: (input) => createProfileControlHandler(runtime, config)(input),
 		},
 	);

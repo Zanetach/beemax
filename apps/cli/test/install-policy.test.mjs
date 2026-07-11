@@ -44,5 +44,6 @@ test("release archive includes Pi and excludes git metadata and dependencies", a
 	assert.match(packager, /--exclude='\.\/\*\*\/\*\.tsbuildinfo'/);
 	assert.match(packager, /--exclude='\.\/docs'/);
 	assert.match(packager, /--exclude='\.\/data'/);
+	assert.match(packager, /RELEASE_VERSION/);
 	assert.match(packager, /shasum -a 256/);
 });
