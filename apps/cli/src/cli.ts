@@ -617,16 +617,17 @@ async function runSkillsCommand(parsed: ParsedArgs): Promise<void> {
 		return;
 	}
 	if (action !== "list") throw new Error("Usage: beemax skills [list | sync] --profile <name>");
-	const skills: string[] = [];
+	const skills: Array<{ name: string; description: string; sha256: string }> = [];
 	try {
 		for (const entry of await readdir(join(paths.homePath, "skills"), { withFileTypes: true })) {
 			if (!entry.isDirectory()) continue;
 			const content = await readFile(join(paths.homePath, "skills", entry.name, "SKILL.md"), "utf8").catch(() => "");
 			const description = content.match(/^description:\s*(.+)$/m)?.[1]?.replaceAll('"', "").trim();
-			if (description) skills.push(`${entry.name}  sha256=${createHash("sha256").update(content).digest("hex").slice(0, 12)}  ${description}`);
+			if (description) skills.push({ name: entry.name, description, sha256: createHash("sha256").update(content).digest("hex") });
 		}
 	} catch { /* no Skills directory yet */ }
-	console.log(skills.sort().join("\n") || "No Profile Skills installed. Run: beemax skills sync --profile " + profile);
+	if (parsed.options.json === true) { console.log(JSON.stringify({ profile, skills: skills.sort((a, b) => a.name.localeCompare(b.name)) })); return; }
+	console.log(skills.sort((a, b) => a.name.localeCompare(b.name)).map((skill) => `${skill.name}  sha256=${skill.sha256.slice(0, 12)}  ${skill.description}`).join("\n") || "No Profile Skills installed. Run: beemax skills sync --profile " + profile);
 }
 
 async function runMcpCommand(parsed: ParsedArgs, config: ReturnType<typeof loadConfig>): Promise<void> {
