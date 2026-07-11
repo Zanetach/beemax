@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { chmodSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { FileInteractionEventJournal, InteractionEventAdapter } from "../dist/index.js";
@@ -28,10 +28,32 @@ test("durable interaction recovery excludes answer and reasoning content while p
 		assert.doesNotMatch(readFileSync(join(dir, "events.jsonl"), "utf8"), /private-file|secret=value/);
 		assert.deepEqual(journal.events(sessionId).map((event) => event.type), ["turn.started", "turn.finished"]);
 
-		const recovered = new InteractionEventAdapter(runtime, { profileId: "personal", eventJournal: journal });
+		const reopenedJournal = new FileInteractionEventJournal(join(dir, "events.jsonl"));
+		assert.equal(reopenedJournal.lastSequence(sessionId), 4);
+		const recovered = new InteractionEventAdapter(runtime, { profileId: "personal", eventJournal: reopenedJournal });
 		assert.deepEqual(recovered.events(source).map((event) => event.sequence), [1, 4]);
 		const next = [];
 		await recovered.dispatch({ type: "message.send", source, text: "next", input: { timeoutMs: 1_000 } }, (event) => { next.push(event.sequence); });
 		assert.equal(next[0], 5);
 	} finally { rmSync(dir, { recursive: true, force: true }); }
 });
+
+test("interaction journal tightens existing permissions and compacts with append headroom", () => {
+	const dir = mkdtempSync(join(tmpdir(), "beemax-interaction-journal-bounds-"));
+	try {
+		const path = join(dir, "events.jsonl");
+		writeFileSync(path, "", { mode: 0o644 });
+		chmodSync(path, 0o644);
+		const journal = new FileInteractionEventJournal(path, 20);
+		assert.equal(statSync(path).mode & 0o777, 0o600);
+		for (let sequence = 1; sequence <= 21; sequence++) journal.append(event(sequence));
+		assert.deepEqual(journal.events("session").map((item) => item.sequence), Array.from({ length: 16 }, (_, index) => index + 6));
+		assert.equal(journal.lastSequence("session"), 21);
+		assert.equal(statSync(`${path}.sequences.json`).mode & 0o777, 0o600);
+		assert.equal(new FileInteractionEventJournal(path, 20).lastSequence("session"), 21);
+	} finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+function event(sequence) {
+	return { type: "turn.started", sessionId: "session", scope: { profileId: "personal", platform: "cli", chatId: "local" }, turnId: `turn-${sequence}`, at: sequence, sequence };
+}

@@ -1,6 +1,6 @@
-import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { dirname } from "node:path";
+import { chmodSync, existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import type { InteractionEvent } from "./interaction-runtime.ts";
+import { BoundedJsonlJournal } from "./bounded-jsonl-journal.ts";
 
 /** Durable state transitions only. Answer/reasoning deltas are deliberately excluded. */
 export type DurableInteractionEvent = Exclude<InteractionEvent, { type: "answer.delta" } | { type: "reasoning.delta" }>;
@@ -8,6 +8,7 @@ export type DurableInteractionEvent = Exclude<InteractionEvent, { type: "answer.
 export interface InteractionEventJournal {
 	append(event: InteractionEvent): void;
 	events(sessionId: string, afterSequence?: number): DurableInteractionEvent[];
+	lastSequence(sessionId: string): number;
 }
 
 /**
@@ -15,43 +16,47 @@ export interface InteractionEventJournal {
  * user messages, assistant text, reasoning, or tool output summaries.
  */
 export class FileInteractionEventJournal implements InteractionEventJournal {
-	private readonly path: string;
-	private readonly limit: number;
+	private readonly journal: BoundedJsonlJournal<DurableInteractionEvent>;
+	private readonly sequencePath: string;
+	private readonly lastSequences = new Map<string, number>();
 
 	constructor(path: string, limit = 2_000) {
-		this.path = path;
-		this.limit = Math.max(20, Math.min(limit, 20_000));
-		mkdirSync(dirname(path), { recursive: true });
+		this.sequencePath = `${path}.sequences.json`;
+		this.loadSequenceIndex();
+		this.journal = new BoundedJsonlJournal({ path, limit, minLimit: 20, maxLimit: 20_000, isRecord: isDurableEvent, onCompacting: () => this.persistSequenceIndex() });
+		for (const event of this.journal.records()) this.rememberSequence(event);
 	}
 
 	append(event: InteractionEvent): void {
 		const durable = durableEvent(event);
 		if (!durable) return;
-		appendFileSync(this.path, `${JSON.stringify(durable)}\n`, { encoding: "utf8", mode: 0o600 });
-		this.compactIfNeeded();
+		this.rememberSequence(durable);
+		this.journal.append(durable);
 	}
 
 	events(sessionId: string, afterSequence = 0): DurableInteractionEvent[] {
-		return this.read().filter((event) => event.sessionId === sessionId && event.sequence > afterSequence);
+		return this.journal.records().filter((event) => event.sessionId === sessionId && event.sequence > afterSequence);
 	}
 
-	private read(): DurableInteractionEvent[] {
-		if (!existsSync(this.path)) return [];
+	lastSequence(sessionId: string): number { return this.lastSequences.get(sessionId) ?? 0; }
+
+	private rememberSequence(event: DurableInteractionEvent): void {
+		this.lastSequences.set(event.sessionId, Math.max(this.lastSequences.get(event.sessionId) ?? 0, event.sequence));
+	}
+
+	private loadSequenceIndex(): void {
+		if (!existsSync(this.sequencePath)) return;
 		try {
-			return readFileSync(this.path, "utf8").split("\n").flatMap((line) => {
-				if (!line.trim()) return [];
-				try { const event = JSON.parse(line) as DurableInteractionEvent; return isDurableEvent(event) ? [event] : []; }
-				catch { return []; }
-			}).slice(-this.limit);
-		} catch { return []; }
+			chmodSync(this.sequencePath, 0o600);
+			const value = JSON.parse(readFileSync(this.sequencePath, "utf8")) as Record<string, unknown>;
+			for (const [sessionId, sequence] of Object.entries(value)) if (typeof sequence === "number" && Number.isSafeInteger(sequence) && sequence >= 0) this.lastSequences.set(sessionId, sequence);
+		} catch { /* The event journal remains authoritative when the optional index is corrupt. */ }
 	}
 
-	private compactIfNeeded(): void {
-		const events = this.read();
-		if (events.length < this.limit) return;
-		// A bounded rewrite is safe here because each record is an independent
-		// recovery hint; a malformed or interrupted line is ignored on read.
-		writeFileSync(this.path, `${events.slice(-this.limit).map((event) => JSON.stringify(event)).join("\n")}\n`, { encoding: "utf8", mode: 0o600 });
+	private persistSequenceIndex(): void {
+		const temporary = `${this.sequencePath}.${process.pid}.tmp`;
+		writeFileSync(temporary, JSON.stringify(Object.fromEntries(this.lastSequences)), { encoding: "utf8", mode: 0o600 });
+		renameSync(temporary, this.sequencePath);
 	}
 }
 

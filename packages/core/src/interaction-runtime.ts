@@ -348,7 +348,7 @@ export class InteractionEventAdapter<Source extends BeeMaxRuntimeSource = BeeMax
 	private enqueue(source: Source, turnId: string, payload: InteractionEventPayload, sink?: InteractionEventSink): Promise<void> {
 		const key = interactionKey(source);
 		const sessionId = interactionEventMeta(source, "", 0, this.profileId).sessionId;
-		const persistedSequence = this.eventJournal?.events(sessionId).at(-1)?.sequence ?? 0;
+		const persistedSequence = this.eventJournal?.lastSequence(sessionId) ?? 0;
 		const event = { ...payload, ...interactionEventMeta(source, turnId, Math.max(this.sequences.get(key) ?? 0, persistedSequence) + 1, this.profileId) } as InteractionEvent;
 		this.sequences.set(key, event.sequence);
 		const previous = this.eventQueues.get(key) ?? Promise.resolve();
