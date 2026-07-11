@@ -41,6 +41,7 @@ import { AgentRunError, SessionCatalog, type BeeMaxAgentRuntime } from "@beemax/
 import type { SessionSource } from "@beemax/gateway";
 import { existsSync } from "node:fs";
 import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 
 async function main(): Promise<void> {
 	const parsed = parseArgs(process.argv.slice(2));
@@ -622,7 +623,7 @@ async function runSkillsCommand(parsed: ParsedArgs): Promise<void> {
 			if (!entry.isDirectory()) continue;
 			const content = await readFile(join(paths.homePath, "skills", entry.name, "SKILL.md"), "utf8").catch(() => "");
 			const description = content.match(/^description:\s*(.+)$/m)?.[1]?.replaceAll('"', "").trim();
-			if (description) skills.push(`${entry.name}  ${description}`);
+			if (description) skills.push(`${entry.name}  sha256=${createHash("sha256").update(content).digest("hex").slice(0, 12)}  ${description}`);
 		}
 	} catch { /* no Skills directory yet */ }
 	console.log(skills.sort().join("\n") || "No Profile Skills installed. Run: beemax skills sync --profile " + profile);
