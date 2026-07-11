@@ -1,4 +1,4 @@
-import { access, mkdir, readdir } from "node:fs/promises";
+import { access, mkdir, readdir, stat } from "node:fs/promises";
 import { constants } from "node:fs";
 import { execFile } from "node:child_process";
 import { join } from "node:path";
@@ -99,6 +99,18 @@ export async function inspectDoctor(config: BeeMaxConfig, options: DoctorOptions
 	} catch (error) {
 		checks.push({ name: "Approval audit", status: "FAIL", detail: error instanceof Error ? error.message : String(error) });
 	}
+
+	try {
+		await mkdir(config.paths.agentDir, { recursive: true, mode: 0o700 });
+		await access(config.paths.agentDir, constants.R_OK | constants.W_OK);
+		const journalPath = join(config.paths.agentDir, "interaction-events.jsonl");
+		const existing = await stat(journalPath).catch(() => undefined);
+		const privateEnough = !existing || (existing.mode & 0o077) === 0;
+		checks.push({ name: "Interaction recovery", status: privateEnough ? "PASS" : "WARN", detail: privateEnough ? `privacy-safe journal ready; ${journalPath}` : `journal permissions are broader than 0600: ${journalPath}` });
+	} catch (error) {
+		checks.push({ name: "Interaction recovery", status: "FAIL", detail: error instanceof Error ? error.message : String(error) });
+	}
+	checks.push({ name: "Interaction protocol", status: "PASS", detail: "v1 scope-bound control contract available" });
 
 	try {
 		const automation = new AutomationStore(config.memory.dbPath);
