@@ -6,11 +6,13 @@ export interface AgentControlInput<Source extends BeeMaxRuntimeSource = BeeMaxRu
 	text: string;
 }
 
-export interface AgentControlResult {
+export interface AgentControlResult<Source extends BeeMaxRuntimeSource = BeeMaxRuntimeSource> {
 	handled: boolean;
 	message: string;
+	/** Optional conversation identity to use for subsequent channel messages. */
+	nextSource?: Source;
 }
 
 export type AgentControlHandler<Source extends BeeMaxRuntimeSource = BeeMaxRuntimeSource> = (
 	input: AgentControlInput<Source>,
-) => Promise<AgentControlResult | undefined>;
+) => Promise<AgentControlResult<Source> | undefined>;

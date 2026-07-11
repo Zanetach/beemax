@@ -229,3 +229,25 @@ test("Dispatcher delegates opaque control handling to the Agent Runtime", async 
 	assert.deepEqual(sent, ["handled by Core"]);
 	dispatcher.dispose();
 });
+
+test("Dispatcher retains a Core-selected conversation identity after a control command", async () => {
+	let inbound;
+	const runs = [];
+	const platform = {
+		name: "feishu", isConnected: true,
+		onMessage: (handler) => { inbound = handler; }, connect: async () => true, disconnect: async () => undefined,
+		send: async () => ({ success: true }), editMessage: async () => ({ success: true }), sendCard: async () => ({ success: true, messageId: "card" }), updateCard: async () => ({ success: true }), sendTyping: async () => undefined, stopTyping: async () => undefined,
+	};
+	const nextSource = { ...source, threadId: "conversation-new" };
+	const dispatcher = new Dispatcher({
+		runtime: {
+			run: async (input) => { runs.push(input); return { answer: "ok", model: "test", durationMs: 1, usage: {} }; }, cancel: async () => false,
+			handleControl: async ({ text }) => text === "/new" ? { handled: true, message: "new", nextSource } : undefined,
+			isBusy: () => false, dispose: () => undefined,
+		},
+	}, platform);
+	await inbound({ text: "/new", messageType: "command", source, mediaPaths: [], mediaTypes: [], raw: {}, timestamp: Date.now() });
+	await inbound({ text: "continue", messageType: "text", source, mediaPaths: [], mediaTypes: [], raw: {}, timestamp: Date.now() });
+	assert.equal(runs[0].source.threadId, "conversation-new");
+	dispatcher.dispose();
+});

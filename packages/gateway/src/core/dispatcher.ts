@@ -42,6 +42,7 @@ export class Dispatcher {
 	private readonly turnTimeoutMs: number;
 	private readonly profileId: string;
 	private readonly deduplicator: MessageDeduplicator;
+	private readonly sessionOverrides = new Map<string, InboundMessage["source"]>();
 
 	constructor(deps: DispatcherDeps, platform: PlatformAdapter) {
 		this.deps = deps;
@@ -59,19 +60,21 @@ export class Dispatcher {
 
 	private async handle(msg: InboundMessage): Promise<void> {
 		if (!this.deduplicator.accept(this.profileId, msg.source.platform, msg.source.messageId)) return;
-		if (this.deps.approvalBroker && (await this.deps.approvalBroker.handleMessage(msg))) return;
-		const control = await this.runtime.handleControl({ source: msg.source, text: msg.text });
+		const effective = { ...msg, source: this.sessionOverrides.get(ownerKey(msg.source)) ?? msg.source };
+		if (this.deps.approvalBroker && (await this.deps.approvalBroker.handleMessage(effective))) return;
+		const control = await this.runtime.handleControl({ source: effective.source, text: effective.text });
 		if (control?.handled) {
+			if (control.nextSource) this.sessionOverrides.set(ownerKey(msg.source), control.nextSource);
 			await this.platform.send(msg.source.chatId, control.message);
 			return;
 		}
-		if (msg.text.trim().toLowerCase() === "/stop") {
-			await this.runtime.cancel(msg.source);
-			const cancelled = this.deps.cancelTasks?.(msg.source) ?? 0;
+		if (effective.text.trim().toLowerCase() === "/stop") {
+			await this.runtime.cancel(effective.source);
+			const cancelled = this.deps.cancelTasks?.(effective.source) ?? 0;
 			await this.platform.send(msg.source.chatId, `Stopped the active Agent turn and cancelled ${cancelled} Sub-Agent task(s).`);
 			return;
 		}
-		await this.runTurn(msg);
+		await this.runTurn(effective);
 	}
 
 	private async runTurn(msg: InboundMessage): Promise<void> {
@@ -193,6 +196,10 @@ export class Dispatcher {
 			}
 		}
 	}
+}
+
+function ownerKey(source: InboundMessage["source"]): string {
+	return `${source.platform}:${source.chatId}:${source.userIdAlt ?? source.userId ?? "anon"}`;
 }
 
 function toolResultSummary(result: unknown): string {

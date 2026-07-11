@@ -63,7 +63,7 @@ export interface AgentRuntimePort<Source extends BeeMaxRuntimeSource = BeeMaxRun
 	sessionPreferences(source: Source): Promise<SessionPreferences>;
 	updateSessionPreferences(source: Source, preferences: SessionPreferences): Promise<void>;
 	reset(source: Source): boolean;
-	handleControl(input: AgentControlInput<Source>): Promise<AgentControlResult | undefined>;
+	handleControl(input: AgentControlInput<Source>): Promise<AgentControlResult<Source> | undefined>;
 	isBusy(): boolean;
 	setModel(source: Source, model: Model<Api>): Promise<boolean>;
 	modelStatus(source: Source): Promise<AgentModelStatus | undefined>;
@@ -166,7 +166,7 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 	async sessionPreferences(source: Source): Promise<SessionPreferences> { return this.sessionCatalog?.preferences(source) ?? {}; }
 	async updateSessionPreferences(source: Source, preferences: SessionPreferences): Promise<void> { await this.sessionCatalog?.updatePreferences(source, preferences); }
 	reset(source: Source): boolean { return this.sessions.reset(source); }
-	async handleControl(input: AgentControlInput<Source>): Promise<AgentControlResult | undefined> {
+	async handleControl(input: AgentControlInput<Source>): Promise<AgentControlResult<Source> | undefined> {
 		return this.controlHandler?.(input);
 	}
 	async setModel(source: Source, model: Model<Api>): Promise<boolean> {

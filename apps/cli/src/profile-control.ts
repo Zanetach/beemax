@@ -11,6 +11,10 @@ export function createProfileControlHandler(
 ): AgentControlHandler<SessionSource> {
 	return async ({ source, text }) => {
 		const command = text.trim().toLowerCase();
+		if (command === "/new" || command === "/reset") {
+			const nextSource = { ...source, threadId: `conversation-${crypto.randomUUID()}` };
+			return { handled: true, nextSource, message: `${command === "/reset" ? "Reset and started" : "Started"} new session: ${nextSource.threadId}` };
+		}
 		if (command === "/help") return { handled: true, message: "Commands: /help /status /usage /compact /model [provider/model] [--global] /stop\nCLI also supports local session, display, tool, and retry controls." };
 		if (command === "/status" || command === "/usage") {
 			const [model, usage] = await Promise.all([runtime.modelStatus(source), runtime.usage(source)]);
