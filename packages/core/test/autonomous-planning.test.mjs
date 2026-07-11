@@ -7,6 +7,7 @@ test("planning policy keeps simple conversational requests direct", () => {
 	const decision = policy.decide("What model are you using?");
 	assert.equal(decision.mode, "direct");
 	assert.equal(decision.requiredTool, undefined);
+	assert.deepEqual(decision.requiredTools, []);
 	assert.equal(decision.suggestedConcurrency, 1);
 	assert.equal(decision.budget.maxSubagents, 0);
 	assert.match(decision.reason, /simple|single/i);
@@ -17,6 +18,7 @@ test("planning policy delegates one substantial isolated work item", () => {
 	const decision = policy.decide("Research the official documentation deeply and produce an evidence-backed comparison report");
 	assert.equal(decision.mode, "delegate");
 	assert.equal(decision.requiredTool, "task_spawn");
+	assert.deepEqual(decision.requiredTools, ["task_spawn", "task_wait"]);
 	assert.equal(decision.suggestedConcurrency, 1);
 	assert.equal(decision.budget.maxSubagents, 1);
 	assert.ok(decision.budget.maxToolCalls > 0);
@@ -27,6 +29,7 @@ test("planning policy selects a DAG and derives bounded parallel resources for i
 	const decision = policy.decide("Review the API, CLI, memory, security, and operations modules in parallel; compare each independently, then synthesize and verify a release report");
 	assert.equal(decision.mode, "dag");
 	assert.equal(decision.requiredTool, "task_plan_execute");
+	assert.deepEqual(decision.requiredTools, ["task_plan_execute"]);
 	assert.ok(decision.suggestedConcurrency >= 2);
 	assert.ok(decision.suggestedConcurrency <= 6);
 	assert.ok(decision.budget.maxSubagents >= decision.suggestedConcurrency);
@@ -152,5 +155,23 @@ test("Agent runtime performs one content-free correction when a complex turn ski
 	assert.equal(prompts.length, 2);
 	assert.match(prompts[1], /task_plan_execute/);
 	assert.doesNotMatch(prompts[1], /frontend|backend/);
+	runtime.dispose();
+});
+
+test("delegated execution cannot finish after spawn without waiting for its Sub-Agent result", async () => {
+	const source = { platform: "cli", chatId: "delegate", chatType: "dm", userId: "local" };
+	let listener;
+	let prompts = 0;
+	const agent = { state: { model: { id: "test" }, messages: [] } };
+	const runtime = new BeeMaxAgentRuntime({ planningPolicy: new AutonomousPlanningPolicy(), createAgent: async () => ({
+		agent, subscribe: (next) => { listener = next; return () => undefined; },
+		prompt: async () => {
+			prompts++;
+			if (prompts === 1) listener({ type: "tool_execution_start", toolCallId: "spawn", toolName: "task_spawn" });
+			agent.state.messages = [{ role: "assistant", content: [{ type: "text", text: "premature" }], usage: { input: 1, output: 1 } }];
+		}, abort: async () => undefined, dispose: () => undefined,
+	}) });
+	await assert.rejects(runtime.run({ source, text: "Research the official documentation deeply and produce an evidence-backed comparison report", timeoutMs: 1_000 }), /required planning tools: task_wait/i);
+	assert.equal(prompts, 2);
 	runtime.dispose();
 });

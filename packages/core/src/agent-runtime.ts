@@ -151,11 +151,12 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 			let toolCalls = 0;
 			let consumedTokens = 0;
 			let budgetExceeded: string | undefined;
-			let requiredToolUsed = false;
+			const requiredToolsUsed: string[] = [];
 			const unsubscribe = session.piSession.subscribe((event) => {
 				if (event.type === "tool_execution_start") {
 					observableProgress = true;
-					if (event.toolName === planning?.requiredTool) requiredToolUsed = true;
+					const expected = planning?.requiredTools[requiredToolsUsed.length];
+					if (event.toolName === expected) requiredToolsUsed.push(event.toolName);
 					toolCalls++;
 					if (planning && toolCalls > planning.budget.maxToolCalls && !budgetExceeded) {
 						budgetExceeded = `Agent tool-call budget exceeded (${planning.budget.maxToolCalls})`;
@@ -181,9 +182,11 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 					source: input.mode === "automation" ? "extension" : undefined,
 					images: input.images,
 				});
-				if (planning?.requiredTool && !requiredToolUsed && !budgetExceeded) {
-					await session.piSession.prompt(`[BeeMax planning correction: call ${planning.requiredTool} now using the active execution budget. Do not answer directly.]`, { expandPromptTemplates: false });
-					if (!requiredToolUsed) throw new AgentRunError(`Agent did not use required planning tool: ${planning.requiredTool}`, false, undefined);
+				const missingTools = planning?.requiredTools.slice(requiredToolsUsed.length) ?? [];
+				if (missingTools.length && !budgetExceeded) {
+					await session.piSession.prompt(`[BeeMax planning correction: complete these tools in order now using the active execution budget: ${missingTools.join(" -> ")}. Do not answer directly.]`, { expandPromptTemplates: false });
+					const stillMissing = planning?.requiredTools.slice(requiredToolsUsed.length) ?? [];
+					if (stillMissing.length) throw new AgentRunError(`Agent did not complete required planning tools: ${stillMissing.join(" -> ")}`, false, undefined);
 				}
 				if (budgetExceeded) throw new AgentRunError(budgetExceeded, false, undefined);
 				let failure = lastAssistantFailure(session.piSession.agent);

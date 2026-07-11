@@ -18,6 +18,7 @@ export interface PlanningSignals {
 export interface AutonomousPlanningDecision {
 	mode: AutonomousExecutionMode;
 	requiredTool?: "task_spawn" | "task_plan_execute";
+	requiredTools: readonly ("task_spawn" | "task_wait" | "task_plan_execute")[];
 	suggestedConcurrency: number;
 	budget: PlanningResourceBudget;
 	signals: PlanningSignals;
@@ -93,11 +94,12 @@ export class AutonomousPlanningPolicy {
 			maxTokens: Math.min(this.capacity.maxTokens, mode === "direct" ? 12_000 : Math.max(20_000, scale * 16_000)),
 			maxCorrectiveAttempts: mode === "direct" ? 0 : this.capacity.maxCorrectiveAttempts,
 		};
-		const requiredTool = mode === "dag" ? "task_plan_execute" as const : mode === "delegate" ? "task_spawn" as const : undefined;
-		const decision = { mode, requiredTool, suggestedConcurrency, budget, signals, reason };
+		const requiredTools = mode === "dag" ? ["task_plan_execute"] as const : mode === "delegate" ? ["task_spawn", "task_wait"] as const : [];
+		const requiredTool = requiredTools[0];
+		const decision = { mode, requiredTool, requiredTools, suggestedConcurrency, budget, signals, reason };
 		return {
 			...decision,
-			directive: () => `[BeeMax execution policy: mode=${mode}; requiredTool=${requiredTool ?? "none"}; concurrency=${suggestedConcurrency}; maxSubagents=${budget.maxSubagents}; maxToolCalls=${budget.maxToolCalls}; maxTokens=${budget.maxTokens}; correctiveAttempts=${budget.maxCorrectiveAttempts}. When requiredTool is not none, call it before giving a final answer.]`,
+			directive: () => `[BeeMax execution policy: mode=${mode}; requiredTools=${requiredTools.length ? requiredTools.join("->") : "none"}; concurrency=${suggestedConcurrency}; maxSubagents=${budget.maxSubagents}; maxToolCalls=${budget.maxToolCalls}; maxTokens=${budget.maxTokens}; correctiveAttempts=${budget.maxCorrectiveAttempts}. Complete requiredTools in order before giving a final answer.]`,
 		};
 	}
 }
