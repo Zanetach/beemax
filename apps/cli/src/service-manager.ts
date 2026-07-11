@@ -1,4 +1,5 @@
 import { mkdir, writeFile } from "node:fs/promises";
+import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { spawnSync, type SpawnSyncReturns } from "node:child_process";
@@ -81,6 +82,40 @@ export async function installSystemdService(
 	assertCommand(runner("systemctl", args), `systemctl ${args.join(" ")}`);
 }
 
+export async function installMacLaunchAgent(
+	profile: string,
+	root = beemaxRoot(),
+	home = beemaxHome(),
+	launchAgentsDir = join(homedir(), "Library", "LaunchAgents"),
+): Promise<string> {
+	validateProfileName(profile);
+	const profileHome = join(resolve(home), "profiles", profile);
+	const logsDir = join(profileHome, "logs");
+	const plist = join(launchAgentsDir, `${macLabel(profile)}.plist`);
+	await mkdir(logsDir, { recursive: true, mode: 0o700 });
+	await mkdir(launchAgentsDir, { recursive: true });
+	await writeFile(plist, renderMacLaunchAgent(profile, root, home), { encoding: "utf8", mode: 0o644 });
+	return plist;
+}
+
+export function renderMacLaunchAgent(profile: string, root = beemaxRoot(), home = beemaxHome(), nodePath = process.execPath): string {
+	validateProfileName(profile);
+	const profileHome = join(resolve(home), "profiles", profile);
+	const logsDir = join(profileHome, "logs");
+	const cliPath = join(resolve(root), "apps", "cli", "dist", "cli.js");
+	return `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>Label</key><string>${xml(macLabel(profile))}</string>
+  <key>ProgramArguments</key><array><string>${xml(nodePath)}</string><string>${xml(cliPath)}</string><string>gateway</string><string>--profile</string><string>${xml(profile)}</string><string>--home</string><string>${xml(resolve(home))}</string><string>--root</string><string>${xml(resolve(root))}</string></array>
+  <key>WorkingDirectory</key><string>${xml(resolve(root))}</string>
+  <key>EnvironmentVariables</key><dict><key>NODE_ENV</key><string>production</string><key>BEEMAX_PROFILE</key><string>${xml(profile)}</string></dict>
+  <key>RunAtLoad</key><true/><key>KeepAlive</key><true/>
+  <key>StandardOutPath</key><string>${xml(join(logsDir, "gateway.log"))}</string>
+  <key>StandardErrorPath</key><string>${xml(join(logsDir, "gateway.error.log"))}</string>
+</dict></plist>\n`;
+}
+
 export function runServiceAction(
 	action: ServiceAction,
 	profile: string,
@@ -89,6 +124,7 @@ export function runServiceAction(
 	scope: ServiceScope = "user",
 ): void {
 	validateProfileName(profile);
+	if (platform === "darwin") return runMacServiceAction(action, profile, runner);
 	if (platform !== "linux") {
 		throw new Error(`beemax ${action} requires Linux systemd; use 'beemax gateway --profile ${profile}' for foreground testing`);
 	}
@@ -101,6 +137,35 @@ export function runServiceAction(
 	const args = action === "logs" ? [...scopeArgs, "-u", unit, "-f"] : [...scopeArgs, ...serviceArgs];
 	assertCommand(runner(command, args), `${command} ${args.join(" ")}`);
 }
+
+function runMacServiceAction(action: ServiceAction, profile: string, runner: Runner): void {
+	const domain = `gui/${process.getuid?.() ?? 0}`;
+	const label = macLabel(profile);
+	const plist = join(homedir(), "Library", "LaunchAgents", `${label}.plist`);
+	if (action === "logs") {
+		const logPath = join(beemaxHome(), "profiles", profile, "logs", "gateway.log");
+		try { process.stdout.write(readFileSync(logPath, "utf8")); } catch { throw new Error(`No Gateway log exists for Profile '${profile}'. Start it first with: beemax start ${profile}`); }
+		return;
+	}
+	if (action === "start") {
+		assertCommand(runner("launchctl", ["bootstrap", domain, plist]), `launchctl bootstrap ${domain} ${plist}`);
+		return;
+	}
+	if (action === "stop") {
+		assertCommand(runner("launchctl", ["bootout", `${domain}/${label}`]), `launchctl bootout ${domain}/${label}`);
+		return;
+	}
+	if (action === "restart") {
+		const stopped = runner("launchctl", ["bootout", `${domain}/${label}`]);
+		if (stopped.error) throw stopped.error;
+		assertCommand(runner("launchctl", ["bootstrap", domain, plist]), `launchctl bootstrap ${domain} ${plist}`);
+		return;
+	}
+	assertCommand(runner("launchctl", ["print", `${domain}/${label}`]), `launchctl print ${domain}/${label}`);
+}
+
+function macLabel(profile: string): string { return `com.beemax.agent.${profile}`; }
+function xml(value: string): string { return value.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll('"', "&quot;").replaceAll("'", "&apos;"); }
 
 function renderSystemdTarget(scope: ServiceScope): string {
 	return `[Unit]

@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.0-preview.14
+
+- Added macOS LaunchAgent Gateway lifecycle support, including per-Profile
+  background services and Gateway log retrieval.
+
 ## 0.1.0-preview.13
 
 - Fixed local chat to render the final Agent answer when a provider does not

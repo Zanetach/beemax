@@ -26,7 +26,7 @@ import {
 	testFeishuCredentials,
 } from "./profile-config.ts";
 import { activeProfile, resolveProfileLocation } from "./profile-home.ts";
-import { installSystemdService, runServiceAction, type ServiceAction } from "./service-manager.ts";
+import { installMacLaunchAgent, installSystemdService, runServiceAction, type ServiceAction } from "./service-manager.ts";
 import { runSetup, type SetupOptions } from "./setup.ts";
 import { renderModelProviderChoices, resolveProviderSelection } from "./model-catalog.ts";
 import { configuredApiKey } from "./provider-resolver.ts";
@@ -66,7 +66,7 @@ async function main(): Promise<void> {
 				if (parsed.options["api-key"]) throw new Error("Do not pass model secrets in argv; set BEEMAX_API_KEY or use the interactive prompt");
 				if (!(await runSetup(setupOptions(parsed, true)))) process.exitCode = 1;
 			} else if (parsed.positionals[1] === "install") {
-				await installSystemdService(beemaxRoot(), parsed.options.system === true ? "system" : "user");
+				await installGatewayService(gatewayProfile(parsed), parsed.options.system === true ? "system" : "user");
 				console.log(`BeeMax Gateway service installed for Profile '${gatewayProfile(parsed)}'.`);
 			} else if (parsed.positionals[1] === "list") {
 				console.log((await listProfiles()).map((name) => `${name}  beemax@${name}.service`).join("\n") || "No Agent Profiles configured.");
@@ -109,8 +109,8 @@ async function main(): Promise<void> {
 			break;
 		case "service":
 			if (parsed.positionals[1] !== "install") throw new Error("Usage: beemax service install");
-			await installSystemdService(beemaxRoot(), parsed.options.system === true ? "system" : "user");
-			console.log("BeeMax systemd service installed. Start an agent with: beemax start <name>");
+			await installGatewayService(serviceProfile(parsed), parsed.options.system === true ? "system" : "user");
+			console.log("BeeMax Gateway service installed. Start an agent with: beemax start <name>");
 			break;
 		case "start":
 		case "stop":
@@ -214,6 +214,16 @@ async function runInit(parsed: ParsedArgs): Promise<void> {
 	console.log(`Created BeeMax Agent '${profile}' at ${paths.configPath}`);
 	console.log(`Next: beemax model set anthropic claude-sonnet-4-5 --profile ${profile}`);
 	console.log(`Then: beemax channel add feishu --profile ${profile}`);
+}
+
+async function installGatewayService(profile: string, scope: "user" | "system"): Promise<void> {
+	if (process.platform === "darwin") {
+		if (scope === "system") throw new Error("macOS system-wide Gateway services are not supported; use the user LaunchAgent");
+		const plist = await installMacLaunchAgent(profile, beemaxRoot(), beemaxHome());
+		console.log(`BeeMax LaunchAgent installed: ${plist}`);
+		return;
+	}
+	await installSystemdService(beemaxRoot(), scope);
 }
 
 async function runUpdate(parsed: ParsedArgs): Promise<void> {

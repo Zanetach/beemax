@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { renderSystemdService, runServiceAction } from "../dist/service-manager.js";
+import { renderMacLaunchAgent, renderSystemdService, runServiceAction } from "../dist/service-manager.js";
 
 test("systemd service binds the installed CLI, profile env, and safe runtime defaults", () => {
 	const unit = renderSystemdService("/opt/beemax", "/usr/bin/node", "user", undefined, "/home/beemax/.beemax");
@@ -35,6 +35,12 @@ test("service actions map profiles to systemctl and journalctl units", () => {
 	]);
 });
 
-test("service actions explain the foreground fallback outside Linux", () => {
-	assert.throws(() => runServiceAction("start", "personal", () => ({ status: 0 }), "darwin"), /gateway --profile personal/);
+test("macOS LaunchAgent runs one isolated Gateway per Profile", () => {
+	const plist = renderMacLaunchAgent("personal", "/opt/beemax", "/Users/zane/.beemax", "/usr/local/bin/node");
+	assert.match(plist, /com\.beemax\.agent\.personal/);
+	assert.match(plist, /\/Users\/zane\/\.beemax\/profiles\/personal\/logs\/gateway\.log/);
+	const calls = [];
+	runServiceAction("start", "personal", (command, args) => { calls.push([command, args]); return { status: 0 }; }, "darwin");
+	assert.equal(calls[0][0], "launchctl");
+	assert.equal(calls[0][1][0], "bootstrap");
 });
