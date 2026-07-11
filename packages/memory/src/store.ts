@@ -195,6 +195,7 @@ export class MemoryStore {
 				kind TEXT NOT NULL CHECK (kind IN ('objective', 'delegated', 'automation')),
 				title TEXT NOT NULL,
 				description TEXT,
+				acceptance_criteria TEXT,
 				recovery_policy TEXT NOT NULL DEFAULT 'never' CHECK (recovery_policy IN ('never', 'safe_retry')),
 				idempotency_key TEXT,
 				execution_scope TEXT,
@@ -288,6 +289,7 @@ export class MemoryStore {
 		`);
 		this.addColumnIfMissing("tasks", "evidence", "TEXT");
 		this.addColumnIfMissing("tasks", "description", "TEXT");
+		this.addColumnIfMissing("tasks", "acceptance_criteria", "TEXT");
 		this.addColumnIfMissing("tasks", "recovery_policy", "TEXT NOT NULL DEFAULT 'never'");
 		this.addColumnIfMissing("tasks", "idempotency_key", "TEXT");
 		this.addColumnIfMissing("tasks", "execution_scope", "TEXT");
@@ -614,9 +616,9 @@ export class MemoryStore {
 	}
 
 	record(task: RuntimeTaskRecord): void {
-		this.db.prepare(`INSERT INTO tasks (id, owner_key, kind, title, description, recovery_policy, idempotency_key, execution_scope, status, parent_id, plan_id, evidence, created_at, started_at, finished_at, result, error, updated_at)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-			.run(task.id, task.ownerKey, task.kind, task.title, task.description ?? null, task.recoveryPolicy ?? "never", task.idempotencyKey ?? null, task.executionScope ? JSON.stringify(task.executionScope) : null, task.status, task.parentId ?? null, task.planId ?? null, task.evidence ?? null, task.createdAt, task.startedAt ?? null, task.finishedAt ?? null, task.result ?? null, task.error ?? null, task.createdAt);
+		this.db.prepare(`INSERT INTO tasks (id, owner_key, kind, title, description, acceptance_criteria, recovery_policy, idempotency_key, execution_scope, status, parent_id, plan_id, evidence, created_at, started_at, finished_at, result, error, updated_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+			.run(task.id, task.ownerKey, task.kind, task.title, task.description ?? null, task.acceptanceCriteria ?? null, task.recoveryPolicy ?? "never", task.idempotencyKey ?? null, task.executionScope ? JSON.stringify(task.executionScope) : null, task.status, task.parentId ?? null, task.planId ?? null, task.evidence ?? null, task.createdAt, task.startedAt ?? null, task.finishedAt ?? null, task.result ?? null, task.error ?? null, task.createdAt);
 	}
 
 	transition(id: string, change: TaskTransition): void {
@@ -625,8 +627,9 @@ export class MemoryStore {
 			finished_at = CASE WHEN ? IN ('pending', 'running') THEN NULL ELSE COALESCE(?, finished_at) END,
 			result = CASE WHEN ? IN ('pending', 'running') THEN NULL ELSE COALESCE(?, result) END,
 			error = CASE WHEN ? IN ('running', 'succeeded') THEN NULL ELSE COALESCE(?, error) END,
+			evidence = COALESCE(?, evidence),
 			updated_at = ? WHERE id = ?`)
-			.run(change.status, change.status, change.startedAt ?? null, change.status, change.finishedAt ?? null, change.status, change.result ?? null, change.status, change.error ?? null, Date.now(), id);
+			.run(change.status, change.status, change.startedAt ?? null, change.status, change.finishedAt ?? null, change.status, change.result ?? null, change.status, change.error ?? null, change.evidence ?? null, Date.now(), id);
 		if (result.changes !== 1) throw new Error(`Task not found: ${id}`);
 	}
 
@@ -824,7 +827,7 @@ interface EventRow {
 }
 
 interface RuntimeTaskRow {
-	id: string; owner_key: string; kind: RuntimeTaskRecord["kind"]; title: string; description: string | null; recovery_policy: RuntimeTaskRecord["recoveryPolicy"]; idempotency_key: string | null; execution_scope: string | null; status: RuntimeTaskRecord["status"];
+	id: string; owner_key: string; kind: RuntimeTaskRecord["kind"]; title: string; description: string | null; acceptance_criteria: string | null; recovery_policy: RuntimeTaskRecord["recoveryPolicy"]; idempotency_key: string | null; execution_scope: string | null; status: RuntimeTaskRecord["status"];
 	parent_id: string | null; plan_id: string | null; evidence: string | null; created_at: number; started_at: number | null; finished_at: number | null; result: string | null; error: string | null;
 }
 
@@ -875,6 +878,7 @@ function mapRuntimeTask(row: RuntimeTaskRow): RuntimeTaskRecord {
 		id: row.id, ownerKey: row.owner_key, kind: row.kind, title: row.title, status: row.status,
 		createdAt: row.created_at,
 		...(row.description === null ? {} : { description: row.description }),
+		...(row.acceptance_criteria === null ? {} : { acceptanceCriteria: row.acceptance_criteria }),
 		...(row.recovery_policy === "never" || row.recovery_policy === undefined ? {} : { recoveryPolicy: row.recovery_policy }),
 		...(row.idempotency_key === null ? {} : { idempotencyKey: row.idempotency_key }),
 		...(executionScope ? { executionScope } : {}),

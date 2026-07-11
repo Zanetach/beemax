@@ -9,7 +9,7 @@
  *   beemax model      Show / set the configured model
  */
 
-import { buildMainAgentSystemPrompt, buildSubagentSystemPrompt, executePlannedTask, executeSubagentTask, mainAgentTools, readOnlyAgentTools, runGateway } from "./gateway.ts";
+import { buildMainAgentSystemPrompt, buildSubagentSystemPrompt, createTaskVerifier, executePlannedTask, executeSubagentTask, mainAgentTools, readOnlyAgentTools, runGateway } from "./gateway.ts";
 import { beemaxHome, beemaxRoot, loadConfig } from "./config.ts";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { backupSqliteDatabase, verifySqliteDatabase } from "@beemax/memory";
@@ -867,9 +867,11 @@ async function runChat(config: ReturnType<typeof loadConfig>, requestedMode: { f
 	});
 	const taskScheduler = new ProfileTaskScheduler({ maxConcurrent: config.subagents.maxConcurrent });
 	const taskPlanRuntime = new TaskPlanRuntime();
+	const runTaskVerification = createTaskVerifier(createSubagentAgent, config.subagents.timeoutMs);
+	const verifyTask: import("@beemax/core").TaskGraphVerifier = (task, result, signal) => taskScheduler.run(task.ownerKey, () => runTaskVerification(task, result, signal), signal);
 	const recoveryController = new AbortController();
 	let recoveryStatus: TaskRecoveryStatus = { phase: config.subagents.enabled ? "running" : "disabled", plans: 0, succeeded: 0, failed: 0, blocked: 0 };
-	const taskRecovery = new TaskRecoveryRunner(memory, (task, signal) => taskScheduler.run(task.ownerKey, () => executePlannedTask(createSubagentAgent, task, task.executionScope as import("@beemax/gateway").SessionSource, signal, config.subagents.timeoutMs), signal), taskPlanRuntime);
+	const taskRecovery = new TaskRecoveryRunner(memory, (task, signal) => taskScheduler.run(task.ownerKey, () => executePlannedTask(createSubagentAgent, task, task.executionScope as import("@beemax/gateway").SessionSource, signal, config.subagents.timeoutMs), signal), taskPlanRuntime, verifyTask);
 	const recoveryRun = (config.subagents.enabled
 		? taskRecovery.run({ maxConcurrent: config.subagents.maxConcurrent, signal: recoveryController.signal })
 		: Promise.resolve({ plans: 0, succeeded: 0, failed: 0, cancelled: 0, blocked: [] as string[] }))
@@ -900,7 +902,7 @@ async function runChat(config: ReturnType<typeof loadConfig>, requestedMode: { f
 		sessionTools: (sessionSource) => [
 			...(subagents ? [
 				...createSubagentTools(subagents, sessionSource),
-				...createTaskOrchestrationTools(memory, sessionSource, (task, signal) => taskScheduler.run(task.ownerKey, () => executePlannedTask(createSubagentAgent, task, sessionSource, signal, config.subagents.timeoutMs), signal), { maxConcurrent: config.subagents.maxConcurrent, planRuntime: taskPlanRuntime }),
+				...createTaskOrchestrationTools(memory, sessionSource, (task, signal) => taskScheduler.run(task.ownerKey, () => executePlannedTask(createSubagentAgent, task, sessionSource, signal, config.subagents.timeoutMs), signal), { maxConcurrent: config.subagents.maxConcurrent, planRuntime: taskPlanRuntime, verify: verifyTask }),
 			] : []),
 			...createTaskLedgerTools(memory, sessionSource),
 		],

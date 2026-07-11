@@ -54,7 +54,7 @@ export { compileLongTermMemorySnapshot, type LongTermMemoryCompiler } from "./pe
 export { curatedMemoryPrompt } from "./curated-memory.ts";
 export type { TaskDependency, TaskKind, TaskLedger, TaskQuery, TaskRecord, TaskRecoveryPolicy, TaskRecoveryResult, TaskRunRecord, TaskRunStatus, TaskRunTransition, TaskStatus, TaskTransition } from "./task-ledger.ts";
 export { createTaskLedgerTools } from "./task-ledger-tools.ts";
-export { TaskGraph, type TaskGraphExecutor, type TaskGraphResult, type TaskGraphRunOptions, type TaskPlanInput } from "./task-graph.ts";
+export { TaskGraph, type TaskGraphExecutionResult, type TaskGraphExecutor, type TaskGraphResult, type TaskGraphRunOptions, type TaskGraphVerificationResult, type TaskGraphVerifier, type TaskPlanInput } from "./task-graph.ts";
 export { createTaskOrchestrationTools, type TaskOrchestrationOptions } from "./task-orchestration-tools.ts";
 export { TaskRecoveryRunner, type TaskPlanCancelResult, type TaskPlanRetryResult, type TaskRecoveryRunnerOptions, type TaskRecoveryRunnerResult } from "./task-recovery.ts";
 export { TaskPlanRuntime } from "./task-plan-runtime.ts";

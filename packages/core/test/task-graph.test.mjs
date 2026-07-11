@@ -73,6 +73,41 @@ test("TaskGraph fails execution when its Task Run lease can no longer be renewed
 	assert.match(ledger.tasks.get("task").error, /Lease could not be renewed/);
 });
 
+test("TaskGraph only succeeds when an independent verifier accepts the result", async () => {
+	const ledger = memoryLedger();
+	const graph = new TaskGraph(ledger);
+	graph.createPlan({ id: "verified-plan", ownerKey: "cli:local:local", tasks: [{ id: "task", title: "Task", acceptanceCriteria: "Cites one primary source" }] });
+	const rejected = await graph.run(["cli:local:local"], "verified-plan", async () => ({ output: "Unsupported claim" }), {
+		verify: async (_task, result) => {
+			assert.equal(result.output, "Unsupported claim");
+			return { accepted: false, feedback: "No primary source was cited" };
+		},
+	});
+	assert.deepEqual(rejected, { succeeded: 0, failed: 1, cancelled: 0, blocked: [] });
+	assert.equal(ledger.tasks.get("task").status, "failed");
+	assert.match(ledger.tasks.get("task").error, /No primary source was cited/);
+});
+
+test("TaskGraph persists accepted verification evidence with the successful Task", async () => {
+	const ledger = memoryLedger();
+	const graph = new TaskGraph(ledger);
+	graph.createPlan({ id: "accepted-plan", ownerKey: "cli:local:local", tasks: [{ id: "task", title: "Task", acceptanceCriteria: "Contains a checked fact" }] });
+	const result = await graph.run(["cli:local:local"], "accepted-plan", async () => ({ output: "checked" }), {
+		verify: async () => ({ accepted: true, evidence: "ACCEPT\nPrimary record checked" }),
+	});
+	assert.deepEqual(result, { succeeded: 1, failed: 0, cancelled: 0, blocked: [] });
+	assert.equal(ledger.tasks.get("task").evidence, "ACCEPT\nPrimary record checked");
+});
+
+test("TaskGraph fails closed when criteria exist but no verifier is available", async () => {
+	const ledger = memoryLedger();
+	const graph = new TaskGraph(ledger);
+	graph.createPlan({ id: "unverified-plan", ownerKey: "cli:local:local", tasks: [{ id: "task", title: "Task", acceptanceCriteria: "Produces evidence" }] });
+	const result = await graph.run(["cli:local:local"], "unverified-plan", async () => ({ output: "done" }));
+	assert.deepEqual(result, { succeeded: 0, failed: 1, cancelled: 0, blocked: [] });
+	assert.match(ledger.tasks.get("task").error, /verification unavailable/i);
+});
+
 test("TaskGraph rejects cyclic plans before persisting any Task", () => {
 	const ledger = memoryLedger();
 	const graph = new TaskGraph(ledger);
@@ -91,9 +126,9 @@ test("orchestration tool validates a model-authored DAG and dispatches bounded S
 	const tools = new Map(createTaskOrchestrationTools(ledger, { platform: "cli", chatId: "local", chatType: "dm", userId: "local" }, async (task) => {
 		executed.push(task.title);
 		return { output: `done:${task.title}` };
-	}, { maxConcurrent: 2 }).map((tool) => [tool.name, tool]));
+	}, { maxConcurrent: 2, verify: async () => ({ accepted: true }) }).map((tool) => [tool.name, tool]));
 	const output = await tools.get("task_plan_execute").execute("plan", {
-		tasks: [{ key: "research", title: "Research", goal: "Collect evidence" }, { key: "write", title: "Write", goal: "Use the evidence" }],
+		tasks: [{ key: "research", title: "Research", goal: "Collect evidence", acceptanceCriteria: "Includes one source" }, { key: "write", title: "Write", goal: "Use the evidence", acceptanceCriteria: "Uses the collected evidence" }],
 		dependencies: [{ task: "write", dependsOn: "research" }],
 	});
 	assert.deepEqual(executed, ["Research", "Write"]);

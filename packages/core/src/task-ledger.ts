@@ -11,6 +11,7 @@ export interface TaskRecord {
 	kind: TaskKind;
 	title: string;
 	description?: string;
+	acceptanceCriteria?: string;
 	recoveryPolicy?: TaskRecoveryPolicy;
 	idempotencyKey?: string;
 	executionScope?: AgentScope;
@@ -25,7 +26,7 @@ export interface TaskRecord {
 	error?: string;
 }
 
-export type TaskTransition = Pick<TaskRecord, "status"> & Partial<Pick<TaskRecord, "startedAt" | "finishedAt" | "result" | "error">>;
+export type TaskTransition = Pick<TaskRecord, "status"> & Partial<Pick<TaskRecord, "startedAt" | "finishedAt" | "result" | "error" | "evidence">>;
 
 export type TaskRunStatus = "running" | "succeeded" | "failed" | "cancelled";
 export interface TaskRunRecord {

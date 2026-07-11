@@ -5,11 +5,14 @@ const DEFAULT_EXECUTION_LEASE_MS = 61 * 60_000;
 export interface TaskPlanInput {
 	id: string;
 	ownerKey: string;
-	tasks: Array<{ id: string; title: string; description?: string; kind?: TaskRecord["kind"]; parentId?: string; recoveryPolicy?: TaskRecord["recoveryPolicy"]; idempotencyKey?: string; executionScope?: TaskRecord["executionScope"] }>;
+	tasks: Array<{ id: string; title: string; description?: string; acceptanceCriteria?: string; kind?: TaskRecord["kind"]; parentId?: string; recoveryPolicy?: TaskRecord["recoveryPolicy"]; idempotencyKey?: string; executionScope?: TaskRecord["executionScope"] }>;
 	dependencies?: TaskDependency[];
 }
-export type TaskGraphExecutor = (task: TaskRecord, signal?: AbortSignal) => Promise<{ output?: string }>;
-export interface TaskGraphRunOptions { maxConcurrent?: number; signal?: AbortSignal; executor?: "agent" | "subagent"; leaseMs?: number; leaseHeartbeatMs?: number; canExecute?: (task: TaskRecord) => boolean; }
+export interface TaskGraphExecutionResult { output?: string; }
+export interface TaskGraphVerificationResult { accepted: boolean; feedback?: string; evidence?: string; }
+export type TaskGraphExecutor = (task: TaskRecord, signal?: AbortSignal) => Promise<TaskGraphExecutionResult>;
+export type TaskGraphVerifier = (task: TaskRecord, result: TaskGraphExecutionResult, signal?: AbortSignal) => Promise<TaskGraphVerificationResult>;
+export interface TaskGraphRunOptions { maxConcurrent?: number; signal?: AbortSignal; executor?: "agent" | "subagent"; leaseMs?: number; leaseHeartbeatMs?: number; canExecute?: (task: TaskRecord) => boolean; verify?: TaskGraphVerifier; }
 export interface TaskGraphResult { succeeded: number; failed: number; cancelled: number; blocked: string[]; }
 interface ActiveTaskResult { execution: Promise<ActiveTaskResult>; outcome: "succeeded" | "failed" | "cancelled"; }
 
@@ -42,6 +45,7 @@ export class TaskGraph {
 			id: task.id, ownerKey: input.ownerKey, kind: task.kind ?? "delegated", title: task.title,
 			status: "pending", planId: input.id, createdAt: now,
 			...(task.description ? { description: task.description } : {}), ...(task.parentId ? { parentId: task.parentId } : {}),
+			...(task.acceptanceCriteria ? { acceptanceCriteria: task.acceptanceCriteria } : {}),
 			...(task.recoveryPolicy ? { recoveryPolicy: task.recoveryPolicy } : {}), ...(task.idempotencyKey ? { idempotencyKey: task.idempotencyKey } : {}),
 			...(task.executionScope ? { executionScope: { ...task.executionScope } } : {}),
 		}));
@@ -107,9 +111,17 @@ export class TaskGraph {
 			if (executionSignal.aborted) throw executionSignal.reason ?? new Error("Task Plan cancelled");
 			const result = await execute({ ...task, status: "running", startedAt }, executionSignal);
 			if (executionSignal.aborted) throw executionSignal.reason ?? new Error("Task execution interrupted");
+			let verificationEvidence: string | undefined;
+			if (task.acceptanceCriteria) {
+				if (!options.verify) throw new Error("Task verification unavailable for defined Acceptance Criteria");
+				const verification = await options.verify({ ...task, status: "running", startedAt }, result, executionSignal);
+				if (executionSignal.aborted) throw executionSignal.reason ?? new Error("Task verification interrupted");
+				if (!verification.accepted) throw new Error(`Task verification rejected: ${verification.feedback?.trim() || "Acceptance Criteria were not satisfied"}`);
+				verificationEvidence = verification.evidence?.slice(0, 5_000);
+			}
 			const finishedAt = Date.now();
 			const output = result.output?.slice(0, 50_000);
-			this.ledger.transition(task.id, { status: "succeeded", finishedAt, result: output });
+			this.ledger.transition(task.id, { status: "succeeded", finishedAt, result: output, evidence: verificationEvidence });
 			this.ledger.transitionRun(runId, { status: "succeeded", finishedAt, output });
 			return "succeeded";
 		} catch (error) {

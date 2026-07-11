@@ -24,6 +24,14 @@ _Avoid_: Prompt outline, checklist, execution log
 A requirement that one Task succeed before another Task becomes ready.
 _Avoid_: Ordering hint, parent Task
 
+**Acceptance Criteria**:
+Observable conditions that a Task result must satisfy before the Task can be accepted as complete.
+_Avoid_: Prompt, implementation steps, subjective quality
+
+**Verification**:
+An independent evaluation of a Task result against its Acceptance Criteria and available evidence; successful execution alone does not imply successful Verification.
+_Avoid_: Execution, self-report, model confidence
+
 **Profile Task Scheduler**:
 The Profile-wide admission controller that shares delegated execution capacity across conversations and Task Plans.
 _Avoid_: Task queue, Sub-Agent manager, Task Plan runner

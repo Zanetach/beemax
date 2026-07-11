@@ -1,4 +1,4 @@
-import { TaskGraph, type TaskGraphExecutor } from "./task-graph.ts";
+import { TaskGraph, type TaskGraphExecutor, type TaskGraphVerifier } from "./task-graph.ts";
 import type { TaskLedger, TaskRecord } from "./task-ledger.ts";
 import { TaskPlanRuntime } from "./task-plan-runtime.ts";
 
@@ -12,7 +12,8 @@ export class TaskRecoveryRunner {
 	private readonly ledger: TaskLedger;
 	private readonly execute: TaskGraphExecutor;
 	private readonly runtime: TaskPlanRuntime;
-	constructor(ledger: TaskLedger, execute: TaskGraphExecutor, runtime = new TaskPlanRuntime()) { this.ledger = ledger; this.execute = execute; this.runtime = runtime; }
+	private readonly verify?: TaskGraphVerifier;
+	constructor(ledger: TaskLedger, execute: TaskGraphExecutor, runtime = new TaskPlanRuntime(), verify?: TaskGraphVerifier) { this.ledger = ledger; this.execute = execute; this.runtime = runtime; this.verify = verify; }
 
 	async run(options: TaskRecoveryRunnerOptions = {}): Promise<TaskRecoveryRunnerResult> {
 		const candidates = this.ledger.recoveryCandidates(100);
@@ -36,7 +37,7 @@ export class TaskRecoveryRunner {
 		const plans = new Map<string, { ownerKey: string; planId: string }>();
 		for (const task of candidates) if (task.planId) plans.set(`${task.ownerKey}\0${task.planId}`, { ownerKey: task.ownerKey, planId: task.planId });
 		const results = await Promise.all([...plans.values()].map(({ ownerKey, planId }) => this.runtime.run(ownerKey, planId, options.signal, (signal) => new TaskGraph(this.ledger).run([ownerKey], planId, this.execute, {
-			maxConcurrent: options.maxConcurrent, signal, executor: "subagent", canExecute: recoverable,
+			maxConcurrent: options.maxConcurrent, signal, executor: "subagent", canExecute: recoverable, verify: this.verify,
 		}))));
 		return results.reduce<TaskRecoveryRunnerResult>((summary, result) => ({
 			plans: summary.plans + 1,
