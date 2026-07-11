@@ -10,6 +10,9 @@ test("Core approval broker owns one-time and session grants", async () => {
 	try {
 		const once = broker.authorize({ source, toolName: "write", args: { path: "a.txt", token: "hidden" } });
 		assert.match(prompts[0], /\[REDACTED\]/);
+		assert.match(prompts[0], /目标：a.txt/);
+		assert.match(prompts[0], /风险：高/);
+		assert.match(prompts[0], /可逆性：/);
 		assert.equal(await broker.handleReply(source, "1"), true);
 		assert.deepEqual(await once, { allowed: true });
 

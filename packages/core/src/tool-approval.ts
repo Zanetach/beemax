@@ -129,7 +129,25 @@ function parseChoice(text: string): "once" | "session" | "deny" | undefined {
 }
 
 function renderApprovalPrompt(request: ToolApprovalRequest): string {
-	return ["⚠️ 工具调用需要审批", `工具：\`${request.toolName}\``, "参数：", "```json", formatArgs(request.args), "```", "请回复：", "1 — 允许一次", "2 — 本会话允许此工具", "3 — 拒绝"].join("\n");
+	const assessment = assessApproval(request);
+	return [
+		"⚠️ 工具调用需要审批",
+		`工具：\`${request.toolName}\``,
+		`目标：${assessment.target}`,
+		`风险：${assessment.risk}`,
+		`影响：${assessment.impact}`,
+		`可逆性：${assessment.reversibility}`,
+		"参数：", "```json", formatArgs(request.args), "```",
+		"请回复：", "1 — 允许一次", "2 — 本会话允许此工具", "3 — 拒绝",
+	].join("\n");
+}
+
+function assessApproval(request: ToolApprovalRequest): { target: string; risk: "低" | "中" | "高"; impact: string; reversibility: string } {
+	const args = request.args && typeof request.args === "object" ? request.args as Record<string, unknown> : {};
+	const target = [args.path, args.url, args.selector, args.command].find((value): value is string => typeof value === "string" && value.trim().length > 0) ?? "由工具参数决定";
+	if (["bash", "write", "edit", "browser_click", "browser_fill", "browser_cookies"].includes(request.toolName)) return { target, risk: "高", impact: "可能修改本机文件、外部服务或读取敏感浏览器数据", reversibility: "执行前请确认；部分操作不可逆" };
+	if (/delete|forget|remove|end|kick|recording_stop/i.test(request.toolName)) return { target, risk: "高", impact: "可能删除数据或终止外部资源", reversibility: "通常不可逆或需要额外恢复步骤" };
+	return { target, risk: "中", impact: "可能改变当前 Profile 或外部资源状态", reversibility: "请根据参数确认是否可恢复" };
 }
 
 function formatArgs(args: unknown): string {
