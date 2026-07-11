@@ -21,9 +21,11 @@ test("durable interaction recovery excludes answer and reasoning content while p
 		};
 		const first = new InteractionEventAdapter(runtime, { profileId: "personal", eventJournal: journal });
 		await first.dispatch({ type: "message.send", source, text: "private question", input: { timeoutMs: 1_000 } });
+		const sessionId = first.events(source)[0].sessionId;
 		const raw = readFileSync(join(dir, "events.jsonl"), "utf8");
 		assert.doesNotMatch(raw, /sensitive answer|private reasoning|private question/);
-		const sessionId = first.events(source)[0].sessionId;
+		journal.append({ type: "approval.requested", sessionId: "other-session", scope: { profileId: "personal", platform: "cli", chatId: "local" }, turnId: "t", at: 1, sequence: 99, toolName: "write", details: { target: "private-file.txt", risk: "高", impact: "private", reversibility: "private", argsSummary: "secret=value" } });
+		assert.doesNotMatch(readFileSync(join(dir, "events.jsonl"), "utf8"), /private-file|secret=value/);
 		assert.deepEqual(journal.events(sessionId).map((event) => event.type), ["turn.started", "turn.finished"]);
 
 		const recovered = new InteractionEventAdapter(runtime, { profileId: "personal", eventJournal: journal });
