@@ -1,4 +1,5 @@
 import type { DeliveryPort, DeliveryTarget, MediaArtifact } from "@beemax/core";
+import { extname } from "node:path";
 import type { PlatformAdapter } from "./types.ts";
 
 /** Concrete channel delivery adapter. It is the only layer that knows how a
@@ -16,12 +17,21 @@ export class GatewayDeliveryPort implements DeliveryPort {
 
 	async sendMedia(target: DeliveryTarget, media: MediaArtifact): Promise<void> {
 		this.assertPlatform(target);
-		if (!this.platform.sendImage) throw new Error(`${this.platform.name} does not support image delivery`);
-		const result = await this.platform.sendImage(target.chatId, media.path);
+		const result = this.platform.sendMedia
+			? await this.platform.sendMedia(target.chatId, media.path, media.mimeType, media.name)
+			: this.platform.sendImage && isImageArtifact(media)
+				? await this.platform.sendImage(target.chatId, media.path)
+				: undefined;
+		if (!result) throw new Error(`${this.platform.name} does not support media delivery`);
 		if (!result.success) throw new Error(result.error ?? "Channel media delivery failed");
 	}
 
 	private assertPlatform(target: DeliveryTarget): void {
 		if (target.platform !== this.platform.name) throw new Error(`Cannot deliver ${target.platform} artifact through ${this.platform.name}`);
 	}
+}
+
+function isImageArtifact(media: MediaArtifact): boolean {
+	if (media.mimeType?.toLowerCase().startsWith("image/")) return true;
+	return [".jpg", ".jpeg", ".png", ".webp", ".gif", ".tiff", ".bmp", ".ico"].includes(extname(media.path).toLowerCase());
 }

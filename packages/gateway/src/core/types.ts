@@ -86,6 +86,8 @@ export interface PlatformAdapter {
 
 	/** Send a local image as a native platform image message when supported. */
 	sendImage?(chatId: string, imagePath: string): Promise<SendResult>;
+	/** Send a local media/file artifact using the platform's native message type. */
+	sendMedia?(chatId: string, mediaPath: string, mimeType?: string, name?: string): Promise<SendResult>;
 
 	/** Edit a previously sent message (for streaming updates). */
 	editMessage(chatId: string, messageId: string, content: string): Promise<SendResult>;
@@ -96,11 +98,11 @@ export interface PlatformAdapter {
 	/** Update a previously-sent interactive card in place (streaming). */
 	updateCard(messageId: string, card: Record<string, unknown>): Promise<SendResult>;
 
-	/** Send a "typing" / working indicator. */
-	sendTyping(chatId: string): Promise<void>;
+	/** Send a "typing" / working indicator for the triggering message. */
+	sendTyping(chatId: string, messageId?: string): Promise<void>;
 
-	/** Clear the "typing" indicator. */
-	stopTyping(chatId: string): Promise<void>;
+	/** Clear the working indicator and optionally mark the triggering message failed. */
+	stopTyping(chatId: string, messageId?: string, failed?: boolean): Promise<void>;
 }
 
 export type MessageHandler = (message: InboundMessage) => void | Promise<void>;

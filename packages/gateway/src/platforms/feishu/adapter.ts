@@ -20,7 +20,7 @@ import { chmod, mkdir, mkdtemp, rm, stat } from "node:fs/promises";
 import { createServer, type Server } from "node:http";
 import type { Socket } from "node:net";
 import { tmpdir } from "node:os";
-import { extname, join } from "node:path";
+import { basename, extname, join } from "node:path";
 import { Transform } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { randomUUID } from "node:crypto";
@@ -42,6 +42,8 @@ const LARK_DOMAIN = lark.Domain.Lark;
 const MAX_TEXT_LENGTH = 4000; // Feishu text message soft cap; we chunk on this.
 const MAX_WEBHOOK_BODY_BYTES = 1_048_576;
 const MAX_INBOUND_MEDIA_BYTES = 25 * 1024 * 1024;
+const MAX_OUTBOUND_FILE_BYTES = 30 * 1024 * 1024;
+const MAX_PROCESSING_REACTIONS = 1024;
 
 export class FeishuAdapter implements PlatformAdapter {
 	readonly name = "feishu" as const;
@@ -53,6 +55,7 @@ export class FeishuAdapter implements PlatformAdapter {
 	private handler?: MessageHandler;
 	private cardActionHandler?: CardActionHandler;
 	private dedup = new Map<string, number>();
+	private processingReactions = new Map<string, string>();
 	private readonly dedupTtlMs = 24 * 60 * 60 * 1000;
 	private readonly settings: FeishuSettings;
 
@@ -467,6 +470,30 @@ export class FeishuAdapter implements PlatformAdapter {
 		}
 	}
 
+	async sendMedia(chatId: string, mediaPath: string, mimeType?: string, name?: string): Promise<SendResult> {
+		if (isImageMedia(mediaPath, mimeType)) return this.sendImage(chatId, mediaPath);
+		try {
+			const info = await stat(mediaPath);
+			if (!info.isFile() || info.size === 0 || info.size > MAX_OUTBOUND_FILE_BYTES) {
+				return { success: false, error: "Feishu media must be a non-empty file no larger than 30MB" };
+			}
+			const fileType = feishuFileType(mediaPath, mimeType);
+			const uploaded = await this.client.im.v1.file.create({
+				data: { file_type: fileType, file_name: name || basename(mediaPath), file: createReadStream(mediaPath) },
+			});
+			if (!uploaded?.file_key) return { success: false, error: "Feishu file upload returned no file_key" };
+			const msgType = fileType === "opus" ? "audio" : fileType === "mp4" ? "media" : "file";
+			const sent = await this.client.im.v1.message.create({
+				params: { receive_id_type: "chat_id" },
+				data: { receive_id: chatId, msg_type: msgType, content: JSON.stringify({ file_key: uploaded.file_key }) },
+			});
+			if (sent.code !== 0) return { success: false, error: sent.msg ?? `feishu code ${sent.code}` };
+			return { success: true, messageId: sent.data?.message_id };
+		} catch (error) {
+			return { success: false, error: error instanceof Error ? error.message : String(error) };
+		}
+	}
+
 	async editMessage(chatId: string, messageId: string, content: string): Promise<SendResult> {
 		// Edit via patch (update shared card / text). We send an interactive
 		// card for the placeholder so patch can update it; final text replaces it.
@@ -485,12 +512,55 @@ export class FeishuAdapter implements PlatformAdapter {
 		}
 	}
 
-	async sendTyping(_chatId: string): Promise<void> {
-		// Feishu has no typing indicator API; the in-progress card edit serves as the indicator.
+	async sendTyping(_chatId: string, messageId?: string): Promise<void> {
+		if (!messageId) return;
+		if (this.processingReactions.has(messageId)) return;
+		try {
+			const res = await this.client.im.v1.messageReaction.create({
+				path: { message_id: messageId },
+				data: { reaction_type: { emoji_type: "Typing" } },
+			});
+			const reactionId = res.code === 0 ? res.data?.reaction_id : undefined;
+			if (!reactionId) return;
+			this.processingReactions.delete(messageId);
+			this.processingReactions.set(messageId, reactionId);
+			while (this.processingReactions.size > MAX_PROCESSING_REACTIONS) {
+				const oldest = this.processingReactions.keys().next().value;
+				if (typeof oldest !== "string") break;
+				const oldestReactionId = this.processingReactions.get(oldest);
+				this.processingReactions.delete(oldest);
+				if (oldestReactionId) {
+					try {
+						await this.client.im.v1.messageReaction.delete({ path: { message_id: oldest, reaction_id: oldestReactionId } });
+					} catch { /* best effort */ }
+				}
+			}
+		} catch {
+			// Reactions are a best-effort UX enhancement and must never fail a turn.
+		}
 	}
 
-	async stopTyping(_chatId: string): Promise<void> {
-		// No-op; see sendTyping.
+	async stopTyping(_chatId: string, messageId?: string, failed = false): Promise<void> {
+		if (!messageId) return;
+		const reactionId = this.processingReactions.get(messageId);
+		this.processingReactions.delete(messageId);
+		if (reactionId) {
+			try {
+				await this.client.im.v1.messageReaction.delete({ path: { message_id: messageId, reaction_id: reactionId } });
+			} catch {
+				// Best effort; a removed/expired source message is harmless here.
+			}
+		}
+		if (failed) {
+			try {
+				await this.client.im.v1.messageReaction.create({
+					path: { message_id: messageId },
+					data: { reaction_type: { emoji_type: "CrossMark" } },
+				});
+			} catch {
+				// Best effort; the error card/text remains the authoritative failure signal.
+			}
+		}
 	}
 
 	/** Send an interactive card. Returns the Feishu message_id for later updates. */
@@ -674,6 +744,23 @@ function inferMediaMimeType(messageType: string, name?: string): string {
 	if (messageType === "audio") return "audio/ogg";
 	const extension = extname(name ?? "").toLowerCase();
 	return ({ ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".gif": "image/gif", ".webp": "image/webp", ".pdf": "application/pdf", ".txt": "text/plain", ".md": "text/markdown", ".mp3": "audio/mpeg", ".wav": "audio/wav", ".ogg": "audio/ogg", ".mp4": "video/mp4" } as Record<string, string>)[extension] ?? "application/octet-stream";
+}
+
+function isImageMedia(path: string, mimeType?: string): boolean {
+	if (mimeType?.toLowerCase().startsWith("image/")) return true;
+	return [".jpg", ".jpeg", ".png", ".webp", ".gif", ".tiff", ".bmp", ".ico"].includes(extname(path).toLowerCase());
+}
+
+function feishuFileType(path: string, mimeType?: string): "opus" | "mp4" | "pdf" | "doc" | "xls" | "ppt" | "stream" {
+	const extension = extname(path).toLowerCase();
+	const mime = mimeType?.toLowerCase();
+	if (extension === ".opus" || mime === "audio/opus") return "opus";
+	if (extension === ".mp4" || mime === "video/mp4") return "mp4";
+	if (extension === ".pdf" || mime === "application/pdf") return "pdf";
+	if ([".doc", ".docx"].includes(extension)) return "doc";
+	if ([".xls", ".xlsx"].includes(extension)) return "xls";
+	if ([".ppt", ".pptx"].includes(extension)) return "ppt";
+	return "stream";
 }
 
 function safeMediaExtension(name: string | undefined, mimeType: string): string {

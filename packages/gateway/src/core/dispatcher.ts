@@ -129,32 +129,38 @@ export class Dispatcher {
 			return res.success;
 		};
 
-		await this.platform.sendTyping(chatId).catch((error) => {
+		await this.platform.sendTyping(chatId, msg.source.messageId).catch((error) => {
 			console.warn(`[beemax] typing indicator failed: ${error instanceof Error ? error.message : String(error)}`);
 		});
 
-		let result;
+		let failed = false;
 		try {
-			const media = await prepareAgentMediaInput(msg);
-			result = await this.interaction.dispatch({ type: "message.send", source: msg.source, text: media.text, input: { timeoutMs: this.turnTimeoutMs, mode: "interactive", images: media.images } }, (event) => this.onInteractionEvent(event, card, flush, renderUpdate));
-			if (!("answer" in result)) throw new Error("Message dispatch did not produce an Agent result");
-		} catch (err) {
-			const errorText = err instanceof AgentRunError ? err.message : err instanceof Error ? err.message : String(err);
-			if (card.status !== "cancelled") card.apply("message.failed", { error: errorText });
-			await flush.schedule(renderUpdate, true);
-			await flush.drain(3000);
-			if (!cardMessageId) await this.platform.send(chatId, `❌ ${errorText}`);
-			await this.platform.stopTyping(chatId).catch(() => undefined);
-			flush.close();
-			return;
-		}
+			let result;
+			try {
+				const media = await prepareAgentMediaInput(msg);
+				result = await this.interaction.dispatch({ type: "message.send", source: msg.source, text: media.text, input: { timeoutMs: this.turnTimeoutMs, mode: "interactive", images: media.images } }, (event) => this.onInteractionEvent(event, card, flush, renderUpdate));
+				if (!("answer" in result)) throw new Error("Message dispatch did not produce an Agent result");
+			} catch (err) {
+				failed = true;
+				const errorText = err instanceof AgentRunError ? err.message : err instanceof Error ? err.message : String(err);
+				if (card.status !== "cancelled") card.apply("message.failed", { error: errorText });
+				await flush.schedule(renderUpdate, true);
+				await flush.drain(3000);
+				if (!cardMessageId) await this.platform.send(chatId, `❌ ${errorText}`);
+				return;
+			}
 
-		// Terminal event already owns completion; only drain its final card patch.
-		await flush.schedule(renderUpdate, true);
-		await flush.drain(5000);
-		if (!cardMessageId) await this.platform.send(chatId, card.answerText || result.answer);
-		await this.platform.stopTyping(chatId).catch(() => undefined);
-		flush.close();
+			// Terminal event already owns completion; only drain its final card patch.
+			await flush.schedule(renderUpdate, true);
+			await flush.drain(5000);
+			if (!cardMessageId) await this.platform.send(chatId, card.answerText || result.answer);
+		} catch (error) {
+			failed = true;
+			throw error;
+		} finally {
+			await this.platform.stopTyping(chatId, msg.source.messageId, failed).catch(() => undefined);
+			flush.close();
+		}
 	}
 
 	isBusy(): boolean {
