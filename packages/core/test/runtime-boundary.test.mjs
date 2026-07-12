@@ -74,6 +74,17 @@ test("Conversation context recalls pending evidence but labels it as unconfirmed
 	} finally { memory.close(); rmSync(root, { recursive: true, force: true }); }
 });
 
+test("Conversation context labels conflicted memory instead of presenting it as confirmed truth", () => {
+	const memory = {
+		recall: () => [{ content: "交付日期可能是七月二十五日", memoryType: "claim", status: "conflicted", confidence: 0.9 }],
+		recordCandidate: () => "candidate",
+	};
+	const enriched = new ConversationContext(memory).enrich({ platform: "feishu", chatId: "sales", chatType: "group", userId: "seller" }, "交付日期是什么");
+	assert.match(enriched, /Conflicted memory evidence/);
+	assert.match(enriched, /must not choose one silently/);
+	assert.doesNotMatch(enriched, /Relevant curated memory/);
+});
+
 test("Conversation context gives supplied volatile facts precedence over restored chat context", () => {
 	const root = mkdtempSync(join(tmpdir(), "beemax-core-facts-"));
 	const memory = new MemoryStore(join(root, "memory.db"));

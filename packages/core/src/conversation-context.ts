@@ -20,7 +20,7 @@ export interface VerifiedRuntimeFacts { model?: string; }
 
 /** Persistence capability required by Core's context policy. */
 export interface ConversationMemoryPort {
-	recall(query: string, options: MemoryScope & { limit: number; includeCandidates?: boolean }): Array<{ content: string; memoryType?: "curated" | "claim" | "candidate"; confidence?: number }>;
+	recall(query: string, options: MemoryScope & { limit: number; includeCandidates?: boolean }): Array<{ content: string; memoryType?: "curated" | "claim" | "candidate"; confidence?: number; status?: string }>;
 	recordCandidate(record: MemoryScope & { role: "user" | "assistant"; content: string }): string;
 	/** Optional immutable evidence ledger for adapters predating structured memory. */
 	recordEvent?(record: MemoryScope & { kind: "user" | "assistant"; content: string }): string;
@@ -49,7 +49,8 @@ export class ConversationContext {
 		const sections: string[] = [];
 		const facts = this.runtimeFacts?.(source, text, runtime);
 		if (facts) sections.push(facts);
-		const confirmed = hits.filter((hit) => hit.memoryType !== "candidate").slice(0, 4);
+		const conflicts = hits.filter((hit) => hit.status === "conflicted").slice(0, 2);
+		const confirmed = hits.filter((hit) => hit.memoryType !== "candidate" && hit.status !== "conflicted").slice(0, 4);
 		const candidates = hits.filter((hit) => hit.memoryType === "candidate").slice(0, 2);
 		if (confirmed.length > 0) {
 			const context = confirmed.map((hit) => `- ${hit.content.slice(0, 500)}`).join("\n");
@@ -58,6 +59,10 @@ export class ConversationContext {
 		if (candidates.length > 0) {
 			const context = candidates.map((hit) => `- ${hit.content.slice(0, 500)}`).join("\n");
 			sections.push("[Unconfirmed conversation evidence: may help recover recent requirements, but must not be treated as a confirmed fact.]", context, "[/Unconfirmed conversation evidence]");
+		}
+		if (conflicts.length > 0) {
+			const context = conflicts.map((hit) => `- ${hit.content.slice(0, 500)}`).join("\n");
+			sections.push("[Conflicted memory evidence: mutually inconsistent facts may be present; must not choose one silently. Confirm against current source or ask the user.]", context, "[/Conflicted memory evidence]");
 		}
 		return sections.length === 0 ? text : [...sections, "", "Current user request:", text].join("\n");
 	}
