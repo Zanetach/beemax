@@ -27,6 +27,7 @@
     "doctor": "node apps/cli/dist/cli.js doctor",
     "chat": "node apps/cli/dist/cli.js chat",
     "test": "node --test apps/cli/test/*.test.mjs packages/automation/test/*.test.mjs packages/core/test/*.test.mjs packages/memory/test/*.test.mjs packages/gateway/test/*.test.mjs",
+    "test:reliability": "node --test packages/memory/test/reliability-soak.mjs",
     "typecheck": "tsgo --noEmit"
   },
   "devDependencies": {

@@ -1,11 +1,31 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { spawn } from "node:child_process";
+import { fileURLToPath } from "node:url";
 import { MemoryStore } from "../dist/index.js";
 import Database from "better-sqlite3";
 import { TaskGraph, TaskPlanRuntime, TaskRecoveryRunner, TaskRecoveryService } from "@beemax/core";
+
+const claimWorker = fileURLToPath(new URL("./fixtures/task-plan-claim-worker.mjs", import.meta.url));
+
+function runClaimWorker(request, expectedCode = 0) {
+	return new Promise((resolve, reject) => {
+		const child = spawn(process.execPath, [claimWorker, JSON.stringify(request)], { stdio: ["ignore", "pipe", "pipe"] });
+		let stdout = "";
+		let stderr = "";
+		child.stdout.setEncoding("utf8");
+		child.stderr.setEncoding("utf8");
+		child.stdout.on("data", (chunk) => { stdout += chunk; });
+		child.stderr.on("data", (chunk) => { stderr += chunk; });
+		child.once("error", reject);
+		child.once("exit", (code, signal) => code === expectedCode && !signal
+			? resolve(stdout.trim())
+			: reject(new Error(`claim worker exited code=${code} signal=${signal}: ${stderr}`)));
+	});
+}
 
 test("natural-language recall is safe and follows a user across chats", () => {
 	const root = mkdtempSync(join(tmpdir(), "beemax-memory-test-"));
@@ -787,6 +807,54 @@ test("a Task Plan Execution Claim admits one holder and fences a stale holder af
 		assert.equal(second.renewTaskPlanExecution("cli:local:local", "claimed-plan", "worker-b", 400, 300), true);
 		assert.equal(second.releaseTaskPlanExecution("cli:local:local", "claimed-plan", "worker-b"), true);
 	} finally { second.close(); first.close(); rmSync(root, { recursive: true, force: true }); }
+});
+
+test("a crashed Agent execution is reconciled and recovered by a new process", async () => {
+	const root = mkdtempSync(join(tmpdir(), "beemax-plan-claim-crash-"));
+	const path = join(root, "memory.db");
+	const executionLog = join(root, "executions.jsonl");
+	let store = new MemoryStore(path);
+	try {
+		const scope = { platform: "cli", chatId: "local", chatType: "dm", userId: "local" };
+		new TaskGraph(store).createPlan({ id: "crash-plan", ownerKey: "owner", tasks: [{ id: "crash-task", title: "Task", recoveryPolicy: "safe_retry", idempotencyKey: "crash-plan:task", executionScope: scope }] });
+		store.close();
+		await runClaimWorker({ databasePath: path, executionLog, mode: "crash-during-execution" }, 17);
+		store = new MemoryStore(path);
+		assert.equal(store.queryTasks({ ownerKeys: ["owner"], id: "crash-task" })[0].status, "running");
+		const recoveryTime = Date.now() + 2 * 60 * 60_000;
+		assert.deepEqual(store.reconcileExpiredTaskRuns(recoveryTime), { retried: 1, failed: 0, affectedPlans: [{ ownerKey: "owner", planId: "crash-plan" }] });
+		assert.equal(store.claimTaskPlanExecution("owner", "crash-plan", "recovery-probe", recoveryTime + 60_000, recoveryTime), true);
+		assert.equal(store.releaseTaskPlanExecution("owner", "crash-plan", "recovery-probe"), true);
+		store.close();
+		const recovered = JSON.parse(await runClaimWorker({ databasePath: path, executionLog, mode: "recover" }));
+		assert.equal(recovered.executions, 1);
+		store = new MemoryStore(path);
+		assert.equal(store.queryTasks({ ownerKeys: ["owner"], id: "crash-task" })[0].status, "succeeded");
+		assert.equal(store.queryTaskPlans({ ownerKeys: ["owner"], id: "crash-plan" })[0].status, "succeeded");
+		assert.equal(readFileSync(executionLog, "utf8").trim().split("\n").length, 2);
+		assert.equal(store.claimTaskPlanCompletionNotices("cli", Date.now(), 10).length, 1);
+	} finally { store.close(); rmSync(root, { recursive: true, force: true }); }
+});
+
+test("multiple Agent processes execute each durable Task Plan exactly once", async () => {
+	const root = mkdtempSync(join(tmpdir(), "beemax-plan-claim-process-race-"));
+	const path = join(root, "memory.db");
+	const executionLog = join(root, "executions.jsonl");
+	let store = new MemoryStore(path);
+	const planIds = Array.from({ length: 24 }, (_, index) => `race-plan-${index}`);
+	try {
+		const scope = { platform: "cli", chatId: "local", chatType: "dm", userId: "local" };
+		for (const [index, planId] of planIds.entries()) new TaskGraph(store).createPlan({ id: planId, ownerKey: "owner", tasks: [{ id: `task-${index}`, title: "Task", recoveryPolicy: "safe_retry", idempotencyKey: planId, executionScope: scope }] });
+		store.close();
+		const results = await Promise.all(Array.from({ length: 6 }, () => runClaimWorker({ databasePath: path, executionLog, mode: "recover", maxConcurrent: 4 }).then(JSON.parse)));
+		assert.equal(results.reduce((total, result) => total + result.executions, 0), planIds.length);
+		store = new MemoryStore(path);
+		assert.equal(store.queryTasks({ ownerKeys: ["owner"], statuses: ["succeeded"] }).length, planIds.length);
+		assert.equal(store.queryTaskPlans({ ownerKeys: ["owner"], statuses: ["succeeded"] }).length, planIds.length);
+		const executions = readFileSync(executionLog, "utf8").trim().split("\n").map(JSON.parse);
+		assert.equal(executions.length, planIds.length);
+		assert.equal(new Set(executions.map((entry) => entry.taskId)).size, planIds.length);
+	} finally { store.close(); rmSync(root, { recursive: true, force: true }); }
 });
 
 test("structured understandings retain evidence, support correction, and compile a bounded long-term snapshot", () => {
