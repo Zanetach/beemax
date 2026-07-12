@@ -42,6 +42,7 @@ import { inspectGateway, readGatewayLogs } from "./gateway-observability.ts";
 import { createTaskAwareConversationContext, ensureBuiltinTasks, installedVersion } from "./runtime-facts.ts";
 import { AgentRunError, ToolApprovalBroker, compileLongTermMemorySnapshot, interactionCommandHelp, parseInteractionCommand } from "@beemax/core";
 import { PairingStore, type SessionSource } from "@beemax/gateway";
+import { executeFeishuSmoke } from "./feishu-smoke.ts";
 import { existsSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -88,6 +89,19 @@ async function main(): Promise<void> {
 				for (const name of profiles) runServiceAction(parsed.positionals[1] as ServiceAction, name, undefined, process.platform, parsed.options.system === true ? "system" : "user");
 			} else if (parsed.positionals[1] === "health") {
 				if (!(await runDoctor(loadConfig(parsed.configPath, gatewayProfile(parsed)), { json: parsed.options.json === true }))) process.exitCode = 1;
+			} else if (parsed.positionals[1] === "smoke") {
+				const smokeConfig = loadConfig(parsed.configPath, gatewayProfile(parsed));
+				let chatId = optionString(parsed, "chat-id") ?? smokeConfig.gateway.feishu.homeChatId;
+				if (!chatId && process.stdin.isTTY) chatId = await askOne("Feishu target chat_id: ");
+				if (!chatId) throw new Error("Feishu smoke test requires --chat-id <oc_xxx> or a configured home chat");
+				if (parsed.options.yes !== true) {
+					if (!process.stdin.isTTY) throw new Error("Feishu smoke test sends three visible messages; rerun with --yes to confirm");
+					const confirmed = await askOne(`Send text, card, and image probes to ${chatId}? [y/N]: `);
+					if (!/^(y|yes)$/i.test(confirmed.trim())) throw new Error("Feishu smoke test cancelled");
+				}
+				const smoke = await executeFeishuSmoke(smokeConfig, chatId);
+				console.log(smoke.output);
+				if (!smoke.success) process.exitCode = 1;
 			} else if (!parsed.positionals[1] || parsed.positionals[1] === "run") {
 				await runGateway(loadConfig(parsed.configPath, gatewayProfile(parsed)));
 			} else throw new Error(`Unknown gateway action: ${parsed.positionals[1]}`);
@@ -169,7 +183,7 @@ Commands:
   agent      create | list | delete
   channel    add | list | remove | test
   pairing    list | approve <platform> <code> | revoke <platform> <user_id> | clear [platform]
-  gateway    run | setup | install | start | stop | restart | status | logs | list | health
+  gateway    run | setup | smoke | install | start | stop | restart | status | logs | list | health
   chat       Adaptive terminal Agent (Full / Compact / Plain)
   model      show | set <provider> <model>
   doctor     Check profile readiness

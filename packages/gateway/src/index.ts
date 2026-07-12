@@ -23,3 +23,4 @@ export type {
 export { FeishuAdapter, parseFeishuCardActionEvent, parseFeishuMediaDescriptor, type FeishuMediaDescriptor } from "./platforms/feishu/adapter.ts";
 export { loadFeishuSettings, validateFeishuWebhookSettings, type FeishuSettings } from "./platforms/feishu/settings.ts";
 export { retryFeishuOperation, type FeishuRetryOptions } from "./platforms/feishu/retry.ts";
+export { runFeishuSmoke, type FeishuSmokeCheck, type FeishuSmokeResult } from "./platforms/feishu/smoke.ts";
