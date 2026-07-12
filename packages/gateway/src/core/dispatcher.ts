@@ -25,6 +25,7 @@ import { FlushController } from "../card/flush.ts";
 import { MessageDeduplicator } from "./message-deduplicator.ts";
 import { prepareAgentMediaInput } from "./media-input.ts";
 import { AdaptiveTextBuffer } from "./stream-presentation.ts";
+import { TurnStatusPulse } from "./turn-status.ts";
 
 interface CardBinding {
 	source: InboundMessage["source"];
@@ -133,6 +134,11 @@ export class Dispatcher {
 			card.apply("answer.delta", { text: chunk });
 			await flush.schedule(renderUpdate);
 		});
+		const statusPulse = new TurnStatusPulse(async (message) => {
+			card.apply("notice.updated", { id: "turn:status", label: "当前状态", status: "running", message });
+			await flush.schedule(renderUpdate);
+		});
+		statusPulse.start();
 
 		await this.platform.sendTyping(chatId, msg.source.messageId).catch((error) => {
 			console.warn(`[beemax] typing indicator failed: ${error instanceof Error ? error.message : String(error)}`);
@@ -143,7 +149,7 @@ export class Dispatcher {
 			let result;
 			try {
 				const media = await prepareAgentMediaInput(msg);
-				result = await this.interaction.dispatch({ type: "message.send", source: msg.source, text: media.text, input: { timeoutMs: this.turnTimeoutMs, mode: "interactive", images: media.images } }, (event) => this.onInteractionEvent(event, card, flush, answerBuffer, renderUpdate));
+				result = await this.interaction.dispatch({ type: "message.send", source: msg.source, text: media.text, input: { timeoutMs: this.turnTimeoutMs, mode: "interactive", images: media.images } }, (event) => this.onInteractionEvent(event, card, flush, answerBuffer, statusPulse, renderUpdate));
 				if (!("answer" in result)) throw new Error("Message dispatch did not produce an Agent result");
 			} catch (err) {
 				failed = true;
@@ -163,6 +169,7 @@ export class Dispatcher {
 			failed = true;
 			throw error;
 		} finally {
+			statusPulse.stop();
 			await answerBuffer.close();
 			await this.platform.stopTyping(chatId, msg.source.messageId, failed).catch(() => undefined);
 			flush.close();
@@ -234,6 +241,7 @@ export class Dispatcher {
 		card: CardSession,
 		flush: FlushController,
 		answerBuffer: AdaptiveTextBuffer,
+		statusPulse: TurnStatusPulse,
 		renderUpdate: () => Promise<boolean>,
 	): Promise<void> {
 		switch (event.type) {
@@ -247,6 +255,7 @@ export class Dispatcher {
 				await flush.schedule(renderUpdate);
 				break;
 			case "answer.delta":
+				statusPulse.contentStarted();
 				answerBuffer.push(event.text);
 				break;
 			case "reasoning.delta":
@@ -265,16 +274,19 @@ export class Dispatcher {
 				await flush.schedule(renderUpdate);
 				break;
 			case "turn.failed":
+				statusPulse.stop();
 				await answerBuffer.flush();
 				card.apply("message.failed", { error: event.error });
 				await flush.schedule(renderUpdate, true);
 				break;
 			case "turn.cancelled":
+				statusPulse.stop();
 				await answerBuffer.flush();
 				card.apply("message.cancelled", { message: "运行已取消" });
 				await flush.schedule(renderUpdate, true);
 				break;
 			case "turn.finished":
+				statusPulse.stop();
 				await answerBuffer.flush();
 				card.apply("message.completed", { answer: card.answerText || event.result.answer, model: event.result.model, duration: event.result.durationMs / 1000, tokens: event.result.usage });
 				await flush.schedule(renderUpdate, true);
