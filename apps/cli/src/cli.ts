@@ -967,7 +967,7 @@ async function runChat(config: ReturnType<typeof loadConfig>, requestedMode: { f
 	const presentationMode: ChatPresentationMode = resolveChatPresentationMode({
 		...requestedMode, isInputTty: process.stdin.isTTY === true, isOutputTty: process.stdout.isTTY === true, term: process.env.TERM,
 	});
-	const { AutonomousPlanningPolicy, conversationKey, createSubagentTools, createTaskLedgerTools, createTaskOrchestrationTools, FileCredentialVault, FileCredentialVaultAuditJournal, ObjectiveRuntime, ProfileTaskScheduler, redactCredentialMaterial, SubagentManager, TaskPlanNoticeDeliveryService, TaskPlanRuntime, TaskRecoveryRunner, TaskRecoveryService } = await import("@beemax/core");
+	const { AutonomousPlanningPolicy, conversationKey, createSubagentTools, createTaskLedgerTools, createTaskOrchestrationTools, FileCredentialVault, FileCredentialVaultAuditJournal, FileToolEffectJournal, ObjectiveRuntime, ProfileTaskScheduler, redactCredentialMaterial, SubagentManager, TaskPlanNoticeDeliveryService, TaskPlanRuntime, TaskRecoveryRunner, TaskRecoveryService } = await import("@beemax/core");
 	const { loadMcpConfig, McpManager } = await import("@beemax/mcp-capability");
 	const { WeKnoraKnowledgeProvider, createKnowledgeTools } = await import("@beemax/knowledge");
 	const { buildAgentFactory } = await import("./agent-factory.ts");
@@ -1040,6 +1040,7 @@ async function runChat(config: ReturnType<typeof loadConfig>, requestedMode: { f
 		admit: (ownerKey, work, signal) => taskScheduler.run(ownerKey, work, signal),
 		execute: (task, signal) => executeSubagentTask(createSubagentAgent, task, signal),
 	}) : undefined;
+	const toolEffects = new FileToolEffectJournal(join(config.paths.agentDir, "tool-effects.jsonl"));
 	const createAgent = buildAgentFactory({
 		profileId: config.profile,
 		provider: () => config.model.provider,
@@ -1059,6 +1060,8 @@ async function runChat(config: ReturnType<typeof loadConfig>, requestedMode: { f
 		])),
 		verifySkillCandidate: createSkillCandidateVerifier(createSubagentAgent, config.subagents.timeoutMs, memory),
 		authorizeTool: (request, signal) => localApproval.authorize(request, signal),
+		toolEffects,
+		currentTaskId: (sessionSource) => localApproval.executionGrant(sessionSource)?.taskId,
 		credentials: credentialVault ? { ownerKey: `profile:${config.profile}`, vault: credentialVault } : undefined,
 		sessionTools: (sessionSource) => [
 			...(subagents ? [

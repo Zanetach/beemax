@@ -26,6 +26,7 @@ import {
 	type ExecutionPort,
 	type ToolApprovalDecision,
 	type ToolApprovalRequest,
+	type ToolEffectSink,
 	type CredentialVault,
 	type SkillCandidateVerifier,
 	type SkillCandidateTrialInput,
@@ -52,6 +53,8 @@ export interface AgentFactoryOptions {
 	skillToolset?: "safe" | "standard";
 	tools?: string[];
 	authorizeTool?: (request: ToolApprovalRequest, signal?: AbortSignal) => Promise<ToolApprovalDecision>;
+	toolEffects?: ToolEffectSink;
+	currentTaskId?: (source: SessionSource) => string | undefined;
 	memoryStore?: MemoryToolStore;
 	customTools?: ToolDefinition[];
 	sessionTools?: (source: SessionSource) => ToolDefinition[];
@@ -80,6 +83,8 @@ export function buildAgentFactory(opts: AgentFactoryOptions) {
 		getApiKey: opts.getApiKey, systemPrompt: opts.systemPrompt ?? DEFAULT_SYSTEM_PROMPT, skillToolset: opts.skillToolset ?? "standard",
 		tools: opts.tools,
 		toolAudit: toolAudit.append,
+		toolEffects: opts.toolEffects,
+		currentTaskId: opts.currentTaskId,
 		authorizeTool: opts.authorizeTool ? async (source, toolName, args, policy, signal) => opts.authorizeTool!({ source, toolName, args, policy }, signal) : undefined,
 		createTools: (source, onResourcesChanged, getRuntimeApiKey, activateTools) => {
 			const browserTools = createBrowserTools({ credentials: opts.credentials });

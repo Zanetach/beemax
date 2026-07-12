@@ -8,7 +8,7 @@
  */
 
 import { AutomationStore } from "@beemax/automation";
-import { AutonomousPlanningPolicy, AutomationScheduler, BeeMaxAgentRuntime, FileCredentialVault, FileCredentialVaultAuditJournal, HeartbeatRunner, ObjectiveRuntime, ProfileTaskScheduler, SubagentManager, TaskPlanNoticeDeliveryService, TaskPlanRuntime, TaskRecoveryRunner, TaskRecoveryService, ToolApprovalBroker, conversationKey, createSubagentTools, createTaskLedgerTools, createTaskOrchestrationTools, redactCredentialMaterial, type BeeMaxAgentRunEventSink, type ObjectiveDeliveryInput, type SkillCandidateTrialInput, type SkillTrialAssertion, type SkillTrialToolCall, type SubagentTask, type TaskGraphExecutionContext, type TaskGraphVerifier, type TaskLedger, type TaskRecord } from "@beemax/core";
+import { AutonomousPlanningPolicy, AutomationScheduler, BeeMaxAgentRuntime, FileCredentialVault, FileCredentialVaultAuditJournal, FileToolEffectJournal, HeartbeatRunner, ObjectiveRuntime, ProfileTaskScheduler, SubagentManager, TaskPlanNoticeDeliveryService, TaskPlanRuntime, TaskRecoveryRunner, TaskRecoveryService, ToolApprovalBroker, conversationKey, createSubagentTools, createTaskLedgerTools, createTaskOrchestrationTools, redactCredentialMaterial, type BeeMaxAgentRunEventSink, type ObjectiveDeliveryInput, type SkillCandidateTrialInput, type SkillTrialAssertion, type SkillTrialToolCall, type SubagentTask, type TaskGraphExecutionContext, type TaskGraphVerifier, type TaskLedger, type TaskRecord } from "@beemax/core";
 import {
 	Dispatcher,
 	FeishuAdapter,
@@ -185,6 +185,7 @@ export async function runGateway(config: BeeMaxConfig): Promise<void> {
 		admit: (ownerKey, work, signal) => taskScheduler.run(ownerKey, work, signal),
 		execute: async (task, signal) => executeSubagentTask(createSubagentAgent, task, signal),
 	}) : undefined;
+	const toolEffects = new FileToolEffectJournal(join(config.paths.agentDir, "tool-effects.jsonl"));
 	const createAgent = buildAgentFactory({
 		...profileAgentDefaults,
 		systemPrompt: () => buildMainAgentSystemPrompt(profilePrompt(config)),
@@ -216,6 +217,8 @@ export async function runGateway(config: BeeMaxConfig): Promise<void> {
 			},
 		},
 		authorizeTool: (request, signal) => approvalBroker.authorize(request, signal),
+		toolEffects,
+		currentTaskId: (source) => approvalBroker.executionGrant(source)?.taskId,
 		credentials: credentialVault ? { ownerKey: `profile:${config.profile}`, vault: credentialVault } : undefined,
 	});
 

@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { MemoryStore } from "@beemax/memory";
-import { AgentRunError, AuthStorage, BeeMaxAgentRuntime, buildBeeMaxRuntimeFactory, ConversationContext, defineTool, getBuiltinModel, isRecoverableModelFailure, SessionCoordinator, sessionIdForSource } from "../dist/index.js";
+import { AgentRunError, AuthStorage, BeeMaxAgentRuntime, buildBeeMaxRuntimeFactory, ConversationContext, defineTool, getBuiltinModel, isRecoverableModelFailure, MUTATING_TOOL_POLICY, SessionCoordinator, sessionIdForSource, withToolPolicy } from "../dist/index.js";
 
 test("BeeMax Core owns the runtime primitive boundary", () => {
 	assert.equal(typeof AuthStorage.create, "function");
@@ -17,6 +17,32 @@ test("BeeMax Core owns the runtime primitive boundary", () => {
 	assert.equal(isRecoverableModelFailure(new Error("fetch failed")), true);
 	assert.equal(isRecoverableModelFailure({ status: 401 }), false);
 	assert.equal(isRecoverableModelFailure(new Error("invalid API key")), false);
+});
+
+test("BeeMax runtime connects approved mutating Tool calls to the Effect lifecycle", async () => {
+	const root = mkdtempSync(join(tmpdir(), "beemax-effect-hook-"));
+	const events = [];
+	const source = { platform: "cli", chatId: "terminal", chatType: "dm", userId: "user" };
+	try {
+		const factory = buildBeeMaxRuntimeFactory({
+			provider: "anthropic", model: "claude-sonnet-4-5", cwd: root, agentDir: join(root, "agent"), getApiKey: () => "test",
+			systemPrompt: "test", skillToolset: "safe", tools: ["mutation"], authorizeTool: async () => ({ allowed: true }),
+			currentTaskId: () => "turn-1",
+			toolEffects: {
+				begin(input) { events.push(["begin", input.taskId, input.toolCallId, input.toolName]); return "effect-1"; },
+				finish(input) { events.push(["finish", input.toolCallId, input.toolName, input.isError]); },
+			},
+			createTools: () => [withToolPolicy(defineTool({ name: "mutation", label: "Mutation", description: "Mutate", parameters: {}, execute: async () => ({ content: [], details: {} }) }), MUTATING_TOOL_POLICY)],
+		});
+		const session = await factory("effect-session", source);
+		try {
+			const toolCall = { id: "call-1", name: "mutation", arguments: {} };
+			const common = { assistantMessage: {}, toolCall, args: {}, context: {} };
+			assert.equal(await session.agent.beforeToolCall(common), undefined);
+			await session.agent.afterToolCall({ ...common, result: { content: [], details: {} }, isError: false });
+			assert.deepEqual(events, [["begin", "turn-1", "call-1", "mutation"], ["finish", "call-1", "mutation", false]]);
+		} finally { session.dispose(); }
+	} finally { rmSync(root, { recursive: true, force: true }); }
 });
 
 test("BeeMax Agent Runtime lists only Task Plans visible to the conversation owners", () => {
