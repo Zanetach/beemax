@@ -96,6 +96,7 @@ export interface TaskDependency { taskId: string; dependsOn: string; }
 export interface TaskLedger {
 	record(task: TaskRecord): void;
 	transition(id: string, change: TaskTransition): boolean;
+	retryObjective?(ownerKey: string, id: string, now?: number): boolean;
 	recordRun(run: TaskRunRecord): void;
 	transitionRun(id: string, change: TaskRunTransition): boolean;
 	queryTasks(query: TaskQuery): TaskRecord[];

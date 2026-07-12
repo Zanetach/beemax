@@ -27,6 +27,7 @@ export interface SubagentTask extends SubagentTaskSnapshot {
 	ownerKey: string;
 	source: BeeMaxRuntimeSource;
 	context?: string;
+	parentId?: string;
 }
 
 export type SubagentExecutor = (task: SubagentTask, signal: AbortSignal) => Promise<string>;
@@ -78,6 +79,7 @@ export class SubagentManager {
 		goal: string;
 		context?: string;
 		capability?: "analysis" | "research";
+		parentId?: string;
 	}): SubagentTaskSnapshot {
 		if (this.disposed) throw new Error("Sub-Agent runtime is shutting down");
 		const ownerKey = conversationKey(source);
@@ -94,6 +96,7 @@ export class SubagentManager {
 			name: input.name?.trim() || `task-${id.slice(0, 8)}`,
 			goal: input.goal.trim(),
 			context: input.context?.trim() || undefined,
+			parentId: input.parentId?.trim() || undefined,
 			capability: input.capability ?? "analysis",
 			status: "queued",
 			createdAt: Date.now(),
@@ -101,7 +104,7 @@ export class SubagentManager {
 			waiters: new Set(),
 		};
 		if (!task.goal) throw new Error("Sub-Agent goal is required");
-		this.taskLedger?.record({ id, ownerKey, kind: "delegated", title: task.name, status: "pending", createdAt: task.createdAt });
+		this.taskLedger?.record({ id, ownerKey, kind: "delegated", title: task.name, status: "pending", createdAt: task.createdAt, ...(task.parentId ? { parentId: task.parentId } : {}) });
 		this.tasks.set(id, task);
 		this.queue.push(id);
 		void this.pump();
@@ -294,7 +297,7 @@ export class SubagentManager {
 	}
 }
 
-export function createSubagentTools(manager: SubagentManager, source: BeeMaxRuntimeSource): ToolDefinition[] {
+export function createSubagentTools(manager: SubagentManager, source: BeeMaxRuntimeSource, options: { objectiveTaskId?: () => string | undefined } = {}): ToolDefinition[] {
 	const tools = [
 		defineTool({
 			name: "task_spawn",
@@ -306,7 +309,7 @@ export function createSubagentTools(manager: SubagentManager, source: BeeMaxRunt
 				name: Type.Optional(Type.String({ minLength: 1, maxLength: 64 })),
 				capability: Type.Optional(StringEnum(["analysis", "research"] as const)),
 			}),
-			execute: async (_id, params) => toolResult(manager.spawn(source, params)),
+			execute: async (_id, params) => toolResult(manager.spawn(source, { ...params, parentId: options.objectiveTaskId?.() })),
 		}),
 		defineTool({
 			name: "task_status",

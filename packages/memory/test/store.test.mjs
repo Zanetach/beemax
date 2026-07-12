@@ -125,6 +125,21 @@ test("runtime Task ledger persists delegated lifecycle independently from memory
 	}
 });
 
+test("failed Objectives can be explicitly reopened for a safe retry", () => {
+	const root = mkdtempSync(join(tmpdir(), "beemax-objective-retry-"));
+	const store = new MemoryStore(join(root, "memory.db"));
+	try {
+		store.record({ id: "objective", ownerKey: "owner", kind: "objective", title: "Report", status: "pending", createdAt: 1 });
+		store.transition("objective", { status: "running", startedAt: 2 });
+		store.transition("objective", { status: "failed", finishedAt: 3, error: "temporary delivery failure" });
+		assert.equal(store.retryObjective("owner", "objective", 4), true);
+		const objective = store.queryTasks({ ownerKeys: ["owner"], id: "objective" })[0];
+		assert.equal(objective.status, "running");
+		assert.equal(objective.finishedAt, undefined);
+		assert.equal(objective.error, undefined);
+	} finally { store.close(); rmSync(root, { recursive: true, force: true }); }
+});
+
 test("Verification unavailable persists across Profile database restarts", async () => {
 	const root = mkdtempSync(join(tmpdir(), "beemax-verification-unavailable-"));
 	const path = join(root, "memory.db");

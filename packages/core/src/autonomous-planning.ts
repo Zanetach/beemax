@@ -107,18 +107,19 @@ export class AutonomousPlanningPolicy {
 
 /** Scope-bound handoff from turn admission to tools executing inside that turn. */
 export class PlanningBudgetRegistry {
-	private readonly active = new Map<string, { lease: string; decision: AutonomousPlanningDecision }>();
+	private readonly active = new Map<string, { lease: string; decision: AutonomousPlanningDecision; objectiveTaskId?: string }>();
 
-	begin(scopeKey: string, decision: AutonomousPlanningDecision): string {
+	begin(scopeKey: string, decision: AutonomousPlanningDecision, objectiveTaskId?: string): string {
 		if (!scopeKey.trim()) throw new Error("Planning budget scope is required");
 		const lease = crypto.randomUUID();
-		this.active.set(scopeKey, { lease, decision });
+		this.active.set(scopeKey, { lease, decision, objectiveTaskId });
 		return lease;
 	}
 
 	current(scopeKey: string): AutonomousPlanningDecision | undefined {
 		return this.active.get(scopeKey)?.decision;
 	}
+	currentObjectiveTaskId(scopeKey: string): string | undefined { return this.active.get(scopeKey)?.objectiveTaskId; }
 
 	end(scopeKey: string, lease: string): boolean {
 		if (this.active.get(scopeKey)?.lease !== lease) return false;

@@ -20,6 +20,8 @@ export interface AgentRunInput<Source extends BeeMaxRuntimeSource = BeeMaxRuntim
 	signal?: AbortSignal;
 	expandPromptTemplates?: boolean;
 	mode?: "interactive" | "automation";
+	/** Bind this Turn to an existing durable Objective instead of creating another responsibility. */
+	objectiveTaskId?: string;
 	/** Native vision attachments. Binary data must never be copied into telemetry. */
 	images?: ImageContent[];
 }
@@ -142,12 +144,14 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 				throw new AgentRunError("Agent turn was cancelled", false, input.signal.reason);
 			}
 			const startedAt = Date.now();
+			const objectiveBinding = input.mode === "interactive" || !input.mode ? this.createObjective(input, startedAt) : undefined;
+			const objective = objectiveBinding?.task;
 			const enrichedText = input.mode === "interactive" || !input.mode
 				? this.context?.enrich(input.source, input.text, { model: modelOf(session.piSession.agent) }) ?? input.text
 				: input.text;
 			const planning = input.mode === "interactive" || !input.mode ? this.planningPolicy?.decide(input.text) : undefined;
 			const planningScope = conversationKey(input.source);
-			const planningLease = planning && this.planningBudgets ? this.planningBudgets.begin(planningScope, planning) : undefined;
+			const planningLease = planning && this.planningBudgets ? this.planningBudgets.begin(planningScope, planning, objective?.id) : undefined;
 			const text = planning ? `${enrichedText}\n\n${planning.directive()}` : enrichedText;
 			const supportsProgressiveTools = typeof session.piSession.getActiveToolNames === "function" && typeof session.piSession.setActiveToolsByName === "function";
 			const activeTools = supportsProgressiveTools ? session.piSession.getActiveToolNames() : undefined;
@@ -233,6 +237,7 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 				}
 				if (failure) throw new AgentRunError(errorMessage(failure), false, failure, isRecoverableModelFailure(failure));
 			} catch (cause) {
+				if (objectiveBinding?.created && objective && !requiredToolsUsed.includes("task_plan_execute")) this.taskLedger?.transition(objective.id, { status: "failed", finishedAt: Date.now(), error: errorMessage(cause).slice(0, 5_000) });
 				if (cause instanceof AgentRunError) throw cause;
 				throw new AgentRunError(timedOut && input.timeoutMs !== null ? `Agent turn timed out after ${Math.round(input.timeoutMs / 60_000)} minutes` : errorMessage(cause), timedOut, cause, timedOut || isRecoverableModelFailure(cause));
 			} finally {
@@ -243,12 +248,34 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 				unsubscribe?.();
 			}
 			const answer = lastAssistantText(session.piSession.agent) || "(no response)";
+			if (objectiveBinding?.created && objective && !requiredToolsUsed.includes("task_plan_execute")) this.taskLedger?.transition(objective.id, { status: "succeeded", finishedAt: Date.now(), result: answer.slice(0, 50_000) });
 			try {
 				if (await reloadRuntimeResourcesIfNeeded(session.piSession)) console.info("[beemax] skills and resources hot-reloaded after agent evolution");
 			} catch (error) { console.error(`[beemax] resource reload failed: ${errorMessage(error)}`); }
 			if (input.mode !== "automation") this.context?.record(input.source, { user: input.text, assistant: answer });
 			return { answer, model: modelOf(session.piSession.agent), durationMs: Date.now() - startedAt, usage: usageOf(session.piSession.agent) };
 		});
+	}
+
+	private createObjective(input: AgentRunInput<Source>, now: number): { task: TaskRecord; created: boolean } | undefined {
+		if (!this.taskLedger || input.source.delegatedTask) return undefined;
+		const description = input.text.trim();
+		if (!description) return undefined;
+		const ownerKey = conversationKey(input.source);
+		const continuation = input.objectiveTaskId || /^(?:(?:继续|接着|补充)(?:\s|处理|这个|该|$)|(?:continue|go on)\b)/iu.test(description)
+			? this.taskLedger.queryTasks({ ownerKeys: [ownerKey], id: input.objectiveTaskId, kinds: ["objective"], statuses: ["pending", "running"], limit: 1 })[0]
+				?? (!input.objectiveTaskId ? this.taskLedger.queryTasks({ ownerKeys: [ownerKey], kinds: ["objective"], statuses: ["pending", "running"], limit: 1 })[0] : undefined)
+			: undefined;
+		if (continuation) return { task: continuation, created: false };
+		const title = description.split(/\r?\n/, 1)[0]!.slice(0, 120);
+		const objective: TaskRecord = {
+			id: `objective:${crypto.randomUUID()}`, ownerKey, kind: "objective",
+			title, description: description.slice(0, 50_000), status: "pending", createdAt: now,
+			executionScope: { ...input.source },
+		};
+		this.taskLedger.record(objective);
+		this.taskLedger.transition(objective.id, { status: "running", startedAt: now });
+		return { task: { ...objective, status: "running", startedAt: now }, created: true };
 	}
 
 	async cancel(source: Source): Promise<boolean> { return this.sessions.abort(source); }

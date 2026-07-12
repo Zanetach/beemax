@@ -26,3 +26,21 @@ test("Task Plan Notice delivery acknowledges success and requeues failure withou
 		{ workId: "plan-fail", state: "failed", completed: 0, total: 1 },
 	]);
 });
+
+test("a successful Plan delivers its Objective result instead of a result-free summary", async () => {
+	const notice = { id: "notice", planId: "plan", ownerKey: "owner", target: { platform: "feishu", chatId: "chat" }, planStatus: "succeeded", title: "Report", taskCount: 2, succeeded: 2, failed: 0, cancelled: 0, status: "delivering", claimToken: "token", attempts: 1, nextAttemptAt: 2, createdAt: 1 };
+	const sent = [];
+	let completed = false;
+	const service = new TaskPlanNoticeDeliveryService({
+		claimTaskPlanCompletionNotices: () => [notice],
+		completeTaskPlanCompletionNotice: () => { completed = true; return true; },
+		failTaskPlanCompletionNotice: () => true,
+	}, { sendText: async (target, text) => { sent.push({ target, text }); } }, {
+		platform: "feishu",
+		deliverObjective: async () => ({ status: "succeeded", result: "Final user-ready report" }),
+	});
+
+	assert.deepEqual(await service.runOnce(), { claimed: 1, delivered: 1, failed: 0 });
+	assert.equal(completed, true);
+	assert.deepEqual(sent, [{ target: notice.target, text: "Final user-ready report" }]);
+});

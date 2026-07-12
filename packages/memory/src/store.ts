@@ -703,6 +703,11 @@ export class MemoryStore {
 		return result.changes === 1;
 	}
 
+	retryObjective(ownerKey: string, id: string, now = Date.now()): boolean {
+		return this.db.prepare(`UPDATE tasks SET status = 'running', started_at = ?, finished_at = NULL, result = NULL, error = NULL, updated_at = ?
+			WHERE id = ? AND owner_key = ? AND kind = 'objective' AND status = 'failed'`).run(now, now, id, ownerKey).changes === 1;
+	}
+
 	recordRun(run: TaskRunRecord): void {
 		this.db.prepare("INSERT INTO task_runs (id, task_id, executor, status, started_at, lease_expires_at, finished_at, output, error) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")
 			.run(run.id, run.taskId, run.executor, run.status, run.startedAt, run.leaseExpiresAt ?? null, run.finishedAt ?? null, safeTaskText(run.output), safeTaskText(run.error));

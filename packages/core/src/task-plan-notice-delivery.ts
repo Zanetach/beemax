@@ -7,7 +7,12 @@ export interface TaskPlanProgressEvent {
 	type: "work.changed"; workId: string; kind: "task_plan"; state: "completed" | "failed" | "cancelled";
 	title: string; completed: number; total: number; failed: number; cancelled: number; at: number;
 }
-export interface TaskPlanNoticeDeliveryOptions { platform: string; intervalMs?: number; batchSize?: number; onProgress?: (event: TaskPlanProgressEvent, notice: TaskPlanCompletionNotice) => void | Promise<void>; onCycle?: (result: TaskPlanNoticeDeliveryResult) => void; onError?: (error: unknown) => void; }
+export interface TaskPlanNoticeDeliveryOptions {
+	platform: string; intervalMs?: number; batchSize?: number;
+	deliverObjective?: (notice: TaskPlanCompletionNotice) => Promise<{ status: "succeeded" | "failed" | "cancelled"; result?: string; error?: string } | undefined>;
+	onProgress?: (event: TaskPlanProgressEvent, notice: TaskPlanCompletionNotice) => void | Promise<void>;
+	onCycle?: (result: TaskPlanNoticeDeliveryResult) => void; onError?: (error: unknown) => void;
+}
 export type TaskPlanNoticeOutbox = Required<Pick<TaskLedger, "claimTaskPlanCompletionNotices" | "completeTaskPlanCompletionNotice" | "failTaskPlanCompletionNotice">>;
 
 /** Delivers durable, result-free background Plan summaries through a channel-neutral port. */
@@ -43,6 +48,16 @@ export class TaskPlanNoticeDeliveryService {
 		const summary = { claimed: notices.length, delivered: 0, failed: 0 };
 		for (const notice of notices) {
 			try {
+				if (this.options.deliverObjective) {
+					const objective = await this.options.deliverObjective(notice);
+					if (objective && notice.planStatus === "succeeded") {
+						if (objective.status !== "succeeded" || !objective.result?.trim()) throw new Error(objective.error || `Objective delivery failed for Task Plan ${notice.planId}`);
+						await this.delivery.sendText(notice.target, objective.result);
+						if (!notice.claimToken || !this.outbox.completeTaskPlanCompletionNotice(notice.id, notice.claimToken)) throw new Error(`Task Plan Completion Notice acknowledgement failed: ${notice.id}`);
+						summary.delivered++;
+						continue;
+					}
+				}
 				const progress: TaskPlanProgressEvent = {
 					type: "work.changed", workId: notice.planId, kind: "task_plan",
 					state: notice.planStatus === "succeeded" ? "completed" : notice.planStatus,

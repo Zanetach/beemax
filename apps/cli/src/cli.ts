@@ -9,7 +9,7 @@
  *   beemax model      Show / set the configured model
  */
 
-import { buildMainAgentSystemPrompt, buildSubagentSystemPrompt, createSkillCandidateVerifier, createTaskVerifier, executePlannedTask, executeSubagentTask, mainAgentTools, readOnlyAgentTools, runGateway } from "./gateway.ts";
+import { buildMainAgentSystemPrompt, buildSubagentSystemPrompt, createSkillCandidateVerifier, createTaskVerifier, executeObjectiveDelivery, executePlannedTask, executeSubagentTask, mainAgentTools, readOnlyAgentTools, runGateway } from "./gateway.ts";
 import { beemaxHome, beemaxRoot, loadConfig } from "./config.ts";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { backupSqliteDatabase, verifySqliteDatabase } from "@beemax/memory";
@@ -967,7 +967,7 @@ async function runChat(config: ReturnType<typeof loadConfig>, requestedMode: { f
 	const presentationMode: ChatPresentationMode = resolveChatPresentationMode({
 		...requestedMode, isInputTty: process.stdin.isTTY === true, isOutputTty: process.stdout.isTTY === true, term: process.env.TERM,
 	});
-	const { AutonomousPlanningPolicy, conversationKey, createSubagentTools, createTaskLedgerTools, createTaskOrchestrationTools, FileCredentialVault, FileCredentialVaultAuditJournal, ProfileTaskScheduler, redactCredentialMaterial, SubagentManager, TaskPlanNoticeDeliveryService, TaskPlanRuntime, TaskRecoveryRunner, TaskRecoveryService } = await import("@beemax/core");
+	const { AutonomousPlanningPolicy, conversationKey, createSubagentTools, createTaskLedgerTools, createTaskOrchestrationTools, FileCredentialVault, FileCredentialVaultAuditJournal, ObjectiveRuntime, ProfileTaskScheduler, redactCredentialMaterial, SubagentManager, TaskPlanNoticeDeliveryService, TaskPlanRuntime, TaskRecoveryRunner, TaskRecoveryService } = await import("@beemax/core");
 	const { loadMcpConfig, McpManager } = await import("@beemax/mcp-capability");
 	const { buildAgentFactory } = await import("./agent-factory.ts");
 	const { MemoryStore } = await import("@beemax/memory");
@@ -1014,6 +1014,7 @@ async function runChat(config: ReturnType<typeof loadConfig>, requestedMode: { f
 	const verifyTask: import("@beemax/core").TaskGraphVerifier = (task, result, signal) => taskScheduler.run(task.ownerKey, () => runTaskVerification(task, result, signal), signal);
 	let recoveryStatus: TaskRecoveryStatus = { phase: config.subagents.enabled ? "running" : "disabled", plans: 0, succeeded: 0, failed: 0, blocked: 0, verification: { attempted: 0, accepted: 0, rejected: 0, unavailable: 0 } };
 	const taskRecovery = new TaskRecoveryRunner(memory, (task, signal, context) => taskScheduler.run(task.ownerKey, () => executePlannedTask(createSubagentAgent, task, task.executionScope as import("@beemax/gateway").SessionSource, signal, config.subagents.timeoutMs, context), signal), taskPlanRuntime, verifyTask);
+	const objectiveRuntime = new ObjectiveRuntime(memory, (input, signal) => executeObjectiveDelivery(createSubagentAgent, input, signal, config.subagents.timeoutMs));
 	const recoveryService = new TaskRecoveryService(memory, config.subagents.enabled ? taskRecovery : undefined, {
 		runnerOptions: { maxConcurrent: config.subagents.maxConcurrent },
 		onCycle: ({ reconciled, verification, recovery: summary }) => {
@@ -1051,8 +1052,8 @@ async function runChat(config: ReturnType<typeof loadConfig>, requestedMode: { f
 		credentials: credentialVault ? { ownerKey: `profile:${config.profile}`, vault: credentialVault } : undefined,
 		sessionTools: (sessionSource) => [
 			...(subagents ? [
-				...createSubagentTools(subagents, sessionSource),
-				...createTaskOrchestrationTools(memory, sessionSource, (task, signal, context) => taskScheduler.run(task.ownerKey, () => executePlannedTask(createSubagentAgent, task, sessionSource, signal, config.subagents.timeoutMs, context), signal), { maxConcurrent: config.subagents.maxConcurrent, planRuntime: taskPlanRuntime, verify: verifyTask, planningDecision: () => planningBudgets.current(conversationKey(sessionSource)) }),
+				...createSubagentTools(subagents, sessionSource, { objectiveTaskId: () => planningBudgets.currentObjectiveTaskId(conversationKey(sessionSource)) }),
+				...createTaskOrchestrationTools(memory, sessionSource, (task, signal, context) => taskScheduler.run(task.ownerKey, () => executePlannedTask(createSubagentAgent, task, sessionSource, signal, config.subagents.timeoutMs, context), signal), { maxConcurrent: config.subagents.maxConcurrent, planRuntime: taskPlanRuntime, verify: verifyTask, planningDecision: () => planningBudgets.current(conversationKey(sessionSource)), objectiveTaskId: () => planningBudgets.currentObjectiveTaskId(conversationKey(sessionSource)) }),
 			] : []),
 			...createTaskLedgerTools(memory, sessionSource),
 		],
@@ -1071,10 +1072,17 @@ async function runChat(config: ReturnType<typeof loadConfig>, requestedMode: { f
 		},
 		approvalBroker: localApproval,
 		cancelSubagents: (sessionSource) => subagents?.cancelOwner(sessionSource) ?? 0,
-		cancelTaskPlans: (sessionSource) => taskPlanRuntime.activePlanIds([conversationKey(sessionSource)]).reduce((count, planId) => count + (taskRecovery.cancel([conversationKey(sessionSource)], planId).tasks > 0 ? 1 : 0), 0),
+		cancelTaskPlans: (sessionSource) => {
+			const ownerKey = conversationKey(sessionSource);
+			const planIds = [...new Set([...taskPlanRuntime.activePlanIds([ownerKey]), ...objectiveRuntime.planIdsForOwner(ownerKey)])];
+			const cancelled = planIds.reduce((count, planId) => count + (taskRecovery.cancel([ownerKey], planId).tasks > 0 ? 1 : 0), 0);
+			objectiveRuntime.cancelOwner(ownerKey);
+			return cancelled;
+		},
 		controlHandler: (profileRuntime, profileInteraction) => createProfileControlHandler(profileRuntime, config, profileInteraction, () => ({ taskScheduler: taskScheduler.snapshot(), taskRecovery: recoveryStatus }), config.subagents.enabled ? {
 			verifyTaskPlan: (sessionSource, planId) => taskRecovery.reverify([conversationKey(sessionSource)], planId),
-			retryTaskPlan: (sessionSource, planId) => taskRecovery.retry([conversationKey(sessionSource)], planId, { maxConcurrent: config.subagents.maxConcurrent }),
+			retryTaskPlan: (sessionSource, planId, objectiveId) => { const ownerKey = conversationKey(sessionSource); if (objectiveId) objectiveRuntime.retry(ownerKey, objectiveId); return taskRecovery.retry([ownerKey], planId, { maxConcurrent: config.subagents.maxConcurrent }); },
+			resumeTaskPlan: (sessionSource, planId) => taskRecovery.resume([conversationKey(sessionSource)], planId, { maxConcurrent: config.subagents.maxConcurrent }),
 			cancelTaskPlan: (sessionSource, planId) => taskRecovery.cancel([conversationKey(sessionSource)], planId),
 		} : undefined),
 	});
@@ -1110,7 +1118,7 @@ async function runChat(config: ReturnType<typeof loadConfig>, requestedMode: { f
 			if (target.platform !== "cli") throw new Error(`Cannot deliver ${target.platform} Task Plan notice through local Chat`);
 			if (workbench) { workbench.notice(text); fullInput?.requestRender(); }
 			else { process.stdout.write(`\n${text}\n`); writePrompt(); }
-		} }, { platform: "cli" });
+		} }, { platform: "cli", deliverObjective: (notice) => objectiveRuntime.settlePlanIfLinked(notice.ownerKey, notice.planId, notice.planStatus) });
 		let closeInput = () => { closed = true; };
 		const usage = async () => {
 			const current = await runtime.usage(source);

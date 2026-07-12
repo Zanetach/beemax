@@ -338,7 +338,7 @@ test("orchestration tool validates a model-authored DAG and dispatches bounded S
 	const tools = new Map(createTaskOrchestrationTools(ledger, { platform: "cli", chatId: "local", chatType: "dm", userId: "local" }, async (task) => {
 		executed.push(task.title);
 		return { output: `done:${task.title}` };
-	}, { maxConcurrent: 2, verify: async () => ({ accepted: true }) }).map((tool) => [tool.name, tool]));
+	}, { maxConcurrent: 2, objectiveTaskId: () => "objective-1", verify: async () => ({ accepted: true }) }).map((tool) => [tool.name, tool]));
 	const output = await tools.get("task_plan_execute").execute("plan", {
 		title: "Research and write",
 		tasks: [{ key: "research", title: "Research", goal: "Collect evidence", acceptanceCriteria: "Includes one source" }, { key: "examples", title: "Examples", goal: "Collect examples", acceptanceCriteria: "Includes one example" }, { key: "write", title: "Write", goal: "Use the evidence", acceptanceCriteria: "Uses the collected evidence" }],
@@ -350,6 +350,7 @@ test("orchestration tool validates a model-authored DAG and dispatches bounded S
 	assert.equal(new Set(executed.slice(0, 2)).size, 2);
 	assert.equal(executed[2], "Write");
 	const planId = output.details.planId;
+	assert.deepEqual(ledger.queryTasks({ ownerKeys: ["cli:local:local"], planIds: [planId] }).map((task) => task.parentId), ["objective-1", "objective-1", "objective-1"]);
 	assert.equal(ledger.queryTaskPlans({ ownerKeys: ["cli:local:local"], id: planId })[0].status, "succeeded");
 	assert.equal(tools.get("task_plan_execute").beemaxPolicy.approval, "never");
 	assert.equal(tools.get("task_plan_execute").beemaxPolicy.timeoutMs, 60_000);

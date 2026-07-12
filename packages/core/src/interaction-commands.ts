@@ -5,7 +5,7 @@
 export type InteractionDetailsDisplay = "hidden" | "collapsed" | "expanded";
 
 export type InteractionCommand =
-	| { kind: "help" | "status" | "new" | "reset" | "stop" | "usage" }
+	| { kind: "help" | "status" | "new" | "reset" | "stop" | "usage" | "continue" }
 	| { kind: "sessions"; query?: string }
 	| { kind: "compact" }
 	| { kind: "history"; limit?: number }
@@ -35,6 +35,7 @@ export const INTERACTION_COMMANDS: readonly InteractionCommandDefinition[] = [
 	{ name: "history", usage: "/history [n]", description: "Show recent session history" },
 	{ name: "usage", usage: "/usage", description: "Show context and token usage" },
 	{ name: "stop", usage: "/stop", description: "Cancel the active turn and pending approval" },
+	{ name: "continue", usage: "/continue", description: "Continue the current durable Objective" },
 	{ name: "compact", usage: "/compact", description: "Compact the current context" },
 	{ name: "models", usage: "/models", description: "List configured models" },
 	{ name: "think", usage: "/think [level]", description: "Inspect or set reasoning level" },
@@ -57,6 +58,7 @@ export function parseInteractionCommand(input: string): InteractionCommand | und
 	if (value === "/new") return { kind: "new" };
 	if (value === "/reset") return { kind: "reset" };
 	if (value === "/stop") return { kind: "stop" };
+	if (value === "/continue") return { kind: "continue" };
 	if (value === "/compact") return { kind: "compact" };
 	if (value === "/usage") return { kind: "usage" };
 	const sessions = input.trim().match(/^\/sessions(?:\s+(.+))?$/i);

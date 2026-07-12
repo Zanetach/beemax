@@ -15,6 +15,7 @@ test("shared /status reports Profile task admission capacity on every channel", 
 		modelStatus: async () => ({ model: "test/model", thinkingLevel: "medium" }),
 		usage: async () => ({ inputTokens: 10, outputTokens: 4, contextTokens: 14, contextWindow: 100 }),
 		isBusy: () => true,
+		tasks: () => [{ id: "objective", kind: "objective", title: "Release report", status: "running", createdAt: 1 }],
 	};
 	const config = { profile: "personal", model: { provider: "test", model: "model" }, models: [] };
 	const control = createProfileControlHandler(runtime, config, undefined, () => ({
@@ -25,6 +26,7 @@ test("shared /status reports Profile task admission capacity on every channel", 
 	assert.match(result.message, /Tasks: running=2; queued=3; queued-owners=2; capacity=2\/4; overload-reductions=3/);
 	assert.match(result.message, /Recovery: completed; plans=2; succeeded=3; failed=1; blocked=1/);
 	assert.match(result.message, /verification=2\/1\/0\/1/);
+	assert.match(result.message, /Objective: \[running\] Release report/);
 });
 
 test("shared /tasks plans summarizes owned Task Plans for discovery and control", async () => {
@@ -83,4 +85,20 @@ test("shared /tasks retry reports Candidate verification separately from correct
 	const result = await control({ source: { platform: "feishu", chatId: "chat", chatType: "dm", userId: "user" }, text: "/tasks retry plan-a" });
 	assert.match(result.message, /verification attempted=2; accepted=1; rejected=1; unavailable=0/);
 	assert.match(result.message, /execution prepared=1; succeeded=1; failed=0; blocked=0/);
+});
+
+test("shared /continue resumes the current Objective Task Plan", async () => {
+	const resumed = [];
+	const runtime = {
+		tasks: (_source, query) => query.kind === "objective"
+			? [{ id: "objective", ownerKey: "owner", kind: "objective", title: "Report", status: "running", createdAt: 1 }]
+			: [{ id: "child", ownerKey: "owner", kind: "delegated", parentId: "objective", planId: "plan", title: "Research", status: "pending", createdAt: 2 }],
+		taskPlans: () => [{ id: "plan", ownerKey: "owner", title: "Plan", status: "running", pausedAt: 3, taskCount: 1, succeeded: 0, failed: 0, cancelled: 0, verified: 0, correctiveAttempts: 0, createdAt: 1 }],
+	};
+	const control = createProfileControlHandler(runtime, { profile: "personal", model: { provider: "test", model: "model" }, models: [] }, undefined, undefined, {
+		resumeTaskPlan: async (_source, planId) => { resumed.push(planId); return { plans: 1, succeeded: 0, failed: 0, cancelled: 0, blocked: [] }; },
+	});
+	const result = await control({ source: { platform: "feishu", chatId: "chat", chatType: "dm", userId: "user" }, text: "/continue" });
+	assert.deepEqual(resumed, ["plan"]);
+	assert.match(result.message, /Continued Objective objective/);
 });

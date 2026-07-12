@@ -11,8 +11,9 @@ export interface TaskRecoveryStatus { phase: "disabled" | "running" | "completed
 export interface ProfileOperationalFacts { taskScheduler?: ProfileTaskSchedulerSnapshot; taskRecovery?: TaskRecoveryStatus; }
 export interface ProfileControlActions {
 	verifyTaskPlan?: (source: SessionSource, planId: string) => Promise<{ attempted: number; accepted: number; rejected: number; unavailable: number }>;
-	retryTaskPlan?: (source: SessionSource, planId: string) => Promise<TaskPlanRetryResult>;
+	retryTaskPlan?: (source: SessionSource, planId: string, objectiveId?: string) => Promise<TaskPlanRetryResult>;
 	cancelTaskPlan?: (source: SessionSource, planId: string) => { active: number; tasks: number };
+	resumeTaskPlan?: (source: SessionSource, planId: string) => Promise<{ plans: number; succeeded: number; failed: number; cancelled: number; blocked: string[] }>;
 }
 
 export function renderTaskSchedulerStatus(snapshot?: ProfileTaskSchedulerSnapshot): string {
@@ -109,13 +110,35 @@ export function createProfileControlHandler(
 			const [model, usage] = await Promise.all([runtime.modelStatus(source), runtime.usage(source)]);
 			const usageText = usage ? `input=${usage.inputTokens}; output=${usage.outputTokens}; context=${usage.contextTokens ?? "?"}/${usage.contextWindow ?? "?"}` : "no live session";
 			const facts = operationalFacts?.();
-			return { handled: true, message: command === "/usage" ? `Usage: ${usageText}` : `Profile: ${config.profile}\nModel: ${model?.model ?? `${config.model.provider}/${config.model.model}`}\nThinking: ${model?.thinkingLevel ?? "off"}\nRun: ${runtime.isBusy() ? "running" : "idle"}\n${renderTaskSchedulerStatus(facts?.taskScheduler)}\n${renderTaskRecoveryStatus(facts?.taskRecovery)}\nUsage: ${usageText}` };
+			const objectives = runtime.tasks(source, { kind: "objective", limit: 20 });
+			const objective = objectives.find((task) => task.status === "running" || task.status === "pending") ?? objectives[0];
+			const objectiveText = objective ? `Objective: [${objective.status}] ${sanitizeDisplayText(objective.title, 120)}` : "Objective: none";
+			return { handled: true, message: command === "/usage" ? `Usage: ${usageText}` : `Profile: ${config.profile}\nModel: ${model?.model ?? `${config.model.provider}/${config.model.model}`}\nThinking: ${model?.thinkingLevel ?? "off"}\nRun: ${runtime.isBusy() ? "running" : "idle"}\n${objectiveText}\n${renderTaskSchedulerStatus(facts?.taskScheduler)}\n${renderTaskRecoveryStatus(facts?.taskRecovery)}\nUsage: ${usageText}` };
 		}
 		if (command === "/compact") {
 			const compacted = interaction
 				? await interaction.dispatch({ type: "session.compact", source })
 				: { compacted: await runtime.compact(source) };
 			return { handled: true, message: "compacted" in compacted && compacted.compacted ? "Context compacted." : "No idle session is available to compact." };
+		}
+		if (command === "/continue" || command === "/retry") {
+			const objectives = runtime.tasks(source, { kind: "objective", limit: 50 });
+			const objective = command === "/retry"
+				? objectives.find((task) => task.status === "failed")
+				: objectives.find((task) => task.status === "running" || task.status === "pending") ?? objectives[0];
+			if (!objective) return { handled: true, message: "No durable Objective is available." };
+			const child = runtime.tasks(source, { limit: 100 }).find((task) => task.parentId === objective.id && task.planId);
+			if (!child?.planId) return { handled: true, message: `Objective ${objective.id} has no resumable Task Plan.` };
+			if (command === "/retry") {
+				if (!actions?.retryTaskPlan) return { handled: true, message: "Objective retry is unavailable in this runtime." };
+				return { handled: true, message: renderTaskPlanRetryResult(child.planId, await actions.retryTaskPlan(source, child.planId, objective.id)) };
+			}
+			const plan = runtime.taskPlans(source, { id: child.planId, limit: 1 })[0];
+			if (plan?.pausedAt && actions?.resumeTaskPlan) {
+				const resumed = await actions.resumeTaskPlan(source, child.planId);
+				return { handled: true, message: `Continued Objective ${objective.id}: plans=${resumed.plans}; blocked=${resumed.blocked.length}.` };
+			}
+			return { handled: true, message: `Objective: [${objective.status}] ${sanitizeDisplayText(objective.title, 120)}${plan ? `; Task Plan: [${plan.status}] ${plan.id}` : ""}.` };
 		}
 		const taskCommand = parseInteractionCommand(text);
 		if (taskCommand?.kind === "tasks" && taskCommand.action === "plans") return { handled: true, message: renderTaskPlans(runtime.taskPlans(source, { limit: 200 })) };

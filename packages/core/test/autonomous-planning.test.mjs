@@ -144,6 +144,82 @@ test("Agent runtime injects a deterministic planning directive without changing 
 	runtime.dispose();
 });
 
+test("interactive runs persist an Objective and keep background DAG Objectives running", async () => {
+	const source = { platform: "cli", chatId: "objective", chatType: "dm", userId: "local" };
+	const tasks = new Map();
+	const ledger = {
+		record(task) { tasks.set(task.id, { ...task }); },
+		transition(id, change) { tasks.set(id, { ...tasks.get(id), ...change }); return true; },
+	};
+	let listener;
+	const agent = { state: { model: { id: "test" }, messages: [] } };
+	const runtime = new BeeMaxAgentRuntime({
+		taskLedger: ledger,
+		planningPolicy: new AutonomousPlanningPolicy(),
+		createAgent: async () => ({
+			agent, subscribe: (next) => { listener = next; return () => undefined; },
+			prompt: async () => {
+				listener({ type: "tool_execution_start", toolCallId: "plan", toolName: "task_plan_execute", args: {} });
+				listener({ type: "tool_execution_end", toolCallId: "plan", toolName: "task_plan_execute", result: { details: { planId: "plan", accepted: true, status: "running" } }, isError: false });
+				agent.state.messages = [{ role: "assistant", content: [{ type: "text", text: "Work accepted" }], usage: { input: 1, output: 1 } }];
+			},
+			abort: async () => undefined, dispose: () => undefined,
+		}),
+	});
+
+	await runtime.run({ source, text: "Review frontend and backend independently, then combine the results", timeoutMs: 1_000 });
+
+	const [objective] = [...tasks.values()];
+	assert.equal(objective.kind, "objective");
+	assert.equal(objective.ownerKey, "cli:objective:local");
+	assert.equal(objective.description, "Review frontend and backend independently, then combine the results");
+	assert.equal(objective.status, "running");
+	runtime.dispose();
+});
+
+test("a direct interactive answer completes its Objective", async () => {
+	const source = { platform: "cli", chatId: "direct-objective", chatType: "dm", userId: "local" };
+	const tasks = new Map();
+	const ledger = {
+		record(task) { tasks.set(task.id, { ...task }); },
+		transition(id, change) { tasks.set(id, { ...tasks.get(id), ...change }); return true; },
+	};
+	const agent = { state: { model: { id: "test" }, messages: [] } };
+	const runtime = new BeeMaxAgentRuntime({ taskLedger: ledger, planningPolicy: new AutonomousPlanningPolicy(), createAgent: async () => ({
+		agent, subscribe: () => () => undefined,
+		prompt: async () => { agent.state.messages = [{ role: "assistant", content: [{ type: "text", text: "42" }], usage: { input: 1, output: 1 } }]; },
+		abort: async () => undefined, dispose: () => undefined,
+	}) });
+
+	await runtime.run({ source, text: "What is the answer?", timeoutMs: 1_000 });
+
+	const [objective] = [...tasks.values()];
+	assert.equal(objective.status, "succeeded");
+	assert.equal(objective.result, "42");
+	assert.equal(typeof objective.finishedAt, "number");
+	runtime.dispose();
+});
+
+test("an explicit continuation Turn reuses the active Objective", async () => {
+	const source = { platform: "cli", chatId: "continued-objective", chatType: "dm", userId: "local" };
+	const active = { id: "objective", ownerKey: "cli:continued-objective:local", kind: "objective", title: "Report", status: "running", createdAt: 1 };
+	const recorded = [];
+	const ledger = {
+		record(task) { recorded.push(task); }, transition() { return true; },
+		queryTasks: (query) => query.ownerKeys.includes(active.ownerKey) && query.statuses?.includes("running") ? [active] : [],
+	};
+	const agent = { state: { model: { id: "test" }, messages: [] } };
+	const runtime = new BeeMaxAgentRuntime({ taskLedger: ledger, planningPolicy: new AutonomousPlanningPolicy(), createAgent: async () => ({
+		agent, subscribe: () => () => undefined,
+		prompt: async () => { agent.state.messages = [{ role: "assistant", content: [{ type: "text", text: "Still running" }], usage: { input: 1, output: 1 } }]; },
+		abort: async () => undefined, dispose: () => undefined,
+	}) });
+	await runtime.run({ source, text: "继续处理这个任务", timeoutMs: 1_000 });
+	assert.equal(recorded.length, 0);
+	assert.equal(active.status, "running");
+	runtime.dispose();
+});
+
 test("planning budget leases cannot be cleared by a stale turn", () => {
 	const registry = new PlanningBudgetRegistry();
 	const policy = new AutonomousPlanningPolicy();

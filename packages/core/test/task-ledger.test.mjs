@@ -33,6 +33,20 @@ test("delegated work records one durable Task and advances its lifecycle", async
 	await manager.dispose();
 });
 
+test("delegated work retains its parent Objective", async () => {
+	const records = new Map();
+	const ledger = {
+		record(task) { records.set(task.id, { ...task }); },
+		transition(id, change) { records.set(id, { ...records.get(id), ...change }); return true; },
+		recordRun() {}, transitionRun() {},
+	};
+	const manager = new SubagentManager({ taskLedger: ledger, execute: async () => "done" });
+	const delegated = manager.spawn(source, { goal: "Research", parentId: "objective-1" });
+	await manager.wait(source, delegated.id, 1_000);
+	assert.equal(records.get(delegated.id).parentId, "objective-1");
+	await manager.dispose();
+});
+
 test("Task ledger tools query durable work across conversation and Profile scopes without leaking other owners", async () => {
 	const tasks = [
 		{ id: "thread", ownerKey: "cli:local#topic:local", kind: "delegated", title: "Thread task", status: "succeeded", createdAt: 1 },

@@ -9,7 +9,7 @@ import { TaskPlanRuntime } from "./task-plan-runtime.ts";
 import type { AutonomousPlanningDecision } from "./autonomous-planning.ts";
 import { assessTaskPlanQuality } from "./task-plan-quality.ts";
 
-export interface TaskOrchestrationOptions { maxConcurrent?: number; maxTasks?: number; maxCorrectiveAttempts?: number; planRuntime?: TaskPlanRuntime; verify?: TaskGraphVerifier; planningDecision?: () => AutonomousPlanningDecision | undefined; }
+export interface TaskOrchestrationOptions { maxConcurrent?: number; maxTasks?: number; maxCorrectiveAttempts?: number; planRuntime?: TaskPlanRuntime; verify?: TaskGraphVerifier; planningDecision?: () => AutonomousPlanningDecision | undefined; objectiveTaskId?: () => string | undefined; }
 
 /** Model-facing structured planning seam; Core owns validation and execution. */
 export function createTaskOrchestrationTools(
@@ -62,9 +62,10 @@ export function createTaskOrchestrationTools(
 			if (maximumParallelWidth([...ids.values()], dependencies) < 2) {
 				throw new Error("Task Plan has no parallel work: execute the serial checklist directly or split it into at least two genuinely independent Sub-Agent Tasks");
 			}
+			const objectiveTaskId = options.objectiveTaskId?.();
 			graph.createPlan({
 				id: planId, ownerKey, title: params.title,
-				tasks: params.tasks.map((task) => ({ id: ids.get(task.key)!, title: task.title, description: task.goal, acceptanceCriteria: task.acceptanceCriteria, kind: "delegated" as const, recoveryPolicy: "safe_retry" as const, idempotencyKey: `${planId}:${task.key}`, executionScope: { ...source }, routes: task.routes })),
+				tasks: params.tasks.map((task) => ({ id: ids.get(task.key)!, title: task.title, description: task.goal, acceptanceCriteria: task.acceptanceCriteria, kind: "delegated" as const, parentId: objectiveTaskId, recoveryPolicy: "safe_retry" as const, idempotencyKey: `${planId}:${task.key}`, executionScope: { ...source }, routes: task.routes })),
 				dependencies,
 			});
 			if (signal?.aborted) { ledger.cancelTaskPlan([ownerKey], planId); throw signal.reason ?? new Error("Task Plan start cancelled"); }
