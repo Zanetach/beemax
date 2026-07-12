@@ -34,7 +34,7 @@ export function renderCard(session: CardSession, opts: CardRenderOptions = {}): 
 	const status = renderStatus(session);
 	let primaryText = normalizeStreamText(session.answerText);
 	if (!primaryText) {
-		primaryText = session.status === "thinking" ? `处理中 ${spinnerFrame()}` : normalizeStreamText(session.visibleMainText);
+		primaryText = session.status === "thinking" ? normalizeStreamText(session.progressText) || `处理中 ${spinnerFrame()}` : normalizeStreamText(session.visibleMainText);
 	}
 
 	// Cap tables at MAX_CARD_TABLES to avoid Feishu rejecting huge card payloads.

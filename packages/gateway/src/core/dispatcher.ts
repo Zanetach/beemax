@@ -41,6 +41,8 @@ export interface DispatcherDeps {
 	interaction?: InteractionEventAdapter<InboundMessage["source"]>;
 	cardOptions?: CardRenderOptions;
 	flushIntervalMs?: number;
+	/** Bound initial/final presentation I/O so a stuck channel cannot block the Turn. */
+	presentationTimeoutMs?: number;
 	/** Abort an individual interactive turn that exceeds this duration. */
 	turnTimeoutMs?: number;
 	approvalBroker?: ToolApprovalBroker;
@@ -180,41 +182,62 @@ export class Dispatcher {
 	private async runTurn(msg: InboundMessage, onReserved?: () => void): Promise<boolean> {
 		const chatId = msg.source.chatId;
 		const card = new CardSession();
-		const flush = new FlushController(this.deps.flushIntervalMs ?? 800);
+		const flush = new FlushController(this.deps.flushIntervalMs ?? 350);
 		let cardMessageId: string | undefined;
+		let cardCreation: Promise<Awaited<ReturnType<PlatformAdapter["sendCard"]>>> | undefined;
+		let cardUpdate: Promise<boolean> | undefined;
+		let pendingCardRender: Record<string, unknown> | undefined;
+		let presentationDegraded = false;
 
 		const renderUpdate = async (): Promise<boolean> => {
 			const rendered = renderCard(card, this.deps.cardOptions);
 			if (!cardMessageId) {
-				const res = await this.platform.sendCard(chatId, rendered, msg.source.messageId, Boolean(msg.source.threadId));
-				if (res.success && res.messageId) {
-					cardMessageId = res.messageId;
-					this.rememberCardBinding(res.messageId, msg.source, card.pendingApprovalId);
+				if (!cardCreation) {
+					const pending = this.platform.sendCard(chatId, rendered, msg.source.messageId, Boolean(msg.source.threadId), `${this.profileId}:${msg.source.messageId ?? "turn"}`);
+					cardCreation = pending.then((res) => {
+						if (res.success && res.messageId) { cardMessageId = res.messageId; this.rememberCardBinding(res.messageId, msg.source, card.pendingApprovalId); }
+						return res;
+					});
 				}
+				const res = await settleWithin(cardCreation, this.deps.presentationTimeoutMs ?? 2_000);
+				if (!res) { presentationDegraded = true; return false; }
+				presentationDegraded = !res.success;
 				return res.success;
 			}
-			const res = await this.platform.updateCard(cardMessageId, rendered);
-			if (res.success) this.rememberCardBinding(cardMessageId, msg.source, card.pendingApprovalId);
-			return res.success;
+			pendingCardRender = rendered;
+			if (!cardUpdate) {
+				cardUpdate = (async () => {
+					let success = true;
+					while (pendingCardRender) {
+						const next = pendingCardRender; pendingCardRender = undefined;
+						const res = await this.platform.updateCard(cardMessageId!, next);
+						success = success && res.success;
+						if (res.success) this.rememberCardBinding(cardMessageId!, msg.source, card.pendingApprovalId);
+					}
+					return success;
+				})().finally(() => { cardUpdate = undefined; });
+			}
+			const res = await settleWithin(cardUpdate, this.deps.presentationTimeoutMs ?? 2_000);
+			if (res === undefined) { presentationDegraded = true; return false; }
+			presentationDegraded = !res;
+			return res;
 		};
 		const answerBuffer = new AdaptiveTextBuffer(async (chunk) => {
 			try {
 				card.apply("answer.delta", { text: chunk });
-				await flush.schedule(renderUpdate);
+				await flush.schedule(renderUpdate, false, true);
 			} catch (error) { console.error(`[beemax] answer presenter failed: ${error instanceof Error ? error.message : String(error)}`); }
-		});
+		}, { minChunkChars: 6, preferredChunkChars: 28, maxChunkChars: 80, maxWaitMs: 50, flushSmallOnMaxWait: true });
 		const statusPulse = new TurnStatusPulse(async (message) => {
 			card.apply("notice.updated", { id: "turn:status", label: "当前状态", status: "running", message });
-			await flush.schedule(renderUpdate);
+			await flush.schedule(renderUpdate, false, true);
 		});
-		statusPulse.start();
-
-		await this.platform.sendTyping(chatId, msg.source.messageId).catch((error) => {
-			console.warn(`[beemax] typing indicator failed: ${error instanceof Error ? error.message : String(error)}`);
-		});
-
 		let failed = false;
 		try {
+			await settleWithin(statusPulse.start(), this.deps.presentationTimeoutMs ?? 2_000);
+			await this.platform.sendTyping(chatId, msg.source.messageId).catch((error) => {
+				console.warn(`[beemax] typing indicator failed: ${error instanceof Error ? error.message : String(error)}`);
+			});
 			let result;
 			try {
 				const media = await prepareAgentMediaInput(msg);
@@ -228,20 +251,20 @@ export class Dispatcher {
 				if (card.status !== "cancelled") card.apply("message.failed", { error: errorText });
 				await flush.schedule(renderUpdate, true);
 				await flush.drain(3000);
-				if (!cardMessageId) await this.platform.send(chatId, `❌ ${errorText}`);
+				if (!cardMessageId || presentationDegraded) await this.platform.send(chatId, `❌ ${errorText}`);
 				return false;
 			}
 
 			// Terminal event already owns completion; only drain its final card patch.
 			await flush.schedule(renderUpdate, true);
 			await flush.drain(5000);
-			if (!cardMessageId) await this.platform.send(chatId, card.answerText || result.answer);
+			if (!cardMessageId || presentationDegraded) await this.platform.send(chatId, card.answerText || result.answer);
 			return true;
 		} catch (error) {
 			failed = true;
 			throw error;
 		} finally {
-			await statusPulse.stop().catch((error) => console.error(`[beemax] turn status presenter failed: ${error instanceof Error ? error.message : String(error)}`));
+			await settleWithin(statusPulse.stop(), 1_000).catch((error) => console.error(`[beemax] turn status presenter failed: ${error instanceof Error ? error.message : String(error)}`));
 			await answerBuffer.close();
 			await this.platform.stopTyping(chatId, msg.source.messageId, failed).catch(() => undefined);
 			flush.close();
@@ -393,13 +416,14 @@ export class Dispatcher {
 	): Promise<void> {
 		switch (event.type) {
 			case "tool.changed":
+				card.apply("notice.updated", { id: "turn:status", label: "当前状态", status: "running", message: event.state === "running" ? `正在执行 ${event.name}` : event.state === "failed" ? "操作未成功 · 正在处理" : "操作完成 · 正在整理结果" });
 				card.apply("tool.updated", {
 					tool_id: event.callId,
 					name: event.name,
 					status: event.state === "failed" ? "error" : event.state,
 					detail: event.summary,
 				});
-				await flush.schedule(renderUpdate);
+				await flush.schedule(renderUpdate, false, true);
 				break;
 			case "answer.delta":
 				statusPulse.contentStarted();
@@ -410,15 +434,15 @@ export class Dispatcher {
 				break;
 			case "model.fallback":
 				card.apply("notice.updated", { id: `model:${event.turnId}:${event.attempt}`, label: "模型回退", status: "running", message: `${event.from} 暂时不可用，已切换到 ${event.to}` });
-				await flush.schedule(renderUpdate);
+				await flush.schedule(renderUpdate, false, true);
 				break;
 			case "planning.selected":
 				card.apply("notice.updated", { id: `planning:${event.turnId}`, label: "执行规划", status: "running", message: `${event.mode} · 并发 ${event.concurrency} · 子代理上限 ${event.maxSubagents}${event.requiredTools.length ? ` · ${event.requiredTools.join(" → ")}` : ""}` });
-				await flush.schedule(renderUpdate);
+				await flush.schedule(renderUpdate, false, true);
 				break;
 			case "planning.completed":
 				card.apply("notice.updated", { id: `planning:${event.turnId}`, label: "执行规划", status: event.compliant ? "completed" : "error", message: `${event.mode}${event.corrected ? " · 已自动纠正" : ""}` });
-				await flush.schedule(renderUpdate);
+				await flush.schedule(renderUpdate, false, true);
 				break;
 			case "work.changed":
 				card.apply("notice.updated", {
@@ -427,7 +451,7 @@ export class Dispatcher {
 					status: event.state === "failed" ? "error" : event.state,
 					message: event.summary ?? (event.state === "queued" ? "已排队" : event.state === "running" ? "运行中" : event.state === "completed" ? "已完成" : event.state === "cancelled" ? "已取消" : "执行失败"),
 				});
-				await flush.schedule(renderUpdate);
+				await flush.schedule(renderUpdate, false, true);
 				break;
 			case "turn.failed":
 				await statusPulse.stop().catch((error) => console.error(`[beemax] turn status presenter failed: ${error instanceof Error ? error.message : String(error)}`));
@@ -455,11 +479,11 @@ export class Dispatcher {
 						? `等待审批：${event.toolName}\n目标：${event.details.target}\n风险：${event.details.risk} · ${event.details.impact}\n可逆性：${event.details.reversibility}\n回复 1（一次）/ 2（本会话）/ 3（拒绝），或 /stop 取消。`
 						: `等待审批：${event.toolName}`,
 				});
-				await flush.schedule(renderUpdate);
+				await flush.schedule(renderUpdate, false, true);
 				break;
 			case "approval.resolved":
 				card.apply("approval.updated", { id: `approval:${event.turnId}`, status: event.allowed ? "allowed" : "denied", message: `${event.toolName}：${event.allowed ? "已允许" : "已拒绝"}` });
-				await flush.schedule(renderUpdate);
+				await flush.schedule(renderUpdate, false, true);
 				break;
 			case "turn.queued":
 				card.apply("approval.updated", {
@@ -471,8 +495,14 @@ export class Dispatcher {
 							? "已收到补充消息，将在当前任务中继续处理"
 							: `${event.mode === "steer_fallback" ? "当前运行时不支持中途引导，" : ""}${event.replaced ? "已更新下一条待处理消息" : `消息已进入当前会话队列（第 ${event.position} 条）`}`,
 				});
-				await flush.schedule(renderUpdate);
+				await flush.schedule(renderUpdate, false, true);
 				break;
 		}
 	}
+}
+
+async function settleWithin<T>(operation: Promise<T>, timeoutMs: number): Promise<T | undefined> {
+	let timer: ReturnType<typeof setTimeout> | undefined;
+	try { return await Promise.race([operation, new Promise<undefined>((resolve) => { timer = setTimeout(() => resolve(undefined), Math.max(10, timeoutMs)); })]); }
+	finally { if (timer) clearTimeout(timer); }
 }

@@ -1,6 +1,13 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { TurnStatusPulse } from "../../core/dist/index.js";
+import { AdaptiveTextBuffer, TurnStatusPulse } from "../../core/dist/index.js";
+
+test("AdaptiveTextBuffer can surface a tiny first answer within its bounded wait", async () => {
+	const chunks = [];
+	const buffer = new AdaptiveTextBuffer((chunk) => { chunks.push(chunk); }, { minChunkChars: 6, maxWaitMs: 50, flushSmallOnMaxWait: true });
+	buffer.push("好的"); await new Promise((resolve) => setTimeout(resolve, 70)); await buffer.close();
+	assert.deepEqual(chunks, ["好的"]);
+});
 
 test("TurnStatusPulse acknowledges immediately and reports truthful waiting time", async () => {
 	const statuses = [];

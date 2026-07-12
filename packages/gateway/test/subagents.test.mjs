@@ -10,6 +10,97 @@ import { createSubagentTools, ProfileTaskScheduler, SubagentManager } from "@bee
 
 const source = { platform: "feishu", chatId: "chat-1", chatType: "dm", userId: "user-1" };
 
+test("Dispatcher publishes the initial progress card before starting a slow Agent Turn", async () => {
+	let inbound; let finish; const order = [];
+	const platform = {
+		name: "feishu", isConnected: true, onMessage: (handler) => { inbound = handler; }, connect: async () => true, disconnect: async () => undefined,
+		send: async () => ({ success: true }), editMessage: async () => ({ success: true }), sendTyping: async () => undefined, stopTyping: async () => undefined,
+		sendCard: async () => { await new Promise((resolve) => setTimeout(resolve, 20)); order.push("card"); return { success: true, messageId: "progress-card" }; }, updateCard: async () => ({ success: true }),
+	};
+	const runtime = {
+		run: async () => { order.push("runtime"); return new Promise((resolve) => { finish = resolve; }); },
+		cancel: async () => false, handleControl: async () => undefined, isBusy: () => false, dispose: () => undefined,
+	};
+	const dispatcher = new Dispatcher({ runtime, flushIntervalMs: 800 }, platform);
+	const turn = inbound({ text: "slow request", messageType: "text", source: { ...source, messageId: "slow-request" }, mediaPaths: [], mediaTypes: [], raw: {}, timestamp: Date.now() });
+	await new Promise((resolve) => setTimeout(resolve, 50));
+	assert.deepEqual(order.slice(0, 2), ["card", "runtime"]);
+	finish({ answer: "done", model: "test", durationMs: 1, usage: {} }); await turn; dispatcher.dispose();
+});
+
+test("Dispatcher starts the Agent Turn when initial card delivery hangs", async () => {
+	let inbound; let runtimeStarted = false;
+	const platform = {
+		name: "feishu", isConnected: true, onMessage: (handler) => { inbound = handler; }, connect: async () => true, disconnect: async () => undefined,
+		send: async () => ({ success: true }), editMessage: async () => ({ success: true }), sendTyping: async () => undefined, stopTyping: async () => undefined,
+		sendCard: async () => new Promise(() => undefined), updateCard: async () => ({ success: true }),
+	};
+	const runtime = { run: async () => { runtimeStarted = true; return { answer: "done", model: "test", durationMs: 1, usage: {} }; }, cancel: async () => false, handleControl: async () => undefined, isBusy: () => false, dispose: () => undefined };
+	const dispatcher = new Dispatcher({ runtime, flushIntervalMs: 0, presentationTimeoutMs: 20 }, platform);
+	const turn = inbound({ text: "request", messageType: "text", source: { ...source, messageId: "hung-card" }, mediaPaths: [], mediaTypes: [], raw: {}, timestamp: Date.now() });
+	await new Promise((resolve) => setTimeout(resolve, 60)); assert.equal(runtimeStarted, true);
+	await Promise.race([turn, new Promise((_resolve, reject) => setTimeout(() => reject(new Error("Turn remained blocked behind hung card delivery")), 500))]);
+	dispatcher.dispose();
+});
+
+test("Dispatcher adopts a late initial card result instead of creating duplicate cards", async () => {
+	let inbound; let sends = 0; let updates = 0;
+	const platform = {
+		name: "feishu", isConnected: true, onMessage: (handler) => { inbound = handler; }, connect: async () => true, disconnect: async () => undefined,
+		send: async () => ({ success: true }), editMessage: async () => ({ success: true }), sendTyping: async () => undefined, stopTyping: async () => undefined,
+		sendCard: async () => { sends++; await new Promise((resolve) => setTimeout(resolve, 60)); return { success: true, messageId: "late-card" }; },
+		updateCard: async (id) => { assert.equal(id, "late-card"); updates++; return { success: true }; },
+	};
+	const runtime = { run: async () => { await new Promise((resolve) => setTimeout(resolve, 90)); return { answer: "done", model: "test", durationMs: 90, usage: {} }; }, cancel: async () => false, handleControl: async () => undefined, isBusy: () => false, dispose: () => undefined };
+	const dispatcher = new Dispatcher({ runtime, flushIntervalMs: 0, presentationTimeoutMs: 20 }, platform);
+	await inbound({ text: "request", messageType: "text", source: { ...source, messageId: "late-card-request" }, mediaPaths: [], mediaTypes: [], raw: {}, timestamp: Date.now() });
+	await new Promise((resolve) => setTimeout(resolve, 180));
+	assert.equal(sends, 1); assert.ok(updates >= 1); dispatcher.dispose();
+});
+
+test("Dispatcher serializes a late card update and eventually writes the latest terminal snapshot", async () => {
+	let inbound; const updates = [];
+	const platform = {
+		name: "feishu", isConnected: true, onMessage: (handler) => { inbound = handler; }, connect: async () => true, disconnect: async () => undefined,
+		send: async () => ({ success: true }), editMessage: async () => ({ success: true }), sendTyping: async () => undefined, stopTyping: async () => undefined,
+		sendCard: async () => ({ success: true, messageId: "card" }),
+		updateCard: async (_id, card) => { if (!updates.length) await new Promise((resolve) => setTimeout(resolve, 60)); updates.push(JSON.stringify(card)); return { success: true }; },
+	};
+	const runtime = { run: async () => ({ answer: "latest final answer", model: "test", durationMs: 1, usage: {} }), cancel: async () => false, handleControl: async () => undefined, isBusy: () => false, dispose: () => undefined };
+	const dispatcher = new Dispatcher({ runtime, flushIntervalMs: 0, presentationTimeoutMs: 20 }, platform);
+	await inbound({ text: "request", messageType: "text", source: { ...source, messageId: "late-update" }, mediaPaths: [], mediaTypes: [], raw: {}, timestamp: Date.now() });
+	await new Promise((resolve) => setTimeout(resolve, 160));
+	assert.ok(updates.length >= 2); assert.match(updates.at(-1), /latest final answer/); dispatcher.dispose();
+});
+
+test("Dispatcher falls back to final text when card updates remain unavailable", async () => {
+	let inbound; const texts = [];
+	const platform = {
+		name: "feishu", isConnected: true, onMessage: (handler) => { inbound = handler; }, connect: async () => true, disconnect: async () => undefined,
+		send: async (_chatId, text) => { texts.push(text); return { success: true }; }, editMessage: async () => ({ success: true }), sendTyping: async () => undefined, stopTyping: async () => undefined,
+		sendCard: async () => ({ success: true, messageId: "card" }), updateCard: async () => new Promise(() => undefined),
+	};
+	const runtime = { run: async () => ({ answer: "recoverable final answer", model: "test", durationMs: 1, usage: {} }), cancel: async () => false, handleControl: async () => undefined, isBusy: () => false, dispose: () => undefined };
+	const dispatcher = new Dispatcher({ runtime, flushIntervalMs: 0, presentationTimeoutMs: 20 }, platform);
+	await inbound({ text: "request", messageType: "text", source: { ...source, messageId: "hung-update" }, mediaPaths: [], mediaTypes: [], raw: {}, timestamp: Date.now() });
+	await new Promise((resolve) => setTimeout(resolve, 100));
+	assert.ok(texts.includes("recoverable final answer")); dispatcher.dispose();
+});
+
+test("Dispatcher falls back to error text when a failed Turn cannot update its card", async () => {
+	let inbound; const texts = [];
+	const platform = {
+		name: "feishu", isConnected: true, onMessage: (handler) => { inbound = handler; }, connect: async () => true, disconnect: async () => undefined,
+		send: async (_chatId, text) => { texts.push(text); return { success: true }; }, editMessage: async () => ({ success: true }), sendTyping: async () => undefined, stopTyping: async () => undefined,
+		sendCard: async () => ({ success: true, messageId: "card" }), updateCard: async () => new Promise(() => undefined),
+	};
+	const runtime = { run: async () => { throw new Error("model unavailable"); }, cancel: async () => false, handleControl: async () => undefined, isBusy: () => false, dispose: () => undefined };
+	const dispatcher = new Dispatcher({ runtime, flushIntervalMs: 0, presentationTimeoutMs: 20 }, platform);
+	await inbound({ text: "request", messageType: "text", source: { ...source, messageId: "hung-error-update" }, mediaPaths: [], mediaTypes: [], raw: {}, timestamp: Date.now() });
+	await new Promise((resolve) => setTimeout(resolve, 100));
+	assert.ok(texts.includes("❌ model unavailable")); dispatcher.dispose();
+});
+
 test("Gateway idempotency is profile-scoped, bounded, and expires", () => {
 	const guard = new MessageDeduplicator({ ttlMs: 1_000, maxEntries: 100 });
 	assert.equal(guard.accept("sales", "feishu", "event-1", 0), true);

@@ -3,6 +3,7 @@ export interface AdaptiveTextBufferOptions {
 	preferredChunkChars?: number;
 	maxChunkChars?: number;
 	maxWaitMs?: number;
+	flushSmallOnMaxWait?: boolean;
 }
 
 /** Channel-neutral conversion of token deltas into stable, readable presentation chunks. */
@@ -16,6 +17,7 @@ export class AdaptiveTextBuffer {
 	private readonly preferredChunkChars: number;
 	private readonly maxChunkChars: number;
 	private readonly maxWaitMs: number;
+	private readonly flushSmallOnMaxWait: boolean;
 	private readonly onChunk: (chunk: string) => void | Promise<void>;
 
 	constructor(onChunk: (chunk: string) => void | Promise<void>, options: AdaptiveTextBufferOptions = {}) {
@@ -24,6 +26,7 @@ export class AdaptiveTextBuffer {
 		this.preferredChunkChars = Math.max(this.minChunkChars, options.preferredChunkChars ?? 36);
 		this.maxChunkChars = Math.max(this.preferredChunkChars, options.maxChunkChars ?? 96);
 		this.maxWaitMs = Math.max(50, options.maxWaitMs ?? 1_200);
+		this.flushSmallOnMaxWait = options.flushSmallOnMaxWait ?? false;
 	}
 
 	push(delta: string): void {
@@ -56,10 +59,10 @@ export class AdaptiveTextBuffer {
 	}
 
 	private scheduleMaxWait(): void {
-		if (this.timer || this.pending.length < this.minChunkChars) return;
+		if (this.timer || (!this.flushSmallOnMaxWait && this.pending.length < this.minChunkChars)) return;
 		this.timer = setTimeout(() => {
 			this.timer = undefined;
-			if (!this.closed && this.pending.length >= this.minChunkChars) this.commit(this.pending.length);
+			if (!this.closed && this.pending.length && (this.flushSmallOnMaxWait || this.pending.length >= this.minChunkChars)) this.commit(this.pending.length);
 		}, this.maxWaitMs);
 	}
 
@@ -90,11 +93,12 @@ export class TurnStatusPulse {
 		this.repeatMs = Math.max(1_000, options.repeatMs ?? 30_000);
 	}
 
-	start(): void {
-		if (this.startedAt) return;
+	start(): Promise<void> {
+		if (this.startedAt) return this.tail;
 		this.startedAt = Date.now();
-		this.emit("已收到 · 正在理解需求", 0);
+		const presented = this.emit("已收到 · 正在理解需求", 0);
 		this.scheduleNext();
+		return presented;
 	}
 
 	contentStarted(): void {
@@ -128,8 +132,9 @@ export class TurnStatusPulse {
 
 	private clearTimer(): void { if (this.timer) clearTimeout(this.timer); this.timer = undefined; }
 
-	private emit(message: string, elapsedMs: number): void {
+	private emit(message: string, elapsedMs: number): Promise<void> {
 		this.tail = this.tail.then(() => this.onStatus(message, elapsedMs)).catch((error: unknown) => { if (this.failure === undefined) this.failure = error; });
+		return this.tail;
 	}
 }
 

@@ -34,6 +34,7 @@ export class CardSession {
 	private thinkingNormalizer = new StreamingTextNormalizer();
 	private answerNormalizer = new StreamingTextNormalizer();
 	pendingApprovalId?: string;
+	progressText = "";
 
 	get toolCount(): number {
 		return this.toolCallCount;
@@ -107,6 +108,7 @@ export class CardSession {
 				break;
 			}
 			case "notice.updated": {
+				if (String(data.id ?? "") === "turn:status" && typeof data.message === "string") this.progressText = data.message.slice(0, 1_000);
 				this.timeline.recordNotice(String(data.id ?? "notice"), String(data.label ?? "状态"), String(data.status ?? "info"), String(data.message ?? ""));
 				break;
 			}

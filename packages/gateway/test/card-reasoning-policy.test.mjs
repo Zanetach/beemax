@@ -13,6 +13,14 @@ test("default cards keep raw reasoning out of the user-visible answer and execut
 	assert.match(JSON.stringify(renderCard(card, { reasoningDisplay: "raw" })), /secret model reasoning/);
 });
 
+test("a waiting card presents its current progress message in the main content", () => {
+	const card = new CardSession();
+	card.apply("notice.updated", { id: "turn:status", label: "当前状态", status: "running", message: "已收到 · 正在理解需求" });
+	const rendered = JSON.stringify(renderCard(card));
+	assert.match(rendered, /已收到 · 正在理解需求/);
+	assert.doesNotMatch(rendered, /处理中 [⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]/u);
+});
+
 test("pending approvals render native semantic actions and terminal decisions remove them", () => {
 	const card = new CardSession();
 	card.apply("approval.updated", { id: "approval:turn-1", status: "pending", message: "Review" });
