@@ -11,15 +11,19 @@
     "build": "tsgo -p tsconfig.build.json",
     "typecheck": "tsgo --noEmit -p tsconfig.build.json"
   },
-	"dependencies": {
-		"@beemax/automation": "0.1.0",
-		"@beemax/core": "0.1.0",
-		"@beemax/codex-image-capability": "0.1.0",
-		"@beemax/feishu-capability": "0.1.0",
-		"@beemax/mcp-capability": "0.1.0",
+  "dependencies": {
+    "@beemax/automation": "0.1.0",
+    "@beemax/codex-image-capability": "0.1.0",
+    "@beemax/core": "0.1.0",
+    "@beemax/feishu-capability": "0.1.0",
     "@beemax/gateway": "*",
+    "@beemax/mcp-capability": "0.1.0",
     "@beemax/memory": "*",
-		"@earendil-works/pi-tui": "^0.80.6",
+    "@earendil-works/pi-tui": "^0.80.6",
+    "qrcode-terminal": "^0.12.0",
     "yaml": "2.9.0"
+  },
+  "devDependencies": {
+    "@types/qrcode-terminal": "^0.12.2"
   }
 }

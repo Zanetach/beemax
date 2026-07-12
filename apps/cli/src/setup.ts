@@ -1,5 +1,6 @@
 import { loadConfig } from "./config.ts";
 import type { CustomProtocol } from "./config.ts";
+import { registerFeishuBot } from "./feishu-onboarding.ts";
 import { presetFor, renderModelProviderChoices, resolveProviderSelection } from "./model-catalog.ts";
 import { runDoctor } from "./doctor.ts";
 import {
@@ -42,6 +43,7 @@ export interface SetupDependencies {
 	probe?: typeof probeFeishuApp;
 	doctor?: typeof runDoctor;
 	ask?: (request: SetupPrompt) => Promise<string>;
+	qrRegister?: typeof registerFeishuBot;
 }
 
 export interface SetupPrompt { label: string; defaultValue?: string; secret?: boolean; }
@@ -87,33 +89,69 @@ export async function runSetup(options: SetupOptions, dependencies: SetupDepende
 		if (!apiKey && !current.model.apiKey) throw new Error("Setup requires a model API key");
 	}
 
-	const configureGateway = options.gatewayOnly || options.configureGateway === true
+	let configureGateway = options.gatewayOnly || options.configureGateway === true
 		|| Boolean(options.appId || options.appSecret || options.allowedUsers);
+	const requireGateway = configureGateway;
+	let replacingExistingGateway = false;
 	let appId = "";
 	let appSecret = "";
 	let allowedUsers: string[] = [];
 	let domain = currentFeishu.domain;
 	let connectionMode = currentFeishu.connectionMode;
 	let webhookEncryptKey: string | undefined;
+	let usedQrRegistration = false;
 	let probe: Awaited<ReturnType<typeof probeFeishuApp>> | undefined;
+	if (configureGateway && !options.nonInteractive && currentFeishu.appId && currentFeishu.appSecret) {
+		const existingAction = await ask("Existing Feishu configuration (keep or replace)", "keep");
+		if (existingAction === "keep") {
+			configureGateway = false;
+			console.log(`Kept the existing Feishu Gateway configuration for Profile '${options.profile}'.`);
+		} else if (existingAction === "replace") replacingExistingGateway = true;
+		else throw new Error("Existing configuration action must be keep or replace");
+	}
 	if (configureGateway) {
-		if (!options.nonInteractive) console.log("\nBeeMax Feishu Gateway setup\nFour short steps; press Enter to accept the recommended defaults.\n");
-		domain = options.domain ?? (options.nonInteractive ? currentFeishu.domain : parseDomain(await ask("[1/4] Platform (feishu or lark)", currentFeishu.domain)));
-		if (!options.nonInteractive) console.log("[2/4] App credentials — Feishu Developer Console > Credentials & Basic Info");
-		appId = options.appId ?? (options.nonInteractive ? currentFeishu.appId : await ask("Feishu App ID", currentFeishu.appId));
-		appSecret = options.appSecret ?? currentFeishu.appSecret;
-		if (!appSecret && !options.nonInteractive) appSecret = await ask("Feishu App Secret", undefined, true);
-		connectionMode = options.connectionMode ?? (options.nonInteractive ? currentFeishu.connectionMode : parseConnectionMode(await ask("[3/4] Connection mode (websocket or webhook)", currentFeishu.connectionMode)));
+		let qrOwnerId: string | undefined;
+		if (!options.nonInteractive) {
+			console.log("\nBeeMax Feishu Gateway setup\nScan to create a bot automatically, or choose manual setup.\n");
+			const method = await ask("[1/5] Setup method (qr or manual)", "qr");
+			if (method !== "qr" && method !== "manual") throw new Error("Setup method must be qr or manual");
+			if (method === "qr") {
+				try {
+					const registered = await (dependencies.qrRegister ?? registerFeishuBot)({ initialDomain: options.domain ?? currentFeishu.domain });
+					if (registered) {
+						({ appId, appSecret, domain } = registered);
+						qrOwnerId = registered.openId;
+						connectionMode = "websocket";
+						usedQrRegistration = true;
+						console.log(`PASS  Feishu QR registration  app=${appId}${qrOwnerId ? " · owner authorized" : ""}`);
+					} else console.log("WARN  QR registration did not complete; continuing with manual setup.");
+				} catch (error) {
+					console.log(`WARN  QR registration failed; continuing manually (${error instanceof Error ? error.message : String(error)}).`);
+				}
+			}
+		}
+		if (!usedQrRegistration) {
+			domain = options.domain ?? (options.nonInteractive ? currentFeishu.domain : parseDomain(await ask("[2/5] Platform (feishu or lark)", currentFeishu.domain)));
+			if (!options.nonInteractive) console.log("[3/5] App credentials — Feishu Developer Console > Credentials & Basic Info");
+			appId = options.appId ?? (options.nonInteractive ? currentFeishu.appId : await ask("Feishu App ID", currentFeishu.appId));
+			appSecret = options.appSecret ?? (replacingExistingGateway && !options.nonInteractive ? "" : currentFeishu.appSecret);
+			if (!appSecret && !options.nonInteractive) appSecret = await ask("Feishu App Secret", undefined, true);
+			connectionMode = options.connectionMode ?? (options.nonInteractive ? currentFeishu.connectionMode : parseConnectionMode(await ask("[4/5] Connection mode (websocket or webhook)", currentFeishu.connectionMode)));
+		}
 		webhookEncryptKey = options.webhookEncryptKey ?? currentFeishu.webhookEncryptKey;
 		if (connectionMode === "webhook" && !webhookEncryptKey && !options.nonInteractive) {
 			webhookEncryptKey = await ask("Feishu webhook encrypt key", undefined, true);
 		}
-		if (!options.nonInteractive) console.log("[4/4] Access — enter your own open_id, union_id, or user_id. Multiple IDs use commas.");
-		allowedUsers = options.allowedUsers ?? currentFeishu.allowedUsers;
+		if (!options.nonInteractive) console.log("[5/5] Access — QR setup authorizes the scanning user; manual setup accepts open_id, union_id, or user_id.");
+		allowedUsers = options.allowedUsers ?? (usedQrRegistration ? (qrOwnerId ? [qrOwnerId] : []) : currentFeishu.allowedUsers);
 		if (allowedUsers.length === 0 && !options.nonInteractive) allowedUsers = splitList(await ask("Allowed Feishu user IDs (comma-separated)"));
 		if (!appId || !appSecret || allowedUsers.length === 0) throw new Error("Gateway setup requires Feishu App ID, App Secret, and at least one allowed user");
 		if (connectionMode === "webhook" && !webhookEncryptKey) throw new Error("Webhook setup requires FEISHU_WEBHOOK_ENCRYPT_KEY");
-		probe = await (dependencies.probe ?? probeFeishuApp)({ appId, appSecret, domain });
+		try { probe = await (dependencies.probe ?? probeFeishuApp)({ appId, appSecret, domain }); }
+		catch (error) {
+			if (!usedQrRegistration) throw error;
+			probe = { warning: `bot probe deferred: ${error instanceof Error ? error.message : String(error)}` };
+		}
 	}
 
 	if (!exists) {
@@ -141,18 +179,19 @@ export async function runSetup(options: SetupOptions, dependencies: SetupDepende
 			webhookVerificationToken: options.webhookVerificationToken ?? currentFeishu.webhookVerificationToken,
 			webhookEncryptKey,
 		});
-		printFeishuChecklist(connectionMode);
+		if (usedQrRegistration) console.log("\nPASS  Feishu application, permissions, events, and card callbacks were configured by QR registration.\n");
+		else printFeishuChecklist(connectionMode);
 		console.log(probe!.botName || probe!.botOpenId
 			? `PASS  Feishu live probe       bot=${probe!.botName ?? probe!.botOpenId}`
 			: `WARN  Feishu live probe       ${probe!.warning ?? "credentials valid; bot identity unavailable"}`);
-		console.log(`\nNext: finish the Feishu console checklist above, then run:\n  beemax gateway run --profile ${options.profile}\nSend the bot a private message to verify streaming cards and approval buttons.\n`);
+		console.log(`\nNext: ${usedQrRegistration ? "run" : "finish the Feishu console checklist above, then run"}:\n  beemax gateway run --profile ${options.profile}\nSend the bot a private message to verify streaming cards and approval buttons.\n`);
 	}
 	if (options.gatewayOnly) {
 		await setActiveProfile(options.profile);
 		console.log(`BeeMax Gateway setup complete for Profile '${options.profile}'.`);
 		return true;
 	}
-	const ready = await (dependencies.doctor ?? runDoctor)(loadConfig(undefined, options.profile), { requireGateway: configureGateway });
+	const ready = await (dependencies.doctor ?? runDoctor)(loadConfig(undefined, options.profile), { requireGateway });
 	if (ready) {
 		await setActiveProfile(options.profile);
 		console.log(`BeeMax setup complete for Profile '${options.profile}'.`);

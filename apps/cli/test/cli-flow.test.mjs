@@ -252,7 +252,7 @@ test("base setup creates a local Agent that can be used before any Gateway exist
 	}
 });
 
-test("Feishu Gateway setup is a four-step guided wizard with safe WebSocket defaults", async () => {
+test("Feishu Gateway manual fallback is guided and keeps safe WebSocket defaults", async () => {
 	const root = await mkdtemp(join(tmpdir(), "beemax-wizard-root-"));
 	const home = await mkdtemp(join(tmpdir(), "beemax-wizard-home-"));
 	const previousRoot = process.env.BEEMAX_ROOT;
@@ -266,10 +266,11 @@ test("Feishu Gateway setup is a four-step guided wizard with safe WebSocket defa
 	try {
 		await runSetup({ profile: "guided", nonInteractive: true, provider: "openrouter", model: "openai/gpt-5.2", apiKey: "model-secret" }, { doctor: async () => true });
 		const answers = new Map([
-			["[1/4] Platform (feishu or lark)", ""],
+			["[1/5] Setup method (qr or manual)", "manual"],
+			["[2/5] Platform (feishu or lark)", ""],
 			["Feishu App ID", "cli_guided"],
 			["Feishu App Secret", "guided-secret"],
-			["[3/4] Connection mode (websocket or webhook)", ""],
+			["[4/5] Connection mode (websocket or webhook)", ""],
 			["Allowed Feishu user IDs (comma-separated)", "ou_guided,on_guided"],
 		]);
 		await runSetup({ profile: "guided", gatewayOnly: true, nonInteractive: false }, {
@@ -284,12 +285,67 @@ test("Feishu Gateway setup is a four-step guided wizard with safe WebSocket defa
 		assert.equal(config.gateway.feishu.connectionMode, "websocket");
 		assert.deepEqual(config.gateway.feishu.allowedUsers, ["ou_guided", "on_guided"]);
 		const output = logs.join("\n");
-		assert.match(output, /Four short steps/);
+		assert.match(output, /Scan to create a bot automatically/);
 		assert.match(output, /card\.action\.trigger/);
 		assert.match(output, /beemax gateway run --profile guided/);
 		assert.equal(prompts.find(({ label }) => label === "Feishu App Secret")?.secret, true);
 	} finally {
 		console.log = previousLog;
+		if (previousRoot === undefined) delete process.env.BEEMAX_ROOT; else process.env.BEEMAX_ROOT = previousRoot;
+		if (previousHome === undefined) delete process.env.BEEMAX_HOME; else process.env.BEEMAX_HOME = previousHome;
+	}
+});
+
+test("Feishu Gateway QR setup stores generated credentials and authorizes only the scanning user", async () => {
+	const root = await mkdtemp(join(tmpdir(), "beemax-qr-wizard-root-"));
+	const home = await mkdtemp(join(tmpdir(), "beemax-qr-wizard-home-"));
+	const previousRoot = process.env.BEEMAX_ROOT;
+	const previousHome = process.env.BEEMAX_HOME;
+	const logs = [];
+	const prompts = [];
+	const previousLog = console.log;
+	process.env.BEEMAX_ROOT = root;
+	process.env.BEEMAX_HOME = home;
+	console.log = (...items) => logs.push(items.join(" "));
+	try {
+		await runSetup({ profile: "qr", nonInteractive: true, provider: "openrouter", model: "openai/gpt-5.2", apiKey: "model-secret" }, { doctor: async () => true });
+		await runSetup({ profile: "qr", gatewayOnly: true, nonInteractive: false }, {
+			ask: async (prompt) => { prompts.push(prompt); return ""; },
+			qrRegister: async () => ({ appId: "cli_qr", appSecret: "qr-secret", domain: "lark", openId: "ou_scanner" }),
+			probe: async (input) => { assert.deepEqual(input, { appId: "cli_qr", appSecret: "qr-secret", domain: "lark" }); return { botName: "QR Bot" }; },
+		});
+		const config = loadConfig(join(home, "profiles", "qr", "config.yaml"), "qr");
+		assert.equal(config.gateway.feishu.appId, "cli_qr");
+		assert.equal(config.gateway.feishu.domain, "lark");
+		assert.equal(config.gateway.feishu.connectionMode, "websocket");
+		assert.deepEqual(config.gateway.feishu.allowedUsers, ["ou_scanner"]);
+		assert.equal(prompts.some(({ label }) => label === "Feishu App Secret"), false);
+		assert.match(logs.join("\n"), /configured by QR registration/);
+		assert.doesNotMatch(logs.join("\n"), /finish the Feishu console checklist/);
+	} finally {
+		console.log = previousLog;
+		if (previousRoot === undefined) delete process.env.BEEMAX_ROOT; else process.env.BEEMAX_ROOT = previousRoot;
+		if (previousHome === undefined) delete process.env.BEEMAX_HOME; else process.env.BEEMAX_HOME = previousHome;
+	}
+});
+
+test("Feishu Gateway setup keeps an existing configuration unless replacement is explicit", async () => {
+	const root = await mkdtemp(join(tmpdir(), "beemax-keep-root-"));
+	const home = await mkdtemp(join(tmpdir(), "beemax-keep-home-"));
+	const previousRoot = process.env.BEEMAX_ROOT;
+	const previousHome = process.env.BEEMAX_HOME;
+	process.env.BEEMAX_ROOT = root;
+	process.env.BEEMAX_HOME = home;
+	try {
+		await runSetup({ profile: "keep", nonInteractive: true, provider: "openrouter", model: "openai/gpt-5.2", apiKey: "model-secret", appId: "cli_existing", appSecret: "existing-secret", allowedUsers: ["ou_existing"] }, { doctor: async () => true, probe: async () => ({ botName: "Existing" }) });
+		await runSetup({ profile: "keep", gatewayOnly: true, nonInteractive: false }, {
+			ask: async ({ label }) => label === "Existing Feishu configuration (keep or replace)" ? "" : assert.fail(`unexpected prompt: ${label}`),
+			qrRegister: async () => assert.fail("QR registration must not run when existing configuration is kept"),
+		});
+		const config = loadConfig(join(home, "profiles", "keep", "config.yaml"), "keep");
+		assert.equal(config.gateway.feishu.appId, "cli_existing");
+		assert.deepEqual(config.gateway.feishu.allowedUsers, ["ou_existing"]);
+	} finally {
 		if (previousRoot === undefined) delete process.env.BEEMAX_ROOT; else process.env.BEEMAX_ROOT = previousRoot;
 		if (previousHome === undefined) delete process.env.BEEMAX_HOME; else process.env.BEEMAX_HOME = previousHome;
 	}
