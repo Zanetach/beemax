@@ -17,6 +17,7 @@
     "@beemax/core": "0.1.0",
     "@beemax/feishu-capability": "0.1.0",
     "@beemax/gateway": "*",
+    "@beemax/knowledge": "0.1.0",
     "@beemax/mcp-capability": "0.1.0",
     "@beemax/memory": "*",
     "@earendil-works/pi-tui": "^0.80.6",

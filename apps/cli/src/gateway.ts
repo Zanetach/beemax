@@ -20,6 +20,7 @@ import { loadMcpConfig, McpManager } from "@beemax/mcp-capability";
 import { buildAgentFactory } from "./agent-factory.ts";
 import { MemoryStore } from "@beemax/memory";
 import { createFeishuMeetingTools } from "@beemax/feishu-capability";
+import { WeKnoraKnowledgeProvider, createKnowledgeTools } from "@beemax/knowledge";
 import type { SessionSource } from "@beemax/gateway";
 import { beemaxHome, type BeeMaxConfig } from "./config.ts";
 import { acquireChannelLock } from "./channel-lock.ts";
@@ -117,6 +118,9 @@ export async function runGateway(config: BeeMaxConfig): Promise<void> {
 	const feishuMeetingTools = createFeishuMeetingTools(() => adapter.apiClient);
 	const credentialAudit = new FileCredentialVaultAuditJournal(join(config.paths.agentDir, "credential-audit.jsonl"));
 	const credentialVault = config.credentials.key ? new FileCredentialVault(config.credentials.vaultPath, Buffer.from(config.credentials.key, "base64"), credentialAudit.append.bind(credentialAudit)) : undefined;
+	const knowledgeProvider = config.knowledge.enabled && config.knowledge.apiKey && config.knowledge.spaces.length
+		? new WeKnoraKnowledgeProvider({ baseUrl: config.knowledge.baseUrl, apiKey: config.knowledge.apiKey })
+		: undefined;
 
 	let scheduler: AutomationScheduler | undefined;
 	const resolveMemoryScope = createMemoryScopeResolver(config.memory.memberships);
@@ -183,7 +187,10 @@ export async function runGateway(config: BeeMaxConfig): Promise<void> {
 	const createAgent = buildAgentFactory({
 		...profileAgentDefaults,
 		systemPrompt: () => buildMainAgentSystemPrompt(profilePrompt(config)),
-		tools: executionSafeTools(config, mainAgentTools(config.agent.toolset, mainMcpTools.map((tool) => tool.name))),
+		tools: executionSafeTools(config, mainAgentTools(config.agent.toolset, [
+			...mainMcpTools.map((tool) => tool.name),
+			...(knowledgeProvider ? ["knowledge_retrieve"] : []),
+		])),
 		customTools: [...mainMcpTools, ...feishuMeetingTools],
 		verifySkillCandidate: createSkillCandidateVerifier(createSubagentAgent, config.subagents.timeoutMs, memory),
 		sessionTools: (source) => [
@@ -192,6 +199,10 @@ export async function runGateway(config: BeeMaxConfig): Promise<void> {
 				...createTaskOrchestrationTools(memory, source, (task, signal, context) => taskScheduler.run(task.ownerKey, () => executePlannedTask(createSubagentAgent, task, source, signal, config.subagents.timeoutMs, context), signal), { maxConcurrent: config.subagents.maxConcurrent, planRuntime: taskPlanRuntime, verify: verifyTask, planningDecision: () => planningBudgets.current(conversationKey(source)), objectiveTaskId: () => planningBudgets.currentObjectiveTaskId(conversationKey(source)) }),
 			] : []),
 			...createTaskLedgerTools(memory, source),
+			...(knowledgeProvider ? createKnowledgeTools(knowledgeProvider, source, {
+				profileId: config.profile,
+				spaces: config.knowledge.spaces,
+			}) : []),
 		],
 		automationStore: automation,
 		wakeAutomation: () => scheduler?.wake(),

@@ -11,6 +11,7 @@ import { AuthStorage, FileCredentialVault } from "@beemax/core";
 import type { BeeMaxConfig } from "./config.ts";
 import { providerApiKeyEnv } from "./provider-resolver.ts";
 import { inspectOperationalMetrics, operationalMetricsPath } from "./operational-metrics.ts";
+import { WeKnoraKnowledgeProvider } from "@beemax/knowledge";
 
 export interface DoctorCheck { name: string; status: "PASS" | "WARN" | "FAIL"; detail: string }
 export interface DoctorResult { ok: boolean; checks: DoctorCheck[] }
@@ -122,6 +123,25 @@ export async function inspectDoctor(config: BeeMaxConfig, options: DoctorOptions
 		checks.push({ name: "Interaction recovery", status: "FAIL", detail: error instanceof Error ? error.message : String(error) });
 	}
 	checks.push({ name: "Interaction protocol", status: "PASS", detail: "v1 scope-bound control contract available" });
+	if (!config.knowledge.enabled) {
+		checks.push({ name: "Knowledge Kernel", status: "WARN", detail: "disabled" });
+	} else if (!config.knowledge.apiKey || config.knowledge.spaces.length === 0) {
+		checks.push({
+			name: "Knowledge Kernel",
+			status: "FAIL",
+			detail: !config.knowledge.apiKey ? "missing BEEMAX_WEKNORA_API_KEY" : "no knowledge spaces configured",
+		});
+	} else {
+		const provider = new WeKnoraKnowledgeProvider({ baseUrl: config.knowledge.baseUrl, apiKey: config.knowledge.apiKey });
+		const health = await provider.healthCheck();
+		checks.push({
+			name: "Knowledge Kernel",
+			status: health.healthy ? "PASS" : "FAIL",
+			detail: health.healthy
+				? `${config.knowledge.spaces.length} space(s); ${config.knowledge.baseUrl}`
+				: `unavailable (${health.status || "network error"}); ${config.knowledge.baseUrl}`,
+		});
+	}
 	try {
 		const metrics = inspectOperationalMetrics(config.paths.agentDir);
 		const status = !metrics.available || !metrics.permissionsSafe || metrics.alerts.length ? "WARN" : "PASS";

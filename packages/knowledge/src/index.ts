@@ -17,3 +17,8 @@ export {
   WeKnoraKnowledgeProvider,
   type WeKnoraKnowledgeProviderOptions,
 } from "./weknora-provider.ts";
+export {
+  createKnowledgeTools,
+  type KnowledgeToolSpace,
+  type KnowledgeToolsOptions,
+} from "./tools.ts";

@@ -969,6 +969,7 @@ async function runChat(config: ReturnType<typeof loadConfig>, requestedMode: { f
 	});
 	const { AutonomousPlanningPolicy, conversationKey, createSubagentTools, createTaskLedgerTools, createTaskOrchestrationTools, FileCredentialVault, FileCredentialVaultAuditJournal, ObjectiveRuntime, ProfileTaskScheduler, redactCredentialMaterial, SubagentManager, TaskPlanNoticeDeliveryService, TaskPlanRuntime, TaskRecoveryRunner, TaskRecoveryService } = await import("@beemax/core");
 	const { loadMcpConfig, McpManager } = await import("@beemax/mcp-capability");
+	const { WeKnoraKnowledgeProvider, createKnowledgeTools } = await import("@beemax/knowledge");
 	const { buildAgentFactory } = await import("./agent-factory.ts");
 	const { MemoryStore } = await import("@beemax/memory");
 	const apiKey = config.model.apiKey ?? "";
@@ -979,6 +980,9 @@ async function runChat(config: ReturnType<typeof loadConfig>, requestedMode: { f
 		if (presentationMode !== "full") process.stdout.write(`\n${text}\n`);
 	});
 	const memory = new MemoryStore(config.memory.dbPath, config.profile);
+	const knowledgeProvider = config.knowledge.enabled && config.knowledge.apiKey && config.knowledge.spaces.length
+		? new WeKnoraKnowledgeProvider({ baseUrl: config.knowledge.baseUrl, apiKey: config.knowledge.apiKey })
+		: undefined;
 	const mcp = new McpManager();
 	await mcp.connectAll(loadMcpConfig(config.mcp.configPath));
 	const credentialAudit = new FileCredentialVaultAuditJournal(join(config.paths.agentDir, "credential-audit.jsonl"));
@@ -1048,7 +1052,10 @@ async function runChat(config: ReturnType<typeof loadConfig>, requestedMode: { f
 		memoryStore: memory,
 		executionPortForSource: executionPortFor(config),
 		customTools: mcp.getTools(),
-		tools: executionSafeTools(config, mainAgentTools(config.agent.toolset, mcp.getTools().map((tool) => tool.name))),
+		tools: executionSafeTools(config, mainAgentTools(config.agent.toolset, [
+			...mcp.getTools().map((tool) => tool.name),
+			...(knowledgeProvider ? ["knowledge_retrieve"] : []),
+		])),
 		verifySkillCandidate: createSkillCandidateVerifier(createSubagentAgent, config.subagents.timeoutMs, memory),
 		authorizeTool: (request, signal) => localApproval.authorize(request, signal),
 		credentials: credentialVault ? { ownerKey: `profile:${config.profile}`, vault: credentialVault } : undefined,
@@ -1058,6 +1065,10 @@ async function runChat(config: ReturnType<typeof loadConfig>, requestedMode: { f
 				...createTaskOrchestrationTools(memory, sessionSource, (task, signal, context) => taskScheduler.run(task.ownerKey, () => executePlannedTask(createSubagentAgent, task, sessionSource, signal, config.subagents.timeoutMs, context), signal), { maxConcurrent: config.subagents.maxConcurrent, planRuntime: taskPlanRuntime, verify: verifyTask, planningDecision: () => planningBudgets.current(conversationKey(sessionSource)), objectiveTaskId: () => planningBudgets.currentObjectiveTaskId(conversationKey(sessionSource)) }),
 			] : []),
 			...createTaskLedgerTools(memory, sessionSource),
+			...(knowledgeProvider ? createKnowledgeTools(knowledgeProvider, sessionSource, {
+				profileId: config.profile,
+				spaces: config.knowledge.spaces,
+			}) : []),
 		],
 	});
 	const profileRuntime = createProfileAgentRuntime<SessionSource>({

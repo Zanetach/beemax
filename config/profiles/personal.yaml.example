@@ -23,6 +23,16 @@ memory:
 mcp:
   configPath: config/profiles/personal.mcp.json
 
+# Set BEEMAX_WEKNORA_API_KEY in the Profile env file, never in YAML.
+knowledge:
+  enabled: false
+  provider: weknora
+  baseUrl: http://127.0.0.1:8080
+  spaces: []
+  # - id: company
+  #   name: 公司公共知识
+  #   knowledgeBaseId: kb-xxxxxxxx
+
 imageGeneration:
   enabled: true
   provider: openai-codex

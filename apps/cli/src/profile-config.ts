@@ -409,6 +409,7 @@ function defaultProfileYaml(): string {
 		gateway: { feishu: { domain: "feishu", requireMention: true, allowedUsers: [], allowedChats: [], allowAllUsers: false } },
 		memory: { dbPath: "memory.db", memberships: [] },
 		mcp: { configPath: "mcp.json" },
+		knowledge: { enabled: false, provider: "weknora", baseUrl: "http://127.0.0.1:8080", spaces: [] },
 		imageGeneration: { enabled: false, provider: "openai-codex", quality: "medium", outputDir: "cache/images" },
 		execution: { backend: "local", mode: "off", workspaceAccess: "none", image: "node:22-alpine", timeoutMs: 180000 },
 		subagents: { enabled: true, maxConcurrent: 3, maxChildrenPerOwner: 5, timeoutMs: 900000 },

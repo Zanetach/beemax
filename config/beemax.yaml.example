@@ -22,6 +22,16 @@ memory:
 mcp:
   configPath: config/mcp.json
 
+# WeKnora-backed enterprise knowledge. Keep BEEMAX_WEKNORA_API_KEY in .env.
+knowledge:
+  enabled: false
+  provider: weknora
+  baseUrl: http://127.0.0.1:8080
+  spaces: []
+  # - id: company
+  #   name: 公司公共知识
+  #   knowledgeBaseId: kb-xxxxxxxx
+
 imageGeneration:
   enabled: false
   provider: openai-codex

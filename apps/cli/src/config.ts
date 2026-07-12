@@ -45,6 +45,12 @@ export interface FeishuConfig {
 }
 export type CustomProtocol = "openai-completions" | "openai-responses" | "anthropic-messages";
 
+export interface KnowledgeSpaceConfig {
+	id: string;
+	name: string;
+	knowledgeBaseId: string;
+}
+
 export interface BeeMaxConfig {
 	profile: string;
 	agent: {
@@ -72,6 +78,13 @@ export interface BeeMaxConfig {
 	credentials: { vaultPath: string; keyPath: string; key?: string };
 	mcp: {
 		configPath: string;
+	};
+	knowledge: {
+		enabled: boolean;
+		provider: "weknora";
+		baseUrl: string;
+		apiKey?: string;
+		spaces: KnowledgeSpaceConfig[];
 	};
 	imageGeneration: {
 		enabled: boolean;
@@ -210,6 +223,13 @@ export function loadConfig(configPath?: string, profile = "default"): BeeMaxConf
 		mcp: {
 			configPath: resolveFrom(location.basePath, str(env.BEEMAX_MCP_CONFIG ?? cfg.mcp?.configPath ?? (location.isHome ? "mcp.json" : profile === "default" ? "config/mcp.json" : `config/profiles/${profile}.mcp.json`))),
 		},
+		knowledge: {
+			enabled: parseBool(env.BEEMAX_KNOWLEDGE_ENABLED ?? cfg.knowledge?.enabled ?? false),
+			provider: "weknora",
+			baseUrl: str(env.BEEMAX_WEKNORA_BASE_URL ?? cfg.knowledge?.baseUrl ?? "http://127.0.0.1:8080"),
+			apiKey: optional(env.BEEMAX_WEKNORA_API_KEY),
+			spaces: parseKnowledgeSpaces(cfg.knowledge?.spaces),
+		},
 		imageGeneration: {
 			enabled: parseBool(env.BEEMAX_IMAGE_ENABLED ?? cfg.imageGeneration?.enabled ?? false),
 			provider: "openai-codex",
@@ -274,6 +294,23 @@ function str(v: unknown): string {
 function parseBool(v: unknown): boolean {
 	if (typeof v === "boolean") return v;
 	return /^(1|true|yes|on)$/i.test(String(v).trim());
+}
+
+function parseKnowledgeSpaces(value: unknown): KnowledgeSpaceConfig[] {
+	if (value === undefined) return [];
+	if (!Array.isArray(value)) throw new Error("knowledge.spaces must be an array");
+	const seen = new Set<string>();
+	return value.map((entry, index) => {
+		if (!entry || typeof entry !== "object") throw new Error(`knowledge.spaces[${index}] must be an object`);
+		const record = entry as Record<string, unknown>;
+		const id = str(record.id);
+		const name = str(record.name);
+		const knowledgeBaseId = str(record.knowledgeBaseId);
+		if (!id || !name || !knowledgeBaseId) throw new Error(`knowledge.spaces[${index}] requires id, name, and knowledgeBaseId`);
+		if (seen.has(id)) throw new Error(`knowledge.spaces contains duplicate id: ${id}`);
+		seen.add(id);
+		return { id, name, knowledgeBaseId };
+	});
 }
 
 function optional(value: unknown): string | undefined {

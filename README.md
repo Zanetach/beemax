@@ -215,6 +215,32 @@ npm run doctor     # validates local readiness
 npm run gateway    # starts the long-running Feishu agent
 ```
 
+### Enterprise knowledge (WeKnora)
+
+BeeMax can search documents uploaded and managed in an existing WeKnora Web console. Configure the connection and explicitly list the knowledge spaces this Profile may read:
+
+```yaml
+knowledge:
+  enabled: true
+  provider: weknora
+  baseUrl: http://127.0.0.1:8080
+  spaces:
+    - id: company
+      name: 公司公共知识
+      knowledgeBaseId: kb-xxxxxxxx
+    - id: pcb
+      name: PCB专业知识
+      knowledgeBaseId: kb-yyyyyyyy
+```
+
+Keep the API key in the Profile `.env`, not in YAML:
+
+```bash
+BEEMAX_WEKNORA_API_KEY=sk-xxxxxxxx
+```
+
+After restarting the Gateway, the Agent receives the read-only `knowledge_retrieve` tool. It can answer enterprise questions from Feishu or local chat with source titles and filenames, and cannot search knowledge spaces omitted from the Profile configuration. Run `beemax doctor --profile <name>` to verify the connection.
+
 To reproduce the release gate locally after choosing a version label:
 
 ```bash
