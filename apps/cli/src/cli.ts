@@ -992,6 +992,7 @@ async function runChat(config: ReturnType<typeof loadConfig>, requestedMode: { f
 	};
 	const readOnlyMcpTools = mcp.getTools().filter((tool) => tool.beemaxPolicy?.sideEffect === "none");
 	const createSubagentAgent = buildAgentFactory({
+		profileId: config.profile,
 		provider: () => config.model.provider,
 		model: () => config.model.model,
 		baseUrl: () => config.model.baseUrl,
@@ -1035,6 +1036,7 @@ async function runChat(config: ReturnType<typeof loadConfig>, requestedMode: { f
 		execute: (task, signal) => executeSubagentTask(createSubagentAgent, task, signal),
 	}) : undefined;
 	const createAgent = buildAgentFactory({
+		profileId: config.profile,
 		provider: () => config.model.provider,
 		model: () => config.model.model,
 		baseUrl: () => config.model.baseUrl,
@@ -1068,7 +1070,7 @@ async function runChat(config: ReturnType<typeof loadConfig>, requestedMode: { f
 			planningBudgets,
 			fallbackModels: configuredRuntimeModels(config),
 			taskLedger: memory,
-			context: createTaskAwareConversationContext(memory, { runtimeSnapshot: () => ({ profile: config.profile }) }),
+			context: createTaskAwareConversationContext(memory, { memoryScope: { profileId: config.profile }, runtimeSnapshot: () => ({ profile: config.profile }) }),
 		},
 		approvalBroker: localApproval,
 		cancelSubagents: (sessionSource) => subagents?.cancelOwner(sessionSource) ?? 0,

@@ -38,6 +38,7 @@ import { homedir } from "node:os";
 export { filterEligibleSkills } from "@beemax/core";
 
 export interface AgentFactoryOptions {
+	profileId: string;
 	provider: string | (() => string);
 	model: string | (() => string);
 	baseUrl?: string | undefined | (() => string | undefined);
@@ -82,7 +83,7 @@ export function buildAgentFactory(opts: AgentFactoryOptions) {
 		createTools: (source, onResourcesChanged, getRuntimeApiKey, activateTools) => {
 			const browserTools = createBrowserTools({ credentials: opts.credentials });
 			const executionTools = createExecutionTools(source, opts.cwd, opts.executionPortForSource?.(source) ?? execution);
-		const memoryTools = opts.memoryStore ? createMemoryTools(opts.memoryStore, source) : [];
+			const memoryTools = opts.memoryStore ? createMemoryTools(opts.memoryStore, source, { profileId: opts.profileId }) : [];
 		const automationTools = opts.automationStore
 			? createAutomationTools(opts.automationStore, source, opts.wakeAutomation ?? (() => undefined))
 			: [];

@@ -7,6 +7,8 @@ export interface ConversationExchange {
 }
 
 export interface ConversationContextOptions {
+	/** Trusted Profile/business scope supplied by the composition root, never by a channel payload. */
+	memoryScope?: Pick<MemoryScope, "profileId" | "projectId" | "organizationId">;
 	/** Persist a delivery route for proactive work without coupling Core to a channel. */
 	recordDirectRoute?: (route: MemoryScope) => void;
 	/** Supplies verified, volatile facts (for example current task state) for fact-sensitive turns. */
@@ -28,15 +30,17 @@ export class ConversationContext {
 	private readonly memory: ConversationMemoryPort;
 	private readonly recordDirectRoute?: ConversationContextOptions["recordDirectRoute"];
 	private readonly runtimeFacts?: ConversationContextOptions["runtimeFacts"];
+	private readonly memoryScope: NonNullable<ConversationContextOptions["memoryScope"]>;
 
 	constructor(memory: ConversationMemoryPort, options: ConversationContextOptions = {}) {
 		this.memory = memory;
 		this.recordDirectRoute = options.recordDirectRoute;
 		this.runtimeFacts = options.runtimeFacts;
+		this.memoryScope = options.memoryScope ?? {};
 	}
 
 	enrich(source: BeeMaxRuntimeSource, text: string, runtime: VerifiedRuntimeFacts = {}): string {
-		const scope = memoryScopeForSource(source);
+		const scope = memoryScopeForSource(source, this.memoryScope);
 		this.memory.recordEvent?.({ ...scope, kind: "user", content: text });
 		const hits = this.memory.recall(text, { ...scope, limit: 4 });
 		const sections: string[] = [];
@@ -50,7 +54,7 @@ export class ConversationContext {
 	}
 
 	record(source: BeeMaxRuntimeSource, exchange: ConversationExchange): void {
-		const scope = memoryScopeForSource(source);
+		const scope = memoryScopeForSource(source, this.memoryScope);
 		if (source.chatType === "dm") this.recordDirectRoute?.(scope);
 		this.memory.recordCandidate({ ...scope, role: "user", content: exchange.user });
 		this.memory.recordCandidate({ ...scope, role: "assistant", content: exchange.assistant });

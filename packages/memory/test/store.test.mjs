@@ -997,7 +997,7 @@ test("organizational claims retain entity identity, source, validity, visibility
 	const root = mkdtempSync(join(tmpdir(), "beemax-organizational-memory-"));
 	const store = new MemoryStore(join(root, "memory.db"));
 	try {
-		const scope = { platform: "feishu", chatId: "sales", threadId: "order-thread", userId: "seller" };
+		const scope = { profileId: "sales-profile", platform: "feishu", chatId: "sales", threadId: "order-thread", userId: "seller", projectId: "sales-team" };
 		const first = store.upsertClaim({ ...scope, kind: "fact", statement: "交付日期为 7 月 25 日", subject: { type: "customer", id: "customer-1" }, object: { type: "order", id: "PO-1" }, source: { type: "message", ref: "om-1" }, validFrom: 100, validUntil: Date.now() + 60_000, visibility: "team" });
 		const second = store.upsertClaim({ ...scope, kind: "fact", statement: "交付日期为 7 月 28 日", subject: { type: "customer", id: "customer-1" }, object: { type: "order", id: "PO-1" }, source: { type: "tool", ref: "erp-1" }, validFrom: 100, visibility: "team" });
 		assert.equal(store.markClaimsConflicted(first.id, second.id, scope), true);
@@ -1007,6 +1007,8 @@ test("organizational claims retain entity identity, source, validity, visibility
 		assert.deepEqual(explained.claim.source, { type: "message", ref: "om-1" });
 		assert.equal(explained.claim.visibility, "team");
 		assert.deepEqual(explained.claim.conflictsWith, [second.id]);
+		assert.equal(store.explainClaim(first.id, { profileId: "sales-profile", platform: "feishu", chatId: "sales", threadId: "order-thread", userId: "seller" }), undefined);
+		assert.equal(store.explainClaim(first.id, { ...scope, profileId: "other-profile" }), undefined);
 		assert.equal(store.listClaims({ ...scope, status: "conflicted" }).length, 2);
 		assert.equal(store.recallBrief("交付日期", scope).claims.length, 2);
 		const otherOrder = store.upsertClaim({ ...scope, kind: "fact", statement: "交付日期为 7 月 28 日", subject: { type: "customer", id: "customer-1" }, object: { type: "order", id: "PO-2" } });

@@ -26,8 +26,8 @@ export interface MemoryToolStore {
 	forgetClaim?(id: string, options: MemoryScope): boolean;
 }
 
-export function createMemoryTools(store: MemoryToolStore, source: BeeMaxRuntimeSource): ToolDefinition[] {
-	const scope = () => memoryScopeForSource(source);
+export function createMemoryTools(store: MemoryToolStore, source: BeeMaxRuntimeSource, trustedScope: Pick<MemoryScope, "profileId" | "projectId" | "organizationId"> = {}): ToolDefinition[] {
+	const scope = () => memoryScopeForSource(source, trustedScope);
 	const tools = [
 		defineTool({ name: "memory_status", label: "Memory Status", description: "Show curated-memory and candidate-memory counts for this user scope.", parameters: Type.Object({}), execute: async () => {
 			const stats = store.stats(scope()); return result(`Curated: ${stats.curated}; pending: ${stats.pending}; promoted: ${stats.promoted}; rejected: ${stats.rejected}`, stats);
