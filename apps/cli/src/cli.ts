@@ -419,6 +419,7 @@ async function runChannelCommand(parsed: ParsedArgs): Promise<void> {
 		appSecret,
 		allowedUsers,
 		allowedChats: splitList(optionString(parsed, "allowed-chats")) ?? currentFeishu.allowedChats,
+		groupPolicy: channelGroupPolicy(parsed, currentFeishu.groupPolicy),
 		domain: channelDomain(parsed, currentFeishu.domain),
 		requireMention: parsed.options["no-require-mention"] === true
 			? false
@@ -509,6 +510,7 @@ function setupOptions(parsed: ParsedArgs, gatewayOnly: boolean): SetupOptions {
 		appSecret: process.env.FEISHU_APP_SECRET,
 		allowedUsers: splitList(optionString(parsed, "allowed-users") ?? process.env.FEISHU_ALLOWED_USERS),
 		allowedChats: splitList(optionString(parsed, "allowed-chats") ?? process.env.FEISHU_ALLOWED_CHATS),
+		groupPolicy: channelGroupPolicy(parsed, undefined),
 		domain: optionString(parsed, "domain") ? channelDomain(parsed, "feishu") : undefined,
 		connectionMode: channelConnectionMode(parsed, undefined),
 		webhookHost: optionString(parsed, "webhook-host"),
@@ -551,6 +553,13 @@ function channelConnectionMode(parsed: ParsedArgs, fallback: "websocket" | "webh
 	if (mode === undefined) return fallback;
 	if (mode !== "websocket" && mode !== "webhook") throw new Error("--connection-mode must be websocket or webhook");
 	return mode;
+}
+
+function channelGroupPolicy(parsed: ParsedArgs, fallback: "open" | "allowlist" | "disabled" | undefined): "open" | "allowlist" | "disabled" | undefined {
+	const policy = optionString(parsed, "group-policy") ?? process.env.FEISHU_GROUP_POLICY;
+	if (policy === undefined) return fallback;
+	if (policy !== "open" && policy !== "allowlist" && policy !== "disabled") throw new Error("--group-policy must be open, allowlist, or disabled");
+	return policy;
 }
 
 function webhookPort(parsed: ParsedArgs, fallback: number | undefined): number | undefined {

@@ -32,6 +32,7 @@ import { createProfileControlHandler, type TaskRecoveryStatus } from "./profile-
 import { recordGatewayEvent, writeGatewayState } from "./gateway-observability.ts";
 import { installedVersion } from "./runtime-facts.ts";
 import { configuredRuntimeModels } from "./model-catalog.ts";
+import { setFeishuHomeChat } from "./profile-config.ts";
 
 export async function runGateway(config: BeeMaxConfig): Promise<void> {
 	if (!config.gateway.feishu.appId || !config.gateway.feishu.appSecret) {
@@ -41,6 +42,7 @@ export async function runGateway(config: BeeMaxConfig): Promise<void> {
 		throw new Error(error);
 	}
 	const pairing = new PairingStore(config.paths.agentDir);
+	let heartbeat: HeartbeatRunner | undefined;
 	const feishuSettings: FeishuSettings = {
 		appId: config.gateway.feishu.appId,
 		appSecret: config.gateway.feishu.appSecret,
@@ -55,7 +57,19 @@ export async function runGateway(config: BeeMaxConfig): Promise<void> {
 		allowedUsers: config.gateway.feishu.allowedUsers,
 		allowedChats: config.gateway.feishu.allowedChats,
 		allowAllUsers: config.gateway.feishu.allowAllUsers,
+		groupPolicy: config.gateway.feishu.groupPolicy,
+		groupRules: config.gateway.feishu.groupRules,
+		admins: config.gateway.feishu.admins,
 		pairing,
+		setHomeChat: async (chatId, userId, chatType) => {
+			await setFeishuHomeChat(config.profile, chatId, userId, chatType);
+			config.gateway.feishu.homeChatId = chatId;
+			config.gateway.feishu.homeUserId = userId;
+			config.gateway.feishu.homeChatType = chatType;
+			config.automation.heartbeat.chatId = chatId;
+			config.automation.heartbeat.userId = userId;
+			heartbeat?.setRoute(chatId, userId);
+		},
 	};
 	const adapter = new FeishuAdapter(feishuSettings);
 	const gatewayVersion = installedVersion();
@@ -242,7 +256,7 @@ export async function runGateway(config: BeeMaxConfig): Promise<void> {
 		await deliveryPort.sendText(job, `🗓️ ${job.name}\n\n${answer}`);
 		return { output: answer };
 	}, 4, memory);
-	const heartbeat = new HeartbeatRunner(
+	heartbeat = new HeartbeatRunner(
 		automation,
 		{
 			enabled: config.automation.enabled && config.automation.heartbeat.enabled,
@@ -256,7 +270,7 @@ export async function runGateway(config: BeeMaxConfig): Promise<void> {
 			activeHours: config.automation.heartbeat.activeHours,
 		},
 		(input) => dispatcher.runAutomation(
-			{ platform: "feishu", chatId: input.route.chatId, chatType: "dm", userIdAlt: input.route.userId },
+			{ platform: "feishu", chatId: input.route.chatId, chatType: input.route.chatId === config.gateway.feishu.homeChatId ? config.gateway.feishu.homeChatType ?? "dm" : "dm", userIdAlt: input.route.userId },
 			input.prompt,
 			{ key: "heartbeat", timeoutMs: input.timeoutMs },
 		),
@@ -284,7 +298,7 @@ export async function runGateway(config: BeeMaxConfig): Promise<void> {
 		shutdownPromise = (async () => {
 			console.info("\n[beemax] shutting down...");
 			clearInterval(mediaDeliveryTimer);
-			try { await heartbeat.stop(); } catch (error) { console.error(`[beemax] heartbeat shutdown failed: ${String(error)}`); }
+			try { await heartbeat?.stop(); } catch (error) { console.error(`[beemax] heartbeat shutdown failed: ${String(error)}`); }
 			try { await scheduler?.stop(); } catch (error) { console.error(`[beemax] scheduler shutdown failed: ${String(error)}`); }
 				try { await taskPlanRuntime.shutdown(new Error("Gateway shutting down")); } catch (error) { console.error(`[beemax] Task Plan shutdown failed: ${String(error)}`); }
 				try { await subagents?.dispose(); } catch (error) { console.error(`[beemax] Sub-Agent shutdown failed: ${String(error)}`); }

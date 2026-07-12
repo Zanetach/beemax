@@ -136,6 +136,7 @@ export class HeartbeatRunner {
 		this.intervalMs = parseDuration(config.every);
 	}
 	start(): void { if (this.stopped && this.config.enabled) { this.stopped = false; this.schedule(this.intervalMs); } }
+	setRoute(chatId: string, userId?: string): void { this.config.chatId = chatId; this.config.userId = userId; }
 	async wake(): Promise<void> {
 		if (this.stopped || !this.config.enabled) return;
 		if (this.timer) clearTimeout(this.timer);

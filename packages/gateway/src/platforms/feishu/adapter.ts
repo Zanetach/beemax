@@ -248,6 +248,13 @@ export class FeishuAdapter implements PlatformAdapter {
 
 		const source = this.buildSource(data);
 		const text = await this.extractText(msg);
+		if (text.trim().toLowerCase() === "/set-home" && this.settings.setHomeChat) {
+			const actorIds = [source.userIdAlt, source.userId].filter((id): id is string => Boolean(id));
+			if (!this.settings.admins?.some((id) => actorIds.includes(id))) { await this.send(msg.chat_id, "Only a BeeMax Profile administrator can set the home chat."); return; }
+			await this.settings.setHomeChat(msg.chat_id, source.userIdAlt ?? source.userId, source.chatType === "dm" ? "dm" : "group");
+			await this.send(msg.chat_id, "This chat is now the BeeMax home destination for heartbeat alerts.");
+			return;
+		}
 		const media = parseFeishuMediaDescriptor(msg);
 		if (!text && !media) return;
 		const downloaded = media ? await this.downloadMedia(msg.message_id, media) : undefined;
@@ -311,15 +318,17 @@ export class FeishuAdapter implements PlatformAdapter {
 					(value): value is string => Boolean(value),
 				)
 			: [];
-		if (!this.settings.allowAllUsers && !ids.some((id) => this.settings.allowedUsers.includes(id)) && !this.settings.pairing?.isApproved("feishu", ids)) {
-			return (msg.chat_type ?? "p2p") === "p2p" && this.settings.pairing ? "pairing required" : "sender is not authorized";
-		}
-		if (this.settings.allowedChats.length > 0 && !this.settings.allowedChats.includes(msg.chat_id)) {
-			return "chat is not in FEISHU_ALLOWED_CHATS";
-		}
-
 		const chatType = msg.chat_type ?? "p2p";
-		if (chatType !== "p2p" && this.settings.requireMention && !this.isBotMentioned(msg)) {
+		const globallyAuthorized = this.settings.allowAllUsers || ids.some((id) => this.settings.allowedUsers.includes(id)) || Boolean(this.settings.pairing?.isApproved("feishu", ids));
+		if (chatType === "p2p") return globallyAuthorized ? null : this.settings.pairing ? "pairing required" : "sender is not authorized";
+		const rule = this.settings.groupRules?.[msg.chat_id];
+		if (!rule && this.settings.allowedChats.length > 0 && !this.settings.allowedChats.includes(msg.chat_id)) return "chat is not in FEISHU_ALLOWED_CHATS";
+		const policy = rule?.policy ?? this.settings.groupPolicy ?? "allowlist";
+		if (policy === "disabled") return "group is disabled";
+		if (policy === "allowlist" && !(rule?.allowlist?.some((id) => ids.includes(id)) || globallyAuthorized)) return "sender is not authorized for group";
+		if (policy === "blacklist" && rule?.blacklist?.some((id) => ids.includes(id))) return "sender is blocked in group";
+		if (policy === "admin_only" && !this.settings.admins?.some((id) => ids.includes(id))) return "sender is not a group admin";
+		if ((rule?.requireMention ?? this.settings.requireMention) && !this.isBotMentioned(msg)) {
 			return "group message without bot mention";
 		}
 		return null;

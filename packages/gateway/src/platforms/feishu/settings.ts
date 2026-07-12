@@ -41,6 +41,10 @@ export interface FeishuSettings {
 	allowedChats: string[];
 	/** Explicit insecure override for development or intentionally public bots. */
 	allowAllUsers: boolean;
+	groupPolicy?: "open" | "allowlist" | "disabled";
+	groupRules?: Record<string, { policy?: "open" | "allowlist" | "blacklist" | "admin_only" | "disabled"; allowlist?: string[]; blacklist?: string[]; requireMention?: boolean }>;
+	admins?: string[];
+	setHomeChat?: (chatId: string, userId: string | undefined, chatType: "dm" | "group") => Promise<void>;
 	/** Optional Profile-scoped DM pairing authority for unknown users. */
 	pairing?: PairingAuthority;
 	/** Bot's own open_id, hydrated at startup via /bot/v3/info. */
@@ -87,6 +91,9 @@ export function loadFeishuSettings(env: NodeJS.ProcessEnv = process.env): Feishu
 		allowedUsers: parseCsv(env.FEISHU_ALLOWED_USERS),
 		allowedChats: parseCsv(env.FEISHU_ALLOWED_CHATS),
 		allowAllUsers: parseBool(env.FEISHU_ALLOW_ALL_USERS ?? "false"),
+		groupPolicy: (env.FEISHU_GROUP_POLICY === "open" || env.FEISHU_GROUP_POLICY === "disabled") ? env.FEISHU_GROUP_POLICY : "allowlist",
+		groupRules: {},
+		admins: parseCsv(env.FEISHU_ADMINS),
 		botOpenId: (env.FEISHU_BOT_OPEN_ID ?? "").trim() || undefined,
 		botName: (env.FEISHU_BOT_NAME ?? "").trim() || undefined,
 	};

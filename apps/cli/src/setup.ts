@@ -29,6 +29,7 @@ export interface SetupOptions {
 	appSecret?: string;
 	allowedUsers?: string[];
 	allowedChats?: string[];
+	groupPolicy?: "open" | "allowlist" | "disabled";
 	domain?: "feishu" | "lark";
 	requireMention?: boolean;
 	connectionMode?: "websocket" | "webhook";
@@ -98,6 +99,7 @@ export async function runSetup(options: SetupOptions, dependencies: SetupDepende
 	let allowedUsers: string[] = [];
 	let domain = currentFeishu.domain;
 	let connectionMode = currentFeishu.connectionMode;
+	let groupPolicy = currentFeishu.groupPolicy;
 	let webhookEncryptKey: string | undefined;
 	let usedQrRegistration = false;
 	let probe: Awaited<ReturnType<typeof probeFeishuApp>> | undefined;
@@ -145,6 +147,7 @@ export async function runSetup(options: SetupOptions, dependencies: SetupDepende
 		if (!options.nonInteractive) console.log("[5/5] Access — QR setup authorizes the scanning user; manual setup accepts open_id, union_id, or user_id.");
 		allowedUsers = options.allowedUsers ?? (usedQrRegistration ? (qrOwnerId ? [qrOwnerId] : []) : currentFeishu.allowedUsers);
 		if (allowedUsers.length === 0 && !options.nonInteractive) allowedUsers = splitList(await ask("Allowed Feishu user IDs (comma-separated)"));
+		groupPolicy = options.groupPolicy ?? (options.nonInteractive ? currentFeishu.groupPolicy : parseSetupGroupPolicy(await ask("[6/6] Group chats (open, allowlist, or disabled)", currentFeishu.groupPolicy)));
 		if (!appId || !appSecret || allowedUsers.length === 0) throw new Error("Gateway setup requires Feishu App ID, App Secret, and at least one allowed user");
 		if (connectionMode === "webhook" && !webhookEncryptKey) throw new Error("Webhook setup requires FEISHU_WEBHOOK_ENCRYPT_KEY");
 		try { probe = await (dependencies.probe ?? probeFeishuApp)({ appId, appSecret, domain }); }
@@ -172,6 +175,7 @@ export async function runSetup(options: SetupOptions, dependencies: SetupDepende
 		await configureFeishuChannel(options.profile, {
 			appId, appSecret, allowedUsers,
 			allowedChats: options.allowedChats ?? currentFeishu.allowedChats,
+			groupPolicy,
 			domain, requireMention: options.requireMention ?? currentFeishu.requireMention,
 			connectionMode, webhookHost: options.webhookHost ?? currentFeishu.webhookHost,
 			webhookPort: options.webhookPort ?? currentFeishu.webhookPort,
@@ -226,6 +230,11 @@ function parseDomain(value: string): "feishu" | "lark" {
 function parseConnectionMode(value: string): "websocket" | "webhook" {
 	if (value === "websocket" || value === "webhook") return value;
 	throw new Error("Connection mode must be websocket or webhook");
+}
+
+function parseSetupGroupPolicy(value: string): "open" | "allowlist" | "disabled" {
+	if (value === "open" || value === "allowlist" || value === "disabled") return value;
+	throw new Error("Group policy must be open, allowlist, or disabled");
 }
 
 async function askOne(prompt: string, secret = false): Promise<string> {

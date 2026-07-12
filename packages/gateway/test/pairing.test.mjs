@@ -59,7 +59,7 @@ test("Feishu admission routes unknown DMs to pairing and admits approved identit
 		assert.equal(adapter.admit(sender, direct), "pairing required");
 		const allowlisted = new FeishuAdapter({ appId: "app", appSecret: "secret", domain: "feishu", connectionMode: "websocket", requireMention: true, allowedUsers: ["ou_unknown"], allowedChats: [], allowAllUsers: false, pairing });
 		assert.equal(allowlisted.admit(sender, direct), null, "static allowlist remains an independent authorization grant");
-		assert.equal(adapter.admit({ sender_type: "user", sender_id: { open_id: "ou_other" } }, { ...direct, chat_type: "group" }), "sender is not authorized");
+		assert.equal(adapter.admit({ sender_type: "user", sender_id: { open_id: "ou_other" } }, { ...direct, chat_type: "group" }), "sender is not authorized for group");
 	} finally { rmSync(root, { recursive: true, force: true }); }
 });
 
@@ -108,4 +108,16 @@ test("PairingStore cross-process lock preserves the global pending bound", async
 		})));
 		assert.equal(new PairingStore(root).list().pending.length, 3);
 	} finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("Feishu group policies support global and per-chat authorization without affecting DMs", () => {
+	const sender = { sender_type: "user", sender_id: { open_id: "ou_user" } };
+	const message = { chat_type: "group", chat_id: "chat", message_id: "m", message_type: "text", content: "{}", create_time: "1", mentions: [{ id: { open_id: "ou_bot" }, name: "bot" }] };
+	const settings = { appId: "app", appSecret: "secret", domain: "feishu", connectionMode: "websocket", requireMention: true, allowedUsers: [], allowedChats: [], allowAllUsers: false, botOpenId: "ou_bot" };
+	assert.equal(new FeishuAdapter({ ...settings, groupPolicy: "open" }).admit(sender, message), null);
+	assert.equal(new FeishuAdapter({ ...settings, groupPolicy: "disabled" }).admit(sender, message), "group is disabled");
+	assert.equal(new FeishuAdapter({ ...settings, groupPolicy: "allowlist" }).admit(sender, message), "sender is not authorized for group");
+	assert.equal(new FeishuAdapter({ ...settings, groupRules: { chat: { policy: "allowlist", allowlist: ["ou_user"] } } }).admit(sender, message), null);
+	assert.equal(new FeishuAdapter({ ...settings, groupRules: { chat: { policy: "blacklist", blacklist: ["ou_user"] } } }).admit(sender, message), "sender is blocked in group");
+	assert.equal(new FeishuAdapter({ ...settings, admins: ["ou_user"], groupRules: { chat: { policy: "admin_only" } } }).admit(sender, message), null);
 });

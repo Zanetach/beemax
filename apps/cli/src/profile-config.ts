@@ -1,5 +1,5 @@
 import { constants } from "node:fs";
-import { access, copyFile, cp, lstat, mkdir, readFile, readdir, readlink, rename, rm, stat, writeFile } from "node:fs/promises";
+import { access, copyFile, cp, lstat, mkdir, open, readFile, readdir, readlink, rename, rm, stat, writeFile } from "node:fs/promises";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { backupSqliteDatabase, verifySqliteDatabase } from "@beemax/memory";
 import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
@@ -26,6 +26,7 @@ export interface FeishuChannelInput {
 	requireMention?: boolean;
 	allowedUsers: string[];
 	allowedChats?: string[];
+	groupPolicy?: "open" | "allowlist" | "disabled";
 	connectionMode?: "websocket" | "webhook";
 	webhookHost?: string;
 	webhookPort?: number;
@@ -167,6 +168,7 @@ export async function configureFeishuChannel(
 		domain: input.domain ?? "feishu",
 		requireMention: input.requireMention ?? true,
 		allowedChats: input.allowedChats ?? [],
+		groupPolicy: input.groupPolicy ?? "allowlist",
 		allowAllUsers: false,
 		connectionMode: input.connectionMode ?? "websocket",
 		...(input.connectionMode === "webhook" ? {
@@ -190,6 +192,19 @@ export async function configureFeishuChannel(
 		} : { FEISHU_CONNECTION_MODE: "websocket" }),
 	});
 	return paths;
+}
+
+export async function setFeishuHomeChat(profile: string, chatId: string, userId?: string, chatType: "dm" | "group" = "dm", options: ProfileStorageOptions = {}): Promise<void> {
+	if (!chatId.trim()) throw new Error("Feishu home chat ID is required");
+	const paths = await writableProfilePaths(profile, options);
+	const config = (parseYaml(await readFile(paths.configPath, "utf8")) ?? {}) as Record<string, unknown>;
+	const gateway = asRecord(config.gateway);
+	config.gateway = { ...gateway, feishu: { ...asRecord(gateway.feishu), homeChatId: chatId.trim(), homeChatType: chatType, ...(userId?.trim() ? { homeUserId: userId.trim() } : {}) } };
+	const temporary = `${paths.configPath}.home-${crypto.randomUUID()}`;
+	await writeFile(temporary, stringifyYaml(config), { encoding: "utf8", mode: 0o600, flag: "wx" });
+	const file = await open(temporary, "r"); try { await file.sync(); } finally { await file.close(); }
+	await rename(temporary, paths.configPath);
+	const directory = await open(dirname(paths.configPath), "r"); try { await directory.sync(); } finally { await directory.close(); }
 }
 
 export async function configureModel(profile: string, input: ModelInput, options: ProfileStorageOptions = {}): Promise<ProfilePaths> {

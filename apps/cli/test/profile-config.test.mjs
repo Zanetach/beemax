@@ -17,6 +17,7 @@ import {
 	probeFeishuApp,
 	removeFeishuChannel,
 	syncBuiltinSkills,
+	setFeishuHomeChat,
 	testFeishuCredentials,
 } from "../dist/profile-config.js";
 
@@ -72,6 +73,10 @@ test("profile creation and Feishu channel configuration keep secrets in a protec
 	assert.equal(config.agent.maxSessions, 100);
 	assert.equal(config.agent.sessionIdleMs, 30 * 60_000);
 	assert.equal(config.paths.cwd, join(paths.homePath, "workspace"));
+	await setFeishuHomeChat("personal", "oc_home", "ou_home", "dm", options);
+	const homeConfig = loadConfig(paths.configPath, "personal");
+	assert.equal(homeConfig.gateway.feishu.homeChatId, "oc_home");
+	assert.equal(homeConfig.automation.heartbeat.chatId, "oc_home");
 	await configureModel("personal", { provider: "openrouter", model: "openai/gpt-5.2", apiKey: "model-secret" }, options);
 	const modelConfig = loadConfig(paths.configPath, "personal");
 	assert.equal(modelConfig.model.provider, "openrouter");

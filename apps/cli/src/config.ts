@@ -23,6 +23,12 @@ export interface FeishuConfig {
 	allowedUsers: string[];
 	allowedChats: string[];
 	allowAllUsers: boolean;
+	groupPolicy: "open" | "allowlist" | "disabled";
+	groupRules: Record<string, { policy?: "open" | "allowlist" | "blacklist" | "admin_only" | "disabled"; allowlist?: string[]; blacklist?: string[]; requireMention?: boolean }>;
+	admins: string[];
+	homeChatId?: string;
+	homeUserId?: string;
+	homeChatType?: "dm" | "group";
 	connectionMode: "websocket" | "webhook";
 	webhookHost: string;
 	webhookPort: number;
@@ -136,14 +142,22 @@ export function loadConfig(configPath?: string, profile = "default"): BeeMaxConf
 		: join(root, profile === "default" ? "data" : `data/profiles/${profile}`);
 	const storedSoul = location.isHome && existsSync(location.soulPath) ? readFileSync(location.soulPath, "utf8") : "";
 	const soul = resolveSoul(storedSoul || env.BEEMAX_SYSTEM_PROMPT || cfg.agent?.systemPrompt);
+	const feishuAllowedUsers = parseList(env.FEISHU_ALLOWED_USERS ?? configuredFeishu?.allowedUsers);
+	const configuredAdmins = parseList(env.FEISHU_ADMINS ?? configuredFeishu?.admins);
 	const feishu: FeishuConfig = {
 		appId,
 		appSecret,
 		domain: (env.FEISHU_DOMAIN ?? configuredFeishu?.domain ?? "feishu") === "lark" ? "lark" : "feishu",
 		requireMention: parseBool(env.FEISHU_REQUIRE_MENTION ?? configuredFeishu?.requireMention ?? true),
-		allowedUsers: parseList(env.FEISHU_ALLOWED_USERS ?? configuredFeishu?.allowedUsers),
+		allowedUsers: feishuAllowedUsers,
 		allowedChats: parseList(env.FEISHU_ALLOWED_CHATS ?? configuredFeishu?.allowedChats),
 		allowAllUsers: parseBool(env.FEISHU_ALLOW_ALL_USERS ?? configuredFeishu?.allowAllUsers ?? false),
+		groupPolicy: parseGroupPolicy(env.FEISHU_GROUP_POLICY ?? configuredFeishu?.groupPolicy),
+		groupRules: parseGroupRules(configuredFeishu?.groupRules),
+		admins: configuredAdmins.length ? configuredAdmins : feishuAllowedUsers,
+		homeChatId: optional(env.FEISHU_HOME_CHANNEL ?? configuredFeishu?.homeChatId),
+		homeUserId: optional(env.FEISHU_HOME_USER ?? configuredFeishu?.homeUserId),
+		homeChatType: configuredFeishu?.homeChatType === "group" ? "group" : configuredFeishu?.homeChatId ? "dm" : undefined,
 		connectionMode: (env.FEISHU_CONNECTION_MODE ?? configuredFeishu?.connectionMode ?? "websocket") === "webhook" ? "webhook" : "websocket",
 		webhookHost: str(env.FEISHU_WEBHOOK_HOST ?? configuredFeishu?.webhookHost ?? "127.0.0.1"),
 		webhookPort: Number(env.FEISHU_WEBHOOK_PORT ?? configuredFeishu?.webhookPort ?? 8787),
@@ -206,8 +220,8 @@ export function loadConfig(configPath?: string, profile = "default"): BeeMaxConf
 			heartbeat: {
 				enabled: parseBool(env.BEEMAX_HEARTBEAT_ENABLED ?? cfg.automation?.heartbeat?.enabled ?? true),
 				every: str(env.BEEMAX_HEARTBEAT_EVERY ?? cfg.automation?.heartbeat?.every ?? "30m"),
-				chatId: optional(env.BEEMAX_HEARTBEAT_CHAT_ID ?? cfg.automation?.heartbeat?.chatId),
-				userId: optional(env.BEEMAX_HEARTBEAT_USER_ID ?? cfg.automation?.heartbeat?.userId),
+				chatId: optional(env.BEEMAX_HEARTBEAT_CHAT_ID ?? cfg.automation?.heartbeat?.chatId ?? feishu.homeChatId),
+				userId: optional(env.BEEMAX_HEARTBEAT_USER_ID ?? cfg.automation?.heartbeat?.userId ?? feishu.homeUserId),
 				prompt: str(env.BEEMAX_HEARTBEAT_PROMPT ?? cfg.automation?.heartbeat?.prompt ?? DEFAULT_HEARTBEAT_PROMPT),
 				ackMaxChars: parseNumber(env.BEEMAX_HEARTBEAT_ACK_MAX_CHARS ?? cfg.automation?.heartbeat?.ackMaxChars, 300),
 				timeoutMs: parseNumber(env.BEEMAX_HEARTBEAT_TIMEOUT_MS ?? cfg.automation?.heartbeat?.timeoutMs, 120_000),
@@ -266,6 +280,19 @@ function parseList(value: unknown): string[] {
 		.split(",")
 		.map((item) => item.trim())
 		.filter(Boolean);
+}
+
+function parseGroupPolicy(value: unknown): "open" | "allowlist" | "disabled" { return value === "open" || value === "disabled" ? value : "allowlist"; }
+function parseGroupRules(value: unknown): FeishuConfig["groupRules"] {
+	if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+	const result: FeishuConfig["groupRules"] = {};
+	for (const [chatId, raw] of Object.entries(value as Record<string, unknown>)) {
+		if (!chatId || !raw || typeof raw !== "object" || Array.isArray(raw)) continue;
+		const rule = raw as Record<string, unknown>;
+		const policy = ["open", "allowlist", "blacklist", "admin_only", "disabled"].includes(String(rule.policy)) ? rule.policy as FeishuConfig["groupRules"][string]["policy"] : undefined;
+		result[chatId] = { policy, allowlist: parseList(rule.allowlist), blacklist: parseList(rule.blacklist), ...(typeof rule.requireMention === "boolean" ? { requireMention: rule.requireMention } : {}) };
+	}
+	return result;
 }
 
 function modelChoices(value: unknown, active: { provider: string; model: string; baseUrl?: string; customProtocol?: CustomProtocol }): Array<{ provider: string; model: string; baseUrl?: string; customProtocol?: CustomProtocol }> {
