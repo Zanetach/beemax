@@ -19,6 +19,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { defineTool, type ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
+import { READ_ONLY_TOOL_POLICY, withToolPolicy } from "./tool-runtime.ts";
 
 const SEARCH_TIMEOUT_MS = 15_000;
 const EXTRACT_TIMEOUT_MS = 20_000;
@@ -118,7 +119,11 @@ export function createWebTools(options: WebToolsOptions = {}): ToolDefinition[] 
 		},
 	});
 
-	return [webSearch, agentReachSearch, webExtract];
+	const publicResearchPolicy = {
+		...READ_ONLY_TOOL_POLICY,
+		impact: "Reads public web data without changing local or external state",
+	};
+	return [webSearch, agentReachSearch, webExtract].map((tool) => withToolPolicy(tool, publicResearchPolicy));
 }
 
 async function agentReachSearchText(query: string, maxResults: number, env: NodeJS.ProcessEnv, signal?: AbortSignal): Promise<string> {

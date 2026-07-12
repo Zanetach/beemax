@@ -61,6 +61,7 @@ export class ToolPolicyRegistry {
 		for (const [name, policy] of BUILTIN_POLICIES) this.policies.set(name, policy);
 		for (const tool of tools) {
 			const explicit = (tool as GovernedToolDefinition).beemaxPolicy;
+			if (!explicit && this.policies.has(tool.name)) throw new Error(`Tool ${tool.name} duplicates a built-in capability without declaring beemaxPolicy`);
 			this.policies.set(tool.name, normalizeToolPolicy(explicit ?? {
 				...MUTATING_TOOL_POLICY,
 				risk: "medium",
