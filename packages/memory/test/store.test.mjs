@@ -1008,5 +1008,10 @@ test("organizational claims retain entity identity, source, validity, visibility
 		assert.equal(explained.claim.visibility, "team");
 		assert.deepEqual(explained.claim.conflictsWith, [second.id]);
 		assert.equal(store.listClaims({ ...scope, status: "conflicted" }).length, 2);
+		assert.equal(store.recallBrief("交付日期", scope).claims.length, 2);
+		const otherOrder = store.upsertClaim({ ...scope, kind: "fact", statement: "交付日期为 7 月 28 日", subject: { type: "customer", id: "customer-1" }, object: { type: "order", id: "PO-2" } });
+		assert.notEqual(otherOrder.id, second.id);
+		store.upsertClaim({ ...scope, kind: "fact", statement: "未来价格生效", validFrom: Date.now() + 60_000 });
+		assert.equal(store.recallBrief("未来价格", scope).claims.length, 0);
 	} finally { store.close(); rmSync(root, { recursive: true, force: true }); }
 });
