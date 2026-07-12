@@ -35,6 +35,11 @@ export interface FeishuConfig {
 	webhookPath: string;
 	webhookVerificationToken?: string;
 	webhookEncryptKey?: string;
+	textBatchDelayMs: number;
+	textBatchSplitDelayMs: number;
+	textBatchMaxMessages: number;
+	textBatchMaxChars: number;
+	mediaBatchDelayMs: number;
 }
 export type CustomProtocol = "openai-completions" | "openai-responses" | "anthropic-messages";
 
@@ -164,6 +169,11 @@ export function loadConfig(configPath?: string, profile = "default"): BeeMaxConf
 		webhookPath: str(env.FEISHU_WEBHOOK_PATH ?? configuredFeishu?.webhookPath ?? "/feishu/events"),
 		webhookVerificationToken: str(env.FEISHU_WEBHOOK_VERIFICATION_TOKEN ?? configuredFeishu?.webhookVerificationToken ?? "") || undefined,
 		webhookEncryptKey: str(env.FEISHU_WEBHOOK_ENCRYPT_KEY ?? configuredFeishu?.webhookEncryptKey ?? "") || undefined,
+		textBatchDelayMs: boundedNumber(env.FEISHU_TEXT_BATCH_DELAY_MS ?? configuredFeishu?.textBatchDelayMs, 600, 0, 60_000),
+		textBatchSplitDelayMs: boundedNumber(env.FEISHU_TEXT_BATCH_SPLIT_DELAY_MS ?? configuredFeishu?.textBatchSplitDelayMs, 2_000, 0, 60_000),
+		textBatchMaxMessages: boundedNumber(env.FEISHU_TEXT_BATCH_MAX_MESSAGES ?? configuredFeishu?.textBatchMaxMessages, 8, 1, 1_000),
+		textBatchMaxChars: boundedNumber(env.FEISHU_TEXT_BATCH_MAX_CHARS ?? configuredFeishu?.textBatchMaxChars, 4_000, 1, 100_000),
+		mediaBatchDelayMs: boundedNumber(env.FEISHU_MEDIA_BATCH_DELAY_MS ?? configuredFeishu?.mediaBatchDelayMs, 800, 0, 60_000),
 	};
 	return {
 		profile,
@@ -237,6 +247,11 @@ export function loadConfig(configPath?: string, profile = "default"): BeeMaxConf
 			cwd: resolveFrom(location.basePath, str(env.BEEMAX_CWD ?? cfg.paths?.cwd ?? (location.isHome ? root : "."))),
 		},
 	};
+}
+
+function boundedNumber(value: unknown, fallback: number, min: number, max: number): number {
+	const parsed = typeof value === "number" ? value : Number(value);
+	return Number.isFinite(parsed) ? Math.max(min, Math.min(max, Math.trunc(parsed))) : fallback;
 }
 
 function resolveFrom(root: string, path: string): string {

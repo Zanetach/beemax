@@ -25,6 +25,7 @@ import { Transform } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { randomUUID } from "node:crypto";
 import lark, { adaptDefault, normalizeCardAction, type Client, type EventDispatcher, type RawCardActionEvent, type WSClient } from "@larksuiteoapi/node-sdk";
+import { sessionOwnerKey } from "@beemax/core";
 import type {
 	InboundMessage,
 	CardActionHandler,
@@ -44,6 +45,18 @@ const MAX_WEBHOOK_BODY_BYTES = 1_048_576;
 const MAX_INBOUND_MEDIA_BYTES = 25 * 1024 * 1024;
 const MAX_OUTBOUND_FILE_BYTES = 30 * 1024 * 1024;
 const MAX_PROCESSING_REACTIONS = 1024;
+const MAX_MEDIA_BATCH_MESSAGES = 8;
+const MAX_MEDIA_BATCH_BYTES = 30 * 1024 * 1024;
+
+interface PendingInboundBatch {
+	message: InboundMessage;
+	mediaMessages?: InboundMessage[];
+	count: number;
+	lastChunkLength: number;
+	byteCount?: number;
+	timer: ReturnType<typeof setTimeout>;
+	waiters: Array<{ resolve: () => void; reject: (error: unknown) => void }>;
+}
 
 export class FeishuAdapter implements PlatformAdapter {
 	readonly name = "feishu" as const;
@@ -56,6 +69,10 @@ export class FeishuAdapter implements PlatformAdapter {
 	private cardActionHandler?: CardActionHandler;
 	private dedup = new Map<string, number>();
 	private processingReactions = new Map<string, string>();
+	private readonly textBatches = new Map<string, PendingInboundBatch>();
+	private readonly mediaBatches = new Map<string, PendingInboundBatch>();
+	private readonly deliveryTails = new Map<string, Promise<void>>();
+	private shuttingDown = false;
 	private readonly dedupTtlMs = 24 * 60 * 60 * 1000;
 	private readonly settings: FeishuSettings;
 
@@ -81,6 +98,7 @@ export class FeishuAdapter implements PlatformAdapter {
 	}
 
 	async connect(): Promise<boolean> {
+		this.shuttingDown = false;
 		if (!this.settings.appId || !this.settings.appSecret) {
 			throw new Error("Feishu requires FEISHU_APP_ID and FEISHU_APP_SECRET.");
 		}
@@ -187,6 +205,9 @@ export class FeishuAdapter implements PlatformAdapter {
 
 	async disconnect(): Promise<void> {
 		this.connected = false;
+		this.shuttingDown = true;
+		this.cancelInboundBatches();
+		await Promise.allSettled([...this.deliveryTails.values()]);
 		if (this.webhookServer) {
 			for (const socket of this.webhookSockets) socket.destroy();
 			await new Promise<void>((resolve) => this.webhookServer?.close(() => resolve()));
@@ -275,12 +296,169 @@ export class FeishuAdapter implements PlatformAdapter {
 		};
 
 		try {
-			await this.handler?.(inbound);
+			await this.dispatchInbound(inbound);
 		} finally {
 			// The Dispatcher normally releases during its own finally block. This
 			// adapter-level fallback also covers missing or failing consumers.
 			await downloaded?.release();
 		}
+	}
+
+	private async dispatchInbound(message: InboundMessage): Promise<void> {
+		if (this.shuttingDown) return;
+		if (message.messageType === "text" && !message.text.trimStart().startsWith("/")) {
+			await this.enqueueTextBatch(message);
+			return;
+		}
+		if (message.mediaPaths.length > 0 && ["image", "audio", "file"].includes(message.messageType)) {
+			await this.enqueueMediaBatch(message);
+			return;
+		}
+		{
+			await this.handler?.(message);
+			return;
+		}
+	}
+
+	private async enqueueTextBatch(message: InboundMessage): Promise<void> {
+		const key = sessionOwnerKey(message.source);
+		const existing = this.textBatches.get(key);
+		if (existing && !this.batchCompatible(existing.message, message)) void this.flushTextBatch(key);
+		const current = this.textBatches.get(key);
+		const nextText = current ? mergeBatchText(current.message.text, message.text) : message.text;
+		const maxMessages = this.settings.textBatchMaxMessages ?? 8;
+		const maxChars = this.settings.textBatchMaxChars ?? 4_000;
+		if (current && (current.count + 1 > maxMessages || nextText.length > maxChars)) void this.flushTextBatch(key);
+
+		return new Promise<void>((resolve, reject) => {
+			const pending = this.textBatches.get(key);
+			if (!pending) {
+				const batch: PendingInboundBatch = {
+					message: { ...message, source: { ...message.source } },
+					count: 1,
+					lastChunkLength: message.text.length,
+					timer: setTimeout(() => undefined, 0),
+					waiters: [{ resolve, reject }],
+				};
+				clearTimeout(batch.timer);
+				this.textBatches.set(key, batch);
+				this.scheduleTextBatch(key, batch);
+				return;
+			}
+			pending.message.text = mergeBatchText(pending.message.text, message.text);
+			pending.message.timestamp = message.timestamp;
+			pending.message.source = { ...message.source };
+			pending.message.raw = message.raw;
+			pending.count += 1;
+			pending.lastChunkLength = message.text.length;
+			pending.waiters.push({ resolve, reject });
+			this.scheduleTextBatch(key, pending);
+		});
+	}
+
+	private batchCompatible(existing: InboundMessage, incoming: InboundMessage): boolean {
+		return existing.replyToMessageId === incoming.replyToMessageId
+			&& existing.replyToText === incoming.replyToText
+			&& existing.source.threadId === incoming.source.threadId;
+	}
+
+	private async enqueueMediaBatch(message: InboundMessage): Promise<void> {
+		const key = `${sessionOwnerKey(message.source)}:media:${message.messageType}`;
+		const byteCount = await mediaByteCount(message);
+		const existing = this.mediaBatches.get(key);
+		if (existing && (!this.batchCompatible(existing.message, message) || existing.message.messageType !== message.messageType)) {
+			void this.flushMediaBatch(key);
+		}
+		const current = this.mediaBatches.get(key);
+		if (current && (current.count + 1 > MAX_MEDIA_BATCH_MESSAGES || (current.byteCount ?? 0) + byteCount > MAX_MEDIA_BATCH_BYTES)) {
+			void this.flushMediaBatch(key);
+		}
+		return new Promise<void>((resolve, reject) => {
+			const pending = this.mediaBatches.get(key);
+			if (!pending) {
+				const batch: PendingInboundBatch = {
+					message: { ...message, source: { ...message.source }, mediaPaths: [...message.mediaPaths], mediaTypes: [...message.mediaTypes] },
+					mediaMessages: [message],
+					count: 1,
+					lastChunkLength: message.text.length,
+					byteCount,
+					timer: setTimeout(() => undefined, 0),
+					waiters: [{ resolve, reject }],
+				};
+				clearTimeout(batch.timer);
+				this.mediaBatches.set(key, batch);
+				this.scheduleMediaBatch(key, batch);
+				return;
+			}
+			pending.mediaMessages?.push(message);
+			pending.count += 1;
+			pending.byteCount = (pending.byteCount ?? 0) + byteCount;
+			pending.waiters.push({ resolve, reject });
+			this.scheduleMediaBatch(key, pending);
+		});
+	}
+
+	private scheduleTextBatch(key: string, batch: PendingInboundBatch): void {
+		clearTimeout(batch.timer);
+		const delay = batch.lastChunkLength >= 4_000
+			? (this.settings.textBatchSplitDelayMs ?? 2_000)
+			: (this.settings.textBatchDelayMs ?? 600);
+		batch.timer = setTimeout(() => { void this.flushTextBatch(key); }, delay);
+	}
+
+	private async flushTextBatch(key: string): Promise<void> {
+		const batch = this.textBatches.get(key);
+		if (!batch) return;
+		this.textBatches.delete(key);
+		clearTimeout(batch.timer);
+		try {
+			await this.deliverInOrder(key, batch.message);
+			for (const waiter of batch.waiters) waiter.resolve();
+		} catch (error) {
+			for (const waiter of batch.waiters) waiter.reject(error);
+		}
+	}
+
+	private scheduleMediaBatch(key: string, batch: PendingInboundBatch): void {
+		clearTimeout(batch.timer);
+		batch.timer = setTimeout(() => { void this.flushMediaBatch(key); }, this.settings.mediaBatchDelayMs ?? 800);
+	}
+
+	private async flushMediaBatch(key: string): Promise<void> {
+		const batch = this.mediaBatches.get(key);
+		if (!batch) return;
+		this.mediaBatches.delete(key);
+		clearTimeout(batch.timer);
+		try {
+			await this.deliverInOrder(sessionOwnerKey(batch.message.source), combineMediaBatch(batch.mediaMessages ?? [batch.message]));
+			for (const waiter of batch.waiters) waiter.resolve();
+		} catch (error) {
+			for (const waiter of batch.waiters) waiter.reject(error);
+		}
+	}
+
+	private async deliverInOrder(key: string, message: InboundMessage): Promise<void> {
+		const prior = this.deliveryTails.get(key) ?? Promise.resolve();
+		const delivery = prior.catch(() => undefined).then(async () => { await this.handler?.(message); });
+		this.deliveryTails.set(key, delivery);
+		try {
+			await delivery;
+		} finally {
+			if (this.deliveryTails.get(key) === delivery) this.deliveryTails.delete(key);
+		}
+	}
+
+	private cancelInboundBatches(): void {
+		for (const batch of this.textBatches.values()) {
+			clearTimeout(batch.timer);
+			for (const waiter of batch.waiters) waiter.resolve();
+		}
+		this.textBatches.clear();
+		for (const batch of this.mediaBatches.values()) {
+			clearTimeout(batch.timer);
+			for (const waiter of batch.waiters) waiter.resolve();
+		}
+		this.mediaBatches.clear();
 	}
 
 	private async downloadMedia(messageId: string, media: FeishuMediaDescriptor): Promise<{ path: string; mimeType: string; release: () => Promise<void> }> {
@@ -744,6 +922,31 @@ function inferMediaMimeType(messageType: string, name?: string): string {
 	if (messageType === "audio") return "audio/ogg";
 	const extension = extname(name ?? "").toLowerCase();
 	return ({ ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".gif": "image/gif", ".webp": "image/webp", ".pdf": "application/pdf", ".txt": "text/plain", ".md": "text/markdown", ".mp3": "audio/mpeg", ".wav": "audio/wav", ".ogg": "audio/ogg", ".mp4": "video/mp4" } as Record<string, string>)[extension] ?? "application/octet-stream";
+}
+
+function mergeBatchText(existing: string, incoming: string): string {
+	return existing && incoming ? `${existing}\n${incoming}` : existing || incoming;
+}
+
+function combineMediaBatch(messages: InboundMessage[]): InboundMessage {
+	const ordered = [...messages].sort((left, right) => left.timestamp - right.timestamp);
+	const first = ordered[0]!;
+	const latest = ordered[ordered.length - 1]!;
+	return {
+		...first,
+		text: ordered.map((message) => message.text).reduce(mergeBatchText, ""),
+		source: { ...latest.source },
+		mediaPaths: ordered.flatMap((message) => message.mediaPaths),
+		mediaTypes: ordered.flatMap((message) => message.mediaTypes),
+		timestamp: latest.timestamp,
+		raw: latest.raw,
+	};
+}
+
+async function mediaByteCount(message: InboundMessage): Promise<number> {
+	let total = 0;
+	for (const path of message.mediaPaths) total += (await stat(path)).size;
+	return total;
 }
 
 function isImageMedia(path: string, mimeType?: string): boolean {

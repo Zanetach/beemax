@@ -50,6 +50,12 @@ export interface FeishuSettings {
 	/** Bot's own open_id, hydrated at startup via /bot/v3/info. */
 	botOpenId?: string;
 	botName?: string;
+	/** Hermes-compatible quiet windows and burst bounds. */
+	textBatchDelayMs?: number;
+	textBatchSplitDelayMs?: number;
+	textBatchMaxMessages?: number;
+	textBatchMaxChars?: number;
+	mediaBatchDelayMs?: number;
 }
 
 /** Reject webhook settings that would expose an unauthenticated public listener. */
@@ -96,7 +102,18 @@ export function loadFeishuSettings(env: NodeJS.ProcessEnv = process.env): Feishu
 		admins: parseCsv(env.FEISHU_ADMINS),
 		botOpenId: (env.FEISHU_BOT_OPEN_ID ?? "").trim() || undefined,
 		botName: (env.FEISHU_BOT_NAME ?? "").trim() || undefined,
+		textBatchDelayMs: parseBoundedNumber(env.FEISHU_TEXT_BATCH_DELAY_MS, 600, 0, 60_000),
+		textBatchSplitDelayMs: parseBoundedNumber(env.FEISHU_TEXT_BATCH_SPLIT_DELAY_MS, 2_000, 0, 60_000),
+		textBatchMaxMessages: parseBoundedNumber(env.FEISHU_TEXT_BATCH_MAX_MESSAGES, 8, 1, 1_000),
+		textBatchMaxChars: parseBoundedNumber(env.FEISHU_TEXT_BATCH_MAX_CHARS, 4_000, 1, 100_000),
+		mediaBatchDelayMs: parseBoundedNumber(env.FEISHU_MEDIA_BATCH_DELAY_MS, 800, 0, 60_000),
 	};
+}
+
+function parseBoundedNumber(value: string | undefined, fallback: number, min: number, max: number): number {
+	if (value === undefined || value.trim() === "") return fallback;
+	const parsed = Number(value);
+	return Number.isFinite(parsed) ? Math.max(min, Math.min(max, Math.trunc(parsed))) : fallback;
 }
 
 function parseBool(v: string): boolean {

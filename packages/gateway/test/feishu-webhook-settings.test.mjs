@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { createServer, request } from "node:http";
 import test from "node:test";
-import { validateFeishuWebhookSettings } from "../dist/platforms/feishu/settings.js";
+import { loadFeishuSettings, validateFeishuWebhookSettings } from "../dist/platforms/feishu/settings.js";
 import { FeishuAdapter } from "../dist/index.js";
 
 const base = {
@@ -23,6 +23,26 @@ test("webhook configuration requires encryption and a valid local listener", () 
 	assert.throws(() => validateFeishuWebhookSettings({ ...base, webhookEncryptKey: "key", webhookPort: 0 }), /port/);
 	assert.throws(() => validateFeishuWebhookSettings({ ...base, webhookEncryptKey: "key", webhookPath: "events" }), /path/);
 	assert.doesNotThrow(() => validateFeishuWebhookSettings({ ...base, webhookEncryptKey: "key" }));
+});
+
+test("Feishu batch tuning defaults match Hermes and clamps environment overrides", () => {
+	const defaults = loadFeishuSettings({ FEISHU_APP_ID: "app", FEISHU_APP_SECRET: "secret" });
+	assert.deepEqual({
+		textDelay: defaults.textBatchDelayMs,
+		splitDelay: defaults.textBatchSplitDelayMs,
+		maxMessages: defaults.textBatchMaxMessages,
+		maxChars: defaults.textBatchMaxChars,
+		mediaDelay: defaults.mediaBatchDelayMs,
+	}, { textDelay: 600, splitDelay: 2_000, maxMessages: 8, maxChars: 4_000, mediaDelay: 800 });
+	const tuned = loadFeishuSettings({
+		FEISHU_APP_ID: "app", FEISHU_APP_SECRET: "secret",
+		FEISHU_TEXT_BATCH_DELAY_MS: "12.9", FEISHU_TEXT_BATCH_MAX_MESSAGES: "0",
+		FEISHU_TEXT_BATCH_MAX_CHARS: "999999", FEISHU_MEDIA_BATCH_DELAY_MS: "bad",
+	});
+	assert.equal(tuned.textBatchDelayMs, 12);
+	assert.equal(tuned.textBatchMaxMessages, 1);
+	assert.equal(tuned.textBatchMaxChars, 100_000);
+	assert.equal(tuned.mediaBatchDelayMs, 800);
 });
 
 test("webhook listener rejects non-POST, query paths, and oversized bodies", async () => {
