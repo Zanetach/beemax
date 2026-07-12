@@ -30,15 +30,15 @@ test("bootstrap installer downloads a verified single release archive and preser
 	assert.match(installer, /BEEMAX_BIN_DIR/);
 });
 
-test("source installer declares Git only when it must initialize the bundled Pi source", async () => {
+test("source installer requires the vendored Pi source without submodule initialization", async () => {
 	const installer = await readFile("scripts/install.sh", "utf8");
-	assert.match(installer, /Pi source is missing and git is required/);
-	assert.match(installer, /command -v git/);
+	assert.match(installer, /vendored Pi source is missing/);
+	assert.doesNotMatch(installer, /git submodule|command -v git/);
 });
 
 test("release archive includes Pi and excludes git metadata and dependencies", async () => {
 	const packager = await readFile("scripts/create-release-archive.sh", "utf8");
-	assert.match(packager, /Pi submodule is missing/);
+	assert.match(packager, /Vendored Pi source is missing/);
 	assert.match(packager, /--exclude='\.\/pi\/.git'/);
 	assert.match(packager, /--exclude='\.\/node_modules'/);
 	assert.match(packager, /--exclude='\.\/\*\*\/\*\.tsbuildinfo'/);

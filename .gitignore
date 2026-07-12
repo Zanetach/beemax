@@ -30,7 +30,7 @@ data/
 *.db-shm
 *.db-wal
 
-# pi source build artifacts (we reference pi/ as a sibling clone)
+# vendored Pi source build artifacts
 pi/packages/*/dist/
 
 # local config overrides

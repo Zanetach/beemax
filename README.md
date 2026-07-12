@@ -104,9 +104,16 @@ directory by default; configure a shared workspace explicitly only when that is
 intended. Profile `.env` values take precedence over ambient shell credentials.
 Set `BEEMAX_HOME` to relocate all Profile Homes.
 The release installer requires Node.js 22.19+, `curl`, `tar`, `npm`, and either
-`shasum` (macOS) or `sha256sum` (common Linux). A source checkout normally
-contains Pi; if it does not, source installation also requires Git to initialize
-the Pi submodule.
+`shasum` (macOS) or `sha256sum` (common Linux). Pi is vendored in `pi/`, so a
+normal clone or source archive is self-contained and requires no submodule step.
+
+Maintainers can continue evolving Pi in its independent repository and sync it
+without changing the self-contained BeeMax layout:
+
+```bash
+git subtree pull --prefix=pi https://github.com/Zanetach/pi.git main --squash
+git subtree push --prefix=pi https://github.com/Zanetach/pi.git main
+```
 
 For the first end-to-end test, keep the gateway in the foreground:
 

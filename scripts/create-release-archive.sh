@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Create a self-contained BeeMax source archive, including the Pi submodule.
+# Create a self-contained BeeMax source archive, including vendored Pi source.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -8,7 +8,7 @@ OUTPUT_DIR="${2:-${ROOT}/dist/release}"
 ARCHIVE_NAME="beemax-${VERSION}.tar.gz"
 
 [[ -f "${ROOT}/pi/package.json" ]] || {
-	echo "Pi submodule is missing; run git submodule update --init --recursive first" >&2
+	echo "Vendored Pi source is missing from this BeeMax checkout" >&2
 	exit 1
 }
 

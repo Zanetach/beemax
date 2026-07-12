@@ -14,13 +14,10 @@ if (major < 22 || (major === 22 && minor < 19)) {
 '
 
 cd "${ROOT}"
-if [[ ! -f "${ROOT}/pi/package.json" ]]; then
-  command -v git >/dev/null 2>&1 || {
-    echo "BeeMax source install failed: Pi source is missing and git is required to initialize it." >&2
-    exit 1
-  }
-  git submodule update --init --recursive
-fi
+[[ -f "${ROOT}/pi/package.json" ]] || {
+  echo "BeeMax source install failed: vendored Pi source is missing." >&2
+  exit 1
+}
 npm ci
 npm run build
 

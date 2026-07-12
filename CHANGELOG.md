@@ -73,6 +73,8 @@
 
 - Switched the Pi submodule to the maintained BeeMax fork so release archives can be reproduced by GitHub Actions.
 
+> Current source layout vendors Pi directly in `pi/`; the independent Pi repository remains available for subtree synchronization.
+
 ## 0.1.0-preview.3
 
 - Added a single verified release archive containing BeeMax and Pi; the one-command installer no longer requires Git or clones submodules.
