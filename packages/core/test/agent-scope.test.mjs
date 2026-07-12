@@ -30,6 +30,7 @@ test("agent scope derives every runtime view from one canonical identity", () =>
 		platform: "discord",
 		chatId: "channel-1",
 		userId: "global-user",
+		threadId: "topic-7",
 	});
 	assert.deepEqual(interactionScopeForSource(source, "personal"), {
 		profileId: "personal",

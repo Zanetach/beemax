@@ -27,11 +27,11 @@ function runClaimWorker(request, expectedCode = 0) {
 	});
 }
 
-test("natural-language recall is safe and follows a user across chats", () => {
+test("natural-language recall is safe and stays inside the requesting conversation", () => {
 	const root = mkdtempSync(join(tmpdir(), "beemax-memory-test-"));
 	const store = new MemoryStore(join(root, "memory.db"));
 	try {
-		store.remember({
+		const memoryId = store.remember({
 			platform: "feishu",
 			chatId: "chat-a",
 			userId: "user-1",
@@ -44,10 +44,9 @@ test("natural-language recall is safe and follows a user across chats", () => {
 			userId: "user-1",
 			limit: 5,
 		});
-		assert.equal(records.length, 1);
-		assert.match(records[0].content, /concise/);
+		assert.equal(records.length, 0);
 		assert.equal(store.list({ platform: "feishu", userId: "user-1" }).length, 1);
-		assert.equal(store.forget(records[0].id, { platform: "feishu", userId: "user-1" }), true);
+		assert.equal(store.forget(memoryId, { platform: "feishu", userId: "user-1" }), true);
 		assert.equal(store.list({ platform: "feishu", userId: "user-1" }).length, 0);
 	} finally {
 		store.close();
@@ -972,9 +971,42 @@ test("structured understandings retain evidence, support correction, and compile
 		store.upsertClaim({ ...scope, userId: "another-user", kind: "fact", statement: "Other user's private fact", confidence: 1, stability: "high" });
 		assert.doesNotMatch(store.compileLongTermMemory({ ...scope, maxChars: 1000 }), /Other user's private fact/);
 		const foreignEvent = store.recordEvent({ ...scope, userId: "another-user", kind: "user", content: "Private source" });
-		assert.throws(() => store.upsertClaim({ ...scope, kind: "fact", statement: "Must not cross scopes", evidence: { eventId: foreignEvent, excerpt: "Private source" } }), /outside this user scope/);
+		assert.throws(() => store.upsertClaim({ ...scope, kind: "fact", statement: "Must not cross scopes", evidence: { eventId: foreignEvent, excerpt: "Private source" } }), /outside this memory scope/);
 	} finally {
 		store.close();
 		rmSync(root, { recursive: true, force: true });
 	}
+});
+
+test("memory recall and evidence remain inside the exact conversation and thread scope", () => {
+	const root = mkdtempSync(join(tmpdir(), "beemax-memory-exact-scope-"));
+	const store = new MemoryStore(join(root, "memory.db"));
+	try {
+		const a = { platform: "feishu", chatId: "group-a", threadId: "thread-a", userId: "same-user" };
+		const b = { platform: "feishu", chatId: "group-b", threadId: "thread-b", userId: "same-user" };
+		store.remember({ ...a, role: "memory", content: "Project Alpha delivery is Friday" });
+		store.remember({ ...b, role: "memory", content: "Project Beta delivery is Monday" });
+		assert.deepEqual(store.recall("delivery", a).map((record) => record.content), ["Project Alpha delivery is Friday"]);
+		assert.deepEqual(store.recall("delivery", { platform: "feishu", chatId: "group-a", userId: "same-user" }), []);
+		const foreignEvent = store.recordEvent({ ...b, kind: "user", content: "Beta private source" });
+		assert.throws(() => store.upsertClaim({ ...a, kind: "fact", statement: "Must stay in Alpha", evidence: { eventId: foreignEvent, excerpt: "Beta private source" } }), /outside this memory scope/);
+	} finally { store.close(); rmSync(root, { recursive: true, force: true }); }
+});
+
+test("organizational claims retain entity identity, source, validity, visibility, and explicit conflicts", () => {
+	const root = mkdtempSync(join(tmpdir(), "beemax-organizational-memory-"));
+	const store = new MemoryStore(join(root, "memory.db"));
+	try {
+		const scope = { platform: "feishu", chatId: "sales", threadId: "order-thread", userId: "seller" };
+		const first = store.upsertClaim({ ...scope, kind: "fact", statement: "交付日期为 7 月 25 日", subject: { type: "customer", id: "customer-1" }, object: { type: "order", id: "PO-1" }, source: { type: "message", ref: "om-1" }, validFrom: 100, validUntil: Date.now() + 60_000, visibility: "team" });
+		const second = store.upsertClaim({ ...scope, kind: "fact", statement: "交付日期为 7 月 28 日", subject: { type: "customer", id: "customer-1" }, object: { type: "order", id: "PO-1" }, source: { type: "tool", ref: "erp-1" }, validFrom: 100, visibility: "team" });
+		assert.equal(store.markClaimsConflicted(first.id, second.id, scope), true);
+		const explained = store.explainClaim(first.id, scope);
+		assert.deepEqual(explained.claim.subject, { type: "customer", id: "customer-1" });
+		assert.deepEqual(explained.claim.object, { type: "order", id: "PO-1" });
+		assert.deepEqual(explained.claim.source, { type: "message", ref: "om-1" });
+		assert.equal(explained.claim.visibility, "team");
+		assert.deepEqual(explained.claim.conflictsWith, [second.id]);
+		assert.equal(store.listClaims({ ...scope, status: "conflicted" }).length, 2);
+	} finally { store.close(); rmSync(root, { recursive: true, force: true }); }
 });

@@ -26,6 +26,7 @@ export interface MemoryRecord {
 	platform: string;
 	chatId: string;
 	userId?: string;
+	threadId?: string;
 	role: "user" | "assistant" | "memory";
 	content: string;
 	createdAt: number;
@@ -36,6 +37,7 @@ export interface RecallOptions {
 	platform?: string;
 	chatId?: string;
 	userId?: string;
+	threadId?: string;
 }
 
 export interface MemoryCandidate extends MemoryRecord {
@@ -48,11 +50,19 @@ export interface MemoryClaim {
 	platform: string;
 	chatId: string;
 	userId?: string;
+	threadId?: string;
 	kind: MemoryClaimKind;
 	statement: string;
 	confidence: number;
 	stability: "low" | "medium" | "high";
-	status: "active" | "superseded" | "rejected" | "archived";
+	status: "candidate" | "active" | "superseded" | "conflicted" | "rejected" | "archived";
+	subject?: { type: string; id: string };
+	object?: { type: string; id: string };
+	source?: { type: "message" | "document" | "meeting" | "tool" | "manual" | "import"; ref?: string };
+	visibility: "private" | "conversation" | "team" | "organization";
+	validFrom?: number;
+	validUntil?: number;
+	conflictsWith: string[];
 	supersededBy?: string;
 	firstObservedAt: number;
 	lastConfirmedAt: number;
@@ -76,6 +86,7 @@ export interface MemoryEvent {
 	platform: string;
 	chatId: string;
 	userId?: string;
+	threadId?: string;
 	kind: "user" | "assistant" | "import" | "feedback";
 	content: string;
 	occurredAt: number;
@@ -91,11 +102,18 @@ export interface ClaimInput {
 	platform: string;
 	chatId: string;
 	userId?: string;
+	threadId?: string;
 	kind: MemoryClaim["kind"];
 	statement: string;
 	confidence?: number;
 	stability?: MemoryClaim["stability"];
 	expiresAt?: number;
+	subject?: MemoryClaim["subject"];
+	object?: MemoryClaim["object"];
+	source?: MemoryClaim["source"];
+	visibility?: MemoryClaim["visibility"];
+	validFrom?: number;
+	validUntil?: number;
 	evidence?: { kind?: MemoryEvidence["kind"]; eventId?: string; excerpt: string };
 }
 
@@ -127,6 +145,7 @@ export class MemoryStore {
 				platform TEXT NOT NULL,
 				chat_id TEXT NOT NULL,
 				user_id TEXT,
+				thread_id TEXT,
 				role TEXT NOT NULL,
 				content TEXT NOT NULL,
 				created_at INTEGER NOT NULL
@@ -159,6 +178,7 @@ export class MemoryStore {
 				platform TEXT NOT NULL,
 				chat_id TEXT NOT NULL,
 				user_id TEXT,
+				thread_id TEXT,
 				role TEXT NOT NULL,
 				content TEXT NOT NULL,
 				status TEXT NOT NULL DEFAULT 'pending',
@@ -283,6 +303,7 @@ export class MemoryStore {
 				platform TEXT NOT NULL,
 				chat_id TEXT NOT NULL,
 				user_id TEXT,
+				thread_id TEXT,
 				kind TEXT NOT NULL,
 				content TEXT NOT NULL,
 				occurred_at INTEGER NOT NULL,
@@ -295,8 +316,18 @@ export class MemoryStore {
 				platform TEXT NOT NULL,
 				chat_id TEXT NOT NULL,
 				user_id TEXT,
+				thread_id TEXT,
 				kind TEXT NOT NULL,
 				statement TEXT NOT NULL,
+				subject_type TEXT,
+				subject_id TEXT,
+				object_type TEXT,
+				object_id TEXT,
+				source_type TEXT,
+				source_ref TEXT,
+				visibility TEXT NOT NULL DEFAULT 'conversation',
+				valid_from INTEGER,
+				valid_until INTEGER,
 				confidence REAL NOT NULL,
 				stability TEXT NOT NULL,
 				status TEXT NOT NULL,
@@ -334,6 +365,13 @@ export class MemoryStore {
 				created_at INTEGER NOT NULL
 			);
 			CREATE INDEX IF NOT EXISTS idx_memory_evidence_claim ON memory_evidence(claim_id, created_at DESC);
+			CREATE TABLE IF NOT EXISTS memory_claim_conflicts (
+				claim_id TEXT NOT NULL REFERENCES memory_claims(id) ON DELETE CASCADE,
+				conflicts_with TEXT NOT NULL REFERENCES memory_claims(id) ON DELETE CASCADE,
+				created_at INTEGER NOT NULL,
+				PRIMARY KEY (claim_id, conflicts_with),
+				CHECK (claim_id <> conflicts_with)
+			);
 		`);
 		this.addColumnIfMissing("tasks", "evidence", "TEXT");
 		this.addColumnIfMissing("tasks", "description", "TEXT");
@@ -362,6 +400,19 @@ export class MemoryStore {
 		this.db.exec("CREATE INDEX IF NOT EXISTS idx_tasks_verification_due ON tasks(verification_outcome, verification_retry_at)");
 		this.backfillTaskPlans();
 		this.addColumnIfMissing("memory_claims", "superseded_by", "TEXT REFERENCES memory_claims(id)");
+		this.addColumnIfMissing("memories", "thread_id", "TEXT");
+		this.addColumnIfMissing("memory_candidates", "thread_id", "TEXT");
+		this.addColumnIfMissing("memory_events", "thread_id", "TEXT");
+		this.addColumnIfMissing("memory_claims", "thread_id", "TEXT");
+		this.addColumnIfMissing("memory_claims", "subject_type", "TEXT");
+		this.addColumnIfMissing("memory_claims", "subject_id", "TEXT");
+		this.addColumnIfMissing("memory_claims", "object_type", "TEXT");
+		this.addColumnIfMissing("memory_claims", "object_id", "TEXT");
+		this.addColumnIfMissing("memory_claims", "source_type", "TEXT");
+		this.addColumnIfMissing("memory_claims", "source_ref", "TEXT");
+		this.addColumnIfMissing("memory_claims", "visibility", "TEXT NOT NULL DEFAULT 'conversation'");
+		this.addColumnIfMissing("memory_claims", "valid_from", "INTEGER");
+		this.addColumnIfMissing("memory_claims", "valid_until", "INTEGER");
 		this.addColumnIfMissing("memory_evidence", "event_id", "TEXT REFERENCES memory_events(id)");
 		this.db.exec("UPDATE tasks SET verification_outcome = verification_status WHERE verification_outcome IS NULL AND verification_status IS NOT NULL");
 		this.db.exec(`INSERT OR IGNORE INTO tasks (id, owner_key, kind, title, status, evidence, created_at, finished_at, updated_at)
@@ -376,11 +427,11 @@ export class MemoryStore {
 	}
 
 	/** Persist a source record as immutable evidence while retained; unreferenced raw events use a bounded per-conversation retention window. */
-	recordEvent(record: { platform: string; chatId: string; userId?: string; kind: "user" | "assistant" | "import" | "feedback"; content: string; occurredAt?: number }): string {
+	recordEvent(record: { platform: string; chatId: string; userId?: string; threadId?: string; kind: "user" | "assistant" | "import" | "feedback"; content: string; occurredAt?: number }): string {
 		const id = cryptoRandom();
 		const now = Date.now();
-		this.db.prepare("INSERT INTO memory_events (id, platform, chat_id, user_id, kind, content, occurred_at, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
-			.run(id, record.platform, record.chatId, record.userId ?? null, record.kind, record.content, record.occurredAt ?? now, now);
+		this.db.prepare("INSERT INTO memory_events (id, platform, chat_id, user_id, thread_id, kind, content, occurred_at, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")
+			.run(id, record.platform, record.chatId, record.userId ?? null, record.threadId ?? null, record.kind, record.content, record.occurredAt ?? now, now);
 		this.db.prepare(`DELETE FROM memory_events WHERE platform = ? AND chat_id = ? AND user_id IS ? AND id NOT IN (SELECT event_id FROM memory_evidence WHERE event_id IS NOT NULL) AND id NOT IN
 			(SELECT id FROM memory_events WHERE platform = ? AND chat_id = ? AND user_id IS ? ORDER BY occurred_at DESC LIMIT 5000)`)
 			.run(record.platform, record.chatId, record.userId ?? null, record.platform, record.chatId, record.userId ?? null);
@@ -398,9 +449,9 @@ export class MemoryStore {
 		const statement = input.statement.trim();
 		if (!statement) throw new Error("Memory claim statement cannot be empty");
 		const now = Date.now();
-		const scope = [input.platform, input.userId ?? null, input.userId ?? null, input.chatId, input.kind, statement];
+		const scope = [input.platform, input.chatId, input.userId ?? null, input.threadId ?? null, input.kind, statement];
 		const existing = this.db.prepare(`SELECT * FROM memory_claims
-			WHERE platform = ? AND (user_id = ? OR (? IS NULL AND chat_id = ?)) AND kind = ? AND statement = ? AND status = 'active'
+			WHERE platform = ? AND chat_id = ? AND user_id IS ? AND thread_id IS ? AND kind = ? AND statement = ? AND status = 'active'
 			ORDER BY updated_at DESC LIMIT 1`).get(...scope) as ClaimRow | undefined;
 		let id: string;
 		if (existing) {
@@ -409,13 +460,32 @@ export class MemoryStore {
 				.run(clampConfidence(input.confidence ?? existing.confidence), strongerStability(existing.stability, input.stability ?? "low"), now, input.expiresAt ?? existing.expires_at, now, id);
 		} else {
 			id = cryptoRandom();
-			this.db.prepare(`INSERT INTO memory_claims (id, platform, chat_id, user_id, kind, statement, confidence, stability, status, first_observed_at, last_confirmed_at, expires_at, created_at, updated_at)
-				VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?)`)
-				.run(id, input.platform, input.chatId, input.userId ?? null, input.kind, statement, clampConfidence(input.confidence ?? 0.7), input.stability ?? "low", now, now, input.expiresAt ?? null, now, now);
+			this.db.prepare(`INSERT INTO memory_claims (id, platform, chat_id, user_id, thread_id, kind, statement, subject_type, subject_id, object_type, object_id, source_type, source_ref, visibility, valid_from, valid_until, confidence, stability, status, first_observed_at, last_confirmed_at, expires_at, created_at, updated_at)
+				VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?)`)
+				.run(id, input.platform, input.chatId, input.userId ?? null, input.threadId ?? null, input.kind, statement,
+					input.subject?.type ?? null, input.subject?.id ?? null, input.object?.type ?? null, input.object?.id ?? null,
+					input.source?.type ?? null, input.source?.ref ?? null, input.visibility ?? "conversation", input.validFrom ?? null,
+					input.validUntil ?? input.expiresAt ?? null, clampConfidence(input.confidence ?? 0.7), input.stability ?? "low", now, now,
+					input.validUntil ?? input.expiresAt ?? null, now, now);
 		}
-		if (input.evidence?.eventId && !this.eventMatchesScope(input.evidence.eventId, input)) throw new Error("Memory evidence event is outside this user scope");
+		if (input.evidence?.eventId && !this.eventMatchesScope(input.evidence.eventId, input)) throw new Error("Memory evidence event is outside this memory scope");
 		if (input.evidence?.excerpt.trim()) this.addEvidence(id, input.evidence.kind ?? "manual", input.evidence.excerpt, input.evidence.eventId);
 		return this.getClaim(id)!;
+	}
+
+	/** Preserve contradictory facts and their provenance instead of silently choosing one. */
+	markClaimsConflicted(firstId: string, secondId: string, opts: Omit<RecallOptions, "limit"> = {}): boolean {
+		if (firstId === secondId) return false;
+		const first = this.getClaim(firstId, opts);
+		const second = this.getClaim(secondId, opts);
+		if (!first || !second || first.status === "superseded" || second.status === "superseded") return false;
+		const now = Date.now();
+		this.db.transaction(() => {
+			this.db.prepare("INSERT OR IGNORE INTO memory_claim_conflicts (claim_id, conflicts_with, created_at) VALUES (?, ?, ?), (?, ?, ?)")
+				.run(firstId, secondId, now, secondId, firstId, now);
+			this.db.prepare("UPDATE memory_claims SET status = 'conflicted', updated_at = ? WHERE id IN (?, ?)").run(now, firstId, secondId);
+		})();
+		return true;
 	}
 
 	correctClaim(id: string, replacement: Pick<ClaimInput, "statement" | "confidence" | "stability" | "expiresAt" | "evidence">, opts: Omit<RecallOptions, "limit"> = {}): MemoryClaim | undefined {
@@ -423,7 +493,9 @@ export class MemoryStore {
 		if (!current || current.status !== "active") return undefined;
 		const evidence = replacement.evidence ?? { kind: "correction" as const, excerpt: `Corrects claim ${id}: ${current.statement}` };
 		const corrected = this.upsertClaim({
-			platform: current.platform, chatId: current.chatId, userId: current.userId, kind: current.kind,
+			platform: current.platform, chatId: current.chatId, userId: current.userId, threadId: current.threadId, kind: current.kind,
+			subject: current.subject, object: current.object, source: current.source, visibility: current.visibility,
+			validFrom: current.validFrom, validUntil: replacement.expiresAt ?? current.validUntil,
 			statement: replacement.statement, confidence: replacement.confidence ?? Math.max(current.confidence, 0.8),
 			stability: replacement.stability ?? current.stability, expiresAt: replacement.expiresAt,
 			evidence: { ...evidence, kind: "correction" },
@@ -487,16 +559,18 @@ export class MemoryStore {
 			.run(cryptoRandom(), claimId, eventId ?? null, kind, excerpt.trim().slice(0, 4000), Date.now());
 	}
 
-	private eventMatchesScope(eventId: string, input: Pick<ClaimInput, "platform" | "chatId" | "userId">): boolean {
-		const row = this.db.prepare("SELECT id FROM memory_events WHERE id = ? AND platform = ? AND (user_id = ? OR (? IS NULL AND chat_id = ?))")
-			.get(eventId, input.platform, input.userId ?? null, input.userId ?? null, input.chatId) as { id: string } | undefined;
+	private eventMatchesScope(eventId: string, input: Pick<ClaimInput, "platform" | "chatId" | "userId" | "threadId">): boolean {
+		const row = this.db.prepare("SELECT id FROM memory_events WHERE id = ? AND platform = ? AND chat_id = ? AND user_id IS ? AND thread_id IS ?")
+			.get(eventId, input.platform, input.chatId, input.userId ?? null, input.threadId ?? null) as { id: string } | undefined;
 		return Boolean(row);
 	}
 
 	private getClaim(id: string, opts: Omit<RecallOptions, "limit"> = {}): MemoryClaim | undefined {
 		const { where, params } = scopeWhere(opts, "c");
 		const row = this.db.prepare(`SELECT * FROM memory_claims c WHERE c.id = ? ${where}`).get(id, ...params) as ClaimRow | undefined;
-		return row ? mapClaim(row) : undefined;
+		if (!row) return undefined;
+		const conflicts = this.db.prepare("SELECT conflicts_with FROM memory_claim_conflicts WHERE claim_id = ? ORDER BY conflicts_with").all(id) as Array<{ conflicts_with: string }>;
+		return { ...mapClaim(row), conflictsWith: conflicts.map((item) => item.conflicts_with) };
 	}
 
 	private searchClaims(match: string, opts: RecallOptions): MemoryClaim[] {
@@ -522,9 +596,9 @@ export class MemoryStore {
 		const createdAt = Date.now();
 		this.db
 			.prepare(
-				"INSERT INTO memories (id, platform, chat_id, user_id, role, content, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+				"INSERT INTO memories (id, platform, chat_id, user_id, thread_id, role, content, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
 			)
-				.run(id, record.platform, record.chatId, record.userId ?? null, record.role, record.content, createdAt);
+				.run(id, record.platform, record.chatId, record.userId ?? null, record.threadId ?? null, record.role, record.content, createdAt);
 		this.db.prepare(`DELETE FROM memories WHERE platform = ? AND chat_id = ? AND user_id IS ? AND id NOT IN
 			(SELECT id FROM memories WHERE platform = ? AND chat_id = ? AND user_id IS ? ORDER BY created_at DESC LIMIT 5000)`)
 			.run(record.platform, record.chatId, record.userId ?? null, record.platform, record.chatId, record.userId ?? null);
@@ -534,13 +608,13 @@ export class MemoryStore {
 	/** Store a raw turn as a retrievable candidate, not as curated long-term memory. */
 	recordCandidate(record: Omit<MemoryRecord, "id" | "createdAt" | "role"> & { role: "user" | "assistant" }): string {
 		const existing = this.db.prepare(
-			"SELECT id FROM memory_candidates WHERE platform = ? AND chat_id = ? AND user_id IS ? AND role = ? AND content = ? AND status = 'pending' ORDER BY created_at DESC LIMIT 1",
-		).get(record.platform, record.chatId, record.userId ?? null, record.role, record.content) as { id: string } | undefined;
+			"SELECT id FROM memory_candidates WHERE platform = ? AND chat_id = ? AND user_id IS ? AND thread_id IS ? AND role = ? AND content = ? AND status = 'pending' ORDER BY created_at DESC LIMIT 1",
+		).get(record.platform, record.chatId, record.userId ?? null, record.threadId ?? null, record.role, record.content) as { id: string } | undefined;
 		if (existing) return existing.id;
 		const id = cryptoRandom();
 		this.db.prepare(
-			"INSERT INTO memory_candidates (id, platform, chat_id, user_id, role, content, status, created_at) VALUES (?, ?, ?, ?, ?, ?, 'pending', ?)",
-		).run(id, record.platform, record.chatId, record.userId ?? null, record.role, record.content, Date.now());
+			"INSERT INTO memory_candidates (id, platform, chat_id, user_id, thread_id, role, content, status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?)",
+		).run(id, record.platform, record.chatId, record.userId ?? null, record.threadId ?? null, record.role, record.content, Date.now());
 		this.db.prepare(`DELETE FROM memory_candidates WHERE platform = ? AND chat_id = ? AND user_id IS ? AND id NOT IN
 			(SELECT id FROM memory_candidates WHERE platform = ? AND chat_id = ? AND user_id IS ? ORDER BY created_at DESC LIMIT 5000)`)
 			.run(record.platform, record.chatId, record.userId ?? null, record.platform, record.chatId, record.userId ?? null);
@@ -561,20 +635,22 @@ export class MemoryStore {
 			conditions.push("m.platform = ?");
 			params.push(opts.platform);
 		}
-		if (opts.chatId && opts.userId) {
-			conditions.push("(m.chat_id = ? OR m.user_id = ?)");
-			params.push(opts.chatId, opts.userId);
-		} else if (opts.chatId) {
+		if (opts.chatId) {
 			conditions.push("m.chat_id = ?");
 			params.push(opts.chatId);
-		} else if (opts.userId) {
+		}
+		if (opts.userId) {
 			conditions.push("m.user_id = ?");
 			params.push(opts.userId);
+		}
+		if (opts.chatId) {
+			conditions.push("m.thread_id IS ?");
+			params.push(opts.threadId ?? null);
 		}
 		const where = conditions.length ? `AND ${conditions.join(" AND ")}` : "";
 		const rows = this.db
 			.prepare(
-				`SELECT m.id, m.platform, m.chat_id, m.user_id, m.role, m.content, m.created_at
+				`SELECT m.id, m.platform, m.chat_id, m.user_id, m.thread_id, m.role, m.content, m.created_at
 				 FROM memories_fts f
 				 JOIN memories m ON m.rowid = f.rowid
 				 WHERE memories_fts MATCH ?
@@ -598,10 +674,11 @@ export class MemoryStore {
 		const conditions = ["role = 'memory'"];
 		const params: unknown[] = [];
 		if (opts.platform) { conditions.push("platform = ?"); params.push(opts.platform); }
+		if (opts.chatId) { conditions.push("chat_id = ?"); params.push(opts.chatId); }
 		if (opts.userId) { conditions.push("user_id = ?"); params.push(opts.userId); }
-		else if (opts.chatId) { conditions.push("chat_id = ?"); params.push(opts.chatId); }
+		if (opts.chatId) { conditions.push("thread_id IS ?"); params.push(opts.threadId ?? null); }
 		const rows = this.db.prepare(
-			`SELECT id, platform, chat_id, user_id, role, content, created_at
+			`SELECT id, platform, chat_id, user_id, thread_id, role, content, created_at
 			 FROM memories WHERE ${conditions.join(" AND ")}
 			 ORDER BY created_at DESC LIMIT ?`,
 		).all(...params, limit) as MemoryRow[];
@@ -613,10 +690,11 @@ export class MemoryStore {
 		const conditions = ["status = 'pending'"];
 		const params: unknown[] = [];
 		if (opts.platform) { conditions.push("platform = ?"); params.push(opts.platform); }
+		if (opts.chatId) { conditions.push("chat_id = ?"); params.push(opts.chatId); }
 		if (opts.userId) { conditions.push("user_id = ?"); params.push(opts.userId); }
-		else if (opts.chatId) { conditions.push("chat_id = ?"); params.push(opts.chatId); }
+		if (opts.chatId) { conditions.push("thread_id IS ?"); params.push(opts.threadId ?? null); }
 		const rows = this.db.prepare(
-			`SELECT id, platform, chat_id, user_id, role, content, status, created_at FROM memory_candidates WHERE ${conditions.join(" AND ")} ORDER BY created_at DESC LIMIT ?`,
+			`SELECT id, platform, chat_id, user_id, thread_id, role, content, status, created_at FROM memory_candidates WHERE ${conditions.join(" AND ")} ORDER BY created_at DESC LIMIT ?`,
 		).all(...params, limit) as CandidateRow[];
 		return rows.map(mapCandidate);
 	}
@@ -625,15 +703,16 @@ export class MemoryStore {
 		const conditions = ["id = ?", "status = 'pending'"];
 		const params: unknown[] = [id];
 		if (opts.platform) { conditions.push("platform = ?"); params.push(opts.platform); }
+		if (opts.chatId) { conditions.push("chat_id = ?"); params.push(opts.chatId); }
 		if (opts.userId) { conditions.push("user_id = ?"); params.push(opts.userId); }
-		else if (opts.chatId) { conditions.push("chat_id = ?"); params.push(opts.chatId); }
+		if (opts.chatId) { conditions.push("thread_id IS ?"); params.push(opts.threadId ?? null); }
 		const row = this.db.prepare(
-			`SELECT id, platform, chat_id, user_id, content FROM memory_candidates WHERE ${conditions.join(" AND ")}`,
-		).get(...params) as Pick<MemoryRow, "id" | "platform" | "chat_id" | "user_id" | "content"> | undefined;
+			`SELECT id, platform, chat_id, user_id, thread_id, content FROM memory_candidates WHERE ${conditions.join(" AND ")}`,
+		).get(...params) as Pick<MemoryRow, "id" | "platform" | "chat_id" | "user_id" | "thread_id" | "content"> | undefined;
 		if (!row) return false;
 		const candidate = mapRow({ ...row, role: "memory", created_at: Date.now() });
 		this.db.transaction(() => {
-			this.remember({ platform: candidate.platform, chatId: candidate.chatId, userId: candidate.userId, role: "memory", content: candidate.content });
+			this.remember({ platform: candidate.platform, chatId: candidate.chatId, userId: candidate.userId, threadId: candidate.threadId, role: "memory", content: candidate.content });
 			this.db.prepare("UPDATE memory_candidates SET status = 'promoted' WHERE id = ?").run(id);
 		})();
 		return true;
@@ -643,8 +722,9 @@ export class MemoryStore {
 		const conditions = ["id = ?", "status = 'pending'"];
 		const params: unknown[] = [id];
 		if (opts.platform) { conditions.push("platform = ?"); params.push(opts.platform); }
+		if (opts.chatId) { conditions.push("chat_id = ?"); params.push(opts.chatId); }
 		if (opts.userId) { conditions.push("user_id = ?"); params.push(opts.userId); }
-		else if (opts.chatId) { conditions.push("chat_id = ?"); params.push(opts.chatId); }
+		if (opts.chatId) { conditions.push("thread_id IS ?"); params.push(opts.threadId ?? null); }
 		return this.db.prepare(`UPDATE memory_candidates SET status = 'rejected' WHERE ${conditions.join(" AND ")}`).run(...params).changes > 0;
 	}
 
@@ -652,8 +732,9 @@ export class MemoryStore {
 		const conditions: string[] = [];
 		const params: unknown[] = [];
 		if (opts.platform) { conditions.push("platform = ?"); params.push(opts.platform); }
+		if (opts.chatId) { conditions.push("chat_id = ?"); params.push(opts.chatId); }
 		if (opts.userId) { conditions.push("user_id = ?"); params.push(opts.userId); }
-		else if (opts.chatId) { conditions.push("chat_id = ?"); params.push(opts.chatId); }
+		if (opts.chatId) { conditions.push("thread_id IS ?"); params.push(opts.threadId ?? null); }
 		const where = conditions.length ? `WHERE ${conditions.join(" AND ")}` : "";
 		const curatedWhere = ["role = 'memory'", ...conditions].join(" AND ");
 		const curated = (this.db.prepare(`SELECT count(*) AS value FROM memories WHERE ${curatedWhere}`).get(...params) as { value: number }).value;
@@ -1081,8 +1162,9 @@ export class MemoryStore {
 		const conditions = ["id = ?", "role = 'memory'"];
 		const params: unknown[] = [id];
 		if (opts.platform) { conditions.push("platform = ?"); params.push(opts.platform); }
+		if (opts.chatId) { conditions.push("chat_id = ?"); params.push(opts.chatId); }
 		if (opts.userId) { conditions.push("user_id = ?"); params.push(opts.userId); }
-		else if (opts.chatId) { conditions.push("chat_id = ?"); params.push(opts.chatId); }
+		if (opts.chatId) { conditions.push("thread_id IS ?"); params.push(opts.threadId ?? null); }
 		return this.db.prepare(`DELETE FROM memories WHERE ${conditions.join(" AND ")}`).run(...params).changes > 0;
 	}
 
@@ -1116,6 +1198,7 @@ interface MemoryRow {
 	platform: string;
 	chat_id: string;
 	user_id: string | null;
+	thread_id: string | null;
 	role: string;
 	content: string;
 	created_at: number;
@@ -1137,8 +1220,18 @@ interface ClaimRow {
 	platform: string;
 	chat_id: string;
 	user_id: string | null;
+	thread_id: string | null;
 	kind: MemoryClaim["kind"];
 	statement: string;
+	subject_type: string | null;
+	subject_id: string | null;
+	object_type: string | null;
+	object_id: string | null;
+	source_type: NonNullable<MemoryClaim["source"]>["type"] | null;
+	source_ref: string | null;
+	visibility: MemoryClaim["visibility"];
+	valid_from: number | null;
+	valid_until: number | null;
 	confidence: number;
 	stability: MemoryClaim["stability"];
 	status: MemoryClaim["status"];
@@ -1172,6 +1265,7 @@ interface EventRow {
 	platform: string;
 	chat_id: string;
 	user_id: string | null;
+	thread_id: string | null;
 	kind: MemoryEvent["kind"];
 	content: string;
 	occurred_at: number;
@@ -1208,6 +1302,7 @@ function mapRow(row: MemoryRow): MemoryRecord {
 		platform: row.platform,
 		chatId: row.chat_id,
 		userId: row.user_id ?? undefined,
+		threadId: row.thread_id ?? undefined,
 		role: row.role as MemoryRecord["role"],
 		content: row.content,
 		createdAt: row.created_at,
@@ -1220,8 +1315,12 @@ function mapCandidate(row: CandidateRow): MemoryCandidate {
 
 function mapClaim(row: ClaimRow): MemoryClaim {
 	return {
-		id: row.id, platform: row.platform, chatId: row.chat_id, userId: row.user_id ?? undefined,
+		id: row.id, platform: row.platform, chatId: row.chat_id, userId: row.user_id ?? undefined, threadId: row.thread_id ?? undefined,
 		kind: row.kind, statement: row.statement, confidence: row.confidence, stability: row.stability,
+		subject: row.subject_type && row.subject_id ? { type: row.subject_type, id: row.subject_id } : undefined,
+		object: row.object_type && row.object_id ? { type: row.object_type, id: row.object_id } : undefined,
+		source: row.source_type ? { type: row.source_type, ...(row.source_ref ? { ref: row.source_ref } : {}) } : undefined,
+		visibility: row.visibility, validFrom: row.valid_from ?? undefined, validUntil: row.valid_until ?? undefined, conflictsWith: [],
 		status: row.status, supersededBy: row.superseded_by ?? undefined, firstObservedAt: row.first_observed_at, lastConfirmedAt: row.last_confirmed_at,
 		expiresAt: row.expires_at ?? undefined, createdAt: row.created_at, updatedAt: row.updated_at,
 	};
@@ -1235,7 +1334,7 @@ function mapEvidence(row: EvidenceRow): MemoryEvidence {
 }
 
 function mapEvent(row: EventRow): MemoryEvent {
-	return { id: row.id, platform: row.platform, chatId: row.chat_id, userId: row.user_id ?? undefined, kind: row.kind, content: row.content, occurredAt: row.occurred_at, createdAt: row.created_at };
+	return { id: row.id, platform: row.platform, chatId: row.chat_id, userId: row.user_id ?? undefined, threadId: row.thread_id ?? undefined, kind: row.kind, content: row.content, occurredAt: row.occurred_at, createdAt: row.created_at };
 }
 
 function mapRuntimeTask(row: RuntimeTaskRow): RuntimeTaskRecord {
@@ -1312,8 +1411,9 @@ function scopeWhere(opts: Omit<RecallOptions, "limit">, alias: string): { where:
 	const conditions: string[] = [];
 	const params: unknown[] = [];
 	if (opts.platform) { conditions.push(`${alias}.platform = ?`); params.push(opts.platform); }
+	if (opts.chatId) { conditions.push(`${alias}.chat_id = ?`); params.push(opts.chatId); }
 	if (opts.userId) { conditions.push(`${alias}.user_id = ?`); params.push(opts.userId); }
-	else if (opts.chatId) { conditions.push(`${alias}.chat_id = ?`); params.push(opts.chatId); }
+	if (opts.chatId) { conditions.push(`${alias}.thread_id IS ?`); params.push(opts.threadId ?? null); }
 	return { where: conditions.length ? `AND ${conditions.join(" AND ")}` : "", params };
 }
 

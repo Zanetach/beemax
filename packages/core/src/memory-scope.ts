@@ -6,9 +6,10 @@ export interface MemoryScope {
 	platform: string;
 	chatId: string;
 	userId?: string;
+	threadId?: string;
 }
 
 export function memoryScopeForSource(source: BeeMaxRuntimeSource): MemoryScope {
-	const { platform, chatId, userId } = conversationIdentity(source);
-	return { platform, chatId, userId };
+	const { platform, chatId, userId, threadId } = conversationIdentity(source);
+	return { platform, chatId, userId, threadId };
 }
