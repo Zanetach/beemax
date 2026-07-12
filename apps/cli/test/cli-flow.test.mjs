@@ -252,6 +252,49 @@ test("base setup creates a local Agent that can be used before any Gateway exist
 	}
 });
 
+test("Feishu Gateway setup is a four-step guided wizard with safe WebSocket defaults", async () => {
+	const root = await mkdtemp(join(tmpdir(), "beemax-wizard-root-"));
+	const home = await mkdtemp(join(tmpdir(), "beemax-wizard-home-"));
+	const previousRoot = process.env.BEEMAX_ROOT;
+	const previousHome = process.env.BEEMAX_HOME;
+	const logs = [];
+	const prompts = [];
+	const previousLog = console.log;
+	process.env.BEEMAX_ROOT = root;
+	process.env.BEEMAX_HOME = home;
+	console.log = (...items) => logs.push(items.join(" "));
+	try {
+		await runSetup({ profile: "guided", nonInteractive: true, provider: "openrouter", model: "openai/gpt-5.2", apiKey: "model-secret" }, { doctor: async () => true });
+		const answers = new Map([
+			["[1/4] Platform (feishu or lark)", ""],
+			["Feishu App ID", "cli_guided"],
+			["Feishu App Secret", "guided-secret"],
+			["[3/4] Connection mode (websocket or webhook)", ""],
+			["Allowed Feishu user IDs (comma-separated)", "ou_guided,on_guided"],
+		]);
+		await runSetup({ profile: "guided", gatewayOnly: true, nonInteractive: false }, {
+			ask: async (prompt) => { prompts.push(prompt); return answers.get(prompt.label) ?? ""; },
+			probe: async (input) => {
+				assert.deepEqual(input, { appId: "cli_guided", appSecret: "guided-secret", domain: "feishu" });
+				return { botName: "Guided Bot" };
+			},
+		});
+		const config = loadConfig(join(home, "profiles", "guided", "config.yaml"), "guided");
+		assert.equal(config.gateway.feishu.domain, "feishu");
+		assert.equal(config.gateway.feishu.connectionMode, "websocket");
+		assert.deepEqual(config.gateway.feishu.allowedUsers, ["ou_guided", "on_guided"]);
+		const output = logs.join("\n");
+		assert.match(output, /Four short steps/);
+		assert.match(output, /card\.action\.trigger/);
+		assert.match(output, /beemax gateway run --profile guided/);
+		assert.equal(prompts.find(({ label }) => label === "Feishu App Secret")?.secret, true);
+	} finally {
+		console.log = previousLog;
+		if (previousRoot === undefined) delete process.env.BEEMAX_ROOT; else process.env.BEEMAX_ROOT = previousRoot;
+		if (previousHome === undefined) delete process.env.BEEMAX_HOME; else process.env.BEEMAX_HOME = previousHome;
+	}
+});
+
 test("setup validates the live Feishu connection before creating a Profile", async () => {
 	const root = await mkdtemp(join(tmpdir(), "beemax-setup-"));
 	const home = await mkdtemp(join(tmpdir(), "beemax-home-"));
