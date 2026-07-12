@@ -1081,10 +1081,12 @@ export class MemoryStore {
 			const affectedPlans = new Map<string, { ownerKey: string; planId: string }>();
 			const reason = "Task Run interrupted after its Execution Lease expired";
 			for (const row of rows) {
-				const hasMutationEffect = parseEffectReceipts(row.effect_receipts).some((receipt) => receipt.sideEffect === "mutation" && (receipt.status === "committed" || receipt.status === "unknown"));
-				const taskReason = hasMutationEffect ? `${reason}; automatic replay blocked by durable Effect Receipt` : reason;
+				const effectState = readEffectReceiptState(row.effect_receipts);
+				const hasMutationEffect = effectState.receipts.some((receipt) => receipt.sideEffect === "mutation" && (receipt.status === "committed" || receipt.status === "unknown"));
+				const replayBlocked = !effectState.readable || hasMutationEffect;
+				const taskReason = !effectState.readable ? `${reason}; automatic replay blocked because durable Effect Receipts are unreadable` : hasMutationEffect ? `${reason}; automatic replay blocked by durable Effect Receipt` : reason;
 				this.db.prepare("UPDATE task_runs SET status = 'failed', finished_at = ?, error = ? WHERE id = ? AND status = 'running'").run(now, taskReason, row.run_id);
-				if (row.recovery_policy === "safe_retry" && row.idempotency_key && !hasMutationEffect) {
+				if (row.recovery_policy === "safe_retry" && row.idempotency_key && !replayBlocked) {
 					const changed = this.db.prepare("UPDATE tasks SET status = 'pending', started_at = NULL, finished_at = NULL, result = NULL, candidate_result = NULL, error = ?, updated_at = ? WHERE id = ? AND status = 'running'").run(taskReason, now, row.task_id).changes;
 					retried += changed;
 				} else {
@@ -1623,11 +1625,16 @@ function uniqueById<T extends { id: string }>(items: readonly T[]): T[] {
 }
 
 function parseEffectReceipts(value: string | null): EffectReceipt[] {
-	if (!value) return [];
+	return readEffectReceiptState(value).receipts;
+}
+
+function readEffectReceiptState(value: string | null): { readable: boolean; receipts: EffectReceipt[] } {
+	if (value === null) return { readable: true, receipts: [] };
 	try {
 		const parsed = JSON.parse(value) as unknown;
-		return Array.isArray(parsed) ? parsed.filter(validEffectReceipt).slice(-100) : [];
-	} catch { return []; }
+		if (!Array.isArray(parsed) || !parsed.every(validEffectReceipt)) return { readable: false, receipts: [] };
+		return { readable: true, receipts: parsed.slice(-100) };
+	} catch { return { readable: false, receipts: [] }; }
 }
 
 function validEffectReceipt(value: unknown): value is EffectReceipt {

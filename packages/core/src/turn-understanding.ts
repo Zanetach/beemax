@@ -1,3 +1,5 @@
+import { multilingualLexicalTerms } from "./multilingual-lexical.ts";
+
 export type TurnAction = "create" | "continue" | "correct" | "query" | "cancel";
 export type TurnExecutionMode = "direct" | "delegate" | "plan";
 
@@ -29,13 +31,15 @@ export class TurnUnderstandingEngine implements TurnUnderstandingPort {
 		const acceptanceCriteria = clauses.filter((item) => /完成后|发给|发送|交付|生成|保存|上传|发布|after completion|send to|deliver|create|save|upload|publish/i.test(item));
 		const independentWork = (normalized.match(/并行|分别|独立|同时|parallel|independently|separately/g) ?? []).length;
 		const executionMode: TurnExecutionMode = independentWork >= 2 ? "plan" : /深入研究|深度分析|research deeply|independent research/i.test(normalized) ? "delegate" : "direct";
+		const resolvedGoal = action === "continue" && input.activeObjective ? input.activeObjective : goal;
+		const resolvedQuery = action === "continue" && input.activeObjective ? `${input.activeObjective} ${goal}` : goal;
 		return {
 			action,
-			goal: action === "continue" && input.activeObjective ? input.activeObjective : goal,
+			goal: resolvedGoal,
 			constraints: [...new Set(constraints)],
 			acceptanceCriteria: [...new Set(acceptanceCriteria)],
-			memoryQuery: goal,
-			capabilityQuery: goal,
+			memoryQuery: resolvedQuery,
+			capabilityQuery: resolvedQuery,
 			executionMode,
 			confidence: goal ? (action === "create" ? 0.65 : 0.85) : 0,
 		};
@@ -66,4 +70,3 @@ export function selectTurnTools(query: string, tools: ReadonlyArray<{ name: stri
 		return score >= 20 ? [{ name: tool.name, score }] : [];
 	}).sort((a, b) => b.score - a.score || a.name.localeCompare(b.name)).slice(0, Math.max(1, Math.min(limit, 5))).map(({ name }) => name);
 }
-import { multilingualLexicalTerms } from "./multilingual-lexical.ts";

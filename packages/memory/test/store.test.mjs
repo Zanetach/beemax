@@ -582,7 +582,10 @@ test("expired Task Run leases recover only explicitly idempotent safe-retry Task
 		store.record({ id: "effectful", ownerKey: "cli:local:local", kind: "delegated", title: "Effect already committed", status: "running", recoveryPolicy: "safe_retry", idempotencyKey: "plan:effectful", createdAt: 10, startedAt: 20 });
 		store.recordEffectReceipt("cli:local:local", "effectful", { id: "effect-1", tool: "send", operation: "send message", sideEffect: "mutation", status: "committed", externalRef: "message-1", occurredAt: 50 });
 		store.recordRun({ id: "effectful-run", taskId: "effectful", executor: "subagent", status: "running", startedAt: 20, leaseExpiresAt: 100 });
-		assert.deepEqual(store.reconcileExpiredTaskRuns(200), { retried: 1, failed: 2, affectedPlans: [] });
+		store.record({ id: "corrupt-effects", ownerKey: "cli:local:local", kind: "delegated", title: "Unreadable effects", status: "running", recoveryPolicy: "safe_retry", idempotencyKey: "plan:corrupt", createdAt: 10, startedAt: 20 });
+		store.recordRun({ id: "corrupt-run", taskId: "corrupt-effects", executor: "subagent", status: "running", startedAt: 20, leaseExpiresAt: 100 });
+		const raw = new Database(join(root, "memory.db")); raw.prepare("UPDATE tasks SET effect_receipts = ? WHERE id = ?").run("{broken", "corrupt-effects"); raw.close();
+		assert.deepEqual(store.reconcileExpiredTaskRuns(200), { retried: 1, failed: 3, affectedPlans: [] });
 		const tasks = new Map(store.queryTasks({ ownerKeys: ["cli:local:local"] }).map((task) => [task.id, task]));
 		assert.equal(tasks.get("safe").status, "pending");
 		store.transition("safe", { status: "running", startedAt: 210 });
@@ -591,6 +594,7 @@ test("expired Task Run leases recover only explicitly idempotent safe-retry Task
 		assert.equal(tasks.get("live").status, "running");
 		assert.equal(tasks.get("effectful").status, "failed");
 		assert.match(tasks.get("effectful").error, /effect receipt/i);
+		assert.match(tasks.get("corrupt-effects").error, /unreadable/i);
 		assert.equal(store.taskRuns("safe")[0].status, "failed");
 		assert.match(store.taskRuns("safe")[0].error, /interrupted/i);
 	} finally { store.close(); rmSync(root, { recursive: true, force: true }); }
