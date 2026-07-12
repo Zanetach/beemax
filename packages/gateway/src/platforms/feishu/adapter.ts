@@ -48,6 +48,13 @@ const MAX_OUTBOUND_FILE_BYTES = 30 * 1024 * 1024;
 const MAX_PROCESSING_REACTIONS = 1024;
 const MAX_MEDIA_BATCH_MESSAGES = 8;
 const MAX_MEDIA_BATCH_BYTES = 30 * 1024 * 1024;
+const MAX_PENDING_INBOUND = 1_000;
+
+interface PendingInboundEvent {
+	message: InboundMessage;
+	resolve: () => void;
+	reject: (error: unknown) => void;
+}
 
 interface PendingInboundBatch {
 	message: InboundMessage;
@@ -73,6 +80,9 @@ export class FeishuAdapter implements PlatformAdapter {
 	private readonly textBatches = new Map<string, PendingInboundBatch>();
 	private readonly mediaBatches = new Map<string, PendingInboundBatch>();
 	private readonly deliveryTails = new Map<string, Promise<void>>();
+	private readonly pendingInbound: PendingInboundEvent[] = [];
+	private drainingInbound?: Promise<void>;
+	private pendingInboundInFlight = 0;
 	private shuttingDown = false;
 	private connectionGeneration = 0;
 	private readonly dedupTtlMs = 24 * 60 * 60 * 1000;
@@ -93,6 +103,7 @@ export class FeishuAdapter implements PlatformAdapter {
 
 	onMessage(handler: MessageHandler): void {
 		this.handler = handler;
+		void this.drainPendingInbound().catch((error) => console.error(`[beemax] Feishu inbound replay failed: ${error instanceof Error ? error.message : String(error)}`));
 	}
 
 	onCardAction(handler: CardActionHandler): void {
@@ -200,7 +211,7 @@ export class FeishuAdapter implements PlatformAdapter {
 			});
 			await this.hydrateBotIdentity();
 			this.assertCurrentConnection(generation);
-			this.connected = true;
+			this.markConnected(generation);
 			return true;
 		}
 
@@ -215,9 +226,9 @@ export class FeishuAdapter implements PlatformAdapter {
 			extraUaTags: ["channel"],
 			handshakeTimeoutMs: 15_000,
 			wsConfig: { pingTimeout: 10 },
-			onReady: () => { if (this.isCurrentConnection(generation, wsClient)) this.connected = true; },
+			onReady: () => { if (this.isCurrentConnection(generation, wsClient)) this.markConnected(generation); },
 			onReconnecting: () => { if (this.isCurrentConnection(generation, wsClient)) this.connected = false; },
-			onReconnected: () => { if (this.isCurrentConnection(generation, wsClient)) this.connected = true; },
+			onReconnected: () => { if (this.isCurrentConnection(generation, wsClient)) this.markConnected(generation); },
 			onError: (error) => {
 				if (!this.isCurrentConnection(generation, wsClient)) return;
 				this.connected = false;
@@ -233,7 +244,7 @@ export class FeishuAdapter implements PlatformAdapter {
 		await this.hydrateBotIdentity();
 		this.assertCurrentConnection(generation, wsClient);
 
-		this.connected = true;
+		this.markConnected(generation);
 		return true;
 	}
 
@@ -259,11 +270,19 @@ export class FeishuAdapter implements PlatformAdapter {
 		throw Object.assign(new Error("Feishu connection attempt was cancelled"), { code: "BEEMAX_CONNECTION_CANCELLED" });
 	}
 
+	private markConnected(generation: number): void {
+		if (!this.isCurrentConnection(generation)) return;
+		this.connected = true;
+		void this.drainPendingInbound().catch((error) => console.error(`[beemax] Feishu inbound replay failed: ${error instanceof Error ? error.message : String(error)}`));
+	}
+
 	async disconnect(): Promise<void> {
 		this.connectionGeneration += 1;
 		this.connected = false;
 		this.shuttingDown = true;
+		this.cancelPendingInbound();
 		this.cancelInboundBatches();
+		await this.drainingInbound?.catch(() => undefined);
 		await Promise.allSettled([...this.deliveryTails.values()]);
 		if (this.webhookServer) {
 			for (const socket of this.webhookSockets) socket.destroy();
@@ -361,6 +380,10 @@ export class FeishuAdapter implements PlatformAdapter {
 
 	private async dispatchInbound(message: InboundMessage): Promise<void> {
 		if (this.shuttingDown) return;
+		if (!this.canDispatchInbound()) {
+			await this.queuePendingInbound(message);
+			return;
+		}
 		if (message.messageType === "text" && !message.text.trimStart().startsWith("/")) {
 			await this.enqueueTextBatch(message);
 			return;
@@ -369,10 +392,121 @@ export class FeishuAdapter implements PlatformAdapter {
 			await this.enqueueMediaBatch(message);
 			return;
 		}
-		{
-			await this.handler?.(message);
-			return;
+		await this.deliverInOrder(sessionOwnerKey(message.source), message);
+	}
+
+	private canDispatchInbound(): boolean {
+		return Boolean(this.handler) && (this.connectionGeneration === 0 || this.connected) && !this.shuttingDown;
+	}
+
+	private queuePendingInbound(message: InboundMessage): Promise<void> {
+		return new Promise<void>((resolve, reject) => {
+			if (this.pendingInbound.length + this.pendingInboundInFlight >= MAX_PENDING_INBOUND) {
+				const dropped = this.pendingInbound.shift();
+				if (dropped) {
+					this.forgetDedup(dropped.message);
+					dropped.resolve();
+				} else {
+					this.forgetDedup(message);
+					resolve();
+					return;
+				}
+				console.warn("[beemax] Feishu pending inbound queue full; dropped oldest event");
+			}
+			this.pendingInbound.push({ message, resolve, reject });
+		});
+	}
+
+	private async drainPendingInbound(): Promise<void> {
+		if (this.drainingInbound) return this.drainingInbound;
+		if (!this.canDispatchInbound() || this.pendingInbound.length === 0) return;
+		const drain = (async () => {
+			while (this.canDispatchInbound() && this.pendingInbound.length > 0) {
+				const group = await this.takeReplayGroup();
+				if (group.length === 0) continue;
+				if (!this.canDispatchInbound()) {
+					for (const pending of group) {
+						this.forgetDedup(pending.message);
+						pending.resolve();
+					}
+					this.pendingInboundInFlight -= group.length;
+					continue;
+				}
+				const message = replayGroupMessage(group.map((pending) => pending.message));
+				try {
+					await this.deliverInOrder(sessionOwnerKey(message.source), message);
+					for (const pending of group) pending.resolve();
+				} catch (error) {
+					for (const pending of group) pending.reject(error);
+				} finally {
+					this.pendingInboundInFlight -= group.length;
+				}
+			}
+		})();
+		this.drainingInbound = drain;
+		try {
+			await drain;
+		} finally {
+			if (this.drainingInbound === drain) this.drainingInbound = undefined;
 		}
+	}
+
+	private async takeReplayGroup(): Promise<PendingInboundEvent[]> {
+		const first = this.pendingInbound.shift();
+		if (!first) return [];
+		const message = first.message;
+		const group = [first];
+		this.pendingInboundInFlight += 1;
+		try {
+			if (message.messageType === "text" && !message.text.trimStart().startsWith("/")) {
+				let chars = message.text.length;
+				while (group.length < (this.settings.textBatchMaxMessages ?? 8)) {
+					const next = this.pendingInbound[0];
+					if (!next || next.message.messageType !== "text" || next.message.text.trimStart().startsWith("/")
+						|| sessionOwnerKey(next.message.source) !== sessionOwnerKey(message.source)
+						|| !this.batchCompatible(message, next.message)) break;
+					const nextChars = chars + (chars && next.message.text ? 1 : 0) + next.message.text.length;
+					if (nextChars > (this.settings.textBatchMaxChars ?? 4_000)) break;
+					group.push(this.pendingInbound.shift()!);
+					this.pendingInboundInFlight += 1;
+					chars = nextChars;
+				}
+				return group;
+			}
+			if (message.mediaPaths.length > 0 && ["image", "audio", "file"].includes(message.messageType)) {
+				let bytes = await mediaByteCount(message);
+				while (group.length < MAX_MEDIA_BATCH_MESSAGES) {
+					const next = this.pendingInbound[0];
+					if (!next || next.message.messageType !== message.messageType
+						|| sessionOwnerKey(next.message.source) !== sessionOwnerKey(message.source)
+						|| !this.batchCompatible(message, next.message)) break;
+					const nextBytes = await mediaByteCount(next.message);
+					if (bytes + nextBytes > MAX_MEDIA_BATCH_BYTES) break;
+					group.push(this.pendingInbound.shift()!);
+					this.pendingInboundInFlight += 1;
+					bytes += nextBytes;
+				}
+			}
+			return group;
+		} catch (error) {
+			for (const pending of group) {
+				this.forgetDedup(pending.message);
+				pending.reject(error);
+			}
+			this.pendingInboundInFlight -= group.length;
+			return [];
+		}
+	}
+
+	private cancelPendingInbound(): void {
+		for (const pending of this.pendingInbound.splice(0)) {
+			this.forgetDedup(pending.message);
+			pending.resolve();
+		}
+	}
+
+	private forgetDedup(message: InboundMessage): void {
+		if (message.source.messageId) this.dedup.delete(message.source.messageId);
 	}
 
 	private async enqueueTextBatch(message: InboundMessage): Promise<void> {
@@ -1008,6 +1142,20 @@ function combineMediaBatch(messages: InboundMessage[]): InboundMessage {
 		source: { ...latest.source },
 		mediaPaths: ordered.flatMap((message) => message.mediaPaths),
 		mediaTypes: ordered.flatMap((message) => message.mediaTypes),
+		timestamp: latest.timestamp,
+		raw: latest.raw,
+	};
+}
+
+function replayGroupMessage(messages: InboundMessage[]): InboundMessage {
+	if (messages.length === 1) return messages[0]!;
+	if (messages[0]?.mediaPaths.length) return combineMediaBatch(messages);
+	const first = messages[0]!;
+	const latest = messages[messages.length - 1]!;
+	return {
+		...first,
+		text: messages.map((message) => message.text).reduce(mergeBatchText, ""),
+		source: { ...latest.source },
 		timestamp: latest.timestamp,
 		raw: latest.raw,
 	};
