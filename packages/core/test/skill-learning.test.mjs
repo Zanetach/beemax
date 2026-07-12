@@ -5,16 +5,19 @@ import { join } from "node:path";
 import test from "node:test";
 import { createSkillTools } from "../dist/index.js";
 
-function toolsAt(root, inventory = [], verifier) {
-	return new Map(createSkillTools(root, () => undefined, inventory, verifier).map((tool) => [tool.name, tool]));
+function toolsAt(root, inventory = [], verifier, activateTools) {
+	return new Map(createSkillTools(root, () => undefined, inventory, verifier, [], activateTools).map((tool) => [tool.name, tool]));
 }
 
 test("capability discovery searches the current tool inventory before learning a Skill", async () => {
 	const root = mkdtempSync(join(tmpdir(), "beemax-capability-discovery-"));
 	try {
-		const tools = toolsAt(root, [{ name: "calendar_find", description: "Find free calendar time" }]);
+		const activations = [];
+		const tools = toolsAt(root, [{ name: "calendar_find", description: "Find free calendar time" }], undefined, (names) => activations.push(names));
 		const discovered = await tools.get("capability_discover").execute("discover", { query: "calendar" });
 		assert.deepEqual(discovered.details.tools, [{ name: "calendar_find", description: "Find free calendar time" }]);
+		assert.deepEqual(discovered.details.activatedTools, ["calendar_find"]);
+		assert.deepEqual(activations, [["calendar_find"]]);
 		assert.deepEqual(discovered.details.skills, []);
 		assert.equal(existsSync(join(root, "state", "skill-learning.key")), false);
 		assert.equal(tools.get("capability_discover").beemaxPolicy.sideEffect, "none");

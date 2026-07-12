@@ -79,7 +79,7 @@ export function buildAgentFactory(opts: AgentFactoryOptions) {
 		tools: opts.tools,
 		toolAudit: toolAudit.append,
 		authorizeTool: opts.authorizeTool ? async (source, toolName, args, policy, signal) => opts.authorizeTool!({ source, toolName, args, policy }, signal) : undefined,
-		createTools: (source, onResourcesChanged, getRuntimeApiKey) => {
+		createTools: (source, onResourcesChanged, getRuntimeApiKey, activateTools) => {
 			const browserTools = createBrowserTools({ credentials: opts.credentials });
 			const executionTools = createExecutionTools(source, opts.cwd, opts.executionPortForSource?.(source) ?? execution);
 		const memoryTools = opts.memoryStore ? createMemoryTools(opts.memoryStore, source) : [];
@@ -97,7 +97,7 @@ export function buildAgentFactory(opts: AgentFactoryOptions) {
 		const scopedTools = opts.sessionTools?.(source) ?? [];
 		const inventory = [...executionTools, ...baseCustomTools, ...browserTools, ...memoryTools, ...automationTools, ...imageTools, ...scopedTools];
 		const skillRoots = [join(opts.cwd, ".agents", "skills"), join(opts.cwd, ".codex", "skills"), join(opts.cwd, "skills"), join(homedir(), ".agents", "skills"), join(homedir(), ".codex", "skills")];
-		const skillTools = createSkillTools(opts.agentDir, onResourcesChanged, inventory, opts.verifySkillCandidate ? (input, signal) => opts.verifySkillCandidate!(source, input, signal) : undefined, skillRoots);
+		const skillTools = createSkillTools(opts.agentDir, onResourcesChanged, inventory, opts.verifySkillCandidate ? (input, signal) => opts.verifySkillCandidate!(source, input, signal) : undefined, skillRoots, activateTools);
 		return [...executionTools, ...baseCustomTools, ...browserTools, ...memoryTools, ...automationTools, ...imageTools, ...skillTools, ...scopedTools];
 		},
 	})(sessionId, source);

@@ -35,7 +35,7 @@ export interface BeeMaxRuntimeFactoryOptions<Source extends BeeMaxRuntimeSource 
 	systemPrompt: string | (() => string);
 	skillToolset: "safe" | "standard";
 	tools?: string[];
-	createTools: (source: Source, onResourcesChanged: () => void, getRuntimeApiKey: (provider: string) => Promise<string | undefined>) => ToolDefinition[];
+	createTools: (source: Source, onResourcesChanged: () => void, getRuntimeApiKey: (provider: string) => Promise<string | undefined>, activateTools: (names: string[]) => void) => ToolDefinition[];
 	authorizeTool?: BeeMaxRuntimeAuthorization<Source>;
 	toolAudit?: ToolRuntimeAuditSink;
 }
@@ -83,6 +83,7 @@ export function buildBeeMaxRuntimeFactory<Source extends BeeMaxRuntimeSource = B
 			source,
 			() => markRuntimeResourcesChanged(sessionRef),
 			(provider) => authStorage.getApiKey(provider, { includeFallback: false }),
+			(names) => sessionRef?.setActiveToolsByName([...new Set([...sessionRef.getActiveToolNames(), "capability_discover", ...names])]),
 		);
 		const policies = new ToolPolicyRegistry(customTools);
 		policies.enable(opts.tools ?? [

@@ -17,7 +17,7 @@ export interface SkillCandidateTrialInput { name: string; description: string; i
 export interface SkillCandidateTrialResult { trialId: string; accepted: boolean; evidence: string; assertions: SkillTrialAssertion[]; toolCalls: SkillTrialToolCall[]; }
 export type SkillCandidateVerifier = (input: SkillCandidateTrialInput, signal?: AbortSignal) => Promise<SkillCandidateTrialResult>;
 
-export function createSkillTools(agentDir: string, markReloadNeeded: () => void, availableTools: readonly Pick<ToolDefinition, "name" | "description">[] = [], verifyCandidate?: SkillCandidateVerifier, additionalSkillRoots: readonly string[] = []): ToolDefinition[] {
+export function createSkillTools(agentDir: string, markReloadNeeded: () => void, availableTools: readonly Pick<ToolDefinition, "name" | "description">[] = [], verifyCandidate?: SkillCandidateVerifier, additionalSkillRoots: readonly string[] = [], activateTools?: (names: string[]) => void): ToolDefinition[] {
 	const root = resolve(agentDir, "skills");
 	const candidateRoot = resolve(agentDir, "skill-candidates");
 	let signingKeyPromise: Promise<Buffer> | undefined;
@@ -29,7 +29,10 @@ export function createSkillTools(agentDir: string, markReloadNeeded: () => void,
 			const existingKey = await readSkillLearningKey(agentDir);
 			const candidates = existingKey ? await listCandidates(candidateRoot, existingKey) : [];
 			const matches = <T extends { name: string; description: string }>(items: T[]) => items.filter((item) => terms.some((term) => `${item.name} ${item.description}`.toLowerCase().includes(term))).slice(0, 20);
-			return result("Capability discovery completed against the current Profile inventory.", { tools: matches([...availableTools]), skills: matches(installed), candidates: matches(candidates.map((item) => ({ name: item.name, description: item.description, attempts: item.attempts.length }))) });
+			const tools = matches([...availableTools]);
+			const skills = matches(installed);
+			activateTools?.([...tools.map((tool) => tool.name), ...(skills.length ? ["read", "skill_read"] : [])]);
+			return result("Capability discovery completed and matching capabilities were activated for this turn.", { tools, skills, candidates: matches(candidates.map((item) => ({ name: item.name, description: item.description, attempts: item.attempts.length }))), activatedTools: [...tools.map((tool) => tool.name), ...(skills.length ? ["read", "skill_read"] : [])] });
 		} }),
 		defineTool({ name: "skill_list", label: "List Evolved Skills", description: "List instruction-only skills created in BeeMax's managed skill directory. Pi also loads trusted global and project skills automatically.", parameters: Type.Object({}), execute: async () => {
 			const skills = await listSkills(root); return result(skills.length ? skills.map((item) => `- ${item.name}: ${item.description}`).join("\n") : "No evolved skills yet.", { skills });
@@ -140,13 +143,13 @@ function sealCandidate(candidate: SkillCandidate, key: Buffer): SkillCandidate {
 function candidateSignature(candidate: SkillCandidate, key: Buffer): string { const { signature: _signature, ...record } = candidate; return createHmac("sha256", key).update(JSON.stringify(record)).digest("hex"); }
 async function skillLearningKey(agentDir: string): Promise<Buffer> { const state = resolve(agentDir, "state"); const path = resolve(state, "skill-learning.key"); await mkdir(state, { recursive: true }); try { return Buffer.from((await readFile(path, "utf8")).trim(), "hex"); } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; const key = randomBytes(32); try { await writeFile(path, `${key.toString("hex")}\n`, { encoding: "utf8", flag: "wx", mode: 0o600 }); return key; } catch (writeError) { if ((writeError as NodeJS.ErrnoException).code !== "EEXIST") throw writeError; return Buffer.from((await readFile(path, "utf8")).trim(), "hex"); } } }
 async function readSkillLearningKey(agentDir: string): Promise<Buffer | undefined> { try { return Buffer.from((await readFile(resolve(agentDir, "state", "skill-learning.key"), "utf8")).trim(), "hex"); } catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined; throw error; } }
-async function listSkills(root: string): Promise<Array<{ name: string; description: string; sha256: string; managed: boolean }>> {
+async function listSkills(root: string): Promise<Array<{ name: string; description: string; path: string; sha256: string; managed: boolean }>> {
 	let entries: string[]; try { entries = await readdir(root); } catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return []; throw error; }
-	const result: Array<{ name: string; description: string; sha256: string; managed: boolean }> = [];
-	for (const name of entries.sort()) { if (!SKILL_NAME.test(name)) continue; try { const content = await readFile(skillPath(root, name), "utf8"); result.push({ name, description: content.match(/^description:\s*(.+)$/m)?.[1]?.trim() ?? "(no description)", sha256: createHash("sha256").update(content).digest("hex"), managed: /managed-by:\s*beemax\b/.test(content) }); } catch { /* Ignore incomplete directories. */ } }
+	const result: Array<{ name: string; description: string; path: string; sha256: string; managed: boolean }> = [];
+	for (const name of entries.sort()) { if (!SKILL_NAME.test(name)) continue; try { const path = skillPath(root, name); const content = await readFile(path, "utf8"); result.push({ name, description: content.match(/^description:\s*(.+)$/m)?.[1]?.trim() ?? "(no description)", path, sha256: createHash("sha256").update(content).digest("hex"), managed: /managed-by:\s*beemax\b/.test(content) }); } catch { /* Ignore incomplete directories. */ } }
 	return result;
 }
-function deduplicateSkills(skills: Array<{ name: string; description: string; sha256: string; managed: boolean }>) { return [...new Map(skills.map((skill) => [skill.name, skill])).values()]; }
+function deduplicateSkills(skills: Array<{ name: string; description: string; path: string; sha256: string; managed: boolean }>) { return [...new Map(skills.map((skill) => [skill.name, skill])).values()]; }
 function skillPath(root: string, name: string): string { if (!SKILL_NAME.test(name) || name.length > 64) throw new Error(`Invalid skill name: ${name}`); const path = resolve(root, name, "SKILL.md"); if (!path.startsWith(`${root}${sep}`)) throw new Error("Skill path escaped managed directory"); return path; }
 function renderSkill(input: { name: string; description: string; instructions: string }): string { const description = input.description.replace(/[\r\n]+/g, " ").trim(); return `---\nname: ${input.name}\ndescription: ${JSON.stringify(description)}\nmetadata:\n  managed-by: beemax\n---\n\n# ${input.name}\n\n${input.instructions.trim()}\n`; }
 function result(text: string, details: unknown) { return { content: [{ type: "text" as const, text }], details }; }

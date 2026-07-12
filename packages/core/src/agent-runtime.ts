@@ -149,6 +149,10 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 			const planningScope = conversationKey(input.source);
 			const planningLease = planning && this.planningBudgets ? this.planningBudgets.begin(planningScope, planning) : undefined;
 			const text = planning ? `${enrichedText}\n\n${planning.directive()}` : enrichedText;
+			const supportsProgressiveTools = typeof session.piSession.getActiveToolNames === "function" && typeof session.piSession.setActiveToolsByName === "function";
+			const activeTools = supportsProgressiveTools ? session.piSession.getActiveToolNames() : undefined;
+			const progressiveTools = ["capability_discover", ...(planning?.requiredTools ?? [])];
+			if (activeTools) session.piSession.setActiveToolsByName(progressiveTools);
 			let observableProgress = false;
 			let toolCalls = 0;
 			let consumedTokens = 0;
@@ -156,6 +160,7 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 			const requiredToolsUsed: string[] = [];
 			const requiredToolCalls = new Map<string, { name: string; args?: unknown }>();
 			let delegatedTaskId: string | undefined;
+			let discoveredCapabilities = false;
 			const unsubscribe = session.piSession.subscribe((event) => {
 				if (event.type === "tool_execution_start") {
 					observableProgress = true;
@@ -167,6 +172,7 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 						void session.piSession.abort();
 					}
 				} else if (event.type === "tool_execution_end") {
+					if (event.toolName === "capability_discover" && !event.isError) discoveredCapabilities = true;
 					const pending = requiredToolCalls.get(event.toolCallId);
 					requiredToolCalls.delete(event.toolCallId);
 					if (pending && pending.name === event.toolName && !event.isError) {
@@ -197,6 +203,10 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 					source: input.mode === "automation" ? "extension" : undefined,
 					images: input.images,
 				});
+				if (discoveredCapabilities) {
+					discoveredCapabilities = false;
+					await session.piSession.prompt("[BeeMax capability continuation: matching Tools or Skills are now active. Continue the original request using them. Do not repeat capability discovery.]", { expandPromptTemplates: false });
+				}
 				const missingTools = planning?.requiredTools.slice(requiredToolsUsed.length) ?? [];
 				let planningCorrected = false;
 				if (missingTools.length && !budgetExceeded) {
@@ -226,6 +236,7 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 				if (cause instanceof AgentRunError) throw cause;
 				throw new AgentRunError(timedOut && input.timeoutMs !== null ? `Agent turn timed out after ${Math.round(input.timeoutMs / 60_000)} minutes` : errorMessage(cause), timedOut, cause, timedOut || isRecoverableModelFailure(cause));
 			} finally {
+				if (activeTools) session.piSession.setActiveToolsByName(activeTools);
 				if (planningLease) this.planningBudgets?.end(planningScope, planningLease);
 				if (timeout) clearTimeout(timeout);
 				input.signal?.removeEventListener("abort", abortFromCaller);

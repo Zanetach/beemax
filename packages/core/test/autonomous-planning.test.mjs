@@ -15,6 +15,49 @@ test("planning policy keeps simple conversational requests direct", () => {
 	assert.match(decision.reason, /simple|single/i);
 });
 
+test("Agent runtime progressively exposes discovery and restores the full catalog after a turn", async () => {
+	const source = { platform: "cli", chatId: "fast", chatType: "dm", userId: "local" };
+	const toolChanges = [];
+	const agent = { state: { model: { id: "test" }, messages: [] } };
+	const piSession = {
+		agent,
+		getActiveToolNames: () => ["read", "web_search"],
+		setActiveToolsByName: (names) => { toolChanges.push([...names]); },
+		subscribe: () => () => undefined,
+		prompt: async () => { agent.state.messages = [{ role: "assistant", content: [{ type: "text", text: "你好" }], usage: { input: 1, output: 1 } }]; },
+		abort: async () => undefined,
+		dispose: () => undefined,
+	};
+	const runtime = new BeeMaxAgentRuntime({ planningPolicy: new AutonomousPlanningPolicy(), createAgent: async () => piSession });
+	await runtime.run({ source, text: "查一下今天的天气", timeoutMs: 1_000 });
+	assert.deepEqual(toolChanges, [["capability_discover"], ["read", "web_search"]]);
+	runtime.dispose();
+});
+
+test("Agent runtime continues once after capability discovery so activated tools can run", async () => {
+	const source = { platform: "cli", chatId: "progressive", chatType: "dm", userId: "local" };
+	let listener;
+	const prompts = [];
+	const agent = { state: { model: { id: "test" }, messages: [] } };
+	const runtime = new BeeMaxAgentRuntime({ planningPolicy: new AutonomousPlanningPolicy(), createAgent: async () => ({
+		agent,
+		getActiveToolNames: () => ["capability_discover", "web_search"],
+		setActiveToolsByName: () => undefined,
+		subscribe: (next) => { listener = next; return () => undefined; },
+		prompt: async (text) => {
+			prompts.push(text);
+			if (prompts.length === 1) listener({ type: "tool_execution_end", toolCallId: "discover", toolName: "capability_discover", result: {}, isError: false });
+			agent.state.messages = [{ role: "assistant", content: [{ type: "text", text: "done" }], usage: { input: 1, output: 1 } }];
+		},
+		abort: async () => undefined, dispose: () => undefined,
+	}) });
+	await runtime.run({ source, text: "search current weather", timeoutMs: 1_000 });
+	assert.equal(prompts.length, 2);
+	assert.match(prompts[1], /capability continuation/i);
+	assert.doesNotMatch(prompts[1], /current weather/i);
+	runtime.dispose();
+});
+
 test("planning policy does not over-delegate lightweight English or Chinese review requests", () => {
 	const policy = new AutonomousPlanningPolicy();
 	for (const prompt of ["Review this sentence", "Please look at this code snippet", "帮我看一下这段代码", "检查这句话是否通顺"]) {
