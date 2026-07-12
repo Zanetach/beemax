@@ -188,6 +188,21 @@ test("BeeMax Agent Runtime binds continuation understanding to the active Object
 	} finally { runtime.dispose(); }
 });
 
+test("BeeMax Agent Runtime uses the Turn Understanding memory query for recall", async () => {
+	const source = { platform: "cli", chatId: "terminal", chatType: "dm", userId: "user" };
+	let recalledQuery = "";
+	const memory = { recall: (query) => { recalledQuery = query; return []; }, recordCandidate: () => "candidate" };
+	const runtime = new BeeMaxAgentRuntime({
+		context: new ConversationContext(memory),
+		turnUnderstanding: { understand: (text) => ({ action: "create", goal: text, constraints: ["客户约束"], acceptanceCriteria: [], memoryQuery: "customer-a delivery requirements", capabilityQuery: text, executionMode: "direct", confidence: 0.9 }) },
+		createAgent: async () => { const agent = { state: { model: { id: "test" }, messages: [] } }; return { agent, subscribe: () => () => undefined, prompt: async () => { agent.state.messages = [{ role: "assistant", content: [{ type: "text", text: "done" }], usage: { input: 1, output: 1 } }]; }, abort: async () => undefined, dispose: () => undefined }; },
+	});
+	try {
+		await runtime.run({ source, text: "按之前要求继续", timeoutMs: 1_000 });
+		assert.equal(recalledQuery, "customer-a delivery requirements");
+	} finally { runtime.dispose(); }
+});
+
 test("BeeMax Agent Runtime propagates an external abort signal to the active turn", async () => {
 	const source = { platform: "cli", chatId: "terminal", chatType: "dm", userId: "user" };
 	const controller = new AbortController();

@@ -60,6 +60,19 @@ test("governed mutating tools never retry after a failure", async () => {
 	assert.equal(calls, 1);
 });
 
+test("governed read-only tools treat structured isError results as retryable failures", async () => {
+	let attempts = 0;
+	const tool = defineTool({ name: "remote_read", label: "Remote read", description: "Read remote data", parameters: Type.Object({}), execute: async () => {
+		attempts++;
+		if (attempts === 1) return { content: [{ type: "text", text: "temporary upstream failure" }], details: {}, isError: true };
+		return { content: [{ type: "text", text: "recovered" }], details: {}, isError: false };
+	} });
+	const governed = governToolDefinition(tool, { ...READ_ONLY_TOOL_POLICY, maxAttempts: 2 }, source);
+	const result = await governed.execute("call", {}, undefined, undefined, {});
+	assert.equal(attempts, 2);
+	assert.equal(result.content[0].text, "recovered");
+});
+
 test("governed tools enforce their timeout even when a legacy implementation ignores AbortSignal", async () => {
 	let calls = 0;
 	const tool = defineTool({ name: "hung_read", label: "Hung Read", description: "Never settles", parameters: Type.Object({}), execute: async () => { calls++; return new Promise(() => {}); } });

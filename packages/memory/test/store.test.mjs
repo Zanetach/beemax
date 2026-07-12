@@ -579,13 +579,18 @@ test("expired Task Run leases recover only explicitly idempotent safe-retry Task
 		store.recordRun({ id: "unsafe-run", taskId: "unsafe", executor: "subagent", status: "running", startedAt: 20, leaseExpiresAt: 100 });
 		store.record({ id: "live", ownerKey: "cli:local:local", kind: "delegated", title: "Still leased", status: "running", recoveryPolicy: "safe_retry", idempotencyKey: "plan:live", createdAt: 10, startedAt: 20 });
 		store.recordRun({ id: "live-run", taskId: "live", executor: "subagent", status: "running", startedAt: 20, leaseExpiresAt: 300 });
-		assert.deepEqual(store.reconcileExpiredTaskRuns(200), { retried: 1, failed: 1, affectedPlans: [] });
+		store.record({ id: "effectful", ownerKey: "cli:local:local", kind: "delegated", title: "Effect already committed", status: "running", recoveryPolicy: "safe_retry", idempotencyKey: "plan:effectful", createdAt: 10, startedAt: 20 });
+		store.recordEffectReceipt("cli:local:local", "effectful", { id: "effect-1", tool: "send", operation: "send message", sideEffect: "mutation", status: "committed", externalRef: "message-1", occurredAt: 50 });
+		store.recordRun({ id: "effectful-run", taskId: "effectful", executor: "subagent", status: "running", startedAt: 20, leaseExpiresAt: 100 });
+		assert.deepEqual(store.reconcileExpiredTaskRuns(200), { retried: 1, failed: 2, affectedPlans: [] });
 		const tasks = new Map(store.queryTasks({ ownerKeys: ["cli:local:local"] }).map((task) => [task.id, task]));
 		assert.equal(tasks.get("safe").status, "pending");
 		store.transition("safe", { status: "running", startedAt: 210 });
 		assert.equal(store.queryTasks({ ownerKeys: ["cli:local:local"], id: "safe" })[0].error, undefined);
 		assert.equal(tasks.get("unsafe").status, "failed");
 		assert.equal(tasks.get("live").status, "running");
+		assert.equal(tasks.get("effectful").status, "failed");
+		assert.match(tasks.get("effectful").error, /effect receipt/i);
 		assert.equal(store.taskRuns("safe")[0].status, "failed");
 		assert.match(store.taskRuns("safe")[0].error, /interrupted/i);
 	} finally { store.close(); rmSync(root, { recursive: true, force: true }); }

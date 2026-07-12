@@ -112,6 +112,11 @@ export function governToolDefinition<T extends ToolDefinition>(tool: T, policy: 
 			try {
 				const result = await abortable(execute(toolCallId, params as never, effectiveSignal, onUpdate as never, ctx as never), effectiveSignal, tool.name);
 				const bounded = boundToolResult(result, normalized.maxResultBytes);
+				if ((bounded as { isError?: boolean }).isError === true) {
+					const errorBlock = bounded.content.find((block) => block.type === "text" && "text" in block && typeof block.text === "string");
+					const message = errorBlock && "text" in errorBlock && typeof errorBlock.text === "string" ? errorBlock.text.slice(0, 500) : "Tool returned an error result";
+					throw new Error(`Tool ${tool.name} failed: ${message}`);
+				}
 				audit?.({ phase: "completed", source, toolName: tool.name, policy: normalized, at: Date.now(), attempt, durationMs: Date.now() - startedAt });
 				return bounded;
 			} catch (error) {

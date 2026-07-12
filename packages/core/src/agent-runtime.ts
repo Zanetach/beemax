@@ -12,7 +12,7 @@ import type { AgentControlHandler, AgentControlInput, AgentControlResult } from 
 import { conversationKey, conversationOwnerKey } from "./agent-scope.ts";
 import type { TaskKind, TaskLedger, TaskPlanRecord, TaskPlanStatus, TaskRecord, TaskRunRecord, TaskStatus } from "./task-ledger.ts";
 import type { AutonomousPlanningPolicy, PlanningBudgetRegistry } from "./autonomous-planning.ts";
-import { TurnUnderstandingEngine, renderWorkContext, type TurnUnderstandingPort } from "./turn-understanding.ts";
+import { TurnUnderstandingEngine, renderWorkContext, selectTurnTools, type TurnUnderstandingPort } from "./turn-understanding.ts";
 
 export interface AgentRunInput<Source extends BeeMaxRuntimeSource = BeeMaxRuntimeSource> {
 	source: Source;
@@ -158,7 +158,7 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 				: undefined;
 			const understanding = input.mode === "interactive" || !input.mode ? this.turnUnderstanding.understand(input.text, { activeObjective: activeObjective?.title }) : undefined;
 			const recalledText = input.mode === "interactive" || !input.mode
-				? this.context?.enrich(input.source, requestedText, { model: modelOf(session.piSession.agent) }) ?? requestedText
+				? this.context?.enrich(input.source, requestedText, { model: modelOf(session.piSession.agent), memoryQuery: understanding?.memoryQuery }) ?? requestedText
 				: requestedText;
 			const needsWorkContext = understanding && (understanding.action !== "create" || understanding.executionMode !== "direct" || understanding.constraints.length > 0 || understanding.acceptanceCriteria.length > 0);
 			const enrichedText = needsWorkContext ? `${renderWorkContext(understanding)}\n\n${recalledText}` : recalledText;
@@ -169,7 +169,9 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 			const text = planning ? `${enrichedText}\n\n${planning.directive()}` : enrichedText;
 			const supportsProgressiveTools = typeof session.piSession.getActiveToolNames === "function" && typeof session.piSession.setActiveToolsByName === "function";
 			const activeTools = supportsProgressiveTools ? session.piSession.getActiveToolNames() : undefined;
-			const progressiveTools = ["capability_discover", ...(planning?.requiredTools ?? [])];
+			const allTools = typeof session.piSession.getAllTools === "function" ? session.piSession.getAllTools() : [];
+			const prefetchedTools = understanding ? selectTurnTools(understanding.capabilityQuery, allTools) : [];
+			const progressiveTools = [...new Set(["capability_discover", ...(planning?.requiredTools ?? []), ...prefetchedTools])];
 			if (activeTools) session.piSession.setActiveToolsByName(progressiveTools);
 			let observableProgress = false;
 			let toolCalls = 0;

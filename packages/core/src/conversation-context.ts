@@ -16,7 +16,7 @@ export interface ConversationContextOptions {
 	runtimeFacts?: (source: BeeMaxRuntimeSource, text: string, facts: VerifiedRuntimeFacts) => string;
 }
 
-export interface VerifiedRuntimeFacts { model?: string; }
+export interface VerifiedRuntimeFacts { model?: string; memoryQuery?: string; }
 
 /** Persistence capability required by Core's context policy. */
 export interface ConversationMemoryPort {
@@ -45,7 +45,7 @@ export class ConversationContext {
 	enrich(source: BeeMaxRuntimeSource, text: string, runtime: VerifiedRuntimeFacts = {}): string {
 		const scope = memoryScopeForSource(source, { ...this.memoryScope, ...this.resolveMemoryScope?.(source) });
 		this.memory.recordEvent?.({ ...scope, kind: "user", content: text });
-		const hits = this.memory.recall(text, { ...scope, limit: 6, includeCandidates: true });
+		const hits = this.memory.recall(runtime.memoryQuery?.trim() || text, { ...scope, limit: 6, includeCandidates: true });
 		const sections: string[] = [];
 		const facts = this.runtimeFacts?.(source, text, runtime);
 		if (facts) sections.push(facts);

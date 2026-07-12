@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { TurnUnderstandingEngine } from "../dist/index.js";
+import { TurnUnderstandingEngine, selectTurnTools } from "../dist/index.js";
 
 test("Turn Understanding distinguishes create, continue, and correction paths across Chinese and English", () => {
 	const engine = new TurnUnderstandingEngine();
@@ -8,6 +8,16 @@ test("Turn Understanding distinguishes create, continue, and correction paths ac
 	assert.equal(engine.understand("继续完成刚才的周报", { activeObjective: "制作华东客户周报" }).action, "continue");
 	assert.equal(engine.understand("不是华东客户，改成华南客户", { activeObjective: "制作华东客户周报" }).action, "correct");
 	assert.equal(engine.understand("continue the previous report", { activeObjective: "Prepare report" }).action, "continue");
+});
+
+test("Capability Router preselects high-confidence tools without forcing weak matches", () => {
+	const tools = [
+		{ name: "calendar_find", description: "Find calendar availability" },
+		{ name: "document_create", description: "Create a document" },
+		{ name: "weather_read", description: "Read current weather" },
+	];
+	assert.deepEqual(selectTurnTools("use calendar_find to check availability", tools), ["calendar_find"]);
+	assert.deepEqual(selectTurnTools("帮我处理一下", tools), []);
 });
 
 test("Turn Understanding preserves explicit constraints and acceptance criteria in one Work Context", () => {

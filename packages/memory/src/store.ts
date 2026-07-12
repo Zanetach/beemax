@@ -1074,19 +1074,21 @@ export class MemoryStore {
 
 	reconcileExpiredTaskRuns(now = Date.now()): TaskRecoveryResult {
 		return this.db.transaction(() => {
-			const rows = this.db.prepare(`SELECT r.id AS run_id, r.task_id, t.owner_key, t.plan_id, t.recovery_policy, t.idempotency_key
+			const rows = this.db.prepare(`SELECT r.id AS run_id, r.task_id, t.owner_key, t.plan_id, t.recovery_policy, t.idempotency_key, t.effect_receipts
 				FROM task_runs r JOIN tasks t ON t.id = r.task_id
-				WHERE r.status = 'running' AND r.lease_expires_at IS NOT NULL AND r.lease_expires_at <= ?`).all(now) as Array<{ run_id: string; task_id: string; owner_key: string; plan_id: string | null; recovery_policy: string; idempotency_key: string | null }>;
+				WHERE r.status = 'running' AND r.lease_expires_at IS NOT NULL AND r.lease_expires_at <= ?`).all(now) as Array<{ run_id: string; task_id: string; owner_key: string; plan_id: string | null; recovery_policy: string; idempotency_key: string | null; effect_receipts: string | null }>;
 			let retried = 0; let failed = 0;
 			const affectedPlans = new Map<string, { ownerKey: string; planId: string }>();
 			const reason = "Task Run interrupted after its Execution Lease expired";
 			for (const row of rows) {
-				this.db.prepare("UPDATE task_runs SET status = 'failed', finished_at = ?, error = ? WHERE id = ? AND status = 'running'").run(now, reason, row.run_id);
-				if (row.recovery_policy === "safe_retry" && row.idempotency_key) {
-					const changed = this.db.prepare("UPDATE tasks SET status = 'pending', started_at = NULL, finished_at = NULL, result = NULL, candidate_result = NULL, error = ?, updated_at = ? WHERE id = ? AND status = 'running'").run(reason, now, row.task_id).changes;
+				const hasMutationEffect = parseEffectReceipts(row.effect_receipts).some((receipt) => receipt.sideEffect === "mutation" && (receipt.status === "committed" || receipt.status === "unknown"));
+				const taskReason = hasMutationEffect ? `${reason}; automatic replay blocked by durable Effect Receipt` : reason;
+				this.db.prepare("UPDATE task_runs SET status = 'failed', finished_at = ?, error = ? WHERE id = ? AND status = 'running'").run(now, taskReason, row.run_id);
+				if (row.recovery_policy === "safe_retry" && row.idempotency_key && !hasMutationEffect) {
+					const changed = this.db.prepare("UPDATE tasks SET status = 'pending', started_at = NULL, finished_at = NULL, result = NULL, candidate_result = NULL, error = ?, updated_at = ? WHERE id = ? AND status = 'running'").run(taskReason, now, row.task_id).changes;
 					retried += changed;
 				} else {
-					const changed = this.db.prepare("UPDATE tasks SET status = 'failed', finished_at = ?, error = ?, updated_at = ? WHERE id = ? AND status = 'running'").run(now, reason, now, row.task_id).changes;
+					const changed = this.db.prepare("UPDATE tasks SET status = 'failed', finished_at = ?, error = ?, updated_at = ? WHERE id = ? AND status = 'running'").run(now, taskReason, now, row.task_id).changes;
 					failed += changed;
 				}
 				if (row.plan_id) affectedPlans.set(`${row.owner_key}\0${row.plan_id}`, { ownerKey: row.owner_key, planId: row.plan_id });

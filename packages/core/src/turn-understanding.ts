@@ -53,3 +53,17 @@ function detectAction(text: string, hasActiveObjective: boolean): TurnAction {
 export function renderWorkContext(value: TurnUnderstanding): string {
 	return `<beemax-work-context>\n${JSON.stringify(value)}\n</beemax-work-context>`;
 }
+
+export function selectTurnTools(query: string, tools: ReadonlyArray<{ name: string; description?: string }>, limit = 3): string[] {
+	const normalized = query.normalize("NFKC").toLocaleLowerCase();
+	const terms = multilingualLexicalTerms(query);
+	return tools.flatMap((tool): Array<{ name: string; score: number }> => {
+		if (tool.name === "capability_discover") return [];
+		const name = tool.name.toLocaleLowerCase();
+		const haystack = `${name} ${tool.description ?? ""}`.normalize("NFKC").toLocaleLowerCase();
+		let score = normalized === name ? 100 : normalized.includes(name) ? 60 : 0;
+		score += terms.filter((term) => term.length >= 3 && haystack.includes(term)).length * 10;
+		return score >= 20 ? [{ name: tool.name, score }] : [];
+	}).sort((a, b) => b.score - a.score || a.name.localeCompare(b.name)).slice(0, Math.max(1, Math.min(limit, 5))).map(({ name }) => name);
+}
+import { multilingualLexicalTerms } from "./multilingual-lexical.ts";

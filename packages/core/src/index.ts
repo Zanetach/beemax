@@ -63,7 +63,7 @@ export { assertNoCredentialMaterial, containsCredentialMaterial, redactCredentia
 export { TaskRecoveryRunner, type TaskPlanCancelResult, type TaskPlanPauseResult, type TaskPlanRetryResult, type TaskRecoveryRunnerOptions, type TaskRecoveryRunnerResult, type TaskVerificationRetryResult } from "./task-recovery.ts";
 export { TaskRecoveryService, type TaskRecoveryCycleResult, type TaskRecoveryServiceOptions } from "./task-recovery-service.ts";
 export { TaskPlanRuntime } from "./task-plan-runtime.ts";
-export { TurnUnderstandingEngine, renderWorkContext, type TurnAction, type TurnExecutionMode, type TurnUnderstanding, type TurnUnderstandingInput, type TurnUnderstandingPort } from "./turn-understanding.ts";
+export { TurnUnderstandingEngine, renderWorkContext, selectTurnTools, type TurnAction, type TurnExecutionMode, type TurnUnderstanding, type TurnUnderstandingInput, type TurnUnderstandingPort } from "./turn-understanding.ts";
 export { multilingualLexicalTerms } from "./multilingual-lexical.ts";
 export { TaskPlanNoticeDeliveryService, renderTaskPlanCompletionNotice, type TaskPlanProgressEvent, type TaskPlanNoticeDeliveryOptions, type TaskPlanNoticeDeliveryResult, type TaskPlanNoticeOutbox } from "./task-plan-notice-delivery.ts";
 export { ProfileTaskScheduler, type ProfileTaskSchedulerOptions, type ProfileTaskSchedulerSnapshot } from "./profile-task-scheduler.ts";
