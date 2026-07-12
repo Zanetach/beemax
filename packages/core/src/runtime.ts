@@ -141,7 +141,7 @@ function installSecurityHook<Source extends BeeMaxRuntimeSource>(session: AgentS
 		const policy = policies.get(context.toolCall.name);
 		if (hardBlock) { audit?.({ phase: "blocked", source, toolName: context.toolCall.name, policy, at: Date.now(), reason: hardBlock }); return { block: true, reason: hardBlock }; }
 		if (policy.approval === "never") {
-			effects?.begin({ source, taskId: currentTaskId?.(source) ?? source.delegatedTask?.id, toolCallId: context.toolCall.id, toolName: context.toolCall.name, policy });
+			effects?.begin({ source, taskId: currentTaskId?.(source) ?? source.delegatedTask?.id, toolCallId: context.toolCall.id, toolName: context.toolCall.name, policy, args: context.args });
 			return priorResult;
 		}
 		audit?.({ phase: "requested", source, toolName: context.toolCall.name, policy, at: Date.now() });
@@ -149,7 +149,7 @@ function installSecurityHook<Source extends BeeMaxRuntimeSource>(session: AgentS
 		const decision = await authorizeTool(source, context.toolCall.name, context.args, policy, signal);
 		audit?.({ phase: decision.allowed ? "allowed" : "blocked", source, toolName: context.toolCall.name, policy, at: Date.now(), reason: decision.reason });
 		if (!decision.allowed) return { block: true, reason: decision.reason ?? "Tool call was not approved" };
-		effects?.begin({ source, taskId: currentTaskId?.(source) ?? source.delegatedTask?.id, toolCallId: context.toolCall.id, toolName: context.toolCall.name, policy });
+		effects?.begin({ source, taskId: currentTaskId?.(source) ?? source.delegatedTask?.id, toolCallId: context.toolCall.id, toolName: context.toolCall.name, policy, args: context.args });
 		return priorResult;
 	};
 	const previousAfter = session.agent.afterToolCall;
@@ -157,7 +157,7 @@ function installSecurityHook<Source extends BeeMaxRuntimeSource>(session: AgentS
 		const policy = policies.get(context.toolCall.name);
 		try {
 			const result = await previousAfter?.(context, signal);
-			effects?.finish({ source, toolCallId: context.toolCall.id, toolName: context.toolCall.name, policy, isError: result?.isError ?? context.isError });
+			effects?.finish({ source, toolCallId: context.toolCall.id, toolName: context.toolCall.name, policy, isError: result?.isError ?? context.isError, details: result?.details ?? context.result.details });
 			return result;
 		} catch (error) {
 			effects?.finish({ source, toolCallId: context.toolCall.id, toolName: context.toolCall.name, policy, isError: true });

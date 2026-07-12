@@ -35,11 +35,26 @@ export function createExecutionTools(source: BeeMaxRuntimeSource, cwd: string, e
 			name: "write",
 			label: "Write File",
 			description: "Write a workspace file through BeeMax's configured execution backend. Requires approval.",
-			parameters: Type.Object({ path: Type.String({ minLength: 1 }), content: Type.String({ maxLength: 1_000_000 }) }),
+			parameters: Type.Object({
+				path: Type.String({ minLength: 1 }),
+				content: Type.String({ maxLength: 1_000_000 }),
+				idempotencyKey: Type.Optional(Type.String({ minLength: 1, maxLength: 256, description: "Stable identity for safely detecting repeated execution of the same intended write" })),
+			}),
 			execute: async (_id, params) => {
 				const path = workspacePath(cwd, params.path);
 				await execution.writeFile({ source, cwd, path }, params.content);
-				return { content: [{ type: "text" as const, text: `Wrote ${path}` }], details: { path } };
+				const externalRef = `workspace:${relative(cwd, path).replaceAll("\\", "/") || "."}`;
+				return {
+					content: [{ type: "text" as const, text: `Wrote ${path}` }],
+					details: {
+						path,
+						beemaxEffect: {
+							operation: "write workspace file",
+							externalRef,
+							...(params.idempotencyKey ? { idempotencyKey: params.idempotencyKey } : {}),
+						},
+					},
+				};
 			},
 		}),
 	];

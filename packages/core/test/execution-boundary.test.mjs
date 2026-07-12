@@ -20,8 +20,16 @@ test("execution tools constrain file requests to their configured workspace", as
 	const read = tools.find((tool) => tool.name === "read");
 	const write = tools.find((tool) => tool.name === "write");
 	await read.execute("read", { path: "notes/today.md" });
-	await write.execute("write", { path: "notes/today.md", content: "hello" });
+	const writeResult = await write.execute("write", { path: "notes/today.md", content: "hello", idempotencyKey: "daily-notes-v1" });
 	assert.equal(calls[0][1].path, "/workspace/notes/today.md");
 	assert.equal(calls[1][1].path, "/workspace/notes/today.md");
+	assert.deepEqual(writeResult.details, {
+		path: "/workspace/notes/today.md",
+		beemaxEffect: {
+			operation: "write workspace file",
+			externalRef: "workspace:notes/today.md",
+			idempotencyKey: "daily-notes-v1",
+		},
+	});
 	await assert.rejects(read.execute("read", { path: "../secret" }), /outside the configured workspace/);
 });
