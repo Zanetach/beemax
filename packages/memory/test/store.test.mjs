@@ -836,6 +836,66 @@ test("a crashed Agent execution is reconciled and recovered by a new process", a
 	} finally { store.close(); rmSync(root, { recursive: true, force: true }); }
 });
 
+test("recovery resumes from a checkpoint persisted immediately before process failure", async () => {
+	const root = mkdtempSync(join(tmpdir(), "beemax-checkpoint-crash-"));
+	const path = join(root, "memory.db"); const executionLog = join(root, "executions.jsonl");
+	let store = new MemoryStore(path);
+	try {
+		const scope = { platform: "cli", chatId: "local", chatType: "dm", userId: "local" };
+		new TaskGraph(store).createPlan({ id: "checkpoint-plan", ownerKey: "owner", tasks: [{ id: "checkpoint-task", title: "Task", recoveryPolicy: "safe_retry", idempotencyKey: "checkpoint-plan:task", executionScope: scope }] });
+		store.close(); await runClaimWorker({ databasePath: path, executionLog, mode: "crash-after-checkpoint" }, 18);
+		store = new MemoryStore(path);
+		assert.equal(store.queryTasks({ ownerKeys: ["owner"], id: "checkpoint-task" })[0].checkpoint, "phase=checkpointed");
+		const recoveryTime = Date.now() + 2 * 60 * 60_000;
+		store.reconcileExpiredTaskRuns(recoveryTime);
+		assert.equal(store.claimTaskPlanExecution("owner", "checkpoint-plan", "recovery-probe", recoveryTime + 60_000, recoveryTime), true);
+		assert.equal(store.releaseTaskPlanExecution("owner", "checkpoint-plan", "recovery-probe"), true);
+		store.close(); await runClaimWorker({ databasePath: path, executionLog, mode: "recover" });
+		const attempts = readFileSync(executionLog, "utf8").trim().split("\n").map(JSON.parse);
+		assert.equal(attempts.length, 2);
+		assert.equal(attempts[1].checkpoint, "phase=checkpointed");
+		store = new MemoryStore(path);
+		assert.equal(store.queryTasks({ ownerKeys: ["owner"], id: "checkpoint-task" })[0].status, "succeeded");
+		assert.equal(store.queryTaskPlans({ ownerKeys: ["owner"], id: "checkpoint-plan" })[0].status, "succeeded");
+	} finally { store.close(); rmSync(root, { recursive: true, force: true }); }
+});
+
+test("a process failure after repeated lease heartbeats remains fenced until reconciliation", async () => {
+	const root = mkdtempSync(join(tmpdir(), "beemax-heartbeat-crash-"));
+	const path = join(root, "memory.db"); const executionLog = join(root, "executions.jsonl");
+	let store = new MemoryStore(path);
+	try {
+		new TaskGraph(store).createPlan({ id: "heartbeat-plan", ownerKey: "owner", tasks: [{ id: "heartbeat-task", title: "Task", recoveryPolicy: "safe_retry", idempotencyKey: "heartbeat-plan:task", executionScope: { platform: "cli", chatId: "local", chatType: "dm", userId: "local" } }] });
+		store.close(); await runClaimWorker({ databasePath: path, executionLog, mode: "crash-after-heartbeats", ownerKey: "owner", planId: "heartbeat-plan" }, 19);
+		store = new MemoryStore(path);
+		const run = store.taskRuns("heartbeat-task")[0];
+		assert.ok(run.leaseExpiresAt > run.startedAt + 1_100, `lease was not renewed: ${JSON.stringify(run)}`);
+		assert.deepEqual(store.reconcileExpiredTaskRuns(run.leaseExpiresAt - 1), { retried: 0, failed: 0, affectedPlans: [] });
+		assert.equal(store.reconcileExpiredTaskRuns(run.leaseExpiresAt).retried, 1);
+		store.close(); await runClaimWorker({ databasePath: path, executionLog, mode: "recover" });
+		store = new MemoryStore(path);
+		assert.equal(store.queryTasks({ ownerKeys: ["owner"], id: "heartbeat-task" })[0].status, "succeeded");
+	} finally { store.close(); rmSync(root, { recursive: true, force: true }); }
+});
+
+test("reconciliation closes the Task-success Run-running terminal commit window", async () => {
+	const root = mkdtempSync(join(tmpdir(), "beemax-terminal-window-crash-"));
+	const path = join(root, "memory.db"); const executionLog = join(root, "executions.jsonl");
+	let store = new MemoryStore(path);
+	try {
+		new TaskGraph(store).createPlan({ id: "terminal-window-plan", ownerKey: "owner", tasks: [{ id: "terminal-window-task", title: "Task", recoveryPolicy: "safe_retry", idempotencyKey: "terminal-window-plan:task", executionScope: { platform: "cli", chatId: "local", chatType: "dm", userId: "local" } }] });
+		store.close(); await runClaimWorker({ databasePath: path, executionLog, mode: "crash-after-terminal-task-write" }, 20);
+		store = new MemoryStore(path);
+		assert.equal(store.queryTasks({ ownerKeys: ["owner"], id: "terminal-window-task" })[0].status, "succeeded");
+		const run = store.taskRuns("terminal-window-task")[0];
+		assert.equal(run.status, "running");
+		assert.equal(store.queryTaskPlans({ ownerKeys: ["owner"], id: "terminal-window-plan" })[0].status, "running");
+		assert.deepEqual(store.reconcileExpiredTaskRuns(run.leaseExpiresAt), { retried: 0, failed: 0, affectedPlans: [{ ownerKey: "owner", planId: "terminal-window-plan" }] });
+		assert.equal(store.taskRuns("terminal-window-task")[0].status, "failed");
+		assert.equal(store.queryTaskPlans({ ownerKeys: ["owner"], id: "terminal-window-plan" })[0].status, "succeeded");
+	} finally { store.close(); rmSync(root, { recursive: true, force: true }); }
+});
+
 test("multiple Agent processes execute each durable Task Plan exactly once", async () => {
 	const root = mkdtempSync(join(tmpdir(), "beemax-plan-claim-process-race-"));
 	const path = join(root, "memory.db");
