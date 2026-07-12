@@ -137,12 +137,14 @@ test("MCP tools are discovered, callable, and mutating tools require approval", 
 
 test("MCP initialization times out and degrades optional servers", async () => {
 	const manager = new McpManager({ initializationTimeoutMs: 100 });
+	const startedAt = Date.now();
 	try {
 		const status = await manager.connectAll({
 			servers: { hanging: { type: "stdio", command: process.execPath, args: [hangingMcpFixture] } },
 		});
 		assert.equal(status[0].connected, false);
 		assert.match(status[0].error, /timed out/);
+		assert.ok(Date.now() - startedAt < 750, "timed-out MCP startup must also terminate its child process promptly");
 	} finally {
 		await manager.close();
 	}

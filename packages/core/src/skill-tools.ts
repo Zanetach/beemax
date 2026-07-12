@@ -19,7 +19,9 @@ export interface SkillCandidateTrialInput { name: string; description: string; i
 export interface SkillCandidateTrialResult { trialId: string; accepted: boolean; evidence: string; assertions: SkillTrialAssertion[]; toolCalls: SkillTrialToolCall[]; }
 export type SkillCandidateVerifier = (input: SkillCandidateTrialInput, signal?: AbortSignal) => Promise<SkillCandidateTrialResult>;
 
-export function createSkillTools(agentDir: string, markReloadNeeded: () => void, availableTools: readonly Pick<ToolDefinition, "name" | "description">[] = [], verifyCandidate?: SkillCandidateVerifier, additionalSkillRoots: readonly string[] = [], activateTools?: (names: string[]) => void): ToolDefinition[] {
+export interface CapabilityMetadata extends Pick<ToolDefinition, "name" | "description"> { aliases?: string[]; triggers?: string[]; exclude?: string[]; }
+
+export function createSkillTools(agentDir: string, markReloadNeeded: () => void, availableTools: readonly CapabilityMetadata[] = [], verifyCandidate?: SkillCandidateVerifier, additionalSkillRoots: readonly string[] = [], activateTools?: (names: string[]) => void): ToolDefinition[] {
 	const root = resolve(agentDir, "skills");
 	const candidateRoot = resolve(agentDir, "skill-candidates");
 	const registry = new SkillRegistry([root, ...additionalSkillRoots.map((item) => resolve(item))]);
@@ -29,10 +31,9 @@ export function createSkillTools(agentDir: string, markReloadNeeded: () => void,
 	const signingKey = () => signingKeyPromise ??= skillLearningKey(agentDir);
 	const tools = [
 		defineTool({ name: "capability_discover", label: "Discover Capabilities", description: "Search the tools, active Skills, and isolated Skill candidates actually available in this Profile before concluding a capability is missing.", parameters: Type.Object({ query: Type.String({ minLength: 1, maxLength: 500 }) }), execute: async (_id, params) => {
-			const terms = params.query.toLowerCase().split(/\s+/).filter(Boolean);
 			const existingKey = await readSkillLearningKey(agentDir);
 			const candidates = existingKey ? await listCandidates(candidateRoot, existingKey) : [];
-			const matches = <T extends { name: string; description: string }>(items: T[]) => items.filter((item) => terms.some((term) => `${item.name} ${item.description}`.toLowerCase().includes(term))).slice(0, 20);
+			const matches = <T extends CapabilityMetadata>(items: T[]) => rankCapabilities(params.query, items, 20);
 			const matchedTools = matches([...availableTools]);
 			const skills = await runtime.discover(params.query, 5);
 			const tools = skills.length ? matchedTools.filter((tool) => tool.name !== "bash") : matchedTools;
@@ -43,7 +44,7 @@ export function createSkillTools(agentDir: string, markReloadNeeded: () => void,
 			const skills = await registry.list(); return result(skills.length ? skills.map((item) => `- ${item.name}: ${item.description}`).join("\n") : "No Skills available.", { skills: skills.map(publicSkill) });
 		} }),
 		defineTool({ name: "skill_activate", label: "Activate Skill", description: "Load one discovered Skill's global rules and route table, locking its SHA256 for this execution.", parameters: Type.Object({ name: Type.String({ pattern: "^[a-z0-9]+(?:-[a-z0-9]+)*$" }) }), execute: async (_id, params) => {
-			const activated = await runtime.activate(params.name); activateTools?.(["skill_route", "skill_complete"]); return ephemeralResult(activated.instructions.slice(0, 50_000), { descriptor: publicSkill(activated.descriptor), routes: activated.routes, state: runtime.snapshot() });
+			const activated = await runtime.activate(params.name); activateTools?.(["skill_route", "skill_complete"]); return ephemeralResult(activated.instructions, { descriptor: publicSkill(activated.descriptor), routes: activated.routes, state: runtime.snapshot() });
 		} }),
 		defineTool({ name: "skill_route", label: "Route Skill", description: "Select one declared module route after Skill activation.", parameters: Type.Object({ route: Type.String({ pattern: "^[a-z0-9]+(?:-[a-z0-9]+)*$" }) }), execute: async (_id, params) => {
 			const routed = await runtime.routeTo(params.route); activateTools?.(["skill_resource_read", "skill_complete", ...routed.tools]); return result(`Selected Skill route ${routed.route}.`, { ...routed, state: runtime.snapshot() });
@@ -58,7 +59,7 @@ export function createSkillTools(agentDir: string, markReloadNeeded: () => void,
 			await runtime.discover(params.name, 10); const activated = await runtime.activate(params.name); const legacy = activated.routes.length === 1 && activated.routes[0]?.name === "legacy";
 			if (legacy) { const routed = await runtime.routeTo("legacy"); runtime.useActivatedInstructionsAsModule(); activateTools?.(["skill_complete", ...routed.tools]); }
 			else activateTools?.(["skill_route", "skill_complete"]);
-			return ephemeralResult(activated.instructions.slice(0, 50_000), { descriptor: publicSkill(activated.descriptor), routes: activated.routes, state: runtime.snapshot(), legacy });
+			return ephemeralResult(activated.instructions, { descriptor: publicSkill(activated.descriptor), routes: activated.routes, state: runtime.snapshot(), legacy });
 		} }),
 		defineTool({ name: "skill_create", label: "Create Skill", description: "Create a durable instruction-only Agent Skill after a workflow proves reusable. Requires approval. Never put credentials in skills.", parameters: Type.Object({ name: Type.String({ pattern: "^[a-z0-9]+(?:-[a-z0-9]+)*$", maxLength: 64 }), description: Type.String({ minLength: 10, maxLength: 1024 }), instructions: Type.String({ minLength: 20, maxLength: 30_000 }) }), execute: async (_id, params) => {
 			assertSafeCandidate({ ...params, source: "direct Skill creation" });
@@ -131,6 +132,22 @@ export function createSkillTools(agentDir: string, markReloadNeeded: () => void,
 	return tools.map((tool) => Object.assign(withToolPolicy(tool, policies[tool.name]!),
 		["skill_activate", "skill_read", "skill_resource_read"].includes(tool.name) ? { persistResultAsSummary: true } : {},
 		tool.name === "skill_complete" ? { beemaxTurnReset: () => runtime.reset() } : {}));
+}
+
+function rankCapabilities<T extends CapabilityMetadata>(query: string, items: readonly T[], limit: number): T[] {
+	const normalized = query.normalize("NFKC").toLocaleLowerCase();
+	const terms = normalized.match(/[\p{Script=Han}]{2}|[\p{L}\p{N}_-]+/gu) ?? [];
+	return items.flatMap((item): Array<{ item: T; score: number }> => {
+		if (item.exclude?.some((term) => normalized.includes(term.normalize("NFKC").toLocaleLowerCase()))) return [];
+		const aliases = item.aliases ?? [];
+		const triggers = item.triggers ?? [];
+		const haystack = [item.name, item.description, ...aliases, ...triggers].join(" ").normalize("NFKC").toLocaleLowerCase();
+		let score = normalized === item.name.toLocaleLowerCase() ? 100 : normalized.includes(item.name.toLocaleLowerCase()) ? 40 : 0;
+		score += triggers.filter((term) => normalized.includes(term.normalize("NFKC").toLocaleLowerCase())).length * 60;
+		score += aliases.filter((term) => normalized.includes(term.normalize("NFKC").toLocaleLowerCase())).length * 50;
+		score += terms.filter((term) => haystack.includes(term)).length * 5;
+		return score > 0 ? [{ item, score }] : [];
+	}).sort((a, b) => b.score - a.score || a.item.name.localeCompare(b.item.name)).slice(0, limit).map(({ item }) => item);
 }
 
 async function listCandidates(root: string, key: Buffer): Promise<SkillCandidate[]> {

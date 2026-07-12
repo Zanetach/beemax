@@ -30,6 +30,9 @@ export interface MemoryRecord {
 	role: "user" | "assistant" | "memory";
 	content: string;
 	createdAt: number;
+	/** Provenance used by context assembly to keep unconfirmed evidence distinguishable from durable facts. */
+	memoryType?: "curated" | "claim" | "candidate";
+	confidence?: number;
 }
 
 export interface RecallOptions {
@@ -41,6 +44,10 @@ export interface RecallOptions {
 	threadId?: string;
 	projectId?: string;
 	organizationId?: string;
+	subject?: { type: string; id: string };
+	object?: { type: string; id: string };
+	/** Pending conversation evidence is excluded unless the caller explicitly opts in. */
+	includeCandidates?: boolean;
 }
 
 export interface MemoryCandidate extends MemoryRecord {
@@ -699,7 +706,7 @@ export class MemoryStore {
 			params.push(opts.threadId ?? null);
 		}
 		const where = conditions.length ? `AND ${conditions.join(" AND ")}` : "";
-		const rows = this.db
+		const ftsRows = this.db
 			.prepare(
 				`SELECT m.id, m.platform, m.chat_id, m.user_id, m.thread_id, m.role, m.content, m.created_at
 				 FROM memories_fts f
@@ -710,14 +717,36 @@ export class MemoryStore {
 				 LIMIT ?`,
 			)
 			.all(...params, limit) as MemoryRow[];
-		const records = rows.map(mapRow);
+		const likeRows = this.searchMemoryRowsLike(query, opts, limit);
+		const records = uniqueById([...ftsRows, ...likeRows]).map((row) => ({ ...mapRow(row), memoryType: "curated" as const, confidence: 1 }));
 		const claims = this.searchClaims(match, opts);
 		if (claims.length === 0) claims.push(...this.searchClaimsLike(query.trim(), opts));
 		const claimRecords = claims.map((claim) => ({
 			id: claim.id, platform: claim.platform, chatId: claim.chatId, userId: claim.userId,
-			role: "memory" as const, content: claim.statement, createdAt: claim.updatedAt,
+			role: "memory" as const, content: claim.statement, createdAt: claim.updatedAt, memoryType: "claim" as const, confidence: claim.confidence,
 		}));
-		return [...claimRecords, ...records].slice(0, limit);
+		const candidates = opts.includeCandidates ? this.searchCandidateRowsLike(query, opts, limit).map((row) => ({
+			...mapRow(row), memoryType: "candidate" as const, confidence: 0.35,
+		})) : [];
+		return uniqueById([...claimRecords, ...records, ...candidates]).slice(0, limit);
+	}
+
+	private searchMemoryRowsLike(query: string, opts: RecallOptions, limit: number): MemoryRow[] {
+		const lexical = lexicalWhere(query, "m.content");
+		if (!lexical) return [];
+		const scope = scopeWhere(opts, "m");
+		return this.db.prepare(`SELECT m.id, m.platform, m.chat_id, m.user_id, m.thread_id, m.role, m.content, m.created_at
+			FROM memories m WHERE ${lexical.where} ${scope.where} ORDER BY m.created_at DESC LIMIT ?`)
+			.all(...lexical.params, ...scope.params, limit) as MemoryRow[];
+	}
+
+	private searchCandidateRowsLike(query: string, opts: RecallOptions, limit: number): MemoryRow[] {
+		const lexical = lexicalWhere(query, "c.content");
+		if (!lexical) return [];
+		const scope = scopeWhere(opts, "c");
+		return this.db.prepare(`SELECT c.id, c.platform, c.chat_id, c.user_id, c.thread_id, c.role, c.content, c.created_at
+			FROM memory_candidates c WHERE c.status = 'pending' AND ${lexical.where} ${scope.where} ORDER BY c.created_at DESC LIMIT ?`)
+			.all(...lexical.params, ...scope.params, limit) as MemoryRow[];
 	}
 
 	list(opts: RecallOptions = {}): MemoryRecord[] {
@@ -1484,13 +1513,24 @@ function sameClaimScope(a: MemoryClaim, b: MemoryClaim): boolean {
 
 function claimReadWhere(opts: Omit<RecallOptions, "limit">, alias: string): { where: string; params: unknown[] } {
 	const profileId = opts.profileId ?? "default";
+	const entityConditions: string[] = [];
+	const entityParams: unknown[] = [];
+	if (opts.subject) {
+		entityConditions.push(`${alias}.subject_type = ? AND ${alias}.subject_id = ?`);
+		entityParams.push(opts.subject.type, opts.subject.id);
+	}
+	if (opts.object) {
+		entityConditions.push(`${alias}.object_type = ? AND ${alias}.object_id = ?`);
+		entityParams.push(opts.object.type, opts.object.id);
+	}
 	return {
 		where: `AND ${alias}.profile_id = ? AND (
 			(${alias}.visibility = 'private' AND ${alias}.platform = ? AND ${alias}.user_id = ?)
 			OR (${alias}.visibility = 'conversation' AND ${alias}.platform = ? AND ${alias}.chat_id = ? AND ${alias}.thread_id IS ?)
 			OR (${alias}.visibility = 'team' AND ${alias}.project_id IS NOT NULL AND ${alias}.project_id = ?)
-			OR (${alias}.visibility = 'organization' AND ${alias}.organization_id IS NOT NULL AND ${alias}.organization_id = ?))`,
-		params: [profileId, opts.platform ?? "", opts.userId ?? "", opts.platform ?? "", opts.chatId ?? "", opts.threadId ?? null, opts.projectId ?? "", opts.organizationId ?? ""],
+			OR (${alias}.visibility = 'organization' AND ${alias}.organization_id IS NOT NULL AND ${alias}.organization_id = ?))
+			${entityConditions.length ? `AND ${entityConditions.join(" AND ")}` : ""}`,
+		params: [profileId, opts.platform ?? "", opts.userId ?? "", opts.platform ?? "", opts.chatId ?? "", opts.threadId ?? null, opts.projectId ?? "", opts.organizationId ?? "", ...entityParams],
 	};
 }
 function limitOf(value: number | undefined, fallback: number): number { return Math.max(1, Math.min(value ?? fallback, 100)); }
@@ -1508,9 +1548,36 @@ function legacyTaskFactStatus(status: string): TaskFactRecord["status"] {
 }
 
 function toFtsQuery(query: string): string {
-	return query.trim().split(/\s+/u).filter(Boolean)
-		.map((token) => `"${token.replaceAll('"', '""')}"`)
+	return lexicalTerms(query)
+		.map((token) => `"${token.replaceAll('"', '""')}"${/^[a-z0-9]+$/i.test(token) ? "*" : ""}`)
 		.join(" OR ");
+}
+
+function lexicalTerms(query: string): string[] {
+	const raw = query.normalize("NFKC").toLocaleLowerCase().match(/[\p{Script=Han}]+|[\p{L}\p{N}]+/gu) ?? [];
+	const terms = raw.flatMap((term) => {
+		if (/^\p{Script=Han}+$/u.test(term)) {
+			if (term.length <= 2) return [term];
+			return Array.from({ length: term.length - 1 }, (_, index) => term.slice(index, index + 2));
+		}
+		if (/^[a-z]+$/i.test(term) && term.length > 4) return [term.replace(/(?:ies|ing|ed|es|s)$/i, (suffix) => suffix.toLowerCase() === "ies" ? "y" : "")];
+		return [term];
+	});
+	return [...new Set(terms.filter((term) => term.length > 0))];
+}
+
+function lexicalWhere(query: string, column: string): { where: string; params: string[] } | undefined {
+	const terms = lexicalTerms(query);
+	if (!terms.length) return undefined;
+	return {
+		where: `(${terms.map(() => `lower(${column}) LIKE ? ESCAPE '\\'`).join(" OR ")})`,
+		params: terms.map((term) => `%${term.replaceAll("\\", "\\\\").replaceAll("%", "\\%").replaceAll("_", "\\_")}%`),
+	};
+}
+
+function uniqueById<T extends { id: string }>(items: readonly T[]): T[] {
+	const seen = new Set<string>();
+	return items.filter((item) => !seen.has(item.id) && Boolean(seen.add(item.id)));
 }
 
 function cryptoRandom(): string {

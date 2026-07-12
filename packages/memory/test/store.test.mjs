@@ -75,6 +75,44 @@ test("conversation candidates stay pending until explicitly promoted or rejected
 	}
 });
 
+test("multilingual recall finds Chinese, English morphology, and mixed-language business terms", () => {
+	const root = mkdtempSync(join(tmpdir(), "beemax-memory-multilingual-"));
+	const store = new MemoryStore(join(root, "memory.db"));
+	try {
+		const scope = { platform: "feishu", chatId: "sales", threadId: "customer-a", userId: "seller" };
+		store.remember({ ...scope, role: "memory", content: "客户要求交付日期为七月二十五日，并提供 delivery report" });
+		assert.equal(store.recall("交付日期", scope)[0]?.content, "客户要求交付日期为七月二十五日，并提供 delivery report");
+		assert.equal(store.recall("deliver reports", scope)[0]?.content, "客户要求交付日期为七月二十五日，并提供 delivery report");
+		assert.equal(store.recall("客户 delivery", scope)[0]?.content, "客户要求交付日期为七月二十五日，并提供 delivery report");
+	} finally { store.close(); rmSync(root, { recursive: true, force: true }); }
+});
+
+test("pending candidates are opt-in low-confidence evidence and remain isolated by conversation", () => {
+	const root = mkdtempSync(join(tmpdir(), "beemax-memory-candidate-recall-"));
+	const store = new MemoryStore(join(root, "memory.db"));
+	try {
+		const customerA = { platform: "feishu", chatId: "sales", threadId: "customer-a", userId: "seller" };
+		const customerB = { platform: "feishu", chatId: "sales", threadId: "customer-b", userId: "seller" };
+		store.recordCandidate({ ...customerA, role: "user", content: "A客户要求使用蓝色封面" });
+		assert.equal(store.recall("蓝色封面", customerA).length, 0);
+		assert.deepEqual(store.recall("蓝色封面", { ...customerA, includeCandidates: true }).map(({ content, memoryType, confidence }) => ({ content, memoryType, confidence })), [
+			{ content: "A客户要求使用蓝色封面", memoryType: "candidate", confidence: 0.35 },
+		]);
+		assert.equal(store.recall("蓝色封面", { ...customerB, includeCandidates: true }).length, 0);
+	} finally { store.close(); rmSync(root, { recursive: true, force: true }); }
+});
+
+test("business-object filters prevent a similar customer requirement from crossing orders", () => {
+	const root = mkdtempSync(join(tmpdir(), "beemax-memory-object-scope-"));
+	const store = new MemoryStore(join(root, "memory.db"), "sales-profile");
+	try {
+		const scope = { profileId: "sales-profile", platform: "feishu", chatId: "sales", threadId: "orders", userId: "seller", projectId: "sales-team" };
+		const expected = store.upsertClaim({ ...scope, kind: "fact", statement: "交付日期为七月二十五日", subject: { type: "customer", id: "customer-a" }, object: { type: "order", id: "PO-1" }, visibility: "team" });
+		store.upsertClaim({ ...scope, kind: "fact", statement: "交付日期为七月二十八日", subject: { type: "customer", id: "customer-b" }, object: { type: "order", id: "PO-2" }, visibility: "team" });
+		assert.deepEqual(store.recallBrief("交付日期", { ...scope, subject: { type: "customer", id: "customer-a" }, object: { type: "order", id: "PO-1" } }).claims.map((claim) => claim.id), [expected.id]);
+	} finally { store.close(); rmSync(root, { recursive: true, force: true }); }
+});
+
 test("task ledger stores verifiable profile-scoped task facts independently from chat memory", () => {
 	const root = mkdtempSync(join(tmpdir(), "beemax-task-ledger-"));
 	const store = new MemoryStore(join(root, "memory.db"));

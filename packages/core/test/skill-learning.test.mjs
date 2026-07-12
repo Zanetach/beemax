@@ -24,6 +24,18 @@ test("capability discovery searches the current tool inventory before learning a
 	} finally { rmSync(root, { recursive: true, force: true }); }
 });
 
+test("capability discovery ranks multilingual aliases and excludes negative matches", async () => {
+	const root = mkdtempSync(join(tmpdir(), "beemax-capability-ranking-"));
+	try {
+		const tools = toolsAt(root, [
+			{ name: "calendar_find", description: "Find available calendar time", aliases: ["查日程", "空闲时间"], triggers: ["安排会议"] },
+			{ name: "calendar_delete", description: "Delete calendar events", aliases: ["删除日程"], exclude: ["查询", "查"] },
+		]);
+		const discovered = await tools.get("capability_discover").execute("discover", { query: "帮我查日程并安排会议" });
+		assert.deepEqual(discovered.details.tools.map((tool) => tool.name), ["calendar_find"]);
+	} finally { rmSync(root, { recursive: true, force: true }); }
+});
+
 test("Skill tools progressively activate a project Skill route and only its declared resource", async () => {
 	const root = mkdtempSync(join(tmpdir(), "beemax-progressive-skill-tools-"));
 	try {
@@ -41,6 +53,20 @@ test("Skill tools progressively activate a project Skill route and only its decl
 		assert.equal((await tools.get("skill_resource_read").execute("read", { path: "modules/review.md" })).content[0].text, "Review only material claims.");
 		assert.equal((await tools.get("skill_complete").execute("complete", {})).details.state, "completed");
 		assert.deepEqual(activations, [["skill_activate", "skill_read"], ["skill_route", "skill_complete"], ["skill_resource_read", "skill_complete", "web_search"]]);
+	} finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("Skill activation never reports success with silently truncated instructions", async () => {
+	const root = mkdtempSync(join(tmpdir(), "beemax-complete-skill-tools-"));
+	try {
+		const skill = join(root, "project-skills", "large-review");
+		mkdirSync(skill, { recursive: true });
+		const sentinel = "END-OF-SKILL-INSTRUCTIONS";
+		writeFileSync(join(skill, "SKILL.md"), `---\nname: large-review\ndescription: "Review large structured documents"\n---\n${"x".repeat(55_000)}${sentinel}`);
+		const tools = new Map(createSkillTools(root, () => undefined, [], undefined, [join(root, "project-skills")]).map((tool) => [tool.name, tool]));
+		await tools.get("capability_discover").execute("discover", { query: "large review" });
+		const activated = await tools.get("skill_activate").execute("activate", { name: "large-review" });
+		assert.match(activated.content[0].text, new RegExp(`${sentinel}$`));
 	} finally { rmSync(root, { recursive: true, force: true }); }
 });
 

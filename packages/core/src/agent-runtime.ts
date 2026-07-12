@@ -12,6 +12,7 @@ import type { AgentControlHandler, AgentControlInput, AgentControlResult } from 
 import { conversationKey, conversationOwnerKey } from "./agent-scope.ts";
 import type { TaskKind, TaskLedger, TaskPlanRecord, TaskPlanStatus, TaskRecord, TaskRunRecord, TaskStatus } from "./task-ledger.ts";
 import type { AutonomousPlanningPolicy, PlanningBudgetRegistry } from "./autonomous-planning.ts";
+import { TurnUnderstandingEngine, renderWorkContext, type TurnUnderstandingPort } from "./turn-understanding.ts";
 
 export interface AgentRunInput<Source extends BeeMaxRuntimeSource = BeeMaxRuntimeSource> {
 	source: Source;
@@ -101,6 +102,7 @@ export interface BeeMaxAgentRuntimeOptions<Source extends BeeMaxRuntimeSource = 
 	/** Deterministic per-turn execution admission and resource policy. */
 	planningPolicy?: Pick<AutonomousPlanningPolicy, "decide">;
 	planningBudgets?: PlanningBudgetRegistry;
+	turnUnderstanding?: TurnUnderstandingPort;
 }
 
 /**
@@ -120,6 +122,7 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 	private readonly taskLedger?: TaskLedger;
 	private readonly planningPolicy?: Pick<AutonomousPlanningPolicy, "decide">;
 	private readonly planningBudgets?: PlanningBudgetRegistry;
+	private readonly turnUnderstanding: TurnUnderstandingPort;
 
 	constructor(options: BeeMaxAgentRuntimeOptions<Source>) {
 		this.sessions = new SessionCoordinator(options);
@@ -133,6 +136,7 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 		this.taskLedger = options.taskLedger;
 		this.planningPolicy = options.planningPolicy;
 		this.planningBudgets = options.planningBudgets;
+		this.turnUnderstanding = options.turnUnderstanding ?? new TurnUnderstandingEngine();
 	}
 
 	async run(input: AgentRunInput<Source>, onEvent?: BeeMaxAgentRunEventSink): Promise<AgentRunResult> {
@@ -149,9 +153,12 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 			const startedAt = Date.now();
 			const planning = input.mode === "interactive" || !input.mode ? this.planningPolicy?.decide(input.text) : undefined;
 			const requestedText = explicitSkillRequest(input.text);
-			const enrichedText = input.mode === "interactive" || !input.mode
+			const understanding = input.mode === "interactive" || !input.mode ? this.turnUnderstanding.understand(input.text) : undefined;
+			const recalledText = input.mode === "interactive" || !input.mode
 				? this.context?.enrich(input.source, requestedText, { model: modelOf(session.piSession.agent) }) ?? requestedText
 				: requestedText;
+			const needsWorkContext = understanding && (understanding.action !== "create" || understanding.executionMode !== "direct" || understanding.constraints.length > 0 || understanding.acceptanceCriteria.length > 0);
+			const enrichedText = needsWorkContext ? `${renderWorkContext(understanding)}\n\n${recalledText}` : recalledText;
 			const objectiveBinding = (input.mode === "interactive" || !input.mode) && (planning?.mode !== "direct" || Boolean(input.objectiveTaskId) || isObjectiveContinuation(input.text)) ? this.createObjective(input, startedAt) : undefined;
 			const objective = objectiveBinding?.task;
 			const planningScope = conversationKey(input.source);
@@ -302,7 +309,15 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 	async compact(source: Source, instructions?: string): Promise<boolean> {
 		return (await this.sessions.withSession(source, async (session) => {
 			if (session.busy) return false;
-			await session.piSession.compact(instructions);
+			const owners = [...new Set([conversationKey(source), conversationOwnerKey(source), "profile"])];
+			const active = this.taskLedger?.queryTasks({ ownerKeys: owners, statuses: ["pending", "running"], limit: 20 }) ?? [];
+			const envelope = active.length ? [
+				"<task-preservation-envelope>",
+				"Preserve these durable responsibilities, constraints, Acceptance Criteria, completed effects, pending steps, and blockers exactly in the compacted summary.",
+				JSON.stringify(active.map((task) => ({ id: task.id, kind: task.kind, title: task.title, description: task.description, acceptanceCriteria: task.acceptanceCriteria, status: task.status, checkpoint: task.checkpoint, result: task.result, verificationFeedback: task.verificationFeedback }))).slice(0, 40_000),
+				"</task-preservation-envelope>",
+			].join("\n") : undefined;
+			await session.piSession.compact([instructions, envelope].filter(Boolean).join("\n\n") || undefined);
 			return true;
 		})) ?? false;
 	}

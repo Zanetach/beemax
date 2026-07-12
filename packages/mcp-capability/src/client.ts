@@ -45,9 +45,11 @@ export class McpManager {
 	private readonly connections = new Map<string, Connection>();
 	private statuses: McpServerStatus[] = [];
 	private readonly initializationTimeoutMs: number;
+	private readonly closeTimeoutMs: number;
 
-	constructor(options: { initializationTimeoutMs?: number } = {}) {
+	constructor(options: { initializationTimeoutMs?: number; closeTimeoutMs?: number } = {}) {
 		this.initializationTimeoutMs = Math.max(100, options.initializationTimeoutMs ?? 15_000);
+		this.closeTimeoutMs = Math.max(100, options.closeTimeoutMs ?? 5_000);
 	}
 
 	async connectAll(config: McpConfig): Promise<McpServerStatus[]> {
@@ -69,6 +71,18 @@ export class McpManager {
 			}));
 			throw new Error(`Required MCP server ${requiredFailure.status.name} failed: ${requiredFailure.status.error}`);
 		}
+		const ownerByTool = new Map<string, string>();
+		for (const attempt of attempts) {
+			if (!("connection" in attempt) || !attempt.connection) continue;
+			for (const tool of attempt.connection.tools) {
+				const owner = ownerByTool.get(tool.name);
+				if (owner) {
+					await Promise.all(attempts.map((item) => "connection" in item && item.connection ? boundedClose(item.connection.client, this.closeTimeoutMs) : undefined));
+					throw new Error(`MCP tool name collision across servers ${owner} and ${attempt.status.name}: ${tool.name}`);
+				}
+				ownerByTool.set(tool.name, attempt.status.name);
+			}
+		}
 		for (const attempt of attempts) if ("connection" in attempt && attempt.connection) this.connections.set(attempt.status.name, attempt.connection);
 		this.statuses = attempts.map((attempt) => attempt.status);
 		return this.getStatus();
@@ -84,7 +98,7 @@ export class McpManager {
 
 	async close(): Promise<void> {
 		for (const connection of this.connections.values()) {
-			await connection.client.close().catch(() => undefined);
+			await boundedClose(connection.client, this.closeTimeoutMs);
 		}
 		this.connections.clear();
 		this.statuses = [];
@@ -198,7 +212,8 @@ export class McpManager {
 			}
 			return { client, tools, resources, prompts };
 		} catch (error) {
-			await client.close().catch(() => undefined);
+			terminateTransport(transport);
+			await boundedClose(client, this.closeTimeoutMs);
 			throw error;
 		}
 	}
@@ -280,4 +295,15 @@ async function withTimeout<T>(operation: Promise<T>, timeoutMs: number, descript
 	} finally {
 		if (timeout) clearTimeout(timeout);
 	}
+}
+
+async function boundedClose(client: Pick<Client, "close">, timeoutMs: number): Promise<void> {
+	await withTimeout(Promise.resolve(client.close()), timeoutMs, "client close").catch(() => undefined);
+}
+
+function terminateTransport(transport: StdioClientTransport | StreamableHTTPClientTransport): void {
+	if (!(transport instanceof StdioClientTransport)) return;
+	const pid = transport.pid;
+	if (pid === null) return;
+	try { process.kill(pid, "SIGTERM"); } catch { /* The process may already have exited. */ }
 }

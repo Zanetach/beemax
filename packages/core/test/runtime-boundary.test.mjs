@@ -61,6 +61,19 @@ test("Conversation context owns curated recall and candidate capture", () => {
 	}
 });
 
+test("Conversation context recalls pending evidence but labels it as unconfirmed", () => {
+	const root = mkdtempSync(join(tmpdir(), "beemax-core-candidate-context-"));
+	const memory = new MemoryStore(join(root, "memory.db"));
+	try {
+		const source = { platform: "feishu", chatId: "sales", threadId: "customer-a", chatType: "group", userId: "seller" };
+		memory.recordCandidate({ platform: "feishu", chatId: "sales", threadId: "customer-a", userId: "seller", role: "user", content: "客户希望封面使用深蓝色" });
+		const enriched = new ConversationContext(memory).enrich(source, "按客户要求制作封面");
+		assert.match(enriched, /Unconfirmed conversation evidence/);
+		assert.match(enriched, /客户希望封面使用深蓝色/);
+		assert.match(enriched, /must not be treated as a confirmed fact/);
+	} finally { memory.close(); rmSync(root, { recursive: true, force: true }); }
+});
+
 test("Conversation context gives supplied volatile facts precedence over restored chat context", () => {
 	const root = mkdtempSync(join(tmpdir(), "beemax-core-facts-"));
 	const memory = new MemoryStore(join(root, "memory.db"));
@@ -129,6 +142,22 @@ test("BeeMax Agent Runtime executes a turn and records context without a Gateway
 		memory.close();
 		rmSync(root, { recursive: true, force: true });
 	}
+});
+
+test("BeeMax Agent Runtime injects one structured Work Context into the model turn", async () => {
+	const source = { platform: "cli", chatId: "terminal", chatType: "dm", userId: "user" };
+	let received = "";
+	const runtime = new BeeMaxAgentRuntime({
+		createAgent: async () => {
+			const agent = { state: { model: { id: "test-model" }, messages: [] } };
+			return { agent, subscribe: () => () => undefined, prompt: async (text) => { received = text; agent.state.messages = [{ role: "assistant", content: [{ type: "text", text: "done" }], usage: { input: 1, output: 1 } }]; }, abort: async () => undefined, dispose: () => undefined };
+		},
+	});
+	try {
+		await runtime.run({ source, text: "生成中文PDF，不要包含报价", timeoutMs: 1_000, mode: "interactive" });
+		assert.match(received, /<beemax-work-context>/);
+		assert.match(received, /不要包含报价/);
+	} finally { runtime.dispose(); }
 });
 
 test("BeeMax Agent Runtime propagates an external abort signal to the active turn", async () => {
@@ -263,6 +292,22 @@ test("BeeMax Agent Runtime exposes explicit context compaction only for an idle 
 	assert.equal(await runtime.compact(source), true);
 	assert.equal(compactions, 1);
 	runtime.dispose();
+});
+
+test("context compaction preserves active Objective and Acceptance Criteria", async () => {
+	const source = { platform: "cli", chatId: "terminal", chatType: "dm", userId: "user" };
+	let compactInstructions = "";
+	const runtime = new BeeMaxAgentRuntime({
+		taskLedger: { queryTasks: () => [{ id: "objective-1", ownerKey: "cli:terminal:user", kind: "objective", title: "生成客户报告", description: "必须使用中文", acceptanceCriteria: "输出PDF并发送给王总", status: "running", createdAt: 1 }] },
+		createAgent: async () => ({ agent: { state: { model: { id: "test" }, messages: [] } }, subscribe: () => () => undefined, prompt: async () => undefined, abort: async () => undefined, compact: async (instructions) => { compactInstructions = instructions; }, dispose: () => undefined }),
+	});
+	try {
+		await runtime.open(source);
+		assert.equal(await runtime.compact(source), true);
+		assert.match(compactInstructions, /生成客户报告/);
+		assert.match(compactInstructions, /输出PDF并发送给王总/);
+		assert.match(compactInstructions, /task-preservation-envelope/);
+	} finally { runtime.dispose(); }
 });
 
 test("BeeMax Agent Runtime exposes session history, snapshots, and idle reset through Core", async () => {
