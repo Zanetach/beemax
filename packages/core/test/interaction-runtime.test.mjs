@@ -225,6 +225,25 @@ test("fallback conversation inputs survive an Agent process restart in FIFO orde
 	} finally { await rm(directory, { recursive: true, force: true }); }
 });
 
+test("fallback conversation queue applies explicit backpressure after 100 inputs", async () => {
+	let rejectTurn;
+	const runtime = {
+		run() { return new Promise((_resolve, reject) => { rejectTurn = reject; }); },
+		async cancel() { rejectTurn(new Error("aborted")); return true; },
+		async modelStatus() { return undefined; }, async usage() { return undefined; },
+	};
+	const interaction = new InteractionEventAdapter(runtime);
+	const turn = interaction.dispatch({ type: "message.send", source, text: "first", input: { timeoutMs: 1_000 } });
+	await new Promise((resolve) => setImmediate(resolve));
+	for (let index = 0; index < 100; index++) {
+		assert.deepEqual(await interaction.dispatch({ type: "turn.queue", source, text: `queued-${index}` }), { queued: true, position: index + 1, replaced: false, mode: "queue" });
+	}
+	assert.deepEqual(await interaction.dispatch({ type: "turn.queue", source, text: "overflow" }), { queued: false, position: 100, replaced: false, mode: "queue" });
+	assert.equal((await interaction.snapshot(source)).queueDepth, 100);
+	await interaction.dispatch({ type: "turn.cancel", source });
+	await assert.rejects(turn, /aborted/);
+});
+
 test("steer and follow-up use native runtime delivery when available", async () => {
 	let rejectTurn;
 	const delivered = [];

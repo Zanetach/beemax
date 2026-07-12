@@ -102,7 +102,11 @@ export class Dispatcher {
 				const queued = command?.kind === "steer"
 					? await this.interaction.dispatch({ type: "turn.steer", source: effective.source, text: command.text })
 					: await this.interaction.dispatch({ type: "turn.queue", source: effective.source, text: effective.text });
-				if (!("queued" in queued) || !queued.queued) throw new Error("Active Agent turn rejected follow-up input");
+				if (!("queued" in queued)) throw new Error("Active Agent turn returned an invalid queue result");
+				if (!queued.queued) {
+					await this.platform.send(msg.source.chatId, `当前会话队列已满（${queued.position} 条），请等待部分消息处理完成，或发送 /stop 停止当前任务。`);
+					return;
+				}
 				const feedback = queued.mode === "steer"
 					? "已更新当前任务要求，Agent 会在下一步按新要求继续。"
 					: queued.mode === "follow_up"
