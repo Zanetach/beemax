@@ -36,6 +36,7 @@ import type {
 	SessionSource,
 } from "../../core/types.ts";
 import { validateFeishuWebhookSettings, type FeishuSettings } from "./settings.ts";
+import { retryFeishuOperation } from "./retry.ts";
 
 const FEISHU_DOMAIN = lark.Domain.Feishu;
 const LARK_DOMAIN = lark.Domain.Lark;
@@ -73,6 +74,7 @@ export class FeishuAdapter implements PlatformAdapter {
 	private readonly mediaBatches = new Map<string, PendingInboundBatch>();
 	private readonly deliveryTails = new Map<string, Promise<void>>();
 	private shuttingDown = false;
+	private connectionGeneration = 0;
 	private readonly dedupTtlMs = 24 * 60 * 60 * 1000;
 	private readonly settings: FeishuSettings;
 
@@ -98,10 +100,25 @@ export class FeishuAdapter implements PlatformAdapter {
 	}
 
 	async connect(): Promise<boolean> {
+		if (!this.settings.appId || !this.settings.appSecret) throw new Error("Feishu requires FEISHU_APP_ID and FEISHU_APP_SECRET.");
+		validateFeishuWebhookSettings(this.settings);
 		this.shuttingDown = false;
-		if (!this.settings.appId || !this.settings.appSecret) {
-			throw new Error("Feishu requires FEISHU_APP_ID and FEISHU_APP_SECRET.");
+		const generation = ++this.connectionGeneration;
+		try {
+			return await retryFeishuOperation(() => this.connectOnce(generation), {
+				attempts: 3,
+				baseDelayMs: this.settings.retryBaseDelayMs ?? 1_000,
+				retryAllErrors: true,
+				onRetry: () => this.cleanupConnectionAttempt(generation),
+			});
+		} catch (error) {
+			await this.cleanupConnectionAttempt(generation);
+			throw error;
 		}
+	}
+
+	private async connectOnce(generation: number): Promise<boolean> {
+		this.assertCurrentConnection(generation);
 		if (!this.settings.allowAllUsers && this.settings.allowedUsers.length === 0) {
 			console.warn(
 				"[beemax] Feishu access is deny-by-default and FEISHU_ALLOWED_USERS is empty; all user messages will be rejected",
@@ -141,7 +158,6 @@ export class FeishuAdapter implements PlatformAdapter {
 		});
 
 		if (this.settings.connectionMode === "webhook") {
-			validateFeishuWebhookSettings(this.settings);
 			const handler = adaptDefault(this.settings.webhookPath ?? "/feishu/events", dispatcher, { autoChallenge: true });
 			this.webhookServer = createServer((req, res) => {
 				if (req.method !== "POST" || req.url !== (this.settings.webhookPath ?? "/feishu/events")) {
@@ -183,27 +199,68 @@ export class FeishuAdapter implements PlatformAdapter {
 				this.webhookServer?.once("error", reject).listen(this.settings.webhookPort ?? 8787, this.settings.webhookHost ?? "127.0.0.1", resolve);
 			});
 			await this.hydrateBotIdentity();
+			this.assertCurrentConnection(generation);
 			this.connected = true;
 			return true;
 		}
 
-		this.wsClient = new lark.WSClient({
+		let wsClient!: WSClient;
+		wsClient = new lark.WSClient({
 			appId: this.settings.appId,
 			appSecret: this.settings.appSecret,
 			loggerLevel: lark.LoggerLevel.warn,
 			domain,
+			autoReconnect: true,
+			source: "beemax",
+			extraUaTags: ["channel"],
+			handshakeTimeoutMs: 15_000,
+			wsConfig: { pingTimeout: 10 },
+			onReady: () => { if (this.isCurrentConnection(generation, wsClient)) this.connected = true; },
+			onReconnecting: () => { if (this.isCurrentConnection(generation, wsClient)) this.connected = false; },
+			onReconnected: () => { if (this.isCurrentConnection(generation, wsClient)) this.connected = true; },
+			onError: (error) => {
+				if (!this.isCurrentConnection(generation, wsClient)) return;
+				this.connected = false;
+				console.error(`[beemax] Feishu WebSocket connection failed: ${error.message}`);
+			},
 		});
+		this.wsClient = wsClient;
 
-		await this.wsClient.start({ eventDispatcher: dispatcher });
+		await wsClient.start({ eventDispatcher: dispatcher });
+		this.assertCurrentConnection(generation, wsClient);
 
 		// Hydrate bot identity (open_id) for @-mention matching.
 		await this.hydrateBotIdentity();
+		this.assertCurrentConnection(generation, wsClient);
 
 		this.connected = true;
 		return true;
 	}
 
+	private async cleanupConnectionAttempt(generation: number): Promise<void> {
+		if (generation !== this.connectionGeneration) return;
+		this.connected = false;
+		if (this.webhookServer) {
+			for (const socket of this.webhookSockets) socket.destroy();
+			await new Promise<void>((resolve) => this.webhookServer?.close(() => resolve()));
+			this.webhookServer = undefined;
+			this.webhookSockets.clear();
+		}
+		this.wsClient?.close({ force: true });
+		this.wsClient = undefined;
+	}
+
+	private isCurrentConnection(generation: number, wsClient?: WSClient): boolean {
+		return !this.shuttingDown && generation === this.connectionGeneration && (!wsClient || this.wsClient === wsClient);
+	}
+
+	private assertCurrentConnection(generation: number, wsClient?: WSClient): void {
+		if (this.isCurrentConnection(generation, wsClient)) return;
+		throw Object.assign(new Error("Feishu connection attempt was cancelled"), { code: "BEEMAX_CONNECTION_CANCELLED" });
+	}
+
 	async disconnect(): Promise<void> {
+		this.connectionGeneration += 1;
 		this.connected = false;
 		this.shuttingDown = true;
 		this.cancelInboundBatches();
@@ -214,9 +271,7 @@ export class FeishuAdapter implements PlatformAdapter {
 			this.webhookServer = undefined;
 			this.webhookSockets.clear();
 		}
-		// The official SDK does not expose a stop() for WSClient in this version;
-		// process exit will close the socket. For graceful shutdown within a
-		// long-running host, we drop references and let the process handle it.
+		this.wsClient?.close({ force: true });
 		this.wsClient = undefined;
 	}
 
@@ -604,14 +659,15 @@ export class FeishuAdapter implements PlatformAdapter {
 		const chunks = chunkText(content, MAX_TEXT_LENGTH);
 		let lastId: string | undefined;
 		for (const chunk of chunks) {
+			const uuid = randomUUID();
 			const payload = opts?.asCard
 				? buildCardPayload(chunk)
 				: { msg_type: "text", content: JSON.stringify({ text: chunk }) };
 			try {
-				const res = await this.client.im.v1.message.create({
+				const res = await this.retryRequest(() => this.client.im.v1.message.create({
 					params: { receive_id_type: "chat_id" },
-					data: { receive_id: chatId, ...payload },
-				});
+					data: { receive_id: chatId, ...payload, uuid },
+				}));
 				if (res.code !== 0) {
 					return { success: false, error: res.msg ?? `feishu code ${res.code}` };
 				}
@@ -629,18 +685,20 @@ export class FeishuAdapter implements PlatformAdapter {
 			if (!info.isFile() || info.size === 0 || info.size > 10 * 1024 * 1024) {
 				return { success: false, error: "Feishu image must be a non-empty file no larger than 10MB" };
 			}
-			const uploaded = await this.client.im.v1.image.create({
-				data: { image_type: "message", image: createReadStream(imagePath) },
-			});
+			const uploaded = await this.retryRequest(() => withFileStream(imagePath, (image) => this.client.im.v1.image.create({
+				data: { image_type: "message", image },
+			})));
 			if (!uploaded?.image_key) return { success: false, error: "Feishu image upload returned no image_key" };
-			const sent = await this.client.im.v1.message.create({
+			const uuid = randomUUID();
+			const sent = await this.retryRequest(() => this.client.im.v1.message.create({
 				params: { receive_id_type: "chat_id" },
 				data: {
 					receive_id: chatId,
 					msg_type: "image",
 					content: JSON.stringify({ image_key: uploaded.image_key }),
+					uuid,
 				},
-			});
+			}));
 			if (sent.code !== 0) return { success: false, error: sent.msg ?? `feishu code ${sent.code}` };
 			return { success: true, messageId: sent.data?.message_id };
 		} catch (error) {
@@ -656,15 +714,16 @@ export class FeishuAdapter implements PlatformAdapter {
 				return { success: false, error: "Feishu media must be a non-empty file no larger than 30MB" };
 			}
 			const fileType = feishuFileType(mediaPath, mimeType);
-			const uploaded = await this.client.im.v1.file.create({
-				data: { file_type: fileType, file_name: name || basename(mediaPath), file: createReadStream(mediaPath) },
-			});
+			const uploaded = await this.retryRequest(() => withFileStream(mediaPath, (file) => this.client.im.v1.file.create({
+				data: { file_type: fileType, file_name: name || basename(mediaPath), file },
+			})));
 			if (!uploaded?.file_key) return { success: false, error: "Feishu file upload returned no file_key" };
 			const msgType = fileType === "opus" ? "audio" : fileType === "mp4" ? "media" : "file";
-			const sent = await this.client.im.v1.message.create({
+			const uuid = randomUUID();
+			const sent = await this.retryRequest(() => this.client.im.v1.message.create({
 				params: { receive_id_type: "chat_id" },
-				data: { receive_id: chatId, msg_type: msgType, content: JSON.stringify({ file_key: uploaded.file_key }) },
-			});
+				data: { receive_id: chatId, msg_type: msgType, content: JSON.stringify({ file_key: uploaded.file_key }), uuid },
+			}));
 			if (sent.code !== 0) return { success: false, error: sent.msg ?? `feishu code ${sent.code}` };
 			return { success: true, messageId: sent.data?.message_id };
 		} catch (error) {
@@ -676,10 +735,10 @@ export class FeishuAdapter implements PlatformAdapter {
 		// Edit via patch (update shared card / text). We send an interactive
 		// card for the placeholder so patch can update it; final text replaces it.
 		try {
-			const res = await this.client.im.v1.message.patch({
+			const res = await this.retryRequest(() => this.client.im.v1.message.patch({
 				data: { content: JSON.stringify(buildCardContent(content)) },
 				path: { message_id: messageId },
-			});
+			}));
 			if (res.code !== 0) {
 				// If patch fails (e.g. was a text message, not a card), fall back to a new send.
 				return await this.send(chatId, content);
@@ -745,13 +804,20 @@ export class FeishuAdapter implements PlatformAdapter {
 	async sendCard(chatId: string, card: Record<string, unknown>, replyTo?: string, replyInThread = false): Promise<SendResult> {
 		try {
 			const payload = { msg_type: "interactive", content: JSON.stringify(card) };
-			const res = replyTo ? await this.client.im.v1.message.reply({
+			const uuid = randomUUID();
+			let res = replyTo ? await this.retryRequest(() => this.client.im.v1.message.reply({
 				path: { message_id: replyTo },
-				data: { ...payload, reply_in_thread: replyInThread },
-			}) : await this.client.im.v1.message.create({
+				data: { ...payload, reply_in_thread: replyInThread, uuid },
+			})) : await this.retryRequest(() => this.client.im.v1.message.create({
 				params: { receive_id_type: "chat_id" },
-				data: { receive_id: chatId, ...payload },
-			});
+				data: { receive_id: chatId, ...payload, uuid },
+			}));
+			if (replyTo && !replyInThread && (res.code === 230011 || res.code === 231003)) {
+				res = await this.retryRequest(() => this.client.im.v1.message.create({
+					params: { receive_id_type: "chat_id" },
+					data: { receive_id: chatId, ...payload, uuid: randomUUID() },
+				}));
+			}
 			if (res.code !== 0) return { success: false, error: res.msg ?? `feishu code ${res.code}` };
 			return { success: true, messageId: res.data?.message_id };
 		} catch (err) {
@@ -762,15 +828,19 @@ export class FeishuAdapter implements PlatformAdapter {
 	/** Update a previously-sent interactive card in place (streaming). */
 	async updateCard(messageId: string, card: Record<string, unknown>): Promise<SendResult> {
 		try {
-			const res = await this.client.im.v1.message.patch({
+			const res = await this.retryRequest(() => this.client.im.v1.message.patch({
 				data: { content: JSON.stringify(card) },
 				path: { message_id: messageId },
-			});
+			}));
 			if (res.code !== 0) return { success: false, error: res.msg ?? `feishu code ${res.code}` };
 			return { success: true, messageId };
 		} catch (err) {
 			return { success: false, error: err instanceof Error ? err.message : String(err) };
 		}
+	}
+
+	private retryRequest<T>(operation: () => Promise<T>): Promise<T> {
+		return retryFeishuOperation(operation, { attempts: 3, baseDelayMs: this.settings.retryBaseDelayMs ?? 1_000 });
 	}
 }
 
@@ -941,6 +1011,15 @@ function combineMediaBatch(messages: InboundMessage[]): InboundMessage {
 		timestamp: latest.timestamp,
 		raw: latest.raw,
 	};
+}
+
+async function withFileStream<T>(path: string, operation: (stream: ReturnType<typeof createReadStream>) => Promise<T>): Promise<T> {
+	const stream = createReadStream(path);
+	try {
+		return await operation(stream);
+	} finally {
+		stream.destroy();
+	}
 }
 
 async function mediaByteCount(message: InboundMessage): Promise<number> {

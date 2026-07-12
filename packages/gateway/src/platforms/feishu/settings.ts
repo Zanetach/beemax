@@ -56,6 +56,8 @@ export interface FeishuSettings {
 	textBatchMaxMessages?: number;
 	textBatchMaxChars?: number;
 	mediaBatchDelayMs?: number;
+	/** Base for Hermes-compatible 1s/2s connection and send retry backoff. */
+	retryBaseDelayMs?: number;
 }
 
 /** Reject webhook settings that would expose an unauthenticated public listener. */
@@ -107,6 +109,7 @@ export function loadFeishuSettings(env: NodeJS.ProcessEnv = process.env): Feishu
 		textBatchMaxMessages: parseBoundedNumber(env.FEISHU_TEXT_BATCH_MAX_MESSAGES, 8, 1, 1_000),
 		textBatchMaxChars: parseBoundedNumber(env.FEISHU_TEXT_BATCH_MAX_CHARS, 4_000, 1, 100_000),
 		mediaBatchDelayMs: parseBoundedNumber(env.FEISHU_MEDIA_BATCH_DELAY_MS, 800, 0, 60_000),
+		retryBaseDelayMs: parseBoundedNumber(env.FEISHU_RETRY_BASE_DELAY_MS, 1_000, 0, 30_000),
 	};
 }
 

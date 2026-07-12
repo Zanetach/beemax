@@ -33,7 +33,8 @@ test("Feishu batch tuning defaults match Hermes and clamps environment overrides
 		maxMessages: defaults.textBatchMaxMessages,
 		maxChars: defaults.textBatchMaxChars,
 		mediaDelay: defaults.mediaBatchDelayMs,
-	}, { textDelay: 600, splitDelay: 2_000, maxMessages: 8, maxChars: 4_000, mediaDelay: 800 });
+		retryDelay: defaults.retryBaseDelayMs,
+	}, { textDelay: 600, splitDelay: 2_000, maxMessages: 8, maxChars: 4_000, mediaDelay: 800, retryDelay: 1_000 });
 	const tuned = loadFeishuSettings({
 		FEISHU_APP_ID: "app", FEISHU_APP_SECRET: "secret",
 		FEISHU_TEXT_BATCH_DELAY_MS: "12.9", FEISHU_TEXT_BATCH_MAX_MESSAGES: "0",

@@ -58,6 +58,7 @@ export async function runGateway(config: BeeMaxConfig): Promise<void> {
 		textBatchMaxMessages: config.gateway.feishu.textBatchMaxMessages,
 		textBatchMaxChars: config.gateway.feishu.textBatchMaxChars,
 		mediaBatchDelayMs: config.gateway.feishu.mediaBatchDelayMs,
+		retryBaseDelayMs: config.gateway.feishu.retryBaseDelayMs,
 		requireMention: config.gateway.feishu.requireMention,
 		allowedUsers: config.gateway.feishu.allowedUsers,
 		allowedChats: config.gateway.feishu.allowedChats,

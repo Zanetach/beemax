@@ -40,6 +40,7 @@ export interface FeishuConfig {
 	textBatchMaxMessages: number;
 	textBatchMaxChars: number;
 	mediaBatchDelayMs: number;
+	retryBaseDelayMs: number;
 }
 export type CustomProtocol = "openai-completions" | "openai-responses" | "anthropic-messages";
 
@@ -174,6 +175,7 @@ export function loadConfig(configPath?: string, profile = "default"): BeeMaxConf
 		textBatchMaxMessages: boundedNumber(env.FEISHU_TEXT_BATCH_MAX_MESSAGES ?? configuredFeishu?.textBatchMaxMessages, 8, 1, 1_000),
 		textBatchMaxChars: boundedNumber(env.FEISHU_TEXT_BATCH_MAX_CHARS ?? configuredFeishu?.textBatchMaxChars, 4_000, 1, 100_000),
 		mediaBatchDelayMs: boundedNumber(env.FEISHU_MEDIA_BATCH_DELAY_MS ?? configuredFeishu?.mediaBatchDelayMs, 800, 0, 60_000),
+		retryBaseDelayMs: boundedNumber(env.FEISHU_RETRY_BASE_DELAY_MS ?? configuredFeishu?.retryBaseDelayMs, 1_000, 0, 30_000),
 	};
 	return {
 		profile,
