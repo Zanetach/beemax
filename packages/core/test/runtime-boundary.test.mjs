@@ -160,6 +160,23 @@ test("BeeMax Agent Runtime injects one structured Work Context into the model tu
 	} finally { runtime.dispose(); }
 });
 
+test("BeeMax Agent Runtime binds continuation understanding to the active Objective", async () => {
+	const source = { platform: "cli", chatId: "terminal", chatType: "dm", userId: "user" };
+	let received = "";
+	const runtime = new BeeMaxAgentRuntime({
+		taskLedger: { queryTasks: () => [{ id: "objective-1", ownerKey: "cli:terminal:user", kind: "objective", title: "制作华东客户周报", status: "running", createdAt: 1 }] },
+		createAgent: async () => {
+			const agent = { state: { model: { id: "test-model" }, messages: [] } };
+			return { agent, subscribe: () => () => undefined, prompt: async (text) => { received = text; agent.state.messages = [{ role: "assistant", content: [{ type: "text", text: "done" }], usage: { input: 1, output: 1 } }]; }, abort: async () => undefined, dispose: () => undefined };
+		},
+	});
+	try {
+		await runtime.run({ source, text: "继续完成刚才的任务", timeoutMs: 1_000, mode: "interactive", objectiveTaskId: "objective-1" });
+		assert.match(received, /"action":"continue"/);
+		assert.match(received, /"goal":"制作华东客户周报"/);
+	} finally { runtime.dispose(); }
+});
+
 test("BeeMax Agent Runtime propagates an external abort signal to the active turn", async () => {
 	const source = { platform: "cli", chatId: "terminal", chatType: "dm", userId: "user" };
 	const controller = new AbortController();

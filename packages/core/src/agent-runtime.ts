@@ -153,7 +153,10 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 			const startedAt = Date.now();
 			const planning = input.mode === "interactive" || !input.mode ? this.planningPolicy?.decide(input.text) : undefined;
 			const requestedText = explicitSkillRequest(input.text);
-			const understanding = input.mode === "interactive" || !input.mode ? this.turnUnderstanding.understand(input.text) : undefined;
+			const activeObjective = (input.mode === "interactive" || !input.mode) && this.taskLedger
+				? this.taskLedger.queryTasks({ ownerKeys: [conversationKey(input.source)], ...(input.objectiveTaskId ? { id: input.objectiveTaskId } : { kinds: ["objective"], statuses: ["pending", "running"] }), limit: 1 })[0]
+				: undefined;
+			const understanding = input.mode === "interactive" || !input.mode ? this.turnUnderstanding.understand(input.text, { activeObjective: activeObjective?.title }) : undefined;
 			const recalledText = input.mode === "interactive" || !input.mode
 				? this.context?.enrich(input.source, requestedText, { model: modelOf(session.piSession.agent) }) ?? requestedText
 				: requestedText;

@@ -8,6 +8,7 @@ import { Type } from "typebox";
 import { MUTATING_TOOL_POLICY, READ_ONLY_TOOL_POLICY, withToolPolicy, type ToolPolicy } from "./tool-runtime.ts";
 import { assertNoCredentialMaterial } from "./credential-material.ts";
 import { SkillRegistry, SkillRuntime } from "./skill-runtime.ts";
+import { multilingualLexicalTerms } from "./multilingual-lexical.ts";
 
 const SKILL_NAME = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 
@@ -136,7 +137,7 @@ export function createSkillTools(agentDir: string, markReloadNeeded: () => void,
 
 function rankCapabilities<T extends CapabilityMetadata>(query: string, items: readonly T[], limit: number): T[] {
 	const normalized = query.normalize("NFKC").toLocaleLowerCase();
-	const terms = normalized.match(/[\p{Script=Han}]{2}|[\p{L}\p{N}_-]+/gu) ?? [];
+	const terms = multilingualLexicalTerms(normalized);
 	return items.flatMap((item): Array<{ item: T; score: number }> => {
 		if (item.exclude?.some((term) => normalized.includes(term.normalize("NFKC").toLocaleLowerCase()))) return [];
 		const aliases = item.aliases ?? [];

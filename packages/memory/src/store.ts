@@ -15,10 +15,11 @@ import Database from "better-sqlite3";
 import type { Database as DatabaseType } from "better-sqlite3";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
-import { containsCredentialMaterial, redactCredentialMaterial, type TaskCandidateVerificationResolution, type TaskDependency, type TaskPlanCompletionNotice, type TaskPlanQuery, type TaskPlanRecord, type TaskPlanTransition, type TaskQuery, type TaskRecord as RuntimeTaskRecord, type TaskRecoveryResult, type TaskRunRecord, type TaskRunTransition, type TaskTransition } from "@beemax/core";
+import { containsCredentialMaterial, multilingualLexicalTerms, redactCredentialMaterial, type TaskCandidateVerificationResolution, type TaskDependency, type TaskPlanCompletionNotice, type TaskPlanQuery, type TaskPlanRecord, type TaskPlanTransition, type TaskQuery, type TaskRecord as RuntimeTaskRecord, type TaskRecoveryResult, type TaskRunRecord, type TaskRunTransition, type TaskTransition } from "@beemax/core";
 
 export const MEMORY_CLAIM_KINDS = ["preference", "fact", "decision", "goal", "project", "relationship", "workflow"] as const;
 export type MemoryClaimKind = typeof MEMORY_CLAIM_KINDS[number];
+export interface BusinessEntityRef { type: string; id: string; }
 export const MEMORY_CLAIM_KIND_LABELS: Record<MemoryClaimKind, string> = { preference: "沟通与偏好", fact: "稳定事实", decision: "关键决策", goal: "长期目标", project: "项目", relationship: "重要关系", workflow: "工作方式" };
 
 export interface MemoryRecord {
@@ -44,8 +45,8 @@ export interface RecallOptions {
 	threadId?: string;
 	projectId?: string;
 	organizationId?: string;
-	subject?: { type: string; id: string };
-	object?: { type: string; id: string };
+	subject?: BusinessEntityRef;
+	object?: BusinessEntityRef;
 	/** Pending conversation evidence is excluded unless the caller explicitly opts in. */
 	includeCandidates?: boolean;
 }
@@ -69,8 +70,8 @@ export interface MemoryClaim {
 	confidence: number;
 	stability: "low" | "medium" | "high";
 	status: "candidate" | "active" | "superseded" | "conflicted" | "rejected" | "archived";
-	subject?: { type: string; id: string };
-	object?: { type: string; id: string };
+	subject?: BusinessEntityRef;
+	object?: BusinessEntityRef;
 	source?: { type: "message" | "document" | "meeting" | "tool" | "manual" | "import"; ref?: string };
 	visibility: "private" | "conversation" | "team" | "organization";
 	validFrom?: number;
@@ -1554,16 +1555,7 @@ function toFtsQuery(query: string): string {
 }
 
 function lexicalTerms(query: string): string[] {
-	const raw = query.normalize("NFKC").toLocaleLowerCase().match(/[\p{Script=Han}]+|[\p{L}\p{N}]+/gu) ?? [];
-	const terms = raw.flatMap((term) => {
-		if (/^\p{Script=Han}+$/u.test(term)) {
-			if (term.length <= 2) return [term];
-			return Array.from({ length: term.length - 1 }, (_, index) => term.slice(index, index + 2));
-		}
-		if (/^[a-z]+$/i.test(term) && term.length > 4) return [term.replace(/(?:ies|ing|ed|es|s)$/i, (suffix) => suffix.toLowerCase() === "ies" ? "y" : "")];
-		return [term];
-	});
-	return [...new Set(terms.filter((term) => term.length > 0))];
+	return multilingualLexicalTerms(query);
 }
 
 function lexicalWhere(query: string, column: string): { where: string; params: string[] } | undefined {
