@@ -4,6 +4,7 @@
     "paths": {
 		"@beemax/core": ["./packages/core/src/index.ts"],
       "@beemax/gateway": ["./packages/gateway/src/index.ts"],
+      "@beemax/knowledge": ["./packages/knowledge/src/index.ts"],
       "@beemax/memory": ["./packages/memory/src/index.ts"]
     }
   },
