@@ -14,6 +14,6 @@ export interface MediaArtifact {
 
 /** Gateway-owned adapter for all outbound artifacts requested by Core. */
 export interface DeliveryPort {
-	sendText(target: DeliveryTarget, text: string): Promise<void>;
+	sendText(target: DeliveryTarget, text: string, options?: { idempotencyKey?: string }): Promise<void>;
 	sendMedia(target: DeliveryTarget, media: MediaArtifact): Promise<void>;
 }

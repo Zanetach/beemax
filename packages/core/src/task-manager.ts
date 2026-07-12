@@ -38,6 +38,7 @@ interface ManagedTask extends SubagentTask {
 	runId?: string;
 	stopReason?: "cancelled" | "timeout";
 	waiters: Set<() => void>;
+	completionOrder?: number;
 }
 
 export interface SubagentManagerOptions {
@@ -47,6 +48,8 @@ export interface SubagentManagerOptions {
 	execute: SubagentExecutor;
 	admit?: SubagentAdmission;
 	taskLedger?: TaskLedger;
+	maxRetainedTerminalTasks?: number;
+	shutdownGraceMs?: number;
 }
 
 const TERMINAL = new Set<SubagentTaskStatus>(["completed", "failed", "cancelled"]);
@@ -62,7 +65,10 @@ export class SubagentManager {
 	private readonly execute: SubagentExecutor;
 	private readonly admit?: SubagentAdmission;
 	private readonly taskLedger?: TaskLedger;
+	private readonly maxRetainedTerminalTasks: number;
+	private readonly shutdownGraceMs: number;
 	private running = 0;
+	private completionSequence = 0;
 	private disposed = false;
 
 	constructor(options: SubagentManagerOptions) {
@@ -72,6 +78,8 @@ export class SubagentManager {
 		this.execute = options.execute;
 		this.admit = options.admit;
 		this.taskLedger = options.taskLedger;
+		this.maxRetainedTerminalTasks = Math.max(1, Math.min(Math.trunc(options.maxRetainedTerminalTasks ?? 1_000), 10_000));
+		this.shutdownGraceMs = Math.max(0, Math.min(Math.trunc(options.shutdownGraceMs ?? 30_000), 5 * 60_000));
 	}
 
 	spawn(source: BeeMaxRuntimeSource, input: {
@@ -120,11 +128,20 @@ export class SubagentManager {
 	}
 
 	get(source: BeeMaxRuntimeSource, id: string): SubagentTaskSnapshot {
-		return snapshot(this.ownedTask(source, id));
+		const task = this.tasks.get(id);
+		if (task?.ownerKey === conversationKey(source)) return snapshot(task);
+		const durable = this.durableSnapshot(source, id);
+		if (durable) return durable;
+		throw new Error(`Sub-Agent task not found: ${id}`);
 	}
 
 	async wait(source: BeeMaxRuntimeSource, id: string, timeoutMs = 120_000, signal?: AbortSignal): Promise<SubagentTaskSnapshot> {
-		const task = this.ownedTask(source, id);
+		const task = this.tasks.get(id);
+		if (!task || task.ownerKey !== conversationKey(source)) {
+			const durable = this.durableSnapshot(source, id);
+			if (durable) return durable;
+			throw new Error(`Sub-Agent task not found: ${id}`);
+		}
 		if (TERMINAL.has(task.status)) return snapshot(task);
 		if (signal?.aborted) return snapshot(task);
 		await new Promise<void>((resolve) => {
@@ -177,7 +194,11 @@ export class SubagentManager {
 			}
 		}
 		this.queue.length = 0;
-		await Promise.allSettled([...this.activeRuns]);
+		if (this.activeRuns.size) {
+			let timer: ReturnType<typeof setTimeout> | undefined;
+			await Promise.race([Promise.allSettled([...this.activeRuns]), new Promise<void>((resolve) => { timer = setTimeout(resolve, this.shutdownGraceMs); })]);
+			if (timer) clearTimeout(timer);
+		}
 	}
 
 	private async pump(): Promise<void> {
@@ -257,6 +278,7 @@ export class SubagentManager {
 	private finish(task: ManagedTask, status: SubagentTaskStatus, result?: string, error?: string): void {
 		task.status = status;
 		task.finishedAt = Date.now();
+		task.completionOrder = ++this.completionSequence;
 		task.result = result?.slice(0, 50_000);
 		task.error = error;
 		const transition = {
@@ -274,14 +296,29 @@ export class SubagentManager {
 					...(task.result === undefined ? {} : { output: task.result }),
 					...(task.error === undefined ? {} : { error: task.error }),
 				});
-			} finally { for (const waiter of [...task.waiters]) waiter(); }
+			} finally { for (const waiter of [...task.waiters]) waiter(); this.pruneTerminalTasks(); }
 		}
+	}
+
+	private pruneTerminalTasks(): void {
+		const terminal = [...this.tasks.values()].filter((task) => TERMINAL.has(task.status)).sort((a, b) => (b.completionOrder ?? 0) - (a.completionOrder ?? 0));
+		for (const task of terminal.slice(this.maxRetainedTerminalTasks)) this.tasks.delete(task.id);
 	}
 
 	private ownedTask(source: BeeMaxRuntimeSource, id: string): ManagedTask {
 		const task = this.tasks.get(id);
 		if (!task || task.ownerKey !== conversationKey(source)) throw new Error(`Sub-Agent task not found: ${id}`);
 		return task;
+	}
+
+	private durableSnapshot(source: BeeMaxRuntimeSource, id: string): SubagentTaskSnapshot | undefined {
+		const task = this.taskLedger?.queryTasks({ ownerKeys: [conversationKey(source)], id, kinds: ["delegated"], limit: 1 })[0];
+		if (!task || (task.status !== "succeeded" && task.status !== "failed" && task.status !== "cancelled")) return undefined;
+		return {
+			id: task.id, name: task.title, goal: task.description ?? task.title, capability: "analysis",
+			status: task.status === "succeeded" ? "completed" : task.status, createdAt: task.createdAt,
+			timeoutMs: this.defaultTimeoutMs, startedAt: task.startedAt, finishedAt: task.finishedAt, result: task.result, error: task.error,
+		};
 	}
 
 	private removeFromQueue(id: string): void {

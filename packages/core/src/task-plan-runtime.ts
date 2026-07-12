@@ -89,10 +89,10 @@ export class TaskPlanRuntime {
 
 	snapshot(): { active: number } { return { active: this.active.size }; }
 
-	async shutdown(reason: unknown = new Error("Task Plan Runtime shutting down")): Promise<void> {
+	async shutdown(reason: unknown = new Error("Task Plan Runtime shutting down"), graceMs = 30_000): Promise<void> {
 		this.shuttingDown = true;
 		for (const controller of this.active.values()) if (!controller.signal.aborted) controller.abort(reason);
-		await Promise.allSettled([...this.background.values(), ...this.inFlight]);
+		await settleWithin([...this.background.values(), ...this.inFlight], graceMs);
 	}
 
 	private async executeClaimed<T>(ledger: TaskLedger, ownerKey: string, planId: string, holderId: string, signal: AbortSignal, execute: (signal: AbortSignal) => Promise<T>, failureMode: "terminalize" | "propagate"): Promise<T> {
@@ -109,6 +109,13 @@ export class TaskPlanRuntime {
 			throw error;
 		} finally { if (heartbeat) clearInterval(heartbeat); }
 	}
+}
+
+async function settleWithin(work: Promise<unknown>[], graceMs: number): Promise<void> {
+	if (!work.length) return;
+	let timer: ReturnType<typeof setTimeout> | undefined;
+	await Promise.race([Promise.allSettled(work), new Promise<void>((resolve) => { timer = setTimeout(resolve, Math.max(0, graceMs)); })]);
+	if (timer) clearTimeout(timer);
 }
 
 function taskPlanKey(ownerKey: string, planId: string): string {

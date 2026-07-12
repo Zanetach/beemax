@@ -57,6 +57,16 @@ test("Feishu text sending retries transient SDK failures and stops after success
 	assert.equal(new Set(uuids).size, 1);
 });
 
+test("Feishu text delivery keeps a stable UUID across outbox retries", async () => {
+	const adapter = new FeishuAdapter({ ...settings });
+	const uuids = [];
+	adapter.client = { im: { v1: { message: { create: async (payload) => { uuids.push(payload.data.uuid); return { code: 0, data: { message_id: "sent" } }; } } } } };
+	await adapter.send("chat", "hello", { idempotencyKey: "notice-1" });
+	await adapter.send("chat", "hello", { idempotencyKey: "notice-1" });
+	assert.equal(uuids.length, 2);
+	assert.equal(uuids[0], uuids[1]);
+});
+
 test("Feishu card reply falls back only when a non-thread target was withdrawn", async () => {
 	const adapter = new FeishuAdapter({ ...settings });
 	const calls = [];

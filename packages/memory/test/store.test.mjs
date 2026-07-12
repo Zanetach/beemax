@@ -140,6 +140,19 @@ test("failed Objectives can be explicitly reopened for a safe retry", () => {
 	} finally { store.close(); rmSync(root, { recursive: true, force: true }); }
 });
 
+test("active Objective Plan lookup is not truncated by newer terminal Task history", () => {
+	const root = mkdtempSync(join(tmpdir(), "beemax-objective-plan-lookup-"));
+	const store = new MemoryStore(join(root, "memory.db"));
+	try {
+		store.record({ id: "objective", ownerKey: "owner", kind: "objective", title: "Live", status: "pending", createdAt: 1 });
+		store.recordPlan([{ id: "child", ownerKey: "owner", kind: "delegated", title: "Child", status: "pending", parentId: "objective", planId: "plan", createdAt: 2 }], [], { id: "plan", ownerKey: "owner", title: "Plan", status: "pending", taskCount: 1, succeeded: 0, failed: 0, cancelled: 0, verified: 0, correctiveAttempts: 0, createdAt: 2 });
+		for (let index = 0; index < 120; index++) store.record({ id: `noise-${index}`, ownerKey: "owner", kind: "delegated", title: "Noise", status: "succeeded", createdAt: 100 + index, finishedAt: 100 + index });
+		assert.deepEqual(store.activeObjectivePlanIds("owner"), ["plan"]);
+		assert.equal(store.cancelObjectives("owner"), 1);
+		assert.equal(store.queryTasks({ ownerKeys: ["owner"], id: "objective" })[0].status, "cancelled");
+	} finally { store.close(); rmSync(root, { recursive: true, force: true }); }
+});
+
 test("Verification unavailable persists across Profile database restarts", async () => {
 	const root = mkdtempSync(join(tmpdir(), "beemax-verification-unavailable-"));
 	const path = join(root, "memory.db");

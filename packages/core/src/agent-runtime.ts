@@ -81,7 +81,7 @@ export interface AgentRuntimePort<Source extends BeeMaxRuntimeSource = BeeMaxRun
 	isBusy(): boolean;
 	setModel(source: Source, model: Model<Api>): Promise<boolean>;
 	modelStatus(source: Source): Promise<AgentModelStatus | undefined>;
-	tasks(source: Source, query?: { kind?: TaskKind; status?: TaskStatus; planId?: string; limit?: number }): TaskRecord[];
+	tasks(source: Source, query?: { kind?: TaskKind; status?: TaskStatus; planId?: string; parentId?: string; limit?: number }): TaskRecord[];
 	taskPlans(source: Source, query?: { id?: string; status?: TaskPlanStatus; limit?: number }): TaskPlanRecord[];
 	taskRuns(source: Source, taskId: string): TaskRunRecord[];
 	setThinkingLevel(source: Source, level: ModelThinkingLevel): Promise<AgentModelStatus | undefined>;
@@ -144,12 +144,12 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 				throw new AgentRunError("Agent turn was cancelled", false, input.signal.reason);
 			}
 			const startedAt = Date.now();
-			const objectiveBinding = input.mode === "interactive" || !input.mode ? this.createObjective(input, startedAt) : undefined;
-			const objective = objectiveBinding?.task;
+			const planning = input.mode === "interactive" || !input.mode ? this.planningPolicy?.decide(input.text) : undefined;
 			const enrichedText = input.mode === "interactive" || !input.mode
 				? this.context?.enrich(input.source, input.text, { model: modelOf(session.piSession.agent) }) ?? input.text
 				: input.text;
-			const planning = input.mode === "interactive" || !input.mode ? this.planningPolicy?.decide(input.text) : undefined;
+			const objectiveBinding = (input.mode === "interactive" || !input.mode) && (planning?.mode !== "direct" || Boolean(input.objectiveTaskId) || isObjectiveContinuation(input.text)) ? this.createObjective(input, startedAt) : undefined;
+			const objective = objectiveBinding?.task;
 			const planningScope = conversationKey(input.source);
 			const planningLease = planning && this.planningBudgets ? this.planningBudgets.begin(planningScope, planning, objective?.id) : undefined;
 			const text = planning ? `${enrichedText}\n\n${planning.directive()}` : enrichedText;
@@ -262,7 +262,7 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 		const description = input.text.trim();
 		if (!description) return undefined;
 		const ownerKey = conversationKey(input.source);
-		const continuation = input.objectiveTaskId || /^(?:(?:继续|接着|补充)(?:\s|处理|这个|该|$)|(?:continue|go on)\b)/iu.test(description)
+		const continuation = input.objectiveTaskId || isObjectiveContinuation(description)
 			? this.taskLedger.queryTasks({ ownerKeys: [ownerKey], id: input.objectiveTaskId, kinds: ["objective"], statuses: ["pending", "running"], limit: 1 })[0]
 				?? (!input.objectiveTaskId ? this.taskLedger.queryTasks({ ownerKeys: [ownerKey], kinds: ["objective"], statuses: ["pending", "running"], limit: 1 })[0] : undefined)
 			: undefined;
@@ -335,12 +335,13 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 	async modelStatus(source: Source): Promise<AgentModelStatus | undefined> {
 		return this.sessions.withSession(source, async (session) => modelStatusOf(session.piSession));
 	}
-	tasks(source: Source, query: { kind?: TaskKind; status?: TaskStatus; planId?: string; limit?: number } = {}): TaskRecord[] {
+	tasks(source: Source, query: { kind?: TaskKind; status?: TaskStatus; planId?: string; parentId?: string; limit?: number } = {}): TaskRecord[] {
 		return this.taskLedger?.queryTasks({
 			ownerKeys: [...new Set([conversationKey(source), conversationOwnerKey(source), "profile"])],
 			kinds: query.kind ? [query.kind] : undefined,
 			statuses: query.status ? [query.status] : undefined,
 			planIds: query.planId ? [query.planId] : undefined,
+			parentIds: query.parentId ? [query.parentId] : undefined,
 			limit: query.limit,
 		}) ?? [];
 	}
@@ -368,6 +369,8 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 	isBusy(): boolean { return this.sessions.isBusy(); }
 	dispose(): void { this.sessions.dispose(); }
 }
+
+function isObjectiveContinuation(text: string): boolean { return /^(?:(?:继续|接着|补充|换成|改成|再加|先不要)(?:\s|处理|这个|该|中文|英文|一个|做|$)|(?:continue|go on|change|add)\b)/iu.test(text.trim()); }
 
 function completedPlanningTool(toolName: string, result: unknown, args: unknown, delegatedTaskId?: string): { accepted: boolean; delegatedTaskId?: string } {
 	const details = result && typeof result === "object" ? (result as { details?: unknown }).details : undefined;

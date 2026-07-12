@@ -93,7 +93,7 @@ export interface PlatformAdapter {
 	editMessage(chatId: string, messageId: string, content: string): Promise<SendResult>;
 
 	/** Send an interactive card. Returns the message_id for later updates. */
-	sendCard(chatId: string, card: Record<string, unknown>, replyTo?: string, replyInThread?: boolean): Promise<SendResult>;
+	sendCard(chatId: string, card: Record<string, unknown>, replyTo?: string, replyInThread?: boolean, idempotencyKey?: string): Promise<SendResult>;
 
 	/** Update a previously-sent interactive card in place (streaming). */
 	updateCard(messageId: string, card: Record<string, unknown>): Promise<SendResult>;
@@ -109,6 +109,7 @@ export type MessageHandler = (message: InboundMessage) => void | Promise<void>;
 
 export interface SendOptions {
 	replyTo?: string;
+	idempotencyKey?: string;
 	/** If true, attempt to send as an interactive card (platform-specific). */
 	asCard?: boolean;
 }

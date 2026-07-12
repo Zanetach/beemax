@@ -28,7 +28,7 @@ export interface TaskPlanCompletionNotice {
 	id: string; planId: string; ownerKey: string; target: DeliveryTarget;
 	planStatus: Extract<TaskPlanStatus, "succeeded" | "failed" | "cancelled">;
 	title: string; taskCount: number; succeeded: number; failed: number; cancelled: number;
-	status: "queued" | "delivering" | "delivered"; claimToken?: string; attempts: number; nextAttemptAt: number; createdAt: number;
+	status: "queued" | "delivering" | "delivered" | "abandoned"; claimToken?: string; attempts: number; nextAttemptAt: number; createdAt: number; abandonedAt?: number; error?: string;
 }
 export type TaskPlanTransition = Pick<TaskPlanRecord, "status" | "taskCount" | "succeeded" | "failed" | "cancelled" | "verified" | "correctiveAttempts"> & Partial<Pick<TaskPlanRecord, "startedAt" | "finishedAt">>;
 export interface TaskPlanQuery { ownerKeys: string[]; id?: string; statuses?: TaskPlanStatus[]; limit?: number; }
@@ -88,6 +88,7 @@ export interface TaskQuery {
 	kinds?: TaskKind[];
 	statuses?: TaskStatus[];
 	planIds?: string[];
+	parentIds?: string[];
 	limit?: number;
 }
 export interface TaskDependency { taskId: string; dependsOn: string; }
@@ -97,6 +98,8 @@ export interface TaskLedger {
 	record(task: TaskRecord): void;
 	transition(id: string, change: TaskTransition): boolean;
 	retryObjective?(ownerKey: string, id: string, now?: number): boolean;
+	cancelObjectives?(ownerKey: string, now?: number): number;
+	activeObjectivePlanIds?(ownerKey: string): string[];
 	recordRun(run: TaskRunRecord): void;
 	transitionRun(id: string, change: TaskRunTransition): boolean;
 	queryTasks(query: TaskQuery): TaskRecord[];
@@ -122,6 +125,8 @@ export interface TaskLedger {
 	claimTaskPlanCompletionNotices?(platform: string, now?: number, limit?: number, leaseMs?: number): TaskPlanCompletionNotice[];
 	completeTaskPlanCompletionNotice?(id: string, claimToken: string): boolean;
 	failTaskPlanCompletionNotice?(id: string, claimToken: string, now?: number): boolean;
+	renewTaskPlanCompletionNotice?(id: string, claimToken: string, leaseExpiresAt: number): boolean;
+	abandonTaskPlanCompletionNotice?(id: string, claimToken: string, error: string, now?: number): boolean;
 	renewTaskRunLease?(id: string, leaseExpiresAt: number): boolean;
 	prepareTaskPlanRetry(ownerKeys: string[], planId: string, maxCorrectiveAttempts?: number): number;
 	cancelTaskPlan(ownerKeys: string[], planId: string, now?: number): number;

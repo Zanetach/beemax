@@ -43,6 +43,19 @@ test("interaction runtime supports a reconnecting presenter subscription", async
 	assert.deepEqual(received, ["turn.started", "answer.delta", "turn.finished"]);
 });
 
+test("interaction runtime evicts inactive conversation state at a global bound", async () => {
+	const runtime = {
+		async run() { return { answer: "ok", model: "test/model", durationMs: 1, usage: {} }; },
+		async cancel() { return false; }, async modelStatus() { return undefined; }, async usage() { return undefined; },
+	};
+	const interaction = new InteractionEventAdapter(runtime, { maxTrackedInteractions: 2, eventHistoryLimit: 20 });
+	const sources = ["one", "two", "three"].map((chatId) => ({ platform: "cli", chatId, chatType: "dm", userId: "user" }));
+	for (const item of sources) await interaction.dispatch({ type: "message.send", source: item, text: "hi", input: { timeoutMs: 1_000 } });
+	assert.deepEqual(interaction.events(sources[0]), []);
+	assert.equal((await interaction.snapshot(sources[0])).phase, "idle");
+	assert.equal((await interaction.snapshot(sources[2])).phase, "completed");
+});
+
 test("interaction runtime emits channel-neutral progress for Sub-Agents and asynchronous Task Plans", async () => {
 	const runtime = {
 		async run(_input, sink) {

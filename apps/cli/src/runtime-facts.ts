@@ -21,8 +21,7 @@ const BUILTIN_TASKS: Array<Pick<TaskFactRecord, "id" | "title" | "status" | "evi
 
 /** Populate documented release facts once, without overwriting user-managed task state. */
 export function ensureBuiltinTasks(store: MemoryStore): void {
-	const existing = new Set(store.listTasks().map((task) => task.id));
-	for (const task of BUILTIN_TASKS) if (!existing.has(task.id)) store.upsertTask(task);
+	for (const task of BUILTIN_TASKS) if (!store.hasTask(task.id)) store.upsertTask(task);
 }
 
 /** One app-level composition point prevents an ingress path from omitting task facts. */

@@ -220,7 +220,7 @@ export class MemoryStore {
 				title TEXT NOT NULL, task_count INTEGER NOT NULL, succeeded INTEGER NOT NULL,
 				failed INTEGER NOT NULL, cancelled INTEGER NOT NULL,
 				status TEXT NOT NULL CHECK (status IN ('queued', 'delivering', 'delivered')), claim_token TEXT,
-				attempts INTEGER NOT NULL DEFAULT 0, next_attempt_at INTEGER NOT NULL, created_at INTEGER NOT NULL
+				attempts INTEGER NOT NULL DEFAULT 0, next_attempt_at INTEGER NOT NULL, created_at INTEGER NOT NULL, abandoned_at INTEGER, last_error TEXT
 			);
 			CREATE INDEX IF NOT EXISTS idx_task_plan_completion_notices_due ON task_plan_completion_notices(status, next_attempt_at);
 			CREATE TABLE IF NOT EXISTS tasks (
@@ -256,6 +256,7 @@ export class MemoryStore {
 				updated_at INTEGER NOT NULL DEFAULT 0
 			);
 			CREATE INDEX IF NOT EXISTS idx_tasks_owner_created ON tasks(owner_key, created_at DESC);
+			CREATE INDEX IF NOT EXISTS idx_tasks_owner_parent ON tasks(owner_key, parent_id);
 			CREATE TABLE IF NOT EXISTS task_runs (
 				id TEXT PRIMARY KEY,
 				task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
@@ -354,6 +355,8 @@ export class MemoryStore {
 		this.addColumnIfMissing("task_plans", "paused_at", "INTEGER");
 		this.addColumnIfMissing("task_runs", "lease_expires_at", "INTEGER");
 		this.addColumnIfMissing("task_plan_completion_notices", "claim_token", "TEXT");
+		this.addColumnIfMissing("task_plan_completion_notices", "abandoned_at", "INTEGER");
+		this.addColumnIfMissing("task_plan_completion_notices", "last_error", "TEXT");
 		this.db.exec("CREATE INDEX IF NOT EXISTS idx_tasks_verification_due ON tasks(verification_outcome, verification_retry_at)");
 		this.backfillTaskPlans();
 		this.addColumnIfMissing("memory_claims", "superseded_by", "TEXT REFERENCES memory_claims(id)");
@@ -676,6 +679,8 @@ export class MemoryStore {
 		}));
 	}
 
+	hasTask(id: string): boolean { return Boolean(this.db.prepare("SELECT 1 FROM tasks WHERE id = ? LIMIT 1").get(id)); }
+
 	record(task: RuntimeTaskRecord): void {
 		this.db.prepare(`INSERT INTO tasks (id, owner_key, kind, title, description, acceptance_criteria, recovery_policy, idempotency_key, execution_scope, status, parent_id, plan_id, evidence, verification_outcome, verification_feedback, corrective_attempts, created_at, started_at, finished_at, result, candidate_result, error, checkpoint, checkpoint_at, routes, route_index, updated_at)
 			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
@@ -708,6 +713,15 @@ export class MemoryStore {
 			WHERE id = ? AND owner_key = ? AND kind = 'objective' AND status = 'failed'`).run(now, now, id, ownerKey).changes === 1;
 	}
 
+	cancelObjectives(ownerKey: string, now = Date.now()): number {
+		return this.db.prepare("UPDATE tasks SET status = 'cancelled', finished_at = ?, error = 'Cancelled by user', updated_at = ? WHERE owner_key = ? AND kind = 'objective' AND status IN ('pending', 'running')").run(now, now, ownerKey).changes;
+	}
+
+	activeObjectivePlanIds(ownerKey: string): string[] {
+		return (this.db.prepare(`SELECT DISTINCT child.plan_id FROM tasks child JOIN tasks objective ON objective.id = child.parent_id
+			WHERE objective.owner_key = ? AND objective.kind = 'objective' AND objective.status IN ('pending', 'running') AND child.plan_id IS NOT NULL`).all(ownerKey) as Array<{ plan_id: string }>).map((row) => row.plan_id);
+	}
+
 	recordRun(run: TaskRunRecord): void {
 		this.db.prepare("INSERT INTO task_runs (id, task_id, executor, status, started_at, lease_expires_at, finished_at, output, error) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")
 			.run(run.id, run.taskId, run.executor, run.status, run.startedAt, run.leaseExpiresAt ?? null, run.finishedAt ?? null, safeTaskText(run.output), safeTaskText(run.error));
@@ -735,6 +749,7 @@ export class MemoryStore {
 		if (query.kinds?.length) { conditions.push(`kind IN (${query.kinds.map(() => "?").join(", ")})`); params.push(...query.kinds); }
 		if (query.statuses?.length) { conditions.push(`status IN (${query.statuses.map(() => "?").join(", ")})`); params.push(...query.statuses); }
 		if (query.planIds?.length) { conditions.push(`plan_id IN (${query.planIds.map(() => "?").join(", ")})`); params.push(...query.planIds); }
+		if (query.parentIds?.length) { conditions.push(`parent_id IN (${query.parentIds.map(() => "?").join(", ")})`); params.push(...query.parentIds); }
 		params.push(limitOf(query.limit, 50));
 		const rows = this.db.prepare(`SELECT * FROM tasks WHERE ${conditions.join(" AND ")} ORDER BY created_at DESC LIMIT ?`).all(...params) as RuntimeTaskRow[];
 		return rows.map(mapRuntimeTask);
@@ -959,6 +974,15 @@ export class MemoryStore {
 		return this.db.prepare("UPDATE task_plan_completion_notices SET status = 'delivered', claim_token = NULL WHERE id = ? AND status = 'delivering' AND claim_token = ?").run(id, claimToken).changes === 1;
 	}
 
+	renewTaskPlanCompletionNotice(id: string, claimToken: string, leaseExpiresAt: number): boolean {
+		return this.db.prepare("UPDATE task_plan_completion_notices SET next_attempt_at = ? WHERE id = ? AND status = 'delivering' AND claim_token = ?").run(leaseExpiresAt, id, claimToken).changes === 1;
+	}
+
+	abandonTaskPlanCompletionNotice(id: string, claimToken: string, error: string, now = Date.now()): boolean {
+		return this.db.prepare("UPDATE task_plan_completion_notices SET status = 'delivered', claim_token = NULL, abandoned_at = ?, last_error = ? WHERE id = ? AND status = 'delivering' AND claim_token = ?")
+			.run(now, redactCredentialMaterial(error).slice(0, 5_000), id, claimToken).changes === 1;
+	}
+
 	failTaskPlanCompletionNotice(id: string, claimToken: string, now = Date.now()): boolean {
 		const row = this.db.prepare("SELECT attempts FROM task_plan_completion_notices WHERE id = ? AND status = 'delivering' AND claim_token = ?").get(id, claimToken) as { attempts: number } | undefined;
 		if (!row) return false;
@@ -1164,7 +1188,7 @@ interface TaskPlanRow {
 interface TaskPlanCompletionNoticeRow {
 	id: string; plan_id: string; owner_key: string; platform: string; chat_id: string; user_id: string | null; thread_id: string | null;
 	plan_status: TaskPlanCompletionNotice["planStatus"]; title: string; task_count: number; succeeded: number; failed: number; cancelled: number;
-	status: TaskPlanCompletionNotice["status"]; claim_token: string | null; attempts: number; next_attempt_at: number; created_at: number;
+	status: Exclude<TaskPlanCompletionNotice["status"], "abandoned">; claim_token: string | null; attempts: number; next_attempt_at: number; created_at: number; abandoned_at: number | null; last_error: string | null;
 }
 
 function mapRow(row: MemoryRow): MemoryRecord {
@@ -1237,7 +1261,8 @@ function mapTaskPlanCompletionNotice(row: TaskPlanCompletionNoticeRow): TaskPlan
 		id: row.id, planId: row.plan_id, ownerKey: row.owner_key,
 		target: { platform: row.platform, chatId: row.chat_id, ...(row.user_id ? { userId: row.user_id } : {}), ...(row.thread_id ? { threadId: row.thread_id } : {}) },
 		planStatus: row.plan_status, title: row.title, taskCount: row.task_count, succeeded: row.succeeded, failed: row.failed, cancelled: row.cancelled,
-		status: row.status, ...(row.claim_token ? { claimToken: row.claim_token } : {}), attempts: row.attempts, nextAttemptAt: row.next_attempt_at, createdAt: row.created_at,
+		status: row.abandoned_at === null ? row.status : "abandoned", ...(row.claim_token ? { claimToken: row.claim_token } : {}), attempts: row.attempts, nextAttemptAt: row.next_attempt_at, createdAt: row.created_at,
+		...(row.abandoned_at === null ? {} : { abandonedAt: row.abandoned_at }), ...(row.last_error ? { error: row.last_error } : {}),
 	};
 }
 

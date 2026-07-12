@@ -9,9 +9,9 @@ export class GatewayDeliveryPort implements DeliveryPort {
 
 	constructor(platform: PlatformAdapter) { this.platform = platform; }
 
-	async sendText(target: DeliveryTarget, text: string): Promise<void> {
+	async sendText(target: DeliveryTarget, text: string, options?: { idempotencyKey?: string }): Promise<void> {
 		this.assertPlatform(target);
-		const result = await this.platform.send(target.chatId, text);
+		const result = await this.platform.send(target.chatId, text, { idempotencyKey: options?.idempotencyKey });
 		if (!result.success) throw new Error(result.error ?? "Channel text delivery failed");
 	}
 

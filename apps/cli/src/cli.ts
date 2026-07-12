@@ -1081,7 +1081,7 @@ async function runChat(config: ReturnType<typeof loadConfig>, requestedMode: { f
 		},
 		controlHandler: (profileRuntime, profileInteraction) => createProfileControlHandler(profileRuntime, config, profileInteraction, () => ({ taskScheduler: taskScheduler.snapshot(), taskRecovery: recoveryStatus }), config.subagents.enabled ? {
 			verifyTaskPlan: (sessionSource, planId) => taskRecovery.reverify([conversationKey(sessionSource)], planId),
-			retryTaskPlan: (sessionSource, planId, objectiveId) => { const ownerKey = conversationKey(sessionSource); if (objectiveId) objectiveRuntime.retry(ownerKey, objectiveId); return taskRecovery.retry([ownerKey], planId, { maxConcurrent: config.subagents.maxConcurrent }); },
+			retryTaskPlan: (sessionSource, planId) => taskRecovery.retry([conversationKey(sessionSource)], planId, { maxConcurrent: config.subagents.maxConcurrent }),
 			resumeTaskPlan: (sessionSource, planId) => taskRecovery.resume([conversationKey(sessionSource)], planId, { maxConcurrent: config.subagents.maxConcurrent }),
 			cancelTaskPlan: (sessionSource, planId) => taskRecovery.cancel([conversationKey(sessionSource)], planId),
 		} : undefined),
@@ -1118,7 +1118,7 @@ async function runChat(config: ReturnType<typeof loadConfig>, requestedMode: { f
 			if (target.platform !== "cli") throw new Error(`Cannot deliver ${target.platform} Task Plan notice through local Chat`);
 			if (workbench) { workbench.notice(text); fullInput?.requestRender(); }
 			else { process.stdout.write(`\n${text}\n`); writePrompt(); }
-		} }, { platform: "cli", deliverObjective: (notice) => objectiveRuntime.settlePlanIfLinked(notice.ownerKey, notice.planId, notice.planStatus) });
+		} }, { platform: "cli", deliverObjective: (notice, signal) => objectiveRuntime.settlePlanIfLinked(notice.ownerKey, notice.planId, notice.planStatus, signal) });
 		let closeInput = () => { closed = true; };
 		const usage = async () => {
 			const current = await runtime.usage(source);

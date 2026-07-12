@@ -13,6 +13,7 @@ function ledgerFixture(records) {
 			tasks.set(id, { ...current, ...change });
 			return true;
 		},
+		retryObjective(ownerKey, id) { const current = tasks.get(id); if (!current || current.ownerKey !== ownerKey || current.status !== "failed") return false; tasks.set(id, { ...current, status: "running", finishedAt: undefined, error: undefined }); return true; },
 		queryTasks(query) {
 			return [...tasks.values()].filter((task) => query.ownerKeys.includes(task.ownerKey)
 				&& (!query.id || task.id === query.id)
@@ -84,4 +85,35 @@ test("cancelling a conversation cancels every active Objective owned by it", () 
 	assert.equal(ledger.tasks.get("one").status, "cancelled");
 	assert.equal(ledger.tasks.get("two").status, "cancelled");
 	assert.equal(ledger.tasks.get("done").status, "succeeded");
+});
+
+test("Objective delivery is single-flight and cancellation aborts the in-flight deliverer", async () => {
+	const ledger = ledgerFixture([
+		{ id: "objective", ownerKey: "owner", kind: "objective", title: "Report", status: "running", createdAt: 1 },
+		{ id: "child", ownerKey: "owner", kind: "delegated", title: "Research", parentId: "objective", planId: "plan", status: "succeeded", result: "done", createdAt: 2 },
+	]);
+	let calls = 0;
+	const runtime = new ObjectiveRuntime(ledger, async (_input, signal) => {
+		calls++;
+		await new Promise((resolve, reject) => signal.addEventListener("abort", () => reject(signal.reason), { once: true }));
+		return { result: "unreachable" };
+	});
+	const first = runtime.deliverPlan("owner", "plan");
+	const second = runtime.deliverPlan("owner", "plan");
+	await new Promise((resolve) => setImmediate(resolve));
+	assert.equal(calls, 1);
+	assert.equal(runtime.cancelOwner("owner"), 1);
+	assert.equal((await first).status, "failed");
+	assert.equal((await second).status, "failed");
+	assert.equal(ledger.tasks.get("objective").status, "cancelled");
+});
+
+test("a retried successful Plan reopens and delivers its failed parent Objective", async () => {
+	const ledger = ledgerFixture([
+		{ id: "objective", ownerKey: "owner", kind: "objective", title: "Report", status: "failed", error: "old failure", createdAt: 1, finishedAt: 2 },
+		{ id: "child", ownerKey: "owner", kind: "delegated", title: "Research", parentId: "objective", planId: "plan", status: "succeeded", result: "done", createdAt: 2 },
+	]);
+	const runtime = new ObjectiveRuntime(ledger, async () => ({ result: "final" }));
+	assert.equal((await runtime.deliverPlan("owner", "plan")).status, "succeeded");
+	assert.equal(ledger.tasks.get("objective").status, "succeeded");
 });

@@ -323,14 +323,14 @@ export class Dispatcher {
 		return result.answer.trim();
 	}
 
-	async presentWorkProgress(target: DeliveryTarget, event: TaskPlanProgressEvent): Promise<void> {
+	async presentWorkProgress(target: DeliveryTarget, event: TaskPlanProgressEvent, idempotencyKey?: string): Promise<void> {
 		if (target.platform !== this.platform.name) throw new Error(`Cannot present ${target.platform} work through ${this.platform.name}`);
 		const card = new CardSession();
 		card.apply("notice.updated", {
 			id: `work:${event.workId}`, label: "异步任务计划", status: event.state === "failed" ? "error" : event.state,
 			message: `${event.title} · ${event.completed}/${event.total}${event.failed ? ` · 失败 ${event.failed}` : ""}${event.cancelled ? ` · 取消 ${event.cancelled}` : ""}`,
 		});
-		const result = await this.platform.sendCard(target.chatId, renderCard(card, this.deps.cardOptions), undefined, Boolean(target.threadId));
+		const result = await this.platform.sendCard(target.chatId, renderCard(card, this.deps.cardOptions), undefined, Boolean(target.threadId), idempotencyKey);
 		if (!result.success) throw new Error(result.error ?? `Failed to present Task Plan ${event.workId}`);
 	}
 

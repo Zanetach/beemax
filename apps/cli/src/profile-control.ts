@@ -105,13 +105,14 @@ export function createProfileControlHandler(
 			const entries = await runtime.history(source, history[1] ? Number(history[1]) : undefined);
 			return { handled: true, message: entries.length ? entries.map((entry) => `[${entry.role}] ${entry.text.replaceAll("\n", " ")}`).join("\n") : "No live message history." };
 		}
-		if (command === "/help") return { handled: true, message: "Commands: /help /status /usage /compact /sessions /resume <id> /history [n] /skills /tasks [plans|show|verify|retry|cancel <plan-id>] /new /reset /model [provider/model] [--global] /stop\nCLI also supports local display, tool, and retry controls." };
+		if (command === "/help") return { handled: true, message: "Commands: /help /status /usage /continue /retry /compact /sessions /resume <id> /history [n] /skills /tasks [plans|show|verify|retry|cancel <plan-id>] /new /reset /model [provider/model] [--global] /stop\nCLI also supports local display, tool, and retry controls." };
 		if (command === "/status" || command === "/usage") {
 			const [model, usage] = await Promise.all([runtime.modelStatus(source), runtime.usage(source)]);
 			const usageText = usage ? `input=${usage.inputTokens}; output=${usage.outputTokens}; context=${usage.contextTokens ?? "?"}/${usage.contextWindow ?? "?"}` : "no live session";
 			const facts = operationalFacts?.();
-			const objectives = runtime.tasks(source, { kind: "objective", limit: 20 });
-			const objective = objectives.find((task) => task.status === "running" || task.status === "pending") ?? objectives[0];
+			const objective = runtime.tasks(source, { kind: "objective", status: "running", limit: 1 })[0]
+				?? runtime.tasks(source, { kind: "objective", status: "pending", limit: 1 })[0]
+				?? runtime.tasks(source, { kind: "objective", limit: 1 })[0];
 			const objectiveText = objective ? `Objective: [${objective.status}] ${sanitizeDisplayText(objective.title, 120)}` : "Objective: none";
 			return { handled: true, message: command === "/usage" ? `Usage: ${usageText}` : `Profile: ${config.profile}\nModel: ${model?.model ?? `${config.model.provider}/${config.model.model}`}\nThinking: ${model?.thinkingLevel ?? "off"}\nRun: ${runtime.isBusy() ? "running" : "idle"}\n${objectiveText}\n${renderTaskSchedulerStatus(facts?.taskScheduler)}\n${renderTaskRecoveryStatus(facts?.taskRecovery)}\nUsage: ${usageText}` };
 		}
@@ -122,12 +123,13 @@ export function createProfileControlHandler(
 			return { handled: true, message: "compacted" in compacted && compacted.compacted ? "Context compacted." : "No idle session is available to compact." };
 		}
 		if (command === "/continue" || command === "/retry") {
-			const objectives = runtime.tasks(source, { kind: "objective", limit: 50 });
 			const objective = command === "/retry"
-				? objectives.find((task) => task.status === "failed")
-				: objectives.find((task) => task.status === "running" || task.status === "pending") ?? objectives[0];
+				? runtime.tasks(source, { kind: "objective", status: "failed", limit: 1 })[0]
+				: runtime.tasks(source, { kind: "objective", status: "running", limit: 1 })[0]
+					?? runtime.tasks(source, { kind: "objective", status: "pending", limit: 1 })[0]
+					?? runtime.tasks(source, { kind: "objective", limit: 1 })[0];
 			if (!objective) return { handled: true, message: "No durable Objective is available." };
-			const child = runtime.tasks(source, { limit: 100 }).find((task) => task.parentId === objective.id && task.planId);
+			const child = runtime.tasks(source, { parentId: objective.id, limit: 1 }).find((task) => task.planId);
 			if (!child?.planId) return { handled: true, message: `Objective ${objective.id} has no resumable Task Plan.` };
 			if (command === "/retry") {
 				if (!actions?.retryTaskPlan) return { handled: true, message: "Objective retry is unavailable in this runtime." };

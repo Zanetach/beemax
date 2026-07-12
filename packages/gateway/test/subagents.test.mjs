@@ -161,6 +161,29 @@ test("Sub-Agent manager enforces the active-child limit", async () => {
 	await manager.dispose();
 });
 
+test("Sub-Agent manager evicts terminal work across inactive owners", async () => {
+	const manager = new SubagentManager({ maxRetainedTerminalTasks: 2, execute: async () => "done" });
+	const sources = ["one", "two", "three"].map((chatId) => ({ platform: "cli", chatId, chatType: "dm", userId: "user" }));
+	const tasks = [];
+	for (const item of sources) {
+		const task = manager.spawn(item, { goal: `work-${item.chatId}` });
+		tasks.push(task);
+		await manager.wait(item, task.id, 1_000);
+	}
+	assert.throws(() => manager.get(sources[0], tasks[0].id), /not found/i);
+	assert.equal(manager.get(sources[2], tasks[2].id).status, "completed");
+	await manager.dispose();
+});
+
+test("Sub-Agent shutdown is bounded when an executor ignores cancellation", async () => {
+	const manager = new SubagentManager({ shutdownGraceMs: 20, execute: async () => new Promise(() => undefined) });
+	manager.spawn(source, { goal: "stuck" });
+	await new Promise((resolve) => setImmediate(resolve));
+	const started = Date.now();
+	await manager.dispose();
+	assert.ok(Date.now() - started < 200);
+});
+
 test("parent sessions expose orchestration tools while child sessions stay read-only and cannot recurse", async () => {
 	const root = mkdtempSync(join(tmpdir(), "beemax-subagent-tools-"));
 	const cwd = join(root, "cwd");

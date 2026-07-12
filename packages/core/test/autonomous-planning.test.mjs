@@ -177,7 +177,7 @@ test("interactive runs persist an Objective and keep background DAG Objectives r
 	runtime.dispose();
 });
 
-test("a direct interactive answer completes its Objective", async () => {
+test("a direct conversational answer does not create durable Objective work", async () => {
 	const source = { platform: "cli", chatId: "direct-objective", chatType: "dm", userId: "local" };
 	const tasks = new Map();
 	const ledger = {
@@ -193,10 +193,7 @@ test("a direct interactive answer completes its Objective", async () => {
 
 	await runtime.run({ source, text: "What is the answer?", timeoutMs: 1_000 });
 
-	const [objective] = [...tasks.values()];
-	assert.equal(objective.status, "succeeded");
-	assert.equal(objective.result, "42");
-	assert.equal(typeof objective.finishedAt, "number");
+	assert.equal(tasks.size, 0);
 	runtime.dispose();
 });
 

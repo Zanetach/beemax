@@ -20,13 +20,26 @@ export interface ObjectiveDeliveryOutcome {
 
 /** Owns the seam between a Task Plan Outcome and delivery of its parent Objective. */
 export class ObjectiveRuntime {
-	private readonly ledger: Pick<TaskLedger, "queryTasks" | "transition"> & Partial<Pick<TaskLedger, "retryObjective">>;
+	private readonly ledger: Pick<TaskLedger, "queryTasks" | "transition"> & Partial<Pick<TaskLedger, "retryObjective" | "cancelObjectives" | "activeObjectivePlanIds">>;
 	private readonly deliver: ObjectiveDeliverer;
-	constructor(ledger: Pick<TaskLedger, "queryTasks" | "transition"> & Partial<Pick<TaskLedger, "retryObjective">>, deliver: ObjectiveDeliverer) { this.ledger = ledger; this.deliver = deliver; }
+	private readonly active = new Map<string, { controller: AbortController; work: Promise<ObjectiveDeliveryOutcome> }>();
+	constructor(ledger: Pick<TaskLedger, "queryTasks" | "transition"> & Partial<Pick<TaskLedger, "retryObjective" | "cancelObjectives" | "activeObjectivePlanIds">>, deliver: ObjectiveDeliverer) { this.ledger = ledger; this.deliver = deliver; }
 
 	async deliverPlan(ownerKey: string, planId: string, signal?: AbortSignal): Promise<ObjectiveDeliveryOutcome> {
+		const key = `${ownerKey}\0${planId}`;
+		const existing = this.active.get(key);
+		if (existing) return existing.work;
+		const controller = new AbortController();
+		const combined = signal ? AbortSignal.any([signal, controller.signal]) : controller.signal;
+		const work = this.executeDelivery(ownerKey, planId, combined).finally(() => { if (this.active.get(key)?.work === work) this.active.delete(key); });
+		this.active.set(key, { controller, work });
+		return work;
+	}
+
+	private async executeDelivery(ownerKey: string, planId: string, signal?: AbortSignal): Promise<ObjectiveDeliveryOutcome> {
 		const tasks = this.ledger.queryTasks({ ownerKeys: [ownerKey], planIds: [planId], limit: 100 });
-		const objective = this.objectiveForPlan(ownerKey, planId, tasks);
+		let objective = this.objectiveForPlan(ownerKey, planId, tasks);
+		if (objective.status === "failed" && this.retry(ownerKey, objective.id)) objective = this.ledger.queryTasks({ ownerKeys: [ownerKey], id: objective.id, kinds: ["objective"], limit: 1 })[0] ?? objective;
 		if (objective.status === "succeeded" || objective.status === "failed" || objective.status === "cancelled") {
 			return { objectiveId: objective.id, status: objective.status, finishedAt: objective.finishedAt ?? Date.now(), result: objective.result, error: objective.error };
 		}
@@ -66,6 +79,8 @@ export class ObjectiveRuntime {
 	retry(ownerKey: string, objectiveId: string): boolean { return this.ledger.retryObjective?.(ownerKey, objectiveId) ?? false; }
 
 	cancelOwner(ownerKey: string): number {
+		for (const [key, delivery] of this.active) if (key.startsWith(`${ownerKey}\0`) && !delivery.controller.signal.aborted) delivery.controller.abort(new Error("Objective delivery cancelled by user"));
+		if (this.ledger.cancelObjectives) return this.ledger.cancelObjectives(ownerKey);
 		const objectives = this.ledger.queryTasks({ ownerKeys: [ownerKey], kinds: ["objective"], statuses: ["pending", "running"], limit: 100 });
 		const finishedAt = Date.now();
 		let cancelled = 0;
@@ -74,6 +89,7 @@ export class ObjectiveRuntime {
 	}
 
 	planIdsForOwner(ownerKey: string): string[] {
+		if (this.ledger.activeObjectivePlanIds) return this.ledger.activeObjectivePlanIds(ownerKey);
 		const objectiveIds = new Set(this.ledger.queryTasks({ ownerKeys: [ownerKey], kinds: ["objective"], statuses: ["pending", "running"], limit: 100 }).map((task) => task.id));
 		return [...new Set(this.ledger.queryTasks({ ownerKeys: [ownerKey], limit: 100 }).filter((task) => task.parentId && objectiveIds.has(task.parentId) && task.planId).map((task) => task.planId!))];
 	}

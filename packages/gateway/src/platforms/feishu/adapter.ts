@@ -23,7 +23,7 @@ import { tmpdir } from "node:os";
 import { basename, extname, join } from "node:path";
 import { Transform } from "node:stream";
 import { pipeline } from "node:stream/promises";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import lark, { adaptDefault, normalizeCardAction, type Client, type EventDispatcher, type RawCardActionEvent, type WSClient } from "@larksuiteoapi/node-sdk";
 import { sessionOwnerKey } from "@beemax/core";
 import type {
@@ -796,11 +796,11 @@ export class FeishuAdapter implements PlatformAdapter {
 
 	// --- outbound --------------------------------------------------------
 
-	async send(chatId: string, content: string, opts?: { asCard?: boolean }): Promise<SendResult> {
+	async send(chatId: string, content: string, opts?: { asCard?: boolean; idempotencyKey?: string }): Promise<SendResult> {
 		const chunks = chunkText(content, MAX_TEXT_LENGTH);
 		let lastId: string | undefined;
-		for (const chunk of chunks) {
-			const uuid = randomUUID();
+		for (const [index, chunk] of chunks.entries()) {
+			const uuid = opts?.idempotencyKey ? deterministicUuid(`${opts.idempotencyKey}:${index}`) : randomUUID();
 			const payload = opts?.asCard
 				? buildCardPayload(chunk)
 				: { msg_type: "text", content: JSON.stringify({ text: chunk }) };
@@ -942,10 +942,10 @@ export class FeishuAdapter implements PlatformAdapter {
 	}
 
 	/** Send an interactive card. Returns the Feishu message_id for later updates. */
-	async sendCard(chatId: string, card: Record<string, unknown>, replyTo?: string, replyInThread = false): Promise<SendResult> {
+	async sendCard(chatId: string, card: Record<string, unknown>, replyTo?: string, replyInThread = false, idempotencyKey?: string): Promise<SendResult> {
 		try {
 			const payload = { msg_type: "interactive", content: JSON.stringify(card) };
-			const uuid = randomUUID();
+			const uuid = idempotencyKey ? deterministicUuid(idempotencyKey) : randomUUID();
 			let res = replyTo ? await this.retryRequest(() => this.client.im.v1.message.reply({
 				path: { message_id: replyTo },
 				data: { ...payload, reply_in_thread: replyInThread, uuid },
@@ -956,7 +956,7 @@ export class FeishuAdapter implements PlatformAdapter {
 			if (replyTo && !replyInThread && (res.code === 230011 || res.code === 231003)) {
 				res = await this.retryRequest(() => this.client.im.v1.message.create({
 					params: { receive_id_type: "chat_id" },
-					data: { receive_id: chatId, ...payload, uuid: randomUUID() },
+					data: { receive_id: chatId, ...payload, uuid: idempotencyKey ? deterministicUuid(`${idempotencyKey}:fallback`) : randomUUID() },
 				}));
 			}
 			if (res.code !== 0) return { success: false, error: res.msg ?? `feishu code ${res.code}` };
@@ -983,6 +983,11 @@ export class FeishuAdapter implements PlatformAdapter {
 	private retryRequest<T>(operation: () => Promise<T>): Promise<T> {
 		return retryFeishuOperation(operation, { attempts: 3, baseDelayMs: this.settings.retryBaseDelayMs ?? 1_000 });
 	}
+}
+
+function deterministicUuid(value: string): string {
+	const hex = createHash("sha256").update(value).digest("hex").slice(0, 32);
+	return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-5${hex.slice(13, 16)}-a${hex.slice(17, 20)}-${hex.slice(20)}`;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

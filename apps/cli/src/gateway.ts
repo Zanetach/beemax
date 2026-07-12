@@ -162,8 +162,8 @@ export async function runGateway(config: BeeMaxConfig): Promise<void> {
 	const objectiveRuntime = new ObjectiveRuntime(memory, (input, signal) => executeObjectiveDelivery(createSubagentAgent, input, signal, config.subagents.timeoutMs));
 	const taskPlanNotices = new TaskPlanNoticeDeliveryService(memory, deliveryPort, {
 		platform: "feishu",
-		deliverObjective: (notice) => objectiveRuntime.settlePlanIfLinked(notice.ownerKey, notice.planId, notice.planStatus),
-		onProgress: (event, notice) => dispatcher.presentWorkProgress(notice.target, event),
+		deliverObjective: (notice, signal) => objectiveRuntime.settlePlanIfLinked(notice.ownerKey, notice.planId, notice.planStatus, signal),
+		onProgress: (event, notice) => dispatcher.presentWorkProgress(notice.target, event, notice.id),
 		onCycle: (result) => { if (result.claimed) console.info(`[beemax] Task Plan notices: delivered=${result.delivered}; failed=${result.failed}`); },
 		onError: (error) => console.error(`[beemax] Task Plan notice delivery failed: ${error instanceof Error ? error.message : String(error)}`),
 	});
@@ -237,7 +237,7 @@ export async function runGateway(config: BeeMaxConfig): Promise<void> {
 		},
 		controlHandler: (profileRuntime, profileInteraction) => createProfileControlHandler(profileRuntime, config, profileInteraction, () => ({ taskScheduler: taskScheduler.snapshot(), taskRecovery: recoveryStatus }), config.subagents.enabled ? {
 			verifyTaskPlan: (source, planId) => taskRecovery.reverify([conversationKey(source)], planId),
-			retryTaskPlan: (source, planId, objectiveId) => { const ownerKey = conversationKey(source); if (objectiveId) objectiveRuntime.retry(ownerKey, objectiveId); return taskRecovery.retry([ownerKey], planId, { maxConcurrent: config.subagents.maxConcurrent }); },
+			retryTaskPlan: (source, planId) => taskRecovery.retry([conversationKey(source)], planId, { maxConcurrent: config.subagents.maxConcurrent }),
 			resumeTaskPlan: (source, planId) => taskRecovery.resume([conversationKey(source)], planId, { maxConcurrent: config.subagents.maxConcurrent }),
 			cancelTaskPlan: (source, planId) => taskRecovery.cancel([conversationKey(source)], planId),
 		} : undefined),
@@ -319,8 +319,10 @@ export async function runGateway(config: BeeMaxConfig): Promise<void> {
 			clearInterval(mediaDeliveryTimer);
 			try { await heartbeat?.stop(); } catch (error) { console.error(`[beemax] heartbeat shutdown failed: ${String(error)}`); }
 			try { await scheduler?.stop(); } catch (error) { console.error(`[beemax] scheduler shutdown failed: ${String(error)}`); }
-				try { await taskPlanRuntime.shutdown(new Error("Gateway shutting down")); } catch (error) { console.error(`[beemax] Task Plan shutdown failed: ${String(error)}`); }
-				try { await subagents?.dispose(); } catch (error) { console.error(`[beemax] Sub-Agent shutdown failed: ${String(error)}`); }
+			try { await taskPlanNotices.stop(); } catch (error) { console.error(`[beemax] Task Plan notice shutdown failed: ${String(error)}`); }
+			try { await recoveryService.stop(new Error("Gateway shutting down")); } catch (error) { console.error(`[beemax] Task recovery shutdown failed: ${String(error)}`); }
+			try { await taskPlanRuntime.shutdown(new Error("Gateway shutting down")); } catch (error) { console.error(`[beemax] Task Plan shutdown failed: ${String(error)}`); }
+			try { await subagents?.dispose(); } catch (error) { console.error(`[beemax] Sub-Agent shutdown failed: ${String(error)}`); }
 			try { await dispatcher.dispose(); } catch (error) { console.error(`[beemax] dispatcher shutdown failed: ${String(error)}`); }
 			try { profileRuntime.dispose(); } catch (error) { console.error(`[beemax] Agent Runtime shutdown failed: ${String(error)}`); }
 			try { await adapter.disconnect(); } catch (error) { console.error(`[beemax] Feishu disconnect failed: ${String(error)}`); }

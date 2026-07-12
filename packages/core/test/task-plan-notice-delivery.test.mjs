@@ -16,7 +16,7 @@ test("Task Plan Notice delivery acknowledges success and requeues failure withou
 	};
 	const sent = [];
 	const progress = [];
-	const delivery = { async sendText(target, text) { sent.push({ target, text }); } };
+	const delivery = { async sendText(target, text, options) { sent.push({ target, text, options }); } };
 	assert.deepEqual(await new TaskPlanNoticeDeliveryService(outbox, delivery, { platform: "feishu", onProgress: (event) => { progress.push(event); if (event.workId === "plan-fail") throw new Error("offline"); } }).runOnce(), { claimed: 2, delivered: 1, failed: 1 });
 	assert.deepEqual(completed, ["notice-ok"]);
 	assert.deepEqual(failed, ["notice-fail"]);
@@ -35,12 +35,32 @@ test("a successful Plan delivers its Objective result instead of a result-free s
 		claimTaskPlanCompletionNotices: () => [notice],
 		completeTaskPlanCompletionNotice: () => { completed = true; return true; },
 		failTaskPlanCompletionNotice: () => true,
-	}, { sendText: async (target, text) => { sent.push({ target, text }); } }, {
+	}, { sendText: async (target, text, options) => { sent.push({ target, text, options }); } }, {
 		platform: "feishu",
 		deliverObjective: async () => ({ status: "succeeded", result: "Final user-ready report" }),
 	});
 
 	assert.deepEqual(await service.runOnce(), { claimed: 1, delivered: 1, failed: 0 });
 	assert.equal(completed, true);
-	assert.deepEqual(sent, [{ target: notice.target, text: "Final user-ready report" }]);
+	assert.deepEqual(sent, [{ target: notice.target, text: "Final user-ready report", options: { idempotencyKey: "notice" } }]);
+});
+
+test("Objective delivery renews its notice lease and dead-letters poison work at a bounded attempt", async () => {
+	const notice = { id: "poison", planId: "plan", ownerKey: "owner", target: { platform: "feishu", chatId: "chat" }, planStatus: "succeeded", title: "Report", taskCount: 1, succeeded: 1, failed: 0, cancelled: 0, status: "delivering", claimToken: "token", attempts: 3, nextAttemptAt: 0, createdAt: 1 };
+	let renewed = 0, completed = 0, failed = 0, abandoned = 0;
+	const service = new TaskPlanNoticeDeliveryService({
+		claimTaskPlanCompletionNotices: () => [notice],
+		completeTaskPlanCompletionNotice: () => { completed++; return true; },
+		failTaskPlanCompletionNotice: () => { failed++; return true; },
+		renewTaskPlanCompletionNotice: () => { renewed++; return true; },
+		abandonTaskPlanCompletionNotice: (_id, _token, error) => { abandoned++; assert.match(error, /permanent/); return true; },
+	}, { sendText: async () => undefined }, {
+		platform: "feishu", leaseMs: 100, leaseHeartbeatMs: 10, maxAttempts: 3,
+		deliverObjective: async () => { await new Promise((resolve) => setTimeout(resolve, 25)); throw new Error("permanent"); },
+	});
+	assert.deepEqual(await service.runOnce(), { claimed: 1, delivered: 0, failed: 1 });
+	assert.ok(renewed >= 1);
+	assert.equal(completed, 0);
+	assert.equal(failed, 0);
+	assert.equal(abandoned, 1);
 });

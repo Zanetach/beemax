@@ -95,6 +95,14 @@ test("TaskPlanRuntime shutdown closes admission before draining active work", as
 	assert.deepEqual(runtime.snapshot(), { active: 0 });
 });
 
+test("TaskPlanRuntime shutdown is bounded when an executor ignores cancellation", async () => {
+	const runtime = new TaskPlanRuntime();
+	runtime.start("owner", "stuck", async () => new Promise(() => undefined));
+	const started = Date.now();
+	await runtime.shutdown(new Error("stop"), 20);
+	assert.ok(Date.now() - started < 200);
+});
+
 test("TaskPlanRuntime reports background failures without an unhandled rejection", async () => {
 	const failures = [];
 	const runtime = new TaskPlanRuntime((event) => failures.push(event));

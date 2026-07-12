@@ -113,6 +113,7 @@ export interface InteractionEventAdapterOptions<Source extends BeeMaxRuntimeSour
 	cancelTaskPlans?: (source: Source) => number | Promise<number>;
 	eventHistoryLimit?: number;
 	actionHistoryLimit?: number;
+	maxTrackedInteractions?: number;
 	eventJournal?: InteractionEventJournal;
 	telemetry?: InteractionTelemetrySink;
 	inputQueueStore?: InteractionInputQueueStore<Source>;
@@ -148,6 +149,7 @@ export class InteractionEventAdapter<Source extends BeeMaxRuntimeSource = BeeMax
 	private readonly unsubscribeApproval?: () => void;
 	private readonly eventHistoryLimit: number;
 	private readonly actionHistoryLimit: number;
+	private readonly maxTrackedInteractions: number;
 	private readonly eventJournal?: InteractionEventJournal;
 	private readonly telemetry?: InteractionTelemetrySink;
 	private readonly inputQueueStore?: InteractionInputQueueStore<Source>;
@@ -160,6 +162,7 @@ export class InteractionEventAdapter<Source extends BeeMaxRuntimeSource = BeeMax
 		this.profileId = options.profileId ?? "default";
 		this.eventHistoryLimit = Math.max(20, Math.min(options.eventHistoryLimit ?? 500, 10_000));
 		this.actionHistoryLimit = Math.max(20, Math.min(options.actionHistoryLimit ?? 200, 10_000));
+		this.maxTrackedInteractions = Math.max(1, Math.min(options.maxTrackedInteractions ?? 1_000, 100_000));
 		this.eventJournal = options.eventJournal;
 		this.telemetry = options.telemetry;
 		this.inputQueueStore = options.inputQueueStore;
@@ -476,6 +479,19 @@ export class InteractionEventAdapter<Source extends BeeMaxRuntimeSource = BeeMax
 		this.eventHistory.set(key, history.slice(-this.eventHistoryLimit));
 		this.eventJournal?.append(event);
 		this.recordTelemetry(event);
+		this.pruneTrackedInteractions();
+	}
+
+	private pruneTrackedInteractions(): void {
+		if (this.states.size <= this.maxTrackedInteractions) return;
+		const candidates = [...this.states.entries()]
+			.filter(([key, state]) => ["completed", "failed", "cancelled"].includes(state.phase) && !this.sinks.has(key) && !this.subscribers.get(key)?.size && !this.queuedInputs.get(key)?.length)
+			.sort((left, right) => left[1].updatedAt - right[1].updatedAt);
+		for (const [key] of candidates.slice(0, this.states.size - this.maxTrackedInteractions)) {
+			this.states.delete(key); this.sequences.delete(key); this.eventHistory.delete(key); this.actions.delete(key);
+			this.approvalStartedAt.delete(key); this.queuedInputs.delete(key); this.nativeQueuedInputs.delete(key);
+			this.primaryQueuedInputs.delete(key); this.nativeClaimTokens.delete(key);
+		}
 	}
 
 	private async publish(source: Source, turnId: string, payload: InteractionEventPayload, sink?: InteractionEventSink): Promise<void> {
