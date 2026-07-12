@@ -38,8 +38,9 @@ export function createSkillTools(agentDir: string, markReloadNeeded: () => void,
 			const matchedTools = matches([...availableTools]);
 			const skills = await runtime.discover(params.query, 5);
 			const tools = skills.length ? matchedTools.filter((tool) => tool.name !== "bash") : matchedTools;
+			const publicTools = tools.map(({ name, description }) => ({ name, description }));
 			activateTools?.([...tools.map((tool) => tool.name), ...(skills.length ? ["skill_activate", "skill_read"] : [])]);
-			return result("Capability discovery completed and matching capabilities were activated for this turn.", { tools, skills: skills.map(publicSkill), candidates: matches(candidates.map((item) => ({ name: item.name, description: item.description, attempts: item.attempts.length }))), activatedTools: [...tools.map((tool) => tool.name), ...(skills.length ? ["skill_activate", "skill_read"] : [])] });
+			return result("Capability discovery completed and matching capabilities were activated for this turn.", { tools: publicTools, skills: skills.map(publicSkill), candidates: matches(candidates.map((item) => ({ name: item.name, description: item.description, attempts: item.attempts.length }))), activatedTools: [...tools.map((tool) => tool.name), ...(skills.length ? ["skill_activate", "skill_read"] : [])] });
 		} }),
 		defineTool({ name: "skill_list", label: "List Skills", description: "List metadata for Profile, project, and global Skills without loading their instruction bodies.", parameters: Type.Object({}), execute: async () => {
 			const skills = await registry.list(); return result(skills.length ? skills.map((item) => `- ${item.name}: ${item.description}`).join("\n") : "No Skills available.", { skills: skills.map(publicSkill) });

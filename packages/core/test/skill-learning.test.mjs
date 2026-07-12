@@ -24,6 +24,17 @@ test("capability discovery searches the current tool inventory before learning a
 	} finally { rmSync(root, { recursive: true, force: true }); }
 });
 
+test("capability discovery returns clone-safe metadata instead of executable Tool definitions", async () => {
+	const root = mkdtempSync(join(tmpdir(), "beemax-capability-clone-safe-"));
+	try {
+		const executableTool = { name: "meeting_list", description: "List meetings", execute: async () => ({ content: [] }) };
+		const tools = toolsAt(root, [executableTool]);
+		const discovered = await tools.get("capability_discover").execute("discover", { query: "meeting" });
+		assert.doesNotThrow(() => structuredClone(discovered));
+		assert.deepEqual(discovered.details.tools, [{ name: "meeting_list", description: "List meetings" }]);
+	} finally { rmSync(root, { recursive: true, force: true }); }
+});
+
 test("capability discovery ranks multilingual aliases and excludes negative matches", async () => {
 	const root = mkdtempSync(join(tmpdir(), "beemax-capability-ranking-"));
 	try {
