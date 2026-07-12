@@ -24,9 +24,11 @@ import { extname, join } from "node:path";
 import { Transform } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { randomUUID } from "node:crypto";
-import lark, { adaptDefault, type Client, type EventDispatcher, type WSClient } from "@larksuiteoapi/node-sdk";
+import lark, { adaptDefault, normalizeCardAction, type Client, type EventDispatcher, type RawCardActionEvent, type WSClient } from "@larksuiteoapi/node-sdk";
 import type {
 	InboundMessage,
+	CardActionHandler,
+	PlatformCardAction,
 	MessageHandler,
 	PlatformAdapter,
 	SendResult,
@@ -49,6 +51,7 @@ export class FeishuAdapter implements PlatformAdapter {
 	private webhookServer?: Server;
 	private readonly webhookSockets = new Set<Socket>();
 	private handler?: MessageHandler;
+	private cardActionHandler?: CardActionHandler;
 	private dedup = new Map<string, number>();
 	private readonly dedupTtlMs = 24 * 60 * 60 * 1000;
 	private readonly settings: FeishuSettings;
@@ -68,6 +71,10 @@ export class FeishuAdapter implements PlatformAdapter {
 
 	onMessage(handler: MessageHandler): void {
 		this.handler = handler;
+	}
+
+	onCardAction(handler: CardActionHandler): void {
+		this.cardActionHandler = handler;
 	}
 
 	async connect(): Promise<boolean> {
@@ -96,6 +103,10 @@ export class FeishuAdapter implements PlatformAdapter {
 		}).register({
 			"im.message.receive_v1": async (data) => {
 				await this.onReceive(data);
+			},
+			"card.action.trigger": async (data: RawCardActionEvent) => {
+				const event = parseFeishuCardActionEvent(data);
+				if (event && this.cardActionHandler) await this.cardActionHandler(event);
 			},
 			"vc.meeting.recording_started_v1": async (data) => {
 				this.onMeetingRecordingEvent("started", data);
@@ -462,18 +473,17 @@ export class FeishuAdapter implements PlatformAdapter {
 	}
 
 	/** Send an interactive card. Returns the Feishu message_id for later updates. */
-	async sendCard(chatId: string, card: Record<string, unknown>, replyTo?: string): Promise<SendResult> {
+	async sendCard(chatId: string, card: Record<string, unknown>, replyTo?: string, replyInThread = false): Promise<SendResult> {
 		try {
-			const res = await this.client.im.v1.message.create({
+			const payload = { msg_type: "interactive", content: JSON.stringify(card) };
+			const res = replyTo ? await this.client.im.v1.message.reply({
+				path: { message_id: replyTo },
+				data: { ...payload, reply_in_thread: replyInThread },
+			}) : await this.client.im.v1.message.create({
 				params: { receive_id_type: "chat_id" },
-				data: {
-					receive_id: chatId,
-					msg_type: "interactive",
-					content: JSON.stringify(card),
-				},
+				data: { receive_id: chatId, ...payload },
 			});
 			if (res.code !== 0) return { success: false, error: res.msg ?? `feishu code ${res.code}` };
-			void replyTo;
 			return { success: true, messageId: res.data?.message_id };
 		} catch (err) {
 			return { success: false, error: err instanceof Error ? err.message : String(err) };
@@ -493,6 +503,30 @@ export class FeishuAdapter implements PlatformAdapter {
 			return { success: false, error: err instanceof Error ? err.message : String(err) };
 		}
 	}
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+	return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function cardActionId(messageId: string, openId: string, element: string, value: unknown): string {
+	const action = isRecord(value) ? String(value.beemax_action ?? "") : "";
+	const approvalId = isRecord(value) ? String(value.approval_id ?? "") : "";
+	const choice = isRecord(value) ? String(value.choice ?? "") : "";
+	return `feishu-card:${messageId}:${openId}:${element}:${action}:${approvalId}:${choice}`;
+}
+
+export function parseFeishuCardActionEvent(data: RawCardActionEvent): PlatformCardAction | undefined {
+	const event = normalizeCardAction(data);
+	if (!event) return undefined;
+	return {
+		messageId: event.messageId,
+		chatId: event.chatId,
+		userId: event.operator.openId,
+		userIdAlt: data.operator?.union_id ?? event.operator.userId,
+		actionId: cardActionId(event.messageId, event.operator.openId, event.action.name ?? event.action.tag, event.action.value),
+		value: isRecord(event.action.value) ? event.action.value : {},
+	};
 }
 
 // --- payload builders ----------------------------------------------------

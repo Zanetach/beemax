@@ -263,6 +263,52 @@ test("Dispatcher delegates turns to an injected Agent Runtime", async () => {
 	assert.equal(disposed, 0);
 });
 
+test("Dispatcher forwards authorized card approval actions through the Core semantic boundary", async () => {
+	let inbound;
+	let cardAction;
+	let finishTurn;
+	const actions = [];
+	const platform = {
+		name: "feishu", isConnected: true,
+		onMessage: (handler) => { inbound = handler; },
+		onCardAction: (handler) => { cardAction = handler; },
+		connect: async () => true, disconnect: async () => undefined,
+		send: async () => ({ success: true }), editMessage: async () => ({ success: true }),
+		sendCard: async () => ({ success: true, messageId: "card-1" }), updateCard: async () => ({ success: true }),
+		sendTyping: async () => undefined, stopTyping: async () => undefined,
+	};
+	const interaction = {
+		dispatch: async (action, sink) => {
+			actions.push(action);
+			if (action.type === "message.send") {
+				await sink({ type: "approval.requested", turnId: "turn", toolName: "bash", details: undefined });
+				return new Promise((resolve) => { finishTurn = async () => {
+					await sink({ type: "approval.resolved", turnId: "turn", toolName: "bash", allowed: true });
+					const result = { answer: "ok", model: "test", durationMs: 1, usage: {} };
+					await sink({ type: "turn.finished", turnId: "turn", result });
+					resolve(result);
+				}; });
+			}
+			return { handled: true };
+		},
+		snapshot: async () => ({ phase: "idle", updatedAt: Date.now() }),
+		handleApprovalReply: async () => false,
+	};
+	const dispatcher = new Dispatcher({ runtime: { isBusy: () => false, handleControl: async () => undefined }, interaction, flushIntervalMs: 0 }, platform);
+	const turn = inbound({ text: "do it", messageType: "text", source: { ...source, messageId: "request-1" }, mediaPaths: [], mediaTypes: [], raw: {}, timestamp: Date.now() });
+	await new Promise((resolve) => setImmediate(resolve));
+	const value = { beemax_action: "approval.decide", approval_id: "approval:turn", choice: "once" };
+	await cardAction({ messageId: "card-1", chatId: source.chatId, userId: source.userId, actionId: "click-stale", value: { ...value, approval_id: "approval:older" } });
+	await cardAction({ messageId: "card-1", chatId: source.chatId, userId: "attacker", actionId: "click-2", value: { ...value, choice: "session" } });
+	await cardAction({ messageId: "card-1", chatId: source.chatId, userId: source.userId, actionId: "click-1", value });
+	await cardAction({ messageId: "card-1", chatId: source.chatId, userId: source.userId, actionId: "click-replay", value });
+	assert.equal(actions.filter((action) => action.type === "approval.decide").length, 1);
+	assert.deepEqual(actions.at(-1), { type: "approval.decide", source: { ...source, messageId: "request-1" }, choice: "once", actionId: "click-1" });
+	await finishTurn();
+	await turn;
+	dispatcher.dispose();
+});
+
 test("Dispatcher delivers a second inbound message as a native follow-up to the active turn", async () => {
 	let inbound;
 	let finish;

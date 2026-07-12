@@ -18,12 +18,17 @@ import {
 	type InteractionEvent,
 	type AgentRuntimePort,
 } from "@beemax/core";
-import type { InboundMessage, PlatformAdapter } from "./types.ts";
+import type { InboundMessage, PlatformAdapter, PlatformCardAction } from "./types.ts";
 import { CardSession } from "../card/session.ts";
 import { renderCard, type CardRenderOptions } from "../card/render.ts";
 import { FlushController } from "../card/flush.ts";
 import { MessageDeduplicator } from "./message-deduplicator.ts";
 import { prepareAgentMediaInput } from "./media-input.ts";
+
+interface CardBinding {
+	source: InboundMessage["source"];
+	pendingApprovalId?: string;
+}
 
 export interface DispatcherDeps {
 	runtime: AgentRuntimePort<InboundMessage["source"]>;
@@ -49,6 +54,7 @@ export class Dispatcher {
 	private readonly profileId: string;
 	private readonly deduplicator: MessageDeduplicator;
 	private readonly sessionOverrides = new Map<string, InboundMessage["source"]>();
+	private readonly cardBindings = new Map<string, CardBinding>();
 	private static readonly maxSessionOverrides = 10_000;
 
 	constructor(deps: DispatcherDeps, platform: PlatformAdapter) {
@@ -67,6 +73,7 @@ export class Dispatcher {
 				console.error(`[beemax] message dispatch failed: ${error instanceof Error ? error.message : String(error)}`);
 			});
 		});
+		this.platform.onCardAction?.((action) => this.handleCardAction(action));
 	}
 
 	private async handle(msg: InboundMessage): Promise<void> {
@@ -110,11 +117,15 @@ export class Dispatcher {
 		const renderUpdate = async (): Promise<boolean> => {
 			const rendered = renderCard(card, this.deps.cardOptions);
 			if (!cardMessageId) {
-				const res = await this.platform.sendCard(chatId, rendered, msg.source.messageId);
-				if (res.success && res.messageId) cardMessageId = res.messageId;
+				const res = await this.platform.sendCard(chatId, rendered, msg.source.messageId, Boolean(msg.source.threadId));
+				if (res.success && res.messageId) {
+					cardMessageId = res.messageId;
+					this.rememberCardBinding(res.messageId, msg.source, card.pendingApprovalId);
+				}
 				return res.success;
 			}
 			const res = await this.platform.updateCard(cardMessageId, rendered);
+			if (res.success) this.rememberCardBinding(cardMessageId, msg.source, card.pendingApprovalId);
 			return res.success;
 		};
 
@@ -172,6 +183,28 @@ export class Dispatcher {
 
 	dispose(): void {
 		this.deps.approvalBroker?.dispose();
+	}
+
+	private async handleCardAction(action: PlatformCardAction): Promise<void> {
+		const binding = this.cardBindings.get(action.messageId);
+		const source = binding?.source;
+		if (!binding || !source || source.chatId !== action.chatId) return;
+		const expectedUserIds = [source.userId, source.userIdAlt].filter((value): value is string => Boolean(value));
+		const actionUserIds = [action.userId, action.userIdAlt].filter((value): value is string => Boolean(value));
+		const sameUser = expectedUserIds.length > 0 && actionUserIds.some((value) => expectedUserIds.includes(value));
+		if (!sameUser || action.value.beemax_action !== "approval.decide") return;
+		const choice = action.value.choice;
+		if (choice !== "once" && choice !== "session" && choice !== "deny") return;
+		if (typeof action.value.approval_id !== "string" || action.value.approval_id !== binding.pendingApprovalId) return;
+		// Consume before dispatch so concurrent/re-delivered clicks fail closed.
+		binding.pendingApprovalId = undefined;
+		await this.interaction.dispatch({ type: "approval.decide", source, choice, actionId: action.actionId });
+	}
+
+	private rememberCardBinding(messageId: string, source: InboundMessage["source"], pendingApprovalId?: string): void {
+		this.cardBindings.delete(messageId);
+		if (this.cardBindings.size >= Dispatcher.maxSessionOverrides) this.cardBindings.delete(this.cardBindings.keys().next().value!);
+		this.cardBindings.set(messageId, { source: { ...source }, pendingApprovalId });
 	}
 
 	private setSessionOverride(source: InboundMessage["source"], threadId: string | undefined): void {

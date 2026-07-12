@@ -47,6 +47,7 @@ export function renderCard(session: CardSession, opts: CardRenderOptions = {}): 
 
 	const timelineElements = renderTimeline(session, opts.reasoningDisplay === "raw");
 	elements.push(...timelineElements);
+	if (session.pendingApprovalId) elements.push(renderApprovalActions(session.pendingApprovalId));
 
 	elements.push({ tag: "hr", element_id: "main_divider" });
 	if (!timelineElements.length) {
@@ -70,6 +71,28 @@ export function renderCard(session: CardSession, opts: CardRenderOptions = {}): 
 		config: { update_multi: true, summary: { content: status.summary ?? status.subtitle } },
 		header,
 		body: { elements },
+	};
+}
+
+function renderApprovalActions(approvalId: string): Record<string, unknown> {
+	const button = (elementId: string, text: string, choice: "once" | "session" | "deny", type: "default" | "primary" | "danger" = "default") => ({
+		tag: "button",
+		element_id: elementId,
+		text: { tag: "plain_text", content: text },
+		type,
+		size: "small",
+		width: "fill",
+		behaviors: [{ type: "callback", value: { beemax_action: "approval.decide", approval_id: approvalId, choice } }],
+	});
+	return {
+		tag: "column_set",
+		element_id: "approval_actions",
+		horizontal_spacing: "8px",
+		columns: [
+			{ tag: "column", width: "weighted", weight: 1, elements: [button("approve_once", "允许一次", "once", "primary")] },
+			{ tag: "column", width: "weighted", weight: 1, elements: [button("approve_session", "本会话允许", "session")] },
+			{ tag: "column", width: "weighted", weight: 1, elements: [button("approve_deny", "拒绝", "deny", "danger")] },
+		],
 	};
 }
 

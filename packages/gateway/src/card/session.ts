@@ -35,6 +35,7 @@ export class CardSession {
 	timeline = new CardTimeline();
 	private thinkingNormalizer = new StreamingTextNormalizer();
 	private answerNormalizer = new StreamingTextNormalizer();
+	pendingApprovalId?: string;
 
 	get toolCount(): number {
 		return this.toolCallCount;
@@ -102,6 +103,8 @@ export class CardSession {
 				break;
 			}
 			case "approval.updated": {
+				const status = String(data.status ?? "pending");
+				this.pendingApprovalId = status === "pending" ? String(data.id ?? "approval") : undefined;
 				this.timeline.recordNotice(String(data.id ?? "approval"), "工具审批", String(data.status ?? "pending"), String(data.message ?? ""));
 				break;
 			}

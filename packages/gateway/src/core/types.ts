@@ -50,6 +50,18 @@ export interface SendResult {
 	error?: string;
 }
 
+/** A semantic action emitted by an interactive channel card. */
+export interface PlatformCardAction {
+	messageId: string;
+	chatId: string;
+	userId?: string;
+	userIdAlt?: string;
+	actionId: string;
+	value: Record<string, unknown>;
+}
+
+export type CardActionHandler = (action: PlatformCardAction) => void | Promise<void>;
+
 /** What a platform adapter must implement. */
 export interface PlatformAdapter {
 	readonly name: PlatformName;
@@ -66,6 +78,8 @@ export interface PlatformAdapter {
 	 * Adapters must call this exactly once per inbound event.
 	 */
 	onMessage(handler: MessageHandler): void;
+	/** Register interactive-card actions when the platform supports them. */
+	onCardAction?(handler: CardActionHandler): void;
 
 	/** Send a text/markdown message to a chat. Chunks as needed. */
 	send(chatId: string, content: string, opts?: SendOptions): Promise<SendResult>;
@@ -77,7 +91,7 @@ export interface PlatformAdapter {
 	editMessage(chatId: string, messageId: string, content: string): Promise<SendResult>;
 
 	/** Send an interactive card. Returns the message_id for later updates. */
-	sendCard(chatId: string, card: Record<string, unknown>, replyTo?: string): Promise<SendResult>;
+	sendCard(chatId: string, card: Record<string, unknown>, replyTo?: string, replyInThread?: boolean): Promise<SendResult>;
 
 	/** Update a previously-sent interactive card in place (streaming). */
 	updateCard(messageId: string, card: Record<string, unknown>): Promise<SendResult>;

@@ -13,9 +13,11 @@ export type {
 	SessionSource,
 	InboundMessage,
 	MessageHandler,
+	CardActionHandler,
+	PlatformCardAction,
 	MessageType,
 	SendResult,
 	SendOptions,
 } from "./core/types.ts";
-export { FeishuAdapter, parseFeishuMediaDescriptor, type FeishuMediaDescriptor } from "./platforms/feishu/adapter.ts";
+export { FeishuAdapter, parseFeishuCardActionEvent, parseFeishuMediaDescriptor, type FeishuMediaDescriptor } from "./platforms/feishu/adapter.ts";
 export { loadFeishuSettings, validateFeishuWebhookSettings, type FeishuSettings } from "./platforms/feishu/settings.ts";
