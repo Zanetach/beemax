@@ -5,6 +5,7 @@ import type { ToolApprovalBroker, ToolApprovalChoice } from "./tool-approval.ts"
 import type { InteractionEventJournal } from "./interaction-event-journal.ts";
 import type { ToolApprovalDetails } from "./tool-approval.ts";
 import { conversationIdentity, type ConversationIdentity } from "./agent-scope.ts";
+import type { InteractionInputQueueStore } from "./interaction-input-queue.ts";
 
 export type InteractionSurface = "chat" | "gateway" | "web";
 export type InteractionPhase = "idle" | "running" | "queued" | "awaiting_approval" | "completed" | "failed" | "cancelled";
@@ -112,6 +113,7 @@ export interface InteractionEventAdapterOptions<Source extends BeeMaxRuntimeSour
 	actionHistoryLimit?: number;
 	eventJournal?: InteractionEventJournal;
 	telemetry?: InteractionTelemetrySink;
+	inputQueueStore?: InteractionInputQueueStore;
 }
 
 /**
@@ -144,6 +146,7 @@ export class InteractionEventAdapter<Source extends BeeMaxRuntimeSource = BeeMax
 	private readonly actionHistoryLimit: number;
 	private readonly eventJournal?: InteractionEventJournal;
 	private readonly telemetry?: InteractionTelemetrySink;
+	private readonly inputQueueStore?: InteractionInputQueueStore;
 
 	constructor(runtime: AgentRuntimePort<Source>, options: InteractionEventAdapterOptions<Source> = {}) {
 		this.runtime = runtime;
@@ -155,6 +158,7 @@ export class InteractionEventAdapter<Source extends BeeMaxRuntimeSource = BeeMax
 		this.actionHistoryLimit = Math.max(20, Math.min(options.actionHistoryLimit ?? 200, 10_000));
 		this.eventJournal = options.eventJournal;
 		this.telemetry = options.telemetry;
+		this.inputQueueStore = options.inputQueueStore;
 		this.unsubscribeApproval = this.approvalBroker && typeof this.approvalBroker.subscribe === "function" ? this.approvalBroker.subscribe((event) => {
 			void (event.type === "requested"
 				? this.approvalRequested(event.source as Source, event.toolName, event.details)
@@ -247,7 +251,7 @@ export class InteractionEventAdapter<Source extends BeeMaxRuntimeSource = BeeMax
 		const current = this.states.get(interactionKey(source));
 		const [status, usage] = await Promise.all([this.runtime.modelStatus?.(source), this.runtime.usage?.(source)]);
 		const key = interactionKey(source);
-		return { phase: current?.phase ?? "idle", turnId: current?.turnId, model: status?.model, usage, queueDepth: (this.queuedInputs.get(key)?.length ?? 0) + (this.nativeQueuedInputs.get(key) ?? 0), updatedAt: current?.updatedAt ?? Date.now() };
+		return { phase: current?.phase ?? "idle", turnId: current?.turnId, model: status?.model, usage, queueDepth: this.fallbackQueue(key).length + (this.nativeQueuedInputs.get(key) ?? 0), updatedAt: current?.updatedAt ?? Date.now() };
 	}
 
 	/** Reconnection-safe semantic events, bounded per interaction session. */
@@ -279,9 +283,10 @@ export class InteractionEventAdapter<Source extends BeeMaxRuntimeSource = BeeMax
 	/** Consume the oldest fallback input after a turn reaches a terminal state. */
 	takeQueuedInput(source: Source): string | undefined {
 		const key = interactionKey(source);
-		const queue = this.queuedInputs.get(key);
+		const queue = this.fallbackQueue(key);
 		const text = queue?.shift();
-		if (!queue?.length) this.queuedInputs.delete(key);
+		if (!queue.length) this.queuedInputs.delete(key);
+		this.inputQueueStore?.save(key, queue);
 		return text;
 	}
 
@@ -307,7 +312,9 @@ export class InteractionEventAdapter<Source extends BeeMaxRuntimeSource = BeeMax
 			this.cancellationPublished.add(key);
 			await this.publish(source, state.turnId, { type: "turn.cancelled" }, sink);
 		}
-		const localQueuedCancelled = this.queuedInputs.delete(key);
+		const localQueuedCancelled = this.fallbackQueue(key).length > 0;
+		this.queuedInputs.delete(key);
+		if (localQueuedCancelled) this.inputQueueStore?.save(key, []);
 		const nativeQueuedCancelled = this.nativeQueuedInputs.delete(key);
 		const queuedCancelled = localQueuedCancelled || nativeQueuedCancelled;
 		if (!cancelled) this.cancellationRequested.delete(key);
@@ -319,10 +326,11 @@ export class InteractionEventAdapter<Source extends BeeMaxRuntimeSource = BeeMax
 		const turnId = this.states.get(key)?.turnId;
 		const phase = this.states.get(key)?.phase;
 		if (!turnId || (phase !== "running" && phase !== "queued")) return { queued: false, position: 0, replaced: false, mode };
-		const queue = this.queuedInputs.get(key) ?? [];
+		const queue = this.fallbackQueue(key);
 		if (queue.length >= 100) return { queued: false, position: queue.length, replaced: false, mode };
 		queue.push(text);
 		this.queuedInputs.set(key, queue);
+		this.inputQueueStore?.save(key, queue);
 		await this.publish(source, turnId, { type: "turn.queued", position: queue.length, replaced: false, mode }, sink);
 		return { queued: true, position: queue.length, replaced: false, mode };
 	}
@@ -342,6 +350,14 @@ export class InteractionEventAdapter<Source extends BeeMaxRuntimeSource = BeeMax
 			}
 		}
 		return this.queue(source, text, mode === "steer" ? "steer_fallback" : "queue", sink);
+	}
+
+	private fallbackQueue(key: string): string[] {
+		const current = this.queuedInputs.get(key);
+		if (current) return current;
+		const restored = this.inputQueueStore?.load(key) ?? [];
+		if (restored.length) this.queuedInputs.set(key, restored);
+		return restored;
 	}
 
 	private apply(source: Source, event: InteractionEvent): void {

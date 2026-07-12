@@ -1,6 +1,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { InteractionEventAdapter, reduceInteractionEvent } from "../dist/index.js";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { FileInteractionInputQueueStore, InteractionEventAdapter, reduceInteractionEvent } from "../dist/index.js";
 
 const source = { platform: "cli", chatId: "local", chatType: "dm", userId: "local" };
 
@@ -199,6 +202,27 @@ test("interaction runtime preserves an ordered bounded queue and clears it on ca
 	assert.equal(cancelled.queuedCancelled, true);
 	assert.equal(interaction.takeQueuedInput(source), undefined);
 	await assert.rejects(turn, /aborted/);
+});
+
+test("fallback conversation inputs survive an Agent process restart in FIFO order", async () => {
+	const directory = await mkdtemp(join(tmpdir(), "beemax-input-queue-"));
+	try {
+		const path = join(directory, "queue.json");
+		const runtime = {
+			run() { return new Promise(() => undefined); },
+			async cancel() { return false; }, async modelStatus() { return undefined; }, async usage() { return undefined; },
+		};
+		const first = new InteractionEventAdapter(runtime, { inputQueueStore: new FileInteractionInputQueueStore(path) });
+		void first.dispatch({ type: "message.send", source, text: "first", input: { timeoutMs: 1_000 } });
+		await new Promise((resolve) => setImmediate(resolve));
+		await first.dispatch({ type: "turn.queue", source, text: "second" });
+		await first.dispatch({ type: "turn.queue", source, text: "third" });
+
+		const restarted = new InteractionEventAdapter(runtime, { inputQueueStore: new FileInteractionInputQueueStore(path) });
+		assert.equal(restarted.takeQueuedInput(source), "second");
+		assert.equal(restarted.takeQueuedInput(source), "third");
+		assert.equal(restarted.takeQueuedInput(source), undefined);
+	} finally { await rm(directory, { recursive: true, force: true }); }
 });
 
 test("steer and follow-up use native runtime delivery when available", async () => {
