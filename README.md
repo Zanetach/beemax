@@ -1,6 +1,6 @@
 # BeeMax Agent
 
-An autonomous agent based on [Pi](https://pi.dev), targeting feature parity with Hermes Agent's gateway + memory model.
+A self-contained personal Agent runtime powered by [Pi](https://pi.dev), with durable memory, progressive Skills, task orchestration, automation, and multi-channel gateways.
 
 ## Status: usable personal-agent runtime
 
