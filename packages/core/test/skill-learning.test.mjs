@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -21,6 +21,26 @@ test("capability discovery searches the current tool inventory before learning a
 		assert.deepEqual(discovered.details.skills, []);
 		assert.equal(existsSync(join(root, "state", "skill-learning.key")), false);
 		assert.equal(tools.get("capability_discover").beemaxPolicy.sideEffect, "none");
+	} finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("Skill tools progressively activate a project Skill route and only its declared resource", async () => {
+	const root = mkdtempSync(join(tmpdir(), "beemax-progressive-skill-tools-"));
+	try {
+		const project = join(root, "project-skills"); const skill = join(project, "report-review");
+		mkdirSync(join(skill, "modules"), { recursive: true });
+		writeFileSync(join(skill, "SKILL.md"), `---\nname: report-review\ndescription: "Review business reports"\ntriggers: ["report review"]\n---\nUse the route table.`);
+		writeFileSync(join(skill, "manifest.json"), JSON.stringify({ version: 1, routes: { review: { module: "modules/review.md", tools: ["web_search"] } } }));
+		writeFileSync(join(skill, "modules", "review.md"), "Review only material claims.");
+		const activations = [];
+		const tools = new Map(createSkillTools(root, () => undefined, [{ name: "web_search", description: "Search public sources" }], undefined, [project], (names) => activations.push(names)).map((tool) => [tool.name, tool]));
+		const discovery = await tools.get("capability_discover").execute("discover", { query: "report review" });
+		assert.deepEqual(discovery.details.skills.map((item) => item.name), ["report-review"]);
+		const activated = await tools.get("skill_activate").execute("activate", { name: "report-review" }); assert.match(activated.content[0].text, /route table/);
+		await tools.get("skill_route").execute("route", { route: "review" });
+		assert.equal((await tools.get("skill_resource_read").execute("read", { path: "modules/review.md" })).content[0].text, "Review only material claims.");
+		assert.equal((await tools.get("skill_complete").execute("complete", {})).details.state, "completed");
+		assert.deepEqual(activations, [["skill_activate", "skill_read"], ["skill_route", "skill_complete"], ["skill_resource_read", "skill_complete", "web_search"]]);
 	} finally { rmSync(root, { recursive: true, force: true }); }
 });
 
@@ -62,6 +82,17 @@ test("direct Skill creation rejects credential material at the durable write bou
 	try {
 		const tool = toolsAt(root).get("skill_create");
 		await assert.rejects(() => tool.execute("create", { name: "unsafe-direct", description: "Unsafe direct workflow", instructions: 'Read config {"password":"must-not-persist"} and continue with the documented workflow.' }), /credential-like/i);
+	} finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("legacy skill_read preserves one-call activation for self-contained Skills", async () => {
+	const root = mkdtempSync(join(tmpdir(), "beemax-legacy-skill-")); const activations = [];
+	try {
+		const tools = new Map(createSkillTools(root, () => undefined, [{ name: "web_search", description: "Search" }], undefined, [], (names) => activations.push(names)).map((tool) => [tool.name, tool]));
+		await tools.get("skill_create").execute("create", { name: "legacy-review", description: "Review a source using the legacy workflow", instructions: "Search the primary source and produce a concise review." });
+		const read = await tools.get("skill_read").execute("read", { name: "legacy-review" });
+		assert.equal(read.details.legacy, true); assert.equal(read.details.state.state, "module_loaded"); assert.match(read.content[0].text, /Search the primary source/);
+		assert.deepEqual(activations.at(-1), ["skill_complete"]);
 	} finally { rmSync(root, { recursive: true, force: true }); }
 });
 

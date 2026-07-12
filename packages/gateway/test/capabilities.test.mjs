@@ -34,15 +34,15 @@ test("managed skills can evolve without escaping their directory", async () => {
 		});
 		assert.equal(reloadNeeded, true);
 		const read = await tools.get("skill_read").execute("read", { name: "weekly-review" });
-		assert.match(read.content[0].text, /managed-by: beemax/);
-		assert.match(read.content[0].text, /description: "Prepare a concise verified weekly review: safely"/);
+		assert.match(read.content[0].text, /Collect completed tasks, blockers, and next actions/);
+		assert.equal(read.details.descriptor.name, "weekly-review");
 		await assert.rejects(() => tools.get("skill_read").execute("bad", { name: "../escape" }));
 	} finally {
 		rmSync(root, { recursive: true, force: true });
 	}
 });
 
-test("Pi discovers managed skills and hot-reloads evolved skills", async () => {
+test("Pi keeps Skill metadata out of the base prompt and hot-reloads the registry", async () => {
 	const root = mkdtempSync(join(tmpdir(), "beemax-skill-reload-test-"));
 	const agentDir = join(root, "agent");
 	const cwd = join(root, "cwd");
@@ -57,7 +57,8 @@ test("Pi discovers managed skills and hot-reloads evolved skills", async () => {
 	});
 	const session = await factory("skill-test", { platform: "feishu", chatId: "c", chatType: "dm", userId: "u" });
 	try {
-		assert.match(session.agent.state.systemPrompt, /existing/);
+		assert.doesNotMatch(session.agent.state.systemPrompt, /Existing verified workflow/);
+		assert.ok(session.agent.state.tools.some((tool) => tool.name === "capability_discover"));
 		const create = session.agent.state.tools.find((tool) => tool.name === "skill_create");
 		await create.execute("create", {
 			name: "evolved-test",
@@ -65,7 +66,10 @@ test("Pi discovers managed skills and hot-reloads evolved skills", async () => {
 			instructions: "Run the verified workflow and report concrete evidence before completion.",
 		});
 		assert.equal(await reloadRuntimeResourcesIfNeeded(session), true);
-		assert.match(session.agent.state.systemPrompt, /evolved-test/);
+		assert.doesNotMatch(session.agent.state.systemPrompt, /A durable evolved test workflow/);
+		const discover = session.agent.state.tools.find((tool) => tool.name === "capability_discover");
+		const result = await discover.execute("discover", { query: "evolved-test", topK: 3 });
+		assert.equal(result.details.skills[0].name, "evolved-test");
 	} finally {
 		session.dispose();
 		rmSync(root, { recursive: true, force: true });

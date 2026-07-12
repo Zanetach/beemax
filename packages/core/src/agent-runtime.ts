@@ -139,15 +139,19 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 		const factory = input.mode === "automation" ? this.createAutomationAgent ?? this.createAgent : this.createAgent;
 		return this.sessions.run(input.source, factory, async (session) => {
 			await this.sessionCatalog?.touch(input.source);
+			const scopedSession = session.piSession as typeof session.piSession & { beemaxSkillHistorySanitized?: boolean };
+			if (!scopedSession.beemaxSkillHistorySanitized) { releaseHistoricalSkillContext(session.piSession); scopedSession.beemaxSkillHistorySanitized = true; }
+			const turnMessageStart = session.piSession.agent.state.messages.length;
 			if (input.signal?.aborted) {
 				await session.piSession.abort();
 				throw new AgentRunError("Agent turn was cancelled", false, input.signal.reason);
 			}
 			const startedAt = Date.now();
 			const planning = input.mode === "interactive" || !input.mode ? this.planningPolicy?.decide(input.text) : undefined;
+			const requestedText = explicitSkillRequest(input.text);
 			const enrichedText = input.mode === "interactive" || !input.mode
-				? this.context?.enrich(input.source, input.text, { model: modelOf(session.piSession.agent) }) ?? input.text
-				: input.text;
+				? this.context?.enrich(input.source, requestedText, { model: modelOf(session.piSession.agent) }) ?? requestedText
+				: requestedText;
 			const objectiveBinding = (input.mode === "interactive" || !input.mode) && (planning?.mode !== "direct" || Boolean(input.objectiveTaskId) || isObjectiveContinuation(input.text)) ? this.createObjective(input, startedAt) : undefined;
 			const objective = objectiveBinding?.task;
 			const planningScope = conversationKey(input.source);
@@ -241,6 +245,8 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 				if (cause instanceof AgentRunError) throw cause;
 				throw new AgentRunError(timedOut && input.timeoutMs !== null ? `Agent turn timed out after ${Math.round(input.timeoutMs / 60_000)} minutes` : errorMessage(cause), timedOut, cause, timedOut || isRecoverableModelFailure(cause));
 			} finally {
+				releaseHistoricalSkillContext(session.piSession, turnMessageStart);
+				(session.piSession as typeof session.piSession & { beemaxResetTurnResources?: () => void }).beemaxResetTurnResources?.();
 				if (activeTools) session.piSession.setActiveToolsByName(activeTools);
 				if (planningLease) this.planningBudgets?.end(planningScope, planningLease);
 				if (timeout) clearTimeout(timeout);
@@ -370,7 +376,22 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 	dispose(): void { this.sessions.dispose(); }
 }
 
+function releaseHistoricalSkillContext(session: AgentSession, fromIndex = 0): void {
+	const names = new Set(["skill_activate", "skill_read", "skill_resource_read"]);
+	const current = session.agent.state.messages; let messages: typeof current | undefined;
+	for (let index = Math.max(0, fromIndex); index < current.length; index++) {
+		const message = current[index]!;
+		if (message.role !== "toolResult" || !names.has(message.toolName) || message.content.every((block) => block.type !== "text" || !block.text || block.text.startsWith("[Turn-scoped Skill context"))) continue;
+		messages ??= [...current]; messages[index] = { ...message, content: [{ type: "text" as const, text: "[Turn-scoped Skill context released; version and loaded-resource summary retained in tool details.]" }] };
+	}
+	if (messages) session.agent.state.messages = messages;
+}
+
 function isObjectiveContinuation(text: string): boolean { return /^(?:(?:继续|接着|补充|换成|改成|再加|先不要)(?:\s|处理|这个|该|中文|英文|一个|做|$)|(?:continue|go on|change|add)\b)/iu.test(text.trim()); }
+function explicitSkillRequest(text: string): string {
+	const match = text.match(/^\/skill:([a-z0-9]+(?:-[a-z0-9]+)*)(?:\s+([\s\S]*))?$/i); if (!match) return text;
+	return `[Explicit Skill request: ${match[1]}]\nUse capability_discover with this exact Skill name, then follow skill_activate, skill_route, skill_resource_read, and skill_complete. Do not expand or read SKILL.md directly.${match[2]?.trim() ? `\n\nUser request: ${match[2].trim()}` : ""}`;
+}
 
 function completedPlanningTool(toolName: string, result: unknown, args: unknown, delegatedTaskId?: string): { accepted: boolean; delegatedTaskId?: string } {
 	const details = result && typeof result === "object" ? (result as { details?: unknown }).details : undefined;

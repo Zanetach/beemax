@@ -74,7 +74,9 @@ export function buildBeeMaxRuntimeFactory<Source extends BeeMaxRuntimeSource = B
 			agentDir,
 			settingsManager,
 			appendSystemPromptOverride: (base) => [...base, channelPrompt],
-			skillsOverride: (base) => ({ ...base, skills: filterEligibleSkills(base.skills, opts.skillToolset) }),
+			// Discovery is owned by capability_discover. Keep Skills registered for
+			// explicit /skill:name compatibility without injecting the full catalog.
+			skillsOverride: (base) => ({ ...base, skills: filterEligibleSkills(base.skills, opts.skillToolset).map((skill) => ({ ...skill, disableModelInvocation: true })) }),
 		});
 		await resourceLoader.reload();
 		const sessionManager = await restoreOrCreateSession(cwd, sessionDir, sessionId);
@@ -85,6 +87,7 @@ export function buildBeeMaxRuntimeFactory<Source extends BeeMaxRuntimeSource = B
 			(provider) => authStorage.getApiKey(provider, { includeFallback: false }),
 			(names) => sessionRef?.setActiveToolsByName([...new Set([...sessionRef.getActiveToolNames(), "capability_discover", ...names])]),
 		);
+		const turnResetters = customTools.flatMap((tool) => typeof (tool as ToolDefinition & { beemaxTurnReset?: () => void }).beemaxTurnReset === "function" ? [(tool as ToolDefinition & { beemaxTurnReset: () => void }).beemaxTurnReset] : []);
 		const policies = new ToolPolicyRegistry(customTools);
 		policies.enable(opts.tools ?? [
 			"read", "bash", "edit", "write", "grep", "find", "ls", "web_search", "web_extract",
@@ -97,6 +100,7 @@ export function buildBeeMaxRuntimeFactory<Source extends BeeMaxRuntimeSource = B
 			customTools: governedTools, authStorage, modelRegistry, settingsManager, resourceLoader, sessionManager,
 		});
 		sessionRef = session;
+		(session as AgentSession & { beemaxResetTurnResources?: () => void }).beemaxResetTurnResources = () => { for (const reset of turnResetters) reset(); };
 		if (modelFallbackMessage) console.warn(`[beemax] ${modelFallbackMessage}`);
 		installSecurityHook(session, cwd, source, opts.authorizeTool, policies, opts.toolAudit);
 		return session;
@@ -146,9 +150,11 @@ function hardBlockReason(toolName: string, args: unknown, cwd: string): string |
 		if (rel === ".." || rel.startsWith(`..${sep}`) || (isAbsolute(rel) && candidate !== cwd)) return `Tool path is outside the configured workspace: ${input.path}`;
 		const normalized = candidate.replaceAll("\\", "/").toLowerCase();
 		const name = basename(normalized);
+		if (name === "skill.md" || normalized.includes("/.agents/skills/") || normalized.includes("/.codex/skills/") || normalized.startsWith(`${resolve(cwd, "skills").replaceAll("\\", "/").toLowerCase()}/`)) return "Skill resources must be accessed through capability_discover and the Skill Runtime lifecycle";
 		if (/^\.env(?:\.(?!example$|sample$).+)?$/.test(name) || normalized.includes("/.ssh/") || normalized.includes("/.aws/credentials") || normalized.includes("/.config/gcloud/") || name === "auth.json" || name === "credentials.json") return `Access to sensitive credential file is blocked: ${input.path}`;
 	}
 	if (toolName === "bash" && typeof input.command === "string") {
+		if (/(?:^|[\s'"`])(?:\.\/)?skills\/|\/skills\/|\bSKILL\.md\b/i.test(input.command)) return "Skill resources cannot be accessed through shell commands; use the Skill Runtime lifecycle";
 		for (const rule of [/\brm\s+[^\n]*(?:-rf|-fr)[^\n]*\s\/(?:\s|$)/i, /\b(?:mkfs|fdisk|parted)\b/i, /\bdd\b[^\n]*\bof=\/dev\//i, /\b(?:shutdown|reboot|poweroff|halt)\b/i, /:\(\)\s*\{\s*:\|:&\s*;\s*\}\s*;/]) if (rule.test(input.command)) return "Refusing a destructive host command";
 	}
 	return undefined;

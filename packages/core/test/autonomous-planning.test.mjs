@@ -58,6 +58,36 @@ test("Agent runtime continues once after capability discovery so activated tools
 	runtime.dispose();
 });
 
+test("Agent runtime releases Skill bodies at turn boundaries while retaining execution metadata", async () => {
+	const source = { platform: "cli", chatId: "skill-context", chatType: "dm", userId: "local" };
+	const agent = { state: { model: { id: "test" }, messages: [{ role: "toolResult", toolCallId: "old", toolName: "skill_resource_read", content: [{ type: "text", text: "old sensitive skill body" }], details: { sha256: "old-hash" } }] } };
+	let historicalAtPrompt = "";
+	const runtime = new BeeMaxAgentRuntime({ createAgent: async () => ({
+		agent, getActiveToolNames: () => ["capability_discover"], setActiveToolsByName: () => undefined, subscribe: () => () => undefined,
+		prompt: async () => {
+			historicalAtPrompt = agent.state.messages[0].content[0].text;
+			agent.state.messages = [...agent.state.messages, { role: "toolResult", toolCallId: "new", toolName: "skill_activate", content: [{ type: "text", text: "current skill body" }], details: { descriptor: { name: "review", sha256: "new-hash" } } }, { role: "assistant", content: [{ type: "text", text: "done" }], usage: { input: 1, output: 1 } }];
+		}, abort: async () => undefined, dispose: () => undefined,
+	}) });
+	await runtime.run({ source, text: "review", timeoutMs: 1_000 });
+	assert.doesNotMatch(historicalAtPrompt, /old sensitive/);
+	assert.doesNotMatch(agent.state.messages.find((message) => message.toolCallId === "new").content[0].text, /current skill body/);
+	assert.equal(agent.state.messages.find((message) => message.toolCallId === "new").details.descriptor.sha256, "new-hash");
+	runtime.dispose();
+});
+
+test("BeeMax explicit Skill commands enter the enforced runtime lifecycle instead of Pi body expansion", async () => {
+	const source = { platform: "cli", chatId: "explicit-skill", chatType: "dm", userId: "local" }; let received = "";
+	const agent = { state: { model: { id: "test" }, messages: [] } };
+	const runtime = new BeeMaxAgentRuntime({ context: { enrich: (_source, text) => `verified facts\n\n${text}`, record: () => undefined }, createAgent: async () => ({
+		agent, getActiveToolNames: () => ["capability_discover"], setActiveToolsByName: () => undefined, subscribe: () => () => undefined,
+		prompt: async (text) => { received = text; agent.state.messages = [{ role: "assistant", content: [{ type: "text", text: "done" }], usage: { input: 1, output: 1 } }]; }, abort: async () => undefined, dispose: () => undefined,
+	}) });
+	await runtime.run({ source, text: "/skill:contract-review inspect this", timeoutMs: 1_000 });
+	assert.match(received, /verified facts/); assert.match(received, /Explicit Skill request: contract-review/); assert.match(received, /capability_discover/); assert.doesNotMatch(received, /<skill name=/);
+	runtime.dispose();
+});
+
 test("planning policy does not over-delegate lightweight English or Chinese review requests", () => {
 	const policy = new AutonomousPlanningPolicy();
 	for (const prompt of ["Review this sentence", "Please look at this code snippet", "帮我看一下这段代码", "检查这句话是否通顺"]) {

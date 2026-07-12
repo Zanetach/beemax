@@ -112,6 +112,7 @@ export { createExecutionTools } from "./execution-tools.ts";
 export type { MediaOutboxPort } from "./media-outbox-port.ts";
 export { createAutomationTools } from "./automation-tools.ts";
 export { createSkillTools, type SkillCandidateTrialInput, type SkillCandidateTrialResult, type SkillCandidateVerifier, type SkillTrialAssertion, type SkillTrialToolCall } from "./skill-tools.ts";
+export { SkillRegistry, SkillRuntime, type SkillDescriptor, type SkillExecutionSnapshot, type SkillManifest, type SkillMatch, type SkillRouteManifest, type SkillRuntimeState } from "./skill-runtime.ts";
 export { createWebTools, type WebToolsOptions } from "./web-tools.ts";
 export { createBrowserTools, type BrowserToolsOptions } from "./browser-tools.ts";
 export {

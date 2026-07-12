@@ -1,11 +1,13 @@
 /** Managed instruction-only Skill evolution is Core runtime policy. */
-import { mkdir, readFile, readdir, rename, stat, unlink, writeFile } from "node:fs/promises";
+import { constants } from "node:fs";
+import { mkdir, open, readFile, readdir, rename, stat, unlink, writeFile } from "node:fs/promises";
 import { createHash, createHmac, randomBytes } from "node:crypto";
 import { resolve, sep } from "node:path";
 import { defineTool, type ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { MUTATING_TOOL_POLICY, READ_ONLY_TOOL_POLICY, withToolPolicy, type ToolPolicy } from "./tool-runtime.ts";
 import { assertNoCredentialMaterial } from "./credential-material.ts";
+import { SkillRegistry, SkillRuntime } from "./skill-runtime.ts";
 
 const SKILL_NAME = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 
@@ -20,35 +22,53 @@ export type SkillCandidateVerifier = (input: SkillCandidateTrialInput, signal?: 
 export function createSkillTools(agentDir: string, markReloadNeeded: () => void, availableTools: readonly Pick<ToolDefinition, "name" | "description">[] = [], verifyCandidate?: SkillCandidateVerifier, additionalSkillRoots: readonly string[] = [], activateTools?: (names: string[]) => void): ToolDefinition[] {
 	const root = resolve(agentDir, "skills");
 	const candidateRoot = resolve(agentDir, "skill-candidates");
+	const registry = new SkillRegistry([root, ...additionalSkillRoots.map((item) => resolve(item))]);
+	const runtime = new SkillRuntime(registry, 200_000, 20, availableTools.map((tool) => tool.name).filter((name) => name !== "bash"));
+	const markSkillsChanged = () => { registry.invalidate(); runtime.reset(); markReloadNeeded(); };
 	let signingKeyPromise: Promise<Buffer> | undefined;
 	const signingKey = () => signingKeyPromise ??= skillLearningKey(agentDir);
 	const tools = [
 		defineTool({ name: "capability_discover", label: "Discover Capabilities", description: "Search the tools, active Skills, and isolated Skill candidates actually available in this Profile before concluding a capability is missing.", parameters: Type.Object({ query: Type.String({ minLength: 1, maxLength: 500 }) }), execute: async (_id, params) => {
 			const terms = params.query.toLowerCase().split(/\s+/).filter(Boolean);
-			const installed = deduplicateSkills((await Promise.all([root, ...additionalSkillRoots].map((skillRoot) => listSkills(resolve(skillRoot))))).flat());
 			const existingKey = await readSkillLearningKey(agentDir);
 			const candidates = existingKey ? await listCandidates(candidateRoot, existingKey) : [];
 			const matches = <T extends { name: string; description: string }>(items: T[]) => items.filter((item) => terms.some((term) => `${item.name} ${item.description}`.toLowerCase().includes(term))).slice(0, 20);
-			const tools = matches([...availableTools]);
-			const skills = matches(installed);
-			activateTools?.([...tools.map((tool) => tool.name), ...(skills.length ? ["read", "skill_read"] : [])]);
-			return result("Capability discovery completed and matching capabilities were activated for this turn.", { tools, skills, candidates: matches(candidates.map((item) => ({ name: item.name, description: item.description, attempts: item.attempts.length }))), activatedTools: [...tools.map((tool) => tool.name), ...(skills.length ? ["read", "skill_read"] : [])] });
+			const matchedTools = matches([...availableTools]);
+			const skills = await runtime.discover(params.query, 5);
+			const tools = skills.length ? matchedTools.filter((tool) => tool.name !== "bash") : matchedTools;
+			activateTools?.([...tools.map((tool) => tool.name), ...(skills.length ? ["skill_activate", "skill_read"] : [])]);
+			return result("Capability discovery completed and matching capabilities were activated for this turn.", { tools, skills: skills.map(publicSkill), candidates: matches(candidates.map((item) => ({ name: item.name, description: item.description, attempts: item.attempts.length }))), activatedTools: [...tools.map((tool) => tool.name), ...(skills.length ? ["skill_activate", "skill_read"] : [])] });
 		} }),
-		defineTool({ name: "skill_list", label: "List Evolved Skills", description: "List instruction-only skills created in BeeMax's managed skill directory. Pi also loads trusted global and project skills automatically.", parameters: Type.Object({}), execute: async () => {
-			const skills = await listSkills(root); return result(skills.length ? skills.map((item) => `- ${item.name}: ${item.description}`).join("\n") : "No evolved skills yet.", { skills });
+		defineTool({ name: "skill_list", label: "List Skills", description: "List metadata for Profile, project, and global Skills without loading their instruction bodies.", parameters: Type.Object({}), execute: async () => {
+			const skills = await registry.list(); return result(skills.length ? skills.map((item) => `- ${item.name}: ${item.description}`).join("\n") : "No Skills available.", { skills: skills.map(publicSkill) });
 		} }),
-		defineTool({ name: "skill_read", label: "Read Evolved Skill", description: "Read a managed BeeMax skill's SKILL.md.", parameters: Type.Object({ name: Type.String({ pattern: "^[a-z0-9]+(?:-[a-z0-9]+)*$" }) }), execute: async (_id, params) => {
-			const path = skillPath(root, params.name); return result((await readFile(path, "utf8")).slice(0, 50_000), { name: params.name, path });
+		defineTool({ name: "skill_activate", label: "Activate Skill", description: "Load one discovered Skill's global rules and route table, locking its SHA256 for this execution.", parameters: Type.Object({ name: Type.String({ pattern: "^[a-z0-9]+(?:-[a-z0-9]+)*$" }) }), execute: async (_id, params) => {
+			const activated = await runtime.activate(params.name); activateTools?.(["skill_route", "skill_complete"]); return ephemeralResult(activated.instructions.slice(0, 50_000), { descriptor: publicSkill(activated.descriptor), routes: activated.routes, state: runtime.snapshot() });
+		} }),
+		defineTool({ name: "skill_route", label: "Route Skill", description: "Select one declared module route after Skill activation.", parameters: Type.Object({ route: Type.String({ pattern: "^[a-z0-9]+(?:-[a-z0-9]+)*$" }) }), execute: async (_id, params) => {
+			const routed = await runtime.routeTo(params.route); activateTools?.(["skill_resource_read", "skill_complete", ...routed.tools]); return result(`Selected Skill route ${routed.route}.`, { ...routed, state: runtime.snapshot() });
+		} }),
+		defineTool({ name: "skill_resource_read", label: "Read Skill Resource", description: "Read one module or reference declared by the active Skill route.", parameters: Type.Object({ path: Type.String({ minLength: 1, maxLength: 500 }) }), execute: async (_id, params) => {
+			const resource = await runtime.readResource(params.path); return ephemeralResult(resource.content, { ...resource, content: undefined, state: runtime.snapshot() });
+		} }),
+		defineTool({ name: "skill_complete", label: "Complete Skill", description: "Complete the turn-scoped Skill execution and retain only its versioned resource summary.", parameters: Type.Object({}), execute: async () => {
+			const summary = runtime.complete(); return result(`Completed Skill ${summary.skill}${summary.route ? ` via ${summary.route}` : ""}.`, summary);
+		} }),
+		defineTool({ name: "skill_read", label: "Read Skill (Compatibility)", description: "Compatibility alias that discovers and activates a Profile, project, or global Skill by name.", parameters: Type.Object({ name: Type.String({ pattern: "^[a-z0-9]+(?:-[a-z0-9]+)*$" }) }), execute: async (_id, params) => {
+			await runtime.discover(params.name, 10); const activated = await runtime.activate(params.name); const legacy = activated.routes.length === 1 && activated.routes[0]?.name === "legacy";
+			if (legacy) { const routed = await runtime.routeTo("legacy"); runtime.useActivatedInstructionsAsModule(); activateTools?.(["skill_complete", ...routed.tools]); }
+			else activateTools?.(["skill_route", "skill_complete"]);
+			return ephemeralResult(activated.instructions.slice(0, 50_000), { descriptor: publicSkill(activated.descriptor), routes: activated.routes, state: runtime.snapshot(), legacy });
 		} }),
 		defineTool({ name: "skill_create", label: "Create Skill", description: "Create a durable instruction-only Agent Skill after a workflow proves reusable. Requires approval. Never put credentials in skills.", parameters: Type.Object({ name: Type.String({ pattern: "^[a-z0-9]+(?:-[a-z0-9]+)*$", maxLength: 64 }), description: Type.String({ minLength: 10, maxLength: 1024 }), instructions: Type.String({ minLength: 20, maxLength: 30_000 }) }), execute: async (_id, params) => {
 			assertSafeCandidate({ ...params, source: "direct Skill creation" });
 			const path = skillPath(root, params.name); await mkdir(resolve(path, ".."), { recursive: true });
 			try { await readFile(path, "utf8"); throw new Error(`Skill ${params.name} already exists; use skill_update`); } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
-			await writeFile(path, renderSkill(params), { encoding: "utf8", flag: "wx" }); markReloadNeeded(); return result(`Created and queued skill ${params.name} for hot reload after this turn.`, { name: params.name, path });
+			await writeFile(path, renderSkill(params), { encoding: "utf8", flag: "wx" }); markSkillsChanged(); return result(`Created and queued skill ${params.name} for hot reload after this turn.`, { name: params.name, path });
 		} }),
 		defineTool({ name: "skill_update", label: "Update Skill", description: "Replace a managed instruction-only Agent Skill after learning a better verified workflow. Requires approval.", parameters: Type.Object({ name: Type.String({ pattern: "^[a-z0-9]+(?:-[a-z0-9]+)*$", maxLength: 64 }), description: Type.String({ minLength: 10, maxLength: 1024 }), instructions: Type.String({ minLength: 20, maxLength: 30_000 }) }), execute: async (_id, params) => {
 			assertSafeCandidate({ ...params, source: "direct Skill update" });
-			const path = skillPath(root, params.name); await readFile(path, "utf8"); await writeFile(path, renderSkill(params), "utf8"); markReloadNeeded(); return result(`Updated and queued skill ${params.name} for hot reload after this turn.`, { name: params.name, path });
+			const path = skillPath(root, params.name); await readFile(path, "utf8"); await writeFile(path, renderSkill(params), "utf8"); markSkillsChanged(); return result(`Updated and queued skill ${params.name} for hot reload after this turn.`, { name: params.name, path });
 		} }),
 		defineTool({ name: "skill_candidate_install", label: "Install Skill Candidate", description: "Safely stage an instruction-only Skill candidate in quarantine. Does not execute code or affect active Agent behavior.", parameters: Type.Object({ name: Type.String({ pattern: "^[a-z0-9]+(?:-[a-z0-9]+)*$", maxLength: 64 }), description: Type.String({ minLength: 10, maxLength: 1024 }), instructions: Type.String({ minLength: 20, maxLength: 30_000 }), source: Type.String({ minLength: 1, maxLength: 2_000 }) }), execute: async (_id, params) => {
 			assertSafeCandidate(params);
@@ -89,7 +109,7 @@ export function createSkillTools(agentDir: string, markReloadNeeded: () => void,
 			try { await readFile(path, "utf8"); throw new Error(`Skill ${params.name} already exists`); } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
 			await writeFile(path, renderSkill(candidate), { encoding: "utf8", flag: "wx" });
 			await unlink(candidateFile).catch(() => undefined);
-			markReloadNeeded();
+			markSkillsChanged();
 			return result(`Promoted and queued verified skill ${params.name} for hot reload after this turn.`, { name: params.name, path, verifiedTrials: consecutive });
 		}) }),
 	];
@@ -98,19 +118,26 @@ export function createSkillTools(agentDir: string, markReloadNeeded: () => void,
 		capability_discover: { ...READ_ONLY_TOOL_POLICY },
 		skill_list: { ...READ_ONLY_TOOL_POLICY },
 		skill_read: { ...READ_ONLY_TOOL_POLICY },
+		skill_activate: { ...READ_ONLY_TOOL_POLICY },
+		skill_route: { ...READ_ONLY_TOOL_POLICY },
+		skill_resource_read: { ...READ_ONLY_TOOL_POLICY },
+		skill_complete: { ...READ_ONLY_TOOL_POLICY },
 		skill_create: { ...evolveSkill, reversible: true },
 		skill_update: evolveSkill,
 		skill_candidate_install: { ...evolveSkill, reversible: true },
 		skill_candidate_verify: { ...MUTATING_TOOL_POLICY, sideEffect: "local", risk: "low", approval: "never", reversible: false, impact: "Appends immutable bounded verification evidence in isolated candidate storage" },
 		skill_candidate_promote: { ...evolveSkill, reversible: true },
 	};
-	return tools.map((tool) => withToolPolicy(tool, policies[tool.name]!));
+	return tools.map((tool) => Object.assign(withToolPolicy(tool, policies[tool.name]!),
+		["skill_activate", "skill_read", "skill_resource_read"].includes(tool.name) ? { persistResultAsSummary: true } : {},
+		tool.name === "skill_complete" ? { beemaxTurnReset: () => runtime.reset() } : {}));
 }
 
 async function listCandidates(root: string, key: Buffer): Promise<SkillCandidate[]> {
-	let entries: string[]; try { entries = await readdir(root); } catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return []; throw error; }
+	let entries; try { entries = (await readdir(root, { withFileTypes: true })).filter((entry) => entry.isFile() && entry.name.endsWith(".json")).slice(0, 1_000); } catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return []; throw error; }
 	const candidates: SkillCandidate[] = [];
-	for (const entry of entries.sort()) if (entry.endsWith(".json")) try { candidates.push(await readCandidate(resolve(root, entry), key)); } catch { /* Ignore corrupt quarantined candidates. */ }
+	let remainingBytes = 8 * 1024 * 1024;
+	for (const entry of entries.sort((a, b) => a.name.localeCompare(b.name))) try { const candidate = await readCandidate(resolve(root, entry.name), key, Math.min(256 * 1024, remainingBytes)); remainingBytes -= Buffer.byteLength(JSON.stringify(candidate)); candidates.push(candidate); if (remainingBytes <= 0) break; } catch { /* Ignore corrupt quarantined candidates. */ }
 	return candidates;
 }
 
@@ -134,7 +161,8 @@ async function withCandidateLock<T>(root: string, name: string, operation: () =>
 	try { return await operation(); } finally { await unlink(lock).catch(() => undefined); }
 }
 async function staleCandidateLock(path: string): Promise<boolean> { try { const [record, info] = await Promise.all([readFile(path, "utf8"), stat(path)]); const parsed = JSON.parse(record) as { pid?: number; at?: number }; if (typeof parsed.pid === "number") try { process.kill(parsed.pid, 0); return false; } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ESRCH") return false; } return Date.now() - Math.max(info.mtimeMs, parsed.at ?? 0) > 1_000; } catch { return true; } }
-async function readCandidate(path: string, key: Buffer): Promise<SkillCandidate> { const candidate = JSON.parse(await readFile(path, "utf8")) as SkillCandidate; const hash = typeof candidate.instructions === "string" ? createHash("sha256").update(candidate.instructions).digest("hex") : ""; if (candidate.version !== 1 || !SKILL_NAME.test(candidate.name) || !Array.isArray(candidate.attempts) || candidate.sha256 !== hash || candidate.signature !== candidateSignature(candidate, key) || candidate.attempts.some((attempt) => !attempt.id || !attempt.scenarioHash || (attempt.outcome !== "accepted" && attempt.outcome !== "rejected") || !attempt.evidence)) throw new Error("Invalid or tampered Skill candidate record"); return candidate; }
+async function readCandidate(path: string, key: Buffer, maxBytes = 256 * 1024): Promise<SkillCandidate> { const candidate = JSON.parse(await boundedCandidateRead(path, maxBytes)) as SkillCandidate; const hash = typeof candidate.instructions === "string" ? createHash("sha256").update(candidate.instructions).digest("hex") : ""; if (candidate.version !== 1 || !SKILL_NAME.test(candidate.name) || !Array.isArray(candidate.attempts) || candidate.sha256 !== hash || candidate.signature !== candidateSignature(candidate, key) || candidate.attempts.some((attempt) => !attempt.id || !attempt.scenarioHash || (attempt.outcome !== "accepted" && attempt.outcome !== "rejected") || !attempt.evidence)) throw new Error("Invalid or tampered Skill candidate record"); return candidate; }
+async function boundedCandidateRead(path: string, maxBytes: number): Promise<string> { if (maxBytes <= 0) throw new Error("Skill candidate byte budget exceeded"); const handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW); try { const info = await handle.stat(); if (!info.isFile() || info.size > maxBytes) throw new Error("Skill candidate byte budget exceeded"); const buffer = Buffer.alloc(info.size + 1); const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0); if (bytesRead > maxBytes) throw new Error("Skill candidate byte budget exceeded"); return buffer.subarray(0, bytesRead).toString("utf8"); } finally { await handle.close(); } }
 async function writeJsonAtomic(path: string, value: SkillCandidate, exclusive = false): Promise<void> { const serialized = `${JSON.stringify(value, null, 2)}\n`; const temporary = `${path}.${crypto.randomUUID()}.tmp`; await writeFile(temporary, serialized, { encoding: "utf8", flag: "wx", mode: 0o600 }); try { if (exclusive) await writeFile(path, serialized, { encoding: "utf8", flag: "wx", mode: 0o600 }); else await rename(temporary, path); } finally { await unlink(temporary).catch(() => undefined); } }
 function assertSafeCandidate(candidate: { description: string; instructions: string; source: string }): void {
 	for (const value of [candidate.description, candidate.instructions, candidate.source]) assertNoCredentialMaterial(value, "Skill candidate");
@@ -153,3 +181,5 @@ function deduplicateSkills(skills: Array<{ name: string; description: string; pa
 function skillPath(root: string, name: string): string { if (!SKILL_NAME.test(name) || name.length > 64) throw new Error(`Invalid skill name: ${name}`); const path = resolve(root, name, "SKILL.md"); if (!path.startsWith(`${root}${sep}`)) throw new Error("Skill path escaped managed directory"); return path; }
 function renderSkill(input: { name: string; description: string; instructions: string }): string { const description = input.description.replace(/[\r\n]+/g, " ").trim(); return `---\nname: ${input.name}\ndescription: ${JSON.stringify(description)}\nmetadata:\n  managed-by: beemax\n---\n\n# ${input.name}\n\n${input.instructions.trim()}\n`; }
 function result(text: string, details: unknown) { return { content: [{ type: "text" as const, text }], details }; }
+function ephemeralResult(text: string, details: Record<string, unknown>) { return result(text, { ...details, beemaxPersistence: { mode: "summary", text: "[Turn-scoped Skill context omitted; versioned execution metadata retained.]" } }); }
+function publicSkill(skill: { name: string; description: string; sha256: string; priority?: number }) { return { name: skill.name, description: skill.description, sha256: skill.sha256, priority: skill.priority }; }
