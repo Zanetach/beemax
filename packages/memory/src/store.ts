@@ -152,6 +152,7 @@ export class MemoryStore {
 
 			CREATE INDEX IF NOT EXISTS idx_memories_chat ON memories(platform, chat_id);
 			CREATE INDEX IF NOT EXISTS idx_memories_user ON memories(platform, user_id);
+			CREATE INDEX IF NOT EXISTS idx_memories_scope_created ON memories(platform, chat_id, user_id, created_at DESC);
 
 			CREATE TABLE IF NOT EXISTS memory_candidates (
 				id TEXT PRIMARY KEY,
@@ -179,6 +180,7 @@ export class MemoryStore {
 				INSERT INTO memory_candidates_fts(memory_candidates_fts, rowid, content) VALUES('delete', old.rowid, old.content);
 			END;
 			CREATE INDEX IF NOT EXISTS idx_memory_candidates_scope ON memory_candidates(platform, chat_id, user_id, status);
+			CREATE INDEX IF NOT EXISTS idx_memory_candidates_scope_created ON memory_candidates(platform, chat_id, user_id, created_at DESC);
 
 			CREATE TABLE IF NOT EXISTS task_ledger (
 				id TEXT PRIMARY KEY,
@@ -373,12 +375,15 @@ export class MemoryStore {
 		if (!columns.some((item) => item.name === column)) this.db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
 	}
 
-	/** Persist an immutable source record. It is evidence, not an inferred user fact. */
+	/** Persist a source record as immutable evidence while retained; unreferenced raw events use a bounded per-conversation retention window. */
 	recordEvent(record: { platform: string; chatId: string; userId?: string; kind: "user" | "assistant" | "import" | "feedback"; content: string; occurredAt?: number }): string {
 		const id = cryptoRandom();
 		const now = Date.now();
 		this.db.prepare("INSERT INTO memory_events (id, platform, chat_id, user_id, kind, content, occurred_at, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
 			.run(id, record.platform, record.chatId, record.userId ?? null, record.kind, record.content, record.occurredAt ?? now, now);
+		this.db.prepare(`DELETE FROM memory_events WHERE platform = ? AND chat_id = ? AND user_id IS ? AND id NOT IN (SELECT event_id FROM memory_evidence WHERE event_id IS NOT NULL) AND id NOT IN
+			(SELECT id FROM memory_events WHERE platform = ? AND chat_id = ? AND user_id IS ? ORDER BY occurred_at DESC LIMIT 5000)`)
+			.run(record.platform, record.chatId, record.userId ?? null, record.platform, record.chatId, record.userId ?? null);
 		return id;
 	}
 
@@ -519,7 +524,10 @@ export class MemoryStore {
 			.prepare(
 				"INSERT INTO memories (id, platform, chat_id, user_id, role, content, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
 			)
-			.run(id, record.platform, record.chatId, record.userId ?? null, record.role, record.content, createdAt);
+				.run(id, record.platform, record.chatId, record.userId ?? null, record.role, record.content, createdAt);
+		this.db.prepare(`DELETE FROM memories WHERE platform = ? AND chat_id = ? AND user_id IS ? AND id NOT IN
+			(SELECT id FROM memories WHERE platform = ? AND chat_id = ? AND user_id IS ? ORDER BY created_at DESC LIMIT 5000)`)
+			.run(record.platform, record.chatId, record.userId ?? null, record.platform, record.chatId, record.userId ?? null);
 		return id;
 	}
 
@@ -533,6 +541,9 @@ export class MemoryStore {
 		this.db.prepare(
 			"INSERT INTO memory_candidates (id, platform, chat_id, user_id, role, content, status, created_at) VALUES (?, ?, ?, ?, ?, ?, 'pending', ?)",
 		).run(id, record.platform, record.chatId, record.userId ?? null, record.role, record.content, Date.now());
+		this.db.prepare(`DELETE FROM memory_candidates WHERE platform = ? AND chat_id = ? AND user_id IS ? AND id NOT IN
+			(SELECT id FROM memory_candidates WHERE platform = ? AND chat_id = ? AND user_id IS ? ORDER BY created_at DESC LIMIT 5000)`)
+			.run(record.platform, record.chatId, record.userId ?? null, record.platform, record.chatId, record.userId ?? null);
 		return id;
 	}
 

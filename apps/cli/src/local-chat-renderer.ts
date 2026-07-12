@@ -99,7 +99,11 @@ export class LocalActivityPresenter {
 	}
 
 	event(event: InteractionEvent): string {
-		if (event.type === "tool.changed") this.activities.set(event.callId, { name: event.name, state: event.state, summary: event.summary });
+		if (event.type === "tool.changed") {
+			this.activities.delete(event.callId);
+			this.activities.set(event.callId, { name: event.name, state: event.state, summary: event.summary });
+			while (this.activities.size > 200) this.activities.delete(this.activities.keys().next().value!);
+		}
 		if (this.details === "hidden" || !this.interactive) return "";
 		if (event.type === "tool.changed") {
 			const label = event.name === "task_spawn" || event.name === "task_status" || event.name === "task_wait" ? "子代理" : "工具";

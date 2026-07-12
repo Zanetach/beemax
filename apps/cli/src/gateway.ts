@@ -29,7 +29,7 @@ import { workspaceToolsPrompt } from "./workspace-context.ts";
 import { join } from "node:path";
 import { executionPortFor, executionSafeTools } from "./execution-composition.ts";
 import { createProfileControlHandler, type TaskRecoveryStatus } from "./profile-control.ts";
-import { recordGatewayEvent, writeGatewayState } from "./gateway-observability.ts";
+import { boundGatewayProcessLogs, recordGatewayEvent, writeGatewayState } from "./gateway-observability.ts";
 import { installedVersion } from "./runtime-facts.ts";
 import { configuredRuntimeModels } from "./model-catalog.ts";
 import { setFeishuHomeChat } from "./profile-config.ts";
@@ -257,9 +257,10 @@ export async function runGateway(config: BeeMaxConfig): Promise<void> {
 		adapter,
 	);
 
-	scheduler = new AutomationScheduler(automation, async (job) => {
+	scheduler = new AutomationScheduler(automation, async (job, signal) => {
+		const assertClaim = () => { if (signal?.aborted) throw signal.reason; if (job.claimToken && !automation.renewClaim(job.id, job.claimToken, Date.now() + 15 * 60_000)) throw new Error(`Automation lease lost: ${job.id}`); };
 		if (job.kind === "reminder") {
-			await deliveryPort.sendText(job, `⏰ ${job.text}`);
+			assertClaim(); await deliveryPort.sendText(job, `⏰ ${job.text}`, { idempotencyKey: `automation:${job.id}:${job.nextRunAt}` });
 			return { output: job.text };
 		}
 		const source: SessionSource = {
@@ -268,8 +269,8 @@ export async function runGateway(config: BeeMaxConfig): Promise<void> {
 			chatType: "dm",
 			userIdAlt: job.userId,
 		};
-		const answer = await dispatcher.runAutomation(source, job.text, { key: `schedule:${job.id}`, timeoutMs: 10 * 60_000 });
-		await deliveryPort.sendText(job, `🗓️ ${job.name}\n\n${answer}`);
+		const answer = await dispatcher.runAutomation(source, job.text, { key: `schedule:${job.id}`, timeoutMs: 10 * 60_000, signal });
+		assertClaim(); await deliveryPort.sendText(job, `🗓️ ${job.name}\n\n${answer}`, { idempotencyKey: `automation:${job.id}:${job.nextRunAt}` });
 		return { output: answer };
 	}, 4, memory);
 	heartbeat = new HeartbeatRunner(
@@ -285,10 +286,10 @@ export async function runGateway(config: BeeMaxConfig): Promise<void> {
 			timeoutMs: config.automation.heartbeat.timeoutMs,
 			activeHours: config.automation.heartbeat.activeHours,
 		},
-		(input) => dispatcher.runAutomation(
+		(input, signal) => dispatcher.runAutomation(
 			{ platform: "feishu", chatId: input.route.chatId, chatType: input.route.chatId === config.gateway.feishu.homeChatId ? config.gateway.feishu.homeChatType ?? "dm" : "dm", userIdAlt: input.route.userId },
 			input.prompt,
-			{ key: "heartbeat", timeoutMs: input.timeoutMs },
+			{ key: "heartbeat", timeoutMs: input.timeoutMs, signal },
 		),
 		{ sendText: (route, text) => deliveryPort.sendText(route, `💓 ${text}`), sendMedia: (route, media) => deliveryPort.sendMedia(route, media) },
 		() => dispatcher.isBusy(),
@@ -307,6 +308,7 @@ export async function runGateway(config: BeeMaxConfig): Promise<void> {
 	if (config.automation.enabled) scheduler.start();
 	heartbeat.start();
 	const mediaDeliveryTimer = setInterval(() => {
+		boundGatewayProcessLogs(config.paths.agentDir);
 		void flushMediaDeliveries(automation, deliveryPort).catch((error) => console.error(`[beemax] media delivery worker failed: ${String(error)}`));
 	}, 5_000);
 	void flushMediaDeliveries(automation, deliveryPort).catch((error) => console.error(`[beemax] media delivery worker failed: ${String(error)}`));

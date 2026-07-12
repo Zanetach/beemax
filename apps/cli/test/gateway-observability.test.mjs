@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { inspectGateway, readGatewayLogs, recordGatewayEvent, writeGatewayState } from "../dist/gateway-observability.js";
+import { boundGatewayProcessLogs, inspectGateway, readGatewayLogs, recordGatewayEvent, writeGatewayState } from "../dist/gateway-observability.js";
 import { inspectOperationalMetrics, recordOperationalMetric } from "../dist/operational-metrics.js";
 
 test("gateway observability distinguishes an absent log from a stopped runtime", () => {
@@ -30,5 +30,20 @@ test("operational metrics aggregate content-free events and raise bounded alerts
 		assert.equal(snapshot.replayedEvents, 20);
 		assert.equal(snapshot.permissionsSafe, true);
 		assert.equal(inspectGateway("personal", root).operational.events, 0);
+	} finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("gateway logs rotate event history and tail large process logs without loading their full history", () => {
+	const root = mkdtempSync(join(tmpdir(), "beemax-observability-bounds-"));
+	try {
+		for (let index = 0; index < 3_000; index++) recordGatewayEvent(root, "approval", { index, detail: "x".repeat(400) });
+		assert.ok(statSync(join(root, "logs", "gateway.jsonl")).size <= 1_000_000);
+		mkdirSync(join(root, "logs"), { recursive: true });
+		writeFileSync(join(root, "logs", "gateway.log"), `${"old\n".repeat(100_000)}latest-line\n`);
+		const tail = readGatewayLogs(root, 2);
+		assert.match(tail, /latest-line/);
+		assert.doesNotMatch(tail, /\[stdout\] old\n\[stdout\] old\n\[stdout\] old/);
+		boundGatewayProcessLogs(root, 100_000, 20_000);
+		assert.ok(statSync(join(root, "logs", "gateway.log")).size <= 20_000);
 	} finally { rmSync(root, { recursive: true, force: true }); }
 });

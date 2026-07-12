@@ -54,6 +54,18 @@ test("interaction journal tightens existing permissions and compacts with append
 	} finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
+test("interaction event journal prunes sequence entries with compacted sessions", () => {
+	const dir = mkdtempSync(join(tmpdir(), "beemax-event-journal-index-"));
+	try {
+		const path = join(dir, "events.jsonl");
+		const journal = new FileInteractionEventJournal(path, 20);
+		for (let index = 0; index < 100; index++) journal.append({ ...event(1), sessionId: `session-${index}` });
+		const reopened = new FileInteractionEventJournal(path, 20);
+		assert.ok(reopened.lastSequence("session-0") >= 1);
+		assert.equal(reopened.lastSequence("session-99"), 1);
+	} finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
 function event(sequence) {
 	return { type: "turn.started", sessionId: "session", scope: { profileId: "personal", platform: "cli", chatId: "local" }, turnId: `turn-${sequence}`, at: sequence, sequence };
 }

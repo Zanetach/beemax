@@ -27,3 +27,14 @@ test("pending approvals render native semantic actions and terminal decisions re
 	card.apply("approval.updated", { id: "approval:turn-1", status: "allowed", message: "Allowed" });
 	assert.doesNotMatch(JSON.stringify(renderCard(card)), /approval\.decide/);
 });
+
+test("card presenter bounds long reasoning and activity histories", () => {
+	const card = new CardSession();
+	for (let index = 0; index < 150; index++) {
+		card.apply("thinking.delta", { text: "x".repeat(1_000) });
+		card.apply("tool.updated", { tool_id: `tool-${index}`, name: "work", status: "completed" });
+	}
+	assert.ok(card.timeline.entryCount <= 100);
+	assert.ok(card.timeline.snapshot().every((entry) => entry.content.length <= 50_000));
+	assert.equal(card.tools.size, 100);
+});

@@ -19,11 +19,12 @@ export class FileInteractionEventJournal implements InteractionEventJournal {
 	private readonly journal: BoundedJsonlJournal<DurableInteractionEvent>;
 	private readonly sequencePath: string;
 	private readonly lastSequences = new Map<string, number>();
+	private sequenceFloor = 0;
 
 	constructor(path: string, limit = 2_000) {
 		this.sequencePath = `${path}.sequences.json`;
 		this.loadSequenceIndex();
-		this.journal = new BoundedJsonlJournal({ path, limit, minLimit: 20, maxLimit: 20_000, isRecord: isDurableEvent, onCompacting: () => this.persistSequenceIndex() });
+		this.journal = new BoundedJsonlJournal({ path, limit, minLimit: 20, maxLimit: 20_000, isRecord: isDurableEvent, onCompacting: (records) => this.persistSequenceIndex(records.slice(-Math.max(1, Math.floor(Math.max(20, Math.min(limit, 20_000)) * 0.8)))) });
 		for (const event of this.journal.records()) this.rememberSequence(event);
 	}
 
@@ -38,7 +39,7 @@ export class FileInteractionEventJournal implements InteractionEventJournal {
 		return this.journal.records().filter((event) => event.sessionId === sessionId && event.sequence > afterSequence);
 	}
 
-	lastSequence(sessionId: string): number { return this.lastSequences.get(sessionId) ?? 0; }
+	lastSequence(sessionId: string): number { return this.lastSequences.get(sessionId) ?? this.sequenceFloor; }
 
 	private rememberSequence(event: DurableInteractionEvent): void {
 		this.lastSequences.set(event.sessionId, Math.max(this.lastSequences.get(event.sessionId) ?? 0, event.sequence));
@@ -49,13 +50,17 @@ export class FileInteractionEventJournal implements InteractionEventJournal {
 		try {
 			chmodSync(this.sequencePath, 0o600);
 			const value = JSON.parse(readFileSync(this.sequencePath, "utf8")) as Record<string, unknown>;
-			for (const [sessionId, sequence] of Object.entries(value)) if (typeof sequence === "number" && Number.isSafeInteger(sequence) && sequence >= 0) this.lastSequences.set(sessionId, sequence);
+			for (const [sessionId, sequence] of Object.entries(value)) if (typeof sequence === "number" && Number.isSafeInteger(sequence) && sequence >= 0) {
+				if (sessionId === "__sequenceFloor") this.sequenceFloor = sequence; else this.lastSequences.set(sessionId, sequence);
+			}
 		} catch { /* The event journal remains authoritative when the optional index is corrupt. */ }
 	}
 
-	private persistSequenceIndex(): void {
+	private persistSequenceIndex(retained: DurableInteractionEvent[]): void {
+		const live = new Set(retained.map((event) => event.sessionId));
+		for (const [sessionId, sequence] of this.lastSequences) if (!live.has(sessionId)) { this.sequenceFloor = Math.max(this.sequenceFloor, sequence); this.lastSequences.delete(sessionId); }
 		const temporary = `${this.sequencePath}.${process.pid}.tmp`;
-		writeFileSync(temporary, JSON.stringify(Object.fromEntries(this.lastSequences)), { encoding: "utf8", mode: 0o600 });
+		writeFileSync(temporary, JSON.stringify({ __sequenceFloor: this.sequenceFloor, ...Object.fromEntries(this.lastSequences) }), { encoding: "utf8", mode: 0o600 });
 		renameSync(temporary, this.sequencePath);
 	}
 }

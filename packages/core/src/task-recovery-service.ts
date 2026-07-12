@@ -12,6 +12,7 @@ export interface TaskRecoveryServiceOptions {
 	runnerOptions?: Omit<TaskRecoveryRunnerOptions, "signal">;
 	onCycle?: (result: TaskRecoveryCycleResult) => void;
 	onError?: (error: unknown) => void;
+	shutdownGraceMs?: number;
 }
 
 type RecoveryLedger = Pick<TaskLedger, "reconcileExpiredTaskRuns">;
@@ -28,6 +29,7 @@ export class TaskRecoveryService {
 	private active?: Promise<TaskRecoveryCycleResult>;
 	private controller?: AbortController;
 	private timer?: ReturnType<typeof setTimeout>;
+	private readonly shutdownGraceMs: number;
 
 	constructor(ledger: RecoveryLedger, runner?: RecoveryRunner, options: TaskRecoveryServiceOptions = {}) {
 		this.ledger = ledger;
@@ -36,6 +38,7 @@ export class TaskRecoveryService {
 		this.runnerOptions = options.runnerOptions ?? {};
 		this.onCycle = options.onCycle;
 		this.onError = options.onError;
+		this.shutdownGraceMs = Math.max(0, Math.min(options.shutdownGraceMs ?? 30_000, 5 * 60_000));
 	}
 
 	async runOnce(options: TaskRecoveryRunnerOptions = {}): Promise<TaskRecoveryCycleResult> {
@@ -66,7 +69,11 @@ export class TaskRecoveryService {
 		this.controller = undefined;
 		if (this.timer) { clearTimeout(this.timer); this.timer = undefined; }
 		controller?.abort(reason);
-		try { await this.active; } catch { /* surfaced through onError */ }
+		if (this.active) {
+			let timer: ReturnType<typeof setTimeout> | undefined;
+			try { await Promise.race([this.active, new Promise<void>((resolve) => { timer = setTimeout(resolve, this.shutdownGraceMs); })]); } catch { /* surfaced through onError */ }
+			finally { if (timer) clearTimeout(timer); }
+		}
 	}
 
 	private schedule(delay: number, controller: AbortController): void {

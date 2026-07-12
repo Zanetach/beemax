@@ -9,12 +9,14 @@ import type { DeliveryPort } from "./delivery-port.ts";
 import { conversationOwnerKey } from "./agent-scope.ts";
 import type { TaskLedger } from "./task-ledger.ts";
 
-export type AutomationExecutor = (job: AutomationJob) => Promise<{ output?: string }>;
+export type AutomationExecutor = (job: AutomationJob, signal?: AbortSignal) => Promise<{ output?: string }>;
 
 /** Core owns scheduled-agent lifecycle; Automation supplies persistence only. */
 export class AutomationScheduler {
 	private timer?: ReturnType<typeof setTimeout>;
 	private readonly running = new Set<Promise<void>>();
+	private readonly controllers = new Set<AbortController>();
+	private readonly shutdownGraceMs = 30_000;
 	private stopped = true;
 	private readonly store: AutomationStore;
 	private readonly execute: AutomationExecutor;
@@ -39,7 +41,8 @@ export class AutomationScheduler {
 		this.stopped = true;
 		if (this.timer) clearTimeout(this.timer);
 		this.timer = undefined;
-		await Promise.allSettled([...this.running]);
+		for (const controller of this.controllers) controller.abort(new Error("Automation scheduler stopped"));
+		await settleWithin([...this.running], this.shutdownGraceMs);
 	}
 	private schedule(delay: number): void {
 		if (!this.stopped) this.timer = setTimeout(() => void this.tick(), Math.max(0, delay));
@@ -59,18 +62,25 @@ export class AutomationScheduler {
 		const startedAt = Date.now();
 		const taskId = crypto.randomUUID();
 		const runId = crypto.randomUUID();
+		const controller = new AbortController();
+		this.controllers.add(controller);
+		const heartbeat = job.claimToken && this.store.renewClaim ? setInterval(() => {
+			try { if (!this.store.renewClaim(job.id, job.claimToken!, Date.now() + 15 * 60_000)) controller.abort(new Error(`Automation lease lost: ${job.id}`)); }
+			catch (error) { controller.abort(error); }
+		}, 60_000) : undefined;
+		heartbeat?.unref();
 		this.recordAutomationStart(job, taskId, runId, startedAt);
 		const promise = (async () => {
 			let result: Omit<AutomationRun, "id" | "jobId">;
 			try {
-				const executed = await this.execute(job);
+				const executed = await this.execute(job, controller.signal);
 				result = { startedAt, finishedAt: Date.now(), status: "ok", output: executed.output };
 			} catch (error) {
 				result = { startedAt, finishedAt: Date.now(), status: "error", error: error instanceof Error ? error.message : String(error) };
 			}
-			this.store.complete(job, result);
+			if (this.store.complete(job, result) === false) return;
 			this.recordAutomationFinish(taskId, runId, result);
-		})().finally(() => { this.running.delete(promise); this.wake(); });
+		})().finally(() => { if (heartbeat) clearInterval(heartbeat); this.controllers.delete(controller); this.running.delete(promise); this.wake(); });
 		this.running.add(promise);
 	}
 
@@ -95,6 +105,13 @@ export class AutomationScheduler {
 	}
 }
 
+async function settleWithin(work: Promise<unknown>[], graceMs: number): Promise<void> {
+	if (!work.length) return;
+	let timer: ReturnType<typeof setTimeout> | undefined;
+	await Promise.race([Promise.allSettled(work), new Promise<void>((resolve) => { timer = setTimeout(resolve, graceMs); })]);
+	if (timer) clearTimeout(timer);
+}
+
 export interface HeartbeatConfig {
 	enabled: boolean;
 	every: string;
@@ -107,7 +124,7 @@ export interface HeartbeatConfig {
 	activeHours?: { start: string; end: string; timezone?: string };
 }
 export interface HeartbeatExecution { route: AutomationOwner; prompt: string; timeoutMs: number; }
-export type HeartbeatExecutor = (input: HeartbeatExecution) => Promise<string>;
+export type HeartbeatExecutor = (input: HeartbeatExecution, signal?: AbortSignal) => Promise<string>;
 
 /** Core policy for proactive checks; the channel delivery function is a port. */
 export class HeartbeatRunner {
@@ -115,6 +132,7 @@ export class HeartbeatRunner {
 	private running = false;
 	private stopped = true;
 	private activeRun?: Promise<void>;
+	private activeController?: AbortController;
 	private readonly intervalMs: number;
 	private readonly store: AutomationStore;
 	private readonly config: HeartbeatConfig;
@@ -146,16 +164,18 @@ export class HeartbeatRunner {
 		this.stopped = true;
 		if (this.timer) clearTimeout(this.timer);
 		this.timer = undefined;
-		await this.activeRun?.catch(() => undefined);
+		this.activeController?.abort(new Error("Heartbeat stopped"));
+		if (this.activeRun) await settleWithin([this.activeRun], 30_000);
 	}
 	private schedule(delay: number): void {
 		if (!this.stopped) this.timer = setTimeout(() => void this.startRun("interval"), Math.max(1000, delay));
 	}
 	private async startRun(reason: "interval" | "manual"): Promise<void> {
-		const active = this.run(reason); this.activeRun = active;
-		try { await active; } finally { if (this.activeRun === active) this.activeRun = undefined; }
+		const controller = new AbortController(); this.activeController = controller;
+		const active = this.run(reason, controller.signal); this.activeRun = active;
+		try { await active; } finally { if (this.activeRun === active) { this.activeRun = undefined; this.activeController = undefined; } }
 	}
-	private async run(reason: "interval" | "manual"): Promise<void> {
+	private async run(reason: "interval" | "manual", signal: AbortSignal): Promise<void> {
 		if (this.stopped || this.running) return;
 		if (!isWithinActiveHours(this.config.activeHours, Date.now())) {
 			this.store.recordHeartbeat("skipped", "quiet-hours"); this.schedule(this.intervalMs); return;
@@ -169,7 +189,7 @@ export class HeartbeatRunner {
 		if (!route) { this.store.recordHeartbeat("skipped", "no-delivery-route"); this.schedule(this.intervalMs); return; }
 		this.running = true;
 		try {
-			const answer = await this.execute({ route, prompt: this.config.prompt, timeoutMs: this.config.timeoutMs });
+			const answer = await Promise.race([this.execute({ route, prompt: this.config.prompt, timeoutMs: this.config.timeoutMs }, signal), new Promise<never>((_, reject) => signal.addEventListener("abort", () => reject(signal.reason), { once: true }))]);
 			const filtered = filterHeartbeatAnswer(answer, this.config.ackMaxChars);
 			if (filtered.notify) await this.deliveryPort.sendText(route, filtered.text);
 			this.store.recordHeartbeat(filtered.notify ? "alert" : "ok", reason);

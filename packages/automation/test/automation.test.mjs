@@ -41,6 +41,17 @@ test("recurring jobs persist next run, ownership, history, and retry state", () 
 	assert.equal(store.remove(job.id, { platform:"feishu",chatId:"other",userId:"other" }), false);
 }));
 
+test("expired automation claims cannot commit after a replacement worker takes ownership", () => withStore((store) => {
+	const now = Date.parse("2026-01-01T00:00:00Z");
+	const job = store.create({ platform:"feishu",chatId:"chat",name:"Digest",kind:"agent",scheduleKind:"every",schedule:"1h",text:"run" }, now);
+	const first = store.claimDue(now + 3_600_000, 1, 100)[0];
+	const second = store.claimDue(now + 3_600_101, 1, 100)[0];
+	assert.notEqual(first.claimToken, second.claimToken);
+	assert.equal(store.complete(first, { startedAt:now,finishedAt:now+1,status:"ok" }, now + 3_600_102), false);
+	assert.equal(store.complete(second, { startedAt:now,finishedAt:now+2,status:"ok" }, now + 3_600_103), true);
+	assert.equal(store.runs(job.id, { platform:"feishu",chatId:"chat" }).length, 1);
+}));
+
 test("scheduler claims due work, records completion, and stops cleanly", async () => {
 	const job = { id:"job",platform:"feishu",chatId:"chat",name:"Test",kind:"reminder",scheduleKind:"at",schedule:"1m",text:"test",enabled:true,deleteAfterRun:true,nextRunAt:0,consecutiveErrors:0,createdAt:0,updatedAt:0 };
 	let claimed = false;
@@ -119,4 +130,16 @@ test("expired media delivery leases are reclaimed after a worker crash", () => w
 	assert.equal(reclaimed.length, 1);
 	assert.equal(reclaimed[0].id, delivery.id);
 	assert.equal(reclaimed[0].attempts, 1);
+}));
+
+test("media delivery poison work is abandoned after bounded attempts", () => withStore((store) => {
+	const item = store.enqueueMedia({ platform:"feishu",chatId:"chat" }, { path:"/missing.png" }, 0);
+	let now = 0;
+	for (let attempt = 0; attempt < 10; attempt++) {
+		const claimed = store.claimMediaDue(now, 1, 1)[0];
+		assert.equal(claimed.id, item.id);
+		store.failMedia(item.id, now);
+		now += 60 * 60_000;
+	}
+	assert.equal(store.claimMediaDue(now, 1).length, 0);
 }));

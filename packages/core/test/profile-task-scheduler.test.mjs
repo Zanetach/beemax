@@ -73,3 +73,16 @@ test("ProfileTaskScheduler does not shrink capacity for ordinary task failures",
 	await assert.rejects(scheduler.run("conversation-a", async () => { throw new Error("acceptance criteria rejected"); }), /acceptance/);
 	assert.equal(scheduler.snapshot().currentConcurrent, 3);
 });
+
+test("ProfileTaskScheduler applies global and per-owner backpressure", async () => {
+	const scheduler = new ProfileTaskScheduler({ maxConcurrent: 1, maxQueued: 2, maxQueuedPerOwner: 1 });
+	let release;
+	const active = scheduler.run("active", () => new Promise((resolve) => { release = resolve; }));
+	await new Promise((resolve) => setImmediate(resolve));
+	const queued = scheduler.run("owner-a", async () => "ok");
+	await assert.rejects(scheduler.run("owner-a", async () => "overflow"), /queue is full/);
+	const other = scheduler.run("owner-b", async () => "ok");
+	await assert.rejects(scheduler.run("owner-c", async () => "overflow"), /queue is full/);
+	release();
+	await Promise.all([active, queued, other]);
+});

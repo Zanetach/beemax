@@ -149,7 +149,7 @@ export class McpManager {
 						}).join("\n");
 						return {
 							content: [{ type: "text" as const, text: truncate(text, 50_000) }],
-							details: { server: name, tool: tool.name, structuredContent: result.structuredContent },
+							details: { server: name, tool: tool.name, structuredContent: boundedDetails(result.structuredContent) },
 							isError: result.isError === true,
 						};
 					},
@@ -166,7 +166,7 @@ export class McpManager {
 					parameters: Type.Object({}),
 					execute: async () => {
 						const result = await client.listResources();
-						return { content: [{ type: "text" as const, text: truncate(JSON.stringify(result.resources), 50_000) }], details: { server: name, resources: result.resources } };
+						return { content: [{ type: "text" as const, text: truncate(JSON.stringify(result.resources), 50_000) }], details: { server: name, resources: boundedDetails(result.resources) } };
 					},
 				}), { ...READ_ONLY_TOOL_POLICY, impact: `Lists resources exposed by MCP server ${name}` }));
 				addUtility(withToolPolicy(defineTool({
@@ -174,7 +174,7 @@ export class McpManager {
 					parameters: Type.Object({ uri: Type.String({ minLength: 1, maxLength: 4096 }) }),
 					execute: async (_id, params) => {
 						const result = await client.readResource({ uri: params.uri });
-						return { content: [{ type: "text" as const, text: truncate(JSON.stringify(result.contents), 50_000) }], details: { server: name, uri: params.uri, contents: result.contents } };
+						return { content: [{ type: "text" as const, text: truncate(JSON.stringify(result.contents), 50_000) }], details: { server: name, uri: params.uri, contents: boundedDetails(result.contents) } };
 					},
 				}), { ...READ_ONLY_TOOL_POLICY, impact: `Reads one resource exposed by MCP server ${name}` }));
 			}
@@ -184,7 +184,7 @@ export class McpManager {
 					parameters: Type.Object({}),
 					execute: async () => {
 						const result = await client.listPrompts();
-						return { content: [{ type: "text" as const, text: truncate(JSON.stringify(result.prompts), 50_000) }], details: { server: name, prompts: result.prompts } };
+						return { content: [{ type: "text" as const, text: truncate(JSON.stringify(result.prompts), 50_000) }], details: { server: name, prompts: boundedDetails(result.prompts) } };
 					},
 				}), { ...READ_ONLY_TOOL_POLICY, impact: `Lists prompt templates exposed by MCP server ${name}` }));
 				addUtility(withToolPolicy(defineTool({
@@ -192,7 +192,7 @@ export class McpManager {
 					parameters: Type.Object({ name: Type.String({ minLength: 1, maxLength: 256 }), arguments: Type.Optional(Type.Record(Type.String(), Type.String())) }),
 					execute: async (_id, params) => {
 						const result = await client.getPrompt({ name: params.name, arguments: params.arguments });
-						return { content: [{ type: "text" as const, text: truncate(JSON.stringify(result.messages), 50_000) }], details: { server: name, prompt: params.name, messages: result.messages } };
+						return { content: [{ type: "text" as const, text: truncate(JSON.stringify(result.messages), 50_000) }], details: { server: name, prompt: params.name, messages: boundedDetails(result.messages) } };
 					},
 				}), { ...READ_ONLY_TOOL_POLICY, impact: `Reads one prompt template exposed by MCP server ${name}` }));
 			}
@@ -242,6 +242,30 @@ function mapValues(input: Record<string, string>, fn: (value: string) => string)
 
 function truncate(value: string, max: number): string {
 	return value.length <= max ? value : `${value.slice(0, max)}\n[truncated]`;
+}
+
+function boundedDetails(value: unknown, maxBytes = 50_000): unknown {
+	let remaining = maxBytes;
+	const seen = new WeakSet<object>();
+	const visit = (candidate: unknown, depth: number): unknown => {
+		if (remaining <= 0) return "[truncated]";
+		if (typeof candidate === "string") { const text = candidate.slice(0, Math.max(0, Math.floor(remaining / 4))); remaining -= Buffer.byteLength(text); return text.length < candidate.length ? `${text}[truncated]` : text; }
+		if (candidate === null || typeof candidate === "number" || typeof candidate === "boolean") { remaining -= 16; return candidate; }
+		if (candidate === undefined) return undefined;
+		if (typeof candidate !== "object" || depth >= 6) { remaining -= 16; return `[${depth >= 6 ? "max depth" : typeof candidate}]`; }
+		if (seen.has(candidate)) return "[circular]"; seen.add(candidate);
+		if (Array.isArray(candidate)) return candidate.slice(0, 100).map((item) => visit(item, depth + 1)).concat(candidate.length > 100 ? ["[truncated items]"] : []);
+		const result: Record<string, unknown> = {};
+		const entries = Object.entries(candidate as Record<string, unknown>);
+		for (const [key, item] of entries.slice(0, 100)) {
+			const boundedKey = key.slice(0, Math.max(0, Math.min(1_024, Math.floor(remaining / 4))));
+			remaining -= Buffer.byteLength(boundedKey); if (!boundedKey || remaining <= 0) break;
+			result[boundedKey] = visit(item, depth + 1); if (remaining <= 0) break;
+		}
+		if (entries.length > 100 || remaining <= 0) result.__truncated = true;
+		return result;
+	};
+	return visit(value, 0);
 }
 
 async function withTimeout<T>(operation: Promise<T>, timeoutMs: number, description: string): Promise<T> {

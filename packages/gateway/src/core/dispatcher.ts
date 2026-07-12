@@ -306,7 +306,7 @@ export class Dispatcher {
 	async runAutomation(
 		source: InboundMessage["source"],
 		prompt: string,
-		options: { key: string; timeoutMs: number },
+		options: { key: string; timeoutMs: number; signal?: AbortSignal },
 	): Promise<string> {
 		const automationSource = { ...source, threadId: `__automation:${options.key}`, messageId: undefined };
 		const msg: InboundMessage = {
@@ -318,7 +318,13 @@ export class Dispatcher {
 			raw: { automation: options.key },
 			timestamp: Date.now(),
 		};
-		const result = await this.runtime.run({ source: msg.source, text: prompt, timeoutMs: options.timeoutMs, expandPromptTemplates: false, mode: "automation" });
+		if (options.signal?.aborted) throw options.signal.reason;
+		const abort = () => { void this.runtime.cancel(automationSource); };
+		options.signal?.addEventListener("abort", abort, { once: true });
+		let result;
+		try {
+			result = await Promise.race([this.runtime.run({ source: msg.source, text: prompt, timeoutMs: options.timeoutMs, expandPromptTemplates: false, mode: "automation" }), ...(options.signal ? [new Promise<never>((_, reject) => options.signal!.addEventListener("abort", () => reject(options.signal!.reason), { once: true }))] : [])]);
+		} finally { options.signal?.removeEventListener("abort", abort); }
 		if (!result.answer.trim() || result.answer === "(no response)") throw new Error("Automation agent returned no answer");
 		return result.answer.trim();
 	}

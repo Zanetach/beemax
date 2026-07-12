@@ -87,6 +87,7 @@ export class FeishuAdapter implements PlatformAdapter {
 	private shuttingDown = false;
 	private connectionGeneration = 0;
 	private readonly dedupTtlMs = 24 * 60 * 60 * 1000;
+	private readonly maxDedupEntries = 10_000;
 	private readonly settings: FeishuSettings;
 
 	constructor(settings: FeishuSettings) {
@@ -283,9 +284,7 @@ export class FeishuAdapter implements PlatformAdapter {
 		this.shuttingDown = true;
 		this.cancelPendingInbound();
 		this.cancelInboundBatches();
-		await this.drainingInbound?.catch(() => undefined);
-		await Promise.allSettled([...this.deliveryTails.values()]);
-		await Promise.allSettled([...this.inFlightDeliveries]);
+		await settleWithin([...(this.drainingInbound ? [this.drainingInbound] : []), ...this.deliveryTails.values(), ...this.inFlightDeliveries], 30_000);
 		if (this.webhookServer) {
 			for (const socket of this.webhookSockets) socket.destroy();
 			await new Promise<void>((resolve) => this.webhookServer?.close(() => resolve()));
@@ -337,14 +336,13 @@ export class FeishuAdapter implements PlatformAdapter {
 		const sender = data?.sender;
 		if (!msg || !sender?.sender_id) return;
 
-		if (this.isDuplicate(msg.message_id)) return;
-
 		const reason = this.admit(sender, msg);
 		if (reason !== null) {
-			if (reason === "pairing required") await this.handlePairing(sender, msg);
+			if (reason === "pairing required" && !this.isDuplicate(msg.message_id)) await this.handlePairing(sender, msg);
 			console.warn(`[beemax] rejected Feishu message ${msg.message_id}: ${reason}`);
 			return;
 		}
+		if (this.isDuplicate(msg.message_id)) return;
 
 		const source = this.buildSource(data);
 		const text = await this.extractText(msg);
@@ -785,12 +783,14 @@ export class FeishuAdapter implements PlatformAdapter {
 		this.purgeDedup(now);
 		if (this.dedup.has(messageId)) return true;
 		this.dedup.set(messageId, now);
+		while (this.dedup.size > this.maxDedupEntries) this.dedup.delete(this.dedup.keys().next().value!);
 		return false;
 	}
 
 	private purgeDedup(now: number): void {
 		for (const [id, ts] of this.dedup) {
-			if (now - ts > this.dedupTtlMs) this.dedup.delete(id);
+			if (now - ts <= this.dedupTtlMs) break;
+			this.dedup.delete(id);
 		}
 	}
 
@@ -983,6 +983,13 @@ export class FeishuAdapter implements PlatformAdapter {
 	private retryRequest<T>(operation: () => Promise<T>): Promise<T> {
 		return retryFeishuOperation(operation, { attempts: 3, baseDelayMs: this.settings.retryBaseDelayMs ?? 1_000 });
 	}
+}
+
+async function settleWithin(work: Promise<unknown>[], graceMs: number): Promise<void> {
+	if (!work.length) return;
+	let timer: ReturnType<typeof setTimeout> | undefined;
+	await Promise.race([Promise.allSettled(work), new Promise<void>((resolve) => { timer = setTimeout(resolve, graceMs); })]);
+	if (timer) clearTimeout(timer);
 }
 
 function deterministicUuid(value: string): string {

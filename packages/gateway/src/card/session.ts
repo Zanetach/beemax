@@ -23,8 +23,6 @@ export interface CardEventData {
 
 export class CardSession {
 	status: CardStatus = "thinking";
-	/** Protocol/debug-only reasoning. Never rendered in the default user card. */
-	thinkingText = "";
 	answerText = "";
 	tools = new Map<string, ToolState>();
 	tokens: Record<string, number> = {};
@@ -53,7 +51,6 @@ export class CardSession {
 				const raw = String(data.text ?? "");
 				const delta = this.thinkingNormalizer.feed(raw);
 				if (delta) {
-					this.thinkingText += delta;
 					this.timeline.recordReasoning(delta);
 				}
 				break;
@@ -70,7 +67,8 @@ export class CardSession {
 				const status = String(data.status ?? "running");
 				const detail = toolDetailFromEvent(data);
 				const isNewTool = !this.tools.has(toolId);
-				this.tools.set(toolId, { toolId, name, status, detail });
+				this.tools.set(toolId, { toolId, name: name.slice(0, 1_000), status, detail: detail.slice(0, 50_000) });
+				while (this.tools.size > 100) this.tools.delete(this.tools.keys().next().value!);
 				this.timeline.recordTool(toolId, name, status, detail);
 				if (isNewTool) this.toolCallCount++;
 				break;

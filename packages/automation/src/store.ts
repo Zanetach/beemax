@@ -39,6 +39,7 @@ export interface AutomationJob extends AutomationOwner {
 	consecutiveErrors: number;
 	createdAt: number;
 	updatedAt: number;
+	claimToken?: string;
 }
 
 export interface AutomationRun {
@@ -55,7 +56,7 @@ export interface MediaDelivery extends AutomationOwner {
 	id: string;
 	path: string;
 	mimeType?: string;
-	status: "queued" | "delivering" | "delivered";
+	status: "queued" | "delivering" | "delivered" | "abandoned";
 	attempts: number;
 	nextAttemptAt: number;
 	createdAt: number;
@@ -102,9 +103,13 @@ export class AutomationStore {
 	}
 
 	remove(id: string, owner: AutomationOwner): boolean {
-		return this.db.prepare(`DELETE FROM automation_jobs WHERE id = ? AND platform = ?
-			AND (chat_id = ? OR (? IS NOT NULL AND user_id = ?))`)
-			.run(id, owner.platform, owner.chatId, owner.userId ?? null, owner.userId ?? null).changes > 0;
+		return this.db.transaction(() => {
+			const changed = this.db.prepare(`DELETE FROM automation_jobs WHERE id = ? AND platform = ?
+				AND (chat_id = ? OR (? IS NOT NULL AND user_id = ?))`)
+				.run(id, owner.platform, owner.chatId, owner.userId ?? null, owner.userId ?? null).changes > 0;
+			if (changed) this.db.prepare("DELETE FROM automation_runs WHERE job_id = ?").run(id);
+			return changed;
+		})();
 	}
 
 	setEnabled(id: string, enabled: boolean, owner: AutomationOwner, now = Date.now()): boolean {
@@ -127,38 +132,47 @@ export class AutomationStore {
 				WHERE enabled = 1 AND next_run_at <= ? AND (locked_until IS NULL OR locked_until < ?)
 				ORDER BY next_run_at ASC LIMIT ?`).all(now, now, clamp(limit, 1, 20)) as JobRow[];
 			for (const row of rows) {
-				this.db.prepare(`UPDATE automation_jobs SET locked_until = ?, updated_at = ? WHERE id = ?`)
-					.run(now + leaseMs, now, row.id);
+				this.db.prepare(`UPDATE automation_jobs SET locked_until = ?, claim_token = ?, updated_at = ? WHERE id = ?`)
+					.run(now + leaseMs, randomId(), now, row.id);
 			}
-			return rows.map(mapJob);
+			return rows.map((row) => mapJob(this.db.prepare("SELECT * FROM automation_jobs WHERE id = ?").get(row.id) as JobRow));
 		});
 		return claim();
 	}
 
-	complete(job: AutomationJob, result: Omit<AutomationRun, "id" | "jobId">, now = Date.now()): void {
-		this.db.transaction(() => {
+	renewClaim(id: string, claimToken: string, leaseExpiresAt: number): boolean {
+		return this.db.prepare("UPDATE automation_jobs SET locked_until = ? WHERE id = ? AND claim_token = ?").run(leaseExpiresAt, id, claimToken).changes === 1;
+	}
+
+	complete(job: AutomationJob, result: Omit<AutomationRun, "id" | "jobId">, now = Date.now()): boolean {
+		return this.db.transaction(() => {
+			if (!job.claimToken || !(this.db.prepare("SELECT 1 FROM automation_jobs WHERE id = ? AND claim_token = ?").get(job.id, job.claimToken))) return false;
 			this.db.prepare(`INSERT INTO automation_runs
 				(id, job_id, started_at, finished_at, status, output, error)
 				VALUES (?, ?, ?, ?, ?, ?, ?)`)
 				.run(randomId(), job.id, result.startedAt, result.finishedAt, result.status,
 					result.output ?? null, result.error ?? null);
+			this.db.prepare(`DELETE FROM automation_runs WHERE job_id = ? AND id NOT IN (SELECT id FROM automation_runs WHERE job_id = ? ORDER BY started_at DESC LIMIT 100)`).run(job.id, job.id);
+			this.db.prepare("DELETE FROM automation_runs WHERE id NOT IN (SELECT id FROM automation_runs ORDER BY started_at DESC LIMIT 10000)").run();
 			if (result.status === "ok" && job.scheduleKind === "at" && job.deleteAfterRun) {
 				this.db.prepare(`DELETE FROM automation_jobs WHERE id = ?`).run(job.id);
-				return;
+				this.db.prepare("DELETE FROM automation_runs WHERE job_id = ?").run(job.id);
+				return true;
 			}
 			if (result.status === "ok") {
 				const enabled = job.scheduleKind === "at" ? 0 : 1;
 				const next = enabled ? computeNextRun(job.scheduleKind, job.schedule, job.timezone, now) : job.nextRunAt;
 				this.db.prepare(`UPDATE automation_jobs SET enabled = ?, next_run_at = ?, last_run_at = ?,
-					last_status = 'ok', consecutive_errors = 0, locked_until = NULL, updated_at = ? WHERE id = ?`)
-					.run(enabled, next, result.finishedAt, now, job.id);
-				return;
+					last_status = 'ok', consecutive_errors = 0, locked_until = NULL, claim_token = NULL, updated_at = ? WHERE id = ? AND claim_token = ?`)
+					.run(enabled, next, result.finishedAt, now, job.id, job.claimToken);
+				return true;
 			}
 			const errors = job.consecutiveErrors + 1;
 			const retryDelay = [30_000, 60_000, 5 * 60_000][Math.min(errors - 1, 2)];
 			this.db.prepare(`UPDATE automation_jobs SET next_run_at = ?, last_run_at = ?, last_status = ?,
-				consecutive_errors = ?, locked_until = NULL, updated_at = ? WHERE id = ?`)
-				.run(now + retryDelay, result.finishedAt, result.status, errors, now, job.id);
+				consecutive_errors = ?, locked_until = NULL, claim_token = NULL, updated_at = ? WHERE id = ? AND claim_token = ?`)
+				.run(now + retryDelay, result.finishedAt, result.status, errors, now, job.id, job.claimToken);
+			return true;
 		})();
 	}
 
@@ -212,11 +226,16 @@ export class AutomationStore {
 		})();
 	}
 
-	completeMedia(id: string): void { this.db.prepare(`UPDATE media_deliveries SET status = 'delivered' WHERE id = ?`).run(id); }
+	completeMedia(id: string): void { this.db.prepare(`DELETE FROM media_deliveries WHERE id = ?`).run(id); }
 	failMedia(id: string, now = Date.now()): void {
 		const row = this.db.prepare(`SELECT attempts FROM media_deliveries WHERE id = ?`).get(id) as { attempts: number } | undefined;
 		if (!row) return;
 		const attempts = row.attempts + 1;
+		if (attempts >= 10) {
+			this.db.prepare("UPDATE media_deliveries SET status = 'abandoned', attempts = ? WHERE id = ?").run(attempts, id);
+			this.db.prepare("DELETE FROM media_deliveries WHERE status = 'abandoned' AND id NOT IN (SELECT id FROM media_deliveries WHERE status = 'abandoned' ORDER BY created_at DESC LIMIT 1000)").run();
+			return;
+		}
 		const delay = Math.min(60 * 60_000, 30_000 * 2 ** Math.min(attempts - 1, 7));
 		this.db.prepare(`UPDATE media_deliveries SET status = 'queued', attempts = ?, next_attempt_at = ? WHERE id = ?`).run(attempts, now + delay, id);
 	}
@@ -248,7 +267,7 @@ export class AutomationStore {
 				schedule_value TEXT NOT NULL, timezone TEXT, payload_text TEXT NOT NULL,
 				enabled INTEGER NOT NULL, delete_after_run INTEGER NOT NULL, next_run_at INTEGER NOT NULL,
 				last_run_at INTEGER, last_status TEXT, consecutive_errors INTEGER NOT NULL DEFAULT 0,
-				locked_until INTEGER, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
+				locked_until INTEGER, claim_token TEXT, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
 			);
 			CREATE INDEX IF NOT EXISTS idx_automation_due ON automation_jobs(enabled, next_run_at);
 			CREATE TABLE IF NOT EXISTS automation_runs (
@@ -271,6 +290,8 @@ export class AutomationStore {
 			);
 			CREATE INDEX IF NOT EXISTS idx_media_deliveries_due ON media_deliveries(status, next_attempt_at);
 		`);
+		const columns = this.db.prepare("PRAGMA table_info(automation_jobs)").all() as Array<{ name: string }>;
+		if (!columns.some((column) => column.name === "claim_token")) this.db.exec("ALTER TABLE automation_jobs ADD COLUMN claim_token TEXT");
 	}
 }
 
@@ -314,9 +335,9 @@ function owns(job: AutomationJob, owner: AutomationOwner): boolean {
 function clamp(value: number, min: number, max: number): number { return Math.max(min, Math.min(max, value)); }
 function randomId(): string { return crypto.randomUUID(); }
 
-interface JobRow { id:string;platform:string;chat_id:string;user_id:string|null;name:string;kind:string;schedule_kind:string;schedule_value:string;timezone:string|null;payload_text:string;enabled:number;delete_after_run:number;next_run_at:number;last_run_at:number|null;last_status:string|null;consecutive_errors:number;created_at:number;updated_at:number }
+interface JobRow { id:string;platform:string;chat_id:string;user_id:string|null;name:string;kind:string;schedule_kind:string;schedule_value:string;timezone:string|null;payload_text:string;enabled:number;delete_after_run:number;next_run_at:number;last_run_at:number|null;last_status:string|null;consecutive_errors:number;claim_token:string|null;created_at:number;updated_at:number }
 interface RunRow { id:string;job_id:string;started_at:number;finished_at:number;status:string;output:string|null;error:string|null }
 interface MediaRow { id:string;platform:string;chat_id:string;user_id:string|null;path:string;mime_type:string|null;status:string;attempts:number;next_attempt_at:number;created_at:number }
-function mapJob(row: JobRow): AutomationJob { return { id:row.id,platform:row.platform,chatId:row.chat_id,userId:row.user_id??undefined,name:row.name,kind:row.kind as AutomationKind,scheduleKind:row.schedule_kind as ScheduleKind,schedule:row.schedule_value,text:row.payload_text,timezone:row.timezone??undefined,enabled:Boolean(row.enabled),deleteAfterRun:Boolean(row.delete_after_run),nextRunAt:row.next_run_at,lastRunAt:row.last_run_at??undefined,lastStatus:row.last_status??undefined,consecutiveErrors:row.consecutive_errors,createdAt:row.created_at,updatedAt:row.updated_at }; }
+function mapJob(row: JobRow): AutomationJob { return { id:row.id,platform:row.platform,chatId:row.chat_id,userId:row.user_id??undefined,name:row.name,kind:row.kind as AutomationKind,scheduleKind:row.schedule_kind as ScheduleKind,schedule:row.schedule_value,text:row.payload_text,timezone:row.timezone??undefined,enabled:Boolean(row.enabled),deleteAfterRun:Boolean(row.delete_after_run),nextRunAt:row.next_run_at,lastRunAt:row.last_run_at??undefined,lastStatus:row.last_status??undefined,consecutiveErrors:row.consecutive_errors,claimToken:row.claim_token??undefined,createdAt:row.created_at,updatedAt:row.updated_at }; }
 function mapRun(row: RunRow): AutomationRun { return { id:row.id,jobId:row.job_id,startedAt:row.started_at,finishedAt:row.finished_at,status:row.status as AutomationRun["status"],output:row.output??undefined,error:row.error??undefined }; }
 function mapMedia(row: MediaRow): MediaDelivery { return { id:row.id,platform:row.platform,chatId:row.chat_id,userId:row.user_id??undefined,path:row.path,mimeType:row.mime_type??undefined,status:row.status as MediaDelivery["status"],attempts:row.attempts,nextAttemptAt:row.next_attempt_at,createdAt:row.created_at }; }

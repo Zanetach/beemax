@@ -25,12 +25,15 @@ export class SessionCatalog<Source extends BeeMaxRuntimeSource = BeeMaxRuntimeSo
 	private readonly path: string;
 	private readonly records = new Map<string, StoredSessionChoice>();
 	private loading?: Promise<void>;
+	private writes?: Promise<void>;
+	private writeGeneration = 0;
+	private readonly limit: number;
 
 	static forAgentDir<Source extends BeeMaxRuntimeSource>(agentDir: string): SessionCatalog<Source> {
 		return new SessionCatalog(join(agentDir, "sessions", "beemax-session-index.json"));
 	}
 
-	constructor(path: string) { this.path = path; }
+	constructor(path: string, limit = 2_000) { this.path = path; this.limit = Math.max(100, Math.min(limit, 20_000)); }
 
 	async list(source: Source): Promise<SavedSessionChoice[]> {
 		await this.ready();
@@ -47,6 +50,7 @@ export class SessionCatalog<Source extends BeeMaxRuntimeSource = BeeMaxRuntimeSo
 		await this.ready();
 		const existing = this.records.get(recordKey(source));
 		this.records.set(recordKey(source), { owner: sessionOwnerKey(source), threadId: source.threadId, lastUsedAt: Date.now(), preferences: existing?.preferences ?? {} });
+		this.prune();
 		await this.persist();
 	}
 
@@ -62,14 +66,31 @@ export class SessionCatalog<Source extends BeeMaxRuntimeSource = BeeMaxRuntimeSo
 			owner: sessionOwnerKey(source), threadId: source.threadId, lastUsedAt: existing?.lastUsedAt ?? Date.now(),
 			preferences: { ...existing?.preferences, ...preferences },
 		});
+		this.prune();
 		await this.persist();
 	}
 
 	private async persist(): Promise<void> {
-		await mkdir(dirname(this.path), { recursive: true });
-		const temporary = `${this.path}.${process.pid}.tmp`;
-		await writeFile(temporary, JSON.stringify([...this.records.values()]), { encoding: "utf8", mode: 0o600 });
-		await rename(temporary, this.path);
+		this.writeGeneration++;
+		this.writes ??= this.flushWrites().finally(() => { this.writes = undefined; });
+		await this.writes;
+	}
+	private async flushWrites(): Promise<void> {
+		await Promise.resolve();
+		let persisted = 0;
+		while (persisted < this.writeGeneration) {
+			const target = this.writeGeneration;
+			const snapshot = JSON.stringify([...this.records.values()]);
+			await mkdir(dirname(this.path), { recursive: true });
+			const temporary = `${this.path}.${process.pid}.${crypto.randomUUID()}.tmp`;
+			await writeFile(temporary, snapshot, { encoding: "utf8", mode: 0o600 }); await rename(temporary, this.path);
+			persisted = target;
+		}
+	}
+	private prune(): void {
+		if (this.records.size <= this.limit) return;
+		const oldest = [...this.records.entries()].sort((a, b) => a[1].lastUsedAt - b[1].lastUsedAt).slice(0, this.records.size - this.limit);
+		for (const [key] of oldest) this.records.delete(key);
 	}
 
 	private async ready(): Promise<void> {
@@ -81,6 +102,7 @@ export class SessionCatalog<Source extends BeeMaxRuntimeSource = BeeMaxRuntimeSo
 			const parsed: unknown = JSON.parse(await readFile(this.path, "utf8"));
 			if (!Array.isArray(parsed)) return;
 			for (const candidate of parsed) if (isRecord(candidate)) this.records.set(`${candidate.owner}:${candidate.threadId ?? ""}`, { ...candidate, preferences: candidate.preferences ?? {} });
+			this.prune();
 		} catch (error) {
 			if ((error as NodeJS.ErrnoException).code !== "ENOENT") console.warn(`[beemax] unable to read session index: ${error instanceof Error ? error.message : String(error)}`);
 		}

@@ -71,3 +71,9 @@ test("tool activity remains separate from the answer stream", () => {
 	assert.match(presenter.renderDetails(), /工具 web_search · completed/);
 	assert.match(presenter.renderDetails(), /子代理 task_spawn · running/);
 });
+
+test("local activity history stays bounded in long-running sessions", () => {
+	const presenter = new LocalActivityPresenter("expanded");
+	for (let index = 0; index < 250; index++) presenter.event({ type: "tool.changed", turnId: "turn", callId: `call-${index}`, name: "bash", state: "completed" });
+	assert.equal(presenter.renderDetails().split("\n\n").length, 200);
+});

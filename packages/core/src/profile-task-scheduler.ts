@@ -1,4 +1,4 @@
-export interface ProfileTaskSchedulerOptions { maxConcurrent?: number; adaptive?: boolean; increaseAfterSuccesses?: number; }
+export interface ProfileTaskSchedulerOptions { maxConcurrent?: number; adaptive?: boolean; increaseAfterSuccesses?: number; maxQueued?: number; maxQueuedPerOwner?: number; }
 export interface ProfileTaskSchedulerSnapshot { running: number; queued: number; queuedOwners: number; maxConcurrent: number; currentConcurrent: number; overloadReductions: number; }
 
 interface ScheduledWork<T> {
@@ -15,6 +15,9 @@ export class ProfileTaskScheduler {
 	private readonly maxConcurrent: number;
 	private readonly adaptive: boolean;
 	private readonly increaseAfterSuccesses: number;
+	private readonly maxQueued: number;
+	private readonly maxQueuedPerOwner: number;
+	private queued = 0;
 	private readonly queues = new Map<string, ScheduledWork<unknown>[]>();
 	private readonly owners: string[] = [];
 	private running = 0;
@@ -28,11 +31,15 @@ export class ProfileTaskScheduler {
 		this.currentConcurrent = this.maxConcurrent;
 		this.adaptive = options.adaptive ?? true;
 		this.increaseAfterSuccesses = positiveInt(options.increaseAfterSuccesses, 4);
+		this.maxQueued = positiveInt(options.maxQueued, 1_000);
+		this.maxQueuedPerOwner = Math.min(this.maxQueued, positiveInt(options.maxQueuedPerOwner, 100));
 	}
 
 	run<T>(ownerKey: string, work: (signal?: AbortSignal) => Promise<T>, signal?: AbortSignal): Promise<T> {
 		if (!ownerKey.trim()) return Promise.reject(new Error("Scheduled work owner is required"));
 		if (signal?.aborted) return Promise.reject(abortReason(signal));
+		const existing = this.queues.get(ownerKey)?.length ?? 0;
+		if (this.queued >= this.maxQueued || existing >= this.maxQueuedPerOwner) return Promise.reject(new Error("Profile task queue is full; retry later"));
 		return new Promise<T>((resolve, reject) => {
 			const item: ScheduledWork<T> = { ownerKey, work, signal, resolve, reject };
 			if (signal) {
@@ -45,12 +52,13 @@ export class ProfileTaskScheduler {
 			const queue = this.queues.get(ownerKey) ?? [];
 			if (!this.queues.has(ownerKey)) { this.queues.set(ownerKey, queue); this.owners.push(ownerKey); }
 			queue.push(item as ScheduledWork<unknown>);
+			this.queued++;
 			this.pump();
 		});
 	}
 
 	snapshot(): ProfileTaskSchedulerSnapshot {
-		return { running: this.running, queued: [...this.queues.values()].reduce((sum, queue) => sum + queue.length, 0), queuedOwners: this.queues.size, maxConcurrent: this.maxConcurrent, currentConcurrent: this.currentConcurrent, overloadReductions: this.overloadReductions };
+		return { running: this.running, queued: this.queued, queuedOwners: this.queues.size, maxConcurrent: this.maxConcurrent, currentConcurrent: this.currentConcurrent, overloadReductions: this.overloadReductions };
 	}
 
 	private pump(): void {
@@ -97,6 +105,7 @@ export class ProfileTaskScheduler {
 			const queue = this.queues.get(owner);
 			if (!queue?.length) continue;
 			const item = queue.shift()!;
+			this.queued--;
 			this.lastOwner = owner;
 			if (!queue.length) this.deleteOwner(owner);
 			return item;
@@ -109,6 +118,7 @@ export class ProfileTaskScheduler {
 		const index = queue?.indexOf(item) ?? -1;
 		if (!queue || index < 0) return false;
 		queue.splice(index, 1);
+		this.queued--;
 		item.signal?.removeEventListener("abort", item.abort!);
 		if (!queue.length) this.deleteOwner(item.ownerKey);
 		return true;

@@ -1,4 +1,4 @@
-import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, readSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
@@ -29,6 +29,11 @@ export function recordGatewayEvent(agentDir: string, event: "started" | "stopped
 	const path = gatewayPaths(agentDir).events;
 	mkdirSync(join(agentDir, "logs"), { recursive: true, mode: 0o700 });
 	appendFileSync(path, `${JSON.stringify({ at: new Date().toISOString(), event, ...fields })}\n`, { mode: 0o600 });
+	if (statSync(path).size > 1_000_000) {
+		const retained = readTail(path, 2_000);
+		const temporary = `${path}.${process.pid}.tmp`;
+		writeFileSync(temporary, `${retained}\n`, { mode: 0o600 }); renameSync(temporary, path);
+	}
 }
 
 export function inspectGateway(profile: string, agentDir: string, scope: "user" | "system" = "user", cliVersion = "unavailable"): GatewayState & { installation: "installed" | "absent" | "unknown"; service: "running" | "stopped" | "unknown"; health: "healthy" | "degraded" | "unavailable"; logs: "available" | "absent"; state: "available" | "absent"; cliVersion: string; versionMatches: boolean | undefined; operational: OperationalSnapshot } {
@@ -52,9 +57,34 @@ export function inspectGateway(profile: string, agentDir: string, scope: "user" 
 export function readGatewayLogs(agentDir: string, tail = 200): string {
 	const paths = gatewayPaths(agentDir);
 	const entries = [["events", paths.events], ["stdout", paths.stdout], ["stderr", paths.stderr]].flatMap(([source, path]) => {
-		try { return readFileSync(path, "utf8").trim().split("\n").filter(Boolean).map((line) => `[${source}] ${line}`); } catch { return []; }
+		try { return readTail(path, Math.max(1, tail)).split("\n").filter(Boolean).map((line) => `[${source}] ${line}`); } catch { return []; }
 	});
 	return entries.length ? entries.slice(-Math.max(1, tail)).join("\n") : "No Gateway logs have been created yet. The Gateway may not have been started for this Profile.";
+}
+
+export function boundGatewayProcessLogs(agentDir: string, maxBytes = 10_000_000, retainBytes = 2_000_000): void {
+	const paths = gatewayPaths(agentDir);
+	for (const path of [paths.stdout, paths.stderr]) {
+		try {
+			const size = statSync(path).size;
+			if (size <= maxBytes) continue;
+			const descriptor = openSync(path, "r");
+			try {
+				const bytes = Math.min(size, retainBytes); const buffer = Buffer.allocUnsafe(bytes);
+				readSync(descriptor, buffer, 0, bytes, size - bytes); writeFileSync(path, buffer, { mode: 0o600 });
+			} finally { closeSync(descriptor); }
+		} catch { /* Logs may not exist or may be managed by the service manager. */ }
+	}
+}
+
+function readTail(path: string, lines: number): string {
+	const size = statSync(path).size;
+	const bytes = Math.min(size, Math.max(64 * 1024, lines * 2_048));
+	const descriptor = openSync(path, "r");
+	try {
+		const buffer = Buffer.allocUnsafe(bytes); readSync(descriptor, buffer, 0, bytes, size - bytes);
+		return buffer.toString("utf8").split("\n").slice(-lines).join("\n").trim();
+	} finally { closeSync(descriptor); }
 }
 
 function pidAlive(pid: number): boolean {
