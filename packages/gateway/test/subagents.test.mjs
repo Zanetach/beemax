@@ -227,7 +227,7 @@ test("/stop bypasses the conversation turn lock and cascades Sub-Agent cancellat
 	assert.equal(cancelled, 1);
 	assert.equal(aborted, 1);
 	assert.equal(approvalReplies, 0, "/stop must not be consumed as an approval reply");
-	assert.match(sent[0], /cancelled 2 Sub-Agent/);
+	assert.match(sent[0], /取消 2 个子任务/);
 	dispatcher.dispose();
 });
 
@@ -330,7 +330,34 @@ test("Dispatcher delivers a second inbound message as a native follow-up to the 
 	await new Promise((resolve) => setImmediate(resolve));
 	await inbound({ text: "second", messageType: "text", source: { ...source, messageId: "second" }, mediaPaths: [], mediaTypes: [], raw: {}, timestamp: Date.now() });
 	assert.deepEqual(followUps, ["second"]);
-	assert.match(sent.at(-1), /Follow-up delivered/);
+	assert.match(sent.at(-1), /已收到补充消息/);
+	finish({ answer: "ok", model: "test", durationMs: 1, usage: {} });
+	await first;
+	dispatcher.dispose();
+});
+
+test("Dispatcher sends explicit /steer guidance to the active turn", async () => {
+	let inbound;
+	let finish;
+	const guidance = [];
+	const sent = [];
+	const platform = {
+		name: "feishu", isConnected: true, onMessage: (handler) => { inbound = handler; }, connect: async () => true, disconnect: async () => undefined,
+		send: async (_chatId, text) => { sent.push(text); return { success: true }; }, editMessage: async () => ({ success: true }),
+		sendCard: async () => ({ success: true, messageId: "card" }), updateCard: async () => ({ success: true }), sendTyping: async () => undefined, stopTyping: async () => undefined,
+	};
+	const runtime = {
+		run: async () => new Promise((resolve) => { finish = resolve; }),
+		steer: async (_source, text) => { guidance.push(text); return true; },
+		cancel: async () => false, handleControl: async () => undefined, modelStatus: async () => undefined, usage: async () => undefined,
+		isBusy: () => true, dispose: () => undefined,
+	};
+	const dispatcher = new Dispatcher({ runtime }, platform);
+	const first = inbound({ text: "first", messageType: "text", source: { ...source, messageId: "first-steer" }, mediaPaths: [], mediaTypes: [], raw: {}, timestamp: Date.now() });
+	await new Promise((resolve) => setImmediate(resolve));
+	await inbound({ text: "/steer 改成中文报告", messageType: "command", source: { ...source, messageId: "steer" }, mediaPaths: [], mediaTypes: [], raw: {}, timestamp: Date.now() });
+	assert.deepEqual(guidance, ["改成中文报告"]);
+	assert.match(sent.at(-1), /已更新当前任务要求/);
 	finish({ answer: "ok", model: "test", durationMs: 1, usage: {} });
 	await first;
 	dispatcher.dispose();

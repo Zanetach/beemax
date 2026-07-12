@@ -181,7 +181,7 @@ test("cancelling a running turn produces a semantic cancellation instead of a fa
 	assert.equal((await interaction.snapshot(source)).phase, "cancelled");
 });
 
-test("interaction runtime owns a one-entry queue and clears it on cancellation", async () => {
+test("interaction runtime preserves an ordered bounded queue and clears it on cancellation", async () => {
 	let rejectTurn;
 	const runtime = {
 		run() { return new Promise((_resolve, reject) => { rejectTurn = reject; }); },
@@ -193,8 +193,8 @@ test("interaction runtime owns a one-entry queue and clears it on cancellation",
 	await new Promise((resolve) => setImmediate(resolve));
 	assert.deepEqual(await interaction.dispatch({ type: "turn.queue", source, text: "second" }), { queued: true, position: 1, replaced: false, mode: "queue" });
 	assert.equal((await interaction.snapshot(source)).phase, "queued");
-	assert.deepEqual(await interaction.dispatch({ type: "turn.queue", source, text: "replacement" }), { queued: true, position: 1, replaced: true, mode: "queue" });
-	assert.equal((await interaction.snapshot(source)).queueDepth, 1);
+	assert.deepEqual(await interaction.dispatch({ type: "turn.queue", source, text: "third" }), { queued: true, position: 2, replaced: false, mode: "queue" });
+	assert.equal((await interaction.snapshot(source)).queueDepth, 2);
 	const cancelled = await interaction.dispatch({ type: "turn.cancel", source });
 	assert.equal(cancelled.queuedCancelled, true);
 	assert.equal(interaction.takeQueuedInput(source), undefined);
@@ -216,8 +216,8 @@ test("steer and follow-up use native runtime delivery when available", async () 
 	await new Promise((resolve) => setImmediate(resolve));
 	assert.deepEqual(await interaction.dispatch({ type: "turn.steer", source, text: "focus on tests" }), { queued: true, position: 1, replaced: false, mode: "steer" });
 	assert.equal((await interaction.snapshot(source)).phase, "running");
-	assert.deepEqual(await interaction.dispatch({ type: "turn.queue", source, text: "then summarize" }), { queued: true, position: 1, replaced: false, mode: "follow_up" });
-	assert.equal((await interaction.snapshot(source)).queueDepth, 1);
+	assert.deepEqual(await interaction.dispatch({ type: "turn.queue", source, text: "then summarize" }), { queued: true, position: 2, replaced: false, mode: "follow_up" });
+	assert.equal((await interaction.snapshot(source)).queueDepth, 2);
 	assert.deepEqual(delivered, [["steer", "focus on tests"], ["follow_up", "then summarize"]]);
 	assert.equal(interaction.takeQueuedInput(source), undefined, "native Pi queues must not be replayed by the presenter");
 	assert.equal((await interaction.dispatch({ type: "turn.cancel", source })).queuedCancelled, true);

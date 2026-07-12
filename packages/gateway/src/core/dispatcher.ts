@@ -13,6 +13,7 @@
 import {
 	AgentRunError,
 	InteractionEventAdapter,
+	parseInteractionCommand,
 	sessionOwnerKey,
 	type ToolApprovalBroker,
 	type InteractionEvent,
@@ -82,10 +83,11 @@ export class Dispatcher {
 		try {
 			if (!this.deduplicator.accept(this.profileId, msg.source.platform, msg.source.messageId)) return;
 			const effective = { ...msg, source: this.sessionOverrides.get(sessionOwnerKey(msg.source)) ?? msg.source };
-			if (effective.text.trim().toLowerCase() === "/stop") {
+			const command = parseInteractionCommand(effective.text);
+			if (command?.kind === "stop") {
 				const outcome = await this.interaction.dispatch({ type: "turn.cancel", source: effective.source });
 				if (!("cancelled" in outcome)) throw new Error("Cancellation dispatch did not produce a cancellation result");
-				await this.platform.send(msg.source.chatId, `${outcome.cancelled ? "Stopped the active Agent turn" : "No active Agent turn"}${outcome.subagentsCancelled ? ` and cancelled ${outcome.subagentsCancelled} Sub-Agent task(s)` : ""}${outcome.approvalCancelled ? "; cancelled pending approval" : ""}.`);
+				await this.platform.send(msg.source.chatId, `${outcome.cancelled ? "已停止当前任务" : "当前没有正在执行的任务"}${outcome.subagentsCancelled ? `；同时取消 ${outcome.subagentsCancelled} 个子任务` : ""}${outcome.approvalCancelled ? "；已取消待审批操作" : ""}。`);
 				return;
 			}
 			if (await this.interaction.handleApprovalReply(effective.source, effective.text)) return;
@@ -97,9 +99,18 @@ export class Dispatcher {
 			}
 			const snapshot = await this.interaction.snapshot(effective.source);
 			if (["running", "queued", "awaiting_approval"].includes(snapshot.phase)) {
-				const queued = await this.interaction.dispatch({ type: "turn.queue", source: effective.source, text: effective.text });
+				const queued = command?.kind === "steer"
+					? await this.interaction.dispatch({ type: "turn.steer", source: effective.source, text: command.text })
+					: await this.interaction.dispatch({ type: "turn.queue", source: effective.source, text: effective.text });
 				if (!("queued" in queued) || !queued.queued) throw new Error("Active Agent turn rejected follow-up input");
-				await this.platform.send(msg.source.chatId, queued.mode === "follow_up" ? "Follow-up delivered to the active Agent." : queued.replaced ? "Replaced the queued follow-up." : "Queued the follow-up.");
+				const feedback = queued.mode === "steer"
+					? "已更新当前任务要求，Agent 会在下一步按新要求继续。"
+					: queued.mode === "follow_up"
+						? "已收到补充消息，将在当前任务中继续处理。"
+						: queued.replaced
+							? "已更新下一条待处理消息。"
+							: `已加入当前会话队列${queued.position > 0 ? `（第 ${queued.position} 条）` : ""}。`;
+				await this.platform.send(msg.source.chatId, `${feedback} 发送 /stop 可随时停止。`);
 				return;
 			}
 			await this.runTurn(effective);
@@ -306,7 +317,15 @@ export class Dispatcher {
 				await flush.schedule(renderUpdate);
 				break;
 			case "turn.queued":
-				card.apply("approval.updated", { id: `queue:${event.turnId}`, status: "queued", message: `${event.mode === "steer_fallback" ? "当前运行时不支持中途引导，" : ""}${event.replaced ? "已替换下一条排队消息" : `下一条消息已排队（位置 ${event.position}）`}` });
+				card.apply("approval.updated", {
+					id: `queue:${event.turnId}`,
+					status: "queued",
+					message: event.mode === "steer"
+						? "已更新当前任务要求"
+						: event.mode === "follow_up"
+							? "已收到补充消息，将在当前任务中继续处理"
+							: `${event.mode === "steer_fallback" ? "当前运行时不支持中途引导，" : ""}${event.replaced ? "已更新下一条待处理消息" : `消息已进入当前会话队列（第 ${event.position} 条）`}`,
+				});
 				await flush.schedule(renderUpdate);
 				break;
 		}

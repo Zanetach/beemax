@@ -80,6 +80,17 @@ test("Feishu splits text bursts at Hermes message and character bounds", async (
 	assert.deepEqual(new Set(delivered), new Set(["1234\n5678", "90\nab"]));
 });
 
+for (const burstSize of [10, 100]) test(`Feishu compiles a ${burstSize}-message burst without loss or reordering`, async () => {
+	const adapter = new FeishuAdapter({ ...settings, textBatchDelayMs: 5, textBatchMaxMessages: 8, textBatchMaxChars: 4_000 });
+	const delivered = [];
+	adapter.onMessage(async (message) => { delivered.push(...message.text.split("\n")); });
+
+	await Promise.all(Array.from({ length: burstSize }, (_, index) => adapter.onReceive(textEvent(`burst-${burstSize}-${index}`, `message-${index}`))));
+	await waitFor(() => delivered.length === burstSize);
+	assert.deepEqual(delivered, Array.from({ length: burstSize }, (_, index) => `message-${index}`));
+	await adapter.disconnect();
+});
+
 test("Feishu admits a second message while the first Agent turn is still running", async () => {
 	const adapter = new FeishuAdapter({ ...settings });
 	const admitted = [];

@@ -129,8 +129,8 @@ export class InteractionEventAdapter<Source extends BeeMaxRuntimeSource = BeeMax
 	private readonly sequences = new Map<string, number>();
 	private readonly eventHistory = new Map<string, InteractionEvent[]>();
 	private readonly subscribers = new Map<string, Set<InteractionEventSink>>();
-	private readonly queuedInputs = new Map<string, string>();
-	private readonly nativeQueuedInputs = new Set<string>();
+	private readonly queuedInputs = new Map<string, string[]>();
+	private readonly nativeQueuedInputs = new Map<string, number>();
 	private readonly actions = new Map<string, Map<string, Promise<InteractionActionResult>>>();
 	private readonly approvalStartedAt = new Map<string, number>();
 	private readonly turnModels = new Map<string, string>();
@@ -247,7 +247,7 @@ export class InteractionEventAdapter<Source extends BeeMaxRuntimeSource = BeeMax
 		const current = this.states.get(interactionKey(source));
 		const [status, usage] = await Promise.all([this.runtime.modelStatus?.(source), this.runtime.usage?.(source)]);
 		const key = interactionKey(source);
-		return { phase: current?.phase ?? "idle", turnId: current?.turnId, model: status?.model, usage, queueDepth: this.queuedInputs.has(key) || this.nativeQueuedInputs.has(key) ? 1 : 0, updatedAt: current?.updatedAt ?? Date.now() };
+		return { phase: current?.phase ?? "idle", turnId: current?.turnId, model: status?.model, usage, queueDepth: (this.queuedInputs.get(key)?.length ?? 0) + (this.nativeQueuedInputs.get(key) ?? 0), updatedAt: current?.updatedAt ?? Date.now() };
 	}
 
 	/** Reconnection-safe semantic events, bounded per interaction session. */
@@ -276,11 +276,12 @@ export class InteractionEventAdapter<Source extends BeeMaxRuntimeSource = BeeMax
 
 	dispose(): void { this.unsubscribeApproval?.(); }
 
-	/** Consume the one-entry queue after a turn reaches a terminal state. */
+	/** Consume the oldest fallback input after a turn reaches a terminal state. */
 	takeQueuedInput(source: Source): string | undefined {
 		const key = interactionKey(source);
-		const text = this.queuedInputs.get(key);
-		this.queuedInputs.delete(key);
+		const queue = this.queuedInputs.get(key);
+		const text = queue?.shift();
+		if (!queue?.length) this.queuedInputs.delete(key);
 		return text;
 	}
 
@@ -318,10 +319,12 @@ export class InteractionEventAdapter<Source extends BeeMaxRuntimeSource = BeeMax
 		const turnId = this.states.get(key)?.turnId;
 		const phase = this.states.get(key)?.phase;
 		if (!turnId || (phase !== "running" && phase !== "queued")) return { queued: false, position: 0, replaced: false, mode };
-		const replaced = this.queuedInputs.has(key);
-		this.queuedInputs.set(key, text);
-		await this.publish(source, turnId, { type: "turn.queued", position: 1, replaced, mode }, sink);
-		return { queued: true, position: 1, replaced, mode };
+		const queue = this.queuedInputs.get(key) ?? [];
+		if (queue.length >= 100) return { queued: false, position: queue.length, replaced: false, mode };
+		queue.push(text);
+		this.queuedInputs.set(key, queue);
+		await this.publish(source, turnId, { type: "turn.queued", position: queue.length, replaced: false, mode }, sink);
+		return { queued: true, position: queue.length, replaced: false, mode };
 	}
 
 	private async deliverOrQueue(source: Source, text: string, mode: "steer" | "follow_up", sink?: InteractionEventSink): Promise<InteractionQueueResult> {
@@ -332,9 +335,10 @@ export class InteractionEventAdapter<Source extends BeeMaxRuntimeSource = BeeMax
 		const deliver = mode === "steer" ? this.runtime.steer : this.runtime.followUp;
 		if (deliver) {
 			if (await deliver.call(this.runtime, source, text)) {
-				this.nativeQueuedInputs.add(key);
-				await this.publish(source, turnId, { type: "turn.queued", position: 1, replaced: false, mode }, sink);
-				return { queued: true, position: 1, replaced: false, mode };
+				const position = (this.nativeQueuedInputs.get(key) ?? 0) + 1;
+				this.nativeQueuedInputs.set(key, position);
+				await this.publish(source, turnId, { type: "turn.queued", position, replaced: false, mode }, sink);
+				return { queued: true, position, replaced: false, mode };
 			}
 		}
 		return this.queue(source, text, mode === "steer" ? "steer_fallback" : "queue", sink);
