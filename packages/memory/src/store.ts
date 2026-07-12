@@ -138,8 +138,10 @@ export interface TaskFactRecord {
 
 export class MemoryStore {
 	private readonly db: DatabaseType;
+	private readonly profileId: string;
 
-	constructor(dbPath: string) {
+	constructor(dbPath: string, profileId = "default") {
+		this.profileId = profileId;
 		mkdirSync(dirname(dbPath), { recursive: true });
 		this.db = new Database(dbPath);
 		this.db.pragma("journal_mode = WAL");
@@ -337,7 +339,7 @@ export class MemoryStore {
 				object_id TEXT,
 				source_type TEXT,
 				source_ref TEXT,
-				visibility TEXT NOT NULL DEFAULT 'conversation',
+				visibility TEXT NOT NULL DEFAULT 'private',
 				valid_from INTEGER,
 				valid_until INTEGER,
 				confidence REAL NOT NULL,
@@ -425,7 +427,7 @@ export class MemoryStore {
 		this.addColumnIfMissing("memory_claims", "object_id", "TEXT");
 		this.addColumnIfMissing("memory_claims", "source_type", "TEXT");
 		this.addColumnIfMissing("memory_claims", "source_ref", "TEXT");
-		this.addColumnIfMissing("memory_claims", "visibility", "TEXT NOT NULL DEFAULT 'conversation'");
+		this.addColumnIfMissing("memory_claims", "visibility", "TEXT NOT NULL DEFAULT 'private'");
 		this.addColumnIfMissing("memory_claims", "valid_from", "INTEGER");
 		this.addColumnIfMissing("memory_claims", "valid_until", "INTEGER");
 		this.db.exec(`
@@ -437,6 +439,18 @@ export class MemoryStore {
 			CREATE INDEX IF NOT EXISTS idx_memory_claims_business_scope ON memory_claims(profile_id, organization_id, project_id, visibility, status, updated_at DESC);
 		`);
 		this.addColumnIfMissing("memory_evidence", "event_id", "TEXT REFERENCES memory_events(id)");
+		this.db.exec("CREATE TABLE IF NOT EXISTS memory_store_identity (id INTEGER PRIMARY KEY CHECK (id = 1), profile_id TEXT NOT NULL)");
+		this.db.prepare("INSERT OR IGNORE INTO memory_store_identity (id, profile_id) VALUES (1, ?)").run(this.profileId);
+		const identity = this.db.prepare("SELECT profile_id FROM memory_store_identity WHERE id = 1").get() as { profile_id: string };
+		if (identity.profile_id === "default" && this.profileId !== "default") {
+			this.db.prepare("UPDATE memory_store_identity SET profile_id = ? WHERE id = 1 AND profile_id = 'default'").run(this.profileId);
+			identity.profile_id = this.profileId;
+		}
+		if (identity.profile_id !== this.profileId) {
+			this.db.close();
+			throw new Error(`Memory database belongs to Profile '${identity.profile_id}', not '${this.profileId}'`);
+		}
+		this.db.prepare("UPDATE memory_claims SET profile_id = ? WHERE profile_id = 'default'").run(this.profileId);
 		this.db.exec("UPDATE tasks SET verification_outcome = verification_status WHERE verification_outcome IS NULL AND verification_status IS NOT NULL");
 		this.db.exec(`INSERT OR IGNORE INTO tasks (id, owner_key, kind, title, status, evidence, created_at, finished_at, updated_at)
 			SELECT id, 'profile', 'objective', title,
@@ -469,14 +483,17 @@ export class MemoryStore {
 
 	/** Store or reinforce a named understanding with optional provenance. */
 	upsertClaim(input: ClaimInput): MemoryClaim {
+		if ((input.profileId ?? this.profileId) !== this.profileId) throw new Error("Memory claim is outside this Profile store");
 		const statement = input.statement.trim();
 		if (!statement) throw new Error("Memory claim statement cannot be empty");
 		const now = Date.now();
-		const scope = [input.profileId ?? "default", input.platform, input.chatId, input.userId ?? null, input.threadId ?? null, input.kind, statement,
-			input.subject?.type ?? null, input.subject?.id ?? null, input.object?.type ?? null, input.object?.id ?? null];
+		const scope = [input.profileId ?? this.profileId, input.platform, input.chatId, input.userId ?? null, input.threadId ?? null, input.kind, statement,
+			input.subject?.type ?? null, input.subject?.id ?? null, input.object?.type ?? null, input.object?.id ?? null,
+			input.projectId ?? null, input.organizationId ?? null, input.visibility ?? "private"];
 		const existing = this.db.prepare(`SELECT * FROM memory_claims
 			WHERE profile_id = ? AND platform = ? AND chat_id = ? AND user_id IS ? AND thread_id IS ? AND kind = ? AND statement = ?
 			AND subject_type IS ? AND subject_id IS ? AND object_type IS ? AND object_id IS ? AND status = 'active'
+			AND project_id IS ? AND organization_id IS ? AND visibility = ?
 			ORDER BY updated_at DESC LIMIT 1`).get(...scope) as ClaimRow | undefined;
 		let id: string;
 		if (existing) {
@@ -491,9 +508,9 @@ export class MemoryStore {
 			id = cryptoRandom();
 			this.db.prepare(`INSERT INTO memory_claims (id, profile_id, platform, chat_id, user_id, thread_id, project_id, organization_id, kind, statement, subject_type, subject_id, object_type, object_id, source_type, source_ref, visibility, valid_from, valid_until, confidence, stability, status, first_observed_at, last_confirmed_at, expires_at, created_at, updated_at)
 				VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?)`)
-				.run(id, input.profileId ?? "default", input.platform, input.chatId, input.userId ?? null, input.threadId ?? null, input.projectId ?? null, input.organizationId ?? null, input.kind, statement,
+				.run(id, input.profileId ?? this.profileId, input.platform, input.chatId, input.userId ?? null, input.threadId ?? null, input.projectId ?? null, input.organizationId ?? null, input.kind, statement,
 					input.subject?.type ?? null, input.subject?.id ?? null, input.object?.type ?? null, input.object?.id ?? null,
-					input.source?.type ?? null, input.source?.ref ?? null, input.visibility ?? "conversation", input.validFrom ?? null,
+					input.source?.type ?? null, input.source?.ref ?? null, input.visibility ?? "private", input.validFrom ?? null,
 					input.validUntil ?? input.expiresAt ?? null, clampConfidence(input.confidence ?? 0.7), input.stability ?? "low", now, now,
 					input.validUntil ?? input.expiresAt ?? null, now, now);
 		}
@@ -536,19 +553,17 @@ export class MemoryStore {
 	}
 
 	forgetClaim(id: string, opts: Omit<RecallOptions, "limit"> = {}): boolean {
-		const { where, params } = scopeWhere(opts, "c");
-		const access = claimAccessWhere(opts, "c");
-		return this.db.prepare(`DELETE FROM memory_claims c WHERE c.id = ? ${where} ${access.where}`).run(id, ...params, ...access.params).changes > 0;
+		const access = claimReadWhere(opts, "c");
+		return this.db.prepare(`DELETE FROM memory_claims c WHERE c.id = ? ${access.where}`).run(id, ...access.params).changes > 0;
 	}
 
 	listClaims(opts: RecallOptions & { status?: MemoryClaim["status"]; limit?: number } = {}): MemoryClaim[] {
-		const { where, params } = scopeWhere(opts, "c");
-		const access = claimAccessWhere(opts, "c");
+		const access = claimReadWhere(opts, "c");
 		const status = opts.status ?? "active";
-		const rows = this.db.prepare(`SELECT * FROM memory_claims c WHERE c.status = ? ${where} ${access.where}
+		const rows = this.db.prepare(`SELECT * FROM memory_claims c WHERE c.status = ? ${access.where}
 			AND (c.valid_from IS NULL OR c.valid_from <= ?) AND (c.valid_until IS NULL OR c.valid_until > ?)
 			ORDER BY CASE c.stability WHEN 'high' THEN 3 WHEN 'medium' THEN 2 ELSE 1 END DESC, c.confidence DESC, c.updated_at DESC LIMIT ?`)
-			.all(status, ...params, ...access.params, Date.now(), Date.now(), limitOf(opts.limit, 50)) as ClaimRow[];
+			.all(status, ...access.params, Date.now(), Date.now(), limitOf(opts.limit, 50)) as ClaimRow[];
 		return rows.map(mapClaim);
 	}
 
@@ -600,33 +615,30 @@ export class MemoryStore {
 	}
 
 	private getClaim(id: string, opts: Omit<RecallOptions, "limit"> = {}): MemoryClaim | undefined {
-		const { where, params } = scopeWhere(opts, "c");
-		const access = claimAccessWhere(opts, "c");
-		const row = this.db.prepare(`SELECT * FROM memory_claims c WHERE c.id = ? ${where} ${access.where}`).get(id, ...params, ...access.params) as ClaimRow | undefined;
+		const access = claimReadWhere(opts, "c");
+		const row = this.db.prepare(`SELECT * FROM memory_claims c WHERE c.id = ? ${access.where}`).get(id, ...access.params) as ClaimRow | undefined;
 		if (!row) return undefined;
 		const conflicts = this.db.prepare("SELECT conflicts_with FROM memory_claim_conflicts WHERE claim_id = ? ORDER BY conflicts_with").all(id) as Array<{ conflicts_with: string }>;
 		return { ...mapClaim(row), conflictsWith: conflicts.map((item) => item.conflicts_with) };
 	}
 
 	private searchClaims(match: string, opts: RecallOptions): MemoryClaim[] {
-		const { where, params } = scopeWhere(opts, "c");
-		const access = claimAccessWhere(opts, "c");
+		const access = claimReadWhere(opts, "c");
 		const rows = this.db.prepare(`SELECT c.* FROM memory_claims_fts f JOIN memory_claims c ON c.rowid = f.rowid
-			WHERE memory_claims_fts MATCH ? AND c.status IN ('active', 'conflicted') ${where} ${access.where}
+			WHERE memory_claims_fts MATCH ? AND c.status IN ('active', 'conflicted') ${access.where}
 			AND (c.valid_from IS NULL OR c.valid_from <= ?) AND (c.valid_until IS NULL OR c.valid_until > ?)
 			ORDER BY rank, c.confidence DESC, c.updated_at DESC LIMIT ?`)
-			.all(match, ...params, ...access.params, Date.now(), Date.now(), limitOf(opts.limit, 5)) as ClaimRow[];
+			.all(match, ...access.params, Date.now(), Date.now(), limitOf(opts.limit, 5)) as ClaimRow[];
 		return rows.map(mapClaim);
 	}
 
 	private searchClaimsLike(query: string, opts: RecallOptions): MemoryClaim[] {
-		const { where, params } = scopeWhere(opts, "c");
-		const access = claimAccessWhere(opts, "c");
+		const access = claimReadWhere(opts, "c");
 		const rows = this.db.prepare(`SELECT c.* FROM memory_claims c
-			WHERE c.statement LIKE ? AND c.status IN ('active', 'conflicted') ${where} ${access.where}
+			WHERE c.statement LIKE ? AND c.status IN ('active', 'conflicted') ${access.where}
 			AND (c.valid_from IS NULL OR c.valid_from <= ?) AND (c.valid_until IS NULL OR c.valid_until > ?)
 			ORDER BY c.confidence DESC, c.updated_at DESC LIMIT ?`)
-			.all(`%${query.replaceAll("%", "\\%").replaceAll("_", "\\_")}%`, ...params, ...access.params, Date.now(), Date.now(), limitOf(opts.limit, 5)) as ClaimRow[];
+			.all(`%${query.replaceAll("%", "\\%").replaceAll("_", "\\_")}%`, ...access.params, Date.now(), Date.now(), limitOf(opts.limit, 5)) as ClaimRow[];
 		return rows.map(mapClaim);
 	}
 
@@ -1466,16 +1478,19 @@ function strongerStability(a: MemoryClaim["stability"], b: MemoryClaim["stabilit
 	return order[a] >= order[b] ? a : b;
 }
 function sameClaimScope(a: MemoryClaim, b: MemoryClaim): boolean {
-	return a.profileId === b.profileId && a.platform === b.platform && a.chatId === b.chatId && a.userId === b.userId && a.threadId === b.threadId;
+	return a.profileId === b.profileId && a.platform === b.platform && a.chatId === b.chatId && a.userId === b.userId && a.threadId === b.threadId
+		&& a.projectId === b.projectId && a.organizationId === b.organizationId && a.visibility === b.visibility;
 }
 
-function claimAccessWhere(opts: Omit<RecallOptions, "limit">, alias: string): { where: string; params: unknown[] } {
+function claimReadWhere(opts: Omit<RecallOptions, "limit">, alias: string): { where: string; params: unknown[] } {
 	const profileId = opts.profileId ?? "default";
 	return {
-		where: `AND ${alias}.profile_id = ? AND (${alias}.visibility IN ('private', 'conversation')
+		where: `AND ${alias}.profile_id = ? AND (
+			(${alias}.visibility = 'private' AND ${alias}.platform = ? AND ${alias}.user_id = ?)
+			OR (${alias}.visibility = 'conversation' AND ${alias}.platform = ? AND ${alias}.chat_id = ? AND ${alias}.thread_id IS ?)
 			OR (${alias}.visibility = 'team' AND ${alias}.project_id IS NOT NULL AND ${alias}.project_id = ?)
 			OR (${alias}.visibility = 'organization' AND ${alias}.organization_id IS NOT NULL AND ${alias}.organization_id = ?))`,
-		params: [profileId, opts.projectId ?? "", opts.organizationId ?? ""],
+		params: [profileId, opts.platform ?? "", opts.userId ?? "", opts.platform ?? "", opts.chatId ?? "", opts.threadId ?? null, opts.projectId ?? "", opts.organizationId ?? ""],
 	};
 }
 function limitOf(value: number | undefined, fallback: number): number { return Math.max(1, Math.min(value ?? fallback, 100)); }

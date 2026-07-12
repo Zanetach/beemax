@@ -810,8 +810,8 @@ async function runMcpCommand(parsed: ParsedArgs, config: ReturnType<typeof loadC
 async function runMemoryCommand(parsed: ParsedArgs, config: ReturnType<typeof loadConfig>): Promise<void> {
 	const action = parsed.positionals[1] ?? "status";
 	const { MemoryStore } = await import("@beemax/memory");
-	const store = new MemoryStore(config.memory.dbPath);
-	const localMemoryScope = { platform: "cli" as const, chatId: "local", userId: "local" };
+	const store = new MemoryStore(config.memory.dbPath, config.profile);
+	const localMemoryScope = { profileId: config.profile, platform: "cli" as const, chatId: "local", userId: "local" };
 	try {
 		if (action === "status") {
 			const stats = store.stats(localMemoryScope);
@@ -910,7 +910,7 @@ async function runCredentialCommand(parsed: ParsedArgs, config: ReturnType<typeo
 async function runTaskCommand(parsed: ParsedArgs, config: ReturnType<typeof loadConfig>): Promise<void> {
 	const action = parsed.positionals[1] ?? "list";
 	const { MemoryStore } = await import("@beemax/memory");
-	const store = new MemoryStore(config.memory.dbPath);
+	const store = new MemoryStore(config.memory.dbPath, config.profile);
 	try {
 		ensureBuiltinTasks(store);
 		if (action === "list") {
@@ -978,7 +978,7 @@ async function runChat(config: ReturnType<typeof loadConfig>, requestedMode: { f
 	const localApproval = new ToolApprovalBroker(async (_source, text) => {
 		if (presentationMode !== "full") process.stdout.write(`\n${text}\n`);
 	});
-	const memory = new MemoryStore(config.memory.dbPath);
+	const memory = new MemoryStore(config.memory.dbPath, config.profile);
 	const mcp = new McpManager();
 	await mcp.connectAll(loadMcpConfig(config.mcp.configPath));
 	const credentialAudit = new FileCredentialVaultAuditJournal(join(config.paths.agentDir, "credential-audit.jsonl"));

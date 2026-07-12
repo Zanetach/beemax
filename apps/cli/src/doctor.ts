@@ -66,7 +66,7 @@ export async function inspectDoctor(config: BeeMaxConfig, options: DoctorOptions
 	});
 
 	try {
-		const memory = new MemoryStore(config.memory.dbPath);
+		const memory = new MemoryStore(config.memory.dbPath, config.profile);
 		memory.close();
 		checks.push({ name: "Memory", status: "PASS", detail: config.memory.dbPath });
 	} catch (error) {

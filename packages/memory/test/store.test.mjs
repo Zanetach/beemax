@@ -995,7 +995,7 @@ test("memory recall and evidence remain inside the exact conversation and thread
 
 test("organizational claims retain entity identity, source, validity, visibility, and explicit conflicts", () => {
 	const root = mkdtempSync(join(tmpdir(), "beemax-organizational-memory-"));
-	const store = new MemoryStore(join(root, "memory.db"));
+	const store = new MemoryStore(join(root, "memory.db"), "sales-profile");
 	try {
 		const scope = { profileId: "sales-profile", platform: "feishu", chatId: "sales", threadId: "order-thread", userId: "seller", projectId: "sales-team" };
 		const first = store.upsertClaim({ ...scope, kind: "fact", statement: "交付日期为 7 月 25 日", subject: { type: "customer", id: "customer-1" }, object: { type: "order", id: "PO-1" }, source: { type: "message", ref: "om-1" }, validFrom: 100, validUntil: Date.now() + 60_000, visibility: "team" });
@@ -1011,9 +1011,27 @@ test("organizational claims retain entity identity, source, validity, visibility
 		assert.equal(store.explainClaim(first.id, { ...scope, profileId: "other-profile" }), undefined);
 		assert.equal(store.listClaims({ ...scope, status: "conflicted" }).length, 2);
 		assert.equal(store.recallBrief("交付日期", scope).claims.length, 2);
+		assert.equal(store.recallBrief("交付日期", { profileId: "sales-profile", platform: "feishu", chatId: "other-chat", userId: "teammate", projectId: "sales-team" }).claims.length, 2);
 		const otherOrder = store.upsertClaim({ ...scope, kind: "fact", statement: "交付日期为 7 月 28 日", subject: { type: "customer", id: "customer-1" }, object: { type: "order", id: "PO-2" } });
 		assert.notEqual(otherOrder.id, second.id);
 		store.upsertClaim({ ...scope, kind: "fact", statement: "未来价格生效", validFrom: Date.now() + 60_000 });
 		assert.equal(store.recallBrief("未来价格", scope).claims.length, 0);
 	} finally { store.close(); rmSync(root, { recursive: true, force: true }); }
+});
+
+test("Profile store ownership migrates legacy claims and rejects a different Profile", () => {
+	const root = mkdtempSync(join(tmpdir(), "beemax-profile-memory-"));
+	const path = join(root, "memory.db");
+	let store = new MemoryStore(path);
+	try {
+		store.upsertClaim({ platform: "cli", chatId: "local", userId: "local", kind: "fact", statement: "Legacy durable fact" });
+		store.close();
+		const legacy = new Database(path);
+		legacy.exec("DROP TABLE memory_store_identity");
+		legacy.close();
+		store = new MemoryStore(path, "personal");
+		assert.equal(store.recallBrief("Legacy durable fact", { profileId: "personal", platform: "cli", chatId: "local", userId: "local" }).claims.length, 1);
+		store.close();
+		assert.throws(() => new MemoryStore(path, "other"), /belongs to Profile 'personal'/);
+	} finally { try { store.close(); } catch {} rmSync(root, { recursive: true, force: true }); }
 });

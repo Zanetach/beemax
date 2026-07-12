@@ -90,7 +90,7 @@ export async function runGateway(config: BeeMaxConfig): Promise<void> {
 	const startupCleanup: Array<() => void | Promise<void>> = [() => adapter.disconnect()];
 	try {
 
-	const memory = new MemoryStore(config.memory.dbPath);
+	const memory = new MemoryStore(config.memory.dbPath, config.profile);
 	startupCleanup.push(() => memory.close());
 	const automation = new AutomationStore(config.memory.dbPath);
 	startupCleanup.push(() => automation.close());
