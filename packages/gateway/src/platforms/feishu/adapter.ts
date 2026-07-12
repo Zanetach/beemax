@@ -80,6 +80,7 @@ export class FeishuAdapter implements PlatformAdapter {
 	private readonly textBatches = new Map<string, PendingInboundBatch>();
 	private readonly mediaBatches = new Map<string, PendingInboundBatch>();
 	private readonly deliveryTails = new Map<string, Promise<void>>();
+	private readonly inFlightDeliveries = new Set<Promise<void>>();
 	private readonly pendingInbound: PendingInboundEvent[] = [];
 	private drainingInbound?: Promise<void>;
 	private pendingInboundInFlight = 0;
@@ -284,6 +285,7 @@ export class FeishuAdapter implements PlatformAdapter {
 		this.cancelInboundBatches();
 		await this.drainingInbound?.catch(() => undefined);
 		await Promise.allSettled([...this.deliveryTails.values()]);
+		await Promise.allSettled([...this.inFlightDeliveries]);
 		if (this.webhookServer) {
 			for (const socket of this.webhookSockets) socket.destroy();
 			await new Promise<void>((resolve) => this.webhookServer?.close(() => resolve()));
@@ -628,12 +630,18 @@ export class FeishuAdapter implements PlatformAdapter {
 
 	private async deliverInOrder(key: string, message: InboundMessage): Promise<void> {
 		const prior = this.deliveryTails.get(key) ?? Promise.resolve();
-		const delivery = prior.catch(() => undefined).then(async () => { await this.handler?.(message); });
-		this.deliveryTails.set(key, delivery);
+		const admission = prior.catch(() => undefined).then(() => {
+			let delivery!: Promise<void>;
+			delivery = Promise.resolve(this.handler?.(message)).catch((error) => {
+				console.error(`[beemax] Feishu inbound delivery failed: ${error instanceof Error ? error.message : String(error)}`);
+			}).finally(() => this.inFlightDeliveries.delete(delivery));
+			this.inFlightDeliveries.add(delivery);
+		});
+		this.deliveryTails.set(key, admission);
 		try {
-			await delivery;
+			await admission;
 		} finally {
-			if (this.deliveryTails.get(key) === delivery) this.deliveryTails.delete(key);
+			if (this.deliveryTails.get(key) === admission) this.deliveryTails.delete(key);
 		}
 	}
 

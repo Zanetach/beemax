@@ -10,6 +10,14 @@ const settings = {
 	textBatchDelayMs: 10, textBatchSplitDelayMs: 20, mediaBatchDelayMs: 10,
 };
 
+async function waitFor(predicate, timeoutMs = 1_000) {
+	const deadline = Date.now() + timeoutMs;
+	while (!predicate()) {
+		if (Date.now() >= deadline) throw new Error("condition was not met before timeout");
+		await new Promise((resolve) => setTimeout(resolve, 5));
+	}
+}
+
 function textEvent(messageId, text, overrides = {}) {
 	return {
 		sender: { sender_type: "user", sender_id: { open_id: "ou_user", union_id: "on_user" } },
@@ -54,7 +62,9 @@ test("Feishu commands bypass batching and incompatible reply contexts split batc
 test("Feishu splits text bursts at Hermes message and character bounds", async () => {
 	const adapter = new FeishuAdapter({ ...settings, textBatchMaxMessages: 2, textBatchMaxChars: 10 });
 	const delivered = [];
+	const admitted = [];
 	adapter.onMessage(async (message) => {
+		admitted.push(message.text);
 		if (message.text === "1234\n5678") await new Promise((resolve) => setTimeout(resolve, 15));
 		delivered.push(message.text);
 	});
@@ -65,7 +75,25 @@ test("Feishu splits text bursts at Hermes message and character bounds", async (
 		adapter.onReceive(textEvent("m3", "90")),
 		adapter.onReceive(textEvent("m4", "ab")),
 	]);
-	assert.deepEqual(delivered, ["1234\n5678", "90\nab"]);
+	await waitFor(() => delivered.length === 2);
+	assert.deepEqual(admitted, ["1234\n5678", "90\nab"]);
+	assert.deepEqual(new Set(delivered), new Set(["1234\n5678", "90\nab"]));
+});
+
+test("Feishu admits a second message while the first Agent turn is still running", async () => {
+	const adapter = new FeishuAdapter({ ...settings });
+	const admitted = [];
+	let finishFirst;
+	adapter.onMessage(async (message) => {
+		admitted.push(message.text);
+		if (message.text === "/first") await new Promise((resolve) => { finishFirst = resolve; });
+	});
+
+	await adapter.onReceive(textEvent("m1", "/first"));
+	await adapter.onReceive(textEvent("m2", "/second"));
+	assert.deepEqual(admitted, ["/first", "/second"]);
+	finishFirst();
+	await adapter.disconnect();
 });
 
 test("Feishu batches compatible media while preserving every downloaded attachment until delivery", async () => {
@@ -91,6 +119,7 @@ test("Feishu batches compatible media while preserving every downloaded attachme
 		adapter.onReceive(imageEvent("m1", "image-1", "1")),
 		adapter.onReceive(imageEvent("m2", "image-2", "2")),
 	]);
+	await waitFor(() => delivered.length === 1);
 	assert.equal(delivered.length, 1);
 	assert.equal(delivered[0].mediaPaths.length, 2);
 	assert.deepEqual(delivered[0].mediaTypes, ["image/png", "image/png"]);
@@ -115,6 +144,7 @@ test("Feishu bounds sustained media bursts and does not dispatch a download comp
 		message: { message_id: `m${index}`, chat_id: "chat", chat_type: "p2p", message_type: "image", content: JSON.stringify({ image_key: `image-${index}` }), create_time: String(index) },
 	});
 	await Promise.all(Array.from({ length: 9 }, (_, index) => adapter.onReceive(imageEvent(index + 1))));
+	await waitFor(() => batchSizes.length === 2);
 	assert.deepEqual(batchSizes, [8, 1]);
 
 	const late = adapter.onReceive({ ...imageEvent(10), message: { ...imageEvent(10).message, content: JSON.stringify({ image_key: "late" }) } });
