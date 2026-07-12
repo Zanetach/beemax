@@ -3,7 +3,11 @@ import type { TaskLedger, TaskPlanCompletionNotice } from "./task-ledger.ts";
 import { sanitizeDisplayText } from "./display-text.ts";
 
 export interface TaskPlanNoticeDeliveryResult { claimed: number; delivered: number; failed: number; }
-export interface TaskPlanNoticeDeliveryOptions { platform: string; intervalMs?: number; batchSize?: number; onCycle?: (result: TaskPlanNoticeDeliveryResult) => void; onError?: (error: unknown) => void; }
+export interface TaskPlanProgressEvent {
+	type: "work.changed"; workId: string; kind: "task_plan"; state: "completed" | "failed" | "cancelled";
+	title: string; completed: number; total: number; failed: number; cancelled: number; at: number;
+}
+export interface TaskPlanNoticeDeliveryOptions { platform: string; intervalMs?: number; batchSize?: number; onProgress?: (event: TaskPlanProgressEvent, notice: TaskPlanCompletionNotice) => void | Promise<void>; onCycle?: (result: TaskPlanNoticeDeliveryResult) => void; onError?: (error: unknown) => void; }
 export type TaskPlanNoticeOutbox = Required<Pick<TaskLedger, "claimTaskPlanCompletionNotices" | "completeTaskPlanCompletionNotice" | "failTaskPlanCompletionNotice">>;
 
 /** Delivers durable, result-free background Plan summaries through a channel-neutral port. */
@@ -39,7 +43,13 @@ export class TaskPlanNoticeDeliveryService {
 		const summary = { claimed: notices.length, delivered: 0, failed: 0 };
 		for (const notice of notices) {
 			try {
-				await this.delivery.sendText(notice.target, renderTaskPlanCompletionNotice(notice));
+				const progress: TaskPlanProgressEvent = {
+					type: "work.changed", workId: notice.planId, kind: "task_plan",
+					state: notice.planStatus === "succeeded" ? "completed" : notice.planStatus,
+					title: notice.title, completed: notice.succeeded, total: notice.taskCount, failed: notice.failed, cancelled: notice.cancelled, at: now,
+				};
+				if (this.options.onProgress) await this.options.onProgress(progress, notice);
+				else await this.delivery.sendText(notice.target, renderTaskPlanCompletionNotice(notice));
 				if (!notice.claimToken || !this.outbox.completeTaskPlanCompletionNotice(notice.id, notice.claimToken)) throw new Error(`Task Plan Completion Notice acknowledgement failed: ${notice.id}`);
 				summary.delivered++;
 			} catch { if (notice.claimToken) this.outbox.failTaskPlanCompletionNotice(notice.id, notice.claimToken, now); summary.failed++; }

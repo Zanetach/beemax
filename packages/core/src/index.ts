@@ -62,7 +62,7 @@ export { assertNoCredentialMaterial, containsCredentialMaterial, redactCredentia
 export { TaskRecoveryRunner, type TaskPlanCancelResult, type TaskPlanPauseResult, type TaskPlanRetryResult, type TaskRecoveryRunnerOptions, type TaskRecoveryRunnerResult, type TaskVerificationRetryResult } from "./task-recovery.ts";
 export { TaskRecoveryService, type TaskRecoveryCycleResult, type TaskRecoveryServiceOptions } from "./task-recovery-service.ts";
 export { TaskPlanRuntime } from "./task-plan-runtime.ts";
-export { TaskPlanNoticeDeliveryService, renderTaskPlanCompletionNotice, type TaskPlanNoticeDeliveryOptions, type TaskPlanNoticeDeliveryResult, type TaskPlanNoticeOutbox } from "./task-plan-notice-delivery.ts";
+export { TaskPlanNoticeDeliveryService, renderTaskPlanCompletionNotice, type TaskPlanProgressEvent, type TaskPlanNoticeDeliveryOptions, type TaskPlanNoticeDeliveryResult, type TaskPlanNoticeOutbox } from "./task-plan-notice-delivery.ts";
 export { ProfileTaskScheduler, type ProfileTaskSchedulerOptions, type ProfileTaskSchedulerSnapshot } from "./profile-task-scheduler.ts";
 export { AutonomousPlanningPolicy, PlanningBudgetRegistry, type AutonomousExecutionMode, type AutonomousPlanningDecision, type AutonomousPlanningPolicyOptions, type PlanningResourceBudget, type PlanningSignals } from "./autonomous-planning.ts";
 export {
@@ -97,7 +97,7 @@ export { ToolApprovalBroker, approvalDetails, type ApprovalAuditSink, type Appro
 export { memoryScopeForSource, type MemoryScope } from "./memory-scope.ts";
 export { InteractionEventAdapter, mapAgentSessionEvent, reduceInteractionEvent, interactionScopeForSource, type InteractionAction, type InteractionActionResult, type InteractionApprovalResult, type InteractionDeliveryMode, type InteractionEvent, type InteractionEventSink, type InteractionPhase, type InteractionQueueResult, type InteractionScope, type InteractionSessionCompactResult, type InteractionSessionResetResult, type InteractionSessionResult, type InteractionSnapshot, type InteractionSurface, type InteractionTelemetryEvent, type InteractionTelemetrySink } from "./interaction-runtime.ts";
 export { AdaptiveTextBuffer, TurnStatusPulse, type AdaptiveTextBufferOptions, type TurnStatusPulseOptions } from "./interaction-presentation.ts";
-export { FileInteractionInputQueueStore, type InteractionInputQueueStore } from "./interaction-input-queue.ts";
+export { FileInteractionInputQueueStore, type InteractionInputQueueStore, type InteractionQueuedInput } from "./interaction-input-queue.ts";
 export { FileInteractionEventJournal, durableEvent, type DurableInteractionEvent, type InteractionEventJournal } from "./interaction-event-journal.ts";
 export { INTERACTION_PROTOCOL_VERSION, InteractionProtocol, parseInteractionProtocolRequest, sameScope, type InteractionProtocolOptions, type InteractionProtocolRequest, type InteractionProtocolResponse, type ProtocolInteractionAction } from "./interaction-protocol.ts";
 export { INTERACTION_COMMANDS, interactionCommandHelp, parseInteractionCommand, type InteractionCommand, type InteractionCommandDefinition, type InteractionDetailsDisplay } from "./interaction-commands.ts";

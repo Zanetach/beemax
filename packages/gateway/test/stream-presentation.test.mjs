@@ -20,13 +20,13 @@ test("AdaptiveTextBuffer commits a stalled readable chunk after bounded wait", a
 	await buffer.close();
 });
 
-test("AdaptiveTextBuffer keeps incomplete Markdown code fences private until complete", async () => {
+test("AdaptiveTextBuffer progressively commits complete lines inside a long Markdown code fence", async () => {
 	const chunks = [];
 	const buffer = new AdaptiveTextBuffer((chunk) => { chunks.push(chunk); }, { minChunkChars: 4, preferredChunkChars: 4, maxWaitMs: 20 });
 	buffer.push("```ts\nconst value = 1;");
-	await new Promise((resolve) => setTimeout(resolve, 40));
-	assert.deepEqual(chunks, []);
+	await new Promise((resolve) => setTimeout(resolve, 70));
+	assert.deepEqual(chunks, ["```ts\n", "const value = 1;"]);
 	buffer.push("\n```\n");
 	await buffer.flush();
-	assert.deepEqual(chunks, ["```ts\nconst value = 1;\n```\n"]);
+	assert.deepEqual(chunks, ["```ts\n", "const value = 1;", "\n```\n"]);
 });

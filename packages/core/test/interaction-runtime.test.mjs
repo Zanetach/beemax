@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { FileInteractionInputQueueStore, InteractionEventAdapter, reduceInteractionEvent } from "../dist/index.js";
@@ -41,6 +41,26 @@ test("interaction runtime supports a reconnecting presenter subscription", async
 	await interaction.dispatch({ type: "message.send", source, text: "hi", input: { timeoutMs: 1_000 } });
 	unsubscribe();
 	assert.deepEqual(received, ["turn.started", "answer.delta", "turn.finished"]);
+});
+
+test("interaction runtime emits channel-neutral progress for Sub-Agents and asynchronous Task Plans", async () => {
+	const runtime = {
+		async run(_input, sink) {
+			await sink({ type: "tool_execution_start", toolCallId: "sub-1", toolName: "task_spawn" });
+			await sink({ type: "tool_execution_end", toolCallId: "sub-1", toolName: "task_spawn", isError: false, result: { details: { id: "task-1" } } });
+			await sink({ type: "tool_execution_start", toolCallId: "plan-1", toolName: "task_plan_execute" });
+			await sink({ type: "tool_execution_end", toolCallId: "plan-1", toolName: "task_plan_execute", isError: false, result: { details: { planId: "plan-42", status: "running" } } });
+			return { answer: "accepted", model: "test/model", durationMs: 1, usage: {} };
+		},
+		async cancel() { return false; }, async modelStatus() { return undefined; }, async usage() { return undefined; },
+	};
+	const interaction = new InteractionEventAdapter(runtime);
+	const events = [];
+	await interaction.dispatch({ type: "message.send", source, text: "parallel work", input: { timeoutMs: 1_000 } }, (event) => { if (event.type === "work.changed") events.push(event); });
+	assert.deepEqual(events.map(({ kind, state, summary }) => ({ kind, state, summary })), [
+		{ kind: "subagent", state: "running", summary: "task-1 · 后台运行中" },
+		{ kind: "task_plan", state: "running", summary: "plan-42 · 后台运行中" },
+	]);
 });
 
 test("action IDs make retried controls and concurrent requests idempotent per session", async () => {
@@ -225,6 +245,78 @@ test("fallback conversation inputs survive an Agent process restart in FIFO orde
 	} finally { await rm(directory, { recursive: true, force: true }); }
 });
 
+test("native follow-up is acknowledged on success but survives a process crash before turn completion", async () => {
+	const directory = await mkdtemp(join(tmpdir(), "beemax-native-queue-"));
+	try {
+		const path = join(directory, "queue.json");
+		const pendingRuntime = {
+			run() { return new Promise(() => undefined); }, async followUp() { return true; },
+			async cancel() { return false; }, async modelStatus() { return undefined; }, async usage() { return undefined; },
+		};
+		const crashed = new InteractionEventAdapter(pendingRuntime, { inputQueueStore: new FileInteractionInputQueueStore(path) });
+		void crashed.dispatch({ type: "message.send", source, text: "first", input: { timeoutMs: 1_000 } });
+		await new Promise((resolve) => setImmediate(resolve));
+		await crashed.dispatch({ type: "turn.queue", source, text: "native follow-up" });
+		const restarted = new InteractionEventAdapter(pendingRuntime, { inputQueueStore: new FileInteractionInputQueueStore(path) });
+		assert.equal(restarted.takeQueuedInput(source), "native follow-up");
+
+		let finish;
+		const completingRuntime = { ...pendingRuntime, run: () => new Promise((resolve) => { finish = resolve; }) };
+		const completed = new InteractionEventAdapter(completingRuntime, { inputQueueStore: new FileInteractionInputQueueStore(path) });
+		const turn = completed.dispatch({ type: "message.send", source, text: "next", input: { timeoutMs: 1_000 } });
+		await new Promise((resolve) => setImmediate(resolve));
+		await completed.dispatch({ type: "turn.queue", source, text: "processed natively" });
+		finish({ answer: "ok", model: "test", durationMs: 1, usage: {} });
+		await turn;
+		assert.equal(new FileInteractionInputQueueStore(path).all().length, 0);
+	} finally { await rm(directory, { recursive: true, force: true }); }
+});
+
+test("primary input is atomically leased before admission and acknowledged on terminal completion", async () => {
+	const directory = await mkdtemp(join(tmpdir(), "beemax-primary-queue-"));
+	try {
+		const path = join(directory, "queue.json");
+		let finish;
+		const runtime = {
+			run: () => new Promise((resolve) => { finish = resolve; }), async cancel() { return false; },
+			async modelStatus() { return undefined; }, async usage() { return undefined; },
+		};
+		const interaction = new InteractionEventAdapter(runtime, { inputQueueStore: new FileInteractionInputQueueStore(path) });
+		const primary = interaction.reservePrimaryInput(source, "primary");
+		assert.ok(primary?.claimToken);
+		assert.equal(new FileInteractionInputQueueStore(path).claim("cli").length, 0, "another process cannot claim an admitted primary");
+		const turn = interaction.dispatch({ type: "message.send", source, text: "primary", input: { timeoutMs: 1_000 } });
+		await new Promise((resolve) => setImmediate(resolve));
+		finish({ answer: "ok", model: "test", durationMs: 1, usage: {} });
+		await turn;
+		assert.equal(new FileInteractionInputQueueStore(path).all().length, 0);
+	} finally { await rm(directory, { recursive: true, force: true }); }
+});
+
+test("file input queue merges independent process views and fails closed on corruption", async () => {
+	const directory = await mkdtemp(join(tmpdir(), "beemax-queue-lock-"));
+	try {
+		const path = join(directory, "queue.json");
+		const first = new FileInteractionInputQueueStore(path);
+		const second = new FileInteractionInputQueueStore(path);
+		assert.equal(first.enqueue({ id: "one", key: "a", text: "first", source, createdAt: 1 }), 1);
+		assert.equal(second.enqueue({ id: "two", key: "b", text: "second", source, createdAt: 2 }), 1);
+		assert.equal(second.enqueue({ id: "three", key: "a", text: "third", source, createdAt: 3 }), 2);
+		assert.deepEqual(first.all().map((input) => input.id), ["one", "two", "three"]);
+		const claims = first.claim("cli");
+		assert.deepEqual(claims.map((input) => input.id), ["one", "two"]);
+		assert.equal(second.claim("cli").length, 0);
+		assert.equal(second.claimKey("a"), undefined, "an active head lease blocks later inputs in the same conversation");
+		assert.equal(second.acknowledge(claims[0].key, claims[0].id, "wrong"), false);
+		assert.equal(second.acknowledge(claims[0].key, claims[0].id, claims[0].claimToken), true);
+		assert.equal(second.claimKey("a")?.id, "three");
+		await writeFile(path, JSON.stringify({ "cli:local:local": ["legacy"] }), "utf8");
+		assert.equal(new FileInteractionInputQueueStore(path).all()[0].text, "legacy");
+		await writeFile(path, "not-json", "utf8");
+		assert.throws(() => new FileInteractionInputQueueStore(path), /queue is corrupt|JSON/);
+	} finally { await rm(directory, { recursive: true, force: true }); }
+});
+
 test("fallback conversation queue applies explicit backpressure after 100 inputs", async () => {
 	let rejectTurn;
 	const runtime = {
@@ -295,7 +387,7 @@ test("native delivery failures surface instead of being misreported as unsupport
 	const turn = interaction.dispatch({ type: "message.send", source, text: "first", input: { timeoutMs: 1_000 } });
 	await new Promise((resolve) => setImmediate(resolve));
 	await assert.rejects(interaction.dispatch({ type: "turn.steer", source, text: "focus" }), /native steer failed/);
-	assert.equal(interaction.takeQueuedInput(source), undefined);
+	assert.equal(interaction.takeQueuedInput(source), "focus", "a native delivery failure remains recoverable instead of losing input");
 	await interaction.dispatch({ type: "turn.cancel", source });
 	await assert.rejects(turn, /aborted/);
 });

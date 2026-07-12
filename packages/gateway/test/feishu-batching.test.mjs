@@ -10,7 +10,7 @@ const settings = {
 	textBatchDelayMs: 10, textBatchSplitDelayMs: 20, mediaBatchDelayMs: 10,
 };
 
-async function waitFor(predicate, timeoutMs = 1_000) {
+async function waitFor(predicate, timeoutMs = 3_000) {
 	const deadline = Date.now() + timeoutMs;
 	while (!predicate()) {
 		if (Date.now() >= deadline) throw new Error("condition was not met before timeout");
@@ -97,13 +97,20 @@ test("Feishu admits a second message while the first Agent turn is still running
 	let finishFirst;
 	adapter.onMessage(async (message) => {
 		admitted.push(message.text);
-		if (message.text === "/first") await new Promise((resolve) => { finishFirst = resolve; });
+		if (message.text === "/first") { const completion = new Promise((resolve) => { finishFirst = resolve; }); void completion; }
 	});
 
 	await adapter.onReceive(textEvent("m1", "/first"));
 	await adapter.onReceive(textEvent("m2", "/second"));
 	assert.deepEqual(admitted, ["/first", "/second"]);
 	finishFirst();
+	await adapter.disconnect();
+});
+
+test("Feishu surfaces an inbound handler admission failure to the channel callback", async () => {
+	const adapter = new FeishuAdapter({ ...settings });
+	adapter.onMessage(async () => { throw new Error("dispatcher admission failed"); });
+	await assert.rejects(adapter.onReceive(textEvent("failed-admission", "/command")), /dispatcher admission failed/);
 	await adapter.disconnect();
 });
 

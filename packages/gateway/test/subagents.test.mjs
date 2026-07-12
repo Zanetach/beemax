@@ -15,6 +15,8 @@ test("Gateway idempotency is profile-scoped, bounded, and expires", () => {
 	assert.equal(guard.accept("sales", "feishu", "event-1", 0), true);
 	assert.equal(guard.accept("sales", "feishu", "event-1", 1), false);
 	assert.equal(guard.accept("support", "feishu", "event-1", 1), true);
+	guard.rollback("support", "feishu", "event-1");
+	assert.equal(guard.accept("support", "feishu", "event-1", 2), true);
 	assert.equal(guard.accept("sales", "feishu", "event-1", 1_001), true);
 	assert.equal(guard.accept("sales", "feishu", undefined, 1_001), true);
 });
@@ -257,6 +259,7 @@ test("Dispatcher delegates turns to an injected Agent Runtime", async () => {
 		},
 	}, platform);
 	await inbound({ text: "hello", messageType: "text", source, mediaPaths: [], mediaTypes: [], raw: {}, timestamp: Date.now() });
+	await new Promise((resolve) => setImmediate(resolve));
 	assert.equal(runs.length, 1);
 	assert.equal(runs[0].text, "hello");
 	dispatcher.dispose();
@@ -293,6 +296,8 @@ test("Dispatcher forwards authorized card approval actions through the Core sema
 		},
 		snapshot: async () => ({ phase: "idle", updatedAt: Date.now() }),
 		handleApprovalReply: async () => false,
+		reservePrimaryInput: (source, text) => ({ id: "primary", key: "key", source, text, createdAt: 1 }),
+		peekQueuedInput: () => undefined, claimQueuedInput: () => undefined,
 	};
 	const dispatcher = new Dispatcher({ runtime: { isBusy: () => false, handleControl: async () => undefined }, interaction, flushIntervalMs: 0 }, platform);
 	const turn = inbound({ text: "do it", messageType: "text", source: { ...source, messageId: "request-1" }, mediaPaths: [], mediaTypes: [], raw: {}, timestamp: Date.now() });
@@ -333,6 +338,68 @@ test("Dispatcher delivers a second inbound message as a native follow-up to the 
 	assert.match(sent.at(-1), /已收到补充消息/);
 	finish({ answer: "ok", model: "test", durationMs: 1, usage: {} });
 	await first;
+	dispatcher.dispose();
+});
+
+test("Dispatcher atomically reserves a session so concurrent inbound messages cannot start two turns", async () => {
+	let inbound;
+	let finish;
+	let runs = 0;
+	const followUps = [];
+	const active = new Promise((resolve) => { finish = resolve; });
+	let releaseModel;
+	const modelGate = new Promise((resolve) => { releaseModel = resolve; });
+	let markRun;
+	let markFollowUp;
+	const runSeen = new Promise((resolve) => { markRun = resolve; });
+	const followUpSeen = new Promise((resolve) => { markFollowUp = resolve; });
+	const platform = {
+		name: "feishu", isConnected: true, onMessage: (handler) => { inbound = handler; }, connect: async () => true, disconnect: async () => undefined,
+		send: async () => ({ success: true }), editMessage: async () => ({ success: true }),
+		sendCard: async () => ({ success: true, messageId: "card" }), updateCard: async () => ({ success: true }), sendTyping: async () => undefined, stopTyping: async () => undefined,
+	};
+	const runtime = {
+		run: async () => { runs++; markRun(); return active; },
+		followUp: async (_source, text) => { followUps.push(text); markFollowUp(); return true; },
+		cancel: async () => false, handleControl: async () => undefined,
+		modelStatus: async () => { await modelGate; return undefined; }, usage: async () => undefined,
+		isBusy: () => true, dispose: () => undefined,
+	};
+	const dispatcher = new Dispatcher({ runtime, flushIntervalMs: 0 }, platform);
+	const first = inbound({ text: "first", messageType: "text", source: { ...source, messageId: "race-first" }, mediaPaths: [], mediaTypes: [], raw: {}, timestamp: Date.now() });
+	const second = inbound({ text: "second", messageType: "text", source: { ...source, messageId: "race-second" }, mediaPaths: [], mediaTypes: [], raw: {}, timestamp: Date.now() });
+	releaseModel();
+	const admitted = await Promise.race([Promise.all([runSeen, followUpSeen]).then(() => true), new Promise((resolve) => setTimeout(() => resolve(false), 3_000))]);
+	const observed = { runs, followUps: [...followUps] };
+	finish({ answer: "ok", model: "test", durationMs: 1, usage: {} });
+	await Promise.all([first, second]);
+	dispatcher.dispose();
+	assert.equal(admitted, true);
+	assert.equal(observed.runs, 1);
+	assert.deepEqual(observed.followUps, ["second"]);
+});
+
+test("Dispatcher drains a legacy runtime fallback queue after the active turn completes", async () => {
+	let inbound;
+	const runs = [];
+	const resolvers = [];
+	const platform = {
+		name: "feishu", isConnected: true, onMessage: (handler) => { inbound = handler; }, connect: async () => true, disconnect: async () => undefined,
+		send: async () => ({ success: true }), editMessage: async () => ({ success: true }), sendTyping: async () => undefined, stopTyping: async () => undefined,
+		sendCard: async () => ({ success: true, messageId: `card-${runs.length}` }), updateCard: async () => ({ success: true }),
+	};
+	const runtime = {
+		run: async ({ text }) => { runs.push(text); return new Promise((resolve) => { resolvers.push(resolve); }); },
+		cancel: async () => false, handleControl: async () => undefined, modelStatus: async () => undefined, usage: async () => undefined,
+		isBusy: () => true, dispose: () => undefined,
+	};
+	const dispatcher = new Dispatcher({ runtime, flushIntervalMs: 0 }, platform);
+	await inbound({ text: "first", messageType: "text", source: { ...source, messageId: "legacy-first" }, mediaPaths: [], mediaTypes: [], raw: {}, timestamp: Date.now() });
+	await inbound({ text: "second", messageType: "text", source: { ...source, messageId: "legacy-second" }, mediaPaths: [], mediaTypes: [], raw: {}, timestamp: Date.now() });
+	resolvers[0]({ answer: "one", model: "test", durationMs: 1, usage: {} });
+	for (let attempt = 0; runs.length < 2 && attempt < 100; attempt++) await new Promise((resolve) => setTimeout(resolve, 5));
+	assert.deepEqual(runs, ["first", "second"]);
+	resolvers[1]({ answer: "two", model: "test", durationMs: 1, usage: {} });
 	dispatcher.dispose();
 });
 
@@ -384,6 +451,40 @@ test("Dispatcher delegates opaque control handling to the Agent Runtime", async 
 	dispatcher.dispose();
 });
 
+test("Dispatcher replays and acknowledges crash-surviving queued inputs on Gateway startup", async () => {
+	let inbound;
+	const acknowledged = [];
+	const runs = [];
+	const cards = [];
+	const recoveredSource = { ...source, messageId: undefined };
+	const platform = {
+		name: "feishu", isConnected: true, onMessage: (handler) => { inbound = handler; }, connect: async () => true, disconnect: async () => undefined,
+		send: async () => ({ success: true }), editMessage: async () => ({ success: true }), sendTyping: async () => undefined, stopTyping: async () => undefined,
+		sendCard: async (_chatId, card) => { cards.push(card); return { success: true, messageId: "recovered-card" }; }, updateCard: async (_id, card) => { cards.push(card); return { success: true }; },
+	};
+	const interaction = {
+		claimRecoveredInputs: () => [{ id: "queued-1", key: "key", text: "resume this", source: recoveredSource, createdAt: 1, claimToken: "claim" }],
+		acknowledgeQueuedInput: (_source, id) => { acknowledged.push(id); return true; },
+			dispatch: async (action, sink) => {
+			runs.push(action.text);
+			await sink({ type: "turn.started", turnId: "recovered", sessionId: "session", scope: recoveredSource, at: 1, sequence: 1 });
+			await sink({ type: "work.changed", turnId: "recovered", sessionId: "session", scope: recoveredSource, at: 2, sequence: 2, workId: "plan-call", kind: "task_plan", state: "running", summary: "plan-42 · 后台运行中" });
+			const result = { answer: "done", model: "test", durationMs: 1, usage: {} };
+			await sink({ type: "turn.finished", turnId: "recovered", sessionId: "session", scope: recoveredSource, at: 3, sequence: 3, result });
+			return result;
+		},
+		snapshot: async () => ({ phase: "idle", updatedAt: Date.now() }), handleApprovalReply: async () => false,
+	};
+	const dispatcher = new Dispatcher({ runtime: { isBusy: () => false, handleControl: async () => undefined }, interaction, flushIntervalMs: 0 }, platform);
+	assert.equal(typeof inbound, "function");
+	assert.equal(await dispatcher.recoverQueuedInputs(), 1);
+	assert.deepEqual(runs, ["resume this"]);
+	assert.deepEqual(acknowledged, ["queued-1"]);
+	assert.match(JSON.stringify(cards), /异步任务计划/);
+	assert.match(JSON.stringify(cards), /plan-42/);
+	dispatcher.dispose();
+});
+
 test("Dispatcher retains a Core-selected conversation identity after a control command", async () => {
 	let inbound;
 	const runs = [];
@@ -402,6 +503,7 @@ test("Dispatcher retains a Core-selected conversation identity after a control c
 	}, platform);
 	await inbound({ text: "/new", messageType: "command", source, mediaPaths: [], mediaTypes: [], raw: {}, timestamp: Date.now() });
 	await inbound({ text: "continue", messageType: "text", source, mediaPaths: [], mediaTypes: [], raw: {}, timestamp: Date.now() });
+	for (let attempt = 0; !runs.length && attempt < 100; attempt++) await new Promise((resolve) => setTimeout(resolve, 5));
 	assert.equal(runs[0].source.threadId, "conversation-new");
 	assert.equal(runs[0].source.platform, source.platform);
 	assert.equal(runs[0].source.chatId, source.chatId);

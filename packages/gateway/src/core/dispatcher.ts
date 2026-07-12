@@ -20,6 +20,8 @@ import {
 	type ToolApprovalBroker,
 	type InteractionEvent,
 	type AgentRuntimePort,
+	type DeliveryTarget,
+	type TaskPlanProgressEvent,
 } from "@beemax/core";
 import type { InboundMessage, PlatformAdapter, PlatformCardAction } from "./types.ts";
 import { CardSession } from "../card/session.ts";
@@ -58,6 +60,9 @@ export class Dispatcher {
 	private readonly deduplicator: MessageDeduplicator;
 	private readonly sessionOverrides = new Map<string, InboundMessage["source"]>();
 	private readonly cardBindings = new Map<string, CardBinding>();
+	private readonly turnStarts = new Map<string, Promise<void>>();
+	private readonly activeHandles = new Set<Promise<void>>();
+	private recoveryTimer?: ReturnType<typeof setTimeout>;
 	private static readonly maxSessionOverrides = 10_000;
 
 	constructor(deps: DispatcherDeps, platform: PlatformAdapter) {
@@ -71,30 +76,45 @@ export class Dispatcher {
 		this.turnTimeoutMs = Math.max(30_000, Math.min(60 * 60_000, deps.turnTimeoutMs ?? 10 * 60_000));
 		this.profileId = deps.profileId ?? "default";
 		this.deduplicator = deps.messageDeduplicator ?? new MessageDeduplicator();
-		this.platform.onMessage((msg) => {
-			return this.handle(msg).catch((error) => {
-				console.error(`[beemax] message dispatch failed: ${error instanceof Error ? error.message : String(error)}`);
-			});
-		});
+		this.platform.onMessage((msg) => this.admit(msg));
 		this.platform.onCardAction?.((action) => this.handleCardAction(action));
 	}
 
-	private async handle(msg: InboundMessage): Promise<void> {
+	private admit(msg: InboundMessage): Promise<void> {
+		return new Promise<void>((resolve, reject) => {
+			let admitted = false;
+			const markAdmitted = () => { if (!admitted) { admitted = true; resolve(); } };
+			let work!: Promise<void>;
+			work = this.handle(msg, markAdmitted).then(markAdmitted).catch((error) => {
+				if (!admitted) { this.deduplicator.rollback(this.profileId, msg.source.platform, msg.source.messageId); reject(error); }
+				else console.error(`[beemax] message dispatch failed after admission: ${error instanceof Error ? error.message : String(error)}`);
+			}).finally(() => this.activeHandles.delete(work));
+			this.activeHandles.add(work);
+		});
+	}
+
+	private async handle(msg: InboundMessage, onAdmitted?: () => void): Promise<void> {
+		let releaseAdmission: (() => void) | undefined;
+		const admit = () => { releaseAdmission?.(); onAdmitted?.(); };
 		try {
-			if (!this.deduplicator.accept(this.profileId, msg.source.platform, msg.source.messageId)) return;
+			if (!this.deduplicator.accept(this.profileId, msg.source.platform, msg.source.messageId)) { onAdmitted?.(); return; }
 			const effective = { ...msg, source: this.sessionOverrides.get(sessionOwnerKey(msg.source)) ?? msg.source };
 			const command = parseInteractionCommand(effective.text);
 			if (command?.kind === "stop") {
 				const outcome = await this.interaction.dispatch({ type: "turn.cancel", source: effective.source });
 				if (!("cancelled" in outcome)) throw new Error("Cancellation dispatch did not produce a cancellation result");
 				await this.platform.send(msg.source.chatId, `${outcome.cancelled ? "已停止当前任务" : "当前没有正在执行的任务"}${outcome.subagentsCancelled ? `；同时取消 ${outcome.subagentsCancelled} 个子任务` : ""}${outcome.approvalCancelled ? "；已取消待审批操作" : ""}。`);
+				onAdmitted?.();
 				return;
 			}
-			if (await this.interaction.handleApprovalReply(effective.source, effective.text)) return;
+			const admissionKey = sessionOwnerKey(effective.source);
+			releaseAdmission = await this.acquireTurnAdmission(admissionKey);
+			if (await this.interaction.handleApprovalReply(effective.source, effective.text)) { admit(); return; }
 			const control = await this.runtime.handleControl({ source: effective.source, text: effective.text });
 			if (control?.handled) {
 				if (control.nextSource) this.setSessionOverride(msg.source, control.nextSource.threadId);
 				await this.platform.send(msg.source.chatId, control.message);
+				admit();
 				return;
 			}
 			const snapshot = await this.interaction.snapshot(effective.source);
@@ -105,6 +125,7 @@ export class Dispatcher {
 				if (!("queued" in queued)) throw new Error("Active Agent turn returned an invalid queue result");
 				if (!queued.queued) {
 					await this.platform.send(msg.source.chatId, `当前会话队列已满（${queued.position} 条），请等待部分消息处理完成，或发送 /stop 停止当前任务。`);
+					admit();
 					return;
 				}
 				const feedback = queued.mode === "steer"
@@ -115,17 +136,48 @@ export class Dispatcher {
 							? "已更新下一条待处理消息。"
 							: `已加入当前会话队列${queued.position > 0 ? `（第 ${queued.position} 条）` : ""}。`;
 				await this.platform.send(msg.source.chatId, `${feedback} 发送 /stop 可随时停止。`);
+				admit();
 				return;
 			}
-			await this.runTurn(effective);
+			const primary = effective.mediaPaths.length ? undefined : this.interaction.reservePrimaryInput(effective.source, effective.text, this.turnTimeoutMs + 60_000);
+			if (!effective.mediaPaths.length && !primary) {
+				await this.platform.send(msg.source.chatId, "当前会话队列已满（100 条），请稍后重试。");
+				admit();
+				return;
+			}
+			if (primary && this.interaction.peekQueuedInput(effective.source)) {
+				this.interaction.demotePrimaryInput(effective.source, primary.id);
+				admit();
+				await this.drainQueuedInputs(effective.source);
+				return;
+			}
+			if (await this.runTurn(effective, admit)) await this.drainQueuedInputs(effective.source);
+			else if (primary) this.interaction.discardPrimaryInput(effective.source, primary.id);
 		} finally {
+			releaseAdmission?.();
 			await msg.releaseMedia?.().catch((error) => {
 				console.warn(`[beemax] temporary inbound media cleanup failed: ${error instanceof Error ? error.message : String(error)}`);
 			});
 		}
 	}
 
-	private async runTurn(msg: InboundMessage): Promise<void> {
+	private async acquireTurnAdmission(key: string): Promise<() => void> {
+		const prior = this.turnStarts.get(key) ?? Promise.resolve();
+		let releaseGate!: () => void;
+		const gate = new Promise<void>((resolve) => { releaseGate = resolve; });
+		const tail = prior.catch(() => undefined).then(() => gate);
+		this.turnStarts.set(key, tail);
+		await prior.catch(() => undefined);
+		let released = false;
+		return () => {
+			if (released) return;
+			released = true;
+			releaseGate();
+			if (this.turnStarts.get(key) === tail) this.turnStarts.delete(key);
+		};
+	}
+
+	private async runTurn(msg: InboundMessage, onReserved?: () => void): Promise<boolean> {
 		const chatId = msg.source.chatId;
 		const card = new CardSession();
 		const flush = new FlushController(this.deps.flushIntervalMs ?? 800);
@@ -146,8 +198,10 @@ export class Dispatcher {
 			return res.success;
 		};
 		const answerBuffer = new AdaptiveTextBuffer(async (chunk) => {
-			card.apply("answer.delta", { text: chunk });
-			await flush.schedule(renderUpdate);
+			try {
+				card.apply("answer.delta", { text: chunk });
+				await flush.schedule(renderUpdate);
+			} catch (error) { console.error(`[beemax] answer presenter failed: ${error instanceof Error ? error.message : String(error)}`); }
 		});
 		const statusPulse = new TurnStatusPulse(async (message) => {
 			card.apply("notice.updated", { id: "turn:status", label: "当前状态", status: "running", message });
@@ -164,7 +218,9 @@ export class Dispatcher {
 			let result;
 			try {
 				const media = await prepareAgentMediaInput(msg);
-				result = await this.interaction.dispatch({ type: "message.send", source: msg.source, text: media.text, input: { timeoutMs: this.turnTimeoutMs, mode: "interactive", images: media.images } }, (event) => this.onInteractionEvent(event, card, flush, answerBuffer, statusPulse, renderUpdate));
+				const turn = this.interaction.dispatch({ type: "message.send", source: msg.source, text: media.text, input: { timeoutMs: this.turnTimeoutMs, mode: "interactive", images: media.images } }, (event) => this.onInteractionEvent(event, card, flush, answerBuffer, statusPulse, renderUpdate));
+				onReserved?.();
+				result = await turn;
 				if (!("answer" in result)) throw new Error("Message dispatch did not produce an Agent result");
 			} catch (err) {
 				failed = true;
@@ -173,21 +229,73 @@ export class Dispatcher {
 				await flush.schedule(renderUpdate, true);
 				await flush.drain(3000);
 				if (!cardMessageId) await this.platform.send(chatId, `❌ ${errorText}`);
-				return;
+				return false;
 			}
 
 			// Terminal event already owns completion; only drain its final card patch.
 			await flush.schedule(renderUpdate, true);
 			await flush.drain(5000);
 			if (!cardMessageId) await this.platform.send(chatId, card.answerText || result.answer);
+			return true;
 		} catch (error) {
 			failed = true;
 			throw error;
 		} finally {
-			statusPulse.stop();
+			await statusPulse.stop().catch((error) => console.error(`[beemax] turn status presenter failed: ${error instanceof Error ? error.message : String(error)}`));
 			await answerBuffer.close();
 			await this.platform.stopTyping(chatId, msg.source.messageId, failed).catch(() => undefined);
 			flush.close();
+		}
+	}
+
+	/** Replays crash-surviving inputs only after their previous turn failed to acknowledge them. */
+	async recoverQueuedInputs(): Promise<number> {
+		let recovered = 0;
+		type RecoveredInput = ReturnType<InteractionEventAdapter<InboundMessage["source"]>["claimRecoveredInputs"]>[number];
+		const failed: RecoveredInput[] = [];
+		let firstFailed: RecoveredInput | undefined;
+		while (true) {
+			const input = this.interaction.claimRecoveredInputs(this.platform.name, 1, this.turnTimeoutMs + 60_000)[0];
+			if (!input) break;
+			const message: InboundMessage = {
+				text: input.text,
+				messageType: "text",
+				source: { ...input.source, messageId: `recovery:${input.id}` },
+				mediaPaths: [], mediaTypes: [], raw: { recoveredInputId: input.id }, timestamp: input.createdAt,
+			};
+			const release = await this.acquireTurnAdmission(sessionOwnerKey(input.source));
+			let succeeded = false;
+			try { succeeded = await this.runTurn(message, release); }
+			finally { release(); }
+			if (!succeeded) { failed.push(input); firstFailed ??= input; continue; }
+			if (!this.interaction.acknowledgeQueuedInput(input.source, input.id, input.claimToken)) throw new Error(`Recovered input acknowledgement failed: ${input.id}`);
+			recovered++;
+		}
+		for (const input of failed) this.interaction.releaseQueuedInput(input.source, input);
+		if (firstFailed && !this.recoveryTimer) {
+			this.recoveryTimer = setTimeout(() => { this.recoveryTimer = undefined; void this.recoverQueuedInputs().catch((error) => console.error(`[beemax] queued input recovery failed: ${String(error)}`)); }, 5_000);
+			this.recoveryTimer.unref?.();
+		}
+		return recovered;
+	}
+
+	private async drainQueuedInputs(source: InboundMessage["source"]): Promise<number> {
+		let drained = 0;
+		while (true) {
+			const input = this.interaction.claimQueuedInput(source, this.turnTimeoutMs + 60_000);
+			if (!input) return drained;
+			const release = await this.acquireTurnAdmission(sessionOwnerKey(source));
+			try {
+				const snapshot = await this.interaction.snapshot(source);
+				if (["running", "queued", "awaiting_approval"].includes(snapshot.phase)) { this.interaction.releaseQueuedInput(source, input); return drained; }
+				const message: InboundMessage = {
+					text: input.text, messageType: "text", source: { ...input.source, messageId: `queued:${input.id}` },
+					mediaPaths: [], mediaTypes: [], raw: { queuedInputId: input.id }, timestamp: input.createdAt,
+				};
+				if (!await this.runTurn(message, release)) { this.interaction.releaseQueuedInput(source, input); return drained; }
+				if (!this.interaction.acknowledgeQueuedInput(input.source, input.id, input.claimToken)) throw new Error(`Queued input acknowledgement failed: ${input.id}`);
+				drained++;
+			} finally { release(); }
 		}
 	}
 
@@ -215,7 +323,25 @@ export class Dispatcher {
 		return result.answer.trim();
 	}
 
-	dispose(): void {
+	async presentWorkProgress(target: DeliveryTarget, event: TaskPlanProgressEvent): Promise<void> {
+		if (target.platform !== this.platform.name) throw new Error(`Cannot present ${target.platform} work through ${this.platform.name}`);
+		const card = new CardSession();
+		card.apply("notice.updated", {
+			id: `work:${event.workId}`, label: "异步任务计划", status: event.state === "failed" ? "error" : event.state,
+			message: `${event.title} · ${event.completed}/${event.total}${event.failed ? ` · 失败 ${event.failed}` : ""}${event.cancelled ? ` · 取消 ${event.cancelled}` : ""}`,
+		});
+		const result = await this.platform.sendCard(target.chatId, renderCard(card, this.deps.cardOptions), undefined, Boolean(target.threadId));
+		if (!result.success) throw new Error(result.error ?? `Failed to present Task Plan ${event.workId}`);
+	}
+
+	async dispose(): Promise<void> {
+		if (this.recoveryTimer) clearTimeout(this.recoveryTimer);
+		if (this.activeHandles.size) {
+			let timer!: ReturnType<typeof setTimeout>;
+			const timeout = new Promise<void>((resolve) => { timer = setTimeout(resolve, 5_000); timer.unref?.(); });
+			await Promise.race([Promise.allSettled([...this.activeHandles]).then(() => undefined), timeout]);
+			clearTimeout(timer);
+		}
 		this.deps.approvalBroker?.dispose();
 	}
 
@@ -288,20 +414,29 @@ export class Dispatcher {
 				card.apply("notice.updated", { id: `planning:${event.turnId}`, label: "执行规划", status: event.compliant ? "completed" : "error", message: `${event.mode}${event.corrected ? " · 已自动纠正" : ""}` });
 				await flush.schedule(renderUpdate);
 				break;
+			case "work.changed":
+				card.apply("notice.updated", {
+					id: `work:${event.workId}`,
+					label: event.kind === "subagent" ? "并行子任务" : "异步任务计划",
+					status: event.state === "failed" ? "error" : event.state,
+					message: event.summary ?? (event.state === "queued" ? "已排队" : event.state === "running" ? "运行中" : event.state === "completed" ? "已完成" : event.state === "cancelled" ? "已取消" : "执行失败"),
+				});
+				await flush.schedule(renderUpdate);
+				break;
 			case "turn.failed":
-				statusPulse.stop();
+				await statusPulse.stop().catch((error) => console.error(`[beemax] turn status presenter failed: ${error instanceof Error ? error.message : String(error)}`));
 				await answerBuffer.flush();
 				card.apply("message.failed", { error: event.error });
 				await flush.schedule(renderUpdate, true);
 				break;
 			case "turn.cancelled":
-				statusPulse.stop();
+				await statusPulse.stop().catch((error) => console.error(`[beemax] turn status presenter failed: ${error instanceof Error ? error.message : String(error)}`));
 				await answerBuffer.flush();
 				card.apply("message.cancelled", { message: "运行已取消" });
 				await flush.schedule(renderUpdate, true);
 				break;
 			case "turn.finished":
-				statusPulse.stop();
+				await statusPulse.stop().catch((error) => console.error(`[beemax] turn status presenter failed: ${error instanceof Error ? error.message : String(error)}`));
 				await answerBuffer.flush();
 				card.apply("message.completed", { answer: card.answerText || event.result.answer, model: event.result.model, duration: event.result.durationMs / 1000, tokens: event.result.usage });
 				await flush.schedule(renderUpdate, true);

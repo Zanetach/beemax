@@ -630,12 +630,11 @@ export class FeishuAdapter implements PlatformAdapter {
 
 	private async deliverInOrder(key: string, message: InboundMessage): Promise<void> {
 		const prior = this.deliveryTails.get(key) ?? Promise.resolve();
-		const admission = prior.catch(() => undefined).then(() => {
+		const admission = prior.catch(() => undefined).then(async () => {
 			let delivery!: Promise<void>;
-			delivery = Promise.resolve(this.handler?.(message)).catch((error) => {
-				console.error(`[beemax] Feishu inbound delivery failed: ${error instanceof Error ? error.message : String(error)}`);
-			}).finally(() => this.inFlightDeliveries.delete(delivery));
+			delivery = Promise.resolve().then(() => this.handler?.(message)).finally(() => this.inFlightDeliveries.delete(delivery));
 			this.inFlightDeliveries.add(delivery);
+			await delivery;
 		});
 		this.deliveryTails.set(key, admission);
 		try {

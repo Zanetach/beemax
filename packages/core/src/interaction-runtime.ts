@@ -5,7 +5,7 @@ import type { ToolApprovalBroker, ToolApprovalChoice } from "./tool-approval.ts"
 import type { InteractionEventJournal } from "./interaction-event-journal.ts";
 import type { ToolApprovalDetails } from "./tool-approval.ts";
 import { conversationIdentity, type ConversationIdentity } from "./agent-scope.ts";
-import type { InteractionInputQueueStore } from "./interaction-input-queue.ts";
+import type { InteractionInputQueueStore, InteractionQueuedInput } from "./interaction-input-queue.ts";
 
 export type InteractionSurface = "chat" | "gateway" | "web";
 export type InteractionPhase = "idle" | "running" | "queued" | "awaiting_approval" | "completed" | "failed" | "cancelled";
@@ -33,6 +33,7 @@ export type InteractionEvent = InteractionEventMeta & (
 	| { type: "model.fallback"; from: string; to: string; attempt: number }
 	| { type: "planning.selected"; mode: "direct" | "delegate" | "dag"; concurrency: number; maxSubagents: number; requiredTools: string[] }
 	| { type: "planning.completed"; mode: "direct" | "delegate" | "dag"; compliant: boolean; corrected: boolean }
+	| { type: "work.changed"; workId: string; kind: "subagent" | "task_plan"; state: "queued" | "running" | "completed" | "failed" | "cancelled"; summary?: string }
 	| { type: "turn.queued"; position: number; replaced: boolean; mode: InteractionDeliveryMode }
 	| { type: "turn.finished"; result: AgentRunResult }
 	| { type: "turn.failed"; error: string }
@@ -49,6 +50,7 @@ type InteractionEventPayload =
 	| { type: "model.fallback"; from: string; to: string; attempt: number }
 	| { type: "planning.selected"; mode: "direct" | "delegate" | "dag"; concurrency: number; maxSubagents: number; requiredTools: string[] }
 	| { type: "planning.completed"; mode: "direct" | "delegate" | "dag"; compliant: boolean; corrected: boolean }
+	| { type: "work.changed"; workId: string; kind: "subagent" | "task_plan"; state: "queued" | "running" | "completed" | "failed" | "cancelled"; summary?: string }
 	| { type: "turn.queued"; position: number; replaced: boolean; mode: InteractionDeliveryMode }
 	| { type: "turn.finished"; result: AgentRunResult }
 	| { type: "turn.failed"; error: string }
@@ -113,7 +115,7 @@ export interface InteractionEventAdapterOptions<Source extends BeeMaxRuntimeSour
 	actionHistoryLimit?: number;
 	eventJournal?: InteractionEventJournal;
 	telemetry?: InteractionTelemetrySink;
-	inputQueueStore?: InteractionInputQueueStore;
+	inputQueueStore?: InteractionInputQueueStore<Source>;
 }
 
 /**
@@ -131,8 +133,10 @@ export class InteractionEventAdapter<Source extends BeeMaxRuntimeSource = BeeMax
 	private readonly sequences = new Map<string, number>();
 	private readonly eventHistory = new Map<string, InteractionEvent[]>();
 	private readonly subscribers = new Map<string, Set<InteractionEventSink>>();
-	private readonly queuedInputs = new Map<string, string[]>();
-	private readonly nativeQueuedInputs = new Map<string, number>();
+	private readonly queuedInputs = new Map<string, InteractionQueuedInput<Source>[]>();
+	private readonly nativeQueuedInputs = new Map<string, Set<string>>();
+	private readonly primaryQueuedInputs = new Map<string, Set<string>>();
+	private readonly nativeClaimTokens = new Map<string, Map<string, string>>();
 	private readonly actions = new Map<string, Map<string, Promise<InteractionActionResult>>>();
 	private readonly approvalStartedAt = new Map<string, number>();
 	private readonly turnModels = new Map<string, string>();
@@ -146,7 +150,7 @@ export class InteractionEventAdapter<Source extends BeeMaxRuntimeSource = BeeMax
 	private readonly actionHistoryLimit: number;
 	private readonly eventJournal?: InteractionEventJournal;
 	private readonly telemetry?: InteractionTelemetrySink;
-	private readonly inputQueueStore?: InteractionInputQueueStore;
+	private readonly inputQueueStore?: InteractionInputQueueStore<Source>;
 
 	constructor(runtime: AgentRuntimePort<Source>, options: InteractionEventAdapterOptions<Source> = {}) {
 		this.runtime = runtime;
@@ -199,16 +203,23 @@ export class InteractionEventAdapter<Source extends BeeMaxRuntimeSource = BeeMax
 		const key = interactionKey(action.source);
 		if (sink) this.sinks.set(key, sink);
 		const turnId = crypto.randomUUID();
-		this.turnModels.set(interactionEventMeta(action.source, "", 0, this.profileId).sessionId, (await this.runtime.modelStatus?.(action.source))?.model ?? "unresolved");
-		await this.publish(action.source, turnId, { type: "turn.started" }, sink);
+		// Reserve synchronously before any model/session I/O so concurrent presenters
+		// observe one active turn and route later input through follow-up/steer.
+		this.states.set(key, { phase: "running", turnId, updatedAt: Date.now() });
+		let completed = false;
 		try {
+			this.turnModels.set(interactionEventMeta(action.source, "", 0, this.profileId).sessionId, (await this.runtime.modelStatus?.(action.source))?.model ?? "unresolved");
+			await this.publish(action.source, turnId, { type: "turn.started" }, sink);
 			const result = await this.runtime.run({ ...action.input, source: action.source, text: action.text }, (event) => {
 				const mapped = mapAgentSessionEvent(event);
-				return mapped ? this.enqueue(action.source, turnId, mapped, sink) : undefined;
+				const work = mapAgentWorkEvent(event);
+				if (mapped && work) return Promise.all([this.enqueue(action.source, turnId, mapped, sink), this.enqueue(action.source, turnId, work, sink)]).then(() => undefined);
+				return mapped ? this.enqueue(action.source, turnId, mapped, sink) : work ? this.enqueue(action.source, turnId, work, sink) : undefined;
 			});
 			await this.flush(key);
 			this.throwSinkFailure(key);
 			await this.publish(action.source, turnId, { type: "turn.finished", result }, sink);
+			completed = true;
 			return result;
 		} catch (error) {
 			if (this.cancellationRequested.has(key)) {
@@ -227,7 +238,13 @@ export class InteractionEventAdapter<Source extends BeeMaxRuntimeSource = BeeMax
 			this.sinkFailures.delete(key);
 			this.cancellationRequested.delete(key);
 			this.cancellationPublished.delete(key);
+			const nativeIds = this.nativeQueuedInputs.get(key) ?? new Set<string>();
+			const primaryIds = this.primaryQueuedInputs.get(key) ?? new Set<string>();
+			if (completed) for (const id of nativeIds) this.acknowledgeNativeInput(key, id);
+			else for (const id of primaryIds) this.acknowledgeNativeInput(key, id);
 			this.nativeQueuedInputs.delete(key);
+			this.primaryQueuedInputs.delete(key);
+			this.nativeClaimTokens.delete(key);
 			this.turnModels.delete(interactionEventMeta(action.source, "", 0, this.profileId).sessionId);
 		}
 	}
@@ -251,7 +268,7 @@ export class InteractionEventAdapter<Source extends BeeMaxRuntimeSource = BeeMax
 		const current = this.states.get(interactionKey(source));
 		const [status, usage] = await Promise.all([this.runtime.modelStatus?.(source), this.runtime.usage?.(source)]);
 		const key = interactionKey(source);
-		return { phase: current?.phase ?? "idle", turnId: current?.turnId, model: status?.model, usage, queueDepth: this.fallbackQueue(key).length + (this.nativeQueuedInputs.get(key) ?? 0), updatedAt: current?.updatedAt ?? Date.now() };
+		return { phase: current?.phase ?? "idle", turnId: current?.turnId, model: status?.model, usage, queueDepth: this.fallbackQueue(key).length, updatedAt: current?.updatedAt ?? Date.now() };
 	}
 
 	/** Reconnection-safe semantic events, bounded per interaction session. */
@@ -284,10 +301,67 @@ export class InteractionEventAdapter<Source extends BeeMaxRuntimeSource = BeeMax
 	takeQueuedInput(source: Source): string | undefined {
 		const key = interactionKey(source);
 		const queue = this.fallbackQueue(key);
-		const text = queue?.shift();
-		if (!queue.length) this.queuedInputs.delete(key);
-		this.inputQueueStore?.save(key, queue);
-		return text;
+		const liveNative = this.nativeQueuedInputs.get(key) ?? new Set<string>();
+		const input = queue.find((candidate) => !liveNative.has(candidate.id));
+		if (!input) return undefined;
+		this.removeQueuedInput(key, input.id);
+		return input.text;
+	}
+
+	peekQueuedInput(source: Source): InteractionQueuedInput<Source> | undefined {
+		const key = interactionKey(source);
+		const liveNative = this.nativeQueuedInputs.get(key) ?? new Set<string>();
+		return this.fallbackQueue(key).find((candidate) => !liveNative.has(candidate.id));
+	}
+
+	/** Durably reserves a primary inbound message before the channel acknowledges admission. */
+	reservePrimaryInput(source: Source, text: string, leaseMs = 60 * 60_000): InteractionQueuedInput<Source> | undefined {
+		const key = interactionKey(source);
+		const input = this.newQueuedInput(key, source, text);
+		const queue = this.fallbackQueue(key);
+		const position = this.inputQueueStore?.enqueueClaimed(input, 100, leaseMs) ?? (queue.length < 100 ? queue.length + 1 : 0);
+		if (!position) return undefined;
+		if (this.inputQueueStore) this.queuedInputs.set(key, this.inputQueueStore.load(key));
+		else { queue.push(input); this.queuedInputs.set(key, queue); }
+		if (input.claimToken || position === 1) {
+			const native = this.nativeQueuedInputs.get(key) ?? new Set<string>(); native.add(input.id); this.nativeQueuedInputs.set(key, native);
+			if (input.claimToken) { const claims = this.nativeClaimTokens.get(key) ?? new Map<string, string>(); claims.set(input.id, input.claimToken); this.nativeClaimTokens.set(key, claims); }
+		}
+		const primary = this.primaryQueuedInputs.get(key) ?? new Set<string>(); primary.add(input.id); this.primaryQueuedInputs.set(key, primary);
+		return input;
+	}
+	demotePrimaryInput(source: Source, id: string): void {
+		const key = interactionKey(source);
+		this.nativeQueuedInputs.get(key)?.delete(id);
+		const token = this.nativeClaimTokens.get(key)?.get(id);
+		if (token) this.inputQueueStore?.release(key, id, token);
+		this.nativeClaimTokens.get(key)?.delete(id);
+	}
+	discardPrimaryInput(source: Source, id: string): void { this.acknowledgeNativeInput(interactionKey(source), id); }
+
+	/** Durable inputs left by a crashed presenter/runtime, ordered for startup recovery. */
+	recoveredQueuedInputs(): InteractionQueuedInput<Source>[] {
+		return (this.inputQueueStore?.all() ?? [...this.queuedInputs.values()].flat()).sort((a, b) => a.createdAt - b.createdAt);
+	}
+	claimRecoveredInputs(platform: string, limit = 1, leaseMs = 60 * 60_000): InteractionQueuedInput<Source>[] {
+		return (this.inputQueueStore?.claim(platform, limit, leaseMs) ?? this.recoveredQueuedInputs().filter((input) => input.source.platform === platform).slice(0, limit)).sort((a, b) => a.createdAt - b.createdAt);
+	}
+	claimQueuedInput(source: Source, leaseMs = 60 * 60_000): InteractionQueuedInput<Source> | undefined {
+		return this.inputQueueStore?.claimKey(interactionKey(source), leaseMs) ?? this.peekQueuedInput(source);
+	}
+	releaseQueuedInput(source: Source, input: InteractionQueuedInput<Source>): boolean {
+		return input.claimToken && this.inputQueueStore ? this.inputQueueStore.release(interactionKey(source), input.id, input.claimToken) : true;
+	}
+
+	acknowledgeQueuedInput(source: Source, id: string, claimToken?: string): boolean {
+		const key = interactionKey(source);
+		if (claimToken && this.inputQueueStore) {
+			const acknowledged = this.inputQueueStore.acknowledge(key, id, claimToken);
+			if (acknowledged) this.queuedInputs.delete(key);
+			return acknowledged;
+		}
+		this.removeQueuedInput(key, id);
+		return true;
 	}
 
 	private async cancel(source: Source, sink?: InteractionEventSink): Promise<InteractionCancelResult> {
@@ -314,7 +388,7 @@ export class InteractionEventAdapter<Source extends BeeMaxRuntimeSource = BeeMax
 		}
 		const localQueuedCancelled = this.fallbackQueue(key).length > 0;
 		this.queuedInputs.delete(key);
-		if (localQueuedCancelled) this.inputQueueStore?.save(key, []);
+		if (localQueuedCancelled) this.inputQueueStore?.clear(key);
 		const nativeQueuedCancelled = this.nativeQueuedInputs.delete(key);
 		const queuedCancelled = localQueuedCancelled || nativeQueuedCancelled;
 		if (!cancelled) this.cancellationRequested.delete(key);
@@ -325,14 +399,12 @@ export class InteractionEventAdapter<Source extends BeeMaxRuntimeSource = BeeMax
 		const key = interactionKey(source);
 		const turnId = this.states.get(key)?.turnId;
 		const phase = this.states.get(key)?.phase;
-		if (!turnId || (phase !== "running" && phase !== "queued")) return { queued: false, position: 0, replaced: false, mode };
-		const queue = this.fallbackQueue(key);
-		if (queue.length >= 100) return { queued: false, position: queue.length, replaced: false, mode };
-		queue.push(text);
-		this.queuedInputs.set(key, queue);
-		this.inputQueueStore?.save(key, queue);
-		await this.publish(source, turnId, { type: "turn.queued", position: queue.length, replaced: false, mode }, sink);
-		return { queued: true, position: queue.length, replaced: false, mode };
+		if (!turnId || !["running", "queued", "awaiting_approval"].includes(phase ?? "")) return { queued: false, position: 0, replaced: false, mode };
+		const input = this.newQueuedInput(key, source, text);
+		const position = this.enqueueQueuedInput(input);
+		if (!position) return { queued: false, position: this.fallbackQueue(key).length, replaced: false, mode };
+		await this.publish(source, turnId, { type: "turn.queued", position, replaced: false, mode }, sink);
+		return { queued: true, position, replaced: false, mode };
 	}
 
 	private async deliverOrQueue(source: Source, text: string, mode: "steer" | "follow_up", sink?: InteractionEventSink): Promise<InteractionQueueResult> {
@@ -342,22 +414,58 @@ export class InteractionEventAdapter<Source extends BeeMaxRuntimeSource = BeeMax
 		if (!turnId || !["running", "queued", "awaiting_approval"].includes(phase ?? "")) return { queued: false, position: 0, replaced: false, mode };
 		const deliver = mode === "steer" ? this.runtime.steer : this.runtime.followUp;
 		if (deliver) {
+			const input = this.newQueuedInput(key, source, text);
+			const position = this.enqueueQueuedInput(input);
+			if (!position) return { queued: false, position: this.fallbackQueue(key).length, replaced: false, mode };
 			if (await deliver.call(this.runtime, source, text)) {
-				const position = (this.nativeQueuedInputs.get(key) ?? 0) + 1;
-				this.nativeQueuedInputs.set(key, position);
+				const native = this.nativeQueuedInputs.get(key) ?? new Set<string>();
+				native.add(input.id);
+				this.nativeQueuedInputs.set(key, native);
 				await this.publish(source, turnId, { type: "turn.queued", position, replaced: false, mode }, sink);
 				return { queued: true, position, replaced: false, mode };
 			}
+			await this.publish(source, turnId, { type: "turn.queued", position, replaced: false, mode: mode === "steer" ? "steer_fallback" : "queue" }, sink);
+			return { queued: true, position, replaced: false, mode: mode === "steer" ? "steer_fallback" : "queue" };
 		}
 		return this.queue(source, text, mode === "steer" ? "steer_fallback" : "queue", sink);
 	}
 
-	private fallbackQueue(key: string): string[] {
+	private fallbackQueue(key: string): InteractionQueuedInput<Source>[] {
+		if (this.inputQueueStore) {
+			const restored = this.inputQueueStore.load(key);
+			if (restored.length) this.queuedInputs.set(key, restored);
+			else this.queuedInputs.delete(key);
+			return restored;
+		}
 		const current = this.queuedInputs.get(key);
 		if (current) return current;
-		const restored = this.inputQueueStore?.load(key) ?? [];
-		if (restored.length) this.queuedInputs.set(key, restored);
-		return restored;
+		return [];
+	}
+
+	private newQueuedInput(key: string, source: Source, text: string): InteractionQueuedInput<Source> {
+		return { id: crypto.randomUUID(), key, text, source: { ...source }, createdAt: Date.now() };
+	}
+
+	private enqueueQueuedInput(input: InteractionQueuedInput<Source>): number {
+		const queue = this.fallbackQueue(input.key);
+		const position = this.inputQueueStore?.enqueue(input, 100) ?? (queue.length < 100 ? queue.length + 1 : 0);
+		if (!position) return 0;
+		if (this.inputQueueStore) this.queuedInputs.set(input.key, this.inputQueueStore.load(input.key));
+		else { queue.push(input); this.queuedInputs.set(input.key, queue); }
+		return position;
+	}
+
+	private removeQueuedInput(key: string, id: string): void {
+		const queue = this.fallbackQueue(key).filter((input) => input.id !== id);
+		if (queue.length) this.queuedInputs.set(key, queue);
+		else this.queuedInputs.delete(key);
+		this.inputQueueStore?.remove(key, id);
+	}
+
+	private acknowledgeNativeInput(key: string, id: string): void {
+		const token = this.nativeClaimTokens.get(key)?.get(id);
+		if (token && this.inputQueueStore) this.inputQueueStore.acknowledge(key, id, token);
+		else this.removeQueuedInput(key, id);
 	}
 
 	private apply(source: Source, event: InteractionEvent): void {
@@ -428,7 +536,7 @@ export function reduceInteractionEvent(snapshot: InteractionSnapshot, event: Int
 	if (event.type === "turn.cancelled") return { ...snapshot, phase: "cancelled", turnId: event.turnId, updatedAt: event.at };
 	if (event.type === "approval.requested") return { ...snapshot, phase: "awaiting_approval", turnId: event.turnId, updatedAt: event.at };
 	if (event.type === "approval.resolved") return { ...snapshot, phase: "running", turnId: event.turnId, updatedAt: event.at };
-	if (event.type === "turn.queued") return { ...snapshot, phase: event.mode === "steer" ? "running" : "queued", turnId: event.turnId, updatedAt: event.at };
+	if (event.type === "turn.queued") return { ...snapshot, phase: snapshot.phase === "awaiting_approval" ? "awaiting_approval" : event.mode === "steer" ? "running" : "queued", turnId: event.turnId, updatedAt: event.at };
 	return { ...snapshot, updatedAt: event.at };
 }
 
@@ -442,6 +550,31 @@ export function mapAgentSessionEvent(event: BeeMaxAgentRunEvent): InteractionEve
 	if (event.assistantMessageEvent.type === "text_delta") return { type: "answer.delta", text: event.assistantMessageEvent.delta };
 	if (event.assistantMessageEvent.type === "thinking_delta") return { type: "reasoning.delta", text: event.assistantMessageEvent.delta };
 	return undefined;
+}
+
+function mapAgentWorkEvent(event: BeeMaxAgentRunEvent): InteractionEventPayload | undefined {
+	if (event.type !== "tool_execution_start" && event.type !== "tool_execution_end") return undefined;
+	if (event.toolName !== "task_spawn" && event.toolName !== "task_wait" && event.toolName !== "task_plan_execute") return undefined;
+	const kind = event.toolName === "task_plan_execute" ? "task_plan" : "subagent";
+	// Tool activity already represents creation-in-progress. Work progress starts
+	// only after the durable task/plan identity is known, so later terminal
+	// events update the same presenter item instead of leaving a stale call row.
+	if (event.type === "tool_execution_start") return undefined;
+	const details = event.result && typeof event.result === "object" ? (event.result as { details?: unknown }).details : undefined;
+	const record = details && typeof details === "object" ? details as Record<string, unknown> : undefined;
+	const identity = typeof record?.planId === "string" ? record.planId : typeof record?.id === "string" ? record.id : undefined;
+	const status = record?.status;
+	if (event.toolName === "task_wait" && status !== "completed" && status !== "failed" && status !== "cancelled") return undefined;
+	const state = event.isError ? "failed"
+		: status === "queued" ? "queued"
+			: status === "running" ? "running"
+				: status === "failed" ? "failed"
+					: status === "cancelled" ? "cancelled"
+						: event.toolName === "task_spawn" || event.toolName === "task_plan_execute" ? "running" : "completed";
+	return {
+		type: "work.changed", workId: identity ?? event.toolCallId, kind, state,
+		summary: identity ? `${identity}${state === "queued" ? " · 已排队" : state === "running" ? " · 后台运行中" : ""}` : undefined,
+	};
 }
 
 

@@ -28,6 +28,10 @@ export class MessageDeduplicator {
 		return true;
 	}
 
+	rollback(profile: string, platform: string, messageId: string | undefined): void {
+		if (messageId) this.seen.delete(`${profile}\u0000${platform}\u0000${messageId}`);
+	}
+
 	private prune(now: number): void {
 		for (const [key, expiresAt] of this.seen) if (expiresAt <= now) this.seen.delete(key);
 	}

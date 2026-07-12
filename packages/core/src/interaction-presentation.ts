@@ -11,6 +11,7 @@ export class AdaptiveTextBuffer {
 	private timer?: ReturnType<typeof setTimeout>;
 	private tail = Promise.resolve();
 	private closed = false;
+	private codeFenceOpen = false;
 	private readonly minChunkChars: number;
 	private readonly preferredChunkChars: number;
 	private readonly maxChunkChars: number;
@@ -28,7 +29,7 @@ export class AdaptiveTextBuffer {
 	push(delta: string): void {
 		if (this.closed || !delta) return;
 		this.pending += delta;
-		const cut = readableCut(this.pending, this.minChunkChars, this.preferredChunkChars, this.maxChunkChars);
+		const cut = readableCut(this.pending, this.minChunkChars, this.preferredChunkChars, this.maxChunkChars, this.codeFenceOpen);
 		if (cut > 0) this.commit(cut);
 		if (this.pending) this.scheduleMaxWait();
 	}
@@ -49,12 +50,13 @@ export class AdaptiveTextBuffer {
 		const chunk = this.pending.slice(0, length);
 		this.pending = this.pending.slice(length);
 		if (!chunk) return;
+		if ((chunk.match(/```/g)?.length ?? 0) % 2 === 1) this.codeFenceOpen = !this.codeFenceOpen;
 		this.clearTimer();
 		this.tail = this.tail.then(() => this.onChunk(chunk));
 	}
 
 	private scheduleMaxWait(): void {
-		if (this.timer || this.pending.length < this.minChunkChars || hasUnclosedCodeFence(this.pending)) return;
+		if (this.timer || this.pending.length < this.minChunkChars) return;
 		this.timer = setTimeout(() => {
 			this.timer = undefined;
 			if (!this.closed && this.pending.length >= this.minChunkChars) this.commit(this.pending.length);
@@ -79,6 +81,8 @@ export class TurnStatusPulse {
 	private readonly thresholdsMs: number[];
 	private readonly repeatMs: number;
 	private readonly onStatus: (message: string, elapsedMs: number) => void | Promise<void>;
+	private tail = Promise.resolve();
+	private failure?: unknown;
 
 	constructor(onStatus: (message: string, elapsedMs: number) => void | Promise<void>, options: TurnStatusPulseOptions = {}) {
 		this.onStatus = onStatus;
@@ -89,7 +93,7 @@ export class TurnStatusPulse {
 	start(): void {
 		if (this.startedAt) return;
 		this.startedAt = Date.now();
-		void this.onStatus("已收到 · 正在理解需求", 0);
+		this.emit("已收到 · 正在理解需求", 0);
 		this.scheduleNext();
 	}
 
@@ -97,10 +101,15 @@ export class TurnStatusPulse {
 		if (this.stopped || this.contentVisible) return;
 		this.contentVisible = true;
 		this.clearTimer();
-		void this.onStatus("正在组织回答", Date.now() - this.startedAt);
+		this.emit("正在组织回答", Date.now() - this.startedAt);
 	}
 
-	stop(): void { this.stopped = true; this.clearTimer(); }
+	async stop(): Promise<void> {
+		this.stopped = true;
+		this.clearTimer();
+		await this.tail;
+		if (this.failure !== undefined) throw this.failure;
+	}
 
 	private scheduleNext(): void {
 		if (this.stopped || !this.startedAt) return;
@@ -111,17 +120,26 @@ export class TurnStatusPulse {
 			if (this.stopped) return;
 			const current = Date.now() - this.startedAt;
 			const seconds = Math.max(1, Math.round(current / 1_000));
-			void this.onStatus(current >= 30_000 ? `模型响应较慢 · 已等待 ${seconds} 秒，连接正常` : `等待模型响应 · ${seconds} 秒`, current);
+			this.emit(current >= 30_000 ? `模型响应较慢 · 已等待 ${seconds} 秒，连接正常` : `等待模型响应 · ${seconds} 秒`, current);
 			if (this.thresholdIndex < this.thresholdsMs.length) this.thresholdIndex++;
 			this.scheduleNext();
 		}, Math.max(0, target - elapsed));
 	}
 
 	private clearTimer(): void { if (this.timer) clearTimeout(this.timer); this.timer = undefined; }
+
+	private emit(message: string, elapsedMs: number): void {
+		this.tail = this.tail.then(() => this.onStatus(message, elapsedMs)).catch((error: unknown) => { if (this.failure === undefined) this.failure = error; });
+	}
 }
 
-function readableCut(text: string, min: number, preferred: number, max: number): number {
-	if (text.length < min || hasUnclosedCodeFence(text)) return 0;
+function readableCut(text: string, min: number, preferred: number, max: number, codeFenceOpen: boolean): number {
+	if (text.length < min) return 0;
+	if (codeFenceOpen || hasUnclosedCodeFence(text)) {
+		const newline = text.lastIndexOf("\n") + 1;
+		if (newline >= min) return newline;
+		return text.length >= max ? max : 0;
+	}
 	const boundary = lastBoundary(text);
 	if (boundary >= min && (boundary >= preferred || /\n\n$/.test(text.slice(0, boundary)))) return boundary;
 	if (text.length < max) return 0;
