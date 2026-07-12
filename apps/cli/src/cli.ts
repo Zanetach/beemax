@@ -41,7 +41,7 @@ import { FullWorkbench, startFullWorkbenchInput, type FullWorkbenchInput } from 
 import { inspectGateway, readGatewayLogs } from "./gateway-observability.ts";
 import { createTaskAwareConversationContext, ensureBuiltinTasks, installedVersion } from "./runtime-facts.ts";
 import { AgentRunError, ToolApprovalBroker, compileLongTermMemorySnapshot, interactionCommandHelp, parseInteractionCommand } from "@beemax/core";
-import type { SessionSource } from "@beemax/gateway";
+import { PairingStore, type SessionSource } from "@beemax/gateway";
 import { existsSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -69,6 +69,9 @@ async function main(): Promise<void> {
 			break;
 		case "channel":
 			await runChannelCommand(parsed);
+			break;
+		case "pairing":
+			await runPairingCommand(parsed);
 			break;
 		case "gateway":
 			if (parsed.positionals[1] === "setup") {
@@ -165,6 +168,7 @@ Commands:
   init       Create the first Agent profile
   agent      create | list | delete
   channel    add | list | remove | test
+  pairing    list | approve <platform> <code> | revoke <platform> <user_id> | clear [platform]
   gateway    run | setup | install | start | stop | restart | status | logs | list | health
   chat       Adaptive terminal Agent (Full / Compact / Plain)
   model      show | set <provider> <model>
@@ -427,6 +431,47 @@ async function runChannelCommand(parsed: ParsedArgs): Promise<void> {
 		webhookEncryptKey: process.env.FEISHU_WEBHOOK_ENCRYPT_KEY ?? currentFeishu.webhookEncryptKey,
 	});
 	console.log(`Configured Feishu channel for Agent '${profile}'. Run: beemax channel test --profile ${profile}`);
+}
+
+async function runPairingCommand(parsed: ParsedArgs): Promise<void> {
+	const profile = selectedProfile(parsed);
+	const config = loadConfig(undefined, profile);
+	const store = new PairingStore(config.paths.agentDir);
+	const action = parsed.positionals[1] ?? "list";
+	const platform = parsed.positionals[2] ?? "feishu";
+	if (action === "list") {
+		const state = store.list(platform);
+		if (!state.pending.length && !state.approved.length) { console.log(`No ${platform} pairing requests or approvals for Profile '${profile}'.`); return; }
+		if (state.pending.length) {
+			console.log(`Pending ${platform} pairing requests:`);
+			for (const item of state.pending) console.log(`  ${item.code}  ${item.userId}  expires=${new Date(item.expiresAt).toISOString()}`);
+		}
+		if (state.approved.length) {
+			console.log(`Approved ${platform} users:`);
+			for (const item of state.approved) console.log(`  ${item.userId}  approved=${new Date(item.approvedAt).toISOString()}`);
+		}
+		return;
+	}
+	if (action === "approve") {
+		const code = parsed.positionals[3];
+		if (!code) throw new Error("Usage: beemax pairing approve <platform> <code> --profile <name>");
+		const approved = store.approve(platform, code);
+		if (!approved) throw new Error("Pairing code was not found or has expired");
+		console.log(`Approved ${approved.userId} for ${platform} on Profile '${profile}'.`);
+		return;
+	}
+	if (action === "revoke") {
+		const userId = parsed.positionals[3];
+		if (!userId) throw new Error("Usage: beemax pairing revoke <platform> <user_id> --profile <name>");
+		if (!store.revoke(platform, userId)) throw new Error(`User ${userId} is not paired for ${platform}`);
+		console.log(`Revoked ${userId} for ${platform} on Profile '${profile}'.`);
+		return;
+	}
+	if (action === "clear-pending" || action === "clear") {
+		console.log(`Cleared ${store.clearPending(platform)} pending ${platform} pairing request(s).`);
+		return;
+	}
+	throw new Error("Usage: beemax pairing [list | approve <platform> <code> | revoke <platform> <user_id> | clear [platform]] --profile <name>");
 }
 
 function serviceProfile(parsed: ParsedArgs): string {

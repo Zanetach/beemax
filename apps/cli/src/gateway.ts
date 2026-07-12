@@ -13,6 +13,7 @@ import {
 	Dispatcher,
 	FeishuAdapter,
 	GatewayDeliveryPort,
+	PairingStore,
 	type FeishuSettings,
 } from "@beemax/gateway";
 import { loadMcpConfig, McpManager } from "@beemax/mcp-capability";
@@ -39,6 +40,7 @@ export async function runGateway(config: BeeMaxConfig): Promise<void> {
 		recordGatewayEvent(config.paths.agentDir, "failed", { profile: config.profile, error });
 		throw new Error(error);
 	}
+	const pairing = new PairingStore(config.paths.agentDir);
 	const feishuSettings: FeishuSettings = {
 		appId: config.gateway.feishu.appId,
 		appSecret: config.gateway.feishu.appSecret,
@@ -53,6 +55,7 @@ export async function runGateway(config: BeeMaxConfig): Promise<void> {
 		allowedUsers: config.gateway.feishu.allowedUsers,
 		allowedChats: config.gateway.feishu.allowedChats,
 		allowAllUsers: config.gateway.feishu.allowAllUsers,
+		pairing,
 	};
 	const adapter = new FeishuAdapter(feishuSettings);
 	const gatewayVersion = installedVersion();

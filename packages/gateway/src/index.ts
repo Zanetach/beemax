@@ -7,6 +7,7 @@ export { CardSession } from "./card/session.ts";
 export { renderCard, type CardRenderOptions } from "./card/render.ts";
 export { FlushController } from "./card/flush.ts";
 export { CardTimeline } from "./card/timeline.ts";
+export { PairingStore, type PairingAuthority, type PairingApproval, type PairingRequest, type PairingRequestResult } from "./security/pairing.ts";
 export type {
 	PlatformAdapter,
 	PlatformName,

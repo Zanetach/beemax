@@ -241,6 +241,7 @@ export class FeishuAdapter implements PlatformAdapter {
 
 		const reason = this.admit(sender, msg);
 		if (reason !== null) {
+			if (reason === "pairing required") await this.handlePairing(sender, msg);
 			console.warn(`[beemax] rejected Feishu message ${msg.message_id}: ${reason}`);
 			return;
 		}
@@ -310,8 +311,8 @@ export class FeishuAdapter implements PlatformAdapter {
 					(value): value is string => Boolean(value),
 				)
 			: [];
-		if (!this.settings.allowAllUsers && !ids.some((id) => this.settings.allowedUsers.includes(id))) {
-			return "sender is not in FEISHU_ALLOWED_USERS";
+		if (!this.settings.allowAllUsers && !ids.some((id) => this.settings.allowedUsers.includes(id)) && !this.settings.pairing?.isApproved("feishu", ids)) {
+			return (msg.chat_type ?? "p2p") === "p2p" && this.settings.pairing ? "pairing required" : "sender is not authorized";
 		}
 		if (this.settings.allowedChats.length > 0 && !this.settings.allowedChats.includes(msg.chat_id)) {
 			return "chat is not in FEISHU_ALLOWED_CHATS";
@@ -322,6 +323,17 @@ export class FeishuAdapter implements PlatformAdapter {
 			return "group message without bot mention";
 		}
 		return null;
+	}
+
+	private async handlePairing(sender: FeishuSender, msg: FeishuMessage): Promise<void> {
+		const identity = sender.sender_id?.union_id ?? sender.sender_id?.user_id ?? sender.sender_id?.open_id;
+		if (!identity || !this.settings.pairing) return;
+		const result = this.settings.pairing.request("feishu", identity);
+		if (result.status === "created" || result.status === "existing") {
+			await this.send(msg.chat_id, `BeeMax access approval is required.\n\nPairing code: ${result.code}\n\nAsk the Profile owner to run:\nbeemax pairing approve feishu ${result.code}\n\nThis code expires in 1 hour.`);
+		} else if (result.status === "capacity") {
+			await this.send(msg.chat_id, "BeeMax has too many pending access requests. Ask the Profile owner to review them with `beemax pairing list`.");
+		}
 	}
 
 	private isBotMentioned(msg: FeishuMessage): boolean {

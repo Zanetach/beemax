@@ -224,6 +224,21 @@ user_id, or open_id values. Optionally restrict chats with
 `FEISHU_ALLOWED_CHATS`. `FEISHU_ALLOW_ALL_USERS=true` explicitly disables the
 user allowlist and should only be used for intentional public/development bots.
 
+Unknown users who privately message a configured Feishu bot receive a one-hour
+pairing code instead of reaching the Agent. The Profile owner can manage access
+without restarting the Gateway:
+
+```bash
+beemax pairing list --profile personal
+beemax pairing approve feishu ABCD2345 --profile personal
+beemax pairing revoke feishu ou_xxx --profile personal
+beemax pairing clear feishu --profile personal
+```
+
+Pairing is Profile-scoped and fail-closed. Requests are rate-limited, pending
+codes are bounded, repeated invalid approvals lock temporarily, and state files
+are atomically replaced with owner-only permissions.
+
 Mutating local, Feishu, Skill, memory-deletion, and MCP tools pause for approval
 in Feishu. Reply `1` to allow once, `2` to allow that tool for the current
 process session, or `3` to deny.

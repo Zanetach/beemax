@@ -17,6 +17,8 @@
  * is fetched at startup via /bot/v3/info and used only for @-mention matching.
  */
 
+import type { PairingAuthority } from "../../security/pairing.ts";
+
 export interface FeishuSettings {
 	appId: string;
 	appSecret: string;
@@ -39,6 +41,8 @@ export interface FeishuSettings {
 	allowedChats: string[];
 	/** Explicit insecure override for development or intentionally public bots. */
 	allowAllUsers: boolean;
+	/** Optional Profile-scoped DM pairing authority for unknown users. */
+	pairing?: PairingAuthority;
 	/** Bot's own open_id, hydrated at startup via /bot/v3/info. */
 	botOpenId?: string;
 	botName?: string;
