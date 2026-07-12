@@ -15,7 +15,12 @@ export interface ToolApprovalDetails {
 	argsSummary: string;
 }
 export interface ToolApprovalDecision { allowed: boolean; reason?: string; }
-export type ToolApprovalChoice = "once" | "session" | "deny";
+export type ToolApprovalChoice = "once" | "task" | "session" | "deny";
+export interface TaskExecutionGrantSnapshot {
+	taskId: string;
+	allowedCapabilities: string[];
+	status: "active";
+}
 export type ApprovalPromptSender = (source: BeeMaxRuntimeSource, text: string) => Promise<void>;
 export type ApprovalAuditSink = (event: { source: BeeMaxRuntimeSource; toolName: string; allowed: boolean; reason?: string }) => void;
 export type ToolApprovalEvent =
@@ -30,10 +35,15 @@ interface PendingApproval {
 	abortCleanup?: () => void;
 }
 
+interface TaskExecutionGrant {
+	taskId: string;
+	allowedCapabilities: Set<string>;
+}
+
 /** Core-owned approval policy; channels only deliver prompts and forward replies. */
 export class ToolApprovalBroker {
 	private readonly pending = new Map<string, PendingApproval>();
-	private readonly sessionGrants = new Set<string>();
+	private readonly taskGrants = new Map<string, TaskExecutionGrant>();
 	private readonly sendPrompt: ApprovalPromptSender;
 	private readonly timeoutMs: number;
 	private readonly audit?: ApprovalAuditSink;
@@ -45,12 +55,32 @@ export class ToolApprovalBroker {
 		this.audit = audit;
 	}
 
+	/** Start a fresh, turn-bounded execution grant. A new task never inherits approvals from the previous task. */
+	beginTask(source: BeeMaxRuntimeSource, taskId: string): void {
+		const sourceKey = sessionKeyForSource(source);
+		const current = this.taskGrants.get(sourceKey);
+		if (current?.taskId === taskId) return;
+		this.taskGrants.set(sourceKey, { taskId, allowedCapabilities: new Set() });
+	}
+
+	/** End only the matching task so a stale completion cannot revoke a newer turn's grant. */
+	endTask(source: BeeMaxRuntimeSource, taskId: string): boolean {
+		const sourceKey = sessionKeyForSource(source);
+		if (this.taskGrants.get(sourceKey)?.taskId !== taskId) return false;
+		this.taskGrants.delete(sourceKey);
+		return true;
+	}
+
+	executionGrant(source: BeeMaxRuntimeSource): TaskExecutionGrantSnapshot | undefined {
+		const grant = this.taskGrants.get(sessionKeyForSource(source));
+		return grant ? { taskId: grant.taskId, allowedCapabilities: [...grant.allowedCapabilities].sort(), status: "active" } : undefined;
+	}
+
 	async authorize(request: ToolApprovalRequest, signal?: AbortSignal): Promise<ToolApprovalDecision> {
 		if (signal?.aborted) return { allowed: false, reason: "Tool approval cancelled" };
 		const sourceKey = sessionKeyForSource(request.source);
-		const grantKey = `${sourceKey}:${request.toolName}`;
-		if (this.sessionGrants.has(grantKey)) {
-			this.audit?.({ source: request.source, toolName: request.toolName, allowed: true, reason: "session grant" });
+		if (this.taskGrants.get(sourceKey)?.allowedCapabilities.has(request.toolName)) {
+			this.audit?.({ source: request.source, toolName: request.toolName, allowed: true, reason: "task execution grant" });
 			return { allowed: true };
 		}
 		if (this.pending.has(sourceKey)) return { allowed: false, reason: "Another tool approval is already pending for this conversation" };
@@ -82,7 +112,7 @@ export class ToolApprovalBroker {
 		const choice = parseChoice(text);
 		if (!choice) {
 			if (!this.pending.has(sessionKeyForSource(source))) return false;
-			await this.sendPrompt(source, "存在待审批工具调用。请回复：1（允许一次）、2（本会话允许）或 3（拒绝）。");
+			await this.sendPrompt(source, "存在待审批工具调用。请回复：1（允许一次）、2（本任务允许）或 3（拒绝）。");
 			return true;
 		}
 		return this.decide(source, choice);
@@ -93,10 +123,10 @@ export class ToolApprovalBroker {
 		const sourceKey = sessionKeyForSource(source);
 		const pending = this.pending.get(sourceKey);
 		if (!pending) return false;
-		if (choice === "session") {
-			this.sessionGrants.add(`${sourceKey}:${pending.toolName}`);
+		if (choice === "task" || choice === "session") {
+			this.taskGrants.get(sourceKey)?.allowedCapabilities.add(pending.toolName);
 			this.finish(sourceKey, { allowed: true });
-			await this.sendPrompt(source, `已允许本会话继续使用工具 \`${pending.toolName}\`。`);
+			await this.sendPrompt(source, this.taskGrants.has(sourceKey) ? `已允许本任务继续使用工具 \`${pending.toolName}\`。` : `当前没有活动任务，已允许本次工具调用 \`${pending.toolName}\`。`);
 		} else if (choice === "once") {
 			this.finish(sourceKey, { allowed: true });
 			await this.sendPrompt(source, `已允许本次工具调用 \`${pending.toolName}\`。`);
@@ -117,7 +147,7 @@ export class ToolApprovalBroker {
 
 	dispose(reason = "Approval broker is shutting down"): void {
 		for (const key of [...this.pending.keys()]) this.finish(key, { allowed: false, reason });
-		this.sessionGrants.clear();
+		this.taskGrants.clear();
 	}
 
 	private finish(sourceKey: string, decision: ToolApprovalDecision): void {
@@ -139,7 +169,7 @@ export class ToolApprovalBroker {
 function parseChoice(text: string): ToolApprovalChoice | undefined {
 	const choice = text.trim().toLowerCase();
 	if (["1", "允许", "允许一次", "allow", "allow once", "yes", "y"].includes(choice)) return "once";
-	if (["2", "本会话允许", "会话允许", "allow session", "always this session"].includes(choice)) return "session";
+	if (["2", "本任务允许", "任务允许", "本会话允许", "会话允许", "allow task", "allow session", "always this session"].includes(choice)) return "task";
 	if (["3", "拒绝", "deny", "no", "n"].includes(choice)) return "deny";
 	return undefined;
 }
@@ -154,7 +184,7 @@ function renderApprovalPrompt(request: ToolApprovalRequest): string {
 		`影响：${assessment.impact}`,
 		`可逆性：${assessment.reversibility}`,
 		"参数：", "```json", assessment.argsSummary, "```",
-		"请回复：", "1 — 允许一次", "2 — 本会话允许此工具", "3 — 拒绝",
+		"请回复：", "1 — 允许一次", "2 — 本任务允许此工具", "3 — 拒绝",
 	].join("\n");
 }
 

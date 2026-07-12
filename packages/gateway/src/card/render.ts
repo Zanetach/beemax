@@ -75,7 +75,7 @@ export function renderCard(session: CardSession, opts: CardRenderOptions = {}): 
 }
 
 function renderApprovalActions(approvalId: string): Record<string, unknown> {
-	const button = (elementId: string, text: string, choice: "once" | "session" | "deny", type: "default" | "primary" | "danger" = "default") => ({
+	const button = (elementId: string, text: string, choice: "once" | "task" | "deny", type: "default" | "primary" | "danger" = "default") => ({
 		tag: "button",
 		element_id: elementId,
 		text: { tag: "plain_text", content: text },
@@ -90,7 +90,7 @@ function renderApprovalActions(approvalId: string): Record<string, unknown> {
 		horizontal_spacing: "8px",
 		columns: [
 			{ tag: "column", width: "weighted", weight: 1, elements: [button("approve_once", "允许一次", "once", "primary")] },
-			{ tag: "column", width: "weighted", weight: 1, elements: [button("approve_session", "本会话允许", "session")] },
+			{ tag: "column", width: "weighted", weight: 1, elements: [button("approve_task", "本任务允许", "task")] },
 			{ tag: "column", width: "weighted", weight: 1, elements: [button("approve_deny", "拒绝", "deny", "danger")] },
 		],
 	};

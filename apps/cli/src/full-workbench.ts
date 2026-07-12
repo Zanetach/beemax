@@ -50,8 +50,8 @@ export class FullWorkbench {
 		if (event.type === "approval.requested") {
 			this.pendingApproval = { turnId: event.turnId, toolName: event.toolName, details: event.details };
 			this.approval = event.details
-				? [`Approval required · ${event.toolName}`, `Target: ${event.details.target}`, `Risk: ${event.details.risk} · ${event.details.impact}`, `Reversible: ${event.details.reversibility}`, "1 allow once · 2 allow session · 3 deny · /stop cancel"]
-				: [`Approval required · ${event.toolName}`, "1 allow once · 2 allow session · 3 deny · /stop cancel"];
+				? [`Approval required · ${event.toolName}`, `Target: ${event.details.target}`, `Risk: ${event.details.risk} · ${event.details.impact}`, `Reversible: ${event.details.reversibility}`, "1 allow once · 2 allow task · 3 deny · /stop cancel"]
+				: [`Approval required · ${event.toolName}`, "1 allow once · 2 allow task · 3 deny · /stop cancel"];
 		}
 		if (event.type === "approval.resolved") { this.pendingApproval = undefined; this.approval = [`Approval ${event.allowed ? "allowed" : "denied"} · ${event.toolName}`]; }
 		if (event.type === "tool.changed" || event.type === "turn.queued") this.activities = activityDetails.split("\n").filter(Boolean);
@@ -152,7 +152,7 @@ export function startFullWorkbenchInput(
 		approvalOverlay?.hide();
 		const choices: Array<{ value: ToolApprovalChoice; label: string; description: string }> = [
 			{ value: "once", label: "Allow once", description: `Run ${pending.toolName} this time` },
-			{ value: "session", label: "Allow for session", description: `Allow ${pending.toolName} until this session ends` },
+			{ value: "task", label: "Allow for task", description: `Allow ${pending.toolName} until this task ends` },
 			{ value: "deny", label: "Deny", description: "Do not run this tool call" },
 		];
 		const list = new SelectList(choices, 3, {

@@ -383,7 +383,7 @@ export class Dispatcher {
 		const sameUser = expectedUserIds.length > 0 && actionUserIds.some((value) => expectedUserIds.includes(value));
 		if (!sameUser || action.value.beemax_action !== "approval.decide") return;
 		const choice = action.value.choice;
-		if (choice !== "once" && choice !== "session" && choice !== "deny") return;
+		if (choice !== "once" && choice !== "task" && choice !== "session" && choice !== "deny") return;
 		if (typeof action.value.approval_id !== "string" || action.value.approval_id !== binding.pendingApprovalId) return;
 		// Consume before dispatch so concurrent/re-delivered clicks fail closed.
 		binding.pendingApprovalId = undefined;

@@ -209,6 +209,7 @@ export class InteractionEventAdapter<Source extends BeeMaxRuntimeSource = BeeMax
 		// Reserve synchronously before any model/session I/O so concurrent presenters
 		// observe one active turn and route later input through follow-up/steer.
 		this.states.set(key, { phase: "running", turnId, updatedAt: Date.now() });
+		this.approvalBroker?.beginTask?.(action.source, turnId);
 		let completed = false;
 		try {
 			this.turnModels.set(interactionEventMeta(action.source, "", 0, this.profileId).sessionId, (await this.runtime.modelStatus?.(action.source))?.model ?? "unresolved");
@@ -249,6 +250,7 @@ export class InteractionEventAdapter<Source extends BeeMaxRuntimeSource = BeeMax
 			this.primaryQueuedInputs.delete(key);
 			this.nativeClaimTokens.delete(key);
 			this.turnModels.delete(interactionEventMeta(action.source, "", 0, this.profileId).sessionId);
+			this.approvalBroker?.endTask?.(action.source, turnId);
 		}
 	}
 

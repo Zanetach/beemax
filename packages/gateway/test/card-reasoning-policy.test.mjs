@@ -27,7 +27,7 @@ test("pending approvals render native semantic actions and terminal decisions re
 	const pending = JSON.stringify(renderCard(card));
 	assert.match(pending, /approval\.decide/);
 	assert.match(pending, /允许一次/);
-	assert.match(pending, /本会话允许/);
+	assert.match(pending, /本任务允许/);
 	assert.match(pending, /拒绝/);
 	assert.match(pending, /column_set/);
 	assert.match(pending, /callback/);

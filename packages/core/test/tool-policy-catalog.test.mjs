@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { createAutomationTools, createSkillTools, createSubagentTools, createWebTools, SubagentManager, ToolPolicyRegistry } from "../dist/index.js";
+import { createAutomationTools, createExecutionTools, createSkillTools, createSubagentTools, createWebTools, SubagentManager, ToolPolicyRegistry } from "../dist/index.js";
 
 const source = { platform: "cli", chatId: "local", chatType: "dm", userId: "local" };
 
@@ -36,6 +36,15 @@ test("public web research capabilities publish first-class read-only policies", 
 			impact: "Reads public web data without changing local or external state",
 		});
 	}
+});
+
+test("execution backend replacements explicitly preserve built-in safety policy", () => {
+	const tools = createExecutionTools(source, "/workspace", { execute: async () => ({ stdout: "", stderr: "", exitCode: 0 }), readFile: async () => "", writeFile: async () => undefined });
+	assert.equal(policy(tools, "read").approval, "never");
+	assert.equal(policy(tools, "read").sideEffect, "none");
+	assert.equal(policy(tools, "bash").approval, "always");
+	assert.equal(policy(tools, "bash").sideEffect, "local");
+	assert.equal(policy(tools, "write").approval, "always");
 });
 
 test("an unannotated custom tool cannot silently inherit or replace a known built-in policy", () => {

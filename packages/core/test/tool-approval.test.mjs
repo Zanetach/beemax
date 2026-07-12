@@ -4,10 +4,11 @@ import { MUTATING_TOOL_POLICY, ToolApprovalBroker } from "../dist/index.js";
 
 const source = { platform: "cli", chatId: "local", chatType: "dm", userId: "local" };
 
-test("Core approval broker owns one-time and session grants", async () => {
+test("Core approval broker owns one-time and task-scoped grants", async () => {
 	const prompts = [];
 	const broker = new ToolApprovalBroker(async (_source, text) => { prompts.push(text); }, 1_000);
 	try {
+		broker.beginTask(source, "turn-1");
 		const once = broker.authorize({ source, toolName: "write", args: { path: "a.txt", token: "hidden" }, policy: MUTATING_TOOL_POLICY });
 		assert.match(prompts[0], /\[REDACTED\]/);
 		assert.match(prompts[0], /目标：a.txt/);
@@ -20,9 +21,37 @@ test("Core approval broker owns one-time and session grants", async () => {
 		assert.equal(await broker.handleReply(source, "2"), true);
 		assert.deepEqual(await granted, { allowed: true });
 		assert.deepEqual(await broker.authorize({ source, toolName: "write", args: {}, policy: MUTATING_TOOL_POLICY }), { allowed: true });
+
+		assert.equal(broker.endTask(source, "turn-1"), true);
+		broker.beginTask(source, "turn-2");
+		const nextTask = broker.authorize({ source, toolName: "write", args: {}, policy: MUTATING_TOOL_POLICY });
+		await new Promise((resolve) => setImmediate(resolve));
+		assert.equal(await broker.handleReply(source, "3"), true);
+		assert.deepEqual(await nextTask, { allowed: false, reason: "User denied the tool call" });
 	} finally {
 		broker.dispose();
 	}
+});
+
+test("task grants are bound to the active task and expose a content-free snapshot", async () => {
+	const broker = new ToolApprovalBroker(async () => {}, 1_000);
+	broker.beginTask(source, "turn-a");
+	const waiting = broker.authorize({ source, toolName: "write", args: { path: "report.md" }, policy: MUTATING_TOOL_POLICY });
+	await new Promise((resolve) => setImmediate(resolve));
+	await broker.decide(source, "task");
+	await waiting;
+	assert.deepEqual(broker.executionGrant(source), {
+		taskId: "turn-a",
+		allowedCapabilities: ["write"],
+		status: "active",
+	});
+	broker.beginTask(source, "turn-b");
+	assert.deepEqual(broker.executionGrant(source), {
+		taskId: "turn-b",
+		allowedCapabilities: [],
+		status: "active",
+	});
+	broker.dispose();
 });
 
 test("approval lifecycle exposes only redacted presenter-safe card details", async () => {

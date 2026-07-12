@@ -30,6 +30,26 @@ test("interaction runtime translates a turn into presenter-safe semantic events"
 	assert.equal((await interaction.snapshot(source)).phase, "completed");
 });
 
+test("interaction runtime bounds execution grants to one turn", async () => {
+	const lifecycle = [];
+	const approvalBroker = {
+		beginTask(_source, taskId) { lifecycle.push(["begin", taskId]); },
+		endTask(_source, taskId) { lifecycle.push(["end", taskId]); return true; },
+		subscribe() { return () => undefined; },
+	};
+	const runtime = {
+		async run() { return { answer: "ok", model: "test/model", durationMs: 1, usage: {} }; },
+		async cancel() { return false; }, async modelStatus() { return undefined; }, async usage() { return undefined; },
+	};
+	const interaction = new InteractionEventAdapter(runtime, { approvalBroker });
+	await interaction.dispatch({ type: "message.send", source, text: "first", input: { timeoutMs: 1_000 } });
+	await interaction.dispatch({ type: "message.send", source, text: "second", input: { timeoutMs: 1_000 } });
+	assert.deepEqual(lifecycle.map(([phase]) => phase), ["begin", "end", "begin", "end"]);
+	assert.notEqual(lifecycle[0][1], lifecycle[2][1]);
+	assert.equal(lifecycle[0][1], lifecycle[1][1]);
+	assert.equal(lifecycle[2][1], lifecycle[3][1]);
+});
+
 test("interaction runtime supports a reconnecting presenter subscription", async () => {
 	const runtime = {
 		async run(_input, sink) { await sink({ type: "message_update", message: { role: "assistant" }, assistantMessageEvent: { type: "text_delta", delta: "hello" } }); return { answer: "hello", model: "test/model", durationMs: 1, usage: {} }; },

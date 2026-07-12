@@ -3,9 +3,10 @@ import { Type } from "typebox";
 import { relative, resolve, sep } from "node:path";
 import type { BeeMaxRuntimeSource } from "./runtime.ts";
 import type { ExecutionPort } from "./execution.ts";
+import { MUTATING_TOOL_POLICY, READ_ONLY_TOOL_POLICY, withToolPolicy } from "./tool-runtime.ts";
 
 export function createExecutionTools(source: BeeMaxRuntimeSource, cwd: string, execution: ExecutionPort): ToolDefinition[] {
-	return [
+	const tools = [
 		defineTool({
 			name: "bash",
 			label: "Run Command",
@@ -42,6 +43,9 @@ export function createExecutionTools(source: BeeMaxRuntimeSource, cwd: string, e
 			},
 		}),
 	];
+	return tools.map((tool) => withToolPolicy(tool, tool.name === "read"
+		? { ...READ_ONLY_TOOL_POLICY, impact: "Reads one file inside the configured workspace" }
+		: { ...MUTATING_TOOL_POLICY, sideEffect: "local", impact: tool.name === "write" ? "Writes one file inside the configured workspace" : "Runs a command through the configured execution backend" }));
 }
 
 function workspacePath(cwd: string, input: string): string {

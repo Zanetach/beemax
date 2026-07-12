@@ -66,7 +66,7 @@ export function parseInteractionProtocolRequest(value: unknown): InteractionProt
 	if (!(["message.send", "turn.queue", "turn.steer", "approval.decide", "session.open", "session.reset", "session.compact", "turn.cancel"] as string[]).includes(String(action.type))) return undefined;
 	if (action.type === "message.send") return typeof action.text === "string" && action.input && typeof action.input === "object" ? request as InteractionProtocolRequest : undefined;
 	if (action.type === "turn.queue" || action.type === "turn.steer") return typeof action.text === "string" ? request as InteractionProtocolRequest : undefined;
-	if (action.type === "approval.decide") return ["once", "session", "deny"].includes(String(action.choice)) ? request as InteractionProtocolRequest : undefined;
+	if (action.type === "approval.decide") return ["once", "task", "session", "deny"].includes(String(action.choice)) ? request as InteractionProtocolRequest : undefined;
 	return request as InteractionProtocolRequest;
 }
 
