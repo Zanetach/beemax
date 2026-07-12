@@ -10,6 +10,7 @@ import { MemoryStore } from "@beemax/memory";
 import { AuthStorage, FileCredentialVault } from "@beemax/core";
 import type { BeeMaxConfig } from "./config.ts";
 import { providerApiKeyEnv } from "./provider-resolver.ts";
+import { inspectOperationalMetrics, operationalMetricsPath } from "./operational-metrics.ts";
 
 export interface DoctorCheck { name: string; status: "PASS" | "WARN" | "FAIL"; detail: string }
 export interface DoctorResult { ok: boolean; checks: DoctorCheck[] }
@@ -121,6 +122,14 @@ export async function inspectDoctor(config: BeeMaxConfig, options: DoctorOptions
 		checks.push({ name: "Interaction recovery", status: "FAIL", detail: error instanceof Error ? error.message : String(error) });
 	}
 	checks.push({ name: "Interaction protocol", status: "PASS", detail: "v1 scope-bound control contract available" });
+	try {
+		const metrics = inspectOperationalMetrics(config.paths.agentDir);
+		const status = !metrics.available || !metrics.permissionsSafe || metrics.alerts.length ? "WARN" : "PASS";
+		const detail = !metrics.available ? `no metrics recorded yet; ${operationalMetricsPath(config.paths.agentDir)}` : !metrics.permissionsSafe ? `permissions are broader than 0600: ${operationalMetricsPath(config.paths.agentDir)}` : metrics.alerts.length ? `${metrics.alerts.length} active alert(s): ${metrics.alerts.map((alert) => alert.code).join(", ")}` : `${metrics.events} recent event(s); ${operationalMetricsPath(config.paths.agentDir)}`;
+		checks.push({ name: "Operational metrics", status, detail });
+	} catch (error) {
+		checks.push({ name: "Operational metrics", status: "WARN", detail: error instanceof Error ? error.message : String(error) });
+	}
 
 	try {
 		const automation = new AutomationStore(config.memory.dbPath);

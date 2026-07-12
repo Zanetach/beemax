@@ -2,6 +2,7 @@ import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } fr
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
+import { inspectOperationalMetrics, type OperationalSnapshot } from "./operational-metrics.ts";
 
 export type GatewayLifecycle = "running" | "stopped" | "failed" | "unknown";
 export interface GatewayState {
@@ -30,7 +31,7 @@ export function recordGatewayEvent(agentDir: string, event: "started" | "stopped
 	appendFileSync(path, `${JSON.stringify({ at: new Date().toISOString(), event, ...fields })}\n`, { mode: 0o600 });
 }
 
-export function inspectGateway(profile: string, agentDir: string, scope: "user" | "system" = "user", cliVersion = "unavailable"): GatewayState & { installation: "installed" | "absent" | "unknown"; service: "running" | "stopped" | "unknown"; health: "healthy" | "degraded" | "unavailable"; logs: "available" | "absent"; state: "available" | "absent"; cliVersion: string; versionMatches: boolean | undefined } {
+export function inspectGateway(profile: string, agentDir: string, scope: "user" | "system" = "user", cliVersion = "unavailable"): GatewayState & { installation: "installed" | "absent" | "unknown"; service: "running" | "stopped" | "unknown"; health: "healthy" | "degraded" | "unavailable"; logs: "available" | "absent"; state: "available" | "absent"; cliVersion: string; versionMatches: boolean | undefined; operational: OperationalSnapshot } {
 	const paths = gatewayPaths(agentDir);
 	let current: GatewayState = { profile, lifecycle: "unknown", version: "unavailable" };
 	try { current = { ...current, ...JSON.parse(readFileSync(paths.state, "utf8")) as GatewayState }; } catch { /* never started or an older install */ }
@@ -43,8 +44,9 @@ export function inspectGateway(profile: string, agentDir: string, scope: "user" 
 	const installation = process.platform === "darwin"
 		? existsSync(join(homedir(), "Library", "LaunchAgents", `com.beemax.agent.${profile}.plist`)) ? "installed" : "absent"
 		: process.platform === "linux" ? existsSync(scope === "system" ? "/etc/systemd/system/beemax@.service" : join(homedir(), ".config", "systemd", "user", "beemax@.service")) ? "installed" : "absent" : "unknown";
-	const health = current.lifecycle === "running" && service === "running" ? "healthy" : current.lifecycle === "failed" ? "degraded" : "unavailable";
-	return { ...current, installation, service, health, cliVersion, versionMatches: current.version === "unavailable" || cliVersion === "unavailable" ? undefined : current.version === cliVersion, logs: existsSync(paths.events) || existsSync(paths.stdout) || existsSync(paths.stderr) ? "available" : "absent", state: existsSync(paths.state) ? "available" : "absent" };
+	const operational = inspectOperationalMetrics(agentDir);
+	const health = operational.alerts.some((alert) => alert.severity === "critical") || current.lifecycle === "failed" ? "degraded" : current.lifecycle === "running" && service === "running" ? "healthy" : "unavailable";
+	return { ...current, installation, service, health, cliVersion, versionMatches: current.version === "unavailable" || cliVersion === "unavailable" ? undefined : current.version === cliVersion, logs: existsSync(paths.events) || existsSync(paths.stdout) || existsSync(paths.stderr) ? "available" : "absent", state: existsSync(paths.state) ? "available" : "absent", operational };
 }
 
 export function readGatewayLogs(agentDir: string, tail = 200): string {

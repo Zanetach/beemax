@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { inspectGateway, readGatewayLogs, recordGatewayEvent, writeGatewayState } from "../dist/gateway-observability.js";
+import { inspectOperationalMetrics, recordOperationalMetric } from "../dist/operational-metrics.js";
 
 test("gateway observability distinguishes an absent log from a stopped runtime", () => {
 	const root = mkdtempSync(join(tmpdir(), "beemax-observability-"));
@@ -14,5 +15,20 @@ test("gateway observability distinguishes an absent log from a stopped runtime",
 		recordGatewayEvent(root, "stopped", { reason: "manual" });
 		assert.equal(inspectGateway("personal", root).lifecycle, "stopped");
 		assert.match(readGatewayLogs(root), /"event":"stopped"/);
+	} finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("operational metrics aggregate content-free events and raise bounded alerts", () => {
+	const root = mkdtempSync(join(tmpdir(), "beemax-metrics-"));
+	try {
+		for (let index = 0; index < 3; index++) recordOperationalMetric(root, { type: "interaction.model_fallback", surface: "cli", from: "a", to: "b", attempt: index + 1 }, 1_000 + index);
+		for (let index = 0; index < 5; index++) recordOperationalMetric(root, { type: "interaction.approval_resolved", surface: "cli", decision: "denied", latency: 10 }, 1_010 + index);
+		recordOperationalMetric(root, { type: "interaction.presenter_reconnected", surface: "cli", gapEvents: 20 }, 1_020);
+		const snapshot = inspectOperationalMetrics(root, 2_000, 15);
+		assert.deepEqual(snapshot.alerts.map((alert) => alert.code), ["model_fallback_spike", "approval_denial_spike"]);
+		assert.equal(snapshot.events, 9);
+		assert.equal(snapshot.replayedEvents, 20);
+		assert.equal(snapshot.permissionsSafe, true);
+		assert.equal(inspectGateway("personal", root).operational.events, 0);
 	} finally { rmSync(root, { recursive: true, force: true }); }
 });

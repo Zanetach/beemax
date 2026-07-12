@@ -10,6 +10,7 @@ import {
 	type SessionCoordinatorOptions,
 } from "@beemax/core";
 import { join } from "node:path";
+import { recordOperationalMetric } from "./operational-metrics.ts";
 
 export interface ProfileAgentRuntimeOptions<Source extends BeeMaxRuntimeSource> {
 	profileId: string;
@@ -52,6 +53,7 @@ export function createProfileAgentRuntime<Source extends BeeMaxRuntimeSource>(
 		cancelSubagents: options.cancelSubagents,
 		cancelTaskPlans: options.cancelTaskPlans,
 		eventJournal: new FileInteractionEventJournal(join(options.agentDir, "interaction-events.jsonl")),
+		telemetry: (event) => { try { recordOperationalMetric(options.agentDir, event); } catch { /* observability must not interrupt Agent execution */ } },
 	});
 	return {
 		runtime,

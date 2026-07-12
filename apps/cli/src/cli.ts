@@ -262,6 +262,8 @@ function runGatewayStatus(config: ReturnType<typeof loadConfig>, scope: "user" |
 	console.log(`Runtime state: ${snapshot.state}`);
 	console.log(`Logs: ${snapshot.logs}`);
 	console.log(`Version: cli=${snapshot.cliVersion}; runtime=${snapshot.version}; matches=${snapshot.versionMatches ?? "unverified"}`);
+	console.log(`Metrics (${snapshot.operational.windowMinutes}m): events=${snapshot.operational.events}; fallbacks=${snapshot.operational.modelFallbacks}; denied=${snapshot.operational.approvalDenied}; replayed=${snapshot.operational.replayedEvents}; noncompliant=${snapshot.operational.planningNoncompliant}`);
+	for (const alert of snapshot.operational.alerts) console.log(`Alert [${alert.severity}] ${alert.code}: ${alert.detail}`);
 	if (snapshot.pid) console.log(`PID: ${snapshot.pid}`);
 	if (snapshot.startedAt) console.log(`Started: ${snapshot.startedAt}`);
 	if (snapshot.lastError) console.log(`Last issue: ${snapshot.lastError}`);
