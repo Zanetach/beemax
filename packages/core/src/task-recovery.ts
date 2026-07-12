@@ -8,8 +8,6 @@ export interface TaskPlanRetryResult extends TaskRecoveryRunnerResult { prepared
 export interface TaskPlanCancelResult { active: number; tasks: number; }
 export interface TaskPlanPauseResult { paused: boolean; }
 export interface TaskVerificationRetryResult { attempted: number; accepted: number; rejected: number; unavailable: number; }
-const PLAN_EXECUTION_LEASE_MS = 61 * 60_000;
-const PLAN_EXECUTION_HEARTBEAT_MS = 30_000;
 
 /** Resumes only durable DAG work that already passed the fail-closed recovery policy. */
 export class TaskRecoveryRunner {
@@ -46,7 +44,7 @@ export class TaskRecoveryRunner {
 			.filter((task) => task.verificationStatus === "unavailable" && Boolean(task.acceptanceCriteria && task.candidateResult));
 		if (!candidates.length) return emptyVerificationResult();
 		const ownerKey = candidates[0]!.ownerKey;
-		return await this.withPlanExecutionClaim(ownerKey, planId, signal, (claimSignal) => this.verifyCandidates(ownerKeys, candidates, claimSignal)) ?? emptyVerificationResult();
+		return await this.runtime.runClaimed(this.ledger, ownerKey, planId, signal, (claimSignal) => this.verifyCandidates(ownerKeys, candidates, claimSignal)) ?? emptyVerificationResult();
 	}
 
 	async reverifyDue(now = Date.now(), signal?: AbortSignal, maxConcurrent = 3): Promise<TaskVerificationRetryResult> {
@@ -68,7 +66,7 @@ export class TaskRecoveryRunner {
 			if (!plans.size) break;
 			const pendingPlans = [...plans.values()];
 			for (let offset = 0; offset < pendingPlans.length && !signal?.aborted; offset += concurrency) {
-				const results = await Promise.all(pendingPlans.slice(offset, offset + concurrency).map(async (plan) => ({ plan, result: await this.withPlanExecutionClaim(plan.ownerKey, plan.planId, signal, (claimSignal) => this.verifyCandidates([plan.ownerKey], plan.tasks, claimSignal, now)) })));
+				const results = await Promise.all(pendingPlans.slice(offset, offset + concurrency).map(async (plan) => ({ plan, result: await this.runtime.runClaimed(this.ledger, plan.ownerKey, plan.planId, signal, (claimSignal) => this.verifyCandidates([plan.ownerKey], plan.tasks, claimSignal, now)) })));
 				for (const { plan, result } of results) if (result) {
 					summary = mergeVerificationResults(summary, result);
 					if (result.accepted || result.rejected) this.enqueueCompletionNoticeIfSettled(plan.ownerKey, plan.planId);
@@ -138,7 +136,7 @@ export class TaskRecoveryRunner {
 	}
 
 	private async executeClaimedPlan(ownerKey: string, planId: string, options: TaskRecoveryRunnerOptions, enqueueCompletionNotice: boolean): Promise<TaskGraphResult | undefined> {
-		const result = await this.withPlanExecutionClaim(ownerKey, planId, options.signal, (signal) => new TaskGraph(this.ledger).run([ownerKey], planId, this.execute, {
+		const result = await this.runtime.runClaimed(this.ledger, ownerKey, planId, options.signal, (signal) => new TaskGraph(this.ledger).run([ownerKey], planId, this.execute, {
 			maxConcurrent: options.maxConcurrent, maxCorrectiveAttempts: options.maxCorrectiveAttempts ?? 1, signal, executor: "subagent", canExecute: recoverable, verify: this.verify,
 		}));
 		if (result && enqueueCompletionNotice) this.enqueueCompletionNoticeIfSettled(ownerKey, planId);
@@ -151,26 +149,6 @@ export class TaskRecoveryRunner {
 		const unsettled = this.ledger.queryTasks({ ownerKeys: [ownerKey], planIds: [planId], limit: 100 })
 			.some((task) => task.status === "pending" || task.status === "running" || task.verificationStatus === "unavailable");
 		return unsettled ? false : (this.ledger.enqueueTaskPlanCompletionNotice?.(ownerKey, planId) ?? false);
-	}
-
-	private async withPlanExecutionClaim<T>(ownerKey: string, planId: string, parentSignal: AbortSignal | undefined, execute: (signal: AbortSignal) => Promise<T>): Promise<T | undefined> {
-		const holderId = crypto.randomUUID();
-		const claimed = this.ledger.claimTaskPlanExecution?.(ownerKey, planId, holderId, Date.now() + PLAN_EXECUTION_LEASE_MS) ?? true;
-		if (!claimed) return undefined;
-		try {
-			return await this.runtime.run(ownerKey, planId, parentSignal, async (signal) => {
-				const leaseLost = new AbortController();
-				const executionSignal = AbortSignal.any([signal, leaseLost.signal]);
-				const heartbeat = this.ledger.renewTaskPlanExecution ? setInterval(() => {
-					try {
-						if (!this.ledger.renewTaskPlanExecution?.(ownerKey, planId, holderId, Date.now() + PLAN_EXECUTION_LEASE_MS)) leaseLost.abort(new Error(`Task Plan Execution Claim lost: ${planId}`));
-					} catch (error) { leaseLost.abort(error); }
-				}, PLAN_EXECUTION_HEARTBEAT_MS) : undefined;
-				heartbeat?.unref();
-				try { return await execute(executionSignal); }
-				finally { if (heartbeat) clearInterval(heartbeat); }
-			});
-		} finally { this.ledger.releaseTaskPlanExecution?.(ownerKey, planId, holderId); }
 	}
 }
 

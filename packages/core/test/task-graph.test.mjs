@@ -64,6 +64,37 @@ test("TaskPlanRuntime shutdown aborts and drains supervised background work", as
 	assert.deepEqual(runtime.snapshot(), { active: 0 });
 });
 
+test("TaskPlanRuntime shutdown also drains foreground claimed recovery work", async () => {
+	const runtime = new TaskPlanRuntime();
+	let released = 0;
+	const ledger = { claimTaskPlanExecution: () => true, releaseTaskPlanExecution: () => { released++; return true; } };
+	let drained = false;
+	const running = runtime.runClaimed(ledger, "owner", "foreground", undefined, async (signal) => {
+		if (!signal.aborted) await new Promise((resolve) => signal.addEventListener("abort", resolve, { once: true }));
+		drained = true;
+	});
+	await runtime.shutdown();
+	await running;
+	assert.equal(drained, true);
+	assert.equal(released, 1);
+	assert.deepEqual(runtime.snapshot(), { active: 0 });
+});
+
+test("TaskPlanRuntime shutdown closes admission before draining active work", async () => {
+	const runtime = new TaskPlanRuntime();
+	let release;
+	assert.equal(runtime.start("owner", "active", async (signal) => {
+		await new Promise((resolve) => { release = resolve; signal.addEventListener("abort", resolve, { once: true }); });
+	}), true);
+	const shutdown = runtime.shutdown();
+	assert.equal(runtime.start("owner", "late-background", async () => undefined), false);
+	await assert.rejects(runtime.run("owner", "late-foreground", undefined, async () => undefined), /shutting down/);
+	await assert.rejects(runtime.runClaimed({}, "owner", "late-claimed", undefined, async () => undefined), /shutting down/);
+	release?.();
+	await shutdown;
+	assert.deepEqual(runtime.snapshot(), { active: 0 });
+});
+
 test("TaskPlanRuntime reports background failures without an unhandled rejection", async () => {
 	const failures = [];
 	const runtime = new TaskPlanRuntime((event) => failures.push(event));
