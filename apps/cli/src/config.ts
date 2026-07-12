@@ -302,15 +302,16 @@ function parseList(value: unknown): string[] {
 		.filter(Boolean);
 }
 
-function parseMemoryMemberships(value: unknown): MemoryMembership[] {
-	if (!Array.isArray(value)) return [];
-	return value.flatMap((item) => {
-		if (!item || typeof item !== "object" || Array.isArray(item)) return [];
+export function parseMemoryMemberships(value: unknown): MemoryMembership[] {
+	if (value === undefined || value === null) return [];
+	if (!Array.isArray(value)) throw new Error("memory.memberships must be an array");
+	return value.map((item, index) => {
+		if (!item || typeof item !== "object" || Array.isArray(item)) throw new Error(`memory.memberships[${index}] must be an object`);
 		const candidate = item as Record<string, unknown>;
 		const platform = str(candidate.platform);
 		const userId = str(candidate.userId);
-		if (!platform || !userId) return [];
-		return [{ platform, userId, projectId: optional(candidate.projectId), organizationId: optional(candidate.organizationId) }];
+		if (!platform || !userId) throw new Error(`memory.memberships[${index}] requires platform and userId`);
+		return { platform, userId, projectId: optional(candidate.projectId), organizationId: optional(candidate.organizationId) };
 	});
 }
 

@@ -13,13 +13,15 @@ export function createMemoryScopeResolver(memberships: readonly MemoryMembership
 	for (const membership of memberships) {
 		const platform = membership.platform.trim();
 		const userId = membership.userId.trim();
+		const projectId = membership.projectId?.trim();
+		const organizationId = membership.organizationId?.trim();
 		if (!platform || !userId) throw new Error("Memory membership requires platform and userId");
-		if (!membership.projectId && !membership.organizationId) throw new Error(`Memory membership ${platform}:${userId} has no project or organization scope`);
+		if (!projectId && !organizationId) throw new Error(`Memory membership ${platform}:${userId} has no project or organization scope`);
 		const key = `${platform}:${userId}`;
 		if (index.has(key)) throw new Error(`Duplicate memory membership for ${key}`);
 		index.set(key, {
-			...(membership.projectId?.trim() ? { projectId: membership.projectId.trim() } : {}),
-			...(membership.organizationId?.trim() ? { organizationId: membership.organizationId.trim() } : {}),
+			...(projectId ? { projectId } : {}),
+			...(organizationId ? { organizationId } : {}),
 		});
 	}
 	return (source) => index.get(`${source.platform}:${canonicalUserId(source) ?? ""}`) ?? {};
