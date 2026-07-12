@@ -456,6 +456,7 @@ test("Dispatcher replays and acknowledges crash-surviving queued inputs on Gatew
 	const acknowledged = [];
 	const runs = [];
 	const cards = [];
+	let recoveredClaimed = false;
 	const recoveredSource = { ...source, messageId: undefined };
 	const platform = {
 		name: "feishu", isConnected: true, onMessage: (handler) => { inbound = handler; }, connect: async () => true, disconnect: async () => undefined,
@@ -463,7 +464,11 @@ test("Dispatcher replays and acknowledges crash-surviving queued inputs on Gatew
 		sendCard: async (_chatId, card) => { cards.push(card); return { success: true, messageId: "recovered-card" }; }, updateCard: async (_id, card) => { cards.push(card); return { success: true }; },
 	};
 	const interaction = {
-		claimRecoveredInputs: () => [{ id: "queued-1", key: "key", text: "resume this", source: recoveredSource, createdAt: 1, claimToken: "claim" }],
+		claimRecoveredInputs: () => {
+			if (recoveredClaimed) return [];
+			recoveredClaimed = true;
+			return [{ id: "queued-1", key: "key", text: "resume this", source: recoveredSource, createdAt: 1, claimToken: "claim" }];
+		},
 		acknowledgeQueuedInput: (_source, id) => { acknowledged.push(id); return true; },
 			dispatch: async (action, sink) => {
 			runs.push(action.text);
