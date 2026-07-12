@@ -112,7 +112,16 @@ export class SubagentManager {
 			waiters: new Set(),
 		};
 		if (!task.goal) throw new Error("Sub-Agent goal is required");
-		this.taskLedger?.record({ id, ownerKey, kind: "delegated", title: task.name, status: "pending", createdAt: task.createdAt, ...(task.parentId ? { parentId: task.parentId } : {}) });
+		if (this.taskLedger) {
+			const planId = `delegation:${id}`;
+			const description = [task.goal, task.context].filter(Boolean).join("\n\n").slice(0, 50_000);
+			if (typeof this.taskLedger.recordPlan === "function") {
+				this.taskLedger.recordPlan([{
+					id, ownerKey, kind: "delegated", title: task.name, description, status: "pending", createdAt: task.createdAt,
+					planId, recoveryPolicy: "safe_retry", idempotencyKey: planId, executionScope: { ...source }, ...(task.parentId ? { parentId: task.parentId } : {}),
+				}], [], { id: planId, ownerKey, title: task.name, status: "pending", taskCount: 1, succeeded: 0, failed: 0, cancelled: 0, verified: 0, correctiveAttempts: 0, createdAt: task.createdAt });
+			} else this.taskLedger.record({ id, ownerKey, kind: "delegated", title: task.name, status: "pending", createdAt: task.createdAt, ...(task.parentId ? { parentId: task.parentId } : {}) });
+		}
 		this.tasks.set(id, task);
 		this.queue.push(id);
 		void this.pump();

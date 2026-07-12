@@ -178,16 +178,16 @@ export class McpManager {
 				addUtility(withToolPolicy(defineTool({
 					name: mcpToolName(name, "resources"), label: `${name}: resources`, description: `[MCP ${name}] List available resources.`,
 					parameters: Type.Object({}),
-					execute: async () => {
-						const result = await client.listResources();
+					execute: async (_id, _params, signal) => {
+						const result = await client.listResources(undefined, { signal, timeout: 120_000 });
 						return { content: [{ type: "text" as const, text: truncate(JSON.stringify(result.resources), 50_000) }], details: { server: name, resources: boundedDetails(result.resources) } };
 					},
 				}), { ...READ_ONLY_TOOL_POLICY, impact: `Lists resources exposed by MCP server ${name}` }));
 				addUtility(withToolPolicy(defineTool({
 					name: mcpToolName(name, "resource_read"), label: `${name}: read resource`, description: `[MCP ${name}] Read one resource by URI.`,
 					parameters: Type.Object({ uri: Type.String({ minLength: 1, maxLength: 4096 }) }),
-					execute: async (_id, params) => {
-						const result = await client.readResource({ uri: params.uri });
+					execute: async (_id, params, signal) => {
+						const result = await client.readResource({ uri: params.uri }, { signal, timeout: 120_000 });
 						return { content: [{ type: "text" as const, text: truncate(JSON.stringify(result.contents), 50_000) }], details: { server: name, uri: params.uri, contents: boundedDetails(result.contents) } };
 					},
 				}), { ...READ_ONLY_TOOL_POLICY, impact: `Reads one resource exposed by MCP server ${name}` }));
@@ -196,16 +196,16 @@ export class McpManager {
 				addUtility(withToolPolicy(defineTool({
 					name: mcpToolName(name, "prompts"), label: `${name}: prompts`, description: `[MCP ${name}] List available prompt templates.`,
 					parameters: Type.Object({}),
-					execute: async () => {
-						const result = await client.listPrompts();
+					execute: async (_id, _params, signal) => {
+						const result = await client.listPrompts(undefined, { signal, timeout: 120_000 });
 						return { content: [{ type: "text" as const, text: truncate(JSON.stringify(result.prompts), 50_000) }], details: { server: name, prompts: boundedDetails(result.prompts) } };
 					},
 				}), { ...READ_ONLY_TOOL_POLICY, impact: `Lists prompt templates exposed by MCP server ${name}` }));
 				addUtility(withToolPolicy(defineTool({
 					name: mcpToolName(name, "prompt_get"), label: `${name}: get prompt`, description: `[MCP ${name}] Get one prompt template with optional string arguments.`,
 					parameters: Type.Object({ name: Type.String({ minLength: 1, maxLength: 256 }), arguments: Type.Optional(Type.Record(Type.String(), Type.String())) }),
-					execute: async (_id, params) => {
-						const result = await client.getPrompt({ name: params.name, arguments: params.arguments });
+					execute: async (_id, params, signal) => {
+						const result = await client.getPrompt({ name: params.name, arguments: params.arguments }, { signal, timeout: 120_000 });
 						return { content: [{ type: "text" as const, text: truncate(JSON.stringify(result.messages), 50_000) }], details: { server: name, prompt: params.name, messages: boundedDetails(result.messages) } };
 					},
 				}), { ...READ_ONLY_TOOL_POLICY, impact: `Reads one prompt template exposed by MCP server ${name}` }));

@@ -82,3 +82,16 @@ test("Skill Registry parses standard multiline YAML routing metadata", async () 
 		assert.deepEqual((await new SkillRegistry([root]).search("translate only commercial review")).map((item) => item.name), []);
 	} finally { rmSync(root, { recursive: true, force: true }); }
 });
+
+test("Skill Registries share one Profile catalog snapshot until explicit invalidation", async () => {
+	const f = fixture();
+	try {
+		const first = new SkillRegistry([f.skills]);
+		assert.match((await first.list())[0].description, /commercial contracts/);
+		writeFileSync(join(f.skill, "SKILL.md"), `---\nname: contract-review\ndescription: "Changed description for a new catalog generation"\n---\nRules`);
+		const concurrentSession = new SkillRegistry([f.skills]);
+		assert.match((await concurrentSession.list())[0].description, /commercial contracts/);
+		concurrentSession.invalidate();
+		assert.match((await new SkillRegistry([f.skills]).list())[0].description, /Changed description/);
+	} finally { rmSync(f.root, { recursive: true, force: true }); }
+});

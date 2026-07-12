@@ -1,4 +1,4 @@
-import type { TaskDependency, TaskLedger, TaskPlanRecord, TaskRecord } from "./task-ledger.ts";
+import type { EffectReceipt, TaskDependency, TaskLedger, TaskPlanRecord, TaskRecord } from "./task-ledger.ts";
 import { containsCredentialMaterial, redactCredentialMaterial } from "./credential-material.ts";
 
 const DEFAULT_EXECUTION_LEASE_MS = 61 * 60_000;
@@ -13,7 +13,7 @@ export interface TaskPlanInput {
 export interface TaskGraphExecutionResult { output?: string; }
 export interface TaskGraphVerificationResult { accepted: boolean; feedback?: string; evidence?: string; }
 export interface TaskGraphDependencyResult { id: string; title: string; result?: string; evidence?: string; }
-export interface TaskGraphExecutionContext { attempt: number; verificationFeedback?: string; previousResult?: string; dependencies: TaskGraphDependencyResult[]; checkpoint?: string; route?: string; saveCheckpoint(value: string): boolean; }
+export interface TaskGraphExecutionContext { attempt: number; verificationFeedback?: string; previousResult?: string; dependencies: TaskGraphDependencyResult[]; checkpoint?: string; route?: string; saveCheckpoint(value: string): boolean; saveEffectReceipt(receipt: EffectReceipt): boolean; }
 export type TaskGraphExecutor = (task: TaskRecord, signal?: AbortSignal, context?: TaskGraphExecutionContext) => Promise<TaskGraphExecutionResult>;
 export type TaskGraphVerifier = (task: TaskRecord, result: TaskGraphExecutionResult, signal?: AbortSignal) => Promise<TaskGraphVerificationResult>;
 export interface TaskGraphRunOptions { maxConcurrent?: number; signal?: AbortSignal; executor?: "agent" | "subagent"; leaseMs?: number; leaseHeartbeatMs?: number; canExecute?: (task: TaskRecord) => boolean; verify?: TaskGraphVerifier; maxCorrectiveAttempts?: number; }
@@ -168,6 +168,7 @@ export class TaskGraph {
 					attempt, verificationFeedback, previousResult, dependencies, checkpoint: current.checkpoint,
 					route: current.routes?.[current.routeIndex ?? 0],
 					saveCheckpoint: (value) => !containsCredentialMaterial(value) && this.ledger.checkpointTask(task.ownerKey, task.id, value.slice(0, 50_000)),
+					saveEffectReceipt: (receipt) => !containsCredentialMaterial(JSON.stringify(receipt)) && (this.ledger.recordEffectReceipt?.(task.ownerKey, task.id, receipt) ?? false),
 				});
 				if (executionSignal.aborted) throw executionSignal.reason ?? new Error("Task execution interrupted");
 				candidateOutput = result.output?.slice(0, 50_000);

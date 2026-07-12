@@ -1,6 +1,6 @@
 /** Deterministic zero-dependency lexical normalization shared by routing and memory fallback search. */
 export function multilingualLexicalTerms(input: string): string[] {
-	const raw = input.normalize("NFKC").toLocaleLowerCase().match(/[\p{Script=Han}]+|[\p{L}\p{N}_-]+/gu) ?? [];
+	const raw = input.normalize("NFKC").toLocaleLowerCase().match(/[\p{Script=Han}]+|[\p{Script=Latin}\p{N}_-]+/gu) ?? [];
 	const terms = raw.flatMap((term) => {
 		if (/^\p{Script=Han}+$/u.test(term)) {
 			if (term.length <= 2) return [term];

@@ -153,7 +153,7 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 			const startedAt = Date.now();
 			const planning = input.mode === "interactive" || !input.mode ? this.planningPolicy?.decide(input.text) : undefined;
 			const requestedText = explicitSkillRequest(input.text);
-			const activeObjective = (input.mode === "interactive" || !input.mode) && this.taskLedger
+			const activeObjective = (input.mode === "interactive" || !input.mode) && this.taskLedger && typeof this.taskLedger.queryTasks === "function"
 				? this.taskLedger.queryTasks({ ownerKeys: [conversationKey(input.source)], ...(input.objectiveTaskId ? { id: input.objectiveTaskId } : { kinds: ["objective"], statuses: ["pending", "running"] }), limit: 1 })[0]
 				: undefined;
 			const understanding = input.mode === "interactive" || !input.mode ? this.turnUnderstanding.understand(input.text, { activeObjective: activeObjective?.title }) : undefined;
@@ -313,11 +313,13 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 		return (await this.sessions.withSession(source, async (session) => {
 			if (session.busy) return false;
 			const owners = [...new Set([conversationKey(source), conversationOwnerKey(source), "profile"])];
-			const active = this.taskLedger?.queryTasks({ ownerKeys: owners, statuses: ["pending", "running"], limit: 20 }) ?? [];
-			const envelope = active.length ? [
+			const active = this.taskLedger && typeof this.taskLedger.queryTasks === "function" ? this.taskLedger.queryTasks({ ownerKeys: owners, statuses: ["pending", "running"], limit: 20 }) : [];
+			const preservationPayload = active.length ? JSON.stringify(active.map((task) => ({ id: task.id, kind: task.kind, title: task.title, description: task.description, acceptanceCriteria: task.acceptanceCriteria, status: task.status, checkpoint: task.checkpoint, effectReceipts: task.effectReceipts, result: task.result, verificationFeedback: task.verificationFeedback }))) : undefined;
+			if (preservationPayload && Buffer.byteLength(preservationPayload) > 40_000) throw new AgentRunError("Task preservation envelope exceeds the safe compaction budget", false, undefined);
+			const envelope = preservationPayload ? [
 				"<task-preservation-envelope>",
 				"Preserve these durable responsibilities, constraints, Acceptance Criteria, completed effects, pending steps, and blockers exactly in the compacted summary.",
-				JSON.stringify(active.map((task) => ({ id: task.id, kind: task.kind, title: task.title, description: task.description, acceptanceCriteria: task.acceptanceCriteria, status: task.status, checkpoint: task.checkpoint, result: task.result, verificationFeedback: task.verificationFeedback }))).slice(0, 40_000),
+				preservationPayload,
 				"</task-preservation-envelope>",
 			].join("\n") : undefined;
 			await session.piSession.compact([instructions, envelope].filter(Boolean).join("\n\n") || undefined);

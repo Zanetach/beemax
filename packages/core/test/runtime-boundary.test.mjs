@@ -315,7 +315,7 @@ test("context compaction preserves active Objective and Acceptance Criteria", as
 	const source = { platform: "cli", chatId: "terminal", chatType: "dm", userId: "user" };
 	let compactInstructions = "";
 	const runtime = new BeeMaxAgentRuntime({
-		taskLedger: { queryTasks: () => [{ id: "objective-1", ownerKey: "cli:terminal:user", kind: "objective", title: "生成客户报告", description: "必须使用中文", acceptanceCriteria: "输出PDF并发送给王总", status: "running", createdAt: 1 }] },
+		taskLedger: { queryTasks: () => [{ id: "objective-1", ownerKey: "cli:terminal:user", kind: "objective", title: "生成客户报告", description: "必须使用中文", acceptanceCriteria: "输出PDF并发送给王总", status: "running", createdAt: 1, effectReceipts: [{ id: "effect-1", tool: "feishu_send", operation: "send report", sideEffect: "mutation", status: "committed", externalRef: "message-42", occurredAt: 2 }] }] },
 		createAgent: async () => ({ agent: { state: { model: { id: "test" }, messages: [] } }, subscribe: () => () => undefined, prompt: async () => undefined, abort: async () => undefined, compact: async (instructions) => { compactInstructions = instructions; }, dispose: () => undefined }),
 	});
 	try {
@@ -323,6 +323,7 @@ test("context compaction preserves active Objective and Acceptance Criteria", as
 		assert.equal(await runtime.compact(source), true);
 		assert.match(compactInstructions, /生成客户报告/);
 		assert.match(compactInstructions, /输出PDF并发送给王总/);
+		assert.match(compactInstructions, /message-42/);
 		assert.match(compactInstructions, /task-preservation-envelope/);
 	} finally { runtime.dispose(); }
 });

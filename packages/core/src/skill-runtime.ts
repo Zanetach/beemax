@@ -18,16 +18,24 @@ export interface SkillExecutionSnapshot {
 }
 
 const NAME = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
+const SHARED_SKILL_CATALOGS = new Map<string, { loadedAt: number; value: Promise<SkillDescriptor[]> }>();
 
 /** Profile/project/global Skill index. Discovery retains metadata, never Skill bodies. */
 export class SkillRegistry {
 	private readonly roots: readonly string[];
-	private cached?: Promise<SkillDescriptor[]>;
-	private cachedAt = 0;
-	constructor(roots: readonly string[]) { this.roots = roots; }
+	private readonly catalogKey: string;
+	constructor(roots: readonly string[]) { this.roots = roots; this.catalogKey = roots.map((root) => resolve(root)).join("\u0000"); }
 
-	list(): Promise<SkillDescriptor[]> { if (!this.cached || Date.now() - this.cachedAt > 5_000) { this.cachedAt = Date.now(); this.cached = this.load().catch((error) => { this.cached = undefined; throw error; }); } return this.cached; }
-	invalidate(): void { this.cached = undefined; this.cachedAt = 0; }
+	list(): Promise<SkillDescriptor[]> {
+		const key = this.key();
+		const cached = SHARED_SKILL_CATALOGS.get(key);
+		if (cached && Date.now() - cached.loadedAt <= 5_000) return cached.value;
+		const value = this.load().catch((error) => { if (SHARED_SKILL_CATALOGS.get(key)?.value === value) SHARED_SKILL_CATALOGS.delete(key); throw error; });
+		SHARED_SKILL_CATALOGS.set(key, { loadedAt: Date.now(), value });
+		return value;
+	}
+	invalidate(): void { SHARED_SKILL_CATALOGS.delete(this.key()); }
+	private key(): string { return this.catalogKey; }
 	private async load(): Promise<SkillDescriptor[]> {
 		const found: SkillDescriptor[] = [];
 		for (const [sourcePriority, root] of this.roots.entries()) {

@@ -128,6 +128,8 @@ test("MCP tools are discovered, callable, and mutating tools require approval", 
 		assert.match(result.content[0].text, /echo:ok/);
 		const resource = await tools.get("mcp_smoke_resource_read").execute("read", { uri: "memo://brief" }, new AbortController().signal);
 		assert.match(resource.content[0].text, /Brief resource/);
+		const cancelled = new AbortController(); cancelled.abort(new Error("cancelled by caller"));
+		await assert.rejects(tools.get("mcp_smoke_resource_read").execute("cancelled-read", { uri: "memo://brief" }, cancelled.signal), /cancel|abort/i);
 		const prompt = await tools.get("mcp_smoke_prompt_get").execute("prompt", { name: "brief-template", arguments: { topic: "memory" } }, new AbortController().signal);
 		assert.match(prompt.content[0].text, /Brief memory/);
 	} finally {

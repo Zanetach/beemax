@@ -20,6 +20,7 @@ function memoryLedger() {
 		taskRuns() { return []; },
 		taskDependencies(ids) { return dependencies.filter((edge) => ids.includes(edge.taskId)); },
 		checkpointTask(ownerKey, taskId, checkpoint, now = Date.now()) { const task = tasks.get(taskId); if (!task || task.ownerKey !== ownerKey || task.status !== "running") return false; tasks.set(taskId, { ...task, checkpoint, checkpointAt: now }); return true; },
+		recordEffectReceipt(ownerKey, taskId, receipt) { const task = tasks.get(taskId); if (!task || task.ownerKey !== ownerKey || task.status !== "running") return false; tasks.set(taskId, { ...task, effectReceipts: [...(task.effectReceipts ?? []), receipt] }); return true; },
 		advanceTaskRoute(ownerKey, taskId, error) { const task = tasks.get(taskId); if (!task || task.ownerKey !== ownerKey || task.status !== "running" || !task.routes?.[task.routeIndex + 1]) return false; tasks.set(taskId, { ...task, status: "pending", routeIndex: task.routeIndex + 1, error }); return true; },
 		pauseTaskPlan() { return false; }, resumeTaskPlan() { return false; },
 	};
@@ -406,6 +407,17 @@ test("TaskGraph persists checkpoints and switches to the next route after a reco
 	assert.deepEqual(seen, [{ route: "primary", checkpoint: undefined }, { route: "fallback", checkpoint: "primary evidence collected" }]);
 	assert.deepEqual(result, { succeeded: 1, failed: 0, cancelled: 0, blocked: [] });
 	assert.equal(ledger.queryTasks({ ownerKeys: ["owner"], id: "work" })[0].result, "continued from primary evidence collected");
+});
+
+test("TaskGraph exposes durable Effect Receipts to executors before external mutation completes", async () => {
+	const ledger = memoryLedger();
+	const graph = new TaskGraph(ledger);
+	graph.createPlan({ id: "effect-plan", ownerKey: "owner", tasks: [{ id: "send", title: "Send report" }] });
+	await graph.run(["owner"], "effect-plan", async (_task, _signal, context) => {
+		assert.equal(context.saveEffectReceipt({ id: "effect-1", tool: "feishu_send", operation: "send report", sideEffect: "mutation", status: "committed", externalRef: "message-42", occurredAt: 2 }), true);
+		return { output: "sent" };
+	});
+	assert.equal(ledger.tasks.get("send").effectReceipts[0].externalRef, "message-42");
 });
 
 test("TaskGraph refuses to persist credential material as a checkpoint", async () => {

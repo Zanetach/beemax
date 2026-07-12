@@ -15,7 +15,7 @@ import Database from "better-sqlite3";
 import type { Database as DatabaseType } from "better-sqlite3";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
-import { containsCredentialMaterial, multilingualLexicalTerms, redactCredentialMaterial, type TaskCandidateVerificationResolution, type TaskDependency, type TaskPlanCompletionNotice, type TaskPlanQuery, type TaskPlanRecord, type TaskPlanTransition, type TaskQuery, type TaskRecord as RuntimeTaskRecord, type TaskRecoveryResult, type TaskRunRecord, type TaskRunTransition, type TaskTransition } from "@beemax/core";
+import { containsCredentialMaterial, multilingualLexicalTerms, redactCredentialMaterial, type EffectReceipt, type TaskCandidateVerificationResolution, type TaskDependency, type TaskPlanCompletionNotice, type TaskPlanQuery, type TaskPlanRecord, type TaskPlanTransition, type TaskQuery, type TaskRecord as RuntimeTaskRecord, type TaskRecoveryResult, type TaskRunRecord, type TaskRunTransition, type TaskTransition } from "@beemax/core";
 
 export const MEMORY_CLAIM_KINDS = ["preference", "fact", "decision", "goal", "project", "relationship", "workflow"] as const;
 export type MemoryClaimKind = typeof MEMORY_CLAIM_KINDS[number];
@@ -35,6 +35,18 @@ export interface MemoryRecord {
 	memoryType?: "curated" | "claim" | "candidate";
 	confidence?: number;
 }
+
+export interface MemoryRecallHit extends MemoryRecord {
+	memoryType: "curated" | "claim" | "candidate";
+	confidence: number;
+	status: MemoryClaim["status"] | "active" | "pending";
+	score: number;
+	matchReasons: string[];
+	subject?: BusinessEntityRef;
+	object?: BusinessEntityRef;
+}
+export interface MemoryRecallEvaluationCase { query: string; options: RecallOptions; expectedIds: string[]; forbiddenIds?: string[]; }
+export interface MemoryRecallEvaluation { cases: number; hits: number; recallAtK: number; forbiddenRetrieved: number; forbiddenRetrievalRate: number; }
 
 export interface RecallOptions {
 	profileId?: string;
@@ -412,6 +424,7 @@ export class MemoryStore {
 		this.addColumnIfMissing("tasks", "updated_at", "INTEGER NOT NULL DEFAULT 0");
 		this.addColumnIfMissing("tasks", "checkpoint", "TEXT");
 		this.addColumnIfMissing("tasks", "checkpoint_at", "INTEGER");
+		this.addColumnIfMissing("tasks", "effect_receipts", "TEXT");
 		this.addColumnIfMissing("tasks", "routes", "TEXT");
 		this.addColumnIfMissing("tasks", "route_index", "INTEGER NOT NULL DEFAULT 0");
 		this.addColumnIfMissing("task_plans", "paused_at", "INTEGER");
@@ -685,6 +698,10 @@ export class MemoryStore {
 	 * to the requesting scope (same chat, or same user across chats).
 	 */
 	recall(query: string, opts: RecallOptions = {}): MemoryRecord[] {
+		return this.recallRanked(query, opts);
+	}
+
+	recallRanked(query: string, opts: RecallOptions = {}): MemoryRecallHit[] {
 		const match = toFtsQuery(query);
 		if (!match) return [];
 		const limit = Math.max(1, Math.min(opts.limit ?? 5, 100));
@@ -719,17 +736,32 @@ export class MemoryStore {
 			)
 			.all(...params, limit) as MemoryRow[];
 		const likeRows = this.searchMemoryRowsLike(query, opts, limit);
-		const records = uniqueById([...ftsRows, ...likeRows]).map((row) => ({ ...mapRow(row), memoryType: "curated" as const, confidence: 1 }));
+		const records: MemoryRecallHit[] = uniqueById([...ftsRows, ...likeRows]).map((row) => rankMemoryHit({ ...mapRow(row), memoryType: "curated", confidence: 1, status: "active", matchReasons: [] }, query, opts));
 		const claims = this.searchClaims(match, opts);
 		if (claims.length === 0) claims.push(...this.searchClaimsLike(query.trim(), opts));
-		const claimRecords = claims.map((claim) => ({
+		const claimRecords: MemoryRecallHit[] = claims.map((claim) => rankMemoryHit({
 			id: claim.id, platform: claim.platform, chatId: claim.chatId, userId: claim.userId,
-			role: "memory" as const, content: claim.statement, createdAt: claim.updatedAt, memoryType: "claim" as const, confidence: claim.confidence,
-		}));
-		const candidates = opts.includeCandidates ? this.searchCandidateRowsLike(query, opts, limit).map((row) => ({
-			...mapRow(row), memoryType: "candidate" as const, confidence: 0.35,
-		})) : [];
-		return uniqueById([...claimRecords, ...records, ...candidates]).slice(0, limit);
+			role: "memory", content: claim.statement, createdAt: claim.updatedAt, memoryType: "claim", confidence: claim.confidence,
+			status: claim.status, matchReasons: [], subject: claim.subject, object: claim.object,
+		}, query, opts));
+		const candidates: MemoryRecallHit[] = opts.includeCandidates ? this.searchCandidateRowsLike(query, opts, limit).map((row) => rankMemoryHit({
+			...mapRow(row), memoryType: "candidate", confidence: 0.35, status: "pending", matchReasons: [],
+		}, query, opts)) : [];
+		return uniqueById([...claimRecords, ...records, ...candidates]).sort((a, b) => b.score - a.score || b.createdAt - a.createdAt || a.id.localeCompare(b.id)).slice(0, limit);
+	}
+
+	evaluateRecall(cases: readonly MemoryRecallEvaluationCase[], k = 5): MemoryRecallEvaluation {
+		const boundedK = Math.max(1, Math.min(Math.trunc(k), 100));
+		let hits = 0; let forbiddenRetrieved = 0; let forbiddenTotal = 0;
+		for (const sample of cases) {
+			const ids = new Set(this.recallRanked(sample.query, { ...sample.options, limit: boundedK }).map((hit) => hit.id));
+			if (sample.expectedIds.some((id) => ids.has(id))) hits++;
+			for (const id of sample.forbiddenIds ?? []) { forbiddenTotal++; if (ids.has(id)) forbiddenRetrieved++; }
+		}
+		return {
+			cases: cases.length, hits, recallAtK: cases.length ? hits / cases.length : 0,
+			forbiddenRetrieved, forbiddenRetrievalRate: forbiddenTotal ? forbiddenRetrieved / forbiddenTotal : 0,
+		};
 	}
 
 	private searchMemoryRowsLike(query: string, opts: RecallOptions, limit: number): MemoryRow[] {
@@ -1003,6 +1035,18 @@ export class MemoryStore {
 		if (containsCredentialMaterial(checkpoint)) return false;
 		return this.db.prepare("UPDATE tasks SET checkpoint = ?, checkpoint_at = ?, updated_at = ? WHERE id = ? AND owner_key = ? AND status = 'running'")
 			.run(checkpoint.slice(0, 50_000), now, now, taskId, ownerKey).changes === 1;
+	}
+
+	recordEffectReceipt(ownerKey: string, taskId: string, receipt: EffectReceipt): boolean {
+		if (!validEffectReceipt(receipt)) return false;
+		return this.db.transaction(() => {
+			const row = this.db.prepare("SELECT effect_receipts FROM tasks WHERE id = ? AND owner_key = ? AND status = 'running'").get(taskId, ownerKey) as { effect_receipts: string | null } | undefined;
+			if (!row) return false;
+			const existing = parseEffectReceipts(row.effect_receipts);
+			if (existing.some((item) => item.id === receipt.id || Boolean(receipt.idempotencyKey && item.idempotencyKey === receipt.idempotencyKey))) return true;
+			const next = [...existing, receipt].slice(-100);
+			return this.db.prepare("UPDATE tasks SET effect_receipts = ?, updated_at = ? WHERE id = ? AND owner_key = ? AND status = 'running'").run(JSON.stringify(next), Date.now(), taskId, ownerKey).changes === 1;
+		})();
 	}
 
 	advanceTaskRoute(ownerKey: string, taskId: string, error: string, now = Date.now()): boolean {
@@ -1359,7 +1403,7 @@ interface EventRow {
 interface RuntimeTaskRow {
 	id: string; owner_key: string; kind: RuntimeTaskRecord["kind"]; title: string; description: string | null; acceptance_criteria: string | null; recovery_policy: RuntimeTaskRecord["recoveryPolicy"]; idempotency_key: string | null; execution_scope: string | null; status: RuntimeTaskRecord["status"];
 	parent_id: string | null; plan_id: string | null; evidence: string | null; verification_outcome: RuntimeTaskRecord["verificationStatus"] | null; verification_feedback: string | null; verification_attempts: number; verification_retry_at: number | null; corrective_attempts: number; created_at: number; started_at: number | null; finished_at: number | null; result: string | null; candidate_result: string | null; error: string | null;
-	checkpoint: string | null; checkpoint_at: number | null; routes: string | null; route_index: number;
+	checkpoint: string | null; checkpoint_at: number | null; routes: string | null; route_index: number; effect_receipts: string | null;
 }
 
 interface TaskRunRow {
@@ -1447,6 +1491,7 @@ function mapRuntimeTask(row: RuntimeTaskRow): RuntimeTaskRecord {
 		...(row.error === null ? {} : { error: row.error }),
 		...(row.checkpoint === null ? {} : { checkpoint: row.checkpoint }),
 		...(row.checkpoint_at === null ? {} : { checkpointAt: row.checkpoint_at }),
+		...(parseEffectReceipts(row.effect_receipts).length ? { effectReceipts: parseEffectReceipts(row.effect_receipts) } : {}),
 		...(row.routes === null ? {} : { routes: JSON.parse(row.routes) as string[], routeIndex: row.route_index }),
 	};
 }
@@ -1570,6 +1615,48 @@ function lexicalWhere(query: string, column: string): { where: string; params: s
 function uniqueById<T extends { id: string }>(items: readonly T[]): T[] {
 	const seen = new Set<string>();
 	return items.filter((item) => !seen.has(item.id) && Boolean(seen.add(item.id)));
+}
+
+function parseEffectReceipts(value: string | null): EffectReceipt[] {
+	if (!value) return [];
+	try {
+		const parsed = JSON.parse(value) as unknown;
+		return Array.isArray(parsed) ? parsed.filter(validEffectReceipt).slice(-100) : [];
+	} catch { return []; }
+}
+
+function validEffectReceipt(value: unknown): value is EffectReceipt {
+	if (!value || typeof value !== "object") return false;
+	const receipt = value as Partial<EffectReceipt>;
+	const text = [receipt.id, receipt.tool, receipt.operation, receipt.externalRef, receipt.idempotencyKey].filter((item): item is string => typeof item === "string").join(" ");
+	return typeof receipt.id === "string" && receipt.id.length > 0 && receipt.id.length <= 256
+		&& typeof receipt.tool === "string" && receipt.tool.length > 0 && receipt.tool.length <= 256
+		&& typeof receipt.operation === "string" && receipt.operation.length > 0 && receipt.operation.length <= 1_000
+		&& (receipt.sideEffect === "none" || receipt.sideEffect === "mutation")
+		&& (receipt.status === "committed" || receipt.status === "unknown")
+		&& typeof receipt.occurredAt === "number" && Number.isFinite(receipt.occurredAt)
+		&& !containsCredentialMaterial(text);
+}
+
+function rankMemoryHit(hit: Omit<MemoryRecallHit, "score">, query: string, opts: RecallOptions): MemoryRecallHit {
+	const normalizedContent = hit.content.normalize("NFKC").toLocaleLowerCase();
+	const normalizedQuery = query.normalize("NFKC").trim().toLocaleLowerCase();
+	const terms = lexicalTerms(query);
+	const matched = terms.filter((term) => normalizedContent.includes(term));
+	const coverage = terms.length ? matched.length / terms.length : 0;
+	const reasons = new Set(hit.matchReasons);
+	if (matched.length) reasons.add("lexical");
+	if (normalizedQuery && normalizedContent.includes(normalizedQuery)) reasons.add("exact-phrase");
+	const subjectMatch = Boolean(opts.subject && hit.subject?.type === opts.subject.type && hit.subject.id === opts.subject.id);
+	const objectMatch = Boolean(opts.object && hit.object?.type === opts.object.type && hit.object.id === opts.object.id);
+	if (subjectMatch || objectMatch) reasons.add("business-object");
+	if (hit.memoryType === "candidate") reasons.add("unconfirmed-candidate"); else reasons.add("confirmed-memory");
+	const base = hit.memoryType === "claim" ? 0.55 : hit.memoryType === "curated" ? 0.4 : 0.1;
+	const phrase = reasons.has("exact-phrase") ? 0.25 : 0;
+	const entity = (subjectMatch ? 0.2 : 0) + (objectMatch ? 0.3 : 0);
+	const confidence = hit.confidence * (hit.memoryType === "candidate" ? 0.1 : 0.2);
+	const conflictPenalty = hit.status === "conflicted" ? 0.15 : 0;
+	return { ...hit, score: Number(Math.max(0, base + coverage * 0.35 + phrase + entity + confidence - conflictPenalty).toFixed(6)), matchReasons: [...reasons] };
 }
 
 function cryptoRandom(): string {

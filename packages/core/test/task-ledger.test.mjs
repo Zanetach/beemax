@@ -47,6 +47,27 @@ test("delegated work retains its parent Objective", async () => {
 	await manager.dispose();
 });
 
+test("single Delegation persists as a recoverable one-Task Plan", async () => {
+	const records = new Map(); const plans = new Map();
+	const ledger = {
+		record() { throw new Error("standalone record must use durable Plan"); },
+		recordPlan(tasks, _dependencies, plan) { for (const task of tasks) records.set(task.id, { ...task }); plans.set(plan.id, { ...plan }); },
+		transition(id, change) { records.set(id, { ...records.get(id), ...change }); return true; },
+		recordRun() {}, transitionRun() {},
+	};
+	const manager = new SubagentManager({ taskLedger: ledger, execute: async () => "done" });
+	const delegated = manager.spawn(source, { goal: "Research official docs", context: "Use primary sources" });
+	await manager.wait(source, delegated.id, 1_000);
+	const task = records.get(delegated.id);
+	assert.equal(task.planId, `delegation:${delegated.id}`);
+	assert.equal(task.recoveryPolicy, "safe_retry");
+	assert.equal(task.idempotencyKey, `delegation:${delegated.id}`);
+	assert.deepEqual(task.executionScope, source);
+	assert.match(task.description, /Use primary sources/);
+	assert.equal(plans.get(task.planId).taskCount, 1);
+	await manager.dispose();
+});
+
 test("Task ledger tools query durable work across conversation and Profile scopes without leaking other owners", async () => {
 	const tasks = [
 		{ id: "thread", ownerKey: "cli:local#topic:local", kind: "delegated", title: "Thread task", status: "succeeded", createdAt: 1 },

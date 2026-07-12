@@ -7,6 +7,16 @@ export type TaskRecoveryPolicy = "never" | "safe_retry";
 export type TaskVerificationStatus = "pending" | "accepted" | "rejected" | "unavailable";
 export type TaskCandidateVerificationResolution = { accepted: true; evidence?: string } | { accepted: false; feedback: string };
 export type TaskPlanStatus = "pending" | "running" | "succeeded" | "failed" | "cancelled";
+export interface EffectReceipt {
+	id: string;
+	tool: string;
+	operation: string;
+	sideEffect: "none" | "mutation";
+	status: "committed" | "unknown";
+	externalRef?: string;
+	idempotencyKey?: string;
+	occurredAt: number;
+}
 
 export interface TaskPlanRecord {
 	id: string;
@@ -63,6 +73,7 @@ export interface TaskRecord {
 	checkpointAt?: number;
 	routes?: string[];
 	routeIndex?: number;
+	effectReceipts?: EffectReceipt[];
 }
 
 export type TaskTransition = Pick<TaskRecord, "status"> & Partial<Pick<TaskRecord, "startedAt" | "finishedAt" | "result" | "candidateResult" | "error" | "evidence" | "verificationStatus" | "verificationFeedback" | "correctiveAttempts">>;
@@ -112,6 +123,7 @@ export interface TaskLedger {
 	queryTaskPlans(query: TaskPlanQuery): TaskPlanRecord[];
 	taskDependencies(taskIds: string[]): TaskDependency[];
 	checkpointTask(ownerKey: string, taskId: string, checkpoint: string, now?: number): boolean;
+	recordEffectReceipt?(ownerKey: string, taskId: string, receipt: EffectReceipt): boolean;
 	advanceTaskRoute(ownerKey: string, taskId: string, error: string, now?: number): boolean;
 	pauseTaskPlan(ownerKeys: string[], planId: string, now?: number): boolean;
 	resumeTaskPlan(ownerKeys: string[], planId: string, now?: number): boolean;

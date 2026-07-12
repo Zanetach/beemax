@@ -113,6 +113,38 @@ test("business-object filters prevent a similar customer requirement from crossi
 	} finally { store.close(); rmSync(root, { recursive: true, force: true }); }
 });
 
+test("ranked recall explains one ordering across claims, curated memory, and pending evidence", () => {
+	const root = mkdtempSync(join(tmpdir(), "beemax-memory-ranked-recall-"));
+	const store = new MemoryStore(join(root, "memory.db"), "sales-profile");
+	try {
+		const scope = { profileId: "sales-profile", platform: "feishu", chatId: "sales", threadId: "order", userId: "seller", projectId: "team" };
+		const claim = store.upsertClaim({ ...scope, kind: "fact", statement: "PO-1交付日期为七月二十五日", subject: { type: "customer", id: "customer-a" }, object: { type: "order", id: "PO-1" }, confidence: 0.95, stability: "high", visibility: "team" });
+		store.remember({ ...scope, role: "memory", content: "交付日期需要再次确认" });
+		store.recordCandidate({ ...scope, role: "user", content: "有人提到交付日期可能变化" });
+		const hits = store.recallRanked("PO-1交付日期", { ...scope, object: { type: "order", id: "PO-1" }, includeCandidates: true, limit: 5 });
+		assert.equal(hits[0].id, claim.id);
+		assert.equal(hits[0].memoryType, "claim");
+		assert.equal(hits[0].status, "active");
+		assert.ok(hits[0].score > hits.at(-1).score);
+		assert.ok(hits[0].matchReasons.includes("business-object"));
+		assert.ok(hits.every((hit) => Number.isFinite(hit.score) && hit.matchReasons.length > 0));
+	} finally { store.close(); rmSync(root, { recursive: true, force: true }); }
+});
+
+test("memory evaluation reports Recall@K and forbidden cross-customer retrievals", () => {
+	const root = mkdtempSync(join(tmpdir(), "beemax-memory-evaluation-"));
+	const store = new MemoryStore(join(root, "memory.db"));
+	try {
+		const a = { platform: "feishu", chatId: "sales", threadId: "customer-a", userId: "seller" };
+		const b = { platform: "feishu", chatId: "sales", threadId: "customer-b", userId: "seller" };
+		const expectedId = store.remember({ ...a, role: "memory", content: "A客户要求周五交付蓝色PDF" });
+		const forbiddenId = store.remember({ ...b, role: "memory", content: "B客户要求周一交付红色PDF" });
+		assert.deepEqual(store.evaluateRecall([{ query: "蓝色PDF交付", options: a, expectedIds: [expectedId], forbiddenIds: [forbiddenId] }], 5), {
+			cases: 1, hits: 1, recallAtK: 1, forbiddenRetrieved: 0, forbiddenRetrievalRate: 0,
+		});
+	} finally { store.close(); rmSync(root, { recursive: true, force: true }); }
+});
+
 test("task ledger stores verifiable profile-scoped task facts independently from chat memory", () => {
 	const root = mkdtempSync(join(tmpdir(), "beemax-task-ledger-"));
 	const store = new MemoryStore(join(root, "memory.db"));
@@ -160,6 +192,21 @@ test("runtime Task ledger persists delegated lifecycle independently from memory
 		store.close();
 		rmSync(root, { recursive: true, force: true });
 	}
+});
+
+test("Effect Receipts survive restart and deduplicate the same external effect", () => {
+	const root = mkdtempSync(join(tmpdir(), "beemax-effect-receipt-"));
+	const path = join(root, "memory.db");
+	let store = new MemoryStore(path);
+	try {
+		store.record({ id: "send-report", ownerKey: "owner", kind: "delegated", title: "Send report", status: "running", createdAt: 1 });
+		const receipt = { id: "effect-1", tool: "feishu_send", operation: "send report", sideEffect: "mutation", status: "committed", externalRef: "message-42", idempotencyKey: "send-report:message", occurredAt: 2 };
+		assert.equal(store.recordEffectReceipt("owner", "send-report", receipt), true);
+		assert.equal(store.recordEffectReceipt("owner", "send-report", receipt), true);
+		store.close();
+		store = new MemoryStore(path);
+		assert.deepEqual(store.queryTasks({ ownerKeys: ["owner"], id: "send-report" })[0].effectReceipts, [receipt]);
+	} finally { store.close(); rmSync(root, { recursive: true, force: true }); }
 });
 
 test("failed Objectives can be explicitly reopened for a safe retry", () => {
