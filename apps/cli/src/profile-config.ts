@@ -407,7 +407,7 @@ function defaultProfileYaml(): string {
 		agent: { toolset: "standard", maxSessions: 100, sessionIdleMs: 1800000 },
 		model: { provider: "anthropic", model: "claude-sonnet-4-5" },
 		gateway: { feishu: { domain: "feishu", requireMention: true, allowedUsers: [], allowedChats: [], allowAllUsers: false } },
-		memory: { dbPath: "memory.db" },
+		memory: { dbPath: "memory.db", memberships: [] },
 		mcp: { configPath: "mcp.json" },
 		imageGeneration: { enabled: false, provider: "openai-codex", quality: "medium", outputDir: "cache/images" },
 		execution: { backend: "local", mode: "off", workspaceAccess: "none", image: "node:22-alpine", timeoutMs: 180000 },

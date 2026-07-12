@@ -33,6 +33,7 @@ import { boundGatewayProcessLogs, recordGatewayEvent, writeGatewayState } from "
 import { installedVersion } from "./runtime-facts.ts";
 import { configuredRuntimeModels } from "./model-catalog.ts";
 import { setFeishuHomeChat } from "./profile-config.ts";
+import { createMemoryScopeResolver } from "./memory-membership.ts";
 
 export async function runGateway(config: BeeMaxConfig): Promise<void> {
 	if (!config.gateway.feishu.appId || !config.gateway.feishu.appSecret) {
@@ -118,6 +119,7 @@ export async function runGateway(config: BeeMaxConfig): Promise<void> {
 	const credentialVault = config.credentials.key ? new FileCredentialVault(config.credentials.vaultPath, Buffer.from(config.credentials.key, "base64"), credentialAudit.append.bind(credentialAudit)) : undefined;
 
 	let scheduler: AutomationScheduler | undefined;
+	const resolveMemoryScope = createMemoryScopeResolver(config.memory.memberships);
 	const profileAgentDefaults = {
 		profileId: config.profile,
 		provider: () => config.model.provider,
@@ -129,6 +131,7 @@ export async function runGateway(config: BeeMaxConfig): Promise<void> {
 		getApiKey: (provider: string) => config.model.apiKeys[provider] ?? (provider === config.model.provider ? apiKey : undefined),
 		skillToolset: config.agent.toolset,
 		memoryStore: memory,
+		resolveMemoryScope,
 		executionPortForSource: executionPortFor(config),
 	};
 	const createSubagentAgent = buildAgentFactory({
@@ -225,7 +228,7 @@ export async function runGateway(config: BeeMaxConfig): Promise<void> {
 			createAutomationAgent,
 			fallbackModels: configuredRuntimeModels(config),
 			taskLedger: memory,
-			context: createTaskAwareConversationContext(memory, { memoryScope: { profileId: config.profile }, recordDirectRoute: (route) => automation.setLastRoute(route), runtimeSnapshot: () => ({ profile: config.profile }) }),
+			context: createTaskAwareConversationContext(memory, { memoryScope: { profileId: config.profile }, resolveMemoryScope, recordDirectRoute: (route) => automation.setLastRoute(route), runtimeSnapshot: () => ({ profile: config.profile }) }),
 		},
 		approvalBroker,
 		cancelSubagents: (source) => subagents?.cancelOwner(source) ?? 0,

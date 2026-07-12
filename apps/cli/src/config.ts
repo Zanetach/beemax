@@ -12,6 +12,7 @@ import { readEnvFileSync } from "./env-file.ts";
 import { beemaxRoot, resolveProfileLocation, validateProfileName } from "./profile-home.ts";
 import { resolveSoul } from "./soul.ts";
 import { providerApiKeyEnv } from "./provider-resolver.ts";
+import type { MemoryMembership } from "./memory-membership.ts";
 
 export { beemaxHome, beemaxRoot, validateProfileName } from "./profile-home.ts";
 
@@ -66,6 +67,7 @@ export interface BeeMaxConfig {
 	gateway: { feishu: FeishuConfig };
 	memory: {
 		dbPath: string;
+		memberships: MemoryMembership[];
 	};
 	credentials: { vaultPath: string; keyPath: string; key?: string };
 	mcp: {
@@ -198,6 +200,7 @@ export function loadConfig(configPath?: string, profile = "default"): BeeMaxConf
 		gateway: { feishu },
 		memory: {
 			dbPath: resolveFrom(location.basePath, str(env.BEEMAX_DB_PATH ?? cfg.memory?.dbPath ?? join(profileDataRoot, location.isHome ? "memory.db" : "beemax.db"))),
+			memberships: parseMemoryMemberships(cfg.memory?.memberships),
 		},
 		credentials: {
 			vaultPath: resolveFrom(location.basePath, str(env.BEEMAX_CREDENTIAL_VAULT_PATH ?? join(profileDataRoot, "credentials.vault"))),
@@ -297,6 +300,18 @@ function parseList(value: unknown): string[] {
 		.split(",")
 		.map((item) => item.trim())
 		.filter(Boolean);
+}
+
+function parseMemoryMemberships(value: unknown): MemoryMembership[] {
+	if (!Array.isArray(value)) return [];
+	return value.flatMap((item) => {
+		if (!item || typeof item !== "object" || Array.isArray(item)) return [];
+		const candidate = item as Record<string, unknown>;
+		const platform = str(candidate.platform);
+		const userId = str(candidate.userId);
+		if (!platform || !userId) return [];
+		return [{ platform, userId, projectId: optional(candidate.projectId), organizationId: optional(candidate.organizationId) }];
+	});
 }
 
 function parseGroupPolicy(value: unknown): "open" | "allowlist" | "disabled" { return value === "open" || value === "disabled" ? value : "allowlist"; }
