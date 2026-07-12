@@ -12,9 +12,11 @@
 
 import {
 	AgentRunError,
+	AdaptiveTextBuffer,
 	InteractionEventAdapter,
 	parseInteractionCommand,
 	sessionOwnerKey,
+	TurnStatusPulse,
 	type ToolApprovalBroker,
 	type InteractionEvent,
 	type AgentRuntimePort,
@@ -25,8 +27,6 @@ import { renderCard, type CardRenderOptions } from "../card/render.ts";
 import { FlushController } from "../card/flush.ts";
 import { MessageDeduplicator } from "./message-deduplicator.ts";
 import { prepareAgentMediaInput } from "./media-input.ts";
-import { AdaptiveTextBuffer } from "./stream-presentation.ts";
-import { TurnStatusPulse } from "./turn-status.ts";
 
 interface CardBinding {
 	source: InboundMessage["source"];

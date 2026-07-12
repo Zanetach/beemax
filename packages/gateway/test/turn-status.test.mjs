@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { TurnStatusPulse } from "../dist/core/turn-status.js";
+import { TurnStatusPulse } from "../../core/dist/index.js";
 
 test("TurnStatusPulse acknowledges immediately and reports truthful waiting time", async () => {
 	const statuses = [];

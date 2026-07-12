@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { AdaptiveTextBuffer } from "../dist/core/stream-presentation.js";
+import { AdaptiveTextBuffer } from "../../core/dist/index.js";
 
 test("AdaptiveTextBuffer hides tiny token deltas and commits readable sentences", async () => {
 	const chunks = [];
