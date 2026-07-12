@@ -50,6 +50,8 @@ export interface SubagentManagerOptions {
 	taskLedger?: TaskLedger;
 	maxRetainedTerminalTasks?: number;
 	shutdownGraceMs?: number;
+	/** Explicit authority to replay this executor after interruption; valid only for enforced read-only/idempotent Sub-Agents. */
+	safeRetry?: boolean;
 }
 
 const TERMINAL = new Set<SubagentTaskStatus>(["completed", "failed", "cancelled"]);
@@ -67,6 +69,7 @@ export class SubagentManager {
 	private readonly taskLedger?: TaskLedger;
 	private readonly maxRetainedTerminalTasks: number;
 	private readonly shutdownGraceMs: number;
+	private readonly safeRetry: boolean;
 	private running = 0;
 	private completionSequence = 0;
 	private disposed = false;
@@ -80,6 +83,7 @@ export class SubagentManager {
 		this.taskLedger = options.taskLedger;
 		this.maxRetainedTerminalTasks = Math.max(1, Math.min(Math.trunc(options.maxRetainedTerminalTasks ?? 1_000), 10_000));
 		this.shutdownGraceMs = Math.max(0, Math.min(Math.trunc(options.shutdownGraceMs ?? 30_000), 5 * 60_000));
+		this.safeRetry = options.safeRetry === true;
 	}
 
 	spawn(source: BeeMaxRuntimeSource, input: {
@@ -118,7 +122,7 @@ export class SubagentManager {
 			if (typeof this.taskLedger.recordPlan === "function") {
 				this.taskLedger.recordPlan([{
 					id, ownerKey, kind: "delegated", title: task.name, description, status: "pending", createdAt: task.createdAt,
-					planId, recoveryPolicy: "safe_retry", idempotencyKey: planId, executionScope: { ...source }, ...(task.parentId ? { parentId: task.parentId } : {}),
+					planId, recoveryPolicy: this.safeRetry ? "safe_retry" : "never", ...(this.safeRetry ? { idempotencyKey: planId } : {}), executionScope: { ...source }, ...(task.parentId ? { parentId: task.parentId } : {}),
 				}], [], { id: planId, ownerKey, title: task.name, status: "pending", taskCount: 1, succeeded: 0, failed: 0, cancelled: 0, verified: 0, correctiveAttempts: 0, createdAt: task.createdAt });
 			} else this.taskLedger.record({ id, ownerKey, kind: "delegated", title: task.name, status: "pending", createdAt: task.createdAt, ...(task.parentId ? { parentId: task.parentId } : {}) });
 		}

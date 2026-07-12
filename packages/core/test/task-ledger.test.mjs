@@ -47,7 +47,7 @@ test("delegated work retains its parent Objective", async () => {
 	await manager.dispose();
 });
 
-test("single Delegation persists as a recoverable one-Task Plan", async () => {
+test("single Delegation persists as a recoverable one-Task Plan only with explicit safe-retry authority", async () => {
 	const records = new Map(); const plans = new Map();
 	const ledger = {
 		record() { throw new Error("standalone record must use durable Plan"); },
@@ -55,7 +55,7 @@ test("single Delegation persists as a recoverable one-Task Plan", async () => {
 		transition(id, change) { records.set(id, { ...records.get(id), ...change }); return true; },
 		recordRun() {}, transitionRun() {},
 	};
-	const manager = new SubagentManager({ taskLedger: ledger, execute: async () => "done" });
+	const manager = new SubagentManager({ taskLedger: ledger, safeRetry: true, execute: async () => "done" });
 	const delegated = manager.spawn(source, { goal: "Research official docs", context: "Use primary sources" });
 	await manager.wait(source, delegated.id, 1_000);
 	const task = records.get(delegated.id);

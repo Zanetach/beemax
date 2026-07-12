@@ -53,7 +53,7 @@ export class SkillRegistry {
 		}
 		const byName = new Map<string, SkillDescriptor>();
 		for (const skill of found.sort((a, b) => a.sourcePriority - b.sourcePriority)) if (!byName.has(skill.name)) byName.set(skill.name, skill);
-		return [...byName.values()];
+		return Object.freeze([...byName.values()].map((skill) => Object.freeze(skill))) as unknown as SkillDescriptor[];
 	}
 
 	async search(query: string, limit = 5): Promise<SkillMatch[]> {

@@ -87,7 +87,10 @@ test("Skill Registries share one Profile catalog snapshot until explicit invalid
 	const f = fixture();
 	try {
 		const first = new SkillRegistry([f.skills]);
-		assert.match((await first.list())[0].description, /commercial contracts/);
+		const firstSnapshot = await first.list();
+		assert.match(firstSnapshot[0].description, /commercial contracts/);
+		assert.equal(Object.isFrozen(firstSnapshot), true);
+		assert.equal(Object.isFrozen(firstSnapshot[0]), true);
 		writeFileSync(join(f.skill, "SKILL.md"), `---\nname: contract-review\ndescription: "Changed description for a new catalog generation"\n---\nRules`);
 		const concurrentSession = new SkillRegistry([f.skills]);
 		assert.match((await concurrentSession.list())[0].description, /commercial contracts/);

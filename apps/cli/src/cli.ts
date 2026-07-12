@@ -1036,6 +1036,7 @@ async function runChat(config: ReturnType<typeof loadConfig>, requestedMode: { f
 		maxChildrenPerOwner: config.subagents.maxChildrenPerOwner,
 		defaultTimeoutMs: config.subagents.timeoutMs,
 		taskLedger: memory,
+		safeRetry: true,
 		admit: (ownerKey, work, signal) => taskScheduler.run(ownerKey, work, signal),
 		execute: (task, signal) => executeSubagentTask(createSubagentAgent, task, signal),
 	}) : undefined;

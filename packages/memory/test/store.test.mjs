@@ -140,7 +140,7 @@ test("memory evaluation reports Recall@K and forbidden cross-customer retrievals
 		const expectedId = store.remember({ ...a, role: "memory", content: "A客户要求周五交付蓝色PDF" });
 		const forbiddenId = store.remember({ ...b, role: "memory", content: "B客户要求周一交付红色PDF" });
 		assert.deepEqual(store.evaluateRecall([{ query: "蓝色PDF交付", options: a, expectedIds: [expectedId], forbiddenIds: [forbiddenId] }], 5), {
-			cases: 1, hits: 1, recallAtK: 1, forbiddenRetrieved: 0, forbiddenRetrievalRate: 0,
+			cases: 1, hitCases: 1, hitRateAtK: 1, expected: 1, expectedRetrieved: 1, recallAtK: 1, forbiddenRetrieved: 0, forbiddenRetrievalRate: 0,
 		});
 	} finally { store.close(); rmSync(root, { recursive: true, force: true }); }
 });

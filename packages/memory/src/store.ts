@@ -46,7 +46,7 @@ export interface MemoryRecallHit extends MemoryRecord {
 	object?: BusinessEntityRef;
 }
 export interface MemoryRecallEvaluationCase { query: string; options: RecallOptions; expectedIds: string[]; forbiddenIds?: string[]; }
-export interface MemoryRecallEvaluation { cases: number; hits: number; recallAtK: number; forbiddenRetrieved: number; forbiddenRetrievalRate: number; }
+export interface MemoryRecallEvaluation { cases: number; hitCases: number; hitRateAtK: number; expected: number; expectedRetrieved: number; recallAtK: number; forbiddenRetrieved: number; forbiddenRetrievalRate: number; }
 
 export interface RecallOptions {
 	profileId?: string;
@@ -752,14 +752,17 @@ export class MemoryStore {
 
 	evaluateRecall(cases: readonly MemoryRecallEvaluationCase[], k = 5): MemoryRecallEvaluation {
 		const boundedK = Math.max(1, Math.min(Math.trunc(k), 100));
-		let hits = 0; let forbiddenRetrieved = 0; let forbiddenTotal = 0;
+		let hitCases = 0; let expected = 0; let expectedRetrieved = 0; let forbiddenRetrieved = 0; let forbiddenTotal = 0;
 		for (const sample of cases) {
 			const ids = new Set(this.recallRanked(sample.query, { ...sample.options, limit: boundedK }).map((hit) => hit.id));
-			if (sample.expectedIds.some((id) => ids.has(id))) hits++;
+			const retrieved = sample.expectedIds.filter((id) => ids.has(id)).length;
+			expected += sample.expectedIds.length; expectedRetrieved += retrieved;
+			if (retrieved > 0) hitCases++;
 			for (const id of sample.forbiddenIds ?? []) { forbiddenTotal++; if (ids.has(id)) forbiddenRetrieved++; }
 		}
 		return {
-			cases: cases.length, hits, recallAtK: cases.length ? hits / cases.length : 0,
+			cases: cases.length, hitCases, hitRateAtK: cases.length ? hitCases / cases.length : 0,
+			expected, expectedRetrieved, recallAtK: expected ? expectedRetrieved / expected : 0,
 			forbiddenRetrieved, forbiddenRetrievalRate: forbiddenTotal ? forbiddenRetrieved / forbiddenTotal : 0,
 		};
 	}
