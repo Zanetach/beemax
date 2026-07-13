@@ -46,7 +46,7 @@ test("Agent runtime continues once after capability discovery so activated tools
 		subscribe: (next) => { listener = next; return () => undefined; },
 		prompt: async (text) => {
 			prompts.push(text);
-			if (prompts.length === 1) listener({ type: "tool_execution_end", toolCallId: "discover", toolName: "capability_discover", result: {}, isError: false });
+			if (prompts.length === 1) listener({ type: "tool_execution_end", toolCallId: "discover", toolName: "capability_discover", result: { details: { activatedTools: ["web_search"] } }, isError: false });
 			agent.state.messages = [{ role: "assistant", content: [{ type: "text", text: "done" }], usage: { input: 1, output: 1 } }];
 		},
 		abort: async () => undefined, dispose: () => undefined,
@@ -55,6 +55,46 @@ test("Agent runtime continues once after capability discovery so activated tools
 	assert.equal(prompts.length, 2);
 	assert.match(prompts[1], /capability continuation/i);
 	assert.doesNotMatch(prompts[1], /current weather/i);
+	runtime.dispose();
+});
+
+test("Agent runtime reroutes one unresolved Tool failure through capability discovery before giving up", async () => {
+	const source = { platform: "cli", chatId: "reroute", chatType: "dm", userId: "local" };
+	let listener; const prompts = []; const agent = { state: { model: { id: "test" }, messages: [] } };
+	const runtime = new BeeMaxAgentRuntime({ createAgent: async () => ({
+		agent, getActiveToolNames: () => ["capability_discover", "primary_search", "alternate_search"], setActiveToolsByName: () => undefined,
+		getAllTools: () => [{ name: "primary_search", description: "Primary search", beemaxPolicy: { sideEffect: "none" } }],
+		subscribe: (next) => { listener = next; return () => undefined; },
+		prompt: async (text) => {
+			prompts.push(text);
+			if (prompts.length === 1) listener({ type: "tool_execution_end", toolCallId: "failed", toolName: "primary_search", result: {}, isError: true });
+			if (prompts.length === 2) listener({ type: "tool_execution_end", toolCallId: "discover", toolName: "capability_discover", result: { details: { activatedTools: ["alternate_search"] } }, isError: false });
+			if (prompts.length === 3) listener({ type: "tool_execution_end", toolCallId: "alternate", toolName: "alternate_search", result: {}, isError: false });
+			agent.state.messages = [{ role: "assistant", content: [{ type: "text", text: "done" }], usage: { input: 1, output: 1 } }];
+		},
+		abort: async () => undefined, dispose: () => undefined,
+	}) });
+	await runtime.run({ source, text: "find current evidence", timeoutMs: 1_000 });
+	assert.equal(prompts.length, 3);
+	assert.match(prompts[1], /primary_search/);
+	assert.match(prompts[1], /capability_discover/);
+	assert.match(prompts[1], /do not retry the same external mutation/i);
+	assert.match(prompts[2], /capability continuation/i);
+	runtime.dispose();
+});
+
+test("Agent runtime never auto-reroutes an unresolved external mutation", async () => {
+	const source = { platform: "cli", chatId: "write-failure", chatType: "dm", userId: "local" };
+	let listener; const prompts = []; const agent = { state: { model: { id: "test" }, messages: [] } };
+	const runtime = new BeeMaxAgentRuntime({ createAgent: async () => ({
+		agent, getActiveToolNames: () => ["capability_discover", "external_write"], setActiveToolsByName: () => undefined,
+		getAllTools: () => [{ name: "external_write", description: "Write externally", beemaxPolicy: { sideEffect: "external" } }],
+		subscribe: (next) => { listener = next; return () => undefined; },
+		prompt: async (text) => { prompts.push(text); listener({ type: "tool_execution_end", toolCallId: "write", toolName: "external_write", result: {}, isError: true }); agent.state.messages = [{ role: "assistant", content: [{ type: "text", text: "failed" }], usage: { input: 1, output: 1 } }]; },
+		abort: async () => undefined, dispose: () => undefined,
+	}) });
+	await runtime.run({ source, text: "perform write", timeoutMs: 1_000 });
+	assert.equal(prompts.length, 1);
 	runtime.dispose();
 });
 

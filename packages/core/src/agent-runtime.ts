@@ -170,6 +170,7 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 			const supportsProgressiveTools = typeof session.piSession.getActiveToolNames === "function" && typeof session.piSession.setActiveToolsByName === "function";
 			const activeTools = supportsProgressiveTools ? session.piSession.getActiveToolNames() : undefined;
 			const allTools = typeof session.piSession.getAllTools === "function" ? session.piSession.getAllTools() : [];
+			const toolSideEffects = new Map(allTools.map((tool) => [tool.name, (tool as { beemaxPolicy?: { sideEffect?: string } }).beemaxPolicy?.sideEffect]));
 			const prefetchedTools = understanding ? selectTurnTools(understanding.capabilityQuery, allTools) : [];
 			const progressiveTools = [...new Set(["capability_discover", ...(planning?.requiredTools ?? []), ...prefetchedTools])];
 			if (activeTools) session.piSession.setActiveToolsByName(progressiveTools);
@@ -181,6 +182,8 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 			const requiredToolCalls = new Map<string, { name: string; args?: unknown }>();
 			let delegatedTaskId: string | undefined;
 			let discoveredCapabilities = false;
+			let singleFailedReadTool: string | undefined;
+			let nonDiscoveryOutcomes = 0;
 			const unsubscribe = session.piSession.subscribe((event) => {
 				if (event.type === "tool_execution_start") {
 					observableProgress = true;
@@ -192,7 +195,11 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 						void session.piSession.abort();
 					}
 				} else if (event.type === "tool_execution_end") {
-					if (event.toolName === "capability_discover" && !event.isError) discoveredCapabilities = true;
+					if (event.toolName === "capability_discover" && !event.isError) discoveredCapabilities = capabilityDiscoveryHasMatches(event.result);
+					else if (event.toolName !== "capability_discover") {
+						nonDiscoveryOutcomes++;
+						singleFailedReadTool = nonDiscoveryOutcomes === 1 && event.isError && toolSideEffects.get(event.toolName) === "none" ? event.toolName : undefined;
+					}
 					const pending = requiredToolCalls.get(event.toolCallId);
 					requiredToolCalls.delete(event.toolCallId);
 					if (pending && pending.name === event.toolName && !event.isError) {
@@ -223,7 +230,11 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 					source: input.mode === "automation" ? "extension" : undefined,
 					images: input.images,
 				});
-				if (discoveredCapabilities) {
+				if (singleFailedReadTool && !discoveredCapabilities && !budgetExceeded) {
+					const failedTool = singleFailedReadTool; singleFailedReadTool = undefined;
+					await session.piSession.prompt(`[BeeMax capability reroute: ${failedTool} failed and no later Tool succeeded. Use capability_discover now to find an already available alternative, then continue the original request. Do not retry the same external mutation; reconcile any uncertain side effect before another write.]`, { expandPromptTemplates: false });
+				}
+				if (discoveredCapabilities && !budgetExceeded) {
 					discoveredCapabilities = false;
 					await session.piSession.prompt("[BeeMax capability continuation: matching Tools or Skills are now active. Continue the original request using them. Do not repeat capability discovery.]", { expandPromptTemplates: false });
 				}
@@ -407,6 +418,13 @@ function releaseHistoricalSkillContext(session: AgentSession, fromIndex = 0): vo
 		messages ??= [...current]; messages[index] = { ...message, content: [{ type: "text" as const, text: "[Turn-scoped Skill context released; version and loaded-resource summary retained in tool details.]" }] };
 	}
 	if (messages) session.agent.state.messages = messages;
+}
+
+function capabilityDiscoveryHasMatches(result: unknown): boolean {
+	const details = result && typeof result === "object" ? (result as { details?: unknown }).details : undefined;
+	if (!details || typeof details !== "object") return false;
+	const value = details as { activatedTools?: unknown; tools?: unknown; skills?: unknown };
+	return Array.isArray(value.activatedTools) && value.activatedTools.length > 0 || Array.isArray(value.tools) && value.tools.length > 0 || Array.isArray(value.skills) && value.skills.length > 0;
 }
 
 function isObjectiveContinuation(text: string): boolean { return /^(?:(?:继续|接着|补充|换成|改成|再加|先不要)(?:\s|处理|这个|该|中文|英文|一个|做|$)|(?:continue|go on|change|add)\b)/iu.test(text.trim()); }
