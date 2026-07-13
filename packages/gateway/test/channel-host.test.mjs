@@ -82,3 +82,35 @@ test("ChannelHost pause and resume changes routability without restarting the Pr
 	assert.equal(host.resolveAdapter("alpha").name, "alpha");
 	await host.stop();
 });
+
+test("ChannelHost bounds a hung adapter connection without blocking healthy channels", async () => {
+	const registry = new AdapterRegistry();
+	registry.register({ id: "healthy", create: () => adapter("healthy", []) });
+	registry.register({ id: "hung", create: () => adapter("hung", [], async () => new Promise(() => undefined)) });
+	const host = new ChannelHost(registry, [
+		{ id: "healthy-main", adapter: "healthy", enabled: true, settings: {} },
+		{ id: "hung-main", adapter: "hung", enabled: true, settings: {} },
+	], { connectAttempts: 1, connectTimeoutMs: 10 });
+	const startedAt = Date.now();
+	const snapshot = await host.start();
+	assert.ok(Date.now() - startedAt < 200);
+	assert.equal(snapshot.channels.find((channel) => channel.id === "healthy-main").state, "connected");
+	assert.match(snapshot.channels.find((channel) => channel.id === "hung-main").lastError, /timed out/);
+	await host.stop();
+});
+
+test("ChannelHost reconnects an adapter that disconnects after startup", async () => {
+	const events = [];
+	const registry = new AdapterRegistry();
+	registry.register({ id: "alpha", create: () => adapter("alpha", events) });
+	const host = new ChannelHost(registry, [{ id: "alpha-main", adapter: "alpha", enabled: true, settings: {} }], {
+		connectAttempts: 1, retryBaseDelayMs: 0, supervisionIntervalMs: 5,
+	});
+	await host.start();
+	const running = host.adapter("alpha-main");
+	running.isConnected = false;
+	for (let attempt = 0; events.filter((event) => event === "alpha:connect").length < 2 && attempt < 100; attempt++) await new Promise((resolve) => setTimeout(resolve, 2));
+	assert.equal(events.filter((event) => event === "alpha:connect").length, 2);
+	assert.equal(host.resolveAdapter("alpha"), running);
+	await host.stop();
+});

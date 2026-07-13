@@ -21,7 +21,6 @@ import {
 	type InteractionEvent,
 	type AgentRuntimePort,
 	type DeliveryTarget,
-	type ExecutionEnvelope,
 	type TaskPlanProgressEvent,
 } from "@beemax/core";
 import type { InboundMessage, PlatformAdapter, PlatformCardAction, SendResult } from "./types.ts";
@@ -331,34 +330,6 @@ export class Dispatcher {
 		return this.runtime.isBusy();
 	}
 
-	async runAutomation(
-		source: InboundMessage["source"],
-		prompt: string,
-		options: { key: string; timeoutMs: number; signal?: AbortSignal; executionEnvelope?: Readonly<ExecutionEnvelope>; objectiveTaskId?: string; allowedCapabilities?: string[] },
-	): Promise<string> {
-		const automationSource = { ...source, threadId: `__automation:${options.key}`, messageId: undefined };
-		const msg: InboundMessage = {
-			text: prompt,
-			messageType: "text",
-			source: automationSource,
-			mediaPaths: [],
-			mediaTypes: [],
-			raw: { automation: options.key },
-			timestamp: Date.now(),
-		};
-		if (options.signal?.aborted) throw options.signal.reason;
-		let rejectAbort: ((reason: unknown) => void) | undefined;
-		const aborted = options.signal ? new Promise<never>((_resolve, reject) => { rejectAbort = reject; }) : undefined;
-		const abort = () => { void this.runtime.cancel(automationSource); rejectAbort?.(options.signal?.reason ?? new Error("Automation aborted")); };
-		options.signal?.addEventListener("abort", abort, { once: true });
-		let result;
-		try {
-			result = await Promise.race([this.runtime.run({ source: msg.source, text: prompt, timeoutMs: options.timeoutMs, expandPromptTemplates: false, mode: "automation", ...(options.objectiveTaskId ? { objectiveTaskId: options.objectiveTaskId } : {}), ...(options.allowedCapabilities ? { allowedCapabilities: options.allowedCapabilities } : {}), ...(options.executionEnvelope ? { executionEnvelope: options.executionEnvelope } : {}) }), ...(aborted ? [aborted] : [])]);
-		} finally { options.signal?.removeEventListener("abort", abort); }
-		if (!result.answer.trim() || result.answer === "(no response)") throw new Error("Automation agent returned no answer");
-		return result.answer.trim();
-	}
-
 	async presentWorkProgress(target: DeliveryTarget, event: TaskPlanProgressEvent, idempotencyKey?: string): Promise<void> {
 		if (target.platform !== this.platform.name) throw new Error(`Cannot present ${target.platform} work through ${this.platform.name}`);
 		const card = new CardSession();
@@ -481,15 +452,21 @@ export class Dispatcher {
 				await flush.schedule(renderUpdate, true);
 				break;
 			case "approval.requested":
+				{
+				const message = event.details
+					? `等待审批：${event.toolName}\n目标：${event.details.target}\n风险：${event.details.risk} · ${event.details.impact}\n可逆性：${event.details.reversibility}\n回复 1（一次）/ 2（本会话）/ 3（拒绝），或 /stop 取消。`
+					: `等待审批：${event.toolName}\n回复 1（一次）/ 2（本会话）/ 3（拒绝），或 /stop 取消。`;
 				card.apply("approval.updated", {
 					id: `approval:${event.turnId}`,
 					status: "pending",
-					message: event.details
-						? `等待审批：${event.toolName}\n目标：${event.details.target}\n风险：${event.details.risk} · ${event.details.impact}\n可逆性：${event.details.reversibility}\n回复 1（一次）/ 2（本会话）/ 3（拒绝），或 /stop 取消。`
-						: `等待审批：${event.toolName}`,
+					message,
 				});
-				await flush.schedule(renderUpdate, false, true);
+				if (!this.platform.sendCard || !this.platform.updateCard) {
+					const result = await this.platform.send(event.scope.chatId, message, { idempotencyKey: `approval:${event.turnId}` });
+					if (!result.success) throw new Error(result.error ?? `Failed to present approval for ${event.toolName}`);
+				} else await flush.schedule(renderUpdate, false, true);
 				break;
+				}
 			case "approval.resolved":
 				card.apply("approval.updated", { id: `approval:${event.turnId}`, status: event.allowed ? "allowed" : "denied", message: `${event.toolName}：${event.allowed ? "已允许" : "已拒绝"}` });
 				await flush.schedule(renderUpdate, false, true);

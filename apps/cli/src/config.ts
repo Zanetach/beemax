@@ -184,8 +184,8 @@ export function loadConfig(configPath?: string, profile = "default"): BeeMaxConf
 		...(configuredFeishuChannel?.settings ?? {}),
 	} as Partial<FeishuConfig>;
 
-	const appId = str(env.FEISHU_APP_ID ?? configuredFeishu?.appId);
-	const appSecret = str(env.FEISHU_APP_SECRET ?? configuredFeishu?.appSecret);
+	const appId = str(env.FEISHU_APP_ID);
+	const appSecret = str(env.FEISHU_APP_SECRET);
 
 	const provider = str(env.BEEMAX_PROVIDER ?? cfg.model?.provider ?? "anthropic");
 	const model = str(env.BEEMAX_MODEL ?? cfg.model?.model ?? "claude-sonnet-4-5");
@@ -440,11 +440,16 @@ function parseGatewayChannels(value: unknown): GatewayChannelConfig[] {
 		}
 		const settings = structuredClone((rawSettings ?? {}) as Record<string, unknown>);
 		assertNoChannelSecrets(settings, `gateway.channels[${index}].settings`);
+		const enabled = candidate.enabled === undefined ? true : parseBool(candidate.enabled);
+		const credentialRef = optional(candidate.credentialRef);
+		if (enabled && (adapter === "feishu" || adapter === "telegram") && !credentialRef) {
+			throw new Error(`gateway.channels[${index}].credentialRef is required for ${adapter}`);
+		}
 		return {
 			id,
 			adapter,
-			enabled: candidate.enabled === undefined ? true : parseBool(candidate.enabled),
-			...(optional(candidate.credentialRef) ? { credentialRef: optional(candidate.credentialRef) } : {}),
+			enabled,
+			...(credentialRef ? { credentialRef } : {}),
 			settings,
 		};
 	});

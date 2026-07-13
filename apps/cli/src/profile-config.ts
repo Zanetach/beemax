@@ -431,7 +431,9 @@ export async function migrateProfile(profile: string, options: ProfileStorageOpt
 	const raw = await readFile(legacy.configPath, "utf8");
 	const originalConfig = configFromYaml(raw);
 	const legacyEnv = await readEnvFile(legacy.envPath);
+	const legacyFeishu = { ...asRecord(originalConfig.feishu), ...asRecord(asRecord(originalConfig.gateway).feishu) };
 	const config = structuredClone(originalConfig);
+	scrubLegacyChannelSecrets(config);
 	const agent = asRecord(config.agent);
 	const legacyIdentity = legacyEnv.BEEMAX_SYSTEM_PROMPT?.trim()
 		|| (typeof agent.systemPrompt === "string" ? agent.systemPrompt.trim() : "")
@@ -450,6 +452,10 @@ export async function migrateProfile(profile: string, options: ProfileStorageOpt
 	const oldImages = absoluteFrom(root, legacyEnv.BEEMAX_IMAGE_OUTPUT_DIR || stringAt(originalConfig, ["imageGeneration", "outputDir"]) || join(legacy.dataPath, "cache", "images"));
 	const oldAgent = absoluteFrom(root, legacyEnv.BEEMAX_AGENT_DIR || stringAt(originalConfig, ["paths", "agentDir"]) || join(legacy.dataPath, "agent"));
 	const migratedEnv = { ...legacyEnv };
+	for (const [envKey, configKey] of [["FEISHU_APP_ID", "appId"], ["FEISHU_APP_SECRET", "appSecret"], ["FEISHU_WEBHOOK_VERIFICATION_TOKEN", "webhookVerificationToken"], ["FEISHU_WEBHOOK_ENCRYPT_KEY", "webhookEncryptKey"]] as const) {
+		const legacyValue = legacyFeishu[configKey];
+		if (!migratedEnv[envKey] && typeof legacyValue === "string" && legacyValue.trim()) migratedEnv[envKey] = legacyValue.trim();
+	}
 	for (const key of PROFILE_ROUTING_ENV) delete migratedEnv[key];
 
 	const temp = `${target.homePath}.migrating-${crypto.randomUUID()}`;
@@ -616,6 +622,14 @@ function upsertGatewayChannel(value: unknown, channel: Record<string, unknown>):
 function removeGatewayChannel(value: unknown, adapter: string): Record<string, unknown>[] {
 	if (!Array.isArray(value)) return [];
 	return value.filter((entry) => !entry || typeof entry !== "object" || Array.isArray(entry) || (entry as Record<string, unknown>).adapter !== adapter) as Record<string, unknown>[];
+}
+
+function scrubLegacyChannelSecrets(config: Record<string, unknown>): void {
+	for (const owner of [config, asRecord(config.gateway)]) {
+		const feishu = asRecord(owner.feishu);
+		for (const key of ["appId", "appSecret", "webhookVerificationToken", "webhookEncryptKey"]) delete feishu[key];
+		if (Object.keys(feishu).length) owner.feishu = feishu;
+	}
 }
 
 function sameModelChoice(value: unknown, model: { provider: string; model: string }): boolean {

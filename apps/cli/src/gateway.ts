@@ -8,7 +8,7 @@
  */
 
 import { AutomationStore } from "@beemax/automation";
-import { ActionGovernance, AutonomyRolloutController, AutomationScheduler, BeeMaxAgentRuntime, DeterministicSituationBuilder, FileCredentialVault, FileCredentialVaultAuditJournal, HeartbeatRunner, InitiativeRuntime, InitiativeTriggerService, ProactiveInvestigationRuntime, TaskPlanNoticeDeliveryService, TaskTransitionInitiativeAdapter, ToolApprovalBroker, ToolPolicyRegistry, buildActiveTaskPreservationEnvelope, buildTaskPreservationEnvelope, canonicalUserId, containsCredentialMaterial, conversationKey, responsibilityOwnerKey, responsibilityOwnerKeys, createExecutionEnvelope, createSubagentTools, createTaskCheckpoint, createTaskLedgerTools, createTaskOrchestrationTools, decideInitiativeFromSituation, guardVerifiedObjectiveMemoryPublisher, redactCredentialMaterial, renderTaskCheckpoint, type BeeMaxAgentRunEvent, type BeeMaxAgentRunEventSink, type ContextCompactionAuditEvent, type DeliveryPort, type ExecutionEnvelope, type ExecutionTraceSink, type InitiativeObservation, type ObjectiveDeliveryInput, type SkillCandidateTrialInput, type SkillTrialAssertion, type SkillTrialToolCall, type SubagentTask, type TaskGraphExecutionContext, type TaskGraphExecutionResult, type TaskGraphVerifier, type TaskLedger, type TaskRecord, type ToolEffectProjectionReader, type VerifiedObjectiveMemoryPublisher } from "@beemax/core";
+import { ActionGovernance, AutonomyRolloutController, AutomationScheduler, BeeMaxAgentRuntime, DeterministicSituationBuilder, FileCredentialVault, FileCredentialVaultAuditJournal, HeartbeatRunner, InitiativeRuntime, InitiativeTriggerService, ProactiveInvestigationRuntime, TaskPlanNoticeDeliveryService, TaskTransitionInitiativeAdapter, ToolApprovalBroker, ToolPolicyRegistry, buildActiveTaskPreservationEnvelope, buildTaskPreservationEnvelope, canonicalUserId, containsCredentialMaterial, conversationKey, responsibilityOwnerKey, responsibilityOwnerKeys, createExecutionEnvelope, createSubagentTools, createTaskCheckpoint, createTaskLedgerTools, createTaskOrchestrationTools, decideInitiativeFromSituation, guardVerifiedObjectiveMemoryPublisher, redactCredentialMaterial, renderTaskCheckpoint, type AgentRuntimePort, type BeeMaxAgentRunEvent, type BeeMaxAgentRunEventSink, type ContextCompactionAuditEvent, type DeliveryPort, type ExecutionEnvelope, type ExecutionTraceSink, type InitiativeObservation, type ObjectiveDeliveryInput, type SkillCandidateTrialInput, type SkillTrialAssertion, type SkillTrialToolCall, type SubagentTask, type TaskGraphExecutionContext, type TaskGraphExecutionResult, type TaskGraphVerifier, type TaskLedger, type TaskRecord, type ToolEffectProjectionReader, type VerifiedObjectiveMemoryPublisher } from "@beemax/core";
 import {
 	AdapterRegistry,
 	ChannelHost,
@@ -39,6 +39,37 @@ import { configuredMediaUnderstanding, configuredRuntimeModels } from "./model-c
 import { setFeishuHomeChat } from "./profile-config.ts";
 import { createMemoryScopeResolver } from "./memory-membership.ts";
 import { createLocalMediaUnderstandingAdapters } from "./local-media-understanding.ts";
+
+async function runProfileAutomation(
+	runtime: AgentRuntimePort<SessionSource>,
+	source: SessionSource,
+	prompt: string,
+	options: { key: string; timeoutMs: number; signal?: AbortSignal; executionEnvelope?: Readonly<ExecutionEnvelope>; objectiveTaskId?: string; allowedCapabilities?: string[] },
+): Promise<string> {
+	const automationSource = { ...source, threadId: `__automation:${options.key}`, messageId: undefined };
+	if (options.signal?.aborted) throw options.signal.reason;
+	let rejectAbort: ((reason: unknown) => void) | undefined;
+	const aborted = options.signal ? new Promise<never>((_resolve, reject) => { rejectAbort = reject; }) : undefined;
+	const abort = () => { void runtime.cancel(automationSource); rejectAbort?.(options.signal?.reason ?? new Error("Automation aborted")); };
+	options.signal?.addEventListener("abort", abort, { once: true });
+	let result;
+	try {
+		result = await Promise.race([runtime.run({
+			source: automationSource,
+			text: prompt,
+			timeoutMs: options.timeoutMs,
+			expandPromptTemplates: false,
+			mode: "automation",
+			...(options.objectiveTaskId ? { objectiveTaskId: options.objectiveTaskId } : {}),
+			...(options.allowedCapabilities ? { allowedCapabilities: options.allowedCapabilities } : {}),
+			...(options.executionEnvelope ? { executionEnvelope: options.executionEnvelope } : {}),
+		}), ...(aborted ? [aborted] : [])]);
+	} finally {
+		options.signal?.removeEventListener("abort", abort);
+	}
+	if (!result.answer.trim() || result.answer === "(no response)") throw new Error("Automation agent returned no answer");
+	return result.answer.trim();
+}
 
 export async function runGateway(config: BeeMaxConfig): Promise<void> {
 	const enabledChannels = config.gateway.channels.filter((channel) => channel.enabled);
@@ -346,8 +377,6 @@ export async function runGateway(config: BeeMaxConfig): Promise<void> {
 		},
 		channelAdapter,
 	)]));
-	const executionDispatcher = dispatchers.values().next().value as Dispatcher | undefined;
-	if (!executionDispatcher) throw new Error("Gateway has no channel dispatcher");
 	const taskPlanNotices = [...dispatchers.entries()].map(([platform, channelDispatcher]) => new TaskPlanNoticeDeliveryService(persistence.completionOutbox, deliveryPort, {
 		platform,
 		deliverObjective: (notice, signal) => objectiveRuntime.settlePlanIfLinked(notice.ownerKey, notice.planId, notice.planStatus, signal),
@@ -372,7 +401,7 @@ export async function runGateway(config: BeeMaxConfig): Promise<void> {
 		const timeoutMs = 10 * 60_000;
 		const triggerId = `schedule:${job.id}:${job.nextRunAt}`;
 		const executionEnvelope = createExecutionEnvelope({ executionId: `automation:${job.id}:${job.nextRunAt}`, trigger: { kind: "automation", id: triggerId }, budget: { deadlineAt: Date.now() + timeoutMs, maxCorrectiveAttempts: 1 }, mode: "normal" });
-		const answer = await executionDispatcher.runAutomation(source, job.text, { key: `schedule:${job.id}`, timeoutMs, signal, executionEnvelope });
+		const answer = await runProfileAutomation(runtime, source, job.text, { key: `schedule:${job.id}`, timeoutMs, signal, executionEnvelope });
 		assertClaim(); await deliveryPort.sendText(job, `🗓️ ${job.name}\n\n${answer}`, { idempotencyKey: `automation:${job.id}:${job.nextRunAt}` });
 		return { output: answer };
 	}, 4);
@@ -409,7 +438,7 @@ export async function runGateway(config: BeeMaxConfig): Promise<void> {
 				budget: input.budget,
 				mode: "normal",
 			});
-			const answer = await executionDispatcher.runAutomation(input.executionScope as SessionSource, input.prompt, {
+			const answer = await runProfileAutomation(runtime, input.executionScope as SessionSource, input.prompt, {
 				key: `initiative:${input.observation.dedupeKey}`,
 				timeoutMs,
 				objectiveTaskId: input.objective.id,
@@ -453,7 +482,7 @@ export async function runGateway(config: BeeMaxConfig): Promise<void> {
 		},
 		async () => { throw new Error("Legacy heartbeat Agent execution is disabled in Initiative observe-only mode"); },
 		{ sendText: (route, text) => deliveryPort.sendText(route, `💓 ${text}`), sendMedia: (route, media) => deliveryPort.sendMedia(route, media) },
-		() => [...dispatchers.values()].some((channelDispatcher) => channelDispatcher.isBusy()),
+		() => runtime.isBusy(),
 		async (input) => {
 			if (!autonomyRollout.allows("initiative_observation").allowed) return { kind: "ignored" };
 			const result = await initiative.observe({
@@ -878,6 +907,6 @@ async function settleBackgroundWork(work: Promise<unknown>, timeoutMs: number, l
 }
 
 function assertChannelCredentialRef(credentialRef: string | undefined, adapter: string): void {
-	if (!credentialRef || credentialRef === `profile-env:${adapter}`) return;
+	if (credentialRef === `profile-env:${adapter}`) return;
 	throw new Error(`Unsupported Credential Ref for ${adapter}: expected profile-env:${adapter}`);
 }

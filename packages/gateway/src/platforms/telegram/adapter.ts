@@ -83,12 +83,14 @@ export class TelegramAdapter implements PlatformAdapter {
 
 	async connect(): Promise<boolean> {
 		if (this.connected) return true;
-		const identity = await this.api<TelegramUser>("getMe", {});
-		if (!identity) return false;
-		this.abortController = new AbortController();
+		const controller = new AbortController();
+		this.abortController = controller;
+		try { await this.api<TelegramUser>("getMe", {}, controller.signal); }
+		catch (error) { if (this.abortController === controller) this.abortController = undefined; throw error; }
+		if (controller.signal.aborted) return false;
 		this.connected = true;
-		this.pollTask = this.pollLoop(this.abortController.signal).catch((error) => {
-			if (!this.abortController?.signal.aborted) console.error(`[beemax] Telegram polling stopped: ${safeError(error)}`);
+		this.pollTask = this.pollLoop(controller.signal).catch((error) => {
+			if (!controller.signal.aborted) console.error(`[beemax] Telegram polling stopped: ${safeError(error)}`);
 		}).finally(() => { this.connected = false; });
 		return true;
 	}
@@ -99,7 +101,7 @@ export class TelegramAdapter implements PlatformAdapter {
 		const task = this.pollTask;
 		this.abortController = undefined;
 		this.pollTask = undefined;
-		if (task) await Promise.race([task.catch(() => undefined), wait(2_000)]);
+		if (task) await settleWithin(task.catch(() => undefined), 2_000);
 	}
 
 	async send(chatId: string, content: string, opts: SendOptions = {}): Promise<SendResult> {
@@ -277,7 +279,12 @@ function wait(ms: number, signal?: AbortSignal): Promise<void> {
 	if (ms <= 0 || signal?.aborted) return Promise.resolve();
 	return new Promise((resolve) => {
 		const timer = setTimeout(resolve, ms);
-		timer.unref?.();
 		signal?.addEventListener("abort", () => { clearTimeout(timer); resolve(); }, { once: true });
 	});
+}
+async function settleWithin(work: Promise<unknown>, timeoutMs: number): Promise<void> {
+	let timer: ReturnType<typeof setTimeout> | undefined;
+	try {
+		await Promise.race([work, new Promise<void>((resolve) => { timer = setTimeout(resolve, timeoutMs); })]);
+	} finally { if (timer) clearTimeout(timer); }
 }

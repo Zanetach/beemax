@@ -145,6 +145,21 @@ gateway:
 	assert.doesNotMatch(await readFile(paths.configPath, "utf8"), /telegram-secret/);
 });
 
+test("channel config rejects missing Credential Refs and never activates YAML-embedded Secrets", async () => {
+	const root = await mkdtemp(join(tmpdir(), "beemax-channel-secret-root-"));
+	const home = await mkdtemp(join(tmpdir(), "beemax-channel-secret-home-"));
+	const paths = await createProfile("secrets", { root, home });
+	await writeFile(paths.configPath, `gateway:\n  channels:\n    - id: telegram-main\n      adapter: telegram\n      enabled: true\n      settings: {}\n`);
+	await writeFile(paths.envPath, 'TELEGRAM_BOT_TOKEN="protected"\n', { mode: 0o600 });
+	assert.throws(() => loadConfig(paths.configPath, "secrets"), /credentialRef is required/);
+	await writeFile(paths.configPath, `gateway:\n  feishu:\n    appId: yaml-app\n    appSecret: yaml-secret\n`);
+	await writeFile(paths.envPath, "", { mode: 0o600 });
+	const ignored = loadConfig(paths.configPath, "secrets");
+	assert.equal(ignored.gateway.feishu.appId, "");
+	assert.equal(ignored.gateway.feishu.appSecret, "");
+	assert.deepEqual(ignored.gateway.channels, []);
+});
+
 test("Telegram channel lifecycle persists only non-secret settings in the registry config", async () => {
 	const root = await mkdtemp(join(tmpdir(), "beemax-telegram-profile-root-"));
 	const home = await mkdtemp(join(tmpdir(), "beemax-telegram-profile-home-"));
@@ -236,6 +251,10 @@ test("legacy profiles migrate into an isolated home without deleting their sourc
 		"model:",
 		"  provider: anthropic",
 		"  model: claude-sonnet-4-5",
+		"gateway:",
+		"  feishu:",
+		"    appId: legacy-app",
+		"    appSecret: legacy-channel-secret",
 		"memory:",
 		"  dbPath: data/profiles/legacy/beemax.db",
 		"mcp:",
@@ -271,7 +290,10 @@ test("legacy profiles migrate into an isolated home without deleting their sourc
 	assert.equal(await readFile(join(migrated.homePath, "mcp.json"), "utf8"), "{}\n");
 	const migratedEnv = await readFile(migrated.envPath, "utf8");
 	assert.match(migratedEnv, /BEEMAX_API_KEY/);
+	assert.match(migratedEnv, /FEISHU_APP_ID="legacy-app"/);
+	assert.match(migratedEnv, /FEISHU_APP_SECRET="legacy-channel-secret"/);
 	assert.doesNotMatch(migratedEnv, /BEEMAX_(DB_PATH|AGENT_DIR|CWD|SYSTEM_PROMPT|HOME)/);
+	assert.doesNotMatch(await readFile(migrated.configPath, "utf8"), /legacy-channel-secret|appSecret/);
 	assert.match(await readFile(join(legacyConfigDir, "legacy.yaml"), "utf8"), /legacy BeeMax identity/);
 
 	const config = loadConfig(migrated.configPath, "legacy");

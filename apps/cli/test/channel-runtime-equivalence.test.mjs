@@ -13,7 +13,7 @@ test("one channel-neutral contract preserves Task, Effect, Verification, cancell
 	const memory = new MemoryStore(join(root, "memory.db"), "personal");
 	const cli = { platform: "cli", chatId: "local", chatType: "dm", userId: "local", userIdAlt: "employee-7" };
 	const feishu = { platform: "feishu", chatId: "oc-chat", chatType: "dm", userId: "ou-app", userIdAlt: "employee-7" };
-	const future = { platform: "future-channel", chatId: "conversation", chatType: "dm", userId: "adapter-user", userIdAlt: "employee-7" };
+	const telegram = { platform: "telegram", chatId: "conversation", chatType: "dm", userId: "adapter-user", userIdAlt: "employee-7" };
 	const ownerKey = responsibilityOwnerKey(cli);
 	const profile = await createProfileRuntime({
 		work: {
@@ -32,16 +32,16 @@ test("one channel-neutral contract preserves Task, Effect, Verification, cancell
 		const graph = new TaskGraph(memory);
 		graph.createPlan({ id: "active-plan", ownerKey, tasks: [{ id: "active-task", title: "Continue responsibility", recoveryPolicy: "safe_retry", idempotencyKey: "active-plan:task", executionScope: cli }] }, 1);
 		assert.deepEqual(profile.runtime.tasks(feishu, { planId: "active-plan" }).map((task) => task.id), ["active-task"]);
-		assert.deepEqual(profile.runtime.tasks(future, { planId: "active-plan" }).map((task) => task.id), ["active-task"]);
+		assert.deepEqual(profile.runtime.tasks(telegram, { planId: "active-plan" }).map((task) => task.id), ["active-task"]);
 		assert.deepEqual(profile.runtime.taskPlans(feishu, { id: "active-plan" }).map((plan) => plan.id), ["active-plan"]);
 		const memoryId = memory.remember({ platform: cli.platform, chatId: cli.chatId, userId: cli.userIdAlt, role: "memory", content: "Channel-local conversation evidence" });
-		assert.equal(memory.recall("conversation evidence", { platform: future.platform, chatId: future.chatId, userId: future.userIdAlt, limit: 10 }).some((item) => item.id === memoryId), false);
+		assert.equal(memory.recall("conversation evidence", { platform: telegram.platform, chatId: telegram.chatId, userId: telegram.userIdAlt, limit: 10 }).some((item) => item.id === memoryId), false);
 
 		const policy = { ...MUTATING_TOOL_POLICY, sideEffect: "local" };
 		profile.work.toolEffects.begin({ source: cli, taskId: "active-task", toolCallId: "call:cli", toolName: "write", args: { idempotencyKey: "shared-mutation" }, policy });
 		profile.work.toolEffects.finish({ source: cli, toolCallId: "call:cli", toolName: "write", policy, isError: false });
 		assert.throws(() => profile.work.toolEffects.begin({ source: feishu, taskId: "active-task", toolCallId: "call:feishu", toolName: "write", args: { idempotencyKey: "shared-mutation" }, policy }), /already committed/i);
-		assert.throws(() => profile.work.toolEffects.begin({ source: future, taskId: "active-task", toolCallId: "call:future", toolName: "write", args: { idempotencyKey: "shared-mutation" }, policy }), /already committed/i);
+		assert.throws(() => profile.work.toolEffects.begin({ source: telegram, taskId: "active-task", toolCallId: "call:telegram", toolName: "write", args: { idempotencyKey: "shared-mutation" }, policy }), /already committed/i);
 
 		assert.equal(profile.work.taskRecovery.cancel(responsibilityOwnerKeys(feishu), "active-plan").tasks, 1);
 		assert.equal(profile.runtime.tasks(cli, { planId: "active-plan" })[0].status, "cancelled");

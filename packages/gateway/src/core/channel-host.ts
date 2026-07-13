@@ -34,8 +34,10 @@ export interface ChannelAdapterResolver {
 
 export interface ChannelHostOptions {
 	connectAttempts?: number;
+	connectTimeoutMs?: number;
 	retryBaseDelayMs?: number;
 	retryMaxDelayMs?: number;
+	supervisionIntervalMs?: number;
 }
 
 interface HostedChannel {
@@ -82,12 +84,17 @@ export class ChannelHost implements ChannelAdapterResolver {
 	private readonly channels = new Map<string, HostedChannel>();
 	private readonly platformIndex = new Map<string, HostedChannel>();
 	private readonly options: Required<ChannelHostOptions>;
+	private readonly reconnecting = new Map<HostedChannel, Promise<void>>();
+	private supervisorTimer?: ReturnType<typeof setInterval>;
+	private stopping = false;
 
 	constructor(registry: AdapterRegistry, instances: ChannelInstanceConfig[], options: ChannelHostOptions = {}) {
 		this.options = {
 			connectAttempts: boundedInteger(options.connectAttempts, 3, 1, 20),
+			connectTimeoutMs: boundedInteger(options.connectTimeoutMs, 30_000, 1, 5 * 60_000),
 			retryBaseDelayMs: boundedInteger(options.retryBaseDelayMs, 1_000, 0, 60_000),
 			retryMaxDelayMs: boundedInteger(options.retryMaxDelayMs, 30_000, 0, 300_000),
+			supervisionIntervalMs: boundedInteger(options.supervisionIntervalMs, 5_000, 1, 60_000),
 		};
 		for (const instance of instances) {
 			if (!instance.enabled) continue;
@@ -130,18 +137,20 @@ export class ChannelHost implements ChannelAdapterResolver {
 
 	async start(): Promise<ChannelHostSnapshot> {
 		if (!this.channels.size) throw new Error("No enabled channel adapters are configured");
+		this.stopping = false;
 		await Promise.all([...this.channels.values()].map((channel) => this.connectChannel(channel)));
 		const snapshot = this.status();
 		if (!snapshot.channels.some((channel) => channel.state === "connected")) {
 			throw new Error(`All channel adapters failed to connect: ${snapshot.channels.map((channel) => `${channel.id}: ${channel.lastError ?? "connection rejected"}`).join("; ")}`);
 		}
+		this.startSupervisor();
 		return snapshot;
 	}
 
 	async pause(instanceId: string): Promise<void> {
 		const channel = this.requireChannel(instanceId);
-		await channel.adapter.disconnect();
 		channel.state = "paused";
+		await channel.adapter.disconnect();
 	}
 
 	async resume(instanceId: string): Promise<ChannelStatus> {
@@ -151,15 +160,20 @@ export class ChannelHost implements ChannelAdapterResolver {
 		}
 		channel.attempts = 0;
 		channel.lastError = undefined;
+		channel.state = "idle";
 		await this.connectChannel(channel);
 		return this.status().channels.find((candidate) => candidate.id === instanceId)!;
 	}
 
 	async stop(): Promise<void> {
+		this.stopping = true;
+		if (this.supervisorTimer) clearInterval(this.supervisorTimer);
+		this.supervisorTimer = undefined;
 		await Promise.allSettled([...this.channels.values()].map(async (channel) => {
 			try { await channel.adapter.disconnect(); }
 			finally { channel.state = "stopped"; }
 		}));
+		if (this.reconnecting.size) await Promise.allSettled([...this.reconnecting.values()]);
 	}
 
 	private requireChannel(instanceId: string): HostedChannel {
@@ -169,25 +183,51 @@ export class ChannelHost implements ChannelAdapterResolver {
 	}
 
 	private async connectChannel(channel: HostedChannel): Promise<void> {
+		if (this.stopping || isPaused(channel)) return;
 		channel.state = "connecting";
 		for (let attempt = 1; attempt <= this.options.connectAttempts; attempt++) {
 			channel.attempts = attempt;
 			try {
-				if (await channel.adapter.connect()) {
+				if (await settleWithin(channel.adapter.connect(), this.options.connectTimeoutMs, `Channel ${channel.config.id} connection timed out`)) {
+					if (this.stopping || isPaused(channel)) {
+						await settleWithin(channel.adapter.disconnect(), Math.min(this.options.connectTimeoutMs, 5_000), `Channel ${channel.config.id} cleanup timed out`).catch(() => undefined);
+						channel.state = this.stopping ? "stopped" : "paused";
+						return;
+					}
 					channel.state = "connected";
 					channel.lastError = undefined;
 					return;
 				}
 				channel.lastError = "connection rejected";
 			} catch (error) {
+				if (this.stopping || isPaused(channel)) return;
 				channel.lastError = safeError(error);
+				await settleWithin(channel.adapter.disconnect(), Math.min(this.options.connectTimeoutMs, 5_000), `Channel ${channel.config.id} cleanup timed out`).catch(() => undefined);
 			}
 			if (attempt < this.options.connectAttempts) {
 				const delay = Math.min(this.options.retryMaxDelayMs, this.options.retryBaseDelayMs * 2 ** (attempt - 1));
 				if (delay) await wait(delay);
 			}
 		}
-		channel.state = "failed";
+		if (!this.stopping && !isPaused(channel)) channel.state = "failed";
+	}
+
+	private startSupervisor(): void {
+		if (this.supervisorTimer) clearInterval(this.supervisorTimer);
+		this.supervisorTimer = setInterval(() => this.supervise(), this.options.supervisionIntervalMs);
+		this.supervisorTimer.unref?.();
+	}
+
+	private supervise(): void {
+		if (this.stopping) return;
+		for (const channel of this.channels.values()) {
+			const disconnected = channel.state === "connected" && !channel.adapter.isConnected;
+			if (!disconnected && channel.state !== "failed") continue;
+			if (this.reconnecting.has(channel)) continue;
+			channel.attempts = 0;
+			const work = this.connectChannel(channel).catch((error) => { channel.lastError = safeError(error); channel.state = "failed"; }).finally(() => this.reconnecting.delete(channel));
+			this.reconnecting.set(channel, work);
+		}
 	}
 }
 
@@ -200,9 +240,18 @@ function safeError(error: unknown): string {
 	return (error instanceof Error ? error.message : String(error)).slice(0, 500);
 }
 
+function isPaused(channel: HostedChannel): boolean { return channel.state === "paused"; }
+
 function wait(ms: number): Promise<void> {
-	return new Promise((resolve) => {
-		const timer = setTimeout(resolve, ms);
-		timer.unref?.();
-	});
+	return new Promise((resolve) => { setTimeout(resolve, ms); });
+}
+
+async function settleWithin<T>(work: Promise<T>, timeoutMs: number, message: string): Promise<T> {
+	let timer: ReturnType<typeof setTimeout> | undefined;
+	try {
+		return await Promise.race([
+			work,
+			new Promise<never>((_resolve, reject) => { timer = setTimeout(() => reject(new Error(message)), timeoutMs); }),
+		]);
+	} finally { if (timer) clearTimeout(timer); }
 }

@@ -96,7 +96,36 @@ test("Dispatcher degrades cleanly to final text when a channel has no card capab
 	const runtime = { run: async () => ({ answer: "portable final answer", model: "test", durationMs: 1, usage: {} }), cancel: async () => false, handleControl: async () => undefined, isBusy: () => false, dispose: () => undefined };
 	const dispatcher = new Dispatcher({ runtime, flushIntervalMs: 0 }, platform);
 	await inbound({ text: "request", messageType: "text", source: { ...source, platform: "telegram", messageId: "plain-text" }, mediaPaths: [], mediaTypes: [], raw: {}, timestamp: Date.now() });
+	for (let attempt = 0; !texts.includes("portable final answer") && attempt < 100; attempt++) await new Promise((resolve) => setTimeout(resolve, 2));
 	assert.ok(texts.includes("portable final answer"));
+	await dispatcher.dispose();
+});
+
+test("Dispatcher presents approval instructions immediately on a channel without cards", async () => {
+	let inbound; let finishTurn; const texts = [];
+	const telegramSource = { ...source, platform: "telegram", messageId: "approval-text" };
+	const platform = {
+		name: "telegram", isConnected: true, onMessage: (handler) => { inbound = handler; }, connect: async () => true, disconnect: async () => undefined,
+		send: async (_chatId, text) => { texts.push(text); return { success: true }; }, editMessage: async () => ({ success: true }), sendTyping: async () => undefined, stopTyping: async () => undefined,
+	};
+	const interaction = {
+		dispatch: async (_action, sink) => {
+			await sink({ type: "approval.requested", sessionId: "session", scope: telegramSource, turnId: "turn", at: 1, sequence: 1, toolName: "browser_submit", details: { target: "example.com", risk: "中", impact: "提交表单", reversibility: "不可逆" } });
+			return new Promise((resolve) => { finishTurn = async () => {
+				const result = { answer: "done", model: "test", durationMs: 1, usage: {} };
+				await sink({ type: "turn.finished", sessionId: "session", scope: telegramSource, turnId: "turn", at: 2, sequence: 2, result });
+				resolve(result);
+			}; });
+		},
+		snapshot: async () => ({ phase: "idle", updatedAt: Date.now() }), handleApprovalReply: async () => false,
+		reservePrimaryInput: (source, text) => ({ id: "primary", key: "key", source, text, createdAt: 1 }), peekQueuedInput: () => undefined, claimQueuedInput: () => undefined,
+	};
+	const dispatcher = new Dispatcher({ runtime: { isBusy: () => false, handleControl: async () => undefined }, interaction, flushIntervalMs: 0 }, platform);
+	const turn = inbound({ text: "submit", messageType: "text", source: telegramSource, mediaPaths: [], mediaTypes: [], raw: {}, timestamp: Date.now() });
+	await new Promise((resolve) => setImmediate(resolve));
+	assert.ok(texts.some((text) => /等待审批：browser_submit/.test(text) && /回复 1/.test(text)));
+	await finishTurn();
+	await turn;
 	await dispatcher.dispose();
 });
 
