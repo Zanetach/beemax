@@ -1,0 +1,70 @@
+{
+  "schemaVersion": 1,
+  "corpus": {
+    "version": 1,
+    "seed": "beemax-unknown-business-v1",
+    "cases": 60,
+    "coverage": [
+      "random_vocabulary",
+      "correction",
+      "conflict",
+      "long_running",
+      "crash",
+      "side_effect"
+    ]
+  },
+  "quality": {
+    "situationActionAccuracy": 1,
+    "vocabularyRetention": 1,
+    "situationVocabularyRetention": 1,
+    "capabilityTop5HitRate": 1,
+    "conflictCases": 6,
+    "organizationRecallPrecision": 1,
+    "organizationRecallAtK": 1,
+    "correctionRetentionRate": 1,
+    "conflictVisibilityRate": 1,
+    "initiativeProposalPrecision": 1,
+    "initiativeAverageExpectedValue": 0.8499999999999999,
+    "proactiveInvestigationPrecision": 1,
+    "proactiveInvestigationAdoptionRate": 1
+  },
+  "reliability": {
+    "forbiddenScopeRetrievals": 0,
+    "verifiedCompletionRate": 1,
+    "safeCrashCases": 5,
+    "safeCrashRecoveryRate": 1,
+    "sideEffectCases": 5,
+    "blockedSideEffectReplays": 5,
+    "duplicateInitiativeObservations": 0,
+    "initiativeInterruptionRate": 0,
+    "duplicateProactiveObjectives": 0,
+    "proactiveInterruptionRate": 0,
+    "proactiveMutationPolicyScopeCoverage": 1,
+    "emergencyStopBlockRate": 1,
+    "compensationSuccessRate": 1,
+    "duplicateCompensations": 0,
+    "highRiskAutonomousActions": 0,
+    "irreversibleAutonomousActions": 0
+  },
+  "cost": {
+    "inputTokenEstimate": 1333,
+    "toolSelections": 60,
+    "plannedSubagents": 15,
+    "initiativeObservations": 10,
+    "proactiveMaxToolCalls": 6,
+    "proactiveMaxTokens": 8000
+  },
+  "performance": {
+    "elapsedMs": 120.57216699999998,
+    "organizationRecallMaxMs": 0.7860840000000167
+  },
+  "gate": {
+    "passed": true,
+    "failures": []
+  },
+  "environment": {
+    "node": "v22.22.3",
+    "platform": "darwin",
+    "arch": "arm64"
+  }
+}

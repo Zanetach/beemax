@@ -1,8 +1,8 @@
 import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { ConversationContext, conversationKey, conversationOwnerKey, type ConversationContextOptions } from "@beemax/core";
-import type { MemoryStore, TaskFactRecord } from "@beemax/memory";
+import { ConversationContext, responsibilityOwnerKeys, type ConversationContextOptions, type ConversationMemoryPort, type TaskLedger } from "@beemax/core";
+import type { TaskFactRecord } from "@beemax/memory";
 import { beemaxRoot } from "./config.ts";
 
 export interface RuntimeFactSnapshot {
@@ -20,19 +20,23 @@ const BUILTIN_TASKS: Array<Pick<TaskFactRecord, "id" | "title" | "status" | "evi
 ];
 
 /** Populate documented release facts once, without overwriting user-managed task state. */
-export function ensureBuiltinTasks(store: MemoryStore): void {
+type BuiltinTaskStore = { hasTask(id: string): boolean; upsertTask(task: Pick<TaskFactRecord, "id" | "title" | "status"> & { evidence?: string; completedAt?: number }): void };
+type TaskFactReader = Pick<TaskLedger, "queryTasks">;
+type TaskAwareMemory = ConversationMemoryPort & BuiltinTaskStore & TaskFactReader;
+
+export function ensureBuiltinTasks(store: BuiltinTaskStore): void {
 	for (const task of BUILTIN_TASKS) if (!store.hasTask(task.id)) store.upsertTask(task);
 }
 
 /** One app-level composition point prevents an ingress path from omitting task facts. */
-export function createTaskAwareConversationContext(memory: MemoryStore, options: TaskAwareConversationOptions = {}): ConversationContext {
+export function createTaskAwareConversationContext(memory: TaskAwareMemory, options: TaskAwareConversationOptions = {}): ConversationContext {
 	ensureBuiltinTasks(memory);
 	const { runtimeSnapshot, ...contextOptions } = options;
-	return new ConversationContext(memory, { ...contextOptions, runtimeFacts: (source, text, verified) => taskLedgerContextForQuestion(memory, text, { ...runtimeSnapshot?.(), ...verified }, [...new Set([conversationKey(source), conversationOwnerKey(source), "profile"])]) });
+	return new ConversationContext(memory, { ...contextOptions, runtimeFacts: (source, text, verified) => taskLedgerContextForQuestion(memory, text, { ...runtimeSnapshot?.(), ...verified }, [...responsibilityOwnerKeys(source), "profile"]) });
 }
 
 /** Only task or version questions receive a snapshot; ordinary chat stays unchanged. */
-export function taskLedgerContextForQuestion(store: MemoryStore, text: string, snapshot: RuntimeFactSnapshot = {}, ownerKeys = ["profile"]): string {
+export function taskLedgerContextForQuestion(store: TaskFactReader, text: string, snapshot: RuntimeFactSnapshot = {}, ownerKeys = ["profile"]): string {
 	const asksTasks = /(挂起|待办|任务|进度|完成|已过|升级|更新|协议|anthropic|release|task|todo|pending|outstanding|shipped|completed|complete|upgrade|update|protocol)/iu.test(text);
 	const asksVersion = /(版本|版本号|version|release)/iu.test(text);
 	const asksModel = /(什么模型|哪个模型|当前模型|使用.*模型|模型.*是什么|what model|which model|model.*using)/iu.test(text);

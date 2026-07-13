@@ -1,6 +1,8 @@
 export {
-	backupSqliteDatabase, MemoryStore, verifySqliteDatabase,
+	backupSqliteDatabase, MemoryStore, memoryPersistencePorts, verifySqliteDatabase,
 	MEMORY_CLAIM_KINDS, MEMORY_CLAIM_KIND_LABELS, type BusinessEntityRef, type ClaimInput, type MemoryBrief, type MemoryCandidate, type MemoryClaim, type MemoryClaimKind, type MemoryEvidence, type MemoryEvent, type MemoryRecallEvaluation, type MemoryRecallEvaluationCase, type MemoryRecallHit,
-	type MemoryRecord, type RecallOptions, type TaskFactRecord,
+	type AutonomyRolloutStore, type CompletionOutbox, type ConversationMemoryStore, type ConventionCandidate, type ConventionCandidateEvent, type ConventionCandidateInput, type ConventionCandidateStatus, type ConventionTransitionEvidence, type DurableTaskLedger, type InitiativeObservationPort, type InitiativeTriggerInboxPort, type MemoryPersistencePorts, type MemoryRecord, type OrganizationMemoryEpisode, type OrganizationMemoryEpisodeInput, type OrganizationMemoryEpisodeStatus, type OrganizationMemoryPort, type RecallOptions, type ReversibleActionControls, type TaskFactRecord, type TaskRecoveryQueue, type WorkflowCandidate, type WorkflowCandidateEdit, type WorkflowCandidateEvent, type WorkflowCandidateInput, type WorkflowCandidateStatus, type WorkflowSkillCandidateDraft, type WorkflowTransitionEvidence,
 } from "./store.ts";
+export { ConventionConsolidator, type ConventionInference, type ConventionInferenceContext, type ConventionScope } from "./convention-consolidator.ts";
+export { WorkflowCandidateDeriver, type WorkflowCandidateInference, type WorkflowCandidateInferenceContext, type WorkflowCandidateScope } from "./workflow-candidate.ts";
 export { canAutomaticallyUnderstand, createMemoryTools, type MemoryToolRecord, type MemoryToolStore } from "./tools.ts";

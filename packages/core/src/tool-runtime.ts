@@ -24,6 +24,16 @@ export interface ToolCapabilityGrant {
 	policy: ToolPolicy;
 }
 
+export interface ToolResultBudget {
+	/** Conservative text-token estimate shared by first-class Tool and MCP results. */
+	maxEstimatedTokens: number;
+}
+
+export function normalizeToolResultBudget(budget: ToolResultBudget): ToolResultBudget {
+	const value = Number.isFinite(budget.maxEstimatedTokens) ? Math.trunc(budget.maxEstimatedTokens) : 12_000;
+	return { maxEstimatedTokens: Math.max(64, Math.min(value, 1_000_000)) };
+}
+
 export type GovernedToolDefinition = ToolDefinition & { beemaxPolicy?: ToolPolicy };
 export type ToolRuntimeAuditEvent = {
 	phase: "requested" | "allowed" | "blocked" | "started" | "completed" | "failed";
@@ -33,7 +43,29 @@ export type ToolRuntimeAuditEvent = {
 	at: number;
 	attempt?: number;
 	durationMs?: number;
+	resultBytes?: number;
+	resultEstimatedTokens?: number;
+	resultTruncated?: boolean;
 	reason?: string;
+	enterprisePolicy?: {
+		decisionId: string;
+		publisherId: string;
+		version: string;
+		disposition: "allow" | "deny" | "require_approval" | "constrain" | "missing_evidence";
+		effectiveScopeId: string;
+		effectiveFrom: number;
+		effectiveUntil?: number;
+		evaluatedAt: number;
+		evidenceRefs: string[];
+	};
+	governance?: {
+		decisionId: string;
+		outcome: "allow" | "deny" | "require_approval" | "missing_evidence";
+		reasonCode: string;
+		factors: string[];
+		policyDecisionId?: string;
+		executionGrantId?: string;
+	};
 };
 export type ToolRuntimeAuditSink = (event: ToolRuntimeAuditEvent) => void;
 
@@ -102,8 +134,9 @@ export function withToolPolicy<T extends ToolDefinition>(tool: T, policy: ToolPo
 }
 
 /** Apply the policy execution contract to a custom first-class Tool. */
-export function governToolDefinition<T extends ToolDefinition>(tool: T, policy: ToolPolicy, source: BeeMaxRuntimeSource, audit?: ToolRuntimeAuditSink): T & GovernedToolDefinition {
+export function governToolDefinition<T extends ToolDefinition>(tool: T, policy: ToolPolicy, source: BeeMaxRuntimeSource, audit?: ToolRuntimeAuditSink, resultBudget?: ToolResultBudget): T & GovernedToolDefinition {
 	const normalized = normalizeToolPolicy(policy);
+	const maxEstimatedTokens = resultBudget ? normalizeToolResultBudget(resultBudget).maxEstimatedTokens : Number.POSITIVE_INFINITY;
 	const execute = tool.execute.bind(tool);
 	return Object.assign({ ...tool, async execute(toolCallId: string, params: unknown, signal: AbortSignal | undefined, onUpdate: unknown, ctx: unknown) {
 		const startedAt = Date.now();
@@ -114,14 +147,14 @@ export function governToolDefinition<T extends ToolDefinition>(tool: T, policy: 
 			const effectiveSignal = signal ? AbortSignal.any([signal, timeoutController.signal]) : timeoutController.signal;
 			try {
 				const result = await abortable(execute(toolCallId, params as never, effectiveSignal, onUpdate as never, ctx as never), effectiveSignal, tool.name);
-				const bounded = boundToolResult(result, normalized.maxResultBytes);
-				if ((bounded as { isError?: boolean }).isError === true) {
-					const errorBlock = bounded.content.find((block) => block.type === "text" && "text" in block && typeof block.text === "string");
+				const bounded = boundToolResult(result, normalized.maxResultBytes, maxEstimatedTokens);
+				if ((bounded.result as { isError?: boolean }).isError === true) {
+					const errorBlock = bounded.result.content.find((block) => block.type === "text" && "text" in block && typeof block.text === "string");
 					const message = errorBlock && "text" in errorBlock && typeof errorBlock.text === "string" ? errorBlock.text.slice(0, 500) : "Tool returned an error result";
 					throw new Error(`Tool ${tool.name} failed: ${message}`);
 				}
-				audit?.({ phase: "completed", source, toolName: tool.name, policy: normalized, at: Date.now(), attempt, durationMs: Date.now() - startedAt });
-				return bounded;
+				audit?.({ phase: "completed", source, toolName: tool.name, policy: normalized, at: Date.now(), attempt, durationMs: Date.now() - startedAt, resultBytes: bounded.bytes, resultEstimatedTokens: bounded.estimatedTokens, resultTruncated: bounded.truncated });
+				return bounded.result;
 			} catch (error) {
 				const reason = error instanceof Error ? error.message : String(error);
 				audit?.({ phase: "failed", source, toolName: tool.name, policy: normalized, at: Date.now(), attempt, durationMs: Date.now() - startedAt, reason: reason.slice(0, 500) });
@@ -158,19 +191,71 @@ function normalizeToolPolicy(policy: ToolPolicy): ToolPolicy {
 	};
 }
 
-function boundToolResult<T extends { content: Array<{ type: string; text?: string }>; details: unknown }>(result: T, maxBytes: number): T {
+function boundToolResult<T extends { content: Array<{ type: string; text?: string }>; details: unknown }>(result: T, maxBytes: number, maxEstimatedTokens: number): { result: T; bytes: number; estimatedTokens: number; truncated: boolean } {
+	const bounded = boundToolResultContent(result.content, { maxBytes, maxEstimatedTokens });
+	return { result: { ...result, content: bounded.content }, bytes: bounded.bytes, estimatedTokens: bounded.estimatedTokens, truncated: bounded.truncated };
+}
+
+/** Apply one context budget to text blocks from built-in Tools, custom Tools, and MCP. */
+export function boundToolResultContent<T extends { type: string; text?: string }>(content: readonly T[], budget: { maxBytes: number; maxEstimatedTokens: number }): { content: Array<T | { type: "text"; text: string }>; bytes: number; estimatedTokens: number; truncated: boolean } {
+	const maxTokenUnits = Number.isFinite(budget.maxEstimatedTokens) ? budget.maxEstimatedTokens * 4 : Number.POSITIVE_INFINITY;
+	const initial = sliceToolResultContent(content, budget.maxBytes, maxTokenUnits);
+	if (!initial.truncated) return { content: initial.content, bytes: initial.bytes, estimatedTokens: Math.ceil(initial.tokenUnits / 4), truncated: false };
+	const marker = "\n[Tool result truncated by BeeMax Tool Runtime]";
+	const markerBytes = Buffer.byteLength(marker);
+	const markerUnits = estimatedTokenUnits(marker);
+	const bounded = sliceToolResultContent(content, Math.max(0, budget.maxBytes - markerBytes), Math.max(0, maxTokenUnits - markerUnits));
+	return { content: [...bounded.content, { type: "text", text: marker }], bytes: bounded.bytes + markerBytes, estimatedTokens: Math.ceil((bounded.tokenUnits + markerUnits) / 4), truncated: true };
+}
+
+function sliceToolResultContent<T extends { type: string; text?: string }>(content: readonly T[], maxBytes: number, maxTokenUnits: number): { content: Array<T | { type: "text"; text: string }>; bytes: number; tokenUnits: number; truncated: boolean } {
 	let remaining = maxBytes;
+	let remainingTokenUnits = maxTokenUnits;
+	let bytesUsed = 0;
+	let tokenUnitsUsed = 0;
 	let truncated = false;
-	const content = result.content.flatMap((block) => {
-		if (block.type !== "text" || typeof block.text !== "string") return [block];
+	const boundedContent: Array<T | { type: "text"; text: string }> = [];
+	for (const block of content) {
+		if (block.type !== "text" || typeof block.text !== "string") {
+			const blockUnits = block.type === "image" ? 4_800 : 256;
+			if (blockUnits <= remainingTokenUnits) { boundedContent.push(block); remainingTokenUnits -= blockUnits; tokenUnitsUsed += blockUnits; }
+			else truncated = true;
+			continue;
+		}
 		const bytes = Buffer.byteLength(block.text);
-		if (bytes <= remaining) { remaining -= bytes; return [block]; }
-		if (remaining <= 0) { truncated = true; return []; }
+		const tokenUnits = estimatedTokenUnits(block.text);
+		if (bytes <= remaining && tokenUnits <= remainingTokenUnits) { remaining -= bytes; remainingTokenUnits -= tokenUnits; bytesUsed += bytes; tokenUnitsUsed += tokenUnits; boundedContent.push(block); continue; }
+		if (remaining <= 0 || remainingTokenUnits <= 0) { truncated = true; continue; }
 		truncated = true;
-		const text = Buffer.from(block.text).subarray(0, remaining).toString("utf8");
-		remaining = 0;
-		return [{ ...block, text }];
-	});
-	if (truncated) content.push({ type: "text", text: "\n[Tool result truncated by BeeMax Tool Runtime]" });
-	return { ...result, content };
+		const text = truncateTextToBudget(block.text, remaining, remainingTokenUnits);
+		const textBytes = Buffer.byteLength(text);
+		const textUnits = estimatedTokenUnits(text);
+		remaining -= textBytes;
+		remainingTokenUnits -= textUnits;
+		bytesUsed += textBytes;
+		tokenUnitsUsed += textUnits;
+		boundedContent.push({ ...block, text });
+	}
+	return { content: boundedContent, bytes: bytesUsed, tokenUnits: tokenUnitsUsed, truncated };
+}
+
+function estimatedTokenUnits(value: string): number {
+	let units = 0;
+	for (const character of value) units += character.codePointAt(0)! <= 0x7f ? 1 : 4;
+	return units;
+}
+
+function truncateTextToBudget(value: string, maxBytes: number, maxTokenUnits: number): string {
+	let bytes = 0;
+	let tokenUnits = 0;
+	let output = "";
+	for (const character of value) {
+		const nextBytes = Buffer.byteLength(character);
+		const nextTokenUnits = character.codePointAt(0)! <= 0x7f ? 1 : 4;
+		if (bytes + nextBytes > maxBytes || tokenUnits + nextTokenUnits > maxTokenUnits) break;
+		output += character;
+		bytes += nextBytes;
+		tokenUnits += nextTokenUnits;
+	}
+	return output;
 }

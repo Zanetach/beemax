@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { AutonomousPlanningPolicy, BeeMaxAgentRuntime, PlanningBudgetRegistry } from "../dist/index.js";
+import { AutonomousPlanningPolicy, BeeMaxAgentRuntime, createAccessScopeRef, createExecutionEnvelope, PlanningBudgetRegistry } from "../dist/index.js";
 
 test("planning policy keeps simple conversational requests direct", () => {
 	const policy = new AutonomousPlanningPolicy({ maxConcurrent: 8 });
@@ -267,6 +267,47 @@ test("interactive runs persist an Objective and keep background DAG Objectives r
 	runtime.dispose();
 });
 
+test("durable Objectives retain arbitrary identity-looking text only through Situation", async () => {
+	const source = { platform: "cli", chatId: "objective-context", chatType: "dm", userId: "local" };
+	const tasks = new Map();
+	const ledger = { record(task) { tasks.set(task.id, { ...task }); }, transition(id, change) { tasks.set(id, { ...tasks.get(id), ...change }); return true; }, queryTasks: () => [] };
+	const agent = { state: { model: { id: "test" }, messages: [] } };
+	const runtime = new BeeMaxAgentRuntime({ taskLedger: ledger, planningPolicy: new AutonomousPlanningPolicy(), createAgent: async () => ({
+		agent, subscribe: () => () => undefined,
+		prompt: async () => { agent.state.messages = [{ role: "assistant", content: [{ type: "text", text: "accepted" }], usage: { input: 1, output: 1 } }]; },
+		abort: async () => undefined, dispose: () => undefined,
+	}) });
+	await runtime.run({ source, text: "核对主体 portfolio:A 下的对象 investment:INV-2026-0713", timeoutMs: 1_000, objectiveTaskId: "new-objective" });
+	const objective = [...tasks.values()][0];
+	assert.match(objective.situation.summary, /portfolio:A/);
+	assert.match(objective.situation.summary, /investment:INV-2026-0713/);
+	assert.equal(objective.businessContext, undefined);
+	runtime.dispose();
+});
+
+test("new durable Objectives preserve Situation and trusted Access Scope provenance separately", async () => {
+	const source = { platform: "cli", chatId: "objective-situation", chatType: "dm", userId: "local" };
+	const tasks = new Map();
+	const ledger = { record(task) { tasks.set(task.id, { ...task }); }, transition(id, change) { tasks.set(id, { ...tasks.get(id), ...change }); return true; }, queryTasks: () => [] };
+	const accessScopeRef = createAccessScopeRef({ id: "scope:aurora", authority: { kind: "membership_registry", reference: "membership:aurora" }, issuedAt: 1 });
+	const agent = { state: { model: { id: "test" }, messages: [] } };
+	const runtime = new BeeMaxAgentRuntime({ taskLedger: ledger, createAgent: async () => ({
+		agent, subscribe: () => () => undefined,
+		prompt: async () => { agent.state.messages = [{ role: "assistant", content: [{ type: "text", text: "accepted" }], usage: { input: 1, output: 1 } }]; },
+		abort: async () => undefined, dispose: () => undefined,
+	}) });
+	await runtime.run({ source, text: "在极光窗口前完成浮光引擎调谐，保留回滚点", timeoutMs: 1_000, objectiveTaskId: "new-objective", accessScopeRef });
+	const objective = [...tasks.values()][0];
+	assert.match(objective.situation.summary, /浮光引擎/);
+	assert.deepEqual(objective.accessScopeRef, accessScopeRef);
+	assert.equal(objective.businessContext, undefined);
+	assert.equal(objective.status, "running");
+	assert.equal(objective.verificationStatus, "unavailable");
+	assert.equal(objective.candidateResult, "accepted");
+	assert.equal(objective.result, undefined);
+	runtime.dispose();
+});
+
 test("a direct conversational answer does not create durable Objective work", async () => {
 	const source = { platform: "cli", chatId: "direct-objective", chatType: "dm", userId: "local" };
 	const tasks = new Map();
@@ -284,6 +325,238 @@ test("a direct conversational answer does not create durable Objective work", as
 	await runtime.run({ source, text: "What is the answer?", timeoutMs: 1_000 });
 
 	assert.equal(tasks.size, 0);
+	runtime.dispose();
+});
+
+test("a responsible direct Turn completes one durable Objective through one verified Task Run", async () => {
+	const source = { platform: "cli", chatId: "direct-work", chatType: "dm", userId: "local" };
+	const tasks = new Map();
+	const runs = new Map();
+	const ledger = {
+		record(task) { tasks.set(task.id, { ...task }); },
+		transition(id, change) { tasks.set(id, { ...tasks.get(id), ...change }); return true; },
+		recordRun(run) { runs.set(run.id, { ...run }); },
+		transitionRun(id, change) { runs.set(id, { ...runs.get(id), ...change }); return true; },
+		queryTasks: (query) => [...tasks.values()].filter((task) => query.ownerKeys.includes(task.ownerKey) && (!query.id || task.id === query.id)),
+		checkpointTask(ownerKey, id, checkpoint) { const task = tasks.get(id); if (!task || task.ownerKey !== ownerKey) return false; tasks.set(id, { ...task, checkpoint }); return true; },
+	};
+	let envelope;
+	let listener;
+	const agent = { state: { model: { id: "test" }, messages: [] } };
+	const runtime = new BeeMaxAgentRuntime({
+		taskLedger: ledger,
+		planningPolicy: new AutonomousPlanningPolicy(),
+		turnUnderstanding: { understand: (text) => ({ action: "create", goal: text, constraints: ["保留证据"], acceptanceCriteria: ["报告包含来源"], memoryQuery: text, capabilityQuery: text, executionMode: "direct", confidence: 0.9 }) },
+		verifyObjectiveCandidate: async (_objective, result, _signal, context) => {
+			assert.equal(result.output, "完成并附来源");
+			assert.equal(context.taskRunId, envelope.taskRunId);
+			return { accepted: true, evidence: "来源已检查" };
+		},
+		createAgent: async (_id, _source, receivedEnvelope) => {
+			envelope = receivedEnvelope;
+			return { agent, subscribe: (next) => { listener = next; return () => undefined; }, prompt: async () => {
+				listener({ type: "tool_execution_end", toolCallId: "source-1", toolName: "read", result: {}, isError: false });
+				listener({ type: "turn_end", message: { role: "assistant", content: [] }, toolResults: [] });
+				agent.state.messages = [{ role: "assistant", content: [{ type: "text", text: "完成并附来源" }], usage: { input: 1, output: 1 } }];
+			}, abort: async () => undefined, dispose: () => undefined };
+		},
+	});
+
+	await runtime.run({ source, text: "生成一份有来源的简短报告", timeoutMs: 1_000 });
+
+	assert.equal(tasks.size, 1);
+	assert.equal(runs.size, 1);
+	const [objective] = [...tasks.values()];
+	const [run] = [...runs.values()];
+	assert.equal(objective.status, "succeeded");
+	assert.equal(objective.verificationStatus, "accepted");
+	assert.equal(objective.result, "完成并附来源");
+	assert.equal(run.status, "succeeded");
+	assert.equal(run.output, "完成并附来源");
+	assert.equal(envelope.objectiveId, objective.id);
+	assert.equal(envelope.taskId, objective.id);
+	assert.equal(envelope.taskRunId, run.id);
+	assert.equal(objective.checkpoint.source, "pi_turn");
+	assert.deepEqual(objective.checkpoint.completed, ["read:source-1"]);
+	runtime.dispose();
+});
+
+test("an Automation Trigger enters the same durable Pi lifecycle as responsible interactive work", async () => {
+	const source = { platform: "feishu", chatId: "scheduled-work", chatType: "dm", userId: "owner", threadId: "__automation:schedule:job" };
+	const tasks = new Map();
+	const runs = new Map();
+	const ledger = {
+		record(task) { tasks.set(task.id, { ...task }); },
+		transition(id, change) { tasks.set(id, { ...tasks.get(id), ...change }); return true; },
+		recordRun(run) { runs.set(run.id, { ...run }); },
+		transitionRun(id, change) { runs.set(id, { ...runs.get(id), ...change }); return true; },
+		queryTasks: () => [],
+		checkpointTask(ownerKey, id, checkpoint) { const task = tasks.get(id); if (!task || task.ownerKey !== ownerKey) return false; tasks.set(id, { ...task, checkpoint }); return true; },
+	};
+	const contextCalls = [];
+	let receivedEnvelope;
+	let receivedPrompt = "";
+	let listener;
+	const agent = { state: { model: { id: "test" }, messages: [] } };
+	const triggerEnvelope = createExecutionEnvelope({ executionId: "automation:job:1700000000000", trigger: { kind: "automation", id: "schedule:job:1700000000000" }, budget: { deadlineAt: Date.now() + 10_000 }, mode: "normal" });
+	const runtime = new BeeMaxAgentRuntime({
+		taskLedger: ledger,
+		turnUnderstanding: { understand: (text) => ({ action: "create", goal: text, constraints: ["保留来源"], acceptanceCriteria: ["摘要包含来源"], memoryQuery: "相关历史摘要", capabilityQuery: text, executionMode: "direct", confidence: 0.88 }) },
+		context: { assemble: (contextSource, text, options) => { contextCalls.push({ contextSource, ...options }); return { text: `${text}\n[recalled organization context]`, items: [], released: [], totalChars: text.length }; }, record: () => undefined },
+		verifyObjectiveCandidate: async (objective, result, _signal, context) => {
+			assert.equal(objective.situation.summary, "生成有来源的周期摘要");
+			assert.equal(result.output, "摘要完成");
+			assert.equal(context.taskRunId, receivedEnvelope.taskRunId);
+			return { accepted: true, evidence: "来源已复核" };
+		},
+		createAgent: async () => { throw new Error("interactive factory must not run"); },
+		createAutomationAgent: async (_id, _source, envelope) => {
+			receivedEnvelope = envelope;
+			return { agent, subscribe: (next) => { listener = next; return () => undefined; }, prompt: async (text) => {
+				receivedPrompt = text;
+				listener({ type: "tool_execution_end", toolCallId: "source", toolName: "read", result: {}, isError: false });
+				listener({ type: "turn_end", message: { role: "assistant", content: [] }, toolResults: [] });
+				agent.state.messages = [{ role: "assistant", content: [{ type: "text", text: "摘要完成" }], usage: { input: 1, output: 1 } }];
+			}, abort: async () => undefined, dispose: () => undefined };
+		},
+	});
+
+	await runtime.run({ source, text: "生成有来源的周期摘要", timeoutMs: 10_000, mode: "automation", executionEnvelope: triggerEnvelope });
+
+	assert.equal(tasks.size, 1);
+	assert.equal(runs.size, 1);
+	const [objective] = [...tasks.values()];
+	assert.equal(objective.ownerKey, "feishu:scheduled-work:owner");
+	assert.equal(objective.status, "succeeded");
+	assert.equal(objective.verificationStatus, "accepted");
+	assert.equal(objective.checkpoint.source, "pi_turn");
+	assert.deepEqual(objective.checkpoint.completed, ["read:source"]);
+	assert.equal(contextCalls.length, 1);
+	assert.equal(contextCalls[0].contextSource.threadId, undefined);
+	assert.equal(contextCalls[0].situation.summary, "生成有来源的周期摘要");
+	assert.match(receivedPrompt, /recalled organization context/);
+	assert.equal(receivedEnvelope.executionId, triggerEnvelope.executionId);
+	assert.deepEqual(receivedEnvelope.trigger, triggerEnvelope.trigger);
+	assert.equal(receivedEnvelope.objectiveId, objective.id);
+	assert.equal(receivedEnvelope.taskId, objective.id);
+	assert.equal(receivedEnvelope.taskRunId, [...runs.values()][0].id);
+	runtime.dispose();
+});
+
+test("an admitted proactive Objective executes through the same Pi Task Run, checkpoint, and Verification path", async () => {
+	const source = { platform: "feishu", chatId: "proactive", chatType: "dm", userId: "owner", threadId: "__initiative:observation-1" };
+	const objective = {
+		id: "objective:initiative:observation-1", ownerKey: "feishu:proactive:owner", kind: "objective", title: "Inspect current evidence",
+		description: "Read authoritative sources and prepare a bounded finding", acceptanceCriteria: "Finding cites current evidence",
+		recoveryPolicy: "safe_retry", idempotencyKey: "initiative:observation-1", executionScope: source,
+		status: "pending", createdAt: 1,
+	};
+	const tasks = new Map([[objective.id, objective]]);
+	const runs = new Map();
+	const ledger = {
+		record() { assert.fail("admitted Objective must be reused"); },
+		transition(id, change) { tasks.set(id, { ...tasks.get(id), ...change }); return true; },
+		recordRun(run) { runs.set(run.id, { ...run }); },
+		transitionRun(id, change) { runs.set(id, { ...runs.get(id), ...change }); return true; },
+		queryTasks(query) { const task = tasks.get(query.id); return task && query.ownerKeys.includes(task.ownerKey) ? [task] : []; },
+		checkpointTask(ownerKey, id, checkpoint) { const task = tasks.get(id); if (!task || task.ownerKey !== ownerKey) return false; tasks.set(id, { ...task, checkpoint }); return true; },
+	};
+	let listener;
+	let receivedEnvelope;
+	let activeTools = ["read", "write"];
+	const agent = { state: { model: { id: "test" }, messages: [] } };
+	const executionEnvelope = createExecutionEnvelope({
+		executionId: "initiative:observation-1", trigger: { kind: "enterprise_event", id: "event:1" },
+		objectiveId: objective.id, taskId: objective.id, budget: { maxToolCalls: 4, maxTokens: 4_000, deadlineAt: Date.now() + 10_000, maxCorrectiveAttempts: 1 }, mode: "normal",
+	});
+	const runtime = new BeeMaxAgentRuntime({
+		taskLedger: ledger,
+		verifyObjectiveCandidate: async (_task, result) => ({ accepted: result.output === "Verified finding", evidence: "checked:source" }),
+		createAgent: async () => { throw new Error("interactive Agent must not run"); },
+		createAutomationAgent: async (_id, _source, envelope) => {
+			receivedEnvelope = envelope;
+			return { agent, getAllTools: () => [{ name: "read", beemaxPolicy: { sideEffect: "none" } }, { name: "write", beemaxPolicy: { sideEffect: "local" } }], getActiveToolNames: () => [...activeTools], setActiveToolsByName: (names) => { activeTools = [...names]; }, subscribe: (next) => { listener = next; return () => undefined; }, prompt: async () => {
+				assert.deepEqual(activeTools, ["read"], "the proactive Turn must expose only admitted capabilities");
+				listener({ type: "tool_execution_end", toolCallId: "source", toolName: "read", result: {}, isError: false });
+				listener({ type: "turn_end", message: { role: "assistant", content: [] }, toolResults: [] });
+				agent.state.messages = [{ role: "assistant", content: [{ type: "text", text: "Verified finding" }], usage: { input: 10, output: 5 } }];
+			}, abort: async () => undefined, dispose: () => undefined };
+		},
+	});
+
+	await runtime.run({ source, text: objective.description, timeoutMs: 10_000, mode: "automation", objectiveTaskId: objective.id, executionEnvelope, allowedCapabilities: ["read"] });
+
+	assert.equal(tasks.size, 1);
+	assert.equal(tasks.get(objective.id).status, "succeeded");
+	assert.equal(tasks.get(objective.id).verificationStatus, "accepted");
+	assert.equal(tasks.get(objective.id).checkpoint.source, "pi_turn");
+	assert.equal(runs.size, 1);
+	assert.equal([...runs.values()][0].status, "succeeded");
+	assert.equal(receivedEnvelope.objectiveId, objective.id);
+	assert.deepEqual(activeTools, ["read", "write"], "the session inventory must be restored after the bounded Turn");
+	runtime.dispose();
+});
+
+test("a failed proactive Pi startup returns its durable Objective to recoverable pending state", async () => {
+	const source = { platform: "feishu", chatId: "proactive-retry", chatType: "dm", userId: "owner" };
+	const objective = { id: "objective:initiative:retry", ownerKey: "feishu:proactive-retry:owner", kind: "objective", title: "Inspect", status: "pending", recoveryPolicy: "safe_retry", idempotencyKey: "initiative:retry", createdAt: 1 };
+	const tasks = new Map([[objective.id, objective]]);
+	const ledger = {
+		record() { assert.fail("existing Objective must be reused"); },
+		transition(id, change) { tasks.set(id, { ...tasks.get(id), ...change }); return true; },
+		queryTasks(query) { const task = tasks.get(query.id); return task && query.ownerKeys.includes(task.ownerKey) ? [task] : []; },
+	};
+	const runtime = new BeeMaxAgentRuntime({
+		taskLedger: ledger,
+		createAgent: async () => { throw new Error("interactive Agent must not run"); },
+		createAutomationAgent: async () => { throw new Error("temporary startup failure"); },
+	});
+	await assert.rejects(runtime.run({ source, text: "Inspect", timeoutMs: 1_000, mode: "automation", objectiveTaskId: objective.id }), /temporary startup failure/);
+	assert.equal(tasks.get(objective.id).status, "pending");
+	assert.match(tasks.get(objective.id).error, /temporary startup failure/);
+	runtime.dispose();
+});
+
+test("Verification correction reuses the Objective and creates one bounded Corrective Task Run", async () => {
+	const source = { platform: "cli", chatId: "direct-correction", chatType: "dm", userId: "local" };
+	const tasks = new Map();
+	const runs = new Map();
+	const ledger = {
+		record(task) { tasks.set(task.id, { ...task }); },
+		transition(id, change) { tasks.set(id, { ...tasks.get(id), ...change }); return true; },
+		recordRun(run) { runs.set(run.id, { ...run }); },
+		transitionRun(id, change) { runs.set(id, { ...runs.get(id), ...change }); return true; },
+		queryTasks: () => [],
+	};
+	let prompts = 0;
+	let verifications = 0;
+	const agent = { state: { model: { id: "test" }, messages: [] } };
+	const runtime = new BeeMaxAgentRuntime({
+		taskLedger: ledger,
+		planningPolicy: new AutonomousPlanningPolicy(),
+		turnUnderstanding: { understand: (text) => ({ action: "create", goal: text, constraints: [], acceptanceCriteria: ["包含来源"], memoryQuery: text, capabilityQuery: text, executionMode: "direct", confidence: 0.9 }) },
+		verifyObjectiveCandidate: async (_objective, result) => ++verifications === 1 && result.output === "草稿" ? { accepted: false, feedback: "缺少来源" } : { accepted: true, evidence: "来源已检查" },
+		createAgent: async () => ({
+			agent, subscribe: () => () => undefined,
+			prompt: async () => { prompts++; const text = prompts === 1 ? "草稿" : "已补充来源"; agent.state.messages = [{ role: "assistant", content: [{ type: "text", text }], usage: { input: 1, output: 1 } }]; },
+			abort: async () => undefined, dispose: () => undefined,
+		}),
+	});
+
+	await runtime.run({ source, text: "生成带来源的摘要", timeoutMs: 1_000 });
+
+	assert.equal(prompts, 2);
+	assert.equal(verifications, 2);
+	assert.equal(tasks.size, 1);
+	assert.equal(runs.size, 2);
+	const [objective] = [...tasks.values()];
+	assert.equal(objective.status, "succeeded");
+	assert.equal(objective.result, "已补充来源");
+	assert.equal(objective.correctiveAttempts, 1);
+	assert.deepEqual([...runs.values()].map(({ status, output }) => ({ status, output })), [
+		{ status: "succeeded", output: "草稿" },
+		{ status: "succeeded", output: "已补充来源" },
+	]);
 	runtime.dispose();
 });
 
@@ -339,6 +612,37 @@ test("Agent runtime aborts a turn that exceeds its planned tool-call budget", as
 	});
 	await assert.rejects(runtime.run({ source, text: "Read this file", timeoutMs: 1_000 }), /tool-call budget exceeded.*8/i);
 	assert.equal(aborts, 1);
+	runtime.dispose();
+});
+
+test("Execution Envelope enforces tool-call budget without a planning policy", async () => {
+	const source = { platform: "cli", chatId: "envelope-budget", chatType: "dm", userId: "local" };
+	let listener;
+	let aborts = 0;
+	const agent = { state: { model: { id: "test" }, messages: [] } };
+	const runtime = new BeeMaxAgentRuntime({ createAgent: async () => ({
+		agent, subscribe: (next) => { listener = next; return () => undefined; },
+		prompt: async () => {
+			listener({ type: "tool_execution_start", toolCallId: "tool-1", toolName: "read" });
+			listener({ type: "tool_execution_start", toolCallId: "tool-2", toolName: "read" });
+			agent.state.messages = [{ role: "assistant", content: [{ type: "text", text: "over budget" }], usage: { input: 1, output: 1 } }];
+		},
+		abort: async () => { aborts++; }, dispose: () => undefined,
+	}) });
+	const executionEnvelope = createExecutionEnvelope({ executionId: "execution:bounded", trigger: { kind: "automation" }, budget: { maxToolCalls: 1 }, mode: "normal" });
+	await assert.rejects(runtime.run({ source, text: "run", timeoutMs: null, mode: "automation", executionEnvelope }), /tool-call budget exceeded.*1/i);
+	assert.equal(aborts, 1);
+	runtime.dispose();
+});
+
+test("Execution Envelope rejects an expired execution before Pi is prompted", async () => {
+	const source = { platform: "cli", chatId: "expired-envelope", chatType: "dm", userId: "local" };
+	let prompts = 0;
+	const agent = { state: { model: { id: "test" }, messages: [] } };
+	const runtime = new BeeMaxAgentRuntime({ createAgent: async () => ({ agent, subscribe: () => () => undefined, prompt: async () => { prompts++; }, abort: async () => undefined, dispose: () => undefined }) });
+	const executionEnvelope = createExecutionEnvelope({ executionId: "execution:expired", trigger: { kind: "automation" }, budget: { deadlineAt: Date.now() - 1 }, mode: "normal" });
+	await assert.rejects(runtime.run({ source, text: "run", timeoutMs: null, mode: "automation", executionEnvelope }), /deadline.*expired/i);
+	assert.equal(prompts, 0);
 	runtime.dispose();
 });
 

@@ -13,7 +13,8 @@ test("delegated work records one durable Task and advances its lifecycle", async
 		recordRun(run) { runs.set(run.id, { ...run }); },
 		transitionRun(id, change) { runs.set(id, { ...runs.get(id), ...change }); return true; },
 	};
-	const manager = new SubagentManager({ taskLedger: ledger, execute: async () => "verified result" });
+	let executorTask;
+	const manager = new SubagentManager({ taskLedger: ledger, execute: async (task) => { executorTask = task; return "verified result"; } });
 	const delegated = manager.spawn(source, { goal: "Review the release", name: "release-review" });
 	const completed = await manager.wait(source, delegated.id, 1_000);
 	assert.equal(completed.status, "completed");
@@ -29,6 +30,8 @@ test("delegated work records one durable Task and advances its lifecycle", async
 		result: "verified result",
 	});
 	assert.equal(typeof records.get(delegated.id).startedAt, "number");
+	assert.equal(completed.taskRunId, executorTask.taskRunId);
+	assert.equal(completed.taskRunId, [...runs.keys()][0]);
 	assert.deepEqual([...runs.values()].map(({ taskId, executor, status, output }) => ({ taskId, executor, status, output })), [{ taskId: delegated.id, executor: "subagent", status: "succeeded", output: "verified result" }]);
 	await manager.dispose();
 });

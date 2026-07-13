@@ -28,12 +28,20 @@ tar -xzf "${ARCHIVE}" -C "${STAGING}"
 SOURCE="${STAGING}/beemax"
 [[ -f "${SOURCE}/package.json" && -f "${SOURCE}/pi/package.json" ]] || fail "archive source layout is incomplete"
 [[ "$(tr -d '\r\n' < "${SOURCE}/RELEASE_VERSION")" == "${VERSION}" ]] || fail "RELEASE_VERSION does not match ${VERSION}"
+package_version() {
+	node -e 'const fs=require("fs"); process.stdout.write(JSON.parse(fs.readFileSync(process.argv[1],"utf8")).version)' "$1"
+}
+ROOT_PACKAGE_VERSION="$(package_version "${SOURCE}/package.json")"
+[[ "${VERSION}" == "v${ROOT_PACKAGE_VERSION}" ]] || fail "release tag does not match package version v${ROOT_PACKAGE_VERSION}"
+for manifest in "${SOURCE}/apps/cli/package.json" "${SOURCE}"/packages/*/package.json; do
+	[[ "$(package_version "${manifest}")" == "${ROOT_PACKAGE_VERSION}" ]] || fail "BeeMax workspace version mismatch: ${manifest}"
+done
 if find "${SOURCE}" \( -name .git -o -name node_modules -o -name dist -o -name '*.tsbuildinfo' \) -print -quit | grep -q .; then
 	fail "archive contains Git metadata, node_modules, dist, or TypeScript build state"
 fi
 
 mkdir -p "${STAGING}/home" "${STAGING}/bin"
-HOME="${STAGING}/home" BEEMAX_BIN_DIR="${STAGING}/bin" bash "${SOURCE}/scripts/install.sh"
+HOME="${STAGING}/home" BEEMAX_BIN_DIR="${STAGING}/bin" BEEMAX_INSTALL_MEDIA_DEPS=0 bash "${SOURCE}/scripts/install.sh"
 HELP_OUTPUT="$(HOME="${STAGING}/home" "${STAGING}/bin/beemax" --help)"
 grep -Fq "BeeMax" <<<"${HELP_OUTPUT}" || fail "installed beemax --help did not start correctly"
 [[ "$(tr -d '\r\n' < "${SOURCE}/RELEASE_VERSION")" == "${VERSION}" ]] || fail "installed release identity changed"

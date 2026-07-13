@@ -1393,11 +1393,11 @@ export class AgentSession {
 	 *
 	 * @param message Custom message with customType, content, display, details
 	 * @param options.triggerTurn If true and not streaming, triggers a new LLM turn
-	 * @param options.deliverAs Delivery mode: "steer", "followUp", or "nextTurn"
+	 * @param options.deliverAs Delivery mode: "steer", "followUp", "nextTurn", or durable "context"
 	 */
 	async sendCustomMessage<T = unknown>(
 		message: Pick<CustomMessage<T>, "customType" | "content" | "display" | "details">,
-		options?: { triggerTurn?: boolean; deliverAs?: "steer" | "followUp" | "nextTurn" },
+		options?: { triggerTurn?: boolean; deliverAs?: "steer" | "followUp" | "nextTurn" | "context" },
 	): Promise<void> {
 		const appMessage = {
 			role: "custom" as const,
@@ -1408,7 +1408,12 @@ export class AgentSession {
 			details: message.details,
 			timestamp: Date.now(),
 		} satisfies CustomMessage<T>;
-		if (options?.deliverAs === "nextTurn") {
+		if (options?.deliverAs === "context") {
+			this.agent.state.messages.push(appMessage);
+			this.sessionManager.appendCustomMessageEntry(message.customType, message.content, message.display, message.details);
+			this._emit({ type: "message_start", message: appMessage });
+			this._emit({ type: "message_end", message: appMessage });
+		} else if (options?.deliverAs === "nextTurn") {
 			this._pendingNextTurnMessages.push(appMessage);
 		} else if (this.isStreaming) {
 			if (options?.deliverAs === "followUp") {
@@ -2208,6 +2213,11 @@ export class AgentSession {
 	/** Whether auto-compaction is enabled */
 	get autoCompactionEnabled(): boolean {
 		return this.settingsManager.getCompactionEnabled();
+	}
+
+	/** Effective host/runtime compaction settings for observability and diagnostics. */
+	get compactionSettings(): { enabled: boolean; reserveTokens: number; keepRecentTokens: number } {
+		return this.settingsManager.getCompactionSettings();
 	}
 
 	async bindExtensions(bindings: ExtensionBindings): Promise<void> {

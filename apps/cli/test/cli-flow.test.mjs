@@ -113,7 +113,8 @@ test("CLI supports init, model setup, Feishu channel setup, listing, and safe de
 	assert.match(run(["agent", "list"]), /No Agent profiles configured/);
 	assert.match(run(["profile", "create", "personal"]), /Created Agent 'personal'/);
 	assert.equal(run(["agent", "list"]).trim(), "personal");
-	assert.match(run(["gateway", "list"]), /personal  beemax@personal\.service/);
+	const serviceName = process.platform === "darwin" ? "com.beemax.agent.personal" : process.platform === "linux" ? "beemax@personal.service" : "beemax:personal";
+	assert.equal(run(["gateway", "list"]).trim(), `personal  ${serviceName}`);
 	assert.throws(() => run(["gateway", "unknown"]), /Unknown gateway action/);
 	assert.match(run(["profile", "delete", "personal", "--yes"]), /Runtime data was preserved/);
 });

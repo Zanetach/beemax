@@ -1,4 +1,4 @@
-import type { TaskLedger, TaskRecoveryResult } from "./task-ledger.ts";
+import type { TaskLedger, TaskRecoveryResult, TaskRunEffectStateReader } from "./task-ledger.ts";
 import type { TaskRecoveryRunner, TaskRecoveryRunnerOptions, TaskRecoveryRunnerResult, TaskVerificationRetryResult } from "./task-recovery.ts";
 
 export interface TaskRecoveryCycleResult {
@@ -10,6 +10,7 @@ export interface TaskRecoveryCycleResult {
 export interface TaskRecoveryServiceOptions {
 	intervalMs?: number;
 	runnerOptions?: Omit<TaskRecoveryRunnerOptions, "signal">;
+	effectAuthority?: TaskRunEffectStateReader;
 	onCycle?: (result: TaskRecoveryCycleResult) => void;
 	onError?: (error: unknown) => void;
 	shutdownGraceMs?: number;
@@ -30,6 +31,7 @@ export class TaskRecoveryService {
 	private controller?: AbortController;
 	private timer?: ReturnType<typeof setTimeout>;
 	private readonly shutdownGraceMs: number;
+	private readonly effectAuthority?: TaskRunEffectStateReader;
 
 	constructor(ledger: RecoveryLedger, runner?: RecoveryRunner, options: TaskRecoveryServiceOptions = {}) {
 		this.ledger = ledger;
@@ -38,13 +40,14 @@ export class TaskRecoveryService {
 		this.runnerOptions = options.runnerOptions ?? {};
 		this.onCycle = options.onCycle;
 		this.onError = options.onError;
+		this.effectAuthority = options.effectAuthority;
 		this.shutdownGraceMs = Math.max(0, Math.min(options.shutdownGraceMs ?? 30_000, 5 * 60_000));
 	}
 
 	async runOnce(options: TaskRecoveryRunnerOptions = {}): Promise<TaskRecoveryCycleResult> {
 		if (this.active) return this.active;
 		const cycle = (async (): Promise<TaskRecoveryCycleResult> => {
-			const reconciled = this.ledger.reconcileExpiredTaskRuns();
+			const reconciled = this.ledger.reconcileExpiredTaskRuns(undefined, this.effectAuthority);
 			const verification = this.runner?.reverifyDue ? await this.runner.reverifyDue(Date.now(), options.signal, options.maxConcurrent) : { attempted: 0, accepted: 0, rejected: 0, unavailable: 0 };
 			const recovery = this.runner ? await this.runner.run(options) : { plans: 0, succeeded: 0, failed: 0, cancelled: 0, blocked: [] };
 			this.runner?.enqueueSettledCompletionNotices?.(reconciled.affectedPlans);

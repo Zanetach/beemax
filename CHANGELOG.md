@@ -1,5 +1,22 @@
 # Changelog
 
+## 1.0.0
+
+- Unified interactive, durable-task, recovery, Initiative, Tool Effect,
+  Checkpoint, Verification, and delivery execution around one Core-owned Pi
+  Agent Runtime without fixing customer business objects or workflows.
+- Added Profile-scoped Work Context, evidence-backed organizational Memory,
+  durable Task Ledger recovery, governed external Effects and receipts, and
+  bounded correction and proactive execution.
+- Added auxiliary image understanding with provider routing and an automatic
+  local Tesseract fallback, including Ubuntu dependency installation.
+- Hardened long-running Gateway operation with single-flight background work,
+  awaited shutdown, bounded execution-trace indexes, bounded streaming cards,
+  scoped Effect projections, and release-time heap/RSS regression checks.
+- Added reproducible Ubuntu release archives, isolated installation checks,
+  security audit, performance, recovery, fault-evidence, architecture,
+  migration, and full-suite release gates.
+
 ## 0.1.0-preview.15
 
 - Added selectable Custom endpoint protocols: OpenAI Chat Completions, OpenAI

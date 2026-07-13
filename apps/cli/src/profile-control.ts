@@ -108,7 +108,8 @@ export function createProfileControlHandler(
 		if (command === "/help") return { handled: true, message: "Commands: /help /status /usage /continue /retry /compact /sessions /resume <id> /history [n] /skills /tasks [plans|show|verify|retry|cancel <plan-id>] /new /reset /model [provider/model] [--global] /stop\nCLI also supports local display, tool, and retry controls." };
 		if (command === "/status" || command === "/usage") {
 			const [model, usage] = await Promise.all([runtime.modelStatus(source), runtime.usage(source)]);
-			const usageText = usage ? `input=${usage.inputTokens}; output=${usage.outputTokens}; context=${usage.contextTokens ?? "?"}/${usage.contextWindow ?? "?"}` : "no live session";
+			const toolBudget = config.context?.maxToolResultTokens ? `; tool-result-budget=${config.context.maxToolResultTokens} estimated tokens` : "";
+			const usageText = usage ? `input=${usage.inputTokens}; output=${usage.outputTokens}; context=${usage.contextTokens ?? "?"}/${usage.contextWindow ?? "?"}; compaction=${usage.compactionEnabled ? `on@${usage.compactionTriggerTokens ?? "?"} (reserve=${usage.compactionReserveTokens}, keep=${usage.compactionKeepRecentTokens})` : "off"}${toolBudget}` : "no live session";
 			const facts = operationalFacts?.();
 			const objective = runtime.tasks(source, { kind: "objective", status: "running", limit: 1 })[0]
 				?? runtime.tasks(source, { kind: "objective", status: "pending", limit: 1 })[0]
@@ -184,7 +185,7 @@ export function createProfileControlHandler(
 		const choice = config.models.find((item) => `${item.provider}/${item.model}` === selected.key)!;
 		config.model = { ...choice, apiKey: config.model.apiKeys[choice.provider], apiKeys: config.model.apiKeys };
 		if (global) {
-			await configureModel(config.profile, { provider: choice.provider, model: choice.model, baseUrl: choice.baseUrl, customProtocol: choice.customProtocol });
+			await configureModel(config.profile, { provider: choice.provider, model: choice.model, baseUrl: choice.baseUrl, customProtocol: choice.customProtocol, contextWindow: choice.contextWindow, maxTokens: choice.maxTokens });
 			return { handled: true, message: `Switched this conversation to ${requested} and saved it as the Profile default.` };
 		}
 		return { handled: true, message: `Switched this conversation to ${requested}.` };

@@ -24,4 +24,7 @@ test("shared read-only policy includes Agent-Reach for every session type", () =
 	assert.ok(mainAgentTools("safe", mcpTools).includes("capability_discover"));
 	assert.equal(mainAgentTools("safe", mcpTools).includes("skill_candidate_install"), false);
 	assert.ok(mainAgentTools("standard", mcpTools).includes("skill_candidate_promote"));
+	assert.ok(mainAgentTools("safe", mcpTools).includes("skill_versions"));
+	assert.equal(mainAgentTools("safe", mcpTools).includes("skill_rollback"), false);
+	assert.ok(mainAgentTools("standard", mcpTools).includes("skill_rollback"));
 });

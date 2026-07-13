@@ -13,8 +13,10 @@ test("gateway observability distinguishes an absent log from a stopped runtime",
 		assert.match(readGatewayLogs(root), /No Gateway logs have been created yet/);
 		writeGatewayState(root, { profile: "personal", lifecycle: "stopped", version: "v-test" });
 		recordGatewayEvent(root, "stopped", { reason: "manual" });
+		recordGatewayEvent(root, "context_compaction", { phase: "completed", expectedTaskCount: 2, missingTaskCount: 1, recoveryInjected: true });
 		assert.equal(inspectGateway("personal", root).lifecycle, "stopped");
 		assert.match(readGatewayLogs(root), /"event":"stopped"/);
+		assert.match(readGatewayLogs(root), /"event":"context_compaction"/);
 	} finally { rmSync(root, { recursive: true, force: true }); }
 });
 

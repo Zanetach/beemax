@@ -45,3 +45,13 @@ export function conversationKey(source: AgentScope): string {
 	const chat = source.threadId ? `${source.chatId}#${source.threadId}` : source.chatId;
 	return `${source.platform}:${chat}:${canonicalUserId(source) ?? "anon"}`;
 }
+
+/** Durable responsibility follows only an explicitly trusted cross-application identity. */
+export function responsibilityOwnerKey(source: AgentScope): string {
+	return source.userIdAlt ? `user:${source.userIdAlt}` : conversationOwnerKey(source);
+}
+
+/** Current responsibility identity followed by legacy channel identities for additive migration reads. */
+export function responsibilityOwnerKeys(source: AgentScope): string[] {
+	return [...new Set([responsibilityOwnerKey(source), conversationKey(source), conversationOwnerKey(source)])];
+}

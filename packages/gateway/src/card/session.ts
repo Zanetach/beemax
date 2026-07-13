@@ -7,6 +7,9 @@
 import { CardTimeline } from "./timeline.ts";
 import { StreamingTextNormalizer, normalizeStreamText } from "./text.ts";
 
+const MAX_ANSWER_CHARS = 200_000;
+const ANSWER_TRUNCATED = "\n[answer truncated]";
+
 export interface ToolState {
 	toolId: string;
 	name: string;
@@ -58,7 +61,7 @@ export class CardSession {
 			}
 			case "answer.delta": {
 				const delta = this.answerNormalizer.feed(String(data.text ?? ""));
-				if (delta) this.answerText += delta;
+				if (delta) this.answerText = boundedAnswer(this.answerText, delta);
 				break;
 			}
 			case "tool.updated": {
@@ -76,7 +79,7 @@ export class CardSession {
 			}
 			case "message.completed": {
 				const completed = normalizeStreamText(String(data.answer ?? ""));
-				if (completed.trim()) this.answerText = completed;
+				if (completed.trim()) this.answerText = boundedAnswer("", completed);
 				this.timeline.complete();
 				this.status = "completed";
 				const tokens = data.tokens;
@@ -92,13 +95,13 @@ export class CardSession {
 			case "message.failed": {
 				this.timeline.complete();
 				this.status = "failed";
-				this.answerText = typeof data.error === "string" ? data.error : "消息处理失败";
+				this.answerText = boundedAnswer("", typeof data.error === "string" ? data.error : "消息处理失败");
 				break;
 			}
 			case "message.cancelled": {
 				this.timeline.complete();
 				this.status = "cancelled";
-				this.answerText = typeof data.message === "string" ? data.message : "运行已取消";
+				this.answerText = boundedAnswer("", typeof data.message === "string" ? data.message : "运行已取消");
 				break;
 			}
 			case "approval.updated": {
@@ -115,6 +118,12 @@ export class CardSession {
 		}
 		return true;
 	}
+}
+
+function boundedAnswer(current: string, addition: string): string {
+	if (current.endsWith(ANSWER_TRUNCATED)) return current;
+	if (current.length + addition.length <= MAX_ANSWER_CHARS) return current + addition;
+	return `${current}${addition}`.slice(0, MAX_ANSWER_CHARS) + ANSWER_TRUNCATED;
 }
 
 function toolDetailFromEvent(data: CardEventData): string {

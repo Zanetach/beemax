@@ -9,6 +9,7 @@ import { MUTATING_TOOL_POLICY, READ_ONLY_TOOL_POLICY, withToolPolicy, type ToolP
 import { assertNoCredentialMaterial } from "./credential-material.ts";
 import { SkillRegistry, SkillRuntime } from "./skill-runtime.ts";
 import { rankCapabilityIndex } from "./capability-ranking.ts";
+import { CapabilityRuntime, capabilityDescriptor, capabilityVersionOf, type CapabilityRanker } from "./capability-runtime.ts";
 
 const SKILL_NAME = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 
@@ -19,14 +20,21 @@ interface SkillCandidate { version: 1; name: string; description: string; instru
 export interface SkillCandidateTrialInput { name: string; description: string; instructions: string; scenario: string; acceptanceCriteria: string; }
 export interface SkillCandidateTrialResult { trialId: string; accepted: boolean; evidence: string; assertions: SkillTrialAssertion[]; toolCalls: SkillTrialToolCall[]; }
 export type SkillCandidateVerifier = (input: SkillCandidateTrialInput, signal?: AbortSignal) => Promise<SkillCandidateTrialResult>;
+export interface SkillCandidatePromotionAuthorityInput { name: string; source: string; sha256: string; acceptedTrialIds: string[]; }
+export type SkillCandidatePromotionAuthority = (input: SkillCandidatePromotionAuthorityInput) => Promise<{ allowed: boolean; evidenceRef?: string; reason?: string }>;
 
-export interface CapabilityMetadata extends Pick<ToolDefinition, "name" | "description"> { kind?: "tool" | "mcp"; aliases?: string[]; triggers?: string[]; exclude?: string[]; }
+interface SkillVersionRecord { version: 1; name: string; description: string; instructions: string; source: string; sha256: string; promotedAt: number; authorityEvidenceRef?: string; signature: string; }
+interface SkillVersionEvent { id: string; kind: "promoted" | "rollback"; name: string; fromSha256?: string; toSha256: string; evidenceRef?: string; at: number; signature: string; }
 
-export function createSkillTools(agentDir: string, markReloadNeeded: () => void, availableTools: readonly CapabilityMetadata[] = [], verifyCandidate?: SkillCandidateVerifier, additionalSkillRoots: readonly string[] = [], activateTools?: (names: string[]) => void): ToolDefinition[] {
+export interface CapabilityMetadata extends Pick<ToolDefinition, "name" | "description"> { kind?: "tool" | "mcp"; aliases?: string[]; triggers?: string[]; exclude?: string[]; version?: string; }
+
+export function createSkillTools(agentDir: string, markReloadNeeded: () => void, availableTools: readonly CapabilityMetadata[] = [], verifyCandidate?: SkillCandidateVerifier, additionalSkillRoots: readonly string[] = [], activateTools?: (names: string[]) => void, capabilityRanker?: CapabilityRanker, promotionAuthority?: SkillCandidatePromotionAuthority): ToolDefinition[] {
 	const root = resolve(agentDir, "skills");
 	const candidateRoot = resolve(agentDir, "skill-candidates");
+	const versionRoot = resolve(agentDir, "skill-versions");
 	const registry = new SkillRegistry([root, ...additionalSkillRoots.map((item) => resolve(item))]);
 	const runtime = new SkillRuntime(registry, 200_000, 20, availableTools.map((tool) => tool.name).filter((name) => name !== "bash"));
+	const capabilities = new CapabilityRuntime({ ...(capabilityRanker ? { ranker: capabilityRanker } : {}), ...(activateTools ? { activeTools: { setActiveTools: activateTools } } : {}) });
 	const markSkillsChanged = () => { registry.invalidate(); runtime.reset(); markReloadNeeded(); };
 	let signingKeyPromise: Promise<Buffer> | undefined;
 	const signingKey = () => signingKeyPromise ??= skillLearningKey(agentDir);
@@ -36,24 +44,23 @@ export function createSkillTools(agentDir: string, markReloadNeeded: () => void,
 			const candidates = existingKey ? await listCandidates(candidateRoot, existingKey) : [];
 			const matches = <T extends CapabilityMetadata>(items: T[]) => rankCapabilities(params.query, items, 20);
 			const eligibleTools = availableTools.filter((tool) => tool.name !== "bash");
-			const matchedTools = rankCapabilityIndex(params.query, eligibleTools, 20);
-			const discoveredSkills = await runtime.discover(params.query, 10);
-			const ranked = [
-				...matchedTools.map((match) => ({ kind: match.item.kind ?? "tool", ...match })),
-				...discoveredSkills.map((skill) => ({ kind: "skill" as const, item: skill, score: skill.score, confidence: skill.confidence, reason: skill.reason })),
-			].sort((left, right) => right.score - left.score || left.item.name.localeCompare(right.item.name)).slice(0, 10);
-			const selectedSkills = ranked.filter((item) => item.kind === "skill").map((item) => item.item as (typeof discoveredSkills)[number]);
-			runtime.retainDiscovered(selectedSkills.map((skill) => skill.name));
-			const tools = ranked.filter((item) => item.kind !== "skill").map((item) => item.item as CapabilityMetadata);
+			const skillInventory = await registry.list();
+			const descriptors = [
+				...eligibleTools.map((tool) => capabilityDescriptor({ kind: tool.kind ?? "tool", name: tool.name, description: tool.description, aliases: tool.aliases, triggers: tool.triggers, exclude: tool.exclude, version: tool.version ?? capabilityVersionOf(tool), activeTools: [tool.name] })),
+				...skillInventory.map((skill) => capabilityDescriptor({ kind: "skill", name: skill.name, description: skill.description, triggers: skill.triggers, exclude: skill.exclude, version: `sha256:${skill.sha256}`, activeTools: ["skill_activate", "skill_read"] })),
+			];
+			const selection = await capabilities.discover({ query: params.query, inventory: descriptors, limit: 10 });
+			const selectedSkillNames = selection.candidates.filter((item) => item.kind === "skill").map((item) => item.name);
+			const selectedSkills = await runtime.admitDiscovered(selectedSkillNames);
+			const selectedToolNames = new Set(selection.candidates.filter((item) => item.kind !== "skill").map((item) => item.name));
+			const tools = eligibleTools.filter((tool) => selectedToolNames.has(tool.name)).sort((left, right) => selection.candidates.findIndex((item) => item.name === left.name) - selection.candidates.findIndex((item) => item.name === right.name));
 			const publicTools = tools.map(({ name, description }) => ({ name, description }));
-			const activatedTools = [...tools.map((tool) => tool.name), ...(selectedSkills.length ? ["skill_activate", "skill_read"] : [])];
-			activateTools?.(activatedTools);
 			return result("Capability discovery completed and matching capabilities were activated for this turn.", {
 				tools: publicTools,
 				skills: selectedSkills.map(publicSkill),
-				ranked: ranked.map((item) => ({ kind: item.kind, name: item.item.name, score: item.score, confidence: item.confidence, reason: item.reason })),
+				ranked: selection.candidates.map((item) => ({ ...item, reason: item.explanation.summary })),
 				candidates: matches(candidates.map((item) => ({ name: item.name, description: item.description, attempts: item.attempts.length }))),
-				activatedTools,
+				activatedTools: selection.activatedTools,
 			});
 		} }),
 		defineTool({ name: "skill_list", label: "List Skills", description: "List metadata for Profile, project, and global Skills without loading their instruction bodies.", parameters: Type.Object({}), execute: async () => {
@@ -81,11 +88,20 @@ export function createSkillTools(agentDir: string, markReloadNeeded: () => void,
 			assertSafeCandidate({ ...params, source: "direct Skill creation" });
 			const path = skillPath(root, params.name); await mkdir(resolve(path, ".."), { recursive: true });
 			try { await readFile(path, "utf8"); throw new Error(`Skill ${params.name} already exists; use skill_update`); } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
-			await writeFile(path, renderSkill(params), { encoding: "utf8", flag: "wx" }); markSkillsChanged(); return result(`Created and queued skill ${params.name} for hot reload after this turn.`, { name: params.name, path });
+			await writeFile(path, renderSkill(params), { encoding: "utf8", flag: "wx" });
+			const version = skillVersionOf({ ...params, source: "direct Skill creation", sha256: createHash("sha256").update(params.instructions.trim()).digest("hex") });
+			await persistSkillVersion(versionRoot, version, await signingKey());
+			await recordSkillVersionEvent(versionRoot, { id: crypto.randomUUID(), kind: "promoted", name: params.name, toSha256: version.sha256, evidenceRef: "approved:direct-skill-creation", at: Date.now(), signature: "" }, await signingKey());
+			markSkillsChanged(); return result(`Created and queued skill ${params.name} for hot reload after this turn.`, { name: params.name, path, sha256: version.sha256 });
 		} }),
 		defineTool({ name: "skill_update", label: "Update Skill", description: "Replace a managed instruction-only Agent Skill after learning a better verified workflow. Requires approval.", parameters: Type.Object({ name: Type.String({ pattern: "^[a-z0-9]+(?:-[a-z0-9]+)*$", maxLength: 64 }), description: Type.String({ minLength: 10, maxLength: 1024 }), instructions: Type.String({ minLength: 20, maxLength: 30_000 }) }), execute: async (_id, params) => {
 			assertSafeCandidate({ ...params, source: "direct Skill update" });
-			const path = skillPath(root, params.name); await readFile(path, "utf8"); await writeFile(path, renderSkill(params), "utf8"); markSkillsChanged(); return result(`Updated and queued skill ${params.name} for hot reload after this turn.`, { name: params.name, path });
+			const path = skillPath(root, params.name); const previous = await activeSkillVersion(path, params.name); if (!previous) throw new Error(`Skill ${params.name} is not active`);
+			const key = await signingKey(); await persistSkillVersion(versionRoot, previous, key);
+			const version = skillVersionOf({ ...params, source: "direct Skill update", sha256: createHash("sha256").update(params.instructions.trim()).digest("hex") });
+			await persistSkillVersion(versionRoot, version, key); await writeTextAtomic(path, renderSkill(params));
+			await recordSkillVersionEvent(versionRoot, { id: crypto.randomUUID(), kind: "promoted", name: params.name, fromSha256: previous.sha256, toSha256: version.sha256, evidenceRef: "approved:direct-skill-update", at: Date.now(), signature: "" }, key);
+			markSkillsChanged(); return result(`Updated and queued skill ${params.name} for hot reload after this turn.`, { name: params.name, path, sha256: version.sha256 });
 		} }),
 		defineTool({ name: "skill_candidate_install", label: "Install Skill Candidate", description: "Safely stage an instruction-only Skill candidate in quarantine. Does not execute code or affect active Agent behavior.", parameters: Type.Object({ name: Type.String({ pattern: "^[a-z0-9]+(?:-[a-z0-9]+)*$", maxLength: 64 }), description: Type.String({ minLength: 10, maxLength: 1024 }), instructions: Type.String({ minLength: 20, maxLength: 30_000 }), source: Type.String({ minLength: 1, maxLength: 2_000 }) }), execute: async (_id, params) => {
 			assertSafeCandidate(params);
@@ -121,13 +137,46 @@ export function createSkillTools(agentDir: string, markReloadNeeded: () => void,
 			const candidate = await readCandidate(candidateFile, await signingKey());
 			const consecutive = consecutiveAccepted(candidate.attempts);
 			if (consecutive < 2) throw new Error(`Skill candidate ${params.name} needs two consecutive accepted trials after its most recent rejection; current=${consecutive}`);
+			const acceptedTrialIds = candidate.attempts.slice(-consecutive).map((attempt) => attempt.trialId!).filter(Boolean);
+			let authorityEvidenceRef: string | undefined;
+			if (candidate.source.startsWith("workflow-candidate:")) {
+				if (!promotionAuthority) throw new Error("Workflow Skill promotion authority is unavailable");
+				const authority = await promotionAuthority({ name: candidate.name, source: candidate.source, sha256: candidate.sha256, acceptedTrialIds });
+				if (!authority.allowed) throw new Error(authority.reason ?? "Workflow Skill promotion was denied by its authority");
+				if (!authority.evidenceRef?.trim()) throw new Error("Workflow Skill promotion authority did not provide evidence");
+				authorityEvidenceRef = authority.evidenceRef.trim().slice(0, 1_000);
+				assertNoCredentialMaterial(authorityEvidenceRef, "Skill promotion authority evidence");
+			}
 			const path = skillPath(root, params.name);
 			await mkdir(resolve(path, ".."), { recursive: true });
-			try { await readFile(path, "utf8"); throw new Error(`Skill ${params.name} already exists`); } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
-			await writeFile(path, renderSkill(candidate), { encoding: "utf8", flag: "wx" });
+			const previous = await activeSkillVersion(path, params.name);
+			if (previous) await persistSkillVersion(versionRoot, previous, await signingKey());
+			const promoted = skillVersionOf(candidate, authorityEvidenceRef);
+			await persistSkillVersion(versionRoot, promoted, await signingKey());
+			await writeTextAtomic(path, renderSkill(candidate));
+			await recordSkillVersionEvent(versionRoot, { id: crypto.randomUUID(), kind: "promoted", name: params.name, ...(previous ? { fromSha256: previous.sha256 } : {}), toSha256: promoted.sha256, ...(authorityEvidenceRef ? { evidenceRef: authorityEvidenceRef } : {}), at: Date.now(), signature: "" }, await signingKey());
 			await unlink(candidateFile).catch(() => undefined);
 			markSkillsChanged();
-			return result(`Promoted and queued verified skill ${params.name} for hot reload after this turn.`, { name: params.name, path, verifiedTrials: consecutive });
+			return result(`Promoted and queued verified skill ${params.name} for Profile-scoped gray rollout after this turn.`, { name: params.name, path, verifiedTrials: consecutive, sha256: promoted.sha256, ...(authorityEvidenceRef ? { authorityEvidenceRef } : {}) });
+		}) }),
+		defineTool({ name: "skill_versions", label: "List Skill Versions", description: "List immutable managed Skill versions and rollout events without loading their instruction bodies.", parameters: Type.Object({ name: Type.String({ pattern: "^[a-z0-9]+(?:-[a-z0-9]+)*$", maxLength: 64 }) }), execute: async (_id, params) => {
+			const key = await readSkillLearningKey(agentDir);
+			const versions = key ? await listSkillVersions(versionRoot, params.name, key) : [];
+			const events = key ? await listSkillVersionEvents(versionRoot, params.name, key) : [];
+			const active = await activeSkillVersion(skillPath(root, params.name), params.name);
+			return result(`Found ${versions.length} immutable versions for ${params.name}.`, { name: params.name, currentSha256: active?.sha256, versions: versions.map(({ instructions: _instructions, signature: _signature, ...version }) => version), events: events.map(({ signature: _signature, ...event }) => event) });
+		} }),
+		defineTool({ name: "skill_rollback", label: "Rollback Skill", description: "Restore one immutable verified managed Skill version. Requires approval and retains a durable rollback event.", parameters: Type.Object({ name: Type.String({ pattern: "^[a-z0-9]+(?:-[a-z0-9]+)*$", maxLength: 64 }), sha256: Type.String({ pattern: "^[a-f0-9]{64}$" }) }), execute: async (_id, params) => withCandidateLock(candidateRoot, params.name, async () => {
+			const key = await signingKey();
+			const target = await readSkillVersion(versionRoot, params.name, params.sha256, key);
+			const path = skillPath(root, params.name);
+			const current = await activeSkillVersion(path, params.name);
+			if (!current) throw new Error(`Skill ${params.name} is not active`);
+			await persistSkillVersion(versionRoot, current, key);
+			await writeTextAtomic(path, renderSkill(target));
+			await recordSkillVersionEvent(versionRoot, { id: crypto.randomUUID(), kind: "rollback", name: params.name, fromSha256: current.sha256, toSha256: target.sha256, at: Date.now(), signature: "" }, key);
+			markSkillsChanged();
+			return result(`Rolled back ${params.name} to ${target.sha256}.`, { name: params.name, fromSha256: current.sha256, currentSha256: target.sha256 });
 		}) }),
 	];
 	const evolveSkill: ToolPolicy = { ...MUTATING_TOOL_POLICY, sideEffect: "local", risk: "high", reversible: "unknown", impact: "Changes durable instructions that influence future Agent behavior" };
@@ -144,6 +193,8 @@ export function createSkillTools(agentDir: string, markReloadNeeded: () => void,
 		skill_candidate_install: { ...evolveSkill, reversible: true },
 		skill_candidate_verify: { ...MUTATING_TOOL_POLICY, sideEffect: "local", risk: "low", approval: "never", reversible: false, impact: "Appends immutable bounded verification evidence in isolated candidate storage" },
 		skill_candidate_promote: { ...evolveSkill, reversible: true },
+		skill_versions: { ...READ_ONLY_TOOL_POLICY },
+		skill_rollback: { ...evolveSkill, reversible: true },
 	};
 	return tools.map((tool) => Object.assign(withToolPolicy(tool, policies[tool.name]!),
 		["skill_activate", "skill_read", "skill_resource_read"].includes(tool.name) ? { persistResultAsSummary: true } : {},
@@ -185,6 +236,42 @@ async function staleCandidateLock(path: string): Promise<boolean> { try { const 
 async function readCandidate(path: string, key: Buffer, maxBytes = 256 * 1024): Promise<SkillCandidate> { const candidate = JSON.parse(await boundedCandidateRead(path, maxBytes)) as SkillCandidate; const hash = typeof candidate.instructions === "string" ? createHash("sha256").update(candidate.instructions).digest("hex") : ""; if (candidate.version !== 1 || !SKILL_NAME.test(candidate.name) || !Array.isArray(candidate.attempts) || candidate.sha256 !== hash || candidate.signature !== candidateSignature(candidate, key) || candidate.attempts.some((attempt) => !attempt.id || !attempt.scenarioHash || (attempt.outcome !== "accepted" && attempt.outcome !== "rejected") || !attempt.evidence)) throw new Error("Invalid or tampered Skill candidate record"); return candidate; }
 async function boundedCandidateRead(path: string, maxBytes: number): Promise<string> { if (maxBytes <= 0) throw new Error("Skill candidate byte budget exceeded"); const handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW); try { const info = await handle.stat(); if (!info.isFile() || info.size > maxBytes) throw new Error("Skill candidate byte budget exceeded"); const buffer = Buffer.alloc(info.size + 1); const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0); if (bytesRead > maxBytes) throw new Error("Skill candidate byte budget exceeded"); return buffer.subarray(0, bytesRead).toString("utf8"); } finally { await handle.close(); } }
 async function writeJsonAtomic(path: string, value: SkillCandidate, exclusive = false): Promise<void> { const serialized = `${JSON.stringify(value, null, 2)}\n`; const temporary = `${path}.${crypto.randomUUID()}.tmp`; await writeFile(temporary, serialized, { encoding: "utf8", flag: "wx", mode: 0o600 }); try { if (exclusive) await writeFile(path, serialized, { encoding: "utf8", flag: "wx", mode: 0o600 }); else await rename(temporary, path); } finally { await unlink(temporary).catch(() => undefined); } }
+async function writeTextAtomic(path: string, value: string): Promise<void> { const temporary = `${path}.${crypto.randomUUID()}.tmp`; await writeFile(temporary, value, { encoding: "utf8", flag: "wx", mode: 0o600 }); try { await rename(temporary, path); } finally { await unlink(temporary).catch(() => undefined); } }
+
+function skillVersionOf(input: { name: string; description: string; instructions: string; source: string; sha256: string }, authorityEvidenceRef?: string): SkillVersionRecord {
+	return { version: 1, name: input.name, description: input.description, instructions: input.instructions, source: input.source, sha256: input.sha256, promotedAt: Date.now(), ...(authorityEvidenceRef ? { authorityEvidenceRef } : {}), signature: "" };
+}
+async function activeSkillVersion(path: string, name: string): Promise<SkillVersionRecord | undefined> {
+	try {
+		const content = await readFile(path, "utf8");
+		const description = content.match(/^description:\s*(.+)$/m)?.[1]?.trim().replace(/^"|"$/g, "") ?? "Managed Skill version";
+		const instructions = content.replace(/^---[\s\S]*?---\s*/m, "").replace(/^#[^\n]*\n+/, "").trim();
+		return skillVersionOf({ name, description, instructions, source: "active-snapshot", sha256: createHash("sha256").update(instructions).digest("hex") });
+	} catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined; throw error; }
+}
+function versionDirectory(root: string, name: string): string { if (!SKILL_NAME.test(name)) throw new Error(`Invalid skill name: ${name}`); const path = resolve(root, name); if (!path.startsWith(`${root}${sep}`)) throw new Error("Skill version path escaped managed directory"); return path; }
+async function persistSkillVersion(root: string, record: SkillVersionRecord, key: Buffer): Promise<void> {
+	const directory = versionDirectory(root, record.name); await mkdir(directory, { recursive: true });
+	const sealed = sealSkillVersion(record, key); const path = resolve(directory, `${record.sha256}.json`);
+	try { await writeFile(path, `${JSON.stringify(sealed, null, 2)}\n`, { encoding: "utf8", flag: "wx", mode: 0o600 }); } catch (error) { if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error; await readSkillVersion(root, record.name, record.sha256, key); }
+}
+function sealSkillVersion(record: SkillVersionRecord, key: Buffer): SkillVersionRecord { const unsigned = { ...record, signature: "" }; return { ...unsigned, signature: createHmac("sha256", key).update(JSON.stringify(unsigned)).digest("hex") }; }
+async function readSkillVersion(root: string, name: string, sha256: string, key: Buffer): Promise<SkillVersionRecord> {
+	if (!/^[a-f0-9]{64}$/.test(sha256)) throw new Error("Invalid Skill version identity");
+	const record = JSON.parse(await boundedCandidateRead(resolve(versionDirectory(root, name), `${sha256}.json`), 256 * 1024)) as SkillVersionRecord;
+	const sealed = sealSkillVersion(record, key);
+	if (record.version !== 1 || record.name !== name || record.sha256 !== sha256 || record.signature !== sealed.signature || createHash("sha256").update(record.instructions).digest("hex") !== sha256) throw new Error("Invalid or tampered Skill version record");
+	return record;
+}
+async function listSkillVersions(root: string, name: string, key: Buffer): Promise<SkillVersionRecord[]> {
+	const directory = versionDirectory(root, name); let entries: string[];
+	try { entries = (await readdir(directory)).filter((entry) => /^[a-f0-9]{64}\.json$/.test(entry)); } catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return []; throw error; }
+	const records: SkillVersionRecord[] = []; for (const entry of entries.slice(0, 1_000)) records.push(await readSkillVersion(root, name, entry.slice(0, -5), key));
+	return records.sort((left, right) => left.promotedAt - right.promotedAt);
+}
+function sealSkillVersionEvent(event: SkillVersionEvent, key: Buffer): SkillVersionEvent { const unsigned = { ...event, signature: "" }; return { ...unsigned, signature: createHmac("sha256", key).update(JSON.stringify(unsigned)).digest("hex") }; }
+async function recordSkillVersionEvent(root: string, event: SkillVersionEvent, key: Buffer): Promise<void> { const directory = resolve(versionDirectory(root, event.name), "events"); await mkdir(directory, { recursive: true }); const sealed = sealSkillVersionEvent(event, key); await writeFile(resolve(directory, `${event.at}-${event.id}.json`), `${JSON.stringify(sealed)}\n`, { encoding: "utf8", flag: "wx", mode: 0o600 }); }
+async function listSkillVersionEvents(root: string, name: string, key: Buffer): Promise<SkillVersionEvent[]> { const directory = resolve(versionDirectory(root, name), "events"); let entries: string[]; try { entries = (await readdir(directory)).filter((entry) => entry.endsWith(".json")).sort(); } catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return []; throw error; } const events: SkillVersionEvent[] = []; for (const entry of entries.slice(-1_000)) { const event = JSON.parse(await boundedCandidateRead(resolve(directory, entry), 16_000)) as SkillVersionEvent; if (event.name !== name || event.signature !== sealSkillVersionEvent(event, key).signature) throw new Error("Invalid or tampered Skill version event"); events.push(event); } return events; }
 function assertSafeCandidate(candidate: { description: string; instructions: string; source: string }): void {
 	for (const value of [candidate.description, candidate.instructions, candidate.source]) assertNoCredentialMaterial(value, "Skill candidate");
 }

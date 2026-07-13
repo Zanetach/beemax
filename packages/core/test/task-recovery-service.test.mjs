@@ -25,6 +25,15 @@ test("TaskRecoveryService reconciles expired runs before one coalesced recovery 
 	assert.deepEqual(order, ["reconcile", "verify", "recover", "notify"]);
 });
 
+test("TaskRecoveryService gives Effect authority to lease reconciliation", async () => {
+	const effectAuthority = { taskRunReplayState: () => "blocked" };
+	let received;
+	const ledger = { reconcileExpiredTaskRuns(_now, effects) { received = effects; return { retried: 0, failed: 1, affectedPlans: [] }; } };
+	const service = new TaskRecoveryService(ledger, undefined, { effectAuthority });
+	await service.runOnce();
+	assert.equal(received, effectAuthority);
+});
+
 test("TaskRecoveryService stop aborts and joins the active recovery cycle", async () => {
 	let reconciliations = 0;
 	let started;

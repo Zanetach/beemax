@@ -6,8 +6,6 @@ import {
 	type AutomationStore,
 } from "@beemax/automation";
 import type { DeliveryPort } from "./delivery-port.ts";
-import { conversationOwnerKey } from "./agent-scope.ts";
-import type { TaskLedger } from "./task-ledger.ts";
 
 export type AutomationExecutor = (job: AutomationJob, signal?: AbortSignal) => Promise<{ output?: string }>;
 
@@ -21,18 +19,15 @@ export class AutomationScheduler {
 	private readonly store: AutomationStore;
 	private readonly execute: AutomationExecutor;
 	private readonly maxConcurrent: number;
-	private readonly taskLedger?: TaskLedger;
 
 	constructor(
 		store: AutomationStore,
 		execute: AutomationExecutor,
 		maxConcurrent = 4,
-		taskLedger?: TaskLedger,
 	) {
 		this.store = store;
 		this.execute = execute;
 		this.maxConcurrent = maxConcurrent;
-		this.taskLedger = taskLedger;
 	}
 
 	start(): void { if (this.stopped) { this.stopped = false; this.schedule(0); } }
@@ -60,8 +55,6 @@ export class AutomationScheduler {
 	}
 	private launch(job: AutomationJob): void {
 		const startedAt = Date.now();
-		const taskId = crypto.randomUUID();
-		const runId = crypto.randomUUID();
 		const controller = new AbortController();
 		this.controllers.add(controller);
 		const heartbeat = job.claimToken && this.store.renewClaim ? setInterval(() => {
@@ -69,7 +62,6 @@ export class AutomationScheduler {
 			catch (error) { controller.abort(error); }
 		}, 60_000) : undefined;
 		heartbeat?.unref();
-		this.recordAutomationStart(job, taskId, runId, startedAt);
 		const promise = (async () => {
 			let result: Omit<AutomationRun, "id" | "jobId">;
 			try {
@@ -79,29 +71,8 @@ export class AutomationScheduler {
 				result = { startedAt, finishedAt: Date.now(), status: "error", error: error instanceof Error ? error.message : String(error) };
 			}
 			if (this.store.complete(job, result) === false) return;
-			this.recordAutomationFinish(taskId, runId, result);
 		})().finally(() => { if (heartbeat) clearInterval(heartbeat); this.controllers.delete(controller); this.running.delete(promise); this.wake(); });
 		this.running.add(promise);
-	}
-
-	private recordAutomationStart(job: AutomationJob, taskId: string, runId: string, startedAt: number): void {
-		if (!this.taskLedger) return;
-		try {
-			const ownerKey = conversationOwnerKey({ platform: job.platform, chatId: job.chatId, chatType: "dm", userId: job.userId });
-			this.taskLedger.record({ id: taskId, ownerKey, kind: "automation", title: job.name, status: "running", evidence: `schedule:${job.id}`, createdAt: startedAt, startedAt });
-			this.taskLedger.recordRun({ id: runId, taskId, executor: "automation", status: "running", startedAt });
-		} catch (error) { console.error(`[beemax] could not record automation Task start: ${error instanceof Error ? error.message : String(error)}`); }
-	}
-
-	private recordAutomationFinish(taskId: string, runId: string, result: Omit<AutomationRun, "id" | "jobId">): void {
-		if (!this.taskLedger) return;
-		const succeeded = result.status === "ok";
-		const output = result.output?.slice(0, 50_000);
-		const errorText = result.error?.slice(0, 5_000);
-		try {
-			this.taskLedger.transition(taskId, { status: succeeded ? "succeeded" : "failed", finishedAt: result.finishedAt, result: output, error: errorText });
-			this.taskLedger.transitionRun(runId, { status: succeeded ? "succeeded" : "failed", finishedAt: result.finishedAt, output, error: errorText });
-		} catch (error) { console.error(`[beemax] could not record automation Task completion: ${error instanceof Error ? error.message : String(error)}`); }
 	}
 }
 
@@ -125,6 +96,8 @@ export interface HeartbeatConfig {
 }
 export interface HeartbeatExecution { route: AutomationOwner; prompt: string; timeoutMs: number; }
 export type HeartbeatExecutor = (input: HeartbeatExecution, signal?: AbortSignal) => Promise<string>;
+export type HeartbeatObservation = { kind: "ignored" | "observed" };
+export type HeartbeatObserver = (input: HeartbeatExecution & { triggerId: string; occurredAt: number; reason: "interval" | "manual" }, signal?: AbortSignal) => Promise<HeartbeatObservation>;
 
 /** Core policy for proactive checks; the channel delivery function is a port. */
 export class HeartbeatRunner {
@@ -139,18 +112,21 @@ export class HeartbeatRunner {
 	private readonly execute: HeartbeatExecutor;
 	private readonly deliveryPort: DeliveryPort;
 	private readonly isBusy: () => boolean;
+	private readonly observe?: HeartbeatObserver;
 	constructor(
 		store: AutomationStore,
 		config: HeartbeatConfig,
 		execute: HeartbeatExecutor,
 		deliveryPort: DeliveryPort,
 		isBusy: () => boolean,
+		observe?: HeartbeatObserver,
 	) {
 		this.store = store;
 		this.config = config;
 		this.execute = execute;
 		this.deliveryPort = deliveryPort;
 		this.isBusy = isBusy;
+		this.observe = observe;
 		this.intervalMs = parseDuration(config.every);
 	}
 	start(): void { if (this.stopped && this.config.enabled) { this.stopped = false; this.schedule(this.intervalMs); } }
@@ -171,6 +147,7 @@ export class HeartbeatRunner {
 		if (!this.stopped) this.timer = setTimeout(() => void this.startRun("interval"), Math.max(1000, delay));
 	}
 	private async startRun(reason: "interval" | "manual"): Promise<void> {
+		if (this.activeRun) { await this.activeRun; return; }
 		const controller = new AbortController(); this.activeController = controller;
 		const active = this.run(reason, controller.signal); this.activeRun = active;
 		try { await active; } finally { if (this.activeRun === active) { this.activeRun = undefined; this.activeController = undefined; } }
@@ -189,6 +166,12 @@ export class HeartbeatRunner {
 		if (!route) { this.store.recordHeartbeat("skipped", "no-delivery-route"); this.schedule(this.intervalMs); return; }
 		this.running = true;
 		try {
+			if (this.observe) {
+				const occurredAt = Date.now();
+				const observed = await Promise.race([this.observe({ route, prompt: this.config.prompt, timeoutMs: this.config.timeoutMs, triggerId: `heartbeat:${this.config.platform}:${route.userId ?? route.chatId}`, occurredAt, reason }, signal), new Promise<never>((_, reject) => signal.addEventListener("abort", () => reject(signal.reason), { once: true }))]);
+				this.store.recordHeartbeat(observed.kind === "observed" ? "observed" : "ok", reason);
+				return;
+			}
 			const answer = await Promise.race([this.execute({ route, prompt: this.config.prompt, timeoutMs: this.config.timeoutMs }, signal), new Promise<never>((_, reject) => signal.addEventListener("abort", () => reject(signal.reason), { once: true }))]);
 			const filtered = filterHeartbeatAnswer(answer, this.config.ackMaxChars);
 			if (filtered.notify) await this.deliveryPort.sendText(route, filtered.text);

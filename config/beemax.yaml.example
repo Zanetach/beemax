@@ -6,6 +6,10 @@ model:
   provider: anthropic
   model: claude-sonnet-4-5
   # apiKey: sk-...         # or set BEEMAX_API_KEY / ANTHROPIC_API_KEY
+  # For provider: custom, declare the actual limits (or use
+  # BEEMAX_MODEL_CONTEXT_WINDOW / BEEMAX_MODEL_MAX_TOKENS):
+  # contextWindow: 128000
+  # maxTokens: 8192
 
 feishu:
   appId: cli_xxxxxxxxxxxxx
@@ -37,6 +41,27 @@ imageGeneration:
   provider: openai-codex
   quality: medium
   outputDir: data/cache/images
+
+# Inbound image understanding. Installed Tesseract is discovered automatically;
+# any configured chat model declaring image input can serve as auxiliary vision.
+mediaUnderstanding:
+  auxiliaryVisionEnabled: true
+  localOcr:
+    enabled: true
+    # command: /usr/bin/tesseract
+    # languages: eng+chi_sim
+    timeoutMs: 30000
+
+# Context enrichment and Pi compaction. Omit token values to scale them from
+# the selected model's actual context window.
+context:
+  maxTurnChars: 12000
+  # Shared conservative output ceiling for Pi built-ins, BeeMax Tools, and MCP.
+  maxToolResultTokens: 12000
+  compaction:
+    enabled: true
+    # reserveTokens: 19200
+    # keepRecentTokens: 20480
 
 subagents:
   enabled: true

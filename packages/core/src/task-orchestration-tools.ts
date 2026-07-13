@@ -1,6 +1,6 @@
 import { Type } from "typebox";
 import { defineTool, type ToolDefinition } from "@earendil-works/pi-coding-agent";
-import { conversationKey } from "./agent-scope.ts";
+import { responsibilityOwnerKey } from "./agent-scope.ts";
 import type { BeeMaxRuntimeSource } from "./runtime.ts";
 import { TaskGraph, type TaskGraphExecutor, type TaskGraphVerifier } from "./task-graph.ts";
 import type { TaskLedger } from "./task-ledger.ts";
@@ -8,8 +8,9 @@ import { MUTATING_TOOL_POLICY, READ_ONLY_TOOL_POLICY, withToolPolicy, type ToolP
 import { TaskPlanRuntime } from "./task-plan-runtime.ts";
 import type { AutonomousPlanningDecision } from "./autonomous-planning.ts";
 import { assessTaskPlanQuality } from "./task-plan-quality.ts";
+import type { ExecutionTraceSink } from "./execution-trace.ts";
 
-export interface TaskOrchestrationOptions { maxConcurrent?: number; maxTasks?: number; maxCorrectiveAttempts?: number; planRuntime?: TaskPlanRuntime; verify?: TaskGraphVerifier; planningDecision?: () => AutonomousPlanningDecision | undefined; objectiveTaskId?: () => string | undefined; }
+export interface TaskOrchestrationOptions { maxConcurrent?: number; maxTasks?: number; maxCorrectiveAttempts?: number; planRuntime?: TaskPlanRuntime; verify?: TaskGraphVerifier; planningDecision?: () => AutonomousPlanningDecision | undefined; objectiveTaskId?: () => string | undefined; executionTrace?: ExecutionTraceSink; }
 
 /** Model-facing structured planning seam; Core owns validation and execution. */
 export function createTaskOrchestrationTools(
@@ -18,8 +19,8 @@ export function createTaskOrchestrationTools(
 	execute: TaskGraphExecutor,
 	options: TaskOrchestrationOptions = {},
 ): ToolDefinition[] {
-	const graph = new TaskGraph(ledger);
-	const ownerKey = conversationKey(source);
+	const graph = new TaskGraph(ledger, options.executionTrace);
+	const ownerKey = responsibilityOwnerKey(source);
 	const maxTasks = Math.max(2, Math.min(Math.trunc(options.maxTasks ?? 12), 20));
 	const maxConcurrent = Math.max(1, Math.min(Math.trunc(options.maxConcurrent ?? 3), 10));
 	const maxCorrectiveAttempts = Math.max(0, Math.min(Math.trunc(options.maxCorrectiveAttempts ?? 1), 2));

@@ -6,6 +6,7 @@ agent:
 model:
   provider: anthropic
   model: claude-sonnet-4-5
+  # Custom providers may declare contextWindow and maxTokens here.
 
 feishu:
   # Keep secrets in /etc/beemax/personal.env, not this file.
@@ -38,6 +39,23 @@ imageGeneration:
   provider: openai-codex
   quality: medium
   outputDir: data/profiles/personal/cache/images
+
+mediaUnderstanding:
+  auxiliaryVisionEnabled: true
+  localOcr:
+    enabled: true
+    # command: /usr/bin/tesseract
+    # languages: eng+chi_sim
+    timeoutMs: 30000
+
+context:
+  maxTurnChars: 12000
+  maxToolResultTokens: 12000
+  compaction:
+    enabled: true
+    # Optional per-profile overrides; defaults scale with the active model.
+    # reserveTokens: 19200
+    # keepRecentTokens: 20480
 
 subagents:
   enabled: true

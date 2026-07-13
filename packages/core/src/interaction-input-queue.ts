@@ -28,10 +28,14 @@ export interface InteractionInputQueueStore<Source extends BeeMaxRuntimeSource =
 /** Owner-only, lock-protected fallback store for deployments without SQLite composition. */
 export class FileInteractionInputQueueStore<Source extends BeeMaxRuntimeSource = BeeMaxRuntimeSource> implements InteractionInputQueueStore<Source> {
 	private readonly lockPath: string;
+	private readonly maxRecords: number;
+	private readonly maxBytes: number;
 
-	constructor(privatePath: string) {
+	constructor(privatePath: string, limits: { maxRecords?: number; maxBytes?: number } = {}) {
 		this.path = privatePath;
 		this.lockPath = `${privatePath}.lock`;
+		this.maxRecords = Math.max(1, Math.min(limits.maxRecords ?? 10_000, 100_000));
+		this.maxBytes = Math.max(256, Math.min(limits.maxBytes ?? 16 * 1024 * 1024, 128 * 1024 * 1024));
 		if (existsSync(privatePath)) this.readRecords();
 	}
 
@@ -43,6 +47,7 @@ export class FileInteractionInputQueueStore<Source extends BeeMaxRuntimeSource =
 	enqueue(input: InteractionQueuedInput<Source>, limit = 100): number {
 		return this.withLock(() => {
 			const records = this.readRecords();
+			if (records.length >= this.maxRecords) return 0;
 			const position = records.filter((candidate) => candidate.key === input.key).length;
 			if (position >= limit) return 0;
 			records.push(input);
@@ -54,6 +59,7 @@ export class FileInteractionInputQueueStore<Source extends BeeMaxRuntimeSource =
 	enqueueClaimed(input: InteractionQueuedInput<Source>, limit = 100, leaseMs = 60 * 60_000): number {
 		return this.withLock(() => {
 			const records = this.readRecords();
+			if (records.length >= this.maxRecords) return 0;
 			const position = records.filter((candidate) => candidate.key === input.key).length;
 			if (position >= limit) return 0;
 			if (position === 0) {
@@ -125,18 +131,27 @@ export class FileInteractionInputQueueStore<Source extends BeeMaxRuntimeSource =
 
 	private readRecords(): InteractionQueuedInput<Source>[] {
 		if (!existsSync(this.path)) return [];
+		if (statSync(this.path).size > this.maxBytes) throw new Error("Interaction input queue exceeds its byte limit");
 		const parsed = JSON.parse(readFileSync(this.path, "utf8")) as unknown;
 		if (Array.isArray(parsed)) {
 			if (!parsed.every(isQueuedInput)) throw new Error("Interaction input queue is corrupt");
+			if (parsed.length > this.maxRecords) throw new Error("Interaction input queue exceeds its record limit");
 			return parsed as InteractionQueuedInput<Source>[];
 		}
-		if (parsed && typeof parsed === "object") return legacyRecords(parsed as Record<string, unknown>) as InteractionQueuedInput<Source>[];
+		if (parsed && typeof parsed === "object") {
+			const records = legacyRecords(parsed as Record<string, unknown>) as InteractionQueuedInput<Source>[];
+			if (records.length > this.maxRecords) throw new Error("Interaction input queue exceeds its record limit");
+			return records;
+		}
 		throw new Error("Interaction input queue is corrupt");
 	}
 
 	private writeRecords(records: readonly InteractionQueuedInput<Source>[]): void {
+		if (records.length > this.maxRecords) throw new Error("Interaction input queue exceeds its record limit");
+		const serialized = JSON.stringify(records);
+		if (Buffer.byteLength(serialized, "utf8") > this.maxBytes) throw new Error("Interaction input queue exceeds its byte limit");
 		const temporary = `${this.path}.${process.pid}.${randomUUID()}.tmp`;
-		writeFileSync(temporary, JSON.stringify(records), { encoding: "utf8", mode: 0o600 });
+		writeFileSync(temporary, serialized, { encoding: "utf8", mode: 0o600 });
 		renameSync(temporary, this.path);
 	}
 

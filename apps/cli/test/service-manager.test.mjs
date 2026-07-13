@@ -1,6 +1,41 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { renderMacLaunchAgent, renderSystemdService, runServiceAction } from "../dist/service-manager.js";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { installSystemdService, renderMacLaunchAgent, renderSystemdService, runServiceAction } from "../dist/service-manager.js";
+import { resolveServiceLayout, serviceDisplayName } from "../dist/service-platform.js";
+
+test("service layout hides platform paths and respects Linux XDG/config overrides", () => {
+	const user = resolveServiceLayout({ platform: "linux", scope: "user", homeDir: "/home/ada", env: { XDG_CONFIG_HOME: "/srv/ada-config" } });
+	assert.equal(user.unitDirectory, "/srv/ada-config/systemd/user");
+	assert.equal(user.unitTemplatePath, "/srv/ada-config/systemd/user/beemax@.service");
+	assert.equal(serviceDisplayName("research", "linux"), "beemax@research.service");
+
+	const system = resolveServiceLayout({ platform: "linux", scope: "system", homeDir: "/root", env: { BEEMAX_SYSTEMD_SYSTEM_DIR: "/usr/local/lib/systemd/system", BEEMAX_SYSTEM_CONFIG_DIR: "/srv/beemax-config" } });
+	assert.equal(system.unitDirectory, "/usr/local/lib/systemd/system");
+	assert.equal(system.environmentDirectory, "/srv/beemax-config");
+	assert.equal(serviceDisplayName("research", "darwin"), "com.beemax.agent.research");
+});
+
+test("systemd installation is testable through the service platform seam", async () => {
+	const root = await mkdtemp(join(tmpdir(), "beemax-systemd-"));
+	const calls = [];
+	try {
+		await installSystemdService("/opt/beemax", "user", {
+			platform: "linux",
+			homeDir: "/home/ada",
+			env: { XDG_CONFIG_HOME: root, BEEMAX_HOME: "/srv/ada-beemax" },
+			nodePath: "/usr/bin/node",
+			runner: (command, args) => { calls.push([command, args]); return { status: 0 }; },
+		});
+		const unit = await readFile(join(root, "systemd", "user", "beemax@.service"), "utf8");
+		assert.match(unit, /ExecStart="\/usr\/bin\/node"/);
+		assert.deepEqual(calls, [["systemctl", ["--user", "daemon-reload"]]]);
+	} finally {
+		await rm(root, { recursive: true, force: true });
+	}
+});
 
 test("systemd service binds the installed CLI, profile env, and safe runtime defaults", () => {
 	const unit = renderSystemdService("/opt/beemax", "/usr/bin/node", "user", undefined, "/home/beemax/.beemax");

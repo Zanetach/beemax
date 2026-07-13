@@ -12,6 +12,8 @@ import type { BeeMaxConfig } from "./config.ts";
 import { providerApiKeyEnv } from "./provider-resolver.ts";
 import { inspectOperationalMetrics, operationalMetricsPath } from "./operational-metrics.ts";
 import { WeKnoraKnowledgeProvider } from "@beemax/knowledge";
+import { ProfileModelCatalog } from "./model-catalog.ts";
+import { createLocalMediaUnderstandingAdapters } from "./local-media-understanding.ts";
 
 export interface DoctorCheck { name: string; status: "PASS" | "WARN" | "FAIL"; detail: string }
 export interface DoctorResult { ok: boolean; checks: DoctorCheck[] }
@@ -36,6 +38,19 @@ export async function inspectDoctor(config: BeeMaxConfig, options: DoctorOptions
 
 	const apiKey = config.model.apiKey;
 	checks.push({ name: "Model", status: apiKey ? "PASS" : "FAIL", detail: apiKey ? `${config.model.provider}/${config.model.model}` : `missing ${providerApiKeyEnv(config.model.provider)} or BEEMAX_API_KEY` });
+	const modelCatalog = new ProfileModelCatalog(config);
+	const currentModel = modelCatalog.resolve(`${config.model.provider}/${config.model.model}`);
+	const nativeVision = currentModel?.capabilities?.input.includes("image") ?? false;
+	const auxiliaryVision = config.mediaUnderstanding.auxiliaryVisionEnabled
+		? modelCatalog.list().filter((model) => model.available && model.key !== currentModel?.key && model.capabilities?.input.includes("image"))
+		: [];
+	const localOcr = createLocalMediaUnderstandingAdapters(config.mediaUnderstanding.localOcr);
+	const perception = [
+		...(nativeVision ? ["native vision"] : []),
+		...auxiliaryVision.map((model) => `auxiliary ${model.key}`),
+		...localOcr.map((adapter) => adapter.id),
+	];
+	checks.push({ name: "Media understanding", status: perception.length ? "PASS" : "WARN", detail: perception.length ? perception.join("; ") : "unavailable: configure an image-capable model or install Tesseract OCR" });
 	checks.push({ name: "Toolset", status: config.agent.toolset === "safe" ? "WARN" : "PASS", detail: config.agent.toolset });
 	await checkExecutionBackend(config, checks);
 	const gatewayRequired = options.requireGateway ?? true;

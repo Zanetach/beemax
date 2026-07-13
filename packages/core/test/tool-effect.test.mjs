@@ -1,11 +1,11 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, statSync } from "node:fs";
+import { mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import Database from "better-sqlite3";
 import { spawnSync } from "node:child_process";
-import { FileToolEffectJournal, MUTATING_TOOL_POLICY, READ_ONLY_TOOL_POLICY } from "../dist/index.js";
+import { createExecutionEnvelope, FileExecutionTraceStore, FileToolEffectJournal, MUTATING_TOOL_POLICY, READ_ONLY_TOOL_POLICY } from "../dist/index.js";
 
 const source = { platform: "cli", chatId: "local", chatType: "dm", userId: "local" };
 
@@ -25,6 +25,70 @@ test("effect journal records a content-free mutation lifecycle and committed rec
 		assert.equal(statSync(path).mode & 0o777, 0o600);
 		const restored = new FileToolEffectJournal(path);
 		assert.throws(() => restored.begin({ source, taskId: "turn-2", toolCallId: "call-2", toolName: "write", args: { idempotencyKey: "report-v1" }, policy: MUTATING_TOOL_POLICY }), /already committed/);
+	} finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("Effect authority projects its lifecycle into the bound Execution Trace", () => {
+	const root = mkdtempSync(join(tmpdir(), "beemax-effects-trace-"));
+	try {
+		const trace = new FileExecutionTraceStore(join(root, "execution-trace.jsonl"));
+		const effects = new FileToolEffectJournal(join(root, "tool-effects.jsonl"), 5_000, trace);
+		const executionEnvelope = createExecutionEnvelope({ executionId: "execution:effect", trigger: { kind: "task_transition" }, taskId: "task:effect", taskRunId: "run:effect", mode: "normal" });
+		const effectId = effects.begin({ source, executionEnvelope, taskId: "task:effect", toolCallId: "call:effect", toolName: "write", policy: { ...MUTATING_TOOL_POLICY, sideEffect: "local" } });
+		effects.finish({ source, executionEnvelope, toolCallId: "call:effect", toolName: "write", policy: { ...MUTATING_TOOL_POLICY, sideEffect: "local" }, isError: false });
+		const interruptedId = effects.begin({ source, executionEnvelope, taskId: "task:effect", toolCallId: "call:interrupted", toolName: "external_write", policy: MUTATING_TOOL_POLICY });
+		assert.equal(effects.interruptTask("task:effect"), 1);
+		const execution = trace.trace({ executionId: "execution:effect" });
+		assert.equal(execution.effects, 2);
+		assert.equal(execution.unknownEffects, 1);
+		assert.deepEqual(execution.events.map(({ type, effectId: id, status }) => ({ type, effectId: id, status })), [
+			{ type: "effect.started", effectId, status: "executing" },
+			{ type: "effect.settled", effectId, status: "committed" },
+			{ type: "effect.started", effectId: interruptedId, status: "executing" },
+			{ type: "effect.settled", effectId: interruptedId, status: "unknown" },
+		]);
+	} finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("durable mutations bind to their Task Run and expose only an authority projection", () => {
+	const root = mkdtempSync(join(tmpdir(), "beemax-effects-task-run-"));
+	try {
+		const effects = new FileToolEffectJournal(join(root, "tool-effects.jsonl"));
+		const executionEnvelope = createExecutionEnvelope({ executionId: "execution:send", trigger: { kind: "task_transition" }, taskId: "task:send", taskRunId: "run:send", mode: "normal" });
+		const effectId = effects.begin({ source, executionEnvelope, taskId: "wrong-task", toolCallId: "call:send", toolName: "write", args: { idempotencyKey: "send-v1" }, policy: { ...MUTATING_TOOL_POLICY, sideEffect: "local" } });
+		effects.finish({ source, executionEnvelope, toolCallId: "call:send", toolName: "write", policy: { ...MUTATING_TOOL_POLICY, sideEffect: "local" }, isError: false });
+		assert.deepEqual(effects.taskProjection({ ownerKey: "cli:local:local", taskId: "task:send" }), [{
+			id: effectId, taskRunId: "run:send", tool: "write", status: "committed", occurredAt: effects.effect(effectId).at,
+			operation: "write", idempotencyKey: "send-v1",
+		}]);
+		assert.deepEqual(effects.taskProjection({ ownerKey: "other", taskId: "task:send" }), []);
+		assert.equal(effects.effect(effectId).taskId, "task:send");
+		assert.equal(effects.effect(effectId).taskRunId, "run:send");
+	} finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("Task Effect projection isolates its query from unrelated historical authority rows", () => {
+	const root = mkdtempSync(join(tmpdir(), "beemax-effects-indexed-projection-"));
+	try {
+		const path = join(root, "tool-effects.jsonl");
+		const effects = new FileToolEffectJournal(path);
+		const executionEnvelope = createExecutionEnvelope({ executionId: "execution:target", trigger: { kind: "task_transition" }, taskId: "task:target", taskRunId: "run:target", mode: "normal" });
+		effects.begin({ source, executionEnvelope, toolCallId: "call:target", toolName: "write", policy: { ...MUTATING_TOOL_POLICY, sideEffect: "local" } });
+		effects.finish({ source, executionEnvelope, toolCallId: "call:target", toolName: "write", policy: { ...MUTATING_TOOL_POLICY, sideEffect: "local" }, isError: false });
+		const db = new Database(`${path}.authority.sqlite`);
+		db.prepare("INSERT INTO tool_effects(id,status,updated_at,record_json,holder_pid,owner_key,task_id,task_run_id) VALUES (?,?,?,?,?,?,?,?)").run("unrelated", "committed", 1, "{corrupt-unrelated", null, "other", "task:other", "run:other");
+		db.close();
+		assert.equal(effects.taskProjection({ ownerKey: "cli:local:local", taskId: "task:target" }).length, 1);
+	} finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("durable mutation identity requires a Task Run", () => {
+	const root = mkdtempSync(join(tmpdir(), "beemax-effects-task-run-required-"));
+	try {
+		const effects = new FileToolEffectJournal(join(root, "tool-effects.jsonl"));
+		const executionEnvelope = createExecutionEnvelope({ executionId: "execution:task-only", trigger: { kind: "task_transition" }, taskId: "task:only", mode: "normal" });
+		assert.throws(() => effects.begin({ source, executionEnvelope, toolCallId: "call:only", toolName: "write", policy: MUTATING_TOOL_POLICY }), /Task Run/);
+		assert.deepEqual(effects.events(), []);
 	} finally { rmSync(root, { recursive: true, force: true }); }
 });
 
@@ -118,6 +182,43 @@ test("external mutation remains unknown without a provider receipt", () => {
 	} finally { rmSync(root, { recursive: true, force: true }); }
 });
 
+test("Tool timeout leaves an external mutation unknown", () => {
+	const root = mkdtempSync(join(tmpdir(), "beemax-effects-timeout-"));
+	try {
+		const effects = new FileToolEffectJournal(join(root, "tool-effects.jsonl"));
+		effects.begin({ source, taskId: "turn-timeout", toolCallId: "call-timeout", toolName: "external_write", args: { idempotencyKey: "timeout-v1" }, policy: MUTATING_TOOL_POLICY });
+		effects.finish({ source, toolCallId: "call-timeout", toolName: "external_write", policy: MUTATING_TOOL_POLICY, isError: true });
+		assert.equal(effects.events().at(-1).status, "unknown");
+		assert.throws(() => effects.begin({ source, taskId: "retry", toolCallId: "retry", toolName: "external_write", args: { idempotencyKey: "timeout-v1" }, policy: MUTATING_TOOL_POLICY }), /unresolved/);
+	} finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("damaged JSONL projection cannot erase committed Effect authority", () => {
+	const root = mkdtempSync(join(tmpdir(), "beemax-effects-projection-damage-"));
+	try {
+		const path = join(root, "tool-effects.jsonl");
+		const effects = new FileToolEffectJournal(path);
+		effects.begin({ source, taskId: "turn-1", toolCallId: "call-1", toolName: "write", args: { idempotencyKey: "durable-v1" }, policy: { ...MUTATING_TOOL_POLICY, sideEffect: "local" } });
+		effects.finish({ source, toolCallId: "call-1", toolName: "write", policy: { ...MUTATING_TOOL_POLICY, sideEffect: "local" }, isError: false });
+		effects.close();
+		writeFileSync(path, "{damaged projection\n", "utf8");
+		const restored = new FileToolEffectJournal(path);
+		assert.throws(() => restored.begin({ source, taskId: "retry", toolCallId: "retry", toolName: "write", args: { idempotencyKey: "durable-v1" }, policy: MUTATING_TOOL_POLICY }), /already committed/);
+	} finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("credential-bearing Effect metadata is omitted from authority and projections", () => {
+	const root = mkdtempSync(join(tmpdir(), "beemax-effects-credential-redaction-"));
+	try {
+		const effects = new FileToolEffectJournal(join(root, "tool-effects.jsonl"));
+		const executionEnvelope = createExecutionEnvelope({ executionId: "execution:safe", trigger: { kind: "task_transition" }, taskId: "task:safe", taskRunId: "run:safe", mode: "normal" });
+		const id = effects.begin({ source, executionEnvelope, toolCallId: "call:safe", toolName: "write", args: { idempotencyKey: "Bearer abcdefghijklmnopqrstuvwxyz" }, policy: { ...MUTATING_TOOL_POLICY, sideEffect: "local" } });
+		effects.finish({ source, executionEnvelope, toolCallId: "call:safe", toolName: "write", policy: { ...MUTATING_TOOL_POLICY, sideEffect: "local" }, isError: false, details: { beemaxEffect: { operation: "Bearer abcdefghijklmnopqrstuvwxyz", externalRef: "secret=abcdefghijklmnop" } } });
+		assert.doesNotMatch(JSON.stringify(effects.effect(id)), /Bearer|abcdefghijklmnop/);
+		assert.doesNotMatch(JSON.stringify(effects.taskProjection({ ownerKey: "cli:local:local", taskId: "task:safe" })), /Bearer|abcdefghijklmnop/);
+	} finally { rmSync(root, { recursive: true, force: true }); }
+});
+
 test("external mutation commits only with a structured provider proof", () => {
 	const root = mkdtempSync(join(tmpdir(), "beemax-effects-provider-proof-"));
 	try {
@@ -127,6 +228,27 @@ test("external mutation commits only with a structured provider proof", () => {
 		effects.finish({ source, toolCallId: "call-1", toolName: "feishu_create", policy: feishuPolicy, isError: false, details: { beemaxEffect: { operation: "create meeting reservation", externalRef: "feishu-vc:meeting-reservation:reserve-42", proof: { provider: "feishu-vc", resourceType: "meeting-reservation", resourceId: "reserve-42" } } } });
 		assert.deepEqual(effects.events().at(-1).receipt?.proof, { provider: "feishu-vc", resourceType: "meeting-reservation", resourceId: "reserve-42" });
 		assert.equal(effects.events().at(-1).status, "committed");
+	} finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("Compensation creates a new linked Effect without rewriting the committed Effect", () => {
+	const root = mkdtempSync(join(tmpdir(), "beemax-effects-compensation-"));
+	try {
+		const effects = new FileToolEffectJournal(join(root, "tool-effects.jsonl"));
+		const policy = { ...MUTATING_TOOL_POLICY, risk: "low", reversible: true, effectProofProvider: "provider-a" };
+		const forwardEnvelope = createExecutionEnvelope({ executionId: "execution:forward", trigger: { kind: "enterprise_event" }, taskId: "task:forward", taskRunId: "run:forward", mode: "normal" });
+		const forwardId = effects.begin({ source, executionEnvelope: forwardEnvelope, toolCallId: "call:forward", toolName: "external_update", args: { idempotencyKey: "forward:1" }, policy });
+		effects.finish({ source, executionEnvelope: forwardEnvelope, toolCallId: "call:forward", toolName: "external_update", policy, isError: false, details: { beemaxEffect: { operation: "update resource", externalRef: "provider-a:item:1", proof: { provider: "provider-a", resourceType: "item", resourceId: "1" } } } });
+
+		const compensationEnvelope = createExecutionEnvelope({ executionId: "execution:compensation", trigger: { kind: "compensation" }, taskId: "task:compensation", taskRunId: "run:compensation", compensatesEffectId: forwardId, mode: "normal" });
+		const compensationId = effects.begin({ source, executionEnvelope: compensationEnvelope, toolCallId: "call:compensate", toolName: "external_restore", args: { idempotencyKey: "compensate:1" }, policy });
+		effects.finish({ source, executionEnvelope: compensationEnvelope, toolCallId: "call:compensate", toolName: "external_restore", policy, isError: false, details: { beemaxEffect: { operation: "restore resource", externalRef: "provider-a:item:1", proof: { provider: "provider-a", resourceType: "item", resourceId: "1" } } } });
+
+		assert.equal(effects.effect(forwardId).status, "committed");
+		assert.equal(effects.effect(forwardId).compensatesEffectId, undefined);
+		assert.equal(effects.effect(compensationId).status, "committed");
+		assert.equal(effects.effect(compensationId).compensatesEffectId, forwardId);
+		assert.throws(() => effects.begin({ source, executionEnvelope: { ...compensationEnvelope, executionId: "execution:duplicate", taskRunId: "run:duplicate" }, toolCallId: "call:duplicate", toolName: "external_restore", policy }), /already compensated|compensation.*unresolved/i);
 	} finally { rmSync(root, { recursive: true, force: true }); }
 });
 

@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
-import { createTaskLedgerTools, createTaskOrchestrationTools, TaskGraph, TaskPlanRuntime } from "../dist/index.js";
+import { createAccessScopeRef, createSituation, createTaskLedgerTools, createTaskOrchestrationTools, FileExecutionTraceStore, TaskGraph, TaskPlanRuntime } from "../dist/index.js";
 
 function memoryLedger() {
 	const tasks = new Map();
@@ -25,6 +28,22 @@ function memoryLedger() {
 		pauseTaskPlan() { return false; }, resumeTaskPlan() { return false; },
 	};
 }
+
+test("Task Graph propagates open Situation and trusted Access Scope provenance to durable child work", () => {
+	const ledger = memoryLedger();
+	const situation = createSituation({ summary: "月影协议需要完成潮汐校验", goals: ["完成潮汐校验"], confidence: 0.82 });
+	const accessScopeRef = createAccessScopeRef({ id: "scope:moon", authority: { kind: "enterprise_system", reference: "iam:moon" }, issuedAt: 1 });
+	ledger.record({ id: "objective-moon", ownerKey: "owner", kind: "objective", title: "月影协议", status: "running", createdAt: 1, situation, accessScopeRef });
+	new TaskGraph(ledger).createPlan({
+		id: "plan-moon",
+		ownerKey: "owner",
+		tasks: [{ id: "task-moon", parentId: "objective-moon", title: "执行潮汐校验" }],
+	}, 2);
+	const task = ledger.queryTasks({ ownerKeys: ["owner"], planIds: ["plan-moon"] })[0];
+	assert.deepEqual(task.situation, situation);
+	assert.deepEqual(task.accessScopeRef, accessScopeRef);
+	assert.equal(task.businessContext, undefined);
+});
 
 test("a delegated Sub-Agent can checkpoint only its bound Task", async () => {
 	const ledger = memoryLedger();
@@ -214,14 +233,36 @@ test("TaskGraph records Verification as unavailable when the verifier fails", as
 	const result = await graph.run(["cli:local:local"], "verifier-failure-plan", async () => ({ output: "candidate" }), {
 		verify: async () => { throw new Error("verification provider unavailable"); },
 	});
-	assert.deepEqual(result, { succeeded: 0, failed: 1, cancelled: 0, blocked: [] });
+	assert.deepEqual(result, { succeeded: 0, failed: 0, cancelled: 0, blocked: ["task"] });
+	assert.equal(ledger.tasks.get("task").status, "running");
 	assert.equal(ledger.tasks.get("task").verificationStatus, "unavailable");
 	assert.equal(ledger.tasks.get("task").result, undefined);
 	assert.equal(ledger.tasks.get("task").candidateResult, "candidate");
 	assert.match(ledger.tasks.get("task").error, /verification provider unavailable/);
-	const failedRun = [...ledger.runs.values()][0];
-	assert.deepEqual({ status: failedRun.status, output: failedRun.output }, { status: "failed", output: "candidate" });
-	assert.equal(ledger.plans.get("verifier-failure-plan").status, "failed");
+	const settledRun = [...ledger.runs.values()][0];
+	assert.deepEqual({ status: settledRun.status, output: settledRun.output }, { status: "succeeded", output: "candidate" });
+	assert.equal(ledger.plans.get("verifier-failure-plan").status, "running");
+});
+
+test("an unverified Candidate Outcome cannot satisfy a dependent Task", async () => {
+	const ledger = memoryLedger();
+	const graph = new TaskGraph(ledger);
+	graph.createPlan({
+		id: "verification-gate-plan", ownerKey: "cli:local:local",
+		tasks: [
+			{ id: "candidate", title: "Candidate", acceptanceCriteria: "Passes an independent check" },
+			{ id: "dependent", title: "Dependent" },
+		],
+		dependencies: [{ taskId: "dependent", dependsOn: "candidate" }],
+	});
+	const executed = [];
+	const result = await graph.run(["cli:local:local"], "verification-gate-plan", async (task) => { executed.push(task.id); return { output: task.id }; }, {
+		verify: async () => { throw new Error("verifier offline"); },
+	});
+	assert.deepEqual(executed, ["candidate"]);
+	assert.deepEqual(result, { succeeded: 0, failed: 0, cancelled: 0, blocked: ["dependent"] });
+	assert.equal(ledger.tasks.get("candidate").status, "running");
+	assert.equal(ledger.tasks.get("dependent").status, "pending");
 });
 
 test("TaskGraph persists accepted verification evidence with the successful Task", async () => {
@@ -253,6 +294,33 @@ test("TaskGraph gives a dependent Task the verified results of its direct depend
 	assert.equal(dependencyContext.length, 1);
 });
 
+test("TaskGraph durably carries Sub-Agent evidence, artifacts, and unresolved issues to dependents", async () => {
+	const ledger = memoryLedger();
+	const graph = new TaskGraph(ledger);
+	graph.createPlan({
+		id: "structured-plan", ownerKey: "cli:local:local",
+		tasks: [{ id: "research", title: "Research" }, { id: "deliver", title: "Deliver" }],
+		dependencies: [{ taskId: "deliver", dependsOn: "research" }],
+	});
+	let dependency;
+	await graph.run(["cli:local:local"], "structured-plan", async (task, _signal, context) => {
+		if (task.id === "research") return {
+			output: "Delivery is Friday", evidence: "ERP order record checked",
+			artifacts: [{ type: "url", uri: "https://example.test/orders/PO-1", label: "Order record" }],
+			unresolvedIssues: ["Warehouse sign-off is pending"],
+		};
+		dependency = context.dependencies[0];
+		return { output: "done" };
+	});
+	assert.deepEqual(dependency, {
+		id: "research", title: "Research", result: "Delivery is Friday", evidence: "ERP order record checked",
+		artifacts: [{ type: "url", uri: "https://example.test/orders/PO-1", label: "Order record" }],
+		unresolvedIssues: ["Warehouse sign-off is pending"],
+	});
+	assert.deepEqual(ledger.tasks.get("research").artifacts, dependency.artifacts);
+	assert.deepEqual(ledger.tasks.get("research").unresolvedIssues, dependency.unresolvedIssues);
+});
+
 test("TaskGraph makes one bounded Corrective Attempt after Verification rejection", async () => {
 	const ledger = memoryLedger();
 	const graph = new TaskGraph(ledger);
@@ -270,6 +338,9 @@ test("TaskGraph makes one bounded Corrective Attempt after Verification rejectio
 	assert.deepEqual(result, { succeeded: 1, failed: 0, cancelled: 0, blocked: [] });
 	assert.equal(contexts.length, 2);
 	assert.equal(contexts[0].attempt, 1);
+	assert.equal(contexts[0].executionMode, "normal");
+	assert.equal(contexts[0].maxCorrectiveAttempts, 1);
+	assert.equal(contexts[0].taskRunId, [...ledger.runs.keys()][0]);
 	assert.equal(contexts[0].verificationFeedback, undefined);
 	assert.equal(contexts[0].previousResult, undefined);
 	assert.equal(contexts[1].attempt, 2);
@@ -282,6 +353,34 @@ test("TaskGraph makes one bounded Corrective Attempt after Verification rejectio
 	assert.equal(ledger.tasks.get("task").correctiveAttempts, 1);
 });
 
+test("TaskGraph binds Checkpoint and Verification to the same durable Execution Envelope", async () => {
+	const root = mkdtempSync(join(tmpdir(), "beemax-task-trace-"));
+	try {
+		const ledger = memoryLedger();
+		const executionTrace = new FileExecutionTraceStore(join(root, "execution-trace.jsonl"));
+		const accessScopeRef = createAccessScopeRef({ id: "scope:trace", authority: { kind: "enterprise_system", reference: "iam:trace" }, issuedAt: 1 });
+		ledger.record({ id: "objective:trace", ownerKey: "owner", kind: "objective", title: "Trace objective", status: "running", createdAt: 1, accessScopeRef });
+		const graph = new TaskGraph(ledger, executionTrace);
+		graph.createPlan({ id: "trace-plan", ownerKey: "owner", tasks: [{ id: "task:trace", parentId: "objective:trace", title: "Trace task", acceptanceCriteria: "verified" }] });
+		let envelope;
+		await graph.run(["owner"], "trace-plan", async (_task, _signal, context) => {
+			envelope = context.executionEnvelope;
+			assert.equal(context.saveCheckpoint("checkpoint body excluded from trace"), true);
+			return { output: "candidate" };
+		}, { verify: async () => ({ accepted: true, evidence: "checked" }) });
+		assert.equal(envelope.executionId, `execution:${envelope.taskRunId}`);
+		assert.equal(envelope.objectiveId, "objective:trace");
+		assert.equal(envelope.taskId, "task:trace");
+		assert.equal(envelope.accessScopeRef.id, "scope:trace");
+		const trace = executionTrace.trace({ executionId: envelope.executionId, accessScopeId: "scope:trace" });
+		assert.equal(trace.checkpoints, 2);
+		assert.equal(trace.verifications, 1);
+		assert.equal(trace.verificationStatus, "accepted");
+		assert.deepEqual(trace.events.map((event) => event.type), ["checkpoint.saved", "checkpoint.saved", "verification.started", "verification.settled"]);
+		assert.doesNotMatch(JSON.stringify(trace), /checkpoint body|candidate|checked/);
+	} finally { rmSync(root, { recursive: true, force: true }); }
+});
+
 test("TaskGraph stops after the configured Corrective Attempt budget is exhausted", async () => {
 	const ledger = memoryLedger();
 	const graph = new TaskGraph(ledger);
@@ -292,6 +391,7 @@ test("TaskGraph stops after the configured Corrective Attempt budget is exhauste
 		verify: async () => ({ accepted: false, feedback: "Still wrong" }),
 	});
 	assert.deepEqual(result, { succeeded: 0, failed: 1, cancelled: 0, blocked: [] });
+	assert.equal(ledger.tasks.get("task").status, "failed");
 	assert.equal(executions, 2);
 	assert.equal(ledger.runs.size, 2);
 	assert.match(ledger.tasks.get("task").error, /Still wrong/);
@@ -324,7 +424,8 @@ test("TaskGraph fails closed when criteria exist but no verifier is available", 
 	const graph = new TaskGraph(ledger);
 	graph.createPlan({ id: "unverified-plan", ownerKey: "cli:local:local", tasks: [{ id: "task", title: "Task", acceptanceCriteria: "Produces evidence" }] });
 	const result = await graph.run(["cli:local:local"], "unverified-plan", async () => ({ output: "done" }));
-	assert.deepEqual(result, { succeeded: 0, failed: 1, cancelled: 0, blocked: [] });
+	assert.deepEqual(result, { succeeded: 0, failed: 0, cancelled: 0, blocked: ["task"] });
+	assert.equal(ledger.tasks.get("task").status, "running");
 	assert.match(ledger.tasks.get("task").error, /verification unavailable/i);
 	assert.equal(ledger.tasks.get("task").verificationStatus, "unavailable");
 });
@@ -339,6 +440,14 @@ test("TaskGraph rejects cyclic plans before persisting any Task", () => {
 		dependencies: [{ taskId: "a", dependsOn: "b" }, { taskId: "b", dependsOn: "a" }],
 	}), /cycle/i);
 	assert.equal(ledger.tasks.size, 0);
+});
+
+test("TaskGraph keeps legacy business context on its parent as migration evidence only", () => {
+	const ledger = memoryLedger();
+	ledger.record({ id: "objective-context", ownerKey: "cli:local:local", kind: "objective", title: "Customer order", status: "running", createdAt: 1, businessContext: { subject: { type: "customer", id: "A" }, object: { type: "order", id: "PO-1" } } });
+	new TaskGraph(ledger).createPlan({ id: "context-plan", ownerKey: "cli:local:local", tasks: [{ id: "research", title: "Research", parentId: "objective-context" }, { id: "write", title: "Write", parentId: "objective-context" }] });
+	assert.deepEqual(ledger.queryTasks({ ownerKeys: ["cli:local:local"], planIds: ["context-plan"] }).map((task) => task.businessContext), [undefined, undefined]);
+	assert.deepEqual(ledger.tasks.get("objective-context").businessContext, { subject: { type: "customer", id: "A" }, object: { type: "order", id: "PO-1" } });
 });
 
 test("orchestration tool validates a model-authored DAG and dispatches bounded Sub-Agent work", async () => {
@@ -409,15 +518,15 @@ test("TaskGraph persists checkpoints and switches to the next route after a reco
 	assert.equal(ledger.queryTasks({ ownerKeys: ["owner"], id: "work" })[0].result, "continued from primary evidence collected");
 });
 
-test("TaskGraph exposes durable Effect Receipts to executors before external mutation completes", async () => {
+test("TaskGraph does not let executors self-author Effect receipts", async () => {
 	const ledger = memoryLedger();
 	const graph = new TaskGraph(ledger);
 	graph.createPlan({ id: "effect-plan", ownerKey: "owner", tasks: [{ id: "send", title: "Send report" }] });
 	await graph.run(["owner"], "effect-plan", async (_task, _signal, context) => {
-		assert.equal(context.saveEffectReceipt({ id: "effect-1", tool: "feishu_send", operation: "send report", sideEffect: "mutation", status: "committed", externalRef: "message-42", occurredAt: 2 }), true);
+		assert.equal("saveEffectReceipt" in context, false);
 		return { output: "sent" };
 	});
-	assert.equal(ledger.tasks.get("send").effectReceipts[0].externalRef, "message-42");
+	assert.equal(ledger.tasks.get("send").effectReceipts, undefined);
 });
 
 test("TaskGraph refuses to persist credential material as a checkpoint", async () => {
@@ -428,7 +537,8 @@ test("TaskGraph refuses to persist credential material as a checkpoint", async (
 		assert.equal(context.saveCheckpoint("Bearer abcdefghijklmnopqrstuvwxyz"), false);
 		return { output: "done" };
 	});
-	assert.equal(ledger.tasks.get("work").checkpoint, undefined);
+	assert.equal(ledger.tasks.get("work").checkpoint.source, "candidate_outcome");
+	assert.doesNotMatch(JSON.stringify(ledger.tasks.get("work").checkpoint), /Bearer|abcdefghijklmnopqrstuvwxyz/);
 });
 
 test("TaskGraph redacts credential material from durable failure details", async () => {

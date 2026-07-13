@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { FileToolAuditJournal, MUTATING_TOOL_POLICY, READ_ONLY_TOOL_POLICY, ToolPolicyRegistry, approvalDetails, defineTool, governToolDefinition, withToolPolicy } from "../dist/index.js";
+import { FileToolAuditJournal, MUTATING_TOOL_POLICY, READ_ONLY_TOOL_POLICY, ToolPolicyRegistry, approvalDetails, boundToolResultContent, defineTool, governToolDefinition, withToolPolicy } from "../dist/index.js";
 import { Type } from "typebox";
 import { mkdtempSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -52,6 +52,33 @@ test("governed read-only tools retry safely, truncate output, and emit lifecycle
 	assert.deepEqual(audit.map((event) => event.phase), ["started", "failed", "started", "completed"]);
 });
 
+test("one estimated-token budget bounds every governed Tool result including multilingual MCP-style text", async () => {
+	const audit = [];
+	const tool = defineTool({
+		name: "mcp_large_result", label: "Large MCP result", description: "Read remote text", parameters: Type.Object({}),
+		execute: async () => ({ content: [{ type: "text", text: `header\n${"汉".repeat(2_000)}` }], details: {} }),
+	});
+	const governed = governToolDefinition(tool, { ...READ_ONLY_TOOL_POLICY, maxResultBytes: 128 * 1024 }, source, (event) => audit.push(event), { maxEstimatedTokens: 256 });
+	const result = await governed.execute("call", {}, undefined, undefined, {});
+	assert.match(result.content.at(-1).text, /truncated/);
+	assert.ok(result.content[0].text.length < 600, "non-ASCII text must not inherit an unsafe ASCII chars/token ratio");
+	const completed = audit.find((event) => event.phase === "completed");
+	assert.equal(completed.resultTruncated, true);
+	assert.ok(completed.resultEstimatedTokens <= 300);
+	assert.ok(completed.resultBytes < 128 * 1024);
+});
+
+test("the shared Tool result ceiling accounts for non-text image content and its truncation marker", () => {
+	const bounded = boundToolResultContent([
+		{ type: "image", data: "first" },
+		{ type: "image", data: "second" },
+	], { maxBytes: 128 * 1024, maxEstimatedTokens: 1_500 });
+	assert.equal(bounded.truncated, true);
+	assert.equal(bounded.content.filter((block) => block.type === "image").length, 1);
+	assert.match(bounded.content.at(-1).text, /truncated/);
+	assert.ok(bounded.estimatedTokens <= 1_500);
+});
+
 test("governed mutating tools never retry after a failure", async () => {
 	let calls = 0;
 	const tool = defineTool({ name: "mutate", label: "Mutate", description: "Mutate", parameters: Type.Object({}), execute: async () => { calls++; throw new Error("failed mutation"); } });
@@ -99,10 +126,14 @@ test("Profile Tool audit journal persists bounded operational events without arg
 		journal.append({ phase: "started", source, toolName: "write", policy: { ...MUTATING_TOOL_POLICY }, at: 10, attempt: 1 });
 		journal.append({ phase: "completed", source, toolName: "write", policy: { ...MUTATING_TOOL_POLICY }, at: 20, attempt: 1, durationMs: 10 });
 		journal.append({ phase: "failed", source, toolName: "write", policy: { ...MUTATING_TOOL_POLICY }, at: 30, reason: "token=private-secret and user content" });
+		journal.append({ phase: "blocked", source, toolName: "write", policy: { ...MUTATING_TOOL_POLICY }, at: 40, reason: "sensitive business rationale", enterprisePolicy: { decisionId: "freeze", publisherId: "security", version: "v7", disposition: "deny", effectiveScopeId: "enterprise", effectiveFrom: 1, effectiveUntil: 100, evaluatedAt: 40, evidenceRefs: ["policy:freeze:7"] }, governance: { decisionId: "governance:call:40", outcome: "deny", reasonCode: "enterprise_policy_deny", factors: ["risk:high"], policyDecisionId: "freeze" } });
 		const events = journal.events();
-		assert.deepEqual(events.map((event) => event.phase), ["started", "completed", "failed"]);
+		assert.deepEqual(events.map((event) => event.phase), ["started", "completed", "failed", "blocked"]);
 		assert.equal(events[2].hasReason, true);
 		assert.equal(events[0].scope.userId, "local");
+		assert.equal(events[3].enterprisePolicy.version, "v7");
+		assert.deepEqual(events[3].enterprisePolicy.evidenceRefs, ["policy:freeze:7"]);
+		assert.equal(events[3].governance.reasonCode, "enterprise_policy_deny");
 		assert.doesNotMatch(JSON.stringify(events), /args|result|private-secret|user content/);
 		assert.equal(statSync(path).mode & 0o777, 0o600);
 	} finally { rmSync(root, { recursive: true, force: true }); }

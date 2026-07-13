@@ -1,8 +1,8 @@
 import { appendFileSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, readSync, renameSync, statSync, writeFileSync } from "node:fs";
-import { homedir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 import { inspectOperationalMetrics, type OperationalSnapshot } from "./operational-metrics.ts";
+import { serviceInstallationPath } from "./service-platform.ts";
 
 export type GatewayLifecycle = "running" | "stopped" | "failed" | "unknown";
 export interface GatewayState {
@@ -25,7 +25,7 @@ export function writeGatewayState(agentDir: string, state: GatewayState): void {
 	writeFileSync(path, `${JSON.stringify({ schemaVersion: 1, updatedAt: new Date().toISOString(), ...state })}\n`, { mode: 0o600 });
 }
 
-export function recordGatewayEvent(agentDir: string, event: "started" | "stopped" | "failed" | "approval", fields: Record<string, unknown> = {}): void {
+export function recordGatewayEvent(agentDir: string, event: "started" | "stopped" | "failed" | "approval" | "proactive_investigation" | "autonomy_blocked" | "context_compaction", fields: Record<string, unknown> = {}): void {
 	const path = gatewayPaths(agentDir).events;
 	mkdirSync(join(agentDir, "logs"), { recursive: true, mode: 0o700 });
 	appendFileSync(path, `${JSON.stringify({ at: new Date().toISOString(), event, ...fields })}\n`, { mode: 0o600 });
@@ -46,9 +46,8 @@ export function inspectGateway(profile: string, agentDir: string, scope: "user" 
 		writeGatewayState(agentDir, current);
 		recordGatewayEvent(agentDir, "failed", { profile, reason: current.lastError });
 	}
-	const installation = process.platform === "darwin"
-		? existsSync(join(homedir(), "Library", "LaunchAgents", `com.beemax.agent.${profile}.plist`)) ? "installed" : "absent"
-		: process.platform === "linux" ? existsSync(scope === "system" ? "/etc/systemd/system/beemax@.service" : join(homedir(), ".config", "systemd", "user", "beemax@.service")) ? "installed" : "absent" : "unknown";
+	let installation: "installed" | "absent" | "unknown" = "unknown";
+	try { installation = existsSync(serviceInstallationPath(profile, { scope })) ? "installed" : "absent"; } catch { /* unsupported supervisor */ }
 	const operational = inspectOperationalMetrics(agentDir);
 	const health = operational.alerts.some((alert) => alert.severity === "critical") || current.lifecycle === "failed" ? "degraded" : current.lifecycle === "running" && service === "running" ? "healthy" : "unavailable";
 	return { ...current, installation, service, health, cliVersion, versionMatches: current.version === "unavailable" || cliVersion === "unavailable" ? undefined : current.version === cliVersion, logs: existsSync(paths.events) || existsSync(paths.stdout) || existsSync(paths.stderr) ? "available" : "absent", state: existsSync(paths.state) ? "available" : "absent", operational };

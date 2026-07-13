@@ -539,6 +539,26 @@ async function completeSummarization(
 	return stream.result();
 }
 
+function estimatedTextTokenUnits(value: string): number {
+	let units = 0;
+	for (const character of value) units += character.codePointAt(0)! <= 0x7f ? 1 : 4;
+	return units;
+}
+
+function truncateTextTailToTokenUnits(value: string, maxUnits: number): string {
+	const reversed: string[] = [];
+	let units = 0;
+	const characters = [...value];
+	for (let index = characters.length - 1; index >= 0; index--) {
+		const character = characters[index];
+		const nextUnits = character.codePointAt(0)! <= 0x7f ? 1 : 4;
+		if (units + nextUnits > maxUnits) break;
+		reversed.push(character);
+		units += nextUnits;
+	}
+	return reversed.reverse().join("");
+}
+
 /**
  * Generate a summary of the conversation using the LLM.
  * If previousSummary is provided, uses the update prompt to merge.
@@ -570,13 +590,26 @@ export async function generateSummary(
 	// Serialize conversation to text so model doesn't try to continue it
 	// Convert to LLM messages first (handles custom types like bashExecution, custom, etc.)
 	const llmMessages = convertToLlm(currentMessages);
-	const conversationText = serializeConversation(llmMessages);
+	let conversationText = serializeConversation(llmMessages);
+	const previousSummaryText = previousSummary ? `<previous-summary>\n${previousSummary}\n</previous-summary>\n\n` : "";
+	const promptScaffolding = `<conversation>\n\n</conversation>\n\n${previousSummaryText}${basePrompt}`;
+	// Reserve output plus a provider/system margin. Non-ASCII text receives a
+	// conservative one-token-per-code-point estimate instead of the common
+	// four-ASCII-characters heuristic.
+	const inputBudgetUnits = Math.max(4_096, (model.contextWindow - maxTokens - 1_024) * 4);
+	const maxConversationUnits = Math.max(0, inputBudgetUnits - estimatedTextTokenUnits(promptScaffolding) - estimatedTextTokenUnits(SUMMARIZATION_SYSTEM_PROMPT));
+	const omissionMarker = "[Earlier serialized history omitted to fit the compaction model context.]\n";
+	if (estimatedTextTokenUnits(conversationText) > maxConversationUnits) {
+		const markerUnits = estimatedTextTokenUnits(omissionMarker);
+		if (maxConversationUnits <= markerUnits) {
+			throw new Error("Compaction instructions leave no model context for conversation history");
+		}
+		conversationText = `${omissionMarker}${truncateTextTailToTokenUnits(conversationText, maxConversationUnits - markerUnits)}`;
+	}
 
 	// Build the prompt with conversation wrapped in tags
 	let promptText = `<conversation>\n${conversationText}\n</conversation>\n\n`;
-	if (previousSummary) {
-		promptText += `<previous-summary>\n${previousSummary}\n</previous-summary>\n\n`;
-	}
+	if (previousSummary) promptText += previousSummaryText;
 	promptText += basePrompt;
 
 	const summarizationMessages = [

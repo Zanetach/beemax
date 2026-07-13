@@ -72,15 +72,22 @@ test("profile creation and Feishu channel configuration keep secrets in a protec
 	assert.equal(config.agent.reasoningDisplay, "summary");
 	assert.equal(config.agent.maxSessions, 100);
 	assert.equal(config.agent.sessionIdleMs, 30 * 60_000);
+	assert.deepEqual(config.context, {
+		maxTurnChars: 12_000,
+		maxToolResultTokens: 12_000,
+		compaction: { enabled: true, reserveTokens: undefined, keepRecentTokens: undefined },
+	});
 	assert.equal(config.paths.cwd, join(paths.homePath, "workspace"));
 	await setFeishuHomeChat("personal", "oc_home", "ou_home", "dm", options);
 	const homeConfig = loadConfig(paths.configPath, "personal");
 	assert.equal(homeConfig.gateway.feishu.homeChatId, "oc_home");
 	assert.equal(homeConfig.automation.heartbeat.chatId, "oc_home");
-	await configureModel("personal", { provider: "openrouter", model: "openai/gpt-5.2", apiKey: "model-secret" }, options);
+	await configureModel("personal", { provider: "custom", model: "private-model", apiKey: "model-secret", baseUrl: "https://models.example.test/v1", contextWindow: 64_000, maxTokens: 6_000 }, options);
 	const modelConfig = loadConfig(paths.configPath, "personal");
-	assert.equal(modelConfig.model.provider, "openrouter");
-	assert.equal(modelConfig.model.model, "openai/gpt-5.2");
+	assert.equal(modelConfig.model.provider, "custom");
+	assert.equal(modelConfig.model.model, "private-model");
+	assert.equal(modelConfig.model.contextWindow, 64_000);
+	assert.equal(modelConfig.model.maxTokens, 6_000);
 	assert.equal(modelConfig.model.apiKey, "model-secret");
 	process.env.BEEMAX_API_KEY = "ambient-key";
 	try {

@@ -67,8 +67,10 @@ export interface BeeMaxConfig {
 		apiKeys: Record<string, string>;
 		baseUrl?: string;
 		customProtocol?: CustomProtocol;
+		contextWindow?: number;
+		maxTokens?: number;
 	};
-	models: Array<{ provider: string; model: string; baseUrl?: string; customProtocol?: CustomProtocol }>;
+	models: Array<{ provider: string; model: string; baseUrl?: string; customProtocol?: CustomProtocol; contextWindow?: number; maxTokens?: number }>;
 	/** Profile-owned channel configuration. A Profile may run its own Gateway. */
 	gateway: { feishu: FeishuConfig };
 	memory: {
@@ -91,6 +93,20 @@ export interface BeeMaxConfig {
 		provider: "openai-codex";
 		quality: "low" | "medium" | "high";
 		outputDir: string;
+	};
+	mediaUnderstanding: {
+		localOcr: {
+			enabled: boolean;
+			command?: string;
+			languages?: string;
+			timeoutMs: number;
+		};
+		auxiliaryVisionEnabled: boolean;
+	};
+	context: {
+		maxTurnChars: number;
+		maxToolResultTokens: number;
+		compaction: { enabled: boolean; reserveTokens?: number; keepRecentTokens?: number };
 	};
 	execution: {
 		backend: "local" | "docker";
@@ -151,7 +167,9 @@ export function loadConfig(configPath?: string, profile = "default"): BeeMaxConf
 	const model = str(env.BEEMAX_MODEL ?? cfg.model?.model ?? "claude-sonnet-4-5");
 	const apiKey = str(env[providerApiKeyEnv(provider)] ?? env.BEEMAX_API_KEY ?? cfg.model?.apiKey);
 	const customProtocol = parseCustomProtocol(cfg.model?.customProtocol);
-	const configuredModels = modelChoices(cfg.models, { provider, model, baseUrl: cfg.model?.baseUrl, customProtocol });
+	const contextWindow = provider === "custom" ? optionalBoundedNumber(env.BEEMAX_MODEL_CONTEXT_WINDOW ?? cfg.model?.contextWindow, 8_000, 10_000_000) : undefined;
+	const maxTokens = provider === "custom" ? optionalBoundedNumber(env.BEEMAX_MODEL_MAX_TOKENS ?? cfg.model?.maxTokens, 256, 1_000_000) : undefined;
+	const configuredModels = modelChoices(cfg.models, { provider, model, baseUrl: cfg.model?.baseUrl, customProtocol, contextWindow, maxTokens });
 	const apiKeys = Object.fromEntries(
 		[...new Set(configuredModels.map((choice) => choice.provider))]
 			.map((candidate) => [candidate, str(env[providerApiKeyEnv(candidate)] ?? (candidate === provider ? env.BEEMAX_API_KEY : ""))])
@@ -208,6 +226,8 @@ export function loadConfig(configPath?: string, profile = "default"): BeeMaxConf
 			apiKeys,
 			baseUrl: cfg.model?.baseUrl,
 			customProtocol: provider === "custom" ? customProtocol : undefined,
+			contextWindow,
+			maxTokens,
 		},
 		models: configuredModels,
 		gateway: { feishu },
@@ -235,6 +255,24 @@ export function loadConfig(configPath?: string, profile = "default"): BeeMaxConf
 			provider: "openai-codex",
 			quality: parseImageQuality(env.BEEMAX_IMAGE_QUALITY ?? cfg.imageGeneration?.quality),
 			outputDir: resolveFrom(location.basePath, str(env.BEEMAX_IMAGE_OUTPUT_DIR ?? cfg.imageGeneration?.outputDir ?? join(profileDataRoot, "cache/images"))),
+		},
+		mediaUnderstanding: {
+			localOcr: {
+				enabled: parseBool(env.BEEMAX_LOCAL_OCR_ENABLED ?? cfg.mediaUnderstanding?.localOcr?.enabled ?? true),
+				command: optional(env.BEEMAX_LOCAL_OCR_COMMAND ?? cfg.mediaUnderstanding?.localOcr?.command),
+				languages: optional(env.BEEMAX_LOCAL_OCR_LANGUAGES ?? cfg.mediaUnderstanding?.localOcr?.languages),
+				timeoutMs: boundedNumber(env.BEEMAX_LOCAL_OCR_TIMEOUT_MS ?? cfg.mediaUnderstanding?.localOcr?.timeoutMs, 30_000, 1_000, 300_000),
+			},
+			auxiliaryVisionEnabled: parseBool(env.BEEMAX_AUXILIARY_VISION_ENABLED ?? cfg.mediaUnderstanding?.auxiliaryVisionEnabled ?? true),
+		},
+		context: {
+			maxTurnChars: boundedNumber(env.BEEMAX_CONTEXT_MAX_TURN_CHARS ?? cfg.context?.maxTurnChars, 12_000, 1_000, 100_000),
+			maxToolResultTokens: boundedNumber(env.BEEMAX_MAX_TOOL_RESULT_TOKENS ?? cfg.context?.maxToolResultTokens, 12_000, 256, 1_000_000),
+			compaction: {
+				enabled: parseBool(env.BEEMAX_COMPACTION_ENABLED ?? cfg.context?.compaction?.enabled ?? true),
+				reserveTokens: optionalBoundedNumber(env.BEEMAX_COMPACTION_RESERVE_TOKENS ?? cfg.context?.compaction?.reserveTokens, 1_024, 1_000_000),
+				keepRecentTokens: optionalBoundedNumber(env.BEEMAX_COMPACTION_KEEP_RECENT_TOKENS ?? cfg.context?.compaction?.keepRecentTokens, 1_024, 1_000_000),
+			},
 		},
 		execution: {
 			backend: executionBackend(env.BEEMAX_EXECUTION_BACKEND ?? cfg.execution?.backend),
@@ -277,6 +315,11 @@ export function loadConfig(configPath?: string, profile = "default"): BeeMaxConf
 function boundedNumber(value: unknown, fallback: number, min: number, max: number): number {
 	const parsed = typeof value === "number" ? value : Number(value);
 	return Number.isFinite(parsed) ? Math.max(min, Math.min(max, Math.trunc(parsed))) : fallback;
+}
+
+function optionalBoundedNumber(value: unknown, min: number, max: number): number | undefined {
+	if (value === undefined || value === null || value === "") return undefined;
+	return boundedNumber(value, min, min, max);
 }
 
 function resolveFrom(root: string, path: string): string {
@@ -365,15 +408,15 @@ function parseGroupRules(value: unknown): FeishuConfig["groupRules"] {
 	return result;
 }
 
-function modelChoices(value: unknown, active: { provider: string; model: string; baseUrl?: string; customProtocol?: CustomProtocol }): Array<{ provider: string; model: string; baseUrl?: string; customProtocol?: CustomProtocol }> {
+function modelChoices(value: unknown, active: { provider: string; model: string; baseUrl?: string; customProtocol?: CustomProtocol; contextWindow?: number; maxTokens?: number }): Array<{ provider: string; model: string; baseUrl?: string; customProtocol?: CustomProtocol; contextWindow?: number; maxTokens?: number }> {
 	const items = Array.isArray(value) ? value : [];
 	const choices = items.filter(isModelChoice);
 	return [{ ...active }, ...choices.filter((item) => item.provider !== active.provider || item.model !== active.model || item.baseUrl !== active.baseUrl)];
 }
 
-function isModelChoice(value: unknown): value is { provider: string; model: string; baseUrl?: string; customProtocol?: CustomProtocol } {
+function isModelChoice(value: unknown): value is { provider: string; model: string; baseUrl?: string; customProtocol?: CustomProtocol; contextWindow?: number; maxTokens?: number } {
 	if (!value || typeof value !== "object" || Array.isArray(value)) return false;
 	const candidate = value as Record<string, unknown>;
-	return typeof candidate.provider === "string" && typeof candidate.model === "string" && (candidate.baseUrl === undefined || typeof candidate.baseUrl === "string") && (candidate.customProtocol === undefined || parseCustomProtocol(candidate.customProtocol) === candidate.customProtocol);
+	return typeof candidate.provider === "string" && typeof candidate.model === "string" && (candidate.baseUrl === undefined || typeof candidate.baseUrl === "string") && (candidate.customProtocol === undefined || parseCustomProtocol(candidate.customProtocol) === candidate.customProtocol) && (candidate.contextWindow === undefined || Number.isFinite(candidate.contextWindow)) && (candidate.maxTokens === undefined || Number.isFinite(candidate.maxTokens));
 }
 function parseCustomProtocol(value: unknown): CustomProtocol { return value === "anthropic-messages" || value === "openai-responses" ? value : "openai-completions"; }

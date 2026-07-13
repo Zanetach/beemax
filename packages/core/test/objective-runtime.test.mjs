@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { ObjectiveRuntime } from "../dist/index.js";
+import { createAccessScopeRef, createSituation, ObjectiveRuntime } from "../dist/index.js";
 
 function ledgerFixture(records) {
 	const tasks = new Map(records.map((task) => [task.id, { ...task }]));
@@ -27,8 +27,8 @@ function ledgerFixture(records) {
 test("a successful Task Plan is delivered before its Objective succeeds", async () => {
 	const ledger = ledgerFixture([
 		{ id: "objective", ownerKey: "owner", kind: "objective", title: "Compare products", description: "Compare A and B", status: "running", createdAt: 1 },
-		{ id: "a", ownerKey: "owner", kind: "delegated", title: "A", parentId: "objective", planId: "plan", status: "succeeded", result: "A result", evidence: "A evidence", createdAt: 2 },
-		{ id: "b", ownerKey: "owner", kind: "delegated", title: "B", parentId: "objective", planId: "plan", status: "succeeded", result: "B result", evidence: "B evidence", createdAt: 3 },
+		{ id: "a", ownerKey: "owner", kind: "delegated", title: "A", parentId: "objective", planId: "plan", status: "succeeded", result: "A result", evidence: "A evidence", verificationStatus: "accepted", createdAt: 2 },
+		{ id: "b", ownerKey: "owner", kind: "delegated", title: "B", parentId: "objective", planId: "plan", status: "succeeded", result: "B result", evidence: "B evidence", verificationStatus: "accepted", createdAt: 3 },
 	]);
 	let observedStatus;
 	const runtime = new ObjectiveRuntime(ledger, async ({ objective, tasks }) => {
@@ -43,14 +43,73 @@ test("a successful Task Plan is delivered before its Objective succeeds", async 
 	assert.equal(result.status, "succeeded");
 	assert.deepEqual(ledger.tasks.get("objective"), {
 		id: "objective", ownerKey: "owner", kind: "objective", title: "Compare products", description: "Compare A and B", status: "succeeded", createdAt: 1,
-		result: "Final comparison", evidence: "A evidence; B evidence", finishedAt: result.finishedAt,
+		result: "Final comparison", evidence: "A evidence; B evidence", verificationStatus: "accepted", finishedAt: result.finishedAt,
 	});
+});
+
+test("legacy business context remains on the Objective but is absent from verified publication", async () => {
+	const ledger = ledgerFixture([
+		{ id: "objective", ownerKey: "owner", kind: "objective", title: "Order delivery", status: "running", createdAt: 1, businessContext: { subject: { type: "customer", id: "A" }, object: { type: "order", id: "PO-1" } } },
+		{ id: "child", ownerKey: "owner", kind: "delegated", title: "Research", parentId: "objective", planId: "plan", status: "succeeded", result: "Friday", verificationStatus: "accepted", evidence: "ERP checked", createdAt: 2 },
+	]);
+	const published = [];
+	const runtime = new ObjectiveRuntime(ledger, async () => ({ result: "Delivery is Friday", evidence: "All tasks verified" }), (outcome) => published.push(outcome));
+	await runtime.deliverPlan("owner", "plan");
+	assert.deepEqual(published, [{ objectiveId: "objective", title: "Order delivery", result: "Delivery is Friday", evidence: "All tasks verified" }]);
+	assert.deepEqual(ledger.tasks.get("objective").businessContext, { subject: { type: "customer", id: "A" }, object: { type: "order", id: "PO-1" } });
+});
+
+test("verified Objective publication preserves Situation and Access Scope provenance separately", async () => {
+	const situation = createSituation({ summary: "晨星阵列需要完成相位同步", goals: ["完成同步"], confidence: 0.91 });
+	const accessScopeRef = createAccessScopeRef({ id: "scope:morning-star", authority: { kind: "enterprise_system", reference: "iam:morning-star" }, issuedAt: 1 });
+	const ledger = ledgerFixture([
+		{ id: "objective", ownerKey: "owner", kind: "objective", title: "阵列同步", status: "running", createdAt: 1, situation, accessScopeRef },
+		{ id: "child", ownerKey: "owner", kind: "delegated", title: "校验", parentId: "objective", planId: "plan", status: "succeeded", result: "stable", verificationStatus: "accepted", createdAt: 2 },
+	]);
+	const published = [];
+	await new ObjectiveRuntime(ledger, async () => ({ result: "同步完成" }), (outcome) => published.push(outcome)).deliverPlan("owner", "plan");
+	assert.deepEqual(published[0].situation, situation);
+	assert.deepEqual(published[0].accessScopeRef, accessScopeRef);
+	assert.equal(published[0].businessContext, undefined);
+});
+
+test("Memory publication failure keeps a verified Objective retryable until publication succeeds", async () => {
+	const ledger = ledgerFixture([
+		{ id: "objective", ownerKey: "owner", kind: "objective", title: "Order delivery", status: "running", createdAt: 1, businessContext: { object: { type: "order", id: "PO-1" } } },
+		{ id: "child", ownerKey: "owner", kind: "delegated", title: "Research", parentId: "objective", planId: "plan", status: "succeeded", result: "Friday", verificationStatus: "accepted", createdAt: 2 },
+	]);
+	let publicationAttempts = 0;
+	const runtime = new ObjectiveRuntime(ledger, async () => ({ result: "Delivery is Friday" }), () => {
+		publicationAttempts++;
+		if (publicationAttempts === 1) throw new Error("memory unavailable");
+	});
+
+	assert.equal((await runtime.deliverPlan("owner", "plan")).status, "failed");
+	assert.equal(ledger.tasks.get("objective").status, "running");
+	assert.equal((await runtime.deliverPlan("owner", "plan")).status, "succeeded");
+	assert.equal(ledger.tasks.get("objective").status, "succeeded");
+	assert.equal(publicationAttempts, 2);
+});
+
+test("an unverified child keeps the Objective active and prevents delivery", async () => {
+	const ledger = ledgerFixture([
+		{ id: "objective", ownerKey: "owner", kind: "objective", title: "Order delivery", status: "running", createdAt: 1 },
+		{ id: "verified", ownerKey: "owner", kind: "delegated", title: "Verified", parentId: "objective", planId: "plan", status: "succeeded", result: "Friday", verificationStatus: "accepted", createdAt: 2 },
+		{ id: "unchecked", ownerKey: "owner", kind: "delegated", title: "Unchecked", parentId: "objective", planId: "plan", status: "succeeded", result: "Maybe", createdAt: 3 },
+	]);
+	const published = [];
+	let deliveries = 0;
+	const runtime = new ObjectiveRuntime(ledger, async () => { deliveries++; return { result: "Delivered" }; }, (outcome) => published.push(outcome));
+	assert.equal((await runtime.deliverPlan("owner", "plan")).status, "awaiting_verification");
+	assert.equal(deliveries, 0);
+	assert.equal(ledger.tasks.get("objective").status, "running");
+	assert.deepEqual(published, []);
 });
 
 test("a failed delivery leaves the Objective retryable without replacing verified Task results", async () => {
 	const ledger = ledgerFixture([
 		{ id: "objective", ownerKey: "owner", kind: "objective", title: "Report", status: "running", createdAt: 1 },
-		{ id: "child", ownerKey: "owner", kind: "delegated", title: "Research", parentId: "objective", planId: "plan", status: "succeeded", result: "verified", createdAt: 2 },
+		{ id: "child", ownerKey: "owner", kind: "delegated", title: "Research", parentId: "objective", planId: "plan", status: "succeeded", result: "verified", verificationStatus: "accepted", createdAt: 2 },
 	]);
 	const runtime = new ObjectiveRuntime(ledger, async () => { throw new Error("delivery unavailable"); });
 
@@ -90,7 +149,7 @@ test("cancelling a conversation cancels every active Objective owned by it", () 
 test("Objective delivery is single-flight and cancellation aborts the in-flight deliverer", async () => {
 	const ledger = ledgerFixture([
 		{ id: "objective", ownerKey: "owner", kind: "objective", title: "Report", status: "running", createdAt: 1 },
-		{ id: "child", ownerKey: "owner", kind: "delegated", title: "Research", parentId: "objective", planId: "plan", status: "succeeded", result: "done", createdAt: 2 },
+		{ id: "child", ownerKey: "owner", kind: "delegated", title: "Research", parentId: "objective", planId: "plan", status: "succeeded", result: "done", verificationStatus: "accepted", createdAt: 2 },
 	]);
 	let calls = 0;
 	const runtime = new ObjectiveRuntime(ledger, async (_input, signal) => {
@@ -111,7 +170,7 @@ test("Objective delivery is single-flight and cancellation aborts the in-flight 
 test("a retried successful Plan reopens and delivers its failed parent Objective", async () => {
 	const ledger = ledgerFixture([
 		{ id: "objective", ownerKey: "owner", kind: "objective", title: "Report", status: "failed", error: "old failure", createdAt: 1, finishedAt: 2 },
-		{ id: "child", ownerKey: "owner", kind: "delegated", title: "Research", parentId: "objective", planId: "plan", status: "succeeded", result: "done", createdAt: 2 },
+		{ id: "child", ownerKey: "owner", kind: "delegated", title: "Research", parentId: "objective", planId: "plan", status: "succeeded", result: "done", verificationStatus: "accepted", createdAt: 2 },
 	]);
 	const runtime = new ObjectiveRuntime(ledger, async () => ({ result: "final" }));
 	assert.equal((await runtime.deliverPlan("owner", "plan")).status, "succeeded");

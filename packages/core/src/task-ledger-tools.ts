@@ -1,6 +1,6 @@
 import { Type } from "typebox";
 import { defineTool, type ToolDefinition } from "@earendil-works/pi-coding-agent";
-import { conversationKey, conversationOwnerKey } from "./agent-scope.ts";
+import { responsibilityOwnerKeys } from "./agent-scope.ts";
 import type { BeeMaxRuntimeSource } from "./runtime.ts";
 import type { TaskLedger, TaskQuery } from "./task-ledger.ts";
 import { MUTATING_TOOL_POLICY, READ_ONLY_TOOL_POLICY, withToolPolicy } from "./tool-runtime.ts";
@@ -8,7 +8,7 @@ import { assertNoCredentialMaterial } from "./credential-material.ts";
 
 /** Read-only durable Task discovery shared by every Agent surface. */
 export function createTaskLedgerTools(ledger: TaskLedger, source: BeeMaxRuntimeSource): ToolDefinition[] {
-	const ownerKeys = [...new Set([conversationKey(source), conversationOwnerKey(source), source.delegatedTask?.ownerKey, "profile"].filter((value): value is string => Boolean(value)))];
+	const ownerKeys = [...new Set([...responsibilityOwnerKeys(source), source.delegatedTask?.ownerKey, "profile"].filter((value): value is string => Boolean(value)))];
 	const query = (input: Omit<TaskQuery, "ownerKeys"> = {}) => ledger.queryTasks({ ...input, ownerKeys });
 	const owned = (id: string) => {
 		const task = query({ id, limit: 1 })[0];

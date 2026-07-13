@@ -1,4 +1,4 @@
-import { builtinProviders, getBuiltinModel, getSupportedThinkingLevels, type Api, type Model } from "@beemax/core";
+import { builtinProviders, getBuiltinModel, getSupportedThinkingLevels, MediaUnderstandingRuntime, PiVisionMediaUnderstandingAdapter, type Api, type MediaUnderstandingAdapter, type Model } from "@beemax/core";
 import type { BeeMaxConfig } from "./config.ts";
 
 export interface ModelProviderPreset {
@@ -103,6 +103,18 @@ export function renderConfiguredModels(config: BeeMaxConfig): string {
 /** Runtime-ready ordered model candidates; unsupported custom definitions stay out of automatic failover. */
 export function configuredRuntimeModels(config: BeeMaxConfig): Model<Api>[] {
 	return new ProfileModelCatalog(config).runtimeModels();
+}
+
+/** Configured image-capable Pi models automatically become auxiliary perception adapters. */
+export function configuredMediaUnderstanding(config: BeeMaxConfig, localAdapters: readonly MediaUnderstandingAdapter[] = []): MediaUnderstandingRuntime {
+	const visionAdapters = config.mediaUnderstanding?.auxiliaryVisionEnabled === false ? [] : configuredRuntimeModels(config)
+		.filter((model) => model.input.includes("image"))
+		.map((model, index) => new PiVisionMediaUnderstandingAdapter({
+			model,
+			apiKey: config.model.apiKeys[model.provider] ?? (model.provider === config.model.provider ? config.model.apiKey : undefined),
+			score: 80 - index,
+		}));
+	return new MediaUnderstandingRuntime([...visionAdapters, ...localAdapters]);
 }
 
 function copyEntry(entry: ProfileModelCapability): ProfileModelCapability {

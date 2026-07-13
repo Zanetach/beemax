@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import type { AgentSession } from "@earendil-works/pi-coding-agent";
 import type { BeeMaxRuntimeSource } from "./runtime.ts";
 import { conversationKey, conversationOwnerKey } from "./agent-scope.ts";
+import type { ExecutionEnvelope } from "./execution-envelope.ts";
 
 /** Stable per-conversation identity, independent of a transport adapter. */
 export function sessionKeyForSource(source: BeeMaxRuntimeSource): string {
@@ -26,6 +27,7 @@ export interface RuntimeSession {
 	sessionId: string;
 	source: BeeMaxRuntimeSource;
 	piSession: AgentSession;
+	executionEnvelope?: Readonly<ExecutionEnvelope>;
 	busy: boolean;
 	lastActiveAt: number;
 }
@@ -42,6 +44,7 @@ export interface RuntimeSessionSnapshot {
 export type RuntimeSessionFactory<Source extends BeeMaxRuntimeSource = BeeMaxRuntimeSource> = (
 	sessionId: string,
 	source: Source,
+	executionEnvelope?: Readonly<ExecutionEnvelope>,
 ) => Promise<AgentSession>;
 
 export interface SessionCoordinatorOptions {
@@ -66,11 +69,13 @@ export class SessionCoordinator<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 		this.sessionIdleMs = clamp(options.sessionIdleMs ?? 30 * 60_000, 60_000, 24 * 60 * 60_000);
 	}
 
-	async run<T>(source: Source, factory: RuntimeSessionFactory<Source>, action: (session: RuntimeSession) => Promise<T>): Promise<T> {
+	async run<T>(source: Source, factory: RuntimeSessionFactory<Source>, action: (session: RuntimeSession) => Promise<T>, executionEnvelope?: Readonly<ExecutionEnvelope>): Promise<T> {
 		const key = sessionKeyForSource(source);
 		return this.withLock(key, async () => {
 			this.prune();
-			const session = await this.getOrCreate(source, factory);
+			const session = await this.getOrCreate(source, factory, executionEnvelope);
+			session.executionEnvelope = executionEnvelope;
+			(session.piSession as AgentSession & { beemaxExecutionEnvelope?: Readonly<ExecutionEnvelope> }).beemaxExecutionEnvelope = executionEnvelope;
 			session.busy = true;
 			try { return await action(session); }
 			finally { session.busy = false; session.lastActiveAt = Date.now(); }
@@ -126,7 +131,7 @@ export class SessionCoordinator<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 		finally { release(); if (this.locks.get(key) === chain) this.locks.delete(key); }
 	}
 
-	private async getOrCreate(source: Source, factory: RuntimeSessionFactory<Source>): Promise<RuntimeSession> {
+	private async getOrCreate(source: Source, factory: RuntimeSessionFactory<Source>, executionEnvelope?: Readonly<ExecutionEnvelope>): Promise<RuntimeSession> {
 		const key = sessionKeyForSource(source);
 		const existing = this.sessions.get(key);
 		if (existing) { existing.lastActiveAt = Date.now(); return existing; }
@@ -134,7 +139,7 @@ export class SessionCoordinator<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 		if (pending) return pending;
 		this.prune(Date.now(), 1);
 		const creation = (async () => {
-			const session: RuntimeSession = { sessionKey: key, sessionId: sessionIdForSource(source), source: { ...source }, piSession: await factory(sessionIdForSource(source), source), busy: false, lastActiveAt: Date.now() };
+			const session: RuntimeSession = { sessionKey: key, sessionId: sessionIdForSource(source), source: { ...source }, piSession: await factory(sessionIdForSource(source), source, executionEnvelope), executionEnvelope, busy: false, lastActiveAt: Date.now() };
 			this.sessions.set(key, session);
 			return session;
 		})();

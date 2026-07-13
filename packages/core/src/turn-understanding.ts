@@ -14,7 +14,9 @@ export interface TurnUnderstanding {
 	confidence: number;
 }
 
-export interface TurnUnderstandingInput { activeObjective?: string; }
+export interface TurnUnderstandingInput {
+	activeObjective?: string;
+}
 export interface TurnUnderstandingPort { understand(text: string, input?: TurnUnderstandingInput): TurnUnderstanding; }
 const PREFETCH_MIN_CONFIDENCE = 0.5;
 

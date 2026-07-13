@@ -46,3 +46,15 @@ test("card presenter bounds long reasoning and activity histories", () => {
 	assert.ok(card.timeline.snapshot().every((entry) => entry.content.length <= 50_000));
 	assert.equal(card.tools.size, 100);
 });
+
+test("card presenter bounds streaming and terminal answer memory", () => {
+	const streaming = new CardSession();
+	for (let index = 0; index < 300; index++) streaming.apply("answer.delta", { text: "中".repeat(1_000) });
+	assert.ok(streaming.answerText.length <= 200_100);
+	assert.match(streaming.answerText, /truncated/);
+
+	const completed = new CardSession();
+	completed.apply("message.completed", { answer: "x".repeat(300_000) });
+	assert.ok(completed.answerText.length <= 200_100);
+	assert.match(completed.answerText, /truncated/);
+});

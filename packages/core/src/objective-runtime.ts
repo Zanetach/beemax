@@ -9,11 +9,21 @@ export interface ObjectiveDeliveryInput {
 
 export interface ObjectiveDeliveryResult { result: string; evidence?: string; }
 export type ObjectiveDeliverer = (input: ObjectiveDeliveryInput, signal?: AbortSignal) => Promise<ObjectiveDeliveryResult>;
+export interface VerifiedObjectiveOutcome {
+	objectiveId: string;
+	title: string;
+	result: string;
+	evidence?: string;
+	situation?: TaskRecord["situation"];
+	accessScopeRef?: TaskRecord["accessScopeRef"];
+	executionScope?: TaskRecord["executionScope"];
+}
+export type VerifiedObjectiveMemoryPublisher = (outcome: VerifiedObjectiveOutcome) => void | Promise<void>;
 
 export interface ObjectiveDeliveryOutcome {
 	objectiveId: string;
-	status: "succeeded" | "failed" | "cancelled";
-	finishedAt: number;
+	status: "awaiting_verification" | "succeeded" | "failed" | "cancelled";
+	finishedAt?: number;
 	result?: string;
 	error?: string;
 }
@@ -22,8 +32,9 @@ export interface ObjectiveDeliveryOutcome {
 export class ObjectiveRuntime {
 	private readonly ledger: Pick<TaskLedger, "queryTasks" | "transition"> & Partial<Pick<TaskLedger, "retryObjective" | "cancelObjectives" | "activeObjectivePlanIds">>;
 	private readonly deliver: ObjectiveDeliverer;
+	private readonly publishVerifiedOutcome?: VerifiedObjectiveMemoryPublisher;
 	private readonly active = new Map<string, { controller: AbortController; work: Promise<ObjectiveDeliveryOutcome> }>();
-	constructor(ledger: Pick<TaskLedger, "queryTasks" | "transition"> & Partial<Pick<TaskLedger, "retryObjective" | "cancelObjectives" | "activeObjectivePlanIds">>, deliver: ObjectiveDeliverer) { this.ledger = ledger; this.deliver = deliver; }
+	constructor(ledger: Pick<TaskLedger, "queryTasks" | "transition"> & Partial<Pick<TaskLedger, "retryObjective" | "cancelObjectives" | "activeObjectivePlanIds">>, deliver: ObjectiveDeliverer, publishVerifiedOutcome?: VerifiedObjectiveMemoryPublisher) { this.ledger = ledger; this.deliver = deliver; this.publishVerifiedOutcome = publishVerifiedOutcome; }
 
 	async deliverPlan(ownerKey: string, planId: string, signal?: AbortSignal): Promise<ObjectiveDeliveryOutcome> {
 		const key = `${ownerKey}\0${planId}`;
@@ -43,13 +54,17 @@ export class ObjectiveRuntime {
 		if (objective.status === "succeeded" || objective.status === "failed" || objective.status === "cancelled") {
 			return { objectiveId: objective.id, status: objective.status, finishedAt: objective.finishedAt ?? Date.now(), result: objective.result, error: objective.error };
 		}
+		if (tasks.length === 0 || tasks.some((task) => task.status !== "succeeded" || task.verificationStatus !== "accepted")) {
+			return { objectiveId: objective.id, status: "awaiting_verification" };
+		}
 		const finishedAt = Date.now();
 		try {
 			if (signal?.aborted) throw signal.reason ?? new Error("Objective delivery cancelled");
 			const delivered = await this.deliver({ objective, tasks, planId }, signal);
 			const result = delivered.result.trim();
 			if (!result) throw new Error("Objective delivery returned no result");
-			if (!this.ledger.transition(objective.id, { status: "succeeded", finishedAt, result: result.slice(0, 50_000), evidence: delivered.evidence?.slice(0, 5_000) })) throw new Error(`Objective ${objective.id} could not reach a Terminal Outcome`);
+			await this.publishVerifiedOutcome?.({ objectiveId: objective.id, title: objective.title, result: result.slice(0, 50_000), ...(delivered.evidence ? { evidence: delivered.evidence.slice(0, 5_000) } : {}), ...(objective.situation ? { situation: structuredClone(objective.situation) } : {}), ...(objective.accessScopeRef ? { accessScopeRef: structuredClone(objective.accessScopeRef) } : {}), ...(objective.executionScope ? { executionScope: structuredClone(objective.executionScope) } : {}) });
+			if (!this.ledger.transition(objective.id, { status: "succeeded", finishedAt, result: result.slice(0, 50_000), evidence: delivered.evidence?.slice(0, 5_000), verificationStatus: "accepted" })) throw new Error(`Objective ${objective.id} could not reach a Terminal Outcome`);
 			return { objectiveId: objective.id, status: "succeeded", finishedAt, result };
 		} catch (error) {
 			const message = redactCredentialMaterial(error instanceof Error ? error.message : String(error)).slice(0, 5_000);

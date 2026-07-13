@@ -4,6 +4,7 @@ import {
 	conversationIdentity,
 	conversationKey,
 	conversationOwnerKey,
+	responsibilityOwnerKey,
 	memoryScopeForSource,
 	interactionScopeForSource,
 } from "../dist/index.js";
@@ -26,6 +27,7 @@ test("agent scope derives every runtime view from one canonical identity", () =>
 	});
 	assert.equal(conversationOwnerKey(source), "discord:channel-1:global-user");
 	assert.equal(conversationKey(source), "discord:channel-1#topic-7:global-user");
+	assert.equal(responsibilityOwnerKey(source), "user:global-user");
 	assert.deepEqual(memoryScopeForSource(source), {
 		platform: "discord",
 		chatId: "channel-1",
@@ -45,4 +47,12 @@ test("anonymous agent scope has stable owner and thread keys", () => {
 	const source = { platform: "cli", chatId: "local", chatType: "dm" };
 	assert.equal(conversationOwnerKey(source), "cli:local:anon");
 	assert.equal(conversationKey(source), "cli:local:anon");
+	assert.equal(responsibilityOwnerKey(source), "cli:local:anon");
+});
+
+test("trusted cross-application identity shares durable responsibility without sharing sessions", () => {
+	const cli = { platform: "cli", chatId: "local", chatType: "dm", userId: "local", userIdAlt: "employee-7" };
+	const feishu = { platform: "feishu", chatId: "oc-chat", chatType: "dm", userId: "ou-app", userIdAlt: "employee-7" };
+	assert.notEqual(conversationKey(cli), conversationKey(feishu));
+	assert.equal(responsibilityOwnerKey(cli), responsibilityOwnerKey(feishu));
 });

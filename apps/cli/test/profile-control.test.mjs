@@ -13,11 +13,11 @@ test("shared Task rendering exposes objective Quality Status without a subjectiv
 test("shared /status reports Profile task admission capacity on every channel", async () => {
 	const runtime = {
 		modelStatus: async () => ({ model: "test/model", thinkingLevel: "medium" }),
-		usage: async () => ({ inputTokens: 10, outputTokens: 4, contextTokens: 14, contextWindow: 100 }),
+		usage: async () => ({ inputTokens: 10, outputTokens: 4, contextTokens: 14, contextWindow: 100, compactionEnabled: true, compactionTriggerTokens: 80, compactionReserveTokens: 20, compactionKeepRecentTokens: 30 }),
 		isBusy: () => true,
 		tasks: () => [{ id: "objective", kind: "objective", title: "Release report", status: "running", createdAt: 1 }],
 	};
-	const config = { profile: "personal", model: { provider: "test", model: "model" }, models: [] };
+	const config = { profile: "personal", model: { provider: "test", model: "model" }, models: [], context: { maxToolResultTokens: 12_000 } };
 	const control = createProfileControlHandler(runtime, config, undefined, () => ({
 		taskScheduler: { running: 2, queued: 3, queuedOwners: 2, maxConcurrent: 4, currentConcurrent: 2, overloadReductions: 3 },
 		taskRecovery: { phase: "completed", plans: 2, succeeded: 3, failed: 1, blocked: 1, verification: { attempted: 2, accepted: 1, rejected: 0, unavailable: 1 } },
@@ -27,6 +27,8 @@ test("shared /status reports Profile task admission capacity on every channel", 
 	assert.match(result.message, /Recovery: completed; plans=2; succeeded=3; failed=1; blocked=1/);
 	assert.match(result.message, /verification=2\/1\/0\/1/);
 	assert.match(result.message, /Objective: \[running\] Release report/);
+	assert.match(result.message, /compaction=on@80 \(reserve=20, keep=30\)/);
+	assert.match(result.message, /tool-result-budget=12000 estimated tokens/);
 });
 
 test("shared /tasks plans summarizes owned Task Plans for discovery and control", async () => {

@@ -4,6 +4,7 @@ set -euo pipefail
 
 VERSION="${BEEMAX_VERSION:-latest}"
 RELEASE_BASE="${BEEMAX_RELEASE_BASE:-https://github.com/Zanetach/beemax/releases/download}"
+RELEASE_API="${BEEMAX_RELEASE_API:-https://api.github.com/repos/Zanetach/beemax/releases?per_page=1}"
 INSTALL_DIR="${BEEMAX_INSTALL_DIR:-${HOME}/.beemax/app}"
 BIN_DIR="${BEEMAX_BIN_DIR:-${HOME}/.local/bin}"
 
@@ -12,7 +13,7 @@ usage() {
 BeeMax installer
 
 Usage:
-  curl -fsSL https://raw.githubusercontent.com/Zanetach/beemax/v0.1.0-preview.8/scripts/bootstrap-install.sh | bash
+  curl -fsSL https://raw.githubusercontent.com/Zanetach/beemax/v1.0.0/scripts/bootstrap-install.sh | bash
 
 Options:
   --version <tag>  Install a specific release tag
@@ -21,7 +22,7 @@ Options:
   --help           Show this help
 
 Environment:
-  BEEMAX_VERSION, BEEMAX_RELEASE_BASE, BEEMAX_INSTALL_DIR, BEEMAX_BIN_DIR
+  BEEMAX_VERSION, BEEMAX_RELEASE_BASE, BEEMAX_RELEASE_API, BEEMAX_INSTALL_DIR, BEEMAX_BIN_DIR
 EOF
 }
 
@@ -49,7 +50,7 @@ for command in curl tar node npm; do
 	command -v "${command}" >/dev/null 2>&1 || fail "${command} is required; install it and retry"
 done
 if [[ "${VERSION}" == "latest" ]]; then
-	VERSION="$(curl --fail --location --silent --show-error 'https://api.github.com/repos/Zanetach/beemax/releases?per_page=1' | sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -n 1)"
+	VERSION="$(curl --fail --location --silent --show-error "${RELEASE_API}" | sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -n 1)"
 	[[ "${VERSION}" =~ ^v[0-9] ]] || fail "could not resolve the latest BeeMax release"
 fi
 if command -v shasum >/dev/null 2>&1; then

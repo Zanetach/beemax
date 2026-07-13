@@ -1,0 +1,67 @@
+{
+  "schemaVersion": 1,
+  "profile": {
+    "id": "apple-m5-32gb-node22",
+    "description": "BeeMax production development profile: Apple M5, 10 logical CPUs, 32 GiB RAM, Node.js 22"
+  },
+  "assessment": {
+    "machineProfileId": "apple-m5-32gb-node22",
+    "passed": true,
+    "failures": [],
+    "paths": {
+      "fast": {
+        "samples": 101,
+        "p50Ms": 0.01037500000001046,
+        "p95Ms": 0.011582999999973254,
+        "contextChars": 17,
+        "tokens": 12000,
+        "toolCalls": 8,
+        "subagents": 0,
+        "recallMs": 0,
+        "situationMs": 0.004250000000013188,
+        "initiativeMs": 0,
+        "cacheWriteTokens": 0,
+        "concurrency": 1,
+        "backpressureEvents": 0
+      },
+      "deep": {
+        "samples": 101,
+        "p50Ms": 3.323167000000012,
+        "p95Ms": 6.486333000000002,
+        "contextChars": 2091,
+        "tokens": 32000,
+        "toolCalls": 16,
+        "subagents": 2,
+        "recallMs": 4.959249999999997,
+        "situationMs": 0.007834000000002561,
+        "initiativeMs": 0,
+        "cacheWriteTokens": 0,
+        "concurrency": 2,
+        "backpressureEvents": 0
+      },
+      "background": {
+        "samples": 101,
+        "p50Ms": 0.009999999999990905,
+        "p95Ms": 0.020167000000014923,
+        "contextChars": 34,
+        "tokens": 8000,
+        "toolCalls": 6,
+        "subagents": 1,
+        "recallMs": 0,
+        "situationMs": 3.440582999999947,
+        "initiativeMs": 3.440582999999947,
+        "cacheWriteTokens": 0,
+        "concurrency": 4,
+        "backpressureEvents": 0
+      }
+    }
+  },
+  "machine": {
+    "platform": "darwin",
+    "arch": "arm64",
+    "node": "v22.22.3",
+    "cpu": "Apple M5",
+    "logicalCpus": 10,
+    "memoryGiB": 32
+  }
+}

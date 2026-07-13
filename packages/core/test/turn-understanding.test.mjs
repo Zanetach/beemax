@@ -43,3 +43,24 @@ test("Turn Understanding preserves explicit constraints and acceptance criteria 
 	assert.equal(result.executionMode, "direct");
 	assert.ok(result.confidence > 0.5);
 });
+
+test("Turn Understanding treats typed identity-looking text as correctable open meaning", () => {
+	const result = new TurnUnderstandingEngine().understand("不是之前的，改成主体 account:B、对象 purchase:PO-2", { activeObjective: "处理采购记录" });
+	assert.equal(result.action, "correct");
+	assert.match(result.goal, /account:B/);
+	assert.match(result.memoryQuery, /purchase:PO-2/);
+	assert.equal("businessContext" in result, false);
+});
+
+test("Turn Understanding keeps randomized unknown-domain identity syntax as open semantics", () => {
+	const engine = new TurnUnderstandingEngine();
+	const domains = ["nebula", "tide", "lattice", "aurora", "quartz", "harbor", "echo", "prism"];
+	for (let index = 0; index < 32; index++) {
+		const domain = domains[index % domains.length];
+		const text = `校准主体 ${domain}:realm-${index} 下的对象 phase:node-${index}，保留回滚点`;
+		const result = engine.understand(text);
+		assert.equal(result.businessContext, undefined);
+		assert.match(result.goal, new RegExp(domain));
+		assert.match(result.memoryQuery, new RegExp(`node-${index}`));
+	}
+});

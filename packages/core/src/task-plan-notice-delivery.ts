@@ -10,7 +10,7 @@ export interface TaskPlanProgressEvent {
 export interface TaskPlanNoticeDeliveryOptions {
 	platform: string; intervalMs?: number; batchSize?: number;
 	leaseMs?: number; leaseHeartbeatMs?: number; maxAttempts?: number; deliveryConcurrency?: number; shutdownGraceMs?: number;
-	deliverObjective?: (notice: TaskPlanCompletionNotice, signal?: AbortSignal) => Promise<{ status: "succeeded" | "failed" | "cancelled"; result?: string; error?: string } | undefined>;
+	deliverObjective?: (notice: TaskPlanCompletionNotice, signal?: AbortSignal) => Promise<{ status: "awaiting_verification" | "succeeded" | "failed" | "cancelled"; result?: string; error?: string } | undefined>;
 	onProgress?: (event: TaskPlanProgressEvent, notice: TaskPlanCompletionNotice) => void | Promise<void>;
 	onCycle?: (result: TaskPlanNoticeDeliveryResult) => void; onError?: (error: unknown) => void;
 }
@@ -80,7 +80,7 @@ export class TaskPlanNoticeDeliveryService {
 	private async deliverNotice(notice: TaskPlanCompletionNotice, now: number): Promise<boolean> {
 			const controller = new AbortController();
 			this.controllers.add(controller);
-			let objectiveOutcome: { status: "succeeded" | "failed" | "cancelled"; result?: string; error?: string } | undefined;
+			let objectiveOutcome: { status: "awaiting_verification" | "succeeded" | "failed" | "cancelled"; result?: string; error?: string } | undefined;
 			const heartbeat = notice.claimToken && this.outbox.renewTaskPlanCompletionNotice ? setInterval(() => {
 				if (!this.outbox.renewTaskPlanCompletionNotice?.(notice.id, notice.claimToken!, Date.now() + this.leaseMs)) controller.abort(new Error(`Task Plan Completion Notice lease lost: ${notice.id}`));
 			}, this.leaseHeartbeatMs) : undefined;
@@ -96,7 +96,7 @@ export class TaskPlanNoticeDeliveryService {
 							if (!notice.claimToken || !this.outbox.completeTaskPlanCompletionNotice(notice.id, notice.claimToken)) throw new Error(`Task Plan Completion Notice acknowledgement failed: ${notice.id}`);
 							return true;
 						}
-						if (objective.status !== "cancelled") throw new Error(objective.error || `Objective delivery failed for Task Plan ${notice.planId}`);
+						if (objective.status !== "cancelled") throw new Error(objective.error || (objective.status === "awaiting_verification" ? `Objective is awaiting accepted Verification for Task Plan ${notice.planId}` : `Objective delivery failed for Task Plan ${notice.planId}`));
 					}
 				}
 				const progress: TaskPlanProgressEvent = {

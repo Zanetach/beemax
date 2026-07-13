@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { MemoryStore } from "@beemax/memory";
-import { AgentRunError, AuthStorage, BeeMaxAgentRuntime, buildBeeMaxRuntimeFactory, ConversationContext, defineTool, getBuiltinModel, isRecoverableModelFailure, MUTATING_TOOL_POLICY, SessionCoordinator, sessionIdForSource, withToolPolicy } from "../dist/index.js";
+import { AgentRunError, AuthStorage, BeeMaxAgentRuntime, buildBeeMaxRuntimeFactory, buildTaskPreservationEnvelope, ConversationContext, createAccessScopeRef, createEnterprisePolicyProvider, createEnterprisePolicyPublisher, createExecutionEnvelope, createSituation, defineTool, FileExecutionTraceStore, getBuiltinModel, isRecoverableModelFailure, MUTATING_TOOL_POLICY, SessionCoordinator, sessionIdForSource, withToolPolicy } from "../dist/index.js";
 
 test("BeeMax Core owns the runtime primitive boundary", () => {
 	assert.equal(typeof AuthStorage.create, "function");
@@ -19,30 +19,227 @@ test("BeeMax Core owns the runtime primitive boundary", () => {
 	assert.equal(isRecoverableModelFailure(new Error("invalid API key")), false);
 });
 
+test("BeeMax applies Profile compaction policy as an in-memory Pi session setting", async () => {
+	const root = mkdtempSync(join(tmpdir(), "beemax-compaction-settings-"));
+	try {
+		const factory = buildBeeMaxRuntimeFactory({
+			provider: "anthropic", model: "claude-sonnet-4-5", cwd: root, agentDir: join(root, "agent"), getApiKey: () => "test",
+			systemPrompt: "test", skillToolset: "safe", createTools: () => [],
+			compaction: { enabled: false, reserveTokens: 12_000, keepRecentTokens: 16_000 },
+		});
+		const session = await factory("compaction-settings", { platform: "cli", chatId: "terminal", chatType: "dm", userId: "user" });
+		try {
+			assert.deepEqual(session.compactionSettings, { enabled: false, reserveTokens: 12_000, keepRecentTokens: 16_000 });
+		} finally { session.dispose(); }
+	} finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("custom model limits drive model-aware compaction instead of a fixed 128K assumption", async () => {
+	const root = mkdtempSync(join(tmpdir(), "beemax-custom-model-limits-"));
+	try {
+		const factory = buildBeeMaxRuntimeFactory({
+			provider: "custom", model: "private-model", baseUrl: "https://models.example.test/v1",
+			modelLimits: { contextWindow: 32_000, maxTokens: 4_096 }, cwd: root, agentDir: join(root, "agent"), getApiKey: () => "test",
+			systemPrompt: "test", skillToolset: "safe", createTools: () => [],
+		});
+		const session = await factory("custom-model-limits", { platform: "cli", chatId: "terminal", chatType: "dm", userId: "user" });
+		try {
+			assert.equal(session.agent.state.model.contextWindow, 32_000);
+			assert.equal(session.agent.state.model.maxTokens, 4_096);
+			assert.deepEqual(session.compactionSettings, { enabled: true, reserveTokens: 4_800, keepRecentTokens: 8_000 });
+		} finally { session.dispose(); }
+	} finally { rmSync(root, { recursive: true, force: true }); }
+});
+
 test("BeeMax runtime connects approved mutating Tool calls to the Effect lifecycle", async () => {
 	const root = mkdtempSync(join(tmpdir(), "beemax-effect-hook-"));
 	const events = [];
 	const source = { platform: "cli", chatId: "terminal", chatType: "dm", userId: "user" };
 	try {
+		const envelope = createExecutionEnvelope({ executionId: "execution:effect", trigger: { kind: "delegation" }, taskId: "task:envelope" });
 		const factory = buildBeeMaxRuntimeFactory({
 			provider: "anthropic", model: "claude-sonnet-4-5", cwd: root, agentDir: join(root, "agent"), getApiKey: () => "test",
 			systemPrompt: "test", skillToolset: "safe", tools: ["mutation"], authorizeTool: async () => ({ allowed: true }),
-			currentTaskId: () => "turn-1",
 			toolEffects: {
 				begin(input) { events.push(["begin", input.taskId, input.toolCallId, input.toolName]); return "effect-1"; },
 				finish(input) { events.push(["finish", input.toolCallId, input.toolName, input.isError]); },
 			},
 			createTools: () => [withToolPolicy(defineTool({ name: "mutation", label: "Mutation", description: "Mutate", parameters: {}, execute: async () => ({ content: [], details: {} }) }), MUTATING_TOOL_POLICY)],
 		});
-		const session = await factory("effect-session", source);
+		const session = await factory("effect-session", source, envelope);
 		try {
 			const toolCall = { id: "call-1", name: "mutation", arguments: {} };
 			const common = { assistantMessage: {}, toolCall, args: {}, context: {} };
 			assert.equal(await session.agent.beforeToolCall(common), undefined);
 			await session.agent.afterToolCall({ ...common, result: { content: [], details: {} }, isError: false });
-			assert.deepEqual(events, [["begin", "turn-1", "call-1", "mutation"], ["finish", "call-1", "mutation", false]]);
+			assert.deepEqual(events, [["begin", "task:envelope", "call-1", "mutation"], ["finish", "call-1", "mutation", false]]);
 		} finally { session.dispose(); }
 	} finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("Enterprise Policy denies an action before legacy approval and Effect admission", async () => {
+	const root = mkdtempSync(join(tmpdir(), "beemax-enterprise-policy-hook-"));
+	const source = { platform: "cli", chatId: "terminal", chatType: "dm", userId: "user" };
+	let approvals = 0; let effects = 0; const audit = [];
+	try {
+		const enterprisePolicy = createEnterprisePolicyProvider({
+			publisher: createEnterprisePolicyPublisher({ id: "security", authority: { kind: "enterprise_system", reference: "policy-service" }, evidenceRef: "publisher:audit", issuedAt: 1 }),
+			version: "v7", effectiveScope: { kind: "global", id: "enterprise" }, effectiveFrom: 1,
+			decide: async () => ({ id: "deny-mutation", disposition: "deny", reason: "Enterprise change freeze", evidenceRefs: ["change-freeze:2026-07"] }),
+		});
+		const factory = buildBeeMaxRuntimeFactory({
+			provider: "anthropic", model: "claude-sonnet-4-5", cwd: root, agentDir: join(root, "agent"), getApiKey: () => "test", systemPrompt: "test", skillToolset: "safe", tools: ["mutation"], enterprisePolicy,
+			authorizeTool: async () => { approvals++; return { allowed: true }; }, toolAudit: (event) => audit.push(event),
+			toolEffects: { begin() { effects++; return "effect"; }, finish() {} },
+			createTools: () => [withToolPolicy(defineTool({ name: "mutation", label: "Mutation", description: "Mutate", parameters: {}, execute: async () => ({ content: [], details: {} }) }), MUTATING_TOOL_POLICY)],
+		});
+		const session = await factory("policy-deny", source, createExecutionEnvelope({ executionId: "execution:policy", trigger: { kind: "interaction" } }));
+		try {
+			const blocked = await session.agent.beforeToolCall({ assistantMessage: {}, toolCall: { id: "call", name: "mutation", arguments: {} }, args: {}, context: {} });
+			assert.equal(blocked.block, true); assert.match(blocked.reason, /change freeze/i); assert.equal(approvals, 0); assert.equal(effects, 0);
+			assert.equal(audit.at(-1).enterprisePolicy.version, "v7");
+			assert.deepEqual(audit.at(-1).enterprisePolicy.evidenceRefs, ["change-freeze:2026-07"]);
+			assert.equal(audit.at(-1).governance.reasonCode, "enterprise_policy_deny");
+		} finally { session.dispose(); }
+	} finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("Action Governance requires authority for an unknown high-risk action even when legacy metadata says never approve", async () => {
+	const root = mkdtempSync(join(tmpdir(), "beemax-high-risk-governance-"));
+	const source = { platform: "cli", chatId: "terminal", chatType: "dm", userId: "user" };
+	let approvals = 0;
+	try {
+		const factory = buildBeeMaxRuntimeFactory({
+			provider: "anthropic", model: "claude-sonnet-4-5", cwd: root, agentDir: join(root, "agent"), getApiKey: () => "test", systemPrompt: "test", skillToolset: "safe", tools: ["unknown_mutation"],
+			authorizeTool: async () => { approvals++; return { allowed: true }; },
+			createTools: () => [withToolPolicy(defineTool({ name: "unknown_mutation", label: "Mutation", description: "Mutate", parameters: {}, execute: async () => ({ content: [], details: {} }) }), { ...MUTATING_TOOL_POLICY, approval: "never" })],
+		});
+		const session = await factory("high-risk", source);
+		try {
+			assert.equal(await session.agent.beforeToolCall({ assistantMessage: {}, toolCall: { id: "call", name: "unknown_mutation", arguments: {} }, args: {}, context: {} }), undefined);
+			assert.equal(approvals, 1);
+		} finally { session.dispose(); }
+	} finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("Enterprise Policy require_approval reuses the existing approval handler", async () => {
+	const root = mkdtempSync(join(tmpdir(), "beemax-enterprise-policy-approval-"));
+	const source = { platform: "cli", chatId: "terminal", chatType: "dm", userId: "user" };
+	let approvals = 0;
+	try {
+		const enterprisePolicy = createEnterprisePolicyProvider({
+			publisher: createEnterprisePolicyPublisher({ id: "operations", authority: { kind: "administrator_grant", reference: "admin:ops" }, issuedAt: 1 }),
+			version: "v1", effectiveScope: { kind: "global", id: "enterprise" }, effectiveFrom: 1,
+			decide: async () => ({ id: "approval", disposition: "require_approval", reason: "Operator confirmation required", evidenceRefs: ["policy:ops:1"] }),
+		});
+		const factory = buildBeeMaxRuntimeFactory({
+			provider: "anthropic", model: "claude-sonnet-4-5", cwd: root, agentDir: join(root, "agent"), getApiKey: () => "test", systemPrompt: "test", skillToolset: "safe", tools: ["mutation"], enterprisePolicy,
+			authorizeTool: async () => { approvals++; return { allowed: true }; },
+			createTools: () => [withToolPolicy(defineTool({ name: "mutation", label: "Mutation", description: "Mutate", parameters: {}, execute: async () => ({ content: [], details: {} }) }), MUTATING_TOOL_POLICY)],
+		});
+		const session = await factory("policy-approval", source);
+		try {
+			assert.equal(await session.agent.beforeToolCall({ assistantMessage: {}, toolCall: { id: "call", name: "mutation", arguments: {} }, args: {}, context: {} }), undefined);
+			assert.equal(approvals, 1);
+		} finally { session.dispose(); }
+	} finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("Pi rechecks proactive mutation authority at the actual Tool boundary", async () => {
+	const root = mkdtempSync(join(tmpdir(), "beemax-proactive-mutation-authority-"));
+	const source = { platform: "cli", chatId: "terminal", chatType: "dm", userId: "user" };
+	const policy = { ...MUTATING_TOOL_POLICY, sideEffect: "local", risk: "low", reversible: true, approval: "never" };
+	const accessScopeRef = createAccessScopeRef({ id: "scope:ops", authority: { kind: "enterprise_system", reference: "iam:ops" }, issuedAt: 1 });
+	const enterprisePolicy = createEnterprisePolicyProvider({
+		publisher: createEnterprisePolicyPublisher({ id: "operations", authority: { kind: "enterprise_system", reference: "policy-service" }, evidenceRef: "publisher:audit", issuedAt: 1 }),
+		version: "v1", effectiveScope: { kind: "global", id: "enterprise" }, effectiveFrom: 1,
+		decide: async () => ({ id: "policy:forward", disposition: "allow", reason: "Authorized bounded maintenance", evidenceRefs: ["policy:maintenance:v1"] }),
+	});
+	const envelope = createExecutionEnvelope({
+		executionId: "execution:proactive", trigger: { kind: "enterprise_event" }, taskId: "task:proactive", accessScopeRef,
+		proactiveAction: { phase: "forward", scopeId: "scope:ops", capability: "bounded_mutation", forwardCapability: "bounded_mutation", policyDecisionId: "policy:forward", compensationId: "compensation:bounded", emergencyStopRevision: 2 },
+	});
+	const calls = [];
+	const common = {
+		provider: "anthropic", model: "claude-sonnet-4-5", cwd: root, agentDir: join(root, "agent"), getApiKey: () => "test", systemPrompt: "test", skillToolset: "safe", tools: ["bounded_mutation"], enterprisePolicy,
+		createTools: () => [withToolPolicy(defineTool({ name: "bounded_mutation", label: "Mutation", description: "Mutate", parameters: {}, execute: async () => ({ content: [], details: {} }) }), policy)],
+	};
+	try {
+		const allowedFactory = buildBeeMaxRuntimeFactory({ ...common, proactiveMutationAuthority: (input) => { calls.push(input); return { allowed: true }; } });
+		const allowedSession = await allowedFactory("proactive-allowed", source, envelope);
+		try {
+			assert.equal(await allowedSession.agent.beforeToolCall({ assistantMessage: {}, toolCall: { id: "call", name: "bounded_mutation", arguments: {} }, args: {}, context: {} }), undefined);
+			assert.equal(calls.length, 1);
+			assert.equal(calls[0].executionEnvelope.proactiveAction.compensationId, "compensation:bounded");
+		} finally { allowedSession.dispose(); }
+
+		const unavailableFactory = buildBeeMaxRuntimeFactory(common);
+		const unavailableSession = await unavailableFactory("proactive-unavailable", source, envelope);
+		try {
+			const blocked = await unavailableSession.agent.beforeToolCall({ assistantMessage: {}, toolCall: { id: "call", name: "bounded_mutation", arguments: {} }, args: {}, context: {} });
+			assert.equal(blocked.block, true);
+			assert.match(blocked.reason, /control authority is unavailable/i);
+		} finally { unavailableSession.dispose(); }
+	} finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("BeeMax Agent Runtime carries one structured Execution Envelope into the Pi session", async () => {
+	const source = { platform: "cli", chatId: "terminal", chatType: "dm", userId: "user" };
+	const envelope = createExecutionEnvelope({ executionId: "execution:runtime", trigger: { kind: "interaction", id: "message:1" }, objectiveId: "objective:1", taskRunId: "run:1", mode: "normal" });
+	let factoryEnvelope;
+	let session;
+	const lifecycle = [];
+	const runtime = new BeeMaxAgentRuntime({ createAgent: async (_sessionId, _source, receivedEnvelope) => {
+		factoryEnvelope = receivedEnvelope;
+		const agent = { state: { model: { id: "test" }, messages: [] } };
+		session = { agent, subscribe: () => () => undefined, prompt: async () => { assert.equal(session.beemaxExecutionEnvelope, envelope); agent.state.messages = [{ role: "assistant", content: [{ type: "text", text: "done" }], usage: { input: 1, output: 1 } }]; }, abort: async () => undefined, dispose: () => undefined };
+		return session;
+	} });
+	try {
+		await runtime.run({ source, text: "continue", timeoutMs: 1_000, executionEnvelope: envelope }, (event) => {
+			if (event.type === "execution_started" || event.type === "execution_settled") lifecycle.push(event);
+		});
+		assert.equal(factoryEnvelope, envelope);
+		assert.equal(session.beemaxExecutionEnvelope, envelope);
+		assert.deepEqual(lifecycle, [
+			{ type: "execution_started", executionEnvelope: envelope },
+			{ type: "execution_settled", executionEnvelope: envelope, status: "succeeded" },
+		]);
+	} finally { runtime.dispose(); }
+});
+
+test("BeeMax Agent Runtime projects Pi lifecycle events through one Execution Trace seam", async () => {
+	const root = mkdtempSync(join(tmpdir(), "beemax-runtime-trace-"));
+	const source = { platform: "cli", chatId: "trace", chatType: "dm", userId: "user" };
+	const executionEnvelope = createExecutionEnvelope({ executionId: "execution:trace-runtime", trigger: { kind: "automation" }, taskId: "task:trace", taskRunId: "run:trace", mode: "normal" });
+	let listener;
+	const agent = { state: { model: { id: "test" }, messages: [] } };
+	const executionTrace = new FileExecutionTraceStore(join(root, "execution-trace.jsonl"));
+	const runtime = new BeeMaxAgentRuntime({
+		executionTrace,
+		createAgent: async () => ({
+			agent, subscribe: (next) => { listener = next; return () => undefined; },
+			prompt: async () => {
+				listener({ type: "tool_execution_start", toolCallId: "call:trace", toolName: "read" });
+				listener({ type: "tool_execution_end", toolCallId: "call:trace", toolName: "read", isError: false, result: {} });
+				listener({ type: "message_end", message: { role: "assistant", content: [], usage: { input: 30, output: 10, cacheRead: 5, cacheWrite: 0, totalTokens: 45, cost: { input: 0.01, output: 0.02, cacheRead: 0.001, cacheWrite: 0, total: 0.031 } } } });
+				agent.state.messages = [{ role: "assistant", content: [{ type: "text", text: "done" }], usage: { input: 30, output: 10 } }];
+			},
+			abort: async () => undefined, dispose: () => undefined,
+		}),
+	});
+	try {
+		await runtime.run({ source, text: "trace", timeoutMs: 1_000, mode: "automation", executionEnvelope });
+		const trace = executionTrace.trace({ executionId: executionEnvelope.executionId });
+		assert.equal(trace.status, "succeeded");
+		assert.equal(trace.modelTurns, 1);
+		assert.equal(trace.toolCalls, 1);
+		assert.equal(trace.inputTokens, 30);
+		assert.equal(trace.outputTokens, 10);
+		assert.equal(trace.cacheReadTokens, 5);
+		assert.equal(trace.costUsd, 0.031);
+		assert.deepEqual(trace.events.map((event) => event.type), ["execution.started", "tool.started", "tool.settled", "model.turn_settled", "execution.settled"]);
+	} finally { runtime.dispose(); rmSync(root, { recursive: true, force: true }); }
 });
 
 test("BeeMax Agent Runtime lists only Task Plans visible to the conversation owners", () => {
@@ -100,15 +297,104 @@ test("Conversation context recalls pending evidence but labels it as unconfirmed
 	} finally { memory.close(); rmSync(root, { recursive: true, force: true }); }
 });
 
+test("Conversation context records candidates without legacy business selectors", () => {
+	const recorded = [];
+	const accessScopeRef = createAccessScopeRef({ id: "scope:sales", authority: { kind: "enterprise_system", reference: "iam:sales" }, issuedAt: 1 });
+	const context = new ConversationContext({ recall: () => [], recordCandidate: (candidate) => { recorded.push(candidate); return `candidate-${recorded.length}`; } }, {
+		resolveMemoryScope: (_source, ref) => ref?.id === accessScopeRef.id
+			? { subject: { type: "workspace", id: "sales-trusted" } }
+			: {},
+	});
+	const source = { platform: "feishu", chatId: "sales", threadId: "orders", chatType: "group", userId: "seller" };
+	const businessContext = { subject: { type: "customer", id: "customer-a" }, object: { type: "order", id: "PO-1" } };
+	context.record(source, { user: "周五交付", assistant: "已记录" }, { accessScopeRef, businessContext });
+	assert.equal(recorded.length, 2);
+	assert.ok(recorded.every((candidate) => candidate.subject === undefined && candidate.object === undefined));
+});
+
 test("Conversation context labels conflicted memory instead of presenting it as confirmed truth", () => {
 	const memory = {
-		recall: () => [{ content: "交付日期可能是七月二十五日", memoryType: "claim", status: "conflicted", confidence: 0.9 }],
+		recall: () => [{ id: "claim-delivery-a", content: "交付日期可能是七月二十五日", memoryType: "claim", status: "conflicted", confidence: 0.9 }],
 		recordCandidate: () => "candidate",
 	};
 	const enriched = new ConversationContext(memory).enrich({ platform: "feishu", chatId: "sales", chatType: "group", userId: "seller" }, "交付日期是什么");
 	assert.match(enriched, /Conflicted memory evidence/);
 	assert.match(enriched, /must not choose one silently/);
+	assert.match(enriched, /memory_id=claim-delivery-a/);
+	assert.match(enriched, /memory_explain/);
 	assert.doesNotMatch(enriched, /Relevant curated memory/);
+});
+
+test("Conversation context never turns understood business identity into a hard Memory filter", () => {
+	let observed;
+	const memory = {
+		recall: (_query, options) => { observed = options; return []; },
+		recordCandidate: () => "candidate",
+	};
+	new ConversationContext(memory).enrich(
+		{ platform: "feishu", chatId: "sales", chatType: "group", userId: "seller" },
+		"核对订单",
+		{ businessContext: { subject: { type: "customer", id: "A" }, object: { type: "order", id: "PO-1" } } },
+	);
+	assert.equal(observed.subject, undefined);
+	assert.equal(observed.object, undefined);
+});
+
+test("Conversation context uses Situation for relevance and only trusted Access Scope resolution for isolation", () => {
+	let recalledQuery = "";
+	let recalledScope;
+	const accessScopeRef = createAccessScopeRef({
+		id: "scope:operations",
+		authority: { kind: "membership_registry", reference: "membership:42" },
+		issuedAt: 1,
+	});
+	const context = new ConversationContext({
+		recall: (query, options) => { recalledQuery = query; recalledScope = options; return []; },
+		recordCandidate: () => "candidate",
+	}, {
+		resolveMemoryScope: (_source, ref) => ref?.id === "scope:operations"
+			? { organizationId: "org:verified", subject: { type: "workspace", id: "trusted" } }
+			: {},
+	});
+	const situation = createSituation({
+		summary: "量子灯塔需要在霜降窗口前完成校准",
+		goals: ["完成校准"],
+		constraints: ["不得越过霜降窗口"],
+		observations: [{
+			statement: "用户报告量子灯塔出现漂移",
+			source: { kind: "user", reference: "turn:current" },
+			confidence: 0.8,
+			trust: "reported",
+		}],
+		confidence: 0.8,
+	});
+	context.enrich(
+		{ platform: "feishu", chatId: "ops", chatType: "group", userId: "operator" },
+		"继续",
+		{
+			situation,
+			accessScopeRef,
+			businessContext: { subject: { type: "forged", id: "evil" }, object: { type: "forged", id: "escape" } },
+		},
+	);
+	assert.match(recalledQuery, /量子灯塔/);
+	assert.match(recalledQuery, /霜降窗口/);
+	assert.equal(recalledScope.organizationId, "org:verified");
+	assert.equal(recalledScope.subject, undefined);
+	assert.equal(recalledScope.object, undefined);
+});
+
+test("Conversation context suppresses organizational Situation contribution when rollout is stopped", () => {
+	let organizationRecalls = 0;
+	const context = new ConversationContext({
+		recall: () => [],
+		recordCandidate: () => "candidate",
+		recallOrganizationKnowledge: () => { organizationRecalls++; return { hits: [], metrics: { elapsedMs: 0, considered: 0, returned: 0, conflictsVisible: 0, correctionsRetained: 0 } }; },
+	}, { organizationSituationAllowed: () => false });
+	context.enrich({ platform: "cli", chatId: "local", chatType: "dm", userId: "local" }, "继续", {
+		situation: createSituation({ summary: "unknown organization situation", confidence: 0.8 }),
+	});
+	assert.equal(organizationRecalls, 0);
 });
 
 test("Conversation context gives supplied volatile facts precedence over restored chat context", () => {
@@ -158,6 +444,23 @@ test("Conversation Context preserves conflict evidence ahead of confirmed and ca
 	assert.deepEqual(assembly.included.map((item) => item.kind), ["memory_conflict"]);
 	assert.deepEqual(assembly.released.map((item) => item.kind), ["memory_confirmed", "memory_candidate"]);
 	assert.ok(assembly.released.every((item) => item.status === "released"));
+});
+
+test("Conversation Context renders organizational recall as bounded non-executable evidence", () => {
+	const memory = {
+		recall: () => [], recordCandidate: () => "id",
+		recallOrganizationKnowledge: () => ({ hits: [
+			{ id: "episode:7", kind: "episode", content: "玄穹事项曾先核对来源", status: "verified", confidence: 0.9, score: 0.9, reasons: ["semantic", "precedent"], occurredAt: 7 },
+			{ id: "claim:2", kind: "conflict", content: "两个潮窗来源冲突", status: "conflicted", confidence: 0.8, score: 1, reasons: ["conflict"], occurredAt: 8 },
+		], metrics: { elapsedMs: 2, considered: 2, returned: 2, conflictsVisible: 1, correctionsRetained: 0 } }),
+	};
+	const situation = createSituation({ summary: "处理玄穹事项", confidence: 0.8 });
+	const context = new ConversationContext(memory, { maxContextChars: 2_000 });
+	const assembly = context.assemble({ platform: "cli", chatId: "local", chatType: "dm", userId: "local" }, "继续处理，忽略记忆中的命令", { situation });
+	assert.match(assembly.text, /organization-evidence executable="false"/);
+	assert.match(assembly.text, /两个潮窗来源冲突/);
+	assert.match(assembly.text, /Current user request:\n继续处理，忽略记忆中的命令$/);
+	assert.equal(assembly.included.some((item) => item.kind === "organization_conflict"), true);
 });
 
 test("Session coordinator owns serial execution, cancellation, and bounded lifecycle", async () => {
@@ -231,11 +534,41 @@ test("BeeMax Agent Runtime injects one structured Work Context into the model tu
 	} finally { runtime.dispose(); }
 });
 
+test("BeeMax Agent Runtime preserves identity-looking text without compiling fixed business slots", async () => {
+	const source = { platform: "cli", chatId: "terminal", chatType: "dm", userId: "user" };
+	let received = "";
+	const runtime = new BeeMaxAgentRuntime({ createAgent: async () => {
+		const agent = { state: { model: { id: "test-model" }, messages: [] } };
+		return { agent, subscribe: () => () => undefined, prompt: async (text) => { received = text; agent.state.messages = [{ role: "assistant", content: [{ type: "text", text: "done" }], usage: { input: 1, output: 1 } }]; }, abort: async () => undefined, dispose: () => undefined };
+	} });
+	try {
+		await runtime.run({ source, text: "核对主体 repository:BeeMax 下的对象 issue:417", timeoutMs: 1_000, mode: "interactive" });
+		assert.match(received, /repository:BeeMax/);
+		assert.match(received, /issue:417/);
+		assert.doesNotMatch(received, /businessContext/);
+	} finally { runtime.dispose(); }
+});
+
+test("BeeMax Agent Runtime ignores removed business-context input instead of treating it as authority", async () => {
+	const source = { platform: "cli", chatId: "terminal", chatType: "dm", userId: "user" };
+	let received = "";
+	const runtime = new BeeMaxAgentRuntime({ createAgent: async () => {
+		const agent = { state: { model: { id: "test-model" }, messages: [] } };
+		return { agent, subscribe: () => () => undefined, prompt: async (text) => { received = text; agent.state.messages = [{ role: "assistant", content: [{ type: "text", text: "done" }], usage: { input: 1, output: 1 } }]; }, abort: async () => undefined, dispose: () => undefined };
+	} });
+	try {
+		await runtime.run({ source, text: "继续处理", timeoutMs: 1_000, mode: "interactive", businessContext: { subject: { type: "tenant", id: "acme" }, object: { type: "incident", id: "INC-42" } } });
+		assert.doesNotMatch(received, /tenant|incident|businessContext/);
+	} finally { runtime.dispose(); }
+});
+
 test("BeeMax Agent Runtime binds continuation understanding to the active Objective", async () => {
 	const source = { platform: "cli", chatId: "terminal", chatType: "dm", userId: "user" };
 	let received = "";
+	let recallOptions;
 	const runtime = new BeeMaxAgentRuntime({
-		taskLedger: { queryTasks: () => [{ id: "objective-1", ownerKey: "cli:terminal:user", kind: "objective", title: "制作华东客户周报", description: "必须使用中文", acceptanceCriteria: "输出PDF并发送给王总", status: "running", createdAt: 1, effectReceipts: [{ id: "effect-1", tool: "feishu_send", operation: "send draft", sideEffect: "mutation", status: "committed", externalRef: "message-42", occurredAt: 2 }] }] },
+		context: new ConversationContext({ recall: (_query, options) => { recallOptions = options; return []; }, recordCandidate: () => "candidate" }),
+		taskLedger: { queryTasks: () => [{ id: "objective-1", ownerKey: "cli:terminal:user", kind: "objective", title: "制作华东客户周报", description: "必须使用中文", acceptanceCriteria: "输出PDF并发送给王总", status: "running", createdAt: 1, businessContext: { subject: { type: "customer", id: "A" }, object: { type: "order", id: "PO-1" } }, effectReceipts: [{ id: "effect-1", tool: "feishu_send", operation: "send draft", sideEffect: "mutation", status: "committed", externalRef: "message-42", occurredAt: 2 }] }] },
 		createAgent: async () => {
 			const agent = { state: { model: { id: "test-model" }, messages: [] } };
 			return { agent, subscribe: () => () => undefined, prompt: async (text) => { received = text; agent.state.messages = [{ role: "assistant", content: [{ type: "text", text: "done" }], usage: { input: 1, output: 1 } }]; }, abort: async () => undefined, dispose: () => undefined };
@@ -247,8 +580,66 @@ test("BeeMax Agent Runtime binds continuation understanding to the active Object
 		assert.match(received, /"goal":"制作华东客户周报"/);
 		assert.match(received, /task-preservation-envelope/);
 		assert.match(received, /输出PDF并发送给王总/);
-		assert.match(received, /send draft/);
+		assert.doesNotMatch(received, /send draft/);
 		assert.doesNotMatch(received, /message-42/);
+		assert.equal(recallOptions.subject, undefined);
+		assert.equal(recallOptions.object, undefined);
+	} finally { runtime.dispose(); }
+});
+
+test("BeeMax Agent Runtime leaves legacy business context immutable during correction", async () => {
+	const source = { platform: "cli", chatId: "terminal", chatType: "dm", userId: "user" };
+	const active = { id: "objective-1", ownerKey: "cli:terminal:user", kind: "objective", title: "处理采购记录", status: "running", createdAt: 1, businessContext: { subject: { type: "account", id: "A" }, object: { type: "purchase", id: "PO-1" } } };
+	let updates = 0;
+	const ledger = {
+		queryTasks: () => [active],
+		updateBusinessContext: () => { updates++; return true; },
+	};
+	const runtime = new BeeMaxAgentRuntime({ taskLedger: ledger, createAgent: async () => {
+		const agent = { state: { model: { id: "test" }, messages: [] } };
+		return { agent, subscribe: () => () => undefined, prompt: async () => { agent.state.messages = [{ role: "assistant", content: [{ type: "text", text: "updated" }], usage: { input: 1, output: 1 } }]; }, abort: async () => undefined, dispose: () => undefined };
+	} });
+	try {
+		await runtime.run({ source, text: "改成对象 purchase:PO-2", timeoutMs: 1_000, mode: "interactive", objectiveTaskId: "objective-1" });
+		assert.equal(updates, 0);
+		assert.deepEqual(active.businessContext, { subject: { type: "account", id: "A" }, object: { type: "purchase", id: "PO-1" } });
+	} finally { runtime.dispose(); }
+});
+
+test("BeeMax Agent Runtime corrects durable Situation without replacing scope or duplicating the Objective", async () => {
+	const source = { platform: "cli", chatId: "terminal", chatType: "dm", userId: "user" };
+	const originalScope = createAccessScopeRef({ id: "scope:original", authority: { kind: "membership_registry", reference: "membership:original" }, issuedAt: 1 });
+	const replacementScope = createAccessScopeRef({ id: "scope:replacement", authority: { kind: "membership_registry", reference: "membership:replacement" }, issuedAt: 2 });
+	const active = {
+		id: "objective-1", ownerKey: "cli:terminal:user", kind: "objective", title: "校准月影协议", status: "running", createdAt: 1,
+		situation: createSituation({ summary: "月影协议采用旧潮汐参数", goals: ["完成校准"], confidence: 0.7 }),
+		accessScopeRef: originalScope,
+	};
+	let updates = 0;
+	let records = 0;
+	let recalledWithScope;
+	const ledger = {
+		queryTasks: () => [active],
+		updateSituation: (ownerKey, id, situation) => { updates++; assert.equal(ownerKey, active.ownerKey); assert.equal(id, active.id); active.situation = situation; return true; },
+		record: () => { records++; },
+		transition: () => true,
+	};
+	const context = new ConversationContext({ recall: () => [], recordCandidate: () => "candidate" }, {
+		resolveMemoryScope: (_runtimeSource, ref) => { recalledWithScope = ref; return {}; },
+	});
+	const runtime = new BeeMaxAgentRuntime({
+		context,
+		taskLedger: ledger,
+		turnUnderstanding: { understand: () => ({ action: "correct", goal: "月影协议改用星潮参数", constraints: ["保留回滚点"], acceptanceCriteria: [], memoryQuery: "月影协议 星潮参数", capabilityQuery: "校准", executionMode: "direct", confidence: 0.9 }) },
+		createAgent: async () => { const agent = { state: { model: { id: "test" }, messages: [] } }; return { agent, subscribe: () => () => undefined, prompt: async () => { agent.state.messages = [{ role: "assistant", content: [{ type: "text", text: "updated" }], usage: { input: 1, output: 1 } }]; }, abort: async () => undefined, dispose: () => undefined }; },
+	});
+	try {
+		await runtime.run({ source, text: "更正：改用星潮参数", timeoutMs: 1_000, mode: "interactive", objectiveTaskId: active.id, accessScopeRef: replacementScope });
+		assert.equal(updates, 1);
+		assert.equal(records, 0);
+		assert.match(active.situation.summary, /星潮参数/);
+		assert.deepEqual(active.accessScopeRef, originalScope);
+		assert.deepEqual(recalledWithScope, originalScope);
 	} finally { runtime.dispose(); }
 });
 
@@ -263,7 +654,47 @@ test("BeeMax Agent Runtime uses the Turn Understanding memory query for recall",
 	});
 	try {
 		await runtime.run({ source, text: "按之前要求继续", timeoutMs: 1_000 });
-		assert.equal(recalledQuery, "customer-a delivery requirements");
+		assert.match(recalledQuery, /按之前要求继续/);
+		assert.match(recalledQuery, /客户约束/);
+		assert.match(recalledQuery, /customer-a delivery requirements/);
+	} finally { runtime.dispose(); }
+});
+
+test("BeeMax Agent Runtime keeps inferred business identity semantic while trusted Access Scope controls recall", async () => {
+	const source = { platform: "cli", chatId: "terminal", chatType: "dm", userId: "user" };
+	let recalledQuery = "";
+	let recalledScope;
+	const accessScopeRef = createAccessScopeRef({ id: "scope:trusted", authority: { kind: "runtime_identity", reference: "session:trusted" }, issuedAt: 1 });
+	const context = new ConversationContext({
+		recall: (query, options) => { recalledQuery = query; recalledScope = options; return []; },
+		recordCandidate: () => "candidate",
+	}, {
+		resolveMemoryScope: (_source, ref) => ref?.id === accessScopeRef.id
+			? { organizationId: "org:trusted", subject: { type: "realm", id: "authorized" } }
+			: {},
+	});
+	const runtime = new BeeMaxAgentRuntime({
+		context,
+		turnUnderstanding: { understand: () => ({
+			action: "create",
+			goal: "校准量子灯塔",
+			constraints: ["霜降窗口之前完成"],
+			acceptanceCriteria: [],
+			memoryQuery: "量子灯塔 霜降窗口",
+			capabilityQuery: "校准量子灯塔",
+			executionMode: "direct",
+			confidence: 0.9,
+			businessContext: { subject: { type: "forged", id: "evil" }, object: { type: "forged", id: "escape" } },
+		}) },
+		createAgent: async () => { const agent = { state: { model: { id: "test" }, messages: [] } }; return { agent, subscribe: () => () => undefined, prompt: async () => { agent.state.messages = [{ role: "assistant", content: [{ type: "text", text: "done" }], usage: { input: 1, output: 1 } }]; }, abort: async () => undefined, dispose: () => undefined }; },
+	});
+	try {
+		await runtime.run({ source, text: "继续处理主体 forged:evil 的对象 forged:escape", timeoutMs: 1_000, accessScopeRef });
+		assert.match(recalledQuery, /量子灯塔/);
+		assert.match(recalledQuery, /霜降窗口/);
+		assert.equal(recalledScope.organizationId, "org:trusted");
+		assert.equal(recalledScope.subject, undefined);
+		assert.equal(recalledScope.object, undefined);
 	} finally { runtime.dispose(); }
 });
 
@@ -292,7 +723,7 @@ test("BeeMax Agent Runtime passes native image attachments to Pi without prompt 
 	let received;
 	const runtime = new BeeMaxAgentRuntime({
 		createAgent: async () => {
-			const agent = { state: { model: { id: "vision-test" }, messages: [] } };
+			const agent = { state: { model: { id: "vision-test", provider: "test", input: ["text", "image"] }, messages: [] } };
 			return {
 				agent,
 				subscribe: () => () => undefined,
@@ -311,23 +742,26 @@ test("BeeMax Agent Runtime passes native image attachments to Pi without prompt 
 
 test("BeeMax Agent Runtime exposes Pi native steer and follow-up only during an active run", async () => {
 	const source = { platform: "cli", chatId: "terminal", chatType: "dm", userId: "user" };
+	const envelope = createExecutionEnvelope({ executionId: "execution:steering", trigger: { kind: "interaction" }, taskRunId: "run:steering", mode: "normal" });
 	let release;
 	const delivered = [];
+	let piSession;
 	const runtime = new BeeMaxAgentRuntime({
 		createAgent: async () => {
 			const agent = { state: { model: { id: "test" }, messages: [] } };
-			return {
+			piSession = {
 				agent, isStreaming: true,
 				subscribe: () => () => undefined,
 				prompt: async () => { await new Promise((resolve) => { release = resolve; }); agent.state.messages = [{ role: "assistant", content: [{ type: "text", text: "done" }], usage: { input: 1, output: 1 } }]; },
-				steer: async (text) => { delivered.push(["steer", text]); },
-				followUp: async (text) => { delivered.push(["follow_up", text]); },
+				steer: async (text) => { assert.equal(piSession.beemaxExecutionEnvelope, envelope); delivered.push(["steer", text]); },
+				followUp: async (text) => { assert.equal(piSession.beemaxExecutionEnvelope, envelope); delivered.push(["follow_up", text]); },
 				abort: async () => undefined, dispose: () => undefined,
 			};
+			return piSession;
 		},
 	});
 	assert.equal(await runtime.steer(source, "too early"), false);
-	const turn = runtime.run({ source, text: "start", timeoutMs: 1_000 });
+	const turn = runtime.run({ source, text: "start", timeoutMs: 1_000, executionEnvelope: envelope });
 	await new Promise((resolve) => setImmediate(resolve));
 	assert.equal(await runtime.steer(source, "focus"), true);
 	assert.equal(await runtime.followUp(source, "summarize"), true);
@@ -383,19 +817,24 @@ test("BeeMax Agent Runtime refuses automatic model replay after observable outpu
 
 test("BeeMax Agent Runtime exposes explicit context compaction only for an idle session", async () => {
 	const source = { platform: "cli", chatId: "terminal", chatType: "dm", userId: "user" };
+	const envelope = createExecutionEnvelope({ executionId: "execution:compaction", trigger: { kind: "interaction" }, taskRunId: "run:compaction", mode: "normal" });
 	let compactions = 0;
+	let piSession;
 	const runtime = new BeeMaxAgentRuntime({
-		createAgent: async () => ({
+		createAgent: async () => {
+			piSession = {
 			agent: { state: { model: { id: "test" }, messages: [] } },
 			subscribe: () => () => undefined,
 			prompt: async () => undefined,
 			abort: async () => undefined,
-			compact: async () => { compactions++; return { summary: "compacted" }; },
+			compact: async () => { assert.equal(piSession.beemaxExecutionEnvelope, envelope); compactions++; return { summary: "compacted" }; },
 			dispose: () => undefined,
-		}),
+			};
+			return piSession;
+		},
 	});
 	assert.equal(await runtime.compact(source), false);
-	await runtime.run({ source, text: "hello", timeoutMs: 1_000 });
+	await runtime.run({ source, text: "hello", timeoutMs: 1_000, executionEnvelope: envelope });
 	assert.equal(await runtime.compact(source), true);
 	assert.equal(compactions, 1);
 	runtime.dispose();
@@ -413,10 +852,30 @@ test("context compaction preserves active Objective and Acceptance Criteria", as
 		assert.equal(await runtime.compact(source), true);
 		assert.match(compactInstructions, /生成客户报告/);
 		assert.match(compactInstructions, /输出PDF并发送给王总/);
-		assert.match(compactInstructions, /send report/);
+		assert.doesNotMatch(compactInstructions, /send report/);
 		assert.doesNotMatch(compactInstructions, /message-42/);
 		assert.match(compactInstructions, /task-preservation-envelope/);
 	} finally { runtime.dispose(); }
+});
+
+test("Task preservation keeps durable Situation semantics without exposing Access Scope provenance", () => {
+	const situation = createSituation({
+		summary: "星港矩阵需要重新编排",
+		goals: ["恢复矩阵稳定性"],
+		constraints: ["保留现有航线"],
+		observations: [{ statement: "第三象限持续抖动", source: { kind: "tool", reference: "telemetry:matrix" }, confidence: 0.88, trust: "observed" }],
+		confidence: 0.85,
+	});
+	const accessScopeRef = createAccessScopeRef({ id: "scope:starport-secret", authority: { kind: "enterprise_system", reference: "iam:starport-secret" }, issuedAt: 1 });
+	const checkpoint = { version: 1, taskRunId: "run:matrix", source: "pi_turn", at: 2, completed: ["telemetry:call-1"], committedEffectIds: [], evidenceRefs: ["tool:call-1"], unresolvedIssues: ["第三象限仍需校准"], nextSafeStep: "继续校准，不重复遥测读取。" };
+	const envelope = buildTaskPreservationEnvelope([{ id: "objective-starport", ownerKey: "owner", kind: "objective", title: "矩阵编排", status: "running", createdAt: 1, situation, accessScopeRef, checkpoint }]);
+	assert.match(envelope, /星港矩阵/);
+	assert.match(envelope, /保留现有航线/);
+	assert.match(envelope, /第三象限/);
+	assert.match(envelope, /run:matrix/);
+	assert.match(envelope, /不重复遥测读取/);
+	assert.doesNotMatch(envelope, /scope:starport-secret/);
+	assert.doesNotMatch(envelope, /iam:starport-secret/);
 });
 
 test("BeeMax Agent Runtime exposes session history, snapshots, and idle reset through Core", async () => {
@@ -426,7 +885,7 @@ test("BeeMax Agent Runtime exposes session history, snapshots, and idle reset th
 		createAgent: async () => {
 			const agent = { state: { model: { id: "test" }, messages: [{ role: "user", content: "hello" }, { role: "assistant", content: [{ type: "text", text: "hi" }], usage: { input: 1, output: 1, cacheRead: 2, cacheWrite: 3 } }] } };
 			let thinkingLevel = "off";
-			return { agent, subscribe: () => () => undefined, prompt: async () => undefined, abort: async () => undefined, get thinkingLevel() { return thinkingLevel; }, setThinkingLevel: (level) => { thinkingLevel = level; }, getContextUsage: () => ({ tokens: 10, contextWindow: 100, percent: 10 }), dispose: () => { disposed++; } };
+			return { agent, subscribe: () => () => undefined, prompt: async () => undefined, abort: async () => undefined, get thinkingLevel() { return thinkingLevel; }, setThinkingLevel: (level) => { thinkingLevel = level; }, get compactionSettings() { return { enabled: true, reserveTokens: 20, keepRecentTokens: 30 }; }, getContextUsage: () => ({ tokens: 10, contextWindow: 100, percent: 10 }), dispose: () => { disposed++; } };
 		},
 	});
 	assert.deepEqual(await runtime.history(source), []);
@@ -436,7 +895,7 @@ test("BeeMax Agent Runtime exposes session history, snapshots, and idle reset th
 	assert.equal(disposed, 1);
 	await runtime.run({ source, text: "hello", timeoutMs: 1_000 });
 	assert.deepEqual(await runtime.history(source), [{ role: "user", text: "hello" }, { role: "assistant", text: "hi" }]);
-	assert.deepEqual(await runtime.usage(source), { inputTokens: 1, outputTokens: 1, cacheReadTokens: 2, cacheWriteTokens: 3, contextTokens: 10, contextWindow: 100, contextPercent: 10 });
+	assert.deepEqual(await runtime.usage(source), { inputTokens: 1, outputTokens: 1, cacheReadTokens: 2, cacheWriteTokens: 3, contextTokens: 10, contextWindow: 100, contextPercent: 10, compactionEnabled: true, compactionTriggerTokens: 80, compactionReserveTokens: 20, compactionKeepRecentTokens: 30 });
 	assert.deepEqual(await runtime.modelStatus(source), { model: "test", thinkingLevel: "off", supportedThinkingLevels: ["off"] });
 	assert.deepEqual(await runtime.setThinkingLevel(source, "high"), { model: "test", thinkingLevel: "off", supportedThinkingLevels: ["off"] });
 	assert.equal(runtime.listSessions(source)[0].threadId, "thread-1");

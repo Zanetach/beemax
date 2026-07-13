@@ -35,6 +35,7 @@ export type InteractionEvent = InteractionEventMeta & (
 	| { type: "planning.completed"; mode: "direct" | "delegate" | "dag"; compliant: boolean; corrected: boolean }
 	| { type: "capability.ranked"; candidates: CapabilityRankedCandidate[]; activatedTools: string[] }
 	| { type: "context.built"; included: Array<{ kind: string; source: string; costChars: number }>; released: Array<{ kind: string; source: string; costChars: number }>; contextChars: number }
+	| { type: "media.understood"; route: "native" | "adapter"; adapterIds: string[]; receiptCount: number; failureCount: number; durationMs: number }
 	| { type: "work.changed"; workId: string; kind: "subagent" | "task_plan"; state: "queued" | "running" | "completed" | "failed" | "cancelled"; summary?: string }
 	| { type: "turn.queued"; position: number; replaced: boolean; mode: InteractionDeliveryMode }
 	| { type: "turn.finished"; result: AgentRunResult }
@@ -54,6 +55,7 @@ type InteractionEventPayload =
 	| { type: "planning.completed"; mode: "direct" | "delegate" | "dag"; compliant: boolean; corrected: boolean }
 	| { type: "capability.ranked"; candidates: CapabilityRankedCandidate[]; activatedTools: string[] }
 	| { type: "context.built"; included: Array<{ kind: string; source: string; costChars: number }>; released: Array<{ kind: string; source: string; costChars: number }>; contextChars: number }
+	| { type: "media.understood"; route: "native" | "adapter"; adapterIds: string[]; receiptCount: number; failureCount: number; durationMs: number }
 	| { type: "work.changed"; workId: string; kind: "subagent" | "task_plan"; state: "queued" | "running" | "completed" | "failed" | "cancelled"; summary?: string }
 	| { type: "turn.queued"; position: number; replaced: boolean; mode: InteractionDeliveryMode }
 	| { type: "turn.finished"; result: AgentRunResult }
@@ -62,8 +64,8 @@ type InteractionEventPayload =
 
 export type InteractionAction<Source extends BeeMaxRuntimeSource = BeeMaxRuntimeSource> =
 	| { type: "message.send"; source: Source; text: string; input: Omit<AgentRunInput<Source>, "source" | "text">; actionId?: string }
-	| { type: "turn.queue"; source: Source; text: string; actionId?: string }
-	| { type: "turn.steer"; source: Source; text: string; actionId?: string }
+	| { type: "turn.queue"; source: Source; text: string; images?: AgentRunInput<Source>["images"]; actionId?: string }
+	| { type: "turn.steer"; source: Source; text: string; images?: AgentRunInput<Source>["images"]; actionId?: string }
 	| { type: "approval.decide"; source: Source; choice: ToolApprovalChoice; actionId?: string }
 	| { type: "session.open"; source: Source; actionId?: string }
 	| { type: "session.reset"; source: Source; actionId?: string }
@@ -108,6 +110,7 @@ export type InteractionTelemetryEvent =
 	| { type: "interaction.planning_completed"; surface: string; mode: "direct" | "delegate" | "dag"; compliant: boolean; corrected: boolean }
 	| { type: "interaction.capability_ranked"; surface: string; candidateCount: number; activatedToolCount: number; toolCandidateCount: number; mcpCandidateCount: number; skillCandidateCount: number }
 	| { type: "interaction.context_built"; surface: string; contextChars: number; includedCount: number; releasedCount: number }
+	| { type: "interaction.media_understood"; surface: string; route: "native" | "adapter"; adapterCount: number; receiptCount: number; failureCount: number; durationMs: number }
 	| { type: "interaction.presenter_reconnected"; surface: string; gapEvents: number }
 	| { type: "interaction.session_resumed"; source: string; age: number };
 export type InteractionTelemetrySink = (event: InteractionTelemetryEvent) => void;
@@ -195,8 +198,8 @@ export class InteractionEventAdapter<Source extends BeeMaxRuntimeSource = BeeMax
 
 	private async dispatchUncached(action: InteractionAction<Source>, sink?: InteractionEventSink): Promise<InteractionActionResult> {
 		if (action.type === "turn.cancel") return this.cancel(action.source, sink);
-		if (action.type === "turn.queue") return this.deliverOrQueue(action.source, action.text, "follow_up", sink);
-		if (action.type === "turn.steer") return this.deliverOrQueue(action.source, action.text, "steer", sink);
+		if (action.type === "turn.queue") return this.deliverOrQueue(action.source, action.text, action.images, "follow_up", sink);
+		if (action.type === "turn.steer") return this.deliverOrQueue(action.source, action.text, action.images, "steer", sink);
 		if (action.type === "approval.decide") return { handled: await this.approvalBroker?.decide(action.source, action.choice) ?? false };
 		if (action.type === "session.open") {
 			const saved = await this.runtime.listSavedSessions(action.source);
@@ -418,17 +421,18 @@ export class InteractionEventAdapter<Source extends BeeMaxRuntimeSource = BeeMax
 		return { queued: true, position, replaced: false, mode };
 	}
 
-	private async deliverOrQueue(source: Source, text: string, mode: "steer" | "follow_up", sink?: InteractionEventSink): Promise<InteractionQueueResult> {
+	private async deliverOrQueue(source: Source, text: string, images: AgentRunInput<Source>["images"], mode: "steer" | "follow_up", sink?: InteractionEventSink): Promise<InteractionQueueResult> {
 		const key = interactionKey(source);
 		const turnId = this.states.get(key)?.turnId;
 		const phase = this.states.get(key)?.phase;
 		if (!turnId || !["running", "queued", "awaiting_approval"].includes(phase ?? "")) return { queued: false, position: 0, replaced: false, mode };
 		const deliver = mode === "steer" ? this.runtime.steer : this.runtime.followUp;
+		const recoverableText = images?.length ? `${text}\n\n[Media attachment was delivered in-memory but cannot be replayed after a process restart. Ask the user to resend it if visual evidence is still required.]` : text;
 		if (deliver) {
-			const input = this.newQueuedInput(key, source, text);
+			const input = this.newQueuedInput(key, source, recoverableText);
 			const position = this.enqueueQueuedInput(input);
 			if (!position) return { queued: false, position: this.fallbackQueue(key).length, replaced: false, mode };
-			if (await deliver.call(this.runtime, source, text)) {
+			if (await deliver.call(this.runtime, source, text, images)) {
 				const native = this.nativeQueuedInputs.get(key) ?? new Set<string>();
 				native.add(input.id);
 				this.nativeQueuedInputs.set(key, native);
@@ -438,7 +442,7 @@ export class InteractionEventAdapter<Source extends BeeMaxRuntimeSource = BeeMax
 			await this.publish(source, turnId, { type: "turn.queued", position, replaced: false, mode: mode === "steer" ? "steer_fallback" : "queue" }, sink);
 			return { queued: true, position, replaced: false, mode: mode === "steer" ? "steer_fallback" : "queue" };
 		}
-		return this.queue(source, text, mode === "steer" ? "steer_fallback" : "queue", sink);
+		return this.queue(source, recoverableText, mode === "steer" ? "steer_fallback" : "queue", sink);
 	}
 
 	private fallbackQueue(key: string): InteractionQueuedInput<Source>[] {
@@ -544,6 +548,7 @@ export class InteractionEventAdapter<Source extends BeeMaxRuntimeSource = BeeMax
 		else if (event.type === "planning.completed") this.telemetry({ type: "interaction.planning_completed", surface: event.scope.platform, mode: event.mode, compliant: event.compliant, corrected: event.corrected });
 		else if (event.type === "capability.ranked") this.telemetry({ type: "interaction.capability_ranked", surface: event.scope.platform, candidateCount: event.candidates.length, activatedToolCount: event.activatedTools.length, toolCandidateCount: event.candidates.filter((item) => item.kind === "tool").length, mcpCandidateCount: event.candidates.filter((item) => item.kind === "mcp").length, skillCandidateCount: event.candidates.filter((item) => item.kind === "skill").length });
 		else if (event.type === "context.built") this.telemetry({ type: "interaction.context_built", surface: event.scope.platform, contextChars: event.contextChars, includedCount: event.included.length, releasedCount: event.released.length });
+		else if (event.type === "media.understood") this.telemetry({ type: "interaction.media_understood", surface: event.scope.platform, route: event.route, adapterCount: event.adapterIds.length, receiptCount: event.receiptCount, failureCount: event.failureCount, durationMs: event.durationMs });
 	}
 }
 
@@ -572,6 +577,7 @@ export function mapAgentSessionEvent(event: BeeMaxAgentRunEvent): InteractionEve
 	if (event.type === "planning_outcome") return { type: "planning.completed", mode: event.mode, compliant: event.compliant, corrected: event.corrected };
 	if (event.type === "capability_ranked") return { type: "capability.ranked", candidates: event.candidates.map((item) => ({ ...item })), activatedTools: [...event.activatedTools] };
 	if (event.type === "context_built") return { type: "context.built", included: event.included.map((item) => ({ ...item })), released: event.released.map((item) => ({ ...item })), contextChars: event.contextChars };
+	if (event.type === "media_understood") return { type: "media.understood", route: event.route, adapterIds: [...event.adapterIds], receiptCount: event.receiptCount, failureCount: event.failureCount, durationMs: event.durationMs };
 	if (event.type === "tool_execution_start") return { type: "tool.changed", callId: event.toolCallId, name: event.toolName, state: "running" };
 	if (event.type === "tool_execution_end") return { type: "tool.changed", callId: event.toolCallId, name: event.toolName, state: event.isError ? "failed" : "completed", summary: typeof event.result === "string" ? event.result.slice(0, 500) : undefined };
 	if (event.type !== "message_update" || event.message.role !== "assistant") return undefined;

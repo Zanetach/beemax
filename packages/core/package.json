@@ -1,6 +1,6 @@
 {
   "name": "@beemax/core",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "private": true,
   "type": "module",
   "main": "./dist/index.js",
@@ -16,7 +16,7 @@
     "typecheck": "tsgo --noEmit -p tsconfig.build.json"
   },
 	"dependencies": {
-		"@beemax/automation": "0.1.0",
+		"@beemax/automation": "1.0.0",
     "@earendil-works/pi-agent-core": "^0.80.6",
     "@earendil-works/pi-ai": "^0.80.6",
     "@earendil-works/pi-coding-agent": "^0.80.6",

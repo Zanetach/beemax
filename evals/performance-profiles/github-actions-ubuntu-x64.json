@@ -1,0 +1,59 @@
+{
+  "schemaVersion": 1,
+  "id": "github-actions-ubuntu-x64-node22",
+  "description": "GitHub-hosted ubuntu-latest release runner: x64, at least 2 logical CPUs and 6 GiB RAM, Node.js 22",
+  "platform": "linux",
+  "arch": "x64",
+  "runnerClass": "github-actions-hosted",
+  "cpuPattern": ".+",
+  "minLogicalCpus": 2,
+  "minMemoryGiB": 6,
+  "nodeMajor": 22,
+  "releaseBaseline": { "mode": "cost-baseline", "path": "evals/baselines/performance-apple-m5-32gb.json" },
+  "warmupIterations": 20,
+  "sampleIterations": 101,
+  "budgets": {
+    "fast": {
+      "p50Ms": 25,
+      "p95Ms": 100,
+      "maxContextChars": 12000,
+      "maxTokens": 12000,
+      "maxToolCalls": 8,
+      "maxSubagents": 0,
+      "maxRecallMs": 150,
+      "maxSituationMs": 100,
+      "maxInitiativeMs": 0,
+      "maxCacheWriteTokens": 2000,
+      "maxConcurrency": 1,
+      "maxBackpressureEvents": 0
+    },
+    "deep": {
+      "p50Ms": 100,
+      "p95Ms": 500,
+      "maxContextChars": 12000,
+      "maxTokens": 80000,
+      "maxToolCalls": 40,
+      "maxSubagents": 5,
+      "maxRecallMs": 500,
+      "maxSituationMs": 150,
+      "maxInitiativeMs": 0,
+      "maxCacheWriteTokens": 8000,
+      "maxConcurrency": 3,
+      "maxBackpressureEvents": 0
+    },
+    "background": {
+      "p50Ms": 100,
+      "p95Ms": 500,
+      "maxContextChars": 12000,
+      "maxTokens": 8000,
+      "maxToolCalls": 6,
+      "maxSubagents": 1,
+      "maxRecallMs": 500,
+      "maxSituationMs": 150,
+      "maxInitiativeMs": 100,
+      "maxCacheWriteTokens": 4000,
+      "maxConcurrency": 4,
+      "maxBackpressureEvents": 0
+    }
+  }
+}

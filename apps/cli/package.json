@@ -1,6 +1,6 @@
 {
   "name": "@beemax/cli",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "private": true,
   "type": "module",
   "bin": {
@@ -12,19 +12,19 @@
     "typecheck": "tsgo --noEmit -p tsconfig.build.json"
   },
   "dependencies": {
-    "@beemax/automation": "0.1.0",
-    "@beemax/codex-image-capability": "0.1.0",
-    "@beemax/core": "0.1.0",
-    "@beemax/feishu-capability": "0.1.0",
+    "@beemax/automation": "1.0.0",
+    "@beemax/codex-image-capability": "1.0.0",
+    "@beemax/core": "1.0.0",
+    "@beemax/feishu-capability": "1.0.0",
     "@beemax/gateway": "*",
-    "@beemax/knowledge": "0.1.0",
-    "@beemax/mcp-capability": "0.1.0",
+    "@beemax/knowledge": "1.0.0",
+    "@beemax/mcp-capability": "1.0.0",
     "@beemax/memory": "*",
     "@earendil-works/pi-tui": "^0.80.6",
-    "qrcode-terminal": "^0.12.0",
+    "qrcode-terminal": "0.12.0",
     "yaml": "2.9.0"
   },
   "devDependencies": {
-    "@types/qrcode-terminal": "^0.12.2"
+    "@types/qrcode-terminal": "0.12.2"
   }
 }

@@ -353,6 +353,19 @@ describe("AgentSession queue characterization", () => {
 		expect(harness.session.messages.map((message) => message.role)).toEqual(["user", "custom", "assistant"]);
 	});
 
+	it("persists context messages immediately without triggering a turn", async () => {
+		const harness = await createHarness();
+		harnesses.push(harness);
+
+		await harness.session.sendCustomMessage(
+			{ customType: "durable-context", content: "recover objective-alpha", display: false, details: {} },
+			{ deliverAs: "context" },
+		);
+
+		expect(harness.session.messages.some((message) => message.role === "custom" && message.customType === "durable-context")).toBe(true);
+		expect(harness.session.sessionManager.buildSessionContext().messages.some((message) => message.role === "custom" && message.customType === "durable-context")).toBe(true);
+	});
+
 	it("updates pendingMessageCount and removes queued text before message_start is emitted", async () => {
 		const waiting = await createWaitingHarness();
 		const { harness, waitForToolStart, promptPromise, releaseToolExecution } = waiting;

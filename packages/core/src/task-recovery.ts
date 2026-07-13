@@ -1,6 +1,7 @@
 import { TaskGraph, type TaskGraphExecutor, type TaskGraphResult, type TaskGraphVerifier } from "./task-graph.ts";
 import type { TaskLedger, TaskRecord, TaskRecoveryPlanRef } from "./task-ledger.ts";
 import { TaskPlanRuntime } from "./task-plan-runtime.ts";
+import type { ExecutionTraceSink } from "./execution-trace.ts";
 
 export interface TaskRecoveryRunnerOptions { maxConcurrent?: number; maxCorrectiveAttempts?: number; signal?: AbortSignal; }
 export interface TaskRecoveryRunnerResult { plans: number; succeeded: number; failed: number; cancelled: number; blocked: string[]; }
@@ -15,7 +16,8 @@ export class TaskRecoveryRunner {
 	private readonly execute: TaskGraphExecutor;
 	private readonly runtime: TaskPlanRuntime;
 	private readonly verify?: TaskGraphVerifier;
-	constructor(ledger: TaskLedger, execute: TaskGraphExecutor, runtime = new TaskPlanRuntime(), verify?: TaskGraphVerifier) { this.ledger = ledger; this.execute = execute; this.runtime = runtime; this.verify = verify; }
+	private readonly executionTrace?: ExecutionTraceSink;
+	constructor(ledger: TaskLedger, execute: TaskGraphExecutor, runtime = new TaskPlanRuntime(), verify?: TaskGraphVerifier, executionTrace?: ExecutionTraceSink) { this.ledger = ledger; this.execute = execute; this.runtime = runtime; this.verify = verify; this.executionTrace = executionTrace; }
 
 	async run(options: TaskRecoveryRunnerOptions = {}): Promise<TaskRecoveryRunnerResult> {
 		this.ledger.prepareTaskCorrections?.(boundedCorrectiveAttempts(options.maxCorrectiveAttempts));
@@ -40,7 +42,7 @@ export class TaskRecoveryRunner {
 	}
 
 	async reverify(ownerKeys: string[], planId: string, signal?: AbortSignal): Promise<TaskVerificationRetryResult> {
-		const candidates = this.ledger.queryTasks({ ownerKeys, planIds: [planId], statuses: ["failed"], limit: 100 })
+		const candidates = this.ledger.queryTasks({ ownerKeys, planIds: [planId], statuses: ["running", "failed"], limit: 100 })
 			.filter((task) => task.verificationStatus === "unavailable" && Boolean(task.acceptanceCriteria && task.candidateResult));
 		if (!candidates.length) return emptyVerificationResult();
 		const ownerKey = candidates[0]!.ownerKey;
@@ -136,8 +138,8 @@ export class TaskRecoveryRunner {
 	}
 
 	private async executeClaimedPlan(ownerKey: string, planId: string, options: TaskRecoveryRunnerOptions, enqueueCompletionNotice: boolean): Promise<TaskGraphResult | undefined> {
-		const result = await this.runtime.runClaimed(this.ledger, ownerKey, planId, options.signal, (signal) => new TaskGraph(this.ledger).run([ownerKey], planId, this.execute, {
-			maxConcurrent: options.maxConcurrent, maxCorrectiveAttempts: options.maxCorrectiveAttempts ?? 1, signal, executor: "subagent", canExecute: recoverable, verify: this.verify,
+		const result = await this.runtime.runClaimed(this.ledger, ownerKey, planId, options.signal, (signal) => new TaskGraph(this.ledger, this.executionTrace).run([ownerKey], planId, this.execute, {
+			maxConcurrent: options.maxConcurrent, maxCorrectiveAttempts: options.maxCorrectiveAttempts ?? 1, signal, executor: "subagent", executionMode: "recovery", canExecute: recoverable, verify: this.verify,
 		}));
 		if (result && enqueueCompletionNotice) this.enqueueCompletionNoticeIfSettled(ownerKey, planId);
 		return result;

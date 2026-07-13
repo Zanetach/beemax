@@ -98,6 +98,10 @@ export class SkillRuntime {
 		this.reset(); const matches = await this.registry.search(query, limit);
 		this.discovered = new Map(matches.map((item) => [item.name, item])); this.state = "discovered"; return matches;
 	}
+	async admitDiscovered(names: readonly string[]): Promise<SkillMatch[]> {
+		this.reset(); const selected = new Set(names); const descriptors = (await this.registry.list()).filter((item) => selected.has(item.name));
+		this.discovered = new Map(descriptors.map((item) => [item.name, { ...item, score: 0, confidence: 0, reason: "selected by Capability Runtime" }])); this.state = "discovered"; return [...this.discovered.values()];
+	}
 	retainDiscovered(names: readonly string[]): void {
 		if (this.state !== "discovered") throw new Error("Skills can only be narrowed immediately after discovery");
 		const selected = new Set(names); this.discovered = new Map([...this.discovered].filter(([name]) => selected.has(name)));

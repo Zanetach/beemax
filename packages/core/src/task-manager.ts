@@ -3,9 +3,10 @@ import { StringEnum } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
 import type { BeeMaxRuntimeSource } from "./runtime.ts";
 import { MUTATING_TOOL_POLICY, READ_ONLY_TOOL_POLICY, withToolPolicy, type ToolPolicy } from "./tool-runtime.ts";
-import { conversationKey } from "./agent-scope.ts";
+import { responsibilityOwnerKey, responsibilityOwnerKeys } from "./agent-scope.ts";
 import type { TaskLedger, TaskStatus } from "./task-ledger.ts";
 import type { TaskRunStatus } from "./task-ledger.ts";
+import { TaskGraph, type TaskGraphVerifier } from "./task-graph.ts";
 
 export type SubagentTaskStatus = "queued" | "running" | "completed" | "failed" | "cancelled";
 
@@ -18,6 +19,7 @@ export interface SubagentTaskSnapshot {
 	createdAt: number;
 	timeoutMs: number;
 	startedAt?: number;
+	taskRunId?: string;
 	finishedAt?: number;
 	result?: string;
 	error?: string;
@@ -53,6 +55,9 @@ export interface SubagentManagerOptions {
 	shutdownGraceMs?: number;
 	/** Explicit authority to replay this executor after interruption; valid only for enforced read-only/idempotent Sub-Agents. */
 	safeRetry?: boolean;
+	/** Routes durable single delegation through the same Verification lifecycle as DAG Tasks. */
+	verify?: TaskGraphVerifier;
+	maxCorrectiveAttempts?: number;
 }
 
 const TERMINAL = new Set<SubagentTaskStatus>(["completed", "failed", "cancelled"]);
@@ -71,6 +76,8 @@ export class SubagentManager {
 	private readonly maxRetainedTerminalTasks: number;
 	private readonly shutdownGraceMs: number;
 	private readonly safeRetry: boolean;
+	private readonly verify?: TaskGraphVerifier;
+	private readonly maxCorrectiveAttempts: number;
 	private running = 0;
 	private completionSequence = 0;
 	private disposed = false;
@@ -85,6 +92,8 @@ export class SubagentManager {
 		this.maxRetainedTerminalTasks = Math.max(1, Math.min(Math.trunc(options.maxRetainedTerminalTasks ?? 1_000), 10_000));
 		this.shutdownGraceMs = Math.max(0, Math.min(Math.trunc(options.shutdownGraceMs ?? 30_000), 5 * 60_000));
 		this.safeRetry = options.safeRetry === true;
+		this.verify = options.verify;
+		this.maxCorrectiveAttempts = Math.max(0, Math.min(Math.trunc(options.maxCorrectiveAttempts ?? 1), 2));
 	}
 
 	spawn(source: BeeMaxRuntimeSource, input: {
@@ -93,9 +102,10 @@ export class SubagentManager {
 		context?: string;
 		capability?: "analysis" | "research";
 		parentId?: string;
+		acceptanceCriteria?: string;
 	}): SubagentTaskSnapshot {
 		if (this.disposed) throw new Error("Sub-Agent runtime is shutting down");
-		const ownerKey = conversationKey(source);
+		const ownerKey = responsibilityOwnerKey(source);
 		const active = [...this.tasks.values()].filter((task) => task.ownerKey === ownerKey && !TERMINAL.has(task.status));
 		if (active.length >= this.maxChildrenPerOwner) {
 			throw new Error(`This conversation already has ${this.maxChildrenPerOwner} active Sub-Agent tasks`);
@@ -120,9 +130,10 @@ export class SubagentManager {
 		if (this.taskLedger) {
 			const planId = `delegation:${id}`;
 			const description = [task.goal, task.context].filter(Boolean).join("\n\n").slice(0, 50_000);
+			const acceptanceCriteria = (input.acceptanceCriteria?.trim() || `The delegated result satisfies the requested goal: ${task.goal}`).slice(0, 5_000);
 			if (typeof this.taskLedger.recordPlan === "function") {
 				this.taskLedger.recordPlan([{
-					id, ownerKey, kind: "delegated", title: task.name, description, status: "pending", createdAt: task.createdAt,
+					id, ownerKey, kind: "delegated", title: task.name, description, acceptanceCriteria, verificationStatus: "pending", correctiveAttempts: 0, status: "pending", createdAt: task.createdAt,
 					planId, recoveryPolicy: this.safeRetry ? "safe_retry" : "never", ...(this.safeRetry ? { idempotencyKey: planId } : {}), executionScope: { ...source }, ...(task.parentId ? { parentId: task.parentId } : {}),
 				}], [], { id: planId, ownerKey, title: task.name, status: "pending", taskCount: 1, succeeded: 0, failed: 0, cancelled: 0, verified: 0, correctiveAttempts: 0, createdAt: task.createdAt });
 			} else this.taskLedger.record({ id, ownerKey, kind: "delegated", title: task.name, status: "pending", createdAt: task.createdAt, ...(task.parentId ? { parentId: task.parentId } : {}) });
@@ -134,7 +145,7 @@ export class SubagentManager {
 	}
 
 	list(source: BeeMaxRuntimeSource): SubagentTaskSnapshot[] {
-		const ownerKey = conversationKey(source);
+		const ownerKey = responsibilityOwnerKey(source);
 		return [...this.tasks.values()]
 			.filter((task) => task.ownerKey === ownerKey)
 			.sort((a, b) => b.createdAt - a.createdAt)
@@ -143,7 +154,7 @@ export class SubagentManager {
 
 	get(source: BeeMaxRuntimeSource, id: string): SubagentTaskSnapshot {
 		const task = this.tasks.get(id);
-		if (task?.ownerKey === conversationKey(source)) return snapshot(task);
+		if (task?.ownerKey === responsibilityOwnerKey(source)) return snapshot(task);
 		const durable = this.durableSnapshot(source, id);
 		if (durable) return durable;
 		throw new Error(`Sub-Agent task not found: ${id}`);
@@ -151,7 +162,7 @@ export class SubagentManager {
 
 	async wait(source: BeeMaxRuntimeSource, id: string, timeoutMs = 120_000, signal?: AbortSignal): Promise<SubagentTaskSnapshot> {
 		const task = this.tasks.get(id);
-		if (!task || task.ownerKey !== conversationKey(source)) {
+		if (!task || task.ownerKey !== responsibilityOwnerKey(source)) {
 			const durable = this.durableSnapshot(source, id);
 			if (durable) return durable;
 			throw new Error(`Sub-Agent task not found: ${id}`);
@@ -190,7 +201,7 @@ export class SubagentManager {
 	cancelOwner(source: BeeMaxRuntimeSource): number {
 		let cancelled = 0;
 		for (const task of this.tasks.values()) {
-			if (task.ownerKey === conversationKey(source) && !TERMINAL.has(task.status)) {
+			if (task.ownerKey === responsibilityOwnerKey(source) && !TERMINAL.has(task.status)) {
 				this.cancel(source, task.id);
 				cancelled++;
 			}
@@ -269,10 +280,12 @@ export class SubagentManager {
 	}
 
 	private async run(task: ManagedTask, suppliedController?: AbortController): Promise<void> {
+		if (this.taskLedger && this.verify && typeof this.taskLedger.recordPlan === "function") return this.runVerifiedTask(task, suppliedController);
 		task.status = "running";
 		task.startedAt = Date.now();
 		this.taskLedger?.transition(task.id, { status: "running", startedAt: task.startedAt });
 		task.runId = crypto.randomUUID();
+		task.taskRunId = task.runId;
 		this.taskLedger?.recordRun({ id: task.runId, taskId: task.id, executor: "subagent", status: "running", startedAt: task.startedAt, ...(this.defaultTimeoutMs > 0 ? { leaseExpiresAt: task.startedAt + this.defaultTimeoutMs + EXECUTION_LEASE_GRACE_MS } : {}) });
 		task.controller = suppliedController ?? new AbortController();
 		const timer = this.defaultTimeoutMs > 0 ? setTimeout(() => {
@@ -296,7 +309,35 @@ export class SubagentManager {
 		}
 	}
 
-	private finish(task: ManagedTask, status: SubagentTaskStatus, result?: string, error?: string): void {
+	private async runVerifiedTask(task: ManagedTask, suppliedController?: AbortController): Promise<void> {
+		task.status = "running";
+		task.startedAt = Date.now();
+		task.controller = suppliedController ?? new AbortController();
+		const timer = this.defaultTimeoutMs > 0 ? setTimeout(() => { task.stopReason = "timeout"; task.controller?.abort(); }, this.defaultTimeoutMs) : undefined;
+		task.timeoutTimer = timer;
+		try {
+			const result = await new TaskGraph(this.taskLedger!).run([task.ownerKey], `delegation:${task.id}`, async (_record, signal, context) => {
+				task.runId = context!.taskRunId;
+				task.taskRunId = context!.taskRunId;
+				return { output: await this.execute(task, signal ?? task.controller!.signal) };
+			}, { maxConcurrent: 1, maxCorrectiveAttempts: this.maxCorrectiveAttempts, signal: task.controller.signal, executor: "subagent", verify: this.verify });
+			const durable = this.taskLedger!.queryTasks({ ownerKeys: [task.ownerKey], id: task.id, limit: 1 })[0];
+			if (durable?.status === "succeeded") this.finish(task, "completed", durable.result, undefined, false);
+			else if (durable?.status === "cancelled" || task.stopReason === "cancelled") this.finish(task, "cancelled", undefined, durable?.error ?? "Cancelled by parent Agent", false);
+			else if (durable?.status === "failed" || task.stopReason === "timeout") this.finish(task, "failed", undefined, durable?.error ?? "Sub-Agent task failed", false);
+			else if (result.blocked.length) for (const waiter of [...task.waiters]) waiter();
+		} catch (error) {
+			const durable = this.taskLedger!.queryTasks({ ownerKeys: [task.ownerKey], id: task.id, limit: 1 })[0];
+			if (durable?.status === "cancelled" || task.stopReason === "cancelled") this.finish(task, "cancelled", undefined, durable?.error ?? "Cancelled by parent Agent", false);
+			else this.finish(task, "failed", undefined, error instanceof Error ? error.message : String(error), false);
+		} finally {
+			if (timer) clearTimeout(timer);
+			if (task.timeoutTimer === timer) task.timeoutTimer = undefined;
+			if (!suppliedController) task.controller = undefined;
+		}
+	}
+
+	private finish(task: ManagedTask, status: SubagentTaskStatus, result?: string, error?: string, persist = true): void {
 		if (TERMINAL.has(task.status)) return;
 		task.status = status;
 		task.finishedAt = Date.now();
@@ -309,10 +350,10 @@ export class SubagentManager {
 			...(task.result === undefined ? {} : { result: task.result }),
 			...(task.error === undefined ? {} : { error: task.error }),
 		};
-		try { this.taskLedger?.transition(task.id, transition); }
+		try { if (persist) this.taskLedger?.transition(task.id, transition); }
 		finally {
 			try {
-				if (task.runId) this.taskLedger?.transitionRun(task.runId, {
+				if (persist && task.runId) this.taskLedger?.transitionRun(task.runId, {
 					status: taskRunStatus(status),
 					finishedAt: task.finishedAt,
 					...(task.result === undefined ? {} : { output: task.result }),
@@ -329,12 +370,12 @@ export class SubagentManager {
 
 	private ownedTask(source: BeeMaxRuntimeSource, id: string): ManagedTask {
 		const task = this.tasks.get(id);
-		if (!task || task.ownerKey !== conversationKey(source)) throw new Error(`Sub-Agent task not found: ${id}`);
+		if (!task || task.ownerKey !== responsibilityOwnerKey(source)) throw new Error(`Sub-Agent task not found: ${id}`);
 		return task;
 	}
 
 	private durableSnapshot(source: BeeMaxRuntimeSource, id: string): SubagentTaskSnapshot | undefined {
-		const task = this.taskLedger?.queryTasks({ ownerKeys: [conversationKey(source)], id, kinds: ["delegated"], limit: 1 })[0];
+		const task = this.taskLedger?.queryTasks({ ownerKeys: responsibilityOwnerKeys(source), id, kinds: ["delegated"], limit: 1 })[0];
 		if (!task || (task.status !== "succeeded" && task.status !== "failed" && task.status !== "cancelled")) return undefined;
 		return {
 			id: task.id, name: task.title, goal: task.description ?? task.title, capability: "analysis",
@@ -365,6 +406,7 @@ export function createSubagentTools(manager: SubagentManager, source: BeeMaxRunt
 			parameters: Type.Object({
 				goal: Type.String({ minLength: 1, maxLength: 10_000 }),
 				context: Type.Optional(Type.String({ maxLength: 20_000 })),
+				acceptanceCriteria: Type.Optional(Type.String({ minLength: 1, maxLength: 5_000 })),
 				name: Type.Optional(Type.String({ minLength: 1, maxLength: 64 })),
 				capability: Type.Optional(StringEnum(["analysis", "research"] as const)),
 			}),
@@ -412,6 +454,7 @@ function snapshot(task: ManagedTask): SubagentTaskSnapshot {
 		createdAt: task.createdAt,
 		timeoutMs: task.timeoutMs,
 		startedAt: task.startedAt,
+		taskRunId: task.taskRunId,
 		finishedAt: task.finishedAt,
 		result: task.result,
 		error: task.error,

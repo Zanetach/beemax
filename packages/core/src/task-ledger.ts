@@ -1,5 +1,8 @@
 import type { AgentScope } from "./agent-scope.ts";
 import type { DeliveryTarget } from "./delivery-port.ts";
+import type { AccessScopeRef } from "./access-scope.ts";
+import type { Situation } from "./situation.ts";
+import type { TaskCheckpoint } from "./task-checkpoint.ts";
 
 export type TaskKind = "objective" | "delegated" | "automation";
 export type TaskStatus = "pending" | "running" | "succeeded" | "failed" | "cancelled";
@@ -7,15 +10,10 @@ export type TaskRecoveryPolicy = "never" | "safe_retry";
 export type TaskVerificationStatus = "pending" | "accepted" | "rejected" | "unavailable";
 export type TaskCandidateVerificationResolution = { accepted: true; evidence?: string } | { accepted: false; feedback: string };
 export type TaskPlanStatus = "pending" | "running" | "succeeded" | "failed" | "cancelled";
-export interface EffectReceipt {
-	id: string;
-	tool: string;
-	operation: string;
-	sideEffect: "none" | "mutation";
-	status: "committed" | "unknown";
-	externalRef?: string;
-	idempotencyKey?: string;
-	occurredAt: number;
+export interface TaskArtifact {
+	type: "file" | "url" | "reference";
+	uri: string;
+	label?: string;
 }
 
 export interface TaskPlanRecord {
@@ -54,10 +52,18 @@ export interface TaskRecord {
 	recoveryPolicy?: TaskRecoveryPolicy;
 	idempotencyKey?: string;
 	executionScope?: AgentScope;
+	/** Durable semantic understanding. It never grants data or execution access. */
+	situation?: Situation;
+	/** Opaque authorization provenance established outside the model loop. */
+	accessScopeRef?: AccessScopeRef;
+	/** @deprecated Legacy semantic slots retained for stored-record migration. */
+	businessContext?: { subject?: { type: string; id: string }; object?: { type: string; id: string } };
 	status: TaskStatus;
 	parentId?: string;
 	planId?: string;
 	evidence?: string;
+	artifacts?: TaskArtifact[];
+	unresolvedIssues?: string[];
 	verificationStatus?: TaskVerificationStatus;
 	verificationFeedback?: string;
 	verificationAttempts?: number;
@@ -69,14 +75,13 @@ export interface TaskRecord {
 	result?: string;
 	candidateResult?: string;
 	error?: string;
-	checkpoint?: string;
+	checkpoint?: TaskCheckpoint | string;
 	checkpointAt?: number;
 	routes?: string[];
 	routeIndex?: number;
-	effectReceipts?: EffectReceipt[];
 }
 
-export type TaskTransition = Pick<TaskRecord, "status"> & Partial<Pick<TaskRecord, "startedAt" | "finishedAt" | "result" | "candidateResult" | "error" | "evidence" | "verificationStatus" | "verificationFeedback" | "correctiveAttempts">>;
+export type TaskTransition = Pick<TaskRecord, "status"> & Partial<Pick<TaskRecord, "startedAt" | "finishedAt" | "result" | "candidateResult" | "error" | "evidence" | "artifacts" | "unresolvedIssues" | "verificationStatus" | "verificationFeedback" | "correctiveAttempts">>;
 
 export type TaskRunStatus = "running" | "succeeded" | "failed" | "cancelled";
 export interface TaskRunRecord {
@@ -93,6 +98,7 @@ export interface TaskRunRecord {
 export type TaskRunTransition = Pick<TaskRunRecord, "status"> & Partial<Pick<TaskRunRecord, "finishedAt" | "output" | "error">>;
 export interface TaskRecoveryPlanRef { ownerKey: string; planId: string; }
 export interface TaskRecoveryResult { retried: number; failed: number; affectedPlans: TaskRecoveryPlanRef[]; }
+export interface TaskRunEffectStateReader { taskRunReplayState(query: { ownerKey: string; taskId: string; taskRunId: string }): "clear" | "blocked"; }
 export interface TaskQuery {
 	ownerKeys: string[];
 	id?: string;
@@ -108,6 +114,7 @@ export interface TaskDependency { taskId: string; dependsOn: string; }
 export interface TaskLedger {
 	record(task: TaskRecord): void;
 	transition(id: string, change: TaskTransition): boolean;
+	updateSituation?(ownerKey: string, taskId: string, situation: Situation): boolean;
 	retryObjective?(ownerKey: string, id: string, now?: number): boolean;
 	cancelObjectives?(ownerKey: string, now?: number): number;
 	activeObjectivePlanIds?(ownerKey: string): string[];
@@ -122,12 +129,11 @@ export interface TaskLedger {
 	releaseTaskPlanExecution?(ownerKey: string, planId: string, holderId: string): boolean;
 	queryTaskPlans(query: TaskPlanQuery): TaskPlanRecord[];
 	taskDependencies(taskIds: string[]): TaskDependency[];
-	checkpointTask(ownerKey: string, taskId: string, checkpoint: string, now?: number): boolean;
-	recordEffectReceipt?(ownerKey: string, taskId: string, receipt: EffectReceipt): boolean;
+	checkpointTask(ownerKey: string, taskId: string, checkpoint: TaskCheckpoint | string, now?: number): boolean;
 	advanceTaskRoute(ownerKey: string, taskId: string, error: string, now?: number): boolean;
 	pauseTaskPlan(ownerKeys: string[], planId: string, now?: number): boolean;
 	resumeTaskPlan(ownerKeys: string[], planId: string, now?: number): boolean;
-	reconcileExpiredTaskRuns(now?: number): TaskRecoveryResult;
+	reconcileExpiredTaskRuns(now?: number, effects?: TaskRunEffectStateReader): TaskRecoveryResult;
 	recoveryCandidates(limit?: number, excludePlanIds?: string[]): TaskRecord[];
 	verificationCandidates?(now?: number, limit?: number, excludePlanIds?: string[]): TaskRecord[];
 	deferCandidateVerification?(ownerKeys: string[], taskId: string, now?: number): boolean;

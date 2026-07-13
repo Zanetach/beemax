@@ -41,6 +41,8 @@ export interface ModelInput {
 	apiKey?: string;
 	baseUrl?: string;
 	customProtocol?: CustomProtocol;
+	contextWindow?: number;
+	maxTokens?: number;
 }
 
 export interface FeishuProbeResult {
@@ -219,9 +221,11 @@ export async function configureModel(profile: string, input: ModelInput, options
 		model: input.model.trim(),
 		...(input.baseUrl?.trim() ? { baseUrl: input.baseUrl.trim() } : {}),
 		...(input.provider.trim() === "custom" ? { customProtocol: input.customProtocol ?? "openai-completions" } : {}),
+		...(input.provider.trim() === "custom" && input.contextWindow !== undefined ? { contextWindow: input.contextWindow } : {}),
+		...(input.provider.trim() === "custom" && input.maxTokens !== undefined ? { maxTokens: input.maxTokens } : {}),
 	};
 	const choices = Array.isArray(config.models) ? config.models : [];
-	const next = { provider: input.provider.trim(), model: input.model.trim(), ...(input.baseUrl?.trim() ? { baseUrl: input.baseUrl.trim() } : {}), ...(input.provider.trim() === "custom" ? { customProtocol: input.customProtocol ?? "openai-completions" } : {}) };
+	const next = { provider: input.provider.trim(), model: input.model.trim(), ...(input.baseUrl?.trim() ? { baseUrl: input.baseUrl.trim() } : {}), ...(input.provider.trim() === "custom" ? { customProtocol: input.customProtocol ?? "openai-completions" } : {}), ...(input.provider.trim() === "custom" && input.contextWindow !== undefined ? { contextWindow: input.contextWindow } : {}), ...(input.provider.trim() === "custom" && input.maxTokens !== undefined ? { maxTokens: input.maxTokens } : {}) };
 	config.models = [next, ...choices.filter((item) => !sameModelChoice(item, next))];
 	await writeFile(paths.configPath, stringifyYaml(config), { encoding: "utf8", mode: 0o600 });
 	if (input.apiKey?.trim()) {
@@ -411,6 +415,8 @@ function defaultProfileYaml(): string {
 		mcp: { configPath: "mcp.json" },
 		knowledge: { enabled: false, provider: "weknora", baseUrl: "http://127.0.0.1:8080", spaces: [] },
 		imageGeneration: { enabled: false, provider: "openai-codex", quality: "medium", outputDir: "cache/images" },
+		mediaUnderstanding: { localOcr: { enabled: true, timeoutMs: 30000 }, auxiliaryVisionEnabled: true },
+		context: { maxTurnChars: 12000, maxToolResultTokens: 12000, compaction: { enabled: true } },
 		execution: { backend: "local", mode: "off", workspaceAccess: "none", image: "node:22-alpine", timeoutMs: 180000 },
 		subagents: { enabled: true, maxConcurrent: 3, maxChildrenPerOwner: 5, timeoutMs: 900000 },
 		automation: { enabled: true, timezone: "Asia/Shanghai", heartbeat: { enabled: true, every: "30m", activeHours: { start: "08:00", end: "23:00", timezone: "Asia/Shanghai" } } },

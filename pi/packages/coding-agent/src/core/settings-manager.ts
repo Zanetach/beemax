@@ -276,6 +276,7 @@ export class SettingsManager {
 	private globalSettings: Settings;
 	private projectSettings: Settings;
 	private settings: Settings;
+	private runtimeCompactionSettings?: Required<CompactionSettings>;
 	private projectTrusted: boolean;
 	private modifiedFields = new Set<keyof Settings>(); // Track global fields modified during session
 	private modifiedNestedFields = new Map<keyof Settings, Set<string>>(); // Track global nested field modifications
@@ -758,7 +759,12 @@ export class SettingsManager {
 	}
 
 	getCompactionEnabled(): boolean {
-		return this.settings.compaction?.enabled ?? true;
+		return this.runtimeCompactionSettings?.enabled ?? this.settings.compaction?.enabled ?? true;
+	}
+
+	/** Apply host-runtime compaction policy without mutating user or project settings. */
+	setRuntimeCompactionSettings(settings: Required<CompactionSettings>): void {
+		this.runtimeCompactionSettings = { ...settings };
 	}
 
 	setCompactionEnabled(enabled: boolean): void {
@@ -771,11 +777,11 @@ export class SettingsManager {
 	}
 
 	getCompactionReserveTokens(): number {
-		return this.settings.compaction?.reserveTokens ?? 16384;
+		return this.runtimeCompactionSettings?.reserveTokens ?? this.settings.compaction?.reserveTokens ?? 16384;
 	}
 
 	getCompactionKeepRecentTokens(): number {
-		return this.settings.compaction?.keepRecentTokens ?? 20000;
+		return this.runtimeCompactionSettings?.keepRecentTokens ?? this.settings.compaction?.keepRecentTokens ?? 20000;
 	}
 
 	getCompactionSettings(): { enabled: boolean; reserveTokens: number; keepRecentTokens: number } {

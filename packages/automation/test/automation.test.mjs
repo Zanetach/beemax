@@ -52,7 +52,7 @@ test("expired automation claims cannot commit after a replacement worker takes o
 	assert.equal(store.runs(job.id, { platform:"feishu",chatId:"chat" }).length, 1);
 }));
 
-test("scheduler claims due work, records completion, and stops cleanly", async () => {
+test("scheduler keeps a Schedule as a Trigger and leaves durable responsibility to its executor", async () => {
 	const job = { id:"job",platform:"feishu",chatId:"chat",name:"Test",kind:"reminder",scheduleKind:"at",schedule:"1m",text:"test",enabled:true,deleteAfterRun:true,nextRunAt:0,consecutiveErrors:0,createdAt:0,updatedAt:0 };
 	let claimed = false;
 	let completed;
@@ -77,8 +77,8 @@ test("scheduler claims due work, records completion, and stops cleanly", async (
 	await scheduler.stop();
 	assert.equal(completed.status, "ok");
 	assert.equal(completed.output, "sent");
-	assert.deepEqual([...tasks.values()].map(({ kind, title, status }) => ({ kind, title, status })), [{ kind:"automation",title:"Test",status:"succeeded" }]);
-	assert.deepEqual([...runs.values()].map(({ executor, status, output }) => ({ executor, status, output })), [{ executor:"automation",status:"succeeded",output:"sent" }]);
+	assert.equal(tasks.size, 0);
+	assert.equal(runs.size, 0);
 });
 
 test("duration, cron timezone, heartbeat ack, and overnight active hours", () => {
@@ -108,6 +108,45 @@ test("heartbeat stays silent on OK and delivers actionable alerts", async () => 
 	assert.deepEqual(deliveries, ["Upcoming meeting needs preparation"]);
 	assert.equal(store.lastHeartbeat().status, "alert");
 	await runner.stop();
+}));
+
+test("heartbeat delegates observe-only Initiative without executing the Agent or notifying", async () => withStore(async (store) => {
+	const route = { platform:"feishu",chatId:"chat",userId:"user" };
+	store.setLastRoute(route);
+	const observations = [];
+	const runner = new HeartbeatRunner(store, {
+		enabled:true,every:"1h",platform:"feishu",prompt:"check",ackMaxChars:300,timeoutMs:1000,
+	}, async () => { assert.fail("observe-only heartbeat must not execute the legacy Agent path"); },
+	{ sendText: async () => { assert.fail("observe-only heartbeat must not notify"); }, sendMedia: async () => undefined },
+	() => false,
+	async (input) => { observations.push(input); return { kind: "observed" }; });
+	runner.start();
+	await runner.wake();
+	assert.equal(observations.length, 1);
+	assert.equal(observations[0].triggerId, "heartbeat:feishu:user");
+	assert.equal(store.lastHeartbeat().status, "observed");
+	await runner.stop();
+}));
+
+test("concurrent heartbeat wake is single-flight and stop aborts the retained run", async () => withStore(async (store) => {
+	store.setLastRoute({ platform: "feishu", chatId: "chat", userId: "user" });
+	let calls = 0;
+	let observedSignal;
+	const runner = new HeartbeatRunner(store, {
+		enabled: true, every: "1h", platform: "feishu", prompt: "check", ackMaxChars: 300, timeoutMs: 1000,
+	}, async (_input, signal) => {
+		calls++;
+		observedSignal = signal;
+		return await new Promise((_resolve, reject) => signal.addEventListener("abort", () => reject(signal.reason), { once: true }));
+	}, { sendText: async () => undefined, sendMedia: async () => undefined }, () => false);
+	runner.start();
+	const first = runner.wake();
+	await new Promise((resolve) => setImmediate(resolve));
+	const second = runner.wake();
+	await runner.stop();
+	await Promise.all([first, second]);
+	assert.equal(calls, 1);
+	assert.equal(observedSignal.aborted, true);
 }));
 
 test("media deliveries persist across send failures and become claimable for retry", () => withStore((store) => {

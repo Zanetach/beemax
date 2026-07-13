@@ -18,6 +18,7 @@ cd "${ROOT}"
   echo "BeeMax source install failed: vendored Pi source is missing." >&2
   exit 1
 }
+bash "${ROOT}/scripts/install-media-dependencies.sh"
 npm ci
 npm run build
 

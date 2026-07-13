@@ -131,4 +131,37 @@ describe("generateSummary reasoning options", () => {
 
 		expect(completeSimpleMock.mock.calls.map((call) => call[2]?.maxTokens)).toEqual([128000, 128000]);
 	});
+
+	it("bounds oversized serialized history to the model input window while retaining recent context and custom preservation", async () => {
+		const oversizedMessages: AgentMessage[] = [
+			{ role: "user", content: `oldest-marker ${"a".repeat(16_000)}`, timestamp: 1 },
+			{ role: "assistant", content: [{ type: "text", text: `middle-marker ${"b".repeat(16_000)}` }], api: "anthropic-messages", provider: "anthropic", model: "test", usage: mockSummaryResponse.usage, stopReason: "stop", timestamp: 2 },
+			{ role: "user", content: `newest-marker ${"c".repeat(16_000)}`, timestamp: 3 },
+		];
+		const model = { ...createModel(false, 2_000), contextWindow: 8_000 };
+
+		await generateSummary(oversizedMessages, model, 2_000, "test-key", undefined, undefined, "PRESERVE objective-alpha");
+
+		const prompt = completeSimpleMock.mock.calls[0][1].messages[0].content[0].text;
+		expect(prompt).toContain("newest-marker");
+		expect(prompt).toContain("PRESERVE objective-alpha");
+		expect(prompt).toContain("Earlier serialized history omitted");
+		expect(prompt).not.toContain("oldest-marker");
+		expect(prompt.length).toBeLessThan(model.contextWindow * 4);
+	});
+
+	it("uses a conservative multilingual token estimate for oversized CJK history", async () => {
+		const model = { ...createModel(false, 2_000), contextWindow: 8_000 };
+		await generateSummary(
+			[{ role: "user", content: `旧记录${"汉".repeat(30_000)}最新状态`, timestamp: 1 }],
+			model,
+			2_000,
+			"test-key",
+		);
+
+		const prompt = completeSimpleMock.mock.calls[0][1].messages[0].content[0].text;
+		expect(prompt).toContain("最新状态");
+		expect(prompt).toContain("Earlier serialized history omitted");
+		expect([...prompt].filter((character) => character === "汉").length).toBeLessThan(6_000);
+	});
 });

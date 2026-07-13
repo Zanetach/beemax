@@ -1,7 +1,10 @@
 import type { BeeMaxRuntimeSource } from "./runtime.ts";
 import { conversationIdentity } from "./agent-scope.ts";
 
-/** Canonical ownership boundary for all personal-memory operations. */
+/**
+ * Core Memory ownership scope. Legacy subject/object selectors remain private
+ * to the Memory Store migration interface and never enter Agent execution.
+ */
 export interface MemoryScope {
 	profileId?: string;
 	platform: string;

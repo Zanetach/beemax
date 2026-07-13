@@ -7,7 +7,7 @@ import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { MemoryStore } from "../dist/index.js";
 import Database from "better-sqlite3";
-import { TaskGraph, TaskPlanRuntime, TaskRecoveryRunner, TaskRecoveryService } from "@beemax/core";
+import { createAccessScopeRef, createSituation, createTaskCheckpoint, TaskGraph, TaskPlanRuntime, TaskRecoveryRunner, TaskRecoveryService } from "@beemax/core";
 
 const claimWorker = fileURLToPath(new URL("./fixtures/task-plan-claim-worker.mjs", import.meta.url));
 
@@ -113,20 +113,88 @@ test("business-object filters prevent a similar customer requirement from crossi
 	} finally { store.close(); rmSync(root, { recursive: true, force: true }); }
 });
 
+test("business-object recall excludes legacy memories and candidates without entity ownership", () => {
+	const root = mkdtempSync(join(tmpdir(), "beemax-memory-object-fail-closed-"));
+	const store = new MemoryStore(join(root, "memory.db"), "sales-profile");
+	try {
+		const scope = { profileId: "sales-profile", platform: "feishu", chatId: "sales", threadId: "orders", userId: "seller", projectId: "sales-team" };
+		const businessScope = { ...scope, subject: { type: "customer", id: "customer-b" }, object: { type: "order", id: "PO-2" }, includeCandidates: true };
+		store.remember({ ...scope, role: "memory", content: "PO-2交付日期需要确认" });
+		store.recordCandidate({ ...scope, role: "user", content: "PO-2交付日期可能是周五" });
+		const expected = store.upsertClaim({ ...scope, kind: "fact", statement: "PO-2交付日期为周一", subject: businessScope.subject, object: businessScope.object, visibility: "team" });
+		assert.deepEqual(store.recallRanked("PO-2交付日期", businessScope).map((hit) => hit.id), [expected.id]);
+	} finally { store.close(); rmSync(root, { recursive: true, force: true }); }
+});
+
+test("business-object recall admits only candidates with matching entity ownership", () => {
+	const root = mkdtempSync(join(tmpdir(), "beemax-memory-object-candidates-"));
+	const store = new MemoryStore(join(root, "memory.db"));
+	try {
+		const scope = { platform: "feishu", chatId: "sales", threadId: "orders", userId: "seller" };
+		const customerA = { subject: { type: "customer", id: "customer-a" }, object: { type: "order", id: "PO-1" } };
+		const customerB = { subject: { type: "customer", id: "customer-b" }, object: { type: "order", id: "PO-2" } };
+		const expected = store.recordCandidate({ ...scope, ...customerA, role: "user", content: "交付日期为周五" });
+		store.recordCandidate({ ...scope, ...customerB, role: "user", content: "交付日期为周一" });
+		assert.deepEqual(store.recallRanked("交付日期", { ...scope, ...customerA, includeCandidates: true }).map((hit) => hit.id), [expected]);
+	} finally { store.close(); rmSync(root, { recursive: true, force: true }); }
+});
+
+test("promoting a business-object candidate preserves its entity ownership as a Claim", () => {
+	const root = mkdtempSync(join(tmpdir(), "beemax-memory-promote-object-candidate-"));
+	const store = new MemoryStore(join(root, "memory.db"));
+	try {
+		const scope = { platform: "feishu", chatId: "sales", threadId: "orders", userId: "seller" };
+		const businessContext = { subject: { type: "customer", id: "customer-a" }, object: { type: "order", id: "PO-1" } };
+		const candidate = store.recordCandidate({ ...scope, ...businessContext, role: "user", content: "PO-1交付日期为周五" });
+		assert.equal(store.promoteCandidate(candidate, { ...scope, ...businessContext }), true);
+		const hits = store.recallRanked("PO-1交付日期", { ...scope, ...businessContext, includeCandidates: true });
+		assert.equal(hits.length, 1);
+		assert.equal(hits[0].memoryType, "claim");
+		assert.deepEqual({ subject: hits[0].subject, object: hits[0].object }, businessContext);
+	} finally { store.close(); rmSync(root, { recursive: true, force: true }); }
+});
+
+test("unbound recall excludes entity-owned Claims and Candidates", () => {
+	const root = mkdtempSync(join(tmpdir(), "beemax-memory-unbound-entity-filter-"));
+	const store = new MemoryStore(join(root, "memory.db"));
+	try {
+		const scope = { platform: "feishu", chatId: "sales", threadId: "orders", userId: "seller" };
+		const entity = { subject: { type: "customer", id: "customer-a" }, object: { type: "order", id: "PO-1" } };
+		const entityClaim = store.upsertClaim({ ...scope, ...entity, kind: "fact", statement: "客户专属交付安排为周五", stability: "high", visibility: "conversation" });
+		const generalClaim = store.upsertClaim({ ...scope, kind: "fact", statement: "通用交付流程需要复核", stability: "high", visibility: "conversation" });
+		const entityCandidate = store.recordCandidate({ ...scope, ...entity, role: "user", content: "客户专属交付包装为蓝色" });
+		const generalCandidate = store.recordCandidate({ ...scope, role: "user", content: "通用交付模板需要更新" });
+		const ids = store.recallRanked("交付", { ...scope, includeCandidates: true, limit: 10 }).map((hit) => hit.id);
+		assert.equal(ids.includes(entityClaim.id), false);
+		assert.equal(ids.includes(entityCandidate), false);
+		assert.ok(ids.includes(generalClaim.id));
+		assert.ok(ids.includes(generalCandidate));
+		const candidateIds = store.listCandidates(scope).map((candidate) => candidate.id);
+		assert.equal(candidateIds.includes(entityCandidate), false);
+		assert.ok(candidateIds.includes(generalCandidate));
+		const snapshot = store.compileLongTermMemory({ ...scope, maxChars: 1000 });
+		assert.doesNotMatch(snapshot, /客户专属交付安排/);
+		assert.match(snapshot, /通用交付流程需要复核/);
+		assert.equal(store.promoteCandidate(entityCandidate, scope), false);
+		assert.equal(store.rejectCandidate(entityCandidate, scope), false);
+		assert.equal(store.promoteCandidate(entityCandidate, { ...scope, ...entity }), true);
+	} finally { store.close(); rmSync(root, { recursive: true, force: true }); }
+});
+
 test("ranked recall explains one ordering across claims, curated memory, and pending evidence", () => {
 	const root = mkdtempSync(join(tmpdir(), "beemax-memory-ranked-recall-"));
 	const store = new MemoryStore(join(root, "memory.db"), "sales-profile");
 	try {
 		const scope = { profileId: "sales-profile", platform: "feishu", chatId: "sales", threadId: "order", userId: "seller", projectId: "team" };
-		const claim = store.upsertClaim({ ...scope, kind: "fact", statement: "PO-1交付日期为七月二十五日", subject: { type: "customer", id: "customer-a" }, object: { type: "order", id: "PO-1" }, confidence: 0.95, stability: "high", visibility: "team" });
+		const claim = store.upsertClaim({ ...scope, kind: "fact", statement: "PO-1交付日期为七月二十五日", confidence: 0.95, stability: "high", visibility: "team" });
 		store.remember({ ...scope, role: "memory", content: "交付日期需要再次确认" });
 		store.recordCandidate({ ...scope, role: "user", content: "有人提到交付日期可能变化" });
-		const hits = store.recallRanked("PO-1交付日期", { ...scope, object: { type: "order", id: "PO-1" }, includeCandidates: true, limit: 5 });
+		const hits = store.recallRanked("PO-1交付日期", { ...scope, includeCandidates: true, limit: 5 });
 		assert.equal(hits[0].id, claim.id);
 		assert.equal(hits[0].memoryType, "claim");
 		assert.equal(hits[0].status, "active");
 		assert.ok(hits[0].score > hits.at(-1).score);
-		assert.ok(hits[0].matchReasons.includes("business-object"));
+		assert.deepEqual(new Set(hits.map((hit) => hit.memoryType)), new Set(["claim", "curated", "candidate"]));
 		assert.ok(hits.every((hit) => Number.isFinite(hit.score) && hit.matchReasons.length > 0));
 	} finally { store.close(); rmSync(root, { recursive: true, force: true }); }
 });
@@ -194,19 +262,93 @@ test("runtime Task ledger persists delegated lifecycle independently from memory
 	}
 });
 
-test("Effect Receipts survive restart and deduplicate the same external effect", () => {
-	const root = mkdtempSync(join(tmpdir(), "beemax-effect-receipt-"));
+test("Task Ledger reads legacy business context from pre-migration rows across store restarts", () => {
+	const root = mkdtempSync(join(tmpdir(), "beemax-task-business-context-"));
 	const path = join(root, "memory.db");
-	let store = new MemoryStore(path);
 	try {
-		store.record({ id: "send-report", ownerKey: "owner", kind: "delegated", title: "Send report", status: "running", createdAt: 1 });
-		const receipt = { id: "effect-1", tool: "feishu_send", operation: "send report", sideEffect: "mutation", status: "committed", externalRef: "message-42", idempotencyKey: "send-report:message", occurredAt: 2 };
-		assert.equal(store.recordEffectReceipt("owner", "send-report", receipt), true);
-		assert.equal(store.recordEffectReceipt("owner", "send-report", receipt), true);
+		let store = new MemoryStore(path);
+		store.record({ id: "objective-context", ownerKey: "owner", kind: "objective", title: "Order delivery", status: "running", createdAt: 1 });
+		store.close();
+		const raw = new Database(path);
+		raw.prepare("UPDATE tasks SET business_context = ? WHERE id = ?").run(JSON.stringify({ subject: { type: "customer", id: "A" }, object: { type: "order", id: "PO-1" } }), "objective-context");
+		raw.close();
+		store = new MemoryStore(path);
+		assert.deepEqual(store.queryTasks({ ownerKeys: ["owner"], id: "objective-context" })[0].businessContext, { subject: { type: "customer", id: "A" }, object: { type: "order", id: "PO-1" } });
+		store.close();
+	} finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("Task Ledger persists Situation and trusted Access Scope provenance separately across restarts", () => {
+	const root = mkdtempSync(join(tmpdir(), "beemax-task-situation-scope-"));
+	const path = join(root, "memory.db");
+	const situation = createSituation({
+		summary: "量子灯塔需要在霜降窗口前完成校准",
+		goals: ["完成校准"],
+		constraints: ["霜降窗口前完成"],
+		observations: [{ statement: "灯塔出现漂移", source: { kind: "enterprise_system", reference: "sensor:17" }, evidenceRef: "reading:42", confidence: 0.96, trust: "verified" }],
+		confidence: 0.9,
+	});
+	const accessScopeRef = createAccessScopeRef({ id: "scope:operations", authority: { kind: "membership_registry", reference: "membership:42" }, evidenceRef: "grant:9", issuedAt: 10 });
+	try {
+		let store = new MemoryStore(path);
+		store.record({ id: "objective-open-domain", ownerKey: "owner", kind: "objective", title: "校准任务", status: "running", createdAt: 11, situation, accessScopeRef });
 		store.close();
 		store = new MemoryStore(path);
-		assert.deepEqual(store.queryTasks({ ownerKeys: ["owner"], id: "send-report" })[0].effectReceipts, [receipt]);
+		const restored = store.queryTasks({ ownerKeys: ["owner"], id: "objective-open-domain" })[0];
+		assert.deepEqual(restored.situation, situation);
+		assert.deepEqual(restored.accessScopeRef, accessScopeRef);
+		assert.equal(restored.businessContext, undefined);
+		store.close();
+	} finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("Task Ledger persists structured Sub-Agent artifacts and unresolved issues across restarts", () => {
+	const root = mkdtempSync(join(tmpdir(), "beemax-task-structured-result-"));
+	const path = join(root, "memory.db");
+	try {
+		let store = new MemoryStore(path);
+		store.record({ id: "structured-task", ownerKey: "owner", kind: "delegated", title: "Research", status: "running", createdAt: 1 });
+		store.transition("structured-task", {
+			status: "succeeded", finishedAt: 2, result: "Friday", evidence: "ERP checked",
+			artifacts: [{ type: "file", uri: "/tmp/report.pdf", label: "Delivery report" }],
+			unresolvedIssues: ["Awaiting warehouse sign-off"],
+		});
+		store.close();
+		store = new MemoryStore(path);
+		const task = store.queryTasks({ ownerKeys: ["owner"], id: "structured-task" })[0];
+		assert.deepEqual(task.artifacts, [{ type: "file", uri: "/tmp/report.pdf", label: "Delivery report" }]);
+		assert.deepEqual(task.unresolvedIssues, ["Awaiting warehouse sign-off"]);
+		store.close();
+	} finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("Task Ledger exposes legacy business context as read-only migration evidence", () => {
+	const root = mkdtempSync(join(tmpdir(), "beemax-task-update-business-context-"));
+	const path = join(root, "memory.db");
+	const store = new MemoryStore(path);
+	try {
+		store.record({ id: "objective-context", ownerKey: "owner", kind: "objective", title: "Order", status: "running", createdAt: 1, businessContext: { subject: { type: "customer", id: "A" }, object: { type: "order", id: "PO-1" } } });
+		assert.equal(store.updateBusinessContext, undefined);
+		assert.equal(store.queryTasks({ ownerKeys: ["owner"], id: "objective-context" })[0].businessContext, undefined);
 	} finally { store.close(); rmSync(root, { recursive: true, force: true }); }
+});
+
+test("Task Ledger ignores malformed or structurally invalid business context during recovery", () => {
+	const root = mkdtempSync(join(tmpdir(), "beemax-task-invalid-business-context-"));
+	const path = join(root, "memory.db");
+	try {
+		let store = new MemoryStore(path);
+		store.record({ id: "broken-json", ownerKey: "owner", kind: "objective", title: "Broken", status: "running", createdAt: 1 });
+		store.record({ id: "invalid-shape", ownerKey: "owner", kind: "objective", title: "Invalid", status: "running", createdAt: 2 });
+		store.close();
+		const raw = new Database(path);
+		raw.prepare("UPDATE tasks SET business_context = ? WHERE id = ?").run("{broken", "broken-json");
+		raw.prepare("UPDATE tasks SET business_context = ? WHERE id = ?").run(JSON.stringify({ subject: { type: "customer", id: 7 }, admin: true }), "invalid-shape");
+		raw.close();
+		store = new MemoryStore(path);
+		assert.deepEqual(store.queryTasks({ ownerKeys: ["owner"] }).map((task) => task.businessContext), [undefined, undefined]);
+		store.close();
+	} finally { rmSync(root, { recursive: true, force: true }); }
 });
 
 test("failed Objectives can be explicitly reopened for a safe retry", () => {
@@ -338,7 +480,7 @@ test("ordinary Task Plan retry never replays a Candidate Result while verificati
 		});
 		assert.equal(executions, 0);
 		const task = store.queryTasks({ ownerKeys: ["cli:local:local"], id: "unavailable-retry-task" })[0];
-		assert.deepEqual({ status: task.status, verificationStatus: task.verificationStatus, candidateResult: task.candidateResult }, { status: "failed", verificationStatus: "unavailable", candidateResult: "candidate" });
+		assert.deepEqual({ status: task.status, verificationStatus: task.verificationStatus, candidateResult: task.candidateResult }, { status: "running", verificationStatus: "unavailable", candidateResult: "candidate" });
 	} finally { store.close(); rmSync(root, { recursive: true, force: true }); }
 });
 
@@ -393,7 +535,8 @@ test("unavailable Verification Retry persists exponential backoff across recover
 		await graph.run(["cli:local:local"], "backoff-plan", async () => ({ output: "candidate" }), { verify: async () => { throw new Error("verifier offline"); } });
 		const first = store.queryTasks({ ownerKeys: ["cli:local:local"], id: "backoff-task" })[0];
 		assert.equal(first.verificationAttempts, 1);
-		assert.ok(first.verificationRetryAt > first.finishedAt);
+		assert.equal(first.finishedAt, undefined);
+		assert.ok(first.verificationRetryAt > first.startedAt);
 		let executions = 0;
 		const runner = new TaskRecoveryRunner(store, async () => { executions++; return { output: "replayed" }; }, undefined, async () => { throw new Error("still offline"); });
 		assert.deepEqual(await runner.reverifyDue(first.verificationRetryAt - 1), { attempted: 0, accepted: 0, rejected: 0, unavailable: 0 });
@@ -580,11 +723,12 @@ test("expired Task Run leases recover only explicitly idempotent safe-retry Task
 		store.record({ id: "live", ownerKey: "cli:local:local", kind: "delegated", title: "Still leased", status: "running", recoveryPolicy: "safe_retry", idempotencyKey: "plan:live", createdAt: 10, startedAt: 20 });
 		store.recordRun({ id: "live-run", taskId: "live", executor: "subagent", status: "running", startedAt: 20, leaseExpiresAt: 300 });
 		store.record({ id: "effectful", ownerKey: "cli:local:local", kind: "delegated", title: "Effect already committed", status: "running", recoveryPolicy: "safe_retry", idempotencyKey: "plan:effectful", createdAt: 10, startedAt: 20 });
-		store.recordEffectReceipt("cli:local:local", "effectful", { id: "effect-1", tool: "send", operation: "send message", sideEffect: "mutation", status: "committed", externalRef: "message-1", occurredAt: 50 });
 		store.recordRun({ id: "effectful-run", taskId: "effectful", executor: "subagent", status: "running", startedAt: 20, leaseExpiresAt: 100 });
 		store.record({ id: "corrupt-effects", ownerKey: "cli:local:local", kind: "delegated", title: "Unreadable effects", status: "running", recoveryPolicy: "safe_retry", idempotencyKey: "plan:corrupt", createdAt: 10, startedAt: 20 });
 		store.recordRun({ id: "corrupt-run", taskId: "corrupt-effects", executor: "subagent", status: "running", startedAt: 20, leaseExpiresAt: 100 });
-		const raw = new Database(join(root, "memory.db")); raw.prepare("UPDATE tasks SET effect_receipts = ? WHERE id = ?").run("{broken", "corrupt-effects"); raw.close();
+		const raw = new Database(join(root, "memory.db"));
+		raw.prepare("UPDATE tasks SET effect_receipts = ? WHERE id = ?").run(JSON.stringify([{ id: "effect-1", tool: "send", operation: "send message", sideEffect: "mutation", status: "committed", externalRef: "message-1", occurredAt: 50 }]), "effectful");
+		raw.prepare("UPDATE tasks SET effect_receipts = ? WHERE id = ?").run("{broken", "corrupt-effects"); raw.close();
 		assert.deepEqual(store.reconcileExpiredTaskRuns(200), { retried: 1, failed: 3, affectedPlans: [] });
 		const tasks = new Map(store.queryTasks({ ownerKeys: ["cli:local:local"] }).map((task) => [task.id, task]));
 		assert.equal(tasks.get("safe").status, "pending");
@@ -868,6 +1012,19 @@ test("Task Plan pause and checkpoints survive process restart and resume owner-s
 	} finally { store.close(); rmSync(root, { recursive: true, force: true }); }
 });
 
+test("structured Task Checkpoint survives restart as recovery state", () => {
+	const root = mkdtempSync(join(tmpdir(), "beemax-structured-checkpoint-"));
+	const path = join(root, "memory.db");
+	let store = new MemoryStore(path);
+	try {
+		store.record({ id: "structured", ownerKey: "owner", kind: "delegated", title: "Structured recovery", status: "running", createdAt: 1 });
+		const checkpoint = createTaskCheckpoint({ taskRunId: "run:structured", source: "pi_turn", at: 2, completed: ["read:call-1"], committedEffectIds: ["effect-1"], evidenceRefs: ["tool:call-1"], unresolvedIssues: ["Need another source"], nextSafeStep: "Read another source without repeating call-1." });
+		assert.equal(store.checkpointTask("owner", "structured", checkpoint, 2), true);
+		store.close(); store = new MemoryStore(path);
+		assert.deepEqual(store.queryTasks({ ownerKeys: ["owner"], id: "structured" })[0].checkpoint, checkpoint);
+	} finally { store.close(); rmSync(root, { recursive: true, force: true }); }
+});
+
 test("a supervised background failure terminalizes its Task Plan instead of leaving running work", async () => {
 	const root = mkdtempSync(join(tmpdir(), "beemax-task-background-failure-"));
 	const store = new MemoryStore(join(root, "memory.db"));
@@ -1094,6 +1251,7 @@ test("organizational claims retain entity identity, source, validity, visibility
 		const scope = { profileId: "sales-profile", platform: "feishu", chatId: "sales", threadId: "order-thread", userId: "seller", projectId: "sales-team" };
 		const first = store.upsertClaim({ ...scope, kind: "fact", statement: "交付日期为 7 月 25 日", subject: { type: "customer", id: "customer-1" }, object: { type: "order", id: "PO-1" }, source: { type: "message", ref: "om-1" }, validFrom: 100, validUntil: Date.now() + 60_000, visibility: "team" });
 		const second = store.upsertClaim({ ...scope, kind: "fact", statement: "交付日期为 7 月 28 日", subject: { type: "customer", id: "customer-1" }, object: { type: "order", id: "PO-1" }, source: { type: "tool", ref: "erp-1" }, validFrom: 100, visibility: "team" });
+		const businessScope = { subject: first.subject, object: first.object };
 		assert.equal(store.markClaimsConflicted(first.id, second.id, scope), true);
 		const explained = store.explainClaim(first.id, scope);
 		assert.deepEqual(explained.claim.subject, { type: "customer", id: "customer-1" });
@@ -1104,8 +1262,8 @@ test("organizational claims retain entity identity, source, validity, visibility
 		assert.equal(store.explainClaim(first.id, { profileId: "sales-profile", platform: "feishu", chatId: "sales", threadId: "order-thread", userId: "seller" }), undefined);
 		assert.equal(store.explainClaim(first.id, { ...scope, profileId: "other-profile" }), undefined);
 		assert.equal(store.listClaims({ ...scope, status: "conflicted" }).length, 2);
-		assert.equal(store.recallBrief("交付日期", scope).claims.length, 2);
-		assert.equal(store.recallBrief("交付日期", { profileId: "sales-profile", platform: "feishu", chatId: "other-chat", userId: "teammate", projectId: "sales-team" }).claims.length, 2);
+		assert.equal(store.recallBrief("交付日期", { ...scope, ...businessScope }).claims.length, 2);
+		assert.equal(store.recallBrief("交付日期", { profileId: "sales-profile", platform: "feishu", chatId: "other-chat", userId: "teammate", projectId: "sales-team", ...businessScope }).claims.length, 2);
 		const otherOrder = store.upsertClaim({ ...scope, kind: "fact", statement: "交付日期为 7 月 28 日", subject: { type: "customer", id: "customer-1" }, object: { type: "order", id: "PO-2" } });
 		assert.notEqual(otherOrder.id, second.id);
 		store.upsertClaim({ ...scope, kind: "fact", statement: "未来价格生效", validFrom: Date.now() + 60_000 });

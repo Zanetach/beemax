@@ -5,8 +5,8 @@ import { join } from "node:path";
 import test from "node:test";
 import { createSkillTools } from "../dist/index.js";
 
-function toolsAt(root, inventory = [], verifier, activateTools) {
-	return new Map(createSkillTools(root, () => undefined, inventory, verifier, [], activateTools).map((tool) => [tool.name, tool]));
+function toolsAt(root, inventory = [], verifier, activateTools, promotionAuthority) {
+	return new Map(createSkillTools(root, () => undefined, inventory, verifier, [], activateTools, undefined, promotionAuthority).map((tool) => [tool.name, tool]));
 }
 
 test("capability discovery searches the current tool inventory before learning a Skill", async () => {
@@ -128,6 +128,60 @@ test("a failed Skill trial remains quarantined until two later independent succe
 		assert.equal(reloads, 1);
 		assert.match(readFileSync(join(root, "skills", "source-check", "SKILL.md"), "utf8"), /managed-by: beemax/);
 		assert.equal((await tools.get("skill_list").execute("list", {})).details.skills.length, 1);
+	} finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("a failed Workflow Skill trial never changes the active Skill", async () => {
+	const root = mkdtempSync(join(tmpdir(), "beemax-skill-failed-update-"));
+	try {
+		const verifier = async () => ({ trialId: "trial:failed", accepted: false, evidence: "Controlled trial rejected the candidate without changing active behavior.", assertions: [], toolCalls: [] });
+		const tools = toolsAt(root, [], verifier, undefined, async () => ({ allowed: true, evidenceRef: "authority:workflow:1" }));
+		await tools.get("skill_create").execute("create", { name: "evidence-flow", description: "Existing stable evidence workflow", instructions: "Keep the existing stable evidence workflow active for every applicable request." });
+		const activePath = join(root, "skills", "evidence-flow", "SKILL.md");
+		const before = readFileSync(activePath, "utf8");
+		await tools.get("skill_candidate_install").execute("install", { name: "evidence-flow", description: "Candidate evidence workflow", source: "workflow-candidate:workflow:1@2", instructions: "Trial a different evidence sequence in quarantine and verify it independently." });
+		await tools.get("skill_candidate_verify").execute("verify", { name: "evidence-flow", scenario: "Representative failed evidence sequence", acceptanceCriteria: "The sequence must retain independently observable evidence." });
+		assert.equal(readFileSync(activePath, "utf8"), before);
+	} finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("Workflow Skill promotion requires current configured authority evidence", async () => {
+	const root = mkdtempSync(join(tmpdir(), "beemax-skill-promotion-authority-"));
+	let allowed = false;
+	let trial = 0;
+	try {
+		const verifier = async (input) => ({ trialId: `trial:${++trial}`, accepted: true, evidence: `Controlled trial retained observable evidence for ${input.scenario}.`, assertions: [{ claim: "Outcome verified", evidence: "Independent verifier observed the required outcome." }], toolCalls: [] });
+		const tools = toolsAt(root, [], verifier, undefined, async (input) => allowed && input.source === "workflow-candidate:workflow:7@3" ? { allowed: true, evidenceRef: "review:workflow:7:current" } : { allowed: false, reason: "Workflow source is no longer current" });
+		await tools.get("skill_candidate_install").execute("install", { name: "workflow-seven", description: "Workflow-derived evidence routine", source: "workflow-candidate:workflow:7@3", instructions: "Follow the reviewed conditions and verify the expected outcome with independent evidence." });
+		await tools.get("skill_candidate_verify").execute("verify-1", { name: "workflow-seven", scenario: "First independent representative scenario", acceptanceCriteria: "The expected outcome has observable evidence." });
+		await tools.get("skill_candidate_verify").execute("verify-2", { name: "workflow-seven", scenario: "Second independent representative scenario", acceptanceCriteria: "The expected outcome has observable evidence." });
+		await assert.rejects(() => tools.get("skill_candidate_promote").execute("promote-denied", { name: "workflow-seven" }), /no longer current/i);
+		allowed = true;
+		const promoted = await tools.get("skill_candidate_promote").execute("promote", { name: "workflow-seven" });
+		assert.equal(promoted.details.authorityEvidenceRef, "review:workflow:7:current");
+	} finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("Skill promotions retain immutable versions and support observable durable rollback", async () => {
+	const root = mkdtempSync(join(tmpdir(), "beemax-skill-version-rollback-"));
+	let trial = 0;
+	try {
+		const verifier = async (input) => ({ trialId: `trial:${++trial}`, accepted: true, evidence: `Controlled trial retained observable evidence for ${input.scenario}.`, assertions: [{ claim: "Version works", evidence: "Independent verifier observed the expected version outcome." }], toolCalls: [] });
+		const tools = toolsAt(root, [], verifier);
+		for (const [version, instructions] of [["v1", "Use the first verified workflow and retain its observable evidence trail."], ["v2", "Use the second verified workflow and retain its improved observable evidence trail."]]) {
+			await tools.get("skill_candidate_install").execute(`install-${version}`, { name: "versioned-flow", description: "Versioned verified workflow", source: `reviewed:${version}`, instructions });
+			await tools.get("skill_candidate_verify").execute(`verify-${version}-1`, { name: "versioned-flow", scenario: `${version} first independent scenario`, acceptanceCriteria: "The version produces observable evidence." });
+			await tools.get("skill_candidate_verify").execute(`verify-${version}-2`, { name: "versioned-flow", scenario: `${version} second independent scenario`, acceptanceCriteria: "The version produces observable evidence." });
+			await tools.get("skill_candidate_promote").execute(`promote-${version}`, { name: "versioned-flow" });
+		}
+		const versions = await tools.get("skill_versions").execute("versions", { name: "versioned-flow" });
+		assert.equal(versions.details.versions.length, 2);
+		const firstSha = versions.details.versions.find((item) => item.source === "reviewed:v1").sha256;
+		await tools.get("skill_rollback").execute("rollback", { name: "versioned-flow", sha256: firstSha });
+		assert.match(readFileSync(join(root, "skills", "versioned-flow", "SKILL.md"), "utf8"), /first verified workflow/);
+		const after = await tools.get("skill_versions").execute("versions-after", { name: "versioned-flow" });
+		assert.equal(after.details.currentSha256, firstSha);
+		assert.equal(after.details.events.at(-1).kind, "rollback");
 	} finally { rmSync(root, { recursive: true, force: true }); }
 });
 

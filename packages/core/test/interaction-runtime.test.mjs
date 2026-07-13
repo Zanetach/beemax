@@ -194,6 +194,19 @@ test("capability ranking crosses the Interaction boundary as content-free metada
 	assert.doesNotMatch(JSON.stringify(telemetry), /private prompt/);
 });
 
+test("media understanding crosses the Interaction seam without image bytes or extracted content", async () => {
+	const telemetry = [];
+	const runtime = {
+		async run(_input, sink) { await sink({ type: "media_understood", route: "adapter", adapterIds: ["local-ocr:tesseract"], receiptCount: 1, failureCount: 0, durationMs: 12 }); return { answer: "done", model: "test/model", durationMs: 13, usage: {} }; },
+		async cancel() { return false; }, async modelStatus() { return undefined; }, async usage() { return undefined; },
+	};
+	const adapter = new InteractionEventAdapter(runtime, { telemetry: (event) => telemetry.push(event) });
+	await adapter.dispatch({ type: "message.send", source, text: "private prompt", input: { timeoutMs: 1_000 } });
+	assert.equal(adapter.events(source).some((event) => event.type === "media.understood" && event.adapterIds[0] === "local-ocr:tesseract"), true);
+	assert.deepEqual(telemetry.filter((event) => event.type === "interaction.media_understood"), [{ type: "interaction.media_understood", surface: "cli", route: "adapter", adapterCount: 1, receiptCount: 1, failureCount: 0, durationMs: 12 }]);
+	assert.doesNotMatch(JSON.stringify(telemetry), /private prompt|image.data|extracted/);
+});
+
 test("approval and queue telemetry includes required latency fields without content", async () => {
 	let rejectTurn;
 	const telemetry = [];
@@ -382,13 +395,29 @@ test("fallback conversation queue applies explicit backpressure after 100 inputs
 	await assert.rejects(turn, /aborted/);
 });
 
+test("file conversation queue bounds total Profile records and serialized bytes", async () => {
+	const directory = await mkdtemp(join(tmpdir(), "beemax-input-queue-bounds-"));
+	const path = join(directory, "queue.json");
+	try {
+		const store = new FileInteractionInputQueueStore(path, { maxRecords: 2, maxBytes: 1_000 });
+		assert.equal(store.enqueue({ id: "one", key: "a", text: "first", source, createdAt: 1 }), 1);
+		assert.equal(store.enqueue({ id: "two", key: "b", text: "second", source, createdAt: 2 }), 1);
+		assert.equal(store.enqueue({ id: "three", key: "c", text: "third", source, createdAt: 3 }), 0);
+		assert.equal(store.all().length, 2);
+		assert.throws(() => new FileInteractionInputQueueStore(path, { maxRecords: 1 }), /record limit/);
+		const bytesPath = join(directory, "bytes.json");
+		const byteBounded = new FileInteractionInputQueueStore(bytesPath, { maxRecords: 10, maxBytes: 300 });
+		assert.throws(() => byteBounded.enqueue({ id: "large", key: "large", text: "x".repeat(1_000), source, createdAt: 1 }), /byte limit/);
+	} finally { await rm(directory, { recursive: true, force: true }); }
+});
+
 test("steer and follow-up use native runtime delivery when available", async () => {
 	let rejectTurn;
 	const delivered = [];
 	const runtime = {
 		run() { return new Promise((_resolve, reject) => { rejectTurn = reject; }); },
-		async steer(_source, text) { delivered.push(["steer", text]); return true; },
-		async followUp(_source, text) { delivered.push(["follow_up", text]); return true; },
+		async steer(_source, text, images) { delivered.push(["steer", text, images]); return true; },
+		async followUp(_source, text, images) { delivered.push(["follow_up", text, images]); return true; },
 		async cancel() { rejectTurn(new Error("aborted")); return true; },
 		async modelStatus() { return undefined; }, async usage() { return undefined; },
 	};
@@ -397,9 +426,10 @@ test("steer and follow-up use native runtime delivery when available", async () 
 	await new Promise((resolve) => setImmediate(resolve));
 	assert.deepEqual(await interaction.dispatch({ type: "turn.steer", source, text: "focus on tests" }), { queued: true, position: 1, replaced: false, mode: "steer" });
 	assert.equal((await interaction.snapshot(source)).phase, "running");
-	assert.deepEqual(await interaction.dispatch({ type: "turn.queue", source, text: "then summarize" }), { queued: true, position: 2, replaced: false, mode: "follow_up" });
+	const images = [{ type: "image", mimeType: "image/png", data: "aW1hZ2U=" }];
+	assert.deepEqual(await interaction.dispatch({ type: "turn.queue", source, text: "then summarize", images }), { queued: true, position: 2, replaced: false, mode: "follow_up" });
 	assert.equal((await interaction.snapshot(source)).queueDepth, 2);
-	assert.deepEqual(delivered, [["steer", "focus on tests"], ["follow_up", "then summarize"]]);
+	assert.deepEqual(delivered, [["steer", "focus on tests", undefined], ["follow_up", "then summarize", images]]);
 	assert.equal(interaction.takeQueuedInput(source), undefined, "native Pi queues must not be replayed by the presenter");
 	assert.equal((await interaction.dispatch({ type: "turn.cancel", source })).queuedCancelled, true);
 	await assert.rejects(turn, /aborted/);

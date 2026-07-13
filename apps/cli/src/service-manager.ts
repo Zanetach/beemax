@@ -1,13 +1,21 @@
 import { mkdir, writeFile } from "node:fs/promises";
-import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { spawnSync, type SpawnSyncReturns } from "node:child_process";
 import { beemaxHome, beemaxRoot, validateProfileName } from "./config.ts";
 import { readGatewayLogs } from "./gateway-observability.ts";
+import { resolveServiceCommands, resolveServiceLayout, serviceDisplayName, type ServiceAction, type ServiceScope } from "./service-platform.ts";
 
-export type ServiceAction = "start" | "stop" | "restart" | "status" | "logs";
-export type ServiceScope = "user" | "system";
 type Runner = (command: string, args: string[]) => Pick<SpawnSyncReturns<Buffer>, "status" | "error">;
+export type { ServiceScope } from "./service-platform.ts";
+export type { ServiceAction } from "./service-platform.ts";
+
+export interface ServiceInstallOptions {
+	platform?: NodeJS.Platform;
+	env?: NodeJS.ProcessEnv;
+	homeDir?: string;
+	nodePath?: string;
+	runner?: Runner;
+}
 
 export function renderSystemdService(
 	root = beemaxRoot(),
@@ -15,6 +23,7 @@ export function renderSystemdService(
 	scope: ServiceScope = "user",
 	serviceUser?: string,
 	home = beemaxHome(),
+	systemEnvironmentDirectory = "/etc/beemax",
 ): string {
 	const absoluteRoot = resolve(root);
 	const absoluteHome = resolve(home);
@@ -30,7 +39,7 @@ Type=simple
 ${scope === "system" ? `User=${serviceUser ?? "beemax"}\n` : ""}WorkingDirectory=${systemdQuote(absoluteRoot)}
 EnvironmentFile=-${systemdQuote(join(absoluteHome, "profiles", "%i", ".env"))}
 EnvironmentFile=-${systemdQuote(join(absoluteRoot, "config", "profiles", "%i.env"))}
-EnvironmentFile=-/etc/beemax/%i.env
+EnvironmentFile=-${systemdQuote(join(systemEnvironmentDirectory, "%i.env"))}
 Environment=NODE_ENV=production
 Environment=BEEMAX_PROFILE=%i
 ExecStart=${systemdQuote(nodePath)} ${systemdQuote(cliPath)} gateway --profile %i --home ${systemdQuote(absoluteHome)} --root ${systemdQuote(absoluteRoot)}
@@ -57,27 +66,30 @@ WantedBy=${scope === "user" ? "default.target" : "multi-user.target"}
 export async function installSystemdService(
 	root = beemaxRoot(),
 	scope: ServiceScope = "user",
-	systemdDir = scope === "user" ? join(homedir(), ".config", "systemd", "user") : "/etc/systemd/system",
-	runner: Runner = runInherited,
+	options: ServiceInstallOptions = {},
 ): Promise<void> {
-	if (process.platform !== "linux") throw new Error("systemd installation is supported only on Linux");
+	const platform = options.platform ?? process.platform;
+	if (platform !== "linux") throw new Error("systemd installation is supported only on Linux");
+	const env = options.env ?? process.env;
+	const layout = resolveServiceLayout({ platform, scope, env, homeDir: options.homeDir });
+	const runner = options.runner ?? runInherited;
 	if (scope === "system" && typeof process.getuid === "function" && process.getuid() !== 0) {
 		throw new Error("systemd installation requires root; rerun with sudo");
 	}
 	const serviceUser = scope === "system"
-		? process.env.BEEMAX_SERVICE_USER || process.env.SUDO_USER || (process.env.USER !== "root" ? process.env.USER : undefined)
+		? env.BEEMAX_SERVICE_USER || env.SUDO_USER || (env.USER !== "root" ? env.USER : undefined)
 		: undefined;
 	if (scope === "system" && !serviceUser) {
 		throw new Error("systemd system service needs a non-root account; set BEEMAX_SERVICE_USER");
 	}
-	const serviceHome = scope === "system" ? process.env.BEEMAX_HOME?.trim() : beemaxHome();
+	const serviceHome = scope === "system" ? env.BEEMAX_HOME?.trim() : beemaxHome(env);
 	if (!serviceHome) {
 		throw new Error("systemd system service needs an explicit BEEMAX_HOME owned by BEEMAX_SERVICE_USER");
 	}
-	await mkdir(systemdDir, { recursive: true });
-	if (scope === "system") await mkdir("/etc/beemax", { recursive: true, mode: 0o700 });
-	await writeFile(join(systemdDir, "beemax@.service"), renderSystemdService(root, process.execPath, scope, serviceUser, serviceHome), { mode: 0o644 });
-	await writeFile(join(systemdDir, "beemax.target"), renderSystemdTarget(scope), { mode: 0o644 });
+	await mkdir(layout.unitDirectory, { recursive: true });
+	if (layout.environmentDirectory) await mkdir(layout.environmentDirectory, { recursive: true, mode: 0o700 });
+	await writeFile(layout.unitTemplatePath, renderSystemdService(root, options.nodePath ?? process.execPath, scope, serviceUser, serviceHome, layout.environmentDirectory), { mode: 0o644 });
+	await writeFile(layout.targetPath!, renderSystemdTarget(scope), { mode: 0o644 });
 	const args = scope === "user" ? ["--user", "daemon-reload"] : ["daemon-reload"];
 	assertCommand(runner("systemctl", args), `systemctl ${args.join(" ")}`);
 }
@@ -86,7 +98,7 @@ export async function installMacLaunchAgent(
 	profile: string,
 	root = beemaxRoot(),
 	home = beemaxHome(),
-	launchAgentsDir = join(homedir(), "Library", "LaunchAgents"),
+	launchAgentsDir = resolveServiceLayout({ platform: "darwin", scope: "user" }).unitDirectory,
 ): Promise<string> {
 	validateProfileName(profile);
 	const profileHome = join(resolve(home), "profiles", profile);
@@ -128,42 +140,26 @@ export function runServiceAction(
 	if (platform !== "linux") {
 		throw new Error(`beemax ${action} requires Linux systemd; use 'beemax gateway --profile ${profile}' for foreground testing`);
 	}
-	const unit = `beemax@${profile}.service`;
-	const command = action === "logs" ? "journalctl" : "systemctl";
-	const scopeArgs = scope === "user" ? ["--user"] : [];
-	const serviceArgs = action === "start"
-		? ["enable", "--now", unit]
-		: action === "stop" ? ["disable", "--now", unit] : [action, unit];
-	const args = action === "logs" ? [...scopeArgs, "-u", unit, "-f"] : [...scopeArgs, ...serviceArgs];
-	assertCommand(runner(command, args), `${command} ${args.join(" ")}`);
+	for (const plan of resolveServiceCommands(action, profile, { platform, scope })) {
+		const result = runner(plan.command, plan.args);
+		if (!plan.allowFailure) assertCommand(result, `${plan.command} ${plan.args.join(" ")}`);
+		else if (result.error) throw result.error;
+	}
 }
 
 function runMacServiceAction(action: ServiceAction, profile: string, runner: Runner): void {
-	const domain = `gui/${process.getuid?.() ?? 0}`;
-	const label = macLabel(profile);
-	const plist = join(homedir(), "Library", "LaunchAgents", `${label}.plist`);
 	if (action === "logs") {
 		process.stdout.write(`${readGatewayLogs(join(beemaxHome(), "profiles", profile))}\n`);
 		return;
 	}
-	if (action === "start") {
-		assertCommand(runner("launchctl", ["bootstrap", domain, plist]), `launchctl bootstrap ${domain} ${plist}`);
-		return;
+	for (const plan of resolveServiceCommands(action, profile, { platform: "darwin" })) {
+		const result = runner(plan.command, plan.args);
+		if (!plan.allowFailure) assertCommand(result, `${plan.command} ${plan.args.join(" ")}`);
+		else if (result.error) throw result.error;
 	}
-	if (action === "stop") {
-		assertCommand(runner("launchctl", ["bootout", `${domain}/${label}`]), `launchctl bootout ${domain}/${label}`);
-		return;
-	}
-	if (action === "restart") {
-		const stopped = runner("launchctl", ["bootout", `${domain}/${label}`]);
-		if (stopped.error) throw stopped.error;
-		assertCommand(runner("launchctl", ["bootstrap", domain, plist]), `launchctl bootstrap ${domain} ${plist}`);
-		return;
-	}
-	assertCommand(runner("launchctl", ["print", `${domain}/${label}`]), `launchctl print ${domain}/${label}`);
 }
 
-function macLabel(profile: string): string { return `com.beemax.agent.${profile}`; }
+function macLabel(profile: string): string { return serviceDisplayName(profile, "darwin"); }
 function xml(value: string): string { return value.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll('"', "&quot;").replaceAll("'", "&apos;"); }
 
 function renderSystemdTarget(scope: ServiceScope): string {

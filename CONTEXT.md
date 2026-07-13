@@ -9,7 +9,7 @@ A durable outcome the Agent has accepted responsibility for delivering.
 _Avoid_: Job, todo, agent run
 
 **Task Run**:
-One execution attempt for a Task; retries create additional Task Runs without duplicating the Task.
+One execution attempt for a Task. Steering, model fallback, and Capability reroute remain inside the active Task Run; a Verification-rejected Corrective Attempt creates a new Task Run without duplicating the Task or Objective.
 _Avoid_: Task, session, turn
 
 **Task Ledger**:
@@ -48,16 +48,20 @@ _Avoid_: Prompt, implementation steps, subjective quality
 An independent evaluation of a Task result against its Acceptance Criteria and available evidence; it is unavailable when that evaluation cannot complete, which is distinct from rejecting the result.
 _Avoid_: Execution, self-report, model confidence
 
-**Candidate Result**:
-Task execution output retained for Verification; it cannot satisfy dependencies or become an accepted outcome until Verification succeeds.
+**Candidate Outcome**:
+Task execution output retained in `candidateResult` after a Pi or Task Run settles; the durable Task and Objective remain active, and the candidate cannot satisfy dependencies or become an accepted result until Verification succeeds.
 _Avoid_: Final answer, successful result, evidence
 
+**Business Completion**:
+The accepted durable outcome of a Task or Objective after Verification; it is distinct from Pi, Turn, Tool, or Task Run settlement.
+_Avoid_: Agent stop, run success, candidate outcome, delivery attempt
+
 **Verification Retry**:
-A repeated evaluation of a retained Candidate Result after Verification was unavailable; it does not execute the Task again.
+A repeated evaluation of a retained Candidate Outcome after Verification was unavailable; it does not execute the Task again.
 _Avoid_: Task retry, Corrective Attempt, model replay
 
 **Verification Backoff**:
-The durable wait before an unavailable Verification may be attempted again; it delays evaluation of the retained Candidate Result and never authorizes Task execution.
+The durable wait before an unavailable Verification may be attempted again; it delays evaluation of the retained Candidate Outcome and never authorizes Task execution.
 _Avoid_: Task timeout, execution retry delay, Corrective Attempt
 
 **Corrective Attempt**:
@@ -76,6 +80,22 @@ _Avoid_: Task queue, Sub-Agent manager, Task Plan runner
 A time-bounded claim that a live executor is still responsible for a Task Run; expiry means the run was interrupted, not that its outcome is known.
 _Avoid_: Task timeout, lock, deadline
 
+**Execution Envelope**:
+The immutable identity and trusted references carried by one Pi execution attempt, including its trigger, Objective, Task Run, Access Scope, budget, deadline, and recovery or verification mode.
+_Avoid_: Prompt context, Task record, customer business schema, Credential Secret
+
+**Execution Trace**:
+A content-free diagnostic projection that correlates one Execution Envelope with model turns, Tool calls, Effects, checkpoints, Verification, delivery, cost, and latency; it never authorizes work or replaces their durable authorities.
+_Avoid_: Transcript, Task Ledger, Effect authority, audit policy, business event
+
+**Effect Authority**:
+The sole durable state machine for a mutating Tool attempt. It binds the Effect to its Execution Envelope and Task Run, prevents committed replay, requires reconciliation for unknown outcomes, and emits safe read-only projections for Tasks and operators.
+_Avoid_: Model-authored receipt, Task field, Tool log, Execution Trace
+
+**Task Checkpoint**:
+A bounded durable recovery snapshot for one Task Run, recording completed progress, committed Effect references, evidence references, unresolved issues, and the next safe step so work can continue without replaying completed actions.
+_Avoid_: Chat summary, model scratchpad, Task result, transcript
+
 **Task Plan Execution Claim**:
 A time-bounded, holder-fenced right to recover one Task Plan so concurrent Agent instances do not schedule the same Plan at once.
 _Avoid_: Task lock, Plan ownership, scheduler slot
@@ -93,7 +113,7 @@ Loss of a live executor before a Task Run reaches a terminal outcome; reconcilia
 _Avoid_: Failure, cancellation, timeout
 
 **Schedule**:
-A rule that creates Tasks at a future time or recurring cadence; it is not itself a Task.
+A rule that emits a Trigger at a future time or recurring cadence; the Trigger may cause delivery, admit durable responsibility, or produce no work, but the Schedule is never itself a Task.
 _Avoid_: Scheduled task, cron job
 
 **Delegation**:
@@ -103,6 +123,161 @@ _Avoid_: Spawn, background chat
 **Turn**:
 One user-to-Agent interaction inside a conversation; a Turn may create, inspect, or advance Tasks.
 _Avoid_: Task, run
+
+**Situation**:
+The Agent's current, evidence-backed interpretation of what is happening, why it matters, and what remains uncertain; it is open-ended and may change when new evidence arrives.
+_Avoid_: Fixed business schema, Access Scope, prompt classification
+
+**Situation Builder**:
+The asynchronous cognition boundary that prefers normalized model inference, separates facts, goals, constraints, conflicts, unknowns, actions, confidence, and provenance, then falls back to deterministic Turn Understanding when inference is unavailable or invalid. Model output cannot create Access Scope or trusted evidence references.
+_Avoid_: Intent router, authorization resolver, second Agent Loop
+
+**Organization Knowledge Recall**:
+A bounded Situation-driven projection that ranks scoped Episodes, Claims, Correction chains, Conflicts, Exceptions, and Conventions by relevance, evidence, recency, precedent, and state, then gives Pi explicitly non-executable evidence.
+_Avoid_: Second Memory Store, prompt injection channel, authorization lookup, flat chat recall
+
+**Organization Memory**:
+The correctable, evidence-backed understanding accumulated from episodes, outcomes, conventions, exceptions, authority, goals, and feedback across work.
+_Avoid_: Chat history, Task Ledger, fixed business ontology
+
+**Memory Persistence Ports**:
+Focused Organization Memory, Conversation Memory, Task Ledger, Recovery Queue, Completion Outbox, and Initiative Observation capability views over one Profile SQLite authority; the views do not own or duplicate state.
+_Avoid_: Second Memory Store, repository wrapper with its own state, full MemoryStore dependency in runtime callers
+
+**Episode**:
+A retained, Objective-idempotent account of one meaningful Situation, the action taken, its outcome, and supporting evidence. Candidate, verified, conflicted, and superseded states remain explicit.
+_Avoid_: Transcript, Task Run, permanent rule
+
+**Correction**:
+Evidence-backed replacement of an active or conflicted Claim that supersedes the prior understanding without erasing its history.
+_Avoid_: Silent edit, new unrelated fact, forget
+
+**Conflict**:
+An unresolved, evidence-backed relationship between incompatible Claims in the same scope; both Claims and both provenance chains remain visible until corrected or revoked.
+_Avoid_: Rank tie, automatic winner, duplicate Claim
+
+**Exception**:
+A scoped, evidence-backed departure from an otherwise applicable understanding. It remains a distinct cognitive type and is never itself a universal Convention.
+_Avoid_: Enterprise Policy, global rule, workflow branch
+
+**Claim Revocation**:
+An evidence-backed withdrawal that removes a Claim from effective recall while retaining its archived explanation chain.
+_Avoid_: Forget, correction, deletion
+
+**Claim Forget**:
+An owner-scoped deletion of a Claim and its dependent evidence, distinct from an auditable revocation.
+_Avoid_: Revocation, archival, supersession
+
+**Convention Candidate**:
+A scoped, asynchronously inferred organizational pattern supported by at least two verified Episodes, with its time span, confidence, contradictions, exceptions, and review lifecycle retained. It is not yet authoritative or enforceable; later contradictory Episodes block confirmation or roll back a previously confirmed candidate.
+_Avoid_: Enterprise Policy, approval grant, permanent rule
+
+**Workflow Candidate**:
+A reviewable, instruction-only description of conditions, exceptions, inputs, ordered guidance, expected outcomes, and Verification derived from confirmed Conventions with complete Episode lineage. It has no execution or Policy authority and remains editable, rejectable, supersedable, and archivable by people.
+_Avoid_: Active workflow, Skill, Enterprise Policy, executable automation
+
+**Skill Candidate**:
+An instruction-only, inactive Skill version isolated for static checks, distinct real trials, and independent Verification. Workflow-derived candidates remain bound to the exact reviewed Workflow revision and content identity until promotion.
+_Avoid_: Active Skill, Workflow Candidate, executable plugin, trial result
+
+**Skill Version**:
+An immutable, integrity-sealed snapshot of managed Skill instructions and promotion provenance within one Profile. Activation and rollback create observable lifecycle events without rewriting prior versions.
+_Avoid_: Skill Candidate, mutable file backup, Git commit, global rollout
+
+**Enterprise Policy**:
+An authoritative organizational constraint or decision source that governs an action without defining the customer's entire business model.
+_Avoid_: Model guess, Convention Candidate, built-in industry workflow
+
+**Enterprise Policy Decision**:
+A versioned action directive stamped by a trusted enterprise publisher with effective scope, effective time, and audit evidence; its disposition is allow, deny, require approval, constrain, or missing evidence.
+_Avoid_: Model recommendation, learned convention, Tool metadata, global autonomy switch
+
+**Action Governance Decision**:
+The explainable per-action result that combines Tool risk, side effect, reversibility, Enterprise Policy, Effect state, measured reliability, Approval, and Execution Grant immediately before Pi Tool enforcement.
+_Avoid_: Global autonomy level, Enterprise Policy publication, model confidence
+
+**Autonomy Rollout Level**:
+A Profile-scoped, evidence-gated release boundary for one generic organizational-intelligence capability: Situation context, Episode publication, Initiative observation, read-only investigation, or reversible action. It controls whether an already governed capability may run; it does not describe a customer's workflow or replace per-action Governance.
+_Avoid_: Customer business stage, global intelligence mode, Enterprise Policy, action risk score
+
+**Execution Grant**:
+A bounded active-task authority allowing named capabilities after approval; it never overrides Enterprise deny, Core hard blocks, or unresolved Effect state.
+_Avoid_: Session-wide permission, Tool availability, Access Scope
+
+**Compensation**:
+An authorized inverse action that uses a committed Effect's trusted receipt to restore an acceptable state and produces its own Effect and Verification evidence.
+_Avoid_: Deleting history, changing the original Effect to failed, assumed rollback
+
+**Proven Reversibility**:
+Evidence that a mutation Capability has a registered Compensation, sufficient trusted receipt data, and a successful bounded rollback exercise for the current rollout.
+_Avoid_: `reversible=true` alone, best-effort undo, model promise
+
+**Emergency Stop**:
+A durable authority that denies new proactive mutations and interrupts uncommitted proactive execution within its scope; committed Effects still require Compensation.
+_Avoid_: Process kill, notification mute, automatic undo
+
+**Capability**:
+A versioned Tool, MCP operation, or Skill affordance that can be ranked and proposed to Pi for the current Situation; it is inventory metadata, not permission or execution authority.
+_Avoid_: Tool execution, Enterprise Policy, fixed business route
+
+**Capability Selection**:
+A bounded, explainable ranking of versioned Capabilities for a query plus the Pi Tool names proposed for turn-scoped activation.
+_Avoid_: Tool call, action approval, Capability Router loop
+
+**Pi Active Tools**:
+The current turn-scoped Tool inventory exposed by Pi and the sole execution authority after Capability Selection; selection never executes a Tool itself.
+_Avoid_: Capability candidates, Skill catalog, authorization grant
+
+**Access Scope**:
+The trusted identity and authorization boundary within which information and capabilities may be used; it does not describe the meaning of the customer's business.
+_Avoid_: Situation, business ontology, model confidence
+
+**Initiative**:
+The Agent recognizing meaningful work, relating it to a goal, and accepting durable responsibility without requiring the user to prescribe each execution step.
+_Avoid_: Unsolicited notification, heartbeat message, speculative action
+
+**Initiative Observation**:
+An evidence-backed, scope-bound record of a proposed action, expected value, risk, rationale, intended verification, dedupe identity, and feedback. Observation itself never grants execution authority. In observe-only mode it never creates an Objective, invokes Pi or Tools, or emits a notification.
+
+**Proactive Investigation**:
+The bounded Phase-2 admission of a high-value, sufficiently confident Initiative Observation into a recoverable read-only Objective. Every admitted capability must have `sideEffect=none` and pass Action Governance. The Objective then uses the same Pi Task Run, Checkpoint, Verification, and recovery lifecycle as other durable work; a non-material result stays quiet.
+_Avoid_: Objective, execution grant, notification, hidden enterprise rule
+
+**Proactive Reversible Action**:
+The bounded Phase-3 admission of one low-risk mutation under a current Enterprise Policy Decision, trusted Access Scope, durable Emergency Stop revision, and current Compensation exercise. Forward and inverse actions use separate Policy decisions, Pi capability allowlists, Effects, receipts, and Verification; the original Effect is never rewritten.
+_Avoid_: Global autonomy switch, `reversible=true` without a drill, inferred customer rule, direct Tool call outside Pi
+
+**Initiative Trigger Inbox**:
+The durable, multi-instance-fenced admission queue shared by Task-transition and enterprise-event adapters. A Trigger remains queued, processing, completed, awaiting a delivery route, or ready for notification without becoming an Objective or a second Agent loop.
+_Avoid_: Event bus, Task Ledger, notification transport, heartbeat implementation
+
+**Organizational Apprenticeship**:
+The Agent's ongoing learning from observation, episodes, corrections, authoritative sources, and outcomes while it performs useful work.
+_Avoid_: One-time onboarding, silent policy creation, passive logging
+
+**Unknown-Business Evaluation Corpus**:
+A seeded, reproducible set of situations, corrections, conflicts, long-running work, interruptions, and effects expressed with unfamiliar organizational vocabulary so Runtime quality is measured without assuming a customer's business ontology.
+_Avoid_: Customer workflow template, demo prompts, industry ontology
+
+**Behavioral Baseline**:
+A versioned observation of Runtime quality, reliability, cost, and latency on a declared Evaluation Corpus and machine profile; it is evidence for regression decisions, not a permanent product rule.
+_Avoid_: Acceptance Criteria, benchmark claim without evidence, universal SLA
+
+**Acceptance Evidence Program**:
+The machine-checked P0–P10 map from each architectural or quantitative requirement to a reproducible command and versioned evidence artifact, including explicit deferral reasons and exit criteria where production evidence does not yet exist.
+_Avoid_: Checklist assertion, synthetic production claim, undocumented waiver
+
+**Migration Rollback Rehearsal**:
+An isolated exercise using production migration, backup, integrity-check, and persistence interfaces to prove legacy responsibility survives migration and a declared backup restores exactly its pre-backup state.
+_Avoid_: Unit-only migration test, destructive production experiment, dual-write rollback
+
+**Responsibility Identity**:
+The durable owner of Objectives, Tasks, Plans, Sub-Agents, Effects, cancellation, and recovery. It may cross channels only through a trusted cross-application identity supplied by an adapter or identity provider; Session and Memory scopes remain separate.
+_Avoid_: Display name, message-text identity, Session ID, automatic permission expansion
+
+**Channel Runtime Contract**:
+The rule that a channel may adapt ingress, media, presentation, approval UI, and delivery but must use the shared Profile Runtime for Task, Effect, Governance, Verification, cancellation, recovery, and Pi execution.
+_Avoid_: Channel-specific Agent loop, channel Task store, ungoverned Tool factory
 
 **Credential Secret**:
 Sensitive authentication material that a trusted capability may use for an owner but must not return to the Agent, memory, transcript, or ordinary Tool result.

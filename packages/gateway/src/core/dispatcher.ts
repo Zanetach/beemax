@@ -21,6 +21,7 @@ import {
 	type InteractionEvent,
 	type AgentRuntimePort,
 	type DeliveryTarget,
+	type ExecutionEnvelope,
 	type TaskPlanProgressEvent,
 } from "@beemax/core";
 import type { InboundMessage, PlatformAdapter, PlatformCardAction } from "./types.ts";
@@ -121,9 +122,10 @@ export class Dispatcher {
 			}
 			const snapshot = await this.interaction.snapshot(effective.source);
 			if (["running", "queued", "awaiting_approval"].includes(snapshot.phase)) {
+				const media = effective.mediaPaths.length ? await prepareAgentMediaInput(effective) : undefined;
 				const queued = command?.kind === "steer"
-					? await this.interaction.dispatch({ type: "turn.steer", source: effective.source, text: command.text })
-					: await this.interaction.dispatch({ type: "turn.queue", source: effective.source, text: effective.text });
+					? await this.interaction.dispatch({ type: "turn.steer", source: effective.source, text: command.text, images: media?.images })
+					: await this.interaction.dispatch({ type: "turn.queue", source: effective.source, text: media?.text ?? effective.text, images: media?.images });
 				if (!("queued" in queued)) throw new Error("Active Agent turn returned an invalid queue result");
 				if (!queued.queued) {
 					await this.platform.send(msg.source.chatId, `当前会话队列已满（${queued.position} 条），请等待部分消息处理完成，或发送 /stop 停止当前任务。`);
@@ -329,7 +331,7 @@ export class Dispatcher {
 	async runAutomation(
 		source: InboundMessage["source"],
 		prompt: string,
-		options: { key: string; timeoutMs: number; signal?: AbortSignal },
+		options: { key: string; timeoutMs: number; signal?: AbortSignal; executionEnvelope?: Readonly<ExecutionEnvelope>; objectiveTaskId?: string; allowedCapabilities?: string[] },
 	): Promise<string> {
 		const automationSource = { ...source, threadId: `__automation:${options.key}`, messageId: undefined };
 		const msg: InboundMessage = {
@@ -342,11 +344,13 @@ export class Dispatcher {
 			timestamp: Date.now(),
 		};
 		if (options.signal?.aborted) throw options.signal.reason;
-		const abort = () => { void this.runtime.cancel(automationSource); };
+		let rejectAbort: ((reason: unknown) => void) | undefined;
+		const aborted = options.signal ? new Promise<never>((_resolve, reject) => { rejectAbort = reject; }) : undefined;
+		const abort = () => { void this.runtime.cancel(automationSource); rejectAbort?.(options.signal?.reason ?? new Error("Automation aborted")); };
 		options.signal?.addEventListener("abort", abort, { once: true });
 		let result;
 		try {
-			result = await Promise.race([this.runtime.run({ source: msg.source, text: prompt, timeoutMs: options.timeoutMs, expandPromptTemplates: false, mode: "automation" }), ...(options.signal ? [new Promise<never>((_, reject) => options.signal!.addEventListener("abort", () => reject(options.signal!.reason), { once: true }))] : [])]);
+			result = await Promise.race([this.runtime.run({ source: msg.source, text: prompt, timeoutMs: options.timeoutMs, expandPromptTemplates: false, mode: "automation", ...(options.objectiveTaskId ? { objectiveTaskId: options.objectiveTaskId } : {}), ...(options.allowedCapabilities ? { allowedCapabilities: options.allowedCapabilities } : {}), ...(options.executionEnvelope ? { executionEnvelope: options.executionEnvelope } : {}) }), ...(aborted ? [aborted] : [])]);
 		} finally { options.signal?.removeEventListener("abort", abort); }
 		if (!result.answer.trim() || result.answer === "(no response)") throw new Error("Automation agent returned no answer");
 		return result.answer.trim();

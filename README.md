@@ -67,7 +67,7 @@ external integrations. The Feishu card renderer remains in
 On Linux or macOS with Node.js 22.19 or newer:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/Zanetach/beemax/v0.1.0-preview.15/scripts/bootstrap-install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/Zanetach/beemax/v1.0.0/scripts/bootstrap-install.sh | bash
 
 # Or, from a source checkout:
 ./scripts/install.sh
@@ -79,7 +79,7 @@ The one-command installer downloads one verified BeeMax release archive, which
 already contains Pi. It keeps executable source files in `~/.beemax/app` and
 the `beemax` command in `~/.local/bin`; Agent Profiles, secrets, memory, and
 sessions remain isolated under `~/.beemax/profiles`. To install another build,
-set `BEEMAX_VERSION`, for example `curl -fsSL https://raw.githubusercontent.com/Zanetach/beemax/v0.1.0-preview.15/scripts/bootstrap-install.sh | BEEMAX_VERSION=v0.1.0-preview.15 bash`.
+set `BEEMAX_VERSION`, for example `curl -fsSL https://raw.githubusercontent.com/Zanetach/beemax/v1.0.0/scripts/bootstrap-install.sh | BEEMAX_VERSION=v1.0.0 bash`.
 Run the same installer with `--uninstall` to remove application files while
 keeping your Profiles and data.
 
@@ -407,6 +407,76 @@ CLI or Gateway with a fenced lease and bounded retry. The notice links back to
 `/tasks show` instead of copying Task results into the delivery queue.
 Child Pi
 transcripts remain in the profile session directory for audit.
+
+## Inbound image understanding
+
+BeeMax routes inbound chat images through one profile-scoped perception seam:
+
+- The active model receives the original image when it declares native image input.
+- Other configured image-capable chat models are discovered automatically as auxiliary vision adapters.
+- BeeMax installs Tesseract automatically and discovers it as a local OCR adapter on macOS or Ubuntu.
+- A text-only model with no available adapter fails explicitly instead of pretending it inspected the image.
+
+```yaml
+mediaUnderstanding:
+  auxiliaryVisionEnabled: true
+  localOcr:
+    enabled: true
+    # Optional. Omit command to discover tesseract from PATH.
+    # command: /usr/bin/tesseract
+    # languages: eng+chi_sim
+    timeoutMs: 30000
+```
+
+The installer includes English and Simplified Chinese OCR data. Existing
+Tesseract installations are kept as-is. CI, offline, and custom image builds can
+skip system dependency installation with `BEEMAX_INSTALL_MEDIA_DEPS=0`; in that
+case, preinstall Tesseract or configure another media adapter. Run
+`beemax doctor` to see the effective native, auxiliary, and local media
+capabilities.
+
+Media adapter output is injected into Pi as untrusted evidence with input
+digests, provenance, confidence when available, warnings, and timing. Raw image
+bytes are not copied into receipts, telemetry, Task Ledger, or Memory.
+
+## Context management and compaction
+
+BeeMax uses one context pipeline and one compactor. Core assembles bounded Work
+Context, scoped Memory evidence, and durable Task/Checkpoint state; Pi owns the
+live session and performs manual, threshold, and overflow compaction. Defaults
+scale from the selected model's actual context window, while a Profile may
+override them explicitly:
+
+For catalog models, BeeMax reads model limits from Pi's model catalog. Custom
+providers can declare `model.contextWindow` and `model.maxTokens` (or
+`BEEMAX_MODEL_CONTEXT_WINDOW` and `BEEMAX_MODEL_MAX_TOKENS`); 128K/8192 remain
+compatibility defaults only when those capabilities are omitted.
+
+```yaml
+context:
+  maxTurnChars: 12000
+  maxToolResultTokens: 12000
+  compaction:
+    enabled: true
+    # reserveTokens: 19200
+    # keepRecentTokens: 20480
+```
+
+`/usage` reports the effective trigger, reserve, and retained-recent budgets.
+Gateway logs record content-free compaction lifecycle events. After every
+summary, BeeMax verifies that durable Task identities survived; if any are
+missing, it reinjects the authoritative Task Preservation Envelope without
+starting another model turn and persists that recovery context in Pi's session
+transcript, so a restart cannot erase it. Oversized summary input is bounded inside Pi while
+retaining recent history and BeeMax's preservation instructions. A deterministic
+multilingual quality proxy also reports whether goals, acceptance criteria, and
+checkpoint continuation anchors became degraded; it observes semantic loss but
+does not invoke a second judge model or trigger unsafe recovery from paraphrases.
+
+The same `maxToolResultTokens` ceiling is enforced at Pi's `tool_result` seam for
+built-in tools, BeeMax tools, and MCP adapters. Individual Tool byte policies
+remain hard upper bounds; the Profile token ceiling is an additional shared
+context-protection budget.
 
 ## Codex image generation
 
