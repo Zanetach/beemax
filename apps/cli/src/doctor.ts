@@ -54,18 +54,25 @@ export async function inspectDoctor(config: BeeMaxConfig, options: DoctorOptions
 	checks.push({ name: "Toolset", status: config.agent.toolset === "safe" ? "WARN" : "PASS", detail: config.agent.toolset });
 	await checkExecutionBackend(config, checks);
 	const gatewayRequired = options.requireGateway ?? true;
-	checks.push({ name: "Feishu credentials", status: config.gateway.feishu.appId && config.gateway.feishu.appSecret ? "PASS" : gatewayRequired ? "FAIL" : "WARN", detail: config.gateway.feishu.appId && config.gateway.feishu.appSecret ? "configured" : "not configured" });
-	const admitted = config.gateway.feishu.allowAllUsers || config.gateway.feishu.allowedUsers.length > 0;
-	checks.push({ name: "Feishu access", status: admitted ? (config.gateway.feishu.allowAllUsers ? "WARN" : "PASS") : gatewayRequired ? "FAIL" : "WARN", detail: admitted ? (config.gateway.feishu.allowAllUsers ? "public/dev mode" : `${config.gateway.feishu.allowedUsers.length} allowed user(s)`) : "not configured" });
-	if (config.gateway.feishu.appId && config.gateway.feishu.appSecret) {
+	const enabledChannels = config.gateway.channels.filter((channel) => channel.enabled);
+	checks.push({ name: "Gateway channels", status: enabledChannels.length ? "PASS" : gatewayRequired ? "FAIL" : "WARN", detail: enabledChannels.length ? enabledChannels.map((channel) => `${channel.id}:${channel.adapter}`).join(", ") : "none enabled" });
+	if (enabledChannels.some((channel) => channel.adapter === "feishu")) {
+		const credentials = Boolean(config.gateway.feishu.appId && config.gateway.feishu.appSecret);
+		checks.push({ name: "Feishu credentials", status: credentials ? "PASS" : "FAIL", detail: credentials ? "configured" : "not configured" });
+		const admitted = config.gateway.feishu.allowAllUsers || config.gateway.feishu.allowedUsers.length > 0;
+		checks.push({ name: "Feishu access", status: admitted ? (config.gateway.feishu.allowAllUsers ? "WARN" : "PASS") : "FAIL", detail: admitted ? (config.gateway.feishu.allowAllUsers ? "public/dev mode" : `${config.gateway.feishu.allowedUsers.length} allowed user(s)`) : "not configured" });
 		try {
 			validateFeishuWebhookSettings(config.gateway.feishu);
-			checks.push({ name: "Feishu transport", status: "PASS", detail: config.gateway.feishu.connectionMode });
+			checks.push({ name: "Feishu transport", status: credentials ? "PASS" : "FAIL", detail: config.gateway.feishu.connectionMode });
 		} catch (error) {
 			checks.push({ name: "Feishu transport", status: "FAIL", detail: error instanceof Error ? error.message : String(error) });
 		}
-	} else {
-		checks.push({ name: "Feishu transport", status: gatewayRequired ? "FAIL" : "WARN", detail: "not configured" });
+	}
+	if (enabledChannels.some((channel) => channel.adapter === "telegram")) {
+		const credentials = Boolean(config.gateway.telegram.botToken);
+		const admitted = config.gateway.telegram.allowAllUsers || config.gateway.telegram.allowedUsers.length > 0;
+		checks.push({ name: "Telegram credentials", status: credentials ? "PASS" : "FAIL", detail: credentials ? "configured" : "not configured" });
+		checks.push({ name: "Telegram access", status: admitted ? (config.gateway.telegram.allowAllUsers ? "WARN" : "PASS") : "FAIL", detail: admitted ? (config.gateway.telegram.allowAllUsers ? "public/dev mode" : `${config.gateway.telegram.allowedUsers.length} allowed user(s)`) : "not configured" });
 	}
 
 	try {

@@ -9,6 +9,7 @@ import { activeProfile } from "../dist/profile-home.js";
 import { curatedMemoryPrompt } from "@beemax/core";
 import {
 	configureFeishuChannel,
+	configureTelegramChannel,
 	configureModel,
 	createProfile,
 	deleteProfile,
@@ -16,6 +17,7 @@ import {
 	migrateProfile,
 	probeFeishuApp,
 	removeFeishuChannel,
+	removeTelegramChannel,
 	syncBuiltinSkills,
 	setFeishuHomeChat,
 	testFeishuCredentials,
@@ -109,6 +111,58 @@ test("profile creation and Feishu channel configuration keep secrets in a protec
 	await deleteProfile("personal", options);
 	await deleteProfile("isolated", options);
 	assert.deepEqual(await listProfiles(options), []);
+});
+
+test("runtime config loads registry-based channels while keeping adapter secrets outside YAML", async () => {
+	const root = await mkdtemp(join(tmpdir(), "beemax-channel-config-root-"));
+	const home = await mkdtemp(join(tmpdir(), "beemax-channel-config-home-"));
+	const paths = await createProfile("channels", { root, home });
+	await writeFile(paths.configPath, `
+gateway:
+  channels:
+    - id: telegram-main
+      adapter: telegram
+      enabled: true
+      credentialRef: profile-env:telegram
+      settings:
+        allowedUsers: ["42"]
+        allowedChats: ["100"]
+        allowAllUsers: false
+        pollingTimeoutSeconds: 20
+`);
+	await writeFile(paths.envPath, 'TELEGRAM_BOT_TOKEN="telegram-secret"\n', { mode: 0o600 });
+
+	const config = loadConfig(paths.configPath, "channels");
+	assert.deepEqual(config.gateway.channels, [{
+		id: "telegram-main",
+		adapter: "telegram",
+		enabled: true,
+		credentialRef: "profile-env:telegram",
+		settings: { allowedUsers: ["42"], allowedChats: ["100"], allowAllUsers: false, pollingTimeoutSeconds: 20 },
+	}]);
+	assert.equal(config.gateway.telegram.botToken, "telegram-secret");
+	assert.deepEqual(config.gateway.telegram.allowedUsers, ["42"]);
+	assert.doesNotMatch(await readFile(paths.configPath, "utf8"), /telegram-secret/);
+});
+
+test("Telegram channel lifecycle persists only non-secret settings in the registry config", async () => {
+	const root = await mkdtemp(join(tmpdir(), "beemax-telegram-profile-root-"));
+	const home = await mkdtemp(join(tmpdir(), "beemax-telegram-profile-home-"));
+	const paths = await createProfile("telegram", { root, home });
+	await configureTelegramChannel("telegram", {
+		botToken: "bot-secret",
+		allowedUsers: ["42"],
+		allowedChats: ["100"],
+	}, { root, home });
+	const config = loadConfig(paths.configPath, "telegram");
+	assert.equal(config.gateway.telegram.botToken, "bot-secret");
+	assert.equal(config.gateway.channels[0].adapter, "telegram");
+	assert.equal(config.gateway.channels[0].credentialRef, "profile-env:telegram");
+	assert.doesNotMatch(await readFile(paths.configPath, "utf8"), /bot-secret/);
+	assert.match(await readFile(paths.envPath, "utf8"), /TELEGRAM_BOT_TOKEN/);
+	await removeTelegramChannel("telegram", { root, home });
+	assert.equal(loadConfig(paths.configPath, "telegram").gateway.channels.length, 0);
+	assert.doesNotMatch(await readFile(paths.envPath, "utf8"), /TELEGRAM_BOT_TOKEN/);
 });
 
 test("runtime configuration falls back to the safe default SOUL when a Profile identity is absent or unsafe", async () => {

@@ -1,5 +1,25 @@
 # Changelog
 
+## 1.1.0
+
+- Replaced the Feishu-shaped Gateway startup path with a registry-only
+  `ChannelHost` that attaches multiple transport adapters to one shared Profile
+  Runtime, isolates channel connection failures, and supports pause/resume and
+  channel-neutral delivery routing.
+- Added `gateway.channels[]` declarations with opaque `credentialRef` values,
+  owner-only Profile secret resolution, legacy Feishu configuration migration,
+  per-adapter Doctor checks, and channel lifecycle CLI commands.
+- Added a production Telegram Bot API adapter with bounded long polling,
+  deny-by-default user/chat access, text reply/edit and typing support, native
+  image/file delivery, and bounded temporary downloads for inbound images,
+  documents, audio, and voice.
+- Added capability degradation for channels without interactive cards: the same
+  governed Pi execution produces a final text response without creating a
+  channel-specific Agent loop.
+- Preserved Core ownership of Tasks, Memory, Policy, Effects, Verification,
+  recovery, automation, and Initiative while allowing one Gateway process to
+  host Feishu/Lark and Telegram together.
+
 ## 1.0.0
 
 - Unified interactive, durable-task, recovery, Initiative, Tool Effect,

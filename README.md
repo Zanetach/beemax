@@ -1,6 +1,6 @@
 # BeeMax Agent
 
-> A durable personal and organizational Agent runtime built on Pi, with scoped Memory, governed execution, recoverable Tasks, progressive Skills, and local or Feishu delivery.
+> A durable personal and organizational Agent runtime built on Pi, with scoped Memory, governed execution, recoverable Tasks, progressive Skills, and multi-channel delivery.
 
 [![Release](https://img.shields.io/github/v/release/Zanetach/beemax?display_name=tag)](https://github.com/Zanetach/beemax/releases/latest)
 [![CI](https://github.com/Zanetach/beemax/actions/workflows/ci.yml/badge.svg)](https://github.com/Zanetach/beemax/actions/workflows/ci.yml)
@@ -9,7 +9,7 @@
 
 ![BeeMax Agent turns scoped context and durable memory into governed, verified execution](docs/assets/beemax-agent-runtime.png)
 
-BeeMax is one Agent product with one Core-owned Pi execution loop. It can chat locally, connect to Feishu/Lark, preserve long-running responsibility across restarts, and understand images through native vision or OCR.
+BeeMax is one Agent product with one Core-owned Pi execution loop. It can chat locally, connect to Feishu/Lark and Telegram through one Profile Gateway, preserve long-running responsibility across restarts, and understand images through native vision or OCR.
 
 Every surface operates under Profile-scoped policy.
 
@@ -44,7 +44,7 @@ Pi owns model interaction, tools, session events, and live compaction. BeeMax Co
 Linux and macOS require Node.js 22.19 or newer, `curl`, `tar`, `npm`, and either `sha256sum` or `shasum`.
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/Zanetach/beemax/v1.0.0/scripts/bootstrap-install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/Zanetach/beemax/v1.1.0/scripts/bootstrap-install.sh | bash
 ```
 
 The installer downloads a checksum-verified release archive containing BeeMax and the vendored Pi source. Application files go to `~/.beemax/app`; the command is installed to `~/.local/bin`.
@@ -73,7 +73,7 @@ beemax chat --profile personal
 
 Local chat uses the same Profile, Memory, Skills, Pi runtime, governance, and durable work graph as a channel Gateway.
 
-### 4. Connect Feishu or Lark when needed
+### 4. Connect messaging channels when needed
 
 ```bash
 beemax gateway setup --profile personal
@@ -82,7 +82,15 @@ beemax gateway run --profile personal
 
 The setup flow configures the channel allowlist, probes credentials and bot identity, and prints the Feishu publishing checklist. WebSocket long connection is the default; webhook mode is available for public HTTPS deployments.
 
-## What ships in 1.0
+Telegram can run beside Feishu in the same Profile Gateway:
+
+```bash
+beemax channel add telegram --profile personal
+beemax channel test telegram --profile personal
+beemax channel list --profile personal
+```
+
+## What ships in 1.1
 
 | Area | Implemented surface |
 | --- | --- |
@@ -93,7 +101,7 @@ The setup flow configures the channel allowlist, probes credentials and bot iden
 | Effects | One authority for mutating Tool Effects, idempotency, provider receipts, unknown outcomes, reconciliation, and compensation |
 | Initiative | Evidence-gated observation and read-only investigation with duplicate and interruption controls |
 | Context | Model-aware budgets, bounded Tool results, Pi compaction, Task Preservation Envelopes, and restart-safe recovery context |
-| Channels | Adaptive terminal UI plus Feishu/Lark streaming cards, pairing, allowlists, idempotency, media delivery, and service lifecycle |
+| Channels | Registry-based ChannelHost, shared Profile Runtime, Feishu/Lark streaming cards, Telegram text/media, access boundaries, idempotency, delivery routing, and service lifecycle |
 | Images | Native model vision, auxiliary configured vision models, local Tesseract OCR, and optional GPT Image generation |
 | Capabilities | Progressive Skills, Web research, MCP, WeKnora retrieval, Feishu meetings, files, schedules, reminders, and bounded Sub-Agents |
 | Operations | Doctor, Profile backup/migration, Linux systemd, macOS LaunchAgent, logs, traces, Effect inspection, and verified updates |
@@ -112,8 +120,9 @@ The setup flow configures the channel allowlist, probes credentials and bot iden
 │ Capability adapters                                      │
 │ Web · MCP · WeKnora · Feishu VC · images · files          │
 ├───────────────────────────────────────────────────────────┤
-│ Gateway control plane                                    │
-│ auth · routing · idempotency · stream · delivery · health │
+│ Gateway / ChannelHost                                    │
+│ registry · connection · auth · routing · presentation    │
+│ Feishu/Lark · Telegram · future channel adapters         │
 ├───────────────────────────────────────────────────────────┤
 │ Operations                                                │
 │ install · Profiles · services · backup · doctor · logs    │
@@ -346,6 +355,32 @@ knowledge:
 
 Store `BEEMAX_WEKNORA_API_KEY` in the Profile `.env`.
 
+## Messaging Gateway
+
+One Profile Gateway hosts all enabled channel adapters while using exactly one shared Profile Runtime. `AdapterRegistry` creates transports, `ChannelHost` isolates lifecycle failures, and `GatewayDeliveryPort` routes outbound artifacts by platform. Channel adapters normalize identity, messages and media; they do not own Tasks, Memory, Policy, Effects, Verification, recovery, or a second Pi loop.
+
+Non-secret declarations live under `gateway.channels[]`; each entry has an adapter ID, instance ID, enabled state, `credentialRef`, and adapter settings. Built-in channel Secrets remain in the owner-only Profile `.env` and are resolved by `profile-env:<adapter>` without entering YAML, logs, Memory, or model context.
+
+```yaml
+gateway:
+  channels:
+    - id: feishu-main
+      adapter: feishu
+      enabled: true
+      credentialRef: profile-env:feishu
+      settings: {}
+    - id: telegram-main
+      adapter: telegram
+      enabled: true
+      credentialRef: profile-env:telegram
+      settings:
+        allowedUsers: ["123456789"]
+        allowedChats: []
+        allowAllUsers: false
+```
+
+Run `beemax channel list --profile personal` to inspect declarations, `beemax doctor --profile personal` to validate enabled adapters, and the standard Gateway lifecycle commands to run them together.
+
 ## Feishu and Lark
 
 BeeMax supports self-built Feishu/Lark applications through WebSocket long connection or encrypted webhook delivery.
@@ -362,9 +397,15 @@ beemax pairing approve feishu ABCD2345 --profile personal
 beemax pairing revoke feishu ou_xxx --profile personal
 ```
 
-Each turn renders one streaming interactive card with answer, progress, governed approval actions, bounded tool activity, and usage metadata. Only one Profile Gateway may consume a given Feishu App ID at a time.
+Each turn renders one streaming interactive card with answer, progress, governed approval actions, bounded tool activity, and usage metadata. Only one Gateway process may own a Profile at a time.
 
 Feishu meeting tools cover meeting queries, reservations, participants, host control, and recording lifecycle. Private user resources still require a future Feishu User OAuth layer.
+
+## Telegram
+
+BeeMax uses the Telegram Bot API with bounded long polling, deny-by-default user/chat allowlists, text reply and edit support, typing indicators, native image/file delivery, and bounded temporary downloads for inbound photos, documents, audio, and voice messages. Channels without interactive cards automatically degrade to final text while retaining the same governed Core execution.
+
+Create a bot with BotFather, then run `beemax channel add telegram --profile personal`. The token is prompted securely or read from `TELEGRAM_BOT_TOKEN`; authorized numeric user IDs may be supplied through the prompt or `TELEGRAM_ALLOWED_USERS`.
 
 ## Deployment and operations
 
@@ -409,7 +450,7 @@ beemax trace show <execution-id> --profile personal
 
 ## Security model
 
-- Feishu/Lark access defaults to deny.
+- Feishu/Lark and Telegram access default to deny.
 - Profile secrets are isolated from YAML and protected with owner-only permissions.
 - The Credential Vault stores encrypted external credentials behind scoped references.
 - Shell and file tools remain inside the configured workspace and block known destructive commands and credential paths.
@@ -520,12 +561,12 @@ docs/                             Architecture, ADRs, operations, PRD, and resea
 
 ## Current boundaries
 
-BeeMax 1.0 intentionally does not include a fixed customer business ontology, a second Agent Loop, high-risk fully autonomous execution, large multi-Agent organizations, or automatic production Skill mutation.
+BeeMax 1.1 intentionally does not include a fixed customer business ontology, a second Agent Loop, high-risk fully autonomous execution, large multi-Agent organizations, or automatic production Skill mutation.
 
-Planned extension points include additional channel adapters, Feishu User OAuth for private resources, externally backed work queues for larger horizontal deployments, and deeper enterprise policy integrations.
+Planned extension points include additional registry adapters such as Slack, Discord, DingTalk, and WeCom; Feishu User OAuth for private resources; externally backed work queues for larger horizontal deployments; and deeper enterprise policy integrations.
 
 ---
 
-**中文简介：** BeeMax 1.0 是一个基于 Pi 的持久化智能体运行时。它通过 Situation/Work Context 理解未知业务语义，以作用域 Memory 保存证据。
+**中文简介：** BeeMax 1.1 是一个基于 Pi 的持久化智能体运行时。它通过同一个 Profile Gateway 接入飞书/Lark、Telegram 与未来渠道，通过 Situation/Work Context 理解未知业务语义，以作用域 Memory 保存证据。
 
 Task Ledger、Effect、Checkpoint 和 Verification 共同承担可恢复责任，企业策略与审批负责约束执行边界。

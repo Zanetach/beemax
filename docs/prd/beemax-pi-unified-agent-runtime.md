@@ -8,7 +8,7 @@
 | 需求方 | BeeMax 产品与 Runtime 团队 |
 | PRD 编写人 | Codex（基于产品负责人确认的方向） |
 | 初始日期 | 2026-07-13 |
-| 当前版本 | v2.1 |
+| 当前版本 | v2.2 |
 | 实施任务 | [`tickets.md`](../../tickets.md) |
 
 ## 修改记录
@@ -18,6 +18,7 @@
 | v1.0 | 2026-07-13 | 定义统一 Task、Policy、Effect、Capability、Context、Memory 与 Pi Runtime 改造 |
 | v2.0 | 2026-07-13 | 合并 intelligence-first 设计；明确 Pi 是唯一执行内核；分离 Situation 与 Access Scope；加入 Organization Memory、Initiative、组织学习与自适应自治方向 |
 | v2.1 | 2026-07-13 | 落地统一 Media Understanding seam；支持原生视觉、辅助视觉与 Ubuntu 本地 OCR，不新增 Agent Loop |
+| v2.2 | 2026-07-14 | 落地 Registry-based ChannelHost；一个 Profile Runtime 同时承载飞书/Lark 与 Telegram adapter，保持 Gateway/Core 分权 |
 
 ---
 
@@ -255,7 +256,13 @@ Messages / Timers / Enterprise Events / Task Transitions
 
 Interaction、Automation、Initiative、Schedule、enterprise event 与 Recovery 都是 Trigger adapter；它们不能拥有独立 Agent Loop 或不同完成语义。
 
-### 6.1 Media Understanding
+### 6.1 ChannelHost
+
+Gateway 使用 `AdapterRegistry + ChannelHost + GatewayDeliveryPort` 作为唯一消息接入形态。一个 Profile 只创建一次 Core/Pi Runtime，可挂载多个不同平台 adapter；adapter 只负责可信 ingress、媒体临时生命周期、呈现能力和 delivery。渠道连接失败彼此隔离，但不能复制 Runtime、Task Ledger、Memory、Policy、Effect、Verification 或 Scheduler。
+
+渠道声明使用开放的 adapter ID 与 `gateway.channels[]`，Core 不枚举平台。Secret 由 `credentialRef` 指向 Profile 受保护来源，不能写入普通 settings。没有卡片能力的平台自动降级为最终文本；这种降级只改变呈现，不改变执行、审批、完成或恢复语义。
+
+### 6.2 Media Understanding
 
 聊天图片、后续 steer 和 follow-up 在进入 Pi prompt 前统一经过 Media Understanding deep module：
 

@@ -87,6 +87,19 @@ test("Dispatcher falls back to final text when card updates remain unavailable",
 	assert.ok(texts.includes("recoverable final answer")); dispatcher.dispose();
 });
 
+test("Dispatcher degrades cleanly to final text when a channel has no card capability", async () => {
+	let inbound; const texts = [];
+	const platform = {
+		name: "telegram", isConnected: true, onMessage: (handler) => { inbound = handler; }, connect: async () => true, disconnect: async () => undefined,
+		send: async (_chatId, text) => { texts.push(text); return { success: true }; }, editMessage: async () => ({ success: true }), sendTyping: async () => undefined, stopTyping: async () => undefined,
+	};
+	const runtime = { run: async () => ({ answer: "portable final answer", model: "test", durationMs: 1, usage: {} }), cancel: async () => false, handleControl: async () => undefined, isBusy: () => false, dispose: () => undefined };
+	const dispatcher = new Dispatcher({ runtime, flushIntervalMs: 0 }, platform);
+	await inbound({ text: "request", messageType: "text", source: { ...source, platform: "telegram", messageId: "plain-text" }, mediaPaths: [], mediaTypes: [], raw: {}, timestamp: Date.now() });
+	assert.ok(texts.includes("portable final answer"));
+	await dispatcher.dispose();
+});
+
 test("Dispatcher falls back to error text when a failed Turn cannot update its card", async () => {
 	let inbound; const texts = [];
 	const platform = {

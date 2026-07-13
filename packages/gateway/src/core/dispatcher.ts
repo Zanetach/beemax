@@ -24,7 +24,7 @@ import {
 	type ExecutionEnvelope,
 	type TaskPlanProgressEvent,
 } from "@beemax/core";
-import type { InboundMessage, PlatformAdapter, PlatformCardAction } from "./types.ts";
+import type { InboundMessage, PlatformAdapter, PlatformCardAction, SendResult } from "./types.ts";
 import { CardSession } from "../card/session.ts";
 import { renderCard, type CardRenderOptions } from "../card/render.ts";
 import { FlushController } from "../card/flush.ts";
@@ -185,17 +185,20 @@ export class Dispatcher {
 		const chatId = msg.source.chatId;
 		const card = new CardSession();
 		const flush = new FlushController(this.deps.flushIntervalMs ?? 350);
+		const sendCard = this.platform.sendCard?.bind(this.platform);
+		const updateCard = this.platform.updateCard?.bind(this.platform);
 		let cardMessageId: string | undefined;
-		let cardCreation: Promise<Awaited<ReturnType<PlatformAdapter["sendCard"]>>> | undefined;
+		let cardCreation: Promise<SendResult> | undefined;
 		let cardUpdate: Promise<boolean> | undefined;
 		let pendingCardRender: Record<string, unknown> | undefined;
 		let presentationDegraded = false;
 
 		const renderUpdate = async (): Promise<boolean> => {
+			if (!sendCard || !updateCard) { presentationDegraded = true; return false; }
 			const rendered = renderCard(card, this.deps.cardOptions);
 			if (!cardMessageId) {
 				if (!cardCreation) {
-					const pending = this.platform.sendCard(chatId, rendered, msg.source.messageId, Boolean(msg.source.threadId), `${this.profileId}:${msg.source.messageId ?? "turn"}`);
+					const pending = sendCard(chatId, rendered, msg.source.messageId, Boolean(msg.source.threadId), `${this.profileId}:${msg.source.messageId ?? "turn"}`);
 					cardCreation = pending.then((res) => {
 						if (res.success && res.messageId) { cardMessageId = res.messageId; this.rememberCardBinding(res.messageId, msg.source, card.pendingApprovalId); }
 						return res;
@@ -212,7 +215,7 @@ export class Dispatcher {
 					let success = true;
 					while (pendingCardRender) {
 						const next = pendingCardRender; pendingCardRender = undefined;
-						const res = await this.platform.updateCard(cardMessageId!, next);
+						const res = await updateCard(cardMessageId!, next);
 						success = success && res.success;
 						if (res.success) this.rememberCardBinding(cardMessageId!, msg.source, card.pendingApprovalId);
 					}
@@ -363,7 +366,9 @@ export class Dispatcher {
 			id: `work:${event.workId}`, label: "异步任务计划", status: event.state === "failed" ? "error" : event.state,
 			message: `${event.title} · ${event.completed}/${event.total}${event.failed ? ` · 失败 ${event.failed}` : ""}${event.cancelled ? ` · 取消 ${event.cancelled}` : ""}`,
 		});
-		const result = await this.platform.sendCard(target.chatId, renderCard(card, this.deps.cardOptions), undefined, Boolean(target.threadId), idempotencyKey);
+		const result = this.platform.sendCard
+			? await this.platform.sendCard(target.chatId, renderCard(card, this.deps.cardOptions), undefined, Boolean(target.threadId), idempotencyKey)
+			: await this.platform.send(target.chatId, `${event.title} · ${event.completed}/${event.total}${event.failed ? ` · 失败 ${event.failed}` : ""}${event.cancelled ? ` · 取消 ${event.cancelled}` : ""}`, { idempotencyKey });
 		if (!result.success) throw new Error(result.error ?? `Failed to present Task Plan ${event.workId}`);
 	}
 

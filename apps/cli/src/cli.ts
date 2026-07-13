@@ -3,8 +3,8 @@
  * beemax - BeeMax Agent CLI.
  *
  * Usage:
- *   beemax gateway    Start the Feishu gateway (long-running)
- *   beemax chat       Local interactive chat on stdout (no Feishu)
+ *   beemax gateway    Start the Profile messaging gateway (long-running)
+ *   beemax chat       Local interactive chat on stdout
  *   beemax tui        Compatibility alias for beemax chat --full
  *   beemax model      Show / set the configured model
  */
@@ -16,6 +16,7 @@ import { backupSqliteDatabase, MemoryStore, memoryPersistencePorts, verifySqlite
 import { runDoctor } from "./doctor.ts";
 import {
 	configureFeishuChannel,
+	configureTelegramChannel,
 	configureModel,
 	createProfile,
 	deleteProfile,
@@ -23,9 +24,11 @@ import {
 	listProfiles,
 	migrateProfile,
 	removeFeishuChannel,
+	removeTelegramChannel,
 	setActiveProfile,
 	syncBuiltinSkills,
 	testFeishuCredentials,
+	testTelegramCredentials,
 } from "./profile-config.ts";
 import { activeProfile, resolveProfileLocation } from "./profile-home.ts";
 import { installMacLaunchAgent, installSystemdService, runServiceAction, type ServiceAction } from "./service-manager.ts";
@@ -438,23 +441,55 @@ async function runChannelCommand(parsed: ParsedArgs): Promise<void> {
 	}
 	if (action === "list") {
 		const config = loadConfig(parsed.configPath, profile);
-		const state = config.gateway.feishu.appId && config.gateway.feishu.appSecret ? "configured" : "not configured";
-		console.log(`feishu  ${state}  mode=${config.gateway.feishu.connectionMode}  domain=${config.gateway.feishu.domain}  allowed_users=${config.gateway.feishu.allowedUsers.length}`);
+		if (!config.gateway.channels.length) { console.log("No channels configured."); return; }
+		for (const channel of config.gateway.channels) {
+			const configured = channel.adapter === "feishu"
+				? Boolean(config.gateway.feishu.appId && config.gateway.feishu.appSecret)
+				: channel.adapter === "telegram" ? Boolean(config.gateway.telegram.botToken) : false;
+			console.log(`${channel.adapter}  ${configured ? "configured" : "not configured"}  id=${channel.id}  ${channel.enabled ? "enabled" : "disabled"}`);
+		}
 		return;
 	}
 	if (action === "remove") {
 		if (parsed.options.yes !== true) throw new Error("Channel removal requires --yes");
-		await removeFeishuChannel(profile);
-		console.log(`Removed Feishu credentials from Agent '${profile}'.`);
+		const platform = parsed.positionals[2] ?? "feishu";
+		if (platform === "feishu") await removeFeishuChannel(profile);
+		else if (platform === "telegram") await removeTelegramChannel(profile);
+		else throw new Error(`Unknown channel adapter: ${platform}`);
+		console.log(`Removed ${platform} credentials from Agent '${profile}'.`);
 		return;
 	}
 	if (action === "test") {
 		const config = loadConfig(parsed.configPath, profile);
-		console.log(await testFeishuCredentials(config.gateway.feishu));
+		const platform = parsed.positionals[2] ?? "feishu";
+		if (platform === "feishu") console.log(await testFeishuCredentials(config.gateway.feishu));
+		else if (platform === "telegram") console.log(await testTelegramCredentials(config.gateway.telegram.botToken));
+		else throw new Error(`Unknown channel adapter: ${platform}`);
+		return;
+	}
+	if (action === "add" && parsed.positionals[2] === "telegram") {
+		const current = loadConfig(parsed.configPath, profile);
+		const nonInteractive = parsed.options["non-interactive"] === true || !process.stdin.isTTY;
+		let botToken = process.env.TELEGRAM_BOT_TOKEN ?? current.gateway.telegram.botToken;
+		let allowedUsers = splitList(optionString(parsed, "allowed-users") ?? process.env.TELEGRAM_ALLOWED_USERS) ?? current.gateway.telegram.allowedUsers;
+		if (!nonInteractive) {
+			botToken ||= await askOne("Telegram Bot Token: ", true);
+			if (!allowedUsers.length) allowedUsers = splitList(await askOne("Allowed Telegram user IDs (comma-separated): ")) ?? [];
+		}
+		if (!botToken || !allowedUsers.length) throw new Error("Missing Telegram configuration. Set TELEGRAM_BOT_TOKEN and TELEGRAM_ALLOWED_USERS or run interactively.");
+		await configureTelegramChannel(profile, {
+			botToken,
+			allowedUsers,
+			allowedChats: splitList(optionString(parsed, "allowed-chats")) ?? current.gateway.telegram.allowedChats,
+			allowAllUsers: parsed.options["allow-all-users"] === true,
+			pollingTimeoutSeconds: current.gateway.telegram.pollingTimeoutSeconds,
+			retryBaseDelayMs: current.gateway.telegram.retryBaseDelayMs,
+		});
+		console.log(`Configured Telegram channel for Agent '${profile}'. Run: beemax channel test telegram --profile ${profile}`);
 		return;
 	}
 	if (action !== "add" || parsed.positionals[2] !== "feishu") {
-		throw new Error("Usage: beemax channel add feishu | list | remove | test");
+		throw new Error("Usage: beemax channel add <feishu|telegram> | list | remove <adapter> | test <adapter>");
 	}
 	const current = loadConfig(parsed.configPath, profile);
 	const currentFeishu = current.gateway.feishu;

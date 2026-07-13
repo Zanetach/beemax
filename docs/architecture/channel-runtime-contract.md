@@ -1,6 +1,14 @@
 # BeeMax Channel Runtime Contract
 
-CLI、Feishu 和未来渠道只能是同一个 Profile Runtime 的输入、呈现与投递 adapter。渠道不得拥有自己的 Task、Effect、Memory、Policy、Verification、Recovery 或 Agent Loop。
+CLI、Feishu/Lark、Telegram 和未来渠道只能是同一个 Profile Runtime 的输入、呈现与投递 adapter。渠道不得拥有自己的 Task、Effect、Memory、Policy、Verification、Recovery 或 Agent Loop。
+
+## Gateway 1.1 运行形态
+
+一个 Profile Gateway 由 `AdapterRegistry + ChannelHost + GatewayDeliveryPort` 构成。Registry 只按配置声明创建 adapter；ChannelHost 统一管理启用渠道的启动、失败隔离、暂停、恢复与关闭；DeliveryPort 按 `DeliveryTarget.platform` 选择已连接 adapter。所有 Dispatcher 共享同一个由 `createProfileRuntime` 产生的 Runtime、Interaction adapter 和 durable work graph。
+
+非敏感声明使用 `gateway.channels[]`，Credential Secret 不得出现在 adapter settings。`credentialRef` 只指向 Profile 受保护的 Secret 来源；当前内置 adapter 使用 `profile-env:feishu` 和 `profile-env:telegram`。未知 adapter ID、重复活动平台、无启用渠道或全部连接失败均 fail closed。
+
+原生卡片是渠道能力，不是 Runtime 要求。Feishu/Lark 使用流式交互卡；Telegram 等无卡片渠道降级为 typing + 最终文本，并继续使用完全相同的 Task、Policy、Effect、Verification 和恢复语义。
 
 ## 三种身份不能混用
 

@@ -1,19 +1,22 @@
 /**
- * `beemax gateway` - start the Feishu gateway.
+ * `beemax gateway` - start one Profile-scoped multi-channel Gateway.
  *
- * Connects the Feishu WSClient for inbound events, drives the Pi agent per
- * chat, and renders streaming replies as continuously-updated Feishu
- * interactive cards (pure TS card pipeline - no Python sidecar). Every turn
- * is also persisted to the FTS5 memory store for cross-session recall.
+ * A registry-owned ChannelHost connects Feishu/Lark, Telegram, and future
+ * adapters to the same Core-owned Profile Runtime. Channels own transport and
+ * presentation only; durable work, Memory, Effects, Policy, and Pi execution
+ * remain in the shared runtime.
  */
 
 import { AutomationStore } from "@beemax/automation";
 import { ActionGovernance, AutonomyRolloutController, AutomationScheduler, BeeMaxAgentRuntime, DeterministicSituationBuilder, FileCredentialVault, FileCredentialVaultAuditJournal, HeartbeatRunner, InitiativeRuntime, InitiativeTriggerService, ProactiveInvestigationRuntime, TaskPlanNoticeDeliveryService, TaskTransitionInitiativeAdapter, ToolApprovalBroker, ToolPolicyRegistry, buildActiveTaskPreservationEnvelope, buildTaskPreservationEnvelope, canonicalUserId, containsCredentialMaterial, conversationKey, responsibilityOwnerKey, responsibilityOwnerKeys, createExecutionEnvelope, createSubagentTools, createTaskCheckpoint, createTaskLedgerTools, createTaskOrchestrationTools, decideInitiativeFromSituation, guardVerifiedObjectiveMemoryPublisher, redactCredentialMaterial, renderTaskCheckpoint, type BeeMaxAgentRunEvent, type BeeMaxAgentRunEventSink, type ContextCompactionAuditEvent, type DeliveryPort, type ExecutionEnvelope, type ExecutionTraceSink, type InitiativeObservation, type ObjectiveDeliveryInput, type SkillCandidateTrialInput, type SkillTrialAssertion, type SkillTrialToolCall, type SubagentTask, type TaskGraphExecutionContext, type TaskGraphExecutionResult, type TaskGraphVerifier, type TaskLedger, type TaskRecord, type ToolEffectProjectionReader, type VerifiedObjectiveMemoryPublisher } from "@beemax/core";
 import {
+	AdapterRegistry,
+	ChannelHost,
 	Dispatcher,
 	FeishuAdapter,
 	GatewayDeliveryPort,
 	PairingStore,
+	TelegramAdapter,
 	type FeishuSettings,
 } from "@beemax/gateway";
 import { loadMcpConfig, McpManager } from "@beemax/mcp-capability";
@@ -38,8 +41,9 @@ import { createMemoryScopeResolver } from "./memory-membership.ts";
 import { createLocalMediaUnderstandingAdapters } from "./local-media-understanding.ts";
 
 export async function runGateway(config: BeeMaxConfig): Promise<void> {
-	if (!config.gateway.feishu.appId || !config.gateway.feishu.appSecret) {
-		const error = "Feishu credentials missing. Set FEISHU_APP_ID / FEISHU_APP_SECRET or configure feishu.appId/appSecret in config/beemax.yaml.";
+	const enabledChannels = config.gateway.channels.filter((channel) => channel.enabled);
+	if (!enabledChannels.length) {
+		const error = "No enabled Gateway channels. Configure gateway.channels and the corresponding Profile credentials.";
 		writeGatewayState(config.paths.agentDir, { profile: config.profile, lifecycle: "failed", version: installedVersion(), pid: process.pid, stoppedAt: new Date().toISOString(), lastError: error });
 		recordGatewayEvent(config.paths.agentDir, "failed", { profile: config.profile, error });
 		throw new Error(error);
@@ -80,11 +84,30 @@ export async function runGateway(config: BeeMaxConfig): Promise<void> {
 			heartbeat?.setRoute(chatId, userId);
 		},
 	};
-	const adapter = new FeishuAdapter(feishuSettings);
+	const adapterRegistry = new AdapterRegistry();
+	let feishuAdapter: FeishuAdapter | undefined;
+	adapterRegistry.register({
+		id: "feishu",
+		create: (instance) => {
+			assertChannelCredentialRef(instance.credentialRef, "feishu");
+			if (!config.gateway.feishu.appId || !config.gateway.feishu.appSecret) throw new Error("Feishu credentials missing from the Profile secret environment");
+			feishuAdapter = new FeishuAdapter(feishuSettings);
+			return feishuAdapter;
+		},
+	});
+	adapterRegistry.register({
+		id: "telegram",
+		create: (instance) => {
+			assertChannelCredentialRef(instance.credentialRef, "telegram");
+			if (!config.gateway.telegram.botToken) throw new Error("Telegram bot token missing from the Profile secret environment");
+			return new TelegramAdapter(config.gateway.telegram);
+		},
+	});
+	const channelHost = new ChannelHost(adapterRegistry, enabledChannels, { connectAttempts: 3, retryBaseDelayMs: 1_000, retryMaxDelayMs: 30_000 });
 	const gatewayVersion = installedVersion();
-	const deliveryPort = new GatewayDeliveryPort(adapter);
+	const deliveryPort = new GatewayDeliveryPort(channelHost);
 	let releaseChannelLock: () => Promise<void>;
-	try { releaseChannelLock = await acquireChannelLock(beemaxHome(), config.gateway.feishu.appId); }
+	try { releaseChannelLock = await acquireChannelLock(beemaxHome(), `profile:${config.profile}`); }
 	catch (error) {
 		writeGatewayState(config.paths.agentDir, { profile: config.profile, lifecycle: "failed", version: gatewayVersion, pid: process.pid, stoppedAt: new Date().toISOString(), lastError: String(error).slice(0, 500) });
 		recordGatewayEvent(config.paths.agentDir, "failed", { profile: config.profile, error: String(error).slice(0, 500) });
@@ -122,7 +145,7 @@ export async function runGateway(config: BeeMaxConfig): Promise<void> {
 	profileStartupCleanup.push(() => approvalBroker.dispose());
 	const readOnlyMcpTools = mcp.getTools().filter((tool) => tool.beemaxPolicy?.sideEffect === "none");
 	const mainMcpTools = config.agent.toolset === "safe" ? readOnlyMcpTools : mcp.getTools();
-	const feishuMeetingTools = createFeishuMeetingTools(() => adapter.apiClient);
+	const feishuMeetingTools = feishuAdapter ? createFeishuMeetingTools(() => feishuAdapter!.apiClient) : [];
 	const automationToolNames = executionSafeTools(config, readOnlyAgentTools(readOnlyMcpTools.map((tool) => tool.name), [
 		"schedule_list", "schedule_runs", "feishu_meeting_get", "feishu_meeting_list",
 		"feishu_meeting_reserve_get", "feishu_meeting_reserve_active_get", "feishu_meeting_recording_get",
@@ -309,18 +332,9 @@ export async function runGateway(config: BeeMaxConfig): Promise<void> {
 	});
 	const { work } = profileRuntime;
 	const { taskScheduler, taskRecovery, objectiveRuntime, subagents } = work;
-	let dispatcher!: Dispatcher;
-	const taskPlanNotices = new TaskPlanNoticeDeliveryService(persistence.completionOutbox, deliveryPort, {
-		platform: "feishu",
-		deliverObjective: (notice, signal) => objectiveRuntime.settlePlanIfLinked(notice.ownerKey, notice.planId, notice.planStatus, signal),
-		onProgress: (event, notice) => dispatcher.presentWorkProgress(notice.target, event, notice.id),
-		onCycle: (result) => { if (result.claimed) console.info(`[beemax] Task Plan notices: delivered=${result.delivered}; failed=${result.failed}`); },
-		onError: (error) => console.error(`[beemax] Task Plan notice delivery failed: ${error instanceof Error ? error.message : String(error)}`),
-	});
-	startupCleanup.push(() => taskPlanNotices.stop());
 	const { runtime, interaction } = profileRuntime;
 	disposeProfileRuntime = () => profileRuntime.dispose();
-	dispatcher = new Dispatcher(
+	const dispatchers = new Map(channelHost.adapters().map((channelAdapter) => [channelAdapter.name, new Dispatcher(
 		{
 			runtime,
 			interaction,
@@ -330,8 +344,18 @@ export async function runGateway(config: BeeMaxConfig): Promise<void> {
 			approvalBroker,
 			cancelTasks: (source) => subagents?.cancelOwner(source) ?? 0,
 		},
-		adapter,
-	);
+		channelAdapter,
+	)]));
+	const executionDispatcher = dispatchers.values().next().value as Dispatcher | undefined;
+	if (!executionDispatcher) throw new Error("Gateway has no channel dispatcher");
+	const taskPlanNotices = [...dispatchers.entries()].map(([platform, channelDispatcher]) => new TaskPlanNoticeDeliveryService(persistence.completionOutbox, deliveryPort, {
+		platform,
+		deliverObjective: (notice, signal) => objectiveRuntime.settlePlanIfLinked(notice.ownerKey, notice.planId, notice.planStatus, signal),
+		onProgress: (event, notice) => channelDispatcher.presentWorkProgress(notice.target, event, notice.id),
+		onCycle: (result) => { if (result.claimed) console.info(`[beemax] ${platform} Task Plan notices: delivered=${result.delivered}; failed=${result.failed}`); },
+		onError: (error) => console.error(`[beemax] ${platform} Task Plan notice delivery failed: ${error instanceof Error ? error.message : String(error)}`),
+	}));
+	startupCleanup.push(() => Promise.all(taskPlanNotices.map((service) => service.stop())).then(() => undefined));
 
 	scheduler = new AutomationScheduler(automation, async (job, signal) => {
 		const assertClaim = () => { if (signal?.aborted) throw signal.reason; if (job.claimToken && !automation.renewClaim(job.id, job.claimToken, Date.now() + 15 * 60_000)) throw new Error(`Automation lease lost: ${job.id}`); };
@@ -340,7 +364,7 @@ export async function runGateway(config: BeeMaxConfig): Promise<void> {
 			return { output: job.text };
 		}
 		const source: SessionSource = {
-			platform: "feishu",
+			platform: job.platform,
 			chatId: job.chatId,
 			chatType: "dm",
 			userIdAlt: job.userId,
@@ -348,7 +372,7 @@ export async function runGateway(config: BeeMaxConfig): Promise<void> {
 		const timeoutMs = 10 * 60_000;
 		const triggerId = `schedule:${job.id}:${job.nextRunAt}`;
 		const executionEnvelope = createExecutionEnvelope({ executionId: `automation:${job.id}:${job.nextRunAt}`, trigger: { kind: "automation", id: triggerId }, budget: { deadlineAt: Date.now() + timeoutMs, maxCorrectiveAttempts: 1 }, mode: "normal" });
-		const answer = await dispatcher.runAutomation(source, job.text, { key: `schedule:${job.id}`, timeoutMs, signal, executionEnvelope });
+		const answer = await executionDispatcher.runAutomation(source, job.text, { key: `schedule:${job.id}`, timeoutMs, signal, executionEnvelope });
 		assertClaim(); await deliveryPort.sendText(job, `🗓️ ${job.name}\n\n${answer}`, { idempotencyKey: `automation:${job.id}:${job.nextRunAt}` });
 		return { output: answer };
 	}, 4);
@@ -385,7 +409,7 @@ export async function runGateway(config: BeeMaxConfig): Promise<void> {
 				budget: input.budget,
 				mode: "normal",
 			});
-			const answer = await dispatcher.runAutomation(input.executionScope as SessionSource, input.prompt, {
+			const answer = await executionDispatcher.runAutomation(input.executionScope as SessionSource, input.prompt, {
 				key: `initiative:${input.observation.dedupeKey}`,
 				timeoutMs,
 				objectiveTaskId: input.objective.id,
@@ -419,7 +443,7 @@ export async function runGateway(config: BeeMaxConfig): Promise<void> {
 		{
 			enabled: config.automation.enabled && config.automation.heartbeat.enabled,
 			every: config.automation.heartbeat.every,
-			platform: "feishu",
+			platform: config.automation.heartbeat.platform,
 			chatId: config.automation.heartbeat.chatId,
 			userId: config.automation.heartbeat.userId,
 			prompt: config.automation.heartbeat.prompt,
@@ -429,7 +453,7 @@ export async function runGateway(config: BeeMaxConfig): Promise<void> {
 		},
 		async () => { throw new Error("Legacy heartbeat Agent execution is disabled in Initiative observe-only mode"); },
 		{ sendText: (route, text) => deliveryPort.sendText(route, `💓 ${text}`), sendMedia: (route, media) => deliveryPort.sendMedia(route, media) },
-		() => dispatcher.isBusy(),
+		() => [...dispatchers.values()].some((channelDispatcher) => channelDispatcher.isBusy()),
 		async (input) => {
 			if (!autonomyRollout.allows("initiative_observation").allowed) return { kind: "ignored" };
 			const result = await initiative.observe({
@@ -443,16 +467,13 @@ export async function runGateway(config: BeeMaxConfig): Promise<void> {
 		},
 	);
 
-	const ok = await adapter.connect();
-	if (!ok) {
-		throw new Error("Failed to connect Feishu adapter");
-	}
+	const channelSnapshot = await channelHost.start();
 	writeGatewayState(config.paths.agentDir, { profile: config.profile, lifecycle: "running", version: gatewayVersion, pid: process.pid, startedAt: new Date().toISOString() });
-	recordGatewayEvent(config.paths.agentDir, "started", { profile: config.profile, pid: process.pid, version: gatewayVersion });
-	console.info(`[beemax:${config.profile}] Feishu gateway connected (model: ${config.model.provider}/${config.model.model})`);
-	const recoveredInputs = await dispatcher.recoverQueuedInputs();
+	recordGatewayEvent(config.paths.agentDir, "started", { profile: config.profile, pid: process.pid, version: gatewayVersion, channels: channelSnapshot.channels });
+	console.info(`[beemax:${config.profile}] Gateway connected: ${channelSnapshot.channels.filter((channel) => channel.state === "connected").map((channel) => channel.platform).join(", ")} (model: ${config.model.provider}/${config.model.model})`);
+	const recoveredInputs = (await Promise.all([...dispatchers.values()].map((channelDispatcher) => channelDispatcher.recoverQueuedInputs()))).reduce((sum, count) => sum + count, 0);
 	if (recoveredInputs) console.info(`[beemax:${config.profile}] recovered ${recoveredInputs} queued conversation input(s)`);
-	taskPlanNotices.start();
+	for (const service of taskPlanNotices) service.start();
 	if (config.automation.enabled) scheduler.start();
 	heartbeat.start();
 	const runInitiativeTriggers = () => {
@@ -483,10 +504,10 @@ export async function runGateway(config: BeeMaxConfig): Promise<void> {
 			if (mediaDeliveryWork) await settleBackgroundWork(mediaDeliveryWork, 30_000, "media delivery worker");
 			try { await heartbeat?.stop(); } catch (error) { console.error(`[beemax] heartbeat shutdown failed: ${String(error)}`); }
 			try { await scheduler?.stop(); } catch (error) { console.error(`[beemax] scheduler shutdown failed: ${String(error)}`); }
-			try { await taskPlanNotices.stop(); } catch (error) { console.error(`[beemax] Task Plan notice shutdown failed: ${String(error)}`); }
-			try { await dispatcher.dispose(); } catch (error) { console.error(`[beemax] dispatcher shutdown failed: ${String(error)}`); }
+			try { await Promise.all(taskPlanNotices.map((service) => service.stop())); } catch (error) { console.error(`[beemax] Task Plan notice shutdown failed: ${String(error)}`); }
+			try { await Promise.all([...dispatchers.values()].map((channelDispatcher) => channelDispatcher.dispose())); } catch (error) { console.error(`[beemax] dispatcher shutdown failed: ${String(error)}`); }
 			try { await profileRuntime.dispose(); } catch (error) { console.error(`[beemax] Agent Runtime shutdown failed: ${String(error)}`); }
-			try { await adapter.disconnect(); } catch (error) { console.error(`[beemax] Feishu disconnect failed: ${String(error)}`); }
+			try { await channelHost.stop(); } catch (error) { console.error(`[beemax] channel shutdown failed: ${String(error)}`); }
 			await releaseChannelLock();
 			writeGatewayState(config.paths.agentDir, { profile: config.profile, lifecycle: "stopped", version: gatewayVersion, pid: process.pid, stoppedAt: new Date().toISOString() });
 			recordGatewayEvent(config.paths.agentDir, "stopped", { profile: config.profile, pid: process.pid });
@@ -509,7 +530,7 @@ export async function runGateway(config: BeeMaxConfig): Promise<void> {
 				try { await cleanup(); } catch { /* preserve the original startup error */ }
 			}
 		}
-		try { await adapter.disconnect(); } catch { /* preserve the original startup error */ }
+		try { await channelHost.stop(); } catch { /* preserve the original startup error */ }
 		await releaseChannelLock();
 		throw error;
 	}
@@ -535,9 +556,7 @@ export async function executeSubagentTask(
 	executionEnvelope?: Readonly<ExecutionEnvelope>,
 	executionTrace?: ExecutionTraceSink,
 ): Promise<string> {
-	if (task.source.platform !== "cli" && task.source.platform !== "feishu") {
-		throw new Error(`No gateway adapter is registered for platform: ${task.source.platform}`);
-	}
+	if (!task.source.platform?.trim()) throw new Error("Delegated Task source platform is unavailable");
 	const source: SessionSource = {
 		...task.source,
 		platform: task.source.platform,
@@ -665,7 +684,7 @@ export async function executeObjectiveDelivery(
 	executionTrace?: ExecutionTraceSink,
 ): Promise<{ result: string; evidence?: string }> {
 	const source = input.objective.executionScope;
-	if (!source || (source.platform !== "cli" && source.platform !== "feishu")) throw new Error("Objective delivery scope is unavailable");
+	if (!source?.platform?.trim()) throw new Error("Objective delivery scope is unavailable");
 	const evidence = input.tasks.flatMap((task) => task.evidence ? [`${task.title}: ${task.evidence}`] : []).join("\n").slice(0, 5_000);
 	const task: SubagentTask = {
 		id: `${input.objective.id}:delivery`, ownerKey: input.objective.ownerKey, source: { ...source },
@@ -856,4 +875,9 @@ async function settleBackgroundWork(work: Promise<unknown>, timeoutMs: number, l
 	} finally {
 		if (timer) clearTimeout(timer);
 	}
+}
+
+function assertChannelCredentialRef(credentialRef: string | undefined, adapter: string): void {
+	if (!credentialRef || credentialRef === `profile-env:${adapter}`) return;
+	throw new Error(`Unsupported Credential Ref for ${adapter}: expected profile-env:${adapter}`);
 }

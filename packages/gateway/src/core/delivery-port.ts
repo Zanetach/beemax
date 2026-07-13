@@ -1,33 +1,37 @@
 import type { DeliveryPort, DeliveryTarget, MediaArtifact } from "@beemax/core";
 import { extname } from "node:path";
+import type { ChannelAdapterResolver } from "./channel-host.ts";
 import type { PlatformAdapter } from "./types.ts";
 
 /** Concrete channel delivery adapter. It is the only layer that knows how a
  * Core artifact becomes a Feishu (or future channel) message. */
 export class GatewayDeliveryPort implements DeliveryPort {
-	private readonly platform: PlatformAdapter;
+	private readonly resolver: ChannelAdapterResolver;
 
-	constructor(platform: PlatformAdapter) { this.platform = platform; }
+	constructor(platform: PlatformAdapter | ChannelAdapterResolver) {
+		this.resolver = "resolveAdapter" in platform
+			? platform
+			: { resolveAdapter: (name) => {
+				if (name !== platform.name) throw new Error(`Cannot deliver ${name} artifact through ${platform.name}`);
+				return platform;
+			} };
+	}
 
 	async sendText(target: DeliveryTarget, text: string, options?: { idempotencyKey?: string }): Promise<void> {
-		this.assertPlatform(target);
-		const result = await this.platform.send(target.chatId, text, { idempotencyKey: options?.idempotencyKey });
+		const platform = this.resolver.resolveAdapter(target.platform);
+		const result = await platform.send(target.chatId, text, { idempotencyKey: options?.idempotencyKey });
 		if (!result.success) throw new Error(result.error ?? "Channel text delivery failed");
 	}
 
 	async sendMedia(target: DeliveryTarget, media: MediaArtifact): Promise<void> {
-		this.assertPlatform(target);
-		const result = this.platform.sendMedia
-			? await this.platform.sendMedia(target.chatId, media.path, media.mimeType, media.name)
-			: this.platform.sendImage && isImageArtifact(media)
-				? await this.platform.sendImage(target.chatId, media.path)
+		const platform = this.resolver.resolveAdapter(target.platform);
+		const result = platform.sendMedia
+			? await platform.sendMedia(target.chatId, media.path, media.mimeType, media.name)
+			: platform.sendImage && isImageArtifact(media)
+				? await platform.sendImage(target.chatId, media.path)
 				: undefined;
-		if (!result) throw new Error(`${this.platform.name} does not support media delivery`);
+		if (!result) throw new Error(`${platform.name} does not support media delivery`);
 		if (!result.success) throw new Error(result.error ?? "Channel media delivery failed");
-	}
-
-	private assertPlatform(target: DeliveryTarget): void {
-		if (target.platform !== this.platform.name) throw new Error(`Cannot deliver ${target.platform} artifact through ${this.platform.name}`);
 	}
 }
 

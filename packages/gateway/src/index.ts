@@ -1,6 +1,8 @@
 export { Dispatcher, type DispatcherDeps } from "./core/dispatcher.ts";
 export { InteractionControlServer, type InteractionControlServerOptions } from "./core/interaction-control-server.ts";
 export { GatewayDeliveryPort } from "./core/delivery-port.ts";
+export { AdapterRegistry, ChannelHost } from "./core/channel-host.ts";
+export type { ChannelAdapterRegistration, ChannelAdapterResolver, ChannelHostOptions, ChannelHostSnapshot, ChannelInstanceConfig, ChannelLifecycleState, ChannelStatus } from "./core/channel-host.ts";
 export { MessageDeduplicator } from "./core/message-deduplicator.ts";
 export { prepareAgentMediaInput, type AgentMediaInput } from "./core/media-input.ts";
 export { CardSession } from "./card/session.ts";
@@ -24,3 +26,4 @@ export { FeishuAdapter, parseFeishuCardActionEvent, parseFeishuMediaDescriptor, 
 export { loadFeishuSettings, validateFeishuWebhookSettings, type FeishuSettings } from "./platforms/feishu/settings.ts";
 export { retryFeishuOperation, type FeishuRetryOptions } from "./platforms/feishu/retry.ts";
 export { runFeishuSmoke, type FeishuSmokeCheck, type FeishuSmokeResult } from "./platforms/feishu/smoke.ts";
+export { TelegramAdapter, type TelegramAdapterDependencies, type TelegramSettings } from "./platforms/telegram/adapter.ts";

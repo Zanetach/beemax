@@ -1,8 +1,8 @@
 /**
  * BeeMax config. Loads from config/beemax.yaml + env overrides.
  *
- * Mirrors the relevant slice of Hermes' ~/.hermes/config.yaml (model +
- * providers + gateway.feishu), trimmed to what BeeMax needs today.
+ * Profile-owned model, runtime, and registry-based channel configuration.
+ * Channel Secrets are resolved from protected Profile sources, never YAML.
  */
 
 import { existsSync, readFileSync } from "node:fs";
@@ -43,6 +43,23 @@ export interface FeishuConfig {
 	mediaBatchDelayMs: number;
 	retryBaseDelayMs: number;
 }
+export interface TelegramConfig {
+	botToken: string;
+	allowedUsers: string[];
+	allowedChats: string[];
+	allowAllUsers: boolean;
+	pollingTimeoutSeconds: number;
+	retryBaseDelayMs: number;
+}
+
+/** Non-secret, registry-routed channel declaration. Adapter secrets stay in the Profile secret environment or Vault. */
+export interface GatewayChannelConfig {
+	id: string;
+	adapter: string;
+	enabled: boolean;
+	credentialRef?: string;
+	settings: Record<string, unknown>;
+}
 export type CustomProtocol = "openai-completions" | "openai-responses" | "anthropic-messages";
 
 export interface KnowledgeSpaceConfig {
@@ -72,7 +89,7 @@ export interface BeeMaxConfig {
 	};
 	models: Array<{ provider: string; model: string; baseUrl?: string; customProtocol?: CustomProtocol; contextWindow?: number; maxTokens?: number }>;
 	/** Profile-owned channel configuration. A Profile may run its own Gateway. */
-	gateway: { feishu: FeishuConfig };
+	gateway: { channels: GatewayChannelConfig[]; feishu: FeishuConfig; telegram: TelegramConfig };
 	memory: {
 		dbPath: string;
 		memberships: MemoryMembership[];
@@ -127,6 +144,7 @@ export interface BeeMaxConfig {
 		heartbeat: {
 			enabled: boolean;
 			every: string;
+			platform: string;
 			chatId?: string;
 			userId?: string;
 			prompt: string;
@@ -158,7 +176,13 @@ export function loadConfig(configPath?: string, profile = "default"): BeeMaxConf
 	// BEEMAX_HOME/PROFILE are resolved before this point and remain explicit routing inputs.
 	const profileEnv = readEnvFileSync(envPath);
 	const env = location.isHome ? profileEnv : process.env;
-	const configuredFeishu = cfg.gateway?.feishu ?? cfg.feishu;
+	const configuredChannels = parseGatewayChannels(cfg.gateway?.channels);
+	const configuredFeishuChannel = configuredChannels.find((channel) => channel.adapter === "feishu");
+	const configuredTelegramChannel = configuredChannels.find((channel) => channel.adapter === "telegram");
+	const configuredFeishu = {
+		...(cfg.gateway?.feishu ?? cfg.feishu),
+		...(configuredFeishuChannel?.settings ?? {}),
+	} as Partial<FeishuConfig>;
 
 	const appId = str(env.FEISHU_APP_ID ?? configuredFeishu?.appId);
 	const appSecret = str(env.FEISHU_APP_SECRET ?? configuredFeishu?.appSecret);
@@ -210,6 +234,21 @@ export function loadConfig(configPath?: string, profile = "default"): BeeMaxConf
 		mediaBatchDelayMs: boundedNumber(env.FEISHU_MEDIA_BATCH_DELAY_MS ?? configuredFeishu?.mediaBatchDelayMs, 800, 0, 60_000),
 		retryBaseDelayMs: boundedNumber(env.FEISHU_RETRY_BASE_DELAY_MS ?? configuredFeishu?.retryBaseDelayMs, 1_000, 0, 30_000),
 	};
+	const configuredTelegram = configuredTelegramChannel?.settings ?? {};
+	const telegram: TelegramConfig = {
+		botToken: str(env.TELEGRAM_BOT_TOKEN),
+		allowedUsers: parseList(env.TELEGRAM_ALLOWED_USERS ?? configuredTelegram.allowedUsers),
+		allowedChats: parseList(env.TELEGRAM_ALLOWED_CHATS ?? configuredTelegram.allowedChats),
+		allowAllUsers: parseBool(env.TELEGRAM_ALLOW_ALL_USERS ?? configuredTelegram.allowAllUsers ?? false),
+		pollingTimeoutSeconds: boundedNumber(env.TELEGRAM_POLLING_TIMEOUT_SECONDS ?? configuredTelegram.pollingTimeoutSeconds, 25, 1, 50),
+		retryBaseDelayMs: boundedNumber(env.TELEGRAM_RETRY_BASE_DELAY_MS ?? configuredTelegram.retryBaseDelayMs, 1_000, 0, 30_000),
+	};
+	const channels = cfg.gateway?.channels === undefined
+		? [
+			...(feishu.appId && feishu.appSecret ? [{ id: "feishu-main", adapter: "feishu", enabled: true, credentialRef: "profile-env:feishu", settings: {} }] : []),
+			...(telegram.botToken ? [{ id: "telegram-main", adapter: "telegram", enabled: true, credentialRef: "profile-env:telegram", settings: {} }] : []),
+		] satisfies GatewayChannelConfig[]
+		: configuredChannels;
 	return {
 		profile,
 		agent: {
@@ -230,7 +269,7 @@ export function loadConfig(configPath?: string, profile = "default"): BeeMaxConf
 			maxTokens,
 		},
 		models: configuredModels,
-		gateway: { feishu },
+		gateway: { channels, feishu, telegram },
 		memory: {
 			dbPath: resolveFrom(location.basePath, str(env.BEEMAX_DB_PATH ?? cfg.memory?.dbPath ?? join(profileDataRoot, location.isHome ? "memory.db" : "beemax.db"))),
 			memberships: parseMemoryMemberships(cfg.memory?.memberships),
@@ -293,6 +332,7 @@ export function loadConfig(configPath?: string, profile = "default"): BeeMaxConf
 			heartbeat: {
 				enabled: parseBool(env.BEEMAX_HEARTBEAT_ENABLED ?? cfg.automation?.heartbeat?.enabled ?? true),
 				every: str(env.BEEMAX_HEARTBEAT_EVERY ?? cfg.automation?.heartbeat?.every ?? "30m"),
+				platform: str(env.BEEMAX_HEARTBEAT_PLATFORM ?? cfg.automation?.heartbeat?.platform ?? channels.find((channel) => channel.enabled)?.adapter ?? "feishu"),
 				chatId: optional(env.BEEMAX_HEARTBEAT_CHAT_ID ?? cfg.automation?.heartbeat?.chatId ?? feishu.homeChatId),
 				userId: optional(env.BEEMAX_HEARTBEAT_USER_ID ?? cfg.automation?.heartbeat?.userId ?? feishu.homeUserId),
 				prompt: str(env.BEEMAX_HEARTBEAT_PROMPT ?? cfg.automation?.heartbeat?.prompt ?? DEFAULT_HEARTBEAT_PROMPT),
@@ -380,6 +420,44 @@ function parseList(value: unknown): string[] {
 		.split(",")
 		.map((item) => item.trim())
 		.filter(Boolean);
+}
+
+function parseGatewayChannels(value: unknown): GatewayChannelConfig[] {
+	if (value === undefined || value === null) return [];
+	if (!Array.isArray(value)) throw new Error("gateway.channels must be an array");
+	const ids = new Set<string>();
+	return value.map((entry, index) => {
+		if (!entry || typeof entry !== "object" || Array.isArray(entry)) throw new Error(`gateway.channels[${index}] must be an object`);
+		const candidate = entry as Record<string, unknown>;
+		const id = str(candidate.id);
+		const adapter = str(candidate.adapter);
+		if (!id || !adapter) throw new Error(`gateway.channels[${index}] requires id and adapter`);
+		if (ids.has(id)) throw new Error(`gateway.channels contains duplicate id: ${id}`);
+		ids.add(id);
+		const rawSettings = candidate.settings;
+		if (rawSettings !== undefined && (!rawSettings || typeof rawSettings !== "object" || Array.isArray(rawSettings))) {
+			throw new Error(`gateway.channels[${index}].settings must be an object`);
+		}
+		const settings = structuredClone((rawSettings ?? {}) as Record<string, unknown>);
+		assertNoChannelSecrets(settings, `gateway.channels[${index}].settings`);
+		return {
+			id,
+			adapter,
+			enabled: candidate.enabled === undefined ? true : parseBool(candidate.enabled),
+			...(optional(candidate.credentialRef) ? { credentialRef: optional(candidate.credentialRef) } : {}),
+			settings,
+		};
+	});
+}
+
+function assertNoChannelSecrets(value: unknown, path: string): void {
+	if (!value || typeof value !== "object") return;
+	for (const [key, nested] of Object.entries(value as Record<string, unknown>)) {
+		if (/(?:secret|token|password|api[_-]?key|private[_-]?key)$/i.test(key)) {
+			throw new Error(`${path}.${key} must use credentialRef and the Profile secret environment or Vault`);
+		}
+		assertNoChannelSecrets(nested, `${path}.${key}`);
+	}
 }
 
 export function parseMemoryMemberships(value: unknown): MemoryMembership[] {

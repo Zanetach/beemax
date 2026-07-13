@@ -35,6 +35,15 @@ export interface FeishuChannelInput {
 	webhookEncryptKey?: string;
 }
 
+export interface TelegramChannelInput {
+	botToken: string;
+	allowedUsers: string[];
+	allowedChats?: string[];
+	allowAllUsers?: boolean;
+	pollingTimeoutSeconds?: number;
+	retryBaseDelayMs?: number;
+}
+
 export interface ModelInput {
 	provider: string;
 	model: string;
@@ -163,10 +172,14 @@ export async function configureFeishuChannel(
 		throw new Error(`Agent profile ${profile} does not exist; run beemax agent create ${profile}`);
 	});
 	const config = (parseYaml(raw) ?? {}) as Record<string, unknown>;
+	const gateway = asRecord(config.gateway);
 	config.gateway = {
-		...asRecord(config.gateway),
+		...gateway,
+		channels: upsertGatewayChannel(gateway.channels, {
+			id: "feishu-main", adapter: "feishu", enabled: true, credentialRef: "profile-env:feishu", settings: {},
+		}),
 		feishu: {
-		...asRecord(asRecord(config.gateway).feishu ?? config.feishu),
+		...asRecord(gateway.feishu ?? config.feishu),
 		domain: input.domain ?? "feishu",
 		requireMention: input.requireMention ?? true,
 		allowedChats: input.allowedChats ?? [],
@@ -192,6 +205,43 @@ export async function configureFeishuChannel(
 			FEISHU_WEBHOOK_VERIFICATION_TOKEN: input.webhookVerificationToken ?? "",
 			FEISHU_WEBHOOK_ENCRYPT_KEY: input.webhookEncryptKey ?? "",
 		} : { FEISHU_CONNECTION_MODE: "websocket" }),
+	});
+	return paths;
+}
+
+export async function configureTelegramChannel(
+	profile: string,
+	input: TelegramChannelInput,
+	options: ProfileStorageOptions = {},
+): Promise<ProfilePaths> {
+	if (!input.botToken.trim()) throw new Error("Telegram Bot Token is required");
+	if (!input.allowAllUsers && input.allowedUsers.length === 0) throw new Error("At least one allowed Telegram user ID is required");
+	const paths = await writableProfilePaths(profile, options);
+	const raw = await readFile(paths.configPath, "utf8").catch(() => {
+		throw new Error(`Agent profile ${profile} does not exist; run beemax agent create ${profile}`);
+	});
+	const config = (parseYaml(raw) ?? {}) as Record<string, unknown>;
+	const gateway = asRecord(config.gateway);
+	config.gateway = {
+		...gateway,
+		channels: upsertGatewayChannel(gateway.channels, {
+			id: "telegram-main",
+			adapter: "telegram",
+			enabled: true,
+			credentialRef: "profile-env:telegram",
+			settings: {
+				allowedUsers: input.allowedUsers,
+				allowedChats: input.allowedChats ?? [],
+				allowAllUsers: input.allowAllUsers ?? false,
+				pollingTimeoutSeconds: input.pollingTimeoutSeconds ?? 25,
+				retryBaseDelayMs: input.retryBaseDelayMs ?? 1_000,
+			},
+		}),
+	};
+	await writeFile(paths.configPath, stringifyYaml(config), { encoding: "utf8", mode: 0o600 });
+	await writeEnvFile(paths.envPath, {
+		...await readEnvFile(paths.envPath),
+		TELEGRAM_BOT_TOKEN: input.botToken.trim(),
 	});
 	return paths;
 }
@@ -260,6 +310,24 @@ export async function removeFeishuChannel(profile: string, options: ProfileStora
 	delete values.FEISHU_WEBHOOK_VERIFICATION_TOKEN;
 	delete values.FEISHU_WEBHOOK_ENCRYPT_KEY;
 	await writeEnvFile(paths.envPath, values);
+	const config = configFromYaml(await readFile(paths.configPath, "utf8"));
+	const gateway = asRecord(config.gateway);
+	config.gateway = { ...gateway, channels: removeGatewayChannel(gateway.channels, "feishu") };
+	await writeFile(paths.configPath, stringifyYaml(config), { encoding: "utf8", mode: 0o600 });
+	return paths;
+}
+
+export async function removeTelegramChannel(profile: string, options: ProfileStorageOptions = {}): Promise<ProfilePaths> {
+	const paths = await writableProfilePaths(profile, options);
+	const values = await readEnvFile(paths.envPath);
+	delete values.TELEGRAM_BOT_TOKEN;
+	delete values.TELEGRAM_ALLOWED_USERS;
+	delete values.TELEGRAM_ALLOWED_CHATS;
+	await writeEnvFile(paths.envPath, values);
+	const config = configFromYaml(await readFile(paths.configPath, "utf8"));
+	const gateway = asRecord(config.gateway);
+	config.gateway = { ...gateway, channels: removeGatewayChannel(gateway.channels, "telegram") };
+	await writeFile(paths.configPath, stringifyYaml(config), { encoding: "utf8", mode: 0o600 });
 	return paths;
 }
 
@@ -270,6 +338,19 @@ export async function testFeishuCredentials(
 	const result = await probeFeishuApp(input, fetcher);
 	const identity = result.botName || result.botOpenId;
 	return `Feishu credentials are valid${identity ? `; bot=${identity}` : ""}${result.warning ? `; warning=${result.warning}` : ""}`;
+}
+
+export async function testTelegramCredentials(botToken: string, fetcher: typeof fetch = fetch): Promise<string> {
+	if (!botToken.trim()) throw new Error("Telegram Bot Token is required");
+	const response = await fetcher(`https://api.telegram.org/bot${botToken.trim()}/getMe`, {
+		method: "POST",
+		headers: { "content-type": "application/json" },
+		body: "{}",
+		signal: AbortSignal.timeout(15_000),
+	});
+	const body = await response.json().catch(() => ({})) as { ok?: boolean; result?: { username?: string }; description?: string };
+	if (!response.ok || !body.ok) throw new Error(`Telegram credential probe failed: ${body.description ?? `HTTP ${response.status}`}`);
+	return `Telegram credentials are valid${body.result?.username ? `; bot=@${body.result.username}` : ""}`;
 }
 
 export async function probeFeishuApp(
@@ -410,7 +491,7 @@ function defaultProfileYaml(): string {
 	return stringifyYaml({
 		agent: { toolset: "standard", maxSessions: 100, sessionIdleMs: 1800000 },
 		model: { provider: "anthropic", model: "claude-sonnet-4-5" },
-		gateway: { feishu: { domain: "feishu", requireMention: true, allowedUsers: [], allowedChats: [], allowAllUsers: false } },
+		gateway: { feishu: { domain: "feishu", requireMention: true, allowedUsers: [], allowedChats: [], allowAllUsers: false }, channels: [] },
 		memory: { dbPath: "memory.db", memberships: [] },
 		mcp: { configPath: "mcp.json" },
 		knowledge: { enabled: false, provider: "weknora", baseUrl: "http://127.0.0.1:8080", spaces: [] },
@@ -525,6 +606,16 @@ const PROFILE_ROUTING_ENV = [
 
 function asRecord(value: unknown): Record<string, unknown> {
 	return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
+}
+
+function upsertGatewayChannel(value: unknown, channel: Record<string, unknown>): Record<string, unknown>[] {
+	const channels = Array.isArray(value) ? value.filter((entry): entry is Record<string, unknown> => Boolean(entry) && typeof entry === "object" && !Array.isArray(entry)) : [];
+	return [...channels.filter((entry) => entry.id !== channel.id && entry.adapter !== channel.adapter), channel];
+}
+
+function removeGatewayChannel(value: unknown, adapter: string): Record<string, unknown>[] {
+	if (!Array.isArray(value)) return [];
+	return value.filter((entry) => !entry || typeof entry !== "object" || Array.isArray(entry) || (entry as Record<string, unknown>).adapter !== adapter) as Record<string, unknown>[];
 }
 
 function sameModelChoice(value: unknown, model: { provider: string; model: string }): boolean {

@@ -9,8 +9,8 @@
 
 import type { AgentScope } from "@beemax/core";
 
-/** A supported platform adapter. Add entries here as new adapters land. */
-export type PlatformName = "feishu" | "cli";
+/** Registry-validated adapter id. Core never enumerates transport platforms. */
+export type PlatformName = string;
 
 /** Where a message originated - used for routing and session keying. */
 export interface SessionSource extends AgentScope {
@@ -92,11 +92,11 @@ export interface PlatformAdapter {
 	/** Edit a previously sent message (for streaming updates). */
 	editMessage(chatId: string, messageId: string, content: string): Promise<SendResult>;
 
-	/** Send an interactive card. Returns the message_id for later updates. */
-	sendCard(chatId: string, card: Record<string, unknown>, replyTo?: string, replyInThread?: boolean, idempotencyKey?: string): Promise<SendResult>;
+	/** Send an interactive card when the platform supports native cards. */
+	sendCard?(chatId: string, card: Record<string, unknown>, replyTo?: string, replyInThread?: boolean, idempotencyKey?: string): Promise<SendResult>;
 
 	/** Update a previously-sent interactive card in place (streaming). */
-	updateCard(messageId: string, card: Record<string, unknown>): Promise<SendResult>;
+	updateCard?(messageId: string, card: Record<string, unknown>): Promise<SendResult>;
 
 	/** Send a "typing" / working indicator for the triggering message. */
 	sendTyping(chatId: string, messageId?: string): Promise<void>;
