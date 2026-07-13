@@ -283,11 +283,15 @@ Promotion requires measured quality, safety, expected value, duplication, and in
 Schedules, reminders, and Heartbeat are durable and Profile-scoped. Heartbeat is single-flight, defers while the Agent is busy, respects active hours, and suppresses `HEARTBEAT_OK`.
 
 ```text
-schedule_create   schedule_list   schedule_pause
-schedule_resume   schedule_delete schedule_runs
+schedule_create   schedule_get      schedule_list
+schedule_update   schedule_pause    schedule_resume
+schedule_run_now  schedule_delete   schedule_runs
+schedule_status
 ```
 
-Unattended scheduled Agent runs use bounded, isolated execution. Durable claims prevent multiple live instances from settling the same work.
+Unattended scheduled Agent runs use bounded, isolated execution. Each due time materializes one durable Schedule Occurrence linked to the Pi-created Objective and Task Run. Renewable fenced claims prevent stale instances from settling the same occurrence; finite retry and explicit misfire policy prevent unbounded catch-up.
+
+Pi execution and channel delivery settle independently. A verified result is persisted before entering the Delivery Outbox, so a Feishu or Telegram outage retries only delivery and never replays completed Agent or Tool work. ChannelHost keeps supervising offline adapters while the Profile Runtime, scheduler, and durable work remain available.
 
 ## Images and OCR
 

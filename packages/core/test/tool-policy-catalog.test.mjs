@@ -7,7 +7,11 @@ const source = { platform: "cli", chatId: "local", chatType: "dm", userId: "loca
 test("automation, Skill, and Sub-Agent capabilities publish first-class execution policies", () => {
 	const automation = createAutomationTools({}, source, () => undefined);
 	assert.equal(policy(automation, "schedule_list").approval, "never");
+	assert.equal(policy(automation, "schedule_get").sideEffect, "none");
+	assert.equal(policy(automation, "schedule_status").approval, "never");
 	assert.equal(policy(automation, "schedule_create").sideEffect, "local");
+	assert.equal(policy(automation, "schedule_update").approval, "always");
+	assert.equal(policy(automation, "schedule_run_now").sideEffect, "local");
 	assert.equal(policy(automation, "schedule_delete").reversible, false);
 
 	const skills = createSkillTools("/tmp/beemax-policy-test", () => undefined);

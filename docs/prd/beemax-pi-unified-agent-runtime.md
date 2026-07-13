@@ -331,7 +331,9 @@ Durability is admitted from the responsibility expressed by the Turn, not from w
 
 Steering、model fallback and Capability reroute continue inside the active Task Run because they advance the same execution attempt. Verification rejection preserves the Objective but creates a separately identified bounded Corrective Task Run and a `mode=correction` Execution Envelope.
 
-Automation Scheduler 只负责 Schedule persistence、due claim、lease 和运行历史；它不创建或结算 Task。需要 Pi 工作的 Schedule occurrence 以稳定的 `schedule id + due time` 形成 Automation Trigger，由统一 Runtime 构建 Situation、召回 Context、创建 Objective/Task Run、保存 Checkpoint 并执行 Verification。Reminder delivery 仍可作为通知 Trigger 直接交付，不伪造 Agent Task；Heartbeat 保留为 Initiative 的 trigger adapter，避免安静检查制造空 Objective。
+Automation Scheduler 只负责 Schedule persistence、Occurrence materialization、due claim、lease、misfire、有限重试和运行历史；它不创建或结算 Task。需要 Pi 工作的 Schedule Occurrence 以稳定的 `schedule id + nominal due time` 形成 Automation Trigger，由统一 Runtime 构建 Situation、召回 Context、创建 Objective/Task Run、保存 Checkpoint 并执行 Verification。Occurrence 保存 Objective/Task Run 引用，但不复制 Task 状态。Reminder delivery 仍可作为通知 Trigger 直接交付，不伪造 Agent Task；Heartbeat 保留为 Initiative 的 trigger adapter，避免安静检查制造空 Objective。
+
+Pi 的 verified Outcome 与渠道 Delivery 分开结算：执行成功先原子保存 Occurrence、Run 和 Delivery Outbox，再由独立 worker 通过 ChannelHost 投递。渠道失败只重试 Delivery，不得重新执行 Pi、Task 或已提交 Effect。所有渠道暂时离线时，Profile Runtime、Scheduler 和 Recovery 继续运行，ChannelHost 负责监督重连。
 
 Recovery 先由 Effect Authority 判定旧 Task Run 是否允许 replay，再由 Task Recovery 从 durable Checkpoint 创建新的 recovery Task Run 和 `trigger=recovery` Execution Envelope。新执行收到旧进展、evidence、committed Effect references 与 next safe step，并继续通过同一 TaskGraph Verification 生命周期；Recovery 不拥有第二套模型循环。
 

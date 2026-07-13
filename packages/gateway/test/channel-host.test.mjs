@@ -114,3 +114,13 @@ test("ChannelHost reconnects an adapter that disconnects after startup", async (
 	assert.equal(host.resolveAdapter("alpha"), running);
 	await host.stop();
 });
+
+test("ChannelHost can keep a Profile worker alive while every delivery channel is temporarily offline", async () => {
+	const registry = new AdapterRegistry().register({ id:"offline", create:() => adapter("telegram", [], async()=>false) });
+	const host = new ChannelHost(registry, [{ id:"telegram",adapter:"offline",enabled:true,settings:{} }], {
+		connectAttempts:1,retryBaseDelayMs:0,supervisionIntervalMs:5,requireConnectedOnStart:false,
+	});
+	const snapshot = await host.start();
+	assert.equal(snapshot.channels[0].state, "failed");
+	await host.stop();
+});

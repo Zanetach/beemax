@@ -160,6 +160,7 @@ export { createWebTools, type WebToolsOptions } from "./web-tools.ts";
 export { createBrowserTools, type BrowserToolsOptions } from "./browser-tools.ts";
 export {
 	AutomationScheduler,
+	AutomationDeliveryWorker,
 	HeartbeatRunner,
 	filterHeartbeatAnswer,
 	isWithinActiveHours,

@@ -176,12 +176,13 @@ export async function inspectDoctor(config: BeeMaxConfig, options: DoctorOptions
 	try {
 		const automation = new AutomationStore(config.memory.dbPath);
 		parseDuration(config.automation.heartbeat.every);
+		const snapshot = automation.status();
 		automation.close();
 		checks.push({
 			name: "Automation",
-			status: config.automation.enabled ? "PASS" : "WARN",
+			status: config.automation.enabled && snapshot.deliveryAbandoned === 0 ? "PASS" : "WARN",
 			detail: config.automation.enabled
-				? `scheduler enabled; heartbeat ${config.automation.heartbeat.enabled ? config.automation.heartbeat.every : "disabled"}`
+				? `scheduler enabled; due=${snapshot.due}; claimed=${snapshot.claimed}; retrying=${snapshot.retrying}; delivery queued=${snapshot.deliveryQueued}; abandoned=${snapshot.deliveryAbandoned}; heartbeat ${config.automation.heartbeat.enabled ? config.automation.heartbeat.every : "disabled"}`
 				: "disabled",
 		});
 	} catch (error) {

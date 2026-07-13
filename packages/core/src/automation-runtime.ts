@@ -1,13 +1,38 @@
 import {
 	parseDuration,
-	type AutomationJob,
+	type AutomationClaim,
+	type AutomationCompletion,
+	type AutomationDeliveryInput,
 	type AutomationOwner,
-	type AutomationRun,
 	type AutomationStore,
 } from "@beemax/automation";
 import type { DeliveryPort } from "./delivery-port.ts";
 
-export type AutomationExecutor = (job: AutomationJob, signal?: AbortSignal) => Promise<{ output?: string }>;
+export type AutomationExecutor = (job: AutomationClaim, signal?: AbortSignal) => Promise<{ output?: string; delivery?: AutomationDeliveryInput; objectiveId?: string; taskRunId?: string }>;
+
+/** Retries durable Schedule result delivery without replaying the settled Pi execution. */
+export class AutomationDeliveryWorker {
+	private readonly store: AutomationStore;
+	private readonly delivery: DeliveryPort;
+	constructor(store: AutomationStore, delivery: DeliveryPort) { this.store = store; this.delivery = delivery; }
+
+	async runOnce(now = Date.now(), limit = 4): Promise<{ claimed: number; delivered: number; failed: number }> {
+		const items = this.store.claimDeliveriesDue(now, limit);
+		let delivered = 0;
+		let failed = 0;
+		for (const item of items) {
+			try {
+				await this.delivery.sendText(item, item.text, { idempotencyKey: item.idempotencyKey });
+				if (!this.store.completeDelivery(item.id, item.claimToken, Date.now())) throw new Error(`Automation delivery claim lost: ${item.id}`);
+				delivered++;
+			} catch (error) {
+				this.store.failDelivery(item.id, item.claimToken, error instanceof Error ? error.message : String(error), now);
+				failed++;
+			}
+		}
+		return { claimed: items.length, delivered, failed };
+	}
+}
 
 /** Core owns scheduled-agent lifecycle; Automation supplies persistence only. */
 export class AutomationScheduler {
@@ -53,7 +78,7 @@ export class AutomationScheduler {
 		const next = this.store.nextDueAt();
 		this.schedule(next === undefined ? 30_000 : Math.min(30_000, Math.max(250, next - Date.now())));
 	}
-	private launch(job: AutomationJob): void {
+	private launch(job: AutomationClaim): void {
 		const startedAt = Date.now();
 		const controller = new AbortController();
 		this.controllers.add(controller);
@@ -63,10 +88,13 @@ export class AutomationScheduler {
 		}, 60_000) : undefined;
 		heartbeat?.unref();
 		const promise = (async () => {
-			let result: Omit<AutomationRun, "id" | "jobId">;
+			let result: AutomationCompletion;
 			try {
 				const executed = await this.execute(job, controller.signal);
-				result = { startedAt, finishedAt: Date.now(), status: "ok", output: executed.output };
+				result = { startedAt, finishedAt: Date.now(), status: "ok", output: executed.output,
+					...(executed.delivery ? { delivery: executed.delivery } : {}),
+					...(executed.objectiveId ? { objectiveId: executed.objectiveId } : {}),
+					...(executed.taskRunId ? { taskRunId: executed.taskRunId } : {}) };
 			} catch (error) {
 				result = { startedAt, finishedAt: Date.now(), status: "error", error: error instanceof Error ? error.message : String(error) };
 			}

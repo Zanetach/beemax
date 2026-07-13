@@ -8,7 +8,7 @@
  */
 
 import { AutomationStore } from "@beemax/automation";
-import { ActionGovernance, AutonomyRolloutController, AutomationScheduler, BeeMaxAgentRuntime, DeterministicSituationBuilder, FileCredentialVault, FileCredentialVaultAuditJournal, HeartbeatRunner, InitiativeRuntime, InitiativeTriggerService, ProactiveInvestigationRuntime, TaskPlanNoticeDeliveryService, TaskTransitionInitiativeAdapter, ToolApprovalBroker, ToolPolicyRegistry, buildActiveTaskPreservationEnvelope, buildTaskPreservationEnvelope, canonicalUserId, containsCredentialMaterial, conversationKey, responsibilityOwnerKey, responsibilityOwnerKeys, createExecutionEnvelope, createSubagentTools, createTaskCheckpoint, createTaskLedgerTools, createTaskOrchestrationTools, decideInitiativeFromSituation, guardVerifiedObjectiveMemoryPublisher, redactCredentialMaterial, renderTaskCheckpoint, type AgentRuntimePort, type BeeMaxAgentRunEvent, type BeeMaxAgentRunEventSink, type ContextCompactionAuditEvent, type DeliveryPort, type ExecutionEnvelope, type ExecutionTraceSink, type InitiativeObservation, type ObjectiveDeliveryInput, type SkillCandidateTrialInput, type SkillTrialAssertion, type SkillTrialToolCall, type SubagentTask, type TaskGraphExecutionContext, type TaskGraphExecutionResult, type TaskGraphVerifier, type TaskLedger, type TaskRecord, type ToolEffectProjectionReader, type VerifiedObjectiveMemoryPublisher } from "@beemax/core";
+import { ActionGovernance, AutonomyRolloutController, AutomationDeliveryWorker, AutomationScheduler, BeeMaxAgentRuntime, DeterministicSituationBuilder, FileCredentialVault, FileCredentialVaultAuditJournal, HeartbeatRunner, InitiativeRuntime, InitiativeTriggerService, ProactiveInvestigationRuntime, TaskPlanNoticeDeliveryService, TaskTransitionInitiativeAdapter, ToolApprovalBroker, ToolPolicyRegistry, buildActiveTaskPreservationEnvelope, buildTaskPreservationEnvelope, canonicalUserId, containsCredentialMaterial, conversationKey, responsibilityOwnerKey, responsibilityOwnerKeys, createExecutionEnvelope, createSubagentTools, createTaskCheckpoint, createTaskLedgerTools, createTaskOrchestrationTools, decideInitiativeFromSituation, guardVerifiedObjectiveMemoryPublisher, redactCredentialMaterial, renderTaskCheckpoint, type AgentRuntimePort, type BeeMaxAgentRunEvent, type BeeMaxAgentRunEventSink, type ContextCompactionAuditEvent, type DeliveryPort, type ExecutionEnvelope, type ExecutionTraceSink, type InitiativeObservation, type ObjectiveDeliveryInput, type SkillCandidateTrialInput, type SkillTrialAssertion, type SkillTrialToolCall, type SubagentTask, type TaskGraphExecutionContext, type TaskGraphExecutionResult, type TaskGraphVerifier, type TaskLedger, type TaskRecord, type ToolEffectProjectionReader, type VerifiedObjectiveMemoryPublisher } from "@beemax/core";
 import {
 	AdapterRegistry,
 	ChannelHost,
@@ -45,7 +45,7 @@ async function runProfileAutomation(
 	source: SessionSource,
 	prompt: string,
 	options: { key: string; timeoutMs: number; signal?: AbortSignal; executionEnvelope?: Readonly<ExecutionEnvelope>; objectiveTaskId?: string; allowedCapabilities?: string[] },
-): Promise<string> {
+): Promise<{ answer: string; objectiveId?: string; taskRunId?: string }> {
 	const automationSource = { ...source, threadId: `__automation:${options.key}`, messageId: undefined };
 	if (options.signal?.aborted) throw options.signal.reason;
 	let rejectAbort: ((reason: unknown) => void) | undefined;
@@ -53,6 +53,7 @@ async function runProfileAutomation(
 	const abort = () => { void runtime.cancel(automationSource); rejectAbort?.(options.signal?.reason ?? new Error("Automation aborted")); };
 	options.signal?.addEventListener("abort", abort, { once: true });
 	let result;
+	let settledEnvelope: Readonly<ExecutionEnvelope> | undefined;
 	try {
 		result = await Promise.race([runtime.run({
 			source: automationSource,
@@ -63,12 +64,12 @@ async function runProfileAutomation(
 			...(options.objectiveTaskId ? { objectiveTaskId: options.objectiveTaskId } : {}),
 			...(options.allowedCapabilities ? { allowedCapabilities: options.allowedCapabilities } : {}),
 			...(options.executionEnvelope ? { executionEnvelope: options.executionEnvelope } : {}),
-		}), ...(aborted ? [aborted] : [])]);
+		}, (event) => { if (event.type === "execution_settled" && event.status === "succeeded") settledEnvelope = event.executionEnvelope; }), ...(aborted ? [aborted] : [])]);
 	} finally {
 		options.signal?.removeEventListener("abort", abort);
 	}
 	if (!result.answer.trim() || result.answer === "(no response)") throw new Error("Automation agent returned no answer");
-	return result.answer.trim();
+	return { answer: result.answer.trim(), ...(settledEnvelope?.objectiveId ? { objectiveId: settledEnvelope.objectiveId } : {}), ...(settledEnvelope?.taskRunId ? { taskRunId: settledEnvelope.taskRunId } : {}) };
 }
 
 export async function runGateway(config: BeeMaxConfig): Promise<void> {
@@ -134,7 +135,7 @@ export async function runGateway(config: BeeMaxConfig): Promise<void> {
 			return new TelegramAdapter(config.gateway.telegram);
 		},
 	});
-	const channelHost = new ChannelHost(adapterRegistry, enabledChannels, { connectAttempts: 3, retryBaseDelayMs: 1_000, retryMaxDelayMs: 30_000 });
+	const channelHost = new ChannelHost(adapterRegistry, enabledChannels, { connectAttempts: 3, retryBaseDelayMs: 1_000, retryMaxDelayMs: 30_000, requireConnectedOnStart: false });
 	const gatewayVersion = installedVersion();
 	const deliveryPort = new GatewayDeliveryPort(channelHost);
 	let releaseChannelLock: () => Promise<void>;
@@ -155,6 +156,7 @@ export async function runGateway(config: BeeMaxConfig): Promise<void> {
 	const taskTransitionInitiative = new TaskTransitionInitiativeAdapter(persistence.initiativeTriggerInbox, config.profile);
 	profileStartupCleanup.push(() => memory.close());
 	const automation = new AutomationStore(config.memory.dbPath);
+	const automationDelivery = new AutomationDeliveryWorker(automation, deliveryPort);
 	profileStartupCleanup.push(() => automation.close());
 	const mcp = new McpManager();
 	profileStartupCleanup.push(() => mcp.close());
@@ -178,7 +180,7 @@ export async function runGateway(config: BeeMaxConfig): Promise<void> {
 	const mainMcpTools = config.agent.toolset === "safe" ? readOnlyMcpTools : mcp.getTools();
 	const feishuMeetingTools = feishuAdapter ? createFeishuMeetingTools(() => feishuAdapter!.apiClient) : [];
 	const automationToolNames = executionSafeTools(config, readOnlyAgentTools(readOnlyMcpTools.map((tool) => tool.name), [
-		"schedule_list", "schedule_runs", "feishu_meeting_get", "feishu_meeting_list",
+		"schedule_get", "schedule_list", "schedule_runs", "schedule_status", "feishu_meeting_get", "feishu_meeting_list",
 		"feishu_meeting_reserve_get", "feishu_meeting_reserve_active_get", "feishu_meeting_recording_get",
 	]));
 	const automationPolicies = new ToolPolicyRegistry([...readOnlyMcpTools, ...feishuMeetingTools]);
@@ -389,8 +391,8 @@ export async function runGateway(config: BeeMaxConfig): Promise<void> {
 	scheduler = new AutomationScheduler(automation, async (job, signal) => {
 		const assertClaim = () => { if (signal?.aborted) throw signal.reason; if (job.claimToken && !automation.renewClaim(job.id, job.claimToken, Date.now() + 15 * 60_000)) throw new Error(`Automation lease lost: ${job.id}`); };
 		if (job.kind === "reminder") {
-			assertClaim(); await deliveryPort.sendText(job, `⏰ ${job.text}`, { idempotencyKey: `automation:${job.id}:${job.nextRunAt}` });
-			return { output: job.text };
+			assertClaim();
+			return { output: job.text, delivery: { kind: "text" as const, text: `⏰ ${job.text}`, idempotencyKey: `automation:${job.occurrenceId}` } };
 		}
 		const source: SessionSource = {
 			platform: job.platform,
@@ -401,9 +403,11 @@ export async function runGateway(config: BeeMaxConfig): Promise<void> {
 		const timeoutMs = 10 * 60_000;
 		const triggerId = `schedule:${job.id}:${job.nextRunAt}`;
 		const executionEnvelope = createExecutionEnvelope({ executionId: `automation:${job.id}:${job.nextRunAt}`, trigger: { kind: "automation", id: triggerId }, budget: { deadlineAt: Date.now() + timeoutMs, maxCorrectiveAttempts: 1 }, mode: "normal" });
-		const answer = await runProfileAutomation(runtime, source, job.text, { key: `schedule:${job.id}`, timeoutMs, signal, executionEnvelope });
-		assertClaim(); await deliveryPort.sendText(job, `🗓️ ${job.name}\n\n${answer}`, { idempotencyKey: `automation:${job.id}:${job.nextRunAt}` });
-		return { output: answer };
+		const automationResult = await runProfileAutomation(runtime, source, job.text, { key: `schedule:${job.id}`, timeoutMs, signal, executionEnvelope });
+		const answer = automationResult.answer;
+		assertClaim();
+		return { output: answer, delivery: { kind: "text" as const, text: `🗓️ ${job.name}\n\n${answer}`, idempotencyKey: `automation:${job.occurrenceId}` },
+			...(automationResult.objectiveId ? { objectiveId: automationResult.objectiveId } : {}), ...(automationResult.taskRunId ? { taskRunId: automationResult.taskRunId } : {}) };
 	}, 4);
 	const initiative = new InitiativeRuntime({
 		situationBuilder: new DeterministicSituationBuilder(),
@@ -438,13 +442,14 @@ export async function runGateway(config: BeeMaxConfig): Promise<void> {
 				budget: input.budget,
 				mode: "normal",
 			});
-			const answer = await runProfileAutomation(runtime, input.executionScope as SessionSource, input.prompt, {
+			const automationResult = await runProfileAutomation(runtime, input.executionScope as SessionSource, input.prompt, {
 				key: `initiative:${input.observation.dedupeKey}`,
 				timeoutMs,
 				objectiveTaskId: input.objective.id,
 				allowedCapabilities: input.allowedCapabilities,
 				executionEnvelope,
 			});
+			const answer = automationResult.answer;
 			const settled = memory.queryTasks({ ownerKeys: [input.objective.ownerKey], id: input.objective.id, kinds: ["objective"], limit: 1 })[0];
 			const materialResult = settled?.status === "succeeded" && settled.verificationStatus === "accepted";
 			if (materialResult) await deliveryPort.sendText(input.executionScope, answer, { idempotencyKey: `initiative-result:${input.objective.id}` });
@@ -515,7 +520,7 @@ export async function runGateway(config: BeeMaxConfig): Promise<void> {
 	const runMediaDeliveries = () => {
 		boundGatewayProcessLogs(config.paths.agentDir);
 		if (mediaDeliveryWork) return;
-		const work = flushMediaDeliveries(automation, deliveryPort).catch((error) => console.error(`[beemax] media delivery worker failed: ${String(error)}`));
+		const work = flushAutomationDeliveries(automationDelivery, automation, deliveryPort).catch((error) => console.error(`[beemax] automation delivery worker failed: ${String(error)}`));
 		mediaDeliveryWork = work;
 		void work.then(() => { if (mediaDeliveryWork === work) mediaDeliveryWork = undefined; });
 	};
@@ -565,7 +570,8 @@ export async function runGateway(config: BeeMaxConfig): Promise<void> {
 	}
 }
 
-async function flushMediaDeliveries(automation: AutomationStore, deliveryPort: DeliveryPort): Promise<void> {
+async function flushAutomationDeliveries(automationDelivery: AutomationDeliveryWorker, automation: AutomationStore, deliveryPort: DeliveryPort): Promise<void> {
+	await automationDelivery.runOnce();
 	for (const item of automation.claimMediaDue(Date.now(), 4)) {
 		try {
 			await deliveryPort.sendMedia(item, { path: item.path, mimeType: item.mimeType });
@@ -876,7 +882,7 @@ export function readOnlyAgentTools(mcpTools: string[], additionalTools: string[]
 export function mainAgentTools(toolset: "safe" | "standard", mcpTools: string[]): string[] {
 	const readOnly = readOnlyAgentTools(mcpTools, [
 		"memory_status", "memory_candidates", "memory_explain",
-		"schedule_list", "schedule_runs", "skill_list", "skill_read", "skill_versions", "capability_discover", "task_status", "task_wait", "task_list", "task_get", "task_runs",
+		"schedule_get", "schedule_list", "schedule_runs", "schedule_status", "skill_list", "skill_read", "skill_versions", "capability_discover", "task_status", "task_wait", "task_list", "task_get", "task_runs",
 		"task_plan_list", "task_plan_get", "task_plan_status",
 		"feishu_meeting_get", "feishu_meeting_list", "feishu_meeting_reserve_get", "feishu_meeting_reserve_active_get", "feishu_meeting_recording_get",
 	]);
@@ -886,7 +892,7 @@ export function mainAgentTools(toolset: "safe" | "standard", mcpTools: string[])
 		"bash", "edit", "write", "memory_remember", "memory_promote", "memory_reject", "memory_forget", "memory_understand", "memory_correct",
 		"browser_open", "browser_read",
 		"browser_click", "browser_fill", "browser_fill_credential", "browser_generate_credential", "browser_cookies",
-		"reminder_create", "schedule_create", "schedule_pause", "schedule_resume", "schedule_delete",
+		"reminder_create", "schedule_create", "schedule_pause", "schedule_resume", "schedule_update", "schedule_run_now", "schedule_delete",
 		"capability_discover", "skill_candidate_install", "skill_candidate_verify", "skill_candidate_promote", "skill_rollback", "task_spawn", "task_cancel", "image_generate",
 		"task_plan_execute", "task_plan_pause", "task_plan_resume",
 		"feishu_meeting_reserve_create", "feishu_meeting_reserve_update", "feishu_meeting_reserve_delete",

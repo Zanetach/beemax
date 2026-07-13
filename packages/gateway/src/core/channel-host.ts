@@ -38,6 +38,8 @@ export interface ChannelHostOptions {
 	retryBaseDelayMs?: number;
 	retryMaxDelayMs?: number;
 	supervisionIntervalMs?: number;
+	/** Keep the Profile worker alive and supervise reconnects even when every channel is initially offline. */
+	requireConnectedOnStart?: boolean;
 }
 
 interface HostedChannel {
@@ -95,6 +97,7 @@ export class ChannelHost implements ChannelAdapterResolver {
 			retryBaseDelayMs: boundedInteger(options.retryBaseDelayMs, 1_000, 0, 60_000),
 			retryMaxDelayMs: boundedInteger(options.retryMaxDelayMs, 30_000, 0, 300_000),
 			supervisionIntervalMs: boundedInteger(options.supervisionIntervalMs, 5_000, 1, 60_000),
+			requireConnectedOnStart: options.requireConnectedOnStart ?? true,
 		};
 		for (const instance of instances) {
 			if (!instance.enabled) continue;
@@ -140,7 +143,7 @@ export class ChannelHost implements ChannelAdapterResolver {
 		this.stopping = false;
 		await Promise.all([...this.channels.values()].map((channel) => this.connectChannel(channel)));
 		const snapshot = this.status();
-		if (!snapshot.channels.some((channel) => channel.state === "connected")) {
+		if (this.options.requireConnectedOnStart && !snapshot.channels.some((channel) => channel.state === "connected")) {
 			throw new Error(`All channel adapters failed to connect: ${snapshot.channels.map((channel) => `${channel.id}: ${channel.lastError ?? "connection rejected"}`).join("; ")}`);
 		}
 		this.startSupervisor();
