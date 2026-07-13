@@ -61,7 +61,8 @@ export interface PlanningOutcomeEvent { type: "planning_outcome"; mode: "direct"
 export type CapabilityRankReason = "exact_name" | "name" | "trigger" | "alias" | "lexical";
 export interface CapabilityRankedCandidate { kind: "tool" | "mcp" | "skill"; name: string; score: number; confidence: number; reason: CapabilityRankReason; }
 export interface CapabilityRankedEvent { type: "capability_ranked"; candidates: CapabilityRankedCandidate[]; activatedTools: string[]; }
-export type BeeMaxAgentRunEvent = AgentSessionEvent | ModelFallbackEvent | PlanningDecisionEvent | PlanningOutcomeEvent | CapabilityRankedEvent;
+export interface ContextBuiltEvent { type: "context_built"; included: Array<{ kind: string; source: string; costChars: number }>; released: Array<{ kind: string; source: string; costChars: number }>; contextChars: number; }
+export type BeeMaxAgentRunEvent = AgentSessionEvent | ModelFallbackEvent | PlanningDecisionEvent | PlanningOutcomeEvent | CapabilityRankedEvent | ContextBuiltEvent;
 export type BeeMaxAgentRunEventSink = (event: BeeMaxAgentRunEvent) => void | Promise<void>;
 /** Gateway-facing runtime contract; implementations may be local or remote. */
 export interface AgentRuntimePort<Source extends BeeMaxRuntimeSource = BeeMaxRuntimeSource> {
@@ -160,9 +161,11 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 				? this.taskLedger.queryTasks({ ownerKeys: [conversationKey(input.source)], ...(input.objectiveTaskId ? { id: input.objectiveTaskId } : { kinds: ["objective"], statuses: ["pending", "running"] }), limit: 1 })[0]
 				: undefined;
 			const understanding = input.mode === "interactive" || !input.mode ? this.turnUnderstanding.understand(input.text, { activeObjective: activeObjective?.title }) : undefined;
-			const recalledText = input.mode === "interactive" || !input.mode
+			const contextAssembly = (input.mode === "interactive" || !input.mode) && this.context && typeof this.context.assemble === "function"
+				? this.context.assemble(input.source, requestedText, { model: modelOf(session.piSession.agent), memoryQuery: understanding?.memoryQuery }) : undefined;
+			const recalledText = contextAssembly?.text ?? ((input.mode === "interactive" || !input.mode)
 				? this.context?.enrich(input.source, requestedText, { model: modelOf(session.piSession.agent), memoryQuery: understanding?.memoryQuery }) ?? requestedText
-				: requestedText;
+				: requestedText);
 			const needsWorkContext = understanding && (understanding.action !== "create" || understanding.executionMode !== "direct" || understanding.constraints.length > 0 || understanding.acceptanceCriteria.length > 0);
 			const enrichedText = needsWorkContext ? `${renderWorkContext(understanding)}\n\n${recalledText}` : recalledText;
 			const objectiveBinding = (input.mode === "interactive" || !input.mode) && (planning?.mode !== "direct" || Boolean(input.objectiveTaskId) || isObjectiveContinuation(input.text)) ? this.createObjective(input, startedAt) : undefined;
@@ -232,6 +235,7 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 			input.signal?.addEventListener("abort", abortFromCaller, { once: true });
 			const timeout = input.timeoutMs === null ? undefined : setTimeout(() => { timedOut = true; void session.piSession.abort(); }, input.timeoutMs);
 			try {
+				if (contextAssembly) await onEvent?.({ type: "context_built", included: contextAssembly.included.map(({ kind, source, costChars }) => ({ kind, source, costChars })), released: contextAssembly.released.map(({ kind, source, costChars }) => ({ kind, source, costChars })), contextChars: contextAssembly.contextChars });
 				if (planning) await onEvent?.({ type: "planning_decision", mode: planning.mode, concurrency: planning.suggestedConcurrency, maxSubagents: planning.budget.maxSubagents, requiredTools: [...planning.requiredTools] });
 				await session.piSession.prompt(text, {
 					expandPromptTemplates: input.expandPromptTemplates ?? true,

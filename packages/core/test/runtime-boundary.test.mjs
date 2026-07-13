@@ -126,6 +126,40 @@ test("Conversation context gives supplied volatile facts precedence over restore
 	}
 });
 
+test("Conversation Context preserves the full current request and releases low-priority evidence under one budget", () => {
+	const request = `完成客户报告-${"R".repeat(2_000)}-REQUEST-END`;
+	const memory = {
+		recall: () => [
+			{ content: `confirmed-${"C".repeat(8_000)}`, memoryType: "claim", status: "active" },
+			{ content: `candidate-${"D".repeat(8_000)}`, memoryType: "candidate", status: "candidate" },
+		],
+		recordCandidate: () => "id",
+	};
+	const context = new ConversationContext(memory, { runtimeFacts: () => `facts-${"F".repeat(5_800)}-FACTS-END`, maxContextChars: 7_000 });
+	const assembly = context.assemble({ platform: "cli", chatId: "local", chatType: "dm", userId: "local" }, request);
+	assert.match(assembly.text, /FACTS-END/);
+	assert.match(assembly.text, /REQUEST-END$/);
+	assert.equal(assembly.text.includes("candidate-"), false);
+	assert.equal(assembly.released.some((item) => item.kind === "memory_candidate"), true);
+	assert.ok(assembly.included.every((item) => item.source && item.lifecycle && Number.isFinite(item.costChars)));
+	assert.ok(assembly.contextChars <= 7_000);
+});
+
+test("Conversation Context preserves conflict evidence ahead of confirmed and candidate memory", () => {
+	const memory = {
+		recall: () => [
+			{ content: `conflict-${"X".repeat(500)}`, memoryType: "claim", status: "conflicted" },
+			{ content: `confirmed-${"C".repeat(500)}`, memoryType: "claim", status: "active" },
+			{ content: `candidate-${"D".repeat(500)}`, memoryType: "candidate", status: "candidate" },
+		],
+		recordCandidate: () => "id",
+	};
+	const assembly = new ConversationContext(memory, { maxContextChars: 1_000 }).assemble({ platform: "cli", chatId: "local", chatType: "dm", userId: "local" }, "current request");
+	assert.deepEqual(assembly.included.map((item) => item.kind), ["memory_conflict"]);
+	assert.deepEqual(assembly.released.map((item) => item.kind), ["memory_confirmed", "memory_candidate"]);
+	assert.ok(assembly.released.every((item) => item.status === "released"));
+});
+
 test("Session coordinator owns serial execution, cancellation, and bounded lifecycle", async () => {
 	const source = { platform: "feishu", chatId: "chat", chatType: "dm", userId: "user" };
 	const source2 = { ...source, chatId: "other" };
