@@ -8,7 +8,7 @@ import { Type } from "typebox";
 import { MUTATING_TOOL_POLICY, READ_ONLY_TOOL_POLICY, withToolPolicy, type ToolPolicy } from "./tool-runtime.ts";
 import { assertNoCredentialMaterial } from "./credential-material.ts";
 import { SkillRegistry, SkillRuntime } from "./skill-runtime.ts";
-import { multilingualLexicalTerms } from "./multilingual-lexical.ts";
+import { rankCapabilityIndex } from "./capability-ranking.ts";
 
 const SKILL_NAME = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 
@@ -20,7 +20,7 @@ export interface SkillCandidateTrialInput { name: string; description: string; i
 export interface SkillCandidateTrialResult { trialId: string; accepted: boolean; evidence: string; assertions: SkillTrialAssertion[]; toolCalls: SkillTrialToolCall[]; }
 export type SkillCandidateVerifier = (input: SkillCandidateTrialInput, signal?: AbortSignal) => Promise<SkillCandidateTrialResult>;
 
-export interface CapabilityMetadata extends Pick<ToolDefinition, "name" | "description"> { aliases?: string[]; triggers?: string[]; exclude?: string[]; }
+export interface CapabilityMetadata extends Pick<ToolDefinition, "name" | "description"> { kind?: "tool" | "mcp"; aliases?: string[]; triggers?: string[]; exclude?: string[]; }
 
 export function createSkillTools(agentDir: string, markReloadNeeded: () => void, availableTools: readonly CapabilityMetadata[] = [], verifyCandidate?: SkillCandidateVerifier, additionalSkillRoots: readonly string[] = [], activateTools?: (names: string[]) => void): ToolDefinition[] {
 	const root = resolve(agentDir, "skills");
@@ -35,12 +35,26 @@ export function createSkillTools(agentDir: string, markReloadNeeded: () => void,
 			const existingKey = await readSkillLearningKey(agentDir);
 			const candidates = existingKey ? await listCandidates(candidateRoot, existingKey) : [];
 			const matches = <T extends CapabilityMetadata>(items: T[]) => rankCapabilities(params.query, items, 20);
-			const matchedTools = matches([...availableTools]);
-			const skills = await runtime.discover(params.query, 5);
-			const tools = skills.length ? matchedTools.filter((tool) => tool.name !== "bash") : matchedTools;
+			const eligibleTools = availableTools.filter((tool) => tool.name !== "bash");
+			const matchedTools = rankCapabilityIndex(params.query, eligibleTools, 20);
+			const discoveredSkills = await runtime.discover(params.query, 10);
+			const ranked = [
+				...matchedTools.map((match) => ({ kind: match.item.kind ?? "tool", ...match })),
+				...discoveredSkills.map((skill) => ({ kind: "skill" as const, item: skill, score: skill.score, confidence: skill.confidence, reason: skill.reason })),
+			].sort((left, right) => right.score - left.score || left.item.name.localeCompare(right.item.name)).slice(0, 10);
+			const selectedSkills = ranked.filter((item) => item.kind === "skill").map((item) => item.item as (typeof discoveredSkills)[number]);
+			runtime.retainDiscovered(selectedSkills.map((skill) => skill.name));
+			const tools = ranked.filter((item) => item.kind !== "skill").map((item) => item.item as CapabilityMetadata);
 			const publicTools = tools.map(({ name, description }) => ({ name, description }));
-			activateTools?.([...tools.map((tool) => tool.name), ...(skills.length ? ["skill_activate", "skill_read"] : [])]);
-			return result("Capability discovery completed and matching capabilities were activated for this turn.", { tools: publicTools, skills: skills.map(publicSkill), candidates: matches(candidates.map((item) => ({ name: item.name, description: item.description, attempts: item.attempts.length }))), activatedTools: [...tools.map((tool) => tool.name), ...(skills.length ? ["skill_activate", "skill_read"] : [])] });
+			const activatedTools = [...tools.map((tool) => tool.name), ...(selectedSkills.length ? ["skill_activate", "skill_read"] : [])];
+			activateTools?.(activatedTools);
+			return result("Capability discovery completed and matching capabilities were activated for this turn.", {
+				tools: publicTools,
+				skills: selectedSkills.map(publicSkill),
+				ranked: ranked.map((item) => ({ kind: item.kind, name: item.item.name, score: item.score, confidence: item.confidence, reason: item.reason })),
+				candidates: matches(candidates.map((item) => ({ name: item.name, description: item.description, attempts: item.attempts.length }))),
+				activatedTools,
+			});
 		} }),
 		defineTool({ name: "skill_list", label: "List Skills", description: "List metadata for Profile, project, and global Skills without loading their instruction bodies.", parameters: Type.Object({}), execute: async () => {
 			const skills = await registry.list(); return result(skills.length ? skills.map((item) => `- ${item.name}: ${item.description}`).join("\n") : "No Skills available.", { skills: skills.map(publicSkill) });
@@ -137,19 +151,7 @@ export function createSkillTools(agentDir: string, markReloadNeeded: () => void,
 }
 
 function rankCapabilities<T extends CapabilityMetadata>(query: string, items: readonly T[], limit: number): T[] {
-	const normalized = query.normalize("NFKC").toLocaleLowerCase();
-	const terms = multilingualLexicalTerms(normalized);
-	return items.flatMap((item): Array<{ item: T; score: number }> => {
-		if (item.exclude?.some((term) => normalized.includes(term.normalize("NFKC").toLocaleLowerCase()))) return [];
-		const aliases = item.aliases ?? [];
-		const triggers = item.triggers ?? [];
-		const haystack = [item.name, item.description, ...aliases, ...triggers].join(" ").normalize("NFKC").toLocaleLowerCase();
-		let score = normalized === item.name.toLocaleLowerCase() ? 100 : normalized.includes(item.name.toLocaleLowerCase()) ? 40 : 0;
-		score += triggers.filter((term) => normalized.includes(term.normalize("NFKC").toLocaleLowerCase())).length * 60;
-		score += aliases.filter((term) => normalized.includes(term.normalize("NFKC").toLocaleLowerCase())).length * 50;
-		score += terms.filter((term) => haystack.includes(term)).length * 5;
-		return score > 0 ? [{ item, score }] : [];
-	}).sort((a, b) => b.score - a.score || a.item.name.localeCompare(b.item.name)).slice(0, limit).map(({ item }) => item);
+	return rankCapabilityIndex(query, items, limit).map(({ item }) => item);
 }
 
 async function listCandidates(root: string, key: Buffer): Promise<SkillCandidate[]> {

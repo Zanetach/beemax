@@ -3,6 +3,7 @@ import { constants } from "node:fs";
 import { open, readdir, realpath } from "node:fs/promises";
 import { basename, dirname, resolve, sep } from "node:path";
 import { parseFrontmatter, stripFrontmatter } from "@earendil-works/pi-coding-agent";
+import { rankCapabilityIndex } from "./capability-ranking.ts";
 
 export interface SkillDescriptor {
 	name: string; description: string; location: string; root: string; sha256: string;
@@ -57,19 +58,8 @@ export class SkillRegistry {
 	}
 
 	async search(query: string, limit = 5): Promise<SkillMatch[]> {
-		const normalized = query.trim().toLowerCase();
-		const terms = normalized.split(/[^\p{L}\p{N}-]+/u).filter(Boolean);
-		return (await this.list()).flatMap((skill): SkillMatch[] => {
-			const haystack = `${skill.name} ${skill.description}`.toLowerCase();
-			if (skill.exclude.some((item) => normalized.includes(item.toLowerCase()))) return [];
-			let score = skill.name === normalized ? 100 : normalized.includes(skill.name) ? 40 : 0;
-			const triggerHits = skill.triggers.filter((item) => normalized.includes(item.toLowerCase())).length;
-			score += triggerHits * 50;
-			const termHits = terms.filter((term) => haystack.includes(term)).length;
-			score += termHits * 10;
-			if (!score) return [];
-			return [{ ...skill, score, confidence: Math.min(1, score / 100), reason: triggerHits ? `matched ${triggerHits} trigger(s)` : `matched ${termHits} term(s)` }];
-		}).sort((a, b) => b.score - a.score || a.sourcePriority - b.sourcePriority || a.name.localeCompare(b.name)).slice(0, Math.max(1, Math.min(limit, 10)));
+		return rankCapabilityIndex(query, (await this.list()).map((skill) => ({ ...skill, priority: skill.sourcePriority })), Math.max(1, Math.min(limit, 10)))
+			.map(({ item, score, confidence, reason }) => ({ ...item, score, confidence, reason }));
 	}
 }
 
@@ -107,6 +97,10 @@ export class SkillRuntime {
 	async discover(query: string, limit = 5): Promise<SkillMatch[]> {
 		this.reset(); const matches = await this.registry.search(query, limit);
 		this.discovered = new Map(matches.map((item) => [item.name, item])); this.state = "discovered"; return matches;
+	}
+	retainDiscovered(names: readonly string[]): void {
+		if (this.state !== "discovered") throw new Error("Skills can only be narrowed immediately after discovery");
+		const selected = new Set(names); this.discovered = new Map([...this.discovered].filter(([name]) => selected.has(name)));
 	}
 
 	async activate(name: string): Promise<{ descriptor: SkillDescriptor; instructions: string; routes: Array<{ name: string; description?: string }> }> {

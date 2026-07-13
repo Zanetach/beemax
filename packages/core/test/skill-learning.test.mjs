@@ -47,6 +47,32 @@ test("capability discovery ranks multilingual aliases and excludes negative matc
 	} finally { rmSync(root, { recursive: true, force: true }); }
 });
 
+test("capability discovery applies one Top-K budget across Tools and Skills", async () => {
+	const root = mkdtempSync(join(tmpdir(), "beemax-unified-capability-ranking-"));
+	try {
+		const project = join(root, "project-skills");
+		const skill = join(project, "report-review");
+		mkdirSync(skill, { recursive: true });
+		writeFileSync(join(skill, "SKILL.md"), `---\nname: report-review\ndescription: "Review reports"\ntriggers: ["review reports"]\n---\nUse the route table.`);
+		const losingSkill = join(project, "zzz-review"); mkdirSync(losingSkill, { recursive: true });
+		writeFileSync(join(losingSkill, "SKILL.md"), `---\nname: zzz-review\ndescription: "Review reports"\n---\nThis Skill must lose the unified budget.`);
+		const inventory = Array.from({ length: 12 }, (_, index) => ({ name: `report_tool_${index}`, description: `Review reports using tool ${index}`, kind: index === 0 ? "mcp" : "tool" }));
+		const activations = [];
+		const tools = new Map(createSkillTools(root, () => undefined, inventory, undefined, [project], (names) => activations.push(names)).map((tool) => [tool.name, tool]));
+		const discovered = await tools.get("capability_discover").execute("discover", { query: "review reports" });
+		assert.equal(discovered.details.ranked.length, 10);
+		assert.equal(discovered.details.ranked[0].kind, "skill");
+		assert.equal(discovered.details.ranked[0].name, "report-review");
+		assert.equal(discovered.details.tools.length, 9);
+		assert.deepEqual(discovered.details.skills.map((item) => item.name), ["report-review"]);
+		assert.equal(discovered.details.ranked.some((item) => item.kind === "mcp"), true);
+		assert.equal(discovered.details.ranked.every((item) => Number.isFinite(item.score) && item.confidence >= 0 && item.confidence <= 1 && item.reason.length > 0), true);
+		assert.deepEqual(activations, [[...discovered.details.tools.map((item) => item.name), "skill_activate", "skill_read"]]);
+		await assert.rejects(() => tools.get("skill_activate").execute("activate-loser", { name: "zzz-review" }), /must be discovered/i);
+		assert.doesNotThrow(() => structuredClone(discovered));
+	} finally { rmSync(root, { recursive: true, force: true }); }
+});
+
 test("Skill tools progressively activate a project Skill route and only its declared resource", async () => {
 	const root = mkdtempSync(join(tmpdir(), "beemax-progressive-skill-tools-"));
 	try {

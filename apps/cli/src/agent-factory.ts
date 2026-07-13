@@ -102,7 +102,8 @@ export function buildAgentFactory(opts: AgentFactoryOptions) {
 			})]
 			: [];
 		const scopedTools = opts.sessionTools?.(source) ?? [];
-		const inventory = [...executionTools, ...baseCustomTools, ...browserTools, ...memoryTools, ...automationTools, ...imageTools, ...scopedTools];
+		const inventory = [...executionTools, ...baseCustomTools, ...browserTools, ...memoryTools, ...automationTools, ...imageTools, ...scopedTools]
+			.map((tool) => Object.assign(tool, { kind: tool.name.startsWith("mcp_") ? "mcp" as const : "tool" as const }));
 		const skillRoots = [join(opts.cwd, ".agents", "skills"), join(opts.cwd, ".codex", "skills"), join(opts.cwd, "skills"), join(homedir(), ".agents", "skills"), join(homedir(), ".codex", "skills")];
 		const skillTools = createSkillTools(opts.agentDir, onResourcesChanged, inventory, opts.verifySkillCandidate ? (input, signal) => opts.verifySkillCandidate!(source, input, signal) : undefined, skillRoots, activateTools);
 		return [...executionTools, ...baseCustomTools, ...browserTools, ...memoryTools, ...automationTools, ...imageTools, ...skillTools, ...scopedTools];
