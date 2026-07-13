@@ -64,10 +64,52 @@ test("idempotency keys are isolated by conversation owner scope", () => {
 	const root = mkdtempSync(join(tmpdir(), "beemax-effects-scope-"));
 	try {
 		const effects = new FileToolEffectJournal(join(root, "tool-effects.jsonl"));
-		effects.begin({ source, taskId: "turn-1", toolCallId: "call-1", toolName: "write", args: { idempotencyKey: "daily-report" }, policy: MUTATING_TOOL_POLICY });
-		effects.finish({ source, toolCallId: "call-1", toolName: "write", policy: MUTATING_TOOL_POLICY, isError: false });
+		const localPolicy = { ...MUTATING_TOOL_POLICY, sideEffect: "local" };
+		effects.begin({ source, taskId: "turn-1", toolCallId: "call-1", toolName: "write", args: { idempotencyKey: "daily-report" }, policy: localPolicy });
+		effects.finish({ source, toolCallId: "call-1", toolName: "write", policy: localPolicy, isError: false });
 		const otherUser = { ...source, userId: "user-2" };
-		assert.ok(effects.begin({ source: otherUser, taskId: "turn-2", toolCallId: "call-2", toolName: "write", args: { idempotencyKey: "daily-report" }, policy: MUTATING_TOOL_POLICY }));
+		assert.ok(effects.begin({ source: otherUser, taskId: "turn-2", toolCallId: "call-2", toolName: "write", args: { idempotencyKey: "daily-report" }, policy: localPolicy }));
+		const otherThread = { ...source, threadId: "thread-2", chatType: "thread" };
+		assert.throws(() => effects.begin({ source: otherThread, taskId: "turn-3", toolCallId: "call-3", toolName: "write", args: { idempotencyKey: "daily-report" }, policy: localPolicy }), /already committed/);
+	} finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("separate runtime instances atomically reject the same idempotent effect", () => {
+	const root = mkdtempSync(join(tmpdir(), "beemax-effects-concurrent-"));
+	try {
+		const path = join(root, "tool-effects.jsonl");
+		const first = new FileToolEffectJournal(path);
+		const second = new FileToolEffectJournal(path);
+		first.begin({ source, taskId: "turn-1", toolCallId: "call-1", toolName: "write", args: { idempotencyKey: "one-effect" }, policy: MUTATING_TOOL_POLICY });
+		assert.throws(() => second.begin({ source, taskId: "turn-2", toolCallId: "call-2", toolName: "write", args: { idempotencyKey: "one-effect" }, policy: MUTATING_TOOL_POLICY }), /unresolved/);
+	} finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("external mutation remains unknown without a provider receipt", () => {
+	const root = mkdtempSync(join(tmpdir(), "beemax-effects-proof-"));
+	try {
+		const effects = new FileToolEffectJournal(join(root, "tool-effects.jsonl"));
+		effects.begin({ source, taskId: "turn-1", toolCallId: "call-1", toolName: "external_write", args: { idempotencyKey: "external-1" }, policy: MUTATING_TOOL_POLICY });
+		effects.finish({ source, toolCallId: "call-1", toolName: "external_write", policy: MUTATING_TOOL_POLICY, isError: false });
+		assert.equal(effects.events().at(-1).status, "unknown");
+		assert.equal(effects.events().at(-1).receipt, undefined);
+		assert.throws(() => effects.begin({ source, taskId: "turn-2", toolCallId: "call-2", toolName: "external_write", args: { idempotencyKey: "external-1" }, policy: MUTATING_TOOL_POLICY }), /unresolved/);
+	} finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("committed idempotency survives bounded audit compaction", () => {
+	const root = mkdtempSync(join(tmpdir(), "beemax-effects-compaction-"));
+	try {
+		const path = join(root, "tool-effects.jsonl");
+		const effects = new FileToolEffectJournal(path, 100);
+		const localPolicy = { ...MUTATING_TOOL_POLICY, sideEffect: "local" };
+		for (let index = 0; index < 60; index++) {
+			const toolCallId = `call-${index}`;
+			effects.begin({ source, taskId: `turn-${index}`, toolCallId, toolName: "write", args: { idempotencyKey: `write-${index}` }, policy: localPolicy });
+			effects.finish({ source, toolCallId, toolName: "write", policy: localPolicy, isError: false });
+		}
+		const restored = new FileToolEffectJournal(path, 100);
+		assert.throws(() => restored.begin({ source, taskId: "retry", toolCallId: "retry", toolName: "write", args: { idempotencyKey: "write-0" }, policy: localPolicy }), /already committed/);
 	} finally { rmSync(root, { recursive: true, force: true }); }
 });
 

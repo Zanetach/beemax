@@ -17,7 +17,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { governToolDefinition, ToolPolicyRegistry, type ToolPolicy, type ToolRuntimeAuditSink } from "./tool-runtime.ts";
 import type { AgentScope } from "./agent-scope.ts";
-import type { ToolEffectSink } from "./tool-effect.ts";
+import { ToolEffectConflictError, type ToolEffectSink } from "./tool-effect.ts";
 
 export type BeeMaxRuntimeSource = AgentScope;
 
@@ -141,7 +141,8 @@ function installSecurityHook<Source extends BeeMaxRuntimeSource>(session: AgentS
 		const policy = policies.get(context.toolCall.name);
 		if (hardBlock) { audit?.({ phase: "blocked", source, toolName: context.toolCall.name, policy, at: Date.now(), reason: hardBlock }); return { block: true, reason: hardBlock }; }
 		if (policy.approval === "never") {
-			effects?.begin({ source, taskId: currentTaskId?.(source) ?? source.delegatedTask?.id, toolCallId: context.toolCall.id, toolName: context.toolCall.name, policy, args: context.args });
+			const effectBlock = beginToolEffect(effects, { source, taskId: currentTaskId?.(source) ?? source.delegatedTask?.id, toolCallId: context.toolCall.id, toolName: context.toolCall.name, policy, args: context.args });
+			if (effectBlock) { audit?.({ phase: "blocked", source, toolName: context.toolCall.name, policy, at: Date.now(), reason: effectBlock }); return { block: true, reason: effectBlock }; }
 			return priorResult;
 		}
 		audit?.({ phase: "requested", source, toolName: context.toolCall.name, policy, at: Date.now() });
@@ -149,7 +150,8 @@ function installSecurityHook<Source extends BeeMaxRuntimeSource>(session: AgentS
 		const decision = await authorizeTool(source, context.toolCall.name, context.args, policy, signal);
 		audit?.({ phase: decision.allowed ? "allowed" : "blocked", source, toolName: context.toolCall.name, policy, at: Date.now(), reason: decision.reason });
 		if (!decision.allowed) return { block: true, reason: decision.reason ?? "Tool call was not approved" };
-		effects?.begin({ source, taskId: currentTaskId?.(source) ?? source.delegatedTask?.id, toolCallId: context.toolCall.id, toolName: context.toolCall.name, policy, args: context.args });
+		const effectBlock = beginToolEffect(effects, { source, taskId: currentTaskId?.(source) ?? source.delegatedTask?.id, toolCallId: context.toolCall.id, toolName: context.toolCall.name, policy, args: context.args });
+		if (effectBlock) { audit?.({ phase: "blocked", source, toolName: context.toolCall.name, policy, at: Date.now(), reason: effectBlock }); return { block: true, reason: effectBlock }; }
 		return priorResult;
 	};
 	const previousAfter = session.agent.afterToolCall;
@@ -164,6 +166,11 @@ function installSecurityHook<Source extends BeeMaxRuntimeSource>(session: AgentS
 			throw error;
 		}
 	};
+}
+
+function beginToolEffect(effects: ToolEffectSink | undefined, input: Parameters<ToolEffectSink["begin"]>[0]): string | undefined {
+	try { effects?.begin(input); return undefined; }
+	catch (error) { if (error instanceof ToolEffectConflictError) return error.message; throw error; }
 }
 
 function hardBlockReason(toolName: string, args: unknown, cwd: string): string | undefined {

@@ -3,9 +3,14 @@ import { BoundedJsonlJournal } from "./bounded-jsonl-journal.ts";
 import { sessionKeyForSource } from "./session-coordinator.ts";
 import type { ToolPolicy } from "./tool-runtime.ts";
 import { containsCredentialMaterial } from "./credential-material.ts";
+import Database from "better-sqlite3";
+import type { Database as DatabaseType } from "better-sqlite3";
+import { chmodSync, existsSync } from "node:fs";
+import { conversationOwnerKey } from "./agent-scope.ts";
 
 export type ToolEffectStatus = "planned" | "executing" | "committed" | "failed" | "unknown";
 export interface ToolEffectReceipt { status: "committed"; occurredAt: number; operation: string; externalRef?: string; idempotencyKey?: string; }
+export class ToolEffectConflictError extends Error { override readonly name = "ToolEffectConflictError"; }
 
 export interface ToolEffectRecord {
 	id: string;
@@ -15,7 +20,7 @@ export interface ToolEffectRecord {
 	sideEffect: "local" | "external";
 	status: ToolEffectStatus;
 	at: number;
-	scope: { platform: string; chatId: string; userId?: string; threadId?: string };
+	scope: { ownerKey?: string; platform: string; chatId: string; userId?: string; threadId?: string };
 	idempotencyKey?: string;
 	receipt?: ToolEffectReceipt;
 }
@@ -46,11 +51,13 @@ export class FileToolEffectJournal implements ToolEffectSink {
 	private readonly journal: BoundedJsonlJournal<ToolEffectRecord>;
 	private readonly active = new Map<string, ToolEffectRecord>();
 	private readonly latest = new Map<string, ToolEffectRecord>();
-	private readonly idempotencyStates = new Map<string, ToolEffectStatus>();
+	private readonly authority: ToolEffectAuthority;
 
 	constructor(path: string, limit = 5_000) {
 		this.journal = new BoundedJsonlJournal({ path, limit, minLimit: 100, maxLimit: 50_000, isRecord: isEffectRecord });
+		this.authority = new ToolEffectAuthority(`${path}.authority.sqlite`);
 		this.rebuildIndexes();
+		this.authority.import(this.latest.values());
 		this.recoverInterrupted();
 		this.rebuildIndexes();
 	}
@@ -59,14 +66,11 @@ export class FileToolEffectJournal implements ToolEffectSink {
 		if (input.policy.sideEffect === "none") return undefined;
 		const idempotencyKey = safeText(recordOf(input.args).idempotencyKey, 256);
 		const scope = scopeOf(input.source);
-		if (idempotencyKey) {
-			const state = this.idempotencyStates.get(idempotencyIdentity(scope, idempotencyKey));
-			if (state === "committed") throw new Error("Effect with this idempotency key is already committed in the current scope");
-			if (state === "planned" || state === "executing" || state === "unknown") throw new Error("Effect with this idempotency key is unresolved in the current scope; reconcile it before retrying");
-		}
 		const at = Date.now();
+		const recordId = crypto.randomUUID();
+		if (idempotencyKey) this.authority.reserve(idempotencyIdentity(scope, idempotencyKey), recordId, at);
 		const record: ToolEffectRecord = {
-			id: crypto.randomUUID(),
+			id: recordId,
 			...(input.taskId ? { taskId: input.taskId } : {}),
 			toolCallId: input.toolCallId,
 			toolName: input.toolName,
@@ -90,12 +94,14 @@ export class FileToolEffectJournal implements ToolEffectSink {
 		this.active.delete(key);
 		const at = Date.now();
 		const metadata = effectMetadata(input.details);
+		const status = input.isError || active.sideEffect === "external" && !metadata.externalRef ? "unknown" : "committed";
 		this.append({
 			...active,
-			status: input.isError ? "unknown" : "committed",
+			status,
 			at,
-			...(input.isError ? {} : { receipt: receiptOf(active, metadata, at) }),
+			...(status === "committed" ? { receipt: receiptOf(active, metadata, at) } : {}),
 		});
+		if (active.idempotencyKey) this.authority.setStatus(active.id, status, at);
 	}
 
 	interruptTask(taskId: string): number {
@@ -103,7 +109,9 @@ export class FileToolEffectJournal implements ToolEffectSink {
 		for (const [key, record] of this.active) {
 			if (record.taskId !== taskId) continue;
 			this.active.delete(key);
-			this.append({ ...record, status: "unknown", at: Date.now(), receipt: undefined });
+			const at = Date.now();
+			this.append({ ...record, status: "unknown", at, receipt: undefined });
+			if (record.idempotencyKey) this.authority.setStatus(record.id, "unknown", at);
 			interrupted++;
 		}
 		return interrupted;
@@ -121,6 +129,7 @@ export class FileToolEffectJournal implements ToolEffectSink {
 			at,
 			receipt: resolution.status === "committed" ? { status: "committed", occurredAt: at, operation, ...(externalRef ? { externalRef } : {}), ...(current.idempotencyKey ? { idempotencyKey: current.idempotencyKey } : {}) } : undefined,
 		});
+		if (current.idempotencyKey) this.authority.setStatus(current.id, resolution.status, at);
 		return true;
 	}
 
@@ -138,38 +147,80 @@ export class FileToolEffectJournal implements ToolEffectSink {
 	private append(record: ToolEffectRecord): void {
 		this.journal.append(record);
 		this.latest.set(record.id, record);
-		if (record.idempotencyKey) this.idempotencyStates.set(idempotencyIdentity(record.scope, record.idempotencyKey), record.status);
 	}
 
 	private rebuildIndexes(): void {
-		this.latest.clear(); this.idempotencyStates.clear();
+		this.latest.clear();
 		for (const record of this.journal.records()) this.latest.set(record.id, record);
-		for (const record of this.journal.records()) if (record.idempotencyKey) this.idempotencyStates.set(idempotencyIdentity(record.scope, record.idempotencyKey), record.status);
+	}
+}
+
+interface EffectAuthorityRow { status: ToolEffectStatus; }
+
+/** Atomic replay authority kept separate from the bounded operational event journal. */
+class ToolEffectAuthority {
+	private readonly db: DatabaseType;
+	private readonly reserveTransaction: (identity: string, effectId: string, at: number) => void;
+
+	constructor(path: string) {
+		this.db = new Database(path);
+		this.db.pragma("journal_mode = WAL");
+		this.db.pragma("busy_timeout = 5000");
+		this.db.exec(`CREATE TABLE IF NOT EXISTS tool_effect_authority (
+			identity TEXT PRIMARY KEY,
+			effect_id TEXT NOT NULL UNIQUE,
+			status TEXT NOT NULL CHECK (status IN ('planned','executing','committed','failed','unknown')),
+			updated_at INTEGER NOT NULL
+		)`);
+		if (existsSync(path)) chmodSync(path, 0o600);
+		this.reserveTransaction = this.db.transaction((identity: string, effectId: string, at: number) => {
+			const current = this.db.prepare("SELECT status FROM tool_effect_authority WHERE identity = ?").get(identity) as EffectAuthorityRow | undefined;
+			if (current?.status === "committed") throw new ToolEffectConflictError("Effect with this idempotency key is already committed in the current owner scope");
+			if (current && current.status !== "failed") throw new ToolEffectConflictError("Effect with this idempotency key is unresolved in the current owner scope; reconcile it before retrying");
+			this.db.prepare(`INSERT INTO tool_effect_authority(identity, effect_id, status, updated_at) VALUES (?, ?, 'executing', ?)
+				ON CONFLICT(identity) DO UPDATE SET effect_id = excluded.effect_id, status = excluded.status, updated_at = excluded.updated_at`).run(identity, effectId, at);
+		}).immediate;
+	}
+
+	reserve(identity: string, effectId: string, at: number): void { this.reserveTransaction(identity, effectId, at); }
+
+	setStatus(effectId: string, status: ToolEffectStatus, at: number): void {
+		this.db.prepare("UPDATE tool_effect_authority SET status = ?, updated_at = ? WHERE effect_id = ?").run(status, at, effectId);
+	}
+
+	import(records: Iterable<ToolEffectRecord>): void {
+		const statement = this.db.prepare(`INSERT INTO tool_effect_authority(identity, effect_id, status, updated_at) VALUES (?, ?, ?, ?)
+			ON CONFLICT(identity) DO UPDATE SET effect_id = excluded.effect_id, status = excluded.status, updated_at = excluded.updated_at
+			WHERE excluded.updated_at >= tool_effect_authority.updated_at`);
+		const migrate = this.db.transaction(() => {
+			for (const record of records) if (record.idempotencyKey) statement.run(idempotencyIdentity(record.scope, record.idempotencyKey), record.id, record.status, record.at);
+		});
+		migrate.immediate();
 	}
 }
 
 function callKey(source: BeeMaxRuntimeSource, toolCallId: string): string { return `${sessionKeyForSource(source)}:${toolCallId}`; }
 
 function scopeOf(source: BeeMaxRuntimeSource): ToolEffectRecord["scope"] {
-	return { platform: source.platform, chatId: source.chatId, userId: source.userIdAlt ?? source.userId, threadId: source.threadId };
+	const ownerKey = source.delegatedTask?.ownerKey ?? (source.userIdAlt ? `user:${source.userIdAlt}` : conversationOwnerKey(source));
+	return { ownerKey, platform: source.platform, chatId: source.chatId, userId: source.userIdAlt ?? source.userId, threadId: source.threadId };
 }
 
 function idempotencyIdentity(scope: ToolEffectRecord["scope"], key: string): string {
-	return JSON.stringify([scope.platform, scope.chatId, scope.userId ?? "", scope.threadId ?? "", key]);
+	return JSON.stringify([scope.ownerKey ?? `${scope.platform}:${scope.chatId}:${scope.userId ?? "anon"}`, key]);
 }
 
-function receiptOf(record: ToolEffectRecord, metadata: { operation?: string; externalRef?: string; idempotencyKey?: string }, occurredAt: number): ToolEffectReceipt {
+function receiptOf(record: ToolEffectRecord, metadata: { operation?: string; externalRef?: string }, occurredAt: number): ToolEffectReceipt {
 	const operation = metadata.operation ?? record.toolName;
-	const idempotencyKey = record.idempotencyKey ?? metadata.idempotencyKey;
+	const idempotencyKey = record.idempotencyKey;
 	return { status: "committed", occurredAt, operation, ...(metadata.externalRef ? { externalRef: metadata.externalRef } : {}), ...(idempotencyKey ? { idempotencyKey } : {}) };
 }
 
-function effectMetadata(details: unknown): { operation?: string; externalRef?: string; idempotencyKey?: string } {
+function effectMetadata(details: unknown): { operation?: string; externalRef?: string } {
 	const effect = recordOf(recordOf(details).beemaxEffect);
 	return {
 		operation: safeText(effect.operation, 1_000),
 		externalRef: safeText(effect.externalRef, 1_000),
-		idempotencyKey: safeText(effect.idempotencyKey, 256),
 	};
 }
 
