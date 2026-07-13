@@ -235,7 +235,7 @@ test("BeeMax Agent Runtime binds continuation understanding to the active Object
 	const source = { platform: "cli", chatId: "terminal", chatType: "dm", userId: "user" };
 	let received = "";
 	const runtime = new BeeMaxAgentRuntime({
-		taskLedger: { queryTasks: () => [{ id: "objective-1", ownerKey: "cli:terminal:user", kind: "objective", title: "制作华东客户周报", status: "running", createdAt: 1 }] },
+		taskLedger: { queryTasks: () => [{ id: "objective-1", ownerKey: "cli:terminal:user", kind: "objective", title: "制作华东客户周报", description: "必须使用中文", acceptanceCriteria: "输出PDF并发送给王总", status: "running", createdAt: 1, effectReceipts: [{ id: "effect-1", tool: "feishu_send", operation: "send draft", sideEffect: "mutation", status: "committed", externalRef: "message-42", occurredAt: 2 }] }] },
 		createAgent: async () => {
 			const agent = { state: { model: { id: "test-model" }, messages: [] } };
 			return { agent, subscribe: () => () => undefined, prompt: async (text) => { received = text; agent.state.messages = [{ role: "assistant", content: [{ type: "text", text: "done" }], usage: { input: 1, output: 1 } }]; }, abort: async () => undefined, dispose: () => undefined };
@@ -245,6 +245,10 @@ test("BeeMax Agent Runtime binds continuation understanding to the active Object
 		await runtime.run({ source, text: "继续完成刚才的任务", timeoutMs: 1_000, mode: "interactive", objectiveTaskId: "objective-1" });
 		assert.match(received, /"action":"continue"/);
 		assert.match(received, /"goal":"制作华东客户周报"/);
+		assert.match(received, /task-preservation-envelope/);
+		assert.match(received, /输出PDF并发送给王总/);
+		assert.match(received, /send draft/);
+		assert.doesNotMatch(received, /message-42/);
 	} finally { runtime.dispose(); }
 });
 
@@ -409,7 +413,8 @@ test("context compaction preserves active Objective and Acceptance Criteria", as
 		assert.equal(await runtime.compact(source), true);
 		assert.match(compactInstructions, /生成客户报告/);
 		assert.match(compactInstructions, /输出PDF并发送给王总/);
-		assert.match(compactInstructions, /message-42/);
+		assert.match(compactInstructions, /send report/);
+		assert.doesNotMatch(compactInstructions, /message-42/);
 		assert.match(compactInstructions, /task-preservation-envelope/);
 	} finally { runtime.dispose(); }
 });

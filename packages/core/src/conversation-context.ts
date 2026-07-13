@@ -19,9 +19,10 @@ export interface ConversationContextOptions {
 }
 
 export interface VerifiedRuntimeFacts { model?: string; memoryQuery?: string; }
-export type ContextItemKind = "runtime_facts" | "memory_confirmed" | "memory_candidate" | "memory_conflict";
+export type ContextItemKind = "task_preservation" | "runtime_facts" | "memory_confirmed" | "memory_candidate" | "memory_conflict";
 export interface ContextItem { readonly kind: ContextItemKind; readonly source: string; readonly priority: number; readonly lifecycle: "turn"; readonly compressible: boolean; readonly status: "full" | "released"; readonly text: string; readonly costChars: number; }
 export interface ContextAssembly { readonly text: string; readonly included: readonly ContextItem[]; readonly released: readonly ContextItem[]; readonly contextChars: number; }
+export interface ContextItemInput { readonly kind: ContextItemKind; readonly source: string; readonly priority: number; readonly compressible: boolean; readonly text: string; }
 
 /** Persistence capability required by Core's context policy. */
 export interface ConversationMemoryPort {
@@ -55,11 +56,11 @@ export class ConversationContext {
 		return this.assemble(source, text, runtime).text;
 	}
 
-	assemble(source: BeeMaxRuntimeSource, text: string, runtime: VerifiedRuntimeFacts = {}): ContextAssembly {
+	assemble(source: BeeMaxRuntimeSource, text: string, runtime: VerifiedRuntimeFacts = {}, additionalItems: readonly ContextItemInput[] = []): ContextAssembly {
 		const scope = memoryScopeForSource(source, { ...this.memoryScope, ...this.resolveMemoryScope?.(source) });
 		this.memory.recordEvent?.({ ...scope, kind: "user", content: text });
 		const hits = this.memory.recall(runtime.memoryQuery?.trim() || text, { ...scope, limit: 6, includeCandidates: true });
-		const items: ContextItem[] = [];
+		const items: ContextItem[] = additionalItems.map((item) => contextItem(item.kind, item.source, item.priority, item.text, item.compressible));
 		const facts = this.runtimeFacts?.(source, text, runtime);
 		if (facts) {
 			if (facts.length > this.maxContextChars) throw new Error("Verified runtime facts exceed the Conversation Context budget and must be structurally compressed by their producer");
@@ -94,7 +95,7 @@ export class ConversationContext {
 	}
 }
 
-function contextItem(kind: ContextItemKind, source: string, priority: number, text: string): ContextItem { return { kind, source, priority, lifecycle: "turn", compressible: false, status: "full", text, costChars: text.length }; }
+function contextItem(kind: ContextItemKind, source: string, priority: number, text: string, compressible = false): ContextItem { return { kind, source, priority, lifecycle: "turn", compressible, status: "full", text, costChars: text.length }; }
 function fitContextItems(items: ContextItem[], budget: number): { included: ContextItem[]; released: ContextItem[] } {
 	let remaining = budget; const included: ContextItem[] = []; const released: ContextItem[] = [];
 	for (const item of [...items].sort((left, right) => right.priority - left.priority)) {

@@ -51,7 +51,7 @@ export {
 	type SubagentTaskSnapshot,
 	type SubagentTaskStatus,
 } from "./task-manager.ts";
-export { ConversationContext, type ContextAssembly, type ContextItem, type ContextItemKind, type ConversationContextOptions, type ConversationExchange, type ConversationMemoryPort, type VerifiedRuntimeFacts } from "./conversation-context.ts";
+export { ConversationContext, type ContextAssembly, type ContextItem, type ContextItemInput, type ContextItemKind, type ConversationContextOptions, type ConversationExchange, type ConversationMemoryPort, type VerifiedRuntimeFacts } from "./conversation-context.ts";
 export { compileLongTermMemorySnapshot, type LongTermMemoryCompiler } from "./personal-memory.ts";
 export { curatedMemoryPrompt } from "./curated-memory.ts";
 export type { EffectReceipt, TaskCandidateVerificationResolution, TaskDependency, TaskKind, TaskLedger, TaskPlanCompletionNotice, TaskPlanQuery, TaskPlanRecord, TaskPlanStatus, TaskPlanTransition, TaskQuery, TaskRecord, TaskRecoveryPolicy, TaskRecoveryResult, TaskRunRecord, TaskRunStatus, TaskRunTransition, TaskStatus, TaskTransition, TaskVerificationStatus } from "./task-ledger.ts";
