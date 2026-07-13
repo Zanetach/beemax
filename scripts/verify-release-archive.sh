@@ -16,6 +16,8 @@ fail() {
 [[ -f "${ARCHIVE}" ]] || fail "archive not found: ${ARCHIVE}"
 [[ -f "${CHECKSUM}" ]] || fail "sha256 checksum not found: ${CHECKSUM}"
 EXPECTED="$(awk 'NR == 1 { print $1 }' "${CHECKSUM}")"
+RECORDED_NAME="$(awk 'NR == 1 { print $2 }' "${CHECKSUM}")"
+[[ "${RECORDED_NAME}" == "$(basename "${ARCHIVE}")" ]] || fail "checksum must contain only the portable archive filename"
 if command -v shasum >/dev/null 2>&1; then ACTUAL="$(shasum -a 256 "${ARCHIVE}" | awk '{ print $1 }')"
 elif command -v sha256sum >/dev/null 2>&1; then ACTUAL="$(sha256sum "${ARCHIVE}" | awk '{ print $1 }')"
 else fail "shasum or sha256sum is required"

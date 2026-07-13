@@ -56,9 +56,9 @@ printf '%s\n' "${VERSION}" > "${STAGING}/beemax/RELEASE_VERSION"
 
 tar -C "${STAGING}" -czf "${OUTPUT_DIR}/${ARCHIVE_NAME}" beemax
 if command -v sha256sum >/dev/null 2>&1; then
-	sha256sum "${OUTPUT_DIR}/${ARCHIVE_NAME}" > "${OUTPUT_DIR}/${ARCHIVE_NAME}.sha256"
+	(cd "${OUTPUT_DIR}" && sha256sum "${ARCHIVE_NAME}" > "${ARCHIVE_NAME}.sha256")
 elif command -v shasum >/dev/null 2>&1; then
-	shasum -a 256 "${OUTPUT_DIR}/${ARCHIVE_NAME}" > "${OUTPUT_DIR}/${ARCHIVE_NAME}.sha256"
+	(cd "${OUTPUT_DIR}" && shasum -a 256 "${ARCHIVE_NAME}" > "${ARCHIVE_NAME}.sha256")
 else
 	echo "sha256sum or shasum is required to create the release checksum" >&2
 	exit 1

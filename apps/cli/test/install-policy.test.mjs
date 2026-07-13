@@ -107,6 +107,7 @@ test("release archive includes Pi and excludes git metadata and dependencies", a
 	assert.match(packager, /workspace version does not match/);
 	assert.match(packager, /command -v sha256sum/);
 	assert.match(packager, /command -v shasum/);
+	assert.match(packager, /cd "\$\{OUTPUT_DIR\}"/);
 });
 
 test("tag releases pass build, test, and isolated archive installation gates before publishing", async () => {
@@ -121,6 +122,7 @@ test("tag releases pass build, test, and isolated archive installation gates bef
 	for (const command of ["npm run build", "npm run typecheck", "npm run eval:runtime", "npm run eval:performance:release", "npm run eval:memory", "npm run eval:reliability", "npm run eval:acceptance", "npm test"]) assert.match(pkg.scripts["verify:release"], new RegExp(command));
 	assert.ok(workflow.indexOf("verify-release-archive.sh") < workflow.indexOf("gh release create"));
 	assert.match(verifier, /sha256/);
+	assert.match(verifier, /portable archive filename/);
 	assert.match(verifier, /RELEASE_VERSION/);
 	assert.match(verifier, /release tag does not match package version/);
 	assert.match(verifier, /workspace version mismatch/);
