@@ -88,3 +88,33 @@ test("Feishu provider errors stay unknown and are not masked by proof constructi
 		assert.equal(persistResult(root, tool, args, result, "failed-update").status, "unknown");
 	} finally { rmSync(root, { recursive: true, force: true }); }
 });
+
+test("Feishu active meeting mutations return operation-specific trusted receipts", async () => {
+	const root = mkdtempSync(join(tmpdir(), "beemax-feishu-active-meeting-receipts-"));
+	try {
+	const client = { vc: { v1: { meeting: {
+		end: async () => ({ code: 0 }),
+		invite: async () => ({ code: 0, data: {} }),
+		kickout: async () => ({ code: 0, data: {} }),
+		setHost: async () => ({ code: 0, data: {} }),
+	} } } };
+	const tools = createFeishuMeetingTools(() => client);
+	const cases = [
+		["feishu_meeting_end", { meetingId: "meeting-42", idempotencyKey: "end-42" }, "end meeting", "end-42"],
+		["feishu_meeting_invite", { meetingId: "meeting-42", userIds: ["user-1"], idempotencyKey: "invite-42-user-1" }, "invite meeting participants", "invite-42-user-1"],
+		["feishu_meeting_kickout", { meetingId: "meeting-42", userIds: ["user-1"], idempotencyKey: "kickout-42-user-1" }, "remove meeting participants", "kickout-42-user-1"],
+		["feishu_meeting_set_host", { meetingId: "meeting-42", hostId: "user-2", oldHostId: "user-1", idempotencyKey: "host-42-user-2" }, "set meeting host", "host-42-user-2"],
+	];
+	for (const [name, args, operation, idempotencyKey] of cases) {
+		const tool = tools.find((candidate) => candidate.name === name);
+		const result = await tool.execute(`call-${name}`, args);
+		assert.deepEqual(result.details.beemaxEffect, {
+			operation,
+			externalRef: "feishu-vc:meeting:meeting-42",
+			idempotencyKey,
+			proof: { provider: "feishu-vc", resourceType: "meeting", resourceId: "meeting-42" },
+		});
+		assert.equal(persistResult(root, tool, args, result, `effect-${name}`).status, "committed");
+	}
+	} finally { rmSync(root, { recursive: true, force: true }); }
+});

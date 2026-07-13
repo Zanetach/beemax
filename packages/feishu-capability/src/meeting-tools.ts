@@ -172,10 +172,10 @@ export function createFeishuMeetingTools(getClient: FeishuClientProvider): ToolD
 		name: "feishu_meeting_end",
 		label: "Feishu Meeting End",
 		description: "End an active Feishu meeting. Requires host permission and explicit approval.",
-		parameters: Type.Object({ meetingId: Type.String({ description: "Feishu meeting_id" }) }),
+		parameters: Type.Object({ meetingId: Type.String({ description: "Feishu meeting_id" }), idempotencyKey: replayKey("Stable local replay identity for ending this meeting") }),
 		execute: async (_id, params) => withClient(getClient, async (client) => {
 			const response = await client.vc.v1.meeting.end({ path: { meeting_id: params.meetingId } });
-			return apiResult("End meeting", response, { meeting_id: params.meetingId, ended: true });
+			return apiResult("End meeting", response, { meeting_id: params.meetingId, ended: true }, () => meetingEffect("end meeting", params.meetingId, params.idempotencyKey));
 		}),
 	});
 
@@ -186,6 +186,7 @@ export function createFeishuMeetingTools(getClient: FeishuClientProvider): ToolD
 		parameters: Type.Object({
 			meetingId: Type.String({ description: "Feishu meeting_id" }),
 			userIds: Type.Array(Type.String(), { minItems: 1, maxItems: 100, description: "Invitee union_id values" }),
+			idempotencyKey: replayKey("Stable local replay identity for this participant invitation"),
 		}),
 		execute: async (_id, params) => withClient(getClient, async (client) => {
 			const response = await client.vc.v1.meeting.invite({
@@ -193,7 +194,7 @@ export function createFeishuMeetingTools(getClient: FeishuClientProvider): ToolD
 				params: { user_id_type: "union_id" },
 				data: { invitees: params.userIds.map((id) => ({ id, user_type: 1 })) },
 			});
-			return apiResult("Invite meeting participants", response, response.data);
+			return apiResult("Invite meeting participants", response, response.data, () => meetingEffect("invite meeting participants", params.meetingId, params.idempotencyKey));
 		}),
 	});
 
@@ -204,6 +205,7 @@ export function createFeishuMeetingTools(getClient: FeishuClientProvider): ToolD
 		parameters: Type.Object({
 			meetingId: Type.String({ description: "Feishu meeting_id" }),
 			userIds: Type.Array(Type.String(), { minItems: 1, maxItems: 100, description: "Participant union_id values" }),
+			idempotencyKey: replayKey("Stable local replay identity for this participant removal"),
 		}),
 		execute: async (_id, params) => withClient(getClient, async (client) => {
 			const response = await client.vc.v1.meeting.kickout({
@@ -211,7 +213,7 @@ export function createFeishuMeetingTools(getClient: FeishuClientProvider): ToolD
 				params: { user_id_type: "union_id" },
 				data: { kickout_users: params.userIds.map((id) => ({ id, user_type: 1 })) },
 			});
-			return apiResult("Remove meeting participants", response, response.data);
+			return apiResult("Remove meeting participants", response, response.data, () => meetingEffect("remove meeting participants", params.meetingId, params.idempotencyKey));
 		}),
 	});
 
@@ -223,6 +225,7 @@ export function createFeishuMeetingTools(getClient: FeishuClientProvider): ToolD
 			meetingId: Type.String({ description: "Feishu meeting_id" }),
 			hostId: Type.String({ description: "New host union_id" }),
 			oldHostId: Type.Optional(Type.String({ description: "Current host union_id for concurrency safety" })),
+			idempotencyKey: replayKey("Stable local replay identity for this host transfer"),
 		}),
 		execute: async (_id, params) => withClient(getClient, async (client) => {
 			const response = await client.vc.v1.meeting.setHost({
@@ -233,7 +236,7 @@ export function createFeishuMeetingTools(getClient: FeishuClientProvider): ToolD
 					old_host_user: params.oldHostId ? { id: params.oldHostId, user_type: 1 } : undefined,
 				},
 			});
-			return apiResult("Set meeting host", response, response.data);
+			return apiResult("Set meeting host", response, response.data, () => meetingEffect("set meeting host", params.meetingId, params.idempotencyKey));
 		}),
 	});
 
@@ -356,6 +359,8 @@ function apiResult(
 }
 
 function safeIdentifier(value: unknown): string | undefined { if (!value || typeof value !== "object") return undefined; const record = value as Record<string, unknown>; const id = record.reserve_id ?? record.id; return typeof id === "string" && id.trim() ? id.trim() : undefined; }
+function replayKey(description: string) { return Type.Optional(Type.String({ minLength: 1, maxLength: 256, description })); }
+function meetingEffect(operation: string, meetingId: string, idempotencyKey?: string) { return createToolEffectDetails({ operation, provider: "feishu-vc", resourceType: "meeting", resourceId: meetingId, idempotencyKey }); }
 
 function textResult(text: string, details: unknown, isError = false) {
 	return { content: [{ type: "text" as const, text }], details, isError };
