@@ -112,6 +112,7 @@ export function createFeishuMeetingTools(getClient: FeishuClientProvider): ToolD
 			password: Type.Optional(Type.String()),
 			autoRecord: Type.Optional(Type.Boolean()),
 			assignHostIds: Type.Optional(Type.Array(Type.String(), { description: "Replacement host union_id list" })),
+			idempotencyKey: Type.Optional(Type.String({ minLength: 1, maxLength: 256, description: "Stable local replay identity for this reservation update" })),
 		}),
 		execute: async (_id, params) => withClient(getClient, async (client) => {
 			const hasSettings = params.topic !== undefined || params.password !== undefined ||
@@ -132,7 +133,7 @@ export function createFeishuMeetingTools(getClient: FeishuClientProvider): ToolD
 					} : undefined,
 				},
 			});
-			return apiResult("Update meeting reservation", response, response.data);
+			return apiResult("Update meeting reservation", response, response.data, createToolEffectDetails({ operation: "update meeting reservation", provider: "feishu-vc", resourceType: "meeting-reservation", resourceId: params.reserveId, idempotencyKey: params.idempotencyKey }));
 		}),
 	});
 
@@ -157,10 +158,13 @@ export function createFeishuMeetingTools(getClient: FeishuClientProvider): ToolD
 		name: "feishu_meeting_reserve_delete",
 		label: "Feishu Meeting Reserve Delete",
 		description: "Delete a Feishu meeting reservation. Irreversible write action; requires approval.",
-		parameters: Type.Object({ reserveId: Type.String({ description: "Feishu reserve_id" }) }),
+		parameters: Type.Object({
+			reserveId: Type.String({ description: "Feishu reserve_id" }),
+			idempotencyKey: Type.Optional(Type.String({ minLength: 1, maxLength: 256, description: "Stable local replay identity for this reservation deletion" })),
+		}),
 		execute: async (_id, params) => withClient(getClient, async (client) => {
 			const response = await client.vc.v1.reserve.delete({ path: { reserve_id: params.reserveId } });
-			return apiResult("Delete meeting reservation", response, { reserve_id: params.reserveId, deleted: true });
+			return apiResult("Delete meeting reservation", response, { reserve_id: params.reserveId, deleted: true }, createToolEffectDetails({ operation: "delete meeting reservation", provider: "feishu-vc", resourceType: "meeting-reservation", resourceId: params.reserveId, idempotencyKey: params.idempotencyKey }));
 		}),
 	});
 
