@@ -268,11 +268,12 @@ test("Sub-Agent manager evicts terminal work across inactive owners", async () =
 
 test("Sub-Agent shutdown is bounded when an executor ignores cancellation", async () => {
 	const manager = new SubagentManager({ shutdownGraceMs: 20, execute: async () => new Promise(() => undefined) });
-	manager.spawn(source, { goal: "stuck" });
+	const task = manager.spawn(source, { goal: "stuck" });
 	await new Promise((resolve) => setImmediate(resolve));
 	const started = Date.now();
 	await manager.dispose();
 	assert.ok(Date.now() - started < 200);
+	assert.equal(manager.get(source, task.id).status, "cancelled");
 });
 
 test("parent sessions expose orchestration tools while child sessions stay read-only and cannot recurse", async () => {

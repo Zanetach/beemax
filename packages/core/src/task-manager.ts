@@ -35,6 +35,7 @@ export type SubagentAdmission = <T>(ownerKey: string, work: (signal?: AbortSigna
 
 interface ManagedTask extends SubagentTask {
 	controller?: AbortController;
+	timeoutTimer?: ReturnType<typeof setTimeout>;
 	runId?: string;
 	stopReason?: "cancelled" | "timeout";
 	waiters: Set<() => void>;
@@ -212,6 +213,11 @@ export class SubagentManager {
 			await Promise.race([Promise.allSettled([...this.activeRuns]), new Promise<void>((resolve) => { timer = setTimeout(resolve, this.shutdownGraceMs); })]);
 			if (timer) clearTimeout(timer);
 		}
+		for (const task of this.tasks.values()) {
+			if (TERMINAL.has(task.status)) continue;
+			if (task.timeoutTimer) { clearTimeout(task.timeoutTimer); task.timeoutTimer = undefined; }
+			this.finish(task, "cancelled", undefined, "Agent runtime shut down before the executor acknowledged cancellation");
+		}
 	}
 
 	private async pump(): Promise<void> {
@@ -273,6 +279,7 @@ export class SubagentManager {
 			task.stopReason = "timeout";
 			task.controller?.abort();
 		}, this.defaultTimeoutMs) : undefined;
+		task.timeoutTimer = timer;
 		try {
 			const result = await this.execute(task, task.controller.signal);
 			if (task.stopReason === "cancelled") this.finish(task, "cancelled", undefined, "Cancelled by parent Agent");
@@ -284,11 +291,13 @@ export class SubagentManager {
 			else this.finish(task, "failed", undefined, error instanceof Error ? error.message : String(error));
 		} finally {
 			if (timer) clearTimeout(timer);
+			if (task.timeoutTimer === timer) task.timeoutTimer = undefined;
 			if (!suppliedController) task.controller = undefined;
 		}
 	}
 
 	private finish(task: ManagedTask, status: SubagentTaskStatus, result?: string, error?: string): void {
+		if (TERMINAL.has(task.status)) return;
 		task.status = status;
 		task.finishedAt = Date.now();
 		task.completionOrder = ++this.completionSequence;
