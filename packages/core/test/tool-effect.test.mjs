@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import Database from "better-sqlite3";
 import { FileToolEffectJournal, MUTATING_TOOL_POLICY, READ_ONLY_TOOL_POLICY } from "../dist/index.js";
 
 const source = { platform: "cli", chatId: "local", chatType: "dm", userId: "local" };
@@ -26,11 +27,13 @@ test("effect journal records a content-free mutation lifecycle and committed rec
 	} finally { rmSync(root, { recursive: true, force: true }); }
 });
 
-test("effect journal marks an interrupted in-flight mutation unknown on recovery", () => {
+test("effect ledger marks active mutations unknown on runtime close", () => {
 	const root = mkdtempSync(join(tmpdir(), "beemax-effects-recovery-"));
 	try {
 		const path = join(root, "tool-effects.jsonl");
-		new FileToolEffectJournal(path).begin({ source, taskId: "turn-1", toolCallId: "call-1", toolName: "external_write", policy: MUTATING_TOOL_POLICY });
+		const first = new FileToolEffectJournal(path);
+		first.begin({ source, taskId: "turn-1", toolCallId: "call-1", toolName: "external_write", policy: MUTATING_TOOL_POLICY });
+		first.close();
 		const recovered = new FileToolEffectJournal(path).events();
 		assert.deepEqual(recovered.map((record) => record.status), ["planned", "executing", "unknown"]);
 		assert.equal(recovered.at(-1).receipt, undefined);
@@ -103,13 +106,36 @@ test("committed idempotency survives bounded audit compaction", () => {
 		const path = join(root, "tool-effects.jsonl");
 		const effects = new FileToolEffectJournal(path, 100);
 		const localPolicy = { ...MUTATING_TOOL_POLICY, sideEffect: "local" };
+		let firstId;
 		for (let index = 0; index < 60; index++) {
 			const toolCallId = `call-${index}`;
-			effects.begin({ source, taskId: `turn-${index}`, toolCallId, toolName: "write", args: { idempotencyKey: `write-${index}` }, policy: localPolicy });
+			const id = effects.begin({ source, taskId: `turn-${index}`, toolCallId, toolName: "write", args: { idempotencyKey: `write-${index}` }, policy: localPolicy });
+			if (index === 0) firstId = id;
 			effects.finish({ source, toolCallId, toolName: "write", policy: localPolicy, isError: false });
 		}
 		const restored = new FileToolEffectJournal(path, 100);
 		assert.throws(() => restored.begin({ source, taskId: "retry", toolCallId: "retry", toolName: "write", args: { idempotencyKey: "write-0" }, policy: localPolicy }), /already committed/);
+		const firstCommitted = restored.effect(firstId);
+		assert.deepEqual(firstCommitted?.receipt, {
+			status: "committed",
+			occurredAt: firstCommitted.at,
+			operation: "write",
+			idempotencyKey: "write-0",
+		});
+	} finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("legacy replay authority migrates without reopening committed effects", () => {
+	const root = mkdtempSync(join(tmpdir(), "beemax-effects-legacy-"));
+	try {
+		const path = join(root, "tool-effects.jsonl");
+		const db = new Database(`${path}.authority.sqlite`);
+		db.exec("CREATE TABLE tool_effect_authority(identity TEXT PRIMARY KEY,effect_id TEXT NOT NULL UNIQUE,status TEXT NOT NULL,updated_at INTEGER NOT NULL)");
+		db.prepare("INSERT INTO tool_effect_authority VALUES (?,?,?,?)").run(JSON.stringify(["cli:local:local", "legacy-key"]), "legacy-effect", "committed", 1);
+		db.close();
+		const effects = new FileToolEffectJournal(path);
+		assert.throws(() => effects.begin({ source, taskId: "retry", toolCallId: "retry", toolName: "write", args: { idempotencyKey: "legacy-key" }, policy: MUTATING_TOOL_POLICY }), /already committed/);
+		assert.equal(effects.effect("legacy-effect")?.status, "committed");
 	} finally { rmSync(root, { recursive: true, force: true }); }
 });
 
