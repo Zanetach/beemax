@@ -6,6 +6,15 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
+const source = { platform: "feishu", chatId: "chat", chatType: "dm", userId: "user" };
+
+function persistResult(root, tool, args, result, toolCallId) {
+	const effects = new FileToolEffectJournal(join(root, `${toolCallId}.jsonl`));
+	effects.begin({ source, taskId: "turn-1", toolCallId, toolName: tool.name, args, policy: tool.beemaxPolicy });
+	effects.finish({ source, toolCallId, toolName: tool.name, policy: tool.beemaxPolicy, isError: Boolean(result.isError), details: result.details });
+	return effects.events().at(-1);
+}
+
 test("Feishu reservation creation produces a trusted provider receipt with a local replay key", async () => {
 	const root = mkdtempSync(join(tmpdir(), "beemax-feishu-receipt-"));
 	try {
@@ -20,7 +29,6 @@ test("Feishu reservation creation produces a trusted provider receipt with a loc
 			proof: { provider: "feishu-vc", resourceType: "meeting-reservation", resourceId: "reserve-42" },
 		});
 		const effects = new FileToolEffectJournal(join(root, "tool-effects.jsonl"));
-		const source = { platform: "feishu", chatId: "chat", chatType: "dm", userId: "user" };
 		effects.begin({ source, taskId: "turn-1", toolCallId: "call-1", toolName: tool.name, args, policy: tool.beemaxPolicy });
 		effects.finish({ source, toolCallId: "call-1", toolName: tool.name, policy: tool.beemaxPolicy, isError: false, details: result.details });
 		assert.equal(effects.events().at(-1).status, "committed");
@@ -36,6 +44,8 @@ test("Feishu success without a stable reservation id does not produce a provider
 });
 
 test("Feishu reservation update returns a trusted receipt for the requested reservation", async () => {
+	const root = mkdtempSync(join(tmpdir(), "beemax-feishu-update-receipt-"));
+	try {
 	const client = { vc: { v1: { reserve: { update: async () => ({ code: 0, data: {} }) } } } };
 	const tool = createFeishuMeetingTools(() => client).find((candidate) => candidate.name === "feishu_meeting_reserve_update");
 	const result = await tool.execute("call-1", { reserveId: "reserve-42", topic: "Updated review", idempotencyKey: "update-reserve-42-v2" });
@@ -45,9 +55,13 @@ test("Feishu reservation update returns a trusted receipt for the requested rese
 		idempotencyKey: "update-reserve-42-v2",
 		proof: { provider: "feishu-vc", resourceType: "meeting-reservation", resourceId: "reserve-42" },
 	});
+	assert.equal(persistResult(root, tool, { reserveId: "reserve-42", topic: "Updated review", idempotencyKey: "update-reserve-42-v2" }, result, "update-1").status, "committed");
+	} finally { rmSync(root, { recursive: true, force: true }); }
 });
 
 test("Feishu reservation deletion returns a trusted irreversible receipt", async () => {
+	const root = mkdtempSync(join(tmpdir(), "beemax-feishu-delete-receipt-"));
+	try {
 	const client = { vc: { v1: { reserve: { delete: async () => ({ code: 0 }) } } } };
 	const tool = createFeishuMeetingTools(() => client).find((candidate) => candidate.name === "feishu_meeting_reserve_delete");
 	const result = await tool.execute("call-1", { reserveId: "reserve-42", idempotencyKey: "delete-reserve-42" });
@@ -57,4 +71,20 @@ test("Feishu reservation deletion returns a trusted irreversible receipt", async
 		idempotencyKey: "delete-reserve-42",
 		proof: { provider: "feishu-vc", resourceType: "meeting-reservation", resourceId: "reserve-42" },
 	});
+	assert.equal(persistResult(root, tool, { reserveId: "reserve-42", idempotencyKey: "delete-reserve-42" }, result, "delete-1").status, "committed");
+	} finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("Feishu provider errors stay unknown and are not masked by proof construction", async () => {
+	const root = mkdtempSync(join(tmpdir(), "beemax-feishu-error-receipt-"));
+	try {
+		const client = { vc: { v1: { reserve: { update: async () => ({ code: 999, msg: "reservation rejected" }) } } } };
+		const tool = createFeishuMeetingTools(() => client).find((candidate) => candidate.name === "feishu_meeting_reserve_update");
+		const args = { reserveId: `token=${"x".repeat(600)}`, topic: "Rejected" };
+		const result = await tool.execute("call-1", args);
+		assert.equal(result.isError, true);
+		assert.match(result.content[0].text, /code=999.*reservation rejected/);
+		assert.equal(result.details.beemaxEffect, undefined);
+		assert.equal(persistResult(root, tool, args, result, "failed-update").status, "unknown");
+	} finally { rmSync(root, { recursive: true, force: true }); }
 });

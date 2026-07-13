@@ -133,7 +133,7 @@ export function createFeishuMeetingTools(getClient: FeishuClientProvider): ToolD
 					} : undefined,
 				},
 			});
-			return apiResult("Update meeting reservation", response, response.data, createToolEffectDetails({ operation: "update meeting reservation", provider: "feishu-vc", resourceType: "meeting-reservation", resourceId: params.reserveId, idempotencyKey: params.idempotencyKey }));
+			return apiResult("Update meeting reservation", response, response.data, () => createToolEffectDetails({ operation: "update meeting reservation", provider: "feishu-vc", resourceType: "meeting-reservation", resourceId: params.reserveId, idempotencyKey: params.idempotencyKey }));
 		}),
 	});
 
@@ -164,7 +164,7 @@ export function createFeishuMeetingTools(getClient: FeishuClientProvider): ToolD
 		}),
 		execute: async (_id, params) => withClient(getClient, async (client) => {
 			const response = await client.vc.v1.reserve.delete({ path: { reserve_id: params.reserveId } });
-			return apiResult("Delete meeting reservation", response, { reserve_id: params.reserveId, deleted: true }, createToolEffectDetails({ operation: "delete meeting reservation", provider: "feishu-vc", resourceType: "meeting-reservation", resourceId: params.reserveId, idempotencyKey: params.idempotencyKey }));
+			return apiResult("Delete meeting reservation", response, { reserve_id: params.reserveId, deleted: true }, () => createToolEffectDetails({ operation: "delete meeting reservation", provider: "feishu-vc", resourceType: "meeting-reservation", resourceId: params.reserveId, idempotencyKey: params.idempotencyKey }));
 		}),
 	});
 
@@ -341,7 +341,7 @@ function apiResult(
 	operation: string,
 	response: { code?: number; msg?: string },
 	data: unknown,
-	effectDetails?: ReturnType<typeof createToolEffectDetails>,
+	effectDetails?: ReturnType<typeof createToolEffectDetails> | (() => ReturnType<typeof createToolEffectDetails>),
 ) {
 	if (response.code !== 0) {
 		return textResult(
@@ -351,7 +351,8 @@ function apiResult(
 			true,
 		);
 	}
-	return textResult(JSON.stringify(data ?? {}, null, 2), { operation, data, ...effectDetails });
+	const resolvedEffect = typeof effectDetails === "function" ? effectDetails() : effectDetails;
+	return textResult(JSON.stringify(data ?? {}, null, 2), { operation, data, ...resolvedEffect });
 }
 
 function safeIdentifier(value: unknown): string | undefined { if (!value || typeof value !== "object") return undefined; const record = value as Record<string, unknown>; const id = record.reserve_id ?? record.id; return typeof id === "string" && id.trim() ? id.trim() : undefined; }
