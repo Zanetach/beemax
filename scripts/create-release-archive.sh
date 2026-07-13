@@ -35,10 +35,11 @@ mkdir -p "${OUTPUT_DIR}" "${STAGING}/beemax"
 tar -C "${ROOT}" \
 	--exclude='./.git' \
 	--exclude='./pi/.git' \
-	--exclude='./node_modules' \
-	--exclude='./pi/node_modules' \
-	--exclude='./**/dist' \
-	--exclude='./**/*.tsbuildinfo' \
+	--exclude='node_modules' \
+	--exclude='*/node_modules' \
+	--exclude='dist' \
+	--exclude='*/dist' \
+	--exclude='*.tsbuildinfo' \
 	--exclude='./docs' \
 	--exclude='./output' \
 	--exclude='./dist' \

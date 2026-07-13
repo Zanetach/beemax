@@ -95,8 +95,11 @@ test("release archive includes Pi and excludes git metadata and dependencies", a
 	const packager = await readFile("scripts/create-release-archive.sh", "utf8");
 	assert.match(packager, /Vendored Pi source is missing/);
 	assert.match(packager, /--exclude='\.\/pi\/.git'/);
-	assert.match(packager, /--exclude='\.\/node_modules'/);
-	assert.match(packager, /--exclude='\.\/\*\*\/\*\.tsbuildinfo'/);
+	assert.match(packager, /--exclude='node_modules'/);
+	assert.match(packager, /--exclude='\*\/node_modules'/);
+	assert.match(packager, /--exclude='dist'/);
+	assert.match(packager, /--exclude='\*\/dist'/);
+	assert.match(packager, /--exclude='\*\.tsbuildinfo'/);
 	assert.match(packager, /--exclude='\.\/docs'/);
 	assert.match(packager, /--exclude='\.\/data'/);
 	assert.match(packager, /RELEASE_VERSION/);
