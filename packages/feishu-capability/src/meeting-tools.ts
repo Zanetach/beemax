@@ -3,6 +3,7 @@
 import type { Client } from "@larksuiteoapi/node-sdk";
 import { createToolEffectDetails, MUTATING_TOOL_POLICY, READ_ONLY_TOOL_POLICY, defineTool, withToolPolicy, type ToolDefinition, type ToolPolicy } from "@beemax/core";
 import { Type } from "typebox";
+import { createHash } from "node:crypto";
 
 export type FeishuClientProvider = () => Client | undefined;
 
@@ -186,7 +187,6 @@ export function createFeishuMeetingTools(getClient: FeishuClientProvider): ToolD
 		parameters: Type.Object({
 			meetingId: Type.String({ description: "Feishu meeting_id" }),
 			userIds: Type.Array(Type.String(), { minItems: 1, maxItems: 100, description: "Invitee union_id values" }),
-			idempotencyKey: replayKey("Stable local replay identity for this participant invitation"),
 		}),
 		execute: async (_id, params) => withClient(getClient, async (client) => {
 			const response = await client.vc.v1.meeting.invite({
@@ -194,7 +194,8 @@ export function createFeishuMeetingTools(getClient: FeishuClientProvider): ToolD
 				params: { user_id_type: "union_id" },
 				data: { invitees: params.userIds.map((id) => ({ id, user_type: 1 })) },
 			});
-			return apiResult("Invite meeting participants", response, response.data);
+			const reconciled = exactProviderResults(params.userIds, response.data?.invite_results, (item) => item.status === 0);
+			return apiResult("Invite meeting participants", response, response.data, reconciled ? () => meetingMutationEffect("invite meeting participants", params.meetingId, { userIds: params.userIds }) : undefined);
 		}),
 	});
 
@@ -205,7 +206,6 @@ export function createFeishuMeetingTools(getClient: FeishuClientProvider): ToolD
 		parameters: Type.Object({
 			meetingId: Type.String({ description: "Feishu meeting_id" }),
 			userIds: Type.Array(Type.String(), { minItems: 1, maxItems: 100, description: "Participant union_id values" }),
-			idempotencyKey: replayKey("Stable local replay identity for this participant removal"),
 		}),
 		execute: async (_id, params) => withClient(getClient, async (client) => {
 			const response = await client.vc.v1.meeting.kickout({
@@ -213,7 +213,8 @@ export function createFeishuMeetingTools(getClient: FeishuClientProvider): ToolD
 				params: { user_id_type: "union_id" },
 				data: { kickout_users: params.userIds.map((id) => ({ id, user_type: 1 })) },
 			});
-			return apiResult("Remove meeting participants", response, response.data);
+			const reconciled = exactProviderResults(params.userIds, response.data?.kickout_results, (item) => item.result === 0);
+			return apiResult("Remove meeting participants", response, response.data, reconciled ? () => meetingMutationEffect("remove meeting participants", params.meetingId, { userIds: params.userIds }) : undefined);
 		}),
 	});
 
@@ -225,7 +226,6 @@ export function createFeishuMeetingTools(getClient: FeishuClientProvider): ToolD
 			meetingId: Type.String({ description: "Feishu meeting_id" }),
 			hostId: Type.String({ description: "New host union_id" }),
 			oldHostId: Type.Optional(Type.String({ description: "Current host union_id for concurrency safety" })),
-			idempotencyKey: replayKey("Stable local replay identity for this host transfer"),
 		}),
 		execute: async (_id, params) => withClient(getClient, async (client) => {
 			const response = await client.vc.v1.meeting.setHost({
@@ -236,7 +236,8 @@ export function createFeishuMeetingTools(getClient: FeishuClientProvider): ToolD
 					old_host_user: params.oldHostId ? { id: params.oldHostId, user_type: 1 } : undefined,
 				},
 			});
-			return apiResult("Set meeting host", response, response.data);
+			const reconciled = response.data?.host_user?.id === params.hostId && response.data.host_user.user_type === 1;
+			return apiResult("Set meeting host", response, response.data, reconciled ? () => meetingMutationEffect("set meeting host", params.meetingId, { hostId: params.hostId, oldHostId: params.oldHostId }) : undefined);
 		}),
 	});
 
@@ -361,6 +362,17 @@ function apiResult(
 function safeIdentifier(value: unknown): string | undefined { if (!value || typeof value !== "object") return undefined; const record = value as Record<string, unknown>; const id = record.reserve_id ?? record.id; return typeof id === "string" && id.trim() ? id.trim() : undefined; }
 function replayKey(description: string) { return Type.Optional(Type.String({ minLength: 1, maxLength: 256, description })); }
 function meetingEffect(operation: string, meetingId: string, idempotencyKey?: string) { return createToolEffectDetails({ operation, provider: "feishu-vc", resourceType: "meeting", resourceId: meetingId, idempotencyKey }); }
+function exactProviderResults(requestedIds: string[], results: Array<{ id?: string; user_type?: number; status?: number; result?: number }> | undefined, succeeded: (item: { status?: number; result?: number }) => boolean): boolean {
+	if (!results || results.length !== requestedIds.length || results.some((item) => item.user_type !== 1 || !succeeded(item))) return false;
+	const requested = [...requestedIds].sort();
+	const confirmed = results.map((item) => item.id).filter((id): id is string => typeof id === "string").sort();
+	return confirmed.length === requested.length && requested.every((id, index) => id === confirmed[index]);
+}
+function meetingMutationEffect(operation: string, meetingId: string, intent: { userIds?: string[]; hostId?: string; oldHostId?: string }) {
+	const canonical = JSON.stringify({ operation, meetingId, userIds: intent.userIds ? [...intent.userIds].sort() : undefined, hostId: intent.hostId, oldHostId: intent.oldHostId });
+	const digest = createHash("sha256").update(canonical).digest("hex");
+	return createToolEffectDetails({ operation, provider: "feishu-vc", resourceType: "meeting-mutation", resourceId: `${meetingId}:${digest}` });
+}
 
 function textResult(text: string, details: unknown, isError = false) {
 	return { content: [{ type: "text" as const, text }], details, isError };

@@ -101,9 +101,9 @@ test("Feishu meeting end commits while participant and host mutations await reco
 	const tools = createFeishuMeetingTools(() => client);
 	const cases = [
 		["feishu_meeting_end", { meetingId: "meeting-42", idempotencyKey: "opaque-end-key" }, true],
-		["feishu_meeting_invite", { meetingId: "meeting-42", userIds: ["user-1"], idempotencyKey: "opaque-invite-key" }, false],
-		["feishu_meeting_kickout", { meetingId: "meeting-42", userIds: ["user-1"], idempotencyKey: "opaque-kickout-key" }, false],
-		["feishu_meeting_set_host", { meetingId: "meeting-42", hostId: "user-2", oldHostId: "user-1", idempotencyKey: "opaque-host-key" }, false],
+		["feishu_meeting_invite", { meetingId: "meeting-42", userIds: ["user-1"] }, false],
+		["feishu_meeting_kickout", { meetingId: "meeting-42", userIds: ["user-1"] }, false],
+		["feishu_meeting_set_host", { meetingId: "meeting-42", hostId: "user-2", oldHostId: "user-1" }, false],
 	];
 	for (const [name, args, hasProof] of cases) {
 		const tool = tools.find((candidate) => candidate.name === name);
@@ -112,4 +112,51 @@ test("Feishu meeting end commits while participant and host mutations await reco
 		assert.equal(persistResult(root, tool, args, result, `effect-${name}`).status, hasProof ? "committed" : "unknown");
 	}
 	} finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("Feishu participant and host mutations commit only after exact provider reconciliation", async () => {
+	const root = mkdtempSync(join(tmpdir(), "beemax-feishu-meeting-reconciliation-"));
+	try {
+		const client = { vc: { v1: { meeting: {
+			invite: async () => ({ code: 0, data: { invite_results: [{ id: "user-2", user_type: 1, status: 0 }, { id: "user-1", user_type: 1, status: 0 }] } }),
+			kickout: async () => ({ code: 0, data: { kickout_results: [{ id: "user-1", user_type: 1, result: 0 }] } }),
+			setHost: async () => ({ code: 0, data: { host_user: { id: "user-2", user_type: 1 } } }),
+		} } } };
+		const tools = createFeishuMeetingTools(() => client);
+		const cases = [
+			["feishu_meeting_invite", { meetingId: "meeting-42", userIds: ["user-1", "user-2"] }],
+			["feishu_meeting_kickout", { meetingId: "meeting-42", userIds: ["user-1"] }],
+			["feishu_meeting_set_host", { meetingId: "meeting-42", hostId: "user-2", oldHostId: "user-1" }],
+		];
+		for (const [name, args] of cases) {
+			const tool = tools.find((candidate) => candidate.name === name);
+			const result = await tool.execute(`call-${name}`, args);
+			assert.equal(persistResult(root, tool, args, result, `effect-${name}`).status, "committed");
+			assert.equal(result.details.beemaxEffect.proof.provider, "feishu-vc");
+			assert.equal(result.details.beemaxEffect.proof.resourceType, "meeting-mutation");
+			assert.match(result.details.beemaxEffect.proof.resourceId, /^meeting-42:[a-f0-9]{64}$/);
+			assert.equal(JSON.stringify(result.details.beemaxEffect).includes("user-"), false);
+		}
+	} finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("Feishu participant reconciliation rejects partial, extra, mismatched, wrong-type, and failed results", async () => {
+	const responses = [
+		[{ id: "user-1", user_type: 1, status: 0 }],
+		[{ id: "user-1", user_type: 1, status: 0 }, { id: "user-2", user_type: 1, status: 0 }, { id: "user-3", user_type: 1, status: 0 }],
+		[{ id: "user-1", user_type: 1, status: 0 }, { id: "wrong-user", user_type: 1, status: 0 }],
+		[{ id: "user-1", user_type: 2, status: 0 }, { id: "user-2", user_type: 1, status: 0 }],
+		[{ id: "user-1", user_type: 1, status: 0 }, { id: "user-2", user_type: 1, status: 1 }],
+	];
+	for (const [index, inviteResults] of responses.entries()) {
+		const root = mkdtempSync(join(tmpdir(), `beemax-feishu-reconciliation-negative-${index}-`));
+		try {
+			const client = { vc: { v1: { meeting: { invite: async () => ({ code: 0, data: { invite_results: inviteResults } }) } } } };
+			const tool = createFeishuMeetingTools(() => client).find((candidate) => candidate.name === "feishu_meeting_invite");
+			const args = { meetingId: "meeting-42", userIds: ["user-1", "user-2"] };
+			const result = await tool.execute(`call-${index}`, args);
+			assert.equal(result.details.beemaxEffect, undefined);
+			assert.equal(persistResult(root, tool, args, result, `effect-${index}`).status, "unknown");
+		} finally { rmSync(root, { recursive: true, force: true }); }
+	}
 });
