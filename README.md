@@ -1,456 +1,246 @@
 # BeeMax Agent
 
-A self-contained personal Agent runtime powered by [Pi](https://pi.dev), with durable memory, progressive Skills, task orchestration, automation, and multi-channel gateways.
+> A durable personal and organizational Agent runtime built on Pi, with scoped Memory, governed execution, recoverable Tasks, progressive Skills, and local or Feishu delivery.
 
-## Status: usable personal-agent runtime
+[![Release](https://img.shields.io/github/v/release/Zanetach/beemax?display_name=tag)](https://github.com/Zanetach/beemax/releases/latest)
+[![CI](https://github.com/Zanetach/beemax/actions/workflows/ci.yml/badge.svg)](https://github.com/Zanetach/beemax/actions/workflows/ci.yml)
+![Node.js](https://img.shields.io/badge/Node.js-%3E%3D22.19-339933?logo=node.js&logoColor=white)
+![Platform](https://img.shields.io/badge/platform-Ubuntu%20%7C%20macOS-4c566a)
 
-- [x] Monorepo wired to Pi (`pi-ai` + `pi-agent-core` as workspace deps)
-- [x] Platform abstraction layer (`PlatformAdapter`)
-- [x] Feishu adapter (WebSocket long-connection, self-built app identity, @-mention gating, dedup, card send/update)
-- [x] Dispatcher: per-chat agent sessions, serialized turns
-- [x] **Streaming interactive cards (pure TS)** - no Python, no sidecar process
-  - `CardSession` accumulates thinking + tools + answer + footer
-  - `renderCard()` produces Feishu CardKit v2.0 JSON (status header + collapsible timeline + footer stats)
-  - `FlushController` coalesces rapid deltas into throttled card patches (5 QPS limit)
-  - Pi agent events mapped: tool_execution_* -> tool.updated, message_update -> answer.delta (growth only)
-- [x] FTS5 long-term memory with safe natural-language queries, cross-chat user recall, and explicit remember/recall/list/forget tools
-- [x] CLI: `beemax gateway` / `beemax chat` / `beemax model`
-- [x] Pi AgentSession integration with built-in `read/bash/edit/write/grep/find/ls` tools (bound to configured cwd)
-- [x] Network research tools: `web_search` (Tavily / Brave / SearXNG) + SSRF-guarded `web_extract`
-- [x] Feishu meeting tools: details/list, reservations, participants, host control, and recording lifecycle
-- [x] MCP client bridge: stdio + Streamable HTTP, environment-secret expansion, namespaced tools, mutating-tool approval
-- [x] Pi Agent Skills loading plus managed instruction-only skill creation/update and post-turn hot reload
-- [x] Persistent reminders, interval/cron agent tasks, run history, retries, and proactive delivery
-- [x] OpenClaw-inspired Heartbeat: active hours, busy deferral, isolated read-only turns, `HEARTBEAT_OK` suppression
-- [x] One-profile-per-process isolation with per-profile model, Feishu app, memory, sessions, Skills, MCP, automation, and systemd unit
-- [x] GPT Image 2 generation through profile-local ChatGPT/Codex OAuth with native Feishu image delivery
-- [x] Isolated read-only Sub-Agents with bounded concurrency, status/wait/cancel tools, and cascading `/stop`
-- [x] `beemax doctor` readiness diagnostics
-- [x] `beemax profile doctor` and `beemax gateway health` readiness aliases
-- [x] Multi-profile Gateway service operations with `--all`
-- [x] Profile-home backup via `beemax profile backup`
-- [x] Deny-by-default Feishu user/chat allowlists
-- [x] Text approval for `bash/edit/write`: allow once / allow for session / deny
-- [x] Workspace boundary, sensitive credential path, and destructive-command hard blocks
-- [x] Deterministic Pi JSONL persistence/resume per Feishu chat + stable user identity
-- [ ] Feishu User OAuth for private calendar/doc resources
-- [ ] Attachment/image/audio ingestion
+![BeeMax Agent turns scoped context and durable memory into governed, verified execution](docs/assets/beemax-agent-runtime.png)
 
-## Architecture
+BeeMax is one Agent product with one Core-owned Pi execution loop. It can chat locally, connect to Feishu/Lark, preserve long-running responsibility across restarts, and understand images through native vision or OCR.
 
-```
-Feishu today · DingTalk / WeCom / API adapters planned
-              │
-              ▼
-Gateway Control Plane
-  adapters · auth · profile routing · idempotency · delivery · health
-              │
-              ▼
-BeeMax Core Runtime
-  Agent runs · sessions · prompt/context · memory · tools · sub-agents
-              │
-              ▼
-Capability adapters
-  MCP · Web · Memory · Automation · Feishu meetings · image generation
+Every surface operates under Profile-scoped policy.
+
+It does not encode customer-specific objects such as orders, tickets, or contracts. Unknown business vocabulary enters through Work Context, evidence, configured capabilities, and enterprise policy instead of a fixed business ontology.
+
+## The execution contract
+
+```text
+User intent or durable Trigger
+        ↓
+Situation / Work Context
+        ↓
+Scoped Memory recall + active responsibility
+        ↓
+Objective and durable Task Ledger
+        ↓
+One Pi Agent Runtime
+        ↓
+Governed Tool Effect → provider receipt
+        ↓
+Checkpoint → independent Verification
+        ↓
+Delivery + evidence-backed Memory update
 ```
 
-**Pure TypeScript.** `@beemax/core` is the only Agent Runtime; Pi is its
-implementation dependency. Gateway holds channel SDKs and enterprise control
-plane concerns, while capability packages provide MCP, meeting and other
-external integrations. The Feishu card renderer remains in
-`packages/gateway/src/card/` and only presents Core run events.
+Pi owns model interaction, tools, session events, and live compaction. BeeMax Core adds product semantics around Pi: scope, durable responsibility, action governance, Effect authority, recovery, verification, and delivery.
 
 ## Quick start
 
-### Install and configure an Agent
+### 1. Install BeeMax
 
-On Linux or macOS with Node.js 22.19 or newer:
+Linux and macOS require Node.js 22.19 or newer, `curl`, `tar`, `npm`, and either `sha256sum` or `shasum`.
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/Zanetach/beemax/v1.0.0/scripts/bootstrap-install.sh | bash
+```
 
-# Or, from a source checkout:
+The installer downloads a checksum-verified release archive containing BeeMax and the vendored Pi source. Application files go to `~/.beemax/app`; the command is installed to `~/.local/bin`.
+
+On Ubuntu and macOS, installation also discovers or installs Tesseract OCR. Set `BEEMAX_INSTALL_MEDIA_DEPS=0` only when the host image manages OCR dependencies separately.
+
+To install from a source checkout:
+
+```bash
 ./scripts/install.sh
+```
 
+### 2. Create a Profile
+
+```bash
 beemax setup --profile personal
 ```
 
-The one-command installer downloads one verified BeeMax release archive, which
-already contains Pi. It keeps executable source files in `~/.beemax/app` and
-the `beemax` command in `~/.local/bin`; Agent Profiles, secrets, memory, and
-sessions remain isolated under `~/.beemax/profiles`. To install another build,
-set `BEEMAX_VERSION`, for example `curl -fsSL https://raw.githubusercontent.com/Zanetach/beemax/v1.0.0/scripts/bootstrap-install.sh | BEEMAX_VERSION=v1.0.0 bash`.
-Run the same installer with `--uninstall` to remove application files while
-keeping your Profiles and data.
+The wizard configures the Profile identity, model, credentials, workspace, Skills, and local readiness. Secrets are prompted securely and stored outside YAML.
 
-The setup wizard creates the Profile, configures `SOUL.md`, model credentials,
-workspace, Skills, and local Agent readiness. It does not require a messaging
-channel: after it finishes, use `beemax chat --profile personal` immediately.
-When ready to connect Feishu/Lark, run `beemax gateway setup --profile personal`;
-that separate wizard configures the channel allowlist, probes the tenant token
-and bot identity, and prints the publishing checklist. Pass `--with-feishu` to
-`beemax setup` only when you deliberately want both wizards in one run.
-
-The local Agent is intentionally first-class: it uses the same Profile, Pi
-runtime, memories, Skills, MCP configuration, and tool approvals as the
-Gateway. Exit it with `/exit` or `/quit`; the Feishu process is not started by
-this command.
-
-The model and Feishu setup commands prompt for missing secrets without writing
-them to YAML. Each Agent is an isolated Profile Home at
-`~/.beemax/profiles/<name>/`; its secrets live in `.env` with mode `0600`, while
-identity lives in `SOUL.md`. New Profiles also receive an isolated `workspace/`
-directory by default; configure a shared workspace explicitly only when that is
-intended. Profile `.env` values take precedence over ambient shell credentials.
-Set `BEEMAX_HOME` to relocate all Profile Homes.
-The release installer requires Node.js 22.19+, `curl`, `tar`, `npm`, and either
-`shasum` (macOS) or `sha256sum` (common Linux). Pi is vendored in `pi/`, so a
-normal clone or source archive is self-contained and requires no submodule step.
-
-Maintainers can continue evolving Pi in its independent repository and sync it
-without changing the self-contained BeeMax layout:
+### 3. Start chatting
 
 ```bash
-git subtree pull --prefix=pi https://github.com/Zanetach/pi.git main --squash
-git subtree push --prefix=pi https://github.com/Zanetach/pi.git main
+beemax chat --profile personal
 ```
 
-For the first end-to-end test, keep the gateway in the foreground:
+Local chat uses the same Profile, Memory, Skills, Pi runtime, governance, and durable work graph as a channel Gateway.
+
+### 4. Connect Feishu or Lark when needed
 
 ```bash
-beemax gateway --profile personal
-```
-
-After a successful Feishu message test, install a user-level systemd service on
-Linux (no root required) and start that profile as its own process:
-
-```bash
-beemax service install
-beemax start personal
-beemax status personal
-beemax logs personal
-```
-
-The Hermes-style Gateway lifecycle aliases are also available:
-
-```text
+beemax gateway setup --profile personal
 beemax gateway run --profile personal
-beemax gateway install --profile personal
-beemax gateway start --profile personal
-beemax gateway stop --profile personal
-beemax gateway restart --profile personal
-beemax gateway status --profile personal
-beemax gateway logs --profile personal
-beemax gateway list
 ```
 
-Only one running Profile Gateway may consume a given Feishu App ID. A second
-Profile using the same App is rejected by the per-Home channel lock.
+The setup flow configures the channel allowlist, probes credentials and bot identity, and prints the Feishu publishing checklist. WebSocket long connection is the default; webhook mode is available for public HTTPS deployments.
 
-Profiles use the `standard` Toolset by default. For a lower-trust group or
-public-facing Profile, set `agent.toolset: safe` in its `config.yaml` and
-restart the Gateway. `safe` exposes read/search, memory inspection, schedules,
-Skill inspection, task status, and read-only MCP tools only; it excludes shell,
-file writes, memory mutation, scheduling mutation, image generation, and
-mutating MCP tools.
+## What ships in 1.0
 
-### Feishu webhook deployment
+| Area | Implemented surface |
+| --- | --- |
+| Agent runtime | One Core-owned Pi runtime for CLI, Gateway, durable Tasks, recovery, automation, and proactive execution |
+| Work Context | Situation model for facts, goals, constraints, uncertainty, conflicts, possible actions, and provenance |
+| Memory | SQLite/FTS5 recall, scope isolation, evidence lineage, correction, conflict, candidates, conventions, and verified Episodes |
+| Durable work | Objectives, DAG Task Plans, Task Runs, leases, Checkpoints, Candidate Results, Verification, correction, cancellation, and recovery |
+| Effects | One authority for mutating Tool Effects, idempotency, provider receipts, unknown outcomes, reconciliation, and compensation |
+| Initiative | Evidence-gated observation and read-only investigation with duplicate and interruption controls |
+| Context | Model-aware budgets, bounded Tool results, Pi compaction, Task Preservation Envelopes, and restart-safe recovery context |
+| Channels | Adaptive terminal UI plus Feishu/Lark streaming cards, pairing, allowlists, idempotency, media delivery, and service lifecycle |
+| Images | Native model vision, auxiliary configured vision models, local Tesseract OCR, and optional GPT Image generation |
+| Capabilities | Progressive Skills, Web research, MCP, WeKnora retrieval, Feishu meetings, files, schedules, reminders, and bounded Sub-Agents |
+| Operations | Doctor, Profile backup/migration, Linux systemd, macOS LaunchAgent, logs, traces, Effect inspection, and verified updates |
 
-WebSocket is the default. For a public HTTPS webhook deployment, configure a
-reverse proxy to forward the exact event path to BeeMax and use an encryption
-key from the Feishu event-subscription settings. BeeMax refuses to start a
-webhook listener without that key. Put it in `FEISHU_WEBHOOK_ENCRYPT_KEY` in
-the Profile `.env`; never pass it as a command-line argument.
-
-```bash
-beemax gateway setup --profile personal --connection-mode webhook \
-  --webhook-host 127.0.0.1 --webhook-port 8787 \
-  --webhook-path /feishu/events
-beemax gateway health --profile personal
-```
-
-Set Feishu's request URL to your proxy's HTTPS URL ending in `/feishu/events`;
-do not add a query string. BeeMax accepts only POST requests, limits request
-bodies to 1 MiB, and applies short HTTP timeouts. `beemax channel qr --open`
-opens the Feishu Developer Console for the required sign-in/app setup; it does
-not create an app on your behalf.
-
-Use `beemax service install --system` as root only when a machine-wide service
-is required; set `BEEMAX_SERVICE_USER` to the non-root account that should run
-the Agent. For a user service that must start before login on a headless server,
-enable lingering once with `sudo loginctl enable-linger $USER`. On macOS, WSL
-without systemd, or containers without a supervisor,
-keep using the foreground `gateway` command.
-
-Each profile has its own gateway process, model, Feishu application, secrets,
-memory, sessions, Skills, MCP servers, and automation state. Useful management
-commands are:
+## Architecture
 
 ```text
-beemax profile create <name>
+┌───────────────────────────────────────────────────────────┐
+│ Product / Profile                                         │
+│ identity · model · policy · Skills · capability grants    │
+├───────────────────────────────────────────────────────────┤
+│ BeeMax Core                                               │
+│ Pi runs · context · Memory · Tasks · Effects · governance │
+│ Checkpoints · Verification · recovery · Initiative        │
+├───────────────────────────────────────────────────────────┤
+│ Capability adapters                                      │
+│ Web · MCP · WeKnora · Feishu VC · images · files          │
+├───────────────────────────────────────────────────────────┤
+│ Gateway control plane                                    │
+│ auth · routing · idempotency · stream · delivery · health │
+├───────────────────────────────────────────────────────────┤
+│ Operations                                                │
+│ install · Profiles · services · backup · doctor · logs    │
+└───────────────────────────────────────────────────────────┘
+```
+
+`@beemax/core` is the only Agent Runtime boundary. Gateway owns channel transport and enterprise control-plane concerns, but does not select models, assemble prompts, recall Memory, or decide Agent work.
+
+Capability packages consume Pi primitives through Core. The CLI presentation layer may use `pi-tui`, but it does not own Agent execution. See the [Core/Gateway ownership contract](docs/architecture/core-gateway-boundaries.md).
+
+## Profiles and configuration
+
+Each Profile is an isolated Agent Home under `~/.beemax/profiles/<name>/`.
+
+| Path | Purpose |
+| --- | --- |
+| `config.yaml` | Profile model, runtime, channel, context, and capability settings |
+| `.env` | Provider and channel secrets, stored with owner-only permissions |
+| `SOUL.md` | Long-lived identity, style, and default behavioral boundaries |
+| `USER.md` | Stable user preferences and working context |
+| `MEMORY.md` | Reviewed durable-memory snapshot |
+| `workspace/` | Isolated default workspace and project instructions |
+| `skills/` | Profile-scoped progressive Skills |
+| `data/` | SQLite authority, Pi sessions, traces, caches, and delivery state |
+
+Common Profile operations:
+
+```bash
+beemax profile create work
 beemax profile list
-beemax profile show <name>
-beemax profile use <name>
-beemax profile migrate <name>
-beemax profile delete <name> --yes
-beemax channel list --profile <name>
-beemax channel remove --profile <name> --yes
-beemax stop|restart|status|logs <name>
+beemax profile show work
+beemax profile use work
+beemax profile backup work ./backups
+beemax doctor --profile work
 ```
 
-### Source-only quick start
+Set `BEEMAX_HOME` to relocate all Profile Homes. Legacy repository-local Profiles remain readable and can be copied non-destructively with `beemax profile migrate <name>`.
 
-```bash
-npm install
-npm run build
+### Models
 
-# Feishu (self-built app: https://open.feishu.cn/app)
-export FEISHU_APP_ID=cli_xxx
-export FEISHU_APP_SECRET=xxx
-export FEISHU_ALLOWED_USERS=on_xxx,ou_xxx  # required unless explicitly public
-export BEEMAX_API_KEY=sk-ant-xxx        # or ANTHROPIC_API_KEY
-export TAVILY_API_KEY=tvly-xxx           # or BRAVE_SEARCH_API_KEY / SEARXNG_URL
+Setup reads providers and model capabilities from Pi's built-in registry. A Profile can hold multiple configured models and switch per conversation.
 
-npm run doctor     # validates local readiness
-npm run gateway    # starts the long-running Feishu agent
-```
-
-### Enterprise knowledge (WeKnora)
-
-BeeMax can search documents uploaded and managed in an existing WeKnora Web console. Configure the connection and explicitly list the knowledge spaces this Profile may read:
+Custom endpoints support OpenAI Chat Completions, OpenAI Responses, and Anthropic Messages protocols. Declare the real context window and maximum output when capability metadata is unavailable.
 
 ```yaml
-knowledge:
-  enabled: true
-  provider: weknora
-  baseUrl: http://127.0.0.1:8080
-  spaces:
-    - id: company
-      name: 公司公共知识
-      knowledgeBaseId: kb-xxxxxxxx
-    - id: pcb
-      name: PCB专业知识
-      knowledgeBaseId: kb-yyyyyyyy
+model:
+  provider: custom
+  model: company-model
+  baseUrl: https://models.example.com/v1
+  customProtocol: openai-responses
+  contextWindow: 128000
+  maxTokens: 8192
 ```
 
-Keep the API key in the Profile `.env`, not in YAML:
+Keep API keys in the Profile `.env`, or enter them through `beemax setup`. BeeMax rejects model and credential secrets passed in command-line arguments.
+
+### Toolsets
+
+Profiles use the `standard` Toolset by default. Set `agent.toolset: safe` for a lower-trust channel.
+
+The safe Toolset keeps read/search, Memory inspection, task status, schedules, Skill inspection, and read-only MCP tools. It excludes shell, file writes, Memory mutation, image generation, scheduling mutation, and mutating MCP tools.
+
+## Memory and durable work
+
+BeeMax separates chat history from durable organizational evidence.
+
+- Conversation candidates stay pending until reviewed or promoted.
+- Claims retain source evidence, validity, visibility, scope, correction, and conflict lineage.
+- Verified Objective outcomes may publish idempotent Situation-backed Episodes.
+- Recall is constrained by Profile, owner, conversation, thread, access scope, and business-object evidence when available.
+- Unknown customer vocabulary remains open semantics; it is not mapped into a fixed order, ticket, or contract schema.
+
+Useful Memory commands:
 
 ```bash
-BEEMAX_WEKNORA_API_KEY=sk-xxxxxxxx
+beemax memory status --profile personal
+beemax memory candidates --profile personal
+beemax memory claims --profile personal
+beemax memory explain <memory-id> --profile personal
+beemax memory promote <candidate-id> --profile personal --yes
+beemax memory reject <candidate-id> --profile personal --yes
 ```
 
-After restarting the Gateway, the Agent receives the read-only `knowledge_retrieve` tool. It can answer enterprise questions from Feishu or local chat with source titles and filenames, and cannot search knowledge spaces omitted from the Profile configuration. Run `beemax doctor --profile <name>` to verify the connection.
+Responsible work becomes an Objective with durable Tasks. Safe work may resume after a crash only when recovery policy, idempotency identity, execution scope, and unresolved Effect state all permit it.
 
-To reproduce the release gate locally after choosing a version label:
-
-```bash
-bash scripts/create-release-archive.sh v0.1.0-audit
-bash scripts/verify-release-archive.sh v0.1.0-audit
-```
-
-The verifier checks the checksum and source-only archive layout, installs into
-an isolated temporary HOME, rebuilds from the packaged sources, and starts the
-installed `beemax --help` command. It does not modify existing Profiles.
-
-Access is deny-by-default. Set `FEISHU_ALLOWED_USERS` to Feishu union_id,
-user_id, or open_id values. Optionally restrict chats with
-`FEISHU_ALLOWED_CHATS`. `FEISHU_ALLOW_ALL_USERS=true` explicitly disables the
-user allowlist and should only be used for intentional public/development bots.
-
-Unknown users who privately message a configured Feishu bot receive a one-hour
-pairing code instead of reaching the Agent. The Profile owner can manage access
-without restarting the Gateway:
-
-```bash
-beemax pairing list --profile personal
-beemax pairing approve feishu ABCD2345 --profile personal
-beemax pairing revoke feishu ou_xxx --profile personal
-beemax pairing clear feishu --profile personal
-```
-
-Pairing is Profile-scoped and fail-closed. Requests are rate-limited, pending
-codes are bounded, repeated invalid approvals lock temporarily, and state files
-are atomically replaced with owner-only permissions.
-
-Mutating local, Feishu, Skill, memory-deletion, and MCP tools pause for approval
-in Feishu. Reply `1` to allow once, `2` to allow that tool for the current
-process session, or `3` to deny.
-
-Subscribe to the `im.message.receive_v1` event in the Feishu developer console
-and enable "长连接" (WebSocket long-connection). Grant
-`im:message.p2p_msg:readonly`, `im:message.group_at_msg:readonly`, and
-`im:message:send_as_bot`; enable the Bot capability and publish an app version
-before testing. No public HTTPS endpoint is needed.
-
-## Profiles: one Agent per process
-
-A named Profile is a self-contained Agent Home under
-`~/.beemax/profiles/<name>/`. It owns `config.yaml`, `.env`, `SOUL.md`, Memory,
-Pi auth/session state, Skills, MCP configuration, caches, schedules, and
-Gateway state. Legacy `config/profiles/<name>.yaml` Profiles remain readable and
-can be copied non-destructively with `beemax profile migrate <name>`.
-
-### Profile identity and workspace context
-
-BeeMax combines an identity layer with a project-work layer:
-
-| Location | Purpose | Managed by |
-| --- | --- | --- |
-| `Profile/SOUL.md` | Long-lived identity, communication style, and safety boundaries | BeeMax creates a safe default; the user may customize it. |
-| `Profile/USER.md` | Stable user preferences and working context | User or reviewed workflows. |
-| `Profile/MEMORY.md` | Reviewed durable memory snapshot | BeeMax memory workflow. |
-| `Profile/skills/` | Profile-scoped reusable Skills | BeeMax Skills system. |
-| `workspace/AGENTS.md` | Project-specific instructions for the active workspace | The workspace owner. |
-| `workspace/TOOLS.md` | Project-specific tool notes, local commands, and operational constraints | The workspace owner. |
-
-Profile files never overwrite a workspace. `beemax setup` keeps the generated
-SOUL by default and only replaces it when you explicitly provide a custom
-identity. Missing, empty, oversized, or obviously prompt-injected SOUL content
-falls back to BeeMax's bounded safe default. `TOOLS.md` is optional and is only
-useful when a workspace has project-specific commands or tool constraints.
-
-```bash
-beemax profile create personal
-beemax profile list
-beemax profile show personal
-beemax profile use personal
-beemax profile doctor personal
-beemax profile start personal
-# equivalent: npm run gateway -- --profile personal
-```
-
-Different profiles can use different models:
-
-```yaml
-# ~/.beemax/profiles/personal/config.yaml
-model: { provider: anthropic, model: claude-sonnet-4-5 }
-
-# ~/.beemax/profiles/work/config.yaml
-model: { provider: openrouter, model: openai/gpt-5.2 }
-```
-
-The user-level service reads each Profile's `.env` directly. For a system-level
-service, set `BEEMAX_HOME` to a directory owned by `BEEMAX_SERVICE_USER` before
-installing; `/etc/beemax/<profile>.env` remains an optional final override:
-
-```bash
-sudo install -d -o beemax -g beemax /var/lib/beemax
-sudo -u beemax BEEMAX_HOME=/var/lib/beemax beemax profile create personal
-sudo BEEMAX_SERVICE_USER=beemax BEEMAX_HOME=/var/lib/beemax beemax service install --system
-sudo systemctl enable --now beemax@personal
-journalctl -u beemax@personal -f
-```
-
-## Reminders, scheduled tasks, and Heartbeat
+In chat, inspect work without asking the model to reconstruct it:
 
 ```text
-reminder_create
-schedule_create
-schedule_list
-schedule_pause
-schedule_resume
-schedule_delete
-schedule_runs
+/status
+/tasks plans
+/tasks show <plan-id>
+/tasks verify <plan-id>
+/tasks retry <plan-id>
+/tasks cancel <plan-id>
 ```
 
-Schedules and run state live in the profile SQLite database. One-shot reminders
-accept ISO timestamps or relative durations such as `20m`; recurring work accepts
-fixed intervals or timezone-aware cron expressions. Transient failures retry with
-30s/60s/5m backoff. Scheduled model turns run in isolated sessions with read-only
-tools so unattended work cannot block on an approval prompt.
+Verification unavailable retries Verification against the retained Candidate Result; it does not replay Task execution. Explicit rejection may start one bounded Corrective Attempt only when safe-retry authority is complete.
 
-Heartbeat defaults to every 30 minutes during configured active hours. It uses
-the last authorized DM unless a fixed chat is configured, defers while the agent
-is busy, reads the small `HEARTBEAT.md` checklist, and suppresses `HEARTBEAT_OK`
-responses. Only actionable output is proactively sent.
+## Governed actions and Effects
 
-## Sub-Agent delegation
+Every action is evaluated independently from its target, risk, reversibility, enterprise policy, current Effect state, approval, and execution grant.
 
-BeeMax 0.1 can delegate independent research and analysis to fresh Pi
-AgentSessions without copying the parent conversation. Parent Agents receive:
+Mutating tools require approval unless a trusted, scoped policy permits the specific action. High-risk or irreversible work cannot become autonomous merely because a broad policy says “allow.”
+
+External mutation follows a durable lifecycle:
 
 ```text
-task_spawn   task_status   task_wait   task_cancel
+planned → executing → committed | failed | unknown
 ```
 
-Sub-Agents can read workspace files, search/extract the web, recall/list memory,
-and call read-only MCP tools. They cannot run shell commands, modify files,
-write or delete memory, change Skills, schedule work, send Feishu messages, or
-spawn another Agent. Their task tools appear in the parent Feishu card timeline.
+A committed mutation is never replayed. An `unknown` outcome blocks retry until an operator observes the external system and reconciles it.
 
-```yaml
-subagents:
-  enabled: true
-  maxConcurrent: 3
-  maxChildrenPerOwner: 5
-  timeoutMs: 900000
+```bash
+beemax effect list --status unknown --profile personal
+beemax effect reconcile <effect-id> --status committed \
+  --operation <observed-operation> --external-ref <reference> \
+  --profile personal
+beemax effect reconcile <effect-id> --status failed --profile personal
 ```
 
-Tasks above the concurrency limit queue. `/stop` aborts the active parent turn
-and cascades cancellation to its queued/running Sub-Agents. Delegated DAG Tasks,
-Task Runs, outcomes, recovery policy and Task Plan Execution Claims are durable.
-After restart, BeeMax resumes only explicitly safe, idempotent Tasks; interrupted
-unsafe work fails closed. Concurrent instances cannot recover the same Plan
-while its holder-fenced claim remains live. A continuous recovery service also
-reconciles expired Execution Leases while Chat or Gateway remains online, so
-recovery does not depend on another restart. Candidate Results whose independent
-Verification was unavailable are retained and automatically rechecked with
-durable exponential backoff; this never replays Task execution. `/tasks verify <plan-id>`
-remains available for an immediate user-requested check. If Verification explicitly
-rejects a result, BeeMax may automatically run a feedback-aware Corrective Attempt
-only when safe-retry authority is complete and the durable correction budget remains.
-Use `/tasks plans` to discover owned Plans and `/tasks show <plan-id>` to inspect
-bounded node results, Verification evidence, and errors without invoking the model.
-When background recovery reaches a settled Terminal Outcome, BeeMax writes a
-result-free Completion Notice to a durable Outbox and delivers it to the originating
-CLI or Gateway with a fenced lease and bounded retry. The notice links back to
-`/tasks show` instead of copying Task results into the delivery queue.
-Child Pi
-transcripts remain in the profile session directory for audit.
+Runtime recovery procedures are documented in the [fault recovery runbook](docs/operations/fault-recovery.md).
 
-## Inbound image understanding
+## Context management
 
-BeeMax routes inbound chat images through one profile-scoped perception seam:
+BeeMax has one context pipeline and one compactor.
 
-- The active model receives the original image when it declares native image input.
-- Other configured image-capable chat models are discovered automatically as auxiliary vision adapters.
-- BeeMax installs Tesseract automatically and discovers it as a local OCR adapter on macOS or Ubuntu.
-- A text-only model with no available adapter fails explicitly instead of pretending it inspected the image.
-
-```yaml
-mediaUnderstanding:
-  auxiliaryVisionEnabled: true
-  localOcr:
-    enabled: true
-    # Optional. Omit command to discover tesseract from PATH.
-    # command: /usr/bin/tesseract
-    # languages: eng+chi_sim
-    timeoutMs: 30000
-```
-
-The installer includes English and Simplified Chinese OCR data. Existing
-Tesseract installations are kept as-is. CI, offline, and custom image builds can
-skip system dependency installation with `BEEMAX_INSTALL_MEDIA_DEPS=0`; in that
-case, preinstall Tesseract or configure another media adapter. Run
-`beemax doctor` to see the effective native, auxiliary, and local media
-capabilities.
-
-Media adapter output is injected into Pi as untrusted evidence with input
-digests, provenance, confidence when available, warnings, and timing. Raw image
-bytes are not copied into receipts, telemetry, Task Ledger, or Memory.
-
-## Context management and compaction
-
-BeeMax uses one context pipeline and one compactor. Core assembles bounded Work
-Context, scoped Memory evidence, and durable Task/Checkpoint state; Pi owns the
-live session and performs manual, threshold, and overflow compaction. Defaults
-scale from the selected model's actual context window, while a Profile may
-override them explicitly:
-
-For catalog models, BeeMax reads model limits from Pi's model catalog. Custom
-providers can declare `model.contextWindow` and `model.maxTokens` (or
-`BEEMAX_MODEL_CONTEXT_WINDOW` and `BEEMAX_MODEL_MAX_TOKENS`); 128K/8192 remain
-compatibility defaults only when those capabilities are omitted.
+Core assembles bounded Situation, scoped Memory evidence, capability context, and durable Task state. Pi owns the live session, threshold/overflow detection, summaries, and manual compaction.
 
 ```yaml
 context:
@@ -462,209 +252,280 @@ context:
     # keepRecentTokens: 20480
 ```
 
-`/usage` reports the effective trigger, reserve, and retained-recent budgets.
-Gateway logs record content-free compaction lifecycle events. After every
-summary, BeeMax verifies that durable Task identities survived; if any are
-missing, it reinjects the authoritative Task Preservation Envelope without
-starting another model turn and persists that recovery context in Pi's session
-transcript, so a restart cannot erase it. Oversized summary input is bounded inside Pi while
-retaining recent history and BeeMax's preservation instructions. A deterministic
-multilingual quality proxy also reports whether goals, acceptance criteria, and
-checkpoint continuation anchors became degraded; it observes semantic loss but
-does not invoke a second judge model or trigger unsafe recovery from paraphrases.
+Defaults scale from the active model's context window. `/usage` shows effective budgets, and `/compact` requests compaction while the session is idle.
 
-The same `maxToolResultTokens` ceiling is enforced at Pi's `tool_result` seam for
-built-in tools, BeeMax tools, and MCP adapters. Individual Tool byte policies
-remain hard upper bounds; the Profile token ceiling is an additional shared
-context-protection budget.
+After compaction, BeeMax checks durable responsibility identities. Missing Tasks are restored from the authoritative Task Ledger and persisted into Pi's session transcript rather than guessed from the summary.
 
-## Codex image generation
+## Initiative and automation
 
-Image generation is configured independently per profile and does not require
-that profile's chat model to be Codex. For example, an Anthropic chat Agent can
-still use its own profile-local Codex OAuth for `image_generate`.
+BeeMax can observe durable Triggers and propose or execute bounded proactive work. Autonomy is separated into evidence-gated levels instead of one global switch.
 
-```yaml
-imageGeneration:
-  enabled: true
-  provider: openai-codex
-  quality: medium # low | medium | high
-  outputDir: cache/images
+```bash
+beemax autonomy status --profile personal
+beemax autonomy promote situation_context --profile personal --yes
+beemax autonomy stop read_only_investigation \
+  --evidence-ref incident:2026-07-14 --profile personal --yes
+beemax autonomy rollback initiative_observation \
+  --evidence-ref review:2026-07-14 --profile personal --yes
 ```
 
-Authenticate once for that profile:
+Promotion requires measured quality, safety, expected value, duplication, and interruption evidence. Enterprise deny always wins; enterprise allow cannot bypass failed evidence.
+
+Schedules, reminders, and Heartbeat are durable and Profile-scoped. Heartbeat is single-flight, defers while the Agent is busy, respects active hours, and suppresses `HEARTBEAT_OK`.
+
+```text
+schedule_create   schedule_list   schedule_pause
+schedule_resume   schedule_delete schedule_runs
+```
+
+Unattended scheduled Agent runs use bounded, isolated execution. Durable claims prevent multiple live instances from settling the same work.
+
+## Images and OCR
+
+Inbound images pass through one Profile-scoped media-understanding seam.
+
+1. The active model receives the original image when it supports image input.
+2. Other configured image-capable models can act as auxiliary vision adapters.
+3. Tesseract provides local OCR fallback on Ubuntu and macOS.
+4. If no adapter can inspect the image, BeeMax fails explicitly.
+
+```yaml
+mediaUnderstanding:
+  auxiliaryVisionEnabled: true
+  localOcr:
+    enabled: true
+    # command: /usr/bin/tesseract
+    # languages: eng+chi_sim
+    timeoutMs: 30000
+```
+
+Media output enters Pi as untrusted evidence with digest, provenance, confidence, warnings, and timing. Raw image bytes are not copied into receipts, telemetry, Task Ledger, or Memory.
+
+Optional GPT Image generation is configured separately and can be used even when the primary chat model is not an OpenAI model.
 
 ```bash
 beemax auth codex --profile personal
 ```
 
-The tool routes GPT Image 2 through the ChatGPT/Codex Responses image-generation
-surface, stores the PNG under the profile cache with mode `0600`, uploads it to
-Feishu as a native image message, and never writes OAuth tokens into tool output
-or logs. Calls require approval because they consume external generation quota.
+```yaml
+imageGeneration:
+  enabled: true
+  provider: openai-codex
+  quality: medium
+  outputDir: cache/images
+```
 
-## Memory, MCP, and Skills
+## Skills, MCP, Web, and knowledge
 
-### Bundled Profile Skills
-
-Every newly created BeeMax Profile receives the bundled Skills below in its
-own `skills/` directory. Existing Profiles can receive missing packaged Skills
-without replacing custom ones:
+BeeMax installs bundled Profile Skills and discovers eligible Pi Skills progressively. Only Skill metadata enters the initial prompt; the full body loads after a task matches it.
 
 ```bash
 beemax skills list --profile personal
 beemax skills sync --profile personal
-# Install official Pi browser automation (Chrome DevTools Protocol) for this Profile.
 beemax skills install pi-web-access --profile personal
 ```
 
-| Skill | Purpose |
-| --- | --- |
-| `business-copywriting` | Campaign, product, sales, and social copy |
-| `business-report` | Decision memos, reports, proposals, and reviews |
-| `ppt-production` | Deck narrative, slide plan, speaker notes, and PPT production guardrails |
-| `research-and-brief` | Sourced research and executive briefs |
-| `feishu-workspace` | Safe Feishu messages, documents, meetings, and permissions |
-| `image-creative` | Creative direction and image-generation workflow |
-| `weekly-review` | Evidence-based weekly reviews and priorities |
-| `humanizer` | Natural-language editing, copied from Hermes Agent under MIT |
-| `arxiv-research` | arXiv paper discovery, copied from Hermes Agent under MIT |
-
-Skills use progressive disclosure: only each Skill's name and description are
-present in the Agent prompt; the Agent reads the relevant `SKILL.md` only after
-the task matches it. See `THIRD_PARTY_NOTICES.md` for Hermes-derived Skill
-attribution and license terms.
-
-Skills may declare `metadata.beemax` requirements. BeeMax hides a Skill when
-its required Toolset, environment variables, or binaries are unavailable. For
-example, `arxiv-research` needs the `standard` Toolset plus `curl` and
-`python3`; `image-creative` and `ppt-production` require `standard`.
-
-BeeMax automatically recalls relevant prior exchanges and exposes explicit
-personal-memory tools:
-
-```text
-memory_remember  memory_recall  memory_list  memory_forget
-```
-
-Inspect and curate a Profile's staged memory from the CLI:
-
-```bash
-beemax memory status --profile personal
-beemax memory candidates --profile personal
-beemax memory promote <candidate-id> --profile personal --yes
-beemax memory reject <candidate-id> --profile personal --yes
-```
-
-Pi discovers trusted Skills from its standard global/project locations. BeeMax
-also manages durable instruction-only evolved skills under
-`data/agent/skills/<name>/SKILL.md` through `skill_create` and `skill_update`.
-Both operations require approval, and successful changes hot-reload after the
-current turn. Skills never receive an automatic executable-code trust grant.
-
-To enable MCP, copy `config/mcp.json.example` to `config/mcp.json`. Both stdio
-and Streamable HTTP servers are supported. Use `${ENV_VAR}` references for
-secrets rather than writing tokens into JSON. MCP tools are exposed as
-`mcp_<server>_<tool>`; any tool not explicitly annotated read-only by its server
-requires Feishu approval.
-
-Probe a Profile's configured MCP servers before starting its Gateway:
+MCP supports stdio and Streamable HTTP servers. Use `${ENV_VAR}` references for secrets. Tools without an explicit read-only annotation are governed as mutations.
 
 ```bash
 beemax mcp status --profile personal
 ```
 
-## Feishu meeting tools
+Web research supports provider-backed search plus SSRF-guarded extraction. WeKnora integration exposes only explicitly configured knowledge spaces through the read-only `knowledge_retrieve` tool.
 
-Registered when the gateway is connected:
+```yaml
+knowledge:
+  enabled: true
+  provider: weknora
+  baseUrl: http://127.0.0.1:8080
+  spaces:
+    - id: company
+      name: Company Knowledge
+      knowledgeBaseId: kb-xxxxxxxx
+```
+
+Store `BEEMAX_WEKNORA_API_KEY` in the Profile `.env`.
+
+## Feishu and Lark
+
+BeeMax supports self-built Feishu/Lark applications through WebSocket long connection or encrypted webhook delivery.
+
+Required Feishu capabilities include Bot, direct-message receive, group `@mention` receive, and send-as-bot. Subscribe to `im.message.receive_v1` and publish the app before testing.
+
+Access is deny-by-default. Configure authorized user IDs with `FEISHU_ALLOWED_USERS`; optionally restrict chats with `FEISHU_ALLOWED_CHATS`.
+
+Unknown private-message users receive a bounded pairing code instead of reaching the Agent:
+
+```bash
+beemax pairing list --profile personal
+beemax pairing approve feishu ABCD2345 --profile personal
+beemax pairing revoke feishu ou_xxx --profile personal
+```
+
+Each turn renders one streaming interactive card with answer, progress, governed approval actions, bounded tool activity, and usage metadata. Only one Profile Gateway may consume a given Feishu App ID at a time.
+
+Feishu meeting tools cover meeting queries, reservations, participants, host control, and recording lifecycle. Private user resources still require a future Feishu User OAuth layer.
+
+## Deployment and operations
+
+### Ubuntu
+
+Run the Gateway in the foreground for the first end-to-end test:
+
+```bash
+beemax gateway run --profile personal
+```
+
+Then install a user-level systemd service:
+
+```bash
+beemax gateway install --profile personal
+beemax gateway start --profile personal
+beemax gateway status --profile personal
+beemax gateway logs --profile personal
+```
+
+For a headless user service that must start before login, enable lingering once:
+
+```bash
+sudo loginctl enable-linger "$USER"
+```
+
+A machine-wide service is available through `beemax service install --system`; run the Agent as a dedicated non-root account and set `BEEMAX_SERVICE_USER`.
+
+### macOS
+
+The same lifecycle commands install and control one LaunchAgent per Profile. On WSL or containers without a supervisor, keep the Gateway in the foreground or use the host's process manager.
+
+### Health and diagnostics
+
+```bash
+beemax doctor --profile personal
+beemax status --deep --profile personal
+beemax gateway health --profile personal
+beemax gateway logs --profile personal --tail 200
+beemax trace show <execution-id> --profile personal
+```
+
+## Security model
+
+- Feishu/Lark access defaults to deny.
+- Profile secrets are isolated from YAML and protected with owner-only permissions.
+- The Credential Vault stores encrypted external credentials behind scoped references.
+- Shell and file tools remain inside the configured workspace and block known destructive commands and credential paths.
+- Mutation receipts exclude credential material.
+- MCP and external tools cannot self-certify a mutation with proof-shaped model output.
+- Task, Effect, delivery, Trigger, and compensation claims use leases and stale-holder fencing.
+- Queues, traces, cards, Tool output, context, and background concurrency are bounded.
+- High-risk autonomy remains unavailable without explicit human authority.
+
+See [autonomy rollout](docs/operations/autonomy-rollout.md), [performance and cost](docs/operations/performance-and-cost.md), and the [P0–P10 acceptance record](docs/operations/p0-p10-acceptance.md).
+
+## CLI reference
+
+| Command | Purpose |
+| --- | --- |
+| `beemax setup` | Configure a Profile, model, identity, Skills, and optional channel |
+| `beemax chat` | Start the adaptive local terminal Agent |
+| `beemax gateway` | Configure, run, install, inspect, and control channel Gateways |
+| `beemax profile` | Create, select, migrate, back up, inspect, and delete Profiles |
+| `beemax model` | Show or change the Profile model |
+| `beemax memory` | Inspect, explain, compile, promote, reject, or forget Memory evidence |
+| `beemax autonomy` | Inspect and control evidence-gated autonomy levels |
+| `beemax credentials` | Manage the encrypted Profile Credential Vault |
+| `beemax effect` | Inspect and reconcile unresolved Tool Effects |
+| `beemax trace` | Inspect a content-free execution trace |
+| `beemax doctor` | Validate runtime and integration readiness |
+| `beemax update` | Install the latest verified release while preserving Profiles |
+
+Run `beemax --help` for the complete command surface. Inside chat, use `/help` for session, model, compaction, Task, retry, cancellation, and display controls.
+
+## Troubleshooting
+
+### The bot receives no messages
+
+Run `beemax gateway health --profile <name>`. Confirm the app is published, WebSocket long connection is enabled, `im.message.receive_v1` is subscribed, and the sender is allowed or paired.
+
+### A Task did not resume after restart
+
+Inspect `/tasks show <plan-id>`, `beemax effect list --status unknown`, and the execution trace. Unsafe or non-idempotent Tasks intentionally fail closed instead of replaying.
+
+### A text-only model cannot read an image
+
+Run `beemax doctor`. Configure an image-capable model, enable auxiliary vision, or ensure Tesseract and the required language data are installed.
+
+### Context is near its limit
+
+Use `/usage` to inspect effective budgets and `/compact` while idle. Active durable Tasks survive compaction through the Task Preservation Envelope.
+
+### MCP is unavailable
+
+Run `beemax mcp status --profile <name>`. Verify the server command or URL, required environment variables, startup deadline, and Profile Toolset.
+
+## Development and verification
+
+```bash
+npm ci
+npm run build
+npm run typecheck
+npm test
+```
+
+The full release gate adds unknown-business evaluation, committed performance profiles, heap/RSS bounds, fault evidence, architecture boundaries, and migration rehearsal:
+
+```bash
+npm run verify:release
+npm run test:reliability
+```
+
+Create and verify the archive for the exact package version:
+
+```bash
+VERSION="v$(node -p "require('./package.json').version")"
+bash scripts/create-release-archive.sh "$VERSION"
+bash scripts/verify-release-archive.sh "$VERSION"
+```
+
+Tag, root package, and every BeeMax workspace version must match. The archive verifier checks checksum portability, source layout, isolated installation, rebuild, and CLI startup.
+
+## Repository layout
 
 ```text
-feishu_meeting_get
-feishu_meeting_list
-feishu_meeting_reserve_create
-feishu_meeting_reserve_get
-feishu_meeting_reserve_update
-feishu_meeting_reserve_active_get
-feishu_meeting_reserve_delete
-feishu_meeting_end
-feishu_meeting_invite
-feishu_meeting_kickout
-feishu_meeting_set_host
-feishu_meeting_recording_get
-feishu_meeting_recording_set_permission
-feishu_meeting_recording_start
-feishu_meeting_recording_stop
+apps/cli/                         CLI, Profile composition, setup, services
+packages/core/                    Agent semantics and the sole Pi runtime seam
+packages/memory/                  SQLite/FTS5 Memory and durable authorities
+packages/gateway/                 Channel control plane and card presentation
+packages/automation/              Schedule persistence and time calculation
+packages/knowledge/               WeKnora capability adapter
+packages/mcp-capability/          MCP client capability
+packages/feishu-capability/       Feishu meeting capability
+packages/codex-image-capability/  Optional GPT Image generation
+pi/                               Vendored Pi source and workspace packages
+config/                           Configuration examples
+evals/                            Runtime and performance evaluation corpus
+scripts/                          Install, release, evaluation, and migration tools
+docs/                             Architecture, ADRs, operations, PRD, and research
 ```
 
-In Feishu Developer Console, grant the VC meeting/reservation/recording read
-scopes for query tools and write scopes for reservation, end, and recording
-controls. Scope labels can vary by console/API version; use the permission
-recommendation shown by these APIs: `vc.v1.meeting`, `vc.v1.meeting_list`,
-`vc.v1.reserve`, and `vc.v1.meeting.recording`. Application identity can only
-access resources it owns or is authorized for.
+## Documentation
 
-Subscribe to the recording lifecycle events:
+- [Unified Agent Runtime PRD](docs/prd/beemax-pi-unified-agent-runtime.md)
+- [Core and Gateway boundaries](docs/architecture/core-gateway-boundaries.md)
+- [Channel-neutral runtime contract](docs/architecture/channel-runtime-contract.md)
+- [Fault recovery runbook](docs/operations/fault-recovery.md)
+- [Autonomy rollout](docs/operations/autonomy-rollout.md)
+- [Performance and cost](docs/operations/performance-and-cost.md)
+- [P0–P10 acceptance](docs/operations/p0-p10-acceptance.md)
+- [Changelog](CHANGELOG.md)
 
-```text
-vc.meeting.recording_started_v1
-vc.meeting.recording_ended_v1
-vc.meeting.recording_ready_v1
-```
+## Current boundaries
 
-The gateway logs lifecycle metadata, but never records sensitive recording URLs.
+BeeMax 1.0 intentionally does not include a fixed customer business ontology, a second Agent Loop, high-risk fully autonomous execution, large multi-Agent organizations, or automatic production Skill mutation.
 
-## Card rendering
+Planned extension points include additional channel adapters, Feishu User OAuth for private resources, externally backed work queues for larger horizontal deployments, and deeper enterprise policy integrations.
 
-Each agent turn produces one continuously-updated Feishu interactive card:
+---
 
-- **Header**: status-colored (`green`=done, `red`=failed, `blue`=streaming, `indigo`=thinking)
-- **Body**: streamed answer markdown (chunked to fit the 30KB card limit)
-- **Collapsible "思考与工具" panel**: reasoning timeline + tool calls with status
-- **Footer**: duration · model · ↑input tokens · ↓output tokens · ctx %
+**中文简介：** BeeMax 1.0 是一个基于 Pi 的持久化智能体运行时。它通过 Situation/Work Context 理解未知业务语义，以作用域 Memory 保存证据。
 
-The `FlushController` batches card updates on an 800ms interval (coalescing
-rapid text deltas) and drains immediately on terminal events (completed/failed)
-to respect Feishu's 5 QPS patch limit while still showing the final card promptly.
-
-## Decisions (recorded)
-
-1. **Based on Pi** - `pi/packages/{ai,agent,tui}` referenced as npm workspaces.
-2. **Feishu** - first and only platform this phase. Modeled on Hermes'
-   `gateway/platforms/feishu.py`: WebSocket long-connection, self-built app,
-   `open_id` for routing, `union_id` preferred for cross-app stability.
-3. **Local Linux deployment** - no serverless; systemd in Phase 4.
-4. **Reuse pi-ai** - 60+ providers, built-in model catalog, `streamSimple`.
-5. **Memory: FTS5** - SQLite only (zero extra services).
-6. **Pi AgentSession** - native coding tools plus JSONL sessions stored under
-   `data/agent/sessions/feishu/` by default.
-7. **Web research** - provider priority is Tavily, Brave, then SearXNG. Page
-   extraction blocks private/link-local/metadata addresses and validates redirects.
-8. **Feishu meetings** - tenant-token VC tools support meeting detail/list,
-   reservations, ending meetings and recording control. User-owned/private
-   meetings require the later User OAuth layer.
-9. **Security** - Feishu access defaults to deny; mutating/shell tools require
-   approval, file tools stay inside `BEEMAX_CWD`, and known destructive commands
-   plus common credential paths are blocked.
-10. **Pure TS card pipeline** - the hermes-feishu-streaming-card rendering logic
-   was ported to TypeScript rather than run as a Python sidecar, so the whole
-   project is one Node.js runtime.
-11. **Bounded Sub-Agents** - fresh-context, read-only child Pi sessions combine
-   Hermes-style isolation with explicit OpenClaw-style task lifecycle tools.
-   V0.1 is flat (depth 1) and process-local by design.
-
-## Layout
-
-```
-packages/
-  gateway/
-    src/
-      card/          session + timeline + render + flush + text (card pipeline)
-      core/          platform abstraction + dispatcher + agent factory + session router
-      platforms/
-        feishu/      adapter (WSClient) + settings
-  memory/           SQLite + FTS5 long-term memory
-apps/
-  cli/              `beemax` entrypoint (gateway / chat / model)
-config/             beemax.yaml.example
-pi/                 Pi source (referenced as workspaces, not modified)
-```
+Task Ledger、Effect、Checkpoint 和 Verification 共同承担可恢复责任，企业策略与审批负责约束执行边界。
