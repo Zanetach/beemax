@@ -56,7 +56,8 @@ export class FileToolEffectJournal implements ToolEffectSink {
 	constructor(path: string, limit = 5_000) {
 		this.journal = new BoundedJsonlJournal({ path, limit, minLimit: 100, maxLimit: 50_000, isRecord: isEffectRecord });
 		this.authority = new ToolEffectAuthority(`${path}.authority.sqlite`, limit);
-		this.authority.import(this.journal.records());
+		this.authority.importLegacyProjection(this.journal.records());
+		for (const record of this.authority.recoverOrphans()) this.append(record);
 	}
 
 	begin(input: ToolEffectStart): string | undefined {
@@ -156,16 +157,21 @@ class ToolEffectAuthority {
 		this.db = new Database(path);
 		this.db.pragma("journal_mode = WAL");
 		this.db.pragma("busy_timeout = 5000");
+		this.db.pragma("foreign_keys = ON");
 		this.db.exec(`CREATE TABLE IF NOT EXISTS tool_effects (
-			id TEXT PRIMARY KEY, status TEXT NOT NULL, updated_at INTEGER NOT NULL, record_json TEXT NOT NULL
+			id TEXT PRIMARY KEY, status TEXT NOT NULL CHECK (status IN ('planned','executing','committed','failed','unknown')), updated_at INTEGER NOT NULL, record_json TEXT NOT NULL, holder_pid INTEGER
 		);
 		CREATE TABLE IF NOT EXISTS tool_effect_identities (
 			identity TEXT PRIMARY KEY, effect_id TEXT NOT NULL REFERENCES tool_effects(id) ON DELETE CASCADE
 		);
 		CREATE TABLE IF NOT EXISTS tool_effect_events (
 			seq INTEGER PRIMARY KEY AUTOINCREMENT, effect_id TEXT NOT NULL, record_json TEXT NOT NULL
-		)`);
+		);
+		CREATE TABLE IF NOT EXISTS tool_effect_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)`);
+		const columns = this.db.prepare("PRAGMA table_info(tool_effects)").all() as Array<{ name: string }>;
+		if (!columns.some((column) => column.name === "holder_pid")) this.db.exec("ALTER TABLE tool_effects ADD COLUMN holder_pid INTEGER");
 		this.migrateLegacyAuthority();
+		this.pruneTerminalWithoutReplayIdentity(Date.now() - 90 * 24 * 60 * 60_000);
 		if (existsSync(path)) chmodSync(path, 0o600);
 	}
 
@@ -185,8 +191,9 @@ class ToolEffectAuthority {
 		}).immediate();
 	}
 
-	import(records: Iterable<ToolEffectRecord>): void {
+	importLegacyProjection(records: Iterable<ToolEffectRecord>): void {
 		const migrate = this.db.transaction(() => {
+			if (this.db.prepare("SELECT 1 FROM tool_effect_meta WHERE key='jsonl_projection_imported'").get()) return;
 			for (const record of records) {
 				const current = this.effect(record.id);
 				if (current && current.at > record.at) continue;
@@ -194,6 +201,7 @@ class ToolEffectAuthority {
 				this.insertEventIfMissing(record);
 				if (record.idempotencyKey) for (const identity of identitiesFor(record.scope, record.idempotencyKey)) this.db.prepare("INSERT OR IGNORE INTO tool_effect_identities(identity, effect_id) VALUES (?, ?)").run(identity, record.id);
 			}
+			this.db.prepare("INSERT INTO tool_effect_meta(key,value) VALUES ('jsonl_projection_imported','1')").run();
 			this.trimEvents();
 		});
 		migrate.immediate();
@@ -201,20 +209,37 @@ class ToolEffectAuthority {
 
 	transition(effectId: string, expected: ToolEffectStatus[], record: ToolEffectRecord): boolean {
 		return this.db.transaction(() => {
-			const current = this.effect(effectId);
-			if (!current || !expected.includes(current.status)) return false;
-			this.updateState(record); this.insertEvent(record); this.trimEvents(); return true;
+			const placeholders = expected.map(() => "?").join(",");
+			const result = this.db.prepare(`UPDATE tool_effects SET status=?,updated_at=?,record_json=?,holder_pid=NULL WHERE id=? AND status IN (${placeholders})`).run(record.status, record.at, JSON.stringify(record), effectId, ...expected);
+			if (result.changes !== 1) return false;
+			this.insertEvent(record); this.trimEvents(); return true;
 		}).immediate();
+	}
+
+	recoverOrphans(): ToolEffectRecord[] {
+		const rows = this.db.prepare("SELECT record_json,holder_pid FROM tool_effects WHERE status IN ('planned','executing')").all() as Array<StoredEffectRow & { holder_pid: number | null }>;
+		const recovered: ToolEffectRecord[] = [];
+		for (const row of rows) {
+			if (row.holder_pid === process.pid || row.holder_pid && processIsAlive(row.holder_pid)) continue;
+			const current = parseEffect(row.record_json);
+			const unknown = { ...current, status: "unknown" as const, at: Date.now(), receipt: undefined };
+			if (this.transition(current.id, ["planned", "executing"], unknown)) recovered.push(unknown);
+		}
+		return recovered;
 	}
 
 	effect(effectId: string): ToolEffectRecord | undefined { const row = this.db.prepare("SELECT record_json FROM tool_effects WHERE id = ?").get(effectId) as StoredEffectRow | undefined; return row ? parseEffect(row.record_json) : undefined; }
 	events(): ToolEffectRecord[] { return (this.db.prepare("SELECT record_json FROM tool_effect_events ORDER BY seq").all() as StoredEffectRow[]).map((row) => parseEffect(row.record_json)); }
-	close(): void { this.db.close(); }
-	private insertState(record: ToolEffectRecord): void { this.db.prepare("INSERT INTO tool_effects(id,status,updated_at,record_json) VALUES (?,?,?,?)").run(record.id, record.status, record.at, JSON.stringify(record)); }
-	private updateState(record: ToolEffectRecord): void { this.db.prepare("UPDATE tool_effects SET status=?,updated_at=?,record_json=? WHERE id=?").run(record.status, record.at, JSON.stringify(record), record.id); }
+	close(): void { this.db.pragma("wal_checkpoint(TRUNCATE)"); this.db.close(); }
+	private insertState(record: ToolEffectRecord): void { this.db.prepare("INSERT INTO tool_effects(id,status,updated_at,record_json,holder_pid) VALUES (?,?,?,?,?)").run(record.id, record.status, record.at, JSON.stringify(record), process.pid); }
+	private updateState(record: ToolEffectRecord): void { this.db.prepare("UPDATE tool_effects SET status=?,updated_at=?,record_json=?,holder_pid=? WHERE id=?").run(record.status, record.at, JSON.stringify(record), record.status === "planned" || record.status === "executing" ? process.pid : null, record.id); }
 	private insertEvent(record: ToolEffectRecord): void { this.db.prepare("INSERT INTO tool_effect_events(effect_id,record_json) VALUES (?,?)").run(record.id, JSON.stringify(record)); }
 	private insertEventIfMissing(record: ToolEffectRecord): void { const json = JSON.stringify(record); this.db.prepare("INSERT INTO tool_effect_events(effect_id,record_json) SELECT ?,? WHERE NOT EXISTS (SELECT 1 FROM tool_effect_events WHERE effect_id=? AND record_json=?)").run(record.id, json, record.id, json); }
 	private trimEvents(): void { this.db.prepare("DELETE FROM tool_effect_events WHERE seq <= COALESCE((SELECT MAX(seq) - ? FROM tool_effect_events), 0)").run(this.eventLimit); }
+	private pruneTerminalWithoutReplayIdentity(olderThan: number): void {
+		this.db.prepare(`DELETE FROM tool_effects WHERE updated_at < ? AND status IN ('committed','failed')
+			AND NOT EXISTS (SELECT 1 FROM tool_effect_identities WHERE effect_id = tool_effects.id)`).run(olderThan);
+	}
 	private migrateLegacyAuthority(): void {
 		const exists = this.db.prepare("SELECT 1 AS present FROM sqlite_master WHERE type='table' AND name='tool_effect_authority'").get() as { present: number } | undefined;
 		if (!exists) return;
@@ -271,6 +296,11 @@ function parseEffect(json: string): ToolEffectRecord {
 	const value = JSON.parse(json) as ToolEffectRecord;
 	if (!isEffectRecord(value)) throw new Error("Tool Effect Ledger is corrupt");
 	return value;
+}
+
+function processIsAlive(pid: number): boolean {
+	try { process.kill(pid, 0); return true; }
+	catch (error) { return (error as NodeJS.ErrnoException).code !== "ESRCH"; }
 }
 
 function isEffectRecord(value: ToolEffectRecord): boolean {

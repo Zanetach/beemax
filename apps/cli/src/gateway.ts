@@ -186,6 +186,7 @@ export async function runGateway(config: BeeMaxConfig): Promise<void> {
 		execute: async (task, signal) => executeSubagentTask(createSubagentAgent, task, signal),
 	}) : undefined;
 	const toolEffects = new FileToolEffectJournal(join(config.paths.agentDir, "tool-effects.jsonl"));
+	startupCleanup.push(() => toolEffects.close());
 	const createAgent = buildAgentFactory({
 		...profileAgentDefaults,
 		systemPrompt: () => buildMainAgentSystemPrompt(profilePrompt(config)),
@@ -348,6 +349,7 @@ export async function runGateway(config: BeeMaxConfig): Promise<void> {
 			try { profileRuntime.dispose(); } catch (error) { console.error(`[beemax] Agent Runtime shutdown failed: ${String(error)}`); }
 			try { await adapter.disconnect(); } catch (error) { console.error(`[beemax] Feishu disconnect failed: ${String(error)}`); }
 			try { await mcp.close(); } catch (error) { console.error(`[beemax] MCP shutdown failed: ${String(error)}`); }
+			try { toolEffects.close(); } catch (error) { console.error(`[beemax] Effect Ledger shutdown failed: ${String(error)}`); }
 			try { automation.close(); } catch (error) { console.error(`[beemax] automation shutdown failed: ${String(error)}`); }
 			try { memory.close(); } catch (error) { console.error(`[beemax] memory shutdown failed: ${String(error)}`); }
 			await releaseChannelLock();

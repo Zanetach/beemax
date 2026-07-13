@@ -1462,6 +1462,7 @@ async function runChat(config: ReturnType<typeof loadConfig>, requestedMode: { f
 		profileRuntime.dispose();
 		await subagents?.dispose();
 		await mcp.close();
+		toolEffects.close();
 		localApproval.dispose();
 		memory.close();
 	}

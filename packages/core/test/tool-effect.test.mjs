@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import Database from "better-sqlite3";
+import { spawnSync } from "node:child_process";
 import { FileToolEffectJournal, MUTATING_TOOL_POLICY, READ_ONLY_TOOL_POLICY } from "../dist/index.js";
 
 const source = { platform: "cli", chatId: "local", chatType: "dm", userId: "local" };
@@ -37,6 +38,23 @@ test("effect ledger marks active mutations unknown on runtime close", () => {
 		const recovered = new FileToolEffectJournal(path).events();
 		assert.deepEqual(recovered.map((record) => record.status), ["planned", "executing", "unknown"]);
 		assert.equal(recovered.at(-1).receipt, undefined);
+	} finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("effect ledger recovers a mutation abandoned by a crashed process", () => {
+	const root = mkdtempSync(join(tmpdir(), "beemax-effects-crash-"));
+	try {
+		const path = join(root, "tool-effects.jsonl");
+		const runtimeUrl = new URL("../dist/index.js", import.meta.url).href;
+		const script = `import { FileToolEffectJournal, MUTATING_TOOL_POLICY } from ${JSON.stringify(runtimeUrl)};
+			const effects = new FileToolEffectJournal(${JSON.stringify(path)});
+			effects.begin({ source: ${JSON.stringify(source)}, taskId: "turn-1", toolCallId: "call-1", toolName: "external_write", args: { idempotencyKey: "crashed-effect" }, policy: MUTATING_TOOL_POLICY });
+			process.exit(0);`;
+		const child = spawnSync(process.execPath, ["--input-type=module", "--eval", script], { encoding: "utf8" });
+		assert.equal(child.status, 0, child.stderr);
+		const recovered = new FileToolEffectJournal(path);
+		assert.equal(recovered.events().at(-1).status, "unknown");
+		assert.throws(() => recovered.begin({ source, taskId: "turn-2", toolCallId: "call-2", toolName: "external_write", args: { idempotencyKey: "crashed-effect" }, policy: MUTATING_TOOL_POLICY }), /unresolved/);
 	} finally { rmSync(root, { recursive: true, force: true }); }
 });
 
