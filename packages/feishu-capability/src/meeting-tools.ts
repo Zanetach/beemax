@@ -309,7 +309,7 @@ export function createFeishuMeetingTools(getClient: FeishuClientProvider): ToolD
 		recordingStart,
 		recordingStop,
 	];
-	const changeMeeting: ToolPolicy = { ...MUTATING_TOOL_POLICY, risk: "medium", reversible: "unknown", impact: "Changes meeting state or participants in Feishu" };
+	const changeMeeting: ToolPolicy = { ...MUTATING_TOOL_POLICY, risk: "medium", reversible: "unknown", impact: "Changes meeting state or participants in Feishu", effectProofProvider: "feishu-vc" };
 	const destructiveMeeting: ToolPolicy = { ...changeMeeting, risk: "high", reversible: false, impact: "Performs a non-reversible meeting or recording operation in Feishu" };
 	const readOnly = new Set(["feishu_meeting_get", "feishu_meeting_list", "feishu_meeting_reserve_get", "feishu_meeting_reserve_active_get", "feishu_meeting_recording_get"]);
 	const destructive = new Set(["feishu_meeting_reserve_delete", "feishu_meeting_end", "feishu_meeting_kickout", "feishu_meeting_recording_stop"]);

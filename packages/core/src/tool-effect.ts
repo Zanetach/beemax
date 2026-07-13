@@ -92,12 +92,14 @@ export class FileToolEffectJournal implements ToolEffectSink {
 		this.active.delete(key);
 		const at = Date.now();
 		const metadata = effectMetadata(input.details);
-		const status = input.isError || active.sideEffect === "external" && !metadata.proof ? "unknown" : "committed";
+		const trustedProof = metadata.proof && input.policy.effectProofProvider === metadata.proof.provider ? metadata.proof : undefined;
+		const trustedMetadata = { ...metadata, proof: trustedProof };
+		const status = input.isError || active.sideEffect === "external" && !trustedProof ? "unknown" : "committed";
 		const completed: ToolEffectRecord = {
 			...active,
 			status,
 			at,
-			...(status === "committed" ? { receipt: receiptOf(active, metadata, at) } : {}),
+			...(status === "committed" ? { receipt: receiptOf(active, trustedMetadata, at) } : {}),
 		};
 		if (this.authority.transition(active.id, ["planned", "executing"], completed)) this.append(completed);
 	}

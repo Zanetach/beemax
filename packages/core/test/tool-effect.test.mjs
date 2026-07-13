@@ -122,10 +122,22 @@ test("external mutation commits only with a structured provider proof", () => {
 	const root = mkdtempSync(join(tmpdir(), "beemax-effects-provider-proof-"));
 	try {
 		const effects = new FileToolEffectJournal(join(root, "tool-effects.jsonl"));
-		effects.begin({ source, taskId: "turn-1", toolCallId: "call-1", toolName: "feishu_create", args: { idempotencyKey: "reserve-1" }, policy: MUTATING_TOOL_POLICY });
-		effects.finish({ source, toolCallId: "call-1", toolName: "feishu_create", policy: MUTATING_TOOL_POLICY, isError: false, details: { beemaxEffect: { operation: "create meeting reservation", externalRef: "feishu-vc:meeting-reservation:reserve-42", proof: { provider: "feishu-vc", resourceType: "meeting-reservation", resourceId: "reserve-42" } } } });
+		const feishuPolicy = { ...MUTATING_TOOL_POLICY, effectProofProvider: "feishu-vc" };
+		effects.begin({ source, taskId: "turn-1", toolCallId: "call-1", toolName: "feishu_create", args: { idempotencyKey: "reserve-1" }, policy: feishuPolicy });
+		effects.finish({ source, toolCallId: "call-1", toolName: "feishu_create", policy: feishuPolicy, isError: false, details: { beemaxEffect: { operation: "create meeting reservation", externalRef: "feishu-vc:meeting-reservation:reserve-42", proof: { provider: "feishu-vc", resourceType: "meeting-reservation", resourceId: "reserve-42" } } } });
 		assert.deepEqual(effects.events().at(-1).receipt?.proof, { provider: "feishu-vc", resourceType: "meeting-reservation", resourceId: "reserve-42" });
 		assert.equal(effects.events().at(-1).status, "committed");
+	} finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("untrusted external tools cannot self-certify with proof-shaped details", () => {
+	const root = mkdtempSync(join(tmpdir(), "beemax-effects-untrusted-proof-"));
+	try {
+		const effects = new FileToolEffectJournal(join(root, "tool-effects.jsonl"));
+		effects.begin({ source, taskId: "turn-1", toolCallId: "call-1", toolName: "dynamic_tool", policy: MUTATING_TOOL_POLICY });
+		effects.finish({ source, toolCallId: "call-1", toolName: "dynamic_tool", policy: MUTATING_TOOL_POLICY, isError: false, details: { beemaxEffect: { operation: "claim success", externalRef: "fake:item:1", proof: { provider: "fake", resourceType: "item", resourceId: "1" } } } });
+		assert.equal(effects.events().at(-1).status, "unknown");
+		assert.equal(effects.events().at(-1).receipt, undefined);
 	} finally { rmSync(root, { recursive: true, force: true }); }
 });
 

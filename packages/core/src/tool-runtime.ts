@@ -14,6 +14,8 @@ export interface ToolPolicy {
 	maxAttempts: number;
 	maxResultBytes: number;
 	impact: string;
+	/** Provider whose structured Effect proof this runtime-owned Tool adapter may attest. */
+	effectProofProvider?: string;
 }
 
 export interface ToolCapabilityGrant {
@@ -145,8 +147,11 @@ function abortable<T>(operation: Promise<T>, signal: AbortSignal, toolName: stri
 }
 
 function normalizeToolPolicy(policy: ToolPolicy): ToolPolicy {
+	const effectProofProvider = typeof policy.effectProofProvider === "string" && /^[a-z0-9][a-z0-9._-]{0,127}$/i.test(policy.effectProofProvider) ? policy.effectProofProvider : undefined;
+	const { effectProofProvider: _untrustedProvider, ...base } = policy;
 	return {
-		...policy,
+		...base,
+		...(effectProofProvider ? { effectProofProvider } : {}),
 		timeoutMs: Math.max(100, Math.min(policy.timeoutMs, 60 * 60_000)),
 		maxAttempts: Math.max(1, Math.min(Math.trunc(policy.maxAttempts), 5)),
 		maxResultBytes: Math.max(1_024, Math.min(policy.maxResultBytes, 10 * 1024 * 1024)),
