@@ -118,6 +118,17 @@ test("external mutation remains unknown without a provider receipt", () => {
 	} finally { rmSync(root, { recursive: true, force: true }); }
 });
 
+test("external mutation commits only with a structured provider proof", () => {
+	const root = mkdtempSync(join(tmpdir(), "beemax-effects-provider-proof-"));
+	try {
+		const effects = new FileToolEffectJournal(join(root, "tool-effects.jsonl"));
+		effects.begin({ source, taskId: "turn-1", toolCallId: "call-1", toolName: "feishu_create", args: { idempotencyKey: "reserve-1" }, policy: MUTATING_TOOL_POLICY });
+		effects.finish({ source, toolCallId: "call-1", toolName: "feishu_create", policy: MUTATING_TOOL_POLICY, isError: false, details: { beemaxEffect: { operation: "create meeting reservation", externalRef: "feishu-vc:meeting-reservation:reserve-42", proof: { provider: "feishu-vc", resourceType: "meeting-reservation", resourceId: "reserve-42" } } } });
+		assert.deepEqual(effects.events().at(-1).receipt?.proof, { provider: "feishu-vc", resourceType: "meeting-reservation", resourceId: "reserve-42" });
+		assert.equal(effects.events().at(-1).status, "committed");
+	} finally { rmSync(root, { recursive: true, force: true }); }
+});
+
 test("committed idempotency survives bounded audit compaction", () => {
 	const root = mkdtempSync(join(tmpdir(), "beemax-effects-compaction-"));
 	try {

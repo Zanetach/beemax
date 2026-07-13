@@ -9,7 +9,8 @@ import { chmodSync, existsSync } from "node:fs";
 import { conversationOwnerKey } from "./agent-scope.ts";
 
 export type ToolEffectStatus = "planned" | "executing" | "committed" | "failed" | "unknown";
-export interface ToolEffectReceipt { status: "committed"; occurredAt: number; operation: string; externalRef?: string; idempotencyKey?: string; }
+export interface ToolEffectProof { provider: string; resourceType: string; resourceId: string; }
+export interface ToolEffectReceipt { status: "committed"; occurredAt: number; operation: string; externalRef?: string; idempotencyKey?: string; proof?: ToolEffectProof; }
 export class ToolEffectConflictError extends Error { override readonly name = "ToolEffectConflictError"; }
 
 export interface ToolEffectRecord {
@@ -91,7 +92,7 @@ export class FileToolEffectJournal implements ToolEffectSink {
 		this.active.delete(key);
 		const at = Date.now();
 		const metadata = effectMetadata(input.details);
-		const status = input.isError || active.sideEffect === "external" && !metadata.externalRef ? "unknown" : "committed";
+		const status = input.isError || active.sideEffect === "external" && !metadata.proof ? "unknown" : "committed";
 		const completed: ToolEffectRecord = {
 			...active,
 			status,
@@ -271,17 +272,27 @@ function identitiesFor(scope: ToolEffectRecord["scope"], key: string): string[] 
 	return [...new Set([JSON.stringify(["v2", owner, key]), ...(scope.ownerKey ? [] : [...(scope.userId ? [JSON.stringify(["v2", `user:${scope.userId}`, key])] : []), JSON.stringify(["v1", legacyOwner, key])])])];
 }
 
-function receiptOf(record: ToolEffectRecord, metadata: { operation?: string; externalRef?: string }, occurredAt: number): ToolEffectReceipt {
-	const operation = metadata.operation ?? record.toolName;
-	const idempotencyKey = record.idempotencyKey;
-	return { status: "committed", occurredAt, operation, ...(metadata.externalRef ? { externalRef: metadata.externalRef } : {}), ...(idempotencyKey ? { idempotencyKey } : {}) };
+export function createToolEffectDetails(input: { operation: string; provider: string; resourceType: string; resourceId: string; idempotencyKey?: string }): { beemaxEffect: { operation: string; externalRef: string; idempotencyKey?: string; proof: ToolEffectProof } } {
+	const operation = requiredSafeText(input.operation, 1_000, "operation");
+	const proof = { provider: requiredSafeText(input.provider, 128, "provider"), resourceType: requiredSafeText(input.resourceType, 128, "resourceType"), resourceId: requiredSafeText(input.resourceId, 512, "resourceId") };
+	const idempotencyKey = safeText(input.idempotencyKey, 256);
+	return { beemaxEffect: { operation, externalRef: `${proof.provider}:${proof.resourceType}:${proof.resourceId}`, ...(idempotencyKey ? { idempotencyKey } : {}), proof } };
 }
 
-function effectMetadata(details: unknown): { operation?: string; externalRef?: string } {
+function receiptOf(record: ToolEffectRecord, metadata: { operation?: string; externalRef?: string; proof?: ToolEffectProof }, occurredAt: number): ToolEffectReceipt {
+	const operation = metadata.operation ?? record.toolName;
+	const idempotencyKey = record.idempotencyKey;
+	return { status: "committed", occurredAt, operation, ...(metadata.externalRef ? { externalRef: metadata.externalRef } : {}), ...(idempotencyKey ? { idempotencyKey } : {}), ...(metadata.proof ? { proof: metadata.proof } : {}) };
+}
+
+function effectMetadata(details: unknown): { operation?: string; externalRef?: string; proof?: ToolEffectProof } {
 	const effect = recordOf(recordOf(details).beemaxEffect);
+	const rawProof = recordOf(effect.proof);
+	const provider = safeText(rawProof.provider, 128); const resourceType = safeText(rawProof.resourceType, 128); const resourceId = safeText(rawProof.resourceId, 512);
 	return {
 		operation: safeText(effect.operation, 1_000),
 		externalRef: safeText(effect.externalRef, 1_000),
+		...(provider && resourceType && resourceId ? { proof: { provider, resourceType, resourceId } } : {}),
 	};
 }
 
@@ -291,6 +302,7 @@ function safeText(value: unknown, maxLength: number): string | undefined {
 	const text = value.trim();
 	return text && text.length <= maxLength && !containsCredentialMaterial(text) ? text : undefined;
 }
+function requiredSafeText(value: unknown, maxLength: number, field: string): string { const text = safeText(value, maxLength); if (!text) throw new Error(`Tool Effect ${field} is invalid`); return text; }
 
 function parseEffect(json: string): ToolEffectRecord {
 	const value = JSON.parse(json) as ToolEffectRecord;

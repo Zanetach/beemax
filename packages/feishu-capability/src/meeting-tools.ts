@@ -1,7 +1,7 @@
 /** Feishu VC capability tools backed by @larksuiteoapi/node-sdk. */
 
 import type { Client } from "@larksuiteoapi/node-sdk";
-import { MUTATING_TOOL_POLICY, READ_ONLY_TOOL_POLICY, defineTool, withToolPolicy, type ToolDefinition, type ToolPolicy } from "@beemax/core";
+import { createToolEffectDetails, MUTATING_TOOL_POLICY, READ_ONLY_TOOL_POLICY, defineTool, withToolPolicy, type ToolDefinition, type ToolPolicy } from "@beemax/core";
 import { Type } from "typebox";
 
 export type FeishuClientProvider = () => Client | undefined;
@@ -63,6 +63,7 @@ export function createFeishuMeetingTools(getClient: FeishuClientProvider): ToolD
 			password: Type.Optional(Type.String({ description: "Optional meeting password" })),
 			autoRecord: Type.Optional(Type.Boolean({ description: "Automatically record the meeting" })),
 			assignHostIds: Type.Optional(Type.Array(Type.String(), { description: "Optional host user IDs" })),
+			idempotencyKey: Type.Optional(Type.String({ minLength: 1, maxLength: 256, description: "Stable identity for safely detecting repeated creation of this reservation" })),
 		}),
 		execute: async (_id, params) => withClient(getClient, async (client) => {
 			const response = await client.vc.v1.reserve.apply({
@@ -80,7 +81,9 @@ export function createFeishuMeetingTools(getClient: FeishuClientProvider): ToolD
 					},
 				},
 			});
-			return apiResult("Create meeting reservation", response, response.data?.reserve);
+			const reserve = response.data?.reserve;
+			const reserveId = safeIdentifier(reserve);
+			return apiResult("Create meeting reservation", response, reserve, reserveId ? createToolEffectDetails({ operation: "create meeting reservation", provider: "feishu-vc", resourceType: "meeting-reservation", resourceId: reserveId, idempotencyKey: params.idempotencyKey }) : undefined);
 		}),
 	});
 
@@ -334,6 +337,7 @@ function apiResult(
 	operation: string,
 	response: { code?: number; msg?: string },
 	data: unknown,
+	effectDetails?: ReturnType<typeof createToolEffectDetails>,
 ) {
 	if (response.code !== 0) {
 		return textResult(
@@ -343,8 +347,10 @@ function apiResult(
 			true,
 		);
 	}
-	return textResult(JSON.stringify(data ?? {}, null, 2), { operation, data });
+	return textResult(JSON.stringify(data ?? {}, null, 2), { operation, data, ...effectDetails });
 }
+
+function safeIdentifier(value: unknown): string | undefined { if (!value || typeof value !== "object") return undefined; const record = value as Record<string, unknown>; const id = record.reserve_id ?? record.id; return typeof id === "string" && id.trim() ? id.trim() : undefined; }
 
 function textResult(text: string, details: unknown, isError = false) {
 	return { content: [{ type: "text" as const, text }], details, isError };
