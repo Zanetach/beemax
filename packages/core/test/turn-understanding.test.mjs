@@ -23,6 +23,17 @@ test("Capability Router preselects high-confidence tools without forcing weak ma
 	assert.deepEqual(selectTurnTools("帮我处理一下", tools), []);
 });
 
+test("Turn tool prefetch uses the shared capability trigger, alias, exclusion, and safety contract", () => {
+	const tools = [
+		{ name: "calendar_find", description: "Find available time", aliases: ["查日程"], triggers: ["安排会议"] },
+		{ name: "calendar_delete", description: "Delete calendar events", aliases: ["删除日程"], exclude: ["查询", "查"] },
+		{ name: "BASH", description: "Run shell commands", triggers: ["安排会议"] },
+		{ name: "Capability_Discover", description: "Discover tools", triggers: ["安排会议"] },
+		{ name: "weak_match", description: "帮我查日程并安排会议" },
+	];
+	assert.deepEqual(selectTurnTools("帮我查日程并安排会议", tools), ["calendar_find"]);
+});
+
 test("Turn Understanding preserves explicit constraints and acceptance criteria in one Work Context", () => {
 	const result = new TurnUnderstandingEngine().understand("给客户生成PDF报告，必须使用中文，不要包含报价，完成后发给王总");
 	assert.equal(result.goal, "给客户生成PDF报告，必须使用中文，不要包含报价，完成后发给王总");

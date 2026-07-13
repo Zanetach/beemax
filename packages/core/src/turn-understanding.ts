@@ -1,4 +1,4 @@
-import { multilingualLexicalTerms } from "./multilingual-lexical.ts";
+import { rankCapabilityIndex, type RankableCapability } from "./capability-ranking.ts";
 
 export type TurnAction = "create" | "continue" | "correct" | "query" | "cancel";
 export type TurnExecutionMode = "direct" | "delegate" | "plan";
@@ -16,6 +16,7 @@ export interface TurnUnderstanding {
 
 export interface TurnUnderstandingInput { activeObjective?: string; }
 export interface TurnUnderstandingPort { understand(text: string, input?: TurnUnderstandingInput): TurnUnderstanding; }
+const PREFETCH_MIN_CONFIDENCE = 0.5;
 
 /**
  * Deterministic fast path for common Turn routing. Complex semantic understanding remains
@@ -58,15 +59,8 @@ export function renderWorkContext(value: TurnUnderstanding): string {
 	return `<beemax-work-context>\n${JSON.stringify(value)}\n</beemax-work-context>`;
 }
 
-export function selectTurnTools(query: string, tools: ReadonlyArray<{ name: string; description?: string }>, limit = 3): string[] {
-	const normalized = query.normalize("NFKC").toLocaleLowerCase();
-	const terms = multilingualLexicalTerms(query);
-	return tools.flatMap((tool): Array<{ name: string; score: number }> => {
-		if (tool.name === "capability_discover") return [];
-		const name = tool.name.toLocaleLowerCase();
-		const haystack = `${name} ${tool.description ?? ""}`.normalize("NFKC").toLocaleLowerCase();
-		let score = normalized === name ? 100 : normalized.includes(name) ? 60 : 0;
-		score += terms.filter((term) => term.length >= 3 && haystack.includes(term)).length * 10;
-		return score >= 20 ? [{ name: tool.name, score }] : [];
-	}).sort((a, b) => b.score - a.score || a.name.localeCompare(b.name)).slice(0, Math.max(1, Math.min(limit, 5))).map(({ name }) => name);
+export function selectTurnTools(query: string, tools: ReadonlyArray<RankableCapability>, limit = 3): string[] {
+	const boundedLimit = Math.max(1, Math.min(limit, 5));
+	const eligible = tools.filter((tool) => !["capability_discover", "bash"].includes(tool.name.normalize("NFKC").toLocaleLowerCase()));
+	return rankCapabilityIndex(query, eligible, boundedLimit).filter((match) => match.confidence >= PREFETCH_MIN_CONFIDENCE).map(({ item }) => item.name);
 }
