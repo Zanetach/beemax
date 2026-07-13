@@ -160,3 +160,60 @@ test("Feishu participant reconciliation rejects partial, extra, mismatched, wron
 		} finally { rmSync(root, { recursive: true, force: true }); }
 	}
 });
+
+test("Feishu recording mutations commit provider receipts bound to privacy-safe intent digests", async () => {
+	const root = mkdtempSync(join(tmpdir(), "beemax-feishu-recording-receipts-"));
+	try {
+		const client = { vc: { v1: { meetingRecording: {
+			start: async () => ({ code: 0, data: {} }),
+			stop: async () => ({ code: 0, data: {} }),
+			setPermission: async () => ({ code: 0, data: {} }),
+		} } } };
+		const tools = createFeishuMeetingTools(() => client);
+		const cases = [
+			["feishu_meeting_recording_start", { meetingId: "meeting-42" }],
+			["feishu_meeting_recording_stop", { meetingId: "meeting-42" }],
+			["feishu_meeting_recording_set_permission", { meetingId: "meeting-42", actionType: 1, objects: [{ id: "user-secret", type: 1, permission: 2 }] }],
+		];
+		const resourceIds = [];
+		for (const [name, args] of cases) {
+			const tool = tools.find((candidate) => candidate.name === name);
+			const result = await tool.execute(`call-${name}`, args);
+			assert.equal(persistResult(root, tool, args, result, `effect-${name}`).status, "committed");
+			assert.equal(result.details.beemaxEffect.proof.provider, "feishu-vc");
+			assert.equal(result.details.beemaxEffect.proof.resourceType, "meeting-recording-mutation");
+			assert.match(result.details.beemaxEffect.proof.resourceId, /^[a-f0-9]{64}$/);
+			assert.equal(JSON.stringify(result.details.beemaxEffect).includes("user-secret"), false);
+			assert.equal(JSON.stringify(result.details.beemaxEffect).includes("meeting-42"), false);
+			resourceIds.push(result.details.beemaxEffect.proof.resourceId);
+		}
+		assert.equal(new Set(resourceIds).size, cases.length);
+	} finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("Feishu recording permission proofs are order-invariant, intent-sensitive, and fail closed", async () => {
+	const success = { vc: { v1: { meetingRecording: { setPermission: async () => ({ code: 0, data: {} }) } } } };
+	const tool = createFeishuMeetingTools(() => success).find((candidate) => candidate.name === "feishu_meeting_recording_set_permission");
+	const first = await tool.execute("first", { meetingId: "meeting-42", actionType: 1, objects: [
+		{ id: "user:2", type: 1, permission: 2 }, { permission: 1, type: 2, id: "user:1" },
+	] });
+	const reordered = await tool.execute("reordered", { meetingId: "meeting-42", actionType: 1, objects: [
+		{ id: "user:1", type: 2, permission: 1 }, { permission: 2, id: "user:2", type: 1 },
+	] });
+	const changed = await tool.execute("changed", { meetingId: "meeting-42", actionType: 1, objects: [
+		{ id: "user:2", type: 1, permission: 3 }, { id: "user:1", type: 2, permission: 1 },
+	] });
+	assert.equal(first.details.beemaxEffect.proof.resourceId, reordered.details.beemaxEffect.proof.resourceId);
+	assert.notEqual(first.details.beemaxEffect.proof.resourceId, changed.details.beemaxEffect.proof.resourceId);
+
+	const root = mkdtempSync(join(tmpdir(), "beemax-feishu-recording-failure-"));
+	try {
+		const failedClient = { vc: { v1: { meetingRecording: { start: async () => ({ code: 999, msg: "not host" }) } } } };
+		const failedTool = createFeishuMeetingTools(() => failedClient).find((candidate) => candidate.name === "feishu_meeting_recording_start");
+		const args = { meetingId: "meeting-42" };
+		const result = await failedTool.execute("failed", args);
+		assert.equal(result.isError, true);
+		assert.equal(result.details.beemaxEffect, undefined);
+		assert.equal(persistResult(root, failedTool, args, result, "failed-recording").status, "unknown");
+	} finally { rmSync(root, { recursive: true, force: true }); }
+});

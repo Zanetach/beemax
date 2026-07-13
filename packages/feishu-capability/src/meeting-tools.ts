@@ -274,7 +274,7 @@ export function createFeishuMeetingTools(getClient: FeishuClientProvider): ToolD
 			return apiResult("Set meeting recording permission", response, {
 				meeting_id: params.meetingId,
 				permission_objects: params.objects.length,
-			});
+			}, () => recordingPermissionEffect(params.meetingId, params.actionType, params.objects));
 		}),
 	});
 
@@ -285,7 +285,7 @@ export function createFeishuMeetingTools(getClient: FeishuClientProvider): ToolD
 		parameters: Type.Object({ meetingId: Type.String({ description: "Feishu meeting_id" }) }),
 		execute: async (_id, params) => withClient(getClient, async (client) => {
 			const response = await client.vc.v1.meetingRecording.start({ path: { meeting_id: params.meetingId } });
-			return apiResult("Start meeting recording", response, { meeting_id: params.meetingId, recording: "started" });
+			return apiResult("Start meeting recording", response, { meeting_id: params.meetingId, recording: "started" }, () => recordingMutationEffect("start meeting recording", params.meetingId, []));
 		}),
 	});
 
@@ -296,7 +296,7 @@ export function createFeishuMeetingTools(getClient: FeishuClientProvider): ToolD
 		parameters: Type.Object({ meetingId: Type.String({ description: "Feishu meeting_id" }) }),
 		execute: async (_id, params) => withClient(getClient, async (client) => {
 			const response = await client.vc.v1.meetingRecording.stop({ path: { meeting_id: params.meetingId } });
-			return apiResult("Stop meeting recording", response, { meeting_id: params.meetingId, recording: "stopped" });
+			return apiResult("Stop meeting recording", response, { meeting_id: params.meetingId, recording: "stopped" }, () => recordingMutationEffect("stop meeting recording", params.meetingId, []));
 		}),
 	});
 
@@ -373,6 +373,17 @@ function meetingMutationEffect(operation: string, meetingId: string, intent: { u
 	const digest = createHash("sha256").update(canonical).digest("hex");
 	return createToolEffectDetails({ operation, provider: "feishu-vc", resourceType: "meeting-mutation", resourceId: `${meetingId}:${digest}` });
 }
+/** Feishu documents code=0 as the authoritative acknowledgement for these write-only recording APIs. */
+function recordingMutationEffect(operation: string, meetingId: string, canonicalIntent: readonly unknown[]) {
+	const digest = createHash("sha256").update(JSON.stringify([operation, meetingId, ...canonicalIntent])).digest("hex");
+	return createToolEffectDetails({ operation, provider: "feishu-vc", resourceType: "meeting-recording-mutation", resourceId: digest });
+}
+function recordingPermissionEffect(meetingId: string, actionType: number | undefined, objects: Array<{ id?: string; type: number; permission: number }>) {
+	const tuples = objects.map((item) => [item.type, item.id ?? null, item.permission] as const)
+		.sort((left, right) => compareCodePoints(JSON.stringify(left), JSON.stringify(right)));
+	return recordingMutationEffect("set meeting recording permission", meetingId, [actionType ?? null, tuples]);
+}
+function compareCodePoints(left: string, right: string): number { return left < right ? -1 : left > right ? 1 : 0; }
 
 function textResult(text: string, details: unknown, isError = false) {
 	return { content: [{ type: "text" as const, text }], details, isError };
