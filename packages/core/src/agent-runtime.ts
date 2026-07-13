@@ -58,7 +58,10 @@ export interface AgentModelStatus {
 export interface ModelFallbackEvent { type: "model_fallback"; from: string; to: string; attempt: number; }
 export interface PlanningDecisionEvent { type: "planning_decision"; mode: "direct" | "delegate" | "dag"; concurrency: number; maxSubagents: number; requiredTools: string[]; }
 export interface PlanningOutcomeEvent { type: "planning_outcome"; mode: "direct" | "delegate" | "dag"; compliant: boolean; corrected: boolean; }
-export type BeeMaxAgentRunEvent = AgentSessionEvent | ModelFallbackEvent | PlanningDecisionEvent | PlanningOutcomeEvent;
+export type CapabilityRankReason = "exact_name" | "name" | "trigger" | "alias" | "lexical";
+export interface CapabilityRankedCandidate { kind: "tool" | "mcp" | "skill"; name: string; score: number; confidence: number; reason: CapabilityRankReason; }
+export interface CapabilityRankedEvent { type: "capability_ranked"; candidates: CapabilityRankedCandidate[]; activatedTools: string[]; }
+export type BeeMaxAgentRunEvent = AgentSessionEvent | ModelFallbackEvent | PlanningDecisionEvent | PlanningOutcomeEvent | CapabilityRankedEvent;
 export type BeeMaxAgentRunEventSink = (event: BeeMaxAgentRunEvent) => void | Promise<void>;
 /** Gateway-facing runtime contract; implementations may be local or remote. */
 export interface AgentRuntimePort<Source extends BeeMaxRuntimeSource = BeeMaxRuntimeSource> {
@@ -184,6 +187,8 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 			let discoveredCapabilities = false;
 			let singleFailedReadTool: string | undefined;
 			let nonDiscoveryOutcomes = 0;
+			let eventDelivery = Promise.resolve();
+			const enqueueEvent = (event: BeeMaxAgentRunEvent) => { eventDelivery = eventDelivery.then(() => onEvent?.(event)).then(() => undefined); };
 			const unsubscribe = session.piSession.subscribe((event) => {
 				if (event.type === "tool_execution_start") {
 					observableProgress = true;
@@ -195,7 +200,10 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 						void session.piSession.abort();
 					}
 				} else if (event.type === "tool_execution_end") {
-					if (event.toolName === "capability_discover" && !event.isError) discoveredCapabilities = capabilityDiscoveryHasMatches(event.result);
+					if (event.toolName === "capability_discover" && !event.isError) {
+						const discovery = capabilityDiscoveryMetadata(event.result, new Set(allTools.map((tool) => tool.name))); discoveredCapabilities = discovery.hasMatches;
+						if (discovery.candidates.length || discovery.activatedTools.length) enqueueEvent({ type: "capability_ranked", candidates: discovery.candidates, activatedTools: discovery.activatedTools });
+					}
 					else if (event.toolName !== "capability_discover") {
 						nonDiscoveryOutcomes++;
 						singleFailedReadTool = nonDiscoveryOutcomes === 1 && event.isError && toolSideEffects.get(event.toolName) === "none" ? event.toolName : undefined;
@@ -217,7 +225,7 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 						void session.piSession.abort();
 					}
 				} else if (event.type === "message_update" && event.assistantMessageEvent.type === "text_delta" && event.assistantMessageEvent.delta.length > 0) observableProgress = true;
-				void onEvent?.(event);
+				enqueueEvent(event);
 			});
 			let timedOut = false;
 			const abortFromCaller = () => { void session.piSession.abort(); };
@@ -268,6 +276,7 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 				if (cause instanceof AgentRunError) throw cause;
 				throw new AgentRunError(timedOut && input.timeoutMs !== null ? `Agent turn timed out after ${Math.round(input.timeoutMs / 60_000)} minutes` : errorMessage(cause), timedOut, cause, timedOut || isRecoverableModelFailure(cause));
 			} finally {
+				await eventDelivery;
 				releaseHistoricalSkillContext(session.piSession, turnMessageStart);
 				(session.piSession as typeof session.piSession & { beemaxResetTurnResources?: () => void }).beemaxResetTurnResources?.();
 				if (activeTools) session.piSession.setActiveToolsByName(activeTools);
@@ -420,11 +429,20 @@ function releaseHistoricalSkillContext(session: AgentSession, fromIndex = 0): vo
 	if (messages) session.agent.state.messages = messages;
 }
 
-function capabilityDiscoveryHasMatches(result: unknown): boolean {
+function capabilityDiscoveryMetadata(result: unknown, knownTools: ReadonlySet<string>): { hasMatches: boolean; candidates: CapabilityRankedCandidate[]; activatedTools: string[] } {
 	const details = result && typeof result === "object" ? (result as { details?: unknown }).details : undefined;
-	if (!details || typeof details !== "object") return false;
-	const value = details as { activatedTools?: unknown; tools?: unknown; skills?: unknown };
-	return Array.isArray(value.activatedTools) && value.activatedTools.length > 0 || Array.isArray(value.tools) && value.tools.length > 0 || Array.isArray(value.skills) && value.skills.length > 0;
+	if (!details || typeof details !== "object") return { hasMatches: false, candidates: [], activatedTools: [] };
+	const value = details as { activatedTools?: unknown; tools?: unknown; skills?: unknown; ranked?: unknown };
+	const validName = (item: unknown): item is string => typeof item === "string" && /^[a-z0-9][a-z0-9_-]{0,127}$/.test(item);
+	const activatedTools = Array.isArray(value.activatedTools) ? [...new Set(value.activatedTools.filter((item): item is string => validName(item) && knownTools.has(item)))].slice(0, 20) : [];
+	const candidates = Array.isArray(value.ranked) ? value.ranked.flatMap((item): CapabilityRankedCandidate[] => {
+		if (!item || typeof item !== "object") return []; const entry = item as Record<string, unknown>;
+		if (!["tool", "mcp", "skill"].includes(String(entry.kind)) || !validName(entry.name) || typeof entry.score !== "number" || !Number.isFinite(entry.score) || typeof entry.confidence !== "number" || !Number.isFinite(entry.confidence) || typeof entry.reason !== "string") return [];
+		const reason: CapabilityRankReason = entry.reason.includes("trigger") ? "trigger" : entry.reason.includes("alias") ? "alias" : entry.reason.includes("exact") ? "exact_name" : entry.reason.includes("name") ? "name" : "lexical";
+		return [{ kind: entry.kind as "tool" | "mcp" | "skill", name: entry.name, score: entry.score, confidence: Math.max(0, Math.min(1, entry.confidence)), reason }];
+	}).slice(0, 10) : [];
+	const hasMatches = activatedTools.length > 0 || candidates.length > 0;
+	return { hasMatches, candidates, activatedTools };
 }
 
 function isObjectiveContinuation(text: string): boolean { return /^(?:(?:继续|接着|补充|换成|改成|再加|先不要)(?:\s|处理|这个|该|中文|英文|一个|做|$)|(?:continue|go on|change|add)\b)/iu.test(text.trim()); }

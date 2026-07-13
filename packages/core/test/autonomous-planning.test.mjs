@@ -38,23 +38,26 @@ test("Agent runtime continues once after capability discovery so activated tools
 	const source = { platform: "cli", chatId: "progressive", chatType: "dm", userId: "local" };
 	let listener;
 	const prompts = [];
+	const events = [];
 	const agent = { state: { model: { id: "test" }, messages: [] } };
 	const runtime = new BeeMaxAgentRuntime({ planningPolicy: new AutonomousPlanningPolicy(), createAgent: async () => ({
 		agent,
 		getActiveToolNames: () => ["capability_discover", "web_search"],
+		getAllTools: () => [{ name: "web_search", description: "Search", beemaxPolicy: { sideEffect: "none" } }],
 		setActiveToolsByName: () => undefined,
 		subscribe: (next) => { listener = next; return () => undefined; },
 		prompt: async (text) => {
 			prompts.push(text);
-			if (prompts.length === 1) listener({ type: "tool_execution_end", toolCallId: "discover", toolName: "capability_discover", result: { details: { activatedTools: ["web_search"] } }, isError: false });
+			if (prompts.length === 1) listener({ type: "tool_execution_end", toolCallId: "discover", toolName: "capability_discover", result: { details: { activatedTools: ["web_search"], ranked: [{ kind: "tool", name: "web_search", score: 60, confidence: 0.6, reason: "matched trigger" }] } }, isError: false });
 			agent.state.messages = [{ role: "assistant", content: [{ type: "text", text: "done" }], usage: { input: 1, output: 1 } }];
 		},
 		abort: async () => undefined, dispose: () => undefined,
 	}) });
-	await runtime.run({ source, text: "search current weather", timeoutMs: 1_000 });
+	await runtime.run({ source, text: "search current weather", timeoutMs: 1_000 }, (event) => events.push(event));
 	assert.equal(prompts.length, 2);
 	assert.match(prompts[1], /capability continuation/i);
 	assert.doesNotMatch(prompts[1], /current weather/i);
+	assert.deepEqual(events.filter((event) => event.type === "capability_ranked"), [{ type: "capability_ranked", candidates: [{ kind: "tool", name: "web_search", score: 60, confidence: 0.6, reason: "trigger" }], activatedTools: ["web_search"] }]);
 	runtime.dispose();
 });
 
@@ -63,12 +66,12 @@ test("Agent runtime reroutes one unresolved Tool failure through capability disc
 	let listener; const prompts = []; const agent = { state: { model: { id: "test" }, messages: [] } };
 	const runtime = new BeeMaxAgentRuntime({ createAgent: async () => ({
 		agent, getActiveToolNames: () => ["capability_discover", "primary_search", "alternate_search"], setActiveToolsByName: () => undefined,
-		getAllTools: () => [{ name: "primary_search", description: "Primary search", beemaxPolicy: { sideEffect: "none" } }],
+		getAllTools: () => [{ name: "primary_search", description: "Primary search", beemaxPolicy: { sideEffect: "none" } }, { name: "alternate_search", description: "Alternate search", beemaxPolicy: { sideEffect: "none" } }],
 		subscribe: (next) => { listener = next; return () => undefined; },
 		prompt: async (text) => {
 			prompts.push(text);
 			if (prompts.length === 1) listener({ type: "tool_execution_end", toolCallId: "failed", toolName: "primary_search", result: {}, isError: true });
-			if (prompts.length === 2) listener({ type: "tool_execution_end", toolCallId: "discover", toolName: "capability_discover", result: { details: { activatedTools: ["alternate_search"] } }, isError: false });
+			if (prompts.length === 2) listener({ type: "tool_execution_end", toolCallId: "discover", toolName: "capability_discover", result: { details: { activatedTools: ["alternate_search"], ranked: [{ kind: "tool", name: "alternate_search", score: 60, confidence: 0.6, reason: "matched trigger" }] } }, isError: false });
 			if (prompts.length === 3) listener({ type: "tool_execution_end", toolCallId: "alternate", toolName: "alternate_search", result: {}, isError: false });
 			agent.state.messages = [{ role: "assistant", content: [{ type: "text", text: "done" }], usage: { input: 1, output: 1 } }];
 		},
@@ -95,6 +98,23 @@ test("Agent runtime never auto-reroutes an unresolved external mutation", async 
 	}) });
 	await runtime.run({ source, text: "perform write", timeoutMs: 1_000 });
 	assert.equal(prompts.length, 1);
+	runtime.dispose();
+});
+
+test("Capability event validation rejects unregistered names and free-form ranking content", async () => {
+	const source = { platform: "cli", chatId: "capability-event-boundary", chatType: "dm", userId: "local" };
+	let listener; const events = []; const agent = { state: { model: { id: "test" }, messages: [] } };
+	const runtime = new BeeMaxAgentRuntime({ createAgent: async () => ({
+		agent, getActiveToolNames: () => ["capability_discover", "safe_search"], setActiveToolsByName: () => undefined,
+		getAllTools: () => [{ name: "safe_search", description: "Safe search", beemaxPolicy: { sideEffect: "none" } }],
+		subscribe: (next) => { listener = next; return () => undefined; },
+		prompt: async () => { listener({ type: "tool_execution_end", toolCallId: "discover", toolName: "capability_discover", isError: false, result: { details: { activatedTools: ["safe_search", "SECRET prompt and args", "safe_search"], ranked: [{ kind: "tool", name: "safe_search", score: 5, confidence: 2, reason: "SECRET prompt schema args" }, { kind: "tool", name: "SECRET body", score: 99, confidence: 1, reason: "SECRET" }] } } }); agent.state.messages = [{ role: "assistant", content: [{ type: "text", text: "done" }], usage: { input: 1, output: 1 } }]; },
+		abort: async () => undefined, dispose: () => undefined,
+	}) });
+	await runtime.run({ source, text: "search", timeoutMs: 1_000 }, async (event) => { await new Promise((resolve) => setTimeout(resolve, 1)); events.push(event); });
+	const ranked = events.find((event) => event.type === "capability_ranked");
+	assert.deepEqual(ranked, { type: "capability_ranked", candidates: [{ kind: "tool", name: "safe_search", score: 5, confidence: 1, reason: "lexical" }], activatedTools: ["safe_search"] });
+	assert.doesNotMatch(JSON.stringify(ranked), /SECRET|schema|args/);
 	runtime.dispose();
 });
 

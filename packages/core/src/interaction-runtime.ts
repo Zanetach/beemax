@@ -1,4 +1,4 @@
-import type { AgentRunInput, AgentRunResult, AgentRuntimePort, AgentSessionUsage, BeeMaxAgentRunEvent } from "./agent-runtime.ts";
+import type { AgentRunInput, AgentRunResult, AgentRuntimePort, AgentSessionUsage, BeeMaxAgentRunEvent, CapabilityRankedCandidate } from "./agent-runtime.ts";
 import type { BeeMaxRuntimeSource } from "./runtime.ts";
 import { sessionIdForSource, sessionKeyForSource } from "./session-coordinator.ts";
 import type { ToolApprovalBroker, ToolApprovalChoice } from "./tool-approval.ts";
@@ -33,6 +33,7 @@ export type InteractionEvent = InteractionEventMeta & (
 	| { type: "model.fallback"; from: string; to: string; attempt: number }
 	| { type: "planning.selected"; mode: "direct" | "delegate" | "dag"; concurrency: number; maxSubagents: number; requiredTools: string[] }
 	| { type: "planning.completed"; mode: "direct" | "delegate" | "dag"; compliant: boolean; corrected: boolean }
+	| { type: "capability.ranked"; candidates: CapabilityRankedCandidate[]; activatedTools: string[] }
 	| { type: "work.changed"; workId: string; kind: "subagent" | "task_plan"; state: "queued" | "running" | "completed" | "failed" | "cancelled"; summary?: string }
 	| { type: "turn.queued"; position: number; replaced: boolean; mode: InteractionDeliveryMode }
 	| { type: "turn.finished"; result: AgentRunResult }
@@ -50,6 +51,7 @@ type InteractionEventPayload =
 	| { type: "model.fallback"; from: string; to: string; attempt: number }
 	| { type: "planning.selected"; mode: "direct" | "delegate" | "dag"; concurrency: number; maxSubagents: number; requiredTools: string[] }
 	| { type: "planning.completed"; mode: "direct" | "delegate" | "dag"; compliant: boolean; corrected: boolean }
+	| { type: "capability.ranked"; candidates: CapabilityRankedCandidate[]; activatedTools: string[] }
 	| { type: "work.changed"; workId: string; kind: "subagent" | "task_plan"; state: "queued" | "running" | "completed" | "failed" | "cancelled"; summary?: string }
 	| { type: "turn.queued"; position: number; replaced: boolean; mode: InteractionDeliveryMode }
 	| { type: "turn.finished"; result: AgentRunResult }
@@ -102,6 +104,7 @@ export type InteractionTelemetryEvent =
 	| { type: "interaction.model_fallback"; surface: string; from: string; to: string; attempt: number }
 	| { type: "interaction.planning_selected"; surface: string; mode: "direct" | "delegate" | "dag"; concurrency: number; maxSubagents: number; requiredToolCount: number }
 	| { type: "interaction.planning_completed"; surface: string; mode: "direct" | "delegate" | "dag"; compliant: boolean; corrected: boolean }
+	| { type: "interaction.capability_ranked"; surface: string; candidateCount: number; activatedToolCount: number; toolCandidateCount: number; mcpCandidateCount: number; skillCandidateCount: number }
 	| { type: "interaction.presenter_reconnected"; surface: string; gapEvents: number }
 	| { type: "interaction.session_resumed"; source: string; age: number };
 export type InteractionTelemetrySink = (event: InteractionTelemetryEvent) => void;
@@ -536,6 +539,7 @@ export class InteractionEventAdapter<Source extends BeeMaxRuntimeSource = BeeMax
 		else if (event.type === "model.fallback") this.telemetry({ type: "interaction.model_fallback", surface: event.scope.platform, from: event.from, to: event.to, attempt: event.attempt });
 		else if (event.type === "planning.selected") this.telemetry({ type: "interaction.planning_selected", surface: event.scope.platform, mode: event.mode, concurrency: event.concurrency, maxSubagents: event.maxSubagents, requiredToolCount: event.requiredTools.length });
 		else if (event.type === "planning.completed") this.telemetry({ type: "interaction.planning_completed", surface: event.scope.platform, mode: event.mode, compliant: event.compliant, corrected: event.corrected });
+		else if (event.type === "capability.ranked") this.telemetry({ type: "interaction.capability_ranked", surface: event.scope.platform, candidateCount: event.candidates.length, activatedToolCount: event.activatedTools.length, toolCandidateCount: event.candidates.filter((item) => item.kind === "tool").length, mcpCandidateCount: event.candidates.filter((item) => item.kind === "mcp").length, skillCandidateCount: event.candidates.filter((item) => item.kind === "skill").length });
 	}
 }
 
@@ -562,6 +566,7 @@ export function mapAgentSessionEvent(event: BeeMaxAgentRunEvent): InteractionEve
 	if (event.type === "model_fallback") return { type: "model.fallback", from: event.from, to: event.to, attempt: event.attempt };
 	if (event.type === "planning_decision") return { type: "planning.selected", mode: event.mode, concurrency: event.concurrency, maxSubagents: event.maxSubagents, requiredTools: [...event.requiredTools] };
 	if (event.type === "planning_outcome") return { type: "planning.completed", mode: event.mode, compliant: event.compliant, corrected: event.corrected };
+	if (event.type === "capability_ranked") return { type: "capability.ranked", candidates: event.candidates.map((item) => ({ ...item })), activatedTools: [...event.activatedTools] };
 	if (event.type === "tool_execution_start") return { type: "tool.changed", callId: event.toolCallId, name: event.toolName, state: "running" };
 	if (event.type === "tool_execution_end") return { type: "tool.changed", callId: event.toolCallId, name: event.toolName, state: event.isError ? "failed" : "completed", summary: typeof event.result === "string" ? event.result.slice(0, 500) : undefined };
 	if (event.type !== "message_update" || event.message.role !== "assistant") return undefined;

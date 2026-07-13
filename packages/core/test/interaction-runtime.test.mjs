@@ -181,6 +181,19 @@ test("planning telemetry records only operational routing fields", async () => {
 	assert.doesNotMatch(JSON.stringify(telemetry), /private prompt|private answer/);
 });
 
+test("capability ranking crosses the Interaction boundary as content-free metadata", async () => {
+	const telemetry = [];
+	const runtime = {
+		async run(_input, sink) { await sink({ type: "capability_ranked", candidates: [{ kind: "mcp", name: "mcp_calendar_find", score: 60, confidence: 0.6, reason: "trigger" }], activatedTools: ["mcp_calendar_find"] }); return { answer: "done", model: "test/model", durationMs: 1, usage: {} }; },
+		async cancel() { return false; }, async modelStatus() { return undefined; }, async usage() { return undefined; },
+	};
+	const adapter = new InteractionEventAdapter(runtime, { telemetry: (event) => telemetry.push(event) });
+	await adapter.dispatch({ type: "message.send", source, text: "private prompt", input: { timeoutMs: 1_000 } });
+	assert.equal(adapter.events(source).some((event) => event.type === "capability.ranked" && event.candidates[0]?.name === "mcp_calendar_find"), true);
+	assert.deepEqual(telemetry.filter((event) => event.type === "interaction.capability_ranked"), [{ type: "interaction.capability_ranked", surface: "cli", candidateCount: 1, activatedToolCount: 1, toolCandidateCount: 0, mcpCandidateCount: 1, skillCandidateCount: 0 }]);
+	assert.doesNotMatch(JSON.stringify(telemetry), /private prompt/);
+});
+
 test("approval and queue telemetry includes required latency fields without content", async () => {
 	let rejectTurn;
 	const telemetry = [];
