@@ -194,7 +194,7 @@ export function createFeishuMeetingTools(getClient: FeishuClientProvider): ToolD
 				params: { user_id_type: "union_id" },
 				data: { invitees: params.userIds.map((id) => ({ id, user_type: 1 })) },
 			});
-			return apiResult("Invite meeting participants", response, response.data, () => meetingEffect("invite meeting participants", params.meetingId, params.idempotencyKey));
+			return apiResult("Invite meeting participants", response, response.data);
 		}),
 	});
 
@@ -213,7 +213,7 @@ export function createFeishuMeetingTools(getClient: FeishuClientProvider): ToolD
 				params: { user_id_type: "union_id" },
 				data: { kickout_users: params.userIds.map((id) => ({ id, user_type: 1 })) },
 			});
-			return apiResult("Remove meeting participants", response, response.data, () => meetingEffect("remove meeting participants", params.meetingId, params.idempotencyKey));
+			return apiResult("Remove meeting participants", response, response.data);
 		}),
 	});
 
@@ -236,7 +236,7 @@ export function createFeishuMeetingTools(getClient: FeishuClientProvider): ToolD
 					old_host_user: params.oldHostId ? { id: params.oldHostId, user_type: 1 } : undefined,
 				},
 			});
-			return apiResult("Set meeting host", response, response.data, () => meetingEffect("set meeting host", params.meetingId, params.idempotencyKey));
+			return apiResult("Set meeting host", response, response.data);
 		}),
 	});
 
