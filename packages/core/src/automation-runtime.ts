@@ -7,14 +7,21 @@ import {
 	type AutomationStore,
 } from "@beemax/automation";
 import type { DeliveryPort } from "./delivery-port.ts";
+import type { TaskRecord } from "./task-ledger.ts";
 
 export type AutomationExecutor = (job: AutomationClaim, signal?: AbortSignal) => Promise<{ output?: string; delivery?: AutomationDeliveryInput; objectiveId?: string; taskRunId?: string }>;
+
+/** Delivery is material only after the durable Objective accepted its Candidate Outcome. */
+export function isVerifiedAutomationOutcome(task: TaskRecord | undefined): task is TaskRecord & { status:"succeeded";verificationStatus:"accepted";result:string } {
+	return task?.status === "succeeded" && task.verificationStatus === "accepted" && Boolean(task.result?.trim());
+}
 
 /** Retries durable Schedule result delivery without replaying the settled Pi execution. */
 export class AutomationDeliveryWorker {
 	private readonly store: AutomationStore;
 	private readonly delivery: DeliveryPort;
-	constructor(store: AutomationStore, delivery: DeliveryPort) { this.store = store; this.delivery = delivery; }
+	private readonly clock: () => number;
+	constructor(store: AutomationStore, delivery: DeliveryPort, clock: () => number = Date.now) { this.store = store; this.delivery = delivery; this.clock = clock; }
 
 	async runOnce(now = Date.now(), limit = 4): Promise<{ claimed: number; delivered: number; failed: number }> {
 		const items = this.store.claimDeliveriesDue(now, limit);
@@ -23,10 +30,10 @@ export class AutomationDeliveryWorker {
 		for (const item of items) {
 			try {
 				await this.delivery.sendText(item, item.text, { idempotencyKey: item.idempotencyKey });
-				if (!this.store.completeDelivery(item.id, item.claimToken, Date.now())) throw new Error(`Automation delivery claim lost: ${item.id}`);
+				if (!this.store.completeDelivery(item.id, item.claimToken, this.clock())) throw new Error(`Automation delivery claim lost: ${item.id}`);
 				delivered++;
 			} catch (error) {
-				this.store.failDelivery(item.id, item.claimToken, error instanceof Error ? error.message : String(error), now);
+				this.store.failDelivery(item.id, item.claimToken, error instanceof Error ? error.message : String(error), this.clock());
 				failed++;
 			}
 		}

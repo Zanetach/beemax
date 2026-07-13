@@ -163,6 +163,7 @@ export {
 	AutomationDeliveryWorker,
 	HeartbeatRunner,
 	filterHeartbeatAnswer,
+	isVerifiedAutomationOutcome,
 	isWithinActiveHours,
 	type AutomationExecutor,
 	type HeartbeatConfig,

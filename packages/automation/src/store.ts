@@ -62,12 +62,16 @@ export interface AutomationJob extends AutomationOwner {
 	createdAt: number;
 	updatedAt: number;
 	claimToken?: string;
+	/** Canonical recurring due time preserved while a manual run is in progress. */
+	manualResumeAt?: number;
 }
 
 export interface AutomationClaim extends AutomationJob {
 	occurrenceId: string;
 	nominalDueAt: number;
 	occurrenceAttempt: number;
+	objectiveId?: string;
+	taskRunId?: string;
 }
 
 export interface AutomationRun {
@@ -204,8 +208,9 @@ export class AutomationStore {
 	runNow(id: string, owner: AutomationOwner, now = Date.now()): boolean {
 		const current = this.get(id, owner);
 		if (!current || !current.enabled || current.claimToken) return false;
-		return this.db.prepare(`UPDATE automation_jobs SET next_run_at=?, updated_at=? WHERE id=? AND enabled=1 AND deleted_at IS NULL`)
-			.run(now, now, id).changes === 1;
+		return this.db.prepare(`UPDATE automation_jobs SET next_run_at=?, manual_resume_at=?, updated_at=?
+			WHERE id=? AND enabled=1 AND deleted_at IS NULL AND manual_resume_at IS NULL`)
+			.run(now, current.scheduleKind === "at" ? null : current.nextRunAt, now, id).changes === 1;
 	}
 
 	status(now = Date.now()): AutomationStatus {
@@ -273,13 +278,14 @@ export class AutomationStore {
 					this.db.prepare(`UPDATE automation_jobs SET enabled=?, next_run_at=?, last_run_at=?, last_status='skipped',
 						locked_until=NULL, claim_token=NULL, updated_at=? WHERE id=?`)
 						.run(enabled, nextRunAt, now, now, row.id);
+					this.pruneAutomationHistory(row.id);
 					continue;
 				}
 				const claimToken = randomId();
-				const retrying = this.db.prepare(`SELECT id, nominal_due_at, attempts FROM automation_occurrences
+				const retrying = this.db.prepare(`SELECT id, nominal_due_at, attempts, objective_id, task_run_id FROM automation_occurrences
 					WHERE schedule_id = ? AND (status = 'retrying' OR (status = 'claimed' AND claim_expires_at < ?))
 					ORDER BY nominal_due_at DESC LIMIT 1`)
-					.get(row.id, now) as { id: string; nominal_due_at: number; attempts: number } | undefined;
+					.get(row.id, now) as { id: string; nominal_due_at: number; attempts: number; objective_id:string|null;task_run_id:string|null } | undefined;
 				const occurrenceId = retrying?.id ?? randomId();
 				const nominalDueAt = retrying?.nominal_due_at ?? row.next_run_at;
 				const claimed = this.db.prepare(`UPDATE automation_jobs SET locked_until = ?, claim_token = ?, updated_at = ?
@@ -294,7 +300,8 @@ export class AutomationStore {
 				) VALUES (?, ?, ?, 'claimed', 1, ?, ?, ?, ?, ?)`)
 					.run(occurrenceId, row.id, nominalDueAt, claimToken, now + leaseMs, now, now, now);
 				const claimedJob = mapJob(this.db.prepare("SELECT * FROM automation_jobs WHERE id = ?").get(row.id) as JobRow);
-				claims.push({ ...claimedJob, occurrenceId, nominalDueAt, occurrenceAttempt: (retrying?.attempts ?? 0) + 1 });
+				claims.push({ ...claimedJob, occurrenceId, nominalDueAt, occurrenceAttempt: (retrying?.attempts ?? 0) + 1,
+					...(retrying?.objective_id ? { objectiveId:retrying.objective_id } : {}), ...(retrying?.task_run_id ? { taskRunId:retrying.task_run_id } : {}) });
 			}
 			return claims;
 		});
@@ -314,13 +321,19 @@ export class AutomationStore {
 		})();
 	}
 
+	bindClaimExecution(id: string, occurrenceId: string, claimToken: string, objectiveId: string, taskRunId: string | undefined, now = Date.now()): boolean {
+		return this.db.prepare(`UPDATE automation_occurrences SET objective_id=?, task_run_id=COALESCE(?, task_run_id), updated_at=?
+			WHERE id=? AND schedule_id=? AND status='claimed' AND claim_token=? AND claim_expires_at>=?`)
+			.run(objectiveId, taskRunId ?? null, now, occurrenceId, id, claimToken, now).changes === 1;
+	}
+
 	complete(job: AutomationClaim, result: AutomationCompletion, now = Date.now()): boolean {
 		return this.db.transaction(() => {
 			if (!job.claimToken || !(this.db.prepare("SELECT 1 FROM automation_jobs WHERE id = ? AND claim_token = ? AND locked_until >= ?").get(job.id, job.claimToken, now))) return false;
 			const occurrence = this.db.prepare(`SELECT id, attempts FROM automation_occurrences
 				WHERE schedule_id = ? AND claim_token = ? AND claim_expires_at >= ?`).get(job.id, job.claimToken, now) as { id: string; attempts: number } | undefined;
 			if (!occurrence) return false;
-			this.db.prepare("UPDATE automation_occurrences SET objective_id=?, task_run_id=?, updated_at=? WHERE id=? AND claim_token=?")
+			this.db.prepare("UPDATE automation_occurrences SET objective_id=COALESCE(?, objective_id), task_run_id=COALESCE(?, task_run_id), updated_at=? WHERE id=? AND claim_token=?")
 				.run(result.objectiveId ?? null, result.taskRunId ?? null, now, occurrence.id, job.claimToken);
 			this.db.prepare(`INSERT INTO automation_runs
 				(id, job_id, started_at, finished_at, status, output, error)
@@ -353,9 +366,10 @@ export class AutomationStore {
 					claim_token=NULL, claim_expires_at=NULL, updated_at=? WHERE id=? AND claim_token=?`)
 					.run(result.finishedAt, result.output ?? null, now, occurrence.id, job.claimToken);
 				const enabled = job.scheduleKind === "at" ? 0 : 1;
-				const next = enabled ? computeNextRun(job.scheduleKind, job.schedule, job.timezone, now) : job.nextRunAt;
+				const next = enabled ? job.manualResumeAt ?? computeNextRun(job.scheduleKind, job.schedule, job.timezone, now) : job.nextRunAt;
 				this.db.prepare(`UPDATE automation_jobs SET enabled = ?, next_run_at = ?, last_run_at = ?,
-					last_status = 'ok', consecutive_errors = 0, locked_until = NULL, claim_token = NULL, updated_at = ? WHERE id = ? AND claim_token = ?`)
+					last_status = 'ok', consecutive_errors = 0, locked_until = NULL, claim_token = NULL, manual_resume_at=NULL,
+					updated_at = ? WHERE id = ? AND claim_token = ?`)
 					.run(enabled, next, result.finishedAt, now, job.id, job.claimToken);
 				this.pruneAutomationHistory(job.id);
 				return true;
@@ -365,14 +379,15 @@ export class AutomationStore {
 			this.db.prepare(`UPDATE automation_occurrences SET status=?, finished_at=?, output=?, error=?,
 				claim_token=NULL, claim_expires_at=NULL, updated_at=? WHERE id=? AND claim_token=?`)
 				.run(exhausted ? "failed" : "retrying", result.finishedAt, result.output ?? null, result.error ?? null, now, occurrence.id, job.claimToken);
-			const retryDelay = [30_000, 60_000, 5 * 60_000][Math.min(errors - 1, 2)];
+			const retryDelay = [30_000, 60_000, 5 * 60_000][Math.min(occurrence.attempts - 1, 2)];
 			const enabled = exhausted && job.scheduleKind === "at" ? 0 : 1;
 			const nextRunAt = exhausted
-				? job.scheduleKind === "at" ? job.nextRunAt : computeNextRun(job.scheduleKind, job.schedule, job.timezone, now)
+				? job.scheduleKind === "at" ? job.nextRunAt : job.manualResumeAt ?? computeNextRun(job.scheduleKind, job.schedule, job.timezone, now)
 				: now + retryDelay;
 			this.db.prepare(`UPDATE automation_jobs SET next_run_at = ?, last_run_at = ?, last_status = ?,
-				consecutive_errors = ?, enabled = ?, locked_until = NULL, claim_token = NULL, updated_at = ? WHERE id = ? AND claim_token = ?`)
-				.run(nextRunAt, result.finishedAt, exhausted ? "failed" : result.status, errors, enabled, now, job.id, job.claimToken);
+				consecutive_errors = ?, enabled = ?, locked_until = NULL, claim_token = NULL,
+				manual_resume_at=CASE WHEN ? THEN NULL ELSE manual_resume_at END, updated_at = ? WHERE id = ? AND claim_token = ?`)
+				.run(nextRunAt, result.finishedAt, exhausted ? "failed" : result.status, errors, enabled, exhausted ? 1 : 0, now, job.id, job.claimToken);
 			if (exhausted) this.pruneAutomationHistory(job.id);
 			return true;
 		})();
@@ -413,29 +428,30 @@ export class AutomationStore {
 
 	completeDelivery(id: string, claimToken: string, now = Date.now()): boolean {
 		return this.db.transaction(() => {
-			const row = this.db.prepare("SELECT schedule_id FROM automation_deliveries WHERE id=? AND claim_token=?").get(id, claimToken) as { schedule_id: string } | undefined;
+			const row = this.db.prepare(`SELECT schedule_id FROM automation_deliveries
+				WHERE id=? AND status='delivering' AND claim_token=? AND claim_expires_at>=?`).get(id, claimToken, now) as { schedule_id: string } | undefined;
 			if (!row) return false;
 			const changed = this.db.prepare(`UPDATE automation_deliveries SET status='delivered', delivered_at=?,
 				claim_token=NULL, claim_expires_at=NULL, error=NULL, updated_at=?
-				WHERE id=? AND status='delivering' AND claim_token=?`).run(now, now, id, claimToken).changes === 1;
+				WHERE id=? AND status='delivering' AND claim_token=? AND claim_expires_at>=?`).run(now, now, id, claimToken, now).changes === 1;
 			if (!changed) return false;
-			this.db.prepare(`DELETE FROM automation_deliveries WHERE schedule_id=? AND status='delivered'
-				AND id NOT IN (SELECT id FROM automation_deliveries WHERE schedule_id=? ORDER BY updated_at DESC LIMIT 100)`).run(row.schedule_id, row.schedule_id);
-			this.db.prepare(`DELETE FROM automation_deliveries WHERE status='delivered'
-				AND id NOT IN (SELECT id FROM automation_deliveries ORDER BY updated_at DESC LIMIT 10000)`).run();
+			this.pruneDeliveryHistory(row.schedule_id);
 			this.pruneAutomationHistory(row.schedule_id);
 			return true;
 		})();
 	}
 
 	failDelivery(id: string, claimToken: string, error: string, now = Date.now()): boolean {
-		const row = this.db.prepare("SELECT attempts FROM automation_deliveries WHERE id=? AND claim_token=?").get(id, claimToken) as { attempts: number } | undefined;
+		const row = this.db.prepare(`SELECT attempts, schedule_id FROM automation_deliveries
+			WHERE id=? AND status='delivering' AND claim_token=? AND claim_expires_at>=?`).get(id, claimToken, now) as { attempts: number;schedule_id:string } | undefined;
 		if (!row) return false;
 		const abandoned = row.attempts >= 10;
 		const delay = Math.min(60 * 60_000, 30_000 * 2 ** Math.min(Math.max(0, row.attempts - 1), 7));
-		return this.db.prepare(`UPDATE automation_deliveries SET status=?, next_attempt_at=?, error=?,
+		const changed = this.db.prepare(`UPDATE automation_deliveries SET status=?, next_attempt_at=?, error=?,
 			claim_token=NULL, claim_expires_at=NULL, updated_at=? WHERE id=? AND claim_token=?`)
 			.run(abandoned ? "abandoned" : "queued", abandoned ? now : now + delay, error.slice(0, 2_000), now, id, claimToken).changes === 1;
+		if (changed && abandoned) { this.pruneDeliveryHistory(row.schedule_id); this.pruneAutomationHistory(row.schedule_id); }
+		return changed;
 	}
 
 	setLastRoute(owner: AutomationOwner, now = Date.now()): void {
@@ -525,6 +541,13 @@ export class AutomationStore {
 				AND id NOT IN (SELECT id FROM automation_occurrences ORDER BY updated_at DESC LIMIT 10000)
 				AND id NOT IN (SELECT occurrence_id FROM automation_deliveries WHERE status IN ('queued','delivering'))`).run();
 	}
+	private pruneDeliveryHistory(scheduleId: string): void {
+		this.db.prepare(`DELETE FROM automation_deliveries WHERE schedule_id=? AND status IN ('delivered','abandoned')
+			AND id NOT IN (SELECT id FROM automation_deliveries WHERE schedule_id=? AND status IN ('delivered','abandoned') ORDER BY updated_at DESC LIMIT 100)`)
+			.run(scheduleId, scheduleId);
+		this.db.prepare(`DELETE FROM automation_deliveries WHERE status IN ('delivered','abandoned')
+			AND id NOT IN (SELECT id FROM automation_deliveries WHERE status IN ('delivered','abandoned') ORDER BY updated_at DESC LIMIT 10000)`).run();
+	}
 
 	private migrate(): void {
 		this.db.exec(`
@@ -536,7 +559,7 @@ export class AutomationStore {
 				last_run_at INTEGER, last_status TEXT, consecutive_errors INTEGER NOT NULL DEFAULT 0,
 				max_attempts INTEGER NOT NULL DEFAULT 3, misfire_policy TEXT NOT NULL DEFAULT 'run_once',
 				misfire_grace_ms INTEGER NOT NULL DEFAULT 300000,
-				locked_until INTEGER, claim_token TEXT, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
+				locked_until INTEGER, claim_token TEXT, manual_resume_at INTEGER, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
 			);
 			CREATE INDEX IF NOT EXISTS idx_automation_due ON automation_jobs(enabled, next_run_at);
 			CREATE TABLE IF NOT EXISTS automation_runs (
@@ -583,6 +606,7 @@ export class AutomationStore {
 		if (!columns.some((column) => column.name === "max_attempts")) this.db.exec("ALTER TABLE automation_jobs ADD COLUMN max_attempts INTEGER NOT NULL DEFAULT 3");
 		if (!columns.some((column) => column.name === "misfire_policy")) this.db.exec("ALTER TABLE automation_jobs ADD COLUMN misfire_policy TEXT NOT NULL DEFAULT 'run_once'");
 		if (!columns.some((column) => column.name === "misfire_grace_ms")) this.db.exec("ALTER TABLE automation_jobs ADD COLUMN misfire_grace_ms INTEGER NOT NULL DEFAULT 300000");
+		if (!columns.some((column) => column.name === "manual_resume_at")) this.db.exec("ALTER TABLE automation_jobs ADD COLUMN manual_resume_at INTEGER");
 		const occurrenceColumns = this.db.prepare("PRAGMA table_info(automation_occurrences)").all() as Array<{ name: string }>;
 		if (!occurrenceColumns.some((column) => column.name === "objective_id")) this.db.exec("ALTER TABLE automation_occurrences ADD COLUMN objective_id TEXT");
 		if (!occurrenceColumns.some((column) => column.name === "task_run_id")) this.db.exec("ALTER TABLE automation_occurrences ADD COLUMN task_run_id TEXT");
@@ -629,12 +653,12 @@ function owns(job: AutomationJob, owner: AutomationOwner): boolean {
 function clamp(value: number, min: number, max: number): number { return Math.max(min, Math.min(max, value)); }
 function randomId(): string { return crypto.randomUUID(); }
 
-interface JobRow { id:string;platform:string;chat_id:string;user_id:string|null;name:string;kind:string;schedule_kind:string;schedule_value:string;timezone:string|null;payload_text:string;enabled:number;delete_after_run:number;max_attempts:number;misfire_policy:string;misfire_grace_ms:number;next_run_at:number;last_run_at:number|null;last_status:string|null;consecutive_errors:number;claim_token:string|null;deleted_at:number|null;created_at:number;updated_at:number }
+interface JobRow { id:string;platform:string;chat_id:string;user_id:string|null;name:string;kind:string;schedule_kind:string;schedule_value:string;timezone:string|null;payload_text:string;enabled:number;delete_after_run:number;max_attempts:number;misfire_policy:string;misfire_grace_ms:number;next_run_at:number;last_run_at:number|null;last_status:string|null;consecutive_errors:number;claim_token:string|null;deleted_at:number|null;manual_resume_at:number|null;created_at:number;updated_at:number }
 interface RunRow { id:string;job_id:string;started_at:number;finished_at:number;status:string;output:string|null;error:string|null }
 interface OccurrenceRow { id:string;schedule_id:string;nominal_due_at:number;status:string;attempts:number;started_at:number|null;finished_at:number|null;output:string|null;error:string|null;objective_id:string|null;task_run_id:string|null }
 interface DeliveryRow { id:string;occurrence_id:string;schedule_id:string;platform:string;chat_id:string;user_id:string|null;kind:string;payload_text:string;idempotency_key:string;status:string;attempts:number;next_attempt_at:number;claim_token:string|null;created_at:number }
 interface MediaRow { id:string;platform:string;chat_id:string;user_id:string|null;path:string;mime_type:string|null;status:string;attempts:number;next_attempt_at:number;created_at:number }
-function mapJob(row: JobRow): AutomationJob { return { id:row.id,platform:row.platform,chatId:row.chat_id,userId:row.user_id??undefined,name:row.name,kind:row.kind as AutomationKind,scheduleKind:row.schedule_kind as ScheduleKind,schedule:row.schedule_value,text:row.payload_text,timezone:row.timezone??undefined,enabled:Boolean(row.enabled),deleteAfterRun:Boolean(row.delete_after_run),maxAttempts:row.max_attempts,misfirePolicy:row.misfire_policy as AutomationJob["misfirePolicy"],misfireGraceMs:row.misfire_grace_ms,nextRunAt:row.next_run_at,lastRunAt:row.last_run_at??undefined,lastStatus:row.last_status??undefined,consecutiveErrors:row.consecutive_errors,claimToken:row.claim_token??undefined,createdAt:row.created_at,updatedAt:row.updated_at }; }
+function mapJob(row: JobRow): AutomationJob { return { id:row.id,platform:row.platform,chatId:row.chat_id,userId:row.user_id??undefined,name:row.name,kind:row.kind as AutomationKind,scheduleKind:row.schedule_kind as ScheduleKind,schedule:row.schedule_value,text:row.payload_text,timezone:row.timezone??undefined,enabled:Boolean(row.enabled),deleteAfterRun:Boolean(row.delete_after_run),maxAttempts:row.max_attempts,misfirePolicy:row.misfire_policy as AutomationJob["misfirePolicy"],misfireGraceMs:row.misfire_grace_ms,nextRunAt:row.next_run_at,lastRunAt:row.last_run_at??undefined,lastStatus:row.last_status??undefined,consecutiveErrors:row.consecutive_errors,claimToken:row.claim_token??undefined,manualResumeAt:row.manual_resume_at??undefined,createdAt:row.created_at,updatedAt:row.updated_at }; }
 function mapRun(row: RunRow): AutomationRun { return { id:row.id,jobId:row.job_id,startedAt:row.started_at,finishedAt:row.finished_at,status:row.status as AutomationRun["status"],output:row.output??undefined,error:row.error??undefined }; }
 function mapOccurrence(row: OccurrenceRow): AutomationOccurrence { return { id:row.id,scheduleId:row.schedule_id,nominalDueAt:row.nominal_due_at,status:row.status as AutomationOccurrence["status"],attempts:row.attempts,startedAt:row.started_at??undefined,finishedAt:row.finished_at??undefined,output:row.output??undefined,error:row.error??undefined,objectiveId:row.objective_id??undefined,taskRunId:row.task_run_id??undefined }; }
 function mapDelivery(row: DeliveryRow): AutomationDelivery { return { id:row.id,occurrenceId:row.occurrence_id,scheduleId:row.schedule_id,platform:row.platform,chatId:row.chat_id,userId:row.user_id??undefined,kind:row.kind as "text",text:row.payload_text,idempotencyKey:row.idempotency_key,status:row.status as AutomationDelivery["status"],attempts:row.attempts,nextAttemptAt:row.next_attempt_at,claimToken:row.claim_token!,createdAt:row.created_at }; }

@@ -134,8 +134,10 @@ adopts the same ownership distinction without copying either project verbatim.
    use the same `BeeMaxAgentRuntime` path as interactive turns; concrete image
    provider OAuth/HTTP code lives in a separate capability package.
 3. **Completed:** move curated-memory context and candidate capture to Core;
-   migrate scheduler and heartbeat policy to Core while Automation retains its
-   SQLite store and time calculation capability.
+   migrate scheduler orchestration, Pi execution and heartbeat policy to Core.
+   Automation retains time calculation plus the atomic SQLite state machine for
+   configured Schedule, Occurrence, lease, retry and Delivery transitions; it
+   never decides Agent capability, Verification or business policy.
 4. **Completed:** introduce `BeeMaxAgentRuntime` as the one run entry point.
    It owns turn timeout, streaming subscription, context capture and resource
    reload; CLI, sub-agents and Gateway all use this path. Dispatcher accepts

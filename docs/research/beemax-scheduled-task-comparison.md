@@ -6,7 +6,7 @@ Research date: 2026-07-14. External claims below use first-party product documen
 
 BeeMax already has a real durable scheduled-task subsystem, not a prompt-only reminder feature. It persists one-shot, interval, and cron schedules in SQLite; supports IANA timezones; fences concurrent workers with renewable leases; records bounded run history; retries failures; runs scheduled Agent work through the shared Profile Runtime; and delivers results through the channel-neutral Delivery Port.
 
-Its strongest differentiator is semantic integration: a responsible scheduled Agent occurrence becomes the same durable Objective / Task Run / Checkpoint / Verification lifecycle used by interactive Pi work. The follow-up implementation now gives each nominal due time a durable Occurrence, retains one-shot audit evidence, bounds retry attempts, exposes skip/run-once misfire policy, separates verified execution from durable delivery retry, and adds get/update/run-now/status management. Remaining breadth gaps are per-job delivery/failure destinations, bounded catch-up, model/Skill/workdir policy, and governed non-LLM actions.
+Its strongest differentiator is semantic integration: a responsible scheduled Agent occurrence becomes the same durable Objective / Task Run / Checkpoint / Verification lifecycle used by interactive Pi work. The follow-up implementation now gives each nominal due time a durable Occurrence, binds Pi identity before execution settles, delivers only accepted Verification outcomes, retains bounded one-shot/misfire/dead-letter evidence, bounds retry attempts, exposes skip/run-once misfire policy, separates verified execution from durable delivery retry, preserves cadence after manual runs, and adds get/update/run-now/status management. Remaining breadth gaps are per-job delivery/failure destinations, bounded catch-up, model/Skill/workdir policy, and governed non-LLM actions.
 
 ## BeeMax current implementation
 
@@ -51,5 +51,6 @@ The next practical increment should add, in order:
 3. Per-job timeout, model class, Skill references, capability policy, working directory, and concurrency key.
 4. Deterministic command/webhook jobs that do not invoke an LLM, still governed by Tool Effect and Receipt policy.
 5. Expanded operator metrics and dead-letter control beyond the implemented status snapshot.
+6. Internally split the `AutomationStore` facade into migration, occurrence and delivery repositories when those areas next change; retain one public store and one database.
 
 This borrows Hermes/OpenClaw's management strengths while keeping BeeMax's stronger SQLite fencing and Pi/Task/Verification integration.

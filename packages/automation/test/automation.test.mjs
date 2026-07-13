@@ -9,13 +9,21 @@ import {
 	computeNextRun,
 	parseDuration,
 } from "../dist/index.js";
-import { AutomationDeliveryWorker, AutomationScheduler, HeartbeatRunner, filterHeartbeatAnswer, isWithinActiveHours } from "@beemax/core";
+import { AutomationDeliveryWorker, AutomationScheduler, HeartbeatRunner, filterHeartbeatAnswer, isVerifiedAutomationOutcome, isWithinActiveHours } from "@beemax/core";
 
 function withStore(run) {
 	const root = mkdtempSync(join(tmpdir(), "beemax-automation-test-"));
 	const store = new AutomationStore(join(root, "state.db"));
 	return Promise.resolve(run(store)).finally(() => { store.close(); rmSync(root, { recursive: true, force: true }); });
 }
+
+test("only an accepted durable Objective is a deliverable automation Outcome", () => {
+	const base = { id:"objective",ownerKey:"owner",kind:"objective",title:"Scheduled work",status:"succeeded",createdAt:0,result:"candidate" };
+	assert.equal(isVerifiedAutomationOutcome({ ...base,verificationStatus:"accepted" }), true);
+	assert.equal(isVerifiedAutomationOutcome({ ...base,verificationStatus:"rejected" }), false);
+	assert.equal(isVerifiedAutomationOutcome({ ...base,status:"running",verificationStatus:"unavailable" }), false);
+	assert.equal(isVerifiedAutomationOutcome(undefined), false);
+});
 
 test("v1.1 Schedule storage migrates additively without losing existing definitions", () => {
 	const root = mkdtempSync(join(tmpdir(), "beemax-automation-migration-"));
@@ -150,6 +158,16 @@ test("run now does not implicitly resume a paused Schedule", () => withStore((st
 	assert.equal(store.get(job.id, owner).enabled, false);
 }));
 
+test("run now preserves the recurring Schedule cadence", () => withStore((store) => {
+	const now = Date.parse("2026-01-01T00:00:00Z");
+	const owner = { platform:"feishu",chatId:"chat",userId:"user" };
+	const job = store.create({ ...owner,name:"Hourly",kind:"agent",scheduleKind:"every",schedule:"1h",text:"Inspect" }, now);
+	assert.equal(store.runNow(job.id, owner, now+1_800_000), true);
+	const claim = store.claimDue(now+1_800_000)[0];
+	assert.equal(store.complete(claim, { startedAt:now+1_800_000,finishedAt:now+1_800_100,status:"ok" }, now+1_800_100), true);
+	assert.equal(store.get(job.id, owner).nextRunAt, now+3_600_000);
+}));
+
 test("Schedule Occurrence history stays bounded during long-running recurring automation", () => withStore((store) => {
 	let now = Date.parse("2026-01-01T00:00:00Z");
 	const owner = { platform:"feishu",chatId:"chat",userId:"user" };
@@ -165,6 +183,28 @@ test("Schedule Occurrence history stays bounded during long-running recurring au
 	assert.equal(store.status(now).deliveryHistory, 100);
 }));
 
+test("skipped misfires and abandoned delivery dead letters stay bounded", () => withStore((store) => {
+	let now = Date.parse("2026-01-01T00:00:00Z");
+	const skippedOwner = { platform:"feishu",chatId:"skipped" };
+	store.create({ ...skippedOwner,name:"Skip",kind:"agent",scheduleKind:"every",schedule:"1s",text:"Inspect",misfirePolicy:"skip",misfireGraceMs:0 }, now);
+	for (let index=0; index<105; index++) { now += 10_000; store.claimDue(now); }
+	assert.equal(store.status(now).occurrenceHistory, 100);
+
+	const failedOwner = { platform:"feishu",chatId:"failed" };
+	const failed = store.create({ ...failedOwner,name:"Dead letters",kind:"agent",scheduleKind:"every",schedule:"1s",text:"Inspect" }, now);
+	for (let index=0; index<105; index++) {
+		now += 1_000;
+		const claim = store.claimDue(now).find((item) => item.id === failed.id);
+		store.complete(claim, { startedAt:now,finishedAt:now,status:"ok",delivery:{kind:"text",text:"result",idempotencyKey:`automation:${claim.occurrenceId}`} }, now);
+		for (let attempt=0; attempt<10; attempt++) {
+			const delivery = store.claimDeliveriesDue(now, 20).find((item) => item.scheduleId === failed.id);
+			store.failDelivery(delivery.id, delivery.claimToken, "offline", now);
+			now += 3_600_001;
+		}
+	}
+	assert.equal(store.status(now).deliveryHistory, 100);
+}));
+
 test("AutomationDeliveryWorker retries channel failure without replaying the settled Schedule execution", () => withStore(async (store) => {
 	const now = Date.parse("2026-01-01T00:00:00Z");
 	const owner = { platform:"telegram",chatId:"chat",userId:"user" };
@@ -172,8 +212,10 @@ test("AutomationDeliveryWorker retries channel failure without replaying the set
 	const claim = store.claimDue(now+600_000)[0];
 	store.complete(claim, { startedAt:now+600_000,finishedAt:now+600_100,status:"ok",output:"done",delivery:{kind:"text",text:"done",idempotencyKey:`automation:${claim.occurrenceId}`} }, now+600_100);
 	let attempts = 0;
-	const worker = new AutomationDeliveryWorker(store, { sendText: async () => { attempts++; if (attempts === 1) throw new Error("offline"); }, sendMedia: async () => undefined });
+	let clock = now+600_100;
+	const worker = new AutomationDeliveryWorker(store, { sendText: async () => { attempts++; if (attempts === 1) throw new Error("offline"); }, sendMedia: async () => undefined }, () => clock);
 	assert.deepEqual(await worker.runOnce(now+600_100), { claimed:1,delivered:0,failed:1 });
+	clock = now+630_100;
 	assert.deepEqual(await worker.runOnce(now+630_100), { claimed:1,delivered:1,failed:0 });
 	assert.equal(store.runs(job.id, owner).length, 1);
 	assert.equal(attempts, 2);
@@ -205,6 +247,30 @@ test("renewing an automation claim extends both execution fencing records", () =
 	assert.equal(store.renewClaim(claim.id, claim.claimToken, now + 3_601_000), true);
 	assert.deepEqual(store.claimDue(now + 3_600_101, 1, 100), []);
 	assert.equal(store.complete(claim, { startedAt:now,finishedAt:now+1,status:"ok" }, now + 3_600_500), true);
+}));
+
+test("Pi execution identity binds durably before an Occurrence settles", () => withStore((store) => {
+	const now = Date.parse("2026-01-01T00:00:00Z");
+	const owner = { platform:"feishu",chatId:"chat" };
+	store.create({ ...owner,name:"Digest",kind:"agent",scheduleKind:"every",schedule:"1h",text:"run" }, now);
+	const claim = store.claimDue(now+3_600_000)[0];
+	assert.equal(store.bindClaimExecution(claim.id, claim.occurrenceId, claim.claimToken, "objective-1", "run-1", now+3_600_001), true);
+	assert.equal(store.complete(claim, { startedAt:now,finishedAt:now+1,status:"error",error:"failed" }, now+3_600_002), true);
+	assert.equal(store.occurrences(claim.id, owner)[0].objectiveId, "objective-1");
+	const retry = store.claimDue(now+3_630_002)[0];
+	assert.equal(retry.occurrenceId, claim.occurrenceId);
+	assert.equal(retry.objectiveId, "objective-1");
+}));
+
+test("expired automation delivery claims cannot settle", () => withStore((store) => {
+	const now = Date.parse("2026-01-01T00:00:00Z");
+	const owner = { platform:"feishu",chatId:"chat" };
+	store.create({ ...owner,name:"Digest",kind:"agent",scheduleKind:"every",schedule:"1h",text:"run" }, now);
+	const claim = store.claimDue(now+3_600_000)[0];
+	store.complete(claim, { startedAt:now,finishedAt:now+1,status:"ok",delivery:{kind:"text",text:"done",idempotencyKey:`automation:${claim.occurrenceId}`} }, now+3_600_001);
+	const delivery = store.claimDeliveriesDue(now+3_600_001, 1, 100)[0];
+	assert.equal(store.completeDelivery(delivery.id, delivery.claimToken, now+3_600_102), false);
+	assert.equal(store.failDelivery(delivery.id, delivery.claimToken, "late", now+3_600_102), false);
 }));
 
 test("scheduler keeps a Schedule as a Trigger and leaves durable responsibility to its executor", async () => {

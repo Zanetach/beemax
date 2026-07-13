@@ -6,6 +6,8 @@
 - Separated verified Pi execution settlement from channel delivery through a durable Delivery Outbox, so channel outages retry delivery without replaying the Agent, Task, or Tool work.
 - Linked Schedule Occurrences to their Pi-created Objective and Task Run, and added `schedule_get`, `schedule_update`, `schedule_run_now`, and `schedule_status` management tools.
 - Kept the Profile Runtime and scheduler alive when every configured channel is temporarily offline; ChannelHost continues supervised reconnect while completed results remain queued for delivery.
+- Deliver scheduled Agent results only after the durable Objective reaches accepted Verification; rejected or unavailable candidates remain recoverable work.
+- Preserve stable Occurrence/Objective lineage across retries, fence expired delivery workers, bound dead letters and skipped history, and keep recurring cadence unchanged after `run now`.
 
 ## 1.1.0
 

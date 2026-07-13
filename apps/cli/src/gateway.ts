@@ -8,7 +8,7 @@
  */
 
 import { AutomationStore } from "@beemax/automation";
-import { ActionGovernance, AutonomyRolloutController, AutomationDeliveryWorker, AutomationScheduler, BeeMaxAgentRuntime, DeterministicSituationBuilder, FileCredentialVault, FileCredentialVaultAuditJournal, HeartbeatRunner, InitiativeRuntime, InitiativeTriggerService, ProactiveInvestigationRuntime, TaskPlanNoticeDeliveryService, TaskTransitionInitiativeAdapter, ToolApprovalBroker, ToolPolicyRegistry, buildActiveTaskPreservationEnvelope, buildTaskPreservationEnvelope, canonicalUserId, containsCredentialMaterial, conversationKey, responsibilityOwnerKey, responsibilityOwnerKeys, createExecutionEnvelope, createSubagentTools, createTaskCheckpoint, createTaskLedgerTools, createTaskOrchestrationTools, decideInitiativeFromSituation, guardVerifiedObjectiveMemoryPublisher, redactCredentialMaterial, renderTaskCheckpoint, type AgentRuntimePort, type BeeMaxAgentRunEvent, type BeeMaxAgentRunEventSink, type ContextCompactionAuditEvent, type DeliveryPort, type ExecutionEnvelope, type ExecutionTraceSink, type InitiativeObservation, type ObjectiveDeliveryInput, type SkillCandidateTrialInput, type SkillTrialAssertion, type SkillTrialToolCall, type SubagentTask, type TaskGraphExecutionContext, type TaskGraphExecutionResult, type TaskGraphVerifier, type TaskLedger, type TaskRecord, type ToolEffectProjectionReader, type VerifiedObjectiveMemoryPublisher } from "@beemax/core";
+import { ActionGovernance, AutonomyRolloutController, AutomationDeliveryWorker, AutomationScheduler, BeeMaxAgentRuntime, DeterministicSituationBuilder, FileCredentialVault, FileCredentialVaultAuditJournal, HeartbeatRunner, InitiativeRuntime, InitiativeTriggerService, ProactiveInvestigationRuntime, TaskPlanNoticeDeliveryService, TaskTransitionInitiativeAdapter, ToolApprovalBroker, ToolPolicyRegistry, buildActiveTaskPreservationEnvelope, buildTaskPreservationEnvelope, canonicalUserId, containsCredentialMaterial, conversationKey, responsibilityOwnerKey, responsibilityOwnerKeys, createExecutionEnvelope, createSubagentTools, createTaskCheckpoint, createTaskLedgerTools, createTaskOrchestrationTools, decideInitiativeFromSituation, guardVerifiedObjectiveMemoryPublisher, isVerifiedAutomationOutcome, redactCredentialMaterial, renderTaskCheckpoint, type AgentRuntimePort, type BeeMaxAgentRunEvent, type BeeMaxAgentRunEventSink, type ContextCompactionAuditEvent, type DeliveryPort, type ExecutionEnvelope, type ExecutionTraceSink, type InitiativeObservation, type ObjectiveDeliveryInput, type SkillCandidateTrialInput, type SkillTrialAssertion, type SkillTrialToolCall, type SubagentTask, type TaskGraphExecutionContext, type TaskGraphExecutionResult, type TaskGraphVerifier, type TaskLedger, type TaskRecord, type ToolEffectProjectionReader, type VerifiedObjectiveMemoryPublisher } from "@beemax/core";
 import {
 	AdapterRegistry,
 	ChannelHost,
@@ -44,7 +44,7 @@ async function runProfileAutomation(
 	runtime: AgentRuntimePort<SessionSource>,
 	source: SessionSource,
 	prompt: string,
-	options: { key: string; timeoutMs: number; signal?: AbortSignal; executionEnvelope?: Readonly<ExecutionEnvelope>; objectiveTaskId?: string; allowedCapabilities?: string[] },
+	options: { key: string; timeoutMs: number; signal?: AbortSignal; executionEnvelope?: Readonly<ExecutionEnvelope>; objectiveTaskId?: string; allowedCapabilities?: string[]; onExecutionStarted?: (envelope:Readonly<ExecutionEnvelope>) => void },
 ): Promise<{ answer: string; objectiveId?: string; taskRunId?: string }> {
 	const automationSource = { ...source, threadId: `__automation:${options.key}`, messageId: undefined };
 	if (options.signal?.aborted) throw options.signal.reason;
@@ -64,7 +64,10 @@ async function runProfileAutomation(
 			...(options.objectiveTaskId ? { objectiveTaskId: options.objectiveTaskId } : {}),
 			...(options.allowedCapabilities ? { allowedCapabilities: options.allowedCapabilities } : {}),
 			...(options.executionEnvelope ? { executionEnvelope: options.executionEnvelope } : {}),
-		}, (event) => { if (event.type === "execution_settled" && event.status === "succeeded") settledEnvelope = event.executionEnvelope; }), ...(aborted ? [aborted] : [])]);
+		}, (event) => {
+			if (event.type === "execution_started") { settledEnvelope = event.executionEnvelope; options.onExecutionStarted?.(event.executionEnvelope); }
+			if (event.type === "execution_settled") settledEnvelope = event.executionEnvelope;
+		}), ...(aborted ? [aborted] : [])]);
 	} finally {
 		options.signal?.removeEventListener("abort", abort);
 	}
@@ -401,10 +404,21 @@ export async function runGateway(config: BeeMaxConfig): Promise<void> {
 			userIdAlt: job.userId,
 		};
 		const timeoutMs = 10 * 60_000;
-		const triggerId = `schedule:${job.id}:${job.nextRunAt}`;
-		const executionEnvelope = createExecutionEnvelope({ executionId: `automation:${job.id}:${job.nextRunAt}`, trigger: { kind: "automation", id: triggerId }, budget: { deadlineAt: Date.now() + timeoutMs, maxCorrectiveAttempts: 1 }, mode: "normal" });
-		const automationResult = await runProfileAutomation(runtime, source, job.text, { key: `schedule:${job.id}`, timeoutMs, signal, executionEnvelope });
+		const triggerId = `schedule:${job.id}:${job.occurrenceId}`;
+		const executionEnvelope = createExecutionEnvelope({ executionId: `automation:${job.occurrenceId}:attempt:${job.occurrenceAttempt}`, trigger: { kind: "automation", id: triggerId },
+			...(job.objectiveId ? { objectiveId:job.objectiveId,taskId:job.objectiveId } : {}), budget: { deadlineAt: Date.now() + timeoutMs, maxCorrectiveAttempts: 1 }, mode: "normal" });
+		const automationResult = await runProfileAutomation(runtime, source, job.text, { key: `schedule:${job.id}`, timeoutMs, signal, executionEnvelope,
+			...(job.objectiveId ? { objectiveTaskId:job.objectiveId } : {}),
+			onExecutionStarted: (envelope) => {
+				if (!envelope.objectiveId) return;
+				if (!automation.bindClaimExecution(job.id, job.occurrenceId, job.claimToken!, envelope.objectiveId, envelope.taskRunId, Date.now())) throw new Error(`Automation execution claim lost: ${job.id}`);
+			},
+		});
 		const answer = automationResult.answer;
+		const objective = automationResult.objectiveId
+			? persistence.taskLedger.queryTasks({ ownerKeys:responsibilityOwnerKeys(source), id:automationResult.objectiveId, kinds:["objective"], limit:1 })[0]
+			: undefined;
+		if (!isVerifiedAutomationOutcome(objective)) throw new Error(`Automation Objective was not verified: ${objective?.verificationStatus ?? "missing"}`);
 		assertClaim();
 		return { output: answer, delivery: { kind: "text" as const, text: `🗓️ ${job.name}\n\n${answer}`, idempotencyKey: `automation:${job.occurrenceId}` },
 			...(automationResult.objectiveId ? { objectiveId: automationResult.objectiveId } : {}), ...(automationResult.taskRunId ? { taskRunId: automationResult.taskRunId } : {}) };

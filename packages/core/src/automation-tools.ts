@@ -31,7 +31,7 @@ export function createAutomationTools(store: AutomationStore, source: BeeMaxRunt
 			const { id, ...patch } = params; const job = store.update(id, patch, owner()); wakeScheduler(); return result(`Updated ${id}; next run ${new Date(job.nextRunAt).toISOString()}`, job);
 		} }),
 		defineTool({ name: "schedule_run_now", label: "Run Schedule Now", description: "Create an immediate due occurrence for an owned Schedule. Requires approval and never bypasses normal execution governance.", parameters: Type.Object({ id: Type.String() }), execute: async (_id, params) => {
-			const changed = store.runNow(params.id, owner()); if (changed) wakeScheduler(); return result(changed ? `Scheduled ${params.id} to run now` : "Schedule not found or currently running", { id: params.id });
+			const changed = store.runNow(params.id, owner()); if (changed) wakeScheduler(); return result(changed ? `Scheduled ${params.id} to run now` : "Schedule not found, paused, already queued manually, or currently running", { id: params.id });
 		} }),
 		defineTool({ name: "schedule_status", label: "Schedule Status", description: "Inspect Profile scheduler health, due work, active claims, retries, and delivery backlog.", parameters: Type.Object({}), execute: async () => result("Scheduler status", store.status()) }),
 		defineTool({ name: "schedule_delete", label: "Delete Scheduled Task", description: "Permanently delete a reminder or scheduled task. Requires approval.", parameters: Type.Object({ id: Type.String() }), execute: async (_id, params) => result(store.remove(params.id, owner()) ? `Deleted ${params.id}` : "Task not found", { id: params.id }) }),
