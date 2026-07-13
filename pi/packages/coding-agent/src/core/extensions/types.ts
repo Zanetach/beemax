@@ -1097,6 +1097,8 @@ export interface SessionBeforeForkResult {
 export interface SessionBeforeCompactResult {
 	cancel?: boolean;
 	compaction?: CompactionResult;
+	/** Override or augment instructions while retaining Pi's native compaction implementation. */
+	customInstructions?: string;
 }
 
 export interface SessionBeforeTreeResult {

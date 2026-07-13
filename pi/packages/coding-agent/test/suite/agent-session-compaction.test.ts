@@ -5,7 +5,7 @@ import {
 	type Model,
 } from "@earendil-works/pi-ai";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { estimateTokens } from "../../src/core/compaction/index.ts";
+import { compact, estimateTokens } from "../../src/core/compaction/index.ts";
 import { createHarness, type Harness } from "./harness.ts";
 
 type SessionWithCompactionInternals = {
@@ -125,6 +125,88 @@ describe("AgentSession compaction characterization", () => {
 		expect(result.estimatedTokensAfter).toBe(estimatedTokensAfter);
 		expect(compactionEntries).toHaveLength(1);
 		expect(harness.session.messages[0]?.role).toBe("compactionSummary");
+	});
+
+	it("lets a compaction hook augment native compaction instructions", async () => {
+		const harness = await createHarness({
+			settings: { compaction: { keepRecentTokens: 1 } },
+			extensionFactories: [(pi) => { pi.on("session_before_compact", (event) => ({ customInstructions: [event.customInstructions, "durable preservation envelope"].filter(Boolean).join("\n") })); }],
+		});
+		harnesses.push(harness); seedCompactableSession(harness);
+		const requests: string[] = [];
+		harness.session.agent.streamFn = (model, context) => {
+			requests.push(JSON.stringify(context));
+			const stream = createAssistantMessageEventStream();
+			queueMicrotask(() => stream.push({ type: "done", reason: "stop", message: { ...fauxAssistantMessage("summary"), api: model.api, provider: model.provider, model: model.id, usage: createUsage(10) } }));
+			return stream;
+		};
+		await harness.session.compact("manual focus");
+		expect(requests.some((request) => request.includes("manual focus"))).toBe(true);
+		expect(requests.some((request) => request.includes("durable preservation envelope"))).toBe(true);
+	});
+
+	it("composes compaction instructions across extension handlers", async () => {
+		const harness = await createHarness({
+			settings: { compaction: { keepRecentTokens: 1 } },
+			extensionFactories: [
+				(pi) => { pi.on("session_before_compact", (event) => ({ customInstructions: [event.customInstructions, "first focus"].filter(Boolean).join("\n") })); },
+				(pi) => { pi.on("session_before_compact", (event) => ({ customInstructions: [event.customInstructions, "second focus"].filter(Boolean).join("\n") })); },
+			],
+		});
+		harnesses.push(harness); seedCompactableSession(harness);
+		const requests: string[] = [];
+		harness.session.agent.streamFn = (model, context) => {
+			requests.push(JSON.stringify(context));
+			const stream = createAssistantMessageEventStream();
+			queueMicrotask(() => stream.push({ type: "done", reason: "stop", message: { ...fauxAssistantMessage("summary"), api: model.api, provider: model.provider, model: model.id, usage: createUsage(10) } }));
+			return stream;
+		};
+		await harness.session.compact();
+		expect(requests.some((request) => request.includes("first focus") && request.includes("second focus"))).toBe(true);
+	});
+
+	for (const reason of ["threshold", "overflow"] as const) {
+		it(`applies compaction hook instructions during ${reason} compaction`, async () => {
+			const harness = await createHarness({
+				settings: { compaction: { keepRecentTokens: 1 } },
+				extensionFactories: [(pi) => { pi.on("session_before_compact", () => ({ customInstructions: "automatic durable envelope" })); }],
+			});
+			harnesses.push(harness); seedCompactableSession(harness);
+			const requests: string[] = [];
+			harness.session.agent.streamFn = (model, context) => {
+				requests.push(JSON.stringify(context));
+				const stream = createAssistantMessageEventStream();
+				queueMicrotask(() => stream.push({ type: "done", reason: "stop", message: { ...fauxAssistantMessage("summary"), api: model.api, provider: model.provider, model: model.id, usage: createUsage(10) } }));
+				return stream;
+			};
+			const sessionInternals = harness.session as unknown as SessionWithCompactionInternals;
+			await sessionInternals._runAutoCompaction(reason, reason === "overflow");
+			expect(harness.sessionManager.getEntries().some((entry) => entry.type === "compaction")).toBe(true);
+			expect(requests.some((request) => request.includes("automatic durable envelope"))).toBe(true);
+		});
+	}
+
+	it("applies preservation instructions to both sides of split-turn compaction", async () => {
+		const harness = await createHarness();
+		harnesses.push(harness);
+		const requests: string[] = [];
+		const streamFn = (model: Model<any>, context: Parameters<NonNullable<typeof harness.session.agent.streamFn>>[1]) => {
+			requests.push(JSON.stringify(context));
+			const stream = createAssistantMessageEventStream();
+			queueMicrotask(() => stream.push({ type: "done", reason: "stop", message: { ...fauxAssistantMessage("summary"), api: model.api, provider: model.provider, model: model.id, usage: createUsage(10) } }));
+			return stream;
+		};
+		await compact({
+			firstKeptEntryId: "kept",
+			messagesToSummarize: [{ role: "user", content: [{ type: "text", text: "older turn" }], timestamp: 1 }],
+			turnPrefixMessages: [{ role: "user", content: [{ type: "text", text: "large current turn prefix" }], timestamp: 2 }],
+			isSplitTurn: true,
+			tokensBefore: 100,
+			fileOps: { read: new Set(), written: new Set(), edited: new Set() },
+			settings: { enabled: true, reserveTokens: 1_000, keepRecentTokens: 1 },
+		}, harness.getModel(), undefined, undefined, "split durable envelope", undefined, undefined, streamFn);
+		expect(requests).toHaveLength(2);
+		expect(requests.every((request) => request.includes("split durable envelope"))).toBe(true);
 	});
 
 	it("throws when compacting without a model", async () => {

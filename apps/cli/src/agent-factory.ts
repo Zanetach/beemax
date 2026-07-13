@@ -55,6 +55,7 @@ export interface AgentFactoryOptions {
 	authorizeTool?: (request: ToolApprovalRequest, signal?: AbortSignal) => Promise<ToolApprovalDecision>;
 	toolEffects?: ToolEffectSink;
 	currentTaskId?: (source: SessionSource) => string | undefined;
+	compactionInstructions?: (source: SessionSource) => string | undefined;
 	memoryStore?: MemoryToolStore;
 	customTools?: ToolDefinition[];
 	sessionTools?: (source: SessionSource) => ToolDefinition[];
@@ -85,6 +86,7 @@ export function buildAgentFactory(opts: AgentFactoryOptions) {
 		toolAudit: toolAudit.append,
 		toolEffects: opts.toolEffects,
 		currentTaskId: opts.currentTaskId,
+		compactionInstructions: opts.compactionInstructions,
 		authorizeTool: opts.authorizeTool ? async (source, toolName, args, policy, signal) => opts.authorizeTool!({ source, toolName, args, policy }, signal) : undefined,
 		createTools: (source, onResourcesChanged, getRuntimeApiKey, activateTools) => {
 			const browserTools = createBrowserTools({ credentials: opts.credentials });

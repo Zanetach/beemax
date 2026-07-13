@@ -41,6 +41,8 @@ export interface BeeMaxRuntimeFactoryOptions<Source extends BeeMaxRuntimeSource 
 	toolAudit?: ToolRuntimeAuditSink;
 	toolEffects?: ToolEffectSink;
 	currentTaskId?: (source: Source) => string | undefined;
+	/** Durable preservation instructions injected into Pi manual and automatic compaction. */
+	compactionInstructions?: (source: Source) => string | undefined;
 }
 
 const reloadPending = new WeakSet<AgentSession>();
@@ -80,6 +82,21 @@ export function buildBeeMaxRuntimeFactory<Source extends BeeMaxRuntimeSource = B
 			// Discovery is owned by capability_discover. Keep Skills registered for
 			// explicit /skill:name compatibility without injecting the full catalog.
 			skillsOverride: (base) => ({ ...base, skills: filterEligibleSkills(base.skills, opts.skillToolset).map((skill) => ({ ...skill, disableModelInvocation: true })) }),
+			extensionFactories: opts.compactionInstructions ? [{ name: "beemax-compaction-preservation", factory: (pi) => {
+				pi.on("session_before_compact", (event) => {
+					let preservation: string | undefined;
+					try {
+						preservation = opts.compactionInstructions?.(source);
+					} catch {
+						// Compaction must not destroy the only durable recovery context merely
+						// because preservation assembly failed.
+						return { cancel: true };
+					}
+					if (!preservation) return;
+					if (event.customInstructions?.includes(preservation)) return { customInstructions: event.customInstructions };
+					return { customInstructions: [event.customInstructions, preservation].filter(Boolean).join("\n\n") };
+				});
+			} }] : [],
 		});
 		await resourceLoader.reload();
 		const sessionManager = await restoreOrCreateSession(cwd, sessionDir, sessionId);

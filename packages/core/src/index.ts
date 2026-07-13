@@ -82,6 +82,7 @@ export {
 export { SessionCatalog, type SavedSessionChoice, type SessionPreferences } from "./session-catalog.ts";
 export {
 	BeeMaxAgentRuntime,
+	buildTaskPreservationEnvelope,
 	AgentRunError,
 	isRecoverableModelFailure,
 	type AgentRunInput,

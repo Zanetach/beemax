@@ -789,6 +789,7 @@ export async function compact(
 			signal,
 			thinkingLevel,
 			streamFn,
+			customInstructions,
 		);
 		// Merge into single summary
 		summary = `${historyResult}\n\n---\n\n**Turn Context (split turn):**\n\n${turnPrefixResult}`;
@@ -838,6 +839,7 @@ async function generateTurnPrefixSummary(
 	signal?: AbortSignal,
 	thinkingLevel?: ThinkingLevel,
 	streamFn?: StreamFn,
+	customInstructions?: string,
 ): Promise<string> {
 	const maxTokens = Math.min(
 		Math.floor(0.5 * reserveTokens),
@@ -845,7 +847,8 @@ async function generateTurnPrefixSummary(
 	); // Smaller budget for turn prefix
 	const llmMessages = convertToLlm(messages);
 	const conversationText = serializeConversation(llmMessages);
-	const promptText = `<conversation>\n${conversationText}\n</conversation>\n\n${TURN_PREFIX_SUMMARIZATION_PROMPT}`;
+	const focus = customInstructions ? `\n\nAdditional focus: ${customInstructions}` : "";
+	const promptText = `<conversation>\n${conversationText}\n</conversation>\n\n${TURN_PREFIX_SUMMARIZATION_PROMPT}${focus}`;
 	const summarizationMessages = [
 		{
 			role: "user" as const,

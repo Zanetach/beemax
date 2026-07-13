@@ -8,7 +8,7 @@
  */
 
 import { AutomationStore } from "@beemax/automation";
-import { AutonomousPlanningPolicy, AutomationScheduler, BeeMaxAgentRuntime, FileCredentialVault, FileCredentialVaultAuditJournal, FileToolEffectJournal, HeartbeatRunner, ObjectiveRuntime, ProfileTaskScheduler, SubagentManager, TaskPlanNoticeDeliveryService, TaskPlanRuntime, TaskRecoveryRunner, TaskRecoveryService, ToolApprovalBroker, conversationKey, createSubagentTools, createTaskLedgerTools, createTaskOrchestrationTools, redactCredentialMaterial, type BeeMaxAgentRunEventSink, type ObjectiveDeliveryInput, type SkillCandidateTrialInput, type SkillTrialAssertion, type SkillTrialToolCall, type SubagentTask, type TaskGraphExecutionContext, type TaskGraphVerifier, type TaskLedger, type TaskRecord } from "@beemax/core";
+import { AutonomousPlanningPolicy, AutomationScheduler, BeeMaxAgentRuntime, FileCredentialVault, FileCredentialVaultAuditJournal, FileToolEffectJournal, HeartbeatRunner, ObjectiveRuntime, ProfileTaskScheduler, SubagentManager, TaskPlanNoticeDeliveryService, TaskPlanRuntime, TaskRecoveryRunner, TaskRecoveryService, ToolApprovalBroker, buildTaskPreservationEnvelope, conversationKey, createSubagentTools, createTaskLedgerTools, createTaskOrchestrationTools, redactCredentialMaterial, type BeeMaxAgentRunEventSink, type ObjectiveDeliveryInput, type SkillCandidateTrialInput, type SkillTrialAssertion, type SkillTrialToolCall, type SubagentTask, type TaskGraphExecutionContext, type TaskGraphVerifier, type TaskLedger, type TaskRecord } from "@beemax/core";
 import {
 	Dispatcher,
 	FeishuAdapter,
@@ -220,6 +220,7 @@ export async function runGateway(config: BeeMaxConfig): Promise<void> {
 		authorizeTool: (request, signal) => approvalBroker.authorize(request, signal),
 		toolEffects,
 		currentTaskId: (source) => approvalBroker.executionGrant(source)?.taskId,
+		compactionInstructions: (source) => buildTaskPreservationEnvelope(memory.queryTasks({ ownerKeys: [conversationKey(source)], statuses: ["pending", "running"], limit: 20 })),
 		credentials: credentialVault ? { ownerKey: `profile:${config.profile}`, vault: credentialVault } : undefined,
 	});
 

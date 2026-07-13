@@ -162,7 +162,7 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 				? this.taskLedger.queryTasks({ ownerKeys: [conversationKey(input.source)], ...(input.objectiveTaskId ? { id: input.objectiveTaskId } : { kinds: ["objective"], statuses: ["pending", "running"] }), limit: 1 })[0]
 				: undefined;
 			const understanding = input.mode === "interactive" || !input.mode ? this.turnUnderstanding.understand(input.text, { activeObjective: activeObjective?.title }) : undefined;
-			const taskPreservation = activeObjective && (Boolean(input.objectiveTaskId) || understanding?.action === "continue") ? taskPreservationEnvelope([activeObjective], 6_000) : undefined;
+			const taskPreservation = activeObjective && (Boolean(input.objectiveTaskId) || understanding?.action === "continue") ? buildTaskPreservationEnvelope([activeObjective], 6_000) : undefined;
 			const contextAssembly = (input.mode === "interactive" || !input.mode) && this.context && typeof this.context.assemble === "function"
 				? this.context.assemble(input.source, requestedText, { model: modelOf(session.piSession.agent), memoryQuery: understanding?.memoryQuery }, taskPreservation ? [{ kind: "task_preservation", source: "task_ledger", priority: 110, compressible: false, text: taskPreservation }] : []) : undefined;
 			const recalledText = contextAssembly?.text ?? ((input.mode === "interactive" || !input.mode)
@@ -341,9 +341,8 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 	async compact(source: Source, instructions?: string): Promise<boolean> {
 		return (await this.sessions.withSession(source, async (session) => {
 			if (session.busy) return false;
-			const owners = [...new Set([conversationKey(source), conversationOwnerKey(source), "profile"])];
-			const active = this.taskLedger && typeof this.taskLedger.queryTasks === "function" ? this.taskLedger.queryTasks({ ownerKeys: owners, statuses: ["pending", "running"], limit: 20 }) : [];
-			const envelope = taskPreservationEnvelope(active);
+			const active = this.taskLedger && typeof this.taskLedger.queryTasks === "function" ? this.taskLedger.queryTasks({ ownerKeys: [conversationKey(source)], statuses: ["pending", "running"], limit: 20 }) : [];
+			const envelope = buildTaskPreservationEnvelope(active);
 			await session.piSession.compact([instructions, envelope].filter(Boolean).join("\n\n") || undefined);
 			return true;
 		})) ?? false;
@@ -445,7 +444,7 @@ function capabilityDiscoveryMetadata(result: unknown, knownTools: ReadonlySet<st
 	return { hasMatches, candidates, activatedTools };
 }
 
-function taskPreservationEnvelope(tasks: readonly TaskRecord[], maxBytes = 40_000): string | undefined {
+export function buildTaskPreservationEnvelope(tasks: readonly TaskRecord[], maxBytes = 40_000): string | undefined {
 	if (!tasks.length) return undefined;
 	const safe = (value: string | undefined) => value === undefined ? undefined : redactCredentialMaterial(value);
 	const payload = JSON.stringify(tasks.map((task) => ({

@@ -749,6 +749,7 @@ export class ExtensionRunner {
 	async emit<TEvent extends RunnerEmitEvent>(event: TEvent): Promise<RunnerEmitResult<TEvent>> {
 		const ctx = this.createContext();
 		let result: SessionBeforeEventResult | undefined;
+		let compactInstructions = event.type === "session_before_compact" ? event.customInstructions : undefined;
 
 		for (const ext of this.extensions) {
 			const handlers = ext.handlers.get(event.type);
@@ -756,10 +757,19 @@ export class ExtensionRunner {
 
 			for (const handler of handlers) {
 				try {
-					const handlerResult = await handler(event, ctx);
+					const handlerEvent = event.type === "session_before_compact"
+						? { ...event, customInstructions: compactInstructions }
+						: event;
+					const handlerResult = await handler(handlerEvent as TEvent, ctx);
 
 					if (this.isSessionBeforeEvent(event) && handlerResult) {
-						result = handlerResult as SessionBeforeEventResult;
+						const nextResult = handlerResult as SessionBeforeEventResult;
+						if (event.type === "session_before_compact" && "customInstructions" in nextResult) {
+							compactInstructions = nextResult.customInstructions;
+						}
+						result = event.type === "session_before_compact"
+							? { ...result, ...nextResult, customInstructions: compactInstructions }
+							: nextResult;
 						if (result.cancel) {
 							return result as RunnerEmitResult<TEvent>;
 						}

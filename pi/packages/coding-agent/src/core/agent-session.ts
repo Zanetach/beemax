@@ -1794,6 +1794,7 @@ export class AgentSession {
 
 			let extensionCompaction: CompactionResult | undefined;
 			let fromExtension = false;
+			let effectiveCustomInstructions = customInstructions;
 
 			if (this._extensionRunner.hasHandlers("session_before_compact")) {
 				const result = (await this._extensionRunner.emit({
@@ -1814,6 +1815,7 @@ export class AgentSession {
 					extensionCompaction = result.compaction;
 					fromExtension = true;
 				}
+				if (result?.customInstructions !== undefined) effectiveCustomInstructions = result.customInstructions;
 			}
 
 			let summary: string;
@@ -1834,7 +1836,7 @@ export class AgentSession {
 					this.model,
 					apiKey,
 					headers,
-					customInstructions,
+					effectiveCustomInstructions,
 					this._compactionAbortController.signal,
 					this.thinkingLevel,
 					this.agent.streamFn,
@@ -2061,6 +2063,7 @@ export class AgentSession {
 
 			let extensionCompaction: CompactionResult | undefined;
 			let fromExtension = false;
+			let effectiveCustomInstructions: string | undefined;
 
 			if (this._extensionRunner.hasHandlers("session_before_compact")) {
 				const extensionResult = (await this._extensionRunner.emit({
@@ -2088,6 +2091,7 @@ export class AgentSession {
 					extensionCompaction = extensionResult.compaction;
 					fromExtension = true;
 				}
+				if (extensionResult?.customInstructions !== undefined) effectiveCustomInstructions = extensionResult.customInstructions;
 			}
 
 			let summary: string;
@@ -2108,7 +2112,7 @@ export class AgentSession {
 					this.model,
 					apiKey,
 					headers,
-					undefined,
+					effectiveCustomInstructions,
 					this._autoCompactionAbortController.signal,
 					this.thinkingLevel,
 					this.agent.streamFn,
