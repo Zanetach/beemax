@@ -67,7 +67,7 @@
 仍按本 PRD 后续阶段实施，不计为本切片完成：
 
 - Shared Channel Relay 与跨进程 Profile 路由。
-- 钉钉、企业微信等新增 Adapter，以及完整 Channel Runtime 包拆分。
+- 钉钉、企业微信等新增 Adapter；Channel Runtime 包拆分已完成并由独立包、契约测试和架构门禁验收。
 
 ---
 

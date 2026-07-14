@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createExecutionEnvelope, FileExecutionTraceStore, FileInteractionInputQueueStore } from "../packages/core/dist/index.js";
-import { CardSession } from "../packages/gateway/dist/card/session.js";
+import { CardSession } from "../packages/channel-feishu/dist/index.js";
 
 if (typeof global.gc !== "function") throw new Error("memory stability gate requires node --expose-gc");
 
