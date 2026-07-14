@@ -44,7 +44,7 @@ Pi owns model interaction, tools, session events, and live compaction. BeeMax Co
 Linux and macOS require Node.js 22.19 or newer, `curl`, `tar`, `npm`, and either `sha256sum` or `shasum`.
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/Zanetach/beemax/v1.1.0/scripts/bootstrap-install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/Zanetach/beemax/v1.2.0/scripts/bootstrap-install.sh | bash
 ```
 
 The installer downloads a checksum-verified release archive containing BeeMax and the vendored Pi source. Application files go to `~/.beemax/app`; the command is installed to `~/.local/bin`.
@@ -539,7 +539,7 @@ bash scripts/create-release-archive.sh "$VERSION"
 bash scripts/verify-release-archive.sh "$VERSION"
 ```
 
-Tag, root package, and every BeeMax workspace version must match. The archive verifier checks checksum portability, source layout, isolated installation, rebuild, and CLI startup.
+Tag, root package, every BeeMax workspace, internal dependency, and Changelog release section must match. The archive verifier checks checksum portability, source layout, isolated installation, rebuild, Profile reload, and packaged Skills.
 
 ## Repository layout
 
@@ -547,7 +547,10 @@ Tag, root package, and every BeeMax workspace version must match. The archive ve
 apps/cli/                         CLI, Profile composition, setup, services
 packages/core/                    Agent semantics and the sole Pi runtime seam
 packages/memory/                  SQLite/FTS5 Memory and durable authorities
-packages/gateway/                 Channel control plane and card presentation
+packages/channel-runtime/         Platform-neutral channel contracts and lifecycle
+packages/channel-feishu/          Feishu transport and rich presentation Adapter
+packages/channel-telegram/        Telegram transport Adapter
+packages/gateway/                 Channel-neutral interaction orchestration and governance
 packages/automation/              Schedule persistence and time calculation
 packages/knowledge/               WeKnora capability adapter
 packages/mcp-capability/          MCP client capability

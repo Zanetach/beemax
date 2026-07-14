@@ -1,11 +1,11 @@
 {
   "name": "@beemax/channel-telegram",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "private": true,
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "exports": { ".": { "types": "./dist/index.d.ts", "import": "./dist/index.js" } },
   "scripts": { "build": "tsgo -p tsconfig.build.json", "typecheck": "tsgo --noEmit -p tsconfig.build.json" },
-  "dependencies": { "@beemax/channel-runtime": "1.1.0" }
+  "dependencies": { "@beemax/channel-runtime": "1.2.0" }
 }

@@ -7,21 +7,7 @@ VERSION="${1:?Usage: scripts/create-release-archive.sh <version> [output-directo
 OUTPUT_DIR="${2:-${ROOT}/dist/release}"
 ARCHIVE_NAME="beemax-${VERSION}.tar.gz"
 
-package_version() {
-	node -e 'const fs=require("fs"); process.stdout.write(JSON.parse(fs.readFileSync(process.argv[1],"utf8")).version)' "$1"
-}
-
-ROOT_PACKAGE_VERSION="$(package_version "${ROOT}/package.json")"
-[[ "${VERSION}" == "v${ROOT_PACKAGE_VERSION}" ]] || {
-	echo "Release tag ${VERSION} does not match package version v${ROOT_PACKAGE_VERSION}" >&2
-	exit 1
-}
-for manifest in "${ROOT}/apps/cli/package.json" "${ROOT}"/packages/*/package.json; do
-	[[ "$(package_version "${manifest}")" == "${ROOT_PACKAGE_VERSION}" ]] || {
-		echo "BeeMax workspace version does not match ${ROOT_PACKAGE_VERSION}: ${manifest}" >&2
-		exit 1
-	}
-done
+node "${ROOT}/scripts/verify-release-version.mjs" "${ROOT}" "${VERSION}"
 
 [[ -f "${ROOT}/pi/package.json" ]] || {
 	echo "Vendored Pi source is missing from this BeeMax checkout" >&2

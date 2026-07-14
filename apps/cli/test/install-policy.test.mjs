@@ -103,8 +103,7 @@ test("release archive includes Pi and excludes git metadata and dependencies", a
 	assert.match(packager, /--exclude='\.\/docs'/);
 	assert.match(packager, /--exclude='\.\/data'/);
 	assert.match(packager, /RELEASE_VERSION/);
-	assert.match(packager, /does not match package version/);
-	assert.match(packager, /workspace version does not match/);
+	assert.match(packager, /verify-release-version\.mjs/);
 	assert.match(packager, /command -v sha256sum/);
 	assert.match(packager, /command -v shasum/);
 	assert.match(packager, /cd "\$\{OUTPUT_DIR\}"/);
@@ -124,8 +123,7 @@ test("tag releases pass build, test, and isolated archive installation gates bef
 	assert.match(verifier, /sha256/);
 	assert.match(verifier, /portable archive filename/);
 	assert.match(verifier, /RELEASE_VERSION/);
-	assert.match(verifier, /release tag does not match package version/);
-	assert.match(verifier, /workspace version mismatch/);
+	assert.match(verifier, /verify-release-version\.mjs/);
 	assert.match(verifier, /node_modules/);
 	assert.match(verifier, /BEEMAX_BIN_DIR/);
 	assert.match(verifier, /BEEMAX_INSTALL_MEDIA_DEPS=0/);

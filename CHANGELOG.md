@@ -2,12 +2,20 @@
 
 ## Unreleased
 
+## 1.2.0
+
 - Added durable Schedule Occurrences with stable due-time identity, renewable fenced claims, bounded retry budgets, explicit skip/run-once misfire policy, and retained one-shot audit history.
 - Separated verified Pi execution settlement from channel delivery through a durable Delivery Outbox, so channel outages retry delivery without replaying the Agent, Task, or Tool work.
 - Linked Schedule Occurrences to their Pi-created Objective and Task Run, and added `schedule_get`, `schedule_update`, `schedule_run_now`, and `schedule_status` management tools.
 - Kept the Profile Runtime and scheduler alive when every configured channel is temporarily offline; ChannelHost continues supervised reconnect while completed results remain queued for delivery.
 - Deliver scheduled Agent results only after the durable Objective reaches accepted Verification; rejected or unavailable candidates remain recoverable work.
 - Preserve stable Occurrence/Objective lineage across retries, fence expired delivery workers, bound dead letters and skipped history, and keep recurring cadence unchanged after `run now`.
+- Added deterministic multi-instance Profile Bindings, group Conversation/Actor separation, bounded contextual activation and observation, governed proactive delivery, ingress backpressure, and Profile Host lifecycle isolation.
+- Added explicit, fenced migrations for legacy Channel Instance and shared-session ownership, including integrity manifests, rollback protection, and operator diagnostics.
+- Split the platform-neutral Channel Runtime, Feishu Adapter, and Telegram Adapter into independent packages; rich presentation now stays behind the Adapter-owned `InteractionPresenter` seam with declared capability fallbacks.
+- Added a hardened Docker Execution Sandbox with CPU, memory, PID, filesystem, network, capability, output, timeout, cancellation, and workspace-access controls while retaining explicit trusted-host execution.
+- Added Ubuntu 24.04 resource high-water gates for RSS, SQLite size, queues, concurrency, systemd limits, and Docker isolation, plus release security evidence for Profile and Memory separation and exactly-once Effects.
+- Hardened clean builds and release archives so stale generated modules cannot mask failures; isolated archive smoke now creates and reloads a Profile and verifies packaged Skills without inheriting host BeeMax state.
 
 ## 1.1.0
 
