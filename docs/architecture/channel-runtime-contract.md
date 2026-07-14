@@ -2,7 +2,7 @@
 
 CLI、Feishu/Lark、Telegram 和未来渠道只能是同一个 Profile Runtime 的输入、呈现与投递 adapter。渠道不得拥有自己的 Task、Effect、Memory、Policy、Verification、Recovery 或 Agent Loop。
 
-## Gateway 1.1 运行形态
+## Gateway 1.2 运行形态
 
 一个 Profile Gateway 由 `AdapterRegistry + ChannelHost + GatewayDeliveryPort` 构成。Registry 只按配置声明创建 adapter；ChannelHost 统一管理启用渠道的启动、失败隔离、暂停、恢复与关闭；DeliveryPort 按 `DeliveryTarget.platform` 选择已连接 adapter。所有 Dispatcher 共享同一个由 `createProfileRuntime` 产生的 Runtime、Interaction adapter 和 durable work graph。
 

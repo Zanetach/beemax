@@ -90,7 +90,7 @@ beemax channel test telegram --profile personal
 beemax channel list --profile personal
 ```
 
-## What ships in 1.1
+## What ships in 1.2
 
 | Area | Implemented surface |
 | --- | --- |
@@ -101,10 +101,10 @@ beemax channel list --profile personal
 | Effects | One authority for mutating Tool Effects, idempotency, provider receipts, unknown outcomes, reconciliation, and compensation |
 | Initiative | Evidence-gated observation and read-only investigation with duplicate and interruption controls |
 | Context | Model-aware budgets, bounded Tool results, Pi compaction, Task Preservation Envelopes, and restart-safe recovery context |
-| Channels | Registry-based ChannelHost, shared Profile Runtime, Feishu/Lark streaming cards, Telegram text/media, access boundaries, idempotency, delivery routing, and service lifecycle |
+| Channels | Independent Channel Runtime and Adapter packages, deterministic multi-instance Bindings, shared group Conversations, bounded contextual activation, Feishu/Lark streaming cards, Telegram text/media, governed delivery, and Profile lifecycle isolation |
 | Images | Native model vision, auxiliary configured vision models, local Tesseract OCR, and optional GPT Image generation |
 | Capabilities | Progressive Skills, Web research, MCP, WeKnora retrieval, Feishu meetings, files, schedules, reminders, and bounded Sub-Agents |
-| Operations | Doctor, Profile backup, explicit Channel Instance ownership migration, Linux systemd, macOS LaunchAgent, logs, traces, Effect inspection, and verified updates |
+| Operations | Doctor, Profile backup, explicit Channel/Session ownership migration, hardened Docker execution, Ubuntu resource gates, Linux systemd, macOS LaunchAgent, logs, traces, Effect inspection, and verified updates |
 
 ## Architecture
 
@@ -576,12 +576,12 @@ docs/                             Architecture, ADRs, operations, PRD, and resea
 
 ## Current boundaries
 
-BeeMax 1.1 intentionally does not include a fixed customer business ontology, a second Agent Loop, high-risk fully autonomous execution, large multi-Agent organizations, or automatic production Skill mutation.
+BeeMax 1.2 intentionally does not include a fixed customer business ontology, a second Agent Loop, high-risk fully autonomous execution, large multi-Agent organizations, or automatic production Skill mutation.
 
 Planned extension points include additional registry adapters such as Slack, Discord, DingTalk, and WeCom; Feishu User OAuth for private resources; externally backed work queues for larger horizontal deployments; and deeper enterprise policy integrations.
 
 ---
 
-**中文简介：** BeeMax 1.1 是一个基于 Pi 的持久化智能体运行时。它通过同一个 Profile Gateway 接入飞书/Lark、Telegram 与未来渠道，通过 Situation/Work Context 理解未知业务语义，以作用域 Memory 保存证据。
+**中文简介：** BeeMax 1.2 是一个基于 Pi 的持久化智能体运行时。它通过同一个 Profile Gateway 接入飞书/Lark、Telegram 与未来渠道，通过 Situation/Work Context 理解未知业务语义，以作用域 Memory 保存证据。
 
 Task Ledger、Effect、Checkpoint 和 Verification 共同承担可恢复责任，企业策略与审批负责约束执行边界。
