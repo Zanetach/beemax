@@ -22,8 +22,8 @@ import {
 	assessProfileChannelHealth,
 	assertProfileBindingConfiguration,
 } from "@beemax/gateway";
-import { FeishuAdapter, type FeishuSettings } from "@beemax/channel-feishu";
-import { TelegramAdapter } from "@beemax/channel-telegram";
+import { createFeishuAdapterRegistration, type FeishuAdapter, type FeishuSettings } from "@beemax/channel-feishu";
+import { createTelegramAdapterRegistration } from "@beemax/channel-telegram";
 import { loadMcpConfig, McpManager } from "@beemax/mcp-capability";
 import { buildAgentFactory } from "./agent-factory.ts";
 import { MemoryStore, memoryPersistencePorts, type OrganizationMemoryPort } from "@beemax/memory";
@@ -138,24 +138,33 @@ export async function runGateway(config: BeeMaxConfig): Promise<void> {
 		},
 	};
 	const adapterRegistry = new AdapterRegistry();
-	let feishuAdapter: FeishuAdapter | undefined;
-	adapterRegistry.register({
-		id: "feishu",
-		create: (instance) => {
-			assertChannelCredentialRef(instance.credentialRef, "feishu");
-			if (!config.gateway.feishu.appId || !config.gateway.feishu.appSecret) throw new Error("Feishu credentials missing from the Profile secret environment");
-			feishuAdapter = new FeishuAdapter(feishuSettings);
-			return feishuAdapter;
+	const feishuAdapters = new Map<string, FeishuAdapter>();
+	const feishuInstanceCount = enabledChannels.filter((channel) => channel.adapter === "feishu").length;
+	const { appId: _legacyFeishuAppId, appSecret: _legacyFeishuAppSecret, webhookVerificationToken: _legacyWebhookToken, webhookEncryptKey: _legacyWebhookKey, ...legacyFeishuDefaults } = feishuSettings;
+	adapterRegistry.register(createFeishuAdapterRegistration({
+		defaults: (instance) => instance.credentialRef === "profile-env:feishu"
+			? legacyFeishuDefaults
+			: {
+				domain: "feishu", connectionMode: "websocket", requireMention: true,
+				allowedUsers: [], allowedChats: [], allowAllUsers: false, groupPolicy: "allowlist", groupRules: {}, admins: [],
+				pairing, ...(feishuInstanceCount === 1 ? { setHomeChat: feishuSettings.setHomeChat } : {}),
+			},
+		resolveCredentials: (instance) => {
+			const credential = instance.credentialRef ? config.gateway.channelCredentials[instance.credentialRef] : undefined;
+			return credential?.adapter === "feishu" ? credential : undefined;
 		},
-	});
-	adapterRegistry.register({
-		id: "telegram",
-		create: (instance) => {
-			assertChannelCredentialRef(instance.credentialRef, "telegram");
-			if (!config.gateway.telegram.botToken) throw new Error("Telegram bot token missing from the Profile secret environment");
-			return new TelegramAdapter(config.gateway.telegram);
+		onCreated: (instance, adapter) => { feishuAdapters.set(instance.id, adapter); },
+	}));
+	const { botToken: _legacyTelegramToken, ...legacyTelegramDefaults } = config.gateway.telegram;
+	adapterRegistry.register(createTelegramAdapterRegistration({
+		defaults: (instance) => instance.credentialRef === "profile-env:telegram"
+			? legacyTelegramDefaults
+			: { allowedUsers: [], allowedChats: [], allowAllUsers: false },
+		resolveCredentials: (instance) => {
+			const credential = instance.credentialRef ? config.gateway.channelCredentials[instance.credentialRef] : undefined;
+			return credential?.adapter === "telegram" ? credential : undefined;
 		},
-	});
+	}));
 	const channelHost = new ChannelHost(adapterRegistry, enabledChannels, { connectAttempts: 3, retryBaseDelayMs: 1_000, retryMaxDelayMs: 30_000, requireConnectedOnStart: false });
 	const gatewayVersion = installedVersion();
 	const rawDeliveryPort = new GatewayDeliveryPort(channelHost);
@@ -219,7 +228,8 @@ export async function runGateway(config: BeeMaxConfig): Promise<void> {
 	profileStartupCleanup.push(() => approvalBroker.dispose());
 	const readOnlyMcpTools = mcp.getTools().filter((tool) => tool.beemaxPolicy?.sideEffect === "none");
 	const mainMcpTools = config.agent.toolset === "safe" ? readOnlyMcpTools : mcp.getTools();
-	const feishuMeetingTools = feishuAdapter ? createFeishuMeetingTools(() => feishuAdapter!.apiClient) : [];
+	const soleFeishuAdapter = feishuAdapters.size === 1 ? [...feishuAdapters.values()][0] : undefined;
+	const feishuMeetingTools = soleFeishuAdapter ? createFeishuMeetingTools(() => soleFeishuAdapter.apiClient) : [];
 	const automationToolNames = executionSafeTools(config, readOnlyAgentTools(readOnlyMcpTools.map((tool) => tool.name), [
 		"schedule_get", "schedule_list", "schedule_runs", "schedule_status", "feishu_meeting_get", "feishu_meeting_list",
 		"feishu_meeting_reserve_get", "feishu_meeting_reserve_active_get", "feishu_meeting_recording_get",
@@ -1032,9 +1042,4 @@ async function settleBackgroundWork(work: Promise<unknown>, timeoutMs: number, l
 	} finally {
 		if (timer) clearTimeout(timer);
 	}
-}
-
-function assertChannelCredentialRef(credentialRef: string | undefined, adapter: string): void {
-	if (credentialRef === `profile-env:${adapter}`) return;
-	throw new Error(`Unsupported Credential Ref for ${adapter}: expected profile-env:${adapter}`);
 }

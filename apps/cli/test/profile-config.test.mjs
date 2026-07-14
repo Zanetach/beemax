@@ -152,6 +152,35 @@ gateway:
 	assert.doesNotMatch(await readFile(paths.configPath, "utf8"), /telegram-secret/);
 });
 
+test("runtime config resolves distinct Profile environment credentials for same-platform Channel Instances", async () => {
+	const home = await mkdtemp(join(tmpdir(), "beemax-channel-instance-credentials-"));
+	const paths = await createProfile("multi-channel", { home });
+	await writeFile(paths.configPath, `gateway:
+  channels:
+    - id: alerts-cn
+      adapter: telegram
+      enabled: true
+      credentialRef: profile-env:channel:alerts-cn
+      settings: { allowedUsers: ["1"], allowedChats: [], allowAllUsers: false }
+    - id: alerts-eu
+      adapter: telegram
+      enabled: true
+      credentialRef: profile-env:channel:alerts-eu
+      settings: { allowedUsers: ["2"], allowedChats: [], allowAllUsers: false }
+`);
+	await writeFile(paths.envPath, [
+		'BEEMAX_CHANNEL_ALERTS_CN_BOT_TOKEN="token-cn"',
+		'BEEMAX_CHANNEL_ALERTS_EU_BOT_TOKEN="token-eu"',
+		"",
+	].join("\n"), { mode: 0o600 });
+	const config = loadConfig(paths.configPath, "multi-channel");
+	assert.deepEqual(config.gateway.channelCredentials, {
+		"profile-env:channel:alerts-cn": { adapter: "telegram", botToken: "token-cn" },
+		"profile-env:channel:alerts-eu": { adapter: "telegram", botToken: "token-eu" },
+	});
+	assert.notEqual(config.gateway.channelCredentials[config.gateway.channels[0].credentialRef].botToken, config.gateway.channelCredentials[config.gateway.channels[1].credentialRef].botToken);
+});
+
 test("runtime config exposes transport-neutral Feishu contextual activation with per-group overrides", async () => {
 	const home = await mkdtemp(join(tmpdir(), "beemax-activation-home-"));
 	const paths = await createProfile("activation", { home });
