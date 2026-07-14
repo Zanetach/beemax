@@ -130,10 +130,13 @@ test("tag releases pass build, test, and isolated archive installation gates bef
 	assert.match(verifier, /BEEMAX_BIN_DIR/);
 	assert.match(verifier, /BEEMAX_INSTALL_MEDIA_DEPS=0/);
 	assert.match(verifier, /scripts\/install\.sh/);
-	assert.match(verifier, /beemax.*--help/);
-	assert.match(verifier, /beemax.*profile create release-smoke/);
-	assert.match(verifier, /beemax.*profile show release-smoke/);
-	assert.match(verifier, /beemax.*skills list --profile release-smoke/);
+	assert.match(verifier, /run_beemax --help/);
+	assert.match(verifier, /env -i/);
+	assert.match(verifier, /SMOKE_HOME="\$\{STAGING\}\/home\/\.beemax"/);
+	assert.match(verifier, /BEEMAX_HOME="\$\{SMOKE_HOME\}"/);
+	assert.match(verifier, /run_beemax profile create release-smoke/);
+	assert.match(verifier, /run_beemax profile show release-smoke/);
+	assert.match(verifier, /run_beemax skills list --profile release-smoke/);
 	assert.doesNotMatch(workflow, /uses:\s+actions\/checkout@v4\s*\n\s+with:\s*$/m);
 	assert.doesNotMatch(ci, /uses:\s+actions\/checkout@v4\s*\n\s+with:\s*$/m);
 	assert.match(workflow, /--latest/);

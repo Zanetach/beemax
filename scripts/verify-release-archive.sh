@@ -43,14 +43,18 @@ if find "${SOURCE}" \( -name .git -o -name node_modules -o -name dist -o -name '
 fi
 
 mkdir -p "${STAGING}/home" "${STAGING}/bin"
-HOME="${STAGING}/home" BEEMAX_BIN_DIR="${STAGING}/bin" BEEMAX_INSTALL_MEDIA_DEPS=0 bash "${SOURCE}/scripts/install.sh"
-HELP_OUTPUT="$(HOME="${STAGING}/home" "${STAGING}/bin/beemax" --help)"
+SMOKE_HOME="${STAGING}/home/.beemax"
+HOME="${STAGING}/home" BEEMAX_HOME="${SMOKE_HOME}" BEEMAX_BIN_DIR="${STAGING}/bin" BEEMAX_INSTALL_MEDIA_DEPS=0 bash "${SOURCE}/scripts/install.sh"
+run_beemax() {
+	env -i HOME="${STAGING}/home" BEEMAX_HOME="${SMOKE_HOME}" PATH="${PATH}" "${STAGING}/bin/beemax" "$@"
+}
+HELP_OUTPUT="$(run_beemax --help)"
 grep -Fq "BeeMax" <<<"${HELP_OUTPUT}" || fail "installed beemax --help did not start correctly"
-PROFILE_CREATE_OUTPUT="$(HOME="${STAGING}/home" "${STAGING}/bin/beemax" profile create release-smoke)"
+PROFILE_CREATE_OUTPUT="$(run_beemax profile create release-smoke)"
 grep -Fq "Created Agent 'release-smoke'" <<<"${PROFILE_CREATE_OUTPUT}" || fail "installed beemax could not create a Profile"
-PROFILE_SHOW_OUTPUT="$(HOME="${STAGING}/home" "${STAGING}/bin/beemax" profile show release-smoke)"
+PROFILE_SHOW_OUTPUT="$(run_beemax profile show release-smoke)"
 grep -Fq '"profile": "release-smoke"' <<<"${PROFILE_SHOW_OUTPUT}" || fail "installed beemax could not reload the created Profile"
-SKILLS_OUTPUT="$(HOME="${STAGING}/home" "${STAGING}/bin/beemax" skills list --profile release-smoke)"
+SKILLS_OUTPUT="$(run_beemax skills list --profile release-smoke)"
 grep -Fq "business-report" <<<"${SKILLS_OUTPUT}" || fail "installed Profile does not contain packaged Skills"
 [[ "$(tr -d '\r\n' < "${SOURCE}/RELEASE_VERSION")" == "${VERSION}" ]] || fail "installed release identity changed"
 
