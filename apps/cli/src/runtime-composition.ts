@@ -4,6 +4,7 @@ import {
 	FileInteractionInputQueueStore,
 	InteractionEventAdapter,
 	SessionCatalog,
+	DEFAULT_RUNTIME_RESOURCE_LIMITS,
 	type BeeMaxAgentRuntimeOptions,
 	type BeeMaxRuntimeSource,
 	type AgentControlHandler,
@@ -128,7 +129,10 @@ export async function createProfileAgentRuntime<Source extends BeeMaxRuntimeSour
 			cancelSubagents: options.cancelSubagents,
 			cancelTaskPlans: options.cancelTaskPlans,
 			eventJournal: new FileInteractionEventJournal(join(options.agentDir, "interaction-events.jsonl")),
-			inputQueueStore: new FileInteractionInputQueueStore(join(options.agentDir, "interaction-input-queue.json")),
+			inputQueueStore: new FileInteractionInputQueueStore(join(options.agentDir, "interaction-input-queue.json"), {
+				maxRecords: DEFAULT_RUNTIME_RESOURCE_LIMITS.interactionQueueMaxRecords,
+				maxBytes: DEFAULT_RUNTIME_RESOURCE_LIMITS.interactionQueueMaxBytes,
+			}),
 			telemetry: (event) => { try { recordOperationalMetric(options.agentDir, event); } catch { /* observability must not interrupt Agent execution */ } },
 		});
 	} catch (error) {

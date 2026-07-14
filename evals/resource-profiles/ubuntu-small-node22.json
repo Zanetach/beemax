@@ -1,0 +1,37 @@
+{
+  "schemaVersion": 1,
+  "id": "ubuntu-small-node22",
+  "description": "BeeMax small Ubuntu Profile host: Ubuntu 24.04, Node.js 22, at least 2 logical CPUs and 6 GiB host RAM",
+  "platform": "linux",
+  "osId": "ubuntu",
+  "osVersionPattern": "^24\\.04",
+  "architectures": ["x64"],
+  "minLogicalCpus": 2,
+  "minMemoryGiB": 6,
+  "nodeMajor": 22,
+  "workload": { "databaseRecords": 5000, "scheduledTasks": 40 },
+  "runtimeLimits": {
+    "systemdMemoryMaxBytes": 2147483648,
+    "systemdCpuQuotaPercent": 200,
+    "systemdTasksMax": 512,
+    "interactionQueueMaxRecords": 500,
+    "interactionQueueMaxBytes": 2097152,
+    "taskConcurrency": 4,
+    "taskQueueMax": 1000,
+    "taskQueueMaxPerOwner": 100
+  },
+  "operationalHighWater": {
+    "rssBytes": 1610612736,
+    "interactionQueueRecords": 400,
+    "interactionQueueBytes": 1677721,
+    "taskQueueDepth": 800,
+    "databaseBytes": 1073741824
+  },
+  "benchmarkBudgets": {
+    "maxRssBytes": 536870912,
+    "maxHeapGrowthBytes": 67108864,
+    "maxQueueBytes": 2097152,
+    "maxDatabaseBytes": 33554432,
+    "expectedTaskConcurrency": 4
+  }
+}

@@ -25,12 +25,13 @@
 | 2026-07-14 | 第七实施切片：旧 Memory/Automation 显式 Channel Instance 归属迁移 | 多实例启用前消除旧路由歧义，提供事务、备份、审计与安全回滚 | Codex | build、typecheck、750 项全量测试及架构/迁移/性能/Memory 门禁通过；双轴审查问题已修复 | v1.7-draft |
 | 2026-07-14 | 第八实施切片：旧群聊 Session Ownership Migration | 以管理员显式选择替代 Actor transcript 猜测，提供非破坏保留、Catalog 收敛与安全回滚 | Codex | build、typecheck、762 项全量测试及架构/迁移/性能/Memory 门禁通过；双轴复审均 clean，崩溃恢复、路径越界、header、文件身份、短写及 no-clobber 恢复问题已关闭 | v1.8-draft |
 | 2026-07-14 | 第九实施切片：安全验收发布门禁 | 将群聊 Private Memory、跨 Profile Memory 与重复 Effect 三项安全阻塞收敛为独立可执行证据 | Codex | `eval:security` 3/3、765 项全量测试及 P10 acceptance 通过；双轴复审均 clean | v1.9-draft |
+| 2026-07-14 | 第十实施切片：Ubuntu 资源高水位门禁 | 为首期 Ubuntu x64 小型规格建立 RSS、队列、并发、DB 与 systemd 的统一可执行合同 | Codex | Ubuntu 24.04 x64 门禁通过（峰值 RSS 436.2 MiB、队列/并发/DB/systemd 合同通过）；765 项全量测试与完整发布门禁通过，双轴复审待执行 | v1.10-draft |
 
 ---
 
 ## 当前实施状态（2026-07-14）
 
-当前已完成第一至第九实施切片：
+当前已完成第一至第十实施切片：
 
 - 群聊/Channel/Thread 的 Conversation 不再包含当前 Actor；Task Responsibility 仍按 Actor 或可信统一身份归属。
 - `channelInstanceId` 已贯穿 Gateway 入站、投递、Task Plan Completion Notice、Automation Job/Delivery/Route/Media 和 Memory 分区。
@@ -58,6 +59,7 @@
 - 旧 Actor-scoped 群聊 transcript 不再依赖永久 fallback 或自动任选；管理员通过 `beemax migration session plan/apply` 显式选择一个 legacy Session 作为 canonical shared Conversation 历史。迁移流式复制 Pi JSONL、收敛内容无关的 Session Catalog owner，保留全部 legacy 文件且不自动合并或删除。
 - Session rollback 以 source/target SHA-256、canonical identity、Profile 路径与 Catalog receipt 共同校验；canonical transcript 或偏好一旦出现新变化就 fail-closed。保留期固定为“无自动过期”，未来删除必须进入独立的企业 retention policy 与审计动作。
 - `npm run eval:security` 使用真实 SQLite Memory authority 与跨实例 Effect Journal 独立验收：Private DM Claim 不进入群聊 recall、一个 Profile 的 Memory Store 不能由另一 Profile 打开、同一 idempotency key 只能产生一个 committed mutation；该门禁已进入 `verify:release` 与 P10 证据清单。
+- `ubuntu-small-node22` 把 Ubuntu 24.04 x64 小型主机的 systemd 2 GiB/200%/512 tasks、Interaction Queue 500 条/2 MiB、Profile Task 并发 4 与 RSS 1.5 GiB/DB 1 GiB 运维高水位收敛为配置合同；`eval:resources:ubuntu` 用真实队列、Scheduler、SQLite 与 RSS 压测，CI 和 tag release 上传逐次 JSON 证据。
 
 仍按本 PRD 后续阶段实施，不计为本切片完成：
 
@@ -193,7 +195,7 @@ BeeMax 不通过预制行业对象和规则覆盖客户场景，而是用 Situat
 | **扩展目标** | 新增渠道不修改 Agent/Memory/Task 语义 | Channel 契约测试与架构门禁 | 100% | P1 完成 |
 | **群聊目标** | 群聊共享上下文且不泄露私人 Memory | 群聊隔离验收用例 | 100% | P0 完成 |
 | **执行目标** | 渠道失败不触发重复 Pi/Effect | Outbox、幂等和恢复用例 | 100% | P1 完成 |
-| **性能目标** | 资源受限时保持有界队列和内存 | 压测与内存基线 | [TODO: 按部署规格确定] | 发布前 |
+| **性能目标** | 资源受限时保持有界队列和内存 | `ubuntu-small-node22` 资源门禁 | RSS < 512 MiB（固定门禁负载）、heap 增量 < 64 MiB、队列 ≤ 500/2 MiB、任务并发 = 4、5k SQLite 样本 ≤ 32 MiB | 发布前 |
 
 ### 4.2 验收标准
 
@@ -1097,7 +1099,7 @@ Interaction/Schedule/Event → Situation → durable admission → Objective/Tas
 | 编号 | 待决事项 | 涉及章节 | 负责人 | 预计决策时间 | 状态 |
 | --- | --- | --- | --- | --- | --- |
 | TBD-1 | 正式商业模式、目标定价和种子客户数量 | 3、13 | [TODO: 产品负责人] | 种子发布前 | 待决 |
-| TBD-2 | 各部署规格的 RSS、并发、队列和 DB 高水位目标 | 4、10、11 | [TODO: Runtime/运维] | 性能门禁前 | 待决 |
+| TBD-2 | 各部署规格的 RSS、并发、队列和 DB 高水位目标 | 4、10、11 | Runtime/运维 | 2026-07-14 | 已决：首期仅声明 `ubuntu-small-node22`，其他规格必须新增独立 Profile 与实测证据 |
 | TBD-3 | Shared Channel Relay 是否进入本次正式版本或后续版本 | 5、10 | 产品/架构负责人 | P1 完成后 | 待决 |
 | TBD-4 | Sandbox 首批支持 Docker、受限本机进程还是两者 | 10、12 | 安全/Runtime | P2 开始前 | 待决 |
 | TBD-5 | 旧群聊 Session Key 的迁移保留周期 | 7、10 | Runtime | 2026-07-14 | 已决：不自动过期；删除进入独立 retention policy 与审计 |
@@ -1144,9 +1146,10 @@ Interaction/Schedule/Event → Situation → durable admission → Objective/Tas
 
 ### 🔴 必须补充（发布前阻塞）
 
-1. 通过压测确定各 Ubuntu 部署规格的内存、队列、并发和数据库高水位。
+已关闭：
 
-已关闭：群聊 Private Memory 不披露、跨 Profile 不召回和重复 Effect 不执行已由 `npm run eval:security` 独立验收并纳入 `verify:release`。
+1. 群聊 Private Memory 不披露、跨 Profile 不召回和重复 Effect 不执行已由 `npm run eval:security` 独立验收并纳入 `verify:release`。
+2. 首期 Ubuntu x64 小型规格的 RSS、队列、并发、数据库与 systemd 高水位已由 `npm run eval:resources:ubuntu` 压测确定；CI/tag release 生成机器声明 artifact。新规格不得继承该结论，必须新增 Profile 和证据。
 
 ### 🟡 建议补充（提升产品质量）
 

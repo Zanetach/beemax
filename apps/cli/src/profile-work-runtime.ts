@@ -8,6 +8,7 @@ import {
 	TaskPlanRuntime,
 	TaskRecoveryRunner,
 	TaskRecoveryService,
+	DEFAULT_RUNTIME_RESOURCE_LIMITS,
 	type ObjectiveDeliverer,
 	type SubagentExecutor,
 	type TaskGraphExecutor,
@@ -50,7 +51,11 @@ export function createProfileWorkRuntime(options: ProfileWorkRuntimeOptions) {
 	// Perform fallible local I/O before starting recovery timers or accepting work.
 	const executionTrace = new FileExecutionTraceStore(join(options.agentDir, "logs", "execution-trace.jsonl"));
 	const toolEffects = new FileToolEffectJournal(join(options.agentDir, "tool-effects.jsonl"), 5_000, executionTrace);
-	const taskScheduler = new ProfileTaskScheduler({ maxConcurrent: options.maxConcurrent });
+	const taskScheduler = new ProfileTaskScheduler({
+		maxConcurrent: options.maxConcurrent,
+		maxQueued: DEFAULT_RUNTIME_RESOURCE_LIMITS.taskQueueMax,
+		maxQueuedPerOwner: DEFAULT_RUNTIME_RESOURCE_LIMITS.taskQueueMaxPerOwner,
+	});
 	const planningPolicy = new AutonomousPlanningPolicy({ maxConcurrent: options.maxConcurrent, maxSubagents: options.maxSubagents });
 	const planningBudgets = planningPolicy.createBudgetRegistry();
 	const taskPlanRuntime = new TaskPlanRuntime((event) => options.onTaskPlanError?.(event));

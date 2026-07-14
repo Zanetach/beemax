@@ -42,8 +42,8 @@ const requiredProgramContract = {
 	P8: { commands: ["npm test"], evidence: ["apps/cli/test/channel-runtime-equivalence.test.mjs"] },
 	P9: { commands: ["npm run eval:architecture"], evidence: ["scripts/evaluate-architecture.mjs"] },
 	P10: {
-		commands: ["npm run eval:migration", "npm run eval:performance:ci", "npm run eval:security"],
-		evidence: ["scripts/rehearse-migration-rollback.mjs", "apps/cli/test/security-acceptance-release-gate.test.mjs"],
+		commands: ["npm run eval:migration", "npm run eval:performance:ci", "npm run eval:resources:ubuntu", "npm run eval:security"],
+		evidence: ["scripts/rehearse-migration-rollback.mjs", "scripts/evaluate-ubuntu-resources.mjs", "evals/resource-profiles/ubuntu-small-node22.json", "apps/cli/test/security-acceptance-release-gate.test.mjs"],
 	},
 };
 const programs = manifest.programs?.map((program) => program.id) ?? [];

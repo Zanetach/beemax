@@ -72,7 +72,7 @@ test("profile creation and Feishu channel configuration keep secrets in a protec
 	assert.equal(config.gateway.feishu.webhookEncryptKey, "test-encryption-key");
 	assert.match(yaml, /gateway:\n\s+feishu:/);
 	assert.equal(config.subagents.enabled, true);
-	assert.equal(config.subagents.maxConcurrent, 3);
+	assert.equal(config.subagents.maxConcurrent, 4);
 	assert.equal(config.subagents.maxChildrenPerOwner, 5);
 	assert.equal(config.agent.toolset, "standard");
 	assert.equal(config.agent.reasoningDisplay, "summary");

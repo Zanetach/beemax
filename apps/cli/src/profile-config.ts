@@ -491,7 +491,7 @@ function defaultProfileYaml(): string {
 		mediaUnderstanding: { localOcr: { enabled: true, timeoutMs: 30000 }, auxiliaryVisionEnabled: true },
 		context: { maxTurnChars: 12000, maxToolResultTokens: 12000, compaction: { enabled: true } },
 		execution: { backend: "local", mode: "off", workspaceAccess: "none", image: "node:22-alpine", timeoutMs: 180000 },
-		subagents: { enabled: true, maxConcurrent: 3, maxChildrenPerOwner: 5, timeoutMs: 900000 },
+		subagents: { enabled: true, maxConcurrent: 4, maxChildrenPerOwner: 5, timeoutMs: 900000 },
 		automation: { enabled: true, timezone: "Asia/Shanghai", heartbeat: { enabled: true, every: "30m", activeHours: { start: "08:00", end: "23:00", timezone: "Asia/Shanghai" } } },
 		paths: { agentDir: ".", cwd: "workspace" },
 	});

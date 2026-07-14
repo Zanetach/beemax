@@ -35,6 +35,7 @@
     "eval:performance:ci": "node scripts/evaluate-performance.mjs --profile evals/performance-profiles/github-actions-ubuntu-x64.json --cost-baseline evals/baselines/performance-apple-m5-32gb.json",
     "eval:performance:release": "node scripts/evaluate-release-performance.mjs",
     "eval:memory": "node --expose-gc scripts/evaluate-memory-stability.mjs",
+    "eval:resources:ubuntu": "node --expose-gc scripts/evaluate-ubuntu-resources.mjs --profile evals/resource-profiles/ubuntu-small-node22.json",
     "eval:architecture": "node scripts/evaluate-architecture.mjs",
     "eval:migration": "node scripts/rehearse-migration-rollback.mjs",
     "eval:acceptance": "node scripts/evaluate-acceptance-program.mjs && npm run eval:architecture && npm run eval:migration",

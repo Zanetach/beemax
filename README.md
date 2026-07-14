@@ -415,6 +415,8 @@ Create a bot with BotFather, then run `beemax channel add telegram --profile per
 
 ### Ubuntu
 
+The first measured production resource class is Ubuntu 24.04 x64 with Node.js 22, at least 2 logical CPUs, and 6 GiB host RAM. Its systemd limits, operational high-water marks, and reproducible queue/concurrency/SQLite/RSS gate are documented in [Ubuntu resource high-water](docs/operations/ubuntu-resource-high-water.md).
+
 Run the Gateway in the foreground for the first end-to-end test:
 
 ```bash

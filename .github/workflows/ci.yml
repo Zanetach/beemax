@@ -19,3 +19,8 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run verify:release
+      - run: mkdir -p artifacts && npm run eval:resources:ubuntu -- --write artifacts/resource-high-water-ubuntu.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: resource-high-water-ubuntu
+          path: artifacts/resource-high-water-ubuntu.json
