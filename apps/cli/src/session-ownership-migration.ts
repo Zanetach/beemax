@@ -92,6 +92,7 @@ export async function rollbackProfileSessionOwnershipMigration(input: RollbackPr
 		let manifest = parseManifest(await readFile(manifestPath, "utf8"));
 		validateManifestOwnership(manifest, input.profile, paths, manifestPath);
 		if (manifest.status === "rolled_back" || manifest.status === "aborted") throw new Error(`Session migration ${manifest.migrationId} is already ${manifest.status}`);
+		const recoveryState = manifest.status;
 		await validateRegularFile(manifest.result.sourcePath);
 		const targetExists = await exists(manifest.result.targetPath);
 		if (manifest.status === "prepared" && !targetExists) {
@@ -103,7 +104,7 @@ export async function rollbackProfileSessionOwnershipMigration(input: RollbackPr
 		if (targetExists) await validateRegularFile(manifest.result.targetPath);
 		manifest = { ...manifest, status: "rollback_prepared", rollbackPreparedAt: manifest.rollbackPreparedAt ?? Date.now() };
 		await writeJsonAtomically(manifestPath, manifest);
-		await new ProfileSessionOwnershipMigration(paths.agentDir).rollback(manifest.result);
+		await new ProfileSessionOwnershipMigration(paths.agentDir).rollback(manifest.result, { allowPreparedCatalog: recoveryState !== "applied" });
 		const rolledBack = { ...manifest, status: "rolled_back" as const, rolledBackAt: Date.now() };
 		await writeJsonAtomically(manifestPath, rolledBack);
 		return rolledBack;

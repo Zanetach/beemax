@@ -40,7 +40,7 @@ beemax migration session apply \
   --profile personal
 ```
 
-BeeMax 以流式方式重写 Pi JSONL header 中的 Session ID，其余 transcript 字节保持不变。canonical 文件通过临时文件、fsync 和 no-clobber hard link 发布；Session Catalog 只迁移 owner、Thread、时间与显示偏好，不复制消息内容。清单保存在：
+BeeMax 以流式方式重写 Pi JSONL header 中的 Session ID，其余 transcript 字节保持不变。源 transcript 在校验、复制和摘要期间固定到同一个 regular-file descriptor，拒绝软链接、路径替换、写入竞态和超过 64 KiB 的异常 header；候选扫描有界，不会把任意数量的同名文件载入内存。canonical 文件通过临时文件、fsync 和 no-clobber hard link 发布；Session Catalog 只迁移 owner、Thread、时间与显示偏好，不复制消息内容。清单保存在：
 
 ```text
 ~/.beemax/profiles/<profile>/migrations/session-ownership/<migration-id>.json
@@ -55,9 +55,9 @@ beemax migration session rollback \
   --profile personal
 ```
 
-回滚会校验 legacy source digest、canonical target digest、目标身份、Profile 路径和 Catalog receipt。成功后只移除该迁移创建且从未改变的 canonical transcript，并恢复迁移前 Catalog 状态；legacy 文件始终保留。
+回滚会校验 legacy source digest、canonical target digest、文件身份、Profile 路径和 Catalog receipt。canonical 文件先进入同目录 quarantine，在 Catalog 收敛前后都通过固定 descriptor 复验，删除前再次确认未收到新工作。no-clobber 恢复在创建 hard link 后和移除 quarantine 后分别 fsync 目录；若进程在两步之间崩溃，重试会识别两个路径指向同一 inode 并继续。成功后只移除该迁移创建且从未改变的 canonical transcript，并恢复迁移前 Catalog 状态；legacy 文件始终保留。
 
-状态机为 `prepared → applied → rollback_prepared → rolled_back`。apply 在 canonical 文件发布前先持久化 `prepared` 清单；进程中断后，rollback 会根据目标文件与 Catalog 的实际状态完成 `aborted` 或 `rolled_back` 收敛。任何不匹配均 fail-closed，需要管理员检查，而不是覆盖文件。
+状态机为 `prepared → applied → rollback_prepared → rolled_back`。apply 在 canonical 文件发布前先持久化 `prepared` 清单；进程中断后，rollback 接受 Catalog 仍处于迁移前或已处于迁移后这两种合法崩溃状态，并根据目标文件与 Catalog 的实际状态完成 `aborted` 或 `rolled_back` 收敛。若发现另一个 canonical transcript、文件身份变化或内容变化，操作均 fail-closed，需要管理员检查，而不是覆盖文件。
 
 ## 不应执行的操作
 
