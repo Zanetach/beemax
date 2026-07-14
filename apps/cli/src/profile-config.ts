@@ -2,7 +2,7 @@ import { constants } from "node:fs";
 import { access, copyFile, cp, lstat, mkdir, open, readFile, readdir, readlink, rename, rm, stat, writeFile } from "node:fs/promises";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { backupSqliteDatabase, verifySqliteDatabase } from "@beemax/memory";
-import { DEFAULT_RUNTIME_RESOURCE_LIMITS } from "@beemax/core";
+import { DEFAULT_DOCKER_SANDBOX_IMAGE, DEFAULT_RUNTIME_RESOURCE_LIMITS } from "@beemax/core";
 import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
 import { readEnvFile, writeEnvFile } from "./env-file.ts";
 import { DEFAULT_SOUL, resolveSoul, validateCustomSoul } from "./soul.ts";
@@ -491,7 +491,7 @@ function defaultProfileYaml(): string {
 		imageGeneration: { enabled: false, provider: "openai-codex", quality: "medium", outputDir: "cache/images" },
 		mediaUnderstanding: { localOcr: { enabled: true, timeoutMs: 30000 }, auxiliaryVisionEnabled: true },
 		context: { maxTurnChars: 12000, maxToolResultTokens: 12000, compaction: { enabled: true } },
-		execution: { backend: "local", mode: "off", workspaceAccess: "none", image: "node:22.19-alpine", timeoutMs: 180000 },
+		execution: { backend: "local", mode: "off", workspaceAccess: "none", image: DEFAULT_DOCKER_SANDBOX_IMAGE, timeoutMs: 180000 },
 		subagents: { enabled: true, maxConcurrent: DEFAULT_RUNTIME_RESOURCE_LIMITS.taskConcurrency, maxChildrenPerOwner: 5, timeoutMs: 900000 },
 		automation: { enabled: true, timezone: "Asia/Shanghai", heartbeat: { enabled: true, every: "30m", activeHours: { start: "08:00", end: "23:00", timezone: "Asia/Shanghai" } } },
 		paths: { agentDir: ".", cwd: "workspace" },

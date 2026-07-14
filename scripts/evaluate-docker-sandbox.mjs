@@ -1,16 +1,17 @@
 #!/usr/bin/env node
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { DEFAULT_DOCKER_SANDBOX_LIMITS, DockerExecutionPort } from "../packages/core/dist/index.js";
+import { DEFAULT_DOCKER_SANDBOX_IMAGE, DEFAULT_DOCKER_SANDBOX_LIMITS, DockerExecutionPort } from "../packages/core/dist/index.js";
 
 const args = process.argv.slice(2);
 const profilePath = resolve(valueAfter(args, "--profile") ?? "evals/sandbox-profiles/ubuntu-docker-node22.json");
 const profile = JSON.parse(readFileSync(profilePath, "utf8"));
 const developmentHost = args.includes("--allow-docker-desktop");
 assert.equal(profile.schemaVersion, 1, "Sandbox Profile schema is invalid");
+assert.equal(profile.image, DEFAULT_DOCKER_SANDBOX_IMAGE, "Sandbox Profile image drifted from production composition");
 assert.deepEqual(profile.limits, DEFAULT_DOCKER_SANDBOX_LIMITS, "Sandbox Profile limits drifted from production composition");
 if (process.platform !== profile.hostPlatform && !developmentHost) throw new Error(`Docker Sandbox release evidence requires ${profile.hostPlatform}; current host is ${process.platform}`);
 const hostOs = process.platform === "linux" ? osRelease() : undefined;
@@ -39,6 +40,10 @@ try {
 
 	const readOnly = new DockerExecutionPort({ ...baseOptions, workspaceAccess: "ro" });
 	assert.equal(await readOnly.readFile({ source, cwd: root, path: join(root, "input.txt") }), "sandbox evidence\n");
+	const readOnlyAttack = await readOnly.execute({ source, cwd: root, command: "printf attack > /workspace/input.txt", timeoutMs: 10_000 });
+	assert.notEqual(readOnlyAttack.exitCode, 0, "Read-only workspace accepted a container write");
+	assert.equal(readFileSync(join(root, "input.txt"), "utf8"), "sandbox evidence\n", "Read-only workspace mutated the host file");
+	assert.equal(existsSync(join(root, "blocked.txt")), false, "Read-only workspace created a host file");
 	await assert.rejects(readOnly.writeFile({ source, cwd: root, path: join(root, "blocked.txt") }, "blocked"), /requires read-write workspace access/);
 	observations.readOnlyWorkspace = true;
 

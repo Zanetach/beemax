@@ -2,9 +2,11 @@ import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { relative, resolve, sep } from "node:path";
 import { promisify } from "node:util";
-import type { ExecutionFileRequest, ExecutionPort, ExecutionRequest, ExecutionResult } from "./execution.ts";
+import { executionErrorResult, type ExecutionFileRequest, type ExecutionPort, type ExecutionRequest, type ExecutionResult } from "./execution.ts";
 
 const execFileAsync = promisify(execFile);
+
+export const DEFAULT_DOCKER_SANDBOX_IMAGE = "node:22.19-alpine";
 
 export const DEFAULT_DOCKER_SANDBOX_LIMITS = Object.freeze({
 	memoryBytes: 2 * 1024 * 1024 * 1024,
@@ -97,12 +99,3 @@ function boundedTimeout(requested: number | undefined, configured: number): numb
 }
 
 function quote(value: string): string { return `'${value.replaceAll("'", "'\\''")}'`; }
-
-function executionErrorResult(error: unknown): ExecutionResult {
-	const value = error instanceof Error ? error as Error & { code?: unknown; stdout?: unknown; stderr?: unknown } : undefined;
-	return {
-		exitCode: typeof value?.code === "number" ? value.code : 1,
-		stdout: typeof value?.stdout === "string" ? value.stdout : "",
-		stderr: typeof value?.stderr === "string" ? value.stderr : String(error),
-	};
-}

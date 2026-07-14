@@ -41,6 +41,16 @@ export interface ExecutionPort {
 	writeFile(request: ExecutionFileRequest, content: string): Promise<void>;
 }
 
+/** Normalize child-process failures without coupling execution adapters to Node's error shape. */
+export function executionErrorResult(error: unknown): ExecutionResult {
+	const value = error instanceof Error ? error as Error & { code?: unknown; stdout?: unknown; stderr?: unknown } : undefined;
+	return {
+		exitCode: typeof value?.code === "number" ? value.code : 1,
+		stdout: typeof value?.stdout === "string" ? value.stdout : "",
+		stderr: typeof value?.stderr === "string" ? value.stderr : String(error),
+	};
+}
+
 export function resolveExecutionBackend(policy: Pick<ExecutionPolicy, "backend" | "mode">, source: BeeMaxRuntimeSource): ExecutionBackend {
 	if (policy.mode === "off") return "local";
 	if (policy.backend !== "docker") throw new Error("Sandbox mode 'all' requires the Docker Execution Sandbox");

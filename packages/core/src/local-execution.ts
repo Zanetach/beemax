@@ -1,7 +1,7 @@
 import { execFile } from "node:child_process";
 import { readFile, writeFile } from "node:fs/promises";
 import { promisify } from "node:util";
-import type { ExecutionFileRequest, ExecutionPort, ExecutionRequest, ExecutionResult } from "./execution.ts";
+import { executionErrorResult, type ExecutionFileRequest, type ExecutionPort, type ExecutionRequest, type ExecutionResult } from "./execution.ts";
 
 const execFileAsync = promisify(execFile);
 
@@ -22,13 +22,4 @@ export class LocalExecutionPort implements ExecutionPort {
 			return executionErrorResult(error);
 		}
 	}
-}
-
-function executionErrorResult(error: unknown): ExecutionResult {
-	const value = error instanceof Error ? error as Error & { code?: unknown; stdout?: unknown; stderr?: unknown } : undefined;
-	return {
-		exitCode: typeof value?.code === "number" ? value.code : 1,
-		stdout: typeof value?.stdout === "string" ? value.stdout : "",
-		stderr: typeof value?.stderr === "string" ? value.stderr : String(error),
-	};
 }

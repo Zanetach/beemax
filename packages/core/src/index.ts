@@ -151,10 +151,10 @@ export { INTERACTION_COMMANDS, interactionCommandHelp, parseInteractionCommand, 
 export { DeliveryDeferredError, type DeliveryOptions, type DeliveryPort, type DeliveryTarget, type MediaArtifact } from "./delivery-port.ts";
 export { sanitizeDisplayText } from "./display-text.ts";
 export type { ExecutionBackend, ExecutionPolicy, ExecutionPort, ExecutionRequest, ExecutionResult, SandboxMode, WorkspaceAccess } from "./execution.ts";
-export { resolveExecutionBackend } from "./execution.ts";
+export { executionErrorResult, resolveExecutionBackend } from "./execution.ts";
 export { createExecutionEnvelope, type ExecutionBudgetRef, type ExecutionEnvelope, type ExecutionMode, type ExecutionTriggerKind, type ProactiveActionAuthorityRef } from "./execution-envelope.ts";
 export { FileExecutionTraceStore, type ExecutionTrace, type ExecutionTraceEvent, type ExecutionTraceInput, type ExecutionTraceQuery, type ExecutionTraceSink } from "./execution-trace.ts";
-export { DEFAULT_DOCKER_SANDBOX_LIMITS, DockerExecutionPort, type DockerExecutionOptions } from "./docker-execution.ts";
+export { DEFAULT_DOCKER_SANDBOX_IMAGE, DEFAULT_DOCKER_SANDBOX_LIMITS, DockerExecutionPort, type DockerExecutionOptions } from "./docker-execution.ts";
 export { LocalExecutionPort } from "./local-execution.ts";
 export { createExecutionTools } from "./execution-tools.ts";
 export type { MediaOutboxPort } from "./media-outbox-port.ts";
