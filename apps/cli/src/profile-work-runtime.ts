@@ -9,6 +9,7 @@ import {
 	TaskRecoveryRunner,
 	TaskRecoveryService,
 	DEFAULT_RUNTIME_RESOURCE_LIMITS,
+	resolveRuntimeTaskConcurrency,
 	type ObjectiveDeliverer,
 	type SubagentExecutor,
 	type TaskGraphExecutor,
@@ -49,14 +50,15 @@ export interface ProfileWorkRuntimeOptions {
  */
 export function createProfileWorkRuntime(options: ProfileWorkRuntimeOptions) {
 	// Perform fallible local I/O before starting recovery timers or accepting work.
+	const maxConcurrent = resolveRuntimeTaskConcurrency(options.maxConcurrent);
 	const executionTrace = new FileExecutionTraceStore(join(options.agentDir, "logs", "execution-trace.jsonl"));
 	const toolEffects = new FileToolEffectJournal(join(options.agentDir, "tool-effects.jsonl"), 5_000, executionTrace);
 	const taskScheduler = new ProfileTaskScheduler({
-		maxConcurrent: options.maxConcurrent,
+		maxConcurrent,
 		maxQueued: DEFAULT_RUNTIME_RESOURCE_LIMITS.taskQueueMax,
 		maxQueuedPerOwner: DEFAULT_RUNTIME_RESOURCE_LIMITS.taskQueueMaxPerOwner,
 	});
-	const planningPolicy = new AutonomousPlanningPolicy({ maxConcurrent: options.maxConcurrent, maxSubagents: options.maxSubagents });
+	const planningPolicy = new AutonomousPlanningPolicy({ maxConcurrent, maxSubagents: options.maxSubagents });
 	const planningBudgets = planningPolicy.createBudgetRegistry();
 	const taskPlanRuntime = new TaskPlanRuntime((event) => options.onTaskPlanError?.(event));
 	const verifyTask: TaskGraphVerifier = (task, result, signal, context) => taskScheduler.run(task.ownerKey, () => options.verifyTaskCandidate(task, result, signal, context, executionTrace), signal);
@@ -70,7 +72,7 @@ export function createProfileWorkRuntime(options: ProfileWorkRuntimeOptions) {
 	let recoveryStatus: TaskRecoveryStatus = emptyRecoveryStatus(options.subagentsEnabled ? "running" : "disabled");
 	const recoveryService = new TaskRecoveryService(options.recoveryQueue ?? options.ledger, options.subagentsEnabled ? taskRecovery : undefined, {
 		effectAuthority: toolEffects,
-		runnerOptions: { maxConcurrent: options.maxConcurrent },
+		runnerOptions: { maxConcurrent },
 		onCycle: (cycle) => {
 			recoveryStatus = {
 				phase: options.subagentsEnabled ? "completed" : "disabled",
@@ -91,7 +93,7 @@ export function createProfileWorkRuntime(options: ProfileWorkRuntimeOptions) {
 	recoveryService.start();
 	const objectiveRuntime = new ObjectiveRuntime(options.ledger, (input, signal) => options.deliverObjective(input, signal, executionTrace), options.publishVerifiedOutcome);
 	const subagents = options.subagentsEnabled ? new SubagentManager({
-		maxConcurrent: options.maxConcurrent,
+		maxConcurrent,
 		maxChildrenPerOwner: options.maxSubagents,
 		defaultTimeoutMs: options.taskTimeoutMs,
 		taskLedger: options.ledger,

@@ -14,7 +14,7 @@ import { resolveSoul } from "./soul.ts";
 import { providerApiKeyEnv } from "./provider-resolver.ts";
 import type { MemoryMembership } from "./memory-membership.ts";
 import type { FeishuActivationSettings, FeishuGroupRule } from "@beemax/gateway";
-import { DEFAULT_RUNTIME_RESOURCE_LIMITS } from "@beemax/core";
+import { DEFAULT_RUNTIME_RESOURCE_LIMITS, resolveRuntimeTaskConcurrency } from "@beemax/core";
 
 export { beemaxHome, beemaxRoot, validateProfileName } from "./profile-home.ts";
 
@@ -370,7 +370,7 @@ export function loadConfig(configPath?: string, profile = "default"): BeeMaxConf
 		},
 		subagents: {
 			enabled: parseBool(env.BEEMAX_SUBAGENTS_ENABLED ?? cfg.subagents?.enabled ?? true),
-			maxConcurrent: parseNumber(env.BEEMAX_SUBAGENTS_MAX_CONCURRENT ?? cfg.subagents?.maxConcurrent, DEFAULT_RUNTIME_RESOURCE_LIMITS.taskConcurrency),
+			maxConcurrent: resolveRuntimeTaskConcurrency(parseNumber(env.BEEMAX_SUBAGENTS_MAX_CONCURRENT ?? cfg.subagents?.maxConcurrent, DEFAULT_RUNTIME_RESOURCE_LIMITS.taskConcurrency)),
 			maxChildrenPerOwner: parseNumber(env.BEEMAX_SUBAGENTS_MAX_CHILDREN ?? cfg.subagents?.maxChildrenPerOwner, 5),
 			timeoutMs: parseNumber(env.BEEMAX_SUBAGENTS_TIMEOUT_MS ?? cfg.subagents?.timeoutMs, 15 * 60_000),
 		},

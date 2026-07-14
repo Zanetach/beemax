@@ -177,4 +177,4 @@ export {
 	type HeartbeatObservation,
 	type HeartbeatObserver,
 } from "./automation-runtime.ts";
-export { DEFAULT_RUNTIME_RESOURCE_LIMITS } from "./runtime-resource-limits.ts";
+export { DEFAULT_RUNTIME_RESOURCE_LIMITS, resolveRuntimeTaskConcurrency } from "./runtime-resource-limits.ts";

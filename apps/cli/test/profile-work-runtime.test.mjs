@@ -38,3 +38,28 @@ test("Profile Work Runtime composes one channel-neutral Task, Recovery, Verifica
 		await rm(root, { recursive: true, force: true });
 	}
 });
+
+test("Profile Work Runtime cannot exceed the production task concurrency boundary", async () => {
+	const root = await mkdtemp(join(tmpdir(), "beemax-profile-work-runtime-limit-"));
+	const memory = new MemoryStore(join(root, "memory.db"), "personal");
+	const work = createProfileWorkRuntime({
+		agentDir: root,
+		ledger: memory,
+		maxConcurrent: 99,
+		maxSubagents: 8,
+		taskTimeoutMs: 1_000,
+		subagentsEnabled: true,
+		executeTask: async () => ({ output: "done" }),
+		verifyTaskCandidate: async () => ({ accepted: true }),
+		deliverObjective: async () => ({ result: "delivered" }),
+		executeSubagent: async () => "done",
+	});
+	try {
+		assert.equal(work.taskScheduler.snapshot().maxConcurrent, 4);
+		assert.equal(work.planningPolicy.decide("Deeply research and verify in parallel: 1. alpha 2. beta 3. gamma 4. delta 5. epsilon").suggestedConcurrency, 4);
+	} finally {
+		for (const resource of [...work.resources].reverse()) await resource.dispose();
+		memory.close();
+		await rm(root, { recursive: true, force: true });
+	}
+});

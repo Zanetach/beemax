@@ -4,7 +4,7 @@ import { mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
 import { readFile, writeFile } from "node:fs/promises";
 import { cpus, tmpdir, totalmem } from "node:os";
 import { join, resolve } from "node:path";
-import { DEFAULT_RUNTIME_RESOURCE_LIMITS, FileInteractionInputQueueStore, ProfileTaskScheduler } from "../packages/core/dist/index.js";
+import { DEFAULT_RUNTIME_RESOURCE_LIMITS, FileInteractionInputQueueStore, ProfileTaskScheduler, resolveRuntimeTaskConcurrency } from "../packages/core/dist/index.js";
 import { MemoryStore } from "../packages/memory/dist/index.js";
 import { renderSystemdService } from "../apps/cli/dist/service-manager.js";
 
@@ -44,7 +44,7 @@ try {
 	let peakTaskConcurrency = 0;
 	let releaseTasks;
 	const taskGate = new Promise((resolveGate) => { releaseTasks = resolveGate; });
-	const scheduler = new ProfileTaskScheduler({ maxConcurrent: profile.runtimeLimits.taskConcurrency, maxQueued: profile.runtimeLimits.taskQueueMax, maxQueuedPerOwner: profile.runtimeLimits.taskQueueMaxPerOwner, adaptive: false });
+	const scheduler = new ProfileTaskScheduler({ maxConcurrent: resolveRuntimeTaskConcurrency(profile.runtimeLimits.taskConcurrency), maxQueued: profile.runtimeLimits.taskQueueMax, maxQueuedPerOwner: profile.runtimeLimits.taskQueueMaxPerOwner, adaptive: false });
 	const tasks = Array.from({ length: profile.workload.scheduledTasks }, (_, index) => scheduler.run(`owner:${index % 8}`, async () => {
 		active++;
 		peakTaskConcurrency = Math.max(peakTaskConcurrency, active);
@@ -114,6 +114,7 @@ function validateProfile(profile, machine) {
 	if (machine.platform !== profile.platform || machine.osId !== profile.osId || !new RegExp(profile.osVersionPattern).test(machine.osVersion ?? "") || !profile.architectures.includes(machine.arch) || machine.logicalCpus < profile.minLogicalCpus || machine.memoryGiB < profile.minMemoryGiB || nodeMajor !== profile.nodeMajor) throw new Error(`Machine does not satisfy Ubuntu resource Profile ${profile.id}: ${JSON.stringify(machine)}`);
 	for (const key of ["runtimeLimits", "operationalHighWater", "benchmarkBudgets", "workload"]) assert.equal(typeof profile[key], "object", `resource Profile ${key} is invalid`);
 	for (const key of Object.keys(DEFAULT_RUNTIME_RESOURCE_LIMITS)) assert.equal(profile.runtimeLimits[key], DEFAULT_RUNTIME_RESOURCE_LIMITS[key], `resource Profile ${key} drifted from production composition`);
+	assert.equal(resolveRuntimeTaskConcurrency(profile.runtimeLimits.taskConcurrency + 1), profile.runtimeLimits.taskConcurrency, "production task concurrency hard limit is not enforced");
 	assert.ok(profile.operationalHighWater.rssBytes < profile.runtimeLimits.systemdMemoryMaxBytes, "RSS high-water must remain below MemoryMax");
 	assert.ok(profile.operationalHighWater.interactionQueueRecords < profile.runtimeLimits.interactionQueueMaxRecords, "queue record high-water must remain below the hard limit");
 	assert.ok(profile.operationalHighWater.interactionQueueBytes < profile.runtimeLimits.interactionQueueMaxBytes, "queue byte high-water must remain below the hard limit");

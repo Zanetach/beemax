@@ -1,6 +1,13 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { ProfileTaskScheduler } from "../dist/index.js";
+import { ProfileTaskScheduler, resolveRuntimeTaskConcurrency } from "../dist/index.js";
+
+test("production task concurrency can be lowered but never exceeds its hard limit", () => {
+	assert.equal(resolveRuntimeTaskConcurrency(), 4);
+	assert.equal(resolveRuntimeTaskConcurrency(2), 2);
+	assert.equal(resolveRuntimeTaskConcurrency(99), 4);
+	assert.equal(resolveRuntimeTaskConcurrency(0), 4);
+});
 
 test("ProfileTaskScheduler shares one concurrency budget across conversations", async () => {
 	const scheduler = new ProfileTaskScheduler({ maxConcurrent: 2 });
