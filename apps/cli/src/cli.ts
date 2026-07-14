@@ -60,6 +60,7 @@ import { inspectProfileExecutionTrace, renderExecutionTrace } from "./execution-
 import { inspectProfileEffects, reconcileProfileEffect } from "./effect-inspection.ts";
 import { loadInstalledAutonomyRolloutEvidence, renderAutonomyRollout } from "./autonomy-control.ts";
 import { createLocalMediaUnderstandingAdapters } from "./local-media-understanding.ts";
+import { setProfileBindingEnabled } from "./profile-binding-config.ts";
 
 const PI_SKILLS_BROWSER_TOOLS_COMMIT = "90bb51cae36515a648515b633a81c0c6efc8c74d";
 
@@ -86,7 +87,7 @@ async function main(): Promise<void> {
 			await runChannelCommand(parsed);
 			break;
 		case "binding":
-			runBindingCommand(parsed);
+			await runBindingCommand(parsed);
 			break;
 		case "pairing":
 			await runPairingCommand(parsed);
@@ -227,7 +228,7 @@ Commands:
   init       Create the first Agent profile
   agent      create | list | delete
   channel    add | list | remove | test
-  binding    validate | explain --channel-instance <id> --conversation <id> [--account <ref>] [--thread <id>]
+  binding    validate | activate <id> | disable <id> | explain --channel-instance <id> --conversation <id>
   pairing    list | approve <platform> <code> | revoke <platform> <user_id> | clear [platform]
   gateway    run | setup | smoke | install | start | stop | restart | status | logs | list | health
   chat       Adaptive terminal Agent (Full / Compact / Plain)
@@ -428,11 +429,19 @@ async function runModelCommand(parsed: ParsedArgs): Promise<void> {
 	console.log(`Configured ${provider}/${model} for Agent '${profile}'.`);
 }
 
-function runBindingCommand(parsed: ParsedArgs): void {
+async function runBindingCommand(parsed: ParsedArgs): Promise<void> {
 	const action = parsed.positionals[1];
 	const profile = selectedProfile(parsed);
 	const config = loadConfig(parsed.configPath, profile);
 	const enabledChannels = config.gateway.channels.filter((channel) => channel.enabled);
+	if (action === "activate" || action === "disable") {
+		const bindingId = parsed.positionals[2];
+		if (!bindingId) throw new Error(`binding ${action} requires a Binding id`);
+		const configPath = parsed.configPath ? resolve(parsed.configPath) : resolveProfileLocation(profile).configPath;
+		await setProfileBindingEnabled(configPath, bindingId, action === "activate", config.profile);
+		console.log(`${action === "activate" ? "Activated" : "Disabled"} Profile Binding '${bindingId}' for Profile '${config.profile}'.`);
+		return;
+	}
 	const resolver = assertProfileBindingConfiguration(config.gateway.bindings, {
 		profileId: config.profile,
 		channelInstanceIds: enabledChannels.map((channel) => channel.id),
@@ -460,7 +469,7 @@ function runBindingCommand(parsed: ParsedArgs): void {
 		console.log(`matched profile=${explanation.profileId} binding=${explanation.bindingId} precedence=${explanation.precedence}`);
 		return;
 	}
-	throw new Error("Usage: beemax binding validate | explain --channel-instance <id> --conversation <id> [--account <ref>] [--thread <id>]");
+	throw new Error("Usage: beemax binding validate | activate <id> | disable <id> | explain --channel-instance <id> --conversation <id> [--account <ref>] [--thread <id>]");
 }
 
 async function runChannelCommand(parsed: ParsedArgs): Promise<void> {

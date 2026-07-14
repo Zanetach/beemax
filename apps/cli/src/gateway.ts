@@ -19,6 +19,8 @@ import {
 	GatewayIngressController,
 	GroupResponseGovernor,
 	PairingStore,
+	ProfileHost,
+	assessProfileChannelHealth,
 	assertProfileBindingConfiguration,
 	TelegramAdapter,
 	type FeishuSettings,
@@ -97,6 +99,7 @@ export async function runGateway(config: BeeMaxConfig): Promise<void> {
 		throw error;
 	}
 	const ingress = new GatewayIngressController(config.gateway.ingress);
+	const profileHost = new ProfileHost(ingress);
 	const pairing = new PairingStore(config.paths.agentDir);
 	let heartbeat: HeartbeatRunner | undefined;
 	const feishuSettings: FeishuSettings = {
@@ -185,7 +188,9 @@ export async function runGateway(config: BeeMaxConfig): Promise<void> {
 	const startupCleanup: Array<() => void | Promise<void>> = [];
 	const profileStartupCleanup: Array<() => void | Promise<void>> = [];
 	let disposeProfileRuntime: (() => Promise<void>) | undefined;
+	let profileHealthTimer: ReturnType<typeof setInterval> | undefined;
 	try {
+	profileHost.beginStart();
 
 	const memory = new MemoryStore(config.memory.dbPath, config.profile);
 	const persistence = memoryPersistencePorts(memory);
@@ -391,7 +396,7 @@ export async function runGateway(config: BeeMaxConfig): Promise<void> {
 			objectiveRuntime.cancelOwner(ownerKey);
 			return cancelled;
 		},
-		controlHandler: (profileRuntime, profileInteraction) => createProfileControlHandler(profileRuntime, config, profileInteraction, () => ({ ingress: ingress.snapshot(), taskScheduler: taskScheduler.snapshot(), taskRecovery: work.recoveryStatus() }), config.subagents.enabled ? {
+			controlHandler: (profileRuntime, profileInteraction) => createProfileControlHandler(profileRuntime, config, profileInteraction, () => ({ ingress: ingress.snapshot(), profileHost: profileHost.snapshot(), taskScheduler: taskScheduler.snapshot(), taskRecovery: work.recoveryStatus() }), config.subagents.enabled ? {
 			verifyTaskPlan: (source, planId) => taskRecovery.reverify(responsibilityOwnerKeys(source), planId),
 			retryTaskPlan: (source, planId) => taskRecovery.retry(responsibilityOwnerKeys(source), planId, { maxConcurrent: config.subagents.maxConcurrent }),
 			resumeTaskPlan: (source, planId) => taskRecovery.resume(responsibilityOwnerKeys(source), planId, { maxConcurrent: config.subagents.maxConcurrent }),
@@ -451,7 +456,7 @@ export async function runGateway(config: BeeMaxConfig): Promise<void> {
 			interaction,
 			profileId: config.profile,
 			bindingResolver,
-			ingress,
+			ingress: profileHost,
 			bindingChannelInstanceId: id,
 			channelAccountRef: enabledChannels.find((channel) => channel.id === id)?.accountRef,
 			channelInstanceId: (platformInstanceCounts.get(channelAdapter.name) ?? 0) > 1 ? id : undefined,
@@ -599,11 +604,24 @@ export async function runGateway(config: BeeMaxConfig): Promise<void> {
 	);
 
 	const channelSnapshot = await channelHost.start();
-	writeGatewayState(config.paths.agentDir, { profile: config.profile, lifecycle: "running", version: gatewayVersion, pid: process.pid, startedAt: new Date().toISOString() });
-	recordGatewayEvent(config.paths.agentDir, "started", { profile: config.profile, pid: process.pid, version: gatewayVersion, channels: channelSnapshot.channels });
-	console.info(`[beemax:${config.profile}] Gateway connected: ${channelSnapshot.channels.filter((channel) => channel.state === "connected").map((channel) => channel.platform).join(", ")} (model: ${config.model.provider}/${config.model.model})`);
+	await work.recoveryService.runOnce({ maxConcurrent: config.subagents.maxConcurrent });
 	const recoveredInputs = (await Promise.all([...dispatchers.values()].map((channelDispatcher) => channelDispatcher.recoverQueuedInputs()))).reduce((sum, count) => sum + count, 0);
 	if (recoveredInputs) console.info(`[beemax:${config.profile}] recovered ${recoveredInputs} queued conversation input(s)`);
+	const initialProfileHealth = profileHost.reportHealth(assessProfileChannelHealth(channelSnapshot));
+	writeGatewayState(config.paths.agentDir, { profile: config.profile, lifecycle: "running", version: gatewayVersion, pid: process.pid, startedAt: new Date().toISOString() });
+	recordGatewayEvent(config.paths.agentDir, "started", { profile: config.profile, pid: process.pid, version: gatewayVersion, profileHostState: initialProfileHealth.state, channels: channelSnapshot.channels });
+	console.info(`[beemax:${config.profile}] Gateway connected: ${channelSnapshot.channels.filter((channel) => channel.state === "connected").map((channel) => channel.platform).join(", ")} (model: ${config.model.provider}/${config.model.model})`);
+	profileHealthTimer = setInterval(() => {
+		try {
+			const state = profileHost.snapshot().state;
+			if (state !== "healthy" && state !== "degraded") return;
+			const next = profileHost.reportHealth(assessProfileChannelHealth(channelHost.status()));
+			if (next.state !== state) recordGatewayEvent(config.paths.agentDir, "profile_health_changed", { profile: config.profile, from: state, to: next.state, degradedReasons: next.degradedReasons });
+		} catch (error) {
+			console.error(`[beemax] Profile health observation failed: ${error instanceof Error ? error.message : String(error)}`);
+		}
+	}, 5_000);
+	profileHealthTimer.unref();
 	for (const service of taskPlanNotices) service.start();
 	if (config.automation.enabled) scheduler.start();
 	heartbeat.start();
@@ -629,6 +647,8 @@ export async function runGateway(config: BeeMaxConfig): Promise<void> {
 		if (shutdownPromise) return shutdownPromise;
 		shutdownPromise = (async () => {
 			console.info("\n[beemax] shutting down...");
+			profileHost.beginDrain();
+			if (profileHealthTimer) clearInterval(profileHealthTimer);
 			clearInterval(initiativeTimer);
 			clearInterval(mediaDeliveryTimer);
 			await settleBackgroundWork(initiativeTriggers.waitForIdle(), 30_000, "Initiative Trigger worker");
@@ -637,8 +657,10 @@ export async function runGateway(config: BeeMaxConfig): Promise<void> {
 			try { await scheduler?.stop(); } catch (error) { console.error(`[beemax] scheduler shutdown failed: ${String(error)}`); }
 			try { await Promise.all(taskPlanNotices.map((service) => service.stop())); } catch (error) { console.error(`[beemax] Task Plan notice shutdown failed: ${String(error)}`); }
 			try { await Promise.all([...dispatchers.values()].map((channelDispatcher) => channelDispatcher.dispose())); } catch (error) { console.error(`[beemax] dispatcher shutdown failed: ${String(error)}`); }
+			try { await profileHost.waitForIdle(5_000); } catch (error) { console.error(`[beemax] Profile Host graceful drain timed out; forcing Runtime disposal: ${String(error)}`); }
 			try { await profileRuntime.dispose(); } catch (error) { console.error(`[beemax] Agent Runtime shutdown failed: ${String(error)}`); }
 			try { await channelHost.stop(); } catch (error) { console.error(`[beemax] channel shutdown failed: ${String(error)}`); }
+			try { await profileHost.waitForIdle(1_000); profileHost.completeStop(); } catch (error) { console.error(`[beemax] Profile Host forced stop retained active Interaction state: ${String(error)}`); }
 			await releaseChannelLock();
 			writeGatewayState(config.paths.agentDir, { profile: config.profile, lifecycle: "stopped", version: gatewayVersion, pid: process.pid, stoppedAt: new Date().toISOString() });
 			recordGatewayEvent(config.paths.agentDir, "stopped", { profile: config.profile, pid: process.pid });
@@ -649,6 +671,8 @@ export async function runGateway(config: BeeMaxConfig): Promise<void> {
 	process.on("SIGINT", () => void shutdown());
 	process.on("SIGTERM", () => void shutdown());
 	} catch (error) {
+		if (profileHealthTimer) clearInterval(profileHealthTimer);
+		if (profileHost.snapshot().state !== "stopped") profileHost.fail(error);
 		writeGatewayState(config.paths.agentDir, { profile: config.profile, lifecycle: "failed", version: gatewayVersion, pid: process.pid, stoppedAt: new Date().toISOString(), lastError: String(error).slice(0, 500) });
 		recordGatewayEvent(config.paths.agentDir, "failed", { profile: config.profile, error: String(error).slice(0, 500) });
 		for (const cleanup of startupCleanup.reverse()) {

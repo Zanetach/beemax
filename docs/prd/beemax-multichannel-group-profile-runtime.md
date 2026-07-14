@@ -21,12 +21,13 @@
 | 2026-07-14 | 第三实施切片：Binding 管理命令与 contextual active-thread 状态 | 补齐路由诊断与自然群聊追问 | Codex | build、typecheck、710 项全量测试及架构/迁移/Memory 门禁通过 | v1.3-draft |
 | 2026-07-14 | 第四实施切片：受限群观察、ambient 响应 quiet hours 与回复频率预算 | 在不建立第二执行链的前提下补齐群聊观察和响应边界 | Codex | build、typecheck、714 项全量测试及架构/迁移/Memory 门禁通过 | v1.4-draft |
 | 2026-07-14 | 第五实施切片：智能 Ambient 价值选择、可信 Conversation Type 与统一主动投递治理 | 让群观察由通用认知判断价值，并确保主动群结果可治理、可延迟且不重跑 Pi | Codex | build、typecheck、726 项全量测试及架构/迁移/Memory 门禁通过；双轴复审通过 | v1.5-draft |
+| 2026-07-14 | 第六实施切片：Binding 原子启停与最小 Profile Host 生命周期 | 补齐冲突安全的路由管理，并把 Profile admission、health、degrade、drain 收敛为统一运行时权威 | Codex | build、typecheck、734 项全量测试及架构/迁移/Memory 门禁通过；双轴审查问题已修复 | v1.6-draft |
 
 ---
 
 ## 当前实施状态（2026-07-14）
 
-当前已完成第一至第五实施切片：
+当前已完成第一至第六实施切片：
 
 - 群聊/Channel/Thread 的 Conversation 不再包含当前 Actor；Task Responsibility 仍按 Actor 或可信统一身份归属。
 - `channelInstanceId` 已贯穿 Gateway 入站、投递、Task Plan Completion Notice、Automation Job/Delivery/Route/Media 和 Memory 分区。
@@ -46,10 +47,13 @@
 - 主动出站统一经过 `GovernedDeliveryPort`；治理按可信 Conversation Type 区分 DM 与群聊，并按 Profile 的 transport-neutral quiet hours、每 Lane 频率预算执行，交互回复和控制消息不被误限流。
 - Schedule、Initiative、Task Completion 与媒体的 durable Delivery Target 均保留可信 Conversation Type；Initiative 验证结果先进入 durable Delivery Outbox，治理延迟不会重跑 Pi 或消耗普通失败重试预算。
 - Legacy 主动目标缺少可信 Conversation Type 时 fail-closed，Heartbeat 多实例路由有歧义时不投递；`delivery_settled` 按 Profile/Channel Instance 记录 delivered/deferred/failed、原因、尝试次数和延迟，媒体投递也具备 lease/token fencing。
+- `beemax binding activate/disable <id>` 仅修改既有 Binding：独占写锁阻止并发 CLI 丢失更新，完整强隔离校验在发布前执行，临时文件 fsync + rename 保证原子替换；未知 Binding 或冲突不会改变原配置。
+- 最小 `ProfileHost` 已成为普通 Interaction 的 Profile 级 admission 权威：仅 healthy/degraded 接收新 Turn，draining/failed/recovering/stopped fail-closed；Gateway 停止时先 drain，再等待已接收 Turn 释放。
+- Profile Host 从 Channel Host 快照推导运行健康并持续更新：单个 Channel Instance 故障进入 degraded，不停止其他 Channel 或 Profile Runtime；核心 authority 不可用才进入 failed。`/status` 可查看 state、accepting、lifecycle rejection 与降级原因。
 
 仍按本 PRD 后续阶段实施，不计为本切片完成：
 
-- Binding activate/disable 写操作、Shared Channel Relay，以及 Profile Host 监督。
+- Shared Channel Relay 与跨进程 Profile 路由。
 - 钉钉、企业微信等新增 Adapter，以及完整 Channel Runtime 包拆分。
 - 多实例启用时旧的无 instance Memory/Automation 数据需要管理员显式归属迁移；系统不得把歧义旧数据同时暴露给多个实例。
 
@@ -830,6 +834,8 @@ Thread 精确匹配 → Conversation 精确匹配 → Account 匹配 → Channel
 | binding activate | 校验通过 | Profile 管理员 |
 | binding disable | 紧急隔离 | Profile 管理员/安全管理员 |
 
+`activate/disable` 当前只切换已经存在的 Binding，不隐式创建路由。写操作持有配置级独占锁，在内存中完成全量唯一性、Channel Instance 归属和 Profile 强隔离校验后，才通过 fsync + atomic rename 发布；校验失败时配置文件保持原样。
+
 ##### 业务规则
 
 | 编号 | 类型 | 规则描述 |
@@ -866,6 +872,8 @@ Supervisor → start Profile Host → 打开 authority/resources → recovery re
 | PROF-4 | 触发 | 达到内存/队列上限时背压或拒绝新工作，不能无限增长 |
 | PROF-5 | 触发 | crash 后先对账 Effect、Task、Occurrence、Outbox，再恢复执行 |
 | PROF-6 | 约束 | Profile namespace、process、Sandbox、tenant trust 必须分别展示 |
+| PROF-7 | 约束 | draining 必须先拒绝新的普通 Interaction，再等待已接收 Interaction；durable Task、Effect 和 Outbox 不因停止 admission 被删除 |
+| PROF-8 | 推论 | 单个可选 Channel 故障只产生 degraded health；不得把 transport failure 等同于核心 authority failure |
 
 #### 10.2.7 Durable Work、投递与主动性
 

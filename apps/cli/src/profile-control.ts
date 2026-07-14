@@ -1,5 +1,5 @@
 import { parseInteractionCommand, sanitizeDisplayText, type AgentControlHandler, type InteractionEventAdapter, type ProfileTaskSchedulerSnapshot, type TaskPlanRecord, type TaskPlanRetryResult, type TaskRecord, type TaskVerificationRetryResult } from "@beemax/core";
-import type { GatewayIngressSnapshot, SessionSource } from "@beemax/gateway";
+import type { GatewayIngressSnapshot, ProfileHostSnapshot, SessionSource } from "@beemax/gateway";
 import type { BeeMaxAgentRuntime } from "@beemax/core";
 import type { BeeMaxConfig } from "./config.ts";
 import { configureModel } from "./profile-config.ts";
@@ -8,7 +8,7 @@ import { join } from "node:path";
 import { ProfileModelCatalog } from "./model-catalog.ts";
 
 export interface TaskRecoveryStatus { phase: "disabled" | "running" | "completed" | "failed"; plans: number; succeeded: number; failed: number; blocked: number; verification: TaskVerificationRetryResult; }
-export interface ProfileOperationalFacts { ingress?: GatewayIngressSnapshot; taskScheduler?: ProfileTaskSchedulerSnapshot; taskRecovery?: TaskRecoveryStatus; }
+export interface ProfileOperationalFacts { ingress?: GatewayIngressSnapshot; profileHost?: ProfileHostSnapshot; taskScheduler?: ProfileTaskSchedulerSnapshot; taskRecovery?: TaskRecoveryStatus; }
 export interface ProfileControlActions {
 	verifyTaskPlan?: (source: SessionSource, planId: string) => Promise<{ attempted: number; accepted: number; rejected: number; unavailable: number }>;
 	retryTaskPlan?: (source: SessionSource, planId: string, objectiveId?: string) => Promise<TaskPlanRetryResult>;
@@ -29,6 +29,12 @@ export function renderTaskRecoveryStatus(status?: TaskRecoveryStatus): string {
 
 export function renderGatewayIngressStatus(snapshot?: GatewayIngressSnapshot): string {
 	return snapshot ? `Ingress: active=${snapshot.active}/${snapshot.maxActive}; conversations=${snapshot.activeConversations}; per-conversation=${snapshot.maxActivePerConversation}; rejected=${snapshot.rejected}` : "Ingress: unavailable";
+}
+
+export function renderProfileHostStatus(snapshot?: ProfileHostSnapshot): string {
+	if (!snapshot) return "Profile Host: unavailable";
+	const detail = snapshot.degradedReasons.length ? `; degraded=${snapshot.degradedReasons.join(" | ")}` : snapshot.lastError ? `; error=${snapshot.lastError}` : "";
+	return `Profile Host: ${snapshot.state}; accepting=${snapshot.acceptingInteractions}; lifecycle-rejected=${snapshot.lifecycleRejected}${detail}`;
 }
 
 export function renderTaskPlans(plans: readonly TaskPlanRecord[]): string {
@@ -119,7 +125,7 @@ export function createProfileControlHandler(
 				?? runtime.tasks(source, { kind: "objective", status: "pending", limit: 1 })[0]
 				?? runtime.tasks(source, { kind: "objective", limit: 1 })[0];
 			const objectiveText = objective ? `Objective: [${objective.status}] ${sanitizeDisplayText(objective.title, 120)}` : "Objective: none";
-			return { handled: true, message: command === "/usage" ? `Usage: ${usageText}` : `Profile: ${config.profile}\nModel: ${model?.model ?? `${config.model.provider}/${config.model.model}`}\nThinking: ${model?.thinkingLevel ?? "off"}\nRun: ${runtime.isBusy() ? "running" : "idle"}\n${objectiveText}\n${renderGatewayIngressStatus(facts?.ingress)}\n${renderTaskSchedulerStatus(facts?.taskScheduler)}\n${renderTaskRecoveryStatus(facts?.taskRecovery)}\nUsage: ${usageText}` };
+			return { handled: true, message: command === "/usage" ? `Usage: ${usageText}` : `Profile: ${config.profile}\nModel: ${model?.model ?? `${config.model.provider}/${config.model.model}`}\nThinking: ${model?.thinkingLevel ?? "off"}\nRun: ${runtime.isBusy() ? "running" : "idle"}\n${objectiveText}\n${renderProfileHostStatus(facts?.profileHost)}\n${renderGatewayIngressStatus(facts?.ingress)}\n${renderTaskSchedulerStatus(facts?.taskScheduler)}\n${renderTaskRecoveryStatus(facts?.taskRecovery)}\nUsage: ${usageText}` };
 		}
 		if (command === "/compact") {
 			const compacted = interaction

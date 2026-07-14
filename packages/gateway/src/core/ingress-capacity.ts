@@ -11,8 +11,12 @@ export interface GatewayIngressSnapshot {
 	rejected: number;
 }
 
+export interface GatewayInteractionAdmission {
+	tryAcquire(conversationKey: string): (() => void) | undefined;
+}
+
 /** Bounded Gateway admission before an Interaction can allocate Runtime work. */
-export class GatewayIngressController {
+export class GatewayIngressController implements GatewayInteractionAdmission {
 	private readonly maxActive: number;
 	private readonly maxActivePerConversation: number;
 	private active = 0;

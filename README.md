@@ -473,6 +473,7 @@ See [autonomy rollout](docs/operations/autonomy-rollout.md), [performance and co
 | `beemax setup` | Configure a Profile, model, identity, Skills, and optional channel |
 | `beemax chat` | Start the adaptive local terminal Agent |
 | `beemax gateway` | Configure, run, install, inspect, and control channel Gateways |
+| `beemax binding` | Validate, explain, atomically activate, or disable deterministic Channel-to-Profile routes |
 | `beemax profile` | Create, select, migrate, back up, inspect, and delete Profiles |
 | `beemax model` | Show or change the Profile model |
 | `beemax memory` | Inspect, explain, compile, promote, reject, or forget Memory evidence |

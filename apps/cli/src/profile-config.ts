@@ -7,6 +7,7 @@ import { readEnvFile, writeEnvFile } from "./env-file.ts";
 import { DEFAULT_SOUL, resolveSoul, validateCustomSoul } from "./soul.ts";
 import { providerApiKeyEnv } from "./provider-resolver.ts";
 import type { CustomProtocol } from "./config.ts";
+import { mutateProfileConfig } from "./profile-config-transaction.ts";
 import {
 	beemaxHome,
 	beemaxRoot,
@@ -168,33 +169,30 @@ export async function configureFeishuChannel(
 	if (!input.appId.trim() || !input.appSecret.trim()) throw new Error("Feishu App ID and App Secret are required");
 	if (input.allowedUsers.length === 0) throw new Error("At least one allowed Feishu user ID is required");
 	const paths = await writableProfilePaths(profile, options);
-	const raw = await readFile(paths.configPath, "utf8").catch(() => {
-		throw new Error(`Agent profile ${profile} does not exist; run beemax agent create ${profile}`);
+	await mutateProfileConfig(paths.configPath, (config) => {
+		const gateway = asRecord(config.gateway);
+		config.gateway = {
+			...gateway,
+			channels: upsertGatewayChannel(gateway.channels, {
+				id: "feishu-main", adapter: "feishu", enabled: true, credentialRef: "profile-env:feishu", settings: {},
+			}),
+			feishu: {
+				...asRecord(gateway.feishu ?? config.feishu),
+				domain: input.domain ?? "feishu",
+				requireMention: input.requireMention ?? true,
+				allowedChats: input.allowedChats ?? [],
+				groupPolicy: input.groupPolicy ?? "allowlist",
+				allowAllUsers: false,
+				connectionMode: input.connectionMode ?? "websocket",
+				...(input.connectionMode === "webhook" ? {
+					webhookHost: input.webhookHost ?? "127.0.0.1",
+					webhookPort: input.webhookPort ?? 8787,
+					webhookPath: input.webhookPath ?? "/feishu/events",
+				} : {}),
+			},
+		};
+		delete config.feishu;
 	});
-	const config = (parseYaml(raw) ?? {}) as Record<string, unknown>;
-	const gateway = asRecord(config.gateway);
-	config.gateway = {
-		...gateway,
-		channels: upsertGatewayChannel(gateway.channels, {
-			id: "feishu-main", adapter: "feishu", enabled: true, credentialRef: "profile-env:feishu", settings: {},
-		}),
-		feishu: {
-		...asRecord(gateway.feishu ?? config.feishu),
-		domain: input.domain ?? "feishu",
-		requireMention: input.requireMention ?? true,
-		allowedChats: input.allowedChats ?? [],
-		groupPolicy: input.groupPolicy ?? "allowlist",
-		allowAllUsers: false,
-		connectionMode: input.connectionMode ?? "websocket",
-		...(input.connectionMode === "webhook" ? {
-			webhookHost: input.webhookHost ?? "127.0.0.1",
-			webhookPort: input.webhookPort ?? 8787,
-			webhookPath: input.webhookPath ?? "/feishu/events",
-		} : {}),
-		},
-	};
-	delete config.feishu;
-	await writeFile(paths.configPath, stringifyYaml(config), { encoding: "utf8", mode: 0o600 });
 	await writeEnvFile(paths.envPath, {
 		...await readEnvFile(paths.envPath),
 		FEISHU_APP_ID: input.appId.trim(),
@@ -217,28 +215,25 @@ export async function configureTelegramChannel(
 	if (!input.botToken.trim()) throw new Error("Telegram Bot Token is required");
 	if (!input.allowAllUsers && input.allowedUsers.length === 0) throw new Error("At least one allowed Telegram user ID is required");
 	const paths = await writableProfilePaths(profile, options);
-	const raw = await readFile(paths.configPath, "utf8").catch(() => {
-		throw new Error(`Agent profile ${profile} does not exist; run beemax agent create ${profile}`);
+	await mutateProfileConfig(paths.configPath, (config) => {
+		const gateway = asRecord(config.gateway);
+		config.gateway = {
+			...gateway,
+			channels: upsertGatewayChannel(gateway.channels, {
+				id: "telegram-main",
+				adapter: "telegram",
+				enabled: true,
+				credentialRef: "profile-env:telegram",
+				settings: {
+					allowedUsers: input.allowedUsers,
+					allowedChats: input.allowedChats ?? [],
+					allowAllUsers: input.allowAllUsers ?? false,
+					pollingTimeoutSeconds: input.pollingTimeoutSeconds ?? 25,
+					retryBaseDelayMs: input.retryBaseDelayMs ?? 1_000,
+				},
+			}),
+		};
 	});
-	const config = (parseYaml(raw) ?? {}) as Record<string, unknown>;
-	const gateway = asRecord(config.gateway);
-	config.gateway = {
-		...gateway,
-		channels: upsertGatewayChannel(gateway.channels, {
-			id: "telegram-main",
-			adapter: "telegram",
-			enabled: true,
-			credentialRef: "profile-env:telegram",
-			settings: {
-				allowedUsers: input.allowedUsers,
-				allowedChats: input.allowedChats ?? [],
-				allowAllUsers: input.allowAllUsers ?? false,
-				pollingTimeoutSeconds: input.pollingTimeoutSeconds ?? 25,
-				retryBaseDelayMs: input.retryBaseDelayMs ?? 1_000,
-			},
-		}),
-	};
-	await writeFile(paths.configPath, stringifyYaml(config), { encoding: "utf8", mode: 0o600 });
 	await writeEnvFile(paths.envPath, {
 		...await readEnvFile(paths.envPath),
 		TELEGRAM_BOT_TOKEN: input.botToken.trim(),
@@ -249,35 +244,28 @@ export async function configureTelegramChannel(
 export async function setFeishuHomeChat(profile: string, chatId: string, userId?: string, chatType: "dm" | "group" = "dm", options: ProfileStorageOptions = {}): Promise<void> {
 	if (!chatId.trim()) throw new Error("Feishu home chat ID is required");
 	const paths = await writableProfilePaths(profile, options);
-	const config = (parseYaml(await readFile(paths.configPath, "utf8")) ?? {}) as Record<string, unknown>;
-	const gateway = asRecord(config.gateway);
-	config.gateway = { ...gateway, feishu: { ...asRecord(gateway.feishu), homeChatId: chatId.trim(), homeChatType: chatType, ...(userId?.trim() ? { homeUserId: userId.trim() } : {}) } };
-	const temporary = `${paths.configPath}.home-${crypto.randomUUID()}`;
-	await writeFile(temporary, stringifyYaml(config), { encoding: "utf8", mode: 0o600, flag: "wx" });
-	const file = await open(temporary, "r"); try { await file.sync(); } finally { await file.close(); }
-	await rename(temporary, paths.configPath);
-	const directory = await open(dirname(paths.configPath), "r"); try { await directory.sync(); } finally { await directory.close(); }
+	await mutateProfileConfig(paths.configPath, (config) => {
+		const gateway = asRecord(config.gateway);
+		config.gateway = { ...gateway, feishu: { ...asRecord(gateway.feishu), homeChatId: chatId.trim(), homeChatType: chatType, ...(userId?.trim() ? { homeUserId: userId.trim() } : {}) } };
+	});
 }
 
 export async function configureModel(profile: string, input: ModelInput, options: ProfileStorageOptions = {}): Promise<ProfilePaths> {
 	if (!input.provider.trim() || !input.model.trim()) throw new Error("Model provider and model ID are required");
 	const paths = await writableProfilePaths(profile, options);
-	const raw = await readFile(paths.configPath, "utf8").catch(() => {
-		throw new Error(`Agent profile ${profile} does not exist; run beemax agent create ${profile}`);
+	await mutateProfileConfig(paths.configPath, (config) => {
+		config.model = {
+			provider: input.provider.trim(),
+			model: input.model.trim(),
+			...(input.baseUrl?.trim() ? { baseUrl: input.baseUrl.trim() } : {}),
+			...(input.provider.trim() === "custom" ? { customProtocol: input.customProtocol ?? "openai-completions" } : {}),
+			...(input.provider.trim() === "custom" && input.contextWindow !== undefined ? { contextWindow: input.contextWindow } : {}),
+			...(input.provider.trim() === "custom" && input.maxTokens !== undefined ? { maxTokens: input.maxTokens } : {}),
+		};
+		const choices = Array.isArray(config.models) ? config.models : [];
+		const next = { provider: input.provider.trim(), model: input.model.trim(), ...(input.baseUrl?.trim() ? { baseUrl: input.baseUrl.trim() } : {}), ...(input.provider.trim() === "custom" ? { customProtocol: input.customProtocol ?? "openai-completions" } : {}), ...(input.provider.trim() === "custom" && input.contextWindow !== undefined ? { contextWindow: input.contextWindow } : {}), ...(input.provider.trim() === "custom" && input.maxTokens !== undefined ? { maxTokens: input.maxTokens } : {}) };
+		config.models = [next, ...choices.filter((item) => !sameModelChoice(item, next))];
 	});
-	const config = (parseYaml(raw) ?? {}) as Record<string, unknown>;
-	config.model = {
-		provider: input.provider.trim(),
-		model: input.model.trim(),
-		...(input.baseUrl?.trim() ? { baseUrl: input.baseUrl.trim() } : {}),
-		...(input.provider.trim() === "custom" ? { customProtocol: input.customProtocol ?? "openai-completions" } : {}),
-		...(input.provider.trim() === "custom" && input.contextWindow !== undefined ? { contextWindow: input.contextWindow } : {}),
-		...(input.provider.trim() === "custom" && input.maxTokens !== undefined ? { maxTokens: input.maxTokens } : {}),
-	};
-	const choices = Array.isArray(config.models) ? config.models : [];
-	const next = { provider: input.provider.trim(), model: input.model.trim(), ...(input.baseUrl?.trim() ? { baseUrl: input.baseUrl.trim() } : {}), ...(input.provider.trim() === "custom" ? { customProtocol: input.customProtocol ?? "openai-completions" } : {}), ...(input.provider.trim() === "custom" && input.contextWindow !== undefined ? { contextWindow: input.contextWindow } : {}), ...(input.provider.trim() === "custom" && input.maxTokens !== undefined ? { maxTokens: input.maxTokens } : {}) };
-	config.models = [next, ...choices.filter((item) => !sameModelChoice(item, next))];
-	await writeFile(paths.configPath, stringifyYaml(config), { encoding: "utf8", mode: 0o600 });
 	if (input.apiKey?.trim()) {
 		await writeEnvFile(paths.envPath, {
 			...await readEnvFile(paths.envPath),
@@ -294,9 +282,7 @@ export async function configureSoul(profile: string, identity: string, options: 
 		await writeFile(paths.soulPath, `${value}\n`, { encoding: "utf8", mode: 0o600 });
 		return paths;
 	}
-	const config = configFromYaml(await readFile(paths.configPath, "utf8"));
-	config.agent = { ...asRecord(config.agent), systemPrompt: value };
-	await writeFile(paths.configPath, stringifyYaml(config), { encoding: "utf8", mode: 0o600 });
+	await mutateProfileConfig(paths.configPath, (config) => { config.agent = { ...asRecord(config.agent), systemPrompt: value }; });
 	return paths;
 }
 
@@ -310,10 +296,10 @@ export async function removeFeishuChannel(profile: string, options: ProfileStora
 	delete values.FEISHU_WEBHOOK_VERIFICATION_TOKEN;
 	delete values.FEISHU_WEBHOOK_ENCRYPT_KEY;
 	await writeEnvFile(paths.envPath, values);
-	const config = configFromYaml(await readFile(paths.configPath, "utf8"));
-	const gateway = asRecord(config.gateway);
-	config.gateway = { ...gateway, channels: removeGatewayChannel(gateway.channels, "feishu") };
-	await writeFile(paths.configPath, stringifyYaml(config), { encoding: "utf8", mode: 0o600 });
+	await mutateProfileConfig(paths.configPath, (config) => {
+		const gateway = asRecord(config.gateway);
+		config.gateway = { ...gateway, channels: removeGatewayChannel(gateway.channels, "feishu") };
+	});
 	return paths;
 }
 
@@ -324,10 +310,10 @@ export async function removeTelegramChannel(profile: string, options: ProfileSto
 	delete values.TELEGRAM_ALLOWED_USERS;
 	delete values.TELEGRAM_ALLOWED_CHATS;
 	await writeEnvFile(paths.envPath, values);
-	const config = configFromYaml(await readFile(paths.configPath, "utf8"));
-	const gateway = asRecord(config.gateway);
-	config.gateway = { ...gateway, channels: removeGatewayChannel(gateway.channels, "telegram") };
-	await writeFile(paths.configPath, stringifyYaml(config), { encoding: "utf8", mode: 0o600 });
+	await mutateProfileConfig(paths.configPath, (config) => {
+		const gateway = asRecord(config.gateway);
+		config.gateway = { ...gateway, channels: removeGatewayChannel(gateway.channels, "telegram") };
+	});
 	return paths;
 }
 

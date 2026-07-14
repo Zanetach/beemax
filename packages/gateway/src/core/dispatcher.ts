@@ -31,6 +31,7 @@ import { FlushController } from "../card/flush.ts";
 import { MessageDeduplicator } from "./message-deduplicator.ts";
 import { prepareAgentMediaInput } from "./media-input.ts";
 import type { ProfileBindingResolver } from "./profile-binding.ts";
+import type { GatewayInteractionAdmission } from "./ingress-capacity.ts";
 import { GatewayIngressController } from "./ingress-capacity.ts";
 
 interface CardBinding {
@@ -61,7 +62,7 @@ export interface DispatcherDeps {
 	/** Fail-closed Profile route authority. Models and adapters cannot override its result. */
 	bindingResolver?: Pick<ProfileBindingResolver, "resolve">;
 	/** Shared Profile-level ingress budget; one controller may cover every Channel Instance. */
-	ingress?: GatewayIngressController;
+	ingress?: GatewayInteractionAdmission;
 	messageDeduplicator?: MessageDeduplicator;
 }
 
@@ -73,7 +74,7 @@ export class Dispatcher {
 	private readonly turnTimeoutMs: number;
 	private readonly profileId: string;
 	private readonly deduplicator: MessageDeduplicator;
-	private readonly ingress: GatewayIngressController;
+	private readonly ingress: GatewayInteractionAdmission;
 	private readonly sessionOverrides = new Map<string, InboundMessage["source"]>();
 	private readonly cardBindings = new Map<string, CardBinding>();
 	private readonly turnStarts = new Map<string, Promise<void>>();
