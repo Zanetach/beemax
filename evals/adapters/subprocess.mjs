@@ -214,7 +214,7 @@ async function fetchValidatedPublicUrl(initialUrl, signal) {
 	for (let redirect = 0; redirect <= 5; redirect++) {
 		if (!isPublicHttpUrl(current)) throw new Error("Public source URL is not allowed");
 		const host = new URL(current).hostname;
-		const addresses = isIP(host) ? [{ address: host }] : await lookup(host, { all: true, verbatim: true });
+		const addresses = isIP(host) ? [{ address: host, family: isIP(host) }] : await resolveValidatedPublicAddresses(host, { signal });
 		if (!addresses.length || addresses.some(({ address }) => !isPublicIpAddress(address))) throw new Error("Public source resolves to a non-public address");
 		const selected = addresses[0];
 		const family = selected.family ?? isIP(selected.address);
@@ -231,6 +231,29 @@ async function fetchValidatedPublicUrl(initialUrl, signal) {
 		current = normalizedPublicUrl(new URL(location, current).toString());
 	}
 	throw new Error("Public source redirect chain is too long");
+}
+
+export async function resolveValidatedPublicAddresses(host, options = {}) {
+	const systemLookup = options.lookup ?? lookup;
+	const systemAddresses = await systemLookup(host, { all: true, verbatim: true });
+	if (systemAddresses.length && systemAddresses.every(({ address }) => isPublicIpAddress(address))) return systemAddresses;
+
+	const dohFetch = options.fetch ?? undiciFetch;
+	const endpoint = new URL("https://cloudflare-dns.com/dns-query");
+	endpoint.searchParams.set("name", host);
+	endpoint.searchParams.set("type", "A");
+	const response = await dohFetch(endpoint, {
+		signal: options.signal,
+		headers: { accept: "application/dns-json", "user-agent": "BeeMax-Agent-Parity/1.0" },
+	});
+	if (!response.ok) throw new Error(`Public DNS fallback failed with HTTP ${response.status}`);
+	const payload = await response.json();
+	if (payload?.Status !== 0) throw new Error("Public DNS fallback returned an unsuccessful status");
+	const addresses = (Array.isArray(payload.Answer) ? payload.Answer : [])
+		.filter((answer) => answer?.type === 1 && isIP(answer?.data) === 4)
+		.map((answer) => ({ address: answer.data, family: 4 }));
+	if (!addresses.length || addresses.some(({ address }) => !isPublicIpAddress(address))) throw new Error("Public source resolves to a non-public address");
+	return addresses;
 }
 
 function registrableDomain(hostname) {

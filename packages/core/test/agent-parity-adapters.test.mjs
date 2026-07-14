@@ -6,7 +6,7 @@ import test from "node:test";
 import { agentParityCorpus } from "../../../evals/agent-parity-corpus.mjs";
 import { parseBeeMaxEvidence, parseCodexEvidence, parseHermesEvidence } from "../../../evals/agent-parity-adapters.mjs";
 import { createIsolatedProfile, filterExecution } from "../../../evals/adapters/beemax-cli.mjs";
-import { collectFixtureEvidence, runSubprocess, signFixtureAuthorityEvent } from "../../../evals/adapters/subprocess.mjs";
+import { collectFixtureEvidence, resolveValidatedPublicAddresses, runSubprocess, signFixtureAuthorityEvent } from "../../../evals/adapters/subprocess.mjs";
 
 const research = agentParityCorpus.cases.find((scenario) => scenario.id === "current-research");
 
@@ -300,6 +300,27 @@ test("fixture evidence derives duplicate Effects from a separate append-only aut
 	} finally {
 		await Promise.all([rm(root, { recursive: true, force: true }), rm(authority, { recursive: true, force: true })]);
 	}
+});
+
+test("public address resolution falls back from fake-IP DNS without relaxing public-address checks", async () => {
+	let requestedUrl;
+	const addresses = await resolveValidatedPublicAddresses("example.com", {
+		lookup: async () => [{ address: "198.18.0.80", family: 4 }],
+		fetch: async (url) => {
+			requestedUrl = String(url);
+			return new Response(JSON.stringify({ Status: 0, Answer: [{ type: 1, data: "93.184.216.34" }] }), { status: 200 });
+		},
+	});
+	assert.deepEqual(addresses, [{ address: "93.184.216.34", family: 4 }]);
+	assert.match(requestedUrl, /^https:\/\/cloudflare-dns\.com\/dns-query\?/);
+	assert.match(requestedUrl, /name=example\.com/);
+});
+
+test("public address resolution rejects non-public DoH answers", async () => {
+	await assert.rejects(resolveValidatedPublicAddresses("internal.example", {
+		lookup: async () => [{ address: "198.18.0.81", family: 4 }],
+		fetch: async () => new Response(JSON.stringify({ Status: 0, Answer: [{ type: 1, data: "127.0.0.1" }] }), { status: 200 }),
+	}), /non-public/);
 });
 
 test("subprocess timeout escalates to the process group and preserves partial output", async () => {
