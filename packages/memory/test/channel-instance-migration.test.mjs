@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import Database from "better-sqlite3";
-import { backupSqliteDatabase, digestSqliteDatabase, ProfileChannelInstanceMigration, restoreSqliteDatabaseIfUnchanged } from "../dist/index.js";
+import { digestSqliteDatabase, ProfileChannelInstanceMigration } from "../dist/index.js";
 
 function fixture() {
 	const root = mkdtempSync(join(tmpdir(), "beemax-channel-migration-"));
@@ -239,22 +239,48 @@ test("logical SQLite digest distinguishes adjacent 64-bit integers exactly", () 
 	finally { rmSync(root, { recursive: true, force: true }); }
 });
 
-test("fenced SQLite restore handles WAL state without an unfenced check-to-replace window", async () => {
+test("logical SQLite digest distinguishes adjacent IEEE-754 real values exactly", () => {
 	const { root, path } = fixture();
-	const beforePath = join(root, "restore-before.db");
-	await backupSqliteDatabase(path, beforePath);
-	const preDigest = digestSqliteDatabase(beforePath);
+	const db = new Database(path);
+	try { db.exec("CREATE TABLE exact_reals (value REAL NOT NULL); INSERT INTO exact_reals VALUES (1.0)"); }
+	finally { db.close(); }
+	const before = digestSqliteDatabase(path);
 	const changed = new Database(path);
+	try { changed.prepare("UPDATE exact_reals SET value = ?").run(1.0000000000000002); }
+	finally { changed.close(); }
+	try { assert.notEqual(digestSqliteDatabase(path), before); }
+	finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("Profile Channel Instance migration reverses its receipt in place under WAL", async () => {
+	const { root, path } = fixture();
+	const beforePath = join(root, "receipt-before.db");
+	const migration = new ProfileChannelInstanceMigration(path);
+	const configured = new Database(path);
 	try {
-		changed.pragma("journal_mode = WAL");
-		changed.prepare("UPDATE memories SET platform='feishu@company-a' WHERE id='legacy-memory'").run();
-	} finally { changed.close(); }
-	const postDigest = digestSqliteDatabase(path);
+		configured.pragma("journal_mode = WAL");
+		configured.exec(`
+			CREATE TABLE channel_instance_migrations (
+				id TEXT PRIMARY KEY, base_platform TEXT NOT NULL, channel_instance_id TEXT NOT NULL,
+				backup_ref TEXT NOT NULL, row_counts_json TEXT NOT NULL, total_rows INTEGER NOT NULL, applied_at INTEGER NOT NULL
+			);
+			INSERT INTO channel_instance_migrations VALUES ('older', 'telegram', 'bot-a', 'older.db', '[]', 0, 1);
+		`);
+	} finally { configured.close(); }
 	try {
-		await restoreSqliteDatabaseIfUnchanged(path, beforePath, postDigest, preDigest);
+		const prepared = await migration.applyWithBackup({
+			id: "migration-receipt-rollback", platform: "feishu", channelInstanceId: "company-a", backupRef: beforePath,
+		}, beforePath, () => undefined);
+		migration.rollbackApplied(prepared.result, prepared.postMigrationDigest, prepared.preMigrationDigest);
 		assert.equal(scalar(path, "SELECT platform FROM memories WHERE id='legacy-memory'"), "feishu");
-		assert.equal(digestSqliteDatabase(path), preDigest);
-	} finally { rmSync(root, { recursive: true, force: true }); }
+		assert.equal(scalar(path, "SELECT channel_instance_id FROM automation_jobs WHERE id='legacy-job'"), null);
+		assert.equal(scalar(path, "SELECT channel_instance_id FROM automation_routes WHERE user_id='user-a'"), "");
+		assert.equal(scalar(path, "SELECT COUNT(*) FROM channel_instance_migrations WHERE id='older'"), 1);
+		assert.equal(digestSqliteDatabase(path), prepared.preMigrationDigest);
+	} finally {
+		migration.close();
+		rmSync(root, { recursive: true, force: true });
+	}
 });
 
 function scalar(path, sql) {

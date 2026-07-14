@@ -1,8 +1,6 @@
 import Database from "better-sqlite3";
 import type { Database as DatabaseType } from "better-sqlite3";
-import { createHash, randomUUID } from "node:crypto";
-import { open, rename, rm } from "node:fs/promises";
-import { dirname, join } from "node:path";
+import { createHash } from "node:crypto";
 
 export type ChannelRouteStorage = "channel_instance_column" | "encoded_platform";
 
@@ -34,6 +32,21 @@ export interface AppliedChannelInstanceMigration extends ChannelInstanceMigratio
 	id: string;
 	backupRef: string;
 	appliedAt: number;
+	receipt: ChannelInstanceMigrationTableReceipt[];
+	migrationAuditTableCreated: boolean;
+}
+
+export interface ChannelInstanceMigrationRowReceipt {
+	key: Record<string, string>;
+	channelInstanceId?: string | null;
+	scopeKey?: string;
+	structuredRoutes?: Record<string, string | null>;
+}
+
+export interface ChannelInstanceMigrationTableReceipt {
+	table: string;
+	storage: ChannelRouteStorage;
+	rows: ChannelInstanceMigrationRowReceipt[];
 }
 
 export interface PreparedChannelInstanceMigration {
@@ -45,6 +58,7 @@ export interface PreparedChannelInstanceMigration {
 interface ChannelRouteTableDescriptor {
 	table: string;
 	storage: ChannelRouteStorage;
+	keyColumns?: readonly string[];
 	scopeKey?: boolean;
 	structuredRouteColumns?: readonly string[];
 }
@@ -60,7 +74,7 @@ const MIGRATION_TABLE = "channel_instance_migrations";
 const ROUTE_TABLES: readonly ChannelRouteTableDescriptor[] = [
 	{ table: "automation_deliveries", storage: "channel_instance_column" },
 	{ table: "automation_jobs", storage: "channel_instance_column" },
-	{ table: "automation_routes", storage: "channel_instance_column" },
+	{ table: "automation_routes", storage: "channel_instance_column", keyColumns: ["user_id"] },
 	{ table: "initiative_observations", storage: "channel_instance_column" },
 	{ table: "initiative_triggers", storage: "channel_instance_column", structuredRouteColumns: ["delivery_target", "execution_scope"] },
 	{ table: "media_deliveries", storage: "channel_instance_column" },
@@ -123,6 +137,29 @@ export class ProfileChannelInstanceMigration {
 		return this.db.transaction(() => this.applyInternal(normalized))();
 	}
 
+	/** Reverses exactly the rows recorded by apply, without replacing the live SQLite file or its inode. */
+	rollbackApplied(
+		migration: AppliedChannelInstanceMigration,
+		expectedCurrentDigest: string,
+		expectedRestoredDigest: string,
+	): void {
+		this.assertOpen();
+		this.validateRollbackReceipt(migration);
+		this.db.exec("BEGIN EXCLUSIVE");
+		try {
+			if (digestDatabase(this.db) !== expectedCurrentDigest) throw new Error("Profile database changed while rollback was prepared");
+			for (const table of migration.receipt) this.rollbackTable(table, migration.platform, migration.channelInstanceId);
+			const deleted = this.db.prepare(`DELETE FROM ${MIGRATION_TABLE} WHERE id = ?`).run(migration.id);
+			if (deleted.changes !== 1) throw new Error(`Migration audit ${migration.id} is missing`);
+			if (migration.migrationAuditTableCreated) this.db.exec(`DROP TABLE ${MIGRATION_TABLE}`);
+			if (digestDatabase(this.db) !== expectedRestoredDigest) throw new Error("Reversed migration does not match the expected pre-migration state");
+			this.db.exec("COMMIT");
+		} catch (error) {
+			if (this.db.inTransaction) this.db.exec("ROLLBACK");
+			throw error;
+		}
+	}
+
 	/** Holds SQLite's write fence across the verified before snapshot, mutation, and prepared recovery manifest. */
 	async applyWithBackup(
 		input: ApplyChannelInstanceMigrationInput,
@@ -164,6 +201,7 @@ export class ProfileChannelInstanceMigration {
 			if (!existing.has(descriptor.table)) continue;
 			const columns = this.columns(descriptor.table);
 			const required = descriptor.storage === "channel_instance_column" ? ["platform", "channel_instance_id"] : ["platform"];
+			required.push(...(descriptor.keyColumns ?? ["id"]));
 			if (!required.every((column) => columns.has(column))) {
 				blockers.push(`${descriptor.table} schema does not support ${descriptor.storage}`);
 				continue;
@@ -271,6 +309,124 @@ export class ProfileChannelInstanceMigration {
 		}
 	}
 
+	private captureReceipt(plan: ChannelInstanceMigrationPlan): ChannelInstanceMigrationTableReceipt[] {
+		return plan.tables.map((table) => {
+			const descriptor = this.descriptor(table.table, table.storage);
+			const keyColumns = descriptor.keyColumns ?? ["id"];
+			const columns = this.columns(table.table);
+			const capturesScopeKey = descriptor.scopeKey === true
+				&& ["scope_key", "chat_id", "user_id", "thread_id"].every((column) => columns.has(column));
+			const projection = [
+				...keyColumns,
+				...(table.storage === "channel_instance_column" ? ["channel_instance_id"] : []),
+				...(capturesScopeKey ? ["scope_key"] : []),
+				...(descriptor.structuredRouteColumns?.filter((column) => columns.has(column)) ?? []),
+			].map(quoteIdentifier).join(", ");
+			const where = table.storage === "channel_instance_column"
+				? "platform = ? AND (channel_instance_id IS NULL OR channel_instance_id = '')"
+				: "platform = ?";
+			const order = keyColumns.map(quoteIdentifier).join(", ");
+			const sourceRows = this.db.prepare(`SELECT ${projection} FROM ${quoteIdentifier(table.table)} WHERE ${where} ORDER BY ${order}`).all(plan.platform) as Record<string, unknown>[];
+			const rows = sourceRows.map((source): ChannelInstanceMigrationRowReceipt => {
+				const key = Object.fromEntries(keyColumns.map((column) => {
+					const value = source[column];
+					if (typeof value !== "string") throw new Error(`${table.table}.${column} must be text for a reversible migration`);
+					return [column, value];
+				}));
+				const receipt: ChannelInstanceMigrationRowReceipt = { key };
+				if (table.storage === "channel_instance_column") {
+					const value = source.channel_instance_id;
+					if (value !== null && typeof value !== "string") throw new Error(`${table.table}.channel_instance_id must be text or null`);
+					receipt.channelInstanceId = value as string | null;
+				}
+				if (capturesScopeKey) {
+					if (typeof source.scope_key !== "string") throw new Error(`${table.table}.scope_key must be text`);
+					receipt.scopeKey = source.scope_key;
+				}
+				if (descriptor.structuredRouteColumns) {
+					receipt.structuredRoutes = {};
+					for (const column of descriptor.structuredRouteColumns) {
+						if (!columns.has(column)) continue;
+						const value = source[column];
+						if (value !== null && typeof value !== "string") throw new Error(`${table.table}.${column} must be text or null`);
+						receipt.structuredRoutes[column] = value as string | null;
+					}
+				}
+				return receipt;
+			});
+			if (rows.length !== table.rows) throw new Error(`Concurrent change detected while recording ${table.table}`);
+			return { table: table.table, storage: table.storage, rows };
+		});
+	}
+
+	private rollbackTable(table: ChannelInstanceMigrationTableReceipt, platform: string, channelInstanceId: string): void {
+		const descriptor = this.descriptor(table.table, table.storage);
+		const keyColumns = descriptor.keyColumns ?? ["id"];
+		const identifier = quoteIdentifier(table.table);
+		for (const row of table.rows) {
+			const assignments: string[] = [];
+			const params: unknown[] = [];
+			if (table.storage === "encoded_platform") {
+				assignments.push("platform = ?");
+				params.push(platform);
+				if (row.scopeKey !== undefined) {
+					if (!descriptor.scopeKey || typeof row.scopeKey !== "string") throw new Error(`${table.table} rollback receipt has invalid scope_key`);
+					assignments.push("scope_key = ?");
+					params.push(row.scopeKey);
+				}
+			} else {
+				if (row.channelInstanceId !== null && typeof row.channelInstanceId !== "string") throw new Error(`${table.table} rollback receipt has invalid channel_instance_id`);
+				assignments.push("channel_instance_id = ?");
+				params.push(row.channelInstanceId);
+				for (const column of descriptor.structuredRouteColumns ?? []) {
+					if (!row.structuredRoutes || !(column in row.structuredRoutes)) continue;
+					const value = row.structuredRoutes[column];
+					if (value !== null && typeof value !== "string") throw new Error(`${table.table} rollback receipt has invalid ${column}`);
+					assignments.push(`${quoteIdentifier(column)} = ?`);
+					params.push(value);
+				}
+			}
+			const keyWhere = keyColumns.map((column) => `${quoteIdentifier(column)} = ?`).join(" AND ");
+			for (const column of keyColumns) params.push(row.key[column]);
+			const ownershipWhere = table.storage === "encoded_platform"
+				? "platform = ?"
+				: "platform = ? AND channel_instance_id = ?";
+			params.push(table.storage === "encoded_platform" ? `${platform}@${channelInstanceId}` : platform);
+			if (table.storage === "channel_instance_column") params.push(channelInstanceId);
+			const result = this.db.prepare(`UPDATE ${identifier} SET ${assignments.join(", ")} WHERE ${keyWhere} AND ${ownershipWhere}`).run(...params);
+			if (result.changes !== 1) throw new Error(`Migrated row in ${table.table} is missing or no longer owned by the target Channel Instance`);
+		}
+	}
+
+	private validateRollbackReceipt(migration: AppliedChannelInstanceMigration): void {
+		if (!migration.id || !Array.isArray(migration.receipt) || typeof migration.migrationAuditTableCreated !== "boolean") {
+			throw new Error("Channel instance migration rollback receipt is invalid");
+		}
+		validateAddressPart("platform", migration.platform);
+		validateAddressPart("channelInstanceId", migration.channelInstanceId);
+		const planned = new Map(migration.tables.map((table) => [table.table, table]));
+		if (migration.receipt.length !== planned.size) throw new Error("Channel instance migration rollback receipt is incomplete");
+		const received = new Set<string>();
+		for (const table of migration.receipt) {
+			const plan = planned.get(table.table);
+			const descriptor = this.descriptor(table.table, table.storage);
+			if (received.has(table.table) || !plan || plan.storage !== table.storage || plan.rows !== table.rows.length) throw new Error(`Channel instance migration rollback receipt does not match ${table.table}`);
+			received.add(table.table);
+			const keyColumns = descriptor.keyColumns ?? ["id"];
+			for (const row of table.rows) {
+				if (!row || typeof row !== "object" || keyColumns.some((column) => typeof row.key?.[column] !== "string")) {
+					throw new Error(`${table.table} rollback receipt has an invalid row key`);
+				}
+			}
+		}
+	}
+
+	private descriptor(table: string, storage: ChannelRouteStorage): ChannelRouteTableDescriptor {
+		const descriptor = ROUTE_TABLES.find((candidate) => candidate.table === table);
+		if (!descriptor || descriptor.storage !== storage) throw new Error(`No migration descriptor owns ${table}`);
+		return descriptor;
+	}
+
 	private createAuditTable(): void {
 		this.db.exec(`
 			CREATE TABLE IF NOT EXISTS ${MIGRATION_TABLE} (
@@ -299,6 +455,8 @@ export class ProfileChannelInstanceMigration {
 		const plan = this.planInternal(input.platform, input.channelInstanceId);
 		if (plan.blockers.length > 0) throw new Error(`Channel instance migration is blocked:\n${plan.blockers.join("\n")}`);
 		if (plan.totalRows === 0) throw new Error("Channel instance migration has no legacy route data to assign");
+		const receipt = this.captureReceipt(plan);
+		const migrationAuditTableCreated = !this.tableExists(MIGRATION_TABLE);
 		this.createAuditTable();
 		for (const table of plan.tables) this.applyTable(table, input.platform, input.channelInstanceId);
 		this.db.prepare(`
@@ -306,13 +464,17 @@ export class ProfileChannelInstanceMigration {
 				(id, base_platform, channel_instance_id, backup_ref, row_counts_json, total_rows, applied_at)
 			VALUES (?, ?, ?, ?, ?, ?, ?)
 		`).run(input.id, input.platform, input.channelInstanceId, input.backupRef, JSON.stringify(plan.tables), plan.totalRows, input.appliedAt);
-		return { ...plan, id: input.id, backupRef: input.backupRef, appliedAt: input.appliedAt };
+		return { ...plan, id: input.id, backupRef: input.backupRef, appliedAt: input.appliedAt, receipt, migrationAuditTableCreated };
 	}
 
 	private userTables(): string[] {
 		return (this.db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name").all() as NamedTableRow[])
 			.map((row) => row.name)
 			.filter((name) => name !== MIGRATION_TABLE);
+	}
+
+	private tableExists(table: string): boolean {
+		return this.db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?").get(table) !== undefined;
 	}
 
 	private columns(table: string): Set<string> {
@@ -344,39 +506,6 @@ export function digestSqliteDatabase(path: string): string {
 		throw error;
 	}
 	finally { db.close(); }
-}
-
-/** Atomically replaces a Profile database only while its exact expected logical state is exclusively fenced. */
-export async function restoreSqliteDatabaseIfUnchanged(
-	destinationPath: string,
-	backupPath: string,
-	expectedCurrentDigest: string,
-	expectedRestoredDigest: string,
-): Promise<void> {
-	const directory = dirname(destinationPath);
-	const restorePath = join(directory, `.channel-instance-restore-${randomUUID()}.db`);
-	try {
-		const source = new Database(backupPath, { readonly: true, fileMustExist: true });
-		try { await source.backup(restorePath); }
-		finally { source.close(); }
-		verifyDatabase(backupPath, restorePath);
-		if (digestSqliteDatabase(restorePath) !== expectedRestoredDigest) throw new Error("Restore snapshot does not match the expected pre-migration state");
-
-		const destination = new Database(destinationPath, { fileMustExist: true });
-		try {
-			destination.pragma("busy_timeout = 5000");
-			const journalMode = destination.pragma("journal_mode = DELETE", { simple: true });
-			if (journalMode !== "delete") throw new Error(`Could not checkpoint Profile database before restore (journal mode: ${String(journalMode)})`);
-			destination.exec("BEGIN EXCLUSIVE");
-			if (digestDatabase(destination) !== expectedCurrentDigest) throw new Error("Profile database changed while rollback was prepared");
-			await rename(restorePath, destinationPath);
-			await fsyncDirectory(directory);
-			destination.exec("COMMIT");
-		} catch (error) {
-			if (destination.inTransaction) destination.exec("ROLLBACK");
-			throw error;
-		} finally { destination.close(); }
-	} finally { await rm(restorePath, { force: true }).catch(() => undefined); }
 }
 
 function digestDatabase(db: DatabaseType): string {
@@ -422,10 +551,11 @@ function rowLocator(db: DatabaseType, table: string, tableInfo: TableInfoRow[]):
 	}
 }
 
-function cellReader(db: DatabaseType, table: string, column: string, where: string): { metadata: Database.Statement<unknown[], unknown>; chunk: Database.Statement<unknown[], unknown> } {
+function cellReader(db: DatabaseType, table: string, column: string, where: string): { metadata: Database.Statement<unknown[], unknown>; exact: Database.Statement<unknown[], unknown>; chunk: Database.Statement<unknown[], unknown> } {
 	const identifier = quoteIdentifier(column);
 	return {
 		metadata: db.prepare(`SELECT typeof(${identifier}) AS value_type, length(CAST(${identifier} AS BLOB)) AS byte_length FROM ${quoteIdentifier(table)} WHERE ${where}`).safeIntegers(),
+		exact: db.prepare(`SELECT ${identifier} FROM ${quoteIdentifier(table)} WHERE ${where}`).pluck(),
 		chunk: db.prepare(`SELECT substr(CAST(${identifier} AS BLOB), ?, ?) FROM ${quoteIdentifier(table)} WHERE ${where}`).pluck(),
 	};
 }
@@ -434,6 +564,14 @@ function hashCell(hash: ReturnType<typeof createHash>, reader: ReturnType<typeof
 	const metadata = reader.metadata.get(...locator) as { value_type: string; byte_length: bigint | null } | undefined;
 	if (!metadata) throw new Error("SQLite row disappeared while creating a fenced logical digest");
 	hashValue(hash, metadata.value_type);
+	if (metadata.value_type === "real") {
+		const value = reader.exact.get(...locator);
+		if (typeof value !== "number") throw new Error("SQLite REAL value was not returned as a number");
+		const bytes = Buffer.allocUnsafe(8);
+		bytes.writeDoubleBE(value);
+		hashValue(hash, bytes);
+		return;
+	}
 	hashValue(hash, metadata.byte_length);
 	const length = Number(metadata.byte_length ?? 0n);
 	const chunkSize = 64 * 1024;
@@ -460,10 +598,4 @@ function verifyDatabase(sourcePath: string, backupPath: string): void {
 		const result = db.pragma("integrity_check", { simple: true });
 		if (result !== "ok") throw new Error(`SQLite backup integrity check failed for ${sourcePath}: ${String(result)}`);
 	} finally { db.close(); }
-}
-
-async function fsyncDirectory(path: string): Promise<void> {
-	const handle = await open(path, "r");
-	try { await handle.sync(); }
-	finally { await handle.close(); }
 }

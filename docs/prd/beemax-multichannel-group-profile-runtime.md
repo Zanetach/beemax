@@ -22,7 +22,7 @@
 | 2026-07-14 | 第四实施切片：受限群观察、ambient 响应 quiet hours 与回复频率预算 | 在不建立第二执行链的前提下补齐群聊观察和响应边界 | Codex | build、typecheck、714 项全量测试及架构/迁移/Memory 门禁通过 | v1.4-draft |
 | 2026-07-14 | 第五实施切片：智能 Ambient 价值选择、可信 Conversation Type 与统一主动投递治理 | 让群观察由通用认知判断价值，并确保主动群结果可治理、可延迟且不重跑 Pi | Codex | build、typecheck、726 项全量测试及架构/迁移/Memory 门禁通过；双轴复审通过 | v1.5-draft |
 | 2026-07-14 | 第六实施切片：Binding 原子启停与最小 Profile Host 生命周期 | 补齐冲突安全的路由管理，并把 Profile admission、health、degrade、drain 收敛为统一运行时权威 | Codex | build、typecheck、734 项全量测试及架构/迁移/Memory 门禁通过；双轴审查问题已修复 | v1.6-draft |
-| 2026-07-14 | 第七实施切片：旧 Memory/Automation 显式 Channel Instance 归属迁移 | 多实例启用前消除旧路由歧义，提供事务、备份、审计与安全回滚 | Codex | build、typecheck、749 项全量测试及架构/迁移/性能/Memory 门禁通过；双轴审查问题已修复 | v1.7-draft |
+| 2026-07-14 | 第七实施切片：旧 Memory/Automation 显式 Channel Instance 归属迁移 | 多实例启用前消除旧路由歧义，提供事务、备份、审计与安全回滚 | Codex | build、typecheck、750 项全量测试及架构/迁移/性能/Memory 门禁通过；双轴审查问题已修复 | v1.7-draft |
 
 ---
 
@@ -832,7 +832,7 @@ beemax migration channel-instance apply --platform feishu --channel-instance com
 beemax migration channel-instance rollback ~/.beemax/profiles/personal/migrations/channel-instance/assign-company-a.json --yes --profile personal
 ```
 
-`apply` 只处理 BeeMax 基础设施显式登记的路由表，在一个 SQLite 写栅栏和事务中覆盖 before backup、编码式 Memory scope、独立 `channel_instance_id` 路由、迁移后摘要与 prepared recovery manifest；客户扩展表不会因列名相似而被猜测改写。结构化 scope key 与 Initiative 嵌套路由同步更新。目标唯一键冲突、无效嵌套 JSON 或并发变化全部 fail-closed。`rollback` 从所选 Profile 配置派生并校验所有路径，以精确 64 位/分块逻辑摘要、no-clobber artifact 发布、SQLite exclusive restore fence 和持久状态机支持崩溃后幂等续作；任何后续写入都会阻止恢复，避免抹掉新业务数据。详细操作见 [`docs/operations/channel-instance-ownership-migration.md`](../operations/channel-instance-ownership-migration.md)。
+`apply` 只处理 BeeMax 基础设施显式登记的路由表，在一个 SQLite 写栅栏和事务中覆盖 before backup、编码式 Memory scope、独立 `channel_instance_id` 路由、逐行反向 receipt、迁移后摘要与 prepared recovery manifest；客户扩展表不会因列名相似而被猜测改写。结构化 scope key 与 Initiative 嵌套路由同步更新。目标唯一键冲突、无效嵌套 JSON 或并发变化全部 fail-closed。`rollback` 从所选 Profile 配置派生并校验所有路径，以精确整数/REAL、分块内容摘要、no-clobber artifact 发布、同一 SQLite inode 内的 exclusive 反向事务和持久状态机支持崩溃后幂等续作；任何后续写入都会阻止恢复，排队 writer 则在回滚提交后继续，避免抹掉新业务数据。详细操作见 [`docs/operations/channel-instance-ownership-migration.md`](../operations/channel-instance-ownership-migration.md)。
 
 #### 10.2.5 Binding 与 Profile 路由
 

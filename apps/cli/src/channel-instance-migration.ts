@@ -5,7 +5,6 @@ import {
 	backupSqliteDatabase,
 	digestSqliteDatabase,
 	ProfileChannelInstanceMigration,
-	restoreSqliteDatabaseIfUnchanged,
 	verifySqliteDatabase,
 	type AppliedChannelInstanceMigration,
 	type ChannelInstanceMigrationPlan,
@@ -162,7 +161,9 @@ export async function rollbackProfileChannelInstanceMigration(input: RollbackPro
 			rollbackPreparedAt: manifest.rollbackPreparedAt ?? Date.now(),
 		};
 		await writeJsonAtomically(manifestPath, manifest);
-		await restoreSqliteDatabaseIfUnchanged(paths.dbPath, manifest.backupPath, manifest.postMigrationDigest, manifest.preMigrationDigest);
+		const migration = new ProfileChannelInstanceMigration(paths.dbPath);
+		try { migration.rollbackApplied(manifest.result, manifest.postMigrationDigest, manifest.preMigrationDigest); }
+		finally { migration.close(); }
 		verifySqliteDatabase(paths.dbPath);
 
 		const rolledBack: ProfileChannelInstanceMigrationManifest = { ...manifest, status: "rolled_back", rolledBackAt: Date.now() };
