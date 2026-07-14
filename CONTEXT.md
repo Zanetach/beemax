@@ -84,6 +84,14 @@ _Avoid_: Task timeout, lock, deadline
 The immutable identity and trusted references carried by one Pi execution attempt, including its trigger, Objective, Task Run, Access Scope, budget, deadline, and recovery or verification mode.
 _Avoid_: Prompt context, Task record, customer business schema, Credential Secret
 
+**Execution Sandbox**:
+A constrained execution environment for selected built-in file and command Capabilities; it does not enlarge Access Scope and does not imply that MCP, Browser, Channel, Profile, or tenant activity is isolated.
+_Avoid_: Profile isolation, Tool approval, local process, tenant boundary
+
+**Host Execution Adapter**:
+The explicit trusted-mode Adapter that runs selected built-in file and command Capabilities with the BeeMax process user's host authority; it is never an Execution Sandbox.
+_Avoid_: Local Sandbox, restricted host, safe mode
+
 **Execution Trace**:
 A content-free diagnostic projection that correlates one Execution Envelope with model turns, Tool calls, Effects, checkpoints, Verification, delivery, cost, and latency; it never authorizes work or replaces their durable authorities.
 _Avoid_: Transcript, Task Ledger, Effect authority, audit policy, business event

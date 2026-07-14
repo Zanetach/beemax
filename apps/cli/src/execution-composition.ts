@@ -6,6 +6,7 @@ import type { BeeMaxConfig } from "./config.ts";
 export function executionPortFor(config: BeeMaxConfig): (source: SessionSource) => ExecutionPort {
 	const local = new LocalExecutionPort();
 	const docker = new DockerExecutionPort({
+		profileId: config.profile,
 		image: config.execution.image,
 		timeoutMs: config.execution.timeoutMs,
 		workspaceAccess: config.execution.workspaceAccess,

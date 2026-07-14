@@ -15,8 +15,8 @@ export function createExecutionTools(source: BeeMaxRuntimeSource, cwd: string, e
 				command: Type.String({ minLength: 1, maxLength: 20_000 }),
 				timeout: Type.Optional(Type.Integer({ minimum: 1, maximum: 600 })),
 			}),
-			execute: async (_id, params) => {
-				const result = await execution.execute({ source, command: params.command, cwd, timeoutMs: (params.timeout ?? 180) * 1_000 });
+			execute: async (_id, params, signal) => {
+				const result = await execution.execute({ source, command: params.command, cwd, timeoutMs: (params.timeout ?? 180) * 1_000, signal });
 				return { content: [{ type: "text" as const, text: [result.stdout, result.stderr].filter(Boolean).join("\n") || `(exit ${result.exitCode})` }], details: result, isError: result.exitCode !== 0 };
 			},
 		}),
@@ -25,9 +25,9 @@ export function createExecutionTools(source: BeeMaxRuntimeSource, cwd: string, e
 			label: "Read File",
 			description: "Read a workspace file through BeeMax's configured execution backend.",
 			parameters: Type.Object({ path: Type.String({ minLength: 1 }) }),
-			execute: async (_id, params) => {
+			execute: async (_id, params, signal) => {
 				const path = workspacePath(cwd, params.path);
-				const content = await execution.readFile({ source, cwd, path });
+				const content = await execution.readFile({ source, cwd, path, signal });
 				return { content: [{ type: "text" as const, text: content.slice(0, 100_000) }], details: { path } };
 			},
 		}),
@@ -40,9 +40,9 @@ export function createExecutionTools(source: BeeMaxRuntimeSource, cwd: string, e
 				content: Type.String({ maxLength: 1_000_000 }),
 				idempotencyKey: Type.Optional(Type.String({ minLength: 1, maxLength: 256, description: "Stable identity for safely detecting repeated execution of the same intended write" })),
 			}),
-			execute: async (_id, params) => {
+			execute: async (_id, params, signal) => {
 				const path = workspacePath(cwd, params.path);
-				await execution.writeFile({ source, cwd, path }, params.content);
+				await execution.writeFile({ source, cwd, path, signal }, params.content);
 				const externalRef = `workspace:${relative(cwd, path).replaceAll("\\", "/") || "."}`;
 				return {
 					content: [{ type: "text" as const, text: `Wrote ${path}` }],

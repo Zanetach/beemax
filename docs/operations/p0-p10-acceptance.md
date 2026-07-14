@@ -12,6 +12,8 @@ npm run verify:release
 
 Ubuntu 资源门禁由 CI 和 tag release 在 Ubuntu 24.04 x64 上独立执行 `npm run eval:resources:ubuntu`，并上传带机器声明的 JSON artifact。它不在 macOS 上降级运行；本地复现方式与 RSS、队列、并发、DB 高水位见 [`ubuntu-resource-high-water.md`](ubuntu-resource-high-water.md)。
 
+Docker Execution Sandbox 门禁同样由 Ubuntu CI/tag release 独立执行 `npm run eval:sandbox:ubuntu`。它通过真实 Docker daemon 验证网络、权限、rootfs、cgroup、workspace、输出边界与取消清理，并上传包含实际镜像 digest 的 JSON artifact；详细边界见 [`docker-execution-sandbox.md`](docker-execution-sandbox.md)。
+
 CI 专用性能复现仍可单独运行 `npm run eval:performance:ci`；本地或发布审计应使用 `npm run eval:performance:release`，由机器事实选择已提交 Profile，未知机器直接失败。
 
 ## P0–P10 证据边界

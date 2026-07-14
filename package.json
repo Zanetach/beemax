@@ -36,6 +36,7 @@
     "eval:performance:release": "node scripts/evaluate-release-performance.mjs",
     "eval:memory": "node --expose-gc scripts/evaluate-memory-stability.mjs",
     "eval:resources:ubuntu": "node --expose-gc scripts/evaluate-ubuntu-resources.mjs --profile evals/resource-profiles/ubuntu-small-node22.json",
+    "eval:sandbox:ubuntu": "node scripts/evaluate-docker-sandbox.mjs --profile evals/sandbox-profiles/ubuntu-docker-node22.json",
     "eval:architecture": "node scripts/evaluate-architecture.mjs",
     "eval:migration": "node scripts/rehearse-migration-rollback.mjs",
     "eval:acceptance": "node scripts/evaluate-acceptance-program.mjs && npm run eval:architecture && npm run eval:migration",

@@ -1,0 +1,20 @@
+{
+  "schemaVersion": 1,
+  "id": "ubuntu-docker-node22",
+  "description": "BeeMax one-shot Docker Execution Sandbox on Ubuntu 24.04 x64",
+  "hostPlatform": "linux",
+  "hostOsId": "ubuntu",
+  "hostOsVersionPattern": "^24\\.04",
+  "hostArchitecture": "x64",
+  "dockerOsType": "linux",
+  "dockerArchitecture": "x86_64",
+  "image": "node:22.19-alpine",
+  "limits": {
+    "memoryBytes": 2147483648,
+    "cpus": 1,
+    "pids": 256,
+    "tmpfsBytes": 268435456,
+    "maxOutputBytes": 4194304,
+    "nofile": 1024
+  }
+}

@@ -16,6 +16,7 @@ export interface ExecutionRequest {
 	command: string;
 	cwd: string;
 	timeoutMs?: number;
+	signal?: AbortSignal;
 }
 
 export interface ExecutionFileRequest {
@@ -24,6 +25,7 @@ export interface ExecutionFileRequest {
 	cwd: string;
 	/** Absolute path already constrained to cwd by the caller. */
 	path: string;
+	signal?: AbortSignal;
 }
 
 export interface ExecutionResult {
@@ -41,5 +43,6 @@ export interface ExecutionPort {
 
 export function resolveExecutionBackend(policy: Pick<ExecutionPolicy, "backend" | "mode">, source: BeeMaxRuntimeSource): ExecutionBackend {
 	if (policy.mode === "off") return "local";
+	if (policy.backend !== "docker") throw new Error("Sandbox mode 'all' requires the Docker Execution Sandbox");
 	return policy.backend;
 }

@@ -26,12 +26,13 @@
 | 2026-07-14 | 第八实施切片：旧群聊 Session Ownership Migration | 以管理员显式选择替代 Actor transcript 猜测，提供非破坏保留、Catalog 收敛与安全回滚 | Codex | build、typecheck、762 项全量测试及架构/迁移/性能/Memory 门禁通过；双轴复审均 clean，崩溃恢复、路径越界、header、文件身份、短写及 no-clobber 恢复问题已关闭 | v1.8-draft |
 | 2026-07-14 | 第九实施切片：安全验收发布门禁 | 将群聊 Private Memory、跨 Profile Memory 与重复 Effect 三项安全阻塞收敛为独立可执行证据 | Codex | `eval:security` 3/3、765 项全量测试及 P10 acceptance 通过；双轴复审均 clean | v1.9-draft |
 | 2026-07-14 | 第十实施切片：Ubuntu 资源高水位门禁 | 为首期 Ubuntu x64 小型规格建立 RSS、队列、并发、DB 与 systemd 的统一可执行合同 | Codex | Ubuntu 24.04 x64 门禁通过（峰值 RSS 436.8 MiB、队列/并发/DB/systemd 合同通过）；767 项全量测试与完整发布门禁通过，Spec 复审 clean、Standards 无硬违规 | v1.10-draft |
+| 2026-07-14 | 第十一实施切片：Docker Execution Sandbox | 明确 Host Execution 不是 Sandbox，并为内置命令/文件 Capability 建立真实容器隔离与取消清理证据 | Codex | Docker Desktop 行为门禁通过但仅为开发证据；Ubuntu CI/tag artifact、全量门禁与双轴复审待执行 | v1.11-draft |
 
 ---
 
 ## 当前实施状态（2026-07-14）
 
-当前已完成第一至第十实施切片：
+当前已完成第一至第十实施切片，正在实施第十一切片：
 
 - 群聊/Channel/Thread 的 Conversation 不再包含当前 Actor；Task Responsibility 仍按 Actor 或可信统一身份归属。
 - `channelInstanceId` 已贯穿 Gateway 入站、投递、Task Plan Completion Notice、Automation Job/Delivery/Route/Media 和 Memory 分区。
@@ -60,6 +61,8 @@
 - Session rollback 以 source/target SHA-256、canonical identity、Profile 路径与 Catalog receipt 共同校验；canonical transcript 或偏好一旦出现新变化就 fail-closed。保留期固定为“无自动过期”，未来删除必须进入独立的企业 retention policy 与审计动作。
 - `npm run eval:security` 使用真实 SQLite Memory authority 与跨实例 Effect Journal 独立验收：Private DM Claim 不进入群聊 recall、一个 Profile 的 Memory Store 不能由另一 Profile 打开、同一 idempotency key 只能产生一个 committed mutation；该门禁已进入 `verify:release` 与 P10 证据清单。
 - `ubuntu-small-node22` 把 Ubuntu 24.04 x64 小型主机的 systemd 2 GiB/200%/512 tasks、Interaction Queue 500 条/2 MiB、Profile Task 并发 4 与 RSS 1.5 GiB/DB 1 GiB 运维高水位收敛为配置合同；`eval:resources:ubuntu` 用真实队列、Scheduler、SQLite 与 RSS 压测，CI 和 tag release 上传逐次 JSON 证据。
+- Docker 是首个生产 Execution Sandbox；`local` 明确为继承 BeeMax 进程用户权限的 Host Execution Adapter。`mode: all` 不允许静默使用 local，配置拼写错误 fail-closed；内置 `bash/read/write` 统一经过 `ExecutionPort`，其他 Pi 宿主文件 Tool 被移除。
+- 一次一容器的 Docker Adapter 已加入 network/rootfs/capability/no-new-privileges/IPC/CPU/memory/PID/tmpfs/nofile/output 边界、Profile label 和取消/超时强制清理；`eval:sandbox:ubuntu` 用真实 Docker daemon 验证 workspace none/ro/rw 与全部隔离观察。
 
 仍按本 PRD 后续阶段实施，不计为本切片完成：
 
@@ -1101,7 +1104,7 @@ Interaction/Schedule/Event → Situation → durable admission → Objective/Tas
 | TBD-1 | 正式商业模式、目标定价和种子客户数量 | 3、13 | [TODO: 产品负责人] | 种子发布前 | 待决 |
 | TBD-2 | 各部署规格的 RSS、并发、队列和 DB 高水位目标 | 4、10、11 | Runtime/运维 | 2026-07-14 | 已决：首期仅声明 `ubuntu-small-node22`，其他规格必须新增独立 Profile 与实测证据 |
 | TBD-3 | Shared Channel Relay 是否进入本次正式版本或后续版本 | 5、10 | 产品/架构负责人 | P1 完成后 | 待决 |
-| TBD-4 | Sandbox 首批支持 Docker、受限本机进程还是两者 | 10、12 | 安全/Runtime | P2 开始前 | 待决 |
+| TBD-4 | Sandbox 首批支持 Docker、受限本机进程还是两者 | 10、12 | 安全/Runtime | 2026-07-14 | 已决：Docker 是首个生产 Execution Sandbox；local 仅为显式可信 Host Execution Adapter，不声明本机 Sandbox |
 | TBD-5 | 旧群聊 Session Key 的迁移保留周期 | 7、10 | Runtime | 2026-07-14 | 已决：不自动过期；删除进入独立 retention policy 与审计 |
 | TBD-6 | 管理控制面采用 CLI-only 还是同时提供 Web 管理端 | 10、13 | 产品负责人 | 正式发布前 | 待决 |
 | TBD-7 | 钉钉、企微、微信生态 Adapter 的首发优先级 | 5、13 | 产品/集成 | P2 开始前 | 待决 |
@@ -1155,7 +1158,8 @@ Interaction/Schedule/Event → Situation → durable admission → Objective/Tas
 
 1. 使用种子客户真实数据建立群聊有用响应率、误响应率和干预次数基线。
 2. 明确钉钉、企微和微信生态 Adapter 的发布优先级与官方接口限制。
-3. 决定首批 Sandbox backend 和部署文档。
+
+已完成：首批 Sandbox backend 已确定为 Docker，Host Execution 明确不属于 Sandbox，并提供部署文档与真实 Docker 发布门禁。
 
 ### 🟢 可选完善（商业和体验）
 

@@ -242,6 +242,15 @@ test("runtime configuration falls back to the safe default SOUL when a Profile i
 	assert.match(oversized.agent.systemPrompt, /# BeeMax/);
 });
 
+test("runtime configuration rejects misspelled Execution Sandbox policy instead of falling back to host execution", async () => {
+	const home = await mkdtemp(join(tmpdir(), "beemax-sandbox-config-home-"));
+	const paths = await createProfile("sandbox-policy", { home });
+	for (const [field, value] of [["backend", "dockre"], ["mode", "everything"], ["workspaceAccess", "readwrite"]]) {
+		await writeFile(paths.configPath, `execution:\n  ${field}: ${value}\n`);
+		assert.throws(() => loadConfig(paths.configPath, "sandbox-policy"), new RegExp(`Invalid execution\\.${field}`));
+	}
+});
+
 test("curated memory is bounded and rendered as a session snapshot", async () => {
 	const root = await mkdtemp(join(tmpdir(), "beemax-curated-memory-"));
 	await writeFile(join(root, "USER.md"), "Prefers concise Chinese reports.\n");

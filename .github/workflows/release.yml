@@ -20,10 +20,15 @@ jobs:
       - run: npm audit --omit=dev --audit-level=high
       - run: npm run verify:release
       - run: mkdir -p artifacts && npm run eval:resources:ubuntu -- --write artifacts/resource-high-water-ubuntu.json
+      - run: npm run eval:sandbox:ubuntu -- --write artifacts/docker-sandbox-ubuntu.json
       - uses: actions/upload-artifact@v4
         with:
           name: resource-high-water-ubuntu-${{ github.ref_name }}
           path: artifacts/resource-high-water-ubuntu.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: docker-sandbox-ubuntu-${{ github.ref_name }}
+          path: artifacts/docker-sandbox-ubuntu.json
       - run: bash scripts/create-release-archive.sh "${GITHUB_REF_NAME}"
       - run: bash scripts/verify-release-archive.sh "${GITHUB_REF_NAME}"
       - env:

@@ -221,17 +221,17 @@ export async function inspectDoctor(config: BeeMaxConfig, options: DoctorOptions
 async function checkExecutionBackend(config: BeeMaxConfig, checks: DoctorCheck[]): Promise<void> {
 	const detail = `${config.execution.backend}; mode=${config.execution.mode}; workspace=${config.execution.workspaceAccess}`;
 	if (config.execution.mode === "off") {
-		checks.push({ name: "Execution sandbox", status: "PASS", detail: `disabled (${detail})` });
+		checks.push({ name: "Execution Sandbox", status: "WARN", detail: `disabled; Host Execution Adapter has the BeeMax process user's authority (${detail})` });
 		return;
 	}
 	if (config.execution.backend !== "docker") {
-		checks.push({ name: "Execution sandbox", status: "WARN", detail: `no isolation backend selected (${detail})` });
+		checks.push({ name: "Execution Sandbox", status: "FAIL", detail: `Sandbox mode 'all' requires Docker (${detail})` });
 		return;
 	}
 	try {
 		const { stdout } = await execFileAsync("docker", ["version", "--format", "{{.Server.Version}}"], { timeout: 5_000 });
-		checks.push({ name: "Execution sandbox", status: "PASS", detail: `Docker ${stdout.trim()}; ${detail}` });
+		checks.push({ name: "Execution Sandbox", status: "PASS", detail: `Docker ${stdout.trim()}; ${detail}` });
 	} catch (error) {
-		checks.push({ name: "Execution sandbox", status: "FAIL", detail: `Docker unavailable: ${error instanceof Error ? error.message : String(error)}` });
+		checks.push({ name: "Execution Sandbox", status: "FAIL", detail: `Docker unavailable: ${error instanceof Error ? error.message : String(error)}` });
 	}
 }

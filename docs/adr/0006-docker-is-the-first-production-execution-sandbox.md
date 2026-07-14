@@ -1,0 +1,3 @@
+# Docker is the first production Execution Sandbox
+
+BeeMax keeps one `ExecutionPort` seam with a Docker Adapter and a Host Execution Adapter. Docker is the first supported production Execution Sandbox because it can enforce process, memory, CPU, network, root-filesystem, and workspace-mount constraints; the Host Execution Adapter remains available only for explicitly trusted operation and is never described as a Sandbox. This isolates the built-in `bash`, `read`, and `write` Capabilities without claiming that Profile identity, MCP, Browser, Channel, or hostile-tenant activity shares that boundary.

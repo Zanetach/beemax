@@ -33,7 +33,7 @@ const requiredEvidencedMetricContract = {
 const requiredProgramContract = {
 	P0: { commands: ["npm run eval:runtime"], evidence: ["evals/baselines/current.json"] },
 	P1: { commands: ["npm test"], evidence: ["packages/core/test/action-governance.test.mjs"] },
-	P2: { commands: ["npm test"], evidence: ["packages/core/test/execution-envelope.test.mjs"] },
+	P2: { commands: ["npm run eval:sandbox:ubuntu", "npm test"], evidence: ["packages/core/test/execution-envelope.test.mjs", "packages/core/test/execution-boundary.test.mjs", "evals/sandbox-profiles/ubuntu-docker-node22.json", "scripts/evaluate-docker-sandbox.mjs"] },
 	P3: { commands: ["npm run eval:reliability"], evidence: ["apps/cli/test/reliability-fault-release-gate.test.mjs"] },
 	P4: { commands: ["npm run eval:runtime"], evidence: ["packages/core/test/capability-runtime.test.mjs"] },
 	P5: { commands: ["npm test"], evidence: ["packages/core/test/task-checkpoint.test.mjs"] },
@@ -42,8 +42,8 @@ const requiredProgramContract = {
 	P8: { commands: ["npm test"], evidence: ["apps/cli/test/channel-runtime-equivalence.test.mjs"] },
 	P9: { commands: ["npm run eval:architecture"], evidence: ["scripts/evaluate-architecture.mjs"] },
 	P10: {
-		commands: ["npm run eval:migration", "npm run eval:performance:ci", "npm run eval:resources:ubuntu", "npm run eval:security"],
-		evidence: ["scripts/rehearse-migration-rollback.mjs", "scripts/evaluate-ubuntu-resources.mjs", "evals/resource-profiles/ubuntu-small-node22.json", "apps/cli/test/security-acceptance-release-gate.test.mjs"],
+		commands: ["npm run eval:migration", "npm run eval:performance:ci", "npm run eval:resources:ubuntu", "npm run eval:sandbox:ubuntu", "npm run eval:security"],
+		evidence: ["scripts/rehearse-migration-rollback.mjs", "scripts/evaluate-ubuntu-resources.mjs", "scripts/evaluate-docker-sandbox.mjs", "evals/resource-profiles/ubuntu-small-node22.json", "evals/sandbox-profiles/ubuntu-docker-node22.json", "apps/cli/test/security-acceptance-release-gate.test.mjs"],
 	},
 };
 const programs = manifest.programs?.map((program) => program.id) ?? [];

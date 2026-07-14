@@ -365,8 +365,8 @@ export function loadConfig(configPath?: string, profile = "default"): BeeMaxConf
 			backend: executionBackend(env.BEEMAX_EXECUTION_BACKEND ?? cfg.execution?.backend),
 			mode: sandboxMode(env.BEEMAX_SANDBOX_MODE ?? cfg.execution?.mode),
 			workspaceAccess: workspaceAccess(env.BEEMAX_SANDBOX_WORKSPACE_ACCESS ?? cfg.execution?.workspaceAccess),
-			image: str(env.BEEMAX_SANDBOX_IMAGE ?? cfg.execution?.image ?? "node:22-alpine"),
-			timeoutMs: parseNumber(env.BEEMAX_SANDBOX_TIMEOUT_MS ?? cfg.execution?.timeoutMs, 180_000),
+			image: str(env.BEEMAX_SANDBOX_IMAGE ?? cfg.execution?.image ?? "node:22.19-alpine"),
+			timeoutMs: boundedNumber(env.BEEMAX_SANDBOX_TIMEOUT_MS ?? cfg.execution?.timeoutMs, 180_000, 1_000, 600_000),
 		},
 		subagents: {
 			enabled: parseBool(env.BEEMAX_SUBAGENTS_ENABLED ?? cfg.subagents?.enabled ?? true),
@@ -462,9 +462,24 @@ function parseImageQuality(value: unknown): "low" | "medium" | "high" {
 function reasoningDisplay(value: unknown): "off" | "summary" | "raw" {
 	return value === "off" || value === "raw" ? value : "summary";
 }
-function executionBackend(value: unknown): "local" | "docker" { return value === "docker" ? "docker" : "local"; }
-function sandboxMode(value: unknown): "off" | "all" { return value === "all" ? "all" : "off"; }
-function workspaceAccess(value: unknown): "none" | "ro" | "rw" { return value === "rw" || value === "ro" ? value : "none"; }
+function executionBackend(value: unknown): "local" | "docker" {
+	const configured = optional(value);
+	if (configured === undefined) return "local";
+	if (configured === "local" || configured === "docker") return configured;
+	throw new Error(`Invalid execution.backend: ${configured}`);
+}
+function sandboxMode(value: unknown): "off" | "all" {
+	const configured = optional(value);
+	if (configured === undefined) return "off";
+	if (configured === "off" || configured === "all") return configured;
+	throw new Error(`Invalid execution.mode: ${configured}`);
+}
+function workspaceAccess(value: unknown): "none" | "ro" | "rw" {
+	const configured = optional(value);
+	if (configured === undefined) return "none";
+	if (configured === "none" || configured === "ro" || configured === "rw") return configured;
+	throw new Error(`Invalid execution.workspaceAccess: ${configured}`);
+}
 function parseNumber(value: unknown, fallback: number): number {
 	const number = Number(value);
 	return Number.isFinite(number) && number >= 0 ? number : fallback;
