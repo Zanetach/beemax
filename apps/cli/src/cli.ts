@@ -9,7 +9,7 @@
  *   beemax model      Show / set the configured model
  */
 
-import { buildMainAgentSystemPrompt, buildSubagentSystemPrompt, createSkillCandidateVerifier, createTaskVerifier, createVerifiedObjectiveMemoryPublisher, executeObjectiveDelivery, executePlannedTask, executeSubagentTask, mainAgentTools, readOnlyAgentTools, runGateway } from "./gateway.ts";
+import { buildMainAgentSystemPrompt, buildSubagentSystemPrompt, createSkillCandidateVerifier, createTaskVerifier, createVerifiedObjectiveMemoryPublisher, executeObjectiveDelivery, executePlannedTask, executeSubagentTask, mainAgentTools, runGateway, verificationAgentTools } from "./gateway.ts";
 import { beemaxHome, beemaxRoot, consumeChannelCredential, loadConfig } from "./config.ts";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { backupSqliteDatabase, MemoryStore, memoryPersistencePorts, verifySqliteDatabase } from "@beemax/memory";
@@ -1268,7 +1268,7 @@ async function runChat(config: ReturnType<typeof loadConfig>, requestedMode: { f
 		memoryStore: memory,
 		executionPortForSource: executionPortFor(config),
 		customTools: readOnlyMcpTools,
-		tools: executionSafeTools(config, readOnlyAgentTools(readOnlyMcpTools.map((tool) => tool.name), ["task_checkpoint_save"])),
+		tools: executionSafeTools(config, verificationAgentTools(readOnlyMcpTools.map((tool) => tool.name))),
 		sessionTools: (sessionSource) => createTaskLedgerTools(memory, sessionSource),
 		compactionInstructions: (sessionSource) => sessionSource.delegatedTask ? buildTaskPreservationEnvelope(memory.queryTasks({ ownerKeys: [sessionSource.delegatedTask.ownerKey], id: sessionSource.delegatedTask.id, limit: 1 })) : undefined,
 	});

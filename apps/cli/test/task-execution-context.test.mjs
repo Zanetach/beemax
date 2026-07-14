@@ -5,7 +5,17 @@ import { join } from "node:path";
 import test from "node:test";
 import { MemoryStore } from "@beemax/memory";
 import { createAccessScopeRef, createExecutionEnvelope, createSituation, FileExecutionTraceStore } from "@beemax/core";
-import { createTaskVerifier, createVerifiedObjectiveMemoryPublisher, executeObjectiveDelivery, executePlannedTask } from "../dist/gateway.js";
+import { createTaskVerifier, createVerifiedObjectiveMemoryPublisher, executeObjectiveDelivery, executePlannedTask, verificationAgentTools } from "../dist/gateway.js";
+
+test("verification agents receive only the required local read capabilities in addition to shared read-only tools", () => {
+	const tools = verificationAgentTools(["mcp_read"]);
+	assert.ok(tools.includes("read"));
+	assert.ok(tools.includes("skill_read"));
+	assert.ok(tools.includes("task_checkpoint_save"));
+	assert.ok(tools.includes("mcp_read"));
+	assert.ok(!tools.includes("write"));
+	assert.ok(!tools.includes("bash"));
+});
 
 test("recovered Pi execution receives durable Situation without exposing Access Scope provenance", async () => {
 	const root = mkdtempSync(join(tmpdir(), "beemax-planned-runtime-trace-"));
@@ -183,12 +193,17 @@ test("Objective delivery receives Situation Work Context", async () => {
 test("independent verification receives the Task Situation", async () => {
 	let prompt = "";
 	let envelope;
+	let activeTools = ["capability_discover", "read", "skill_read", "write"];
+	let toolsDuringPrompt = [];
 	const agent = { state: { model: { id: "test" }, messages: [] } };
 	const factory = async (_source, _profile, receivedEnvelope) => {
 		envelope = receivedEnvelope;
 		return {
-		agent, subscribe: () => () => undefined,
-		prompt: async (text) => { prompt = text; agent.state.messages = [{ role: "assistant", content: [{ type: "text", text: "ACCEPT" }], usage: { input: 1, output: 1 } }]; },
+			agent, subscribe: () => () => undefined,
+			getActiveToolNames: () => [...activeTools],
+			getAllTools: () => activeTools.map((name) => ({ name })),
+			setActiveToolsByName: (names) => { activeTools = [...names]; },
+			prompt: async (text) => { prompt = text; toolsDuringPrompt = [...activeTools]; agent.state.messages = [{ role: "assistant", content: [{ type: "text", text: "Evidence checked independently.\nACCEPT\nAll observable criteria passed." }], usage: { input: 1, output: 1 } }]; },
 		abort: async () => undefined, dispose: () => undefined,
 	}; };
 	const verify = createTaskVerifier(factory, 1_000);
@@ -205,4 +220,5 @@ test("independent verification receives the Task Situation", async () => {
 	assert.equal(envelope.taskId, "task-verify");
 	assert.equal(envelope.taskRunId, "run-verify");
 	assert.equal(envelope.trigger.kind, "verification");
+	assert.deepEqual(toolsDuringPrompt, ["read", "skill_read"]);
 });

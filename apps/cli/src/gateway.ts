@@ -274,7 +274,7 @@ export async function runGateway(config: BeeMaxConfig): Promise<void> {
 		...profileAgentDefaults,
 		systemPrompt: () => buildSubagentSystemPrompt(profilePrompt(config)),
 		customTools: readOnlyMcpTools,
-		tools: executionSafeTools(config, readOnlyAgentTools(readOnlyMcpTools.map((tool) => tool.name), ["task_checkpoint_save"])),
+		tools: executionSafeTools(config, verificationAgentTools(readOnlyMcpTools.map((tool) => tool.name))),
 		sessionTools: (source) => createTaskLedgerTools(memory, source),
 		compactionInstructions: (source) => source.delegatedTask ? buildTaskPreservationEnvelope(memory.queryTasks({ ownerKeys: [source.delegatedTask.ownerKey], id: source.delegatedTask.id, limit: 1 })) : undefined,
 	});
@@ -714,6 +714,7 @@ export async function executeSubagentTask(
 	onEvent?: BeeMaxAgentRunEventSink,
 	executionEnvelope?: Readonly<ExecutionEnvelope>,
 	executionTrace?: ExecutionTraceSink,
+	allowedCapabilities?: readonly string[],
 ): Promise<string> {
 	if (!task.source.platform?.trim()) throw new Error("Delegated Task source platform is unavailable");
 	const source: SessionSource = {
@@ -726,7 +727,7 @@ export async function executeSubagentTask(
 	const runtime = new BeeMaxAgentRuntime({ createAgent: factory, executionTrace });
 	try {
 		const envelope = executionEnvelope ?? createExecutionEnvelope({ executionId: task.taskRunId ? `execution:${task.taskRunId}` : `execution:${crypto.randomUUID()}`, trigger: { kind: "delegation", id: task.id }, ...(task.parentId ? { objectiveId: task.parentId } : {}), taskId: task.id, ...(task.taskRunId ? { taskRunId: task.taskRunId } : {}), ...(runtimeTimeoutMs === null ? {} : { budget: { deadlineAt: Date.now() + runtimeTimeoutMs } }) });
-		const result = await runtime.run({ source, signal, timeoutMs: runtimeTimeoutMs, expandPromptTemplates: false, mode: "automation", executionEnvelope: envelope, text: [
+		const result = await runtime.run({ source, signal, timeoutMs: runtimeTimeoutMs, expandPromptTemplates: false, mode: "automation", executionEnvelope: envelope, ...(allowedCapabilities ? { allowedCapabilities: [...allowedCapabilities] } : {}), text: [
 			"[Sub-Agent Task]",
 			`Task ID: ${task.id}`,
 			`Name: ${task.name}`,
@@ -912,10 +913,10 @@ export function createTaskVerifier(factory: ReturnType<typeof buildAgentFactory>
 			...(context?.taskRunId ? { taskRunId: context.taskRunId } : {}), ...(task.accessScopeRef ? { accessScopeRef: task.accessScopeRef } : {}),
 			budget: { deadlineAt: Date.now() + timeoutMs }, mode: "verification",
 		});
-		const verdict = await executeSubagentTask(factory, verificationTask, signal ?? new AbortController().signal, null, undefined, executionEnvelope, executionTrace);
-		const firstLine = verdict.split(/\r?\n/, 1)[0]?.trim() ?? "";
-		if (firstLine === "ACCEPT") return { accepted: true, evidence: verdict.slice(0, 5_000) };
-		if (firstLine.startsWith("REJECT:")) return { accepted: false, feedback: firstLine.slice("REJECT:".length).trim() || "Acceptance Criteria were not satisfied" };
+		const verdict = await executeSubagentTask(factory, verificationTask, signal ?? new AbortController().signal, null, undefined, executionEnvelope, executionTrace, ["read", "skill_read"]);
+		const verdictLine = verdict.split(/\r?\n/).map((line) => line.trim()).find((line) => line === "ACCEPT" || line.startsWith("REJECT:"));
+		if (verdictLine === "ACCEPT") return { accepted: true, evidence: verdict.slice(0, 5_000) };
+		if (verdictLine?.startsWith("REJECT:")) return { accepted: false, feedback: verdictLine.slice("REJECT:".length).trim() || "Acceptance Criteria were not satisfied" };
 		return { accepted: false, feedback: "Verifier returned an invalid verdict" };
 	};
 }
@@ -1001,6 +1002,10 @@ export function readOnlyAgentTools(mcpTools: string[], additionalTools: string[]
 		...additionalTools,
 		...mcpTools,
 	];
+}
+
+export function verificationAgentTools(mcpTools: string[]): string[] {
+	return readOnlyAgentTools(mcpTools, ["task_checkpoint_save", "skill_read"]);
 }
 
 export function mainAgentTools(toolset: "safe" | "standard", mcpTools: string[]): string[] {
