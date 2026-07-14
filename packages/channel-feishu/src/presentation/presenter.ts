@@ -21,7 +21,7 @@ export class FeishuInteractionPresenter implements InteractionPresenter {
 		const card = new CardSession();
 		card.apply("notice.updated", {
 			id: `work:${event.workId}`, label: "异步任务计划", status: event.state === "failed" ? "error" : event.state,
-			message: `${event.title} · ${event.completed}/${event.total}${event.failed ? ` · 失败 ${event.failed}` : ""}${event.cancelled ? ` · 取消 ${event.cancelled}` : ""}`,
+			message: formatWorkProgress(event),
 		});
 		try {
 			const result = await this.transport.sendCard(target.chatId, renderCard(card), undefined, Boolean(target.threadId), idempotencyKey);

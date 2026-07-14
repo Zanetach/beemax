@@ -8,16 +8,18 @@ test("Gateway delivery forwards complete artifacts to generic media transport", 
 	let received;
 	const port = new GatewayDeliveryPort({
 		name: "feishu",
+		capabilities: { mediaDelivery: "files", messageEditing: false, interactiveActions: false, richPresentation: false },
 		sendMedia: async (...args) => { received = args; return { success: true }; },
 	});
 	await port.sendMedia(target, { path: "/tmp/report.pdf", mimeType: "application/pdf", name: "Report.pdf" });
 	assert.deepEqual(received, ["chat", "/tmp/report.pdf", "application/pdf", "Report.pdf"]);
 });
 
-test("Gateway delivery uses legacy image transport only for image artifacts", async () => {
+test("Gateway delivery honors the declared image-only capability", async () => {
 	const calls = [];
 	const port = new GatewayDeliveryPort({
 		name: "feishu",
+		capabilities: { mediaDelivery: "images", messageEditing: false, interactiveActions: false, richPresentation: false },
 		sendImage: async (...args) => { calls.push(args); return { success: true }; },
 	});
 	await port.sendMedia(target, { path: "/tmp/generated.png" });

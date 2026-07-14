@@ -24,10 +24,10 @@ export class GatewayDeliveryPort implements DeliveryPort {
 
 	async sendMedia(target: DeliveryTarget, media: MediaArtifact, _options?: DeliveryOptions): Promise<void> {
 		const platform = this.resolver.resolveAdapter(target.platform, target.channelInstanceId);
-		const declared = platform.capabilities?.mediaDelivery;
-		const result = (declared === "files" || declared === undefined) && platform.sendMedia
+		const declared = platform.capabilities.mediaDelivery;
+		const result = declared === "files" && platform.sendMedia
 			? await platform.sendMedia(target.chatId, media.path, media.mimeType, media.name)
-			: (declared === "images" || declared === undefined) && platform.sendImage && isImageArtifact(media)
+			: declared === "images" && platform.sendImage && isImageArtifact(media)
 				? await platform.sendImage(target.chatId, media.path)
 				: undefined;
 		if (!result) throw new Error(`${platform.name} does not support media delivery`);
