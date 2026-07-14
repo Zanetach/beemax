@@ -19,9 +19,28 @@ export interface GroupObservationStore {
 	upsertBoundedAmbientGroupObservation(input: InitiativeObservationInput, retain: number): { observation: InitiativeObservation; created: boolean };
 }
 
+interface AmbientObservationEvaluationBase {
+	relevance: number;
+	credibility: number;
+	expectedValue: number;
+	confidence: number;
+	rationale: string;
+}
+type RetainedAmbientObservationEvaluation = AmbientObservationEvaluationBase & { disposition: "retain"; action: string; intendedVerification: string };
+export type AmbientObservationEvaluation = RetainedAmbientObservationEvaluation | AmbientObservationEvaluationBase & { disposition: "defer" | "ignore"; action?: string; intendedVerification?: string };
+
+export interface AmbientObservationEvaluator {
+	evaluate(observation: AmbientGroupObservation): Promise<AmbientObservationEvaluation>;
+}
+
+export type GroupObservationRecordResult =
+	| { kind: "retained"; observation: InitiativeObservation; created: boolean }
+	| { kind: "deferred" | "ignored"; rationale: string };
+
 export interface GroupObservationRecorderOptions {
 	profileId: string;
 	store: GroupObservationStore;
+	evaluator: AmbientObservationEvaluator;
 	retainPerLane?: number;
 }
 
@@ -29,20 +48,24 @@ export interface GroupObservationRecorderOptions {
 export class GroupObservationRecorder {
 	private readonly profileId: string;
 	private readonly store: GroupObservationStore;
+	private readonly evaluator: AmbientObservationEvaluator;
 	private readonly retainPerLane: number;
 
 	constructor(options: GroupObservationRecorderOptions) {
 		if (!options.profileId.trim()) throw new Error("Group Observation Recorder requires a Profile");
 		this.profileId = options.profileId;
 		this.store = options.store;
+		this.evaluator = options.evaluator;
 		this.retainPerLane = boundedRetention(options.retainPerLane);
 	}
 
-	record(observation: AmbientGroupObservation): { observation: InitiativeObservation; created: boolean } {
+	async record(observation: AmbientGroupObservation): Promise<GroupObservationRecordResult> {
 		if (observation.source.chatType === "dm") throw new Error("Ambient group Observation cannot accept a direct message");
 		const text = observation.text.trim();
 		const messageId = observation.source.messageId?.trim();
 		if (!text || text.length > 10_000 || !messageId) throw new Error("Ambient group Observation requires bounded text and a message id");
+		const evaluation = normalizeEvaluation(await this.evaluator.evaluate({ ...observation, text }));
+		if (evaluation.disposition !== "retain") return { kind: evaluation.disposition === "defer" ? "deferred" : "ignored", rationale: evaluation.rationale };
 		const scope: InitiativeScope = {
 			profileId: this.profileId,
 			platform: observation.source.platform,
@@ -57,24 +80,39 @@ export class GroupObservationRecorder {
 			triggerId: `ambient-group:${evidenceRef}`,
 			scope,
 			situation: createSituation({
-				summary: "Unreviewed ambient group observation",
-				observations: [{ statement: text, source: { kind: "user", reference: evidenceRef }, evidenceRef, confidence: 1, trust: "reported" }],
-				confidence: 0.5,
+				summary: evaluation.rationale,
+				observations: [{ statement: text, source: { kind: "user", reference: evidenceRef }, evidenceRef, confidence: Math.min(evaluation.credibility, evaluation.confidence), trust: "reported" }],
+				confidence: evaluation.confidence,
 			}),
-			action: "Re-evaluate this candidate only when later evidence makes it relevant",
-			expectedValue: 0.5,
+			action: evaluation.action,
+			expectedValue: evaluation.expectedValue,
 			risk: "none",
-			rationale: "Ambient group content retained as an unreviewed candidate Observation",
-			intendedVerification: "Later evidence explicitly relates the Observation to active work",
+			rationale: evaluation.rationale,
+			intendedVerification: evaluation.intendedVerification,
 			evidenceRefs: [evidenceRef],
-			confidence: 0.5,
+			confidence: Math.min(evaluation.relevance, evaluation.credibility, evaluation.confidence),
 			mode: "observe_only",
 			disposition: "new_candidate",
 			notificationEmitted: false,
 			observedAt: observation.timestamp,
 		};
-		return this.store.upsertBoundedAmbientGroupObservation(input, this.retainPerLane);
+		return { kind: "retained", ...this.store.upsertBoundedAmbientGroupObservation(input, this.retainPerLane) };
 	}
+}
+
+function normalizeEvaluation(value: AmbientObservationEvaluation): AmbientObservationEvaluation {
+	if (!value || !["retain", "defer", "ignore"].includes(value.disposition)) throw new Error("Ambient Observation evaluation disposition is invalid");
+	for (const [name, score] of Object.entries({ relevance: value.relevance, credibility: value.credibility, expectedValue: value.expectedValue, confidence: value.confidence })) {
+		if (!Number.isFinite(score) || score < 0 || score > 1) throw new Error(`Ambient Observation evaluation ${name} must be between 0 and 1`);
+	}
+	const rationale = boundedText(value.rationale, "rationale");
+	if (value.disposition !== "retain") return { ...value, rationale };
+	return { ...value, rationale, action: boundedText(value.action, "action"), intendedVerification: boundedText(value.intendedVerification, "verification") };
+}
+
+function boundedText(value: string | undefined, field: string): string {
+	if (typeof value !== "string" || !value.trim() || value.trim().length > 5_000) throw new Error(`Ambient Observation evaluation ${field} is invalid`);
+	return value.trim();
 }
 
 function boundedRetention(value: number | undefined): number {

@@ -14,7 +14,7 @@ export interface GroupResponseGovernorOptions {
 	now?: () => number;
 }
 
-export type GroupResponseReservation = { allowed: true } | { allowed: false; reason: "quiet_hours" | "reply_budget" };
+export type GroupResponseReservation = { allowed: true; rollback?: () => void } | { allowed: false; reason: "quiet_hours" | "reply_budget"; retryAt: number };
 
 export interface GroupResponseGovernorSnapshot {
 	trackedLanes: number;
@@ -46,7 +46,7 @@ export class GroupResponseGovernor {
 		const now = this.now();
 		if (activation === "ambient" && this.isQuiet(now)) {
 			this.suppressedByQuietHours++;
-			return { allowed: false, reason: "quiet_hours" };
+			return { allowed: false, reason: "quiet_hours", retryAt: this.nextAllowedAt(now) };
 		}
 		if (activation === "command") return { allowed: true };
 		const threshold = now - this.replyWindowMs;
@@ -54,11 +54,20 @@ export class GroupResponseGovernor {
 		if (recent.length >= this.maxRepliesPerWindow) {
 			this.suppressedByReplyBudget++;
 			this.touch(laneKey, recent);
-			return { allowed: false, reason: "reply_budget" };
+			return { allowed: false, reason: "reply_budget", retryAt: recent[0]! + this.replyWindowMs + 1 };
 		}
 		recent.push(now);
 		this.touch(laneKey, recent);
-		return { allowed: true };
+		let active = true;
+		return { allowed: true, rollback: () => {
+			if (!active) return;
+			active = false;
+			const timestamps = this.replies.get(laneKey);
+			if (!timestamps) return;
+			const index = timestamps.lastIndexOf(now);
+			if (index >= 0) timestamps.splice(index, 1);
+			if (timestamps.length) this.touch(laneKey, timestamps); else this.replies.delete(laneKey);
+		} };
 	}
 
 	snapshot(): GroupResponseGovernorSnapshot {
@@ -78,6 +87,15 @@ export class GroupResponseGovernor {
 		if (!Number.isFinite(current)) return false;
 		const { start, end } = this.quietHours;
 		return start === end || (end > start ? current >= start && current < end : current >= start || current < end);
+	}
+
+	private nextAllowedAt(now: number): number {
+		const minute = Math.floor(now / 60_000) * 60_000;
+		for (let step = 1; step <= 24 * 60; step++) {
+			const candidate = minute + step * 60_000;
+			if (!this.isQuiet(candidate)) return candidate;
+		}
+		return now + 24 * 60 * 60_000;
 	}
 }
 

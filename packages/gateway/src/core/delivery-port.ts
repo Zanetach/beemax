@@ -1,4 +1,4 @@
-import type { DeliveryPort, DeliveryTarget, MediaArtifact } from "@beemax/core";
+import type { DeliveryOptions, DeliveryPort, DeliveryTarget, MediaArtifact } from "@beemax/core";
 import { extname } from "node:path";
 import type { ChannelAdapterResolver } from "./channel-host.ts";
 import type { PlatformAdapter } from "./types.ts";
@@ -17,13 +17,13 @@ export class GatewayDeliveryPort implements DeliveryPort {
 			} };
 	}
 
-	async sendText(target: DeliveryTarget, text: string, options?: { idempotencyKey?: string }): Promise<void> {
+	async sendText(target: DeliveryTarget, text: string, options?: DeliveryOptions): Promise<void> {
 		const platform = this.resolver.resolveAdapter(target.platform, target.channelInstanceId);
 		const result = await platform.send(target.chatId, text, { idempotencyKey: options?.idempotencyKey });
 		if (!result.success) throw new Error(result.error ?? "Channel text delivery failed");
 	}
 
-	async sendMedia(target: DeliveryTarget, media: MediaArtifact): Promise<void> {
+	async sendMedia(target: DeliveryTarget, media: MediaArtifact, _options?: DeliveryOptions): Promise<void> {
 		const platform = this.resolver.resolveAdapter(target.platform, target.channelInstanceId);
 		const result = platform.sendMedia
 			? await platform.sendMedia(target.chatId, media.path, media.mimeType, media.name)

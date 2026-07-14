@@ -44,6 +44,7 @@ export {
 	filterEligibleSkills,
 	markRuntimeResourcesChanged,
 	reloadRuntimeResourcesIfNeeded,
+	resolveRuntimeModel,
 	type BeeMaxRuntimeAuthorization,
 	type BeeMaxRuntimeFactoryOptions,
 	type ContextCompactionAuditEvent,
@@ -134,7 +135,8 @@ export { createSituation, type Situation, type SituationAction, type SituationCo
 export { AUTONOMY_LEVELS, AutonomyRolloutController, guardVerifiedObjectiveMemoryPublisher, type AutonomyAllowance, type AutonomyEnterpriseOverride, type AutonomyLevel, type AutonomyRolloutAuthority, type AutonomyRolloutDecision, type AutonomyRolloutEvidence, type AutonomyRolloutRecord, type AutonomyRolloutStateStore, type AutonomyRolloutStatus } from "./autonomy-rollout.ts";
 export { DeterministicSituationBuilder, ModelBackedSituationBuilder, type SituationBuildInput, type SituationBuildResult, type SituationBuilderPort, type SituationEvidenceInput, type SituationModelInference, type SituationModelProposal } from "./situation-builder.ts";
 export { InitiativeRuntime, decideInitiativeFromSituation, initiativeDedupeKey, initiativeOwnerKey, initiativeScopeMatchesExecutionScope, type InitiativeDecision, type InitiativeDecisionContext, type InitiativeDecisionPort, type InitiativeEvidenceRecallPort, type InitiativeObservation, type InitiativeObservationInput, type InitiativeObservationStore, type InitiativeObserveResult, type InitiativeRisk, type InitiativeRuntimeOptions, type InitiativeScope, type InitiativeTrigger, type InitiativeTriggerKind } from "./initiative-runtime.ts";
-export { GroupObservationRecorder, type AmbientGroupObservation, type GroupObservationRecorderOptions, type GroupObservationStore } from "./group-observation-recorder.ts";
+export { GroupObservationRecorder, type AmbientGroupObservation, type AmbientObservationEvaluation, type AmbientObservationEvaluator, type GroupObservationRecordResult, type GroupObservationRecorderOptions, type GroupObservationStore } from "./group-observation-recorder.ts";
+export { ModelBackedAmbientObservationEvaluator, PiAmbientObservationEvaluator, type AmbientObservationEvaluationOptions, type AmbientObservationInferenceInput, type AmbientObservationModelInference, type PiAmbientObservationEvaluatorOptions } from "./ambient-observation-evaluator.ts";
 export { ProactiveInvestigationRuntime, type ProactiveCapability, type ProactiveInvestigationCandidate, type ProactiveInvestigationExecution, type ProactiveInvestigationExecutionResult, type ProactiveInvestigationLedger, type ProactiveInvestigationMetric, type ProactiveInvestigationPolicy, type ProactiveInvestigationResult, type ProactiveInvestigationRuntimeOptions } from "./proactive-investigation-runtime.ts";
 export { createReversibleActionMutationAuthority, ReversibleActionAdmission, type CompensationProof, type EmergencyStopRecord, type EmergencyStopSnapshot, type ReversibleActionAdmissionDecision, type ReversibleActionAdmissionInput, type ReversibleActionCapability, type ReversibleActionControlPort } from "./reversible-action-admission.ts";
 export { ProactiveReversibleActionRuntime, type ProactiveCompensationExecution, type ProactiveCompensationResult, type ProactiveReversibleActionCandidate, type ProactiveReversibleActionExecution, type ProactiveReversibleActionExecutionResult, type ProactiveReversibleActionResult, type ProactiveReversibleActionRuntimeOptions } from "./proactive-reversible-action-runtime.ts";
@@ -145,7 +147,7 @@ export { FileInteractionInputQueueStore, type InteractionInputQueueStore, type I
 export { FileInteractionEventJournal, durableEvent, type DurableInteractionEvent, type InteractionEventJournal } from "./interaction-event-journal.ts";
 export { INTERACTION_PROTOCOL_VERSION, InteractionProtocol, parseInteractionProtocolRequest, sameScope, type InteractionProtocolOptions, type InteractionProtocolRequest, type InteractionProtocolResponse, type ProtocolInteractionAction } from "./interaction-protocol.ts";
 export { INTERACTION_COMMANDS, interactionCommandHelp, parseInteractionCommand, type InteractionCommand, type InteractionCommandDefinition, type InteractionDetailsDisplay } from "./interaction-commands.ts";
-export type { DeliveryPort, DeliveryTarget, MediaArtifact } from "./delivery-port.ts";
+export { DeliveryDeferredError, type DeliveryOptions, type DeliveryPort, type DeliveryTarget, type MediaArtifact } from "./delivery-port.ts";
 export { sanitizeDisplayText } from "./display-text.ts";
 export type { ExecutionBackend, ExecutionPolicy, ExecutionPort, ExecutionRequest, ExecutionResult, SandboxMode, WorkspaceAccess } from "./execution.ts";
 export { resolveExecutionBackend } from "./execution.ts";

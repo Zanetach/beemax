@@ -101,7 +101,7 @@ export interface BeeMaxConfig {
 	};
 	models: Array<{ provider: string; model: string; baseUrl?: string; customProtocol?: CustomProtocol; contextWindow?: number; maxTokens?: number }>;
 	/** Profile-owned channel configuration. A Profile may run its own Gateway. */
-	gateway: { channels: GatewayChannelConfig[]; bindings: GatewayBindingConfig[]; ingress: { maxActive: number; maxActivePerConversation: number }; observation: { retainPerLane: number }; feishu: FeishuConfig; telegram: TelegramConfig };
+	gateway: { channels: GatewayChannelConfig[]; bindings: GatewayBindingConfig[]; ingress: { maxActive: number; maxActivePerConversation: number }; observation: { retainPerLane: number; minRelevance: number; minCredibility: number; minExpectedValue: number; minConfidence: number; evaluationTimeoutMs: number; maxActiveEvaluations: number; maxActivePerLane: number }; proactiveDelivery: { quietHours?: FeishuActivationSettings["quietHours"]; maxDeliveriesPerWindow: number; deliveryWindowMs: number; maxTrackedLanes: number }; feishu: FeishuConfig; telegram: TelegramConfig };
 	memory: {
 		dbPath: string;
 		memberships: MemoryMembership[];
@@ -157,7 +157,9 @@ export interface BeeMaxConfig {
 			enabled: boolean;
 			every: string;
 			platform: string;
+			channelInstanceId?: string;
 			chatId?: string;
+			chatType?: "dm" | "group" | "channel" | "thread";
 			userId?: string;
 			prompt: string;
 			ackMaxChars: number;
@@ -276,7 +278,24 @@ export function loadConfig(configPath?: string, profile = "default"): BeeMaxConf
 				?? env.FEISHU_OBSERVATION_RETAIN_PER_LANE,
 			100, 1, 10_000,
 		),
+		minRelevance: boundedScore(env.BEEMAX_GROUP_OBSERVATION_MIN_RELEVANCE ?? cfg.gateway?.observation?.minRelevance, 0.6),
+		minCredibility: boundedScore(env.BEEMAX_GROUP_OBSERVATION_MIN_CREDIBILITY ?? cfg.gateway?.observation?.minCredibility, 0.4),
+		minExpectedValue: boundedScore(env.BEEMAX_GROUP_OBSERVATION_MIN_EXPECTED_VALUE ?? cfg.gateway?.observation?.minExpectedValue, 0.6),
+		minConfidence: boundedScore(env.BEEMAX_GROUP_OBSERVATION_MIN_CONFIDENCE ?? cfg.gateway?.observation?.minConfidence, 0.65),
+		evaluationTimeoutMs: boundedNumber(env.BEEMAX_GROUP_OBSERVATION_EVALUATION_TIMEOUT_MS ?? cfg.gateway?.observation?.evaluationTimeoutMs, 15_000, 1_000, 120_000),
+		maxActiveEvaluations: boundedNumber(env.BEEMAX_GROUP_OBSERVATION_MAX_ACTIVE_EVALUATIONS ?? cfg.gateway?.observation?.maxActiveEvaluations, 8, 1, 1_000),
+		maxActivePerLane: boundedNumber(env.BEEMAX_GROUP_OBSERVATION_MAX_ACTIVE_PER_LANE ?? cfg.gateway?.observation?.maxActivePerLane, 1, 1, 100),
 	};
+	const proactiveQuietHours = parseQuietHours(cfg.gateway?.proactiveDelivery?.quietHours ?? feishu.activation.quietHours, env.BEEMAX_TIMEZONE);
+	const proactiveDelivery = {
+		...(proactiveQuietHours ? { quietHours: proactiveQuietHours } : {}),
+		maxDeliveriesPerWindow: boundedNumber(env.BEEMAX_PROACTIVE_MAX_DELIVERIES_PER_WINDOW ?? cfg.gateway?.proactiveDelivery?.maxDeliveriesPerWindow ?? feishu.activation.maxRepliesPerWindow, 6, 1, 1_000),
+		deliveryWindowMs: boundedNumber(env.BEEMAX_PROACTIVE_DELIVERY_WINDOW_MS ?? cfg.gateway?.proactiveDelivery?.deliveryWindowMs ?? feishu.activation.replyWindowMs, 60_000, 1_000, 24 * 60 * 60_000),
+		maxTrackedLanes: boundedNumber(env.BEEMAX_PROACTIVE_MAX_TRACKED_LANES ?? cfg.gateway?.proactiveDelivery?.maxTrackedLanes ?? feishu.activation.maxTrackedResponseLanes, 10_000, 1, 100_000),
+	};
+	const heartbeatPlatform = str(env.BEEMAX_HEARTBEAT_PLATFORM ?? cfg.automation?.heartbeat?.platform ?? channels.find((channel) => channel.enabled)?.adapter ?? "feishu");
+	const heartbeatInstances = channels.filter((channel) => channel.enabled && channel.adapter === heartbeatPlatform);
+	const heartbeatChannelInstanceId = optional(env.BEEMAX_HEARTBEAT_CHANNEL_INSTANCE_ID ?? cfg.automation?.heartbeat?.channelInstanceId) ?? (heartbeatInstances.length === 1 ? heartbeatInstances[0]!.id : undefined);
 	return {
 		profile,
 		agent: {
@@ -297,7 +316,7 @@ export function loadConfig(configPath?: string, profile = "default"): BeeMaxConf
 			maxTokens,
 		},
 		models: configuredModels,
-		gateway: { channels, bindings, ingress, observation, feishu, telegram },
+		gateway: { channels, bindings, ingress, observation, proactiveDelivery, feishu, telegram },
 		memory: {
 			dbPath: resolveFrom(location.basePath, str(env.BEEMAX_DB_PATH ?? cfg.memory?.dbPath ?? join(profileDataRoot, location.isHome ? "memory.db" : "beemax.db"))),
 			memberships: parseMemoryMemberships(cfg.memory?.memberships),
@@ -360,8 +379,10 @@ export function loadConfig(configPath?: string, profile = "default"): BeeMaxConf
 			heartbeat: {
 				enabled: parseBool(env.BEEMAX_HEARTBEAT_ENABLED ?? cfg.automation?.heartbeat?.enabled ?? true),
 				every: str(env.BEEMAX_HEARTBEAT_EVERY ?? cfg.automation?.heartbeat?.every ?? "30m"),
-				platform: str(env.BEEMAX_HEARTBEAT_PLATFORM ?? cfg.automation?.heartbeat?.platform ?? channels.find((channel) => channel.enabled)?.adapter ?? "feishu"),
+				platform: heartbeatPlatform,
+				channelInstanceId: heartbeatChannelInstanceId,
 				chatId: optional(env.BEEMAX_HEARTBEAT_CHAT_ID ?? cfg.automation?.heartbeat?.chatId ?? feishu.homeChatId),
+				chatType: cfg.automation?.heartbeat?.chatType ?? feishu.homeChatType,
 				userId: optional(env.BEEMAX_HEARTBEAT_USER_ID ?? cfg.automation?.heartbeat?.userId ?? feishu.homeUserId),
 				prompt: str(env.BEEMAX_HEARTBEAT_PROMPT ?? cfg.automation?.heartbeat?.prompt ?? DEFAULT_HEARTBEAT_PROMPT),
 				ackMaxChars: parseNumber(env.BEEMAX_HEARTBEAT_ACK_MAX_CHARS ?? cfg.automation?.heartbeat?.ackMaxChars, 300),
@@ -383,6 +404,12 @@ export function loadConfig(configPath?: string, profile = "default"): BeeMaxConf
 function boundedNumber(value: unknown, fallback: number, min: number, max: number): number {
 	const parsed = typeof value === "number" ? value : Number(value);
 	return Number.isFinite(parsed) ? Math.max(min, Math.min(max, Math.trunc(parsed))) : fallback;
+}
+function boundedScore(value: unknown, fallback: number): number {
+	if (value === undefined || value === null || value === "") return fallback;
+	const parsed = typeof value === "number" ? value : Number(value);
+	if (!Number.isFinite(parsed) || parsed < 0 || parsed > 1) throw new Error("Gateway observation scores must be between 0 and 1");
+	return parsed;
 }
 
 function optionalBoundedNumber(value: unknown, min: number, max: number): number | undefined {

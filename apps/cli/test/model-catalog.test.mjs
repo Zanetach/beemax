@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { configuredMediaUnderstanding, ProfileModelCatalog, renderConfiguredModels } from "../dist/model-catalog.js";
+import { configuredAuxiliaryTextModels, configuredMediaUnderstanding, ProfileModelCatalog, renderConfiguredModels } from "../dist/model-catalog.js";
 
 test("configured model list renders actual known capability metadata", () => {
 	const output = renderConfiguredModels({ models: [{ provider: "anthropic", model: "claude-sonnet-4-5" }] });
@@ -36,4 +36,15 @@ test("configured image-capable models are reusable as auxiliary media understand
 	const native = await runtime.prepare({ text: "inspect", images: [image], primaryModel: { id: "already-visual", input: ["text", "image"] } });
 	assert.equal(native.route, "native");
 	assert.deepEqual(native.images, [image]);
+});
+
+test("custom Profile models remain available to tool-free auxiliary cognition", () => {
+	const models = configuredAuxiliaryTextModels({
+		model: { provider:"custom",model:"private",apiKey:"secret",apiKeys:{ custom:"secret" },baseUrl:"https://models.example/v1",customProtocol:"openai-completions",contextWindow:64_000,maxTokens:4_000 },
+		models: [{ provider:"custom",model:"private",baseUrl:"https://models.example/v1",customProtocol:"openai-completions",contextWindow:64_000,maxTokens:4_000 }],
+	});
+	assert.equal(models.length, 1);
+	assert.equal(models[0].model.id, "private");
+	assert.equal(models[0].model.baseUrl, "https://models.example/v1");
+	assert.equal(models[0].apiKey, "secret");
 });

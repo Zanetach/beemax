@@ -20,12 +20,13 @@
 | 2026-07-14 | 第二实施切片：Profile Binding、通用 Activation 契约与 Gateway ingress 背压 | 补齐确定性路由和运行时容量边界 | Codex | build、typecheck、全量测试及架构/迁移/Memory 门禁通过 | v1.2-draft |
 | 2026-07-14 | 第三实施切片：Binding 管理命令与 contextual active-thread 状态 | 补齐路由诊断与自然群聊追问 | Codex | build、typecheck、710 项全量测试及架构/迁移/Memory 门禁通过 | v1.3-draft |
 | 2026-07-14 | 第四实施切片：受限群观察、ambient 响应 quiet hours 与回复频率预算 | 在不建立第二执行链的前提下补齐群聊观察和响应边界 | Codex | build、typecheck、714 项全量测试及架构/迁移/Memory 门禁通过 | v1.4-draft |
+| 2026-07-14 | 第五实施切片：智能 Ambient 价值选择、可信 Conversation Type 与统一主动投递治理 | 让群观察由通用认知判断价值，并确保主动群结果可治理、可延迟且不重跑 Pi | Codex | build、typecheck、726 项全量测试及架构/迁移/Memory 门禁通过；双轴复审通过 | v1.5-draft |
 
 ---
 
 ## 当前实施状态（2026-07-14）
 
-当前已完成第一至第四实施切片：
+当前已完成第一至第五实施切片：
 
 - 群聊/Channel/Thread 的 Conversation 不再包含当前 Actor；Task Responsibility 仍按 Actor 或可信统一身份归属。
 - `channelInstanceId` 已贯穿 Gateway 入站、投递、Task Plan Completion Notice、Automation Job/Delivery/Route/Media 和 Memory 分区。
@@ -41,12 +42,14 @@
 - 通用 Group Response Governor 已实现跨午夜 quiet hours、每 Lane 有界回复预算和有界 Lane 状态；入站触发的 ambient 响应受控，`/stop` 等命令不被预算锁死。
 - 飞书非激活群消息可按显式配置投递为 Ambient Group Observation；该路径只写入现有 Profile SQLite 的有界 Initiative Observation 候选，不进入 Agent、Pi、Task、Tool 或 Delivery。
 - Observation 以 Profile、Channel Instance、Conversation 和 Thread 精确隔离；同平台多机器人不会因相同群 ID 串线，保留数量按 Lane 配置并即时裁剪。
+- Ambient Observation 通过 Core 的异步 cognition port 评估相关性、可信度、预期价值和置信度；模型结果必须通过通用阈值校验，推理不可用时 fail-closed defer 且不持久化未经价值批准的群原文；并发按 Profile/Lane 有界，Gateway 中没有客户、订单或工单规则。
+- 主动出站统一经过 `GovernedDeliveryPort`；治理按可信 Conversation Type 区分 DM 与群聊，并按 Profile 的 transport-neutral quiet hours、每 Lane 频率预算执行，交互回复和控制消息不被误限流。
+- Schedule、Initiative、Task Completion 与媒体的 durable Delivery Target 均保留可信 Conversation Type；Initiative 验证结果先进入 durable Delivery Outbox，治理延迟不会重跑 Pi 或消耗普通失败重试预算。
+- Legacy 主动目标缺少可信 Conversation Type 时 fail-closed，Heartbeat 多实例路由有歧义时不投递；`delivery_settled` 按 Profile/Channel Instance 记录 delivered/deferred/failed、原因、尝试次数和延迟，媒体投递也具备 lease/token fencing。
 
 仍按本 PRD 后续阶段实施，不计为本切片完成：
 
 - Binding activate/disable 写操作、Shared Channel Relay，以及 Profile Host 监督。
-- Ambient 候选进入长期 Initiative Observation 前的异步价值选择（相关性、可信度、预期价值与 defer/ignore）；使用 Core cognition port，不调用 Agent/Pi/Tool，也不把客户业务规则硬编码进 Gateway。
-- Automation、Initiative、Task Completion 等真正主动出站 Delivery 的统一 quiet hours/频率治理；该能力需要先让 durable Delivery Target 保留可信 Conversation Type，不能按 chat ID 猜测群聊。
 - 钉钉、企业微信等新增 Adapter，以及完整 Channel Runtime 包拆分。
 - 多实例启用时旧的无 instance Memory/Automation 数据需要管理员显式归属迁移；系统不得把歧义旧数据同时暴露给多个实例。
 

@@ -65,6 +65,9 @@ test("profile creation and Feishu channel configuration keep secrets in a protec
 	assert.equal(config.gateway.feishu.appSecret, 'secret-\\-"-value');
 	assert.deepEqual(config.gateway.feishu.allowedUsers, ["ou_allowed"]);
 	assert.equal(config.gateway.feishu.activation.mode, "contextual");
+	assert.deepEqual(config.gateway.proactiveDelivery, { maxDeliveriesPerWindow: 6, deliveryWindowMs: 60_000, maxTrackedLanes: 10_000 });
+	assert.equal(config.gateway.observation.maxActiveEvaluations, 8);
+	assert.equal(config.gateway.observation.maxActivePerLane, 1);
 	assert.equal(config.gateway.feishu.connectionMode, "webhook");
 	assert.equal(config.gateway.feishu.webhookEncryptKey, "test-encryption-key");
 	assert.match(yaml, /gateway:\n\s+feishu:/);
@@ -180,10 +183,10 @@ await writeFile(paths.configPath, `gateway:
 		quietHours: { start: "22:00", end: "07:00", timezone: "Asia/Shanghai" },
 		maxRepliesPerWindow: 4, replyWindowMs: 30_000, maxTrackedResponseLanes: 60,
 	});
-	assert.deepEqual(config.gateway.observation, { retainPerLane: 25 });
+	assert.deepEqual(config.gateway.observation, { retainPerLane: 25, minRelevance: 0.6, minCredibility: 0.4, minExpectedValue: 0.6, minConfidence: 0.65, evaluationTimeoutMs: 15_000, maxActiveEvaluations: 8, maxActivePerLane: 1 });
 	assert.deepEqual(config.gateway.feishu.groupRules["incident-room"].activation, { mode: "explicit", respondTo: ["mention", "command"] });
 	await writeFile(paths.configPath, `gateway:\n  feishu:\n    activation:\n      observationRetainPerLane: 17\n`);
-	assert.deepEqual(loadConfig(paths.configPath, "activation").gateway.observation, { retainPerLane: 17 });
+	assert.deepEqual(loadConfig(paths.configPath, "activation").gateway.observation, { retainPerLane: 17, minRelevance: 0.6, minCredibility: 0.4, minExpectedValue: 0.6, minConfidence: 0.65, evaluationTimeoutMs: 15_000, maxActiveEvaluations: 8, maxActivePerLane: 1 });
 	await writeFile(paths.configPath, `gateway:\n  feishu:\n    activation:\n      mode: contextual\n      respondTo: [mention, typo_signal]\n`);
 	assert.throws(() => loadConfig(paths.configPath, "activation"), /Invalid group activation signals: typo_signal/);
 });

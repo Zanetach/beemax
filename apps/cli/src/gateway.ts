@@ -8,14 +8,16 @@
  */
 
 import { AutomationStore } from "@beemax/automation";
-import { ActionGovernance, AutonomyRolloutController, AutomationDeliveryWorker, AutomationScheduler, BeeMaxAgentRuntime, DeterministicSituationBuilder, FileCredentialVault, FileCredentialVaultAuditJournal, GroupObservationRecorder, HeartbeatRunner, InitiativeRuntime, InitiativeTriggerService, ProactiveInvestigationRuntime, TaskPlanNoticeDeliveryService, TaskTransitionInitiativeAdapter, ToolApprovalBroker, ToolPolicyRegistry, buildActiveTaskPreservationEnvelope, buildTaskPreservationEnvelope, canonicalUserId, containsCredentialMaterial, conversationKey, responsibilityOwnerKey, responsibilityOwnerKeys, createExecutionEnvelope, createSubagentTools, createTaskCheckpoint, createTaskLedgerTools, createTaskOrchestrationTools, decideInitiativeFromSituation, guardVerifiedObjectiveMemoryPublisher, isVerifiedAutomationOutcome, redactCredentialMaterial, renderTaskCheckpoint, type AgentRuntimePort, type BeeMaxAgentRunEvent, type BeeMaxAgentRunEventSink, type ContextCompactionAuditEvent, type DeliveryPort, type ExecutionEnvelope, type ExecutionTraceSink, type InitiativeObservation, type ObjectiveDeliveryInput, type SkillCandidateTrialInput, type SkillTrialAssertion, type SkillTrialToolCall, type SubagentTask, type TaskGraphExecutionContext, type TaskGraphExecutionResult, type TaskGraphVerifier, type TaskLedger, type TaskRecord, type ToolEffectProjectionReader, type VerifiedObjectiveMemoryPublisher } from "@beemax/core";
+import { ActionGovernance, AutonomyRolloutController, AutomationDeliveryWorker, AutomationScheduler, BeeMaxAgentRuntime, DeliveryDeferredError, DeterministicSituationBuilder, FileCredentialVault, FileCredentialVaultAuditJournal, GroupObservationRecorder, HeartbeatRunner, InitiativeRuntime, InitiativeTriggerService, PiAmbientObservationEvaluator, ProactiveInvestigationRuntime, TaskPlanNoticeDeliveryService, TaskTransitionInitiativeAdapter, ToolApprovalBroker, ToolPolicyRegistry, buildActiveTaskPreservationEnvelope, buildTaskPreservationEnvelope, canonicalUserId, containsCredentialMaterial, conversationKey, responsibilityOwnerKey, responsibilityOwnerKeys, createExecutionEnvelope, createSubagentTools, createTaskCheckpoint, createTaskLedgerTools, createTaskOrchestrationTools, decideInitiativeFromSituation, guardVerifiedObjectiveMemoryPublisher, isVerifiedAutomationOutcome, redactCredentialMaterial, renderTaskCheckpoint, type AgentRuntimePort, type AmbientObservationEvaluator, type BeeMaxAgentRunEvent, type BeeMaxAgentRunEventSink, type ContextCompactionAuditEvent, type DeliveryPort, type ExecutionEnvelope, type ExecutionTraceSink, type InitiativeObservation, type ObjectiveDeliveryInput, type SkillCandidateTrialInput, type SkillTrialAssertion, type SkillTrialToolCall, type SubagentTask, type TaskGraphExecutionContext, type TaskGraphExecutionResult, type TaskGraphVerifier, type TaskLedger, type TaskRecord, type ToolEffectProjectionReader, type VerifiedObjectiveMemoryPublisher } from "@beemax/core";
 import {
 	AdapterRegistry,
 	ChannelHost,
 	Dispatcher,
 	FeishuAdapter,
 	GatewayDeliveryPort,
+	GovernedDeliveryPort,
 	GatewayIngressController,
+	GroupResponseGovernor,
 	PairingStore,
 	assertProfileBindingConfiguration,
 	TelegramAdapter,
@@ -37,7 +39,7 @@ import { executionPortFor, executionSafeTools } from "./execution-composition.ts
 import { createProfileControlHandler, type TaskRecoveryStatus } from "./profile-control.ts";
 import { boundGatewayProcessLogs, recordGatewayEvent, writeGatewayState } from "./gateway-observability.ts";
 import { installedVersion } from "./runtime-facts.ts";
-import { configuredMediaUnderstanding, configuredRuntimeModels } from "./model-catalog.ts";
+import { configuredAuxiliaryTextModels, configuredMediaUnderstanding, configuredRuntimeModels } from "./model-catalog.ts";
 import { setFeishuHomeChat } from "./profile-config.ts";
 import { createMemoryScopeResolver } from "./memory-membership.ts";
 import { createLocalMediaUnderstandingAdapters } from "./local-media-understanding.ts";
@@ -129,7 +131,8 @@ export async function runGateway(config: BeeMaxConfig): Promise<void> {
 			config.gateway.feishu.homeChatType = chatType;
 			config.automation.heartbeat.chatId = chatId;
 			config.automation.heartbeat.userId = userId;
-			heartbeat?.setRoute(chatId, userId);
+			config.automation.heartbeat.chatType = chatType;
+			heartbeat?.setRoute(chatId, userId, chatType);
 		},
 	};
 	const adapterRegistry = new AdapterRegistry();
@@ -153,7 +156,25 @@ export async function runGateway(config: BeeMaxConfig): Promise<void> {
 	});
 	const channelHost = new ChannelHost(adapterRegistry, enabledChannels, { connectAttempts: 3, retryBaseDelayMs: 1_000, retryMaxDelayMs: 30_000, requireConnectedOnStart: false });
 	const gatewayVersion = installedVersion();
-	const deliveryPort = new GatewayDeliveryPort(channelHost);
+	const rawDeliveryPort = new GatewayDeliveryPort(channelHost);
+	const proactiveGovernors = new Map<string, GroupResponseGovernor>();
+	const deliveryPort = new GovernedDeliveryPort(rawDeliveryPort, {
+		resolve: (target) => {
+			const key = `${target.platform}:${target.channelInstanceId ?? "default"}`;
+			let governor = proactiveGovernors.get(key);
+			if (!governor) {
+				governor = new GroupResponseGovernor({
+					quietHours: config.gateway.proactiveDelivery.quietHours,
+					maxRepliesPerWindow: config.gateway.proactiveDelivery.maxDeliveriesPerWindow,
+					replyWindowMs: config.gateway.proactiveDelivery.deliveryWindowMs,
+					maxTrackedLanes: config.gateway.proactiveDelivery.maxTrackedLanes,
+				});
+				proactiveGovernors.set(key, governor);
+			}
+			return governor;
+		},
+		onSettled: (event) => recordGatewayEvent(config.paths.agentDir, "delivery_settled", { profile: config.profile, ...event }),
+	});
 	let releaseChannelLock: () => Promise<void>;
 	try { releaseChannelLock = await acquireChannelLock(beemaxHome(), `profile:${config.profile}`); }
 	catch (error) {
@@ -359,7 +380,7 @@ export async function runGateway(config: BeeMaxConfig): Promise<void> {
 			createAutomationAgent,
 			fallbackModels: configuredRuntimeModels(config),
 			mediaUnderstanding: configuredMediaUnderstanding(config, createLocalMediaUnderstandingAdapters(config.mediaUnderstanding.localOcr)),
-			context: createTaskAwareConversationContext(memory, { memoryScope: { profileId: config.profile }, resolveMemoryScope, organizationSituationAllowed: () => autonomyRollout.allows("situation_context").allowed, recordDirectRoute: (_route, source) => automation.setLastRoute({ platform: source.platform, ...(source.channelInstanceId ? { channelInstanceId: source.channelInstanceId } : {}), chatId: source.chatId, userId: source.userIdAlt ?? source.userId }), runtimeSnapshot: () => ({ profile: config.profile }), maxContextChars: config.context.maxTurnChars }),
+			context: createTaskAwareConversationContext(memory, { memoryScope: { profileId: config.profile }, resolveMemoryScope, organizationSituationAllowed: () => autonomyRollout.allows("situation_context").allowed, recordDirectRoute: (_route, source) => automation.setLastRoute({ platform: source.platform, ...(source.channelInstanceId ? { channelInstanceId: source.channelInstanceId } : {}), chatId: source.chatId, chatType: source.chatType, userId: source.userIdAlt ?? source.userId }), runtimeSnapshot: () => ({ profile: config.profile }), maxContextChars: config.context.maxTurnChars }),
 		},
 		approvalBroker,
 		cancelSubagents: (source) => subagents?.cancelOwner(source) ?? 0,
@@ -386,20 +407,40 @@ export async function runGateway(config: BeeMaxConfig): Promise<void> {
 	const adapterEntries = channelHost.adapterEntries();
 	const platformInstanceCounts = new Map<string, number>();
 	for (const { adapter } of adapterEntries) platformInstanceCounts.set(adapter.name, (platformInstanceCounts.get(adapter.name) ?? 0) + 1);
-	const groupObservations = new GroupObservationRecorder({ profileId: config.profile, store: memory, retainPerLane: config.gateway.observation.retainPerLane });
+	const observationModels = configuredAuxiliaryTextModels(config);
+	const observationEvaluator: AmbientObservationEvaluator = observationModels.length
+		? new PiAmbientObservationEvaluator({
+			models: observationModels,
+			minRelevance: config.gateway.observation.minRelevance,
+			minCredibility: config.gateway.observation.minCredibility,
+			minExpectedValue: config.gateway.observation.minExpectedValue,
+			minConfidence: config.gateway.observation.minConfidence,
+			timeoutMs: config.gateway.observation.evaluationTimeoutMs,
+		})
+		: { evaluate: async () => ({ disposition: "defer", relevance: 0, credibility: 0, expectedValue: 0, confidence: 0, rationale: "Ambient Observation evaluation unavailable" }) };
+	const groupObservations = new GroupObservationRecorder({ profileId: config.profile, store: memory, evaluator: observationEvaluator, retainPerLane: config.gateway.observation.retainPerLane });
+	const observationIngress = new GatewayIngressController({ maxActive: config.gateway.observation.maxActiveEvaluations, maxActivePerConversation: config.gateway.observation.maxActivePerLane });
 	if (autonomyRollout.allows("initiative_observation").allowed) {
-		for (const { id, adapter } of adapterEntries) adapter.onObservation?.((observation) => {
+		for (const { id, adapter } of adapterEntries) adapter.onObservation?.(async (observation) => {
 			const source = (platformInstanceCounts.get(adapter.name) ?? 0) > 1
 				? { ...observation.source, channelInstanceId: id }
 				: observation.source;
-			const persisted = groupObservations.record({ ...observation, source });
-			recordGatewayEvent(config.paths.agentDir, "group_observation_recorded", {
-				profile: config.profile,
-				platform: adapter.name,
-				channelInstanceId: id,
-				conversationType: observation.source.chatType,
-				created: persisted.created,
-			});
+			const release = observationIngress.tryAcquire(conversationKey(source));
+			if (!release) {
+				recordGatewayEvent(config.paths.agentDir, "group_observation_recorded", { profile: config.profile, platform: adapter.name, channelInstanceId: id, conversationType: source.chatType, decision: "deferred_capacity" });
+				return;
+			}
+			try {
+				const result = await groupObservations.record({ ...observation, source });
+				recordGatewayEvent(config.paths.agentDir, "group_observation_recorded", {
+					profile: config.profile,
+					platform: adapter.name,
+					channelInstanceId: id,
+					conversationType: source.chatType,
+					decision: result.kind,
+					created: result.kind === "retained" && result.created,
+				});
+			} finally { release(); }
 		});
 	}
 	const dispatcherEntries = adapterEntries.map(({ id, adapter: channelAdapter }) => ({
@@ -426,15 +467,7 @@ export async function runGateway(config: BeeMaxConfig): Promise<void> {
 	const taskPlanNotices = platforms.map((platform) => new TaskPlanNoticeDeliveryService(persistence.completionOutbox, deliveryPort, {
 		platform,
 		deliverObjective: (notice, signal) => objectiveRuntime.settlePlanIfLinked(notice.ownerKey, notice.planId, notice.planStatus, signal),
-		onProgress: (event, notice) => {
-			const candidates = dispatcherEntries.filter((entry) => entry.platform === platform);
-			const selected = notice.target.channelInstanceId
-				? candidates.find((entry) => entry.id === notice.target.channelInstanceId)
-				: candidates.length === 1 ? candidates[0] : undefined;
-			if (!selected) throw new Error(`Task Plan notice target requires a valid channelInstanceId for platform ${platform}`);
-			return selected.dispatcher.presentWorkProgress(notice.target, event, notice.id);
-		},
-		onCycle: (result) => { if (result.claimed) console.info(`[beemax] ${platform} Task Plan notices: delivered=${result.delivered}; failed=${result.failed}`); },
+		onCycle: (result) => { if (result.claimed) console.info(`[beemax] ${platform} Task Plan notices: delivered=${result.delivered}; deferred=${result.deferred}; failed=${result.failed}`); },
 		onError: (error) => console.error(`[beemax] ${platform} Task Plan notice delivery failed: ${error instanceof Error ? error.message : String(error)}`),
 	}));
 	startupCleanup.push(() => Promise.all(taskPlanNotices.map((service) => service.stop())).then(() => undefined));
@@ -447,8 +480,9 @@ export async function runGateway(config: BeeMaxConfig): Promise<void> {
 		}
 		const source: SessionSource = {
 			platform: job.platform,
+			...(job.channelInstanceId ? { channelInstanceId: job.channelInstanceId } : {}),
 			chatId: job.chatId,
-			chatType: "dm",
+			chatType: job.chatType ?? "dm",
 			userIdAlt: job.userId,
 		};
 		const timeoutMs = 10 * 60_000;
@@ -504,17 +538,16 @@ export async function runGateway(config: BeeMaxConfig): Promise<void> {
 				budget: input.budget,
 				mode: "normal",
 			});
-			const automationResult = await runProfileAutomation(runtime, input.executionScope as SessionSource, input.prompt, {
+			await runProfileAutomation(runtime, input.executionScope as SessionSource, input.prompt, {
 				key: `initiative:${input.observation.dedupeKey}`,
 				timeoutMs,
 				objectiveTaskId: input.objective.id,
 				allowedCapabilities: input.allowedCapabilities,
 				executionEnvelope,
 			});
-			const answer = automationResult.answer;
 			const settled = memory.queryTasks({ ownerKeys: [input.objective.ownerKey], id: input.objective.id, kinds: ["objective"], limit: 1 })[0];
 			const materialResult = settled?.status === "succeeded" && settled.verificationStatus === "accepted";
-			if (materialResult) await deliveryPort.sendText(input.executionScope, answer, { idempotencyKey: `initiative-result:${input.objective.id}` });
+			if (materialResult) automation.enqueueDelivery(input.executionScope, { kind: "text", text: settled.result!, idempotencyKey: `initiative-result:${input.objective.id}` });
 			return { status: settled?.status === "cancelled" ? "cancelled" : settled?.status === "succeeded" ? "succeeded" : "failed", materialResult };
 		},
 	});
@@ -540,7 +573,9 @@ export async function runGateway(config: BeeMaxConfig): Promise<void> {
 			enabled: config.automation.enabled && config.automation.heartbeat.enabled,
 			every: config.automation.heartbeat.every,
 			platform: config.automation.heartbeat.platform,
+			channelInstanceId: config.automation.heartbeat.channelInstanceId,
 			chatId: config.automation.heartbeat.chatId,
+			chatType: config.automation.heartbeat.chatType,
 			userId: config.automation.heartbeat.userId,
 			prompt: config.automation.heartbeat.prompt,
 			ackMaxChars: config.automation.heartbeat.ackMaxChars,
@@ -548,7 +583,7 @@ export async function runGateway(config: BeeMaxConfig): Promise<void> {
 			activeHours: config.automation.heartbeat.activeHours,
 		},
 		async () => { throw new Error("Legacy heartbeat Agent execution is disabled in Initiative observe-only mode"); },
-		{ sendText: (route, text) => deliveryPort.sendText(route, `💓 ${text}`), sendMedia: (route, media) => deliveryPort.sendMedia(route, media) },
+		{ sendText: (route, text, options) => deliveryPort.sendText(route, `💓 ${text}`, options), sendMedia: (route, media, options) => deliveryPort.sendMedia(route, media, options) },
 		() => runtime.isBusy(),
 		async (input) => {
 			if (!autonomyRollout.allows("initiative_observation").allowed) return { kind: "ignored" };
@@ -636,10 +671,12 @@ async function flushAutomationDeliveries(automationDelivery: AutomationDeliveryW
 	await automationDelivery.runOnce();
 	for (const item of automation.claimMediaDue(Date.now(), 4)) {
 		try {
-			await deliveryPort.sendMedia(item, { path: item.path, mimeType: item.mimeType });
-			automation.completeMedia(item.id);
-		} catch {
-			automation.failMedia(item.id);
+			await deliveryPort.sendMedia(item, { path: item.path, mimeType: item.mimeType }, { deliveryClass: "proactive", deliveryAttempt: item.attempts });
+			if (!item.claimToken || !automation.completeMedia(item.id, item.claimToken)) throw new Error(`Media delivery claim lost: ${item.id}`);
+		} catch (error) {
+			if (!item.claimToken) continue;
+			if (error instanceof DeliveryDeferredError) automation.deferMedia(item.id, item.claimToken, error.retryAt);
+			else automation.failMedia(item.id, item.claimToken);
 		}
 	}
 }

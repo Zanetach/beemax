@@ -1,6 +1,8 @@
 export { Dispatcher, type DispatcherDeps } from "./core/dispatcher.ts";
 export { InteractionControlServer, type InteractionControlServerOptions } from "./core/interaction-control-server.ts";
 export { GatewayDeliveryPort } from "./core/delivery-port.ts";
+export { GovernedDeliveryPort, type GovernedDeliveryEvent, type GroupDeliveryGovernorResolver } from "./core/governed-delivery-port.ts";
+export { DeliveryDeferredError } from "@beemax/core";
 export { AdapterRegistry, ChannelHost } from "./core/channel-host.ts";
 export type { ChannelAdapterRegistration, ChannelAdapterResolver, ChannelHostOptions, ChannelHostSnapshot, ChannelInstanceConfig, ChannelLifecycleState, ChannelStatus } from "./core/channel-host.ts";
 export { MessageDeduplicator } from "./core/message-deduplicator.ts";

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { TaskPlanNoticeDeliveryService } from "../dist/index.js";
+import { DeliveryDeferredError, TaskPlanNoticeDeliveryService } from "../dist/index.js";
 
 test("Task Plan Notice delivery acknowledges success and requeues failure without exposing results", async () => {
 	const completed = [];
@@ -17,7 +17,7 @@ test("Task Plan Notice delivery acknowledges success and requeues failure withou
 	const sent = [];
 	const progress = [];
 	const delivery = { async sendText(target, text, options) { sent.push({ target, text, options }); } };
-	assert.deepEqual(await new TaskPlanNoticeDeliveryService(outbox, delivery, { platform: "feishu", onProgress: (event) => { progress.push(event); if (event.workId === "plan-fail") throw new Error("offline"); } }).runOnce(), { claimed: 2, delivered: 1, failed: 1 });
+	assert.deepEqual(await new TaskPlanNoticeDeliveryService(outbox, delivery, { platform: "feishu", onProgress: (event) => { progress.push(event); if (event.workId === "plan-fail") throw new Error("offline"); } }).runOnce(), { claimed: 2, delivered: 1, failed: 1, deferred: 0 });
 	assert.deepEqual(completed, ["notice-ok"]);
 	assert.deepEqual(failed, ["notice-fail"]);
 	assert.equal(sent.length, 0, "structured progress replaces text so retries cannot duplicate a partial delivery");
@@ -40,9 +40,25 @@ test("a successful Plan delivers its Objective result instead of a result-free s
 		deliverObjective: async () => ({ status: "succeeded", result: "Final user-ready report" }),
 	});
 
-	assert.deepEqual(await service.runOnce(), { claimed: 1, delivered: 1, failed: 0 });
+	assert.deepEqual(await service.runOnce(), { claimed: 1, delivered: 1, failed: 0, deferred: 0 });
 	assert.equal(completed, true);
-	assert.deepEqual(sent, [{ target: notice.target, text: "Final user-ready report", options: { idempotencyKey: "notice" } }]);
+	assert.deepEqual(sent, [{ target: notice.target, text: "Final user-ready report", options: { idempotencyKey: "notice", deliveryClass: "proactive", deliveryAttempt: 1 } }]);
+});
+
+test("governed deferral preserves the durable Notice without consuming its retry budget", async () => {
+	const notice = { id: "deferred", planId: "plan", ownerKey: "owner", target: { platform: "feishu", chatId: "chat", chatType: "group" }, planStatus: "succeeded", title: "Report", taskCount: 1, succeeded: 1, failed: 0, cancelled: 0, status: "delivering", claimToken: "token", attempts: 4, nextAttemptAt: 0, createdAt: 1 };
+	const deferred = [];
+	let failed = 0;
+	const service = new TaskPlanNoticeDeliveryService({
+		claimTaskPlanCompletionNotices: () => [notice],
+		completeTaskPlanCompletionNotice: () => true,
+		failTaskPlanCompletionNotice: () => { failed++; return true; },
+		deferTaskPlanCompletionNotice: (...args) => { deferred.push(args); return true; },
+	}, { sendText: async () => { throw new DeliveryDeferredError("quiet_hours", 9_000); } }, { platform: "feishu" });
+
+	assert.deepEqual(await service.runOnce(1_000), { claimed: 1, delivered: 0, failed: 0, deferred: 1 });
+	assert.deepEqual(deferred, [["deferred", "token", 9_000, 1_000]]);
+	assert.equal(failed, 0);
 });
 
 test("Objective delivery renews its notice lease and dead-letters poison work at a bounded attempt", async () => {
@@ -58,7 +74,7 @@ test("Objective delivery renews its notice lease and dead-letters poison work at
 		platform: "feishu", leaseMs: 100, leaseHeartbeatMs: 10, maxAttempts: 3,
 		deliverObjective: async () => { await new Promise((resolve) => setTimeout(resolve, 25)); throw new Error("permanent"); },
 	});
-	assert.deepEqual(await service.runOnce(), { claimed: 1, delivered: 0, failed: 1 });
+	assert.deepEqual(await service.runOnce(), { claimed: 1, delivered: 0, failed: 1, deferred: 0 });
 	assert.ok(renewed >= 1);
 	assert.equal(completed, 0);
 	assert.equal(failed, 0);

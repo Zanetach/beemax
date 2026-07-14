@@ -622,7 +622,7 @@ test("one recovery cycle automatically corrects a rejected Candidate Result with
 		const task = store.queryTasks({ ownerKeys: ["cli:local:local"], id: "automatic-correction-task" })[0];
 		assert.deepEqual({ status: task.status, result: task.result, correctiveAttempts: task.correctiveAttempts }, { status: "succeeded", result: "supported [source]", correctiveAttempts: 1 });
 		const notices = store.claimTaskPlanCompletionNotices("cli", Date.now(), 10, 1_000);
-		assert.deepEqual(notices.map(({ planId, planStatus, target }) => ({ planId, planStatus, target })), [{ planId: "automatic-correction-plan", planStatus: "succeeded", target: { platform: "cli", chatId: "local", userId: "local" } }]);
+		assert.deepEqual(notices.map(({ planId, planStatus, target }) => ({ planId, planStatus, target })), [{ planId: "automatic-correction-plan", planStatus: "succeeded", target: { platform: "cli", chatId: "local", chatType: "dm", userId: "local" } }]);
 	} finally { store.close(); rmSync(root, { recursive: true, force: true }); }
 });
 
@@ -682,7 +682,7 @@ test("Task Plan Completion Notice Outbox is idempotent and reclaims an expired d
 		const first = store.claimTaskPlanCompletionNotices("feishu", 100, 10, 50);
 		assert.equal(first.length, 1);
 		assert.deepEqual({ planId: first[0].planId, planStatus: first[0].planStatus, title: first[0].title, target: first[0].target, attempts: first[0].attempts }, {
-			planId: "notice-plan", planStatus: "succeeded", title: "Background report", target: { platform: "feishu", channelInstanceId: "company-a", chatId: "chat", userId: "user", threadId: "thread" }, attempts: 1,
+			planId: "notice-plan", planStatus: "succeeded", title: "Background report", target: { platform: "feishu", channelInstanceId: "company-a", chatId: "chat", chatType: "dm", userId: "user", threadId: "thread" }, attempts: 1,
 		});
 		assert.equal(JSON.stringify(first[0]).includes("private result"), false);
 		assert.deepEqual(store.claimTaskPlanCompletionNotices("feishu", 149, 10, 50), []);

@@ -6,7 +6,7 @@ import {
 	type AutomationOwner,
 	type AutomationStore,
 } from "@beemax/automation";
-import type { DeliveryPort } from "./delivery-port.ts";
+import { DeliveryDeferredError, type DeliveryPort } from "./delivery-port.ts";
 import type { TaskRecord } from "./task-ledger.ts";
 
 export type AutomationExecutor = (job: AutomationClaim, signal?: AbortSignal) => Promise<{ output?: string; delivery?: AutomationDeliveryInput; objectiveId?: string; taskRunId?: string }>;
@@ -23,21 +23,23 @@ export class AutomationDeliveryWorker {
 	private readonly clock: () => number;
 	constructor(store: AutomationStore, delivery: DeliveryPort, clock: () => number = Date.now) { this.store = store; this.delivery = delivery; this.clock = clock; }
 
-	async runOnce(now = Date.now(), limit = 4): Promise<{ claimed: number; delivered: number; failed: number }> {
+	async runOnce(now = Date.now(), limit = 4): Promise<{ claimed: number; delivered: number; failed: number; deferred: number }> {
 		const items = this.store.claimDeliveriesDue(now, limit);
 		let delivered = 0;
 		let failed = 0;
+		let deferred = 0;
 		for (const item of items) {
 			try {
-				await this.delivery.sendText(item, item.text, { idempotencyKey: item.idempotencyKey });
+				await this.delivery.sendText(item, item.text, { idempotencyKey: item.idempotencyKey, deliveryClass: "proactive", deliveryAttempt: item.attempts });
 				if (!this.store.completeDelivery(item.id, item.claimToken, this.clock())) throw new Error(`Automation delivery claim lost: ${item.id}`);
 				delivered++;
 			} catch (error) {
+				if (error instanceof DeliveryDeferredError && this.store.deferDelivery(item.id, item.claimToken, error.retryAt, this.clock())) { deferred++; continue; }
 				this.store.failDelivery(item.id, item.claimToken, error instanceof Error ? error.message : String(error), this.clock());
 				failed++;
 			}
 		}
-		return { claimed: items.length, delivered, failed };
+		return { claimed: items.length, delivered, failed, deferred };
 	}
 }
 
@@ -122,7 +124,9 @@ export interface HeartbeatConfig {
 	enabled: boolean;
 	every: string;
 	platform: string;
+	channelInstanceId?: string;
 	chatId?: string;
+	chatType?: AutomationOwner["chatType"];
 	userId?: string;
 	prompt: string;
 	ackMaxChars: number;
@@ -165,7 +169,7 @@ export class HeartbeatRunner {
 		this.intervalMs = parseDuration(config.every);
 	}
 	start(): void { if (this.stopped && this.config.enabled) { this.stopped = false; this.schedule(this.intervalMs); } }
-	setRoute(chatId: string, userId?: string): void { this.config.chatId = chatId; this.config.userId = userId; }
+	setRoute(chatId: string, userId?: string, chatType?: AutomationOwner["chatType"]): void { this.config.chatId = chatId; this.config.userId = userId; this.config.chatType = chatType; }
 	async wake(): Promise<void> {
 		if (this.stopped || !this.config.enabled) return;
 		if (this.timer) clearTimeout(this.timer);
@@ -196,8 +200,8 @@ export class HeartbeatRunner {
 			this.store.recordHeartbeat("skipped", "agent-busy"); this.schedule(Math.min(60_000, this.intervalMs)); return;
 		}
 		const route = this.config.chatId
-			? { platform: this.config.platform, chatId: this.config.chatId, userId: this.config.userId }
-			: this.store.getLastRoute(this.config.platform, this.config.userId);
+			? { platform: this.config.platform, ...(this.config.channelInstanceId ? { channelInstanceId: this.config.channelInstanceId } : {}), chatId: this.config.chatId, ...(this.config.chatType ? { chatType: this.config.chatType } : {}), userId: this.config.userId }
+			: this.store.getLastRoute(this.config.platform, this.config.userId, this.config.channelInstanceId);
 		if (!route) { this.store.recordHeartbeat("skipped", "no-delivery-route"); this.schedule(this.intervalMs); return; }
 		this.running = true;
 		try {
@@ -209,7 +213,7 @@ export class HeartbeatRunner {
 			}
 			const answer = await Promise.race([this.execute({ route, prompt: this.config.prompt, timeoutMs: this.config.timeoutMs }, signal), new Promise<never>((_, reject) => signal.addEventListener("abort", () => reject(signal.reason), { once: true }))]);
 			const filtered = filterHeartbeatAnswer(answer, this.config.ackMaxChars);
-			if (filtered.notify) await this.deliveryPort.sendText(route, filtered.text);
+			if (filtered.notify) await this.deliveryPort.sendText(route, filtered.text, { deliveryClass: "proactive" });
 			this.store.recordHeartbeat(filtered.notify ? "alert" : "ok", reason);
 		} catch (error) {
 			this.store.recordHeartbeat("error", error instanceof Error ? error.message : String(error));

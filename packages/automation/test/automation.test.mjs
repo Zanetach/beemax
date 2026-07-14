@@ -9,7 +9,7 @@ import {
 	computeNextRun,
 	parseDuration,
 } from "../dist/index.js";
-import { AutomationDeliveryWorker, AutomationScheduler, HeartbeatRunner, filterHeartbeatAnswer, isVerifiedAutomationOutcome, isWithinActiveHours } from "@beemax/core";
+import { AutomationDeliveryWorker, AutomationScheduler, DeliveryDeferredError, HeartbeatRunner, filterHeartbeatAnswer, isVerifiedAutomationOutcome, isWithinActiveHours } from "@beemax/core";
 
 function withStore(run) {
 	const root = mkdtempSync(join(tmpdir(), "beemax-automation-test-"));
@@ -82,8 +82,8 @@ test("recurring jobs persist next run, ownership, history, and retry state", () 
 }));
 
 test("channel instances isolate schedules and survive durable delivery", () => withStore((store) => {
-	const firstOwner = { platform: "feishu", channelInstanceId: "company-a", chatId: "same-chat", userId: "same-user" };
-	const secondOwner = { platform: "feishu", channelInstanceId: "company-b", chatId: "same-chat", userId: "same-user" };
+	const firstOwner = { platform: "feishu", channelInstanceId: "company-a", chatId: "same-chat", chatType: "group", userId: "same-user" };
+	const secondOwner = { platform: "feishu", channelInstanceId: "company-b", chatId: "same-chat", chatType: "group", userId: "same-user" };
 	const first = store.create({ ...firstOwner, name: "A", kind: "reminder", scheduleKind: "at", schedule: "1h", text: "first" }, 1_000);
 	store.create({ ...secondOwner, name: "B", kind: "reminder", scheduleKind: "at", schedule: "1h", text: "second" }, 1_000);
 	assert.deepEqual(store.list(firstOwner).map((job) => job.name), ["A"]);
@@ -91,9 +91,12 @@ test("channel instances isolate schedules and survive durable delivery", () => w
 	store.runNow(first.id, firstOwner, 2_000);
 	const claim = store.claimDue(2_000)[0];
 	store.complete(claim, { startedAt: 2_000, finishedAt: 2_001, status: "ok", delivery: { kind: "text", text: "first", idempotencyKey: "instance-a" } }, 2_001);
-	assert.equal(store.claimDeliveriesDue(2_001)[0].channelInstanceId, "company-a");
+	const delivery = store.claimDeliveriesDue(2_001)[0];
+	assert.deepEqual({ instance: delivery.channelInstanceId, chatType: delivery.chatType }, { instance: "company-a", chatType: "group" });
+	store.setLastRoute(firstOwner, 2_001);
 	store.setLastRoute(secondOwner, 2_002);
-	assert.equal(store.getLastRoute("feishu", "same-user").channelInstanceId, "company-b");
+	assert.equal(store.getLastRoute("feishu", "same-user"), undefined);
+	assert.equal(store.getLastRoute("feishu", "same-user", "company-b").channelInstanceId, "company-b");
 }));
 
 test("one Schedule Occurrence retries with one identity and stops after its finite attempt budget", () => withStore((store) => {
@@ -149,6 +152,32 @@ test("verified Schedule execution is settled once while durable delivery retries
 	assert.equal(retry.id, firstDelivery.id);
 	assert.equal(store.completeDelivery(retry.id, retry.claimToken, now+630_102), true);
 	assert.equal(store.claimDeliveriesDue(now+700_000).length, 0);
+}));
+
+test("standalone proactive results enter the durable Delivery Outbox idempotently", () => withStore((store) => {
+	const now = Date.parse("2026-01-01T00:00:00Z");
+	const owner = { platform:"feishu",channelInstanceId:"feishu-main",chatId:"group",chatType:"group",userId:"user" };
+	assert.equal(store.enqueueDelivery(owner, { kind:"text",text:"Verified finding",idempotencyKey:"initiative:objective-1" }, now), true);
+	assert.equal(store.enqueueDelivery(owner, { kind:"text",text:"Duplicate",idempotencyKey:"initiative:objective-1" }, now+1), false);
+	const delivery = store.claimDeliveriesDue(now)[0];
+	assert.equal(delivery.text, "Verified finding");
+	assert.equal(delivery.chatType, "group");
+	assert.equal(delivery.channelInstanceId, "feishu-main");
+}));
+
+test("a governed delivery deferral does not consume the durable delivery retry budget", () => withStore((store) => {
+	const now = Date.parse("2026-01-01T00:00:00Z");
+	const owner = { platform:"feishu",chatId:"group",chatType:"group",userId:"user" };
+	const job = store.create({ ...owner,name:"Digest",kind:"agent",scheduleKind:"at",schedule:"10m",text:"Summarize" }, now);
+	const claim = store.claimDue(now + 600_000)[0];
+	store.complete(claim, { startedAt:now+600_000,finishedAt:now+600_100,status:"ok",delivery:{ kind:"text",text:"Summary",idempotencyKey:"delivery" } }, now+600_100);
+	const delivery = store.claimDeliveriesDue(now+600_100)[0];
+	assert.equal(delivery.attempts, 1);
+	assert.equal(store.deferDelivery(delivery.id, delivery.claimToken, now+900_000, now+600_101), true);
+	assert.equal(store.claimDeliveriesDue(now+899_999).length, 0);
+	const retried = store.claimDeliveriesDue(now+900_000)[0];
+	assert.equal(retried.attempts, 1);
+	assert.equal(retried.chatType, "group");
 }));
 
 test("Schedule management can inspect, update, run now, and report scheduler health", () => withStore((store) => {
@@ -229,11 +258,24 @@ test("AutomationDeliveryWorker retries channel failure without replaying the set
 	let attempts = 0;
 	let clock = now+600_100;
 	const worker = new AutomationDeliveryWorker(store, { sendText: async () => { attempts++; if (attempts === 1) throw new Error("offline"); }, sendMedia: async () => undefined }, () => clock);
-	assert.deepEqual(await worker.runOnce(now+600_100), { claimed:1,delivered:0,failed:1 });
+	assert.deepEqual(await worker.runOnce(now+600_100), { claimed:1,delivered:0,failed:1,deferred:0 });
 	clock = now+630_100;
-	assert.deepEqual(await worker.runOnce(now+630_100), { claimed:1,delivered:1,failed:0 });
+	assert.deepEqual(await worker.runOnce(now+630_100), { claimed:1,delivered:1,failed:0,deferred:0 });
 	assert.equal(store.runs(job.id, owner).length, 1);
 	assert.equal(attempts, 2);
+}));
+
+test("AutomationDeliveryWorker durably defers governed group delivery without counting a failure", () => withStore(async (store) => {
+	const now = Date.parse("2026-01-01T00:00:00Z");
+	const owner = { platform:"feishu",chatId:"group",chatType:"group",userId:"user" };
+	store.create({ ...owner,name:"Digest",kind:"agent",scheduleKind:"at",schedule:"10m",text:"Summarize" }, now);
+	const claim = store.claimDue(now+600_000)[0];
+	store.complete(claim, { startedAt:now+600_000,finishedAt:now+600_100,status:"ok",delivery:{kind:"text",text:"done",idempotencyKey:"governed"} }, now+600_100);
+	const worker = new AutomationDeliveryWorker(store, { sendText: async (_target, _text, options) => { assert.equal(options.deliveryClass, "proactive"); throw new DeliveryDeferredError("quiet_hours", now+900_000); }, sendMedia: async () => undefined }, () => now+600_101);
+
+	assert.deepEqual(await worker.runOnce(now+600_100), { claimed:1,delivered:0,failed:0,deferred:1 });
+	assert.equal(store.claimDeliveriesDue(now+899_999).length, 0);
+	assert.equal(store.claimDeliveriesDue(now+900_000)[0].attempts, 1);
 }));
 
 test("expired automation claims cannot commit after a replacement worker takes ownership", () => withStore((store) => {
@@ -390,21 +432,39 @@ test("media deliveries persist across send failures and become claimable for ret
 	const claimed = store.claimMediaDue(1_000);
 	assert.equal(claimed.length, 1);
 	assert.equal(claimed[0].id, delivery.id);
-	store.failMedia(delivery.id, 1_000);
+	store.failMedia(delivery.id, claimed[0].claimToken, 1_000);
 	assert.equal(store.claimMediaDue(30_999).length, 0);
-	assert.equal(store.claimMediaDue(31_000).length, 1);
-	store.completeMedia(delivery.id);
+	const retry = store.claimMediaDue(31_000)[0];
+	assert.ok(retry);
+	store.completeMedia(delivery.id, retry.claimToken, 31_000);
 	assert.equal(store.claimMediaDue(1_000_000).length, 0);
+}));
+
+test("governed media deferral preserves its retry budget until the allowed time", () => withStore((store) => {
+	const now = Date.parse("2026-01-01T00:00:00Z");
+	const item = store.enqueueMedia({ platform:"feishu",chatId:"group",chatType:"group" }, { path:"/tmp/report.png",mimeType:"image/png" }, now);
+	const claimed = store.claimMediaDue(now)[0];
+	assert.equal(store.deferMedia(claimed.id, claimed.claimToken, now+60_000, now), true);
+	assert.equal(store.claimMediaDue(now+59_999).length, 0);
+	const retried = store.claimMediaDue(now+60_000)[0];
+	assert.equal(retried.id, item.id);
+	assert.equal(retried.attempts, 0);
+	assert.equal(retried.chatType, "group");
 }));
 
 test("expired media delivery leases are reclaimed after a worker crash", () => withStore((store) => {
 	const delivery = store.enqueueMedia({ platform: "feishu", chatId: "chat" }, { path: "/tmp/generated.png" }, 1_000);
-	assert.equal(store.claimMediaDue(1_000, 1, 5_000)[0].id, delivery.id);
+	const stale = store.claimMediaDue(1_000, 1, 5_000)[0];
+	assert.equal(stale.id, delivery.id);
 	assert.equal(store.claimMediaDue(5_999).length, 0);
-	const reclaimed = store.claimMediaDue(6_000, 1, 5_000);
+	const reclaimed = store.claimMediaDue(6_001, 1, 5_000);
 	assert.equal(reclaimed.length, 1);
 	assert.equal(reclaimed[0].id, delivery.id);
 	assert.equal(reclaimed[0].attempts, 1);
+	assert.equal(store.completeMedia(stale.id, stale.claimToken, 6_002), false);
+	assert.equal(store.deferMedia(stale.id, stale.claimToken, 10_000, 6_002), false);
+	assert.equal(store.failMedia(stale.id, stale.claimToken, 6_002), false);
+	assert.equal(store.completeMedia(reclaimed[0].id, reclaimed[0].claimToken, 6_002), true);
 }));
 
 test("media delivery poison work is abandoned after bounded attempts", () => withStore((store) => {
@@ -413,7 +473,7 @@ test("media delivery poison work is abandoned after bounded attempts", () => wit
 	for (let attempt = 0; attempt < 10; attempt++) {
 		const claimed = store.claimMediaDue(now, 1, 1)[0];
 		assert.equal(claimed.id, item.id);
-		store.failMedia(item.id, now);
+		store.failMedia(item.id, claimed.claimToken, now);
 		now += 60 * 60_000;
 	}
 	assert.equal(store.claimMediaDue(now, 1).length, 0);

@@ -1,8 +1,8 @@
-import type { DeliveryPort } from "./delivery-port.ts";
+import { DeliveryDeferredError, type DeliveryPort } from "./delivery-port.ts";
 import type { TaskLedger, TaskPlanCompletionNotice } from "./task-ledger.ts";
 import { sanitizeDisplayText } from "./display-text.ts";
 
-export interface TaskPlanNoticeDeliveryResult { claimed: number; delivered: number; failed: number; }
+export interface TaskPlanNoticeDeliveryResult { claimed: number; delivered: number; failed: number; deferred: number; }
 export interface TaskPlanProgressEvent {
 	type: "work.changed"; workId: string; kind: "task_plan"; state: "completed" | "failed" | "cancelled";
 	title: string; completed: number; total: number; failed: number; cancelled: number; at: number;
@@ -14,7 +14,7 @@ export interface TaskPlanNoticeDeliveryOptions {
 	onProgress?: (event: TaskPlanProgressEvent, notice: TaskPlanCompletionNotice) => void | Promise<void>;
 	onCycle?: (result: TaskPlanNoticeDeliveryResult) => void; onError?: (error: unknown) => void;
 }
-export type TaskPlanNoticeOutbox = Required<Pick<TaskLedger, "claimTaskPlanCompletionNotices" | "completeTaskPlanCompletionNotice" | "failTaskPlanCompletionNotice">> & Partial<Pick<TaskLedger, "renewTaskPlanCompletionNotice" | "abandonTaskPlanCompletionNotice">>;
+export type TaskPlanNoticeOutbox = Required<Pick<TaskLedger, "claimTaskPlanCompletionNotices" | "completeTaskPlanCompletionNotice" | "failTaskPlanCompletionNotice">> & Partial<Pick<TaskLedger, "renewTaskPlanCompletionNotice" | "abandonTaskPlanCompletionNotice" | "deferTaskPlanCompletionNotice">>;
 
 /** Delivers durable Objective results or terminal Plan progress through a channel-neutral port. */
 export class TaskPlanNoticeDeliveryService {
@@ -65,19 +65,22 @@ export class TaskPlanNoticeDeliveryService {
 
 	private async deliverBatch(now: number): Promise<TaskPlanNoticeDeliveryResult> {
 		const notices = this.outbox.claimTaskPlanCompletionNotices(this.options.platform, now, this.batchSize, this.leaseMs);
-		const summary = { claimed: notices.length, delivered: 0, failed: 0 };
+		const summary: TaskPlanNoticeDeliveryResult = { claimed: notices.length, delivered: 0, failed: 0, deferred: 0 };
 		let cursor = 0;
 		const workers = Array.from({ length: Math.min(this.deliveryConcurrency, notices.length) }, async () => {
 			while (cursor < notices.length) {
 				const notice = notices[cursor++]!;
-				if (await this.deliverNotice(notice, now)) summary.delivered++; else summary.failed++;
+				const outcome = await this.deliverNotice(notice, now);
+				if (outcome === "delivered") summary.delivered++;
+				else if (outcome === "deferred") summary.deferred++;
+				else summary.failed++;
 			}
 		});
 		await Promise.all(workers);
 		return summary;
 	}
 
-	private async deliverNotice(notice: TaskPlanCompletionNotice, now: number): Promise<boolean> {
+	private async deliverNotice(notice: TaskPlanCompletionNotice, now: number): Promise<"delivered" | "failed" | "deferred"> {
 			const controller = new AbortController();
 			this.controllers.add(controller);
 			let objectiveOutcome: { status: "awaiting_verification" | "succeeded" | "failed" | "cancelled"; result?: string; error?: string } | undefined;
@@ -92,9 +95,9 @@ export class TaskPlanNoticeDeliveryService {
 					if (controller.signal.aborted) throw controller.signal.reason;
 					if (objective && notice.planStatus === "succeeded") {
 						if (objective.status === "succeeded" && objective.result?.trim()) {
-							await this.delivery.sendText(notice.target, objective.result, { idempotencyKey: notice.id });
+							await this.delivery.sendText(notice.target, objective.result, { idempotencyKey: notice.id, deliveryClass: "proactive", deliveryAttempt: notice.attempts });
 							if (!notice.claimToken || !this.outbox.completeTaskPlanCompletionNotice(notice.id, notice.claimToken)) throw new Error(`Task Plan Completion Notice acknowledgement failed: ${notice.id}`);
-							return true;
+							return "delivered";
 						}
 						if (objective.status !== "cancelled") throw new Error(objective.error || (objective.status === "awaiting_verification" ? `Objective is awaiting accepted Verification for Task Plan ${notice.planId}` : `Objective delivery failed for Task Plan ${notice.planId}`));
 					}
@@ -105,16 +108,17 @@ export class TaskPlanNoticeDeliveryService {
 					title: notice.title, completed: notice.succeeded, total: notice.taskCount, failed: notice.failed, cancelled: notice.cancelled, at: now,
 				};
 				if (this.options.onProgress) await this.options.onProgress(progress, notice);
-				else await this.delivery.sendText(notice.target, renderTaskPlanCompletionNotice(notice), { idempotencyKey: notice.id });
+				else await this.delivery.sendText(notice.target, renderTaskPlanCompletionNotice(notice), { idempotencyKey: notice.id, deliveryClass: "proactive", deliveryAttempt: notice.attempts });
 				if (!notice.claimToken || !this.outbox.completeTaskPlanCompletionNotice(notice.id, notice.claimToken)) throw new Error(`Task Plan Completion Notice acknowledgement failed: ${notice.id}`);
-				return true;
+				return "delivered";
 			} catch (error) {
+				if (error instanceof DeliveryDeferredError && notice.claimToken && this.outbox.deferTaskPlanCompletionNotice?.(notice.id, notice.claimToken, error.retryAt, now)) return "deferred";
 				if (notice.claimToken) {
 					if (notice.attempts >= this.maxAttempts) this.outbox.abandonTaskPlanCompletionNotice?.(notice.id, notice.claimToken, error instanceof Error ? error.message : String(error), now) ?? this.outbox.completeTaskPlanCompletionNotice(notice.id, notice.claimToken);
 					else this.outbox.failTaskPlanCompletionNotice(notice.id, notice.claimToken, now);
 				}
 				if (notice.attempts >= this.maxAttempts) this.options.onError?.(error);
-				return false;
+				return "failed";
 			} finally { if (heartbeat) clearInterval(heartbeat); this.controllers.delete(controller); }
 	}
 

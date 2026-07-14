@@ -156,6 +156,18 @@ _Avoid_: Enterprise Policy, semantic response judgment, Agent prompt rule
 An opt-in projection of a non-activated group text message into a bounded Initiative Observation candidate inside the same Profile, Channel Instance, Conversation, and Thread scope. It bypasses the Agent message path and cannot create an Objective, invoke Pi, call a Tool, or deliver a message.
 _Avoid_: Passive Agent turn, chat transcript ingestion, permanent Memory, hidden execution
 
+**Ambient Observation Evaluator**:
+A Core-owned, asynchronous cognition port that decides retain, defer, or ignore from generic relevance, credibility, expected-value, and confidence evidence. Its Pi-backed implementation uses tool-free model completion rather than an Agent session; invalid or unavailable inference defers safely and cannot invent Access Scope, business authority, or customer-specific rules.
+_Avoid_: Intent router, fixed business ontology, Agent Loop, Tool execution
+
+**Ambient Evaluation Defer**:
+A fail-closed, non-retention decision for unactivated group content whose value cannot currently be established. It is observable but deliberately does not persist unapproved raw chatter or promise replay; capacity is bounded separately so model outages cannot create an unbounded intake queue.
+_Avoid_: Durable Task defer, hidden raw transcript retention, accepted Observation
+
+**Governed Delivery**:
+A transport-neutral outbound boundary that applies proactive group quiet hours and per-Conversation frequency budgets from trusted Conversation Type. Interactive and control Delivery bypass proactive governance; a denied durable Delivery is rescheduled without replaying Pi or consuming its ordinary failure budget.
+_Avoid_: Channel send retry, prompt policy, business-value judgment, guessed chat type
+
 **Profile Binding**:
 A deterministic, model-independent route from Channel Instance, optional account, Conversation, and Thread to exactly one Profile. Thread outranks Conversation, Conversation outranks account, and account outranks the Channel Instance default; same-level ambiguity fails closed.
 _Avoid_: Prompt routing, Adapter-selected Profile, array-order fallback

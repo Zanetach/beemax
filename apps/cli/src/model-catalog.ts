@@ -1,4 +1,4 @@
-import { builtinProviders, getBuiltinModel, getSupportedThinkingLevels, MediaUnderstandingRuntime, PiVisionMediaUnderstandingAdapter, type Api, type MediaUnderstandingAdapter, type Model } from "@beemax/core";
+import { builtinProviders, getBuiltinModel, getSupportedThinkingLevels, MediaUnderstandingRuntime, PiVisionMediaUnderstandingAdapter, resolveRuntimeModel, type Api, type MediaUnderstandingAdapter, type Model } from "@beemax/core";
 import type { BeeMaxConfig } from "./config.ts";
 
 export interface ModelProviderPreset {
@@ -103,6 +103,18 @@ export function renderConfiguredModels(config: BeeMaxConfig): string {
 /** Runtime-ready ordered model candidates; unsupported custom definitions stay out of automatic failover. */
 export function configuredRuntimeModels(config: BeeMaxConfig): Model<Api>[] {
 	return new ProfileModelCatalog(config).runtimeModels();
+}
+
+/** Runtime-ready text models with Profile-owned auth, including supported custom endpoints. */
+export function configuredAuxiliaryTextModels(config: BeeMaxConfig): Array<{ model: Model<Api>; apiKey?: string }> {
+	return config.models.flatMap((choice) => {
+		try {
+			const model = resolveRuntimeModel(choice.provider, choice.model, choice.baseUrl, choice.customProtocol, { contextWindow: choice.contextWindow, maxTokens: choice.maxTokens });
+			if (!model.input.includes("text")) return [];
+			const apiKey = config.model.apiKeys[choice.provider] ?? (choice.provider === config.model.provider ? config.model.apiKey : undefined);
+			return apiKey ? [{ model, apiKey }] : [];
+		} catch { return []; }
+	});
 }
 
 /** Configured image-capable Pi models automatically become auxiliary perception adapters. */

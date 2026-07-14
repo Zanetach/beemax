@@ -107,7 +107,7 @@ export function buildBeeMaxRuntimeFactory<Source extends BeeMaxRuntimeSource = B
 	mkdirSync(sessionDir, { recursive: true });
 	const authStorage = AuthStorage.create(join(agentDir, "auth.json"));
 	const modelRegistry = ModelRegistry.create(authStorage, join(agentDir, "models.json"));
-	const resolvedModel = resolveModel(opts.provider, opts.model, opts.baseUrl, opts.customProtocol, opts.modelLimits);
+	const resolvedModel = resolveRuntimeModel(opts.provider, opts.model, opts.baseUrl, opts.customProtocol, opts.modelLimits);
 	const model = opts.baseUrl ? { ...resolvedModel, baseUrl: opts.baseUrl } : resolvedModel;
 	return async (sessionId: string, source: Source, executionEnvelope?: Readonly<ExecutionEnvelope>, legacySessionIds: string[] = []): Promise<AgentSession> => {
 		const apiKey = await opts.getApiKey(opts.provider);
@@ -362,7 +362,7 @@ function hardBlockReason(toolName: string, args: unknown, cwd: string): string |
 	return undefined;
 }
 
-function resolveModel(provider: string, modelId: string, baseUrl?: string, customProtocol: "openai-completions" | "openai-responses" | "anthropic-messages" = "openai-completions", limits?: { contextWindow?: number; maxTokens?: number }): Model<Api> {
+export function resolveRuntimeModel(provider: string, modelId: string, baseUrl?: string, customProtocol: "openai-completions" | "openai-responses" | "anthropic-messages" = "openai-completions", limits?: { contextWindow?: number; maxTokens?: number }): Model<Api> {
 	if (provider === "custom") {
 		if (!baseUrl) throw new Error("Custom OpenAI-compatible models require a Base URL");
 		const contextWindow = boundedModelLimit(limits?.contextWindow, 128_000, 8_000, 10_000_000);

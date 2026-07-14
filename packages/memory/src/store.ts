@@ -369,7 +369,7 @@ export class MemoryStore {
 			CREATE INDEX IF NOT EXISTS idx_task_plan_execution_claims_expiry ON task_plan_execution_claims(lease_expires_at);
 			CREATE TABLE IF NOT EXISTS task_plan_completion_notices (
 				id TEXT PRIMARY KEY, plan_id TEXT NOT NULL, owner_key TEXT NOT NULL,
-				platform TEXT NOT NULL, channel_instance_id TEXT, chat_id TEXT NOT NULL, user_id TEXT, thread_id TEXT,
+				platform TEXT NOT NULL, channel_instance_id TEXT, chat_id TEXT NOT NULL, chat_type TEXT, user_id TEXT, thread_id TEXT,
 				plan_status TEXT NOT NULL CHECK (plan_status IN ('succeeded', 'failed', 'cancelled')),
 				title TEXT NOT NULL, task_count INTEGER NOT NULL, succeeded INTEGER NOT NULL,
 				failed INTEGER NOT NULL, cancelled INTEGER NOT NULL,
@@ -779,6 +779,7 @@ export class MemoryStore {
 		this.addColumnIfMissing("task_runs", "lease_expires_at", "INTEGER");
 		this.addColumnIfMissing("task_plan_completion_notices", "claim_token", "TEXT");
 		this.addColumnIfMissing("task_plan_completion_notices", "channel_instance_id", "TEXT");
+		this.addColumnIfMissing("task_plan_completion_notices", "chat_type", "TEXT");
 		this.addColumnIfMissing("task_plan_completion_notices", "abandoned_at", "INTEGER");
 		this.addColumnIfMissing("task_plan_completion_notices", "last_error", "TEXT");
 		this.db.exec("CREATE INDEX IF NOT EXISTS idx_tasks_verification_due ON tasks(verification_outcome, verification_retry_at)");
@@ -2018,9 +2019,9 @@ export class MemoryStore {
 		if (!target?.platform || !target.chatId) return false;
 		const id = `${plan.id}:${plan.finished_at ?? now}:${plan.status}`;
 		return this.db.prepare(`INSERT OR IGNORE INTO task_plan_completion_notices
-			(id, plan_id, owner_key, platform, channel_instance_id, chat_id, user_id, thread_id, plan_status, title, task_count, succeeded, failed, cancelled, status, attempts, next_attempt_at, created_at)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', 0, ?, ?)`)
-			.run(id, plan.id, plan.owner_key, target.platform, target.channelInstanceId ?? null, target.chatId, target.userId ?? null, target.threadId ?? null, plan.status, plan.title, plan.task_count, plan.succeeded, plan.failed, plan.cancelled, now, now).changes === 1;
+			(id, plan_id, owner_key, platform, channel_instance_id, chat_id, chat_type, user_id, thread_id, plan_status, title, task_count, succeeded, failed, cancelled, status, attempts, next_attempt_at, created_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', 0, ?, ?)`)
+			.run(id, plan.id, plan.owner_key, target.platform, target.channelInstanceId ?? null, target.chatId, target.chatType ?? null, target.userId ?? null, target.threadId ?? null, plan.status, plan.title, plan.task_count, plan.succeeded, plan.failed, plan.cancelled, now, now).changes === 1;
 	}
 
 	claimTaskPlanCompletionNotices(platform: string, now = Date.now(), limit = 10, leaseMs = 5 * 60_000): TaskPlanCompletionNotice[] {
@@ -2052,6 +2053,12 @@ export class MemoryStore {
 		if (!row) return false;
 		const delay = Math.min(60 * 60_000, 30_000 * (2 ** Math.min(Math.max(0, row.attempts - 1), 7)));
 		return this.db.prepare("UPDATE task_plan_completion_notices SET status = 'queued', claim_token = NULL, next_attempt_at = ? WHERE id = ? AND status = 'delivering' AND claim_token = ?").run(now + delay, id, claimToken).changes === 1;
+	}
+
+	deferTaskPlanCompletionNotice(id: string, claimToken: string, retryAt: number, now = Date.now()): boolean {
+		const boundedRetryAt = Math.max(now + 1_000, Math.min(retryAt, now + 7 * 24 * 60 * 60_000));
+		return this.db.prepare("UPDATE task_plan_completion_notices SET status = 'queued', attempts = MAX(0, attempts - 1), claim_token = NULL, next_attempt_at = ?, last_error = NULL WHERE id = ? AND status = 'delivering' AND claim_token = ?")
+			.run(boundedRetryAt, id, claimToken).changes === 1;
 	}
 
 	prepareTaskPlanRetry(ownerKeys: string[], planId: string, maxCorrectiveAttempts = 1): number {
@@ -2708,9 +2715,13 @@ interface TaskPlanRow {
 }
 
 interface TaskPlanCompletionNoticeRow {
-	id: string; plan_id: string; owner_key: string; platform: string; channel_instance_id: string | null; chat_id: string; user_id: string | null; thread_id: string | null;
+	id: string; plan_id: string; owner_key: string; platform: string; channel_instance_id: string | null; chat_id: string; chat_type: string | null; user_id: string | null; thread_id: string | null;
 	plan_status: TaskPlanCompletionNotice["planStatus"]; title: string; task_count: number; succeeded: number; failed: number; cancelled: number;
 	status: Exclude<TaskPlanCompletionNotice["status"], "abandoned">; claim_token: string | null; attempts: number; next_attempt_at: number; created_at: number; abandoned_at: number | null; last_error: string | null;
+}
+
+function validChatType(value: string | null): DeliveryTarget["chatType"] {
+	return value === "dm" || value === "group" || value === "channel" || value === "thread" ? value : undefined;
 }
 
 function mapRow(row: MemoryRow): MemoryRecord {
@@ -2866,7 +2877,7 @@ function mapRuntimeTask(row: RuntimeTaskRow): RuntimeTaskRecord {
 function mapTaskPlanCompletionNotice(row: TaskPlanCompletionNoticeRow): TaskPlanCompletionNotice {
 	return {
 		id: row.id, planId: row.plan_id, ownerKey: row.owner_key,
-		target: { platform: row.platform, ...(row.channel_instance_id ? { channelInstanceId: row.channel_instance_id } : {}), chatId: row.chat_id, ...(row.user_id ? { userId: row.user_id } : {}), ...(row.thread_id ? { threadId: row.thread_id } : {}) },
+		target: { platform: row.platform, ...(row.channel_instance_id ? { channelInstanceId: row.channel_instance_id } : {}), chatId: row.chat_id, ...(validChatType(row.chat_type) ? { chatType: validChatType(row.chat_type) } : {}), ...(row.user_id ? { userId: row.user_id } : {}), ...(row.thread_id ? { threadId: row.thread_id } : {}) },
 		planStatus: row.plan_status, title: row.title, taskCount: row.task_count, succeeded: row.succeeded, failed: row.failed, cancelled: row.cancelled,
 		status: row.abandoned_at === null ? row.status : "abandoned", ...(row.claim_token ? { claimToken: row.claim_token } : {}), attempts: row.attempts, nextAttemptAt: row.next_attempt_at, createdAt: row.created_at,
 		...(row.abandoned_at === null ? {} : { abandonedAt: row.abandoned_at }), ...(row.last_error ? { error: row.last_error } : {}),

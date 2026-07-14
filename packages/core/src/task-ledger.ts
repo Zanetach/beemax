@@ -143,6 +143,7 @@ export interface TaskLedger {
 	claimTaskPlanCompletionNotices?(platform: string, now?: number, limit?: number, leaseMs?: number): TaskPlanCompletionNotice[];
 	completeTaskPlanCompletionNotice?(id: string, claimToken: string): boolean;
 	failTaskPlanCompletionNotice?(id: string, claimToken: string, now?: number): boolean;
+	deferTaskPlanCompletionNotice?(id: string, claimToken: string, retryAt: number, now?: number): boolean;
 	renewTaskPlanCompletionNotice?(id: string, claimToken: string, leaseExpiresAt: number): boolean;
 	abandonTaskPlanCompletionNotice?(id: string, claimToken: string, error: string, now?: number): boolean;
 	renewTaskRunLease?(id: string, leaseExpiresAt: number): boolean;
