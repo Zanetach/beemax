@@ -11,7 +11,9 @@ const profilePath = resolve(valueAfter(args, "--profile") ?? "evals/sandbox-prof
 const profile = JSON.parse(readFileSync(profilePath, "utf8"));
 const developmentHost = args.includes("--allow-docker-desktop");
 assert.equal(profile.schemaVersion, 1, "Sandbox Profile schema is invalid");
-assert.equal(profile.image, DEFAULT_DOCKER_SANDBOX_IMAGE, "Sandbox Profile image drifted from production composition");
+if (profile.id === "ubuntu-docker-node22") {
+	assert.equal(profile.image, DEFAULT_DOCKER_SANDBOX_IMAGE, "Default release Sandbox Profile image drifted from production composition");
+}
 assert.deepEqual(profile.limits, DEFAULT_DOCKER_SANDBOX_LIMITS, "Sandbox Profile limits drifted from production composition");
 if (process.platform !== profile.hostPlatform && !developmentHost) throw new Error(`Docker Sandbox release evidence requires ${profile.hostPlatform}; current host is ${process.platform}`);
 const hostOs = process.platform === "linux" ? osRelease() : undefined;
