@@ -269,7 +269,7 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 			const enrichedText = contextAssembly ? enrichedBase : [taskPreservation, enrichedBase].filter(Boolean).join("\n\n");
 			const planningScope = conversationKey(input.source);
 			const planningLease = planning && this.planningBudgets ? this.planningBudgets.begin(planningScope, planning, objective?.id) : undefined;
-			const text = planning ? `${enrichedText}\n\n${planning.directive()}` : enrichedText;
+			const text = planning ? `${enrichedText}\n\n${planning.directive(objective?.id)}` : enrichedText;
 			let promptText = text;
 			let promptImages = input.images;
 			const supportsProgressiveTools = typeof session.piSession.getActiveToolNames === "function" && typeof session.piSession.setActiveToolsByName === "function";
@@ -406,7 +406,7 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 				let planningCorrected = false;
 				if (missingTools.length && !turnAbortReason) {
 					planningCorrected = true;
-					await session.piSession.prompt(`[BeeMax planning correction: complete these tools in order now using the active execution budget: ${missingTools.join(" -> ")}. Do not answer directly.]`, { expandPromptTemplates: false });
+					await session.piSession.prompt(`[BeeMax planning correction: objective=${objective?.id ?? "turn-local"}; complete these tools in order now using the active execution budget: ${missingTools.join(" -> ")}. This correction applies only to this Objective. Do not answer directly.]`, { expandPromptTemplates: false });
 					const stillMissing = planning?.requiredTools.slice(requiredToolsUsed.length) ?? [];
 					if (stillMissing.length) {
 						await onEvent?.({ type: "planning_outcome", mode: planning!.mode, compliant: false, corrected: true });

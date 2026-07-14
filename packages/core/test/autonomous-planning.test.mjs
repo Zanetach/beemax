@@ -174,6 +174,12 @@ test("planning policy delegates one substantial isolated work item", () => {
 	assert.equal(decision.budget.maxTokens, null);
 });
 
+test("planning policy keeps one bounded writing and file-verification workflow in the parent Agent", () => {
+	const decision = new AutonomousPlanningPolicy().decide("请使用当前最合适的标准 Skill，为 BeeMax 写一段约120字的中文发布短文，必须包含持久任务、飞书、可验证结果三个词。将最终文本写入文件，然后重新读取并确认三个关键词都存在。不要发布到外部平台。");
+	assert.equal(decision.mode, "direct");
+	assert.deepEqual(decision.requiredTools, []);
+});
+
 test("planning policy selects a DAG and derives bounded parallel resources for independent deliverables", () => {
 	const policy = new AutonomousPlanningPolicy({ maxConcurrent: 8, maxSubagents: 6, maxToolCalls: 60, maxTokens: 120_000 });
 	const decision = policy.decide("Review the API, CLI, memory, security, and operations modules in parallel; compare each independently, then synthesize and verify a release report");
@@ -203,6 +209,14 @@ test("planning policy exposes a content-free directive for the Agent runtime", (
 	assert.match(directive, /mode=(?:dag|delegate)/);
 	assert.match(directive, /maxSubagents=/);
 	assert.doesNotMatch(directive, /frontend|backend/);
+});
+
+test("planning directives scope execution control to the current Objective", () => {
+	const decision = new AutonomousPlanningPolicy().decide("Research the official documentation deeply and produce an evidence-backed comparison report");
+	const directive = decision.directive("objective:current");
+	assert.match(directive, /objective:current/);
+	assert.match(directive, /sole current execution policy/i);
+	assert.match(directive, /ignore earlier BeeMax planning correction.*other Objectives/i);
 });
 
 test("Agent runtime injects a deterministic planning directive without changing the user exchange", async () => {

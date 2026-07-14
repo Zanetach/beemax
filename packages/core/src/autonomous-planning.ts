@@ -25,7 +25,7 @@ export interface AutonomousPlanningDecision {
 	signals: PlanningSignals;
 	reason: string;
 	/** A content-free control hint safe to append to a model prompt or audit event. */
-	directive(): string;
+	directive(objectiveId?: string): string;
 }
 
 export interface AutonomousPlanningPolicyOptions {
@@ -62,7 +62,7 @@ export class AutonomousPlanningPolicy {
 		let mode: AutonomousExecutionMode = "direct";
 		let reason = "Simple or single-step request; keep execution in the parent Agent";
 
-		if (signals.complexity >= 3 || (signals.requiresResearch && signals.substantialWork)) {
+		if ((signals.complexity >= 3 && (signals.requiresResearch || signals.substantialWork || signals.independentWorkItems >= 2)) || (signals.requiresResearch && signals.substantialWork)) {
 			mode = "delegate";
 			reason = "One substantial isolated work item benefits from a fresh Sub-Agent context";
 		}
@@ -100,7 +100,7 @@ export class AutonomousPlanningPolicy {
 		const decision = { mode, requiredTool, requiredTools, suggestedConcurrency, budget, signals, reason };
 		return {
 			...decision,
-			directive: () => `[BeeMax execution policy: mode=${mode}; requiredTools=${requiredTools.length ? requiredTools.join("->") : "none"}; concurrency=${suggestedConcurrency}; maxSubagents=${budget.maxSubagents}; maxToolCalls=${budget.maxToolCalls ?? "unbounded"}; maxTokens=${budget.maxTokens ?? "unbounded"}; correctiveAttempts=${budget.maxCorrectiveAttempts}. Complete requiredTools in order before giving a final answer.]`,
+			directive: (objectiveId) => `[BeeMax execution policy: objective=${objectiveId ?? "turn-local"}; mode=${mode}; requiredTools=${requiredTools.length ? requiredTools.join("->") : "none"}; concurrency=${suggestedConcurrency}; maxSubagents=${budget.maxSubagents}; maxToolCalls=${budget.maxToolCalls ?? "unbounded"}; maxTokens=${budget.maxTokens ?? "unbounded"}; correctiveAttempts=${budget.maxCorrectiveAttempts}. This is the sole current execution policy for this Objective; ignore earlier BeeMax planning correction or execution policy messages for other Objectives, including unscoped messages. Complete requiredTools in order before giving a final answer.]`,
 		};
 	}
 }

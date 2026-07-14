@@ -133,6 +133,8 @@ test("fact-sensitive chat questions receive task and installed-version facts, no
 		await writeFile(join(home, "RELEASE_VERSION"), "v0.1.0-preview.16\n");
 		assert.equal(installedVersion(home), "v0.1.0-preview.16");
 		assert.equal(taskLedgerContextForQuestion(store, "Draft a weekly report"), "");
+		assert.equal(taskLedgerContextForQuestion(store, "写一段包含持久任务和可验证结果的产品发布文案"), "");
+		assert.equal(taskLedgerContextForQuestion(store, "面向需要在飞书中持续完成复杂工作的团队，介绍 Task Ledger、定时任务和 OCR"), "");
 	} finally {
 		store.close();
 	}
