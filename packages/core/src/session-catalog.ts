@@ -16,7 +16,13 @@ export interface SessionPreferences {
 	detailsDisplay?: "hidden" | "collapsed" | "expanded";
 }
 
-interface StoredSessionChoice extends SavedSessionChoice { owner: string; }
+export interface StoredSessionChoice extends SavedSessionChoice { owner: string; }
+
+export interface SessionCatalogOwnershipReceipt {
+	canonicalKey: string;
+	before?: StoredSessionChoice;
+	after?: StoredSessionChoice;
+}
 
 /**
  * Content-free, profile-local discovery index. AgentSession/Pi remains the
@@ -71,6 +77,48 @@ export class SessionCatalog<Source extends BeeMaxRuntimeSource = BeeMaxRuntimeSo
 		await this.persist();
 	}
 
+	/** Prepares a bounded, content-free receipt for moving legacy discovery metadata to the canonical Conversation owner. */
+	async prepareOwnershipMigration(source: Source): Promise<SessionCatalogOwnershipReceipt> {
+		await this.ready();
+		const canonicalKey = recordKey(source);
+		const before = cloneRecord(this.records.get(canonicalKey));
+		const legacy = firstRecord(this.records, recordKeys(source).filter((key) => key !== canonicalKey));
+		const after = before ?? (legacy ? { ...cloneRecord(legacy)!, owner: sessionOwnerKey(source) } : undefined);
+		return { canonicalKey, before, after };
+	}
+
+	async applyOwnershipMigration(source: Source, receipt: SessionCatalogOwnershipReceipt): Promise<void> {
+		await this.ready();
+		this.validateOwnershipReceipt(source, receipt);
+		if (!sameRecord(this.records.get(receipt.canonicalKey), receipt.before)) throw new Error("Session Catalog changed while ownership migration was prepared");
+		if (receipt.after) this.records.set(receipt.canonicalKey, cloneRecord(receipt.after)!);
+		if (!sameRecord(receipt.before, receipt.after)) await this.persist();
+	}
+
+	async rollbackOwnershipMigration(source: Source, receipt: SessionCatalogOwnershipReceipt): Promise<void> {
+		await this.ready();
+		this.validateOwnershipReceipt(source, receipt);
+		if (!sameRecord(this.records.get(receipt.canonicalKey), receipt.after)) throw new Error("Session Catalog changed after ownership migration");
+		if (receipt.before) this.records.set(receipt.canonicalKey, cloneRecord(receipt.before)!); else this.records.delete(receipt.canonicalKey);
+		if (!sameRecord(receipt.before, receipt.after)) await this.persist();
+	}
+
+	async reconcileOwnershipRollback(source: Source, receipt: SessionCatalogOwnershipReceipt): Promise<void> {
+		await this.ready();
+		this.validateOwnershipReceipt(source, receipt);
+		const current = this.records.get(receipt.canonicalKey);
+		if (sameRecord(current, receipt.before)) return;
+		if (!sameRecord(current, receipt.after)) throw new Error("Session Catalog changed after ownership migration");
+		if (receipt.before) this.records.set(receipt.canonicalKey, cloneRecord(receipt.before)!); else this.records.delete(receipt.canonicalKey);
+		if (!sameRecord(receipt.before, receipt.after)) await this.persist();
+	}
+
+	private validateOwnershipReceipt(source: Source, receipt: SessionCatalogOwnershipReceipt): void {
+		if (receipt.canonicalKey !== recordKey(source)) throw new Error("Session Catalog ownership receipt targets a different Conversation");
+		if (receipt.before && !isRecord(receipt.before)) throw new Error("Session Catalog ownership receipt has an invalid previous record");
+		if (receipt.after && (!isRecord(receipt.after) || receipt.after.owner !== sessionOwnerKey(source))) throw new Error("Session Catalog ownership receipt has an invalid canonical record");
+	}
+
 	private async persist(): Promise<void> {
 		this.writeGeneration++;
 		this.writes ??= this.flushWrites().finally(() => { this.writes = undefined; });
@@ -116,6 +164,12 @@ function recordKeys(source: BeeMaxRuntimeSource): string[] { return ownerKeys(so
 function firstRecord(records: Map<string, StoredSessionChoice>, keys: string[]): StoredSessionChoice | undefined {
 	for (const key of keys) { const record = records.get(key); if (record) return record; }
 	return undefined;
+}
+function cloneRecord(record: StoredSessionChoice | undefined): StoredSessionChoice | undefined {
+	return record ? { ...record, preferences: { ...record.preferences } } : undefined;
+}
+function sameRecord(left: StoredSessionChoice | undefined, right: StoredSessionChoice | undefined): boolean {
+	return JSON.stringify(left) === JSON.stringify(right);
 }
 function isRecord(value: unknown): value is StoredSessionChoice {
 	return typeof value === "object" && value !== null

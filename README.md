@@ -466,6 +466,8 @@ beemax trace show <execution-id> --profile personal
 
 See [autonomy rollout](docs/operations/autonomy-rollout.md), [performance and cost](docs/operations/performance-and-cost.md), and the [P0–P10 acceptance record](docs/operations/p0-p10-acceptance.md).
 
+Legacy Actor-scoped group transcripts are never guessed or merged. Administrators can explicitly assign one transcript to the canonical shared Conversation with `beemax migration session plan/apply`, retain every legacy file, and use digest-guarded rollback. See [Session Ownership Migration](docs/operations/session-ownership-migration.md).
+
 ## CLI reference
 
 | Command | Purpose |

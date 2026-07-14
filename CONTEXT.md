@@ -136,6 +136,10 @@ _Avoid_: Platform, Profile, Capability credential
 A shared communication space identified by Channel Instance, platform conversation, and optional Thread. A group Conversation never includes the current Actor in its identity; a direct Conversation includes its peer so private sessions remain separate.
 _Avoid_: Actor, Task owner, Profile
 
+**Session Ownership Migration**:
+An explicit, reversible assignment of one legacy Actor-scoped group transcript to the canonical shared Conversation Session. It never guesses, merges, or deletes unselected legacy transcripts; the old files remain archived until a separately governed retention action exists.
+_Avoid_: Automatic transcript merge, Session fallback, Memory migration, retention cleanup
+
 **Actor**:
 The authenticated person, bot, or system that produced an Interaction. Actor identity governs personal responsibility and private Memory but does not partition a shared group Conversation.
 _Avoid_: Conversation, display name, Profile

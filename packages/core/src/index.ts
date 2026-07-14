@@ -102,7 +102,8 @@ export {
 	type RuntimeSessionFactory,
 	type SessionCoordinatorOptions,
 } from "./session-coordinator.ts";
-export { SessionCatalog, type SavedSessionChoice, type SessionPreferences } from "./session-catalog.ts";
+export { SessionCatalog, type SavedSessionChoice, type SessionPreferences, type SessionCatalogOwnershipReceipt, type StoredSessionChoice } from "./session-catalog.ts";
+export { ProfileSessionOwnershipMigration, type AppliedSessionOwnershipMigration, type ApplySessionOwnershipMigrationInput, type PreparedSessionOwnershipMigration, type SessionOwnershipCandidate, type SessionOwnershipMigrationPlan } from "./session-ownership-migration.ts";
 export {
 	BeeMaxAgentRuntime,
 	buildTaskPreservationEnvelope,

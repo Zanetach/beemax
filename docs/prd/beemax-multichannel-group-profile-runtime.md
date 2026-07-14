@@ -23,12 +23,13 @@
 | 2026-07-14 | 第五实施切片：智能 Ambient 价值选择、可信 Conversation Type 与统一主动投递治理 | 让群观察由通用认知判断价值，并确保主动群结果可治理、可延迟且不重跑 Pi | Codex | build、typecheck、726 项全量测试及架构/迁移/Memory 门禁通过；双轴复审通过 | v1.5-draft |
 | 2026-07-14 | 第六实施切片：Binding 原子启停与最小 Profile Host 生命周期 | 补齐冲突安全的路由管理，并把 Profile admission、health、degrade、drain 收敛为统一运行时权威 | Codex | build、typecheck、734 项全量测试及架构/迁移/Memory 门禁通过；双轴审查问题已修复 | v1.6-draft |
 | 2026-07-14 | 第七实施切片：旧 Memory/Automation 显式 Channel Instance 归属迁移 | 多实例启用前消除旧路由歧义，提供事务、备份、审计与安全回滚 | Codex | build、typecheck、750 项全量测试及架构/迁移/性能/Memory 门禁通过；双轴审查问题已修复 | v1.7-draft |
+| 2026-07-14 | 第八实施切片：旧群聊 Session Ownership Migration | 以管理员显式选择替代 Actor transcript 猜测，提供非破坏保留、Catalog 收敛与安全回滚 | Codex | build、typecheck、755 项全量测试及架构/迁移/性能/Memory 门禁通过；双轴审查待执行 | v1.8-draft |
 
 ---
 
 ## 当前实施状态（2026-07-14）
 
-当前已完成第一至第七实施切片：
+当前已完成第一至第八实施切片：
 
 - 群聊/Channel/Thread 的 Conversation 不再包含当前 Actor；Task Responsibility 仍按 Actor 或可信统一身份归属。
 - `channelInstanceId` 已贯穿 Gateway 入站、投递、Task Plan Completion Notice、Automation Job/Delivery/Route/Media 和 Memory 分区。
@@ -53,6 +54,8 @@
 - Profile Host 从 Channel Host 快照推导运行健康并持续更新：单个 Channel Instance 故障进入 degraded，不停止其他 Channel 或 Profile Runtime；核心 authority 不可用才进入 failed。`/status` 可查看 state、accepting、lifecycle rejection 与降级原因。
 - 旧版无 instance 的 Memory、Automation、Initiative 和 Completion Notice 路由数据不再靠运行时猜测归属；管理员使用 `beemax migration channel-instance plan/apply` 显式选择唯一目标实例，所有相关表在同一 Profile SQLite 事务内更新。
 - 迁移会验证目标是该 Profile 中已启用且 adapter 匹配的 Channel Instance，并在 Gateway Profile 锁与 SQLite 写栅栏内创建经完整性校验的快照、数据库审计记录和迁移前后逻辑 SHA-256 清单；结构化 Memory scope、Initiative 嵌套路由和唯一键冲突均在写入前检查。`rollback` 仅在迁移后数据库未发生任何新写入时恢复，并保留迁移后快照。
+- 旧 Actor-scoped 群聊 transcript 不再依赖永久 fallback 或自动任选；管理员通过 `beemax migration session plan/apply` 显式选择一个 legacy Session 作为 canonical shared Conversation 历史。迁移流式复制 Pi JSONL、收敛内容无关的 Session Catalog owner，保留全部 legacy 文件且不自动合并或删除。
+- Session rollback 以 source/target SHA-256、canonical identity、Profile 路径与 Catalog receipt 共同校验；canonical transcript 或偏好一旦出现新变化就 fail-closed。保留期固定为“无自动过期”，未来删除必须进入独立的企业 retention policy 与审计动作。
 
 仍按本 PRD 后续阶段实施，不计为本切片完成：
 
@@ -305,7 +308,7 @@ BeeMax 不通过预制行业对象和规则覆盖客户场景，而是用 Situat
 | --- | --- | --- | --- | --- | --- |
 | R1 | 产品 | 群聊过度响应造成打扰 | 中 | 高 | contextual 默认、激活信号、频率预算和 observe 决策 |
 | R2 | 产品 | 群聊共享上下文造成隐私泄露 | 中 | 高 | Visibility、披露检查、敏感审批转私聊、红队用例 |
-| R3 | 技术 | Session Key 迁移导致历史断裂 | 中 | 高 | additive key、legacy read、迁移映射和回滚开关 |
+| R3 | 技术 | Session Key 迁移导致历史断裂 | 中 | 高 | additive read、显式 Session Ownership Migration、legacy 非破坏保留和摘要回滚 |
 | R4 | 技术 | 多实例路由造成错误投递 | 中 | 高 | instance identity、Binding 优先级、Delivery Receipt 和契约测试 |
 | R5 | 技术 | 单 Profile OOM 影响宿主 | 中 | 高 | systemd MemoryMax、队列背压、附件和 Tool Result 上限 |
 | R6 | 运营 | 平台权限配置复杂 | 高 | 中 | doctor、setup wizard、最小权限文档和诊断输出 |
@@ -1095,7 +1098,7 @@ Interaction/Schedule/Event → Situation → durable admission → Objective/Tas
 | TBD-2 | 各部署规格的 RSS、并发、队列和 DB 高水位目标 | 4、10、11 | [TODO: Runtime/运维] | 性能门禁前 | 待决 |
 | TBD-3 | Shared Channel Relay 是否进入本次正式版本或后续版本 | 5、10 | 产品/架构负责人 | P1 完成后 | 待决 |
 | TBD-4 | Sandbox 首批支持 Docker、受限本机进程还是两者 | 10、12 | 安全/Runtime | P2 开始前 | 待决 |
-| TBD-5 | 旧群聊 Session Key 的迁移保留周期 | 7、10 | Runtime | P0 实施前 | 待决 |
+| TBD-5 | 旧群聊 Session Key 的迁移保留周期 | 7、10 | Runtime | 2026-07-14 | 已决：不自动过期；删除进入独立 retention policy 与审计 |
 | TBD-6 | 管理控制面采用 CLI-only 还是同时提供 Web 管理端 | 10、13 | 产品负责人 | 正式发布前 | 待决 |
 | TBD-7 | 钉钉、企微、微信生态 Adapter 的首发优先级 | 5、13 | 产品/集成 | P2 开始前 | 待决 |
 
@@ -1139,9 +1142,8 @@ Interaction/Schedule/Event → Situation → durable admission → Objective/Tas
 
 ### 🔴 必须补充（发布前阻塞）
 
-1. 固定群聊 Session legacy migration 的保留和回滚策略，避免历史 Session 断裂。
-2. 通过压测确定各 Ubuntu 部署规格的内存、队列、并发和数据库高水位。
-3. 完成群聊 Private Memory 不披露、跨 Profile 不召回和重复 Effect 不执行的安全验收。
+1. 通过压测确定各 Ubuntu 部署规格的内存、队列、并发和数据库高水位。
+2. 完成群聊 Private Memory 不披露、跨 Profile 不召回和重复 Effect 不执行的安全验收。
 
 ### 🟡 建议补充（提升产品质量）
 

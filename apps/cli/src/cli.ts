@@ -62,6 +62,7 @@ import { loadInstalledAutonomyRolloutEvidence, renderAutonomyRollout } from "./a
 import { createLocalMediaUnderstandingAdapters } from "./local-media-understanding.ts";
 import { setProfileBindingEnabled } from "./profile-binding-config.ts";
 import { applyProfileChannelInstanceMigration, planProfileChannelInstanceMigration, rollbackProfileChannelInstanceMigration } from "./channel-instance-migration.ts";
+import { applyProfileSessionOwnershipMigration, planProfileSessionOwnershipMigration, rollbackProfileSessionOwnershipMigration } from "./session-ownership-migration.ts";
 
 const PI_SKILLS_BROWSER_TOOLS_COMMIT = "90bb51cae36515a648515b633a81c0c6efc8c74d";
 
@@ -240,7 +241,7 @@ Commands:
   doctor     Check profile readiness
   update     Update the installed BeeMax release, preserving all Profiles
   profile    create | list | show | path | use | migrate | backup | delete
-  migration  channel-instance plan | apply | rollback (explicit legacy route ownership)
+  migration  channel-instance | session plan | apply | rollback (explicit legacy ownership)
   skills     list | sync (prepackaged Profile Skills)
   mcp        status (probe configured MCP servers)
   memory     status | list | candidates | claims | explain <id> | compile | promote <id> | reject <id> | forget <id>
@@ -743,10 +744,48 @@ async function askOne(prompt: string, secret = false): Promise<string> {
 async function runMigrationCommand(parsed: ParsedArgs): Promise<void> {
 	const kind = parsed.positionals[1];
 	const action = parsed.positionals[2];
-	if (kind !== "channel-instance" || !["plan", "apply", "rollback"].includes(action ?? "")) {
-		throw new Error("Usage: beemax migration channel-instance <plan|apply|rollback> [manifest] --profile <name>");
+	if (!["channel-instance", "session"].includes(kind ?? "") || !["plan", "apply", "rollback"].includes(action ?? "")) {
+		throw new Error("Usage: beemax migration <channel-instance|session> <plan|apply|rollback> [manifest] --profile <name>");
 	}
 	const profile = parsed.profile ?? activeProfile();
+	if (kind === "session") {
+		const location = resolveProfileLocation(profile, parsed.configPath);
+		const config = loadConfig(parsed.configPath, profile);
+		if (action === "rollback") {
+			const manifestPath = parsed.positionals[3];
+			if (!manifestPath) throw new Error("session rollback requires a manifest path");
+			if (parsed.options.yes !== true) throw new Error("Session ownership migration rollback requires --yes");
+			const result = await rollbackProfileSessionOwnershipMigration({ lockRoot: beemaxHome(), profileHome: location.homePath, agentDir: config.paths.agentDir, profile, manifestPath });
+			console.log(`Rolled back Session ownership migration '${result.migrationId}' for Profile '${profile}'.`);
+			return;
+		}
+		const platform = optionString(parsed, "platform");
+		const channelInstanceId = optionString(parsed, "channel-instance");
+		const chatId = optionString(parsed, "chat-id");
+		const legacyUser = optionString(parsed, "legacy-user");
+		const chatType = optionString(parsed, "chat-type") ?? (optionString(parsed, "thread") ? "thread" : "group");
+		if (!platform || !channelInstanceId || !chatId || !legacyUser || !["group", "thread"].includes(chatType)) {
+			throw new Error("session plan/apply requires --platform, --channel-instance, --chat-id, --legacy-user and optional --chat-type <group|thread>");
+		}
+		const channel = config.gateway.channels.find((candidate) => candidate.id === channelInstanceId);
+		if (!channel || !channel.enabled || channel.adapter !== platform) throw new Error(`Configured enabled Channel Instance '${channelInstanceId}' does not belong to platform '${platform}' in Profile '${profile}'`);
+		const source = { platform, channelInstanceId, chatId, chatType: chatType as "group" | "thread", userId: legacyUser, ...(optionString(parsed, "thread") ? { threadId: optionString(parsed, "thread") } : {}) };
+		const target = { lockRoot: beemaxHome(), profileHome: location.homePath, agentDir: config.paths.agentDir, profile, source };
+		const legacySessionId = optionString(parsed, "legacy-session-id");
+		if (action === "plan") {
+			const plan = await planProfileSessionOwnershipMigration(target, legacySessionId);
+			console.log(`Session ownership plan: canonical=${plan.canonicalSessionId}; candidates=${plan.candidates.length}.`);
+			for (const candidate of plan.candidates) console.log(`  ${candidate.sessionId}: ${candidate.bytes} bytes · ${candidate.path}`);
+			for (const blocker of plan.blockers) console.log(`  BLOCKED: ${blocker}`);
+			if (plan.blockers.length > 0) process.exitCode = 1;
+			return;
+		}
+		if (!legacySessionId) throw new Error("session apply requires --legacy-session-id from the plan output");
+		if (parsed.options.yes !== true) throw new Error("Session ownership migration apply requires --yes");
+		const applied = await applyProfileSessionOwnershipMigration({ ...target, legacySessionId, migrationId: optionString(parsed, "migration-id") });
+		console.log(`Migrated legacy Session '${legacySessionId}' to canonical '${applied.result.canonicalSessionId}' for Profile '${profile}'. Manifest: ${applied.manifestPath}`);
+		return;
+	}
 	if (action === "rollback") {
 		const manifestPath = parsed.positionals[3];
 		if (!manifestPath) throw new Error("channel-instance rollback requires a manifest path");
