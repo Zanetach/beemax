@@ -6,3 +6,4 @@ export {
 export { ConventionConsolidator, type ConventionInference, type ConventionInferenceContext, type ConventionScope } from "./convention-consolidator.ts";
 export { WorkflowCandidateDeriver, type WorkflowCandidateInference, type WorkflowCandidateInferenceContext, type WorkflowCandidateScope } from "./workflow-candidate.ts";
 export { canAutomaticallyUnderstand, createMemoryTools, type MemoryToolRecord, type MemoryToolStore } from "./tools.ts";
+export { ProfileChannelInstanceMigration, type AppliedChannelInstanceMigration, type ApplyChannelInstanceMigrationInput, type ChannelInstanceMigrationPlan, type ChannelInstanceMigrationTablePlan, type ChannelRouteStorage } from "./channel-instance-migration.ts";

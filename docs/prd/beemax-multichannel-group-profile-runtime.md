@@ -22,12 +22,13 @@
 | 2026-07-14 | 第四实施切片：受限群观察、ambient 响应 quiet hours 与回复频率预算 | 在不建立第二执行链的前提下补齐群聊观察和响应边界 | Codex | build、typecheck、714 项全量测试及架构/迁移/Memory 门禁通过 | v1.4-draft |
 | 2026-07-14 | 第五实施切片：智能 Ambient 价值选择、可信 Conversation Type 与统一主动投递治理 | 让群观察由通用认知判断价值，并确保主动群结果可治理、可延迟且不重跑 Pi | Codex | build、typecheck、726 项全量测试及架构/迁移/Memory 门禁通过；双轴复审通过 | v1.5-draft |
 | 2026-07-14 | 第六实施切片：Binding 原子启停与最小 Profile Host 生命周期 | 补齐冲突安全的路由管理，并把 Profile admission、health、degrade、drain 收敛为统一运行时权威 | Codex | build、typecheck、734 项全量测试及架构/迁移/Memory 门禁通过；双轴审查问题已修复 | v1.6-draft |
+| 2026-07-14 | 第七实施切片：旧 Memory/Automation 显式 Channel Instance 归属迁移 | 多实例启用前消除旧路由歧义，提供事务、备份、审计与安全回滚 | Codex | build、typecheck、742 项全量测试及架构/迁移/性能/Memory 门禁通过；双轴审查进行中 | v1.7-draft |
 
 ---
 
 ## 当前实施状态（2026-07-14）
 
-当前已完成第一至第六实施切片：
+当前已完成第一至第七实施切片：
 
 - 群聊/Channel/Thread 的 Conversation 不再包含当前 Actor；Task Responsibility 仍按 Actor 或可信统一身份归属。
 - `channelInstanceId` 已贯穿 Gateway 入站、投递、Task Plan Completion Notice、Automation Job/Delivery/Route/Media 和 Memory 分区。
@@ -50,12 +51,13 @@
 - `beemax binding activate/disable <id>` 仅修改既有 Binding：独占写锁阻止并发 CLI 丢失更新，完整强隔离校验在发布前执行，临时文件 fsync + rename 保证原子替换；未知 Binding 或冲突不会改变原配置。
 - 最小 `ProfileHost` 已成为普通 Interaction 的 Profile 级 admission 权威：仅 healthy/degraded 接收新 Turn，draining/failed/recovering/stopped fail-closed；Gateway 停止时先 drain，再等待已接收 Turn 释放。
 - Profile Host 从 Channel Host 快照推导运行健康并持续更新：单个 Channel Instance 故障进入 degraded，不停止其他 Channel 或 Profile Runtime；核心 authority 不可用才进入 failed。`/status` 可查看 state、accepting、lifecycle rejection 与降级原因。
+- 旧版无 instance 的 Memory、Automation、Initiative 和 Completion Notice 路由数据不再靠运行时猜测归属；管理员使用 `beemax migration channel-instance plan/apply` 显式选择唯一目标实例，所有相关表在同一 Profile SQLite 事务内更新。
+- 迁移会在持有 Gateway Profile 锁时自动创建经完整性校验的 SQLite 快照、数据库审计记录和 SHA-256 清单；结构化 Memory scope、Initiative 嵌套路由和唯一键冲突均在写入前检查。`rollback` 仅在迁移后数据库未发生任何新写入时恢复，并保留迁移后快照。
 
 仍按本 PRD 后续阶段实施，不计为本切片完成：
 
 - Shared Channel Relay 与跨进程 Profile 路由。
 - 钉钉、企业微信等新增 Adapter，以及完整 Channel Runtime 包拆分。
-- 多实例启用时旧的无 instance Memory/Automation 数据需要管理员显式归属迁移；系统不得把歧义旧数据同时暴露给多个实例。
 
 ---
 
@@ -818,6 +820,19 @@ Channel Instance Config → Adapter Registry 创建 → ChannelHost 独立连接
 | CH-3 | 触发 | disconnected/failed 进入有界指数退避和熔断 |
 | CH-4 | 约束 | Adapter 只能声明能力，不能决定 Agent 是否建 Task 或召回 Memory |
 | CH-5 | 推论 | 不支持 card/edit/thread 的平台按能力降级，不改变执行语义 |
+| CH-6 | 约束 | 旧版无 instance 数据只能由管理员显式归属到一个实例；系统不得猜测或同时投影给多个实例 |
+
+##### 旧数据显式归属迁移
+
+Profile Gateway 必须先停止；迁移命令复用同一个 Profile 进程锁，运行中的 Gateway 会使操作失败。管理员先执行只读计划，再确认写入：
+
+```bash
+beemax migration channel-instance plan --platform feishu --channel-instance company-a --profile personal
+beemax migration channel-instance apply --platform feishu --channel-instance company-a --migration-id assign-company-a --yes --profile personal
+beemax migration channel-instance rollback ~/.beemax/profiles/personal/migrations/channel-instance/assign-company-a.json --yes --profile personal
+```
+
+`apply` 在一个 SQLite 事务中处理编码式 Memory scope 与独立 `channel_instance_id` 路由，自动更新结构化 scope key 和 Initiative 的嵌套路由。目标唯一键冲突、无效嵌套 JSON 或并发变化全部 fail-closed。`rollback` 会比较迁移后逻辑 SQLite 快照摘要；任何后续写入都会阻止恢复，避免抹掉新业务数据。详细操作见 [`docs/operations/channel-instance-ownership-migration.md`](../operations/channel-instance-ownership-migration.md)。
 
 #### 10.2.5 Binding 与 Profile 路由
 

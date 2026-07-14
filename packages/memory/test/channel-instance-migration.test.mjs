@@ -1,0 +1,180 @@
+import assert from "node:assert/strict";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import test from "node:test";
+import Database from "better-sqlite3";
+import { ProfileChannelInstanceMigration } from "../dist/index.js";
+
+function fixture() {
+	const root = mkdtempSync(join(tmpdir(), "beemax-channel-migration-"));
+	const path = join(root, "profile.db");
+	const db = new Database(path);
+	db.exec(`
+		CREATE TABLE memories (id TEXT PRIMARY KEY, platform TEXT NOT NULL, chat_id TEXT NOT NULL);
+		CREATE TABLE automation_jobs (id TEXT PRIMARY KEY, platform TEXT NOT NULL, channel_instance_id TEXT, chat_id TEXT NOT NULL);
+		CREATE TABLE automation_routes (platform TEXT NOT NULL, channel_instance_id TEXT NOT NULL DEFAULT '', user_id TEXT NOT NULL, chat_id TEXT NOT NULL, PRIMARY KEY(platform, channel_instance_id, user_id));
+		CREATE TABLE unrelated (id TEXT PRIMARY KEY, value TEXT NOT NULL);
+		INSERT INTO memories VALUES ('legacy-memory', 'feishu', 'chat-a'), ('other-memory', 'telegram', 'chat-a'), ('owned-memory', 'feishu@company-a', 'chat-a');
+		INSERT INTO automation_jobs VALUES ('legacy-job', 'feishu', NULL, 'chat-a'), ('owned-job', 'feishu', 'company-b', 'chat-a');
+		INSERT INTO automation_routes VALUES ('feishu', '', 'user-a', 'chat-a');
+		INSERT INTO unrelated VALUES ('keep', 'unchanged');
+	`);
+	db.close();
+	return { root, path };
+}
+
+test("Profile Channel Instance migration plans and atomically assigns only legacy route data", () => {
+	const { root, path } = fixture();
+	const migration = new ProfileChannelInstanceMigration(path);
+	try {
+		const plan = migration.plan("feishu", "company-a");
+		assert.equal(plan.totalRows, 3);
+		assert.deepEqual(plan.tables, [
+			{ table: "automation_jobs", storage: "channel_instance_column", rows: 1 },
+			{ table: "automation_routes", storage: "channel_instance_column", rows: 1 },
+			{ table: "memories", storage: "encoded_platform", rows: 1 },
+		]);
+		assert.deepEqual(plan.blockers, []);
+
+		const applied = migration.apply({
+			id: "migration-1", platform: "feishu", channelInstanceId: "company-a", backupRef: "backup:profile-before-migration",
+		});
+		assert.equal(applied.totalRows, 3);
+		const db = new Database(path, { readonly: true });
+		try {
+			assert.deepEqual(db.prepare("SELECT id, platform FROM memories ORDER BY id").all(), [
+				{ id: "legacy-memory", platform: "feishu@company-a" },
+				{ id: "other-memory", platform: "telegram" },
+				{ id: "owned-memory", platform: "feishu@company-a" },
+			]);
+			assert.equal(db.prepare("SELECT channel_instance_id FROM automation_jobs WHERE id='legacy-job'").pluck().get(), "company-a");
+			assert.equal(db.prepare("SELECT channel_instance_id FROM automation_jobs WHERE id='owned-job'").pluck().get(), "company-b");
+			assert.equal(db.prepare("SELECT channel_instance_id FROM automation_routes WHERE user_id='user-a'").pluck().get(), "company-a");
+			assert.equal(db.prepare("SELECT value FROM unrelated WHERE id='keep'").pluck().get(), "unchanged");
+			assert.equal(db.prepare("SELECT backup_ref FROM channel_instance_migrations WHERE id='migration-1'").pluck().get(), "backup:profile-before-migration");
+		} finally { db.close(); }
+		assert.equal(migration.plan("feishu", "company-a").totalRows, 0);
+	} finally {
+		migration.close();
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("Profile Channel Instance migration reports target collisions and rolls back every table", () => {
+	const { root, path } = fixture();
+	const db = new Database(path);
+	db.prepare("INSERT INTO automation_routes VALUES ('feishu', 'company-a', 'user-a', 'target-chat')").run();
+	db.close();
+	const migration = new ProfileChannelInstanceMigration(path);
+	try {
+		const plan = migration.plan("feishu", "company-a");
+		assert.match(plan.blockers.join("\n"), /automation_routes.*user-a.*already exists/i);
+		assert.throws(() => migration.apply({ id: "migration-conflict", platform: "feishu", channelInstanceId: "company-a", backupRef: "backup:before" }), /blocked/i);
+		const check = new Database(path, { readonly: true });
+		try {
+			assert.equal(check.prepare("SELECT platform FROM memories WHERE id='legacy-memory'").pluck().get(), "feishu");
+			assert.equal(check.prepare("SELECT channel_instance_id FROM automation_jobs WHERE id='legacy-job'").pluck().get(), null);
+			assert.equal(check.prepare("SELECT channel_instance_id FROM automation_routes WHERE user_id='user-a' ORDER BY channel_instance_id").pluck().all()[0], "");
+		} finally { check.close(); }
+	} finally {
+		migration.close();
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("Profile Channel Instance migration preserves structured scope and nested trigger routes", () => {
+	const { root, path } = fixture();
+	const db = new Database(path);
+	db.exec(`
+		CREATE TABLE memory_convention_candidates (
+			id TEXT PRIMARY KEY, profile_id TEXT NOT NULL, platform TEXT NOT NULL,
+			chat_id TEXT NOT NULL, user_id TEXT, thread_id TEXT, scope_key TEXT NOT NULL,
+			canonical_statement TEXT NOT NULL,
+			UNIQUE(profile_id, scope_key, canonical_statement)
+		);
+		CREATE TABLE initiative_triggers (
+			id TEXT PRIMARY KEY, platform TEXT NOT NULL, channel_instance_id TEXT,
+			delivery_target TEXT, execution_scope TEXT
+		);
+		INSERT INTO memory_convention_candidates VALUES (
+			'convention-a', 'personal', 'feishu', 'chat-a', 'user-a', NULL,
+			json_array('feishu', 'chat-a', 'user-a', NULL), 'send a summary'
+		);
+		INSERT INTO initiative_triggers VALUES (
+			'trigger-a', 'feishu', NULL,
+			json_object('platform', 'feishu', 'chatId', 'chat-a'),
+			json_object('platform', 'feishu', 'chatId', 'chat-a')
+		);
+	`);
+	db.close();
+	const migration = new ProfileChannelInstanceMigration(path);
+	try {
+		migration.apply({ id: "migration-structured", platform: "feishu", channelInstanceId: "company-a", backupRef: "backup:structured" });
+		const check = new Database(path, { readonly: true });
+		try {
+			const convention = check.prepare("SELECT platform, scope_key FROM memory_convention_candidates WHERE id='convention-a'").get();
+			assert.equal(convention.platform, "feishu@company-a");
+			assert.deepEqual(JSON.parse(convention.scope_key), ["feishu@company-a", "chat-a", "user-a", null]);
+			const trigger = check.prepare("SELECT channel_instance_id, delivery_target, execution_scope FROM initiative_triggers WHERE id='trigger-a'").get();
+			assert.equal(trigger.channel_instance_id, "company-a");
+			assert.equal(JSON.parse(trigger.delivery_target).channelInstanceId, "company-a");
+			assert.equal(JSON.parse(trigger.execution_scope).channelInstanceId, "company-a");
+		} finally { check.close(); }
+	} finally {
+		migration.close();
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("Profile Channel Instance migration plans structured scope collisions before apply", () => {
+	const { root, path } = fixture();
+	const db = new Database(path);
+	db.exec(`
+		CREATE TABLE memory_workflow_candidates (
+			id TEXT PRIMARY KEY, profile_id TEXT NOT NULL, platform TEXT NOT NULL,
+			chat_id TEXT NOT NULL, user_id TEXT, thread_id TEXT, scope_key TEXT NOT NULL,
+			canonical_title TEXT NOT NULL,
+			UNIQUE(profile_id, scope_key, canonical_title)
+		);
+		INSERT INTO memory_workflow_candidates VALUES
+			('legacy-flow', 'personal', 'feishu', 'chat-a', 'user-a', NULL, json_array('feishu', 'chat-a', 'user-a', NULL), 'daily brief'),
+			('owned-flow', 'personal', 'feishu@company-a', 'chat-a', 'user-a', NULL, json_array('feishu@company-a', 'chat-a', 'user-a', NULL), 'daily brief');
+	`);
+	db.close();
+	const migration = new ProfileChannelInstanceMigration(path);
+	try {
+		const plan = migration.plan("feishu", "company-a");
+		assert.match(plan.blockers.join("\n"), /memory_workflow_candidates.*daily brief.*already exists/i);
+		assert.throws(() => migration.apply({ id: "migration-scope-conflict", platform: "feishu", channelInstanceId: "company-a", backupRef: "backup:scope" }), /blocked/i);
+		const check = new Database(path, { readonly: true });
+		try { assert.equal(check.prepare("SELECT platform FROM memory_workflow_candidates WHERE id='legacy-flow'").pluck().get(), "feishu"); }
+		finally { check.close(); }
+	} finally {
+		migration.close();
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("Profile Channel Instance migration blocks malformed nested trigger ownership", () => {
+	const { root, path } = fixture();
+	const db = new Database(path);
+	db.exec(`
+		CREATE TABLE initiative_triggers (
+			id TEXT PRIMARY KEY, platform TEXT NOT NULL, channel_instance_id TEXT,
+			delivery_target TEXT, execution_scope TEXT
+		);
+		INSERT INTO initiative_triggers VALUES ('trigger-invalid', 'feishu', NULL, '[]', '{broken');
+	`);
+	db.close();
+	const migration = new ProfileChannelInstanceMigration(path);
+	try {
+		const plan = migration.plan("feishu", "company-a");
+		assert.match(plan.blockers.join("\n"), /delivery_target.*invalid or non-object|invalid or non-object.*delivery_target/i);
+		assert.match(plan.blockers.join("\n"), /execution_scope.*invalid or non-object|invalid or non-object.*execution_scope/i);
+		assert.throws(() => migration.apply({ id: "migration-invalid-json", platform: "feishu", channelInstanceId: "company-a", backupRef: "backup:invalid" }), /blocked/i);
+	} finally {
+		migration.close();
+		rmSync(root, { recursive: true, force: true });
+	}
+});

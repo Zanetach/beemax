@@ -61,6 +61,7 @@ import { inspectProfileEffects, reconcileProfileEffect } from "./effect-inspecti
 import { loadInstalledAutonomyRolloutEvidence, renderAutonomyRollout } from "./autonomy-control.ts";
 import { createLocalMediaUnderstandingAdapters } from "./local-media-understanding.ts";
 import { setProfileBindingEnabled } from "./profile-binding-config.ts";
+import { applyProfileChannelInstanceMigration, planProfileChannelInstanceMigration, rollbackProfileChannelInstanceMigration } from "./channel-instance-migration.ts";
 
 const PI_SKILLS_BROWSER_TOOLS_COMMIT = "90bb51cae36515a648515b633a81c0c6efc8c74d";
 
@@ -152,6 +153,9 @@ async function main(): Promise<void> {
 		case "profile":
 			await runProfileCommand(parsed);
 			break;
+		case "migration":
+			await runMigrationCommand(parsed);
+			break;
 		case "skills":
 			await runSkillsCommand(parsed);
 			break;
@@ -236,6 +240,7 @@ Commands:
   doctor     Check profile readiness
   update     Update the installed BeeMax release, preserving all Profiles
   profile    create | list | show | path | use | migrate | backup | delete
+  migration  channel-instance plan | apply | rollback (explicit legacy route ownership)
   skills     list | sync (prepackaged Profile Skills)
   mcp        status (probe configured MCP servers)
   memory     status | list | candidates | claims | explain <id> | compile | promote <id> | reject <id> | forget <id>
@@ -733,6 +738,56 @@ async function askOne(prompt: string, secret = false): Promise<string> {
 	} finally {
 		rl.close();
 	}
+}
+
+async function runMigrationCommand(parsed: ParsedArgs): Promise<void> {
+	const kind = parsed.positionals[1];
+	const action = parsed.positionals[2];
+	if (kind !== "channel-instance" || !["plan", "apply", "rollback"].includes(action ?? "")) {
+		throw new Error("Usage: beemax migration channel-instance <plan|apply|rollback> [manifest] --profile <name>");
+	}
+	const profile = parsed.profile ?? activeProfile();
+	if (action === "rollback") {
+		const manifestPath = parsed.positionals[3];
+		if (!manifestPath) throw new Error("channel-instance rollback requires a manifest path");
+		if (parsed.options.yes !== true) throw new Error("Channel instance migration rollback requires --yes");
+		const result = await rollbackProfileChannelInstanceMigration({
+			lockRoot: beemaxHome(),
+			profile,
+			manifestPath,
+		});
+		console.log(`Rolled back channel instance migration '${result.migrationId}' for Profile '${profile}'. Post-migration snapshot: ${result.postMigrationBackupPath}`);
+		return;
+	}
+
+	const platform = optionString(parsed, "platform");
+	const channelInstanceId = optionString(parsed, "channel-instance");
+	if (!platform || !channelInstanceId) throw new Error("channel-instance plan/apply requires --platform and --channel-instance");
+	const config = loadConfig(parsed.configPath, profile);
+	const target = {
+		lockRoot: beemaxHome(),
+		profile,
+		dbPath: config.memory.dbPath,
+		platform,
+		channelInstanceId,
+	};
+	if (action === "plan") {
+		const plan = await planProfileChannelInstanceMigration(target);
+		console.log(`Channel instance ownership plan: ${plan.totalRows} legacy row(s) from '${plan.legacyAddress}' to '${plan.targetAddress}'.`);
+		for (const table of plan.tables) console.log(`  ${table.table}: ${table.rows} (${table.storage})`);
+		for (const blocker of plan.blockers) console.log(`  BLOCKED: ${blocker}`);
+		if (plan.blockers.length > 0) process.exitCode = 1;
+		return;
+	}
+
+	if (parsed.options.yes !== true) throw new Error("Channel instance migration apply requires --yes");
+	const location = resolveProfileLocation(profile, parsed.configPath);
+	const applied = await applyProfileChannelInstanceMigration({
+		...target,
+		profileHome: location.homePath,
+		migrationId: optionString(parsed, "migration-id"),
+	});
+	console.log(`Migrated ${applied.result.totalRows} legacy row(s) in migration '${applied.migrationId}' for Profile '${profile}'. Manifest: ${applied.manifestPath}`);
 }
 
 async function runProfileCommand(parsed: ParsedArgs): Promise<void> {

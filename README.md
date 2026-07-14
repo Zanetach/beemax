@@ -104,7 +104,7 @@ beemax channel list --profile personal
 | Channels | Registry-based ChannelHost, shared Profile Runtime, Feishu/Lark streaming cards, Telegram text/media, access boundaries, idempotency, delivery routing, and service lifecycle |
 | Images | Native model vision, auxiliary configured vision models, local Tesseract OCR, and optional GPT Image generation |
 | Capabilities | Progressive Skills, Web research, MCP, WeKnora retrieval, Feishu meetings, files, schedules, reminders, and bounded Sub-Agents |
-| Operations | Doctor, Profile backup/migration, Linux systemd, macOS LaunchAgent, logs, traces, Effect inspection, and verified updates |
+| Operations | Doctor, Profile backup, explicit Channel Instance ownership migration, Linux systemd, macOS LaunchAgent, logs, traces, Effect inspection, and verified updates |
 
 ## Architecture
 
@@ -475,6 +475,7 @@ See [autonomy rollout](docs/operations/autonomy-rollout.md), [performance and co
 | `beemax gateway` | Configure, run, install, inspect, and control channel Gateways |
 | `beemax binding` | Validate, explain, atomically activate, or disable deterministic Channel-to-Profile routes |
 | `beemax profile` | Create, select, migrate, back up, inspect, and delete Profiles |
+| `beemax migration channel-instance` | Plan, apply, audit, and safely roll back explicit legacy route ownership |
 | `beemax model` | Show or change the Profile model |
 | `beemax memory` | Inspect, explain, compile, promote, reject, or forget Memory evidence |
 | `beemax autonomy` | Inspect and control evidence-gated autonomy levels |
