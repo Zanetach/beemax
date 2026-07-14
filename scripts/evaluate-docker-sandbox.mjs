@@ -81,6 +81,7 @@ try {
 	assert.equal(observations.workspaceAbsent, true);
 	assert.equal(observations.capEff, "0000000000000000");
 	assert.equal(observations.noNewPrivileges, 1);
+	assert.equal(observations.uid, typeof process.getuid === "function" ? process.getuid() : 0);
 	assert.equal(observations.memoryMax, profile.limits.memoryBytes);
 	assert.equal(observations.cpuQuota, profile.limits.cpus);
 	assert.equal(observations.pidsMax, profile.limits.pids);
@@ -128,6 +129,7 @@ console.log(JSON.stringify({
   workspaceAbsent: !fs.existsSync("/workspace"),
   capEff: field("CapEff"),
   noNewPrivileges: Number(field("NoNewPrivs")),
+  uid: process.getuid(),
   memoryMax: Number(fs.readFileSync("/sys/fs/cgroup/memory.max", "utf8")),
   cpuQuota: cpu[0] / cpu[1],
   pidsMax: Number(fs.readFileSync("/sys/fs/cgroup/pids.max", "utf8")),

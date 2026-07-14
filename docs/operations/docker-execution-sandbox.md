@@ -21,7 +21,7 @@ execution:
 
 - 内置 `bash`、`read`、`write` 通过同一个 `ExecutionPort`；Pi 的宿主 `edit/grep/find/ls` 在 Sandbox 模式不可用。
 - 每次执行使用随机名称和内容无关的 Profile label，结束、超时或取消后删除容器。
-- `network=none`、只读 rootfs、全部 Linux capabilities 移除、`no-new-privileges`、独立 IPC、init reaping。
+- 容器映射到 BeeMax 进程的宿主 UID/GID，避免 root-owned workspace 文件；同时使用 `network=none`、只读 rootfs、全部 Linux capabilities 移除、`no-new-privileges`、独立 IPC、init reaping。
 - 单容器上限：2 GiB memory、1 CPU、256 PIDs、256 MiB `/tmp`、1,024 open files、4 MiB stdout/stderr。
 - Workspace 默认不挂载；`ro` 只能读，`rw` 才允许写。路径必须保持在配置的 workspace 内。
 - 模块不传递宿主环境、Docker socket 或 Credential Secret。

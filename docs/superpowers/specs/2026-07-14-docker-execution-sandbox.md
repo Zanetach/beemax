@@ -28,7 +28,7 @@ Declare Docker as the first production Execution Sandbox and retain local execut
 - Keep `ExecutionPort` as the only execution seam; do not add another Agent Loop, command router, or policy authority.
 - Keep exactly two Adapters: Docker Execution Sandbox and Host Execution Adapter. `mode=off` explicitly selects trusted host execution; `mode=all` with `backend=docker` selects Docker and never falls back.
 - Bind cancellation to the process invocation and assign every Docker run a random, content-free name plus Profile labels. Cleanup is idempotent and force-removes the named container after abnormal settlement.
-- Docker receives no host environment or credential mounts from this module. Network stays `none`; the container root stays read-only; the only writable root path is bounded `/tmp`.
+- Docker receives no host environment or credential mounts from this module. It runs as the BeeMax process UID/GID, network stays `none`, the container root stays read-only, and the only writable root path is bounded `/tmp`.
 - Workspace mount policy is `none`, `ro`, or `rw`. `writeFile` fails before launching Docker unless policy is `rw`.
 - Default image is pinned to the declared Node 22 release tag. Enterprises may configure another image, but that choice is operator authority and must pass the same runtime gate.
 - Tool approval, Enterprise Policy, Effect Authority, and Execution Grant remain upstream governance. Sandbox constraints are defense in depth and never grant an action.

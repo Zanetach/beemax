@@ -47,9 +47,11 @@ export class DockerExecutionPort implements ExecutionPort {
 	private async run(request: ExecutionRequest, stdin?: string): Promise<ExecutionResult> {
 		const name = `beemax-sandbox-${randomUUID()}`;
 		const limits = DEFAULT_DOCKER_SANDBOX_LIMITS;
+		const hostIdentity = typeof process.getuid === "function" && typeof process.getgid === "function" ? `${process.getuid()}:${process.getgid()}` : undefined;
 		const args = [
 			"run", "--rm", ...(stdin === undefined ? [] : ["-i"]), "--name", name,
 			"--label", "com.beemax.sandbox=execution", "--label", `com.beemax.profile=${this.options.profileId}`,
+			...(hostIdentity ? ["--user", hostIdentity] : []),
 			"--init", "--network", "none", "--ipc", "none", "--read-only", "--cap-drop", "ALL",
 			"--security-opt", "no-new-privileges:true", "--pids-limit", String(limits.pids),
 			"--memory", String(limits.memoryBytes), "--cpus", String(limits.cpus),
