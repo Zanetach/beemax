@@ -1,6 +1,9 @@
 import { chmodSync, closeSync, fsyncSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { randomInt, randomUUID } from "node:crypto";
+import type { PairingApproval, PairingAuthority, PairingRequest, PairingRequestResult } from "@beemax/channel-runtime";
+
+export type { PairingApproval, PairingAuthority, PairingRequest, PairingRequestResult } from "@beemax/channel-runtime";
 
 const ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 const CODE_TTL_MS = 60 * 60_000;
@@ -10,11 +13,6 @@ const MAX_PENDING = 3;
 const MAX_FAILED = 5;
 const LOCK_TIMEOUT_MS = 2_000;
 const STALE_LOCK_MS = 30_000;
-
-export interface PairingRequest { platform: string; userId: string; code: string; createdAt: number; expiresAt: number; }
-export interface PairingApproval { platform: string; userId: string; approvedAt: number; }
-export type PairingRequestResult = { status: "created" | "existing"; code: string; expiresAt: number } | { status: "rate_limited" | "capacity" };
-export interface PairingAuthority { isApproved(platform: string, userIds: string[]): boolean; request(platform: string, userId: string, now?: number): PairingRequestResult; }
 
 interface PairingState {
 	pending: Record<string, PairingRequest[]>;

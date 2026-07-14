@@ -1,7 +1,6 @@
 import type { DeliveryOptions, DeliveryPort, DeliveryTarget, MediaArtifact } from "@beemax/core";
 import { extname } from "node:path";
-import type { ChannelAdapterResolver } from "./channel-host.ts";
-import type { PlatformAdapter } from "./types.ts";
+import type { ChannelAdapterResolver, PlatformAdapter } from "@beemax/channel-runtime";
 
 /** Concrete channel delivery adapter. It is the only layer that knows how a
  * Core artifact becomes a Feishu (or future channel) message. */

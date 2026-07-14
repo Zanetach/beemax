@@ -3,6 +3,9 @@
   "compilerOptions": {
     "paths": {
 		"@beemax/core": ["./packages/core/src/index.ts"],
+      "@beemax/channel-feishu": ["./packages/channel-feishu/src/index.ts"],
+      "@beemax/channel-runtime": ["./packages/channel-runtime/src/index.ts"],
+      "@beemax/channel-telegram": ["./packages/channel-telegram/src/index.ts"],
       "@beemax/gateway": ["./packages/gateway/src/index.ts"],
       "@beemax/knowledge": ["./packages/knowledge/src/index.ts"],
       "@beemax/memory": ["./packages/memory/src/index.ts"]

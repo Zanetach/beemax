@@ -1,5 +1,5 @@
 import { DockerExecutionPort, LocalExecutionPort, resolveExecutionBackend, type ExecutionPort } from "@beemax/core";
-import type { SessionSource } from "@beemax/gateway";
+import type { SessionSource } from "@beemax/channel-runtime";
 import type { BeeMaxConfig } from "./config.ts";
 
 /** Infrastructure composition only: Core selects no Docker policy itself. */

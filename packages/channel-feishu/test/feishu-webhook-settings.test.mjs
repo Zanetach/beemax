@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { createServer, request } from "node:http";
 import test from "node:test";
-import { loadFeishuSettings, validateFeishuWebhookSettings } from "../dist/platforms/feishu/settings.js";
+import { loadFeishuSettings, validateFeishuWebhookSettings } from "../dist/index.js";
 import { FeishuAdapter } from "../dist/index.js";
 
 const base = {

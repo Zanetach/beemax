@@ -1,5 +1,5 @@
 /**
- * Normalized platform-agnostic message types.
+ * Normalized platform-agnostic Channel Runtime message types.
  *
  * Mirrors Hermes' MessageEvent / SessionSource / SendResult design but in
  * TypeScript for the BeeMax gateway. All platform adapters convert their

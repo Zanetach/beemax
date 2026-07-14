@@ -1,6 +1,6 @@
 import { readFile, stat } from "node:fs/promises";
 import type { ImageContent } from "@beemax/core";
-import type { InboundMessage } from "./types.ts";
+import type { InboundMessage } from "@beemax/channel-runtime";
 
 const MAX_IMAGE_BYTES = 20 * 1024 * 1024;
 const MAX_TOTAL_IMAGE_BYTES = 30 * 1024 * 1024;

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { AdapterRegistry, ChannelHost, GatewayDeliveryPort } from "../dist/index.js";
+import { AdapterRegistry, ChannelHost } from "../dist/index.js";
 
 function adapter(name, events, connect = async () => true) {
 	return {
@@ -27,7 +27,7 @@ function adapter(name, events, connect = async () => true) {
 	};
 }
 
-test("ChannelHost starts registered adapters, isolates failures, and routes delivery by platform", async () => {
+test("ChannelHost starts registered adapters and isolates connection failures", async () => {
 	const events = [];
 	const registry = new AdapterRegistry();
 	registry.register({ id: "alpha", create: () => adapter("alpha", events) });
@@ -45,10 +45,6 @@ test("ChannelHost starts registered adapters, isolates failures, and routes deli
 	]);
 	assert.equal(host.resolveAdapter("alpha").name, "alpha");
 	assert.throws(() => host.resolveAdapter("broken"), /not connected/);
-
-	const delivery = new GatewayDeliveryPort(host);
-	await delivery.sendText({ platform: "alpha", chatId: "chat" }, "hello");
-	assert.ok(events.includes("alpha:send:chat:hello"));
 
 	await host.stop();
 	assert.equal(events.filter((event) => event === "alpha:disconnect").length, 1);

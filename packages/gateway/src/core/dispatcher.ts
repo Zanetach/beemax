@@ -24,7 +24,7 @@ import {
 	type DeliveryTarget,
 	type TaskPlanProgressEvent,
 } from "@beemax/core";
-import type { InboundMessage, PlatformAdapter, PlatformCardAction, SendResult } from "./types.ts";
+import type { InboundMessage, PlatformAdapter, PlatformCardAction, SendResult } from "@beemax/channel-runtime";
 import { CardSession } from "../card/session.ts";
 import { renderCard, type CardRenderOptions } from "../card/render.ts";
 import { FlushController } from "../card/flush.ts";

@@ -4,8 +4,7 @@ import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { Readable, Transform } from "node:stream";
 import { pipeline } from "node:stream/promises";
-import type { InboundMessage, MessageHandler, PlatformAdapter, SendOptions, SendResult } from "../../core/types.ts";
-import { decideGroupActivation } from "../../core/group-admission.ts";
+import { decideGroupActivation, type InboundMessage, type MessageHandler, type PlatformAdapter, type SendOptions, type SendResult } from "@beemax/channel-runtime";
 
 export interface TelegramSettings {
 	botToken: string;
@@ -46,7 +45,7 @@ interface TelegramMessage {
 }
 interface TelegramUpdate { update_id: number; message?: TelegramMessage; edited_message?: TelegramMessage; channel_post?: TelegramMessage; }
 
-/** Telegram Bot API adapter using bounded long polling and no channel-specific Agent runtime. */
+/** Telegram Bot API Adapter using bounded long polling and no channel-specific Agent runtime. */
 export class TelegramAdapter implements PlatformAdapter {
 	readonly name = "telegram" as const;
 	private readonly settings: Required<Pick<TelegramSettings, "pollingTimeoutSeconds" | "retryBaseDelayMs" | "apiBaseUrl" | "mediaMaxBytes">> & TelegramSettings;

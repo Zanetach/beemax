@@ -1,4 +1,4 @@
-import { runFeishuSmoke, type FeishuSmokeResult } from "@beemax/gateway";
+import { runFeishuSmoke, type FeishuSmokeResult } from "@beemax/channel-feishu";
 import type { BeeMaxConfig } from "./config.ts";
 
 export async function executeFeishuSmoke(

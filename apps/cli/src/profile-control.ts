@@ -1,5 +1,6 @@
 import { parseInteractionCommand, sanitizeDisplayText, type AgentControlHandler, type InteractionEventAdapter, type ProfileTaskSchedulerSnapshot, type TaskPlanRecord, type TaskPlanRetryResult, type TaskRecord, type TaskVerificationRetryResult } from "@beemax/core";
-import type { GatewayIngressSnapshot, ProfileHostSnapshot, SessionSource } from "@beemax/gateway";
+import type { SessionSource } from "@beemax/channel-runtime";
+import type { GatewayIngressSnapshot, ProfileHostSnapshot } from "@beemax/gateway";
 import type { BeeMaxAgentRuntime } from "@beemax/core";
 import type { BeeMaxConfig } from "./config.ts";
 import { configureModel } from "./profile-config.ts";

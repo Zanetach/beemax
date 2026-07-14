@@ -13,7 +13,6 @@ import {
 	AdapterRegistry,
 	ChannelHost,
 	Dispatcher,
-	FeishuAdapter,
 	GatewayDeliveryPort,
 	GovernedDeliveryPort,
 	GatewayIngressController,
@@ -22,15 +21,15 @@ import {
 	ProfileHost,
 	assessProfileChannelHealth,
 	assertProfileBindingConfiguration,
-	TelegramAdapter,
-	type FeishuSettings,
 } from "@beemax/gateway";
+import { FeishuAdapter, type FeishuSettings } from "@beemax/channel-feishu";
+import { TelegramAdapter } from "@beemax/channel-telegram";
 import { loadMcpConfig, McpManager } from "@beemax/mcp-capability";
 import { buildAgentFactory } from "./agent-factory.ts";
 import { MemoryStore, memoryPersistencePorts, type OrganizationMemoryPort } from "@beemax/memory";
 import { createFeishuMeetingTools } from "@beemax/feishu-capability";
 import { WeKnoraKnowledgeProvider, createKnowledgeTools } from "@beemax/knowledge";
-import type { SessionSource } from "@beemax/gateway";
+import type { SessionSource } from "@beemax/channel-runtime";
 import { beemaxHome, type BeeMaxConfig } from "./config.ts";
 import { acquireChannelLock } from "./channel-lock.ts";
 import { createTaskAwareConversationContext } from "./runtime-facts.ts";

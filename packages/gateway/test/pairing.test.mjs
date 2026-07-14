@@ -4,7 +4,8 @@ import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import test from "node:test";
-import { FeishuAdapter, PairingStore } from "../dist/index.js";
+import { FeishuAdapter } from "@beemax/channel-feishu";
+import { PairingStore } from "../dist/index.js";
 
 test("PairingStore creates, approves, reloads, revokes, expires, and rate-limits profile grants", () => {
 	const root = mkdtempSync(join(tmpdir(), "beemax-pairing-"));

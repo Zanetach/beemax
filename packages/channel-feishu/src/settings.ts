@@ -1,5 +1,5 @@
 /**
- * Feishu adapter settings.
+ * Feishu Channel Runtime Adapter settings.
  *
  * Identity model follows Hermes' Feishu adapter (see Hermes'
  * gateway/platforms/feishu.py module docstring):
@@ -17,9 +17,8 @@
  * is fetched at startup via /bot/v3/info and used only for @-mention matching.
  */
 
-import type { PairingAuthority } from "../../security/pairing.ts";
-import type { GroupActivationMode, GroupActivationSignal } from "../../core/group-admission.ts";
-import type { GroupQuietHours } from "../../core/group-response-governor.ts";
+import type { PairingAuthority } from "@beemax/channel-runtime";
+import type { GroupActivationMode, GroupActivationSignal, GroupQuietHours } from "@beemax/channel-runtime";
 
 export interface FeishuActivationSettings {
 	mode: GroupActivationMode;

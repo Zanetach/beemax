@@ -343,6 +343,10 @@ _Avoid_: Display name, message-text identity, Session ID, automatic permission e
 The rule that a channel may adapt ingress, media, presentation, approval UI, and delivery but must use the shared Profile Runtime for Task, Effect, Governance, Verification, cancellation, recovery, and Pi execution.
 _Avoid_: Channel-specific Agent loop, channel Task store, ungoverned Tool factory
 
+**Channel Runtime**:
+The platform-neutral lifecycle and message contract through which Channel Instances connect to the Interaction Gateway; it owns no Profile Memory, Task, Effect, Governance, Verification, or Pi state.
+_Avoid_: Messaging platform Adapter, Interaction Gateway, Agent Runtime
+
 **Credential Secret**:
 Sensitive authentication material that a trusted capability may use for an owner but must not return to the Agent, memory, transcript, or ordinary Tool result.
 _Avoid_: Password memory, secret text, account fact

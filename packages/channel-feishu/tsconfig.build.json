@@ -1,0 +1,5 @@
+{
+  "extends": "../../pi/tsconfig.base.json",
+  "compilerOptions": { "outDir": "dist", "rootDir": "src", "declaration": true, "sourceMap": true, "noEmit": false },
+  "include": ["src/**/*.ts"]
+}

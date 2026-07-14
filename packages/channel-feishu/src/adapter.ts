@@ -1,5 +1,5 @@
 /**
- * Feishu (飞书) platform adapter.
+ * Feishu (飞书) Channel Runtime Adapter.
  *
  * Modeled on Hermes' gateway/platforms/feishu.py, but in TypeScript on top of
  * the official `@larksuiteoapi/node-sdk`.
@@ -35,11 +35,10 @@ import type {
 	PlatformAdapter,
 	SendResult,
 	SessionSource,
-} from "../../core/types.ts";
+} from "@beemax/channel-runtime";
 import { validateFeishuWebhookSettings, type FeishuSettings } from "./settings.ts";
 import { retryFeishuOperation } from "./retry.ts";
-import { GroupActivationController, type GroupActivationDecision } from "../../core/group-admission.ts";
-import { GroupResponseGovernor } from "../../core/group-response-governor.ts";
+import { GroupActivationController, GroupResponseGovernor, type GroupActivationDecision } from "@beemax/channel-runtime";
 
 const FEISHU_DOMAIN = lark.Domain.Feishu;
 const LARK_DOMAIN = lark.Domain.Lark;

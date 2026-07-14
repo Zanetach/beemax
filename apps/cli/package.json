@@ -13,6 +13,9 @@
   },
   "dependencies": {
     "@beemax/automation": "1.1.0",
+	"@beemax/channel-feishu": "1.1.0",
+	"@beemax/channel-runtime": "1.1.0",
+	"@beemax/channel-telegram": "1.1.0",
     "@beemax/codex-image-capability": "1.1.0",
     "@beemax/core": "1.1.0",
     "@beemax/feishu-capability": "1.1.0",

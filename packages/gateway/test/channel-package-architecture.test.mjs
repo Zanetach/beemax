@@ -1,0 +1,35 @@
+import assert from "node:assert/strict";
+import { readFile, readdir } from "node:fs/promises";
+import { join, resolve } from "node:path";
+import test from "node:test";
+
+const root = resolve(import.meta.dirname, "../../..");
+
+test("Channel Runtime builds independently of Gateway and messaging platform SDKs", async () => {
+	const runtime = JSON.parse(await readFile(join(root, "packages/channel-runtime/package.json"), "utf8"));
+	assert.equal(runtime.name, "@beemax/channel-runtime");
+	assert.equal(runtime.dependencies?.["@beemax/gateway"], undefined);
+	assert.equal(runtime.dependencies?.["@larksuiteoapi/node-sdk"], undefined);
+	const sources = await sourceText(join(root, "packages/channel-runtime/src"));
+	assert.doesNotMatch(sources, /@beemax\/(?:gateway|channel-feishu|channel-telegram)|@larksuiteoapi\/node-sdk/u);
+});
+
+test("Interaction Gateway does not publish or depend on messaging platform implementations", async () => {
+	const gateway = JSON.parse(await readFile(join(root, "packages/gateway/package.json"), "utf8"));
+	assert.equal(gateway.dependencies?.["@larksuiteoapi/node-sdk"], undefined);
+	assert.equal(gateway.dependencies?.["@beemax/channel-feishu"], undefined);
+	assert.equal(gateway.dependencies?.["@beemax/channel-telegram"], undefined);
+	const sources = await sourceText(join(root, "packages/gateway/src"));
+	assert.doesNotMatch(sources, /@larksuiteoapi\/node-sdk|platforms\/(?:feishu|telegram)|@beemax\/channel-(?:feishu|telegram)/u);
+});
+
+async function sourceText(directory) {
+	const entries = await readdir(directory, { withFileTypes: true });
+	const parts = [];
+	for (const entry of entries) {
+		const path = join(directory, entry.name);
+		if (entry.isDirectory()) parts.push(await sourceText(path));
+		else if (entry.isFile() && entry.name.endsWith(".ts")) parts.push(await readFile(path, "utf8"));
+	}
+	return parts.join("\n");
+}

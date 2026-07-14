@@ -13,7 +13,7 @@ import { beemaxRoot, resolveProfileLocation, validateProfileName } from "./profi
 import { resolveSoul } from "./soul.ts";
 import { providerApiKeyEnv } from "./provider-resolver.ts";
 import type { MemoryMembership } from "./memory-membership.ts";
-import type { FeishuActivationSettings, FeishuGroupRule } from "@beemax/gateway";
+import type { FeishuActivationSettings, FeishuGroupRule } from "@beemax/channel-feishu";
 import { DEFAULT_DOCKER_SANDBOX_IMAGE, DEFAULT_RUNTIME_RESOURCE_LIMITS, resolveRuntimeTaskConcurrency } from "@beemax/core";
 
 export { beemaxHome, beemaxRoot, validateProfileName } from "./profile-home.ts";

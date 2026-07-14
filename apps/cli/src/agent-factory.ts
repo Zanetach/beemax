@@ -40,7 +40,7 @@ import {
 	type ToolResultBudget,
 } from "@beemax/core";
 import { createCodexImageTool } from "@beemax/codex-image-capability";
-import type { SessionSource } from "@beemax/gateway";
+import type { SessionSource } from "@beemax/channel-runtime";
 import { join } from "node:path";
 import { homedir } from "node:os";
 

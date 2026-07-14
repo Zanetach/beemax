@@ -4,7 +4,7 @@ import { execFile } from "node:child_process";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { AutomationStore, parseDuration } from "@beemax/automation";
-import { validateFeishuWebhookSettings } from "@beemax/gateway";
+import { validateFeishuWebhookSettings } from "@beemax/channel-feishu";
 import { loadMcpConfig, McpManager } from "@beemax/mcp-capability";
 import { MemoryStore } from "@beemax/memory";
 import { AuthStorage, FileCredentialVault } from "@beemax/core";

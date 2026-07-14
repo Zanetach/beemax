@@ -1,5 +1,5 @@
 import { DeliveryDeferredError, conversationKey, type DeliveryOptions, type DeliveryPort, type DeliveryTarget, type MediaArtifact } from "@beemax/core";
-import type { GroupResponseGovernor } from "./group-response-governor.ts";
+import type { GroupResponseGovernor } from "@beemax/channel-runtime";
 
 export interface GroupDeliveryGovernorResolver {
 	resolve(target: DeliveryTarget): GroupResponseGovernor | undefined;
