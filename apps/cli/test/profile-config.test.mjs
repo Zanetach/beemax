@@ -122,6 +122,7 @@ gateway:
   channels:
     - id: telegram-main
       adapter: telegram
+      accountRef: company-alerts
       enabled: true
       credentialRef: profile-env:telegram
       settings:
@@ -136,10 +137,12 @@ gateway:
 	assert.deepEqual(config.gateway.channels, [{
 		id: "telegram-main",
 		adapter: "telegram",
+		accountRef: "company-alerts",
 		enabled: true,
 		credentialRef: "profile-env:telegram",
 		settings: { allowedUsers: ["42"], allowedChats: ["100"], allowAllUsers: false, pollingTimeoutSeconds: 20 },
 	}]);
+	assert.deepEqual(config.gateway.bindings, [{ id: "telegram-main-default", profileId: "channels", channelInstanceId: "telegram-main", enabled: true }]);
 	assert.equal(config.gateway.telegram.botToken, "telegram-secret");
 	assert.deepEqual(config.gateway.telegram.allowedUsers, ["42"]);
 	assert.doesNotMatch(await readFile(paths.configPath, "utf8"), /telegram-secret/);

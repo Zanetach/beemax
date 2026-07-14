@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { decideGroupAdmission } from "../dist/index.js";
+import { decideGroupActivation, decideGroupAdmission } from "../dist/index.js";
 
 test("group admission keeps transport identity outside policy decisions", () => {
 	assert.deepEqual(decideGroupAdmission({
@@ -28,4 +28,21 @@ test("globally authorized actors satisfy allowlist but never bypass blacklist or
 	assert.equal(decideGroupAdmission({ ...base, policy: "allowlist", allowlist: [] }).admitted, true);
 	assert.equal(decideGroupAdmission({ ...base, policy: "blacklist", blacklist: ["user"] }).admitted, false);
 	assert.equal(decideGroupAdmission({ ...base, policy: "disabled" }).admitted, false);
+});
+
+test("contextual activation responds to verified signals and otherwise observes or ignores", () => {
+	const base = {
+		policy: "open", actorIds: ["user"], actorAuthorized: true, actorIsAdmin: false,
+		mode: "contextual", respondTo: ["mention", "reply", "active_thread", "command"],
+	};
+	assert.deepEqual(decideGroupActivation({ ...base, signals: { reply: true } }), { admitted: true, action: "respond", activation: "reply" });
+	assert.deepEqual(decideGroupActivation({ ...base, signals: {}, ambientObservation: true }), { admitted: true, action: "observe", activation: "ambient" });
+	assert.deepEqual(decideGroupActivation({ ...base, signals: {}, ambientObservation: false }), { admitted: false, reason: "activation_required" });
+});
+
+test("explicit and disabled activation modes never become ambient responses", () => {
+	const base = { policy: "open", actorIds: ["user"], actorAuthorized: true, actorIsAdmin: false, respondTo: ["mention", "command"] };
+	assert.equal(decideGroupActivation({ ...base, mode: "explicit", signals: {} }).reason, "activation_required");
+	assert.deepEqual(decideGroupActivation({ ...base, mode: "explicit", signals: { command: true } }), { admitted: true, action: "respond", activation: "command" });
+	assert.equal(decideGroupActivation({ ...base, mode: "disabled", signals: { mention: true } }).reason, "group_disabled");
 });

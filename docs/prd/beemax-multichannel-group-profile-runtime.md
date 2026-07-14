@@ -17,12 +17,13 @@
 | --- | --- | --- | --- | --- | --- |
 | 2026-07-14 | 初始版本：统一多渠道、群聊、Profile 隔离、路由、权限与可靠性 | 产品与 Runtime 架构收敛 | Codex | [TODO] | v1.0 |
 | 2026-07-14 | 第一实施切片：Conversation/Actor 分离、Channel Instance 持久路由、通用群准入、Memory visibility、systemd 资源上限 | P0 安全语义与 P1 多实例基础先行 | Codex | 自动化门禁通过，产品审核待完成 | v1.1-draft |
+| 2026-07-14 | 第二实施切片：Profile Binding、通用 Activation 契约与 Gateway ingress 背压 | 补齐确定性路由和运行时容量边界 | Codex | build、typecheck、全量测试及架构/迁移/Memory 门禁通过 | v1.2-draft |
 
 ---
 
 ## 当前实施状态（2026-07-14）
 
-已完成并进入代码验证的第一切片：
+当前已完成第一、第二实施切片：
 
 - 群聊/Channel/Thread 的 Conversation 不再包含当前 Actor；Task Responsibility 仍按 Actor 或可信统一身份归属。
 - `channelInstanceId` 已贯穿 Gateway 入站、投递、Task Plan Completion Notice、Automation Job/Delivery/Route/Media 和 Memory 分区。
@@ -30,11 +31,14 @@
 - 群聊 Private Claim 仅可在 DM 披露，Conversation Claim 可在共享群 Conversation 召回。
 - 旧 Actor Session transcript、Session Catalog 与 Task owner 提供 additive fallback read。
 - 通用 Group Admission 决策模块已落地，飞书 Adapter 已接入；Ubuntu systemd 已增加可配置 Memory/CPU/Tasks 上限。
+- Profile Binding 已实现 Thread→Conversation→Account→Instance 优先级、同层冲突失败、启动校验与入站 fail-closed；模型不能选择 Profile。
+- Activation 契约已支持 disabled/explicit/contextual/ambient 与 mention/reply/active-thread/command，飞书和 Telegram 共用通用决策边界。
+- Gateway ingress 已实现 Profile 全局和单 Conversation 高水位、拒绝计数和 `/status` 诊断；容量耗尽时仍允许 `/stop`。
 
 仍按本 PRD 后续阶段实施，不计为本切片完成：
 
-- `explicit/contextual/ambient` 智能激活、quiet hours、回复预算以及 Telegram/后续 Adapter 的统一准入契约。
-- Binding Resolver、Binding 冲突解释、Profile Host 监督与 Runtime 队列高水位背压。
+- contextual active-thread 状态维护、受限 Observation 投递、quiet hours 和回复频率预算。
+- Binding CLI validate/explain 管理命令、Shared Channel Relay，以及 Profile Host 监督。
 - 钉钉、企业微信等新增 Adapter，以及完整 Channel Runtime 包拆分。
 - 多实例启用时旧的无 instance Memory/Automation 数据需要管理员显式归属迁移；系统不得把歧义旧数据同时暴露给多个实例。
 

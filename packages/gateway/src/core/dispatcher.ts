@@ -13,6 +13,7 @@
 import {
 	AgentRunError,
 	AdaptiveTextBuffer,
+	conversationKey,
 	InteractionEventAdapter,
 	parseInteractionCommand,
 	sessionOwnerKey,
@@ -29,6 +30,8 @@ import { renderCard, type CardRenderOptions } from "../card/render.ts";
 import { FlushController } from "../card/flush.ts";
 import { MessageDeduplicator } from "./message-deduplicator.ts";
 import { prepareAgentMediaInput } from "./media-input.ts";
+import type { ProfileBindingResolver } from "./profile-binding.ts";
+import { GatewayIngressController } from "./ingress-capacity.ts";
 
 interface CardBinding {
 	source: InboundMessage["source"];
@@ -51,6 +54,14 @@ export interface DispatcherDeps {
 	profileId?: string;
 	/** Stable configured account/connection identity injected into every inbound Interaction. */
 	channelInstanceId?: string;
+	/** Configured route identity even when a legacy single-instance source keeps its old Session namespace. */
+	bindingChannelInstanceId?: string;
+	/** Non-secret platform account identity used by deterministic Profile Binding. */
+	channelAccountRef?: string;
+	/** Fail-closed Profile route authority. Models and adapters cannot override its result. */
+	bindingResolver?: Pick<ProfileBindingResolver, "resolve">;
+	/** Shared Profile-level ingress budget; one controller may cover every Channel Instance. */
+	ingress?: GatewayIngressController;
 	messageDeduplicator?: MessageDeduplicator;
 }
 
@@ -62,6 +73,7 @@ export class Dispatcher {
 	private readonly turnTimeoutMs: number;
 	private readonly profileId: string;
 	private readonly deduplicator: MessageDeduplicator;
+	private readonly ingress: GatewayIngressController;
 	private readonly sessionOverrides = new Map<string, InboundMessage["source"]>();
 	private readonly cardBindings = new Map<string, CardBinding>();
 	private readonly turnStarts = new Map<string, Promise<void>>();
@@ -80,6 +92,7 @@ export class Dispatcher {
 		this.turnTimeoutMs = Math.max(30_000, Math.min(60 * 60_000, deps.turnTimeoutMs ?? 10 * 60_000));
 		this.profileId = deps.profileId ?? "default";
 		this.deduplicator = deps.messageDeduplicator ?? new MessageDeduplicator();
+		this.ingress = deps.ingress ?? new GatewayIngressController();
 		this.platform.onMessage((msg) => this.admit(msg));
 		this.platform.onCardAction?.((action) => this.handleCardAction(action));
 	}
@@ -88,6 +101,28 @@ export class Dispatcher {
 		const scoped = this.deps.channelInstanceId && msg.source.channelInstanceId !== this.deps.channelInstanceId
 			? { ...msg, source: { ...msg.source, channelInstanceId: this.deps.channelInstanceId } }
 			: msg;
+		if (this.deps.bindingResolver) {
+			try {
+				const channelInstanceId = this.deps.bindingChannelInstanceId ?? scoped.source.channelInstanceId;
+				if (!channelInstanceId) throw new Error("inbound Interaction has no Channel Instance identity");
+				const binding = this.deps.bindingResolver.resolve({
+					channelInstanceId,
+					...(this.deps.channelAccountRef ? { accountRef: this.deps.channelAccountRef } : {}),
+					conversationId: scoped.source.chatId,
+					...(scoped.source.threadId ? { threadId: scoped.source.threadId } : {}),
+				});
+				if (binding.profileId !== this.profileId) throw new Error(`Binding selected Profile ${binding.profileId}`);
+			} catch (error) {
+				console.warn(`[beemax] rejected inbound Interaction by Profile Binding: ${error instanceof Error ? error.message : String(error)}`);
+				return scoped.releaseMedia?.().catch(() => undefined) ?? Promise.resolve();
+			}
+		}
+		const emergencyStop = parseInteractionCommand(scoped.text)?.kind === "stop";
+		const releaseIngress = emergencyStop ? () => undefined : this.ingress.tryAcquire(conversationKey(scoped.source));
+		if (!releaseIngress) return (async () => {
+			try { await this.platform.send(scoped.source.chatId, "当前 Profile 处理容量已满，请稍后重试。"); }
+			finally { await scoped.releaseMedia?.().catch(() => undefined); }
+		})();
 		return new Promise<void>((resolve, reject) => {
 			let admitted = false;
 			const markAdmitted = () => { if (!admitted) { admitted = true; resolve(); } };
@@ -95,7 +130,7 @@ export class Dispatcher {
 			work = this.handle(scoped, markAdmitted).then(markAdmitted).catch((error) => {
 				if (!admitted) { this.deduplicator.rollback(this.profileId, channelDedupeKey(scoped.source), scoped.source.messageId); reject(error); }
 				else console.error(`[beemax] message dispatch failed after admission: ${error instanceof Error ? error.message : String(error)}`);
-			}).finally(() => this.activeHandles.delete(work));
+			}).finally(() => { releaseIngress(); this.activeHandles.delete(work); });
 			this.activeHandles.add(work);
 		});
 	}

@@ -56,9 +56,19 @@ export interface TelegramConfig {
 export interface GatewayChannelConfig {
 	id: string;
 	adapter: string;
+	accountRef?: string;
 	enabled: boolean;
 	credentialRef?: string;
 	settings: Record<string, unknown>;
+}
+export interface GatewayBindingConfig {
+	id: string;
+	profileId: string;
+	channelInstanceId: string;
+	accountRef?: string;
+	conversationId?: string;
+	threadId?: string;
+	enabled: boolean;
 }
 export type CustomProtocol = "openai-completions" | "openai-responses" | "anthropic-messages";
 
@@ -89,7 +99,7 @@ export interface BeeMaxConfig {
 	};
 	models: Array<{ provider: string; model: string; baseUrl?: string; customProtocol?: CustomProtocol; contextWindow?: number; maxTokens?: number }>;
 	/** Profile-owned channel configuration. A Profile may run its own Gateway. */
-	gateway: { channels: GatewayChannelConfig[]; feishu: FeishuConfig; telegram: TelegramConfig };
+	gateway: { channels: GatewayChannelConfig[]; bindings: GatewayBindingConfig[]; ingress: { maxActive: number; maxActivePerConversation: number }; feishu: FeishuConfig; telegram: TelegramConfig };
 	memory: {
 		dbPath: string;
 		memberships: MemoryMembership[];
@@ -249,6 +259,11 @@ export function loadConfig(configPath?: string, profile = "default"): BeeMaxConf
 			...(telegram.botToken ? [{ id: "telegram-main", adapter: "telegram", enabled: true, credentialRef: "profile-env:telegram", settings: {} }] : []),
 		] satisfies GatewayChannelConfig[]
 		: configuredChannels;
+	const bindings = parseGatewayBindings(cfg.gateway?.bindings, profile, channels);
+	const ingress = {
+		maxActive: boundedNumber(env.BEEMAX_GATEWAY_MAX_ACTIVE ?? cfg.gateway?.ingress?.maxActive, 1_000, 1, 100_000),
+		maxActivePerConversation: boundedNumber(env.BEEMAX_GATEWAY_MAX_ACTIVE_PER_CONVERSATION ?? cfg.gateway?.ingress?.maxActivePerConversation, 100, 1, 10_000),
+	};
 	return {
 		profile,
 		agent: {
@@ -269,7 +284,7 @@ export function loadConfig(configPath?: string, profile = "default"): BeeMaxConf
 			maxTokens,
 		},
 		models: configuredModels,
-		gateway: { channels, feishu, telegram },
+		gateway: { channels, bindings, ingress, feishu, telegram },
 		memory: {
 			dbPath: resolveFrom(location.basePath, str(env.BEEMAX_DB_PATH ?? cfg.memory?.dbPath ?? join(profileDataRoot, location.isHome ? "memory.db" : "beemax.db"))),
 			memberships: parseMemoryMemberships(cfg.memory?.memberships),
@@ -442,15 +457,42 @@ function parseGatewayChannels(value: unknown): GatewayChannelConfig[] {
 		assertNoChannelSecrets(settings, `gateway.channels[${index}].settings`);
 		const enabled = candidate.enabled === undefined ? true : parseBool(candidate.enabled);
 		const credentialRef = optional(candidate.credentialRef);
+		const accountRef = optional(candidate.accountRef);
 		if (enabled && (adapter === "feishu" || adapter === "telegram") && !credentialRef) {
 			throw new Error(`gateway.channels[${index}].credentialRef is required for ${adapter}`);
 		}
 		return {
 			id,
 			adapter,
+			...(accountRef ? { accountRef } : {}),
 			enabled,
 			...(credentialRef ? { credentialRef } : {}),
 			settings,
+		};
+	});
+}
+
+function parseGatewayBindings(value: unknown, profileId: string, channels: GatewayChannelConfig[]): GatewayBindingConfig[] {
+	if (value === undefined || value === null) return channels.map((channel) => ({
+		id: `${channel.id}-default`, profileId, channelInstanceId: channel.id, enabled: channel.enabled,
+	}));
+	if (!Array.isArray(value)) throw new Error("gateway.bindings must be an array");
+	return value.map((entry, index) => {
+		if (!entry || typeof entry !== "object" || Array.isArray(entry)) throw new Error(`gateway.bindings[${index}] must be an object`);
+		const candidate = entry as Record<string, unknown>;
+		const id = str(candidate.id);
+		const targetProfile = str(candidate.profileId);
+		const channelInstanceId = str(candidate.channelInstanceId);
+		const accountRef = optional(candidate.accountRef);
+		const conversationId = optional(candidate.conversationId);
+		const threadId = optional(candidate.threadId);
+		if (!id || !targetProfile || !channelInstanceId) throw new Error(`gateway.bindings[${index}] requires id, profileId, and channelInstanceId`);
+		return {
+			id, profileId: targetProfile, channelInstanceId,
+			...(accountRef ? { accountRef } : {}),
+			...(conversationId ? { conversationId } : {}),
+			...(threadId ? { threadId } : {}),
+			enabled: candidate.enabled === undefined ? true : parseBool(candidate.enabled),
 		};
 	});
 }

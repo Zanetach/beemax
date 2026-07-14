@@ -144,6 +144,14 @@ _Avoid_: Conversation, display name, Profile
 The transport-neutral admission rule that decides whether a group Interaction may be considered for response or observation from verified signals such as mention, reply, command, role, and allowlist state. It never performs business reasoning or grants Tool authority.
 _Avoid_: Prompt instruction, Enterprise Policy, Situation decision
 
+**Profile Binding**:
+A deterministic, model-independent route from Channel Instance, optional account, Conversation, and Thread to exactly one Profile. Thread outranks Conversation, Conversation outranks account, and account outranks the Channel Instance default; same-level ambiguity fails closed.
+_Avoid_: Prompt routing, Adapter-selected Profile, array-order fallback
+
+**Gateway Ingress Capacity**:
+The Profile-wide high-water boundary that limits active inbound Interactions globally and per Conversation before Runtime work is allocated. Rejection is observable and emergency stop remains admissible.
+_Avoid_: systemd MemoryMax, Task Scheduler capacity, unbounded Adapter queue
+
 **Situation**:
 The Agent's current, evidence-backed interpretation of what is happening, why it matters, and what remains uncertain; it is open-ended and may change when new evidence arrives.
 _Avoid_: Fixed business schema, Access Scope, prompt classification

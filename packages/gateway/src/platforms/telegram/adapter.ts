@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { Readable, Transform } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import type { InboundMessage, MessageHandler, PlatformAdapter, SendOptions, SendResult } from "../../core/types.ts";
+import { decideGroupActivation } from "../../core/group-admission.ts";
 
 export interface TelegramSettings {
 	botToken: string;
@@ -75,9 +76,14 @@ export class TelegramAdapter implements PlatformAdapter {
 
 	onMessage(handler: MessageHandler): void { this.handler = handler; }
 
-	admit(source: { chatId: string; userId?: string }): string | null {
+	admit(source: { chatId: string; userId?: string; chatType?: "dm" | "group" | "channel" | "thread" }): string | null {
 		if (this.settings.allowedChats.length && !this.settings.allowedChats.includes(source.chatId)) return "chat is not authorized";
-		if (!this.settings.allowAllUsers && (!source.userId || !this.settings.allowedUsers.includes(source.userId))) return "user is not authorized";
+		const actorAuthorized = this.settings.allowAllUsers || Boolean(source.userId && this.settings.allowedUsers.includes(source.userId));
+		if (source.chatType && source.chatType !== "dm") {
+			const decision = decideGroupActivation({ policy: this.settings.allowAllUsers ? "open" : "allowlist", actorIds: source.userId ? [source.userId] : [], actorAuthorized, actorIsAdmin: false, allowlist: this.settings.allowedUsers, mode: "ambient", respondTo: [], signals: {} });
+			return decision.admitted ? null : decision.reason === "actor_not_allowed" ? "user is not authorized" : decision.reason;
+		}
+		if (!actorAuthorized) return "user is not authorized";
 		return null;
 	}
 
@@ -168,7 +174,8 @@ export class TelegramAdapter implements PlatformAdapter {
 		if (!message || !this.handler) return;
 		const chatId = String(message.chat.id);
 		const userId = message.from ? String(message.from.id) : undefined;
-		if (this.admit({ chatId, userId })) return;
+		const chatType = telegramChatType(message.chat.type);
+		if (this.admit({ chatId, userId, chatType })) return;
 		const media = telegramMedia(message);
 		const text = (message.text ?? message.caption ?? (media ? `[Telegram ${media.messageType}]` : "")).trim();
 		if (!text && !media) return;
@@ -179,7 +186,7 @@ export class TelegramAdapter implements PlatformAdapter {
 			source: {
 				platform: "telegram",
 				chatId,
-				chatType: telegramChatType(message.chat.type),
+				chatType,
 				...(message.chat.title ? { chatName: message.chat.title } : {}),
 				...(userId ? { userId } : {}),
 				...(message.from ? { userName: telegramUserName(message.from) } : {}),

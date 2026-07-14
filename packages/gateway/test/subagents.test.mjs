@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { buildAgentFactory } from "../../../apps/cli/dist/agent-factory.js";
 import { Dispatcher } from "../dist/core/dispatcher.js";
-import { MessageDeduplicator } from "../dist/index.js";
+import { GatewayIngressController, MessageDeduplicator, ProfileBindingResolver } from "../dist/index.js";
 import { createSubagentTools, ProfileTaskScheduler, SubagentManager } from "@beemax/core";
 
 const source = { platform: "feishu", chatId: "chat-1", chatType: "dm", userId: "user-1" };
@@ -25,6 +25,59 @@ test("Dispatcher binds inbound interactions to the configured channel instance",
 	await inbound({ text: "hello", messageType: "text", source: { ...source, messageId: "instance-bound" }, mediaPaths: [], mediaTypes: [], raw: {}, timestamp: Date.now() });
 	for (let attempt = 0; !receivedSource && attempt < 100; attempt++) await new Promise((resolve) => setTimeout(resolve, 2));
 	assert.equal(receivedSource.channelInstanceId, "company-a");
+	await dispatcher.dispose();
+});
+
+test("Dispatcher fails closed when Profile Binding selects another Profile", async () => {
+	let inbound; let runs = 0; let released = 0;
+	const platform = {
+		name: "feishu", isConnected: true, onMessage: (handler) => { inbound = handler; }, connect: async () => true, disconnect: async () => undefined,
+		send: async () => ({ success: true }), editMessage: async () => ({ success: true }), sendTyping: async () => undefined, stopTyping: async () => undefined,
+	};
+	const runtime = { run: async () => { runs++; return { answer: "wrong", model: "test", durationMs: 1, usage: {} }; }, cancel: async () => false, handleControl: async () => undefined, isBusy: () => false, dispose: () => undefined };
+	const bindingResolver = new ProfileBindingResolver([{ id: "finance", profileId: "finance", channelInstanceId: "company-a" }]);
+	const dispatcher = new Dispatcher({ runtime, profileId: "sales", channelInstanceId: "company-a", bindingResolver, flushIntervalMs: 0 }, platform);
+	await inbound({ text: "hello", messageType: "text", source: { ...source, messageId: "wrong-profile" }, mediaPaths: [], mediaTypes: [], releaseMedia: async () => { released++; }, raw: {}, timestamp: Date.now() });
+	await new Promise((resolve) => setTimeout(resolve, 20));
+	assert.equal(runs, 0);
+	assert.equal(released, 1);
+	await dispatcher.dispose();
+});
+
+test("Dispatcher rejects new work at the Profile ingress high-water mark but always admits emergency stop", async () => {
+	let inbound; let finish; let runs = 0; let cancels = 0; const texts = [];
+	const platform = {
+		name: "feishu", isConnected: true, onMessage: (handler) => { inbound = handler; }, connect: async () => true, disconnect: async () => undefined,
+		send: async (_chatId, text) => { texts.push(text); return { success: true }; }, editMessage: async () => ({ success: true }), sendTyping: async () => undefined, stopTyping: async () => undefined,
+	};
+	const runtime = { run: async () => { runs++; return new Promise((resolve) => { finish = () => resolve({ answer: "done", model: "test", durationMs: 1, usage: {} }); }); }, cancel: async () => { cancels++; return true; }, handleControl: async () => undefined, isBusy: () => false, dispose: () => undefined };
+	const ingress = new GatewayIngressController({ maxActive: 1, maxActivePerConversation: 1 });
+	const dispatcher = new Dispatcher({ runtime, ingress, flushIntervalMs: 0 }, platform);
+	await inbound({ text: "first", messageType: "text", source: { ...source, messageId: "capacity-1" }, mediaPaths: [], mediaTypes: [], raw: {}, timestamp: Date.now() });
+	for (let attempt = 0; runs === 0 && attempt < 100; attempt++) await new Promise((resolve) => setTimeout(resolve, 2));
+	await inbound({ text: "second", messageType: "text", source: { ...source, chatId: "chat-2", messageId: "capacity-2" }, mediaPaths: [], mediaTypes: [], raw: {}, timestamp: Date.now() });
+	assert.equal(runs, 1);
+	assert.ok(texts.some((text) => /容量已满/.test(text)));
+	await inbound({ text: "/stop", messageType: "command", source: { ...source, messageId: "capacity-stop" }, mediaPaths: [], mediaTypes: [], raw: {}, timestamp: Date.now() });
+	assert.equal(cancels, 1);
+	finish(); await new Promise((resolve) => setTimeout(resolve, 20));
+	assert.equal(ingress.snapshot().active, 0);
+	await dispatcher.dispose();
+});
+
+test("Dispatcher applies per-conversation ingress limits independently to group threads", async () => {
+	let inbound; const conversationKeys = [];
+	const platform = {
+		name: "feishu", isConnected: true, onMessage: (handler) => { inbound = handler; }, connect: async () => true, disconnect: async () => undefined,
+		send: async () => ({ success: true }), editMessage: async () => ({ success: true }), sendTyping: async () => undefined, stopTyping: async () => undefined,
+	};
+	const runtime = { run: async () => ({ answer: "done", model: "test", durationMs: 1, usage: {} }), cancel: async () => false, handleControl: async () => undefined, isBusy: () => false, dispose: () => undefined };
+	const ingress = { tryAcquire: (key) => { conversationKeys.push(key); return () => undefined; } };
+	const dispatcher = new Dispatcher({ runtime, ingress, flushIntervalMs: 0 }, platform);
+	const groupSource = { ...source, chatType: "group", userId: "member-1" };
+	await inbound({ text: "first", messageType: "text", source: { ...groupSource, threadId: "topic-1", messageId: "thread-1" }, mediaPaths: [], mediaTypes: [], raw: {}, timestamp: Date.now() });
+	await inbound({ text: "second", messageType: "text", source: { ...groupSource, threadId: "topic-2", messageId: "thread-2" }, mediaPaths: [], mediaTypes: [], raw: {}, timestamp: Date.now() });
+	assert.deepEqual(conversationKeys, ["feishu:chat-1#topic-1", "feishu:chat-1#topic-2"]);
 	await dispatcher.dispose();
 });
 
