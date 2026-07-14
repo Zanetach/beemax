@@ -23,6 +23,11 @@ export interface ProfileBindingConflict {
 	bindingIds: string[];
 }
 
+export interface ProfileBindingAuthority {
+	profileId: string;
+	channelInstanceIds: Iterable<string>;
+}
+
 export type ProfileBindingExplanation =
 	| { status: "matched"; profileId: string; bindingId: string; precedence: ProfileBindingPrecedence; candidates: string[] }
 	| { status: "conflict"; precedence: ProfileBindingPrecedence; candidates: string[] }
@@ -76,6 +81,20 @@ export class ProfileBindingResolver {
 		}
 		return { status: "unmatched", candidates: [] };
 	}
+}
+
+/** Validates the complete strong-isolation Binding authority used by a Profile-owned Gateway. */
+export function assertProfileBindingConfiguration(bindings: readonly ProfileBinding[], authority: ProfileBindingAuthority): ProfileBindingResolver {
+	const resolver = new ProfileBindingResolver(bindings);
+	const validation = resolver.validate();
+	if (!validation.valid) throw new Error(`Profile Binding configuration has conflicts: ${validation.conflicts.map((conflict) => conflict.bindingIds.join(", ")).join("; ")}`);
+	const available = new Set(authority.channelInstanceIds);
+	const enabled = bindings.filter((binding) => binding.enabled !== false);
+	const unknown = enabled.filter((binding) => !available.has(binding.channelInstanceId));
+	if (unknown.length) throw new Error(`Profile Binding references an unavailable Channel Instance: ${unknown.map((binding) => binding.channelInstanceId).join(", ")}`);
+	const foreign = enabled.filter((binding) => binding.profileId !== authority.profileId);
+	if (foreign.length) throw new Error(`Profile-owned Gateway cannot route to another Profile before Shared Relay is enabled: ${foreign.map((binding) => `${binding.id}->${binding.profileId}`).join(", ")}`);
+	return resolver;
 }
 
 function validateBinding(binding: ProfileBinding): void {

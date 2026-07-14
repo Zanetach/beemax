@@ -18,6 +18,22 @@
  */
 
 import type { PairingAuthority } from "../../security/pairing.ts";
+import type { GroupActivationMode, GroupActivationSignal } from "../../core/group-admission.ts";
+
+export interface FeishuActivationSettings {
+	mode: GroupActivationMode;
+	respondTo: GroupActivationSignal[];
+	activeThreadTtlMs?: number;
+	maxActiveThreads?: number;
+}
+
+export interface FeishuGroupRule {
+	policy?: "open" | "allowlist" | "blacklist" | "admin_only" | "disabled";
+	allowlist?: string[];
+	blacklist?: string[];
+	requireMention?: boolean;
+	activation?: Partial<Pick<FeishuActivationSettings, "mode" | "respondTo">>;
+}
 
 export interface FeishuSettings {
 	appId: string;
@@ -35,6 +51,8 @@ export interface FeishuSettings {
 	 * Matches Hermes default (FEISHU_REQUIRE_MENTION=true).
 	 */
 	requireMention: boolean;
+	/** Transport-neutral group activation; requireMention remains a legacy fallback when omitted. */
+	activation?: FeishuActivationSettings;
 	/** Authorized Feishu open_id/user_id/union_id values. Empty means deny unless allowAllUsers=true. */
 	allowedUsers: string[];
 	/** Optional chat_id restriction. Empty allows authorized users in any chat. */
@@ -42,7 +60,7 @@ export interface FeishuSettings {
 	/** Explicit insecure override for development or intentionally public bots. */
 	allowAllUsers: boolean;
 	groupPolicy?: "open" | "allowlist" | "disabled";
-	groupRules?: Record<string, { policy?: "open" | "allowlist" | "blacklist" | "admin_only" | "disabled"; allowlist?: string[]; blacklist?: string[]; requireMention?: boolean }>;
+	groupRules?: Record<string, FeishuGroupRule>;
 	admins?: string[];
 	setHomeChat?: (chatId: string, userId: string | undefined, chatType: "dm" | "group") => Promise<void>;
 	/** Optional Profile-scoped DM pairing authority for unknown users. */

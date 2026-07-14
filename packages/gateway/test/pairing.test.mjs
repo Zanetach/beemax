@@ -121,3 +121,31 @@ test("Feishu group policies support global and per-chat authorization without af
 	assert.equal(new FeishuAdapter({ ...settings, groupRules: { chat: { policy: "blacklist", blacklist: ["ou_user"] } } }).admit(sender, message), "sender is blocked in group");
 	assert.equal(new FeishuAdapter({ ...settings, admins: ["ou_user"], groupRules: { chat: { policy: "admin_only" } } }).admit(sender, message), null);
 });
+
+test("Feishu contextual activation carries natural follow-ups only within the activated thread", () => {
+	const sender = { sender_type: "user", sender_id: { open_id: "ou_user" } };
+	const settings = {
+		appId: "app", appSecret: "secret", domain: "feishu", connectionMode: "websocket", requireMention: true,
+		allowedUsers: ["ou_user"], allowedChats: [], allowAllUsers: false, botOpenId: "ou_bot", groupPolicy: "allowlist",
+		activation: { mode: "contextual", respondTo: ["mention", "active_thread"], activeThreadTtlMs: 60_000, maxActiveThreads: 10 },
+	};
+	const adapter = new FeishuAdapter(settings);
+	const message = { chat_type: "group", chat_id: "chat", thread_id: "topic-1", message_id: "m1", message_type: "text", content: JSON.stringify({ text: "start" }), create_time: "1", mentions: [{ id: { open_id: "ou_bot" }, name: "bot" }] };
+	assert.equal(adapter.admit(sender, message), null);
+	assert.equal(adapter.admit(sender, { ...message, message_id: "m2", mentions: [] }), null);
+	assert.equal(adapter.admit(sender, { ...message, thread_id: "topic-2", message_id: "m3", mentions: [] }), "group message without bot mention");
+});
+
+test("Feishu contextual activation trusts replies only when the parent is known Agent output", async () => {
+	const sender = { sender_type: "user", sender_id: { open_id: "ou_user" } };
+	const adapter = new FeishuAdapter({
+		appId: "app", appSecret: "secret", domain: "feishu", connectionMode: "websocket", requireMention: true,
+		allowedUsers: ["ou_user"], allowedChats: [], allowAllUsers: false, groupPolicy: "allowlist",
+		activation: { mode: "contextual", respondTo: ["reply"], activeThreadTtlMs: 60_000, maxActiveThreads: 10 },
+	});
+	adapter.client = { im: { v1: { message: { create: async () => ({ code: 0, data: { message_id: "agent-output" } }) } } } };
+	assert.equal((await adapter.send("chat", "answer")).success, true);
+	const message = { chat_type: "group", chat_id: "chat", thread_id: "topic", message_id: "reply", parent_id: "agent-output", message_type: "text", content: JSON.stringify({ text: "continue" }), create_time: "1", mentions: [] };
+	assert.equal(adapter.admit(sender, message), null);
+	assert.equal(adapter.admit(sender, { ...message, thread_id: "other", message_id: "untrusted", parent_id: "someone-else" }), "group message without bot mention");
+});

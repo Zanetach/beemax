@@ -64,6 +64,7 @@ test("profile creation and Feishu channel configuration keep secrets in a protec
 	assert.equal(config.gateway.feishu.appId, "cli_test");
 	assert.equal(config.gateway.feishu.appSecret, 'secret-\\-"-value');
 	assert.deepEqual(config.gateway.feishu.allowedUsers, ["ou_allowed"]);
+	assert.equal(config.gateway.feishu.activation.mode, "contextual");
 	assert.equal(config.gateway.feishu.connectionMode, "webhook");
 	assert.equal(config.gateway.feishu.webhookEncryptKey, "test-encryption-key");
 	assert.match(yaml, /gateway:\n\s+feishu:/);
@@ -146,6 +147,30 @@ gateway:
 	assert.equal(config.gateway.telegram.botToken, "telegram-secret");
 	assert.deepEqual(config.gateway.telegram.allowedUsers, ["42"]);
 	assert.doesNotMatch(await readFile(paths.configPath, "utf8"), /telegram-secret/);
+});
+
+test("runtime config exposes transport-neutral Feishu contextual activation with per-group overrides", async () => {
+	const home = await mkdtemp(join(tmpdir(), "beemax-activation-home-"));
+	const paths = await createProfile("activation", { home });
+	await writeFile(paths.configPath, `gateway:
+  feishu:
+    activation:
+      mode: contextual
+      respondTo: [mention, reply, active_thread, command]
+      activeThreadTtlMs: 120000
+      maxActiveThreads: 50
+    groupRules:
+      incident-room:
+        policy: open
+        activation:
+          mode: explicit
+          respondTo: [mention, command]
+`);
+	const config = loadConfig(paths.configPath, "activation");
+	assert.deepEqual(config.gateway.feishu.activation, { mode: "contextual", respondTo: ["mention", "reply", "active_thread", "command"], activeThreadTtlMs: 120_000, maxActiveThreads: 50 });
+	assert.deepEqual(config.gateway.feishu.groupRules["incident-room"].activation, { mode: "explicit", respondTo: ["mention", "command"] });
+	await writeFile(paths.configPath, `gateway:\n  feishu:\n    activation:\n      mode: contextual\n      respondTo: [mention, typo_signal]\n`);
+	assert.throws(() => loadConfig(paths.configPath, "activation"), /Invalid group activation signals: typo_signal/);
 });
 
 test("channel config rejects missing Credential Refs and never activates YAML-embedded Secrets", async () => {

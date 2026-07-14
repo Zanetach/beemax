@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { decideGroupActivation, decideGroupAdmission } from "../dist/index.js";
+import { GroupActivationController, decideGroupActivation, decideGroupAdmission } from "../dist/index.js";
 
 test("group admission keeps transport identity outside policy decisions", () => {
 	assert.deepEqual(decideGroupAdmission({
@@ -45,4 +45,18 @@ test("explicit and disabled activation modes never become ambient responses", ()
 	assert.equal(decideGroupActivation({ ...base, mode: "explicit", signals: {} }).reason, "activation_required");
 	assert.deepEqual(decideGroupActivation({ ...base, mode: "explicit", signals: { command: true } }), { admitted: true, action: "respond", activation: "command" });
 	assert.equal(decideGroupActivation({ ...base, mode: "disabled", signals: { mention: true } }).reason, "group_disabled");
+});
+
+test("contextual activation continues only inside the explicitly activated Conversation Thread", () => {
+	let now = 1_000;
+	const activation = new GroupActivationController({ activeThreadTtlMs: 5_000, maxActiveThreads: 1, now: () => now });
+	const input = { policy: "open", actorIds: ["member"], actorAuthorized: true, actorIsAdmin: false, mode: "contextual", respondTo: ["mention", "active_thread"] };
+	assert.deepEqual(activation.decide("group#spoofed", { ...input, signals: { active_thread: true } }), { admitted: false, reason: "activation_required" });
+	assert.deepEqual(activation.decide("group#topic-1", { ...input, signals: { mention: true } }), { admitted: true, action: "respond", activation: "mention" });
+	assert.deepEqual(activation.decide("group#topic-1", { ...input, signals: {} }), { admitted: true, action: "respond", activation: "active_thread" });
+	assert.deepEqual(activation.decide("group#topic-2", { ...input, signals: {} }), { admitted: false, reason: "activation_required" });
+	assert.equal(activation.decide("group#topic-2", { ...input, signals: { mention: true } }).admitted, true);
+	assert.deepEqual(activation.decide("group#topic-1", { ...input, signals: {} }), { admitted: false, reason: "activation_required" });
+	now += 5_001;
+	assert.deepEqual(activation.decide("group#topic-2", { ...input, signals: {} }), { admitted: false, reason: "activation_required" });
 });

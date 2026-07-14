@@ -45,7 +45,7 @@ import { FullWorkbench, startFullWorkbenchInput, type FullWorkbenchInput } from 
 import { inspectGateway, readGatewayLogs } from "./gateway-observability.ts";
 import { createTaskAwareConversationContext, ensureBuiltinTasks, installedVersion } from "./runtime-facts.ts";
 import { AUTONOMY_LEVELS, AgentRunError, AuthStorage, AutonomyRolloutController, FileCredentialVault, FileCredentialVaultAuditJournal, TaskPlanNoticeDeliveryService, ToolApprovalBroker, buildActiveTaskPreservationEnvelope, buildTaskPreservationEnvelope, compileLongTermMemorySnapshot, conversationKey, createSubagentTools, createTaskLedgerTools, createTaskOrchestrationTools, guardVerifiedObjectiveMemoryPublisher, interactionCommandHelp, parseInteractionCommand, redactCredentialMaterial, responsibilityOwnerKey, responsibilityOwnerKeys, type AutonomyLevel, type AutonomyRolloutAuthority } from "@beemax/core";
-import { PairingStore, type SessionSource } from "@beemax/gateway";
+import { PairingStore, assertProfileBindingConfiguration, type SessionSource } from "@beemax/gateway";
 import { executeFeishuSmoke } from "./feishu-smoke.ts";
 import { existsSync } from "node:fs";
 import { spawn, spawnSync } from "node:child_process";
@@ -84,6 +84,9 @@ async function main(): Promise<void> {
 			break;
 		case "channel":
 			await runChannelCommand(parsed);
+			break;
+		case "binding":
+			runBindingCommand(parsed);
 			break;
 		case "pairing":
 			await runPairingCommand(parsed);
@@ -224,6 +227,7 @@ Commands:
   init       Create the first Agent profile
   agent      create | list | delete
   channel    add | list | remove | test
+  binding    validate | explain --channel-instance <id> --conversation <id> [--account <ref>] [--thread <id>]
   pairing    list | approve <platform> <code> | revoke <platform> <user_id> | clear [platform]
   gateway    run | setup | smoke | install | start | stop | restart | status | logs | list | health
   chat       Adaptive terminal Agent (Full / Compact / Plain)
@@ -422,6 +426,41 @@ async function runModelCommand(parsed: ParsedArgs): Promise<void> {
 	}
 	await configureModel(profile, { provider, model, apiKey, baseUrl: optionString(parsed, "base-url"), customProtocol: customProtocolOption(parsed) });
 	console.log(`Configured ${provider}/${model} for Agent '${profile}'.`);
+}
+
+function runBindingCommand(parsed: ParsedArgs): void {
+	const action = parsed.positionals[1];
+	const profile = selectedProfile(parsed);
+	const config = loadConfig(parsed.configPath, profile);
+	const enabledChannels = config.gateway.channels.filter((channel) => channel.enabled);
+	const resolver = assertProfileBindingConfiguration(config.gateway.bindings, {
+		profileId: config.profile,
+		channelInstanceIds: enabledChannels.map((channel) => channel.id),
+	});
+	const enabledBindingCount = config.gateway.bindings.filter((binding) => binding.enabled).length;
+	if (action === "validate") {
+		console.log(`Profile Binding valid: ${enabledBindingCount} enabled bindings for Profile '${config.profile}'.`);
+		return;
+	}
+	if (action === "explain") {
+		const channelInstanceId = optionString(parsed, "channel-instance");
+		const conversationId = optionString(parsed, "conversation");
+		const accountRef = optionString(parsed, "account");
+		const threadId = optionString(parsed, "thread");
+		if (!channelInstanceId || !conversationId) throw new Error("binding explain requires --channel-instance <id> and --conversation <id>");
+		const explanation = resolver.explain({
+			channelInstanceId,
+			conversationId,
+			...(accountRef ? { accountRef } : {}),
+			...(threadId ? { threadId } : {}),
+		});
+		if (explanation.status !== "matched") throw new Error(explanation.status === "conflict"
+			? `Profile Binding conflict at ${explanation.precedence}: ${explanation.candidates.join(", ")}`
+			: `No Profile Binding matches Channel Instance ${channelInstanceId}`);
+		console.log(`matched profile=${explanation.profileId} binding=${explanation.bindingId} precedence=${explanation.precedence}`);
+		return;
+	}
+	throw new Error("Usage: beemax binding validate | explain --channel-instance <id> --conversation <id> [--account <ref>] [--thread <id>]");
 }
 
 async function runChannelCommand(parsed: ParsedArgs): Promise<void> {

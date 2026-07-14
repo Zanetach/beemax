@@ -25,7 +25,7 @@ import { Transform } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { createHash, randomUUID } from "node:crypto";
 import lark, { adaptDefault, normalizeCardAction, type Client, type EventDispatcher, type RawCardActionEvent, type WSClient } from "@larksuiteoapi/node-sdk";
-import { sessionOwnerKey } from "@beemax/core";
+import { conversationKey, sessionOwnerKey } from "@beemax/core";
 import type {
 	InboundMessage,
 	CardActionHandler,
@@ -37,7 +37,7 @@ import type {
 } from "../../core/types.ts";
 import { validateFeishuWebhookSettings, type FeishuSettings } from "./settings.ts";
 import { retryFeishuOperation } from "./retry.ts";
-import { decideGroupActivation, type GroupActivationDecision } from "../../core/group-admission.ts";
+import { GroupActivationController, type GroupActivationDecision } from "../../core/group-admission.ts";
 
 const FEISHU_DOMAIN = lark.Domain.Feishu;
 const LARK_DOMAIN = lark.Domain.Lark;
@@ -90,9 +90,15 @@ export class FeishuAdapter implements PlatformAdapter {
 	private readonly dedupTtlMs = 24 * 60 * 60 * 1000;
 	private readonly maxDedupEntries = 10_000;
 	private readonly settings: FeishuSettings;
+	private readonly activation: GroupActivationController;
+	private readonly outboundMessages = new Map<string, number>();
 
 	constructor(settings: FeishuSettings) {
 		this.settings = settings;
+		this.activation = new GroupActivationController({
+			activeThreadTtlMs: settings.activation?.activeThreadTtlMs,
+			maxActiveThreads: settings.activation?.maxActiveThreads,
+		});
 	}
 
 	get isConnected(): boolean {
@@ -699,19 +705,41 @@ export class FeishuAdapter implements PlatformAdapter {
 		if (chatType === "p2p") return globallyAuthorized ? null : this.settings.pairing ? "pairing required" : "sender is not authorized";
 		const rule = this.settings.groupRules?.[msg.chat_id];
 		if (!rule && this.settings.allowedChats.length > 0 && !this.settings.allowedChats.includes(msg.chat_id)) return "chat is not in FEISHU_ALLOWED_CHATS";
-		const requireMention = rule?.requireMention ?? this.settings.requireMention;
-		const decision = decideGroupActivation({
+		const legacyMode = (rule?.requireMention ?? this.settings.requireMention) ? "explicit" : "ambient";
+		const mode = rule?.activation?.mode ?? this.settings.activation?.mode ?? legacyMode;
+		const respondTo = rule?.activation?.respondTo ?? this.settings.activation?.respondTo ?? ["mention"];
+		const decision = this.activation.decide(conversationKey({ platform: "feishu", chatId: msg.chat_id, chatType: "group", ...(msg.thread_id ? { threadId: msg.thread_id } : {}) }), {
 			policy: rule?.policy ?? this.settings.groupPolicy ?? "allowlist",
 			actorIds: ids,
 			actorAuthorized: globallyAuthorized,
 			actorIsAdmin: Boolean(this.settings.admins?.some((id) => ids.includes(id))),
 			allowlist: rule?.allowlist,
 			blacklist: rule?.blacklist,
-			mode: requireMention ? "explicit" : "ambient",
-			respondTo: ["mention"],
-			signals: { mention: this.isBotMentioned(msg) },
+			mode,
+			respondTo,
+			signals: {
+				mention: this.isBotMentioned(msg),
+				reply: this.isReplyToAgent(msg),
+				command: feishuMessageIsCommand(msg),
+			},
 		});
-		return decision.admitted ? null : feishuAdmissionReason(decision);
+		return decision.admitted && decision.action === "respond" ? null : decision.admitted ? "ambient observation is not delivered to Agent Runtime" : feishuAdmissionReason(decision);
+	}
+
+	private isReplyToAgent(msg: FeishuMessage): boolean {
+		const now = Date.now();
+		for (const [messageId, recordedAt] of this.outboundMessages) {
+			if (now - recordedAt <= this.dedupTtlMs) break;
+			this.outboundMessages.delete(messageId);
+		}
+		return Boolean([msg.parent_id, msg.root_id].some((messageId) => messageId && this.outboundMessages.has(messageId)));
+	}
+
+	private rememberOutboundMessage(messageId: string | undefined): void {
+		if (!messageId) return;
+		this.outboundMessages.delete(messageId);
+		this.outboundMessages.set(messageId, Date.now());
+		while (this.outboundMessages.size > this.maxDedupEntries) this.outboundMessages.delete(this.outboundMessages.keys().next().value!);
 	}
 
 	private async handlePairing(sender: FeishuSender, msg: FeishuMessage): Promise<void> {
@@ -818,6 +846,7 @@ export class FeishuAdapter implements PlatformAdapter {
 					return { success: false, error: res.msg ?? `feishu code ${res.code}` };
 				}
 				lastId = res.data?.message_id;
+				this.rememberOutboundMessage(lastId);
 			} catch (err) {
 				return { success: false, error: err instanceof Error ? err.message : String(err) };
 			}
@@ -846,6 +875,7 @@ export class FeishuAdapter implements PlatformAdapter {
 				},
 			}));
 			if (sent.code !== 0) return { success: false, error: sent.msg ?? `feishu code ${sent.code}` };
+			this.rememberOutboundMessage(sent.data?.message_id);
 			return { success: true, messageId: sent.data?.message_id };
 		} catch (error) {
 			return { success: false, error: error instanceof Error ? error.message : String(error) };
@@ -871,6 +901,7 @@ export class FeishuAdapter implements PlatformAdapter {
 				data: { receive_id: chatId, msg_type: msgType, content: JSON.stringify({ file_key: uploaded.file_key }), uuid },
 			}));
 			if (sent.code !== 0) return { success: false, error: sent.msg ?? `feishu code ${sent.code}` };
+			this.rememberOutboundMessage(sent.data?.message_id);
 			return { success: true, messageId: sent.data?.message_id };
 		} catch (error) {
 			return { success: false, error: error instanceof Error ? error.message : String(error) };
@@ -965,6 +996,7 @@ export class FeishuAdapter implements PlatformAdapter {
 				}));
 			}
 			if (res.code !== 0) return { success: false, error: res.msg ?? `feishu code ${res.code}` };
+			this.rememberOutboundMessage(res.data?.message_id);
 			return { success: true, messageId: res.data?.message_id };
 		} catch (err) {
 			return { success: false, error: err instanceof Error ? err.message : String(err) };
@@ -997,6 +1029,16 @@ function feishuAdmissionReason(decision: Exclude<GroupActivationDecision, { admi
 		case "actor_not_allowed": return "sender is not authorized for group";
 		case "admin_required": return "sender is not a group admin";
 		case "activation_required": return "group message without bot mention";
+	}
+}
+
+function feishuMessageIsCommand(message: Pick<FeishuMessage, "message_type" | "content">): boolean {
+	if (message.message_type !== "text") return false;
+	try {
+		const content = JSON.parse(message.content) as { text?: unknown };
+		return typeof content.text === "string" && content.text.trimStart().startsWith("/");
+	} catch {
+		return false;
 	}
 }
 

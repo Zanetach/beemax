@@ -144,6 +144,10 @@ _Avoid_: Conversation, display name, Profile
 The transport-neutral admission rule that decides whether a group Interaction may be considered for response or observation from verified signals such as mention, reply, command, role, and allowlist state. It never performs business reasoning or grants Tool authority.
 _Avoid_: Prompt instruction, Enterprise Policy, Situation decision
 
+**Active Conversation Lane**:
+A bounded, expiring group Conversation/Thread state created only by a verified Activation signal. It permits natural contextual follow-ups in that same lane without repeated mentions, but never crosses Threads, grants authority, or becomes durable Memory.
+_Avoid_: Session ownership, Access Scope, permanent group state
+
 **Profile Binding**:
 A deterministic, model-independent route from Channel Instance, optional account, Conversation, and Thread to exactly one Profile. Thread outranks Conversation, Conversation outranks account, and account outranks the Channel Instance default; same-level ambiguity fails closed.
 _Avoid_: Prompt routing, Adapter-selected Profile, array-order fallback

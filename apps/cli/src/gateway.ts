@@ -17,7 +17,7 @@ import {
 	GatewayDeliveryPort,
 	GatewayIngressController,
 	PairingStore,
-	ProfileBindingResolver,
+	assertProfileBindingConfiguration,
 	TelegramAdapter,
 	type FeishuSettings,
 } from "@beemax/gateway";
@@ -85,15 +85,9 @@ export async function runGateway(config: BeeMaxConfig): Promise<void> {
 		recordGatewayEvent(config.paths.agentDir, "failed", { profile: config.profile, error });
 		throw new Error(error);
 	}
-	const bindingResolver = new ProfileBindingResolver(config.gateway.bindings);
+	let bindingResolver;
 	try {
-		const bindingValidation = bindingResolver.validate();
-		if (!bindingValidation.valid) throw new Error(`Profile Binding configuration has conflicts: ${bindingValidation.conflicts.map((conflict) => conflict.bindingIds.join(", ")).join("; ")}`);
-		const enabledChannelIds = new Set(enabledChannels.map((channel) => channel.id));
-		const unknownBindings = config.gateway.bindings.filter((binding) => binding.enabled && !enabledChannelIds.has(binding.channelInstanceId));
-		if (unknownBindings.length) throw new Error(`Profile Binding references an unavailable Channel Instance: ${unknownBindings.map((binding) => binding.channelInstanceId).join(", ")}`);
-		const foreignBindings = config.gateway.bindings.filter((binding) => binding.enabled && binding.profileId !== config.profile);
-		if (foreignBindings.length) throw new Error(`Profile-owned Gateway cannot route to another Profile before Shared Relay is enabled: ${foreignBindings.map((binding) => `${binding.id}->${binding.profileId}`).join(", ")}`);
+		bindingResolver = assertProfileBindingConfiguration(config.gateway.bindings, { profileId: config.profile, channelInstanceIds: enabledChannels.map((channel) => channel.id) });
 	} catch (error) {
 		const message = error instanceof Error ? error.message : String(error);
 		writeGatewayState(config.paths.agentDir, { profile: config.profile, lifecycle: "failed", version: installedVersion(), pid: process.pid, stoppedAt: new Date().toISOString(), lastError: message.slice(0, 500) });
@@ -120,6 +114,7 @@ export async function runGateway(config: BeeMaxConfig): Promise<void> {
 		mediaBatchDelayMs: config.gateway.feishu.mediaBatchDelayMs,
 		retryBaseDelayMs: config.gateway.feishu.retryBaseDelayMs,
 		requireMention: config.gateway.feishu.requireMention,
+		activation: config.gateway.feishu.activation,
 		allowedUsers: config.gateway.feishu.allowedUsers,
 		allowedChats: config.gateway.feishu.allowedChats,
 		allowAllUsers: config.gateway.feishu.allowAllUsers,

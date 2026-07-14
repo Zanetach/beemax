@@ -29,6 +29,47 @@ export type GroupActivationDecision =
 	| { admitted: false; reason: "group_disabled" | "actor_blocked" | "actor_not_allowed" | "admin_required" | "activation_required" };
 type GroupAccessDenial = { admitted: false; reason: "group_disabled" | "actor_blocked" | "actor_not_allowed" | "admin_required" };
 
+export interface GroupActivationControllerOptions {
+	activeThreadTtlMs?: number;
+	maxActiveThreads?: number;
+	now?: () => number;
+}
+
+export interface GroupActivationControllerInput extends Omit<GroupActivationInput, "signals"> {
+	signals: Partial<Record<Exclude<GroupActivationSignal, "active_thread">, boolean>>;
+}
+
+/** Bounded, ephemeral contextual activation state; durable Agent authority never depends on it. */
+export class GroupActivationController {
+	private readonly activeThreadTtlMs: number;
+	private readonly maxActiveThreads: number;
+	private readonly now: () => number;
+	private readonly activeThreads = new Map<string, number>();
+
+	constructor(options: GroupActivationControllerOptions = {}) {
+		this.activeThreadTtlMs = positiveInteger(options.activeThreadTtlMs, 15 * 60_000);
+		this.maxActiveThreads = positiveInteger(options.maxActiveThreads, 10_000);
+		this.now = options.now ?? Date.now;
+	}
+
+	decide(laneKey: string, input: GroupActivationControllerInput): GroupActivationDecision {
+		if (!laneKey.trim()) throw new Error("Group Activation requires a Conversation lane key");
+		const now = this.now();
+		const active = input.mode === "contextual" && (this.activeThreads.get(laneKey) ?? 0) > now;
+		const decision = decideGroupActivation({ ...input, signals: { ...input.signals, active_thread: active } });
+		if (input.mode !== "contextual") this.activeThreads.delete(laneKey);
+		else if (decision.admitted && decision.action === "respond") this.remember(laneKey, now);
+		else if (!active) this.activeThreads.delete(laneKey);
+		return decision;
+	}
+
+	private remember(laneKey: string, now: number): void {
+		this.activeThreads.delete(laneKey);
+		this.activeThreads.set(laneKey, now + this.activeThreadTtlMs);
+		while (this.activeThreads.size > this.maxActiveThreads) this.activeThreads.delete(this.activeThreads.keys().next().value!);
+	}
+}
+
 /** Transport-neutral group admission. Platform adapters supply verified identity and mention facts only. */
 export function decideGroupAdmission(input: GroupAdmissionInput): GroupAdmissionDecision {
 	const access = decideGroupAccess(input);
@@ -60,4 +101,10 @@ function decideGroupAccess(input: Pick<GroupAdmissionInput, "policy" | "actorIds
 
 function intersects(actorIds: readonly string[], configured: readonly string[] | undefined): boolean {
 	return Boolean(configured?.some((id) => actorIds.includes(id)));
+}
+
+function positiveInteger(value: number | undefined, fallback: number): number {
+	if (value === undefined) return fallback;
+	if (!Number.isSafeInteger(value) || value < 1) throw new Error("Group Activation limits must be positive integers");
+	return value;
 }

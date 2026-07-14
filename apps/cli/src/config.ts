@@ -13,6 +13,7 @@ import { beemaxRoot, resolveProfileLocation, validateProfileName } from "./profi
 import { resolveSoul } from "./soul.ts";
 import { providerApiKeyEnv } from "./provider-resolver.ts";
 import type { MemoryMembership } from "./memory-membership.ts";
+import type { FeishuActivationSettings, FeishuGroupRule } from "@beemax/gateway";
 
 export { beemaxHome, beemaxRoot, validateProfileName } from "./profile-home.ts";
 
@@ -21,11 +22,12 @@ export interface FeishuConfig {
 	appSecret: string;
 	domain: "feishu" | "lark";
 	requireMention: boolean;
+	activation: FeishuActivationSettings;
 	allowedUsers: string[];
 	allowedChats: string[];
 	allowAllUsers: boolean;
 	groupPolicy: "open" | "allowlist" | "disabled";
-	groupRules: Record<string, { policy?: "open" | "allowlist" | "blacklist" | "admin_only" | "disabled"; allowlist?: string[]; blacklist?: string[]; requireMention?: boolean }>;
+	groupRules: Record<string, FeishuGroupRule>;
 	admins: string[];
 	homeChatId?: string;
 	homeUserId?: string;
@@ -217,11 +219,13 @@ export function loadConfig(configPath?: string, profile = "default"): BeeMaxConf
 	const soul = resolveSoul(storedSoul || env.BEEMAX_SYSTEM_PROMPT || cfg.agent?.systemPrompt);
 	const feishuAllowedUsers = parseList(env.FEISHU_ALLOWED_USERS ?? configuredFeishu?.allowedUsers);
 	const configuredAdmins = parseList(env.FEISHU_ADMINS ?? configuredFeishu?.admins);
+	const requireMention = parseBool(env.FEISHU_REQUIRE_MENTION ?? configuredFeishu?.requireMention ?? true);
 	const feishu: FeishuConfig = {
 		appId,
 		appSecret,
 		domain: (env.FEISHU_DOMAIN ?? configuredFeishu?.domain ?? "feishu") === "lark" ? "lark" : "feishu",
-		requireMention: parseBool(env.FEISHU_REQUIRE_MENTION ?? configuredFeishu?.requireMention ?? true),
+		requireMention,
+		activation: parseFeishuActivation(configuredFeishu?.activation, requireMention, env),
 		allowedUsers: feishuAllowedUsers,
 		allowedChats: parseList(env.FEISHU_ALLOWED_CHATS ?? configuredFeishu?.allowedChats),
 		allowAllUsers: parseBool(env.FEISHU_ALLOW_ALL_USERS ?? configuredFeishu?.allowAllUsers ?? false),
@@ -521,6 +525,28 @@ export function parseMemoryMemberships(value: unknown): MemoryMembership[] {
 }
 
 function parseGroupPolicy(value: unknown): "open" | "allowlist" | "disabled" { return value === "open" || value === "disabled" ? value : "allowlist"; }
+function parseFeishuActivation(value: unknown, requireMention: boolean, env: Record<string, string | undefined>): FeishuActivationSettings {
+	const candidate = value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
+	return {
+		mode: parseActivationMode(env.FEISHU_ACTIVATION_MODE ?? candidate.mode, requireMention ? "contextual" : "ambient"),
+		respondTo: parseActivationSignals(env.FEISHU_ACTIVATION_RESPOND_TO ?? candidate.respondTo),
+		activeThreadTtlMs: boundedNumber(env.FEISHU_ACTIVE_THREAD_TTL_MS ?? candidate.activeThreadTtlMs, 15 * 60_000, 1_000, 24 * 60 * 60_000),
+		maxActiveThreads: boundedNumber(env.FEISHU_MAX_ACTIVE_THREADS ?? candidate.maxActiveThreads, 10_000, 1, 100_000),
+	};
+}
+function parseActivationMode(value: unknown, fallback: FeishuActivationSettings["mode"]): FeishuActivationSettings["mode"] {
+	if (value === undefined || value === null || value === "") return fallback;
+	if (value === "disabled" || value === "explicit" || value === "contextual" || value === "ambient") return value;
+	throw new Error(`Invalid group activation mode: ${String(value)}`);
+}
+function parseActivationSignals(value: unknown): FeishuActivationSettings["respondTo"] {
+	const allowed = new Set(["mention", "reply", "active_thread", "command"] as const);
+	if (value === undefined || value === null) return ["mention", "reply", "active_thread", "command"];
+	const configured = parseList(value);
+	const invalid = configured.filter((signal) => !allowed.has(signal as FeishuActivationSettings["respondTo"][number]));
+	if (invalid.length) throw new Error(`Invalid group activation signals: ${invalid.join(", ")}`);
+	return [...new Set(configured)] as FeishuActivationSettings["respondTo"];
+}
 function parseGroupRules(value: unknown): FeishuConfig["groupRules"] {
 	if (!value || typeof value !== "object" || Array.isArray(value)) return {};
 	const result: FeishuConfig["groupRules"] = {};
@@ -528,7 +554,16 @@ function parseGroupRules(value: unknown): FeishuConfig["groupRules"] {
 		if (!chatId || !raw || typeof raw !== "object" || Array.isArray(raw)) continue;
 		const rule = raw as Record<string, unknown>;
 		const policy = ["open", "allowlist", "blacklist", "admin_only", "disabled"].includes(String(rule.policy)) ? rule.policy as FeishuConfig["groupRules"][string]["policy"] : undefined;
-		result[chatId] = { policy, allowlist: parseList(rule.allowlist), blacklist: parseList(rule.blacklist), ...(typeof rule.requireMention === "boolean" ? { requireMention: rule.requireMention } : {}) };
+		const activation = rule.activation && typeof rule.activation === "object" && !Array.isArray(rule.activation) ? rule.activation as Record<string, unknown> : undefined;
+		const activationOverride = activation ? {
+			...(activation.mode !== undefined ? { mode: parseActivationMode(activation.mode, "contextual") } : {}),
+			...(activation.respondTo !== undefined ? { respondTo: parseActivationSignals(activation.respondTo) } : {}),
+		} : undefined;
+		result[chatId] = {
+			policy, allowlist: parseList(rule.allowlist), blacklist: parseList(rule.blacklist),
+			...(typeof rule.requireMention === "boolean" ? { requireMention: rule.requireMention } : {}),
+			...(activationOverride ? { activation: activationOverride } : {}),
+		};
 	}
 	return result;
 }
