@@ -751,9 +751,13 @@ async function runMigrationCommand(parsed: ParsedArgs): Promise<void> {
 		const manifestPath = parsed.positionals[3];
 		if (!manifestPath) throw new Error("channel-instance rollback requires a manifest path");
 		if (parsed.options.yes !== true) throw new Error("Channel instance migration rollback requires --yes");
+		const config = loadConfig(parsed.configPath, profile);
+		const location = resolveProfileLocation(profile, parsed.configPath);
 		const result = await rollbackProfileChannelInstanceMigration({
 			lockRoot: beemaxHome(),
+			profileHome: location.homePath,
 			profile,
+			dbPath: config.memory.dbPath,
 			manifestPath,
 		});
 		console.log(`Rolled back channel instance migration '${result.migrationId}' for Profile '${profile}'. Post-migration snapshot: ${result.postMigrationBackupPath}`);
@@ -764,6 +768,10 @@ async function runMigrationCommand(parsed: ParsedArgs): Promise<void> {
 	const channelInstanceId = optionString(parsed, "channel-instance");
 	if (!platform || !channelInstanceId) throw new Error("channel-instance plan/apply requires --platform and --channel-instance");
 	const config = loadConfig(parsed.configPath, profile);
+	const channel = config.gateway.channels.find((candidate) => candidate.id === channelInstanceId);
+	if (!channel || !channel.enabled || channel.adapter !== platform) {
+		throw new Error(`Configured enabled Channel Instance '${channelInstanceId}' does not belong to platform '${platform}' in Profile '${profile}'`);
+	}
 	const target = {
 		lockRoot: beemaxHome(),
 		profile,

@@ -14,10 +14,12 @@ function fixture() {
 		CREATE TABLE memories (id TEXT PRIMARY KEY, platform TEXT NOT NULL, chat_id TEXT NOT NULL);
 		CREATE TABLE automation_jobs (id TEXT PRIMARY KEY, platform TEXT NOT NULL, channel_instance_id TEXT, chat_id TEXT NOT NULL);
 		CREATE TABLE automation_routes (platform TEXT NOT NULL, channel_instance_id TEXT NOT NULL DEFAULT '', user_id TEXT NOT NULL, chat_id TEXT NOT NULL, PRIMARY KEY(platform, channel_instance_id, user_id));
+		CREATE TABLE customer_extension (id TEXT PRIMARY KEY, platform TEXT NOT NULL);
 		CREATE TABLE unrelated (id TEXT PRIMARY KEY, value TEXT NOT NULL);
 		INSERT INTO memories VALUES ('legacy-memory', 'feishu', 'chat-a'), ('other-memory', 'telegram', 'chat-a'), ('owned-memory', 'feishu@company-a', 'chat-a');
 		INSERT INTO automation_jobs VALUES ('legacy-job', 'feishu', NULL, 'chat-a'), ('owned-job', 'feishu', 'company-b', 'chat-a');
 		INSERT INTO automation_routes VALUES ('feishu', '', 'user-a', 'chat-a');
+		INSERT INTO customer_extension VALUES ('customer-row', 'feishu');
 		INSERT INTO unrelated VALUES ('keep', 'unchanged');
 	`);
 	db.close();
@@ -52,9 +54,54 @@ test("Profile Channel Instance migration plans and atomically assigns only legac
 			assert.equal(db.prepare("SELECT channel_instance_id FROM automation_jobs WHERE id='owned-job'").pluck().get(), "company-b");
 			assert.equal(db.prepare("SELECT channel_instance_id FROM automation_routes WHERE user_id='user-a'").pluck().get(), "company-a");
 			assert.equal(db.prepare("SELECT value FROM unrelated WHERE id='keep'").pluck().get(), "unchanged");
+			assert.equal(db.prepare("SELECT platform FROM customer_extension WHERE id='customer-row'").pluck().get(), "feishu");
 			assert.equal(db.prepare("SELECT backup_ref FROM channel_instance_migrations WHERE id='migration-1'").pluck().get(), "backup:profile-before-migration");
 		} finally { db.close(); }
 		assert.equal(migration.plan("feishu", "company-a").totalRows, 0);
+	} finally {
+		migration.close();
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("Profile Channel Instance migration snapshots both sides while its SQLite write fence is held", async () => {
+	const { root, path } = fixture();
+	const backupPath = join(root, "before.db");
+	const migration = new ProfileChannelInstanceMigration(path);
+	const competingWriter = new Database(path);
+	competingWriter.pragma("busy_timeout = 1");
+	try {
+		const applied = await migration.applyWithBackup({
+			id: "migration-fenced", platform: "feishu", channelInstanceId: "company-a", backupRef: backupPath,
+		}, backupPath, async (prepared) => {
+			assert.notEqual(prepared.preMigrationDigest, prepared.postMigrationDigest);
+			assert.throws(() => competingWriter.prepare("INSERT INTO memories VALUES ('concurrent', 'feishu', 'chat-a')").run(), /locked|busy/i);
+		});
+		assert.equal(applied.result.totalRows, 3);
+		const backup = new Database(backupPath, { readonly: true });
+		try { assert.equal(backup.prepare("SELECT platform FROM memories WHERE id='legacy-memory'").pluck().get(), "feishu"); }
+		finally { backup.close(); }
+	} finally {
+		competingWriter.close();
+		migration.close();
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("Profile Channel Instance migration rolls back when the prepared recovery manifest cannot be persisted", async () => {
+	const { root, path } = fixture();
+	const backupPath = join(root, "before-failed.db");
+	const migration = new ProfileChannelInstanceMigration(path);
+	try {
+		await assert.rejects(
+			migration.applyWithBackup({ id: "migration-prepare-failed", platform: "feishu", channelInstanceId: "company-a", backupRef: backupPath }, backupPath, async () => { throw new Error("manifest unavailable"); }),
+			/manifest unavailable/,
+		);
+		const check = new Database(path, { readonly: true });
+		try {
+			assert.equal(check.prepare("SELECT platform FROM memories WHERE id='legacy-memory'").pluck().get(), "feishu");
+			assert.equal(check.prepare("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='channel_instance_migrations'").pluck().get(), 0);
+		} finally { check.close(); }
 	} finally {
 		migration.close();
 		rmSync(root, { recursive: true, force: true });

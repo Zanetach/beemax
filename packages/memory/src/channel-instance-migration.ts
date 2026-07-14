@@ -1,5 +1,6 @@
 import Database from "better-sqlite3";
 import type { Database as DatabaseType } from "better-sqlite3";
+import { createHash } from "node:crypto";
 
 export type ChannelRouteStorage = "channel_instance_column" | "encoded_platform";
 
@@ -33,13 +34,43 @@ export interface AppliedChannelInstanceMigration extends ChannelInstanceMigratio
 	appliedAt: number;
 }
 
+export interface PreparedChannelInstanceMigration {
+	result: AppliedChannelInstanceMigration;
+	preMigrationDigest: string;
+	postMigrationDigest: string;
+}
+
+interface ChannelRouteTableDescriptor {
+	table: string;
+	storage: ChannelRouteStorage;
+	scopeKey?: boolean;
+	structuredRouteColumns?: readonly string[];
+}
+
 interface TableInfoRow { name: string; }
 interface NamedTableRow { name: string; }
+interface SchemaRow { type: string; name: string; tbl_name: string; sql: string | null; }
 interface CountRow { count: number; }
 interface UserRow { user_id: string; }
 interface CanonicalRow { canonical_value: string; }
 
 const MIGRATION_TABLE = "channel_instance_migrations";
+const ROUTE_TABLES: readonly ChannelRouteTableDescriptor[] = [
+	{ table: "automation_deliveries", storage: "channel_instance_column" },
+	{ table: "automation_jobs", storage: "channel_instance_column" },
+	{ table: "automation_routes", storage: "channel_instance_column" },
+	{ table: "initiative_observations", storage: "channel_instance_column" },
+	{ table: "initiative_triggers", storage: "channel_instance_column", structuredRouteColumns: ["delivery_target", "execution_scope"] },
+	{ table: "media_deliveries", storage: "channel_instance_column" },
+	{ table: "memories", storage: "encoded_platform" },
+	{ table: "memory_candidates", storage: "encoded_platform" },
+	{ table: "memory_claims", storage: "encoded_platform" },
+	{ table: "memory_convention_candidates", storage: "encoded_platform", scopeKey: true },
+	{ table: "memory_episodes", storage: "encoded_platform" },
+	{ table: "memory_events", storage: "encoded_platform" },
+	{ table: "memory_workflow_candidates", storage: "encoded_platform", scopeKey: true },
+	{ table: "task_plan_completion_notices", storage: "channel_instance_column" },
+];
 
 function quoteIdentifier(value: string): string {
 	return `"${value.replaceAll('"', '""')}"`;
@@ -66,9 +97,11 @@ function requireText(label: string, value: string): string {
  */
 export class ProfileChannelInstanceMigration {
 	private readonly db: DatabaseType;
+	private readonly path: string;
 	private closed = false;
 
 	constructor(path: string) {
+		this.path = path;
 		this.db = new Database(path);
 		this.db.pragma("foreign_keys = ON");
 		this.db.pragma("busy_timeout = 5000");
@@ -84,29 +117,35 @@ export class ProfileChannelInstanceMigration {
 
 	apply(input: ApplyChannelInstanceMigrationInput): AppliedChannelInstanceMigration {
 		this.assertOpen();
-		const id = requireText("migration id", input.id);
-		const backupRef = requireText("backupRef", input.backupRef);
-		const platform = validateAddressPart("platform", input.platform);
-		const channelInstanceId = validateAddressPart("channelInstanceId", input.channelInstanceId);
-		const appliedAt = input.appliedAt ?? Date.now();
+		const normalized = this.normalizeInput(input);
+		return this.db.transaction(() => this.applyInternal(normalized))();
+	}
 
-		return this.db.transaction(() => {
-			const plan = this.planInternal(platform, channelInstanceId);
-			if (plan.blockers.length > 0) {
-				throw new Error(`Channel instance migration is blocked:\n${plan.blockers.join("\n")}`);
-			}
-			if (plan.totalRows === 0) throw new Error("Channel instance migration has no legacy route data to assign");
-
-			this.createAuditTable();
-			for (const table of plan.tables) this.applyTable(table, platform, channelInstanceId);
-			this.db.prepare(`
-				INSERT INTO ${MIGRATION_TABLE}
-					(id, base_platform, channel_instance_id, backup_ref, row_counts_json, total_rows, applied_at)
-				VALUES (?, ?, ?, ?, ?, ?, ?)
-			`).run(id, platform, channelInstanceId, backupRef, JSON.stringify(plan.tables), plan.totalRows, appliedAt);
-
-			return { ...plan, id, backupRef, appliedAt };
-		})();
+	/** Holds SQLite's write fence across the verified before snapshot, mutation, and prepared recovery manifest. */
+	async applyWithBackup(
+		input: ApplyChannelInstanceMigrationInput,
+		backupPath: string,
+		prepareCommit: (prepared: PreparedChannelInstanceMigration) => void | Promise<void>,
+	): Promise<PreparedChannelInstanceMigration> {
+		this.assertOpen();
+		const normalized = this.normalizeInput(input);
+		this.db.exec("BEGIN IMMEDIATE");
+		try {
+			const backupSource = new Database(this.path, { readonly: true, fileMustExist: true });
+			try { await backupSource.backup(backupPath); }
+			finally { backupSource.close(); }
+			verifyDatabase(this.path, backupPath);
+			const preMigrationDigest = digestDatabase(this.db);
+			if (digestSqliteDatabase(backupPath) !== preMigrationDigest) throw new Error("SQLite backup does not match the fenced pre-migration state");
+			const result = this.applyInternal(normalized);
+			const prepared = { result, preMigrationDigest, postMigrationDigest: digestDatabase(this.db) };
+			await prepareCommit(prepared);
+			this.db.exec("COMMIT");
+			return prepared;
+		} catch (error) {
+			if (this.db.inTransaction) this.db.exec("ROLLBACK");
+			throw error;
+		}
 	}
 
 	close(): void {
@@ -118,17 +157,20 @@ export class ProfileChannelInstanceMigration {
 	private planInternal(platform: string, channelInstanceId: string): ChannelInstanceMigrationPlan {
 		const tables: ChannelInstanceMigrationTablePlan[] = [];
 		const blockers: string[] = [];
-		for (const table of this.userTables()) {
-			const columns = this.columns(table);
-			if (!columns.has("platform")) continue;
-			const storage: ChannelRouteStorage = columns.has("channel_instance_id")
-				? "channel_instance_column"
-				: "encoded_platform";
-			const where = storage === "channel_instance_column"
+		const existing = new Set(this.userTables());
+		for (const descriptor of ROUTE_TABLES) {
+			if (!existing.has(descriptor.table)) continue;
+			const columns = this.columns(descriptor.table);
+			const required = descriptor.storage === "channel_instance_column" ? ["platform", "channel_instance_id"] : ["platform"];
+			if (!required.every((column) => columns.has(column))) {
+				blockers.push(`${descriptor.table} schema does not support ${descriptor.storage}`);
+				continue;
+			}
+			const where = descriptor.storage === "channel_instance_column"
 				? "platform = ? AND (channel_instance_id IS NULL OR channel_instance_id = '')"
 				: "platform = ?";
-			const row = this.db.prepare(`SELECT COUNT(*) AS count FROM ${quoteIdentifier(table)} WHERE ${where}`).get(platform) as CountRow;
-			if (row.count > 0) tables.push({ table, storage, rows: row.count });
+			const row = this.db.prepare(`SELECT COUNT(*) AS count FROM ${quoteIdentifier(descriptor.table)} WHERE ${where}`).get(platform) as CountRow;
+			if (row.count > 0) tables.push({ table: descriptor.table, storage: descriptor.storage, rows: row.count });
 		}
 
 		if (this.hasColumns("automation_routes", ["platform", "channel_instance_id", "user_id"])) {
@@ -195,13 +237,15 @@ export class ProfileChannelInstanceMigration {
 
 	private applyTable(table: ChannelInstanceMigrationTablePlan, platform: string, channelInstanceId: string): void {
 		const identifier = quoteIdentifier(table.table);
+		const descriptor = ROUTE_TABLES.find((candidate) => candidate.table === table.table);
+		if (!descriptor || descriptor.storage !== table.storage) throw new Error(`No migration descriptor owns ${table.table}`);
 		let result: Database.RunResult;
 		if (table.storage === "channel_instance_column") {
 			const columns = this.columns(table.table);
 			const assignments = ["channel_instance_id = ?"];
 			const params: unknown[] = [channelInstanceId];
-			if (table.table === "initiative_triggers") {
-				for (const column of ["delivery_target", "execution_scope"]) {
+			if (descriptor.structuredRouteColumns) {
+				for (const column of descriptor.structuredRouteColumns) {
 					if (!columns.has(column)) continue;
 					assignments.push(`${quoteIdentifier(column)} = CASE WHEN ${quoteIdentifier(column)} IS NULL THEN NULL ELSE json_set(${quoteIdentifier(column)}, '$.channelInstanceId', ?) END`);
 					params.push(channelInstanceId);
@@ -213,7 +257,7 @@ export class ProfileChannelInstanceMigration {
 			const columns = this.columns(table.table);
 			const assignments = ["platform = ?"];
 			const params: unknown[] = [`${platform}@${channelInstanceId}`];
-			if (["scope_key", "chat_id", "user_id", "thread_id"].every((column) => columns.has(column))) {
+			if (descriptor.scopeKey && ["scope_key", "chat_id", "user_id", "thread_id"].every((column) => columns.has(column))) {
 				assignments.push("scope_key = json_array(?, chat_id, user_id, thread_id)");
 				params.push(`${platform}@${channelInstanceId}`);
 			}
@@ -239,6 +283,30 @@ export class ProfileChannelInstanceMigration {
 		`);
 	}
 
+	private normalizeInput(input: ApplyChannelInstanceMigrationInput): Required<ApplyChannelInstanceMigrationInput> {
+		return {
+			id: requireText("migration id", input.id),
+			backupRef: requireText("backupRef", input.backupRef),
+			platform: validateAddressPart("platform", input.platform),
+			channelInstanceId: validateAddressPart("channelInstanceId", input.channelInstanceId),
+			appliedAt: input.appliedAt ?? Date.now(),
+		};
+	}
+
+	private applyInternal(input: Required<ApplyChannelInstanceMigrationInput>): AppliedChannelInstanceMigration {
+		const plan = this.planInternal(input.platform, input.channelInstanceId);
+		if (plan.blockers.length > 0) throw new Error(`Channel instance migration is blocked:\n${plan.blockers.join("\n")}`);
+		if (plan.totalRows === 0) throw new Error("Channel instance migration has no legacy route data to assign");
+		this.createAuditTable();
+		for (const table of plan.tables) this.applyTable(table, input.platform, input.channelInstanceId);
+		this.db.prepare(`
+			INSERT INTO ${MIGRATION_TABLE}
+				(id, base_platform, channel_instance_id, backup_ref, row_counts_json, total_rows, applied_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?)
+		`).run(input.id, input.platform, input.channelInstanceId, input.backupRef, JSON.stringify(plan.tables), plan.totalRows, input.appliedAt);
+		return { ...plan, id: input.id, backupRef: input.backupRef, appliedAt: input.appliedAt };
+	}
+
 	private userTables(): string[] {
 		return (this.db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name").all() as NamedTableRow[])
 			.map((row) => row.name)
@@ -258,4 +326,60 @@ export class ProfileChannelInstanceMigration {
 	private assertOpen(): void {
 		if (this.closed) throw new Error("ProfileChannelInstanceMigration is closed");
 	}
+}
+
+/** Stable, bounded-memory digest of one logical SQLite state, including schema and all table rows. */
+export function digestSqliteDatabase(path: string): string {
+	const db = new Database(path, { readonly: true, fileMustExist: true });
+	try {
+		db.exec("BEGIN");
+		const digest = digestDatabase(db);
+		db.exec("COMMIT");
+		return digest;
+	}
+	catch (error) {
+		if (db.inTransaction) db.exec("ROLLBACK");
+		throw error;
+	}
+	finally { db.close(); }
+}
+
+function digestDatabase(db: DatabaseType): string {
+	const hash = createHash("sha256");
+	const schema = db.prepare(`SELECT type, name, tbl_name, sql FROM sqlite_master
+		WHERE name NOT LIKE 'sqlite_%' ORDER BY type, name`).all() as SchemaRow[];
+	for (const row of schema) {
+		hashValue(hash, row.type);
+		hashValue(hash, row.name);
+		hashValue(hash, row.tbl_name);
+		hashValue(hash, row.sql);
+	}
+	for (const table of schema.filter((row) => row.type === "table")) {
+		const columns = (db.prepare(`PRAGMA table_info(${quoteIdentifier(table.name)})`).all() as TableInfoRow[]).map((row) => row.name);
+		if (columns.length === 0) continue;
+		const projection = columns.map(quoteIdentifier).join(", ");
+		hashValue(hash, table.name);
+		for (const row of db.prepare(`SELECT ${projection} FROM ${quoteIdentifier(table.name)} ORDER BY ${projection}`).iterate() as Iterable<Record<string, unknown>>) {
+			for (const column of columns) hashValue(hash, row[column]);
+		}
+	}
+	return hash.digest("hex");
+}
+
+function hashValue(hash: ReturnType<typeof createHash>, value: unknown): void {
+	let type: string = typeof value;
+	let bytes: Buffer;
+	if (value === null) { type = "null"; bytes = Buffer.alloc(0); }
+	else if (Buffer.isBuffer(value)) { type = "buffer"; bytes = value; }
+	else bytes = Buffer.from(String(value), "utf8");
+	hash.update(`${type}:${bytes.byteLength}:`);
+	hash.update(bytes);
+}
+
+function verifyDatabase(sourcePath: string, backupPath: string): void {
+	const db = new Database(backupPath, { readonly: true, fileMustExist: true });
+	try {
+		const result = db.pragma("integrity_check", { simple: true });
+		if (result !== "ok") throw new Error(`SQLite backup integrity check failed for ${sourcePath}: ${String(result)}`);
+	} finally { db.close(); }
 }

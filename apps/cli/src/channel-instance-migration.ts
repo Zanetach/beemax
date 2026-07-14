@@ -1,13 +1,14 @@
-import { createHash, randomUUID } from "node:crypto";
-import { createReadStream } from "node:fs";
-import { access, mkdir, readFile, rename, rm } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
+import { access, mkdir, open, readFile, realpath, rename, rm } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import {
 	backupSqliteDatabase,
+	digestSqliteDatabase,
 	ProfileChannelInstanceMigration,
 	verifySqliteDatabase,
 	type AppliedChannelInstanceMigration,
 	type ChannelInstanceMigrationPlan,
+	type PreparedChannelInstanceMigration,
 } from "@beemax/memory";
 import { acquireChannelLock } from "./channel-lock.ts";
 
@@ -24,9 +25,11 @@ export interface ApplyProfileChannelInstanceMigrationInput extends ProfileChanne
 	migrationId?: string;
 }
 
+export type ProfileChannelInstanceMigrationStatus = "prepared" | "applied" | "rollback_prepared" | "rolled_back" | "aborted";
+
 export interface ProfileChannelInstanceMigrationManifest {
 	version: 1;
-	status: "applied" | "rolled_back";
+	status: ProfileChannelInstanceMigrationStatus;
 	migrationId: string;
 	profile: string;
 	dbPath: string;
@@ -37,7 +40,9 @@ export interface ProfileChannelInstanceMigrationManifest {
 	preMigrationDigest: string;
 	postMigrationDigest: string;
 	appliedAt: number;
+	rollbackPreparedAt?: number;
 	rolledBackAt?: number;
+	abortedAt?: number;
 	result: AppliedChannelInstanceMigration;
 }
 
@@ -47,8 +52,16 @@ export interface AppliedProfileChannelInstanceMigration extends ProfileChannelIn
 
 export interface RollbackProfileChannelInstanceMigrationInput {
 	lockRoot: string;
+	profileHome: string;
 	profile: string;
+	dbPath: string;
 	manifestPath: string;
+}
+
+interface MigrationPaths {
+	profileHome: string;
+	directory: string;
+	dbPath: string;
 }
 
 export async function planProfileChannelInstanceMigration(input: ProfileChannelInstanceMigrationTarget): Promise<ChannelInstanceMigrationPlan> {
@@ -62,91 +75,107 @@ export async function planProfileChannelInstanceMigration(input: ProfileChannelI
 export async function applyProfileChannelInstanceMigration(input: ApplyProfileChannelInstanceMigrationInput): Promise<AppliedProfileChannelInstanceMigration> {
 	return withProfileOffline(input.lockRoot, input.profile, async () => {
 		const migrationId = migrationFileId(input.migrationId ?? `channel-instance-${Date.now()}-${randomUUID()}`);
-		const directory = join(resolve(input.profileHome), "migrations", "channel-instance");
-		const backupPath = join(directory, `${migrationId}.before.db`);
-		const manifestPath = join(directory, `${migrationId}.json`);
-		await mkdir(directory, { recursive: true, mode: 0o700 });
+		const paths = await resolveMigrationPaths(input.profileHome, input.dbPath);
+		const backupPath = join(paths.directory, `${migrationId}.before.db`);
+		const manifestPath = join(paths.directory, `${migrationId}.json`);
 		await assertAbsent(backupPath);
 		await assertAbsent(manifestPath);
 
-		let databaseChanged = false;
+		const migration = new ProfileChannelInstanceMigration(paths.dbPath);
+		let manifest: ProfileChannelInstanceMigrationManifest | undefined;
 		try {
-			await backupSqliteDatabase(input.dbPath, backupPath);
-			verifySqliteDatabase(backupPath);
-			const preMigrationDigest = await sha256File(backupPath);
-			const migration = new ProfileChannelInstanceMigration(input.dbPath);
-			let result: AppliedChannelInstanceMigration;
-			try {
-				result = migration.apply({
-					id: migrationId,
-					platform: input.platform,
-					channelInstanceId: input.channelInstanceId,
-					backupRef: backupPath,
-				});
-			} finally { migration.close(); }
-			databaseChanged = true;
-			const postMigrationDigest = await digestSqliteSnapshot(input.dbPath, directory);
-			const manifest: ProfileChannelInstanceMigrationManifest = {
-				version: 1,
-				status: "applied",
-				migrationId,
-				profile: input.profile,
-				dbPath: resolve(input.dbPath),
-				backupPath,
-				platform: result.platform,
-				channelInstanceId: result.channelInstanceId,
-				preMigrationDigest,
-				postMigrationDigest,
-				appliedAt: result.appliedAt,
-				result,
-			};
-			await writeJsonAtomically(manifestPath, manifest);
-			return { ...manifest, manifestPath };
+			const prepared = await migration.applyWithBackup({
+				id: migrationId,
+				platform: input.platform,
+				channelInstanceId: input.channelInstanceId,
+				backupRef: backupPath,
+			}, backupPath, async (state) => {
+				verifySqliteDatabase(backupPath);
+				manifest = preparedManifest(input.profile, paths.dbPath, backupPath, migrationId, state);
+				await writeJsonAtomically(manifestPath, manifest);
+			});
+			manifest ??= preparedManifest(input.profile, paths.dbPath, backupPath, migrationId, prepared);
+			verifySqliteDatabase(paths.dbPath);
+			const applied: ProfileChannelInstanceMigrationManifest = { ...manifest, status: "applied" };
+			await writeJsonAtomically(manifestPath, applied);
+			return { ...applied, manifestPath };
 		} catch (error) {
-			if (!databaseChanged) await rm(backupPath, { force: true }).catch(() => undefined);
+			if (!manifest) await rm(backupPath, { force: true }).catch(() => undefined);
 			throw error;
-		}
+		} finally { migration.close(); }
 	});
 }
 
 export async function rollbackProfileChannelInstanceMigration(input: RollbackProfileChannelInstanceMigrationInput): Promise<ProfileChannelInstanceMigrationManifest> {
 	return withProfileOffline(input.lockRoot, input.profile, async () => {
-		const manifestPath = resolve(input.manifestPath);
-		const manifest = parseManifest(await readFile(manifestPath, "utf8"));
-		if (manifest.profile !== input.profile) throw new Error(`Migration belongs to Profile '${manifest.profile}', not '${input.profile}'`);
-		if (manifest.status !== "applied") throw new Error(`Migration ${manifest.migrationId} is already ${manifest.status}`);
-		verifySqliteDatabase(manifest.backupPath);
-		if (await sha256File(manifest.backupPath) !== manifest.preMigrationDigest) throw new Error("Migration backup digest does not match its manifest");
+		const paths = await resolveMigrationPaths(input.profileHome, input.dbPath);
+		const manifestPath = await validateManifestLocation(input.manifestPath, paths.directory);
+		let manifest = parseManifest(await readFile(manifestPath, "utf8"));
+		validateManifestOwnership(manifest, input.profile, paths, manifestPath);
+		if (manifest.status === "rolled_back" || manifest.status === "aborted") {
+			throw new Error(`Migration ${manifest.migrationId} is already ${manifest.status}`);
+		}
 
-		const directory = dirname(manifestPath);
-		const currentDigest = await digestSqliteSnapshot(manifest.dbPath, directory);
+		verifySqliteDatabase(manifest.backupPath);
+		if (digestSqliteDatabase(manifest.backupPath) !== manifest.preMigrationDigest) {
+			throw new Error("Migration backup digest does not match its manifest");
+		}
+		let currentDigest = digestSqliteDatabase(paths.dbPath);
+		if (manifest.status === "prepared" && currentDigest === manifest.preMigrationDigest) {
+			const aborted: ProfileChannelInstanceMigrationManifest = { ...manifest, status: "aborted", abortedAt: Date.now() };
+			await writeJsonAtomically(manifestPath, aborted);
+			return aborted;
+		}
+		if (manifest.status === "rollback_prepared" && currentDigest === manifest.preMigrationDigest) {
+			const completed: ProfileChannelInstanceMigrationManifest = { ...manifest, status: "rolled_back", rolledBackAt: Date.now() };
+			await writeJsonAtomically(manifestPath, completed);
+			return completed;
+		}
 		if (currentDigest !== manifest.postMigrationDigest) {
 			throw new Error("Profile database changed after migration; rollback would erase newer writes");
 		}
 
-		const postMigrationBackupPath = join(directory, `${manifest.migrationId}.after.db`);
-		await assertAbsent(postMigrationBackupPath);
-		await backupSqliteDatabase(manifest.dbPath, postMigrationBackupPath);
-		verifySqliteDatabase(postMigrationBackupPath);
-		const restorePath = join(dirname(manifest.dbPath), `.channel-instance-restore-${randomUUID()}.db`);
+		const postMigrationBackupPath = join(paths.directory, `${manifest.migrationId}.after.db`);
+		if (await exists(postMigrationBackupPath)) {
+			verifySqliteDatabase(postMigrationBackupPath);
+			if (digestSqliteDatabase(postMigrationBackupPath) !== manifest.postMigrationDigest) {
+				throw new Error("Post-migration recovery snapshot does not match its manifest");
+			}
+		} else {
+			await backupSqliteDatabase(paths.dbPath, postMigrationBackupPath);
+			verifySqliteDatabase(postMigrationBackupPath);
+			if (digestSqliteDatabase(postMigrationBackupPath) !== manifest.postMigrationDigest) {
+				await rm(postMigrationBackupPath, { force: true });
+				throw new Error("Profile database changed while preparing rollback");
+			}
+			await fsyncDirectory(paths.directory);
+		}
+
+		manifest = {
+			...manifest,
+			status: "rollback_prepared",
+			postMigrationBackupPath,
+			rollbackPreparedAt: manifest.rollbackPreparedAt ?? Date.now(),
+		};
+		await writeJsonAtomically(manifestPath, manifest);
+		const restorePath = join(dirname(paths.dbPath), `.channel-instance-restore-${randomUUID()}.db`);
 		try {
 			await backupSqliteDatabase(manifest.backupPath, restorePath);
 			verifySqliteDatabase(restorePath);
-			await rm(`${manifest.dbPath}-wal`, { force: true });
-			await rm(`${manifest.dbPath}-shm`, { force: true });
-			await rename(restorePath, manifest.dbPath);
-			verifySqliteDatabase(manifest.dbPath);
+			currentDigest = digestSqliteDatabase(paths.dbPath);
+			if (currentDigest !== manifest.postMigrationDigest) throw new Error("Profile database changed while rollback was prepared");
+			await rm(`${paths.dbPath}-wal`, { force: true });
+			await rm(`${paths.dbPath}-shm`, { force: true });
+			await rename(restorePath, paths.dbPath);
+			await fsyncDirectory(dirname(paths.dbPath));
+			verifySqliteDatabase(paths.dbPath);
+			if (digestSqliteDatabase(paths.dbPath) !== manifest.preMigrationDigest) throw new Error("Restored database does not match the pre-migration state");
 		} catch (error) {
 			await rm(restorePath, { force: true }).catch(() => undefined);
 			throw error;
 		}
 
-		const rolledBack: ProfileChannelInstanceMigrationManifest = {
-			...manifest,
-			status: "rolled_back",
-			postMigrationBackupPath,
-			rolledBackAt: Date.now(),
-		};
+		const rolledBack: ProfileChannelInstanceMigrationManifest = { ...manifest, status: "rolled_back", rolledBackAt: Date.now() };
 		await writeJsonAtomically(manifestPath, rolledBack);
 		return rolledBack;
 	});
@@ -158,6 +187,54 @@ async function withProfileOffline<T>(lockRoot: string, profile: string, operatio
 	finally { await release(); }
 }
 
+function preparedManifest(
+	profile: string,
+	dbPath: string,
+	backupPath: string,
+	migrationId: string,
+	prepared: PreparedChannelInstanceMigration,
+): ProfileChannelInstanceMigrationManifest {
+	return {
+		version: 1,
+		status: "prepared",
+		migrationId,
+		profile,
+		dbPath,
+		backupPath,
+		platform: prepared.result.platform,
+		channelInstanceId: prepared.result.channelInstanceId,
+		preMigrationDigest: prepared.preMigrationDigest,
+		postMigrationDigest: prepared.postMigrationDigest,
+		appliedAt: prepared.result.appliedAt,
+		result: prepared.result,
+	};
+}
+
+async function resolveMigrationPaths(profileHome: string, dbPath: string): Promise<MigrationPaths> {
+	const canonicalProfileHome = await realpath(resolve(profileHome));
+	const directory = join(canonicalProfileHome, "migrations", "channel-instance");
+	await mkdir(directory, { recursive: true, mode: 0o700 });
+	if (await realpath(directory) !== directory) throw new Error("Profile migration directory resolves outside the selected Profile");
+	return { profileHome: canonicalProfileHome, directory, dbPath: await realpath(resolve(dbPath)) };
+}
+
+async function validateManifestLocation(path: string, directory: string): Promise<string> {
+	const canonical = await realpath(resolve(path));
+	if (dirname(canonical) !== directory) throw new Error("Migration manifest path is outside the selected Profile migration directory");
+	return canonical;
+}
+
+function validateManifestOwnership(manifest: ProfileChannelInstanceMigrationManifest, profile: string, paths: MigrationPaths, manifestPath: string): void {
+	const id = migrationFileId(manifest.migrationId);
+	if (manifest.profile !== profile) throw new Error(`Migration belongs to Profile '${manifest.profile}', not '${profile}'`);
+	if (resolve(manifestPath) !== join(paths.directory, `${id}.json`)) throw new Error("Migration manifest path does not match its migration id");
+	if (resolve(manifest.dbPath) !== paths.dbPath) throw new Error("Migration manifest does not target the selected Profile configured database");
+	if (resolve(manifest.backupPath) !== join(paths.directory, `${id}.before.db`)) throw new Error("Migration backup path does not match the selected Profile");
+	if (manifest.postMigrationBackupPath && resolve(manifest.postMigrationBackupPath) !== join(paths.directory, `${id}.after.db`)) {
+		throw new Error("Post-migration backup path does not match the selected Profile");
+	}
+}
+
 function migrationFileId(value: string): string {
 	if (!/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,199}$/u.test(value)) {
 		throw new Error("migrationId must contain only letters, numbers, '.', '_' or '-' and be at most 200 characters");
@@ -165,47 +242,39 @@ function migrationFileId(value: string): string {
 	return value;
 }
 
+async function exists(path: string): Promise<boolean> {
+	try { await access(path); return true; }
+	catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return false; throw error; }
+}
+
 async function assertAbsent(path: string): Promise<void> {
-	try {
-		await access(path);
-		throw new Error(`Migration artifact already exists: ${path}`);
-	} catch (error) {
-		if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-	}
-}
-
-async function digestSqliteSnapshot(dbPath: string, directory: string): Promise<string> {
-	const snapshot = join(directory, `.digest-${randomUUID()}.db`);
-	try {
-		await backupSqliteDatabase(dbPath, snapshot);
-		verifySqliteDatabase(snapshot);
-		return await sha256File(snapshot);
-	} finally { await rm(snapshot, { force: true }).catch(() => undefined); }
-}
-
-async function sha256File(path: string): Promise<string> {
-	const hash = createHash("sha256");
-	for await (const chunk of createReadStream(path)) hash.update(chunk as Buffer);
-	return hash.digest("hex");
+	if (await exists(path)) throw new Error(`Migration artifact already exists: ${path}`);
 }
 
 async function writeJsonAtomically(path: string, value: unknown): Promise<void> {
 	const temp = `${path}.${randomUUID()}.tmp`;
 	try {
-		const handle = await import("node:fs/promises").then(({ open }) => open(temp, "wx", 0o600));
+		const handle = await open(temp, "wx", 0o600);
 		try {
 			await handle.writeFile(`${JSON.stringify(value, null, 2)}\n`, "utf8");
 			await handle.sync();
 		} finally { await handle.close(); }
 		await rename(temp, path);
+		await fsyncDirectory(dirname(path));
 	} finally { await rm(temp, { force: true }).catch(() => undefined); }
+}
+
+async function fsyncDirectory(path: string): Promise<void> {
+	const handle = await open(path, "r");
+	try { await handle.sync(); }
+	finally { await handle.close(); }
 }
 
 function parseManifest(source: string): ProfileChannelInstanceMigrationManifest {
 	const value = JSON.parse(source) as Partial<ProfileChannelInstanceMigrationManifest>;
 	if (value.version !== 1 || !value.migrationId || !value.profile || !value.dbPath || !value.backupPath
-		|| !value.preMigrationDigest || !value.postMigrationDigest || !value.result
-		|| (value.status !== "applied" && value.status !== "rolled_back")) {
+		|| !value.platform || !value.channelInstanceId || !value.preMigrationDigest || !value.postMigrationDigest || !value.result
+		|| !["prepared", "applied", "rollback_prepared", "rolled_back", "aborted"].includes(value.status ?? "")) {
 		throw new Error("Channel instance migration manifest is invalid");
 	}
 	return value as ProfileChannelInstanceMigrationManifest;
