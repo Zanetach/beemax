@@ -87,6 +87,7 @@ export interface BeeMaxConfig {
 		toolset: "safe" | "standard";
 		maxSessions: number;
 		sessionIdleMs: number;
+		turnIdleSettleMs: number;
 	};
 	model: {
 		provider: string;
@@ -301,6 +302,7 @@ export function loadConfig(configPath?: string, profile = "default"): BeeMaxConf
 			toolset: (env.BEEMAX_TOOLSET ?? cfg.agent?.toolset) === "safe" ? "safe" : "standard",
 			maxSessions: parseNumber(env.BEEMAX_MAX_SESSIONS ?? cfg.agent?.maxSessions, 100),
 			sessionIdleMs: parseNumber(env.BEEMAX_SESSION_IDLE_MS ?? cfg.agent?.sessionIdleMs, 30 * 60_000),
+			turnIdleSettleMs: boundedNumber(env.BEEMAX_TURN_IDLE_SETTLE_MS ?? cfg.agent?.turnIdleSettleMs, 60_000, 5_000, 5 * 60_000),
 		},
 		model: {
 			provider,

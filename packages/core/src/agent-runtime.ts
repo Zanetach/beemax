@@ -138,6 +138,8 @@ export interface BeeMaxAgentRuntimeOptions<Source extends BeeMaxRuntimeSource = 
 	verifyObjectiveCandidate?: TaskGraphVerifier;
 	/** Shared perception seam used when the active Pi model cannot consume media natively. */
 	mediaUnderstanding?: MediaUnderstandingPort;
+	/** Settle a Pi turn that has produced visible progress but then stops emitting output. Null disables it. */
+	turnIdleSettleMs?: number | null;
 }
 
 /**
@@ -162,6 +164,7 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 	private readonly executionTrace?: ExecutionTraceSink;
 	private readonly verifyObjectiveCandidate?: TaskGraphVerifier;
 	private readonly mediaUnderstanding: MediaUnderstandingPort;
+	private readonly turnIdleSettleMs: number | null;
 	private readonly supplementalMediaControllers = new Map<string, Set<AbortController>>();
 
 	constructor(options: BeeMaxAgentRuntimeOptions<Source>) {
@@ -181,6 +184,7 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 		this.executionTrace = options.executionTrace;
 		this.verifyObjectiveCandidate = options.verifyObjectiveCandidate;
 		this.mediaUnderstanding = options.mediaUnderstanding ?? new MediaUnderstandingRuntime([]);
+		this.turnIdleSettleMs = options.turnIdleSettleMs === null ? null : Math.max(10, Math.min(options.turnIdleSettleMs ?? 60_000, 300_000));
 	}
 
 	async run(input: AgentRunInput<Source>, onEvent?: BeeMaxAgentRunEventSink): Promise<AgentRunResult> {
@@ -304,9 +308,29 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 			const unresolvedToolProgress: string[] = [];
 			let checkpointedToolProgress = 0;
 			let eventDelivery = Promise.resolve();
+			let promptInFlight = false;
+			let idleSettleTimer: ReturnType<typeof setTimeout> | undefined;
+			const clearIdleSettle = () => {
+				if (idleSettleTimer) clearTimeout(idleSettleTimer);
+				idleSettleTimer = undefined;
+			};
+			const scheduleIdleSettle = () => {
+				clearIdleSettle();
+				if (this.turnIdleSettleMs === null || !promptInFlight || !observableProgress || toolStartedAt.size > 0) return;
+				idleSettleTimer = setTimeout(() => {
+					idleSettleTimer = undefined;
+					if (promptInFlight && toolStartedAt.size === 0) void session.piSession.abort();
+				}, this.turnIdleSettleMs);
+			};
+			const promptSession = async (...args: Parameters<typeof session.piSession.prompt>): Promise<void> => {
+				promptInFlight = true;
+				try { await session.piSession.prompt(...args); }
+				finally { promptInFlight = false; clearIdleSettle(); }
+			};
 			const enqueueEvent = (event: BeeMaxAgentRunEvent) => { eventDelivery = eventDelivery.then(() => onEvent?.(event)).then(() => undefined); };
 			const unsubscribe = session.piSession.subscribe((event) => {
 				if (event.type === "tool_execution_start") {
+					clearIdleSettle();
 					const at = Date.now();
 					toolStartedAt.set(event.toolCallId, at);
 					this.recordTrace({ type: "tool.started", executionEnvelope, at, toolCallId: event.toolCallId, toolName: event.toolName });
@@ -352,6 +376,7 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 					}
 					settledToolProgress.push(`${event.toolName}:${event.toolCallId}`);
 					if (event.isError) unresolvedToolProgress.push(`${event.toolName} failed during this Pi Turn`);
+					scheduleIdleSettle();
 				} else if (event.type === "turn_end" && objective && activeTaskRunId && settledToolProgress.length > checkpointedToolProgress) {
 					const latest = this.taskLedger?.queryTasks({ ownerKeys: [objective.ownerKey], id: objective.id, limit: 1 })[0];
 					const checkpoint = createTaskCheckpoint({
@@ -368,7 +393,14 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 						turnAbortReason = `Agent token budget exceeded (${maxTokens})`;
 						void session.piSession.abort();
 					}
-				} else if (event.type === "message_update" && event.assistantMessageEvent.type === "text_delta" && event.assistantMessageEvent.delta.length > 0) observableProgress = true;
+					scheduleIdleSettle();
+				} else if (event.type === "message_update" && event.assistantMessageEvent.type === "text_delta" && event.assistantMessageEvent.delta.length > 0) {
+					// Pi cannot emit the next assistant text while a prior Tool batch is still executing.
+					// Clear orphaned starts from provider/tool-routing failures that never emitted a matching end.
+					toolStartedAt.clear();
+					observableProgress = true;
+					scheduleIdleSettle();
+				}
 				enqueueEvent(event);
 			});
 			let timedOut = false;
@@ -389,24 +421,24 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 					promptImages = preparedMedia.images;
 					await onEvent?.({ type: "media_understood", route: preparedMedia.route === "none" ? "adapter" : preparedMedia.route, adapterIds: preparedMedia.receipts.map((receipt) => receipt.adapterId), receiptCount: preparedMedia.receipts.length, failureCount: preparedMedia.failures.length, durationMs: Math.max(0, Date.now() - mediaStartedAt) });
 				}
-				await session.piSession.prompt(promptText, {
+				await promptSession(promptText, {
 					expandPromptTemplates: input.expandPromptTemplates ?? true,
 					source: input.mode === "automation" ? "extension" : undefined,
 					images: promptImages,
 				});
 				if (singleFailedReadTool && !discoveredCapabilities && !turnAbortReason) {
 					const failedTool = singleFailedReadTool; singleFailedReadTool = undefined;
-					await session.piSession.prompt(`[BeeMax capability reroute: ${failedTool} failed and no later Tool succeeded. Use capability_discover now to find an already available alternative, then continue the original request. Do not retry the same external mutation; reconcile any uncertain side effect before another write.]`, { expandPromptTemplates: false });
+					await promptSession(`[BeeMax capability reroute: ${failedTool} failed and no later Tool succeeded. Use capability_discover now to find an already available alternative, then continue the original request. Do not retry the same external mutation; reconcile any uncertain side effect before another write.]`, { expandPromptTemplates: false });
 				}
 				if (discoveredCapabilities && !turnAbortReason) {
 					discoveredCapabilities = false;
-					await session.piSession.prompt("[BeeMax capability continuation: matching Tools or Skills are now active. Continue the original request using them. Do not repeat capability discovery.]", { expandPromptTemplates: false });
+					await promptSession("[BeeMax capability continuation: matching Tools or Skills are now active. Continue the original request using them. Do not repeat capability discovery.]", { expandPromptTemplates: false });
 				}
 				const missingTools = planning?.requiredTools.slice(requiredToolsUsed.length) ?? [];
 				let planningCorrected = false;
 				if (missingTools.length && !turnAbortReason) {
 					planningCorrected = true;
-					await session.piSession.prompt(`[BeeMax planning correction: objective=${objective?.id ?? "turn-local"}; complete these tools in order now using the active execution budget: ${missingTools.join(" -> ")}. This correction applies only to this Objective. Do not answer directly.]`, { expandPromptTemplates: false });
+					await promptSession(`[BeeMax planning correction: objective=${objective?.id ?? "turn-local"}; complete these tools in order now using the active execution budget: ${missingTools.join(" -> ")}. This correction applies only to this Objective. Do not answer directly.]`, { expandPromptTemplates: false });
 					const stillMissing = planning?.requiredTools.slice(requiredToolsUsed.length) ?? [];
 					if (stillMissing.length) {
 						await onEvent?.({ type: "planning_outcome", mode: planning!.mode, compliant: false, corrected: true });
@@ -427,7 +459,7 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 							promptText = recoveredMedia.text;
 							promptImages = undefined;
 							await onEvent?.({ type: "media_understood", route: "adapter", adapterIds: recoveredMedia.receipts.map((receipt) => receipt.adapterId), receiptCount: recoveredMedia.receipts.length, failureCount: recoveredMedia.failures.length, durationMs: Math.max(0, Date.now() - mediaStartedAt) });
-							await session.piSession.prompt(promptText, { expandPromptTemplates: false, source: input.mode === "automation" ? "extension" : undefined });
+							await promptSession(promptText, { expandPromptTemplates: false, source: input.mode === "automation" ? "extension" : undefined });
 							failure = lastAssistantFailure(session.piSession.agent);
 						}
 					} catch (error) {
@@ -485,7 +517,7 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 							this.recordTrace({ type: "execution.started", executionEnvelope, at: correctionStartedAt });
 							await onEvent?.({ type: "execution_started", executionEnvelope });
 							correctionInFlight = true;
-							await session.piSession.prompt(`[BeeMax Verification correction: the Candidate Outcome did not satisfy the durable Objective. Feedback: ${feedback}. Correct the result within the existing Objective and Task Run. Do not repeat committed Effects; reconcile unknown Effects before any mutation.]`, { expandPromptTemplates: false });
+							await promptSession(`[BeeMax Verification correction: the Candidate Outcome did not satisfy the durable Objective. Feedback: ${feedback}. Correct the result within the existing Objective and Task Run. Do not repeat committed Effects; reconcile unknown Effects before any mutation.]`, { expandPromptTemplates: false });
 							const correctionFailure = lastAssistantFailure(session.piSession.agent);
 							if (correctionFailure) throw correctionFailure;
 							if (turnAbortReason) throw new AgentRunError(turnAbortReason, false, undefined);
@@ -508,6 +540,7 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 				if (cause instanceof AgentRunError) throw cause;
 				throw new AgentRunError(timedOut ? `Agent execution deadline exceeded after ${effectiveTimeoutMs} milliseconds` : errorMessage(cause), timedOut, cause, timedOut || isRecoverableModelFailure(cause));
 			} finally {
+				clearIdleSettle();
 				await eventDelivery;
 				this.recordTrace({ type: "execution.settled", executionEnvelope, at: Date.now(), status: settlementStatus });
 				await onEvent?.({ type: "execution_settled", executionEnvelope, status: settlementStatus });

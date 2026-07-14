@@ -381,6 +381,7 @@ export async function runGateway(config: BeeMaxConfig): Promise<void> {
 			createAgent,
 			createAutomationAgent,
 			fallbackModels: configuredRuntimeModels(config),
+			turnIdleSettleMs: config.agent.turnIdleSettleMs,
 			mediaUnderstanding: configuredMediaUnderstanding(config, createLocalMediaUnderstandingAdapters(config.mediaUnderstanding.localOcr)),
 			context: createTaskAwareConversationContext(memory, { memoryScope: { profileId: config.profile }, resolveMemoryScope, organizationSituationAllowed: () => autonomyRollout.allows("situation_context").allowed, recordDirectRoute: (_route, source) => automation.setLastRoute({ platform: source.platform, ...(source.channelInstanceId ? { channelInstanceId: source.channelInstanceId } : {}), chatId: source.chatId, chatType: source.chatType, userId: source.userIdAlt ?? source.userId }), runtimeSnapshot: () => ({ profile: config.profile }), maxContextChars: config.context.maxTurnChars }),
 		},
@@ -390,7 +391,7 @@ export async function runGateway(config: BeeMaxConfig): Promise<void> {
 			const ownerKey = responsibilityOwnerKey(source);
 			const planIds = [...new Set([...taskPlanRuntime.activePlanIds([ownerKey]), ...objectiveRuntime.planIdsForOwner(ownerKey)])];
 			const cancelled = planIds.reduce((count, planId) => count + (taskRecovery.cancel([ownerKey], planId).tasks > 0 ? 1 : 0), 0);
-			objectiveRuntime.cancelOwner(ownerKey);
+			objectiveRuntime.cancelPlans(ownerKey, planIds);
 			return cancelled;
 		},
 			controlHandler: (profileRuntime, profileInteraction) => createProfileControlHandler(profileRuntime, config, profileInteraction, () => ({ ingress: ingress.snapshot(), profileHost: profileHost.snapshot(), taskScheduler: taskScheduler.snapshot(), taskRecovery: work.recoveryStatus() }), config.subagents.enabled ? {

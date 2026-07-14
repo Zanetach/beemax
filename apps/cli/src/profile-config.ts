@@ -482,7 +482,7 @@ export async function migrateProfile(profile: string, options: ProfileStorageOpt
 
 function defaultProfileYaml(): string {
 	return stringifyYaml({
-		agent: { toolset: "standard", maxSessions: 100, sessionIdleMs: 1800000 },
+		agent: { toolset: "standard", maxSessions: 100, sessionIdleMs: 1800000, turnIdleSettleMs: 60000 },
 		model: { provider: "anthropic", model: "claude-sonnet-4-5" },
 		gateway: { feishu: { domain: "feishu", requireMention: true, allowedUsers: [], allowedChats: [], allowAllUsers: false }, channels: [] },
 		memory: { dbPath: "memory.db", memberships: [] },

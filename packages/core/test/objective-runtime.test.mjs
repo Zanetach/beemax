@@ -146,6 +146,18 @@ test("cancelling a conversation cancels every active Objective owned by it", () 
 	assert.equal(ledger.tasks.get("done").status, "succeeded");
 });
 
+test("cancelling active Task Plans does not cancel an unrelated direct Objective", () => {
+	const ledger = ledgerFixture([
+		{ id: "direct", ownerKey: "owner", kind: "objective", title: "Direct", status: "running", createdAt: 1 },
+		{ id: "planned", ownerKey: "owner", kind: "objective", title: "Planned", status: "running", createdAt: 2 },
+		{ id: "child", ownerKey: "owner", kind: "delegated", title: "Child", parentId: "planned", planId: "plan", status: "running", createdAt: 3 },
+	]);
+	const runtime = new ObjectiveRuntime(ledger, async () => ({ result: "unused" }));
+	assert.equal(runtime.cancelPlans("owner", ["plan"]), 1);
+	assert.equal(ledger.tasks.get("direct").status, "running");
+	assert.equal(ledger.tasks.get("planned").status, "cancelled");
+});
+
 test("Objective delivery is single-flight and cancellation aborts the in-flight deliverer", async () => {
 	const ledger = ledgerFixture([
 		{ id: "objective", ownerKey: "owner", kind: "objective", title: "Report", status: "running", createdAt: 1 },

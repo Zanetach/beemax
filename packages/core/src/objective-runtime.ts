@@ -93,14 +93,31 @@ export class ObjectiveRuntime {
 
 	retry(ownerKey: string, objectiveId: string): boolean { return this.ledger.retryObjective?.(ownerKey, objectiveId) ?? false; }
 
-	cancelOwner(ownerKey: string): number {
-		for (const [key, delivery] of this.active) if (key.startsWith(`${ownerKey}\0`) && !delivery.controller.signal.aborted) delivery.controller.abort(new Error("Objective delivery cancelled by user"));
-		if (this.ledger.cancelObjectives) return this.ledger.cancelObjectives(ownerKey);
-		const objectives = this.ledger.queryTasks({ ownerKeys: [ownerKey], kinds: ["objective"], statuses: ["pending", "running"], limit: 100 });
+	cancelOwner(ownerKey: string): number { return this.cancelObjectives(ownerKey); }
+
+	cancelPlans(ownerKey: string, planIds: readonly string[]): number { return this.cancelObjectives(ownerKey, new Set(planIds)); }
+
+	private cancelObjectives(ownerKey: string, scopedPlanIds?: ReadonlySet<string>): number {
+		for (const [key, delivery] of this.active) {
+			const planId = key.slice(`${ownerKey}\0`.length);
+			if (key.startsWith(`${ownerKey}\0`) && (!scopedPlanIds || scopedPlanIds.has(planId)) && !delivery.controller.signal.aborted) delivery.controller.abort(new Error("Objective delivery cancelled by user"));
+		}
+		if (!scopedPlanIds && this.ledger.cancelObjectives) return this.ledger.cancelObjectives(ownerKey);
+		const objectives = scopedPlanIds
+			? this.activeObjectivesForPlans(ownerKey, scopedPlanIds)
+			: this.ledger.queryTasks({ ownerKeys: [ownerKey], kinds: ["objective"], statuses: ["pending", "running"], limit: 100 });
 		const finishedAt = Date.now();
 		let cancelled = 0;
 		for (const objective of objectives) if (this.ledger.transition(objective.id, { status: "cancelled", finishedAt, error: "Cancelled by user" })) cancelled++;
 		return cancelled;
+	}
+
+	private activeObjectivesForPlans(ownerKey: string, planIds: ReadonlySet<string>): TaskRecord[] {
+		const objectiveIds = new Set<string>();
+		for (const planId of planIds) {
+			for (const task of this.ledger.queryTasks({ ownerKeys: [ownerKey], planIds: [planId], limit: 100 })) if (task.parentId) objectiveIds.add(task.parentId);
+		}
+		return [...objectiveIds].flatMap((id) => this.ledger.queryTasks({ ownerKeys: [ownerKey], id, kinds: ["objective"], statuses: ["pending", "running"], limit: 1 }));
 	}
 
 	planIdsForOwner(ownerKey: string): string[] {

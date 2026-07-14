@@ -1345,6 +1345,7 @@ async function runChat(config: ReturnType<typeof loadConfig>, requestedMode: { f
 			runtime: {
 			createAgent,
 			fallbackModels: configuredRuntimeModels(config),
+			turnIdleSettleMs: config.agent.turnIdleSettleMs,
 			mediaUnderstanding: configuredMediaUnderstanding(config, createLocalMediaUnderstandingAdapters(config.mediaUnderstanding.localOcr)),
 			context: createTaskAwareConversationContext(memory, { memoryScope: { profileId: config.profile }, organizationSituationAllowed: () => autonomyRollout.allows("situation_context").allowed, runtimeSnapshot: () => ({ profile: config.profile }), maxContextChars: config.context.maxTurnChars }),
 		},
@@ -1354,7 +1355,7 @@ async function runChat(config: ReturnType<typeof loadConfig>, requestedMode: { f
 			const ownerKey = responsibilityOwnerKey(sessionSource);
 			const planIds = [...new Set([...taskPlanRuntime.activePlanIds([ownerKey]), ...objectiveRuntime.planIdsForOwner(ownerKey)])];
 			const cancelled = planIds.reduce((count, planId) => count + (taskRecovery.cancel([ownerKey], planId).tasks > 0 ? 1 : 0), 0);
-			objectiveRuntime.cancelOwner(ownerKey);
+			objectiveRuntime.cancelPlans(ownerKey, planIds);
 			return cancelled;
 		},
 		controlHandler: (profileRuntime, profileInteraction) => createProfileControlHandler(profileRuntime, config, profileInteraction, () => ({ taskScheduler: taskScheduler.snapshot(), taskRecovery: work.recoveryStatus() }), config.subagents.enabled ? {

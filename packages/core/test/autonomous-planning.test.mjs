@@ -34,6 +34,36 @@ test("Agent runtime progressively exposes discovery and restores the full catalo
 	runtime.dispose();
 });
 
+test("Agent runtime settles a model turn after bounded visible-output inactivity", async () => {
+	const source = { platform: "cli", chatId: "idle-settle", chatType: "dm", userId: "local" };
+	let listener;
+	let finishPrompt;
+	let fallback;
+	let aborts = 0;
+	const agent = { state: { model: { id: "test" }, messages: [] } };
+	const runtime = new BeeMaxAgentRuntime({
+		turnIdleSettleMs: 20,
+		createAgent: async () => ({
+			agent,
+			subscribe: (next) => { listener = next; return () => undefined; },
+			prompt: async () => {
+				agent.state.messages = [{ role: "assistant", content: [{ type: "text", text: "completed result" }], usage: { input: 1, output: 1 } }];
+				listener({ type: "tool_execution_start", toolCallId: "orphaned-tool", toolName: "read", args: {} });
+				listener({ type: "message_update", message: agent.state.messages[0], assistantMessageEvent: { type: "text_delta", delta: "completed result" } });
+				await new Promise((resolve) => { finishPrompt = resolve; fallback = setTimeout(resolve, 200); });
+			},
+			abort: async () => { aborts++; clearTimeout(fallback); finishPrompt?.(); },
+			dispose: () => undefined,
+		}),
+	});
+	const startedAt = Date.now();
+	const result = await runtime.run({ source, text: "hello", timeoutMs: 1_000 });
+	assert.equal(result.answer, "completed result");
+	assert.equal(aborts, 1);
+	assert.ok(Date.now() - startedAt < 150);
+	runtime.dispose();
+});
+
 test("Agent runtime continues once after capability discovery so activated tools can run", async () => {
 	const source = { platform: "cli", chatId: "progressive", chatType: "dm", userId: "local" };
 	let listener;
