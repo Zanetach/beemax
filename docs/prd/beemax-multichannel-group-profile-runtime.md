@@ -24,12 +24,13 @@
 | 2026-07-14 | 第六实施切片：Binding 原子启停与最小 Profile Host 生命周期 | 补齐冲突安全的路由管理，并把 Profile admission、health、degrade、drain 收敛为统一运行时权威 | Codex | build、typecheck、734 项全量测试及架构/迁移/Memory 门禁通过；双轴审查问题已修复 | v1.6-draft |
 | 2026-07-14 | 第七实施切片：旧 Memory/Automation 显式 Channel Instance 归属迁移 | 多实例启用前消除旧路由歧义，提供事务、备份、审计与安全回滚 | Codex | build、typecheck、750 项全量测试及架构/迁移/性能/Memory 门禁通过；双轴审查问题已修复 | v1.7-draft |
 | 2026-07-14 | 第八实施切片：旧群聊 Session Ownership Migration | 以管理员显式选择替代 Actor transcript 猜测，提供非破坏保留、Catalog 收敛与安全回滚 | Codex | build、typecheck、762 项全量测试及架构/迁移/性能/Memory 门禁通过；双轴复审均 clean，崩溃恢复、路径越界、header、文件身份、短写及 no-clobber 恢复问题已关闭 | v1.8-draft |
+| 2026-07-14 | 第九实施切片：安全验收发布门禁 | 将群聊 Private Memory、跨 Profile Memory 与重复 Effect 三项安全阻塞收敛为独立可执行证据 | Codex | `eval:security` 3/3、765 项全量测试及 P10 acceptance 通过；双轴复审均 clean | v1.9-draft |
 
 ---
 
 ## 当前实施状态（2026-07-14）
 
-当前已完成第一至第八实施切片：
+当前已完成第一至第九实施切片：
 
 - 群聊/Channel/Thread 的 Conversation 不再包含当前 Actor；Task Responsibility 仍按 Actor 或可信统一身份归属。
 - `channelInstanceId` 已贯穿 Gateway 入站、投递、Task Plan Completion Notice、Automation Job/Delivery/Route/Media 和 Memory 分区。
@@ -56,6 +57,7 @@
 - 迁移会验证目标是该 Profile 中已启用且 adapter 匹配的 Channel Instance，并在 Gateway Profile 锁与 SQLite 写栅栏内创建经完整性校验的快照、数据库审计记录和迁移前后逻辑 SHA-256 清单；结构化 Memory scope、Initiative 嵌套路由和唯一键冲突均在写入前检查。`rollback` 仅在迁移后数据库未发生任何新写入时恢复，并保留迁移后快照。
 - 旧 Actor-scoped 群聊 transcript 不再依赖永久 fallback 或自动任选；管理员通过 `beemax migration session plan/apply` 显式选择一个 legacy Session 作为 canonical shared Conversation 历史。迁移流式复制 Pi JSONL、收敛内容无关的 Session Catalog owner，保留全部 legacy 文件且不自动合并或删除。
 - Session rollback 以 source/target SHA-256、canonical identity、Profile 路径与 Catalog receipt 共同校验；canonical transcript 或偏好一旦出现新变化就 fail-closed。保留期固定为“无自动过期”，未来删除必须进入独立的企业 retention policy 与审计动作。
+- `npm run eval:security` 使用真实 SQLite Memory authority 与跨实例 Effect Journal 独立验收：Private DM Claim 不进入群聊 recall、一个 Profile 的 Memory Store 不能由另一 Profile 打开、同一 idempotency key 只能产生一个 committed mutation；该门禁已进入 `verify:release` 与 P10 证据清单。
 
 仍按本 PRD 后续阶段实施，不计为本切片完成：
 
@@ -1143,7 +1145,8 @@ Interaction/Schedule/Event → Situation → durable admission → Objective/Tas
 ### 🔴 必须补充（发布前阻塞）
 
 1. 通过压测确定各 Ubuntu 部署规格的内存、队列、并发和数据库高水位。
-2. 完成群聊 Private Memory 不披露、跨 Profile 不召回和重复 Effect 不执行的安全验收。
+
+已关闭：群聊 Private Memory 不披露、跨 Profile 不召回和重复 Effect 不执行已由 `npm run eval:security` 独立验收并纳入 `verify:release`。
 
 ### 🟡 建议补充（提升产品质量）
 

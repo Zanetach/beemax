@@ -30,6 +30,7 @@
     "test:reliability": "node --test packages/memory/test/reliability-soak.mjs",
     "eval:runtime": "node scripts/evaluate-runtime.mjs --check evals/baselines/current.json",
     "eval:reliability": "node --test apps/cli/test/reliability-fault-release-gate.test.mjs packages/core/test/runtime-fault-catalog.test.mjs",
+    "eval:security": "node --test apps/cli/test/security-acceptance-release-gate.test.mjs",
     "eval:performance": "node scripts/evaluate-performance.mjs --profile evals/performance-profiles/apple-m5-32gb.json --check evals/baselines/performance-apple-m5-32gb.json",
     "eval:performance:ci": "node scripts/evaluate-performance.mjs --profile evals/performance-profiles/github-actions-ubuntu-x64.json --cost-baseline evals/baselines/performance-apple-m5-32gb.json",
     "eval:performance:release": "node scripts/evaluate-release-performance.mjs",
@@ -37,7 +38,7 @@
     "eval:architecture": "node scripts/evaluate-architecture.mjs",
     "eval:migration": "node scripts/rehearse-migration-rollback.mjs",
     "eval:acceptance": "node scripts/evaluate-acceptance-program.mjs && npm run eval:architecture && npm run eval:migration",
-    "verify:release": "npm run build && npm run typecheck && npm run eval:runtime && npm run eval:performance:release && npm run eval:memory && npm run eval:reliability && npm run eval:acceptance && npm test",
+    "verify:release": "npm run build && npm run typecheck && npm run eval:runtime && npm run eval:performance:release && npm run eval:memory && npm run eval:reliability && npm run eval:security && npm run eval:acceptance && npm test",
     "typecheck": "tsgo --noEmit"
   },
   "devDependencies": {

@@ -8,7 +8,7 @@
 npm run verify:release
 ```
 
-`verify:release` 依次执行 build、typecheck、Runtime evaluation、当前受支持机器的严格 performance Profile、reliability、P0–P10 acceptance 和全量测试。`eval:acceptance` 校验 P0–P10 证据清单、原 PRD 的 TBD 处置，执行 P9 架构收缩门禁，并完成 P10 数据迁移/回滚演练。详细映射由 `evals/original-acceptance-program.json` 维护；增加或删除程序、指标或证据都必须经过代码审查。
+`verify:release` 依次执行 build、typecheck、Runtime evaluation、当前受支持机器的严格 performance Profile、Memory stability、reliability、security、P0–P10 acceptance 和全量测试。`eval:security` 用真实 SQLite 与 Effect Journal 验收群聊 Private Memory 不披露、跨 Profile Memory 不召回和重复 Effect 不执行；`eval:acceptance` 校验 P0–P10 证据清单、原 PRD 的 TBD 处置，执行 P9 架构收缩门禁，并完成 P10 数据迁移/回滚演练。详细映射由 `evals/original-acceptance-program.json` 维护；增加或删除程序、指标或证据都必须经过代码审查。
 
 CI 专用性能复现仍可单独运行 `npm run eval:performance:ci`；本地或发布审计应使用 `npm run eval:performance:release`，由机器事实选择已提交 Profile，未知机器直接失败。
 
