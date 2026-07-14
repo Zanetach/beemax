@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Verify a BeeMax release archive by checksum, source layout, isolated install, and CLI startup.
+# Verify a BeeMax release archive by checksum, source layout, isolated install, and Profile smoke test.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -46,6 +46,12 @@ mkdir -p "${STAGING}/home" "${STAGING}/bin"
 HOME="${STAGING}/home" BEEMAX_BIN_DIR="${STAGING}/bin" BEEMAX_INSTALL_MEDIA_DEPS=0 bash "${SOURCE}/scripts/install.sh"
 HELP_OUTPUT="$(HOME="${STAGING}/home" "${STAGING}/bin/beemax" --help)"
 grep -Fq "BeeMax" <<<"${HELP_OUTPUT}" || fail "installed beemax --help did not start correctly"
+PROFILE_CREATE_OUTPUT="$(HOME="${STAGING}/home" "${STAGING}/bin/beemax" profile create release-smoke)"
+grep -Fq "Created Agent 'release-smoke'" <<<"${PROFILE_CREATE_OUTPUT}" || fail "installed beemax could not create a Profile"
+PROFILE_SHOW_OUTPUT="$(HOME="${STAGING}/home" "${STAGING}/bin/beemax" profile show release-smoke)"
+grep -Fq '"profile": "release-smoke"' <<<"${PROFILE_SHOW_OUTPUT}" || fail "installed beemax could not reload the created Profile"
+SKILLS_OUTPUT="$(HOME="${STAGING}/home" "${STAGING}/bin/beemax" skills list --profile release-smoke)"
+grep -Fq "business-report" <<<"${SKILLS_OUTPUT}" || fail "installed Profile does not contain packaged Skills"
 [[ "$(tr -d '\r\n' < "${SOURCE}/RELEASE_VERSION")" == "${VERSION}" ]] || fail "installed release identity changed"
 
-echo "Verified ${ARCHIVE}: checksum, layout, isolated install, build, and CLI startup passed"
+echo "Verified ${ARCHIVE}: checksum, layout, isolated install, build, Profile reload, and packaged Skills passed"
