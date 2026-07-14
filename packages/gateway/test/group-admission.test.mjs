@@ -37,6 +37,7 @@ test("contextual activation responds to verified signals and otherwise observes 
 	};
 	assert.deepEqual(decideGroupActivation({ ...base, signals: { reply: true } }), { admitted: true, action: "respond", activation: "reply" });
 	assert.deepEqual(decideGroupActivation({ ...base, signals: {}, ambientObservation: true }), { admitted: true, action: "observe", activation: "ambient" });
+	assert.deepEqual(decideGroupActivation({ ...base, mode: "explicit", signals: {}, ambientObservation: true }), { admitted: true, action: "observe", activation: "ambient" });
 	assert.deepEqual(decideGroupActivation({ ...base, signals: {}, ambientObservation: false }), { admitted: false, reason: "activation_required" });
 });
 

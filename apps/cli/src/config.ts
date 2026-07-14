@@ -101,7 +101,7 @@ export interface BeeMaxConfig {
 	};
 	models: Array<{ provider: string; model: string; baseUrl?: string; customProtocol?: CustomProtocol; contextWindow?: number; maxTokens?: number }>;
 	/** Profile-owned channel configuration. A Profile may run its own Gateway. */
-	gateway: { channels: GatewayChannelConfig[]; bindings: GatewayBindingConfig[]; ingress: { maxActive: number; maxActivePerConversation: number }; feishu: FeishuConfig; telegram: TelegramConfig };
+	gateway: { channels: GatewayChannelConfig[]; bindings: GatewayBindingConfig[]; ingress: { maxActive: number; maxActivePerConversation: number }; observation: { retainPerLane: number }; feishu: FeishuConfig; telegram: TelegramConfig };
 	memory: {
 		dbPath: string;
 		memberships: MemoryMembership[];
@@ -268,6 +268,15 @@ export function loadConfig(configPath?: string, profile = "default"): BeeMaxConf
 		maxActive: boundedNumber(env.BEEMAX_GATEWAY_MAX_ACTIVE ?? cfg.gateway?.ingress?.maxActive, 1_000, 1, 100_000),
 		maxActivePerConversation: boundedNumber(env.BEEMAX_GATEWAY_MAX_ACTIVE_PER_CONVERSATION ?? cfg.gateway?.ingress?.maxActivePerConversation, 100, 1, 10_000),
 	};
+	const observation = {
+		retainPerLane: boundedNumber(
+			env.BEEMAX_GROUP_OBSERVATION_RETAIN_PER_LANE
+				?? cfg.gateway?.observation?.retainPerLane
+				?? (cfg.gateway?.feishu?.activation as (Record<string, unknown> | undefined))?.observationRetainPerLane
+				?? env.FEISHU_OBSERVATION_RETAIN_PER_LANE,
+			100, 1, 10_000,
+		),
+	};
 	return {
 		profile,
 		agent: {
@@ -288,7 +297,7 @@ export function loadConfig(configPath?: string, profile = "default"): BeeMaxConf
 			maxTokens,
 		},
 		models: configuredModels,
-		gateway: { channels, bindings, ingress, feishu, telegram },
+		gateway: { channels, bindings, ingress, observation, feishu, telegram },
 		memory: {
 			dbPath: resolveFrom(location.basePath, str(env.BEEMAX_DB_PATH ?? cfg.memory?.dbPath ?? join(profileDataRoot, location.isHome ? "memory.db" : "beemax.db"))),
 			memberships: parseMemoryMemberships(cfg.memory?.memberships),
@@ -527,12 +536,29 @@ export function parseMemoryMemberships(value: unknown): MemoryMembership[] {
 function parseGroupPolicy(value: unknown): "open" | "allowlist" | "disabled" { return value === "open" || value === "disabled" ? value : "allowlist"; }
 function parseFeishuActivation(value: unknown, requireMention: boolean, env: Record<string, string | undefined>): FeishuActivationSettings {
 	const candidate = value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
+	const quietHours = parseQuietHours(candidate.quietHours, env.BEEMAX_TIMEZONE);
 	return {
 		mode: parseActivationMode(env.FEISHU_ACTIVATION_MODE ?? candidate.mode, requireMention ? "contextual" : "ambient"),
 		respondTo: parseActivationSignals(env.FEISHU_ACTIVATION_RESPOND_TO ?? candidate.respondTo),
+		ambientObservation: parseBool(env.FEISHU_AMBIENT_OBSERVATION ?? candidate.ambientObservation ?? false),
 		activeThreadTtlMs: boundedNumber(env.FEISHU_ACTIVE_THREAD_TTL_MS ?? candidate.activeThreadTtlMs, 15 * 60_000, 1_000, 24 * 60 * 60_000),
 		maxActiveThreads: boundedNumber(env.FEISHU_MAX_ACTIVE_THREADS ?? candidate.maxActiveThreads, 10_000, 1, 100_000),
+		...(quietHours ? { quietHours } : {}),
+		maxRepliesPerWindow: boundedNumber(env.FEISHU_MAX_REPLIES_PER_WINDOW ?? candidate.maxRepliesPerWindow, 6, 1, 1_000),
+		replyWindowMs: boundedNumber(env.FEISHU_REPLY_WINDOW_MS ?? candidate.replyWindowMs, 60_000, 1_000, 24 * 60 * 60_000),
+		maxTrackedResponseLanes: boundedNumber(env.FEISHU_MAX_TRACKED_RESPONSE_LANES ?? candidate.maxTrackedResponseLanes, 10_000, 1, 100_000),
 	};
+}
+function parseQuietHours(value: unknown, fallbackTimezone: string | undefined): FeishuActivationSettings["quietHours"] {
+	if (value === undefined || value === null) return undefined;
+	if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("group quietHours must be an object");
+	const candidate = value as Record<string, unknown>;
+	const start = str(candidate.start);
+	const end = str(candidate.end);
+	const timezone = str(candidate.timezone ?? fallbackTimezone ?? Intl.DateTimeFormat().resolvedOptions().timeZone ?? "UTC");
+	if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(start) || !/^([01]\d|2[0-3]):[0-5]\d$/.test(end)) throw new Error("group quietHours start/end must use HH:MM");
+	try { new Intl.DateTimeFormat("en-US", { timeZone: timezone }).format(); } catch { throw new Error(`Invalid group quietHours timezone: ${timezone}`); }
+	return { start, end, timezone };
 }
 function parseActivationMode(value: unknown, fallback: FeishuActivationSettings["mode"]): FeishuActivationSettings["mode"] {
 	if (value === undefined || value === null || value === "") return fallback;
@@ -558,6 +584,7 @@ function parseGroupRules(value: unknown): FeishuConfig["groupRules"] {
 		const activationOverride = activation ? {
 			...(activation.mode !== undefined ? { mode: parseActivationMode(activation.mode, "contextual") } : {}),
 			...(activation.respondTo !== undefined ? { respondTo: parseActivationSignals(activation.respondTo) } : {}),
+			...(activation.ambientObservation !== undefined ? { ambientObservation: parseBool(activation.ambientObservation) } : {}),
 		} : undefined;
 		result[chatId] = {
 			policy, allowlist: parseList(rule.allowlist), blacklist: parseList(rule.blacklist),

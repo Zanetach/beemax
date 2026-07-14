@@ -8,7 +8,7 @@
  */
 
 import { AutomationStore } from "@beemax/automation";
-import { ActionGovernance, AutonomyRolloutController, AutomationDeliveryWorker, AutomationScheduler, BeeMaxAgentRuntime, DeterministicSituationBuilder, FileCredentialVault, FileCredentialVaultAuditJournal, HeartbeatRunner, InitiativeRuntime, InitiativeTriggerService, ProactiveInvestigationRuntime, TaskPlanNoticeDeliveryService, TaskTransitionInitiativeAdapter, ToolApprovalBroker, ToolPolicyRegistry, buildActiveTaskPreservationEnvelope, buildTaskPreservationEnvelope, canonicalUserId, containsCredentialMaterial, conversationKey, responsibilityOwnerKey, responsibilityOwnerKeys, createExecutionEnvelope, createSubagentTools, createTaskCheckpoint, createTaskLedgerTools, createTaskOrchestrationTools, decideInitiativeFromSituation, guardVerifiedObjectiveMemoryPublisher, isVerifiedAutomationOutcome, redactCredentialMaterial, renderTaskCheckpoint, type AgentRuntimePort, type BeeMaxAgentRunEvent, type BeeMaxAgentRunEventSink, type ContextCompactionAuditEvent, type DeliveryPort, type ExecutionEnvelope, type ExecutionTraceSink, type InitiativeObservation, type ObjectiveDeliveryInput, type SkillCandidateTrialInput, type SkillTrialAssertion, type SkillTrialToolCall, type SubagentTask, type TaskGraphExecutionContext, type TaskGraphExecutionResult, type TaskGraphVerifier, type TaskLedger, type TaskRecord, type ToolEffectProjectionReader, type VerifiedObjectiveMemoryPublisher } from "@beemax/core";
+import { ActionGovernance, AutonomyRolloutController, AutomationDeliveryWorker, AutomationScheduler, BeeMaxAgentRuntime, DeterministicSituationBuilder, FileCredentialVault, FileCredentialVaultAuditJournal, GroupObservationRecorder, HeartbeatRunner, InitiativeRuntime, InitiativeTriggerService, ProactiveInvestigationRuntime, TaskPlanNoticeDeliveryService, TaskTransitionInitiativeAdapter, ToolApprovalBroker, ToolPolicyRegistry, buildActiveTaskPreservationEnvelope, buildTaskPreservationEnvelope, canonicalUserId, containsCredentialMaterial, conversationKey, responsibilityOwnerKey, responsibilityOwnerKeys, createExecutionEnvelope, createSubagentTools, createTaskCheckpoint, createTaskLedgerTools, createTaskOrchestrationTools, decideInitiativeFromSituation, guardVerifiedObjectiveMemoryPublisher, isVerifiedAutomationOutcome, redactCredentialMaterial, renderTaskCheckpoint, type AgentRuntimePort, type BeeMaxAgentRunEvent, type BeeMaxAgentRunEventSink, type ContextCompactionAuditEvent, type DeliveryPort, type ExecutionEnvelope, type ExecutionTraceSink, type InitiativeObservation, type ObjectiveDeliveryInput, type SkillCandidateTrialInput, type SkillTrialAssertion, type SkillTrialToolCall, type SubagentTask, type TaskGraphExecutionContext, type TaskGraphExecutionResult, type TaskGraphVerifier, type TaskLedger, type TaskRecord, type ToolEffectProjectionReader, type VerifiedObjectiveMemoryPublisher } from "@beemax/core";
 import {
 	AdapterRegistry,
 	ChannelHost,
@@ -277,7 +277,7 @@ export async function runGateway(config: BeeMaxConfig): Promise<void> {
 			const userId = canonicalUserId(source);
 			taskTransitionInitiative.receive({
 				id: `objective:${outcome.objectiveId}:verified`, occurredAt: Date.now(),
-				scope: { profileId: config.profile, platform: source.platform, chatId: source.chatId, ...(userId ? { userId } : {}), ...(source.threadId ? { threadId: source.threadId } : {}) },
+				scope: { profileId: config.profile, platform: source.platform, ...(source.channelInstanceId ? { channelInstanceId: source.channelInstanceId } : {}), chatId: source.chatId, ...(userId ? { userId } : {}), ...(source.threadId ? { threadId: source.threadId } : {}) },
 				summary: "A durable Objective produced a verified outcome",
 				evidenceRef: `objective:${outcome.objectiveId}`,
 				notificationRequired: false,
@@ -386,6 +386,22 @@ export async function runGateway(config: BeeMaxConfig): Promise<void> {
 	const adapterEntries = channelHost.adapterEntries();
 	const platformInstanceCounts = new Map<string, number>();
 	for (const { adapter } of adapterEntries) platformInstanceCounts.set(adapter.name, (platformInstanceCounts.get(adapter.name) ?? 0) + 1);
+	const groupObservations = new GroupObservationRecorder({ profileId: config.profile, store: memory, retainPerLane: config.gateway.observation.retainPerLane });
+	if (autonomyRollout.allows("initiative_observation").allowed) {
+		for (const { id, adapter } of adapterEntries) adapter.onObservation?.((observation) => {
+			const source = (platformInstanceCounts.get(adapter.name) ?? 0) > 1
+				? { ...observation.source, channelInstanceId: id }
+				: observation.source;
+			const persisted = groupObservations.record({ ...observation, source });
+			recordGatewayEvent(config.paths.agentDir, "group_observation_recorded", {
+				profile: config.profile,
+				platform: adapter.name,
+				channelInstanceId: id,
+				conversationType: observation.source.chatType,
+				created: persisted.created,
+			});
+		});
+	}
 	const dispatcherEntries = adapterEntries.map(({ id, adapter: channelAdapter }) => ({
 		id,
 		platform: channelAdapter.name,
@@ -540,7 +556,7 @@ export async function runGateway(config: BeeMaxConfig): Promise<void> {
 				kind: "heartbeat",
 				id: input.triggerId,
 				occurredAt: input.occurredAt,
-				scope: { profileId: config.profile, platform: input.route.platform, chatId: input.route.chatId, ...(input.route.userId ? { userId: input.route.userId } : {}) },
+				scope: { profileId: config.profile, platform: input.route.platform, ...(input.route.channelInstanceId ? { channelInstanceId: input.route.channelInstanceId } : {}), chatId: input.route.chatId, ...(input.route.userId ? { userId: input.route.userId } : {}) },
 				prompt: input.prompt,
 			});
 			return { kind: result.kind === "observed" ? "observed" : "ignored" };

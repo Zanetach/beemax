@@ -1,9 +1,9 @@
 import type { AgentScope } from "./agent-scope.ts";
-import { canonicalUserId, responsibilityOwnerKey, responsibilityOwnerKeys } from "./agent-scope.ts";
+import { responsibilityOwnerKey, responsibilityOwnerKeys } from "./agent-scope.ts";
 import type { MeasuredActionReliability } from "./action-governance.ts";
 import { ActionGovernance } from "./action-governance.ts";
 import type { ExecutionBudgetRef } from "./execution-envelope.ts";
-import type { InitiativeObservation } from "./initiative-runtime.ts";
+import { initiativeScopeMatchesExecutionScope, type InitiativeObservation } from "./initiative-runtime.ts";
 import type { Situation } from "./situation.ts";
 import type { TaskRecord } from "./task-ledger.ts";
 import type { ToolPolicy } from "./tool-runtime.ts";
@@ -169,7 +169,7 @@ export class ProactiveInvestigationRuntime {
 
 	private rejectionReason(candidate: ProactiveInvestigationCandidate, at: number): string | undefined {
 		if (!this.policy.enabled) return "Proactive read-only investigation is disabled";
-		if (!sameInitiativeExecutionScope(candidate.observation, candidate.executionScope)) return "Initiative observation and execution scope do not match";
+		if (!initiativeScopeMatchesExecutionScope(candidate.observation.scope, candidate.executionScope)) return "Initiative observation and execution scope do not match";
 		if (candidate.observation.expectedValue < this.policy.minExpectedValue) return "Expected value is below the proactive admission threshold";
 		if (candidate.observation.confidence < this.policy.minConfidence) return "Confidence is below the proactive admission threshold";
 		if (candidate.observation.risk !== "none" && candidate.observation.risk !== "low") return "Initiative risk exceeds the read-only investigation threshold";
@@ -204,14 +204,6 @@ export class ProactiveInvestigationRuntime {
 			at,
 		});
 	}
-}
-
-function sameInitiativeExecutionScope(observation: InitiativeObservation, executionScope: AgentScope): boolean {
-	const scope = observation.scope;
-	return scope.platform === executionScope.platform
-		&& scope.chatId === executionScope.chatId
-		&& (!scope.userId || scope.userId === canonicalUserId(executionScope))
-		&& (!scope.threadId || scope.threadId === executionScope.threadId);
 }
 
 function createObjective(id: string, ownerKey: string, observation: InitiativeObservation, executionScope: AgentScope, at: number): TaskRecord {

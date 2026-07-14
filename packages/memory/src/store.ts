@@ -641,6 +641,7 @@ export class MemoryStore {
 				id TEXT PRIMARY KEY,
 				profile_id TEXT NOT NULL,
 				platform TEXT NOT NULL,
+				channel_instance_id TEXT,
 				chat_id TEXT NOT NULL,
 				user_id TEXT,
 				thread_id TEXT,
@@ -675,6 +676,7 @@ export class MemoryStore {
 				trigger_id TEXT NOT NULL,
 				occurred_at INTEGER NOT NULL,
 				platform TEXT NOT NULL,
+				channel_instance_id TEXT,
 				chat_id TEXT NOT NULL,
 				user_id TEXT,
 				thread_id TEXT,
@@ -750,6 +752,9 @@ export class MemoryStore {
 		this.addColumnIfMissing("tasks", "idempotency_key", "TEXT");
 		this.addColumnIfMissing("tasks", "execution_scope", "TEXT");
 		this.addColumnIfMissing("initiative_triggers", "execution_scope", "TEXT");
+		this.addColumnIfMissing("initiative_triggers", "channel_instance_id", "TEXT");
+		this.addColumnIfMissing("initiative_observations", "channel_instance_id", "TEXT");
+		this.db.exec("CREATE INDEX IF NOT EXISTS idx_initiative_observations_route_scope ON initiative_observations(profile_id, platform, channel_instance_id, chat_id, user_id, thread_id, created_at DESC)");
 		this.addColumnIfMissing("autonomy_rollout_states", "publisher", "TEXT");
 		this.addColumnIfMissing("tasks", "situation", "TEXT");
 		this.addColumnIfMissing("tasks", "access_scope_ref", "TEXT");
@@ -2144,10 +2149,10 @@ export class MemoryStore {
 			|| !Number.isFinite(input.confidence) || input.confidence < 0 || input.confidence > 1) throw new Error("Initiative observation scores must be between 0 and 1");
 		if (!input.evidenceRefs.length || input.evidenceRefs.length > 100 || input.evidenceRefs.some((reference) => !reference.trim() || reference.length > 1_000)) throw new Error("Initiative observation evidence references are invalid");
 		const normalizedSituation = createSituation(input.situation);
-		const existing = this.db.prepare("SELECT id, platform, chat_id, user_id, thread_id FROM initiative_observations WHERE profile_id = ? AND dedupe_key = ?")
-			.get(this.profileId, input.dedupeKey) as Pick<InitiativeObservationRow, "id" | "platform" | "chat_id" | "user_id" | "thread_id"> | undefined;
+		const existing = this.db.prepare("SELECT id, platform, channel_instance_id, chat_id, user_id, thread_id FROM initiative_observations WHERE profile_id = ? AND dedupe_key = ?")
+			.get(this.profileId, input.dedupeKey) as Pick<InitiativeObservationRow, "id" | "platform" | "channel_instance_id" | "chat_id" | "user_id" | "thread_id"> | undefined;
 		if (existing) {
-			if (existing.platform !== input.scope.platform || existing.chat_id !== input.scope.chatId
+			if (existing.platform !== input.scope.platform || existing.channel_instance_id !== (input.scope.channelInstanceId ?? null) || existing.chat_id !== input.scope.chatId
 				|| existing.user_id !== (input.scope.userId ?? null) || existing.thread_id !== (input.scope.threadId ?? null)) {
 				throw new Error("Initiative observation dedupe key belongs to a different scope");
 			}
@@ -2158,12 +2163,12 @@ export class MemoryStore {
 		}
 		const id = crypto.randomUUID();
 		this.db.prepare(`INSERT INTO initiative_observations (
-			id, profile_id, platform, chat_id, user_id, thread_id, dedupe_key, trigger_kind, trigger_id,
+			id, profile_id, platform, channel_instance_id, chat_id, user_id, thread_id, dedupe_key, trigger_kind, trigger_id,
 			situation, action, expected_value, risk, rationale, intended_verification, evidence_refs,
 			confidence, mode, disposition, related_objective_id, notification_emitted, feedback,
 			repeat_count, created_at, last_observed_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'observe_only', ?, ?, 0, 'unreviewed', 1, ?, ?)`)
-			.run(id, this.profileId, input.scope.platform, input.scope.chatId, input.scope.userId ?? null, input.scope.threadId ?? null,
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'observe_only', ?, ?, 0, 'unreviewed', 1, ?, ?)`)
+			.run(id, this.profileId, input.scope.platform, input.scope.channelInstanceId ?? null, input.scope.chatId, input.scope.userId ?? null, input.scope.threadId ?? null,
 				input.dedupeKey, input.triggerKind, input.triggerId, JSON.stringify(normalizedSituation), input.action, input.expectedValue,
 				input.risk, input.rationale, input.intendedVerification, JSON.stringify(input.evidenceRefs), input.confidence,
 				input.disposition, input.relatedObjectiveId ?? null, input.observedAt, input.observedAt);
@@ -2172,17 +2177,35 @@ export class MemoryStore {
 
 	listInitiativeObservations(scope: InitiativeScope, limit = 100): InitiativeObservation[] {
 		this.assertInitiativeScope(scope);
-		return (this.db.prepare(`SELECT * FROM initiative_observations WHERE profile_id = ? AND platform = ? AND chat_id = ?
+		return (this.db.prepare(`SELECT * FROM initiative_observations WHERE profile_id = ? AND platform = ? AND channel_instance_id IS ? AND chat_id = ?
 			AND user_id IS ? AND thread_id IS ? ORDER BY created_at DESC LIMIT ?`)
-			.all(this.profileId, scope.platform, scope.chatId, scope.userId ?? null, scope.threadId ?? null, Math.max(1, Math.min(500, limit))) as InitiativeObservationRow[])
+			.all(this.profileId, scope.platform, scope.channelInstanceId ?? null, scope.chatId, scope.userId ?? null, scope.threadId ?? null, Math.max(1, Math.min(500, limit))) as InitiativeObservationRow[])
 			.map(mapInitiativeObservation);
 	}
 
 	reviewInitiativeObservation(id: string, scope: InitiativeScope, feedback: "accepted" | "rejected", now = Date.now()): boolean {
 		this.assertInitiativeScope(scope);
 		return this.db.prepare(`UPDATE initiative_observations SET feedback = ?, reviewed_at = ? WHERE id = ? AND profile_id = ?
-			AND platform = ? AND chat_id = ? AND user_id IS ? AND thread_id IS ?`)
-			.run(feedback, now, id, this.profileId, scope.platform, scope.chatId, scope.userId ?? null, scope.threadId ?? null).changes === 1;
+			AND platform = ? AND channel_instance_id IS ? AND chat_id = ? AND user_id IS ? AND thread_id IS ?`)
+			.run(feedback, now, id, this.profileId, scope.platform, scope.channelInstanceId ?? null, scope.chatId, scope.userId ?? null, scope.threadId ?? null).changes === 1;
+	}
+
+	pruneAmbientGroupObservations(scope: InitiativeScope, retain: number): number {
+		this.assertInitiativeScope(scope);
+		if (!Number.isSafeInteger(retain) || retain < 1 || retain > 10_000) throw new Error("Ambient group Observation retention must be between 1 and 10000");
+		return this.db.prepare(`DELETE FROM initiative_observations WHERE id IN (
+			SELECT id FROM initiative_observations WHERE profile_id = ? AND platform = ? AND channel_instance_id IS ? AND chat_id = ?
+			AND user_id IS ? AND thread_id IS ? AND trigger_kind = 'message' AND trigger_id LIKE 'ambient-group:%'
+			ORDER BY created_at DESC LIMIT -1 OFFSET ?
+		)`).run(this.profileId, scope.platform, scope.channelInstanceId ?? null, scope.chatId, scope.userId ?? null, scope.threadId ?? null, retain).changes;
+	}
+
+	upsertBoundedAmbientGroupObservation(input: InitiativeObservationInput, retain: number): { observation: InitiativeObservation; created: boolean } {
+		return this.db.transaction(() => {
+			const persisted = this.upsertInitiativeObservation(input);
+			this.pruneAmbientGroupObservations(input.scope, retain);
+			return persisted;
+		})();
 	}
 
 	initiativeEvaluation(scope: InitiativeScope): {
@@ -2209,6 +2232,7 @@ export class MemoryStore {
 		if (input.profileId !== this.profileId || input.scope.profileId !== this.profileId) throw new Error("Initiative Trigger Profile does not own this Memory Store");
 		this.assertInitiativeScope(input.scope);
 		if (input.executionScope && (input.executionScope.platform !== input.scope.platform
+			|| input.executionScope.channelInstanceId !== input.scope.channelInstanceId
 			|| input.executionScope.chatId !== input.scope.chatId
 			|| Boolean(input.scope.userId) && input.scope.userId !== (input.executionScope.userIdAlt ?? input.executionScope.userId)
 			|| Boolean(input.scope.threadId) && input.scope.threadId !== input.executionScope.threadId)) {
@@ -2217,10 +2241,10 @@ export class MemoryStore {
 		if (containsCredentialMaterial(JSON.stringify(input))) throw new Error("Initiative Trigger cannot contain credential material");
 		const id = crypto.randomUUID();
 		const inserted = this.db.prepare(`INSERT OR IGNORE INTO initiative_triggers (
-			id, profile_id, kind, trigger_id, occurred_at, platform, chat_id, user_id, thread_id, prompt, evidence_ref,
+			id, profile_id, kind, trigger_id, occurred_at, platform, channel_instance_id, chat_id, user_id, thread_id, prompt, evidence_ref,
 			 notification_required, delivery_target, execution_scope, status, attempts, next_attempt_at, created_at, updated_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', 0, ?, ?, ?)`)
-			.run(id, this.profileId, input.kind, input.triggerId, input.occurredAt, input.scope.platform, input.scope.chatId,
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', 0, ?, ?, ?)`)
+			.run(id, this.profileId, input.kind, input.triggerId, input.occurredAt, input.scope.platform, input.scope.channelInstanceId ?? null, input.scope.chatId,
 				input.scope.userId ?? null, input.scope.threadId ?? null, input.prompt, input.evidenceRef,
 				input.notificationRequired ? 1 : 0, input.deliveryTarget ? JSON.stringify(input.deliveryTarget) : null,
 				input.executionScope ? JSON.stringify(input.executionScope) : null,
@@ -2229,7 +2253,7 @@ export class MemoryStore {
 		const existing = this.db.prepare("SELECT * FROM initiative_triggers WHERE profile_id = ? AND kind = ? AND trigger_id = ?")
 			.get(this.profileId, input.kind, input.triggerId) as InitiativeTriggerRow | undefined;
 		if (!existing) throw new Error("Initiative Trigger idempotent insert could not be resolved");
-		if (existing.platform !== input.scope.platform || existing.chat_id !== input.scope.chatId
+		if (existing.platform !== input.scope.platform || existing.channel_instance_id !== (input.scope.channelInstanceId ?? null) || existing.chat_id !== input.scope.chatId
 			|| existing.user_id !== (input.scope.userId ?? null) || existing.thread_id !== (input.scope.threadId ?? null)
 			|| existing.evidence_ref !== input.evidenceRef || existing.prompt !== input.prompt
 			|| existing.execution_scope !== (input.executionScope ? JSON.stringify(input.executionScope) : null)) {
@@ -2615,7 +2639,7 @@ interface WorkflowCandidateRow {
 interface WorkflowCandidateEventRow { id: string; candidate_id: string; kind: WorkflowCandidateEvent["kind"]; excerpt: string; source_ref: string | null; created_at: number; }
 
 interface InitiativeObservationRow {
-	id: string; profile_id: string; platform: string; chat_id: string; user_id: string | null; thread_id: string | null;
+	id: string; profile_id: string; platform: string; channel_instance_id: string | null; chat_id: string; user_id: string | null; thread_id: string | null;
 	dedupe_key: string; trigger_kind: InitiativeObservation["triggerKind"]; trigger_id: string; situation: string; action: string;
 	expected_value: number; risk: InitiativeObservation["risk"]; rationale: string; intended_verification: string; evidence_refs: string;
 	confidence: number; mode: "observe_only"; disposition: InitiativeObservation["disposition"]; related_objective_id: string | null;
@@ -2624,7 +2648,7 @@ interface InitiativeObservationRow {
 
 interface InitiativeTriggerRow {
 	id: string; profile_id: string; kind: DurableInitiativeTrigger["kind"]; trigger_id: string; occurred_at: number;
-	platform: string; chat_id: string; user_id: string | null; thread_id: string | null; prompt: string; evidence_ref: string;
+	platform: string; channel_instance_id: string | null; chat_id: string; user_id: string | null; thread_id: string | null; prompt: string; evidence_ref: string;
 	notification_required: number; delivery_target: string | null; execution_scope: string | null; status: DurableInitiativeTrigger["status"]; attempts: number;
 	next_attempt_at: number; claim_token: string | null; claim_holder: string | null; claim_expires_at: number | null;
 	observation_id: string | null; decision: DurableInitiativeTrigger["decision"] | null; created_at: number;
@@ -2748,7 +2772,7 @@ function mapInitiativeObservation(row: InitiativeObservationRow): InitiativeObse
 	if (!Array.isArray(evidenceRefs) || evidenceRefs.some((item) => typeof item !== "string")) throw new Error(`Initiative observation ${row.id} has invalid evidence references`);
 	return {
 		id: row.id, dedupeKey: row.dedupe_key, triggerKind: row.trigger_kind, triggerId: row.trigger_id,
-		scope: { profileId: row.profile_id, platform: row.platform, chatId: row.chat_id, ...(row.user_id ? { userId: row.user_id } : {}), ...(row.thread_id ? { threadId: row.thread_id } : {}) },
+		scope: { profileId: row.profile_id, platform: row.platform, ...(row.channel_instance_id ? { channelInstanceId: row.channel_instance_id } : {}), chatId: row.chat_id, ...(row.user_id ? { userId: row.user_id } : {}), ...(row.thread_id ? { threadId: row.thread_id } : {}) },
 		situation, action: row.action, expectedValue: row.expected_value, risk: row.risk, rationale: row.rationale,
 		intendedVerification: row.intended_verification, evidenceRefs, confidence: row.confidence, mode: row.mode,
 		disposition: row.disposition, ...(row.related_objective_id ? { relatedObjectiveId: row.related_objective_id } : {}),
@@ -2768,7 +2792,7 @@ function mapInitiativeTrigger(row: InitiativeTriggerRow): DurableInitiativeTrigg
 	const executionScope = parseExecutionScope(row.execution_scope);
 	return {
 		id: row.id, profileId: row.profile_id, kind: row.kind, triggerId: row.trigger_id, occurredAt: row.occurred_at,
-		scope: { profileId: row.profile_id, platform: row.platform, chatId: row.chat_id, ...(row.user_id ? { userId: row.user_id } : {}), ...(row.thread_id ? { threadId: row.thread_id } : {}) },
+		scope: { profileId: row.profile_id, platform: row.platform, ...(row.channel_instance_id ? { channelInstanceId: row.channel_instance_id } : {}), chatId: row.chat_id, ...(row.user_id ? { userId: row.user_id } : {}), ...(row.thread_id ? { threadId: row.thread_id } : {}) },
 		prompt: row.prompt, evidenceRef: row.evidence_ref, notificationRequired: row.notification_required === 1,
 		...(deliveryTarget ? { deliveryTarget } : {}), ...(executionScope ? { executionScope } : {}), status: row.status, attempts: row.attempts, nextAttemptAt: row.next_attempt_at,
 		...(row.claim_token ? { claimToken: row.claim_token } : {}), ...(row.claim_expires_at === null ? {} : { claimExpiresAt: row.claim_expires_at }),

@@ -149,3 +149,35 @@ test("Feishu contextual activation trusts replies only when the parent is known 
 	assert.equal(adapter.admit(sender, message), null);
 	assert.equal(adapter.admit(sender, { ...message, thread_id: "other", message_id: "untrusted", parent_id: "someone-else" }), "group message without bot mention");
 });
+
+test("Feishu ambient Observation is isolated from the Agent message path", async () => {
+	const adapter = new FeishuAdapter({
+		appId: "app", appSecret: "secret", domain: "feishu", connectionMode: "websocket", requireMention: true,
+		allowedUsers: ["ou_user"], allowedChats: [], allowAllUsers: false, groupPolicy: "allowlist",
+		activation: { mode: "contextual", respondTo: ["mention", "active_thread"], ambientObservation: true },
+	});
+	const observations = []; let messages = 0;
+	adapter.onObservation((observation) => { observations.push(observation); });
+	adapter.onMessage(() => { messages++; });
+	await adapter.onReceive({
+		sender: { sender_type: "user", sender_id: { open_id: "ou_user" } },
+		message: { chat_type: "group", chat_id: "chat", thread_id: "topic", message_id: "ambient-1", message_type: "text", content: JSON.stringify({ text: "A potentially useful fact" }), create_time: "1", mentions: [] },
+	});
+	assert.equal(messages, 0);
+	assert.equal(observations.length, 1);
+	assert.equal(observations[0].text, "A potentially useful fact");
+	assert.equal(observations[0].source.threadId, "topic");
+});
+
+test("Feishu group response budget defers excess replies but never blocks commands", () => {
+	const sender = { sender_type: "user", sender_id: { open_id: "ou_user" } };
+	const adapter = new FeishuAdapter({
+		appId: "app", appSecret: "secret", domain: "feishu", connectionMode: "websocket", requireMention: true,
+		allowedUsers: ["ou_user"], allowedChats: [], allowAllUsers: false, groupPolicy: "allowlist", botOpenId: "ou_bot",
+		activation: { mode: "contextual", respondTo: ["mention", "command"], maxRepliesPerWindow: 1, replyWindowMs: 60_000 },
+	});
+	const message = { chat_type: "group", chat_id: "chat", message_id: "budget-1", message_type: "text", content: JSON.stringify({ text: "hello" }), create_time: "1", mentions: [{ id: { open_id: "ou_bot" }, name: "bot" }] };
+	assert.equal(adapter.admit(sender, message), null);
+	assert.equal(adapter.admit(sender, { ...message, message_id: "budget-2" }), "group reply budget exhausted");
+	assert.equal(adapter.admit(sender, { ...message, message_id: "budget-stop", content: JSON.stringify({ text: "/stop" }), mentions: [] }), null);
+});

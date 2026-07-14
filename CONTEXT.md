@@ -148,6 +148,14 @@ _Avoid_: Prompt instruction, Enterprise Policy, Situation decision
 A bounded, expiring group Conversation/Thread state created only by a verified Activation signal. It permits natural contextual follow-ups in that same lane without repeated mentions, but never crosses Threads, grants authority, or becomes durable Memory.
 _Avoid_: Session ownership, Access Scope, permanent group state
 
+**Group Response Governor**:
+A deterministic, bounded per-Conversation-lane control that applies configured quiet hours and reply-window budgets after Activation but before a group response enters Agent work. Emergency commands bypass the reply budget; the governor never interprets customer business meaning or grants authority.
+_Avoid_: Enterprise Policy, semantic response judgment, Agent prompt rule
+
+**Ambient Group Observation**:
+An opt-in projection of a non-activated group text message into a bounded Initiative Observation candidate inside the same Profile, Channel Instance, Conversation, and Thread scope. It bypasses the Agent message path and cannot create an Objective, invoke Pi, call a Tool, or deliver a message.
+_Avoid_: Passive Agent turn, chat transcript ingestion, permanent Memory, hidden execution
+
 **Profile Binding**:
 A deterministic, model-independent route from Channel Instance, optional account, Conversation, and Thread to exactly one Profile. Thread outranks Conversation, Conversation outranks account, and account outranks the Channel Instance default; same-level ambiguity fails closed.
 _Avoid_: Prompt routing, Adapter-selected Profile, array-order fallback

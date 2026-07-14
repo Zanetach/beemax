@@ -19,12 +19,18 @@
 
 import type { PairingAuthority } from "../../security/pairing.ts";
 import type { GroupActivationMode, GroupActivationSignal } from "../../core/group-admission.ts";
+import type { GroupQuietHours } from "../../core/group-response-governor.ts";
 
 export interface FeishuActivationSettings {
 	mode: GroupActivationMode;
 	respondTo: GroupActivationSignal[];
+	ambientObservation?: boolean;
 	activeThreadTtlMs?: number;
 	maxActiveThreads?: number;
+	quietHours?: GroupQuietHours;
+	maxRepliesPerWindow?: number;
+	replyWindowMs?: number;
+	maxTrackedResponseLanes?: number;
 }
 
 export interface FeishuGroupRule {
@@ -32,7 +38,7 @@ export interface FeishuGroupRule {
 	allowlist?: string[];
 	blacklist?: string[];
 	requireMention?: boolean;
-	activation?: Partial<Pick<FeishuActivationSettings, "mode" | "respondTo">>;
+	activation?: Partial<Pick<FeishuActivationSettings, "mode" | "respondTo" | "ambientObservation">>;
 }
 
 export interface FeishuSettings {

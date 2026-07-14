@@ -31,6 +31,7 @@ import type {
 	CardActionHandler,
 	PlatformCardAction,
 	MessageHandler,
+	ObservationHandler,
 	PlatformAdapter,
 	SendResult,
 	SessionSource,
@@ -38,6 +39,7 @@ import type {
 import { validateFeishuWebhookSettings, type FeishuSettings } from "./settings.ts";
 import { retryFeishuOperation } from "./retry.ts";
 import { GroupActivationController, type GroupActivationDecision } from "../../core/group-admission.ts";
+import { GroupResponseGovernor } from "../../core/group-response-governor.ts";
 
 const FEISHU_DOMAIN = lark.Domain.Feishu;
 const LARK_DOMAIN = lark.Domain.Lark;
@@ -50,6 +52,7 @@ const MAX_PROCESSING_REACTIONS = 1024;
 const MAX_MEDIA_BATCH_MESSAGES = 8;
 const MAX_MEDIA_BATCH_BYTES = 30 * 1024 * 1024;
 const MAX_PENDING_INBOUND = 1_000;
+const OBSERVE_ONLY = Symbol("observe_only");
 
 interface PendingInboundEvent {
 	message: InboundMessage;
@@ -75,6 +78,7 @@ export class FeishuAdapter implements PlatformAdapter {
 	private webhookServer?: Server;
 	private readonly webhookSockets = new Set<Socket>();
 	private handler?: MessageHandler;
+	private observationHandler?: ObservationHandler;
 	private cardActionHandler?: CardActionHandler;
 	private dedup = new Map<string, number>();
 	private processingReactions = new Map<string, string>();
@@ -91,6 +95,7 @@ export class FeishuAdapter implements PlatformAdapter {
 	private readonly maxDedupEntries = 10_000;
 	private readonly settings: FeishuSettings;
 	private readonly activation: GroupActivationController;
+	private readonly responseGovernor: GroupResponseGovernor;
 	private readonly outboundMessages = new Map<string, number>();
 
 	constructor(settings: FeishuSettings) {
@@ -98,6 +103,12 @@ export class FeishuAdapter implements PlatformAdapter {
 		this.activation = new GroupActivationController({
 			activeThreadTtlMs: settings.activation?.activeThreadTtlMs,
 			maxActiveThreads: settings.activation?.maxActiveThreads,
+		});
+		this.responseGovernor = new GroupResponseGovernor({
+			quietHours: settings.activation?.quietHours,
+			maxRepliesPerWindow: settings.activation?.maxRepliesPerWindow,
+			replyWindowMs: settings.activation?.replyWindowMs,
+			maxTrackedLanes: settings.activation?.maxTrackedResponseLanes,
 		});
 	}
 
@@ -113,6 +124,10 @@ export class FeishuAdapter implements PlatformAdapter {
 	onMessage(handler: MessageHandler): void {
 		this.handler = handler;
 		void this.drainPendingInbound().catch((error) => console.error(`[beemax] Feishu inbound replay failed: ${error instanceof Error ? error.message : String(error)}`));
+	}
+
+	onObservation(handler: ObservationHandler): void {
+		this.observationHandler = handler;
 	}
 
 	onCardAction(handler: CardActionHandler): void {
@@ -344,6 +359,17 @@ export class FeishuAdapter implements PlatformAdapter {
 		if (!msg || !sender?.sender_id) return;
 
 		const reason = this.admit(sender, msg);
+		if (reason === OBSERVE_ONLY) {
+			if (this.isDuplicate(msg.message_id)) return;
+			const text = (await this.extractText(msg)).trim().slice(0, 10_000);
+			if (!text || !this.observationHandler) return;
+			try {
+				await this.observationHandler({ text, source: this.buildSource(data), timestamp: Number.parseInt(msg.create_time, 10) * 1000 || Date.now() });
+			} catch (error) {
+				console.warn(`[beemax] Feishu ambient Observation was rejected: ${error instanceof Error ? error.message : String(error)}`);
+			}
+			return;
+		}
 		if (reason !== null) {
 			if (reason === "pairing required" && !this.isDuplicate(msg.message_id)) await this.handlePairing(sender, msg);
 			console.warn(`[beemax] rejected Feishu message ${msg.message_id}: ${reason}`);
@@ -692,7 +718,7 @@ export class FeishuAdapter implements PlatformAdapter {
 
 	// --- access policy ---------------------------------------------------
 
-	private admit(sender: FeishuSender, msg: FeishuMessage): string | null {
+	private admit(sender: FeishuSender, msg: FeishuMessage): string | null | typeof OBSERVE_ONLY {
 		if (sender.sender_type === "app") return "bot/app senders are not allowed";
 
 		const ids = sender.sender_id
@@ -708,7 +734,8 @@ export class FeishuAdapter implements PlatformAdapter {
 		const legacyMode = (rule?.requireMention ?? this.settings.requireMention) ? "explicit" : "ambient";
 		const mode = rule?.activation?.mode ?? this.settings.activation?.mode ?? legacyMode;
 		const respondTo = rule?.activation?.respondTo ?? this.settings.activation?.respondTo ?? ["mention"];
-		const decision = this.activation.decide(conversationKey({ platform: "feishu", chatId: msg.chat_id, chatType: "group", ...(msg.thread_id ? { threadId: msg.thread_id } : {}) }), {
+		const laneKey = conversationKey({ platform: "feishu", chatId: msg.chat_id, chatType: "group", ...(msg.thread_id ? { threadId: msg.thread_id } : {}) });
+		const decision = this.activation.decide(laneKey, {
 			policy: rule?.policy ?? this.settings.groupPolicy ?? "allowlist",
 			actorIds: ids,
 			actorAuthorized: globallyAuthorized,
@@ -717,13 +744,17 @@ export class FeishuAdapter implements PlatformAdapter {
 			blacklist: rule?.blacklist,
 			mode,
 			respondTo,
+			ambientObservation: rule?.activation?.ambientObservation ?? this.settings.activation?.ambientObservation ?? false,
 			signals: {
 				mention: this.isBotMentioned(msg),
 				reply: this.isReplyToAgent(msg),
 				command: feishuMessageIsCommand(msg),
 			},
 		});
-		return decision.admitted && decision.action === "respond" ? null : decision.admitted ? "ambient observation is not delivered to Agent Runtime" : feishuAdmissionReason(decision);
+		if (!decision.admitted) return feishuAdmissionReason(decision);
+		if (decision.action === "observe") return OBSERVE_ONLY;
+		const reservation = this.responseGovernor.reserve(laneKey, decision.activation);
+		return reservation.allowed ? null : reservation.reason === "quiet_hours" ? "group quiet hours" : "group reply budget exhausted";
 	}
 
 	private isReplyToAgent(msg: FeishuMessage): boolean {

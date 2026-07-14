@@ -74,6 +74,19 @@ test("Initiative observations remain inside exact trusted scope", () => {
 		assert.equal(store.listInitiativeObservations({ ...scope, chatId: "other" }).length, 0);
 		assert.equal(store.reviewInitiativeObservation("missing", scope, "rejected"), false);
 		assert.throws(() => store.upsertInitiativeObservation({ ...input, scope: { ...scope, chatId: "other" }, observedAt: 2_000 }), /different scope/);
+		const instanceScope = { ...scope, channelInstanceId: "company-a" };
+		store.upsertInitiativeObservation({ ...input, dedupeKey: "instance-key", scope: instanceScope, observedAt: 3_000 });
+		assert.equal(store.listInitiativeObservations({ ...instanceScope, channelInstanceId: "company-b" }).length, 0);
+		assert.throws(() => store.upsertInitiativeObservation({ ...input, dedupeKey: "instance-key", scope: { ...instanceScope, channelInstanceId: "company-b" }, observedAt: 4_000 }), /different scope/);
+		store.upsertInitiativeObservation({ ...input, dedupeKey: "non-ambient-message", triggerKind: "message", triggerId: "message:other-path", scope: instanceScope, observedAt: 4_999 });
+		for (let index = 0; index < 3; index++) store.upsertInitiativeObservation({ ...input, dedupeKey: `ambient-${index}`, triggerKind: "message", triggerId: `ambient-group:message-${index}`, scope: instanceScope, observedAt: 5_000 + index });
+		const oldestAmbient = store.listInitiativeObservations(instanceScope).find((item) => item.dedupeKey === "ambient-0");
+		assert.ok(oldestAmbient);
+		assert.equal(store.reviewInitiativeObservation(oldestAmbient.id, instanceScope, "accepted", 6_000), true);
+		assert.equal(store.pruneAmbientGroupObservations(instanceScope, 2), 1);
+		const messages = store.listInitiativeObservations(instanceScope).filter((item) => item.triggerKind === "message");
+		assert.equal(messages.filter((item) => item.triggerId.startsWith("ambient-group:")).length, 2);
+		assert.ok(messages.some((item) => item.triggerId === "message:other-path"));
 	} finally {
 		store.close();
 		rmSync(root, { recursive: true, force: true });

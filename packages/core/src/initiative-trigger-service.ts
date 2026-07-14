@@ -1,7 +1,6 @@
 import type { DeliveryTarget } from "./delivery-port.ts";
 import type { AgentScope } from "./agent-scope.ts";
-import { canonicalUserId } from "./agent-scope.ts";
-import type { InitiativeObservation, InitiativeObserveResult, InitiativeScope, InitiativeTrigger, InitiativeTriggerKind } from "./initiative-runtime.ts";
+import { initiativeScopeMatchesExecutionScope, type InitiativeObservation, type InitiativeObserveResult, type InitiativeScope, type InitiativeTrigger, type InitiativeTriggerKind } from "./initiative-runtime.ts";
 
 export type DurableInitiativeTriggerStatus = "queued" | "processing" | "completed" | "awaiting_route" | "notification_queued";
 export interface DurableInitiativeTriggerInput {
@@ -51,7 +50,7 @@ abstract class InitiativeTriggerAdapter {
 	constructor(inbox: Pick<InitiativeTriggerInbox, "enqueueInitiativeTrigger">, profileId: string) { this.inbox = inbox; this.profileId = profileId; }
 	receive(input: InitiativeTriggerAdapterInput): { trigger: DurableInitiativeTrigger; created: boolean } {
 		if (input.scope.profileId !== this.profileId) throw new Error("Initiative Trigger scope belongs to a different Profile");
-		if (input.executionScope && !sameExecutionScope(input.scope, input.executionScope)) throw new Error("Initiative Trigger execution scope does not match its observation scope");
+		if (input.executionScope && !initiativeScopeMatchesExecutionScope(input.scope, input.executionScope)) throw new Error("Initiative Trigger execution scope does not match its observation scope");
 		return this.inbox.enqueueInitiativeTrigger({
 			profileId: this.profileId, kind: this.kind, triggerId: input.id, occurredAt: input.occurredAt,
 			scope: input.scope, prompt: input.summary, evidenceRef: input.evidenceRef,
@@ -61,12 +60,6 @@ abstract class InitiativeTriggerAdapter {
 	}
 }
 
-function sameExecutionScope(scope: InitiativeScope, executionScope: AgentScope): boolean {
-	return scope.platform === executionScope.platform
-		&& scope.chatId === executionScope.chatId
-		&& (!scope.userId || scope.userId === canonicalUserId(executionScope))
-		&& (!scope.threadId || scope.threadId === executionScope.threadId);
-}
 export class TaskTransitionInitiativeAdapter extends InitiativeTriggerAdapter { protected readonly kind = "task_transition" as const; }
 export class EnterpriseEventInitiativeAdapter extends InitiativeTriggerAdapter { protected readonly kind = "enterprise_event" as const; }
 

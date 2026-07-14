@@ -19,12 +19,13 @@
 | 2026-07-14 | 第一实施切片：Conversation/Actor 分离、Channel Instance 持久路由、通用群准入、Memory visibility、systemd 资源上限 | P0 安全语义与 P1 多实例基础先行 | Codex | 自动化门禁通过，产品审核待完成 | v1.1-draft |
 | 2026-07-14 | 第二实施切片：Profile Binding、通用 Activation 契约与 Gateway ingress 背压 | 补齐确定性路由和运行时容量边界 | Codex | build、typecheck、全量测试及架构/迁移/Memory 门禁通过 | v1.2-draft |
 | 2026-07-14 | 第三实施切片：Binding 管理命令与 contextual active-thread 状态 | 补齐路由诊断与自然群聊追问 | Codex | build、typecheck、710 项全量测试及架构/迁移/Memory 门禁通过 | v1.3-draft |
+| 2026-07-14 | 第四实施切片：受限群观察、ambient 响应 quiet hours 与回复频率预算 | 在不建立第二执行链的前提下补齐群聊观察和响应边界 | Codex | build、typecheck、714 项全量测试及架构/迁移/Memory 门禁通过 | v1.4-draft |
 
 ---
 
 ## 当前实施状态（2026-07-14）
 
-当前已完成第一至第三实施切片：
+当前已完成第一至第四实施切片：
 
 - 群聊/Channel/Thread 的 Conversation 不再包含当前 Actor；Task Responsibility 仍按 Actor 或可信统一身份归属。
 - `channelInstanceId` 已贯穿 Gateway 入站、投递、Task Plan Completion Notice、Automation Job/Delivery/Route/Media 和 Memory 分区。
@@ -37,11 +38,15 @@
 - Gateway ingress 已实现 Profile 全局和单 Conversation 高水位、拒绝计数和 `/status` 诊断；容量耗尽时仍允许 `/stop`。
 - `beemax binding validate/explain` 已复用 Gateway 强隔离校验，可诊断唯一匹配层级并拒绝冲突、未知实例和跨 Profile 路由。
 - 通用 Active Conversation Lane 已实现有界 TTL/LRU 状态；飞书支持 mention、可信回复、命令及同 Thread 自然追问，不向其他 Thread 扩散。
+- 通用 Group Response Governor 已实现跨午夜 quiet hours、每 Lane 有界回复预算和有界 Lane 状态；入站触发的 ambient 响应受控，`/stop` 等命令不被预算锁死。
+- 飞书非激活群消息可按显式配置投递为 Ambient Group Observation；该路径只写入现有 Profile SQLite 的有界 Initiative Observation 候选，不进入 Agent、Pi、Task、Tool 或 Delivery。
+- Observation 以 Profile、Channel Instance、Conversation 和 Thread 精确隔离；同平台多机器人不会因相同群 ID 串线，保留数量按 Lane 配置并即时裁剪。
 
 仍按本 PRD 后续阶段实施，不计为本切片完成：
 
-- 受限 Observation 投递、quiet hours 和回复频率预算。
 - Binding activate/disable 写操作、Shared Channel Relay，以及 Profile Host 监督。
+- Ambient 候选进入长期 Initiative Observation 前的异步价值选择（相关性、可信度、预期价值与 defer/ignore）；使用 Core cognition port，不调用 Agent/Pi/Tool，也不把客户业务规则硬编码进 Gateway。
+- Automation、Initiative、Task Completion 等真正主动出站 Delivery 的统一 quiet hours/频率治理；该能力需要先让 durable Delivery Target 保留可信 Conversation Type，不能按 chat ID 猜测群聊。
 - 钉钉、企业微信等新增 Adapter，以及完整 Channel Runtime 包拆分。
 - 多实例启用时旧的无 instance Memory/Automation 数据需要管理员显式归属迁移；系统不得把歧义旧数据同时暴露给多个实例。
 
@@ -723,6 +728,7 @@ Platform Event → Adapter 验证 → Interaction Envelope → Admission → Bin
 | activation.mode | enum | contextual | disabled/explicit/contextual/ambient |
 | respondTo | list | mention,reply,active_thread,command | 激活信号 |
 | ambientObservation | bool | false | 是否接收非激活消息用于受限观察 |
+| gateway.observation.retainPerLane | integer | 100 | 跨 Adapter 的每 Conversation Lane 文本候选保留上限；旧 Feishu 字段仅迁移读取 |
 | allowedActors | refs | 空 | 空不等于全部允许，由上层 Policy 决定 |
 | quietHours | schedule | 空 | 主动群消息安静时段 |
 | maxRepliesPerWindow | integer | 有界默认 | 防止群聊刷屏 |
@@ -738,6 +744,8 @@ Platform Event → Adapter 验证 → Interaction Envelope → Admission → Bin
 | GRP-5 | 触发 | 多个独立 Thread 可以并发；同一 Lane 默认串行并支持 Steer/Follow-up |
 | GRP-6 | 约束 | 敏感批准和凭证交互必须转私聊或可信审批面 |
 | GRP-7 | 推论 | 无需回应但有可信价值的内容可成为候选观察，不自动成为长期 Convention/Policy |
+| GRP-8 | 约束 | Ambient Observation 必须显式启用并通过 Profile 的 initiative_observation rollout；默认关闭且只保留有界文本候选 |
+| GRP-9 | 约束 | quiet hours 仅抑制主动 ambient 响应；命令不受回复窗口预算阻断 |
 
 ##### AI 功能设计
 
@@ -929,6 +937,7 @@ Interaction/Schedule/Event → Situation → durable admission → Objective/Tas
 | Channel 状态 | channel_state_changed | profile_id、instance_id、adapter_id、from、to、reason | 连接稳定性 |
 | Binding 诊断 | binding_resolved | instance_id、match_level、profile_id、conflict | 路由正确性 |
 | 群聊准入 | group_interaction_admitted | mode、activation_kind、decision、reason | 误响应和漏响应分析 |
+| 群聊观察 | group_observation_recorded | profile_id、platform、instance_id、conversation_type | 观察量与隔离诊断；不记录消息正文 |
 | Recovery | profile_recovery_cycle | interrupted、retried、failed、outbox_pending | 恢复质量 |
 
 ### 11.3 行为与流程埋点

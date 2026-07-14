@@ -1,9 +1,9 @@
-import { canonicalUserId, type AgentScope } from "./agent-scope.ts";
+import type { AgentScope } from "./agent-scope.ts";
 import type { AccessScopeRef } from "./access-scope.ts";
 import type { EnterprisePolicyDecision } from "./enterprise-policy.ts";
 import { resolveEnterprisePolicyDecision } from "./enterprise-policy.ts";
 import type { ExecutionBudgetRef, ProactiveActionAuthorityRef } from "./execution-envelope.ts";
-import type { InitiativeObservation } from "./initiative-runtime.ts";
+import { initiativeScopeMatchesExecutionScope, type InitiativeObservation } from "./initiative-runtime.ts";
 import { ReversibleActionAdmission, type CompensationProof, type ReversibleActionCapability, type ReversibleActionControlPort } from "./reversible-action-admission.ts";
 import type { ToolPolicy } from "./tool-runtime.ts";
 import type { AutonomyRolloutController } from "./autonomy-rollout.ts";
@@ -82,7 +82,7 @@ export class ProactiveReversibleActionRuntime {
 
 	async consider(candidate: ProactiveReversibleActionCandidate, at = Date.now()): Promise<ProactiveReversibleActionResult> {
 		if (!this.options.autonomy.allows("reversible_action").allowed) return { kind: "rejected", reason: "autonomy_level_disabled", notify: false };
-		if (!sameScope(candidate.observation, candidate.executionScope)) return { kind: "rejected", reason: "execution_scope_mismatch", notify: false };
+		if (!initiativeScopeMatchesExecutionScope(candidate.observation.scope, candidate.executionScope)) return { kind: "rejected", reason: "execution_scope_mismatch", notify: false };
 		const scopeId = candidate.accessScopeRef.id;
 		const compensation = this.options.controls.compensationProof(scopeId, candidate.capability.name, at);
 		if (!compensation) return { kind: "rejected", reason: "compensation_proof_required", notify: false };
@@ -164,13 +164,6 @@ function compensationAuthorityRejection(candidate: ProactiveReversibleActionCand
 	if (decision.publisher.trust !== "verified" || !decision.evidenceRefs.length) return "compensation_policy_untrusted";
 	const resolved = resolveEnterprisePolicyDecision(decision, policy);
 	return !resolved.allowed || resolved.requiresApproval ? "compensation_policy_does_not_allow_autonomy" : undefined;
-}
-
-function sameScope(observation: InitiativeObservation, executionScope: AgentScope): boolean {
-	return observation.scope.platform === executionScope.platform
-		&& observation.scope.chatId === executionScope.chatId
-		&& (!observation.scope.userId || observation.scope.userId === canonicalUserId(executionScope))
-		&& (!observation.scope.threadId || observation.scope.threadId === executionScope.threadId);
 }
 
 function mutationPrompt(observation: InitiativeObservation, capability: string): string {

@@ -5,11 +5,13 @@ import type { SituationBuilderPort } from "./situation-builder.ts";
 import type { SituationEvidenceInput } from "./situation-builder.ts";
 import type { TaskLedger, TaskRecord } from "./task-ledger.ts";
 import type { TurnUnderstanding } from "./turn-understanding.ts";
+import { canonicalUserId, type AgentScope } from "./agent-scope.ts";
 
 export type InitiativeTriggerKind = "heartbeat" | "message" | "task_transition" | "enterprise_event";
 export interface InitiativeScope {
 	profileId: string;
 	platform: string;
+	channelInstanceId?: string;
 	chatId: string;
 	userId?: string;
 	threadId?: string;
@@ -72,6 +74,15 @@ export interface InitiativeObservation extends InitiativeObservationInput {
 }
 export interface InitiativeObservationStore {
 	upsertInitiativeObservation(input: InitiativeObservationInput): { observation: InitiativeObservation; created: boolean };
+}
+
+/** Exact trusted route match; optional observation actor/thread fields remain deliberate scope wildcards. */
+export function initiativeScopeMatchesExecutionScope(scope: InitiativeScope, executionScope: AgentScope): boolean {
+	return scope.platform === executionScope.platform
+		&& scope.channelInstanceId === executionScope.channelInstanceId
+		&& scope.chatId === executionScope.chatId
+		&& (!scope.userId || scope.userId === canonicalUserId(executionScope))
+		&& (!scope.threadId || scope.threadId === executionScope.threadId);
 }
 export type InitiativeObserveResult =
 	| { kind: "ignored"; rationale: string }
@@ -165,11 +176,11 @@ export async function decideInitiativeFromSituation(context: InitiativeDecisionC
 }
 
 export function initiativeOwnerKey(scope: InitiativeScope): string {
-	return `${scope.platform}:${scope.chatId}:${scope.userId ?? "anon"}`;
+	return `${scope.platform}${scope.channelInstanceId ? `@${scope.channelInstanceId}` : ""}:${scope.chatId}:${scope.userId ?? "anon"}`;
 }
 
 export function initiativeDedupeKey(scope: InitiativeScope, action: string, relatedObjectiveId?: string): string {
-	const identity = [scope.profileId, scope.platform, scope.chatId, scope.userId ?? "", scope.threadId ?? "", canonical(action), relatedObjectiveId ?? ""].join("\0");
+	const identity = [scope.profileId, scope.platform, scope.channelInstanceId ?? "", scope.chatId, scope.userId ?? "", scope.threadId ?? "", canonical(action), relatedObjectiveId ?? ""].join("\0");
 	return createHash("sha256").update(identity).digest("hex");
 }
 
@@ -179,6 +190,7 @@ function normalizeTrigger(trigger: InitiativeTrigger): InitiativeTrigger {
 	const scope = {
 		profileId: requiredText(trigger.scope.profileId, "Initiative profile", 512),
 		platform: requiredText(trigger.scope.platform, "Initiative platform", 128),
+		...(trigger.scope.channelInstanceId ? { channelInstanceId: requiredText(trigger.scope.channelInstanceId, "Initiative Channel Instance", 512) } : {}),
 		chatId: requiredText(trigger.scope.chatId, "Initiative chat", 512),
 		...(trigger.scope.userId ? { userId: requiredText(trigger.scope.userId, "Initiative user", 512) } : {}),
 		...(trigger.scope.threadId ? { threadId: requiredText(trigger.scope.threadId, "Initiative thread", 512) } : {}),

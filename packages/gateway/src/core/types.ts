@@ -42,6 +42,13 @@ export interface InboundMessage {
 	timestamp: number;
 }
 
+/** Content-only observe path. It cannot carry media, raw transport payloads, or execution grants. */
+export interface InboundObservation {
+	text: string;
+	source: SessionSource;
+	timestamp: number;
+}
+
 /** Result of an outbound send. */
 export interface SendResult {
 	success: boolean;
@@ -78,6 +85,8 @@ export interface PlatformAdapter {
 	 * Adapters must call this exactly once per inbound event.
 	 */
 	onMessage(handler: MessageHandler): void;
+	/** Optional isolated path for configured observe-only group content. */
+	onObservation?(handler: ObservationHandler): void;
 	/** Register interactive-card actions when the platform supports them. */
 	onCardAction?(handler: CardActionHandler): void;
 
@@ -106,6 +115,7 @@ export interface PlatformAdapter {
 }
 
 export type MessageHandler = (message: InboundMessage) => void | Promise<void>;
+export type ObservationHandler = (observation: InboundObservation) => void | Promise<void>;
 
 export interface SendOptions {
 	replyTo?: string;

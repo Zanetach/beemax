@@ -87,7 +87,7 @@ export function decideGroupActivation(input: GroupActivationInput): GroupActivat
 		if (input.signals[signal] && input.respondTo.includes(signal)) return { admitted: true, action: "respond", activation: signal };
 	}
 	if (input.mode === "ambient") return { admitted: true, action: "respond", activation: "ambient" };
-	if (input.mode === "contextual" && input.ambientObservation) return { admitted: true, action: "observe", activation: "ambient" };
+	if (input.ambientObservation) return { admitted: true, action: "observe", activation: "ambient" };
 	return { admitted: false, reason: "activation_required" };
 }
 

@@ -152,13 +152,20 @@ gateway:
 test("runtime config exposes transport-neutral Feishu contextual activation with per-group overrides", async () => {
 	const home = await mkdtemp(join(tmpdir(), "beemax-activation-home-"));
 	const paths = await createProfile("activation", { home });
-	await writeFile(paths.configPath, `gateway:
+await writeFile(paths.configPath, `gateway:
+  observation:
+    retainPerLane: 25
   feishu:
     activation:
       mode: contextual
       respondTo: [mention, reply, active_thread, command]
+      ambientObservation: true
       activeThreadTtlMs: 120000
       maxActiveThreads: 50
+      quietHours: { start: "22:00", end: "07:00", timezone: "Asia/Shanghai" }
+      maxRepliesPerWindow: 4
+      replyWindowMs: 30000
+      maxTrackedResponseLanes: 60
     groupRules:
       incident-room:
         policy: open
@@ -167,8 +174,16 @@ test("runtime config exposes transport-neutral Feishu contextual activation with
           respondTo: [mention, command]
 `);
 	const config = loadConfig(paths.configPath, "activation");
-	assert.deepEqual(config.gateway.feishu.activation, { mode: "contextual", respondTo: ["mention", "reply", "active_thread", "command"], activeThreadTtlMs: 120_000, maxActiveThreads: 50 });
+	assert.deepEqual(config.gateway.feishu.activation, {
+		mode: "contextual", respondTo: ["mention", "reply", "active_thread", "command"], ambientObservation: true,
+		activeThreadTtlMs: 120_000, maxActiveThreads: 50,
+		quietHours: { start: "22:00", end: "07:00", timezone: "Asia/Shanghai" },
+		maxRepliesPerWindow: 4, replyWindowMs: 30_000, maxTrackedResponseLanes: 60,
+	});
+	assert.deepEqual(config.gateway.observation, { retainPerLane: 25 });
 	assert.deepEqual(config.gateway.feishu.groupRules["incident-room"].activation, { mode: "explicit", respondTo: ["mention", "command"] });
+	await writeFile(paths.configPath, `gateway:\n  feishu:\n    activation:\n      observationRetainPerLane: 17\n`);
+	assert.deepEqual(loadConfig(paths.configPath, "activation").gateway.observation, { retainPerLane: 17 });
 	await writeFile(paths.configPath, `gateway:\n  feishu:\n    activation:\n      mode: contextual\n      respondTo: [mention, typo_signal]\n`);
 	assert.throws(() => loadConfig(paths.configPath, "activation"), /Invalid group activation signals: typo_signal/);
 });
