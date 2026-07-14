@@ -526,6 +526,24 @@ test("due Verification Retry evaluates retained Candidate Results without replay
 	} finally { store.close(); rmSync(root, { recursive: true, force: true }); }
 });
 
+test("due Verification Retry also completes a direct Objective without a Task Plan", async () => {
+	const root = mkdtempSync(join(tmpdir(), "beemax-direct-objective-verification-retry-"));
+	const store = new MemoryStore(join(root, "memory.db"));
+	try {
+		store.record({ id: "direct-objective", ownerKey: "cli:local:local", kind: "objective", title: "Direct verified work", acceptanceCriteria: "Candidate is independently checked", status: "running", createdAt: 1, startedAt: 2, executionScope: { platform: "cli", chatId: "local", chatType: "dm", userId: "local" } });
+		store.transition("direct-objective", { status: "running", verificationStatus: "unavailable", candidateResult: "direct candidate", error: "verifier offline" });
+		assert.equal(store.deferCandidateVerification(["cli:local:local"], "direct-objective", 10), true);
+		assert.deepEqual(store.verificationCandidates(10 + 24 * 60 * 60_000, 10, ["already-attempted-plan"]).map((task) => task.id), ["direct-objective"]);
+		let executions = 0; const notices = [];
+		const runner = new TaskRecoveryRunner(store, async () => { executions++; return { output: "replayed" }; }, undefined, async (_task, result) => ({ accepted: result.output === "direct candidate", evidence: "direct candidate checked later" }), undefined, async (task, resolution) => { notices.push({ id: task.id, resolution }); });
+		assert.deepEqual(await runner.reverifyDue(10 + 24 * 60 * 60_000), { attempted: 1, accepted: 1, rejected: 0, unavailable: 0 });
+		assert.equal(executions, 0);
+		assert.deepEqual(notices, [{ id: "direct-objective", resolution: { accepted: true, evidence: "direct candidate checked later" } }]);
+		const objective = store.queryTasks({ ownerKeys: ["cli:local:local"], id: "direct-objective" })[0];
+		assert.deepEqual({ status: objective.status, verificationStatus: objective.verificationStatus, result: objective.result }, { status: "succeeded", verificationStatus: "accepted", result: "direct candidate" });
+	} finally { store.close(); rmSync(root, { recursive: true, force: true }); }
+});
+
 test("unavailable Verification Retry persists exponential backoff across recovery cycles", async () => {
 	const root = mkdtempSync(join(tmpdir(), "beemax-verification-backoff-"));
 	const store = new MemoryStore(join(root, "memory.db"));

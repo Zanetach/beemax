@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { AutonomousPlanningPolicy, BeeMaxAgentRuntime, createAccessScopeRef, createExecutionEnvelope, PlanningBudgetRegistry } from "../dist/index.js";
+import { AutonomousPlanningPolicy, BeeMaxAgentRuntime, createAccessScopeRef, createExecutionEnvelope, createWebTools, PlanningBudgetRegistry } from "../dist/index.js";
 
 test("planning policy keeps simple conversational requests direct", () => {
 	const policy = new AutonomousPlanningPolicy({ maxConcurrent: 8 });
@@ -31,6 +31,62 @@ test("Agent runtime progressively exposes discovery and restores the full catalo
 	const runtime = new BeeMaxAgentRuntime({ planningPolicy: new AutonomousPlanningPolicy(), createAgent: async () => piSession });
 	await runtime.run({ source, text: "查一下今天的天气", timeoutMs: 1_000 });
 	assert.deepEqual(toolChanges, [["capability_discover"], ["read", "web_search"]]);
+	runtime.dispose();
+});
+
+test("Agent runtime deterministically preflights and enforces an installed matching Skill before execution", async () => {
+	const source = { platform: "cli", chatId: "skill-preflight", chatType: "dm", userId: "local" };
+	const prompts = [];
+	const toolChanges = [];
+	let listener;
+	const agent = { state: { model: { id: "test" }, messages: [] } };
+	const capabilityDiscover = {
+		name: "capability_discover",
+		description: "Discover capabilities",
+		beemaxSkillPrefetch: async () => [{ name: "research-brief" }],
+	};
+	const piSession = {
+		agent,
+		getActiveToolNames: () => ["capability_discover", "skill_activate", "skill_read", "skill_complete"],
+		getAllTools: () => [capabilityDiscover, { name: "skill_activate", description: "Activate Skill" }, { name: "skill_read", description: "Read Skill" }, { name: "skill_complete", description: "Complete Skill" }],
+		setActiveToolsByName: (names) => { toolChanges.push([...names]); },
+		subscribe: (next) => { listener = next; return () => undefined; },
+		prompt: async (text) => {
+			prompts.push(text);
+			if (prompts.length === 2) {
+				listener({ type: "tool_execution_end", toolCallId: "skill", toolName: "skill_read", isError: false, result: { details: { descriptor: { name: "research-brief" }, state: { skill: "research-brief" } } } });
+				listener({ type: "tool_execution_end", toolCallId: "skill-complete", toolName: "skill_complete", isError: false, result: { details: { skill: "research-brief" } } });
+			}
+			agent.state.messages = [{ role: "assistant", content: [{ type: "text", text: "done" }], usage: { input: 1, output: 1 } }];
+		},
+		abort: async () => undefined,
+		dispose: () => undefined,
+	};
+	const runtime = new BeeMaxAgentRuntime({ createAgent: async () => piSession });
+	await runtime.run({ source, text: "请生成一份有真实来源的研究简报", timeoutMs: 1_000 });
+	assert.match(prompts[0], /Installed matching Skill metadata: research-brief/);
+	assert.match(prompts[1], /Skill correction/);
+	assert.deepEqual(toolChanges[0], ["capability_discover", "skill_read", "skill_activate", "skill_complete"]);
+	runtime.dispose();
+});
+
+test("delegated Chinese research starts with Agent-Reach active instead of degrading before discovery", async () => {
+	const source = { platform: "cli", chatId: "research", chatType: "dm", userId: "local", delegatedTask: { id: "task-research", ownerKey: "cli:local:local" } };
+	const tools = createWebTools();
+	const activeChanges = [];
+	const agent = { state: { model: { id: "test" }, messages: [] } };
+	const runtime = new BeeMaxAgentRuntime({ createAgent: async () => ({
+		agent,
+		getAllTools: () => tools,
+		getActiveToolNames: () => tools.map(({ name }) => name),
+		setActiveToolsByName: (names) => { activeChanges.push([...names]); },
+		subscribe: () => () => undefined,
+		prompt: async () => { agent.state.messages = [{ role: "assistant", content: [{ type: "text", text: "done" }], usage: { input: 1, output: 1 } }]; },
+		abort: async () => undefined,
+		dispose: () => undefined,
+	}) });
+	await runtime.run({ source, text: "用 agent-reach 网络检索可验证的公开趋势和真实可溯源来源", timeoutMs: 1_000, mode: "automation" });
+	assert.ok(activeChanges[0].includes("agent_reach_search"));
 	runtime.dispose();
 });
 
@@ -95,12 +151,15 @@ test("Agent runtime reroutes one unresolved Tool failure through capability disc
 	const source = { platform: "cli", chatId: "reroute", chatType: "dm", userId: "local" };
 	let listener; const prompts = []; const agent = { state: { model: { id: "test" }, messages: [] } };
 	const runtime = new BeeMaxAgentRuntime({ createAgent: async () => ({
-		agent, getActiveToolNames: () => ["capability_discover", "primary_search", "alternate_search"], setActiveToolsByName: () => undefined,
-		getAllTools: () => [{ name: "primary_search", description: "Primary search", beemaxPolicy: { sideEffect: "none" } }, { name: "alternate_search", description: "Alternate search", beemaxPolicy: { sideEffect: "none" } }],
+		agent, getActiveToolNames: () => ["capability_discover", "read", "primary_search", "alternate_search"], setActiveToolsByName: () => undefined,
+		getAllTools: () => [{ name: "read", description: "Read context", beemaxPolicy: { sideEffect: "none" } }, { name: "primary_search", description: "Primary search", beemaxPolicy: { sideEffect: "none" } }, { name: "alternate_search", description: "Alternate search", beemaxPolicy: { sideEffect: "none" } }],
 		subscribe: (next) => { listener = next; return () => undefined; },
 		prompt: async (text) => {
 			prompts.push(text);
-			if (prompts.length === 1) listener({ type: "tool_execution_end", toolCallId: "failed", toolName: "primary_search", result: {}, isError: true });
+			if (prompts.length === 1) {
+				listener({ type: "tool_execution_end", toolCallId: "failed", toolName: "primary_search", result: {}, isError: true });
+				listener({ type: "tool_execution_end", toolCallId: "context", toolName: "read", result: {}, isError: false });
+			}
 			if (prompts.length === 2) listener({ type: "tool_execution_end", toolCallId: "discover", toolName: "capability_discover", result: { details: { activatedTools: ["alternate_search"], ranked: [{ kind: "tool", name: "alternate_search", score: 60, confidence: 0.6, reason: "matched trigger" }] } }, isError: false });
 			if (prompts.length === 3) listener({ type: "tool_execution_end", toolCallId: "alternate", toolName: "alternate_search", result: {}, isError: false });
 			agent.state.messages = [{ role: "assistant", content: [{ type: "text", text: "done" }], usage: { input: 1, output: 1 } }];
@@ -207,6 +266,29 @@ test("planning policy delegates one substantial isolated work item", () => {
 test("planning policy keeps one bounded writing and file-verification workflow in the parent Agent", () => {
 	const decision = new AutonomousPlanningPolicy().decide("请使用当前最合适的标准 Skill，为 BeeMax 写一段约120字的中文发布短文，必须包含持久任务、飞书、可验证结果三个词。将最终文本写入文件，然后重新读取并确认三个关键词都存在。不要发布到外部平台。");
 	assert.equal(decision.mode, "direct");
+	assert.equal(decision.signals.requiresResearch, false);
+	assert.deepEqual(decision.requiredTools, []);
+});
+
+test("planning policy distinguishes temporal information needs from ordinary current-context modifiers", () => {
+	const policy = new AutonomousPlanningPolicy();
+	assert.equal(policy.decide("current weather").signals.requiresResearch, true);
+	assert.equal(policy.decide("查询当前天气").signals.requiresResearch, true);
+	assert.equal(policy.decide("use the current best Skill").signals.requiresResearch, false);
+	assert.equal(policy.decide("使用当前最合适的 Skill").signals.requiresResearch, false);
+});
+
+test("planning policy does not mistake an independent verification capability name for parallel work", () => {
+	const decision = new AutonomousPlanningPolicy().decide("写一份 BeeMax 营销 brief，仅描述 Pi 循环、Task Ledger、独立 Verification、Memory 和 Skills，写入文件后读回确认。");
+	assert.equal(decision.mode, "direct");
+	assert.equal(decision.signals.requestsParallelism, false);
+	assert.deepEqual(decision.requiredTools, []);
+});
+
+test("planning policy honors an explicit request not to delegate", () => {
+	const decision = new AutonomousPlanningPolicy().decide("全面整理这份营销材料并写入文件，不要委派，不使用子代理。");
+	assert.equal(decision.mode, "direct");
+	assert.match(decision.reason, /explicitly requires/i);
 	assert.deepEqual(decision.requiredTools, []);
 });
 
@@ -340,7 +422,7 @@ test("new durable Objectives preserve Situation and trusted Access Scope provena
 		prompt: async () => { agent.state.messages = [{ role: "assistant", content: [{ type: "text", text: "accepted" }], usage: { input: 1, output: 1 } }]; },
 		abort: async () => undefined, dispose: () => undefined,
 	}) });
-	await runtime.run({ source, text: "在极光窗口前完成浮光引擎调谐，保留回滚点", timeoutMs: 1_000, objectiveTaskId: "new-objective", accessScopeRef });
+	const result = await runtime.run({ source, text: "在极光窗口前完成浮光引擎调谐，保留回滚点", timeoutMs: 1_000, objectiveTaskId: "new-objective", accessScopeRef });
 	const objective = [...tasks.values()][0];
 	assert.match(objective.situation.summary, /浮光引擎/);
 	assert.deepEqual(objective.accessScopeRef, accessScopeRef);
@@ -349,6 +431,8 @@ test("new durable Objectives preserve Situation and trusted Access Scope provena
 	assert.equal(objective.verificationStatus, "unavailable");
 	assert.equal(objective.candidateResult, "accepted");
 	assert.equal(objective.result, undefined);
+	assert.match(result.answer, /任务尚未完成.*Verification/);
+	assert.notEqual(result.answer, "accepted");
 	runtime.dispose();
 });
 
@@ -415,6 +499,10 @@ test("a responsible direct Turn completes one durable Objective through one veri
 	assert.equal(objective.status, "succeeded");
 	assert.equal(objective.verificationStatus, "accepted");
 	assert.equal(objective.result, "完成并附来源");
+	assert.match(objective.description, /生成一份有来源的简短报告/);
+	assert.deepEqual(objective.situation.constraints, ["保留证据"]);
+	assert.match(objective.acceptanceCriteria, /报告包含来源/);
+	assert.doesNotMatch(objective.acceptanceCriteria, /生成一份有来源的简短报告|保留证据|weaker substitute/i);
 	assert.equal(run.status, "succeeded");
 	assert.equal(run.output, "完成并附来源");
 	assert.equal(envelope.objectiveId, objective.id);
@@ -422,6 +510,27 @@ test("a responsible direct Turn completes one durable Objective through one veri
 	assert.equal(envelope.taskRunId, run.id);
 	assert.equal(objective.checkpoint.source, "pi_turn");
 	assert.deepEqual(objective.checkpoint.completed, ["read:source-1"]);
+	runtime.dispose();
+});
+
+test("a rejected Objective returns a blocker and fails its Task Run instead of returning the Candidate as completed", async () => {
+	const source = { platform: "cli", chatId: "direct-rejected", chatType: "dm", userId: "local" };
+	const tasks = new Map(); const runs = new Map();
+	const ledger = {
+		record(task) { tasks.set(task.id, { ...task }); }, transition(id, change) { tasks.set(id, { ...tasks.get(id), ...change }); return true; },
+		recordRun(run) { runs.set(run.id, { ...run }); }, transitionRun(id, change) { runs.set(id, { ...runs.get(id), ...change }); return true; }, queryTasks: () => [],
+	};
+	const agent = { state: { model: { id: "test" }, messages: [] } };
+	const runtime = new BeeMaxAgentRuntime({
+		taskLedger: ledger,
+		turnUnderstanding: { understand: (text) => ({ action: "create", goal: text, constraints: [], acceptanceCriteria: ["必须包含来源"], memoryQuery: text, capabilityQuery: text, executionMode: "direct", confidence: 0.9 }) },
+		verifyObjectiveCandidate: async () => ({ accepted: false, feedback: "缺少来源证据" }),
+		createAgent: async () => ({ agent, subscribe: () => () => undefined, prompt: async () => { agent.state.messages = [{ role: "assistant", content: [{ type: "text", text: "没有来源的草稿" }], usage: { input: 1, output: 1 } }]; }, abort: async () => undefined, dispose: () => undefined }),
+	});
+	const result = await runtime.run({ source, text: "生成带来源报告", timeoutMs: 1_000, executionEnvelope: createExecutionEnvelope({ executionId: "rejected", trigger: { kind: "interaction", id: "message" }, budget: { maxCorrectiveAttempts: 0 } }) });
+	const [objective] = [...tasks.values()]; const [run] = [...runs.values()];
+	assert.equal(objective.status, "failed"); assert.equal(objective.verificationStatus, "rejected");
+	assert.equal(run.status, "failed"); assert.match(result.answer, /未通过独立 Verification/); assert.notEqual(result.answer, "没有来源的草稿");
 	runtime.dispose();
 });
 

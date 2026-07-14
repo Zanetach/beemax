@@ -39,7 +39,9 @@ test("Skill Runtime enforces discover, activate, route and declared-resource ord
 		await assert.rejects(() => runtime.readResource("references/not-declared.md"), /not declared/);
 		await assert.rejects(() => runtime.readResource("references/risk.md"), /module must be loaded/);
 		assert.equal((await runtime.readResource("modules/commercial.md")).content, "Commercial review workflow");
-		const completed = runtime.complete(); assert.equal(completed.state, "completed"); assert.equal(completed.loadedResources.length, 1); assert.equal(runtime.snapshot().state, "idle");
+		assert.throws(() => runtime.complete(), /every declared reference.*references\/risk\.md/);
+		assert.equal((await runtime.readResource("references/risk.md")).content, "Risk clause reference");
+		const completed = runtime.complete(); assert.equal(completed.state, "completed"); assert.equal(completed.loadedResources.length, 2); assert.equal(runtime.snapshot().state, "idle");
 	} finally { rmSync(f.root, { recursive: true, force: true }); }
 });
 
@@ -80,6 +82,43 @@ test("Skill Registry parses standard multiline YAML routing metadata", async () 
 		writeFileSync(join(skill, "SKILL.md"), `---\nname: yaml-skill\ndescription: >\n  Review structured commercial documents\ntriggers:\n  - 商业审查\n  - commercial review\nexclude:\n  - translate only\n---\nRules`);
 		assert.deepEqual((await new SkillRegistry([root]).search("请做商业审查")).map((item) => item.name), ["yaml-skill"]);
 		assert.deepEqual((await new SkillRegistry([root]).search("translate only commercial review")).map((item) => item.name), []);
+	} finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("standard SKILL.md compatibility route exposes referenced local resources without a BeeMax manifest", async () => {
+	const root = mkdtempSync(join(tmpdir(), "beemax-standard-skill-"));
+	const skill = join(root, "research-brief");
+	mkdirSync(join(skill, "references"), { recursive: true });
+	try {
+		writeFileSync(join(skill, "SKILL.md"), `---\nname: research-brief\ndescription: "Create a sourced research brief"\n---\n\nRead references/source-policy.md before researching.`);
+		writeFileSync(join(skill, "references", "source-policy.md"), "Require two independently verifiable public sources.");
+		writeFileSync(join(skill, "references", "policy.md"), "Substring-only path must not leak into the route.");
+		writeFileSync(join(skill, "references", "unmentioned.md"), "This file was not requested by the Skill entry.");
+		const runtime = new SkillRuntime(new SkillRegistry([root]));
+		await runtime.discover("sourced research brief");
+		const activation = await runtime.activate("research-brief");
+		assert.deepEqual(activation.routes, [{ name: "legacy", description: "Compatibility route for a self-contained SKILL.md" }]);
+		const route = await runtime.routeTo("legacy");
+		assert.deepEqual(route.references, ["references/source-policy.md"]);
+		runtime.useActivatedInstructionsAsModule();
+		assert.equal((await runtime.readResource("references/source-policy.md")).content, "Require two independently verifiable public sources.");
+		await assert.rejects(() => runtime.readResource("references/unmentioned.md"), /not declared/);
+	} finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("standard Skill reference discovery is direct, bounded, and fails loudly for a missing declared path", async () => {
+	const root = mkdtempSync(join(tmpdir(), "beemax-standard-skill-direct-")); const skill = join(root, "direct-skill");
+	mkdirSync(join(skill, "references"), { recursive: true });
+	try {
+		for (let index = 0; index < 150; index++) writeFileSync(join(skill, "references", `unrelated-${String(index).padStart(3, "0")}.md`), "unrelated");
+		writeFileSync(join(skill, "references", "late.md"), "explicit resource");
+		writeFileSync(join(skill, "SKILL.md"), "---\nname: direct-skill\ndescription: Direct reference parsing\n---\nRead `references/late.md`.");
+		const runtime = new SkillRuntime(new SkillRegistry([root])); await runtime.discover("Direct reference parsing"); await runtime.activate("direct-skill");
+		assert.deepEqual((await runtime.routeTo("legacy")).references, ["references/late.md"]);
+		writeFileSync(join(skill, "SKILL.md"), "---\nname: direct-skill\ndescription: Missing reference parsing\n---\nRead `references/missing.md`.");
+		new SkillRegistry([root]).invalidate();
+		const missing = new SkillRuntime(new SkillRegistry([root])); await missing.discover("Missing reference parsing");
+		await assert.rejects(() => missing.activate("direct-skill"), /referenced resource is unavailable: references\/missing\.md/);
 	} finally { rmSync(root, { recursive: true, force: true }); }
 });
 

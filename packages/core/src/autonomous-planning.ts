@@ -59,6 +59,7 @@ export class AutonomousPlanningPolicy {
 	decide(prompt: string): AutonomousPlanningDecision {
 		const normalized = prompt.trim();
 		const signals = inspectPrompt(normalized);
+		const forbidsDelegation = has(normalized.toLowerCase(), /(?:不|不要|无需|禁止)(?:再)?(?:委派|子代理|子\s*agent)|(?:do not|don't|without)\s+(?:delegate|delegation|sub-?agents?)/i);
 		let mode: AutonomousExecutionMode = "direct";
 		let reason = "Simple or single-step request; keep execution in the parent Agent";
 
@@ -69,6 +70,10 @@ export class AutonomousPlanningPolicy {
 		if (signals.independentWorkItems >= 2 && signals.complexity >= 5) {
 			mode = "dag";
 			reason = "Multiple independent substantial work items can execute as a verified DAG";
+		}
+		if (forbidsDelegation) {
+			mode = "direct";
+			reason = "The user explicitly requires execution in the parent Agent";
 		}
 
 		const dagCapacity = Math.min(this.capacity.maxConcurrent, this.capacity.maxSubagents);
@@ -129,9 +134,9 @@ export class PlanningBudgetRegistry {
 
 function inspectPrompt(prompt: string): PlanningSignals {
 	const lower = prompt.toLowerCase();
-	const requiresResearch = has(lower, /\b(research|investigate|audit|review|compare|benchmark)\b|研究|调研|审查|审核|对标|比较/);
+	const requiresResearch = has(lower, /\b(research|investigate|audit|review|compare|benchmark|search|look up|latest|today|real[- ]?time|up[- ]to[- ]date)\b|\bcurrent\s+(?!best\b|most\s+suitable\b)|研究|调研|审查|审核|对标|比较|查(?:一下|找)|查询|搜索|检索|今天|今日|当前(?!最(?:合适|佳|好))|最新|实时/);
 	const requiresVerification = has(lower, /\b(verify|validate|test|evidence|acceptance|quality)\b|验证|测试|证据|验收|质量/);
-	const requestsParallelism = has(lower, /\b(parallel|concurrent|independent(?:ly)?)\b|并行|并发|独立/);
+	const requestsParallelism = has(lower, /\b(parallel|concurrent|independently)\b|并行|并发|独立地/);
 	const synthesis = has(lower, /\b(synthesi[sz]e|combine|report|release|implement|build|refactor)\b|汇总|综合|报告|发布|实现|开发|重构/);
 	const substantialWork = has(lower, /\b(deep(?:ly)?|comprehensive|thorough|evidence[- ]backed|official documentation|full (?:audit|review|report)|across (?:the )?(?:project|codebase))\b|深入|深度|全面|完整报告|整个项目|全项目|证据支持/);
 	const orderedSteps = (prompt.match(/(?:^|\s)(?:\d+[.)]|[-*])\s/gm) ?? []).length;

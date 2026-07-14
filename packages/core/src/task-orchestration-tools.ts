@@ -28,19 +28,20 @@ export function createTaskOrchestrationTools(
 	const executeTool = defineTool({
 		name: "task_plan_execute",
 		label: "Plan and Execute Tasks",
-		description: "Create a validated Task DAG and execute independent nodes in parallel with isolated read-only Sub-Agents. Every result must pass independent verification against observable Acceptance Criteria. Use only for 2 or more substantial independent work items.",
+		description: "Create a validated Task DAG and execute independent nodes in parallel with isolated read-only Sub-Agents. Every Task must be fully achievable with effect=none and return findings to the parent Agent; keep any mutation in the parent. Every result must pass independent verification against observable Acceptance Criteria. Use only for 2 or more substantial independent work items.",
 		parameters: Type.Object({
 			title: Type.String({ minLength: 1, maxLength: 120 }),
 			tasks: Type.Array(Type.Object({
-				key: Type.String({ pattern: "^[a-z0-9][a-z0-9_-]{0,31}$" }),
+				key: Type.String({ pattern: "^[a-z0-9][a-z0-9_-]{0,63}$" }),
 				title: Type.String({ minLength: 1, maxLength: 120 }),
 				goal: Type.String({ minLength: 1, maxLength: 10_000 }),
 				acceptanceCriteria: Type.String({ minLength: 1, maxLength: 5_000 }),
+				effect: Type.Literal("none", { description: "Declare that this delegated Task is fully achievable with read-only Tools and returns findings without external or local mutation." }),
 				routes: Type.Optional(Type.Array(Type.String({ minLength: 1, maxLength: 2_000 }), { maxItems: 5 })),
 			}), { minItems: 2, maxItems: maxTasks }),
 			dependencies: Type.Optional(Type.Array(Type.Object({
-				task: Type.String({ minLength: 1, maxLength: 32 }),
-				dependsOn: Type.String({ minLength: 1, maxLength: 32 }),
+				task: Type.String({ minLength: 1, maxLength: 64 }),
+				dependsOn: Type.String({ minLength: 1, maxLength: 64 }),
 			}), { maxItems: maxTasks * maxTasks })),
 		}),
 		execute: async (_callId, params, signal) => {

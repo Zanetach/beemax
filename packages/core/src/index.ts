@@ -79,7 +79,7 @@ export { TaskGraph, type TaskGraphDependencyResult, type TaskGraphExecutionConte
 export { createTaskOrchestrationTools, type TaskOrchestrationOptions } from "./task-orchestration-tools.ts";
 export { assessTaskPlanQuality, type TaskPlanQualityInput, type TaskPlanQualityResult } from "./task-plan-quality.ts";
 export { assertNoCredentialMaterial, containsCredentialMaterial, redactCredentialMaterial } from "./credential-material.ts";
-export { TaskRecoveryRunner, type TaskPlanCancelResult, type TaskPlanPauseResult, type TaskPlanRetryResult, type TaskRecoveryRunnerOptions, type TaskRecoveryRunnerResult, type TaskVerificationRetryResult } from "./task-recovery.ts";
+export { TaskRecoveryRunner, type DirectObjectiveVerificationNotifier, type DirectObjectiveVerificationResolution, type TaskPlanCancelResult, type TaskPlanPauseResult, type TaskPlanRetryResult, type TaskRecoveryRunnerOptions, type TaskRecoveryRunnerResult, type TaskVerificationRetryResult } from "./task-recovery.ts";
 export { TaskRecoveryService, type TaskRecoveryCycleResult, type TaskRecoveryServiceOptions } from "./task-recovery-service.ts";
 export { TaskPlanRuntime } from "./task-plan-runtime.ts";
 export { TurnUnderstandingEngine, renderWorkContext, selectTurnTools, type TurnAction, type TurnExecutionMode, type TurnUnderstanding, type TurnUnderstandingInput, type TurnUnderstandingPort } from "./turn-understanding.ts";

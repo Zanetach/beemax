@@ -9,6 +9,8 @@ export interface TaskPlanRetryResult extends TaskRecoveryRunnerResult { prepared
 export interface TaskPlanCancelResult { active: number; tasks: number; }
 export interface TaskPlanPauseResult { paused: boolean; }
 export interface TaskVerificationRetryResult { attempted: number; accepted: number; rejected: number; unavailable: number; }
+export type DirectObjectiveVerificationResolution = { accepted: true; evidence?: string } | { accepted: false; feedback: string };
+export type DirectObjectiveVerificationNotifier = (task: TaskRecord, resolution: DirectObjectiveVerificationResolution, signal: AbortSignal) => Promise<void>;
 
 /** Resumes only durable DAG work that already passed the fail-closed recovery policy. */
 export class TaskRecoveryRunner {
@@ -17,7 +19,8 @@ export class TaskRecoveryRunner {
 	private readonly runtime: TaskPlanRuntime;
 	private readonly verify?: TaskGraphVerifier;
 	private readonly executionTrace?: ExecutionTraceSink;
-	constructor(ledger: TaskLedger, execute: TaskGraphExecutor, runtime = new TaskPlanRuntime(), verify?: TaskGraphVerifier, executionTrace?: ExecutionTraceSink) { this.ledger = ledger; this.execute = execute; this.runtime = runtime; this.verify = verify; this.executionTrace = executionTrace; }
+	private readonly notifyDirectObjective?: DirectObjectiveVerificationNotifier;
+	constructor(ledger: TaskLedger, execute: TaskGraphExecutor, runtime = new TaskPlanRuntime(), verify?: TaskGraphVerifier, executionTrace?: ExecutionTraceSink, notifyDirectObjective?: DirectObjectiveVerificationNotifier) { this.ledger = ledger; this.execute = execute; this.runtime = runtime; this.verify = verify; this.executionTrace = executionTrace; this.notifyDirectObjective = notifyDirectObjective; }
 
 	async run(options: TaskRecoveryRunnerOptions = {}): Promise<TaskRecoveryRunnerResult> {
 		this.ledger.prepareTaskCorrections?.(boundedCorrectiveAttempts(options.maxCorrectiveAttempts));
@@ -52,11 +55,18 @@ export class TaskRecoveryRunner {
 	async reverifyDue(now = Date.now(), signal?: AbortSignal, maxConcurrent = 3): Promise<TaskVerificationRetryResult> {
 		let summary = emptyVerificationResult();
 		const attemptedPlanIds = new Set<string>();
+		const attemptedDirectTaskIds = new Set<string>();
 		const concurrency = Math.max(1, Math.min(Math.trunc(maxConcurrent), 20));
 		while (!signal?.aborted) {
 			const candidates = (this.ledger.verificationCandidates?.(now, 100, [...attemptedPlanIds]) ?? [])
-				.filter((task) => task.planId && !attemptedPlanIds.has(task.planId));
+				.filter((task) => task.planId ? !attemptedPlanIds.has(task.planId) : !attemptedDirectTaskIds.has(task.id));
 			if (!candidates.length) break;
+			const direct = candidates.filter((task) => !task.planId);
+			for (const task of direct) attemptedDirectTaskIds.add(task.id);
+			for (let offset = 0; offset < direct.length && !signal?.aborted; offset += concurrency) {
+				const results = await Promise.all(direct.slice(offset, offset + concurrency).map((task) => this.verifyCandidates([task.ownerKey], [task], signal ?? new AbortController().signal, now)));
+				for (const result of results) summary = mergeVerificationResults(summary, result);
+			}
 			const plans = new Map<string, { ownerKey: string; planId: string; tasks: TaskRecord[] }>();
 			for (const task of candidates) {
 				if (!task.planId) continue;
@@ -125,6 +135,7 @@ export class TaskRecoveryRunner {
 				const resolution = verification.accepted
 					? { accepted: true as const, evidence: verification.evidence?.slice(0, 5_000) }
 					: { accepted: false as const, feedback: verification.feedback?.trim().slice(0, 5_000) || "Acceptance Criteria were not satisfied" };
+				if (!task.planId && task.kind === "objective" && this.notifyDirectObjective) await this.notifyDirectObjective(task, resolution, signal);
 				if (!this.ledger.resolveCandidateVerification(ownerKeys, task.id, resolution)) {
 					summary.unavailable++; this.ledger.deferCandidateVerification?.(ownerKeys, task.id, attemptedAt); continue;
 				}

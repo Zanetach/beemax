@@ -92,6 +92,26 @@ test("missing durable Task identities produce a non-triggering recovery context"
 	});
 });
 
+test("semantic loss after compaction restores the authoritative Task contract even when identity survives", () => {
+	const preservation = buildTaskPreservationEnvelope([{
+		id: "objective-verified-research",
+		ownerKey: "owner",
+		kind: "objective",
+		title: "研究实时行业趋势",
+		acceptanceCriteria: "必须通过公共网络复核至少两个真实来源；不得用 evergreen 内容替代",
+		status: "running",
+		createdAt: 1,
+	}]);
+	const recovered = recoverCompactionPreservation({
+		summary: "继续 objective-verified-research。",
+		preservation,
+		expectedTaskIds: ["objective-verified-research"],
+	});
+	assert.equal(recovered.complete, true);
+	assert.deepEqual(recovered.missingTaskIds, []);
+	assert.equal(recovered.recoveryContext, preservation);
+});
+
 test("Profile compaction overrides are explicit and fail closed when they cannot fit", () => {
 	assert.deepEqual(planContextCompaction({ contextWindow: 128_000, enabled: false, reserveTokens: 20_000, keepRecentTokens: 24_000 }), {
 		enabled: false,

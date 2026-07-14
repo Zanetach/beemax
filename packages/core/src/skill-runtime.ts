@@ -147,6 +147,8 @@ export class SkillRuntime {
 
 	complete(): SkillExecutionSnapshot {
 		if (!this.active || (this.state !== "module_loaded" && this.state !== "executing")) throw new Error("Skill execution cannot complete before its route module is loaded");
+		const missingReferences = (this.route?.value.references ?? []).filter((path) => !this.resourceCache.has(path));
+		if (missingReferences.length) throw new Error(`Skill execution cannot complete before every declared reference is loaded: ${missingReferences.join(", ")}`);
 		this.state = "completed"; const snapshot = this.snapshot(); this.reset(); return snapshot;
 	}
 	snapshot(): SkillExecutionSnapshot { return { state: this.state, skill: this.active?.name, sha256: this.active?.sha256, manifestSha256: this.manifestSha256, route: this.route?.name, loadedResources: [...this.loaded] }; }
@@ -170,11 +172,32 @@ async function loadManifest(root: string, legacyTools: readonly string[]): Promi
 		return { manifest: value, sha256: digest(content), location };
 	} catch (error) {
 		if ((error as NodeJS.ErrnoException).code === "ENOENT") {
-			const manifest: SkillManifest = { version: 1, routes: { legacy: { description: "Compatibility route for a self-contained SKILL.md", module: "SKILL.md", tools: [] } } };
+			const references = await discoverLegacyReferences(root);
+			const manifest: SkillManifest = { version: 1, routes: { legacy: { description: "Compatibility route for a self-contained SKILL.md", module: "SKILL.md", ...(references.length ? { references } : {}), tools: [] } } };
 			return { manifest, sha256: digest(JSON.stringify(manifest)) };
 		}
 		throw error;
 	}
+}
+
+async function discoverLegacyReferences(root: string): Promise<string[]> {
+	const entry = await boundedRead(resolve(root, "SKILL.md"), 64_000, "Skill entry");
+	const pattern = /(?:^|[\s"'`(\[])((?:\.\/)?[a-zA-Z0-9_.-]+(?:\/[a-zA-Z0-9_.-]+)*\.(?:md|mdx|txt|json|ya?ml|toml|csv|tsv|js|mjs|cjs|ts|mts|cts|py|sh|bash|zsh|sql|html|css|svg))(?=$|[\s"'`)\],:;])/gmu;
+	const referenced = [...new Set([...entry.matchAll(pattern)]
+		.map((match) => match[1]!.replace(/^\.\//, ""))
+		.filter((path) => path !== "SKILL.md" && path !== "manifest.json"))];
+	if (referenced.length > 19) throw new Error("Legacy Skill references exceed the compatibility route resource limit; add manifest.json with explicit routes");
+	for (const path of referenced) {
+		let handle;
+		try { handle = await openConfinedResource(root, path); }
+		catch (error) {
+			if ((error as NodeJS.ErrnoException).code === "ENOENT") throw new Error(`Skill referenced resource is unavailable: ${path}`);
+			throw error;
+		}
+		try { if (!(await handle.stat()).isFile()) throw new Error(`Skill referenced resource is unavailable: ${path}`); }
+		finally { await handle.close(); }
+	}
+	return referenced;
 }
 function safeResource(root: string, path: string): string { const absolute = resolve(root, path); if (!path || path.startsWith("/") || !absolute.startsWith(`${resolve(root)}${sep}`)) throw new Error("Skill resource path escaped its directory"); return absolute; }
 async function openConfinedResource(root: string, path: string) {

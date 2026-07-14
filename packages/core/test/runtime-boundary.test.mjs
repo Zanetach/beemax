@@ -208,6 +208,44 @@ test("BeeMax Agent Runtime carries one structured Execution Envelope into the Pi
 	} finally { runtime.dispose(); }
 });
 
+test("a Turn with no new assistant message never reuses a stale Session answer", async () => {
+	const source = { platform: "cli", chatId: "stale-answer", chatType: "dm", userId: "user" };
+	const agent = { state: { model: { id: "test" }, messages: [{ role: "assistant", content: [{ type: "text", text: "old verified report" }], usage: { input: 1, output: 1 } }] } };
+	const runtime = new BeeMaxAgentRuntime({ createAgent: async () => ({
+		agent,
+		subscribe: () => () => undefined,
+		prompt: async () => undefined,
+		abort: async () => undefined,
+		dispose: () => undefined,
+	}) });
+	try {
+		const result = await runtime.run({ source, text: "new unrelated request", timeoutMs: 1_000 });
+		assert.equal(result.answer, "(no response)");
+		assert.doesNotMatch(result.answer, /old verified report/);
+	} finally { runtime.dispose(); }
+});
+
+test("Turn-scoped Memory and execution guidance are released while the raw user request remains in Session history", async () => {
+	const source = { platform: "cli", chatId: "released-guidance", chatType: "dm", userId: "user" };
+	const agent = { state: { model: { id: "test" }, messages: [] } };
+	const runtime = new BeeMaxAgentRuntime({
+		planningPolicy: { decide: () => ({ mode: "direct", requiredTools: [], suggestedConcurrency: 1, budget: { maxSubagents: 0, maxToolCalls: null, maxTokens: null, maxCorrectiveAttempts: 0 }, signals: {}, reason: "test", directive: () => "[BeeMax execution policy: internal-only]" }) },
+		context: { enrich: (_source, text) => `[Relevant curated memory]\nold evidence\n[/Relevant curated memory]\n\nCurrent user request:\n${text}`, record: () => undefined },
+		createAgent: async () => ({
+			agent,
+			subscribe: () => () => undefined,
+			prompt: async (text) => { agent.state.messages.push({ role: "user", content: text }, { role: "assistant", content: [{ type: "text", text: "done" }], usage: { input: 1, output: 1 } }); },
+			abort: async () => undefined,
+			dispose: () => undefined,
+		}),
+	});
+	try {
+		await runtime.run({ source, text: "请继续真实任务", timeoutMs: 1_000 });
+		assert.equal(agent.state.messages[0].content, "请继续真实任务");
+		assert.doesNotMatch(String(agent.state.messages[0].content), /curated memory|execution policy/i);
+	} finally { runtime.dispose(); }
+});
+
 test("BeeMax Agent Runtime projects Pi lifecycle events through one Execution Trace seam", async () => {
 	const root = mkdtempSync(join(tmpdir(), "beemax-runtime-trace-"));
 	const source = { platform: "cli", chatId: "trace", chatType: "dm", userId: "user" };

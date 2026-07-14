@@ -287,9 +287,21 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 			}
 			const toolSideEffects = new Map(allTools.map((tool) => [tool.name, toolSideEffect(tool)]));
 			const capabilityRuntime = new CapabilityRuntime();
-			const prefetchedTools = understanding ? selectTurnTools(understanding.capabilityQuery, allTools) : [];
-			const progressiveTools = admittedTools ?? [...new Set(["capability_discover", ...(planning?.requiredTools ?? []), ...prefetchedTools])];
+			const skillPrefetch = allTools.find((tool) => tool.name === "capability_discover") as (typeof allTools[number] & { beemaxSkillPrefetch?: (query: string) => Promise<Array<{ name: string }>> }) | undefined;
+			let prefetchedSkills: string[] = [];
+			if (skillPrefetch?.beemaxSkillPrefetch && (!admittedTools || admittedTools.includes("skill_read"))) {
+				try { prefetchedSkills = [...new Set((await skillPrefetch.beemaxSkillPrefetch(understanding?.capabilityQuery ?? input.text)).map((skill) => skill.name).filter(Boolean))].slice(0, 1); }
+				catch { /* capability_discover remains available as the observable recovery path */ }
+			}
+			// Delegated and recovery runs intentionally skip full cognitive context assembly,
+			// but they still need deterministic Tool prefetch from their bounded Task prompt.
+			// Selection only narrows the factory-provided inventory; it never enlarges the
+			// Sub-Agent allowlist or grants execution authority.
+			const prefetchedTools = selectTurnTools(understanding?.capabilityQuery ?? input.text, allTools);
+			const skillLifecycleTools = prefetchedSkills.length ? ["skill_read", "skill_activate", "skill_route", "skill_resource_read", "skill_complete"].filter((name) => allTools.some((tool) => tool.name === name)) : [];
+			const progressiveTools = admittedTools ?? [...new Set(["capability_discover", ...skillLifecycleTools, ...(planning?.requiredTools ?? []), ...prefetchedTools])];
 			if (activeTools) session.piSession.setActiveToolsByName(progressiveTools);
+			if (prefetchedSkills.length) promptText = [`<beemax-skill-preflight>Installed matching Skill metadata: ${prefetchedSkills.join(", ")}. Use skill_read with the exact best-matching name before executing the request; do not skip it or infer its instructions.</beemax-skill-preflight>`, promptText].join("\n\n");
 			let observableProgress = false;
 			let toolCalls = 0;
 			let consumedTokens = 0;
@@ -301,8 +313,11 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 			const requiredToolFailures = new Map<string, number>();
 			let delegatedTaskId: string | undefined;
 			let discoveredCapabilities = false;
-			let singleFailedReadTool: string | undefined;
-			let nonDiscoveryOutcomes = 0;
+			const activatedPrefetchedSkills = new Set<string>();
+			const completedPrefetchedSkills = new Set<string>();
+			let failedReadToolAwaitingReroute: string | undefined;
+			let completionAnswer: string | undefined;
+			let objectiveVerificationOutcome: "accepted" | "rejected" | "unavailable" | undefined;
 			const toolStartedAt = new Map<string, number>();
 			const settledToolProgress: string[] = [];
 			const unresolvedToolProgress: string[] = [];
@@ -348,13 +363,18 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 					this.recordTrace({ type: "tool.settled", executionEnvelope, at, toolCallId: event.toolCallId, toolName: event.toolName, status: event.isError ? "failed" : "succeeded", ...(toolStart === undefined ? {} : { durationMs: Math.max(0, at - toolStart) }) });
 					if (event.toolName === "capability_discover" && !event.isError) {
 						const discovery = capabilityDiscoveryMetadata(event.result, new Set(allTools.map((tool) => tool.name))); discoveredCapabilities = discovery.hasMatches;
+						const discoveredSkill = discovery.candidates.find((candidate) => candidate.kind === "skill" && candidate.confidence >= 0.5)?.name;
+						if (!prefetchedSkills.length && discoveredSkill) prefetchedSkills = [discoveredSkill];
 						if (discovery.candidates.length || discovery.activatedTools.length) enqueueEvent({ type: "capability_ranked", candidates: discovery.candidates, activatedTools: discovery.activatedTools });
 					}
 					else if (event.toolName !== "capability_discover") {
-						nonDiscoveryOutcomes++;
+						const skillName = skillExecutionName(event.result);
+						if (!event.isError && (event.toolName === "skill_activate" || event.toolName === "skill_read") && skillName && prefetchedSkills.includes(skillName)) activatedPrefetchedSkills.add(skillName);
+						if (!event.isError && event.toolName === "skill_complete" && skillName && prefetchedSkills.includes(skillName)) completedPrefetchedSkills.add(skillName);
 						const sideEffect = toolSideEffects.get(event.toolName);
 						const reroute = sideEffect === undefined ? { allowed: false } : capabilityRuntime.canReroute({ sideEffect, effectStatus: sideEffect === "none" ? "none" : "unknown" });
-						singleFailedReadTool = nonDiscoveryOutcomes === 1 && event.isError && reroute.allowed ? event.toolName : undefined;
+						if (event.isError && reroute.allowed) failedReadToolAwaitingReroute = event.toolName;
+						else if (!event.isError && event.toolName === failedReadToolAwaitingReroute) failedReadToolAwaitingReroute = undefined;
 					}
 					const pending = requiredToolCalls.get(event.toolCallId);
 					requiredToolCalls.delete(event.toolCallId);
@@ -426,9 +446,14 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 					source: input.mode === "automation" ? "extension" : undefined,
 					images: promptImages,
 				});
-				if (singleFailedReadTool && !discoveredCapabilities && !turnAbortReason) {
-					const failedTool = singleFailedReadTool; singleFailedReadTool = undefined;
-					await promptSession(`[BeeMax capability reroute: ${failedTool} failed and no later Tool succeeded. Use capability_discover now to find an already available alternative, then continue the original request. Do not retry the same external mutation; reconcile any uncertain side effect before another write.]`, { expandPromptTemplates: false });
+				const completedMatchingSkill = () => prefetchedSkills.some((name) => activatedPrefetchedSkills.has(name) && completedPrefetchedSkills.has(name));
+				if (prefetchedSkills.length && !completedMatchingSkill() && !turnAbortReason) {
+					await promptSession(`[BeeMax Skill correction: an installed Skill matched this Task (${prefetchedSkills.join(", ")}) but its lifecycle is incomplete. Use skill_read or skill_activate with the exact best-matching name, select its route, read every required module/resource, follow it, and finish with skill_complete before answering. Do not substitute another Skill.]`, { expandPromptTemplates: false });
+					if (!completedMatchingSkill()) throw new AgentRunError(`Agent did not complete the installed matching Skill lifecycle: ${prefetchedSkills.join(", ")}`, false, undefined);
+				}
+				if (failedReadToolAwaitingReroute && !discoveredCapabilities && !turnAbortReason) {
+					const failedTool = failedReadToolAwaitingReroute; failedReadToolAwaitingReroute = undefined;
+					await promptSession(`[BeeMax capability reroute: ${failedTool} failed without a recorded equivalent-capability discovery. Use capability_discover now to find an already available alternative, then continue the original request. Do not retry the same external mutation; reconcile any uncertain side effect before another write.]`, { expandPromptTemplates: false });
 				}
 				if (discoveredCapabilities && !turnAbortReason) {
 					discoveredCapabilities = false;
@@ -450,7 +475,7 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 					throw new AgentRunError(turnAbortReason, false, undefined);
 				}
 				if (planning) await onEvent?.({ type: "planning_outcome", mode: planning.mode, compliant: true, corrected: planningCorrected });
-				let failure = lastAssistantFailure(session.piSession.agent);
+				let failure = lastAssistantFailure(session.piSession.agent, turnMessageStart);
 				if (failure && promptImages?.length && input.images?.length && !observableProgress && !input.signal?.aborted) {
 					try {
 						const mediaStartedAt = Date.now();
@@ -460,7 +485,7 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 							promptImages = undefined;
 							await onEvent?.({ type: "media_understood", route: "adapter", adapterIds: recoveredMedia.receipts.map((receipt) => receipt.adapterId), receiptCount: recoveredMedia.receipts.length, failureCount: recoveredMedia.failures.length, durationMs: Math.max(0, Date.now() - mediaStartedAt) });
 							await promptSession(promptText, { expandPromptTemplates: false, source: input.mode === "automation" ? "extension" : undefined });
-							failure = lastAssistantFailure(session.piSession.agent);
+							failure = lastAssistantFailure(session.piSession.agent, turnMessageStart);
 						}
 					} catch (error) {
 						if (input.signal?.aborted) throw input.signal.reason ?? error;
@@ -475,29 +500,38 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 					attempt++;
 					await onEvent?.({ type: "model_fallback", from: current?.id ?? "Unknown", to: fallback.id, attempt });
 					if (!await session.piSession.retryWithModel(fallback)) break;
-					failure = lastAssistantFailure(session.piSession.agent);
+					failure = lastAssistantFailure(session.piSession.agent, turnMessageStart);
 				}
 				if (failure) throw new AgentRunError(errorMessage(failure), false, failure, isRecoverableModelFailure(failure));
 				if (objective && typeof this.taskLedger?.transition === "function" && !requiredToolsUsed.includes("task_plan_execute")) {
-					let candidate = lastAssistantText(session.piSession.agent) || "(no response)";
+					let candidate = lastAssistantText(session.piSession.agent, turnMessageStart) || "(no response)";
 					const maxCorrectiveAttempts = Math.max(0, Math.min(executionEnvelope.budget?.maxCorrectiveAttempts ?? 1, 2));
 					let correctiveAttempts = 0;
 					let correctionInFlight = false;
 					while (true) {
 						this.taskLedger?.transition(objective.id, { status: "running", verificationStatus: "unavailable", candidateResult: candidate.slice(0, 50_000), correctiveAttempts });
-						if (!this.verifyObjectiveCandidate || !activeTaskRunId) break;
+						if (!this.verifyObjectiveCandidate || !activeTaskRunId) {
+							objectiveVerificationOutcome = "unavailable";
+							this.taskLedger?.deferCandidateVerification?.([objective.ownerKey], objective.id, Date.now());
+							completionAnswer = "任务尚未完成：独立 Verification 当前不可用。Candidate Outcome 已保留，Objective 仍处于 incomplete 状态；请恢复验证能力后重试。";
+							break;
+						}
 						this.recordTrace({ type: "verification.started", executionEnvelope, at: Date.now() });
 						try {
 							const verification = await this.verifyObjectiveCandidate({ ...objective, status: "running", candidateResult: candidate, correctiveAttempts }, { output: candidate }, input.signal, { taskRunId: activeTaskRunId });
 							if (verification.accepted) {
+								objectiveVerificationOutcome = "accepted";
 								this.recordTrace({ type: "verification.settled", executionEnvelope, at: Date.now(), status: "accepted" });
 								this.taskLedger?.transition(objective.id, { status: "succeeded", finishedAt: Date.now(), result: candidate.slice(0, 50_000), evidence: verification.evidence?.slice(0, 5_000), verificationStatus: "accepted", correctiveAttempts });
+								completionAnswer = candidate;
 								break;
 							}
 							const feedback = redactCredentialMaterial(verification.feedback?.trim() || "Acceptance Criteria were not satisfied").slice(0, 5_000);
 							this.recordTrace({ type: "verification.settled", executionEnvelope, at: Date.now(), status: "rejected" });
 							if (correctiveAttempts >= maxCorrectiveAttempts) {
+								objectiveVerificationOutcome = "rejected";
 								this.taskLedger?.transition(objective.id, { status: "failed", finishedAt: Date.now(), error: `Objective verification rejected: ${feedback}`, candidateResult: candidate.slice(0, 50_000), verificationStatus: "rejected", verificationFeedback: feedback, correctiveAttempts });
+								completionAnswer = `任务未通过独立 Verification，不能作为完成结果交付。原因：${feedback}`;
 								break;
 							}
 							correctiveAttempts++;
@@ -518,21 +552,29 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 							await onEvent?.({ type: "execution_started", executionEnvelope });
 							correctionInFlight = true;
 							await promptSession(`[BeeMax Verification correction: the Candidate Outcome did not satisfy the durable Objective. Feedback: ${feedback}. Correct the result within the existing Objective and Task Run. Do not repeat committed Effects; reconcile unknown Effects before any mutation.]`, { expandPromptTemplates: false });
-							const correctionFailure = lastAssistantFailure(session.piSession.agent);
+							const correctionFailure = lastAssistantFailure(session.piSession.agent, turnMessageStart);
 							if (correctionFailure) throw correctionFailure;
 							if (turnAbortReason) throw new AgentRunError(turnAbortReason, false, undefined);
 							correctionInFlight = false;
-							candidate = lastAssistantText(session.piSession.agent) || "(no response)";
+							candidate = lastAssistantText(session.piSession.agent, turnMessageStart) || "(no response)";
 						} catch (error) {
 							if (correctionInFlight || input.signal?.aborted || turnAbortReason) throw error;
 							this.recordTrace({ type: "verification.settled", executionEnvelope, at: Date.now(), status: "unavailable" });
+							objectiveVerificationOutcome = "unavailable";
 							this.taskLedger?.transition(objective.id, { status: "running", error: redactCredentialMaterial(errorMessage(error)).slice(0, 5_000), candidateResult: candidate.slice(0, 50_000), verificationStatus: "unavailable", correctiveAttempts });
+							this.taskLedger?.deferCandidateVerification?.([objective.ownerKey], objective.id, Date.now());
+							completionAnswer = `任务尚未完成：独立 Verification 暂时不可用（${redactCredentialMaterial(errorMessage(error)).slice(0, 1_000)}）。Candidate Outcome 已保留，恢复验证能力后可继续。`;
 							break;
 						}
 					}
 				}
-				if (activeTaskRunId) this.taskLedger?.transitionRun(activeTaskRunId, { status: "succeeded", finishedAt: Date.now(), output: (lastAssistantText(session.piSession.agent) || "(no response)").slice(0, 50_000) });
-				settlementStatus = "succeeded";
+				if (activeTaskRunId) {
+					const rejected = objectiveVerificationOutcome === "rejected";
+					this.taskLedger?.transitionRun(activeTaskRunId, !rejected
+						? { status: "succeeded", finishedAt: Date.now(), output: (lastAssistantText(session.piSession.agent, turnMessageStart) || "(no response)").slice(0, 50_000) }
+						: { status: "failed", finishedAt: Date.now(), error: completionAnswer?.slice(0, 5_000) ?? "Objective verification did not accept the Candidate Outcome" });
+				}
+				settlementStatus = objectiveVerificationOutcome === "rejected" ? "failed" : "succeeded";
 			} catch (cause) {
 				if (input.signal?.aborted) settlementStatus = "cancelled";
 				if (objectiveBinding?.created && objective && !requiredToolsUsed.includes("task_plan_execute")) this.taskLedger?.transition(objective.id, { status: "failed", finishedAt: Date.now(), error: errorMessage(cause).slice(0, 5_000) });
@@ -544,6 +586,7 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 				await eventDelivery;
 				this.recordTrace({ type: "execution.settled", executionEnvelope, at: Date.now(), status: settlementStatus });
 				await onEvent?.({ type: "execution_settled", executionEnvelope, status: settlementStatus });
+				releaseTurnInputContext(session.piSession, turnMessageStart, input.text);
 				releaseHistoricalSkillContext(session.piSession, turnMessageStart);
 				(session.piSession as typeof session.piSession & { beemaxResetTurnResources?: () => void }).beemaxResetTurnResources?.();
 				if (activeTools) session.piSession.setActiveToolsByName(activeTools);
@@ -552,7 +595,7 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 				input.signal?.removeEventListener("abort", abortFromCaller);
 				unsubscribe?.();
 			}
-			const answer = lastAssistantText(session.piSession.agent) || "(no response)";
+			const answer = completionAnswer ?? (lastAssistantText(session.piSession.agent, turnMessageStart) || "(no response)");
 			try {
 				if (await reloadRuntimeResourcesIfNeeded(session.piSession)) console.info("[beemax] skills and resources hot-reloaded after agent evolution");
 			} catch (error) { console.error(`[beemax] resource reload failed: ${errorMessage(error)}`); }
@@ -587,7 +630,7 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 		const objective: TaskRecord = {
 			id: `objective:${crypto.randomUUID()}`, ownerKey, kind: "objective",
 			title, description: description.slice(0, 50_000), status: "pending", createdAt: now,
-			acceptanceCriteria: (acceptanceCriteria.length ? acceptanceCriteria.join("\n") : `The delivered outcome satisfies the requested objective: ${description}`).slice(0, 5_000),
+			acceptanceCriteria: objectiveObservableAcceptanceCriteria(acceptanceCriteria),
 			executionScope: { ...input.source },
 			...(situation ? { situation: structuredClone(situation) } : {}),
 			...(accessScopeRef ? { accessScopeRef: structuredClone(accessScopeRef) } : {}),
@@ -716,11 +759,42 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 
 function shouldBindDurableObjective<Source extends BeeMaxRuntimeSource>(input: AgentRunInput<Source>, understanding: TurnUnderstanding | undefined, planning: AutonomousPlanningDecision | undefined): boolean {
 	if (input.objectiveTaskId || isObjectiveContinuation(input.text)) return true;
-	if (!understanding || understanding.action === "query" || understanding.action === "cancel") return false;
+	if (!understanding || understanding.action === "cancel") return false;
+	if (understanding.action === "query") return Boolean(understanding.constraints.length || understanding.acceptanceCriteria.length || planning?.signals.requiresResearch || planning?.signals.requiresVerification || planning?.signals.substantialWork);
 	if (understanding.action === "continue" || understanding.action === "correct") return true;
 	if (planning?.mode && planning.mode !== "direct") return true;
 	if (understanding.constraints.length || understanding.acceptanceCriteria.length) return true;
 	return Boolean(planning?.signals.requiresResearch || planning?.signals.requiresVerification || planning?.signals.substantialWork);
+}
+
+function objectiveObservableAcceptanceCriteria(acceptanceCriteria: readonly string[]): string {
+	if (acceptanceCriteria.length) return boundedContractItems(acceptanceCriteria, 5_000);
+	return "The delivered result provides observable evidence that the Objective outcome was achieved and every constraint recorded in its Situation was preserved.";
+}
+
+function skillExecutionName(result: unknown): string | undefined {
+	if (!result || typeof result !== "object") return undefined;
+	const details = (result as { details?: unknown }).details;
+	if (!details || typeof details !== "object") return undefined;
+	const record = details as Record<string, unknown>;
+	if (typeof record.skill === "string") return record.skill;
+	for (const value of [record.descriptor, record.state]) {
+		if (value && typeof value === "object") {
+			const name = (value as { name?: unknown; skill?: unknown }).name ?? (value as { skill?: unknown }).skill;
+			if (typeof name === "string") return name;
+		}
+	}
+	return undefined;
+}
+
+function boundedContractItems(items: readonly string[], maxChars: number): string {
+	let result = "";
+	for (const item of [...new Set(items.map((value) => value.trim()).filter(Boolean))]) {
+		const line = `- ${item.slice(0, 500)}`;
+		if (result.length + line.length + (result ? 1 : 0) > maxChars) break;
+		result += `${result ? "\n" : ""}${line}`;
+	}
+	return result;
 }
 
 function releaseHistoricalSkillContext(session: AgentSession, fromIndex = 0): void {
@@ -730,6 +804,25 @@ function releaseHistoricalSkillContext(session: AgentSession, fromIndex = 0): vo
 		const message = current[index]!;
 		if (message.role !== "toolResult" || !names.has(message.toolName) || message.content.every((block) => block.type !== "text" || !block.text || block.text.startsWith("[Turn-scoped Skill context"))) continue;
 		messages ??= [...current]; messages[index] = { ...message, content: [{ type: "text" as const, text: "[Turn-scoped Skill context released; version and loaded-resource summary retained in tool details.]" }] };
+	}
+	if (messages) session.agent.state.messages = messages;
+}
+
+function releaseTurnInputContext(session: AgentSession, fromIndex: number, rawText: string): void {
+	const current = session.agent.state.messages;
+	let messages: typeof current | undefined;
+	let first = true;
+	for (let index = Math.max(0, fromIndex); index < current.length; index++) {
+		const message = current[index]!;
+		if (message.role !== "user") continue;
+		const replacement = first ? rawText : "[Turn-scoped BeeMax execution guidance released.]";
+		first = false;
+		messages ??= [...current];
+		if (typeof message.content === "string") messages[index] = { ...message, content: replacement };
+		else {
+			const retained = message.content.filter((block) => block.type !== "text");
+			messages[index] = { ...message, content: [{ type: "text", text: replacement }, ...retained] };
+		}
 	}
 	if (messages) session.agent.state.messages = messages;
 }
@@ -842,8 +935,8 @@ export function isRecoverableModelFailure(error: unknown): boolean {
 	return /(?:\b(?:408|409|425|429|5\d\d)\b|fetch failed|network error|networkerror|econnreset|econnrefused|etimedout|socket hang up|temporarily unavailable|rate limit|overloaded)/.test(message);
 }
 
-function lastAssistantText(agent: Agent): string {
-	const last = agent.state.messages[agent.state.messages.length - 1];
+function lastAssistantText(agent: Agent, fromIndex = 0): string {
+	const last = lastAssistantMessage(agent, fromIndex);
 	if (!last || last.role !== "assistant" || !Array.isArray(last.content)) return "";
 	const text: string[] = [];
 	for (const block of last.content) {
@@ -857,10 +950,17 @@ function mediaModelOf(agent: Agent): { id: string; provider?: string; input?: re
 	return { id: model?.id ?? "Unknown", ...(model?.provider ? { provider: model.provider } : {}), ...(model?.input ? { input: model.input } : {}) };
 }
 function sameModel(left: Model<Api> | undefined, right: Model<Api>): boolean { return left?.provider === right.provider && left.id === right.id; }
-function lastAssistantFailure(agent: Agent): unknown | undefined {
-	const last = agent.state.messages.at(-1);
+function lastAssistantFailure(agent: Agent, fromIndex = 0): unknown | undefined {
+	const last = lastAssistantMessage(agent, fromIndex);
 	if (!last || last.role !== "assistant" || last.stopReason !== "error") return undefined;
 	return new Error(last.errorMessage ?? "Model request failed");
+}
+function lastAssistantMessage(agent: Agent, fromIndex: number) {
+	for (let index = agent.state.messages.length - 1; index >= Math.max(0, fromIndex); index--) {
+		const message = agent.state.messages[index];
+		if (message?.role === "assistant") return message;
+	}
+	return undefined;
 }
 function usageOf(agent: Agent): { input_tokens?: number; output_tokens?: number } {
 	const last = agent.state.messages[agent.state.messages.length - 1];

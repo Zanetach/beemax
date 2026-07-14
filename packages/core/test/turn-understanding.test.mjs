@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { TurnUnderstandingEngine, selectTurnTools } from "../dist/index.js";
+import { createWebTools, TurnUnderstandingEngine, selectTurnTools } from "../dist/index.js";
 
 test("Turn Understanding distinguishes create, continue, and correction paths across Chinese and English", () => {
 	const engine = new TurnUnderstandingEngine();
@@ -32,6 +32,12 @@ test("Turn tool prefetch uses the shared capability trigger, alias, exclusion, a
 		{ name: "weak_match", description: "帮我查日程并安排会议" },
 	];
 	assert.deepEqual(selectTurnTools("帮我查日程并安排会议", tools), ["calendar_find"]);
+});
+
+test("Turn tool prefetch activates Agent-Reach for Chinese live-web research", () => {
+	const tools = createWebTools();
+	const selected = selectTurnTools("收集截至今天可验证的公开趋势，用 agent-reach 网络检索真实可溯源来源", tools);
+	assert.ok(selected.includes("agent_reach_search"));
 });
 
 test("Turn Understanding preserves explicit constraints and acceptance criteria in one Work Context", () => {

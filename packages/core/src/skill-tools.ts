@@ -36,20 +36,30 @@ export function createSkillTools(agentDir: string, markReloadNeeded: () => void,
 	const runtime = new SkillRuntime(registry, 200_000, 20, availableTools.map((tool) => tool.name).filter((name) => name !== "bash"));
 	const capabilities = new CapabilityRuntime({ ...(capabilityRanker ? { ranker: capabilityRanker } : {}), ...(activateTools ? { activeTools: { setActiveTools: activateTools } } : {}) });
 	const markSkillsChanged = () => { registry.invalidate(); runtime.reset(); markReloadNeeded(); };
+	const selectAvailableCapabilities = async (query: string, limit: number) => {
+		const eligibleTools = availableTools.filter((tool) => tool.name !== "bash");
+		const skillInventory = await registry.list();
+		const inventory = [
+			...eligibleTools.map((tool) => capabilityDescriptor({ kind: tool.kind ?? "tool", name: tool.name, description: tool.description, aliases: tool.aliases, triggers: tool.triggers, exclude: tool.exclude, version: tool.version ?? capabilityVersionOf(tool), activeTools: [tool.name] })),
+			...skillInventory.map((skill) => capabilityDescriptor({ kind: "skill", name: skill.name, description: skill.description, triggers: skill.triggers, exclude: skill.exclude, version: `sha256:${skill.sha256}`, activeTools: ["skill_activate", "skill_read"] })),
+		];
+		return { eligibleTools, selection: await capabilities.discover({ query, inventory, limit }) };
+	};
+	const prefetchSkills = async (query: string) => {
+		const { selection } = await selectAvailableCapabilities(query, 10);
+		const selectedName = selection.candidates.find((item) => item.kind === "skill" && item.confidence >= 0.5)?.name;
+		const selected = await runtime.admitDiscovered(selectedName ? [selectedName] : []);
+		if (selected.length) activateTools?.(["skill_read"]);
+		return selected.map(publicSkill);
+	};
 	let signingKeyPromise: Promise<Buffer> | undefined;
 	const signingKey = () => signingKeyPromise ??= skillLearningKey(agentDir);
 	const tools = [
-		defineTool({ name: "capability_discover", label: "Discover Capabilities", description: "Search the tools, active Skills, and isolated Skill candidates actually available in this Profile before concluding a capability is missing.", parameters: Type.Object({ query: Type.String({ minLength: 1, maxLength: 500 }) }), execute: async (_id, params) => {
+		Object.assign(defineTool({ name: "capability_discover", label: "Discover Capabilities", description: "Search the tools, active Skills, and isolated Skill candidates actually available in this Profile before concluding a capability is missing.", parameters: Type.Object({ query: Type.String({ minLength: 1, maxLength: 500 }) }), execute: async (_id, params) => {
 			const existingKey = await readSkillLearningKey(agentDir);
 			const candidates = existingKey ? await listCandidates(candidateRoot, existingKey) : [];
 			const matches = <T extends CapabilityMetadata>(items: T[]) => rankCapabilities(params.query, items, 20);
-			const eligibleTools = availableTools.filter((tool) => tool.name !== "bash");
-			const skillInventory = await registry.list();
-			const descriptors = [
-				...eligibleTools.map((tool) => capabilityDescriptor({ kind: tool.kind ?? "tool", name: tool.name, description: tool.description, aliases: tool.aliases, triggers: tool.triggers, exclude: tool.exclude, version: tool.version ?? capabilityVersionOf(tool), activeTools: [tool.name] })),
-				...skillInventory.map((skill) => capabilityDescriptor({ kind: "skill", name: skill.name, description: skill.description, triggers: skill.triggers, exclude: skill.exclude, version: `sha256:${skill.sha256}`, activeTools: ["skill_activate", "skill_read"] })),
-			];
-			const selection = await capabilities.discover({ query: params.query, inventory: descriptors, limit: 10 });
+			const { eligibleTools, selection } = await selectAvailableCapabilities(params.query, 10);
 			const selectedSkillNames = selection.candidates.filter((item) => item.kind === "skill").map((item) => item.name);
 			const selectedSkills = await runtime.admitDiscovered(selectedSkillNames);
 			const selectedToolNames = new Set(selection.candidates.filter((item) => item.kind !== "skill").map((item) => item.name));
@@ -69,7 +79,7 @@ export function createSkillTools(agentDir: string, markReloadNeeded: () => void,
 				candidates: matches(candidates.map((item) => ({ name: item.name, description: item.description, attempts: item.attempts.length }))),
 				activatedTools: selection.activatedTools,
 			});
-		} }),
+		} }), { beemaxSkillPrefetch: prefetchSkills }),
 		defineTool({ name: "skill_list", label: "List Skills", description: "List metadata for Profile, project, and global Skills without loading their instruction bodies.", parameters: Type.Object({}), execute: async () => {
 			const skills = await registry.list(); return result(skills.length ? skills.map((item) => `- ${item.name}: ${item.description}`).join("\n") : "No Skills available.", { skills: skills.map(publicSkill) });
 		} }),

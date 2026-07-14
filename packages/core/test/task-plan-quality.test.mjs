@@ -15,15 +15,12 @@ test("Task Plan quality rejects duplicate work and non-observable acceptance cri
 	]);
 });
 
-test("Task Plan quality rejects mutation goals assigned to read-only Sub-Agents", () => {
+test("Task Plan quality leaves side-effect authority to the Tool policy boundary instead of guessing from prose", () => {
 	const result = assessTaskPlanQuality([
 		{ title: "Change auth", goal: "Edit src/auth.ts and commit the changes", acceptanceCriteria: "Tests demonstrate the new authentication behavior" },
 		{ title: "Notify team", goal: "发送邮件并发布报告", acceptanceCriteria: "Delivery receipt identifies the destination" },
 	]);
-	assert.deepEqual(result.issues, [
-		"Task 1 goal requires mutating capability unavailable to isolated Sub-Agents",
-		"Task 2 goal requires mutating capability unavailable to isolated Sub-Agents",
-	]);
+	assert.deepEqual(result, { accepted: true, issues: [] });
 });
 
 test("Task Plan quality permits returning findings to the parent Agent", () => {
@@ -44,7 +41,7 @@ test("Task Plan quality permits producing text without publishing or writing it"
 	assert.deepEqual(result, { accepted: true, issues: [] });
 });
 
-test("Task Plan quality does not mistake urgency wording for mutation negation", () => {
+test("Task Plan quality does not use imperative wording as a substitute for Effect authorization", () => {
 	const result = assessTaskPlanQuality([
 		{
 			title: "Publish immediately",
@@ -52,7 +49,7 @@ test("Task Plan quality does not mistake urgency wording for mutation negation",
 			acceptanceCriteria: "A publication receipt identifies the destination and report.",
 		},
 	]);
-	assert.equal(result.accepted, false);
+	assert.equal(result.accepted, true);
 });
 
 test("Task Plan quality treats publish-ready copy as content when publication is explicitly forbidden", () => {
@@ -68,8 +65,7 @@ test("Task Plan quality distinguishes file writes from explicit no-write constra
 		{ title: "Write English", goal: "Write the final report to a workspace file.", acceptanceCriteria: "The file exists in the workspace." },
 		{ title: "Write Chinese", goal: "将最终报告写入文件。", acceptanceCriteria: "工作区中存在对应报告文件。" },
 	]);
-	assert.equal(mutating.accepted, false);
-	assert.equal(mutating.issues.length, 2);
+	assert.deepEqual(mutating, { accepted: true, issues: [] });
 	const readOnly = assessTaskPlanQuality([
 		{ title: "Return English", goal: "Draft the final report; do not write files, return text only.", acceptanceCriteria: "Returns the complete report text." },
 		{ title: "Return Chinese", goal: "起草最终报告，不要写入文件，只返回文本。", acceptanceCriteria: "返回完整的报告文本。" },
@@ -81,6 +77,22 @@ test("Task Plan quality accepts common publication-ready content attributes unde
 	const result = assessTaskPlanQuality([
 		{ title: "Ready to publish", goal: "Draft ready-to-publish copy; do not publish it.", acceptanceCriteria: "Returns the complete copy as text." },
 		{ title: "Chinese ready copy", goal: "生成可直接发布的文案，但不要发布。", acceptanceCriteria: "返回完整中文文案文本。" },
+	]);
+	assert.deepEqual(result, { accepted: true, issues: [] });
+});
+
+test("Task Plan quality distinguishes existing installed capabilities and source publisher metadata from mutations", () => {
+	const result = assessTaskPlanQuality([
+		{
+			title: "Research with an installed Skill",
+			goal: "使用已安装的 arxiv-research Skill 检索论文，只返回研究发现。",
+			acceptanceCriteria: "返回论文标题、日期与可核验 URL。",
+		},
+		{
+			title: "Verify industry sources",
+			goal: "查找产业来源并记录标题、发布方、发布日期、URL 与具体能力声明。",
+			acceptanceCriteria: "返回至少两个可解析 URL，并逐项标注发布方与日期。",
+		},
 	]);
 	assert.deepEqual(result, { accepted: true, issues: [] });
 });

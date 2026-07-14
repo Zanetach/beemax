@@ -42,7 +42,7 @@ interface SearchResult {
 export function createWebTools(options: WebToolsOptions = {}): ToolDefinition[] {
 	const env = options.env ?? process.env;
 
-	const webSearch = defineTool({
+	const webSearch = Object.assign(defineTool({
 		name: "web_search",
 		label: "Web Search",
 		description:
@@ -70,9 +70,13 @@ export function createWebTools(options: WebToolsOptions = {}): ToolDefinition[] 
 				return textResult(`Web search failed: ${errorMessage(error)}`, { provider: "unknown", resultCount: 0 }, true);
 			}
 		},
+	}), {
+		aliases: ["联网搜索", "网络搜索", "公开信息检索"],
+		triggers: ["web_search", "搜索公开网页", "检索公开信息"],
+		priority: 20,
 	});
 
-	const webExtract = defineTool({
+	const webExtract = Object.assign(defineTool({
 		name: "web_extract",
 		label: "Web Extract",
 		description:
@@ -101,8 +105,12 @@ export function createWebTools(options: WebToolsOptions = {}): ToolDefinition[] 
 				return textResult(`Web extraction failed: ${errorMessage(error)}`, { url: params.url }, true);
 			}
 		},
+	}), {
+		aliases: ["读取网页", "提取网页", "网页正文"],
+		triggers: ["web_extract", "读取网页内容", "提取网页内容"],
+		priority: 30,
 	});
-	const agentReachSearch = defineTool({
+	const agentReachSearch = Object.assign(defineTool({
 		name: "agent_reach_search",
 		label: "Agent Reach Search",
 		description: "Search the live web through Agent-Reach's configured Exa channel. Use for semantic/current web research; falls back with a clear setup message when Agent-Reach is unavailable.",
@@ -117,6 +125,10 @@ export function createWebTools(options: WebToolsOptions = {}): ToolDefinition[] 
 				return textResult(`Agent-Reach search unavailable: ${errorMessage(error)}. Run 'agent-reach doctor' and configure the Exa channel.`, { provider: "agent-reach-exa" }, true);
 			}
 		},
+	}), {
+		aliases: ["Agent-Reach", "联网检索", "网络检索", "实时网络搜索"],
+		triggers: ["agent-reach", "可验证的公开趋势", "真实可溯源来源", "检索公开趋势", "live web research"],
+		priority: 10,
 	});
 
 	const publicResearchPolicy = {

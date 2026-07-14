@@ -19,6 +19,7 @@ import {
 	type TaskRecord,
 	type ExecutionTraceSink,
 	type TaskRecoveryCycleResult,
+	type DirectObjectiveVerificationNotifier,
 	type VerifiedObjectiveMemoryPublisher,
 	type TaskLedger,
 } from "@beemax/core";
@@ -42,6 +43,7 @@ export interface ProfileWorkRuntimeOptions {
 	onTaskPlanError?: (event: { planId: string; error: unknown }) => void;
 	onRecoveryStatus?: (status: TaskRecoveryStatus, cycle?: TaskRecoveryCycleResult) => void;
 	onRecoveryError?: (error: unknown) => void;
+	deliverDirectObjectiveVerification?: DirectObjectiveVerificationNotifier;
 }
 
 /**
@@ -68,6 +70,7 @@ export function createProfileWorkRuntime(options: ProfileWorkRuntimeOptions) {
 		taskPlanRuntime,
 		verifyTask,
 		executionTrace,
+		options.deliverDirectObjectiveVerification,
 	);
 	let recoveryStatus: TaskRecoveryStatus = emptyRecoveryStatus(options.subagentsEnabled ? "running" : "disabled");
 	const recoveryService = new TaskRecoveryService(options.recoveryQueue ?? options.ledger, options.subagentsEnabled ? taskRecovery : undefined, {

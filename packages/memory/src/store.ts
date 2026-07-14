@@ -1946,17 +1946,17 @@ export class MemoryStore {
 		return (this.db.prepare(`SELECT tasks.* FROM tasks LEFT JOIN task_plans ON task_plans.id = tasks.plan_id WHERE tasks.status = 'pending' AND tasks.recovery_policy = 'safe_retry'
 			AND idempotency_key IS NOT NULL AND plan_id IS NOT NULL AND execution_scope IS NOT NULL
 			AND task_plans.paused_at IS NULL
-			${excluded.length ? "AND plan_id NOT IN (SELECT value FROM json_each(?))" : ""}
+			${excluded.length ? "AND (tasks.plan_id IS NULL OR tasks.plan_id NOT IN (SELECT value FROM json_each(?)))" : ""}
 			ORDER BY updated_at, created_at LIMIT ?`).all(...(excluded.length ? [JSON.stringify(excluded)] : []), limitOf(limit, 100)) as RuntimeTaskRow[]).map(mapRuntimeTask);
 	}
 
 	verificationCandidates(now = Date.now(), limit = 100, excludePlanIds: string[] = []): RuntimeTaskRecord[] {
 		const excluded = [...new Set(excludePlanIds.filter((id) => id.trim()))];
 		return (this.db.prepare(`SELECT tasks.* FROM tasks LEFT JOIN task_plans ON task_plans.id = tasks.plan_id WHERE tasks.status IN ('running', 'failed') AND verification_outcome = 'unavailable'
-			AND candidate_result IS NOT NULL AND acceptance_criteria IS NOT NULL AND plan_id IS NOT NULL
-			AND task_plans.paused_at IS NULL
+			AND candidate_result IS NOT NULL AND acceptance_criteria IS NOT NULL
+			AND (tasks.plan_id IS NULL OR task_plans.paused_at IS NULL)
 			AND (verification_retry_at IS NULL OR verification_retry_at <= ?)
-			${excluded.length ? "AND plan_id NOT IN (SELECT value FROM json_each(?))" : ""}
+			${excluded.length ? "AND (tasks.plan_id IS NULL OR tasks.plan_id NOT IN (SELECT value FROM json_each(?)))" : ""}
 			ORDER BY COALESCE(verification_retry_at, 0), updated_at, created_at LIMIT ?`)
 			.all(now, ...(excluded.length ? [JSON.stringify(excluded)] : []), limitOf(limit, 100)) as RuntimeTaskRow[]).map(mapRuntimeTask);
 	}

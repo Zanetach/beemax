@@ -64,7 +64,8 @@ export function assessCompactionPreservation(input: { summary: string; expectedT
 /** Return the authoritative envelope only when Pi's summary omitted durable identities. */
 export function recoverCompactionPreservation(input: { summary: string; preservation: string; expectedTaskIds: readonly string[] }): CompactionPreservationRecovery {
 	const assessment = assessCompactionPreservation(input);
-	return assessment.complete ? assessment : { ...assessment, recoveryContext: input.preservation };
+	const quality = evaluateCompactionQuality({ summary: input.summary, preservation: input.preservation });
+	return assessment.complete && quality.status === "good" ? assessment : { ...assessment, recoveryContext: input.preservation };
 }
 
 /**

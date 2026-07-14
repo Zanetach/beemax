@@ -5,11 +5,19 @@ import { join } from "node:path";
 import test from "node:test";
 import { MemoryStore } from "@beemax/memory";
 import { createAccessScopeRef, createExecutionEnvelope, createSituation, FileExecutionTraceStore } from "@beemax/core";
-import { createTaskVerifier, createVerifiedObjectiveMemoryPublisher, executeObjectiveDelivery, executePlannedTask, verificationAgentTools } from "../dist/gateway.js";
+import { buildSubagentSystemPrompt, createTaskVerifier, createVerifiedObjectiveMemoryPublisher, executeObjectiveDelivery, executePlannedTask, verificationAgentTools } from "../dist/gateway.js";
+
+test("Sub-Agents must discover admitted capabilities and fail explicitly instead of weakening the Task contract", () => {
+	const prompt = buildSubagentSystemPrompt();
+	assert.match(prompt, /capability_discover/);
+	assert.match(prompt, /Never replace the requested outcome, evidence standard, quality level, or mandatory constraint with a weaker substitute/);
+	assert.match(prompt, /exact blocker and attempted remedies/);
+});
 
 test("verification agents receive only the required local read capabilities in addition to shared read-only tools", () => {
 	const tools = verificationAgentTools(["mcp_read"]);
 	assert.ok(tools.includes("read"));
+	assert.ok(tools.includes("capability_discover"));
 	assert.ok(tools.includes("skill_read"));
 	assert.ok(tools.includes("task_checkpoint_save"));
 	assert.ok(tools.includes("mcp_read"));
@@ -193,7 +201,7 @@ test("Objective delivery receives Situation Work Context", async () => {
 test("independent verification receives the Task Situation", async () => {
 	let prompt = "";
 	let envelope;
-	let activeTools = ["capability_discover", "read", "skill_read", "write"];
+	let activeTools = ["capability_discover", "read", "skill_read", "web_search", "agent_reach_search", "web_extract", "write"];
 	let toolsDuringPrompt = [];
 	const agent = { state: { model: { id: "test" }, messages: [] } };
 	const factory = async (_source, _profile, receivedEnvelope) => {
@@ -203,7 +211,7 @@ test("independent verification receives the Task Situation", async () => {
 			getActiveToolNames: () => [...activeTools],
 			getAllTools: () => activeTools.map((name) => ({ name })),
 			setActiveToolsByName: (names) => { activeTools = [...names]; },
-			prompt: async (text) => { prompt = text; toolsDuringPrompt = [...activeTools]; agent.state.messages = [{ role: "assistant", content: [{ type: "text", text: "Evidence checked independently.\nACCEPT\nAll observable criteria passed." }], usage: { input: 1, output: 1 } }]; },
+			prompt: async (text) => { prompt = text; toolsDuringPrompt = [...activeTools]; agent.state.messages = [{ role: "assistant", content: [{ type: "text", text: '<beemax-verdict>{"status":"accepted","reason":"All observable criteria passed","assertions":[{"criterionId":"C1","evidence":"Candidate value is Friday","evidenceRefs":["candidate"]}]}</beemax-verdict>' }], usage: { input: 1, output: 1 } }]; },
 		abort: async () => undefined, dispose: () => undefined,
 	}; };
 	const verify = createTaskVerifier(factory, 1_000);
@@ -220,5 +228,33 @@ test("independent verification receives the Task Situation", async () => {
 	assert.equal(envelope.taskId, "task-verify");
 	assert.equal(envelope.taskRunId, "run-verify");
 	assert.equal(envelope.trigger.kind, "verification");
-	assert.deepEqual(toolsDuringPrompt, ["read", "skill_read"]);
+	assert.deepEqual(toolsDuringPrompt, ["capability_discover", "read", "web_search", "agent_reach_search", "web_extract"]);
+});
+
+test("independent verification treats invalid or unavailable verdicts as unavailable instead of acceptance", async () => {
+	for (const answer of ["ACCEPT: unable to verify", '<beemax-verdict>{"status":"unavailable","reason":"source provider offline"}</beemax-verdict>']) {
+		let activeTools = ["capability_discover", "read", "web_search", "agent_reach_search", "web_extract"];
+		const agent = { state: { model: { id: "test" }, messages: [] } };
+		const factory = async () => ({
+			agent, subscribe: () => () => undefined,
+			getActiveToolNames: () => [...activeTools], getAllTools: () => activeTools.map((name) => ({ name })), setActiveToolsByName: (names) => { activeTools = [...names]; },
+			prompt: async () => { agent.state.messages = [{ role: "assistant", content: [{ type: "text", text: answer }], usage: { input: 1, output: 1 } }]; },
+			abort: async () => undefined, dispose: () => undefined,
+		});
+		const verify = createTaskVerifier(factory, 1_000);
+		await assert.rejects(() => verify({ id: "task", ownerKey: "owner", kind: "delegated", title: "Verify", status: "running", createdAt: 1, executionScope: { platform: "cli", chatId: "local", chatType: "dm", userId: "local" } }, { output: "candidate" }), /Verification unavailable/);
+	}
+});
+
+test("independent verification cannot accept an external URL without fetching it", async () => {
+	let activeTools = ["capability_discover", "read", "web_search", "agent_reach_search", "web_extract"];
+	const agent = { state: { model: { id: "test" }, messages: [] } };
+	const factory = async () => ({
+		agent, subscribe: () => () => undefined,
+		getActiveToolNames: () => [...activeTools], getAllTools: () => activeTools.map((name) => ({ name })), setActiveToolsByName: (names) => { activeTools = [...names]; },
+		prompt: async () => { agent.state.messages = [{ role: "assistant", content: [{ type: "text", text: '<beemax-verdict>{"status":"accepted","reason":"looks plausible","assertions":[{"criterionId":"C1","evidence":"claimed URL","evidenceRefs":["candidate"]}]}</beemax-verdict>' }], usage: { input: 1, output: 1 } }]; },
+		abort: async () => undefined, dispose: () => undefined,
+	});
+	const verify = createTaskVerifier(factory, 1_000);
+	await assert.rejects(() => verify({ id: "task", ownerKey: "owner", kind: "delegated", title: "Verify URL", status: "running", createdAt: 1, executionScope: { platform: "cli", chatId: "local", chatType: "dm", userId: "local" } }, { output: "Source: https://example.com/fact" }), /not every cited external source URL was independently fetched/);
 });
