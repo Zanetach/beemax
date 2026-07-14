@@ -63,7 +63,7 @@ export class AutonomousPlanningPolicy {
 		let mode: AutonomousExecutionMode = "direct";
 		let reason = "Simple or single-step request; keep execution in the parent Agent";
 
-		if ((signals.complexity >= 3 && (signals.requiresResearch || signals.substantialWork || signals.independentWorkItems >= 2)) || (signals.requiresResearch && signals.substantialWork)) {
+		if ((signals.complexity >= 6 && (signals.requiresResearch || signals.substantialWork || signals.independentWorkItems >= 2)) || (signals.requiresResearch && signals.substantialWork)) {
 			mode = "delegate";
 			reason = "One substantial isolated work item benefits from a fresh Sub-Agent context";
 		}

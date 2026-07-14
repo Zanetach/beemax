@@ -133,6 +133,7 @@ async function main(): Promise<void> {
 				compact: parsed.options.compact === true,
 				plain: parsed.options.plain === true,
 				noAltScreen: parsed.options["no-alt-screen"] === true,
+				once: optionString(parsed, "once"),
 			});
 			break;
 		case "tui":
@@ -141,6 +142,7 @@ async function main(): Promise<void> {
 				compact: false,
 				plain: false,
 				noAltScreen: parsed.options["no-alt-screen"] === true,
+				once: undefined,
 			});
 			break;
 		case "model":
@@ -268,6 +270,7 @@ Options:
   --full                   Force Full workbench presentation when interactive
   --compact                Force compact terminal presentation
   --plain                  Force pipe/log-friendly text presentation
+  --once <prompt>          Run one non-interactive Turn and exit after settlement
   --no-alt-screen          Disable full-screen terminal behavior
   --yes                    Confirm destructive configuration changes
 
@@ -1223,7 +1226,7 @@ async function promptLine(message: string): Promise<string> {
 	try { return await rl.question(message); } finally { rl.close(); }
 }
 
-async function runChat(config: ReturnType<typeof loadConfig>, requestedMode: { full: boolean; compact: boolean; plain: boolean; noAltScreen: boolean }): Promise<void> {
+async function runChat(config: ReturnType<typeof loadConfig>, requestedMode: { full: boolean; compact: boolean; plain: boolean; noAltScreen: boolean; once?: string }): Promise<void> {
 	const presentationMode: ChatPresentationMode = resolveChatPresentationMode({
 		...requestedMode, isInputTty: process.stdin.isTTY === true, isOutputTty: process.stdout.isTTY === true, term: process.env.TERM,
 	});
@@ -1276,6 +1279,7 @@ async function runChat(config: ReturnType<typeof loadConfig>, requestedMode: { f
 		work: {
 		agentDir: config.paths.agentDir, ledger: persistence.taskLedger, recoveryQueue: persistence.recoveryQueue, maxConcurrent: config.subagents.maxConcurrent,
 		maxSubagents: config.subagents.maxChildrenPerOwner, taskTimeoutMs: config.subagents.timeoutMs, subagentsEnabled: config.subagents.enabled,
+		backgroundRecoveryEnabled: requestedMode.once === undefined,
 		executeTask: (task, signal, context, executionTrace, effectAuthority) => executePlannedTask(createSubagentAgent, task, task.executionScope as SessionSource, signal, config.subagents.timeoutMs, context, executionTrace, effectAuthority),
 		verifyTaskCandidate: (task, result, signal, context, executionTrace) => createTaskVerifier(createSubagentAgent, config.subagents.timeoutMs, executionTrace, verificationAgentTools(readOnlyMcpTools.map((tool) => tool.name)))(task, result, signal, context),
 		deliverObjective: (input, signal, executionTrace) => executeObjectiveDelivery(createSubagentAgent, input, signal, config.subagents.timeoutMs, executionTrace),
@@ -1460,7 +1464,7 @@ async function runChat(config: ReturnType<typeof loadConfig>, requestedMode: { f
 			workbench = new FullWorkbench({ profile: config.profile, model: `${config.model.provider}/${config.model.model}`, session: source.threadId ?? "default", details: detailsDisplay });
 			process.stdout.write(fullScreenEnter(""));
 		}
-		taskPlanNotices.start();
+		if (requestedMode.once === undefined) taskPlanNotices.start();
 		const runTurn = async (text: string, turnSource: SessionSource) => {
 			workbench?.user(text);
 			let streamed = "";
@@ -1697,7 +1701,10 @@ async function runChat(config: ReturnType<typeof loadConfig>, requestedMode: { f
 				writePrompt();
 			}
 		};
-		if (workbench) {
+		if (requestedMode.once !== undefined) {
+			closed = true;
+			await handleLine(requestedMode.once);
+		} else if (workbench) {
 			await new Promise<void>((resolve) => {
 				closeInput = () => { closed = true; const input = fullInput; fullInput = undefined; input?.stop(); resolve(); };
 				fullInput = startFullWorkbenchInput(
@@ -1715,11 +1722,13 @@ async function runChat(config: ReturnType<typeof loadConfig>, requestedMode: { f
 			});
 		} else {
 			const rl = createInterface({ input: process.stdin, output: process.stdout });
+			let pendingLines = Promise.resolve();
 			closeInput = () => { closed = true; rl.close(); };
 			writePrompt();
-			rl.on("line", (line) => { void handleLine(line); });
+			rl.on("line", (line) => { pendingLines = pendingLines.then(() => handleLine(line)); });
 			rl.on("SIGINT", () => { if (active) void stop(); else closeInput(); });
 			await new Promise<void>((resolve) => rl.once("close", resolve));
+			await pendingLines;
 		}
 		} finally {
 			await taskPlanNotices?.stop();

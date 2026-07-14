@@ -1,0 +1,136 @@
+{
+  "schemaVersion": 1,
+  "corpus": {
+    "version": 1,
+    "seed": "beemax-agent-parity-v1"
+  },
+  "platforms": [
+    "darwin-26-arm64",
+    "ubuntu-24.04-x64"
+  ],
+  "node": "22.22.3",
+  "execution": {
+    "caseTimeoutMs": 180000,
+    "productConcurrency": 1,
+    "caseConcurrency": 1,
+    "sideEffects": "blocked-unless-isolated-fixture-provider"
+  },
+  "machineProfiles": [
+    {
+      "id": "darwin-26-arm64",
+      "platform": "darwin",
+      "os": "macOS 26",
+      "osId": "macos",
+      "osVersionPrefix": "26.",
+      "arch": "arm64",
+      "node": "v22.22.3"
+    },
+    {
+      "id": "ubuntu-24.04-x64",
+      "platform": "linux",
+      "os": "Ubuntu 24.04",
+      "osId": "ubuntu",
+      "osVersionPrefix": "24.04",
+      "arch": "x64",
+      "node": "v22.22.3"
+    }
+  ],
+  "networkConditions": [
+    {
+      "id": "isolated-fixture",
+      "enforcement": "deterministic-fixture-adapter-only",
+      "purpose": "Deterministic contract and fault-path runs with no external dependency"
+    },
+    {
+      "id": "live-public-uncontrolled",
+      "enforcement": "observational",
+      "purpose": "Source-backed native-product runs against the public network; preserve timestamps and receipts"
+    },
+    {
+      "id": "offline",
+      "enforcement": "runner-network-isolation-required",
+      "purpose": "Deterministic proof that unavailable current-data requirements block instead of degrading"
+    }
+  ],
+  "targets": [
+    {
+      "id": "beemax",
+      "version": "1.2.0",
+      "nativeModel": "glm-5.2",
+      "source": "workspace-package",
+      "capture": {
+        "adapter": "evals/adapters/beemax-cli.mjs",
+        "bestNativeOptions": { "fixtureRoot": "evals/fixtures/agent-parity", "profile": "e2e-feishu", "provider": "custom" },
+        "sameModelOptions": { "fixtureRoot": "evals/fixtures/agent-parity", "profile": "e2e-feishu", "provider": "custom" }
+      }
+    },
+    {
+      "id": "codex",
+      "version": "0.144.1",
+      "nativeModel": "gpt-5.6-sol",
+      "source": "codex-cli",
+      "capture": {
+        "adapter": "evals/adapters/codex-cli.mjs",
+        "bestNativeOptions": { "fixtureRoot": "evals/fixtures/agent-parity" },
+        "sameModelOptions": { "fixtureRoot": "evals/fixtures/agent-parity" }
+      }
+    },
+    {
+      "id": "hermes",
+      "version": "0.15.1",
+      "nativeModel": "glm-5-2-260617",
+      "revision": "c47b9d126f2f820f41059813a2c5b16ea4742bf8",
+      "source": "hermes-agent",
+      "capture": {
+        "adapter": "evals/adapters/hermes-cli.mjs",
+        "bestNativeOptions": { "fixtureRoot": "evals/fixtures/agent-parity", "provider": "custom:ark" },
+        "sameModelOptions": { "fixtureRoot": "evals/fixtures/agent-parity", "provider": "custom:ark" }
+      }
+    }
+  ],
+  "fixtures": {
+    "contract-fixture": {
+      "version": "1.0.0",
+      "model": "deterministic-fixture"
+    }
+  },
+  "modes": {
+    "sameModel": {
+      "requireExactModelIdentity": true,
+      "model": "glm-5-2-260617",
+      "purpose": "Compare Agent Runtime behavior with model capability held constant"
+    },
+    "bestNative": {
+      "requireExactModelIdentity": false,
+      "purpose": "Compare the best supported end-user product configuration"
+    }
+  },
+  "scoring": {
+    "rule": "BeeMax must be no worse than every baseline on each declared dimension; no aggregate score may hide a regression",
+    "higherIsBetter": [
+      "endToEndSuccessRate",
+      "requiredCapabilityRecall",
+      "argumentValidityRate",
+      "argumentAssessmentRate",
+      "toolNecessityAssessmentRate",
+      "toolCallSuccessRate",
+      "evidenceCoverageRate",
+      "downgradeAssessmentRate",
+      "effectAssessmentRate",
+      "recoveryRate",
+      "recoveryAssessmentRate"
+    ],
+    "lowerIsBetter": [
+      "unnecessaryToolCallRate",
+      "unauthorizedDowngrades",
+      "duplicateEffects",
+      "averageUserInterventions"
+    ],
+    "reportedOnly": [
+      "p95DurationMs",
+      "averageDurationMs",
+      "totalTokens",
+      "averageTokens"
+    ]
+  }
+}

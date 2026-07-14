@@ -19,8 +19,13 @@ jobs:
       - run: npm ci
       - run: npm audit --omit=dev --audit-level=high
       - run: npm run verify:release
+      - run: mkdir -p artifacts && npm run eval:deployment -- --require-ubuntu --write artifacts/agent-deployment-ubuntu.json
       - run: mkdir -p artifacts && npm run eval:resources:ubuntu -- --write artifacts/resource-high-water-ubuntu.json
       - run: npm run eval:sandbox:ubuntu -- --write artifacts/docker-sandbox-ubuntu.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: agent-deployment-ubuntu-${{ github.ref_name }}
+          path: artifacts/agent-deployment-ubuntu.json
       - uses: actions/upload-artifact@v4
         with:
           name: resource-high-water-ubuntu-${{ github.ref_name }}

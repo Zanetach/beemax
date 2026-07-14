@@ -35,6 +35,24 @@ test("capability discovery returns clone-safe metadata instead of executable Too
 	} finally { rmSync(root, { recursive: true, force: true }); }
 });
 
+test("capability discovery reports matched Tool and MCP Provider health plus exact configuration blockers", async () => {
+	const root = mkdtempSync(join(tmpdir(), "beemax-provider-discovery-"));
+	try {
+		const tools = toolsAt(root, [{
+			name: "web_search", description: "Search current public web sources", triggers: ["live research"],
+			providers: [
+				{ id: "ready-mcp", kind: "mcp", capabilities: ["web_search"], installed: true, health: async () => ({ status: "ready", evidenceRef: "probe:ready" }) },
+				{ id: "needs-key", kind: "tool", capabilities: ["web_search"], installed: true, configuration: { required: ["SEARCH_API_KEY"], instructions: "Configure a Profile credential reference." }, health: async () => ({ status: "configuration_required", reason: "SEARCH_API_KEY is not configured", missingConfiguration: ["SEARCH_API_KEY"] }) },
+			],
+		}]);
+		const discovered = await tools.get("capability_discover").execute("discover", { query: "live research" });
+		assert.deepEqual(discovered.details.providers.map((provider) => [provider.id, provider.health.status]), [["ready-mcp", "ready"], ["needs-key", "configuration_required"]]);
+		assert.match(discovered.content[0].text, /ready-mcp: ready/);
+		assert.match(discovered.content[0].text, /SEARCH_API_KEY is not configured/);
+		assert.doesNotThrow(() => structuredClone(discovered));
+	} finally { rmSync(root, { recursive: true, force: true }); }
+});
+
 test("capability discovery ranks multilingual aliases and excludes negative matches", async () => {
 	const root = mkdtempSync(join(tmpdir(), "beemax-capability-ranking-"));
 	try {

@@ -31,6 +31,10 @@
     "test:reliability": "node --test packages/memory/test/reliability-soak.mjs",
     "eval:runtime": "node scripts/evaluate-runtime.mjs --check evals/baselines/current.json",
     "eval:agent": "node --test apps/cli/test/task-execution-context.test.mjs packages/core/test/turn-understanding.test.mjs packages/core/test/runtime-boundary.test.mjs packages/core/test/autonomous-planning.test.mjs packages/core/test/skill-runtime.test.mjs packages/core/test/capability-runtime.test.mjs packages/core/test/context-compaction.test.mjs packages/core/test/task-graph.test.mjs packages/core/test/task-checkpoint.test.mjs packages/core/test/task-recovery-service.test.mjs packages/core/test/tool-effect.test.mjs packages/core/test/media-understanding.test.mjs packages/memory/test/p6-memory-acceptance.test.mjs packages/memory/test/p7-task-recovery-acceptance.test.mjs packages/memory/test/organization-knowledge-recall.test.mjs packages/automation/test/automation.test.mjs packages/gateway/test/subagents.test.mjs",
+    "eval:agent-parity": "node scripts/evaluate-agent-parity.mjs",
+    "eval:agent-parity:capture": "node scripts/capture-agent-parity.mjs",
+    "eval:capability-ranking": "node scripts/evaluate-capability-ranking.mjs",
+    "eval:deployment": "node scripts/evaluate-agent-deployment.mjs",
     "eval:reliability": "node --test apps/cli/test/reliability-fault-release-gate.test.mjs apps/cli/test/profile-failure-isolation-release-gate.test.mjs packages/core/test/runtime-fault-catalog.test.mjs",
     "eval:security": "node --test apps/cli/test/security-acceptance-release-gate.test.mjs",
     "eval:performance": "node scripts/evaluate-performance.mjs --profile evals/performance-profiles/apple-m5-32gb.json --check evals/baselines/performance-apple-m5-32gb.json",
@@ -42,7 +46,7 @@
     "eval:architecture": "node scripts/evaluate-architecture.mjs && node scripts/evaluate-channel-package-independence.mjs",
     "eval:migration": "node scripts/rehearse-migration-rollback.mjs",
     "eval:acceptance": "node scripts/evaluate-acceptance-program.mjs && npm run eval:architecture && npm run eval:migration",
-    "verify:release": "npm run build && npm run typecheck && npm run eval:agent && npm run eval:runtime && npm run eval:performance:release && npm run eval:memory && npm run eval:reliability && npm run eval:security && npm run eval:acceptance && npm test",
+    "verify:release": "npm run build && npm run typecheck && npm run eval:agent && npm run eval:capability-ranking && npm run eval:deployment && npm run eval:runtime && npm run eval:performance:release && npm run eval:memory && npm run eval:reliability && npm run eval:security && npm run eval:acceptance && npm test",
     "typecheck": "tsgo --noEmit"
   },
   "devDependencies": {
@@ -50,7 +54,8 @@
     "@types/node": "22.19.19",
     "@typescript/native-preview": "^7.0.0-dev.20260120.1",
     "tsx": "4.23.1",
-    "typescript": "5.9.3"
+    "typescript": "5.9.3",
+    "undici": "8.5.0"
   },
   "dependencies": {
     "axios": "1.18.1"

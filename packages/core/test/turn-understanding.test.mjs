@@ -50,6 +50,33 @@ test("Turn Understanding preserves explicit constraints and acceptance criteria 
 	assert.ok(result.confidence > 0.5);
 });
 
+test("Turn Understanding treats bilingual negation as a constraint instead of reversing the requested action", () => {
+	const engine = new TurnUnderstandingEngine();
+	const activeObjective = "研究 BeeMax Provider 架构";
+	for (const text of [
+		"不要取消任务，继续分析并保留来源",
+		"Do not stop the task; continue the analysis and keep citations.",
+		"Don't change the goal; continue with the previous task.",
+		"继续，but do not publish externally",
+	]) {
+		const result = engine.understand(text, { activeObjective });
+		assert.equal(result.action, "continue", text);
+		assert.equal(result.goal, activeObjective, text);
+		assert.ok(result.constraints.length >= 1, text);
+	}
+});
+
+test("Turn Understanding excludes forbidden delivery actions from observable Acceptance Criteria", () => {
+	const engine = new TurnUnderstandingEngine();
+	const chinese = engine.understand("无需发布，只需要把最终草稿保存到本地文件");
+	assert.ok(chinese.constraints.some((item) => item.includes("无需发布")));
+	assert.equal(chinese.acceptanceCriteria.some((item) => item.includes("无需发布")), false);
+	assert.ok(chinese.acceptanceCriteria.some((item) => item.includes("保存")));
+	const english = engine.understand("Do not upload or publish externally; save the final draft locally.");
+	assert.equal(english.acceptanceCriteria.some((item) => /upload|publish/i.test(item)), false);
+	assert.ok(english.acceptanceCriteria.some((item) => /save/i.test(item)));
+});
+
 test("Turn Understanding treats typed identity-looking text as correctable open meaning", () => {
 	const result = new TurnUnderstandingEngine().understand("不是之前的，改成主体 account:B、对象 purchase:PO-2", { activeObjective: "处理采购记录" });
 	assert.equal(result.action, "correct");

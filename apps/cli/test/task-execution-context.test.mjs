@@ -211,7 +211,7 @@ test("independent verification receives the Task Situation", async () => {
 			getActiveToolNames: () => [...activeTools],
 			getAllTools: () => activeTools.map((name) => ({ name })),
 			setActiveToolsByName: (names) => { activeTools = [...names]; },
-			prompt: async (text) => { prompt = text; toolsDuringPrompt = [...activeTools]; agent.state.messages = [{ role: "assistant", content: [{ type: "text", text: '<beemax-verdict>{"status":"accepted","reason":"All observable criteria passed","assertions":[{"criterionId":"C1","evidence":"Candidate value is Friday","evidenceRefs":["candidate"]}]}</beemax-verdict>' }], usage: { input: 1, output: 1 } }]; },
+			prompt: async (text) => { prompt = text; toolsDuringPrompt = [...activeTools]; agent.state.messages = [{ role: "assistant", content: [{ type: "text", text: '```json\n{"status":"accepted","reason":"All observable criteria passed","assertions":[{"criterionId":"C1","evidence":"Candidate value is Friday","evidenceRefs":["candidate"]}]}\n```' }], usage: { input: 1, output: 1 } }]; },
 		abort: async () => undefined, dispose: () => undefined,
 	}; };
 	const verify = createTaskVerifier(factory, 1_000);

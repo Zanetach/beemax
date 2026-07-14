@@ -30,8 +30,8 @@ export class TurnUnderstandingEngine implements TurnUnderstandingPort {
 		const normalized = goal.normalize("NFKC").toLocaleLowerCase();
 		const action = detectAction(normalized, Boolean(input.activeObjective));
 		const clauses = goal.split(/[，。；;,.]|\b(?:and|but)\b/iu).map((item) => item.trim()).filter(Boolean);
-		const constraints = clauses.filter((item) => /必须|不要|不能|不得|只用|使用|格式|语言|截止|预算|without|must|do not|don't|only|deadline|budget/i.test(item));
-		const acceptanceCriteria = clauses.filter((item) => /完成后|发给|发送|交付|生成|保存|上传|发布|after completion|send to|deliver|create|save|upload|publish/i.test(item));
+		const constraints = clauses.filter((item) => /必须|不要|不能|不得|无需|不必|只用|只需|仅|使用|格式|语言|截止|预算|without|must|do not|don't|never|only|no need|deadline|budget/i.test(item));
+		const acceptanceCriteria = clauses.filter((item) => /完成后|发给|发送|交付|生成|保存|上传|发布|after completion|send to|deliver|create|save|upload|publish/i.test(item) && !forbidsDeliveryAction(item));
 		const independentWork = (normalized.match(/并行|分别|独立|同时|parallel|independently|separately/g) ?? []).length;
 		const executionMode: TurnExecutionMode = independentWork >= 2 ? "plan" : /深入研究|深度分析|research deeply|independent research/i.test(normalized) ? "delegate" : "direct";
 		const resolvedGoal = action === "continue" && input.activeObjective ? input.activeObjective : goal;
@@ -50,11 +50,23 @@ export class TurnUnderstandingEngine implements TurnUnderstandingPort {
 }
 
 function detectAction(text: string, hasActiveObjective: boolean): TurnAction {
-	if (/取消|停止|终止|cancel|stop|abort/.test(text)) return "cancel";
-	if (/不是|改成|更正|纠正|修改为|rather than|change (?:it )?to|correction/.test(text)) return "correct";
-	if (hasActiveObjective && /继续|接着|刚才|上一个|之前的|continue|resume|previous|carry on/.test(text)) return "continue";
-	if (/^(?:查询|查一下|看看|列出|what|which|show|list|find|search)/.test(text)) return "query";
+	const actionable = withoutNegatedCommands(text);
+	if (/取消|停止|终止|cancel|stop|abort/.test(actionable)) return "cancel";
+	if (/不是|改成|更正|纠正|修改为|rather than|change (?:it )?to|correction/.test(actionable)) return "correct";
+	if (hasActiveObjective && /继续|接着|刚才|上一个|之前的|continue|resume|previous|carry on/.test(actionable)) return "continue";
+	if (/^(?:查询|查一下|看看|列出|what|which|show|list|find|search)/.test(actionable)) return "query";
 	return "create";
+}
+
+function withoutNegatedCommands(text: string): string {
+	return text
+		.replace(/(?:不要|不能|不得|无需|不必|不是(?:要)?)(?:再)?(?:取消|停止|终止|更改|修改|改动)[^，。；;,.]*/giu, "")
+		.replace(/(?:do not|don't|must not|never)\s+(?:cancel|stop|abort|change|correct|modify)\b[^,.;]*/giu, "")
+		.trim();
+}
+
+function forbidsDeliveryAction(clause: string): boolean {
+	return /(?:不要|不能|不得|无需|不必|禁止)[^，。；;,.]*(?:发给|发送|交付|生成|保存|上传|发布)|(?:do not|don't|must not|never|without|no need to)[^,.;]*(?:send|deliver|create|save|upload|publish)/iu.test(clause);
 }
 
 export function renderWorkContext(value: TurnUnderstanding): string {

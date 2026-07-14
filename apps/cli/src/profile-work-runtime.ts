@@ -35,6 +35,7 @@ export interface ProfileWorkRuntimeOptions {
 	maxSubagents: number;
 	taskTimeoutMs: number;
 	subagentsEnabled: boolean;
+	backgroundRecoveryEnabled?: boolean;
 	executeTask: (task: TaskRecord, signal: AbortSignal | undefined, context: Parameters<TaskGraphExecutor>[2], executionTrace: ExecutionTraceSink, effectAuthority: FileToolEffectJournal) => ReturnType<TaskGraphExecutor>;
 	verifyTaskCandidate: (task: TaskRecord, result: TaskGraphExecutionResult, signal: AbortSignal | undefined, context: TaskGraphVerificationContext | undefined, executionTrace: ExecutionTraceSink) => ReturnType<TaskGraphVerifier>;
 	deliverObjective: (input: Parameters<ObjectiveDeliverer>[0], signal: AbortSignal | undefined, executionTrace: ExecutionTraceSink) => ReturnType<ObjectiveDeliverer>;
@@ -72,7 +73,8 @@ export function createProfileWorkRuntime(options: ProfileWorkRuntimeOptions) {
 		executionTrace,
 		options.deliverDirectObjectiveVerification,
 	);
-	let recoveryStatus: TaskRecoveryStatus = emptyRecoveryStatus(options.subagentsEnabled ? "running" : "disabled");
+	const backgroundRecoveryEnabled = options.backgroundRecoveryEnabled !== false;
+	let recoveryStatus: TaskRecoveryStatus = emptyRecoveryStatus(options.subagentsEnabled && backgroundRecoveryEnabled ? "running" : "disabled");
 	const recoveryService = new TaskRecoveryService(options.recoveryQueue ?? options.ledger, options.subagentsEnabled ? taskRecovery : undefined, {
 		effectAuthority: toolEffects,
 		runnerOptions: { maxConcurrent },
@@ -93,7 +95,7 @@ export function createProfileWorkRuntime(options: ProfileWorkRuntimeOptions) {
 			options.onRecoveryError?.(error);
 		},
 	});
-	recoveryService.start();
+	if (backgroundRecoveryEnabled) recoveryService.start();
 	const objectiveRuntime = new ObjectiveRuntime(options.ledger, (input, signal) => options.deliverObjective(input, signal, executionTrace), options.publishVerifiedOutcome);
 	const subagents = options.subagentsEnabled ? new SubagentManager({
 		maxConcurrent,

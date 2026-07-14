@@ -10,6 +10,7 @@ import { assertNoCredentialMaterial } from "./credential-material.ts";
 import { SkillRegistry, SkillRuntime } from "./skill-runtime.ts";
 import { rankCapabilityIndex } from "./capability-ranking.ts";
 import { CapabilityRuntime, capabilityDescriptor, capabilityVersionOf, type CapabilityRanker } from "./capability-runtime.ts";
+import { CapabilityProviderRuntime, type CapabilityProviderDescriptor } from "./capability-provider.ts";
 
 const SKILL_NAME = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 
@@ -26,7 +27,7 @@ export type SkillCandidatePromotionAuthority = (input: SkillCandidatePromotionAu
 interface SkillVersionRecord { version: 1; name: string; description: string; instructions: string; source: string; sha256: string; promotedAt: number; authorityEvidenceRef?: string; signature: string; }
 interface SkillVersionEvent { id: string; kind: "promoted" | "rollback"; name: string; fromSha256?: string; toSha256: string; evidenceRef?: string; at: number; signature: string; }
 
-export interface CapabilityMetadata extends Pick<ToolDefinition, "name" | "description"> { kind?: "tool" | "mcp"; aliases?: string[]; triggers?: string[]; exclude?: string[]; version?: string; }
+export interface CapabilityMetadata extends Pick<ToolDefinition, "name" | "description"> { kind?: "tool" | "mcp"; aliases?: string[]; triggers?: string[]; exclude?: string[]; version?: string; providers?: readonly CapabilityProviderDescriptor[]; }
 
 export function createSkillTools(agentDir: string, markReloadNeeded: () => void, availableTools: readonly CapabilityMetadata[] = [], verifyCandidate?: SkillCandidateVerifier, additionalSkillRoots: readonly string[] = [], activateTools?: (names: string[]) => void, capabilityRanker?: CapabilityRanker, promotionAuthority?: SkillCandidatePromotionAuthority): ToolDefinition[] {
 	const root = resolve(agentDir, "skills");
@@ -35,6 +36,7 @@ export function createSkillTools(agentDir: string, markReloadNeeded: () => void,
 	const registry = new SkillRegistry([root, ...additionalSkillRoots.map((item) => resolve(item))]);
 	const runtime = new SkillRuntime(registry, 200_000, 20, availableTools.map((tool) => tool.name).filter((name) => name !== "bash"));
 	const capabilities = new CapabilityRuntime({ ...(capabilityRanker ? { ranker: capabilityRanker } : {}), ...(activateTools ? { activeTools: { setActiveTools: activateTools } } : {}) });
+	const providers = new CapabilityProviderRuntime();
 	const markSkillsChanged = () => { registry.invalidate(); runtime.reset(); markReloadNeeded(); };
 	const selectAvailableCapabilities = async (query: string, limit: number) => {
 		const eligibleTools = availableTools.filter((tool) => tool.name !== "bash");
@@ -66,10 +68,13 @@ export function createSkillTools(agentDir: string, markReloadNeeded: () => void,
 			const matchedTools = eligibleTools.filter((tool) => selectedToolNames.has(tool.name)).sort((left, right) => selection.candidates.findIndex((item) => item.name === left.name) - selection.candidates.findIndex((item) => item.name === right.name));
 			const publicTools = matchedTools.map(({ name, description }) => ({ name, description }));
 			const publicSkills = selectedSkills.map(publicSkill);
+			const providerResolutions = await Promise.all(matchedTools.filter((tool) => tool.providers?.length).map((tool) => providers.resolve({ capability: tool.name, providers: tool.providers! })));
+			const publicProviders = providerResolutions.flatMap((resolution) => resolution.candidates);
 			const modelVisible = [
 				"Capability discovery results (use these exact names):",
 				...publicSkills.map((skill) => `- skill: ${skill.name} — ${skill.description}`),
 				...matchedTools.map((tool) => `- ${tool.kind === "mcp" ? "mcp" : "tool"}: ${tool.name} — ${tool.description}`),
+				...publicProviders.map((provider) => `- provider: ${provider.id}: ${provider.health.status}${provider.health.reason ? ` — ${provider.health.reason}` : ""}`),
 				...(publicSkills.length || publicTools.length ? ["Matching capabilities are activated for this turn."] : ["No active Skill, Tool, or MCP capability matched this query."]),
 			].join("\n");
 			return result(modelVisible, {
@@ -77,6 +82,7 @@ export function createSkillTools(agentDir: string, markReloadNeeded: () => void,
 				skills: publicSkills,
 				ranked: selection.candidates.map((item) => ({ ...item, reason: item.explanation.summary })),
 				candidates: matches(candidates.map((item) => ({ name: item.name, description: item.description, attempts: item.attempts.length }))),
+				providers: publicProviders,
 				activatedTools: selection.activatedTools,
 			});
 		} }), { beemaxSkillPrefetch: prefetchSkills }),

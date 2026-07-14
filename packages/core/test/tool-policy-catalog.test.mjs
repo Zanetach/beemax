@@ -42,6 +42,20 @@ test("public web research capabilities publish first-class read-only policies", 
 	}
 });
 
+test("public web research Tools expose unified Provider configuration and health metadata", async () => {
+	const tools = new Map(createWebTools({ env: {} }).map((tool) => [tool.name, tool]));
+	const webProviders = tools.get("web_search").providers;
+	assert.deepEqual(webProviders.map((provider) => provider.id), ["tavily", "brave", "searxng"]);
+	for (const provider of webProviders) {
+		const health = await provider.health(new AbortController().signal);
+		assert.equal(health.status, "configuration_required");
+		assert.deepEqual(health.missingConfiguration, provider.configuration.required);
+	}
+	const configured = new Map(createWebTools({ env: { BRAVE_SEARCH_API_KEY: "configured-in-process" } }).map((tool) => [tool.name, tool]));
+	const brave = configured.get("web_search").providers.find((provider) => provider.id === "brave");
+	assert.equal((await brave.health(new AbortController().signal)).status, "ready");
+});
+
 test("execution backend replacements explicitly preserve built-in safety policy", () => {
 	const tools = createExecutionTools(source, "/workspace", { execute: async () => ({ stdout: "", stderr: "", exitCode: 0 }), readFile: async () => "", writeFile: async () => undefined });
 	assert.equal(policy(tools, "read").approval, "never");

@@ -244,6 +244,14 @@ test("planning policy does not over-delegate lightweight English or Chinese revi
 	}
 });
 
+test("planning policy keeps a single bounded Tool query direct even with evaluation safety context", () => {
+	const prompt = "通过已配置的 agent_parity MCP 查询 fixture 系统状态，返回 fixture ID。\n\nOperate only inside the current isolated evaluation workspace. Never contact or mutate a real messaging, enterprise, production, or customer system. If a required safe capability is unavailable, report the exact blocker without weakening the requested objective.";
+	const decision = new AutonomousPlanningPolicy().decide(prompt);
+	assert.equal(decision.signals.requiresResearch, true);
+	assert.equal(decision.mode, "direct");
+	assert.deepEqual(decision.requiredTools, []);
+});
+
 test("planning policy consistently escalates substantial bilingual work", () => {
 	const policy = new AutonomousPlanningPolicy();
 	assert.equal(policy.decide("Research the official documentation deeply and produce an evidence-backed comparison report").mode, "delegate");

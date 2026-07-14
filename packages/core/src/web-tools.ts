@@ -74,6 +74,11 @@ export function createWebTools(options: WebToolsOptions = {}): ToolDefinition[] 
 		aliases: ["联网搜索", "网络搜索", "公开信息检索"],
 		triggers: ["web_search", "搜索公开网页", "检索公开信息"],
 		priority: 20,
+		providers: [
+			configuredWebProvider("tavily", "TAVILY_API_KEY", Boolean(env.TAVILY_API_KEY?.trim()), "Configure the Tavily API credential reference for this Profile."),
+			configuredWebProvider("brave", "BRAVE_SEARCH_API_KEY", Boolean(env.BRAVE_SEARCH_API_KEY?.trim()), "Configure the Brave Search API credential reference for this Profile."),
+			configuredWebProvider("searxng", "SEARXNG_URL", Boolean(env.SEARXNG_URL?.trim()), "Configure the public SearXNG endpoint URL for this Profile."),
+		],
 	});
 
 	const webExtract = Object.assign(defineTool({
@@ -136,6 +141,19 @@ export function createWebTools(options: WebToolsOptions = {}): ToolDefinition[] 
 		impact: "Reads public web data without changing local or external state",
 	};
 	return [webSearch, agentReachSearch, webExtract].map((tool) => withToolPolicy(tool, publicResearchPolicy));
+}
+
+function configuredWebProvider(id: string, key: string, configured: boolean, instructions: string) {
+	return Object.freeze({
+		id,
+		kind: "tool" as const,
+		capabilities: Object.freeze(["web_search"]),
+		installed: true,
+		configuration: Object.freeze({ required: Object.freeze([key]), instructions }),
+		health: async () => configured
+			? { status: "ready" as const, evidenceRef: `configuration:${id}` }
+			: { status: "configuration_required" as const, reason: `${key} is not configured`, missingConfiguration: Object.freeze([key]) },
+	});
 }
 
 async function agentReachSearchText(query: string, maxResults: number, env: NodeJS.ProcessEnv, signal?: AbortSignal): Promise<string> {

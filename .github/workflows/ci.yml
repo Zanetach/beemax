@@ -9,6 +9,30 @@ permissions:
   contents: read
 
 jobs:
+  agent-parity-contract:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            machine-profile: ubuntu-24.04-x64
+          - os: macos-26
+            machine-profile: darwin-26-arm64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.22.3
+          cache: npm
+      - run: npm ci
+      - run: node --test packages/core/test/agent-parity-evaluation.test.mjs
+      - run: mkdir -p artifacts && npm run eval:agent-parity:capture -- --mode contract --adapter packages/core/test/fixtures/agent-parity-adapter.mjs --system contract-fixture --version 1.0.0 --model deterministic-fixture --machine-profile ${{ matrix.machine-profile }} --network-condition isolated-fixture --adapter-options '{"fixtureRoot":"evals/fixtures/agent-parity"}' --write artifacts/agent-parity-contract-${{ runner.os }}.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: agent-parity-contract-${{ runner.os }}
+          path: artifacts/agent-parity-contract-${{ runner.os }}.json
+
   verify:
     runs-on: ubuntu-24.04
     steps:
@@ -19,8 +43,13 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run verify:release
+      - run: mkdir -p artifacts && npm run eval:deployment -- --require-ubuntu --write artifacts/agent-deployment-ubuntu.json
       - run: mkdir -p artifacts && npm run eval:resources:ubuntu -- --write artifacts/resource-high-water-ubuntu.json
       - run: npm run eval:sandbox:ubuntu -- --write artifacts/docker-sandbox-ubuntu.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: agent-deployment-ubuntu
+          path: artifacts/agent-deployment-ubuntu.json
       - uses: actions/upload-artifact@v4
         with:
           name: resource-high-water-ubuntu

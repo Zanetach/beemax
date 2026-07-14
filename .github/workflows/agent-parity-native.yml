@@ -1,0 +1,74 @@
+name: Agent parity native evidence
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+  attestations: write
+
+jobs:
+  native-evidence:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: beemax-macos-26-arm64
+            machine-profile: darwin-26-arm64
+          - runner: beemax-ubuntu-24-x64
+            machine-profile: ubuntu-24.04-x64
+    runs-on: [self-hosted, "${{ matrix.runner }}"]
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.22.3
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      - run: mkdir -p artifacts
+      - name: Verify pinned product installations
+        run: |
+          test "$(node -p 'require("./package.json").version')" = "1.2.0"
+          codex --version | grep -F "codex-cli 0.144.1"
+          hermes --version | grep -F "Hermes Agent v0.15.1"
+          test "$(git -C "$HOME/.hermes/hermes-agent" rev-parse HEAD)" = "c47b9d126f2f820f41059813a2c5b16ea4742bf8"
+      - name: Capture Codex native baseline
+        run: >-
+          node scripts/capture-agent-parity.mjs --mode best-native
+          --adapter evals/adapters/codex-cli.mjs --system codex --version 0.144.1 --model gpt-5.6-sol
+          --machine-profile ${{ matrix.machine-profile }} --network-condition live-public-uncontrolled
+          --adapter-options '{"fixtureRoot":"evals/fixtures/agent-parity"}' --timeout-ms 180000
+          --write artifacts/codex-native.json > artifacts/codex-native.stdout.json
+      - name: Capture Hermes native baseline
+        run: >-
+          node scripts/capture-agent-parity.mjs --mode best-native
+          --adapter evals/adapters/hermes-cli.mjs --system hermes --version 0.15.1 --model glm-5-2-260617
+          --machine-profile ${{ matrix.machine-profile }} --network-condition live-public-uncontrolled
+          --adapter-options '{"fixtureRoot":"evals/fixtures/agent-parity","provider":"custom:ark"}' --timeout-ms 180000
+          --write artifacts/hermes-native.json > artifacts/hermes-native.stdout.json
+      - name: Capture BeeMax native baseline
+        run: >-
+          node scripts/capture-agent-parity.mjs --mode best-native
+          --adapter evals/adapters/beemax-cli.mjs --system beemax --version 1.2.0 --model glm-5.2
+          --machine-profile ${{ matrix.machine-profile }} --network-condition live-public-uncontrolled
+          --adapter-options '{"fixtureRoot":"evals/fixtures/agent-parity","profile":"e2e-feishu","provider":"custom"}' --timeout-ms 180000
+          --write artifacts/beemax-native.json > artifacts/beemax-native.stdout.json
+      - name: Produce differential report
+        id: compare
+        run: >-
+          node scripts/evaluate-agent-parity.mjs --mode best-native
+          --candidate artifacts/beemax-native.json
+          --baseline artifacts/codex-native.json --baseline artifacts/hermes-native.json
+          --write artifacts/best-native-comparison.json > artifacts/best-native-comparison.stdout.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: agent-parity-native-${{ matrix.machine-profile }}
+          path: artifacts/*.json
+      - uses: actions/attest-build-provenance@v2
+        if: always()
+        with:
+          subject-path: artifacts/*.json

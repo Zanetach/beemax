@@ -63,3 +63,33 @@ test("Profile Work Runtime cannot exceed the production task concurrency boundar
 		await rm(root, { recursive: true, force: true });
 	}
 });
+
+test("one-shot Profile Work Runtime does not start unrelated background recovery", async () => {
+	const root = await mkdtemp(join(tmpdir(), "beemax-profile-work-runtime-once-"));
+	const memory = new MemoryStore(join(root, "memory.db"), "personal");
+	let reconciliations = 0;
+	const originalReconcile = memory.reconcileExpiredTaskRuns.bind(memory);
+	memory.reconcileExpiredTaskRuns = (...args) => { reconciliations++; return originalReconcile(...args); };
+	const work = createProfileWorkRuntime({
+		agentDir: root,
+		ledger: memory,
+		maxConcurrent: 1,
+		maxSubagents: 1,
+		taskTimeoutMs: 1_000,
+		subagentsEnabled: true,
+		backgroundRecoveryEnabled: false,
+		executeTask: async () => ({ output: "done" }),
+		verifyTaskCandidate: async () => ({ accepted: true }),
+		deliverObjective: async () => ({ result: "delivered" }),
+		executeSubagent: async () => "done",
+	});
+	try {
+		await new Promise((resolve) => setTimeout(resolve, 30));
+		assert.equal(reconciliations, 0);
+		assert.equal(work.recoveryStatus().phase, "disabled");
+	} finally {
+		for (const resource of [...work.resources].reverse()) await resource.dispose();
+		memory.close();
+		await rm(root, { recursive: true, force: true });
+	}
+});

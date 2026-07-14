@@ -364,3 +364,269 @@ These remain in scope for the long-term destination but need production Episodes
 - Direct automatic publication of Enterprise Policy or production Skills.
 - Broad Pi rewrites without a demonstrated missing lifecycle seam.
 - High-risk or irreversible autonomous action in this effort.
+
+# Tickets: Codex/Hermes parity and verified Agent completion
+
+Bring BeeMax to Hermes Agent feature parity and Codex-level Tool routing, then exceed both in durable enterprise execution, evidence-bound completion, Profile isolation, and capability acquisition. These tickets remediate gaps found after the original Pi-native runtime program; prior completion marks are retained as historical implementation evidence, not proof that these stricter gates already pass.
+
+Work the **frontier**: any ticket whose blockers are all done. Do not bypass blocking edges, silently degrade the user's Objective, introduce a second Agent Loop beside Pi, or encode customer business vocabulary in Core.
+
+## Establish the differential Agent benchmark
+
+**What to build:** A reproducible harness runs the same short, long, realtime, Skill, Tool, MCP, file, image, Gateway, failure, and recovery tasks against BeeMax and pinned Codex/Hermes baselines.
+
+**Blocked by:** None — can start immediately.
+
+- [x] Pin models, versions, machine profiles, network conditions, fixtures, seeds, capture configuration contracts, and scoring rules.
+- [x] Record end-to-end success, Tool selection and arguments, latency, tokens, receipt-bound evidence, side effects, recovery, and user interventions.
+- [ ] Run the corpus unattended on macOS and Ubuntu and preserve source-backed reports as release evidence.
+
+## Reconcile the current parity working tree
+
+**What to build:** Preserve valid Capability, Provider, evaluation, and CI work while separating or removing temporary semantic rules so the next slices start from a green, reviewable baseline.
+
+**Blocked by:** Establish the differential Agent benchmark.
+
+- [ ] Preserve user-owned output artifacts and unrelated changes.
+- [ ] Split mixed changes into independently testable concerns and keep TypeScript, unit, integration, and packaging checks green.
+- [ ] Remove production behavior that maps concrete business phrases directly to lifecycle or delivery decisions.
+
+## Interpret one Turn as a model-backed Work Contract
+
+**What to build:** For one direct task, Pi retains the immutable Raw Request and proposes a structured Work Contract containing the Objective, constraints, prohibitions, acceptance criteria, Capability requirements, uncertainties, and source spans.
+
+**Blocked by:** Reconcile the current parity working tree.
+
+- [ ] Use a strict versioned schema and keep model inference separate from trusted Access Scope and Policy.
+- [ ] Produce the Contract without a separate business-intent loop or fixed customer vocabulary.
+- [ ] Exercise Chinese, English, mixed-language, paraphrase, and unknown-enterprise inputs end to end.
+
+## Validate Work Contracts before execution
+
+**What to build:** A Contract proposal becomes executable only after deterministic validation of provenance, contradictions, unsupported additions, Objective linkage, and verifiability.
+
+**Blocked by:** Interpret one Turn as a model-backed Work Contract.
+
+- [ ] Reject fabricated source spans, unsupported requirements, and internally contradictory clauses.
+- [ ] Preserve uncertainty instead of guessing and route governed actions through existing Policy authority.
+- [ ] Keep validation free of business action dictionaries and customer-specific workflow rules.
+
+## Carry continuation, correction, cancellation, and query through Work Contracts
+
+**What to build:** Natural multi-turn requests continue, amend, cancel, or inspect the correct durable Objective without phrase-specific production parsing.
+
+**Blocked by:** Validate Work Contracts before execution.
+
+- [ ] Cover negation, double negation, reversals, pronouns, omitted subjects, and cross-language corrections.
+- [ ] Preserve the original Objective and revision chain without duplicate or misbound work.
+- [ ] Contract the legacy regex understanding path after all callers migrate and regression tests are red-capable.
+
+## Build a dynamic Tool Spec Plan for each Pi Turn
+
+**What to build:** Profile scope, Work Contract, active Skill, Policy, provider health, platform, and execution state produce a bounded model-visible Tool plan with direct, deferred, and hidden exposure.
+
+**Blocked by:** Validate Work Contracts before execution.
+
+- [ ] Keep large catalogs out of the initial context and expose only valid immutable Tool identifiers and schemas.
+- [ ] Make newly activated Tools visible on the next Pi sampling request without restarting the Agent Loop.
+- [ ] Prevent hidden, unhealthy, unconfigured, or unauthorized Tools from becoming executable.
+
+## Route Capability requirements semantically
+
+**What to build:** Tool, MCP, and Skill candidates share one explainable Capability selection shape while Pi remains the final task-level selector.
+
+**Blocked by:** Build a dynamic Tool Spec Plan for each Pi Turn.
+
+- [ ] Make semantic ranking the production path and lexical ranking a bounded recall or offline fallback.
+- [ ] Rank by meaning, input/output modality, freshness, evidence, effect, health, cost, latency, and Profile preference.
+- [ ] Calibrate thresholds with the differential corpus so weak overlap never forces an unrelated Skill.
+
+## Enforce one Skill lifecycle for prefetched and discovered Skills
+
+**What to build:** Explicitly selected, prefetched, and runtime-discovered Skills use the same version-locked discover, admit, activate, route, resource-read, execute, and complete lifecycle.
+
+**Blocked by:** Route Capability requirements semantically.
+
+- [ ] Require the lifecycle only for explicit or calibrated high-confidence selection.
+- [ ] Merge runtime discovery receipts into the lifecycle gate and enable only declared route Tools.
+- [ ] Report missing modules, invalid resources, failed routes, and incomplete execution without silently substituting another Skill.
+
+## Acquire missing Tool and MCP Providers without degrading the Objective
+
+**What to build:** When an installed capability cannot satisfy the Contract, BeeMax searches configured and installable Providers, obtains authority, installs safely, verifies health, and resumes the original Objective.
+
+**Blocked by:** Route Capability requirements semantically.
+
+- [ ] Resolve installed, configured, healthy candidates before considering installation.
+- [ ] Require evidence-backed installation authority and return exact missing configuration or health blockers.
+- [ ] Never replace realtime, publication, real-data, or full-scope requirements with a weaker result without user authorization.
+
+## Dispatch model Tool Calls through one strict Router
+
+**What to build:** One deep Tool Router validates identity, arguments, scope, Policy, approval, timeout, cancellation, execution, redaction, output bounds, events, and receipts for Native, MCP, Skill, and Provider-backed calls.
+
+**Blocked by:** Build a dynamic Tool Spec Plan for each Pi Turn; Acquire missing Tool and MCP Providers without degrading the Objective.
+
+- [ ] Reject invented identifiers and repair or return actionable errors for malformed names and arguments without bypassing schema checks.
+- [ ] Persist oversized or binary output as bounded Artifacts and preserve only safe summaries and references in model context.
+- [ ] Produce a traceable Route and Tool Receipt for every attempted dispatch.
+
+## Execute independent Tools in parallel and reroute safely
+
+**What to build:** Pi may run independent read-only calls concurrently, while dependencies, shared resources, mutations, and unknown Effects are serialized or reconciled before retry or reroute.
+
+**Blocked by:** Dispatch model Tool Calls through one strict Router.
+
+- [ ] Derive concurrency from declared dependencies and Effect metadata rather than prompt keywords.
+- [ ] Reroute failed read-only work to equivalent healthy Providers without changing the Contract.
+- [ ] Prevent blind replay of external writes and prove zero duplicate mutation under timeout and crash injection.
+
+## Verify every acceptance criterion against durable receipts
+
+**What to build:** Candidate Outcomes complete an Objective only when every required Contract criterion is independently accepted against real Source, Artifact, Effect, Test, or Delivery receipts.
+
+**Blocked by:** Validate Work Contracts before execution; Dispatch model Tool Calls through one strict Router.
+
+- [ ] Bind every verifier assertion to a criterion identifier and an existing successful evidence reference.
+- [ ] Reject model-authored prose, bare URLs, and unrelated receipts as completion evidence.
+- [ ] Keep rejected and unavailable criteria durable for corrective execution or Verification Retry.
+
+## Complete realtime research without silent fallback
+
+**What to build:** A current-data request discovers and calls a live external capability, retains source evidence, and either delivers a verified result or an exact Blocker.
+
+**Blocked by:** Acquire missing Tool and MCP Providers without degrading the Objective; Verify every acceptance criterion against durable receipts.
+
+- [ ] Derive freshness and source requirements from the Work Contract rather than a hardcoded weather, price, or news vocabulary.
+- [ ] Prove no current external claim can pass without a successful source receipt.
+- [ ] Exercise configured, unconfigured, offline, timeout, and alternate-provider paths without evergreen substitution.
+
+## Recover and verify both Direct and Plan Objectives
+
+**What to build:** Interrupted direct and planned work resumes or re-verifies from durable state without starvation, duplicate execution, or lost responsibility.
+
+**Blocked by:** Verify every acceptance criterion against durable receipts.
+
+- [ ] Keep direct candidates visible when Plan IDs are excluded by treating null Plan identity correctly.
+- [ ] Preserve leases, checkpoints, Effects, candidate outcomes, and bounded corrective attempts across restart.
+- [ ] Prove multi-instance claims cannot execute or verify the same responsibility concurrently.
+
+## Deliver every verified Objective through one Completion Outbox
+
+**What to build:** Direct and planned Objectives that complete interactively or in the background reach the correct owner, Channel Instance, Conversation, and Thread through one durable delivery path.
+
+**Blocked by:** Recover and verify both Direct and Plan Objectives.
+
+- [ ] Enqueue completion exactly once for every accepted Objective regardless of execution mode.
+- [ ] Retry transient channel failure without replaying Pi or external Effects and retain a Delivery Receipt.
+- [ ] Keep the Objective nonterminal when required delivery remains unverified or permanently blocked.
+
+## Preserve Contracts and responsibility through context compression
+
+**What to build:** Long sessions compact model context while retaining the Raw Request, active Contract, unresolved criteria, trusted scope, checkpoints, Effect state, and artifact references.
+
+**Blocked by:** Validate Work Contracts before execution; Verify every acceptance criterion against durable receipts.
+
+- [ ] Store large Tool results outside prompt history and support bounded on-demand rereading.
+- [ ] Prove multilingual constraints, corrections, and prohibitions survive repeated compaction.
+- [ ] Enforce model-specific budgets and demonstrate bounded process memory during long runs.
+
+## Recall and publish only scope-correct verified Memory
+
+**What to build:** Pi receives relevant evidence from Actor, Conversation, Group, Profile, and Organization scopes, while only verified or explicitly confirmed outcomes can become reliable organizational knowledge.
+
+**Blocked by:** Deliver every verified Objective through one Completion Outbox; Preserve Contracts and responsibility through context compression.
+
+- [ ] Preserve correction, conflict, exception, revocation, provenance, confidence, and expiry semantics.
+- [ ] Prevent inferred business meaning, Tool output, or retrieved content from granting authority or becoming executable instruction.
+- [ ] Prove zero recall or write leakage across Profile, enterprise, private conversation, group, and thread scopes.
+
+## Run scheduled and proactive work through the unified durable lifecycle
+
+**What to build:** One-time, recurring, Cron, recovery, and authorized Initiative triggers create or resume responsibility through the same Contract, Pi, Effect, Verification, Outbox, and Memory path.
+
+**Blocked by:** Deliver every verified Objective through one Completion Outbox; Recall and publish only scope-correct verified Memory.
+
+- [ ] Recheck Policy, credentials, provider health, budget, and dedupe identity at execution time.
+- [ ] Support pause, resume, cancel, failure recovery, quiet completion, and correct channel delivery.
+- [ ] Keep schedules and Initiative observations as triggers rather than second Agent Loops or implicit Tasks.
+
+## Isolate Gateway channels and Profile runtimes end to end
+
+**What to build:** Feishu proves a transport-neutral Gateway and Channel Runtime contract that other platforms can implement without bypassing Profile binding, activation, Governance, Effects, Memory, or delivery.
+
+**Blocked by:** Deliver every verified Objective through one Completion Outbox; Recall and publish only scope-correct verified Memory.
+
+- [ ] Cover direct chat, group mention, contextual follow-up, thread, whitelist, quiet hours, duplicate ingress, and background delivery.
+- [ ] Isolate Profile model, credentials, Skills, Tools, Memory, Tasks, capacity, shutdown, and failure propagation.
+- [ ] Demonstrate one Profile or Channel failure cannot corrupt or block unrelated Profiles.
+
+## Route images, documents, and OCR through auxiliary capabilities
+
+**What to build:** A chat image or document is routed to the primary multimodal model, an auxiliary vision Provider, OCR, or a higher-quality fallback according to capability, confidence, Policy, cost, and evidence requirements.
+
+**Blocked by:** Acquire missing Tool and MCP Providers without degrading the Objective.
+
+- [ ] Support images, screenshots, scanned documents, PDFs, and attachment provenance through the Gateway.
+- [ ] Install and health-check Tesseract on supported Ubuntu installation paths while allowing configurable vision Providers.
+- [ ] Escalate low-confidence OCR without pretending recognition succeeded and retain input/output Artifact references.
+
+## Delegate complex work without creating a second Agent Loop
+
+**What to build:** Pi chooses direct, durable Plan, or bounded Sub-Agent execution from the Contract, with shared Task, Capability, Effect, Verification, and recovery authorities.
+
+**Blocked by:** Execute independent Tools in parallel and reroute safely; Recover and verify both Direct and Plan Objectives.
+
+- [ ] Keep short tasks on the fast path and decompose only demonstrably independent or long-running work.
+- [ ] Restrict child scope, Tools, budgets, deadlines, and Memory and return evidence-backed child outcomes.
+- [ ] Prove child failure, cancellation, timeout, or crash cannot complete or corrupt the parent responsibility.
+
+## Install and operate BeeMax reproducibly on Ubuntu
+
+**What to build:** A clean supported Ubuntu host can install dependencies, configure a Profile, start BeeMax under production supervision, run a smoke task, and upgrade or roll back safely.
+
+**Blocked by:** Run scheduled and proactive work through the unified durable lifecycle; Isolate Gateway channels and Profile runtimes end to end; Route images, documents, and OCR through auxiliary capabilities.
+
+- [ ] Automate supported Node, native dependencies, OCR, data directories, credentials, health checks, and diagnostics.
+- [ ] Use Docker as the default production execution sandbox and document trusted host execution separately.
+- [ ] Verify cold install, restart, backup, migration, upgrade, rollback, and uninstall behavior in CI.
+
+## Exercise the production fault and resource matrix
+
+**What to build:** Fault injection and soak tests prove safe behavior under model errors, Provider timeout, MCP crash, network loss, Gateway reconnect, process exit, SQLite contention, compaction, low memory, and sustained concurrency.
+
+**Blocked by:** Install and operate BeeMax reproducibly on Ubuntu; Delegate complex work without creating a second Agent Loop.
+
+- [ ] Demonstrate bounded queues, context, Tool output, process memory, handles, child processes, and backpressure.
+- [ ] Prove committed Effects never duplicate and every incomplete responsibility remains observable and recoverable.
+- [ ] Publish P50/P95 latency, throughput, cost, recovery, and memory profiles for declared deployment sizes.
+
+## Pass the Hermes Agent parity gate
+
+**What to build:** A pinned Hermes baseline and BeeMax run the same model and tasks across conversation, Skills, Tools, Providers, Memory, context, files, vision, scheduling, Gateway, recovery, and operator experience.
+
+**Blocked by:** Exercise the production fault and resource matrix; Isolate Gateway channels and Profile runtimes end to end.
+
+- [ ] Close or explicitly document every feature, success-rate, latency, cost, stability, and usability gap.
+- [ ] Require BeeMax to be no worse on each declared parity dimension rather than hiding regressions in an aggregate score.
+- [ ] Preserve reproducible traces and evidence for every claimed advantage.
+
+## Pass the Codex Tool routing gate
+
+**What to build:** A pinned Codex baseline and BeeMax use the same model, tools, schemas, permissions, and tasks to compare dynamic visibility, discovery, selection, arguments, parallelism, recovery, context use, and final completion.
+
+**Blocked by:** Exercise the production fault and resource matrix; Complete realtime research without silent fallback.
+
+- [ ] Meet calibrated gates for required-Tool recall, unnecessary calls, argument validity, task success, latency, and token cost.
+- [ ] Prove zero unauthorized downgrade, Profile bypass, unsupported completion, and duplicate external mutation.
+- [ ] Keep a second best-native-configuration benchmark separate from the same-model Runtime comparison.
+
+## Release only after parity and verified-completion gates pass
+
+**What to build:** Produce a formal BeeMax release only when all release blockers, Ubuntu checks, migration drills, parity reports, security isolation, and completion evidence are green.
+
+**Blocked by:** Pass the Hermes Agent parity gate; Pass the Codex Tool routing gate.
+
+- [ ] Resolve every P0/P1 or record an explicitly approved deferral that does not invalidate parity claims.
+- [ ] Publish versioned artifacts, checksums, changelog, architecture and operator documentation, migration guidance, and rollback steps.
+- [ ] Verify the Git tag, GitHub release, installation artifact, clean-host smoke test, and post-release health checks agree.

@@ -942,11 +942,9 @@ export function createTaskVerifier(factory: ReturnType<typeof buildAgentFactory>
 				}
 			}
 		}, executionEnvelope, executionTrace, allowedCapabilities);
-		const match = verdict.trim().match(/^<beemax-verdict>\s*([\s\S]*?)\s*<\/beemax-verdict>$/i);
-		if (!match) throw new Error("Verification unavailable: verifier returned an invalid verdict envelope");
 		let parsed: { status?: unknown; reason?: unknown; assertions?: unknown };
-		try { parsed = JSON.parse(match[1]!); }
-		catch { throw new Error("Verification unavailable: verifier returned invalid verdict JSON"); }
+		try { parsed = parseVerifierVerdict(verdict); }
+		catch (error) { throw new Error(`Verification unavailable: ${error instanceof Error ? error.message : "verifier returned an invalid verdict envelope"}`); }
 		const reason = typeof parsed.reason === "string" ? parsed.reason.trim().slice(0, 5_000) : "";
 		if (parsed.status === "unavailable") throw new Error(`Verification unavailable: ${reason || "no factual reason supplied"}; attempts=${JSON.stringify(attemptedTools).slice(0, 1_000)}`);
 		if (parsed.status === "rejected") return { accepted: false, feedback: reason || "Acceptance Criteria were not satisfied" };
@@ -968,6 +966,20 @@ export function createTaskVerifier(factory: ReturnType<typeof buildAgentFactory>
 		if (externalUrls.length && !externalUrls.every((url) => extractedUrls.has(url))) throw new Error(`Verification unavailable: not every cited external source URL was independently fetched; attempts=${JSON.stringify(attemptedTools).slice(0, 1_000)}`);
 		return { accepted: true, evidence: JSON.stringify({ reason, assertions, successfulTools: [...successfulTools], independentlyFetchedUrls: [...extractedUrls] }).slice(0, 5_000) };
 	};
+}
+
+function parseVerifierVerdict(value: string): { status?: unknown; reason?: unknown; assertions?: unknown } {
+	let normalized = value.trim();
+	const fenced = normalized.match(/^```(?:json|xml)?\s*\n?([\s\S]*?)\n?```$/i);
+	if (fenced) normalized = fenced[1]!.trim();
+	const tagged = normalized.match(/^<beemax-verdict>\s*([\s\S]*?)\s*<\/beemax-verdict>$/i);
+	const payload = tagged?.[1]?.trim() ?? normalized;
+	if (!payload.startsWith("{") || !payload.endsWith("}")) throw new Error("verifier returned an invalid verdict envelope");
+	try {
+		const parsed = JSON.parse(payload);
+		if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("not an object");
+		return parsed;
+	} catch { throw new Error("verifier returned invalid verdict JSON"); }
 }
 
 function normalizedEvidenceUrl(value: string): string {
