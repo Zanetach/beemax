@@ -17,6 +17,12 @@ export interface ServiceInstallOptions {
 	runner?: Runner;
 }
 
+export interface ServiceResourceLimits {
+	memoryMax?: string;
+	cpuQuota?: string;
+	tasksMax?: number;
+}
+
 export function renderSystemdService(
 	root = beemaxRoot(),
 	nodePath = process.execPath,
@@ -24,10 +30,12 @@ export function renderSystemdService(
 	serviceUser?: string,
 	home = beemaxHome(),
 	systemEnvironmentDirectory = "/etc/beemax",
+	resourceLimits: ServiceResourceLimits = {},
 ): string {
 	const absoluteRoot = resolve(root);
 	const absoluteHome = resolve(home);
 	const cliPath = join(absoluteRoot, "apps", "cli", "dist", "cli.js");
+	const limits = normalizeServiceResourceLimits(resourceLimits);
 	return `[Unit]
 Description=BeeMax Agent profile %i
 After=network-online.target
@@ -51,6 +59,9 @@ TimeoutStopSec=60s
 KillSignal=SIGTERM
 NoNewPrivileges=true
 PrivateTmp=true
+MemoryMax=${limits.memoryMax}
+CPUQuota=${limits.cpuQuota}
+TasksMax=${limits.tasksMax}
 UMask=0077
 StandardOutput=journal
 StandardError=journal
@@ -88,7 +99,11 @@ export async function installSystemdService(
 	}
 	await mkdir(layout.unitDirectory, { recursive: true });
 	if (layout.environmentDirectory) await mkdir(layout.environmentDirectory, { recursive: true, mode: 0o700 });
-	await writeFile(layout.unitTemplatePath, renderSystemdService(root, options.nodePath ?? process.execPath, scope, serviceUser, serviceHome, layout.environmentDirectory), { mode: 0o644 });
+	await writeFile(layout.unitTemplatePath, renderSystemdService(root, options.nodePath ?? process.execPath, scope, serviceUser, serviceHome, layout.environmentDirectory, {
+		memoryMax: env.BEEMAX_SERVICE_MEMORY_MAX,
+		cpuQuota: env.BEEMAX_SERVICE_CPU_QUOTA,
+		tasksMax: optionalInteger(env.BEEMAX_SERVICE_TASKS_MAX),
+	}), { mode: 0o644 });
 	await writeFile(layout.targetPath!, renderSystemdTarget(scope), { mode: 0o644 });
 	const args = scope === "user" ? ["--user", "daemon-reload"] : ["daemon-reload"];
 	assertCommand(runner("systemctl", args), `systemctl ${args.join(" ")}`);
@@ -175,6 +190,21 @@ WantedBy=${scope === "user" ? "default.target" : "multi-user.target"}
 
 function systemdQuote(value: string): string {
 	return `"${value.replaceAll("\\", "\\\\").replaceAll('"', '\\"')}"`;
+}
+
+function normalizeServiceResourceLimits(input: ServiceResourceLimits): Required<ServiceResourceLimits> {
+	const memoryMax = input.memoryMax?.trim() || "2G";
+	const cpuQuota = input.cpuQuota?.trim() || "200%";
+	const tasksMax = input.tasksMax ?? 512;
+	if (!/^[1-9][0-9]*(?:\.[0-9]+)?[KMGTPE]?$/.test(memoryMax)) throw new Error("Invalid systemd Profile memory limit");
+	if (!/^[1-9][0-9]*(?:\.[0-9]+)?%$/.test(cpuQuota) || Number.parseFloat(cpuQuota) > 10_000) throw new Error("Invalid systemd Profile CPU quota");
+	if (!Number.isSafeInteger(tasksMax) || tasksMax < 32 || tasksMax > 1_000_000) throw new Error("Invalid systemd Profile task limit");
+	return { memoryMax, cpuQuota, tasksMax };
+}
+
+function optionalInteger(value: string | undefined): number | undefined {
+	if (value === undefined || !value.trim()) return undefined;
+	return Number(value);
 }
 
 function runInherited(command: string, args: string[]): Pick<SpawnSyncReturns<Buffer>, "status" | "error"> {

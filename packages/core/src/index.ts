@@ -93,6 +93,7 @@ export { AutonomousPlanningPolicy, PlanningBudgetRegistry, type AutonomousExecut
 export {
 	SessionCoordinator,
 	sessionIdForSource,
+	legacySessionIdsForSource,
 	sessionKeyForSource,
 	sessionOwnerKey,
 	type RuntimeSession,

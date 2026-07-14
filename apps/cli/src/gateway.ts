@@ -346,7 +346,7 @@ export async function runGateway(config: BeeMaxConfig): Promise<void> {
 			createAutomationAgent,
 			fallbackModels: configuredRuntimeModels(config),
 			mediaUnderstanding: configuredMediaUnderstanding(config, createLocalMediaUnderstandingAdapters(config.mediaUnderstanding.localOcr)),
-			context: createTaskAwareConversationContext(memory, { memoryScope: { profileId: config.profile }, resolveMemoryScope, organizationSituationAllowed: () => autonomyRollout.allows("situation_context").allowed, recordDirectRoute: (route) => automation.setLastRoute(route), runtimeSnapshot: () => ({ profile: config.profile }), maxContextChars: config.context.maxTurnChars }),
+			context: createTaskAwareConversationContext(memory, { memoryScope: { profileId: config.profile }, resolveMemoryScope, organizationSituationAllowed: () => autonomyRollout.allows("situation_context").allowed, recordDirectRoute: (_route, source) => automation.setLastRoute({ platform: source.platform, ...(source.channelInstanceId ? { channelInstanceId: source.channelInstanceId } : {}), chatId: source.chatId, userId: source.userIdAlt ?? source.userId }), runtimeSnapshot: () => ({ profile: config.profile }), maxContextChars: config.context.maxTurnChars }),
 		},
 		approvalBroker,
 		cancelSubagents: (source) => subagents?.cancelOwner(source) ?? 0,
@@ -370,22 +370,37 @@ export async function runGateway(config: BeeMaxConfig): Promise<void> {
 	const { taskScheduler, taskRecovery, objectiveRuntime, subagents } = work;
 	const { runtime, interaction } = profileRuntime;
 	disposeProfileRuntime = () => profileRuntime.dispose();
-	const dispatchers = new Map(channelHost.adapters().map((channelAdapter) => [channelAdapter.name, new Dispatcher(
-		{
+	const adapterEntries = channelHost.adapterEntries();
+	const platformInstanceCounts = new Map<string, number>();
+	for (const { adapter } of adapterEntries) platformInstanceCounts.set(adapter.name, (platformInstanceCounts.get(adapter.name) ?? 0) + 1);
+	const dispatcherEntries = adapterEntries.map(({ id, adapter: channelAdapter }) => ({
+		id,
+		platform: channelAdapter.name,
+		dispatcher: new Dispatcher({
 			runtime,
 			interaction,
 			profileId: config.profile,
+			channelInstanceId: (platformInstanceCounts.get(channelAdapter.name) ?? 0) > 1 ? id : undefined,
 			cardOptions: { title: config.profile === "default" ? "BeeMax Agent" : `BeeMax · ${config.profile}`, reasoningDisplay: config.agent.reasoningDisplay },
 			flushIntervalMs: 350,
 			approvalBroker,
 			cancelTasks: (source) => subagents?.cancelOwner(source) ?? 0,
 		},
-		channelAdapter,
-	)]));
-	const taskPlanNotices = [...dispatchers.entries()].map(([platform, channelDispatcher]) => new TaskPlanNoticeDeliveryService(persistence.completionOutbox, deliveryPort, {
+		channelAdapter),
+	}));
+	const dispatchers = new Map(dispatcherEntries.map(({ id, dispatcher }) => [id, dispatcher]));
+	const platforms = [...new Set(dispatcherEntries.map(({ platform }) => platform))];
+	const taskPlanNotices = platforms.map((platform) => new TaskPlanNoticeDeliveryService(persistence.completionOutbox, deliveryPort, {
 		platform,
 		deliverObjective: (notice, signal) => objectiveRuntime.settlePlanIfLinked(notice.ownerKey, notice.planId, notice.planStatus, signal),
-		onProgress: (event, notice) => channelDispatcher.presentWorkProgress(notice.target, event, notice.id),
+		onProgress: (event, notice) => {
+			const candidates = dispatcherEntries.filter((entry) => entry.platform === platform);
+			const selected = notice.target.channelInstanceId
+				? candidates.find((entry) => entry.id === notice.target.channelInstanceId)
+				: candidates.length === 1 ? candidates[0] : undefined;
+			if (!selected) throw new Error(`Task Plan notice target requires a valid channelInstanceId for platform ${platform}`);
+			return selected.dispatcher.presentWorkProgress(notice.target, event, notice.id);
+		},
 		onCycle: (result) => { if (result.claimed) console.info(`[beemax] ${platform} Task Plan notices: delivered=${result.delivered}; failed=${result.failed}`); },
 		onError: (error) => console.error(`[beemax] ${platform} Task Plan notice delivery failed: ${error instanceof Error ? error.message : String(error)}`),
 	}));

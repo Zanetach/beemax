@@ -49,6 +49,8 @@ export interface DispatcherDeps {
 	cancelTasks?: (source: InboundMessage["source"]) => number;
 	/** Isolated deployment/profile identity used for ingress idempotency. */
 	profileId?: string;
+	/** Stable configured account/connection identity injected into every inbound Interaction. */
+	channelInstanceId?: string;
 	messageDeduplicator?: MessageDeduplicator;
 }
 
@@ -83,12 +85,15 @@ export class Dispatcher {
 	}
 
 	private admit(msg: InboundMessage): Promise<void> {
+		const scoped = this.deps.channelInstanceId && msg.source.channelInstanceId !== this.deps.channelInstanceId
+			? { ...msg, source: { ...msg.source, channelInstanceId: this.deps.channelInstanceId } }
+			: msg;
 		return new Promise<void>((resolve, reject) => {
 			let admitted = false;
 			const markAdmitted = () => { if (!admitted) { admitted = true; resolve(); } };
 			let work!: Promise<void>;
-			work = this.handle(msg, markAdmitted).then(markAdmitted).catch((error) => {
-				if (!admitted) { this.deduplicator.rollback(this.profileId, msg.source.platform, msg.source.messageId); reject(error); }
+			work = this.handle(scoped, markAdmitted).then(markAdmitted).catch((error) => {
+				if (!admitted) { this.deduplicator.rollback(this.profileId, channelDedupeKey(scoped.source), scoped.source.messageId); reject(error); }
 				else console.error(`[beemax] message dispatch failed after admission: ${error instanceof Error ? error.message : String(error)}`);
 			}).finally(() => this.activeHandles.delete(work));
 			this.activeHandles.add(work);
@@ -99,7 +104,7 @@ export class Dispatcher {
 		let releaseAdmission: (() => void) | undefined;
 		const admit = () => { releaseAdmission?.(); onAdmitted?.(); };
 		try {
-			if (!this.deduplicator.accept(this.profileId, msg.source.platform, msg.source.messageId)) { onAdmitted?.(); return; }
+			if (!this.deduplicator.accept(this.profileId, channelDedupeKey(msg.source), msg.source.messageId)) { onAdmitted?.(); return; }
 			const effective = { ...msg, source: this.sessionOverrides.get(sessionOwnerKey(msg.source)) ?? msg.source };
 			const command = parseInteractionCommand(effective.text);
 			if (command?.kind === "stop") {
@@ -485,6 +490,10 @@ export class Dispatcher {
 				break;
 		}
 	}
+}
+
+function channelDedupeKey(source: InboundMessage["source"]): string {
+	return source.channelInstanceId ? `${source.platform}@${source.channelInstanceId}` : source.platform;
 }
 
 async function settleWithin<T>(operation: Promise<T>, timeoutMs: number): Promise<T | undefined> {

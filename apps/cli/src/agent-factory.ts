@@ -111,7 +111,7 @@ export function buildAgentFactory(opts: AgentFactoryOptions) {
 	const baseCustomTools = [...webTools, ...(opts.customTools ?? [])];
 	const execution = opts.executionPort ?? new LocalExecutionPort();
 	const toolAudit = new FileToolAuditJournal(join(opts.agentDir, "tool-audit.jsonl"));
-	const factory = async (sessionId: string, source: SessionSource, executionEnvelope?: Readonly<ExecutionEnvelope>) => buildBeeMaxRuntimeFactory<SessionSource>({
+	const factory = async (sessionId: string, source: SessionSource, executionEnvelope?: Readonly<ExecutionEnvelope>, legacySessionIds?: string[]) => buildBeeMaxRuntimeFactory<SessionSource>({
 		provider: valueOf(opts.provider), model: valueOf(opts.model), baseUrl: valueOf(opts.baseUrl), customProtocol: valueOf(opts.customProtocol), modelLimits: valueOf(opts.modelLimits), cwd: opts.cwd, agentDir: opts.agentDir,
 		getApiKey: opts.getApiKey, systemPrompt: opts.systemPrompt ?? DEFAULT_SYSTEM_PROMPT, skillToolset: opts.skillToolset ?? "standard",
 		tools: opts.tools,
@@ -149,7 +149,7 @@ export function buildAgentFactory(opts: AgentFactoryOptions) {
 		const skillTools = createSkillTools(opts.agentDir, onResourcesChanged, inventory, opts.verifySkillCandidate ? (input, signal) => opts.verifySkillCandidate!(source, input, signal) : undefined, skillRoots, activateTools, opts.capabilityRanker, opts.authorizeSkillCandidatePromotion ? (input) => opts.authorizeSkillCandidatePromotion!(source, input) : undefined);
 		return [...executionTools, ...baseCustomTools, ...browserTools, ...memoryTools, ...automationTools, ...imageTools, ...skillTools, ...scopedTools];
 		},
-	})(sessionId, source, executionEnvelope);
+	})(sessionId, source, executionEnvelope, legacySessionIds);
 	return attestAgentFactorySecurity(factory, opts.toolEffects);
 }
 

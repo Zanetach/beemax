@@ -10,6 +10,24 @@ import { createSubagentTools, ProfileTaskScheduler, SubagentManager } from "@bee
 
 const source = { platform: "feishu", chatId: "chat-1", chatType: "dm", userId: "user-1" };
 
+test("Dispatcher binds inbound interactions to the configured channel instance", async () => {
+	let inbound;
+	let receivedSource;
+	const platform = {
+		name: "feishu", isConnected: true, onMessage: (handler) => { inbound = handler; }, connect: async () => true, disconnect: async () => undefined,
+		send: async () => ({ success: true }), editMessage: async () => ({ success: true }), sendTyping: async () => undefined, stopTyping: async () => undefined,
+	};
+	const runtime = {
+		run: async ({ source }) => { receivedSource = source; return { answer: "ok", model: "test", durationMs: 1, usage: {} }; },
+		cancel: async () => false, handleControl: async () => undefined, isBusy: () => false, dispose: () => undefined,
+	};
+	const dispatcher = new Dispatcher({ runtime, channelInstanceId: "company-a", flushIntervalMs: 0 }, platform);
+	await inbound({ text: "hello", messageType: "text", source: { ...source, messageId: "instance-bound" }, mediaPaths: [], mediaTypes: [], raw: {}, timestamp: Date.now() });
+	for (let attempt = 0; !receivedSource && attempt < 100; attempt++) await new Promise((resolve) => setTimeout(resolve, 2));
+	assert.equal(receivedSource.channelInstanceId, "company-a");
+	await dispatcher.dispose();
+});
+
 test("Dispatcher publishes the initial progress card before starting a slow Agent Turn", async () => {
 	let inbound; let finish; const order = [];
 	const platform = {

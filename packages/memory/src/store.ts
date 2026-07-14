@@ -59,6 +59,8 @@ export interface RecallOptions {
 	chatId?: string;
 	userId?: string;
 	threadId?: string;
+	/** Disclosure surface. Omitted preserves trusted programmatic compatibility; runtime callers always set it. */
+	chatType?: "dm" | "group" | "channel" | "thread";
 	projectId?: string;
 	organizationId?: string;
 	subject?: BusinessEntityRef;
@@ -367,7 +369,7 @@ export class MemoryStore {
 			CREATE INDEX IF NOT EXISTS idx_task_plan_execution_claims_expiry ON task_plan_execution_claims(lease_expires_at);
 			CREATE TABLE IF NOT EXISTS task_plan_completion_notices (
 				id TEXT PRIMARY KEY, plan_id TEXT NOT NULL, owner_key TEXT NOT NULL,
-				platform TEXT NOT NULL, chat_id TEXT NOT NULL, user_id TEXT, thread_id TEXT,
+				platform TEXT NOT NULL, channel_instance_id TEXT, chat_id TEXT NOT NULL, user_id TEXT, thread_id TEXT,
 				plan_status TEXT NOT NULL CHECK (plan_status IN ('succeeded', 'failed', 'cancelled')),
 				title TEXT NOT NULL, task_count INTEGER NOT NULL, succeeded INTEGER NOT NULL,
 				failed INTEGER NOT NULL, cancelled INTEGER NOT NULL,
@@ -771,6 +773,7 @@ export class MemoryStore {
 		this.addColumnIfMissing("task_plans", "paused_at", "INTEGER");
 		this.addColumnIfMissing("task_runs", "lease_expires_at", "INTEGER");
 		this.addColumnIfMissing("task_plan_completion_notices", "claim_token", "TEXT");
+		this.addColumnIfMissing("task_plan_completion_notices", "channel_instance_id", "TEXT");
 		this.addColumnIfMissing("task_plan_completion_notices", "abandoned_at", "INTEGER");
 		this.addColumnIfMissing("task_plan_completion_notices", "last_error", "TEXT");
 		this.db.exec("CREATE INDEX IF NOT EXISTS idx_tasks_verification_due ON tasks(verification_outcome, verification_retry_at)");
@@ -2010,9 +2013,9 @@ export class MemoryStore {
 		if (!target?.platform || !target.chatId) return false;
 		const id = `${plan.id}:${plan.finished_at ?? now}:${plan.status}`;
 		return this.db.prepare(`INSERT OR IGNORE INTO task_plan_completion_notices
-			(id, plan_id, owner_key, platform, chat_id, user_id, thread_id, plan_status, title, task_count, succeeded, failed, cancelled, status, attempts, next_attempt_at, created_at)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', 0, ?, ?)`)
-			.run(id, plan.id, plan.owner_key, target.platform, target.chatId, target.userId ?? null, target.threadId ?? null, plan.status, plan.title, plan.task_count, plan.succeeded, plan.failed, plan.cancelled, now, now).changes === 1;
+			(id, plan_id, owner_key, platform, channel_instance_id, chat_id, user_id, thread_id, plan_status, title, task_count, succeeded, failed, cancelled, status, attempts, next_attempt_at, created_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', 0, ?, ?)`)
+			.run(id, plan.id, plan.owner_key, target.platform, target.channelInstanceId ?? null, target.chatId, target.userId ?? null, target.threadId ?? null, plan.status, plan.title, plan.task_count, plan.succeeded, plan.failed, plan.cancelled, now, now).changes === 1;
 	}
 
 	claimTaskPlanCompletionNotices(platform: string, now = Date.now(), limit = 10, leaseMs = 5 * 60_000): TaskPlanCompletionNotice[] {
@@ -2681,7 +2684,7 @@ interface TaskPlanRow {
 }
 
 interface TaskPlanCompletionNoticeRow {
-	id: string; plan_id: string; owner_key: string; platform: string; chat_id: string; user_id: string | null; thread_id: string | null;
+	id: string; plan_id: string; owner_key: string; platform: string; channel_instance_id: string | null; chat_id: string; user_id: string | null; thread_id: string | null;
 	plan_status: TaskPlanCompletionNotice["planStatus"]; title: string; task_count: number; succeeded: number; failed: number; cancelled: number;
 	status: Exclude<TaskPlanCompletionNotice["status"], "abandoned">; claim_token: string | null; attempts: number; next_attempt_at: number; created_at: number; abandoned_at: number | null; last_error: string | null;
 }
@@ -2839,7 +2842,7 @@ function mapRuntimeTask(row: RuntimeTaskRow): RuntimeTaskRecord {
 function mapTaskPlanCompletionNotice(row: TaskPlanCompletionNoticeRow): TaskPlanCompletionNotice {
 	return {
 		id: row.id, planId: row.plan_id, ownerKey: row.owner_key,
-		target: { platform: row.platform, chatId: row.chat_id, ...(row.user_id ? { userId: row.user_id } : {}), ...(row.thread_id ? { threadId: row.thread_id } : {}) },
+		target: { platform: row.platform, ...(row.channel_instance_id ? { channelInstanceId: row.channel_instance_id } : {}), chatId: row.chat_id, ...(row.user_id ? { userId: row.user_id } : {}), ...(row.thread_id ? { threadId: row.thread_id } : {}) },
 		planStatus: row.plan_status, title: row.title, taskCount: row.task_count, succeeded: row.succeeded, failed: row.failed, cancelled: row.cancelled,
 		status: row.abandoned_at === null ? row.status : "abandoned", ...(row.claim_token ? { claimToken: row.claim_token } : {}), attempts: row.attempts, nextAttemptAt: row.next_attempt_at, createdAt: row.created_at,
 		...(row.abandoned_at === null ? {} : { abandonedAt: row.abandoned_at }), ...(row.last_error ? { error: row.last_error } : {}),
@@ -3057,6 +3060,7 @@ function sameClaimScope(a: MemoryClaim, b: MemoryClaim): boolean {
 
 function claimReadWhere(opts: Omit<RecallOptions, "limit">, alias: string): { where: string; params: unknown[] } {
 	const profileId = opts.profileId ?? "default";
+	const privateDisclosureAllowed = opts.chatType === undefined || opts.chatType === "dm";
 	const entityConditions: string[] = [];
 	const entityParams: unknown[] = [];
 	if (opts.subject) {
@@ -3069,12 +3073,12 @@ function claimReadWhere(opts: Omit<RecallOptions, "limit">, alias: string): { wh
 	}
 	return {
 		where: `AND ${alias}.profile_id = ? AND (
-			(${alias}.visibility = 'private' AND ${alias}.platform = ? AND ${alias}.user_id = ?)
+			(? = 1 AND ${alias}.visibility = 'private' AND ${alias}.platform = ? AND ${alias}.user_id = ?)
 			OR (${alias}.visibility = 'conversation' AND ${alias}.platform = ? AND ${alias}.chat_id = ? AND ${alias}.thread_id IS ?)
 			OR (${alias}.visibility = 'team' AND ${alias}.project_id IS NOT NULL AND ${alias}.project_id = ?)
 			OR (${alias}.visibility = 'organization' AND ${alias}.organization_id IS NOT NULL AND ${alias}.organization_id = ?))
 			${entityConditions.length ? `AND ${entityConditions.join(" AND ")}` : ""}`,
-		params: [profileId, opts.platform ?? "", opts.userId ?? "", opts.platform ?? "", opts.chatId ?? "", opts.threadId ?? null, opts.projectId ?? "", opts.organizationId ?? "", ...entityParams],
+		params: [profileId, privateDisclosureAllowed ? 1 : 0, opts.platform ?? "", opts.userId ?? "", opts.platform ?? "", opts.chatId ?? "", opts.threadId ?? null, opts.projectId ?? "", opts.organizationId ?? "", ...entityParams],
 	};
 }
 function claimRecallWhere(opts: Omit<RecallOptions, "limit">, alias: string): { where: string; params: unknown[] } {

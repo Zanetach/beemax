@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import type { AgentSession } from "@earendil-works/pi-coding-agent";
 import type { BeeMaxRuntimeSource } from "./runtime.ts";
-import { conversationKey, conversationOwnerKey } from "./agent-scope.ts";
+import { canonicalUserId, conversationKey, conversationOwnerKey } from "./agent-scope.ts";
 import type { ExecutionEnvelope } from "./execution-envelope.ts";
 
 /** Stable per-conversation identity, independent of a transport adapter. */
@@ -18,7 +18,22 @@ export function sessionOwnerKey(source: BeeMaxRuntimeSource): string {
 export function sessionIdForSource(source: BeeMaxRuntimeSource): string {
 	// Preserve the pre-R2 stable persisted transcript ids while the catalog adds
 	// a separate owner/thread index for discovery.
-	const hex = createHash("sha256").update(conversationKey(source)).digest("hex").slice(0, 32);
+	return sessionIdForKey(conversationKey(source));
+}
+
+/** Pre-shared-conversation transcript ids, ordered from the closest legacy identity to the oldest. */
+export function legacySessionIdsForSource(source: BeeMaxRuntimeSource): string[] {
+	const actor = canonicalUserId(source) ?? "anon";
+	const chat = source.threadId ? `${source.chatId}#${source.threadId}` : source.chatId;
+	const keys = [
+		`${source.platform}:${chat}:${actor}`,
+		...(source.chatType === "dm" ? [] : [`${source.platform}:${chat}`]),
+	];
+	return [...new Set(keys.map(sessionIdForKey))].filter((id) => id !== sessionIdForSource(source));
+}
+
+function sessionIdForKey(key: string): string {
+	const hex = createHash("sha256").update(key).digest("hex").slice(0, 32);
 	return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-4${hex.slice(13, 16)}-a${hex.slice(17, 20)}-${hex.slice(20, 32)}`;
 }
 
@@ -45,6 +60,7 @@ export type RuntimeSessionFactory<Source extends BeeMaxRuntimeSource = BeeMaxRun
 	sessionId: string,
 	source: Source,
 	executionEnvelope?: Readonly<ExecutionEnvelope>,
+	legacySessionIds?: string[],
 ) => Promise<AgentSession>;
 
 export interface SessionCoordinatorOptions {
@@ -139,7 +155,8 @@ export class SessionCoordinator<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 		if (pending) return pending;
 		this.prune(Date.now(), 1);
 		const creation = (async () => {
-			const session: RuntimeSession = { sessionKey: key, sessionId: sessionIdForSource(source), source: { ...source }, piSession: await factory(sessionIdForSource(source), source, executionEnvelope), executionEnvelope, busy: false, lastActiveAt: Date.now() };
+			const sessionId = sessionIdForSource(source);
+			const session: RuntimeSession = { sessionKey: key, sessionId, source: { ...source }, piSession: await factory(sessionId, source, executionEnvelope, legacySessionIdsForSource(source)), executionEnvelope, busy: false, lastActiveAt: Date.now() };
 			this.sessions.set(key, session);
 			return session;
 		})();

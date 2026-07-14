@@ -1,5 +1,6 @@
 import type { BeeMaxRuntimeSource } from "./runtime.ts";
 import { conversationIdentity } from "./agent-scope.ts";
+import type { AgentScope } from "./agent-scope.ts";
 
 /**
  * Core Memory ownership scope. Legacy subject/object selectors remain private
@@ -11,11 +12,21 @@ export interface MemoryScope {
 	chatId: string;
 	userId?: string;
 	threadId?: string;
+	/** Disclosure surface. Private claims are eligible only in direct messages. */
+	chatType?: AgentScope["chatType"];
 	projectId?: string;
 	organizationId?: string;
 }
 
 export function memoryScopeForSource(source: BeeMaxRuntimeSource, trusted: Pick<MemoryScope, "profileId" | "projectId" | "organizationId"> = {}): MemoryScope {
-	const { platform, chatId, userId, threadId } = conversationIdentity(source);
-	return { ...trusted, platform, chatId, userId, threadId };
+	const { platform, channelInstanceId, chatId, userId, threadId } = conversationIdentity(source);
+	const memoryPlatform = channelInstanceId ? `${platform}@${channelInstanceId}` : platform;
+	return {
+		...trusted,
+		platform: memoryPlatform,
+		chatId,
+		...(source.chatType === "dm" && userId ? { userId } : {}),
+		...(threadId ? { threadId } : {}),
+		chatType: source.chatType,
+	};
 }

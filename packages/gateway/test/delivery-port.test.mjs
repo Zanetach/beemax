@@ -24,3 +24,18 @@ test("Gateway delivery uses legacy image transport only for image artifacts", as
 	assert.deepEqual(calls, [["chat", "/tmp/generated.png"]]);
 	await assert.rejects(port.sendMedia(target, { path: "/tmp/report.pdf", mimeType: "application/pdf" }), /does not support media delivery/);
 });
+
+test("Gateway delivery routes through the requested channel instance", async () => {
+	let resolved;
+	const port = new GatewayDeliveryPort({
+		resolveAdapter(platform, channelInstanceId) {
+			resolved = { platform, channelInstanceId };
+			return {
+				name: platform,
+				async send() { return { success: true }; },
+			};
+		},
+	});
+	await port.sendText({ platform: "feishu", channelInstanceId: "company-a", chatId: "group-1" }, "hello");
+	assert.deepEqual(resolved, { platform: "feishu", channelInstanceId: "company-a" });
+});

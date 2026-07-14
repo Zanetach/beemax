@@ -9,6 +9,7 @@ export type AutomationKind = "reminder" | "agent";
 
 export interface AutomationOwner {
 	platform: string;
+	channelInstanceId?: string;
 	chatId: string;
 	userId?: string;
 }
@@ -150,11 +151,11 @@ export class AutomationStore {
 		const nextRunAt = computeNextRun(input.scheduleKind, input.schedule, input.timezone, now);
 		const deleteAfterRun = input.deleteAfterRun ?? input.scheduleKind === "at";
 		this.db.prepare(`INSERT INTO automation_jobs (
-			id, platform, chat_id, user_id, name, kind, schedule_kind, schedule_value, timezone,
+			id, platform, channel_instance_id, chat_id, user_id, name, kind, schedule_kind, schedule_value, timezone,
 			payload_text, enabled, delete_after_run, max_attempts, misfire_policy, misfire_grace_ms,
 			next_run_at, consecutive_errors, created_at, updated_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, 0, ?, ?)`)
-			.run(id, input.platform, input.chatId, input.userId ?? null, input.name.trim(), input.kind,
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, 0, ?, ?)`)
+			.run(id, input.platform, input.channelInstanceId ?? null, input.chatId, input.userId ?? null, input.name.trim(), input.kind,
 				input.scheduleKind, input.schedule.trim(), input.timezone ?? null, input.text.trim(),
 				deleteAfterRun ? 1 : 0, clamp(input.maxAttempts ?? 3, 1, 20), input.misfirePolicy ?? "run_once",
 				clamp(input.misfireGraceMs ?? 5 * 60_000, 0, 7 * 24 * 60 * 60_000), nextRunAt, now, now);
@@ -170,9 +171,9 @@ export class AutomationStore {
 
 	list(owner: AutomationOwner, limit = 50): AutomationJob[] {
 		const rows = this.db.prepare(`SELECT * FROM automation_jobs
-			WHERE deleted_at IS NULL AND platform = ? AND (chat_id = ? OR (? IS NOT NULL AND user_id = ?))
+			WHERE deleted_at IS NULL AND platform = ? AND channel_instance_id IS ? AND (chat_id = ? OR (? IS NOT NULL AND user_id = ?))
 			ORDER BY enabled DESC, next_run_at ASC LIMIT ?`)
-			.all(owner.platform, owner.chatId, owner.userId ?? null, owner.userId ?? null, clamp(limit, 1, 100)) as JobRow[];
+			.all(owner.platform, owner.channelInstanceId ?? null, owner.chatId, owner.userId ?? null, owner.userId ?? null, clamp(limit, 1, 100)) as JobRow[];
 		return rows.map(mapJob);
 	}
 
@@ -181,7 +182,7 @@ export class AutomationStore {
 		if (!current) throw new Error(`Schedule not found: ${id}`);
 		if (current.claimToken) throw new Error(`Schedule ${id} is currently running`);
 		const input: CreateJobInput = {
-			platform: current.platform, chatId: current.chatId, ...(current.userId ? { userId: current.userId } : {}),
+			platform: current.platform, ...(current.channelInstanceId ? { channelInstanceId: current.channelInstanceId } : {}), chatId: current.chatId, ...(current.userId ? { userId: current.userId } : {}),
 			name: patch.name ?? current.name,
 			kind: patch.kind ?? current.kind,
 			scheduleKind: patch.scheduleKind ?? current.scheduleKind,
@@ -236,9 +237,9 @@ export class AutomationStore {
 
 	remove(id: string, owner: AutomationOwner): boolean {
 		return this.db.transaction(() => {
-			const changed = this.db.prepare(`DELETE FROM automation_jobs WHERE id = ? AND platform = ?
+			const changed = this.db.prepare(`DELETE FROM automation_jobs WHERE id = ? AND platform = ? AND channel_instance_id IS ?
 				AND (chat_id = ? OR (? IS NOT NULL AND user_id = ?))`)
-				.run(id, owner.platform, owner.chatId, owner.userId ?? null, owner.userId ?? null).changes > 0;
+				.run(id, owner.platform, owner.channelInstanceId ?? null, owner.chatId, owner.userId ?? null, owner.userId ?? null).changes > 0;
 			if (changed) this.db.prepare("DELETE FROM automation_runs WHERE job_id = ?").run(id);
 			if (changed) this.db.prepare("DELETE FROM automation_occurrences WHERE schedule_id = ?").run(id);
 			if (changed) this.db.prepare("DELETE FROM automation_deliveries WHERE schedule_id = ?").run(id);
@@ -344,11 +345,11 @@ export class AutomationStore {
 			this.db.prepare("DELETE FROM automation_runs WHERE id NOT IN (SELECT id FROM automation_runs ORDER BY started_at DESC LIMIT 10000)").run();
 			if (result.status === "ok" && result.delivery) {
 				this.db.prepare(`INSERT INTO automation_deliveries (
-					id, occurrence_id, schedule_id, platform, chat_id, user_id, kind, payload_text,
+					id, occurrence_id, schedule_id, platform, channel_instance_id, chat_id, user_id, kind, payload_text,
 					idempotency_key, status, attempts, next_attempt_at, created_at, updated_at
-				) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', 0, ?, ?, ?)
+				) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', 0, ?, ?, ?)
 				ON CONFLICT(occurrence_id) DO NOTHING`)
-					.run(randomId(), occurrence.id, job.id, job.platform, job.chatId, job.userId ?? null,
+					.run(randomId(), occurrence.id, job.id, job.platform, job.channelInstanceId ?? null, job.chatId, job.userId ?? null,
 						result.delivery.kind, result.delivery.text, result.delivery.idempotencyKey, now, now, now);
 			}
 			if (result.status === "ok" && job.scheduleKind === "at" && job.deleteAfterRun) {
@@ -455,17 +456,17 @@ export class AutomationStore {
 	}
 
 	setLastRoute(owner: AutomationOwner, now = Date.now()): void {
-		this.db.prepare(`INSERT INTO automation_routes(platform, user_id, chat_id, updated_at)
-			VALUES (?, ?, ?, ?) ON CONFLICT(platform, user_id) DO UPDATE SET chat_id=excluded.chat_id, updated_at=excluded.updated_at`)
-			.run(owner.platform, owner.userId ?? `chat:${owner.chatId}`, owner.chatId, now);
+		this.db.prepare(`INSERT INTO automation_routes(platform, channel_instance_id, user_id, chat_id, updated_at)
+			VALUES (?, ?, ?, ?, ?) ON CONFLICT(platform, channel_instance_id, user_id) DO UPDATE SET chat_id=excluded.chat_id, updated_at=excluded.updated_at`)
+			.run(owner.platform, owner.channelInstanceId ?? "", owner.userId ?? `chat:${owner.chatId}`, owner.chatId, now);
 	}
 
 	getLastRoute(platform: string, userId?: string): AutomationOwner | undefined {
 		const row = userId
 			? this.db.prepare(`SELECT * FROM automation_routes WHERE platform = ? AND user_id = ?`).get(platform, userId)
 			: this.db.prepare(`SELECT * FROM automation_routes WHERE platform = ? ORDER BY updated_at DESC LIMIT 1`).get(platform);
-		const route = row as { platform: string; user_id: string; chat_id: string } | undefined;
-		return route ? { platform: route.platform, chatId: route.chat_id, userId: route.user_id.startsWith("chat:") ? undefined : route.user_id } : undefined;
+		const route = row as { platform: string; channel_instance_id: string; user_id: string; chat_id: string } | undefined;
+		return route ? { platform: route.platform, ...(route.channel_instance_id ? { channelInstanceId: route.channel_instance_id } : {}), chatId: route.chat_id, userId: route.user_id.startsWith("chat:") ? undefined : route.user_id } : undefined;
 	}
 
 	recordHeartbeat(status: string, detail?: string, now = Date.now()): void {
@@ -477,8 +478,8 @@ export class AutomationStore {
 	enqueueMedia(owner: AutomationOwner, media: { path: string; mimeType?: string }, now = Date.now()): MediaDelivery {
 		if (!owner.platform || !owner.chatId || !media.path) throw new Error("Media delivery requires a platform, chat ID, and file path");
 		const id = randomId();
-		this.db.prepare(`INSERT INTO media_deliveries(id, platform, chat_id, user_id, path, mime_type, status, attempts, next_attempt_at, created_at)
-			VALUES (?, ?, ?, ?, ?, ?, 'queued', 0, ?, ?)`).run(id, owner.platform, owner.chatId, owner.userId ?? null, media.path, media.mimeType ?? null, now, now);
+		this.db.prepare(`INSERT INTO media_deliveries(id, platform, channel_instance_id, chat_id, user_id, path, mime_type, status, attempts, next_attempt_at, created_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?, 'queued', 0, ?, ?)`).run(id, owner.platform, owner.channelInstanceId ?? null, owner.chatId, owner.userId ?? null, media.path, media.mimeType ?? null, now, now);
 		return this.getMediaRequired(id);
 	}
 
@@ -552,7 +553,7 @@ export class AutomationStore {
 	private migrate(): void {
 		this.db.exec(`
 			CREATE TABLE IF NOT EXISTS automation_jobs (
-				id TEXT PRIMARY KEY, platform TEXT NOT NULL, chat_id TEXT NOT NULL, user_id TEXT,
+				id TEXT PRIMARY KEY, platform TEXT NOT NULL, channel_instance_id TEXT, chat_id TEXT NOT NULL, user_id TEXT,
 				name TEXT NOT NULL, kind TEXT NOT NULL, schedule_kind TEXT NOT NULL,
 				schedule_value TEXT NOT NULL, timezone TEXT, payload_text TEXT NOT NULL,
 				enabled INTEGER NOT NULL, delete_after_run INTEGER NOT NULL, next_run_at INTEGER NOT NULL,
@@ -578,7 +579,7 @@ export class AutomationStore {
 			CREATE INDEX IF NOT EXISTS idx_automation_occurrences_schedule ON automation_occurrences(schedule_id, nominal_due_at DESC);
 			CREATE TABLE IF NOT EXISTS automation_deliveries (
 				id TEXT PRIMARY KEY, occurrence_id TEXT NOT NULL UNIQUE, schedule_id TEXT NOT NULL,
-				platform TEXT NOT NULL, chat_id TEXT NOT NULL, user_id TEXT, kind TEXT NOT NULL,
+				platform TEXT NOT NULL, channel_instance_id TEXT, chat_id TEXT NOT NULL, user_id TEXT, kind TEXT NOT NULL,
 				payload_text TEXT NOT NULL, idempotency_key TEXT NOT NULL UNIQUE,
 				status TEXT NOT NULL, attempts INTEGER NOT NULL DEFAULT 0, next_attempt_at INTEGER NOT NULL,
 				claim_token TEXT, claim_expires_at INTEGER, delivered_at INTEGER, error TEXT,
@@ -586,15 +587,15 @@ export class AutomationStore {
 			);
 			CREATE INDEX IF NOT EXISTS idx_automation_deliveries_due ON automation_deliveries(status, next_attempt_at);
 			CREATE TABLE IF NOT EXISTS automation_routes (
-				platform TEXT NOT NULL, user_id TEXT NOT NULL, chat_id TEXT NOT NULL, updated_at INTEGER NOT NULL,
-				PRIMARY KEY(platform, user_id)
+				platform TEXT NOT NULL, channel_instance_id TEXT NOT NULL DEFAULT '', user_id TEXT NOT NULL, chat_id TEXT NOT NULL, updated_at INTEGER NOT NULL,
+				PRIMARY KEY(platform, channel_instance_id, user_id)
 			);
 			CREATE TABLE IF NOT EXISTS heartbeat_state (
 				id INTEGER PRIMARY KEY CHECK(id = 1), last_run_at INTEGER NOT NULL,
 				last_status TEXT NOT NULL, detail TEXT
 			);
 			CREATE TABLE IF NOT EXISTS media_deliveries (
-				id TEXT PRIMARY KEY, platform TEXT NOT NULL, chat_id TEXT NOT NULL, user_id TEXT,
+				id TEXT PRIMARY KEY, platform TEXT NOT NULL, channel_instance_id TEXT, chat_id TEXT NOT NULL, user_id TEXT,
 				path TEXT NOT NULL, mime_type TEXT, status TEXT NOT NULL, attempts INTEGER NOT NULL,
 				next_attempt_at INTEGER NOT NULL, created_at INTEGER NOT NULL
 			);
@@ -607,9 +608,30 @@ export class AutomationStore {
 		if (!columns.some((column) => column.name === "misfire_policy")) this.db.exec("ALTER TABLE automation_jobs ADD COLUMN misfire_policy TEXT NOT NULL DEFAULT 'run_once'");
 		if (!columns.some((column) => column.name === "misfire_grace_ms")) this.db.exec("ALTER TABLE automation_jobs ADD COLUMN misfire_grace_ms INTEGER NOT NULL DEFAULT 300000");
 		if (!columns.some((column) => column.name === "manual_resume_at")) this.db.exec("ALTER TABLE automation_jobs ADD COLUMN manual_resume_at INTEGER");
+		if (!columns.some((column) => column.name === "channel_instance_id")) this.db.exec("ALTER TABLE automation_jobs ADD COLUMN channel_instance_id TEXT");
+		const deliveryColumns = this.db.prepare("PRAGMA table_info(automation_deliveries)").all() as Array<{ name: string }>;
+		if (!deliveryColumns.some((column) => column.name === "channel_instance_id")) this.db.exec("ALTER TABLE automation_deliveries ADD COLUMN channel_instance_id TEXT");
+		const mediaColumns = this.db.prepare("PRAGMA table_info(media_deliveries)").all() as Array<{ name: string }>;
+		if (!mediaColumns.some((column) => column.name === "channel_instance_id")) this.db.exec("ALTER TABLE media_deliveries ADD COLUMN channel_instance_id TEXT");
+		this.migrateAutomationRoutes();
 		const occurrenceColumns = this.db.prepare("PRAGMA table_info(automation_occurrences)").all() as Array<{ name: string }>;
 		if (!occurrenceColumns.some((column) => column.name === "objective_id")) this.db.exec("ALTER TABLE automation_occurrences ADD COLUMN objective_id TEXT");
 		if (!occurrenceColumns.some((column) => column.name === "task_run_id")) this.db.exec("ALTER TABLE automation_occurrences ADD COLUMN task_run_id TEXT");
+	}
+
+	private migrateAutomationRoutes(): void {
+		const columns = this.db.prepare("PRAGMA table_info(automation_routes)").all() as Array<{ name: string }>;
+		if (columns.some((column) => column.name === "channel_instance_id")) return;
+		this.db.exec(`
+			ALTER TABLE automation_routes RENAME TO automation_routes_legacy;
+			CREATE TABLE automation_routes (
+				platform TEXT NOT NULL, channel_instance_id TEXT NOT NULL DEFAULT '', user_id TEXT NOT NULL, chat_id TEXT NOT NULL, updated_at INTEGER NOT NULL,
+				PRIMARY KEY(platform, channel_instance_id, user_id)
+			);
+			INSERT INTO automation_routes(platform, channel_instance_id, user_id, chat_id, updated_at)
+				SELECT platform, '', user_id, chat_id, updated_at FROM automation_routes_legacy;
+			DROP TABLE automation_routes_legacy;
+		`);
 	}
 }
 
@@ -648,18 +670,18 @@ function validateInput(input: CreateJobInput): void {
 }
 
 function owns(job: AutomationJob, owner: AutomationOwner): boolean {
-	return job.platform === owner.platform && (job.chatId === owner.chatId || Boolean(owner.userId && job.userId === owner.userId));
+	return job.platform === owner.platform && job.channelInstanceId === owner.channelInstanceId && (job.chatId === owner.chatId || Boolean(owner.userId && job.userId === owner.userId));
 }
 function clamp(value: number, min: number, max: number): number { return Math.max(min, Math.min(max, value)); }
 function randomId(): string { return crypto.randomUUID(); }
 
-interface JobRow { id:string;platform:string;chat_id:string;user_id:string|null;name:string;kind:string;schedule_kind:string;schedule_value:string;timezone:string|null;payload_text:string;enabled:number;delete_after_run:number;max_attempts:number;misfire_policy:string;misfire_grace_ms:number;next_run_at:number;last_run_at:number|null;last_status:string|null;consecutive_errors:number;claim_token:string|null;deleted_at:number|null;manual_resume_at:number|null;created_at:number;updated_at:number }
+interface JobRow { id:string;platform:string;channel_instance_id:string|null;chat_id:string;user_id:string|null;name:string;kind:string;schedule_kind:string;schedule_value:string;timezone:string|null;payload_text:string;enabled:number;delete_after_run:number;max_attempts:number;misfire_policy:string;misfire_grace_ms:number;next_run_at:number;last_run_at:number|null;last_status:string|null;consecutive_errors:number;claim_token:string|null;deleted_at:number|null;manual_resume_at:number|null;created_at:number;updated_at:number }
 interface RunRow { id:string;job_id:string;started_at:number;finished_at:number;status:string;output:string|null;error:string|null }
 interface OccurrenceRow { id:string;schedule_id:string;nominal_due_at:number;status:string;attempts:number;started_at:number|null;finished_at:number|null;output:string|null;error:string|null;objective_id:string|null;task_run_id:string|null }
-interface DeliveryRow { id:string;occurrence_id:string;schedule_id:string;platform:string;chat_id:string;user_id:string|null;kind:string;payload_text:string;idempotency_key:string;status:string;attempts:number;next_attempt_at:number;claim_token:string|null;created_at:number }
-interface MediaRow { id:string;platform:string;chat_id:string;user_id:string|null;path:string;mime_type:string|null;status:string;attempts:number;next_attempt_at:number;created_at:number }
-function mapJob(row: JobRow): AutomationJob { return { id:row.id,platform:row.platform,chatId:row.chat_id,userId:row.user_id??undefined,name:row.name,kind:row.kind as AutomationKind,scheduleKind:row.schedule_kind as ScheduleKind,schedule:row.schedule_value,text:row.payload_text,timezone:row.timezone??undefined,enabled:Boolean(row.enabled),deleteAfterRun:Boolean(row.delete_after_run),maxAttempts:row.max_attempts,misfirePolicy:row.misfire_policy as AutomationJob["misfirePolicy"],misfireGraceMs:row.misfire_grace_ms,nextRunAt:row.next_run_at,lastRunAt:row.last_run_at??undefined,lastStatus:row.last_status??undefined,consecutiveErrors:row.consecutive_errors,claimToken:row.claim_token??undefined,manualResumeAt:row.manual_resume_at??undefined,createdAt:row.created_at,updatedAt:row.updated_at }; }
+interface DeliveryRow { id:string;occurrence_id:string;schedule_id:string;platform:string;channel_instance_id:string|null;chat_id:string;user_id:string|null;kind:string;payload_text:string;idempotency_key:string;status:string;attempts:number;next_attempt_at:number;claim_token:string|null;created_at:number }
+interface MediaRow { id:string;platform:string;channel_instance_id:string|null;chat_id:string;user_id:string|null;path:string;mime_type:string|null;status:string;attempts:number;next_attempt_at:number;created_at:number }
+function mapJob(row: JobRow): AutomationJob { return { id:row.id,platform:row.platform,channelInstanceId:row.channel_instance_id??undefined,chatId:row.chat_id,userId:row.user_id??undefined,name:row.name,kind:row.kind as AutomationKind,scheduleKind:row.schedule_kind as ScheduleKind,schedule:row.schedule_value,text:row.payload_text,timezone:row.timezone??undefined,enabled:Boolean(row.enabled),deleteAfterRun:Boolean(row.delete_after_run),maxAttempts:row.max_attempts,misfirePolicy:row.misfire_policy as AutomationJob["misfirePolicy"],misfireGraceMs:row.misfire_grace_ms,nextRunAt:row.next_run_at,lastRunAt:row.last_run_at??undefined,lastStatus:row.last_status??undefined,consecutiveErrors:row.consecutive_errors,claimToken:row.claim_token??undefined,manualResumeAt:row.manual_resume_at??undefined,createdAt:row.created_at,updatedAt:row.updated_at }; }
 function mapRun(row: RunRow): AutomationRun { return { id:row.id,jobId:row.job_id,startedAt:row.started_at,finishedAt:row.finished_at,status:row.status as AutomationRun["status"],output:row.output??undefined,error:row.error??undefined }; }
 function mapOccurrence(row: OccurrenceRow): AutomationOccurrence { return { id:row.id,scheduleId:row.schedule_id,nominalDueAt:row.nominal_due_at,status:row.status as AutomationOccurrence["status"],attempts:row.attempts,startedAt:row.started_at??undefined,finishedAt:row.finished_at??undefined,output:row.output??undefined,error:row.error??undefined,objectiveId:row.objective_id??undefined,taskRunId:row.task_run_id??undefined }; }
-function mapDelivery(row: DeliveryRow): AutomationDelivery { return { id:row.id,occurrenceId:row.occurrence_id,scheduleId:row.schedule_id,platform:row.platform,chatId:row.chat_id,userId:row.user_id??undefined,kind:row.kind as "text",text:row.payload_text,idempotencyKey:row.idempotency_key,status:row.status as AutomationDelivery["status"],attempts:row.attempts,nextAttemptAt:row.next_attempt_at,claimToken:row.claim_token!,createdAt:row.created_at }; }
-function mapMedia(row: MediaRow): MediaDelivery { return { id:row.id,platform:row.platform,chatId:row.chat_id,userId:row.user_id??undefined,path:row.path,mimeType:row.mime_type??undefined,status:row.status as MediaDelivery["status"],attempts:row.attempts,nextAttemptAt:row.next_attempt_at,createdAt:row.created_at }; }
+function mapDelivery(row: DeliveryRow): AutomationDelivery { return { id:row.id,occurrenceId:row.occurrence_id,scheduleId:row.schedule_id,platform:row.platform,channelInstanceId:row.channel_instance_id??undefined,chatId:row.chat_id,userId:row.user_id??undefined,kind:row.kind as "text",text:row.payload_text,idempotencyKey:row.idempotency_key,status:row.status as AutomationDelivery["status"],attempts:row.attempts,nextAttemptAt:row.next_attempt_at,claimToken:row.claim_token!,createdAt:row.created_at }; }
+function mapMedia(row: MediaRow): MediaDelivery { return { id:row.id,platform:row.platform,channelInstanceId:row.channel_instance_id??undefined,chatId:row.chat_id,userId:row.user_id??undefined,path:row.path,mimeType:row.mime_type??undefined,status:row.status as MediaDelivery["status"],attempts:row.attempts,nextAttemptAt:row.next_attempt_at,createdAt:row.created_at }; }

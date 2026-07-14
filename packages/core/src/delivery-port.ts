@@ -1,6 +1,8 @@
 /** A channel-neutral target. Core never imports a channel adapter or SDK. */
 export interface DeliveryTarget {
 	platform: string;
+	/** Selects a concrete account/connection when a platform has multiple active instances. */
+	channelInstanceId?: string;
 	chatId: string;
 	userId?: string;
 	threadId?: string;

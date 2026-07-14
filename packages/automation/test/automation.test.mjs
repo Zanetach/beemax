@@ -81,6 +81,21 @@ test("recurring jobs persist next run, ownership, history, and retry state", () 
 	assert.equal(store.remove(job.id, { platform:"feishu",chatId:"other",userId:"other" }), false);
 }));
 
+test("channel instances isolate schedules and survive durable delivery", () => withStore((store) => {
+	const firstOwner = { platform: "feishu", channelInstanceId: "company-a", chatId: "same-chat", userId: "same-user" };
+	const secondOwner = { platform: "feishu", channelInstanceId: "company-b", chatId: "same-chat", userId: "same-user" };
+	const first = store.create({ ...firstOwner, name: "A", kind: "reminder", scheduleKind: "at", schedule: "1h", text: "first" }, 1_000);
+	store.create({ ...secondOwner, name: "B", kind: "reminder", scheduleKind: "at", schedule: "1h", text: "second" }, 1_000);
+	assert.deepEqual(store.list(firstOwner).map((job) => job.name), ["A"]);
+	assert.deepEqual(store.list(secondOwner).map((job) => job.name), ["B"]);
+	store.runNow(first.id, firstOwner, 2_000);
+	const claim = store.claimDue(2_000)[0];
+	store.complete(claim, { startedAt: 2_000, finishedAt: 2_001, status: "ok", delivery: { kind: "text", text: "first", idempotencyKey: "instance-a" } }, 2_001);
+	assert.equal(store.claimDeliveriesDue(2_001)[0].channelInstanceId, "company-a");
+	store.setLastRoute(secondOwner, 2_002);
+	assert.equal(store.getLastRoute("feishu", "same-user").channelInstanceId, "company-b");
+}));
+
 test("one Schedule Occurrence retries with one identity and stops after its finite attempt budget", () => withStore((store) => {
 	const now = Date.parse("2026-01-01T00:00:00Z");
 	const owner = { platform:"feishu",chatId:"chat",userId:"user" };

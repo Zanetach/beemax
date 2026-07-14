@@ -124,6 +124,26 @@ _Avoid_: Spawn, background chat
 One user-to-Agent interaction inside a conversation; a Turn may create, inspect, or advance Tasks.
 _Avoid_: Task, run
 
+**Profile**:
+An independently configured Agent identity and state authority containing its own Memory, Sessions, durable work, credentials, capabilities, automation, and channel configuration. A Profile namespace does not by itself imply a process, Sandbox, or hostile-tenant security boundary.
+_Avoid_: Customer business type, chat session, guaranteed tenant Sandbox
+
+**Channel Instance**:
+A stable configured connection to one concrete platform account or bot identity. Multiple Channel Instances may use the same platform adapter, and delivery must select the instance whenever the platform alone is ambiguous.
+_Avoid_: Platform, Profile, Capability credential
+
+**Conversation**:
+A shared communication space identified by Channel Instance, platform conversation, and optional Thread. A group Conversation never includes the current Actor in its identity; a direct Conversation includes its peer so private sessions remain separate.
+_Avoid_: Actor, Task owner, Profile
+
+**Actor**:
+The authenticated person, bot, or system that produced an Interaction. Actor identity governs personal responsibility and private Memory but does not partition a shared group Conversation.
+_Avoid_: Conversation, display name, Profile
+
+**Activation Policy**:
+The transport-neutral admission rule that decides whether a group Interaction may be considered for response or observation from verified signals such as mention, reply, command, role, and allowlist state. It never performs business reasoning or grants Tool authority.
+_Avoid_: Prompt instruction, Enterprise Policy, Situation decision
+
 **Situation**:
 The Agent's current, evidence-backed interpretation of what is happening, why it matters, and what remains uncertain; it is open-ended and may change when new evidence arrives.
 _Avoid_: Fixed business schema, Access Scope, prompt classification

@@ -672,7 +672,7 @@ test("Task Plan Completion Notice Outbox is idempotent and reclaims an expired d
 	const root = mkdtempSync(join(tmpdir(), "beemax-plan-notice-outbox-"));
 	const store = new MemoryStore(join(root, "memory.db"));
 	try {
-		const scope = { platform: "feishu", chatId: "chat", chatType: "dm", userId: "user", threadId: "thread" };
+		const scope = { platform: "feishu", channelInstanceId: "company-a", chatId: "chat", chatType: "dm", userId: "user", threadId: "thread" };
 		const graph = new TaskGraph(store);
 		graph.createPlan({ id: "notice-plan", ownerKey: "feishu:chat:user", title: "Background report", tasks: [{ id: "notice-task", title: "Report", executionScope: scope }] }, 10);
 		await graph.run(["feishu:chat:user"], "notice-plan", async () => ({ output: "private result" }));
@@ -682,7 +682,7 @@ test("Task Plan Completion Notice Outbox is idempotent and reclaims an expired d
 		const first = store.claimTaskPlanCompletionNotices("feishu", 100, 10, 50);
 		assert.equal(first.length, 1);
 		assert.deepEqual({ planId: first[0].planId, planStatus: first[0].planStatus, title: first[0].title, target: first[0].target, attempts: first[0].attempts }, {
-			planId: "notice-plan", planStatus: "succeeded", title: "Background report", target: { platform: "feishu", chatId: "chat", userId: "user", threadId: "thread" }, attempts: 1,
+			planId: "notice-plan", planStatus: "succeeded", title: "Background report", target: { platform: "feishu", channelInstanceId: "company-a", chatId: "chat", userId: "user", threadId: "thread" }, attempts: 1,
 		});
 		assert.equal(JSON.stringify(first[0]).includes("private result"), false);
 		assert.deepEqual(store.claimTaskPlanCompletionNotices("feishu", 149, 10, 50), []);

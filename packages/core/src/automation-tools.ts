@@ -9,8 +9,8 @@ import { MUTATING_TOOL_POLICY, READ_ONLY_TOOL_POLICY, withToolPolicy, type ToolP
 
 export function createAutomationTools(store: AutomationStore, source: BeeMaxRuntimeSource, wakeScheduler: () => void): ToolDefinition[] {
 	const owner = (): AutomationOwner => {
-		const { platform, chatId, userId } = conversationIdentity(source);
-		return { platform, chatId, userId };
+		const { platform, channelInstanceId, chatId, userId } = conversationIdentity(source);
+		return { platform, ...(channelInstanceId ? { channelInstanceId } : {}), chatId, userId };
 	};
 	const tools = [
 		defineTool({ name: "reminder_create", label: "Create Reminder", description: "Create a persistent one-shot reminder delivered to the current chat. Requires approval. Use an ISO timestamp with timezone or relative duration like 20m.", parameters: Type.Object({ name: Type.String({ minLength: 1, maxLength: 120 }), when: Type.String({ description: "ISO 8601 timestamp with timezone, or duration like 20m/2h/1d" }), text: Type.String({ minLength: 1, maxLength: 20_000 }) }), execute: async (_id, params) => {

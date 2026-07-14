@@ -55,16 +55,27 @@ test("ChannelHost starts registered adapters, isolates failures, and routes deli
 	assert.equal(events.filter((event) => event === "broken:disconnect").length, 1);
 });
 
-test("ChannelHost rejects unknown adapters and duplicate active platforms", () => {
+test("ChannelHost rejects unknown adapters", () => {
 	const registry = new AdapterRegistry();
 	registry.register({ id: "alpha", create: () => adapter("alpha", []) });
 	assert.throws(() => new ChannelHost(registry, [
 		{ id: "missing", adapter: "missing", enabled: true, settings: {} },
 	]), /Unknown channel adapter: missing/);
-	assert.throws(() => new ChannelHost(registry, [
-		{ id: "first", adapter: "alpha", enabled: true, settings: {} },
-		{ id: "second", adapter: "alpha", enabled: true, settings: {} },
-	]), /Duplicate active channel platform: alpha/);
+});
+
+test("ChannelHost supports multiple instances of one platform and requires an instance for ambiguous delivery", async () => {
+	const events = [];
+	const registry = new AdapterRegistry();
+	registry.register({ id: "alpha", create: (instance) => adapter("alpha", events.map ? events : [], async () => true) });
+	const host = new ChannelHost(registry, [
+		{ id: "company-a", adapter: "alpha", enabled: true, settings: {} },
+		{ id: "company-b", adapter: "alpha", enabled: true, settings: {} },
+	]);
+	await host.start();
+	assert.equal(host.resolveAdapter("alpha", "company-a"), host.adapter("company-a"));
+	assert.equal(host.resolveAdapter("alpha", "company-b"), host.adapter("company-b"));
+	assert.throws(() => host.resolveAdapter("alpha"), /multiple channel instances/i);
+	await host.stop();
 });
 
 test("ChannelHost pause and resume changes routability without restarting the Profile Runtime", async () => {

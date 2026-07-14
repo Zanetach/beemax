@@ -4,6 +4,7 @@ export { GatewayDeliveryPort } from "./core/delivery-port.ts";
 export { AdapterRegistry, ChannelHost } from "./core/channel-host.ts";
 export type { ChannelAdapterRegistration, ChannelAdapterResolver, ChannelHostOptions, ChannelHostSnapshot, ChannelInstanceConfig, ChannelLifecycleState, ChannelStatus } from "./core/channel-host.ts";
 export { MessageDeduplicator } from "./core/message-deduplicator.ts";
+export { decideGroupAdmission, type GroupAdmissionDecision, type GroupAdmissionInput, type GroupAdmissionPolicy } from "./core/group-admission.ts";
 export { prepareAgentMediaInput, type AgentMediaInput } from "./core/media-input.ts";
 export { CardSession } from "./card/session.ts";
 export { renderCard, type CardRenderOptions } from "./card/render.ts";

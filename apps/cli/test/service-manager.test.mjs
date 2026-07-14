@@ -44,10 +44,25 @@ test("systemd service binds the installed CLI, profile env, and safe runtime def
 	assert.match(unit, /EnvironmentFile=-"\/opt\/beemax\/config\/profiles\/%i\.env"/);
 	assert.match(unit, /ExecStart="\/usr\/bin\/node" "\/opt\/beemax\/apps\/cli\/dist\/cli\.js" gateway --profile %i --home "\/home\/beemax\/\.beemax" --root "\/opt\/beemax"/);
 	assert.match(unit, /NoNewPrivileges=true/);
+	assert.match(unit, /MemoryMax=2G/);
+	assert.match(unit, /CPUQuota=200%/);
+	assert.match(unit, /TasksMax=512/);
 	assert.match(unit, /UMask=0077/);
 	assert.match(unit, /WantedBy=default\.target/);
 	assert.match(renderSystemdService("/opt/beemax", "/usr/bin/node", "system"), /WantedBy=multi-user\.target/);
 	assert.match(renderSystemdService("/opt/beemax", "/usr/bin/node", "system", "beemax"), /User=beemax/);
+});
+
+test("systemd Profile resource limits are configurable without allowing directive injection", () => {
+	const unit = renderSystemdService("/opt/beemax", "/usr/bin/node", "system", "beemax", "/srv/beemax", "/etc/beemax", {
+		memoryMax: "4G", cpuQuota: "150%", tasksMax: 256,
+	});
+	assert.match(unit, /MemoryMax=4G/);
+	assert.match(unit, /CPUQuota=150%/);
+	assert.match(unit, /TasksMax=256/);
+	assert.throws(() => renderSystemdService("/opt/beemax", "/usr/bin/node", "user", undefined, "/srv/beemax", "/etc/beemax", {
+		memoryMax: "2G\nEnvironment=ATTACK=1",
+	}), /memory limit/i);
 });
 
 test("service actions map profiles to systemctl and journalctl units", () => {

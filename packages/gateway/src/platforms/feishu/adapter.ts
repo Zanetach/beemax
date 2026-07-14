@@ -37,6 +37,7 @@ import type {
 } from "../../core/types.ts";
 import { validateFeishuWebhookSettings, type FeishuSettings } from "./settings.ts";
 import { retryFeishuOperation } from "./retry.ts";
+import { decideGroupAdmission, type GroupAdmissionDecision } from "../../core/group-admission.ts";
 
 const FEISHU_DOMAIN = lark.Domain.Feishu;
 const LARK_DOMAIN = lark.Domain.Lark;
@@ -698,15 +699,17 @@ export class FeishuAdapter implements PlatformAdapter {
 		if (chatType === "p2p") return globallyAuthorized ? null : this.settings.pairing ? "pairing required" : "sender is not authorized";
 		const rule = this.settings.groupRules?.[msg.chat_id];
 		if (!rule && this.settings.allowedChats.length > 0 && !this.settings.allowedChats.includes(msg.chat_id)) return "chat is not in FEISHU_ALLOWED_CHATS";
-		const policy = rule?.policy ?? this.settings.groupPolicy ?? "allowlist";
-		if (policy === "disabled") return "group is disabled";
-		if (policy === "allowlist" && !(rule?.allowlist?.some((id) => ids.includes(id)) || globallyAuthorized)) return "sender is not authorized for group";
-		if (policy === "blacklist" && rule?.blacklist?.some((id) => ids.includes(id))) return "sender is blocked in group";
-		if (policy === "admin_only" && !this.settings.admins?.some((id) => ids.includes(id))) return "sender is not a group admin";
-		if ((rule?.requireMention ?? this.settings.requireMention) && !this.isBotMentioned(msg)) {
-			return "group message without bot mention";
-		}
-		return null;
+		const decision = decideGroupAdmission({
+			policy: rule?.policy ?? this.settings.groupPolicy ?? "allowlist",
+			actorIds: ids,
+			actorAuthorized: globallyAuthorized,
+			actorIsAdmin: Boolean(this.settings.admins?.some((id) => ids.includes(id))),
+			allowlist: rule?.allowlist,
+			blacklist: rule?.blacklist,
+			requireMention: rule?.requireMention ?? this.settings.requireMention,
+			agentMentioned: this.isBotMentioned(msg),
+		});
+		return decision.admitted ? null : feishuAdmissionReason(decision);
 	}
 
 	private async handlePairing(sender: FeishuSender, msg: FeishuMessage): Promise<void> {
@@ -982,6 +985,16 @@ export class FeishuAdapter implements PlatformAdapter {
 
 	private retryRequest<T>(operation: () => Promise<T>): Promise<T> {
 		return retryFeishuOperation(operation, { attempts: 3, baseDelayMs: this.settings.retryBaseDelayMs ?? 1_000 });
+	}
+}
+
+function feishuAdmissionReason(decision: Exclude<GroupAdmissionDecision, { admitted: true }>): string {
+	switch (decision.reason) {
+		case "group_disabled": return "group is disabled";
+		case "actor_blocked": return "sender is blocked in group";
+		case "actor_not_allowed": return "sender is not authorized for group";
+		case "admin_required": return "sender is not a group admin";
+		case "mention_required": return "group message without bot mention";
 	}
 }
 

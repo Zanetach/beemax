@@ -109,7 +109,7 @@ export function buildBeeMaxRuntimeFactory<Source extends BeeMaxRuntimeSource = B
 	const modelRegistry = ModelRegistry.create(authStorage, join(agentDir, "models.json"));
 	const resolvedModel = resolveModel(opts.provider, opts.model, opts.baseUrl, opts.customProtocol, opts.modelLimits);
 	const model = opts.baseUrl ? { ...resolvedModel, baseUrl: opts.baseUrl } : resolvedModel;
-	return async (sessionId: string, source: Source, executionEnvelope?: Readonly<ExecutionEnvelope>): Promise<AgentSession> => {
+	return async (sessionId: string, source: Source, executionEnvelope?: Readonly<ExecutionEnvelope>, legacySessionIds: string[] = []): Promise<AgentSession> => {
 		const apiKey = await opts.getApiKey(opts.provider);
 		if (apiKey) authStorage.setRuntimeApiKey(model.provider, apiKey);
 		const settingsManager = SettingsManager.create(cwd, agentDir);
@@ -166,7 +166,7 @@ export function buildBeeMaxRuntimeFactory<Source extends BeeMaxRuntimeSource = B
 			} }] : [],
 		});
 		await resourceLoader.reload();
-		const sessionManager = await restoreOrCreateSession(cwd, sessionDir, sessionId);
+		const sessionManager = await restoreOrCreateSession(cwd, sessionDir, sessionId, legacySessionIds);
 		let sessionRef: AgentSession | undefined;
 		const customTools = opts.createTools(
 			source,
@@ -226,10 +226,16 @@ export function filterEligibleSkills(skills: Skill[], toolset: "safe" | "standar
 	});
 }
 
-async function restoreOrCreateSession(cwd: string, sessionDir: string, sessionId: string): Promise<SessionManager> {
-	const suffix = `_${sessionId}.jsonl`;
+async function restoreOrCreateSession(cwd: string, sessionDir: string, sessionId: string, legacySessionIds: string[] = []): Promise<SessionManager> {
+	const suffixes = [sessionId, ...legacySessionIds].map((id) => `_${id}.jsonl`);
 	let matchingFiles: string[] = [];
-	try { matchingFiles = (await readdir(sessionDir)).filter((name) => name.endsWith(suffix)).sort().reverse(); } catch { /* SessionManager recreates a removed directory. */ }
+	try {
+		const names = await readdir(sessionDir);
+		for (const suffix of suffixes) {
+			matchingFiles = names.filter((name) => name.endsWith(suffix)).sort().reverse();
+			if (matchingFiles.length) break;
+		}
+	} catch { /* SessionManager recreates a removed directory. */ }
 	return matchingFiles[0] ? SessionManager.open(join(sessionDir, matchingFiles[0]), sessionDir, cwd) : SessionManager.create(cwd, sessionDir, { id: sessionId });
 }
 

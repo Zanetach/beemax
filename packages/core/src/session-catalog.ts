@@ -2,6 +2,7 @@ import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import type { BeeMaxRuntimeSource } from "./runtime.ts";
 import { sessionOwnerKey } from "./session-coordinator.ts";
+import { responsibilityOwnerKeys } from "./agent-scope.ts";
 
 export interface SavedSessionChoice {
 	threadId?: string;
@@ -37,18 +38,18 @@ export class SessionCatalog<Source extends BeeMaxRuntimeSource = BeeMaxRuntimeSo
 
 	async list(source: Source): Promise<SavedSessionChoice[]> {
 		await this.ready();
-		const owner = sessionOwnerKey(source);
-		return [...this.records.values()].filter((record) => record.owner === owner).map(({ threadId, lastUsedAt, preferences }) => ({ threadId, lastUsedAt, preferences: { ...preferences } })).sort((a, b) => b.lastUsedAt - a.lastUsedAt);
+		const owners = new Set(ownerKeys(source));
+		return [...this.records.values()].filter((record) => owners.has(record.owner)).map(({ threadId, lastUsedAt, preferences }) => ({ threadId, lastUsedAt, preferences: { ...preferences } })).sort((a, b) => b.lastUsedAt - a.lastUsedAt);
 	}
 
 	async has(source: Source): Promise<boolean> {
 		await this.ready();
-		return this.records.has(recordKey(source));
+		return recordKeys(source).some((key) => this.records.has(key));
 	}
 
 	async touch(source: Source): Promise<void> {
 		await this.ready();
-		const existing = this.records.get(recordKey(source));
+		const existing = firstRecord(this.records, recordKeys(source));
 		this.records.set(recordKey(source), { owner: sessionOwnerKey(source), threadId: source.threadId, lastUsedAt: Date.now(), preferences: existing?.preferences ?? {} });
 		this.prune();
 		await this.persist();
@@ -56,12 +57,12 @@ export class SessionCatalog<Source extends BeeMaxRuntimeSource = BeeMaxRuntimeSo
 
 	async preferences(source: Source): Promise<SessionPreferences> {
 		await this.ready();
-		return { ...(this.records.get(recordKey(source))?.preferences ?? {}) };
+		return { ...(firstRecord(this.records, recordKeys(source))?.preferences ?? {}) };
 	}
 
 	async updatePreferences(source: Source, preferences: SessionPreferences): Promise<void> {
 		await this.ready();
-		const existing = this.records.get(recordKey(source));
+		const existing = firstRecord(this.records, recordKeys(source));
 		this.records.set(recordKey(source), {
 			owner: sessionOwnerKey(source), threadId: source.threadId, lastUsedAt: existing?.lastUsedAt ?? Date.now(),
 			preferences: { ...existing?.preferences, ...preferences },
@@ -110,6 +111,12 @@ export class SessionCatalog<Source extends BeeMaxRuntimeSource = BeeMaxRuntimeSo
 }
 
 function recordKey(source: BeeMaxRuntimeSource): string { return `${sessionOwnerKey(source)}:${source.threadId ?? ""}`; }
+function ownerKeys(source: BeeMaxRuntimeSource): string[] { return [...new Set([sessionOwnerKey(source), ...responsibilityOwnerKeys(source)])]; }
+function recordKeys(source: BeeMaxRuntimeSource): string[] { return ownerKeys(source).map((owner) => `${owner}:${source.threadId ?? ""}`); }
+function firstRecord(records: Map<string, StoredSessionChoice>, keys: string[]): StoredSessionChoice | undefined {
+	for (const key of keys) { const record = records.get(key); if (record) return record; }
+	return undefined;
+}
 function isRecord(value: unknown): value is StoredSessionChoice {
 	return typeof value === "object" && value !== null
 		&& "owner" in value && typeof value.owner === "string"

@@ -29,7 +29,7 @@ export interface ChannelHostSnapshot {
 }
 
 export interface ChannelAdapterResolver {
-	resolveAdapter(platform: string): PlatformAdapter;
+	resolveAdapter(platform: string, channelInstanceId?: string): PlatformAdapter;
 }
 
 export interface ChannelHostOptions {
@@ -84,7 +84,7 @@ export class AdapterRegistry {
  */
 export class ChannelHost implements ChannelAdapterResolver {
 	private readonly channels = new Map<string, HostedChannel>();
-	private readonly platformIndex = new Map<string, HostedChannel>();
+	private readonly platformIndex = new Map<string, HostedChannel[]>();
 	private readonly options: Required<ChannelHostOptions>;
 	private readonly reconnecting = new Map<HostedChannel, Promise<void>>();
 	private supervisorTimer?: ReturnType<typeof setInterval>;
@@ -104,14 +104,18 @@ export class ChannelHost implements ChannelAdapterResolver {
 			if (!instance.id.trim()) throw new Error("Channel instance id is required");
 			if (this.channels.has(instance.id)) throw new Error(`Duplicate channel instance id: ${instance.id}`);
 			const adapter = registry.create(instance);
-			if (this.platformIndex.has(adapter.name)) throw new Error(`Duplicate active channel platform: ${adapter.name}`);
 			const channel: HostedChannel = { config: instance, adapter, state: "idle", attempts: 0 };
 			this.channels.set(instance.id, channel);
-			this.platformIndex.set(adapter.name, channel);
+			const platformChannels = this.platformIndex.get(adapter.name) ?? [];
+			platformChannels.push(channel);
+			this.platformIndex.set(adapter.name, platformChannels);
 		}
 	}
 
 	adapters(): PlatformAdapter[] { return [...this.channels.values()].map((channel) => channel.adapter); }
+	adapterEntries(): Array<{ id: string; adapter: PlatformAdapter }> {
+		return [...this.channels.values()].map((channel) => ({ id: channel.config.id, adapter: channel.adapter }));
+	}
 
 	adapter(instanceId: string): PlatformAdapter {
 		const channel = this.channels.get(instanceId);
@@ -119,9 +123,16 @@ export class ChannelHost implements ChannelAdapterResolver {
 		return channel.adapter;
 	}
 
-	resolveAdapter(platform: string): PlatformAdapter {
-		const channel = this.platformIndex.get(platform);
-		if (!channel) throw new Error(`No channel adapter is registered for platform: ${platform}`);
+	resolveAdapter(platform: string, channelInstanceId?: string): PlatformAdapter {
+		const candidates = this.platformIndex.get(platform) ?? [];
+		const channel = channelInstanceId ? this.channels.get(channelInstanceId) : candidates.length === 1 ? candidates[0] : undefined;
+		if (!channel) {
+			if (!channelInstanceId && candidates.length > 1) throw new Error(`Platform ${platform} has multiple channel instances; channelInstanceId is required`);
+			throw new Error(channelInstanceId
+				? `No channel adapter is registered for platform ${platform} and instance ${channelInstanceId}`
+				: `No channel adapter is registered for platform: ${platform}`);
+		}
+		if (channel.adapter.name !== platform) throw new Error(`Channel instance ${channelInstanceId} belongs to platform ${channel.adapter.name}, not ${platform}`);
 		if (channel.state === "paused") throw new Error(`Channel adapter is paused: ${platform}`);
 		if (channel.state !== "connected" || !channel.adapter.isConnected) throw new Error(`Channel adapter is not connected: ${platform}`);
 		return channel.adapter;

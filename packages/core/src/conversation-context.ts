@@ -14,7 +14,7 @@ export interface ConversationContextOptions {
 	/** Resolve an opaque Access Scope through a trusted composition-root adapter. */
 	resolveMemoryScope?: (source: BeeMaxRuntimeSource, accessScopeRef?: AccessScopeRef) => Pick<MemoryScope, "projectId" | "organizationId">;
 	/** Persist a delivery route for proactive work without coupling Core to a channel. */
-	recordDirectRoute?: (route: MemoryScope) => void;
+	recordDirectRoute?: (route: MemoryScope, source: BeeMaxRuntimeSource) => void;
 	/** Supplies verified, volatile facts (for example current task state) for fact-sensitive turns. */
 	runtimeFacts?: (source: BeeMaxRuntimeSource, text: string, facts: VerifiedRuntimeFacts) => string;
 	/** Dynamic Profile rollout boundary for Situation-backed organizational recall. */
@@ -119,7 +119,7 @@ export class ConversationContext {
 
 	record(source: BeeMaxRuntimeSource, exchange: ConversationExchange, runtime: Pick<VerifiedRuntimeFacts, "accessScopeRef"> = {}): void {
 		const scope = this.scopeFor(source, runtime.accessScopeRef);
-		if (source.chatType === "dm") this.recordDirectRoute?.(scope);
+		if (source.chatType === "dm") this.recordDirectRoute?.(scope, source);
 		this.memory.recordCandidate({ ...scope, role: "user", content: exchange.user });
 		this.memory.recordCandidate({ ...scope, role: "assistant", content: exchange.assistant });
 		this.memory.recordEvent?.({ ...scope, kind: "assistant", content: exchange.assistant });
