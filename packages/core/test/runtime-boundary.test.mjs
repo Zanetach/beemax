@@ -483,6 +483,8 @@ test("Session coordinator owns serial execution, cancellation, and bounded lifec
 	});
 	await Promise.all([run(), run()]);
 	assert.equal(peak, 1);
+	await assert.rejects(coordinator.run(source, factory, async () => { throw new Error("Task Plan rejected"); }), /Task Plan rejected/);
+	assert.equal(coordinator.isBusy(), false, "a failed Agent turn must release the runtime busy state");
 	assert.equal(await coordinator.abort(source), true);
 	assert.equal(disposed.includes(`abort:${sessionIdForSource(source)}`), true);
 	await coordinator.run(source2, factory, async () => undefined);

@@ -1,5 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
 import { createExecutionTools, DockerExecutionPort, LocalExecutionPort, resolveExecutionBackend } from "../dist/index.js";
 
 const source = { platform: "feishu", chatId: "chat", chatType: "group", userId: "user" };
@@ -43,6 +46,18 @@ test("Host Execution Adapter stops an active command when its Tool execution is 
 	const result = await execution.execute({ source, cwd: process.cwd(), command: "sleep 2", timeoutMs: 2_000, signal: controller.signal });
 	assert.ok(Date.now() - startedAt < 500, "cancelled host command kept running");
 	assert.notEqual(result.exitCode, 0);
+});
+
+test("Host Execution Adapter creates safe parent directories for workspace writes", async () => {
+	const cwd = await mkdtemp(join(tmpdir(), "beemax-write-test-"));
+	try {
+		const tools = createExecutionTools(source, cwd, new LocalExecutionPort());
+		const write = tools.find((tool) => tool.name === "write");
+		await write.execute("nested-write", { path: "reports/launch/copy.md", content: "verified" });
+		assert.equal(await readFile(join(cwd, "reports/launch/copy.md"), "utf8"), "verified");
+	} finally {
+		await rm(cwd, { recursive: true, force: true });
+	}
 });
 
 test("Docker Execution Sandbox rejects writes before launch unless workspace access is read-write", async () => {

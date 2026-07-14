@@ -53,11 +53,18 @@ export function createSkillTools(agentDir: string, markReloadNeeded: () => void,
 			const selectedSkillNames = selection.candidates.filter((item) => item.kind === "skill").map((item) => item.name);
 			const selectedSkills = await runtime.admitDiscovered(selectedSkillNames);
 			const selectedToolNames = new Set(selection.candidates.filter((item) => item.kind !== "skill").map((item) => item.name));
-			const tools = eligibleTools.filter((tool) => selectedToolNames.has(tool.name)).sort((left, right) => selection.candidates.findIndex((item) => item.name === left.name) - selection.candidates.findIndex((item) => item.name === right.name));
-			const publicTools = tools.map(({ name, description }) => ({ name, description }));
-			return result("Capability discovery completed and matching capabilities were activated for this turn.", {
+			const matchedTools = eligibleTools.filter((tool) => selectedToolNames.has(tool.name)).sort((left, right) => selection.candidates.findIndex((item) => item.name === left.name) - selection.candidates.findIndex((item) => item.name === right.name));
+			const publicTools = matchedTools.map(({ name, description }) => ({ name, description }));
+			const publicSkills = selectedSkills.map(publicSkill);
+			const modelVisible = [
+				"Capability discovery results (use these exact names):",
+				...publicSkills.map((skill) => `- skill: ${skill.name} — ${skill.description}`),
+				...matchedTools.map((tool) => `- ${tool.kind === "mcp" ? "mcp" : "tool"}: ${tool.name} — ${tool.description}`),
+				...(publicSkills.length || publicTools.length ? ["Matching capabilities are activated for this turn."] : ["No active Skill, Tool, or MCP capability matched this query."]),
+			].join("\n");
+			return result(modelVisible, {
 				tools: publicTools,
-				skills: selectedSkills.map(publicSkill),
+				skills: publicSkills,
 				ranked: selection.candidates.map((item) => ({ ...item, reason: item.explanation.summary })),
 				candidates: matches(candidates.map((item) => ({ name: item.name, description: item.description, attempts: item.attempts.length }))),
 				activatedTools: selection.activatedTools,

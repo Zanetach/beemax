@@ -687,6 +687,30 @@ test("Agent runtime performs one content-free correction when a complex turn ski
 	runtime.dispose();
 });
 
+test("Agent runtime aborts repeated Task Plan rejection inside one live Pi turn and releases busy state", async () => {
+	const source = { platform: "cli", chatId: "rejected-planner", chatType: "dm", userId: "local" };
+	let listener;
+	let aborts = 0;
+	const agent = { state: { model: { id: "test" }, messages: [] } };
+	const runtime = new BeeMaxAgentRuntime({ planningPolicy: new AutonomousPlanningPolicy(), createAgent: async () => ({
+		agent,
+		getAllTools: () => [{ name: "task_plan_execute", beemaxPolicy: { sideEffect: "local" } }],
+		subscribe: (next) => { listener = next; return () => undefined; },
+		prompt: async () => {
+			for (let attempt = 1; attempt <= 2; attempt++) {
+				listener({ type: "tool_execution_start", toolCallId: `plan-${attempt}`, toolName: "task_plan_execute", args: {} });
+				listener({ type: "tool_execution_end", toolCallId: `plan-${attempt}`, toolName: "task_plan_execute", result: {}, isError: true });
+			}
+			agent.state.messages = [{ role: "assistant", content: [{ type: "text", text: "still trying" }], usage: { input: 1, output: 1 } }];
+		},
+		abort: async () => { aborts++; }, dispose: () => undefined,
+	}) });
+	await assert.rejects(runtime.run({ source, text: "Review frontend and backend independently, then combine and verify the results", timeoutMs: 1_000 }), /repeatedly failed required planning tool/i);
+	assert.equal(aborts, 1);
+	assert.equal(runtime.isBusy(), false);
+	runtime.dispose();
+});
+
 test("delegated execution cannot finish after spawn without waiting for its Sub-Agent result", async () => {
 	const source = { platform: "cli", chatId: "delegate", chatType: "dm", userId: "local" };
 	let listener;

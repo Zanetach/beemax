@@ -30,6 +30,18 @@ test("interaction runtime translates a turn into presenter-safe semantic events"
 	assert.equal((await interaction.snapshot(source)).phase, "completed");
 });
 
+test("interaction runtime settles a rejected Agent turn instead of remaining running", async () => {
+	const runtime = {
+		async run() { throw new Error("Task Plan quality rejected"); },
+		async cancel() { return false; },
+		async modelStatus() { return undefined; },
+		async usage() { return undefined; },
+	};
+	const interaction = new InteractionEventAdapter(runtime);
+	await assert.rejects(interaction.dispatch({ type: "message.send", source, text: "plan work", input: { timeoutMs: 1_000 } }), /Task Plan quality rejected/);
+	assert.equal((await interaction.snapshot(source)).phase, "failed");
+});
+
 test("interaction runtime bounds execution grants to one turn", async () => {
 	const lifecycle = [];
 	const approvalBroker = {

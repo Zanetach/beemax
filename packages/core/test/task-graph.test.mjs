@@ -573,7 +573,7 @@ test("orchestration enforces the active planning Sub-Agent and concurrency budge
 		return { output: task.title };
 	}, { maxConcurrent: 5, planningDecision: () => decision, verify: async () => ({ accepted: true }) })[0];
 	const task = (key) => ({ key, title: key, goal: `Complete ${key}`, acceptanceCriteria: `${key} is complete` });
-	await assert.rejects(() => tool.execute("over-budget", { title: "Too large", tasks: [task("one"), task("two"), task("three")] }), /Sub-Agent budget \(2\)/);
+	await assert.rejects(() => tool.execute("over-budget", { title: "Too large", tasks: [task("one"), task("two"), task("three")] }), /submitted 3 Tasks.*at most 2 total Sub-Agent Tasks/);
 	assert.equal(ledger.tasks.size, 0);
 	await tool.execute("admitted", { title: "Bounded", tasks: [task("one"), task("two")] });
 	assert.equal(peak, 1);

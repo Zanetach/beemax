@@ -70,6 +70,7 @@ test("Pi keeps Skill metadata out of the base prompt and hot-reloads the registr
 		const discover = session.agent.state.tools.find((tool) => tool.name === "capability_discover");
 		const result = await discover.execute("discover", { query: "evolved-test", topK: 3 });
 		assert.equal(result.details.skills[0].name, "evolved-test");
+		assert.match(result.content[0].text, /evolved-test/, "the model-visible Tool result must name matching capabilities");
 	} finally {
 		session.dispose();
 		rmSync(root, { recursive: true, force: true });

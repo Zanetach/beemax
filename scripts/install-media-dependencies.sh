@@ -3,6 +3,7 @@
 set -euo pipefail
 
 MEDIA_DEPS_ENABLED="${BEEMAX_INSTALL_MEDIA_DEPS:-1}"
+TESSERACT_BIN="${BEEMAX_TESSERACT:-tesseract}"
 
 case "${MEDIA_DEPS_ENABLED}" in
 	0|false|FALSE|no|NO|off|OFF)
@@ -11,8 +12,8 @@ case "${MEDIA_DEPS_ENABLED}" in
 		;;
 esac
 
-if command -v tesseract >/dev/null 2>&1; then
-	echo "BeeMax media dependency ready: $(tesseract --version 2>&1 | head -n 1)"
+if command -v "${TESSERACT_BIN}" >/dev/null 2>&1; then
+	echo "BeeMax media dependency ready: $("${TESSERACT_BIN}" --version 2>&1 | head -n 1)"
 	exit 0
 fi
 
@@ -84,9 +85,9 @@ case "$(detect_platform)" in
 		;;
 esac
 
-if ! command -v tesseract >/dev/null 2>&1; then
+if ! command -v "${TESSERACT_BIN}" >/dev/null 2>&1; then
 	echo "BeeMax installed the OCR packages, but tesseract is not available on PATH." >&2
 	exit 1
 fi
 
-echo "BeeMax media dependency installed: $(tesseract --version 2>&1 | head -n 1)"
+echo "BeeMax media dependency installed: $("${TESSERACT_BIN}" --version 2>&1 | head -n 1)"

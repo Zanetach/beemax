@@ -291,9 +291,10 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 			let consumedTokens = 0;
 			const maxToolCalls = minimumLimit(executionEnvelope.budget?.maxToolCalls, planning?.budget.maxToolCalls ?? undefined);
 			const maxTokens = minimumLimit(executionEnvelope.budget?.maxTokens, planning?.budget.maxTokens ?? undefined);
-			let budgetExceeded: string | undefined;
+			let turnAbortReason: string | undefined;
 			const requiredToolsUsed: string[] = [];
 			const requiredToolCalls = new Map<string, { name: string; args?: unknown }>();
+			const requiredToolFailures = new Map<string, number>();
 			let delegatedTaskId: string | undefined;
 			let discoveredCapabilities = false;
 			let singleFailedReadTool: string | undefined;
@@ -313,8 +314,8 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 					const expected = planning?.requiredTools[requiredToolsUsed.length];
 					if (event.toolName === expected) requiredToolCalls.set(event.toolCallId, { name: event.toolName, args: event.args });
 					toolCalls++;
-					if (maxToolCalls !== undefined && toolCalls > maxToolCalls && !budgetExceeded) {
-						budgetExceeded = `Agent tool-call budget exceeded (${maxToolCalls})`;
+					if (maxToolCalls !== undefined && toolCalls > maxToolCalls && !turnAbortReason) {
+						turnAbortReason = `Agent tool-call budget exceeded (${maxToolCalls})`;
 						void session.piSession.abort();
 					}
 				} else if (event.type === "tool_execution_end") {
@@ -333,6 +334,15 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 					}
 					const pending = requiredToolCalls.get(event.toolCallId);
 					requiredToolCalls.delete(event.toolCallId);
+					if (pending && event.isError) {
+						const failures = (requiredToolFailures.get(pending.name) ?? 0) + 1;
+						requiredToolFailures.set(pending.name, failures);
+						const maximumFailures = 1 + (planning?.budget.maxCorrectiveAttempts ?? 0);
+						if (failures >= maximumFailures && !turnAbortReason) {
+							turnAbortReason = `Agent repeatedly failed required planning tool ${pending.name} (${failures}/${maximumFailures})`;
+							void session.piSession.abort();
+						}
+					}
 					if (pending && pending.name === event.toolName && !event.isError) {
 						const completed = completedPlanningTool(event.toolName, event.result, pending.args, delegatedTaskId);
 						if (completed.accepted) {
@@ -354,8 +364,8 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 					const usage = event.message.usage;
 					this.recordTrace({ type: "model.turn_settled", executionEnvelope, at: Date.now(), inputTokens: usage.input, outputTokens: usage.output, cacheReadTokens: usage.cacheRead, cacheWriteTokens: usage.cacheWrite, costUsd: usage.cost?.total ?? 0 });
 					consumedTokens += usage.input + usage.output + usage.cacheRead + usage.cacheWrite;
-					if (maxTokens !== undefined && consumedTokens > maxTokens && !budgetExceeded) {
-						budgetExceeded = `Agent token budget exceeded (${maxTokens})`;
+					if (maxTokens !== undefined && consumedTokens > maxTokens && !turnAbortReason) {
+						turnAbortReason = `Agent token budget exceeded (${maxTokens})`;
 						void session.piSession.abort();
 					}
 				} else if (event.type === "message_update" && event.assistantMessageEvent.type === "text_delta" && event.assistantMessageEvent.delta.length > 0) observableProgress = true;
@@ -384,17 +394,17 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 					source: input.mode === "automation" ? "extension" : undefined,
 					images: promptImages,
 				});
-				if (singleFailedReadTool && !discoveredCapabilities && !budgetExceeded) {
+				if (singleFailedReadTool && !discoveredCapabilities && !turnAbortReason) {
 					const failedTool = singleFailedReadTool; singleFailedReadTool = undefined;
 					await session.piSession.prompt(`[BeeMax capability reroute: ${failedTool} failed and no later Tool succeeded. Use capability_discover now to find an already available alternative, then continue the original request. Do not retry the same external mutation; reconcile any uncertain side effect before another write.]`, { expandPromptTemplates: false });
 				}
-				if (discoveredCapabilities && !budgetExceeded) {
+				if (discoveredCapabilities && !turnAbortReason) {
 					discoveredCapabilities = false;
 					await session.piSession.prompt("[BeeMax capability continuation: matching Tools or Skills are now active. Continue the original request using them. Do not repeat capability discovery.]", { expandPromptTemplates: false });
 				}
 				const missingTools = planning?.requiredTools.slice(requiredToolsUsed.length) ?? [];
 				let planningCorrected = false;
-				if (missingTools.length && !budgetExceeded) {
+				if (missingTools.length && !turnAbortReason) {
 					planningCorrected = true;
 					await session.piSession.prompt(`[BeeMax planning correction: complete these tools in order now using the active execution budget: ${missingTools.join(" -> ")}. Do not answer directly.]`, { expandPromptTemplates: false });
 					const stillMissing = planning?.requiredTools.slice(requiredToolsUsed.length) ?? [];
@@ -403,8 +413,11 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 						throw new AgentRunError(`Agent did not complete required planning tools: ${stillMissing.join(" -> ")}`, false, undefined);
 					}
 				}
+				if (turnAbortReason) {
+					if (planning) await onEvent?.({ type: "planning_outcome", mode: planning.mode, compliant: false, corrected: planningCorrected });
+					throw new AgentRunError(turnAbortReason, false, undefined);
+				}
 				if (planning) await onEvent?.({ type: "planning_outcome", mode: planning.mode, compliant: true, corrected: planningCorrected });
-				if (budgetExceeded) throw new AgentRunError(budgetExceeded, false, undefined);
 				let failure = lastAssistantFailure(session.piSession.agent);
 				if (failure && promptImages?.length && input.images?.length && !observableProgress && !input.signal?.aborted) {
 					try {
@@ -475,11 +488,11 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 							await session.piSession.prompt(`[BeeMax Verification correction: the Candidate Outcome did not satisfy the durable Objective. Feedback: ${feedback}. Correct the result within the existing Objective and Task Run. Do not repeat committed Effects; reconcile unknown Effects before any mutation.]`, { expandPromptTemplates: false });
 							const correctionFailure = lastAssistantFailure(session.piSession.agent);
 							if (correctionFailure) throw correctionFailure;
-							if (budgetExceeded) throw new AgentRunError(budgetExceeded, false, undefined);
+							if (turnAbortReason) throw new AgentRunError(turnAbortReason, false, undefined);
 							correctionInFlight = false;
 							candidate = lastAssistantText(session.piSession.agent) || "(no response)";
 						} catch (error) {
-							if (correctionInFlight || input.signal?.aborted || budgetExceeded) throw error;
+							if (correctionInFlight || input.signal?.aborted || turnAbortReason) throw error;
 							this.recordTrace({ type: "verification.settled", executionEnvelope, at: Date.now(), status: "unavailable" });
 							this.taskLedger?.transition(objective.id, { status: "running", error: redactCredentialMaterial(errorMessage(error)).slice(0, 5_000), candidateResult: candidate.slice(0, 50_000), verificationStatus: "unavailable", correctiveAttempts });
 							break;

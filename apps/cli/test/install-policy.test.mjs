@@ -24,7 +24,8 @@ test("source installer keeps native dependency scripts and pins CLI commands to 
 test("media dependency installer auto-installs Tesseract on Ubuntu and macOS", async () => {
 	const installer = await readFile("scripts/install-media-dependencies.sh", "utf8");
 	assert.match(installer, /BEEMAX_INSTALL_MEDIA_DEPS/);
-	assert.match(installer, /command -v.*tesseract/);
+	assert.match(installer, /BEEMAX_TESSERACT:-tesseract/);
+	assert.match(installer, /command -v "\$\{TESSERACT_BIN\}"/);
 	assert.match(installer, /tesseract-ocr/);
 	assert.match(installer, /tesseract-ocr-eng/);
 	assert.match(installer, /tesseract-ocr-chi-sim/);
@@ -56,6 +57,7 @@ fi
 				BEEMAX_APT_GET: aptGet,
 				BEEMAX_INSTALL_EUID: "0",
 				BEEMAX_INSTALL_OS: "ubuntu",
+				BEEMAX_TESSERACT: tesseract,
 				BEEMAX_TEST_TESSERACT: tesseract,
 				BEEMAX_TEST_CALLS: calls,
 				PATH: `${fixture}:${process.env.PATH}`,

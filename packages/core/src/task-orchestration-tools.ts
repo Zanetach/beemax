@@ -47,7 +47,7 @@ export function createTaskOrchestrationTools(
 			if (signal?.aborted) throw signal.reason ?? new Error("Task Plan start cancelled");
 			const planning = options.planningDecision?.();
 			if (planning && planning.mode !== "dag") throw new Error(`Task Plan execution is not admitted for ${planning.mode} mode`);
-			if (planning && params.tasks.length > planning.budget.maxSubagents) throw new Error(`Task Plan exceeds Sub-Agent budget (${planning.budget.maxSubagents})`);
+			if (planning && params.tasks.length > planning.budget.maxSubagents) throw new Error(`Task Plan submitted ${params.tasks.length} Tasks but this turn allows at most ${planning.budget.maxSubagents} total Sub-Agent Tasks. Reduce or combine Tasks, or execute the remaining work directly.`);
 			const admittedConcurrency = planning ? Math.min(maxConcurrent, planning.suggestedConcurrency) : maxConcurrent;
 			const admittedCorrections = planning ? Math.min(maxCorrectiveAttempts, planning.budget.maxCorrectiveAttempts) : maxCorrectiveAttempts;
 			const quality = assessTaskPlanQuality(params.tasks);
