@@ -25,7 +25,7 @@
 | 2026-07-14 | 第七实施切片：旧 Memory/Automation 显式 Channel Instance 归属迁移 | 多实例启用前消除旧路由歧义，提供事务、备份、审计与安全回滚 | Codex | build、typecheck、750 项全量测试及架构/迁移/性能/Memory 门禁通过；双轴审查问题已修复 | v1.7-draft |
 | 2026-07-14 | 第八实施切片：旧群聊 Session Ownership Migration | 以管理员显式选择替代 Actor transcript 猜测，提供非破坏保留、Catalog 收敛与安全回滚 | Codex | build、typecheck、762 项全量测试及架构/迁移/性能/Memory 门禁通过；双轴复审均 clean，崩溃恢复、路径越界、header、文件身份、短写及 no-clobber 恢复问题已关闭 | v1.8-draft |
 | 2026-07-14 | 第九实施切片：安全验收发布门禁 | 将群聊 Private Memory、跨 Profile Memory 与重复 Effect 三项安全阻塞收敛为独立可执行证据 | Codex | `eval:security` 3/3、765 项全量测试及 P10 acceptance 通过；双轴复审均 clean | v1.9-draft |
-| 2026-07-14 | 第十实施切片：Ubuntu 资源高水位门禁 | 为首期 Ubuntu x64 小型规格建立 RSS、队列、并发、DB 与 systemd 的统一可执行合同 | Codex | Ubuntu 24.04 x64 门禁通过（峰值 RSS 436.2 MiB、队列/并发/DB/systemd 合同通过）；765 项全量测试与完整发布门禁通过，双轴复审待执行 | v1.10-draft |
+| 2026-07-14 | 第十实施切片：Ubuntu 资源高水位门禁 | 为首期 Ubuntu x64 小型规格建立 RSS、队列、并发、DB 与 systemd 的统一可执行合同 | Codex | Ubuntu 24.04 x64 门禁通过（峰值 RSS 436.8 MiB、队列/并发/DB/systemd 合同通过）；767 项全量测试与完整发布门禁通过，Spec 复审 clean、Standards 无硬违规 | v1.10-draft |
 
 ---
 
