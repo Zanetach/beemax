@@ -6,7 +6,7 @@
 
 两者的共同原则是：**对话正文、工具生命周期、推理可见性、持久化记录是不同层**。用户应获得干净的最终回复和可理解的执行状态；富客户端通过带类型的事件渲染工具卡片/进度，不能把调试文本或模型推理混进 assistant 正文。推理强度、推理是否展示、推理是否因协议需要保存，也应是三个独立开关。
 
-BeeMax 已具备“单张飞书卡片流式更新、工具时间线、最终 footer”的基础；最需要调整的是把原始 `thinking_delta` 从默认可见卡片内容中移走，改成默认隐藏的运行态，并引入统一的 `RunEvent` / `RunRecord`，使飞书、CLI、以后 Web UI 都渲染同一份结构化事件。
+BeeMax 已把通用 Interaction 事件与平台呈现分离：Gateway 只通过 `InteractionPresenter` 驱动呈现，飞书 Adapter 独立拥有单卡流式更新、工具时间线和最终 footer，纯文本渠道使用通用降级 Presenter。原始 `thinking_delta` 默认不展示，只有受信任诊断配置显式选择 `raw` 时才进入飞书时间线；后续仍可继续深化统一的持久化 `RunRecord`。
 
 ## 已核实：OpenClaw
 
@@ -47,11 +47,11 @@ BeeMax 已具备“单张飞书卡片流式更新、工具时间线、最终 foo
 
 | 项目 | 当前行为 | 结论 |
 | --- | --- | --- |
-| 会话路由 | `SessionSource` 按 platform/chat/thread/稳定用户身份形成 session key。 | 路由粒度足够，继续保留。[session-router.ts](/Users/zane/Documents/Github/BeeMax-Agent/packages/gateway/src/core/session-router.ts:1) |
-| 流式交付 | Dispatcher 将事件汇入 `CardSession`，以单张飞书 Card 首发后更新；FlushController 限流。 | 与两者的“结构化事件→富 UI”方向一致。[dispatcher.ts](/Users/zane/Documents/Github/BeeMax-Agent/packages/gateway/src/core/dispatcher.ts:78) |
-| 工具进度 | `tool_execution_start/end` 形成 tool timeline；结果摘要截断为 200 字。 | 可继续作为默认可见进度，但需要脱敏参数/输出策略。[dispatcher.ts](/Users/zane/Documents/Github/BeeMax-Agent/packages/gateway/src/core/dispatcher.ts:154) |
-| reasoning | `thinking_delta` 被累积、写进 timeline，并在默认折叠的“思考与工具”面板渲染（最多 1200 字）。 | 即使折叠，它仍是默认发送给飞书用户的原始模型推理；这与两者默认隐藏 reasoning 的策略不一致。[session.ts](/Users/zane/Documents/Github/BeeMax-Agent/packages/gateway/src/card/session.ts:51) [render.ts](/Users/zane/Documents/Github/BeeMax-Agent/packages/gateway/src/card/render.ts:97) |
-| 最终格式 | 主 Markdown + 可折叠时间线 + duration/model/token/context footer。 | 最终正文干净、footer 可选的方向正确；应把“思考”与工具进度拆开。[render.ts](/Users/zane/Documents/Github/BeeMax-Agent/packages/gateway/src/card/render.ts:30) |
+| 会话路由 | Core 以可信 Profile、Channel Instance、Conversation 和 Thread 构造 session key；群聊共享 Conversation 与 Actor 权限保持分离。 | 路由语义由通用 Runtime 持有，不属于任何平台 Adapter。[session-coordinator.ts](/Users/zane/Documents/Github/BeeMax-Agent/packages/core/src/session-coordinator.ts:8) [agent-scope.ts](/Users/zane/Documents/Github/BeeMax-Agent/packages/core/src/agent-scope.ts:18) |
+| 流式交付 | Dispatcher 只调用 `InteractionPresenter`；飞书 Adapter 的 Presenter 独立管理 `CardSession`、单卡更新和 FlushController，其他渠道可使用纯文本降级。 | 与两者的“结构化事件→平台能力呈现”方向一致，Gateway 不拥有飞书卡片实现。[dispatcher.ts](/Users/zane/Documents/Github/BeeMax-Agent/packages/gateway/src/core/dispatcher.ts:210) [presenter.ts](/Users/zane/Documents/Github/BeeMax-Agent/packages/channel-feishu/src/presentation/presenter.ts:18) |
+| 工具进度 | 通用 Interaction 事件跨 Presenter seam 传递；飞书 `CardSession` 将 `tool.updated` 聚合为有界工具状态和 timeline。 | 平台细节保持在 Adapter 内，工具状态不会混入最终 answer。[session.ts](/Users/zane/Documents/Github/BeeMax-Agent/packages/channel-feishu/src/presentation/session.ts:52) |
+| reasoning | `thinking.delta` 可保留为运行事件，但 Feishu renderer 默认过滤 reasoning；只有受信任诊断 Profile 显式选择 `reasoningDisplay: raw` 时展示，且单项最多 1200 字。 | 已与 OpenClaw、Hermes 的默认隐藏策略一致。[render.ts](/Users/zane/Documents/Github/BeeMax-Agent/packages/channel-feishu/src/presentation/render.ts:25) |
+| 最终格式 | 飞书 Adapter 渲染主 Markdown、默认不含 raw reasoning 的执行时间线和可选 footer；无富呈现能力时 Gateway 发送最终纯文本。 | 最终正文与执行状态分层，平台能力不足时仍有确定降级路径。[render.ts](/Users/zane/Documents/Github/BeeMax-Agent/packages/channel-feishu/src/presentation/render.ts:29) [text-presentation.ts](/Users/zane/Documents/Github/BeeMax-Agent/packages/gateway/src/core/text-presentation.ts:11) |
 
 ## 对 BeeMax 的建议（设计推断）
 

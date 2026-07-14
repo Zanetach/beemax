@@ -1,5 +1,7 @@
 # Feishu Codex-Style Interaction Design
 
+> Historical implementation spec. Its interaction behavior remains relevant, but module ownership was superseded by the Channel Runtime split: `Dispatcher` now drives the platform-neutral `InteractionPresenter`, while Feishu owns `CardSession`, `FlushController`, buffering, and rendering under `packages/channel-feishu/src/presentation/`.
+
 ## Goal
 
 Make one continuously updated Feishu card feel like Codex: acknowledge immediately, show concise truthful progress during work, stream readable answer chunks, and finish with a clean final answer.
@@ -25,4 +27,3 @@ Make one continuously updated Feishu card feel like Codex: acknowledge immediate
 3. Tiny answer deltas become visible within 300 ms without exceeding four patches per second.
 4. Terminal events immediately include all buffered answer text.
 5. Existing Gateway and card tests remain green.
-
