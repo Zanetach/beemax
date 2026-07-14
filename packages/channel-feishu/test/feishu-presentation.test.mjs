@@ -34,3 +34,19 @@ test("Feishu Adapter owns rich Turn presentation and exposes only the Channel Ru
 	assert.match(JSON.stringify(cards.at(-1)), /真实答案/);
 	assert.deepEqual(bindings.at(-1), { messageId: "card-1", pendingApprovalId: undefined });
 });
+
+test("Feishu work progress degrades to mandatory text delivery when CardKit is unavailable", async () => {
+	const texts = [];
+	const adapter = new FeishuAdapter({
+		appId: "app", appSecret: "secret", domain: "feishu", connectionMode: "websocket",
+		requireMention: true, allowedUsers: ["user"], allowedChats: [], allowAllUsers: false,
+	});
+	adapter.sendCard = async () => ({ success: false, error: "CardKit unavailable" });
+	adapter.send = async (_chatId, text) => { texts.push(text); return { success: true, messageId: "fallback" }; };
+	await adapter.presentation.presentWorkProgress({
+		target: { platform: "feishu", chatId: "chat", chatType: "dm" },
+		event: { workId: "plan", title: "季度复盘", state: "running", completed: 1, total: 3, failed: 0, cancelled: 0 },
+		idempotencyKey: "progress:plan",
+	});
+	assert.deepEqual(texts, ["季度复盘 · 1/3"]);
+});

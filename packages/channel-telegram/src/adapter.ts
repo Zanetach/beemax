@@ -48,6 +48,7 @@ interface TelegramUpdate { update_id: number; message?: TelegramMessage; edited_
 /** Telegram Bot API Adapter using bounded long polling and no channel-specific Agent runtime. */
 export class TelegramAdapter implements PlatformAdapter {
 	readonly name = "telegram" as const;
+	readonly capabilities = { mediaDelivery: "files", messageEditing: true, interactiveActions: false, richPresentation: false } as const;
 	private readonly settings: Required<Pick<TelegramSettings, "pollingTimeoutSeconds" | "retryBaseDelayMs" | "apiBaseUrl" | "mediaMaxBytes">> & TelegramSettings;
 	private readonly fetchImpl: typeof globalThis.fetch;
 	private handler?: MessageHandler;

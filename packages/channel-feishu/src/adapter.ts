@@ -73,6 +73,7 @@ interface PendingInboundBatch {
 
 export class FeishuAdapter implements PlatformAdapter {
 	readonly name = "feishu" as const;
+	readonly capabilities = { mediaDelivery: "files", messageEditing: true, interactiveActions: true, richPresentation: true } as const;
 	readonly presentation: InteractionPresenter;
 	private connected = false;
 	private client!: Client;
@@ -863,14 +864,12 @@ export class FeishuAdapter implements PlatformAdapter {
 
 	// --- outbound --------------------------------------------------------
 
-	async send(chatId: string, content: string, opts?: { asCard?: boolean; idempotencyKey?: string }): Promise<SendResult> {
+	async send(chatId: string, content: string, opts?: { idempotencyKey?: string }): Promise<SendResult> {
 		const chunks = chunkText(content, MAX_TEXT_LENGTH);
 		let lastId: string | undefined;
 		for (const [index, chunk] of chunks.entries()) {
 			const uuid = opts?.idempotencyKey ? deterministicUuid(`${opts.idempotencyKey}:${index}`) : randomUUID();
-			const payload = opts?.asCard
-				? buildCardPayload(chunk)
-				: { msg_type: "text", content: JSON.stringify({ text: chunk }) };
+			const payload = { msg_type: "text", content: JSON.stringify({ text: chunk }) };
 			try {
 				const res = await this.retryRequest(() => this.client.im.v1.message.create({
 					params: { receive_id_type: "chat_id" },
@@ -1113,13 +1112,6 @@ export function parseFeishuCardActionEvent(data: RawCardActionEvent): PlatformCa
 }
 
 // --- payload builders ----------------------------------------------------
-
-function buildCardPayload(text: string): { msg_type: "interactive"; content: string } {
-	return {
-		msg_type: "interactive",
-		content: JSON.stringify(buildCardContent(text)),
-	};
-}
 
 function buildCardContent(text: string): {
 	config: { wide_screen_mode: boolean; update_multi: boolean };

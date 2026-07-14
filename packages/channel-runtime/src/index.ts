@@ -4,6 +4,7 @@ export { GroupActivationController, decideGroupActivation, decideGroupAdmission 
 export type { GroupActivationControllerInput, GroupActivationControllerOptions, GroupActivationDecision, GroupActivationInput, GroupActivationMode, GroupActivationSignal, GroupAdmissionDecision, GroupAdmissionInput, GroupAdmissionPolicy } from "./group-admission.ts";
 export { GroupResponseGovernor } from "./group-response-governor.ts";
 export type { GroupQuietHours, GroupResponseGovernorOptions, GroupResponseGovernorSnapshot, GroupResponseReservation } from "./group-response-governor.ts";
-export type { CardActionHandler, InboundMessage, InboundObservation, MessageHandler, MessageType, ObservationHandler, PlatformAdapter, PlatformCardAction, PlatformName, SendOptions, SendResult, SessionSource } from "./types.ts";
+export type { CardActionHandler, InboundMessage, InboundObservation, MessageHandler, MessageType, ObservationHandler, PlatformAdapter, PlatformCapabilities, PlatformCardAction, PlatformName, SendOptions, SendResult, SessionSource } from "./types.ts";
 export type { PairingApproval, PairingAuthority, PairingRequest, PairingRequestResult } from "./pairing.ts";
+export { formatApprovalRequest, formatWorkProgress } from "./presentation.ts";
 export type { InteractionPresentationOpen, InteractionPresentationPreferences, InteractionPresenter, TurnPresentation, WorkProgressPresentation } from "./presentation.ts";

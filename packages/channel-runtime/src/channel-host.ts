@@ -69,11 +69,26 @@ export class AdapterRegistry {
 		if (!adapter || typeof adapter.name !== "string" || !adapter.name.trim()) {
 			throw new Error(`Channel adapter ${instance.adapter} returned an invalid platform adapter`);
 		}
+		assertDeclaredCapabilities(instance.adapter, adapter);
 		return adapter;
 	}
 
 	has(id: string): boolean { return this.registrations.has(id); }
 	ids(): string[] { return [...this.registrations.keys()].sort(); }
+}
+
+function assertDeclaredCapabilities(adapterId: string, adapter: PlatformAdapter): void {
+	const capabilities = adapter.capabilities;
+	if (!capabilities || !["none", "images", "files"].includes(capabilities.mediaDelivery)
+		|| typeof capabilities.messageEditing !== "boolean"
+		|| typeof capabilities.interactiveActions !== "boolean"
+		|| typeof capabilities.richPresentation !== "boolean") {
+		throw new Error(`Channel adapter ${adapterId} returned an invalid capability declaration`);
+	}
+	if (capabilities.richPresentation !== Boolean(adapter.presentation)) throw new Error(`Channel adapter ${adapterId} rich presentation capability does not match its presenter`);
+	if (capabilities.interactiveActions !== Boolean(adapter.onCardAction)) throw new Error(`Channel adapter ${adapterId} interactive action capability does not match its handler`);
+	if (capabilities.mediaDelivery === "files" && !adapter.sendMedia) throw new Error(`Channel adapter ${adapterId} declares file delivery without a media sender`);
+	if (capabilities.mediaDelivery === "images" && !adapter.sendImage) throw new Error(`Channel adapter ${adapterId} declares image delivery without an image sender`);
 }
 
 /**

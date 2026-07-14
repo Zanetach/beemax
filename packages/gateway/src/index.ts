@@ -15,6 +15,7 @@ export { prepareAgentMediaInput, type AgentMediaInput } from "./core/media-input
 export { PairingStore, type PairingAuthority, type PairingApproval, type PairingRequest, type PairingRequestResult } from "./security/pairing.ts";
 export type {
 	PlatformAdapter,
+	PlatformCapabilities,
 	PlatformName,
 	SessionSource,
 	InboundMessage,

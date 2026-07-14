@@ -5,6 +5,7 @@ import { AdapterRegistry, ChannelHost } from "../dist/index.js";
 function adapter(name, events, connect = async () => true) {
 	return {
 		name,
+		capabilities: { mediaDelivery: "none", messageEditing: true, interactiveActions: false, richPresentation: false },
 		isConnected: false,
 		async connect() {
 			events.push(`${name}:connect`);

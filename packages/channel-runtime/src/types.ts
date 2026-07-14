@@ -70,10 +70,19 @@ export interface PlatformCardAction {
 
 export type CardActionHandler = (action: PlatformCardAction) => void | Promise<void>;
 
+export interface PlatformCapabilities {
+	mediaDelivery: "none" | "images" | "files";
+	messageEditing: boolean;
+	interactiveActions: boolean;
+	richPresentation: boolean;
+}
+
 /** What a platform adapter must implement. */
 export interface PlatformAdapter {
 	readonly name: PlatformName;
 	readonly isConnected: boolean;
+	/** Explicit capability declaration; production callers never infer provider features from method names. */
+	readonly capabilities: PlatformCapabilities;
 	/** Optional rich presentation owned by this Adapter. Gateway provides text fallback when absent. */
 	readonly presentation?: InteractionPresenter;
 
@@ -104,12 +113,6 @@ export interface PlatformAdapter {
 	/** Edit a previously sent message (for streaming updates). */
 	editMessage(chatId: string, messageId: string, content: string): Promise<SendResult>;
 
-	/** Send an interactive card when the platform supports native cards. */
-	sendCard?(chatId: string, card: Record<string, unknown>, replyTo?: string, replyInThread?: boolean, idempotencyKey?: string): Promise<SendResult>;
-
-	/** Update a previously-sent interactive card in place (streaming). */
-	updateCard?(messageId: string, card: Record<string, unknown>): Promise<SendResult>;
-
 	/** Send a "typing" / working indicator for the triggering message. */
 	sendTyping(chatId: string, messageId?: string): Promise<void>;
 
@@ -123,6 +126,4 @@ export type ObservationHandler = (observation: InboundObservation) => void | Pro
 export interface SendOptions {
 	replyTo?: string;
 	idempotencyKey?: string;
-	/** If true, attempt to send as an interactive card (platform-specific). */
-	asCard?: boolean;
 }

@@ -6,6 +6,7 @@ import type {
 	TurnPresentation,
 	WorkProgressPresentation,
 } from "@beemax/channel-runtime";
+import { formatApprovalRequest, formatWorkProgress } from "@beemax/channel-runtime";
 
 /** Universal presentation fallback for channels that only implement text delivery. */
 export class TextInteractionPresenter implements InteractionPresenter {
@@ -20,7 +21,7 @@ export class TextInteractionPresenter implements InteractionPresenter {
 	async presentWorkProgress({ target, event, idempotencyKey }: WorkProgressPresentation): Promise<void> {
 		const result = await this.platform.send(
 			target.chatId,
-			`${event.title} · ${event.completed}/${event.total}${event.failed ? ` · 失败 ${event.failed}` : ""}${event.cancelled ? ` · 取消 ${event.cancelled}` : ""}`,
+			formatWorkProgress(event),
 			{ idempotencyKey },
 		);
 		if (!result.success) throw new Error(result.error ?? `Failed to present Task Plan ${event.workId}`);
@@ -44,9 +45,7 @@ class TextTurnPresentation implements TurnPresentation {
 
 	async onEvent(event: InteractionEvent): Promise<void> {
 		if (event.type !== "approval.requested") return;
-		const message = event.details
-			? `等待审批：${event.toolName}\n目标：${event.details.target}\n风险：${event.details.risk} · ${event.details.impact}\n可逆性：${event.details.reversibility}\n回复 1（一次）/ 2（本会话）/ 3（拒绝），或 /stop 取消。`
-			: `等待审批：${event.toolName}\n回复 1（一次）/ 2（本会话）/ 3（拒绝），或 /stop 取消。`;
+		const message = formatApprovalRequest(event);
 		const result = await this.platform.send(event.scope.chatId, message, { idempotencyKey: `approval:${event.turnId}` });
 		if (!result.success) throw new Error(result.error ?? `Failed to present approval for ${event.toolName}`);
 	}

@@ -1,5 +1,5 @@
 import { AdaptiveTextBuffer, TurnStatusPulse, type InteractionEvent } from "@beemax/core";
-import type { InteractionPresentationOpen, InteractionPresenter, SendOptions, SendResult, TurnPresentation, WorkProgressPresentation } from "@beemax/channel-runtime";
+import { formatApprovalRequest, formatWorkProgress, type InteractionPresentationOpen, type InteractionPresenter, type SendOptions, type SendResult, type TurnPresentation, type WorkProgressPresentation } from "@beemax/channel-runtime";
 import { FlushController } from "./flush.ts";
 import { renderCard, type CardRenderOptions } from "./render.ts";
 import { CardSession } from "./session.ts";
@@ -23,8 +23,14 @@ export class FeishuInteractionPresenter implements InteractionPresenter {
 			id: `work:${event.workId}`, label: "异步任务计划", status: event.state === "failed" ? "error" : event.state,
 			message: `${event.title} · ${event.completed}/${event.total}${event.failed ? ` · 失败 ${event.failed}` : ""}${event.cancelled ? ` · 取消 ${event.cancelled}` : ""}`,
 		});
-		const result = await this.transport.sendCard(target.chatId, renderCard(card), undefined, Boolean(target.threadId), idempotencyKey);
-		if (!result.success) throw new Error(result.error ?? `Failed to present Task Plan ${event.workId}`);
+		try {
+			const result = await this.transport.sendCard(target.chatId, renderCard(card), undefined, Boolean(target.threadId), idempotencyKey);
+			if (result.success) return;
+		} catch (error) {
+			console.warn(`[beemax] Feishu work progress card failed: ${safeError(error)}`);
+		}
+		const fallback = await this.transport.send(target.chatId, formatWorkProgress(event), { idempotencyKey });
+		if (!fallback.success) throw new Error(fallback.error ?? `Failed to present Task Plan ${event.workId}`);
 	}
 }
 
@@ -92,7 +98,7 @@ class FeishuTurnPresentation implements TurnPresentation {
 				await this.stopPulse(); await this.answerBuffer.flush(); this.card.apply("message.completed", { answer: this.card.answerText || event.result.answer, model: event.result.model, duration: event.result.durationMs / 1000, tokens: event.result.usage });
 				await this.flush.schedule(() => this.renderUpdate(), true); break;
 			case "approval.requested": {
-				const message = approvalMessage(event);
+				const message = formatApprovalRequest(event);
 				this.card.apply("approval.updated", { id: `approval:${event.turnId}`, status: "pending", message });
 				await this.flush.schedule(() => this.renderUpdate(), false, true);
 				break;
@@ -162,12 +168,6 @@ class FeishuTurnPresentation implements TurnPresentation {
 	private ioTimeout(): number { return this.input.preferences?.ioTimeoutMs ?? 2_000; }
 	private async stopPulse(): Promise<void> { await this.statusPulse.stop().catch((error) => console.error(`[beemax] Feishu status presenter failed: ${safeError(error)}`)); }
 	private async sendFallback(text: string): Promise<void> { const result = await this.transport.send(this.input.source.chatId, text); if (!result.success) throw new Error(result.error ?? "Feishu text fallback failed"); }
-}
-
-function approvalMessage(event: Extract<InteractionEvent, { type: "approval.requested" }>): string {
-	return event.details
-		? `等待审批：${event.toolName}\n目标：${event.details.target}\n风险：${event.details.risk} · ${event.details.impact}\n可逆性：${event.details.reversibility}\n回复 1（一次）/ 2（本会话）/ 3（拒绝），或 /stop 取消。`
-		: `等待审批：${event.toolName}\n回复 1（一次）/ 2（本会话）/ 3（拒绝），或 /stop 取消。`;
 }
 
 async function settleWithin<T>(operation: Promise<T>, timeoutMs: number): Promise<T | undefined> {

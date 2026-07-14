@@ -12,6 +12,7 @@ test("Channel Runtime builds independently of Gateway and messaging platform SDK
 	assert.equal(runtime.dependencies?.["@larksuiteoapi/node-sdk"], undefined);
 	const sources = await sourceText(join(root, "packages/channel-runtime/src"));
 	assert.doesNotMatch(sources, /@beemax\/(?:gateway|channel-feishu|channel-telegram)|@larksuiteoapi\/node-sdk/u);
+	assert.doesNotMatch(sources, /\b(?:sendCard|updateCard|asCard)\b/u);
 });
 
 test("Interaction Gateway does not publish or depend on messaging platform implementations", async () => {
