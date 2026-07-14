@@ -26,13 +26,13 @@
 | 2026-07-14 | 第八实施切片：旧群聊 Session Ownership Migration | 以管理员显式选择替代 Actor transcript 猜测，提供非破坏保留、Catalog 收敛与安全回滚 | Codex | build、typecheck、762 项全量测试及架构/迁移/性能/Memory 门禁通过；双轴复审均 clean，崩溃恢复、路径越界、header、文件身份、短写及 no-clobber 恢复问题已关闭 | v1.8-draft |
 | 2026-07-14 | 第九实施切片：安全验收发布门禁 | 将群聊 Private Memory、跨 Profile Memory 与重复 Effect 三项安全阻塞收敛为独立可执行证据 | Codex | `eval:security` 3/3、765 项全量测试及 P10 acceptance 通过；双轴复审均 clean | v1.9-draft |
 | 2026-07-14 | 第十实施切片：Ubuntu 资源高水位门禁 | 为首期 Ubuntu x64 小型规格建立 RSS、队列、并发、DB 与 systemd 的统一可执行合同 | Codex | Ubuntu 24.04 x64 门禁通过（峰值 RSS 436.8 MiB、队列/并发/DB/systemd 合同通过）；767 项全量测试与完整发布门禁通过，Spec 复审 clean、Standards 无硬违规 | v1.10-draft |
-| 2026-07-14 | 第十一实施切片：Docker Execution Sandbox | 明确 Host Execution 不是 Sandbox，并为内置命令/文件 Capability 建立真实容器隔离与取消清理证据 | Codex | Docker Desktop 行为门禁通过但仅为开发证据；Ubuntu CI/tag artifact、全量门禁与双轴复审待执行 | v1.11-draft |
+| 2026-07-14 | 第十一实施切片：Docker Execution Sandbox | 明确 Host Execution 不是 Sandbox，并为内置命令/文件 Capability 建立真实容器隔离与取消清理证据 | Codex | build、typecheck、773 项全量测试、发布评估与真实 Docker 开发门禁通过；双轴复审 clean。Ubuntu 24.04 x64 正式 artifact 由 CI/tag 生成，本机证据不冒充正式证据 | v1.11-draft |
 
 ---
 
 ## 当前实施状态（2026-07-14）
 
-当前已完成第一至第十实施切片，正在实施第十一切片：
+当前已完成第一至第十一实施切片的代码、文档与本地发布门禁；第十一切片的 Ubuntu 24.04 x64 正式证据由已配置的 CI/tag release 生成：
 
 - 群聊/Channel/Thread 的 Conversation 不再包含当前 Actor；Task Responsibility 仍按 Actor 或可信统一身份归属。
 - `channelInstanceId` 已贯穿 Gateway 入站、投递、Task Plan Completion Notice、Automation Job/Delivery/Route/Media 和 Memory 分区。
