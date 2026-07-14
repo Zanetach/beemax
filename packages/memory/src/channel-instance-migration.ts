@@ -1,6 +1,8 @@
 import Database from "better-sqlite3";
 import type { Database as DatabaseType } from "better-sqlite3";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
+import { open, rename, rm } from "node:fs/promises";
+import { dirname, join } from "node:path";
 
 export type ChannelRouteStorage = "channel_instance_column" | "encoded_platform";
 
@@ -47,7 +49,7 @@ interface ChannelRouteTableDescriptor {
 	structuredRouteColumns?: readonly string[];
 }
 
-interface TableInfoRow { name: string; }
+interface TableInfoRow { name: string; pk: number; }
 interface NamedTableRow { name: string; }
 interface SchemaRow { type: string; name: string; tbl_name: string; sql: string | null; }
 interface CountRow { count: number; }
@@ -344,6 +346,39 @@ export function digestSqliteDatabase(path: string): string {
 	finally { db.close(); }
 }
 
+/** Atomically replaces a Profile database only while its exact expected logical state is exclusively fenced. */
+export async function restoreSqliteDatabaseIfUnchanged(
+	destinationPath: string,
+	backupPath: string,
+	expectedCurrentDigest: string,
+	expectedRestoredDigest: string,
+): Promise<void> {
+	const directory = dirname(destinationPath);
+	const restorePath = join(directory, `.channel-instance-restore-${randomUUID()}.db`);
+	try {
+		const source = new Database(backupPath, { readonly: true, fileMustExist: true });
+		try { await source.backup(restorePath); }
+		finally { source.close(); }
+		verifyDatabase(backupPath, restorePath);
+		if (digestSqliteDatabase(restorePath) !== expectedRestoredDigest) throw new Error("Restore snapshot does not match the expected pre-migration state");
+
+		const destination = new Database(destinationPath, { fileMustExist: true });
+		try {
+			destination.pragma("busy_timeout = 5000");
+			const journalMode = destination.pragma("journal_mode = DELETE", { simple: true });
+			if (journalMode !== "delete") throw new Error(`Could not checkpoint Profile database before restore (journal mode: ${String(journalMode)})`);
+			destination.exec("BEGIN EXCLUSIVE");
+			if (digestDatabase(destination) !== expectedCurrentDigest) throw new Error("Profile database changed while rollback was prepared");
+			await rename(restorePath, destinationPath);
+			await fsyncDirectory(directory);
+			destination.exec("COMMIT");
+		} catch (error) {
+			if (destination.inTransaction) destination.exec("ROLLBACK");
+			throw error;
+		} finally { destination.close(); }
+	} finally { await rm(restorePath, { force: true }).catch(() => undefined); }
+}
+
 function digestDatabase(db: DatabaseType): string {
 	const hash = createHash("sha256");
 	const schema = db.prepare(`SELECT type, name, tbl_name, sql FROM sqlite_master
@@ -355,15 +390,58 @@ function digestDatabase(db: DatabaseType): string {
 		hashValue(hash, row.sql);
 	}
 	for (const table of schema.filter((row) => row.type === "table")) {
-		const columns = (db.prepare(`PRAGMA table_info(${quoteIdentifier(table.name)})`).all() as TableInfoRow[]).map((row) => row.name);
-		if (columns.length === 0) continue;
-		const projection = columns.map(quoteIdentifier).join(", ");
+		const tableInfo = db.prepare(`PRAGMA table_info(${quoteIdentifier(table.name)})`).all() as TableInfoRow[];
+		if (tableInfo.length === 0) continue;
 		hashValue(hash, table.name);
-		for (const row of db.prepare(`SELECT ${projection} FROM ${quoteIdentifier(table.name)} ORDER BY ${projection}`).iterate() as Iterable<Record<string, unknown>>) {
-			for (const column of columns) hashValue(hash, row[column]);
+		const locator = rowLocator(db, table.name, tableInfo);
+		const cells = tableInfo.map((column) => cellReader(db, table.name, column.name, locator.where));
+		for (const row of locator.rows) {
+			const params = locator.keys.map((key) => row[key]);
+			for (const value of params) hashValue(hash, value);
+			for (const cell of cells) hashCell(hash, cell, params);
 		}
 	}
 	return hash.digest("hex");
+}
+
+function rowLocator(db: DatabaseType, table: string, tableInfo: TableInfoRow[]): { keys: string[]; where: string; rows: Iterable<Record<string, unknown>> } {
+	try {
+		const statement = db.prepare(`SELECT rowid AS __beemax_rowid FROM ${quoteIdentifier(table)} ORDER BY rowid`).safeIntegers();
+		return { keys: ["__beemax_rowid"], where: "rowid = ?", rows: statement.iterate() as Iterable<Record<string, unknown>> };
+	} catch {
+		const primaryKey = tableInfo.filter((column) => column.pk > 0).sort((left, right) => left.pk - right.pk);
+		if (primaryKey.length === 0) throw new Error(`Cannot create a stable logical digest for table ${table}`);
+		const keys = primaryKey.map((column) => column.name);
+		const projection = keys.map(quoteIdentifier).join(", ");
+		const statement = db.prepare(`SELECT ${projection} FROM ${quoteIdentifier(table)} ORDER BY ${projection}`).safeIntegers();
+		return {
+			keys,
+			where: keys.map((key) => `${quoteIdentifier(key)} = ?`).join(" AND "),
+			rows: statement.iterate() as Iterable<Record<string, unknown>>,
+		};
+	}
+}
+
+function cellReader(db: DatabaseType, table: string, column: string, where: string): { metadata: Database.Statement<unknown[], unknown>; chunk: Database.Statement<unknown[], unknown> } {
+	const identifier = quoteIdentifier(column);
+	return {
+		metadata: db.prepare(`SELECT typeof(${identifier}) AS value_type, length(CAST(${identifier} AS BLOB)) AS byte_length FROM ${quoteIdentifier(table)} WHERE ${where}`).safeIntegers(),
+		chunk: db.prepare(`SELECT substr(CAST(${identifier} AS BLOB), ?, ?) FROM ${quoteIdentifier(table)} WHERE ${where}`).pluck(),
+	};
+}
+
+function hashCell(hash: ReturnType<typeof createHash>, reader: ReturnType<typeof cellReader>, locator: unknown[]): void {
+	const metadata = reader.metadata.get(...locator) as { value_type: string; byte_length: bigint | null } | undefined;
+	if (!metadata) throw new Error("SQLite row disappeared while creating a fenced logical digest");
+	hashValue(hash, metadata.value_type);
+	hashValue(hash, metadata.byte_length);
+	const length = Number(metadata.byte_length ?? 0n);
+	const chunkSize = 64 * 1024;
+	for (let offset = 0; offset < length; offset += chunkSize) {
+		const chunk = reader.chunk.get(offset + 1, Math.min(chunkSize, length - offset), ...locator);
+		if (!Buffer.isBuffer(chunk)) throw new Error("SQLite digest chunk was not returned as bytes");
+		hash.update(chunk);
+	}
 }
 
 function hashValue(hash: ReturnType<typeof createHash>, value: unknown): void {
@@ -382,4 +460,10 @@ function verifyDatabase(sourcePath: string, backupPath: string): void {
 		const result = db.pragma("integrity_check", { simple: true });
 		if (result !== "ok") throw new Error(`SQLite backup integrity check failed for ${sourcePath}: ${String(result)}`);
 	} finally { db.close(); }
+}
+
+async function fsyncDirectory(path: string): Promise<void> {
+	const handle = await open(path, "r");
+	try { await handle.sync(); }
+	finally { await handle.close(); }
 }

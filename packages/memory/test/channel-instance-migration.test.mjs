@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import Database from "better-sqlite3";
-import { ProfileChannelInstanceMigration } from "../dist/index.js";
+import { backupSqliteDatabase, digestSqliteDatabase, ProfileChannelInstanceMigration, restoreSqliteDatabaseIfUnchanged } from "../dist/index.js";
 
 function fixture() {
 	const root = mkdtempSync(join(tmpdir(), "beemax-channel-migration-"));
@@ -225,3 +225,40 @@ test("Profile Channel Instance migration blocks malformed nested trigger ownersh
 		rmSync(root, { recursive: true, force: true });
 	}
 });
+
+test("logical SQLite digest distinguishes adjacent 64-bit integers exactly", () => {
+	const { root, path } = fixture();
+	const db = new Database(path);
+	try { db.exec("CREATE TABLE exact_integers (value INTEGER NOT NULL); INSERT INTO exact_integers VALUES (9007199254740992)"); }
+	finally { db.close(); }
+	const before = digestSqliteDatabase(path);
+	const changed = new Database(path);
+	try { changed.exec("UPDATE exact_integers SET value = 9007199254740993"); }
+	finally { changed.close(); }
+	try { assert.notEqual(digestSqliteDatabase(path), before); }
+	finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("fenced SQLite restore handles WAL state without an unfenced check-to-replace window", async () => {
+	const { root, path } = fixture();
+	const beforePath = join(root, "restore-before.db");
+	await backupSqliteDatabase(path, beforePath);
+	const preDigest = digestSqliteDatabase(beforePath);
+	const changed = new Database(path);
+	try {
+		changed.pragma("journal_mode = WAL");
+		changed.prepare("UPDATE memories SET platform='feishu@company-a' WHERE id='legacy-memory'").run();
+	} finally { changed.close(); }
+	const postDigest = digestSqliteDatabase(path);
+	try {
+		await restoreSqliteDatabaseIfUnchanged(path, beforePath, postDigest, preDigest);
+		assert.equal(scalar(path, "SELECT platform FROM memories WHERE id='legacy-memory'"), "feishu");
+		assert.equal(digestSqliteDatabase(path), preDigest);
+	} finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+function scalar(path, sql) {
+	const db = new Database(path, { readonly: true });
+	try { return db.prepare(sql).pluck().get(); }
+	finally { db.close(); }
+}

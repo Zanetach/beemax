@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -118,6 +118,24 @@ test("operator rollback resumes prepared and post-restore crash states idempoten
 		const finalized = await rollbackProfileChannelInstanceMigration({ lockRoot: root, profileHome, profile: "personal", dbPath, manifestPath: applied.manifestPath });
 		assert.equal(finalized.status, "rolled_back");
 		assert.equal(scalar(dbPath, "SELECT platform FROM memories"), "feishu");
+	} finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("operator migration rejects a dangling backup symlink instead of escaping the Profile", async () => {
+	const { root, profileHome, dbPath } = fixture();
+	const directory = join(profileHome, "migrations", "channel-instance");
+	mkdirSync(directory, { recursive: true });
+	const outside = join(root, "outside-created.db");
+	symlinkSync(outside, join(directory, "dangling.before.db"));
+	try {
+		await assert.rejects(
+			applyProfileChannelInstanceMigration({
+				lockRoot: root, profileHome, profile: "personal", dbPath,
+				platform: "feishu", channelInstanceId: "company-a", migrationId: "dangling",
+			}),
+			/artifact already exists|symbolic link/i,
+		);
+		assert.equal(existsSync(outside), false);
 	} finally { rmSync(root, { recursive: true, force: true }); }
 });
 
