@@ -43,15 +43,21 @@ Pi owns model interaction, tools, session events, and live compaction. BeeMax Co
 
 Linux and macOS require Node.js 22.19 or newer, `curl`, `tar`, `npm`, and either `sha256sum` or `shasum`.
 
-The 1.2 branch is an engineering release candidate until the `v1.2.0` GitHub tag and archive are actually published. For candidate validation, install from a source checkout:
+Install the latest published BeeMax release:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Zanetach/beemax/main/scripts/bootstrap-install.sh | bash
+```
+
+The bootstrap installer resolves GitHub's latest stable Release, then downloads its checksum-verified archive containing BeeMax and the vendored Pi source. Application files go to `~/.beemax/app`; the command is installed to `~/.local/bin`.
+
+To validate unreleased source or contribute to BeeMax, install from a checkout instead:
 
 ```bash
 git clone https://github.com/Zanetach/beemax.git
 cd beemax
 ./scripts/install.sh
 ```
-
-After publication, the tagged bootstrap installer downloads a checksum-verified release archive containing BeeMax and the vendored Pi source. Application files go to `~/.beemax/app`; the command is installed to `~/.local/bin`.
 
 On Ubuntu and macOS, installation also discovers or installs Tesseract OCR. Set `BEEMAX_INSTALL_MEDIA_DEPS=0` only when the host image manages OCR dependencies separately.
 

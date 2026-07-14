@@ -1,10 +1,10 @@
 # Changelog
 
-## Unreleased — 1.2.0 release candidate
+## Unreleased
 
 ## 1.2.0
 
-> Reserved release section for version consistency checks. These changes remain an engineering release candidate until the GitHub tag and archive are published.
+> Release notes are prepared before tagging; the `v1.2.0` GitHub Tag and Release are the authoritative publication record.
 
 - Added durable Schedule Occurrences with stable due-time identity, renewable fenced claims, bounded retry budgets, explicit skip/run-once misfire policy, and retained one-shot audit history.
 - Separated verified Pi execution settlement from channel delivery through a durable Delivery Outbox, so channel outages retry delivery without replaying the Agent, Task, or Tool work.
