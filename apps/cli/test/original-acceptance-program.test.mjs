@@ -25,6 +25,11 @@ test("P0-P10 architecture contraction is enforced by one reproducible release ga
 		parserFixtureViolations: 0,
 		protectedAuthorityConstructionViolations: 0,
 		memoryImplementationImportsOutsideComposition: 0,
+		channelRuntimePlatformImplementationImports: 0,
+		gatewayPlatformImplementationImports: 0,
+		gatewayProviderPresentationFiles: 0,
+		gatewayProviderPresentationIdentifiers: 0,
+		feishuPresentationOwnerFiles: 1,
 	});
 });
 

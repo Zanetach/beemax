@@ -1,5 +1,5 @@
 /**
- * Stream text normalization + markdown block splitting.
+ * Feishu stream text normalization + markdown block splitting.
  * Faithful TS port of the hermes-feishu-streaming-card rendering logic.
  */
 

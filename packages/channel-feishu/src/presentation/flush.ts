@@ -1,5 +1,5 @@
 /**
- * Flush controller: coalesces rapid card updates into throttled renders.
+ * Flush controller: coalesces rapid Feishu card updates into throttled renders.
  * Ported from flush.py. Instead of updating the Feishu card on every text
  * delta (which would hit the 5 QPS patch limit), it batches updates on an
  * interval and drains immediately for terminal events (completed/failed).

@@ -33,11 +33,13 @@ import type {
 	MessageHandler,
 	ObservationHandler,
 	PlatformAdapter,
+	InteractionPresenter,
 	SendResult,
 	SessionSource,
 } from "@beemax/channel-runtime";
 import { validateFeishuWebhookSettings, type FeishuSettings } from "./settings.ts";
 import { retryFeishuOperation } from "./retry.ts";
+import { FeishuInteractionPresenter } from "./presentation/presenter.ts";
 import { GroupActivationController, GroupResponseGovernor, type GroupActivationDecision } from "@beemax/channel-runtime";
 
 const FEISHU_DOMAIN = lark.Domain.Feishu;
@@ -71,6 +73,7 @@ interface PendingInboundBatch {
 
 export class FeishuAdapter implements PlatformAdapter {
 	readonly name = "feishu" as const;
+	readonly presentation: InteractionPresenter;
 	private connected = false;
 	private client!: Client;
 	private wsClient?: WSClient;
@@ -99,6 +102,7 @@ export class FeishuAdapter implements PlatformAdapter {
 
 	constructor(settings: FeishuSettings) {
 		this.settings = settings;
+		this.presentation = new FeishuInteractionPresenter(this);
 		this.activation = new GroupActivationController({
 			activeThreadTtlMs: settings.activation?.activeThreadTtlMs,
 			maxActiveThreads: settings.activation?.maxActiveThreads,

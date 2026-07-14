@@ -1,5 +1,5 @@
 /**
- * Card timeline: ordered list of reasoning / tool / notice entries rendered
+ * Feishu card timeline: ordered list of reasoning / tool / notice entries rendered
  * into the collapsible "思考与工具" panel. Ported from card_timeline.py.
  */
 

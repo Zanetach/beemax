@@ -21,6 +21,20 @@ test("Interaction Gateway does not publish or depend on messaging platform imple
 	assert.equal(gateway.dependencies?.["@beemax/channel-telegram"], undefined);
 	const sources = await sourceText(join(root, "packages/gateway/src"));
 	assert.doesNotMatch(sources, /@larksuiteoapi\/node-sdk|platforms\/(?:feishu|telegram)|@beemax\/channel-(?:feishu|telegram)/u);
+	assert.doesNotMatch(sources, /\b(?:CardSession|renderCard|FlushController)\b/u);
+	const gatewayEntries = await readdir(join(root, "packages/gateway/src"), { withFileTypes: true });
+	assert.equal(gatewayEntries.some((entry) => entry.isDirectory() && entry.name === "card"), false);
+});
+
+test("Platform presentation is owned by its Adapter package behind the Channel Runtime contract", async () => {
+	const runtime = await sourceText(join(root, "packages/channel-runtime/src"));
+	assert.match(runtime, /interface InteractionPresenter/u);
+	assert.match(runtime, /readonly presentation\?: InteractionPresenter/u);
+
+	const feishu = await sourceText(join(root, "packages/channel-feishu/src"));
+	assert.match(feishu, /class FeishuInteractionPresenter implements InteractionPresenter/u);
+	assert.match(feishu, /class CardSession/u);
+	assert.match(feishu, /function renderCard/u);
 });
 
 async function sourceText(directory) {

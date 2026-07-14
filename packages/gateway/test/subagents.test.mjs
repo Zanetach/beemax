@@ -7,8 +7,14 @@ import { buildAgentFactory } from "../../../apps/cli/dist/agent-factory.js";
 import { Dispatcher } from "../dist/core/dispatcher.js";
 import { GatewayIngressController, MessageDeduplicator, ProfileBindingResolver } from "../dist/index.js";
 import { createSubagentTools, ProfileTaskScheduler, SubagentManager } from "@beemax/core";
+import { FeishuInteractionPresenter } from "@beemax/channel-feishu";
 
 const source = { platform: "feishu", chatId: "chat-1", chatType: "dm", userId: "user-1" };
+
+function enableFeishuPresentation(platform) {
+	platform.presentation = new FeishuInteractionPresenter(platform);
+	return platform;
+}
 
 test("Dispatcher binds inbound interactions to the configured channel instance", async () => {
 	let inbound;
@@ -88,6 +94,7 @@ test("Dispatcher publishes the initial progress card before starting a slow Agen
 		send: async () => ({ success: true }), editMessage: async () => ({ success: true }), sendTyping: async () => undefined, stopTyping: async () => undefined,
 		sendCard: async () => { await new Promise((resolve) => setTimeout(resolve, 20)); order.push("card"); return { success: true, messageId: "progress-card" }; }, updateCard: async () => ({ success: true }),
 	};
+	enableFeishuPresentation(platform);
 	const runtime = {
 		run: async () => { order.push("runtime"); return new Promise((resolve) => { finish = resolve; }); },
 		cancel: async () => false, handleControl: async () => undefined, isBusy: () => false, dispose: () => undefined,
@@ -106,6 +113,7 @@ test("Dispatcher starts the Agent Turn when initial card delivery hangs", async 
 		send: async () => ({ success: true }), editMessage: async () => ({ success: true }), sendTyping: async () => undefined, stopTyping: async () => undefined,
 		sendCard: async () => new Promise(() => undefined), updateCard: async () => ({ success: true }),
 	};
+	enableFeishuPresentation(platform);
 	const runtime = { run: async () => { runtimeStarted = true; return { answer: "done", model: "test", durationMs: 1, usage: {} }; }, cancel: async () => false, handleControl: async () => undefined, isBusy: () => false, dispose: () => undefined };
 	const dispatcher = new Dispatcher({ runtime, flushIntervalMs: 0, presentationTimeoutMs: 20 }, platform);
 	const turn = inbound({ text: "request", messageType: "text", source: { ...source, messageId: "hung-card" }, mediaPaths: [], mediaTypes: [], raw: {}, timestamp: Date.now() });
@@ -122,6 +130,7 @@ test("Dispatcher adopts a late initial card result instead of creating duplicate
 		sendCard: async () => { sends++; await new Promise((resolve) => setTimeout(resolve, 60)); return { success: true, messageId: "late-card" }; },
 		updateCard: async (id) => { assert.equal(id, "late-card"); updates++; return { success: true }; },
 	};
+	enableFeishuPresentation(platform);
 	const runtime = { run: async () => { await new Promise((resolve) => setTimeout(resolve, 90)); return { answer: "done", model: "test", durationMs: 90, usage: {} }; }, cancel: async () => false, handleControl: async () => undefined, isBusy: () => false, dispose: () => undefined };
 	const dispatcher = new Dispatcher({ runtime, flushIntervalMs: 0, presentationTimeoutMs: 20 }, platform);
 	await inbound({ text: "request", messageType: "text", source: { ...source, messageId: "late-card-request" }, mediaPaths: [], mediaTypes: [], raw: {}, timestamp: Date.now() });
@@ -137,6 +146,7 @@ test("Dispatcher serializes a late card update and eventually writes the latest 
 		sendCard: async () => ({ success: true, messageId: "card" }),
 		updateCard: async (_id, card) => { if (!updates.length) await new Promise((resolve) => setTimeout(resolve, 60)); updates.push(JSON.stringify(card)); return { success: true }; },
 	};
+	enableFeishuPresentation(platform);
 	const runtime = { run: async () => ({ answer: "latest final answer", model: "test", durationMs: 1, usage: {} }), cancel: async () => false, handleControl: async () => undefined, isBusy: () => false, dispose: () => undefined };
 	const dispatcher = new Dispatcher({ runtime, flushIntervalMs: 0, presentationTimeoutMs: 20 }, platform);
 	await inbound({ text: "request", messageType: "text", source: { ...source, messageId: "late-update" }, mediaPaths: [], mediaTypes: [], raw: {}, timestamp: Date.now() });
@@ -151,6 +161,7 @@ test("Dispatcher falls back to final text when card updates remain unavailable",
 		send: async (_chatId, text) => { texts.push(text); return { success: true }; }, editMessage: async () => ({ success: true }), sendTyping: async () => undefined, stopTyping: async () => undefined,
 		sendCard: async () => ({ success: true, messageId: "card" }), updateCard: async () => new Promise(() => undefined),
 	};
+	enableFeishuPresentation(platform);
 	const runtime = { run: async () => ({ answer: "recoverable final answer", model: "test", durationMs: 1, usage: {} }), cancel: async () => false, handleControl: async () => undefined, isBusy: () => false, dispose: () => undefined };
 	const dispatcher = new Dispatcher({ runtime, flushIntervalMs: 0, presentationTimeoutMs: 20 }, platform);
 	await inbound({ text: "request", messageType: "text", source: { ...source, messageId: "hung-update" }, mediaPaths: [], mediaTypes: [], raw: {}, timestamp: Date.now() });
@@ -207,6 +218,7 @@ test("Dispatcher falls back to error text when a failed Turn cannot update its c
 		send: async (_chatId, text) => { texts.push(text); return { success: true }; }, editMessage: async () => ({ success: true }), sendTyping: async () => undefined, stopTyping: async () => undefined,
 		sendCard: async () => ({ success: true, messageId: "card" }), updateCard: async () => new Promise(() => undefined),
 	};
+	enableFeishuPresentation(platform);
 	const runtime = { run: async () => { throw new Error("model unavailable"); }, cancel: async () => false, handleControl: async () => undefined, isBusy: () => false, dispose: () => undefined };
 	const dispatcher = new Dispatcher({ runtime, flushIntervalMs: 0, presentationTimeoutMs: 20 }, platform);
 	await inbound({ text: "request", messageType: "text", source: { ...source, messageId: "hung-error-update" }, mediaPaths: [], mediaTypes: [], raw: {}, timestamp: Date.now() });
@@ -508,6 +520,7 @@ test("Dispatcher forwards authorized card approval actions through the Core sema
 		sendCard: async () => ({ success: true, messageId: "card-1" }), updateCard: async () => ({ success: true }),
 		sendTyping: async () => undefined, stopTyping: async () => undefined,
 	};
+	enableFeishuPresentation(platform);
 	const interaction = {
 		dispatch: async (action, sink) => {
 			actions.push(action);
@@ -691,6 +704,7 @@ test("Dispatcher replays and acknowledges crash-surviving queued inputs on Gatew
 		send: async () => ({ success: true }), editMessage: async () => ({ success: true }), sendTyping: async () => undefined, stopTyping: async () => undefined,
 		sendCard: async (_chatId, card) => { cards.push(card); return { success: true, messageId: "recovered-card" }; }, updateCard: async (_id, card) => { cards.push(card); return { success: true }; },
 	};
+	enableFeishuPresentation(platform);
 	const interaction = {
 		claimRecoveredInputs: () => {
 			if (recoveredClaimed) return [];

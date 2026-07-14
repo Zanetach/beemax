@@ -1,5 +1,5 @@
 /**
- * CardSession: accumulates streaming events into card state.
+ * CardSession: accumulates streaming events into Feishu card state.
  * Stripped of interaction (approval/clarify) and attachment handling -
  * BeeMax's first cut needs answer + tools + footer.
  */

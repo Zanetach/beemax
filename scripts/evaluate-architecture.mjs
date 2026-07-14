@@ -144,6 +144,8 @@ const core = await parse(coreFiles);
 const production = await parse(allProductionFiles);
 const cli = production.filter(({ file }) => file.startsWith("apps/cli/src/"));
 const boundary = production.filter(({ file }) => file.startsWith("packages/core/src/") || file.startsWith("packages/gateway/src/") || file.startsWith("packages/automation/src/"));
+const channelRuntime = production.filter(({ file }) => file.startsWith("packages/channel-runtime/src/"));
+const gateway = production.filter(({ file }) => file.startsWith("packages/gateway/src/"));
 
 const ontologyIdentifier = /^(?:client|customer|order|ticket|purchaseorder|workorder)(?:id|type|status|number|ref|reference|record|entity|profile|context|scope|item|items)?$/;
 const fixedOntologyIdentifier = /^(?:(?:customer|purchaseorder|workorder)(?:id|type|status|number|ref|reference|record|entity|profile|context|scope|item|items)?|(?:order|ticket)(?:id|type|status|number|ref|reference|record|entity|profile|context|scope|item|items))$/;
@@ -192,6 +194,11 @@ const invariants = {
 	parserFixtureViolations: parserFixtureViolations(),
 	protectedAuthorityConstructionViolations,
 	memoryImplementationImportsOutsideComposition: importedModules(boundary).filter(({ file, module }) => resolvesToMemoryImplementation(file, module)).length,
+	channelRuntimePlatformImplementationImports: importedModules(channelRuntime).filter(({ module }) => /@beemax\/(?:gateway|channel-feishu|channel-telegram)|@larksuiteoapi\/node-sdk/u.test(module)).length,
+	gatewayPlatformImplementationImports: importedModules(gateway).filter(({ module }) => /@beemax\/channel-(?:feishu|telegram)|@larksuiteoapi\/node-sdk/u.test(module)).length,
+	gatewayProviderPresentationFiles: gateway.filter(({ file }) => file.includes("/card/")).length,
+	gatewayProviderPresentationIdentifiers: countIdentifiers(gateway, new Set(["CardSession", "renderCard", "FlushController"])),
+	feishuPresentationOwnerFiles: production.filter(({ file }) => file === "packages/channel-feishu/src/presentation/presenter.ts").length,
 };
 const expected = {
 	customerOntologyInCore: 0,
@@ -203,7 +210,18 @@ const expected = {
 	parserFixtureViolations: 0,
 	protectedAuthorityConstructionViolations: 0,
 	memoryImplementationImportsOutsideComposition: 0,
+	channelRuntimePlatformImplementationImports: 0,
+	gatewayPlatformImplementationImports: 0,
+	gatewayProviderPresentationFiles: 0,
+	gatewayProviderPresentationIdentifiers: 0,
+	feishuPresentationOwnerFiles: 1,
 };
 const failures = Object.entries(expected).filter(([name, value]) => invariants[name] !== value).map(([name, value]) => `${name}: expected ${value}, observed ${invariants[name]}`);
-console.log(JSON.stringify({ schemaVersion: 4, parser: `typescript-${ts.version}`, invariants, gate: { passed: failures.length === 0, failures } }, null, 2));
+console.log(JSON.stringify({ schemaVersion: 5, parser: `typescript-${ts.version}`, invariants, gate: { passed: failures.length === 0, failures } }, null, 2));
 if (failures.length) process.exitCode = 1;
+
+function countIdentifiers(parsed, names) {
+	let count = 0;
+	visitAll(parsed, (_item, node) => { if (ts.isIdentifier(node) && names.has(node.text)) count++; });
+	return count;
+}

@@ -469,8 +469,11 @@ export async function runGateway(config: BeeMaxConfig): Promise<void> {
 			bindingChannelInstanceId: id,
 			channelAccountRef: enabledChannels.find((channel) => channel.id === id)?.accountRef,
 			channelInstanceId: (platformInstanceCounts.get(channelAdapter.name) ?? 0) > 1 ? id : undefined,
-			cardOptions: { title: config.profile === "default" ? "BeeMax Agent" : `BeeMax · ${config.profile}`, reasoningDisplay: config.agent.reasoningDisplay },
-			flushIntervalMs: 350,
+			presentationOptions: {
+				title: config.profile === "default" ? "BeeMax Agent" : `BeeMax · ${config.profile}`,
+				reasoningDisplay: config.agent.reasoningDisplay,
+				updateIntervalMs: 350,
+			},
 			approvalBroker,
 			cancelTasks: (source) => subagents?.cancelOwner(source) ?? 0,
 		},

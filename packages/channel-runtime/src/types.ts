@@ -8,6 +8,7 @@
  */
 
 import type { AgentScope } from "@beemax/core";
+import type { InteractionPresenter } from "./presentation.ts";
 
 /** Registry-validated adapter id. Core never enumerates transport platforms. */
 export type PlatformName = string;
@@ -73,6 +74,8 @@ export type CardActionHandler = (action: PlatformCardAction) => void | Promise<v
 export interface PlatformAdapter {
 	readonly name: PlatformName;
 	readonly isConnected: boolean;
+	/** Optional rich presentation owned by this Adapter. Gateway provides text fallback when absent. */
+	readonly presentation?: InteractionPresenter;
 
 	/** Establish connection (WS / webhook / etc.). Resolves true on success. */
 	connect(): Promise<boolean>;

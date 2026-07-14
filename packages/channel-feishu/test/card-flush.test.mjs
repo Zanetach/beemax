@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { FlushController } from "../dist/card/flush.js";
+import { FlushController } from "../dist/presentation/flush.js";
 
 test("FlushController drops queued renders after close", async () => {
 	const flush = new FlushController(1_000);

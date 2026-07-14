@@ -1,38 +1,23 @@
-/**
- * The dispatcher wires a platform adapter to Pi agent sessions and renders
- * streaming replies as one continuously-updated Feishu interactive card.
- *
- * Pure-TS card pipeline (no Python sidecar):
- *   Pi AgentEvent -> CardSession.apply() -> renderCard() -> FlushController
- *     -> platform.sendCard() (first frame) / platform.updateCard() (deltas)
- *
- * The flush controller coalesces rapid text deltas into throttled card patches
- * (Feishu patch is 5 QPS limited), and drains immediately for terminal events.
- */
+/** Platform-neutral ingress, interaction dispatch, and presentation orchestration. */
 
 import {
 	AgentRunError,
-	AdaptiveTextBuffer,
 	conversationKey,
 	InteractionEventAdapter,
 	parseInteractionCommand,
 	sessionOwnerKey,
-	TurnStatusPulse,
 	type ToolApprovalBroker,
-	type InteractionEvent,
 	type AgentRuntimePort,
 	type DeliveryTarget,
 	type TaskPlanProgressEvent,
 } from "@beemax/core";
-import type { InboundMessage, PlatformAdapter, PlatformCardAction, SendResult } from "@beemax/channel-runtime";
-import { CardSession } from "../card/session.ts";
-import { renderCard, type CardRenderOptions } from "../card/render.ts";
-import { FlushController } from "../card/flush.ts";
+import type { InboundMessage, InteractionPresentationPreferences, PlatformAdapter, PlatformCardAction } from "@beemax/channel-runtime";
 import { MessageDeduplicator } from "./message-deduplicator.ts";
 import { prepareAgentMediaInput } from "./media-input.ts";
 import type { ProfileBindingResolver } from "./profile-binding.ts";
 import type { GatewayInteractionAdmission } from "./ingress-capacity.ts";
 import { GatewayIngressController } from "./ingress-capacity.ts";
+import { TextInteractionPresenter } from "./text-presentation.ts";
 
 interface CardBinding {
 	source: InboundMessage["source"];
@@ -43,7 +28,8 @@ export interface DispatcherDeps {
 	runtime: AgentRuntimePort<InboundMessage["source"]>;
 	/** Core semantic boundary. When omitted, legacy callers get a local adapter. */
 	interaction?: InteractionEventAdapter<InboundMessage["source"]>;
-	cardOptions?: CardRenderOptions;
+	presentationOptions?: InteractionPresentationPreferences;
+	/** @deprecated Use presentationOptions.updateIntervalMs. */
 	flushIntervalMs?: number;
 	/** Bound initial/final presentation I/O so a stuck channel cannot block the Turn. */
 	presentationTimeoutMs?: number;
@@ -222,97 +208,40 @@ export class Dispatcher {
 	}
 
 	private async runTurn(msg: InboundMessage, onReserved?: () => void): Promise<boolean> {
-		const chatId = msg.source.chatId;
-		const card = new CardSession();
-		const flush = new FlushController(this.deps.flushIntervalMs ?? 350);
-		const sendCard = this.platform.sendCard?.bind(this.platform);
-		const updateCard = this.platform.updateCard?.bind(this.platform);
-		let cardMessageId: string | undefined;
-		let cardCreation: Promise<SendResult> | undefined;
-		let cardUpdate: Promise<boolean> | undefined;
-		let pendingCardRender: Record<string, unknown> | undefined;
-		let presentationDegraded = false;
-
-		const renderUpdate = async (): Promise<boolean> => {
-			if (!sendCard || !updateCard) { presentationDegraded = true; return false; }
-			const rendered = renderCard(card, this.deps.cardOptions);
-			if (!cardMessageId) {
-				if (!cardCreation) {
-					const pending = sendCard(chatId, rendered, msg.source.messageId, Boolean(msg.source.threadId), `${this.profileId}:${msg.source.messageId ?? "turn"}`);
-					cardCreation = pending.then((res) => {
-						if (res.success && res.messageId) { cardMessageId = res.messageId; this.rememberCardBinding(res.messageId, msg.source, card.pendingApprovalId); }
-						return res;
-					});
-				}
-				const res = await settleWithin(cardCreation, this.deps.presentationTimeoutMs ?? 2_000);
-				if (!res) { presentationDegraded = true; return false; }
-				presentationDegraded = !res.success;
-				return res.success;
-			}
-			pendingCardRender = rendered;
-			if (!cardUpdate) {
-				cardUpdate = (async () => {
-					let success = true;
-					while (pendingCardRender) {
-						const next = pendingCardRender; pendingCardRender = undefined;
-						const res = await updateCard(cardMessageId!, next);
-						success = success && res.success;
-						if (res.success) this.rememberCardBinding(cardMessageId!, msg.source, card.pendingApprovalId);
-					}
-					return success;
-				})().finally(() => { cardUpdate = undefined; });
-			}
-			const res = await settleWithin(cardUpdate, this.deps.presentationTimeoutMs ?? 2_000);
-			if (res === undefined) { presentationDegraded = true; return false; }
-			presentationDegraded = !res;
-			return res;
-		};
-		const answerBuffer = new AdaptiveTextBuffer(async (chunk) => {
-			try {
-				card.apply("answer.delta", { text: chunk });
-				await flush.schedule(renderUpdate, false, true);
-			} catch (error) { console.error(`[beemax] answer presenter failed: ${error instanceof Error ? error.message : String(error)}`); }
-		}, { minChunkChars: 6, preferredChunkChars: 28, maxChunkChars: 80, maxWaitMs: 50, flushSmallOnMaxWait: true });
-		const statusPulse = new TurnStatusPulse(async (message) => {
-			card.apply("notice.updated", { id: "turn:status", label: "当前状态", status: "running", message });
-			await flush.schedule(renderUpdate, false, true);
+		const presenter = this.platform.presentation ?? new TextInteractionPresenter(this.platform);
+		const presentation = presenter.open({
+			source: msg.source,
+			profileId: this.profileId,
+			preferences: {
+				...this.deps.presentationOptions,
+				updateIntervalMs: this.deps.presentationOptions?.updateIntervalMs ?? this.deps.flushIntervalMs,
+				ioTimeoutMs: this.deps.presentationOptions?.ioTimeoutMs ?? this.deps.presentationTimeoutMs,
+			},
+			onBinding: (messageId, pendingApprovalId) => this.rememberCardBinding(messageId, msg.source, pendingApprovalId),
 		});
 		let failed = false;
 		try {
-			await settleWithin(statusPulse.start(), this.deps.presentationTimeoutMs ?? 2_000);
-			await this.platform.sendTyping(chatId, msg.source.messageId).catch((error) => {
-				console.warn(`[beemax] typing indicator failed: ${error instanceof Error ? error.message : String(error)}`);
-			});
+			await presentation.start();
 			let result;
 			try {
 				const media = await prepareAgentMediaInput(msg);
-				const turn = this.interaction.dispatch({ type: "message.send", source: msg.source, text: media.text, input: { timeoutMs: this.turnTimeoutMs, mode: "interactive", images: media.images } }, (event) => this.onInteractionEvent(event, card, flush, answerBuffer, statusPulse, renderUpdate));
+				const turn = this.interaction.dispatch({ type: "message.send", source: msg.source, text: media.text, input: { timeoutMs: this.turnTimeoutMs, mode: "interactive", images: media.images } }, (event) => presentation.onEvent(event));
 				onReserved?.();
 				result = await turn;
 				if (!("answer" in result)) throw new Error("Message dispatch did not produce an Agent result");
 			} catch (err) {
 				failed = true;
 				const errorText = err instanceof AgentRunError ? err.message : err instanceof Error ? err.message : String(err);
-				if (card.status !== "cancelled") card.apply("message.failed", { error: errorText });
-				await flush.schedule(renderUpdate, true);
-				await flush.drain(3000);
-				if (!cardMessageId || presentationDegraded) await this.platform.send(chatId, `❌ ${errorText}`);
+				await presentation.fail(errorText);
 				return false;
 			}
-
-			// Terminal event already owns completion; only drain its final card patch.
-			await flush.schedule(renderUpdate, true);
-			await flush.drain(5000);
-			if (!cardMessageId || presentationDegraded) await this.platform.send(chatId, card.answerText || result.answer);
+			await presentation.finish(result.answer);
 			return true;
 		} catch (error) {
 			failed = true;
 			throw error;
 		} finally {
-			await settleWithin(statusPulse.stop(), 1_000).catch((error) => console.error(`[beemax] turn status presenter failed: ${error instanceof Error ? error.message : String(error)}`));
-			await answerBuffer.close();
-			await this.platform.stopTyping(chatId, msg.source.messageId, failed).catch(() => undefined);
-			flush.close();
+			await presentation.close(failed);
 		}
 	}
 
@@ -373,15 +302,9 @@ export class Dispatcher {
 
 	async presentWorkProgress(target: DeliveryTarget, event: TaskPlanProgressEvent, idempotencyKey?: string): Promise<void> {
 		if (target.platform !== this.platform.name) throw new Error(`Cannot present ${target.platform} work through ${this.platform.name}`);
-		const card = new CardSession();
-		card.apply("notice.updated", {
-			id: `work:${event.workId}`, label: "异步任务计划", status: event.state === "failed" ? "error" : event.state,
-			message: `${event.title} · ${event.completed}/${event.total}${event.failed ? ` · 失败 ${event.failed}` : ""}${event.cancelled ? ` · 取消 ${event.cancelled}` : ""}`,
-		});
-		const result = this.platform.sendCard
-			? await this.platform.sendCard(target.chatId, renderCard(card, this.deps.cardOptions), undefined, Boolean(target.threadId), idempotencyKey)
-			: await this.platform.send(target.chatId, `${event.title} · ${event.completed}/${event.total}${event.failed ? ` · 失败 ${event.failed}` : ""}${event.cancelled ? ` · 取消 ${event.cancelled}` : ""}`, { idempotencyKey });
-		if (!result.success) throw new Error(result.error ?? `Failed to present Task Plan ${event.workId}`);
+		const presenter = this.platform.presentation ?? new TextInteractionPresenter(this.platform);
+		if (!presenter.presentWorkProgress) throw new Error(`Channel ${this.platform.name} cannot present Task Plan progress`);
+		await presenter.presentWorkProgress({ target, event, idempotencyKey });
 	}
 
 	async dispose(): Promise<void> {
@@ -427,113 +350,8 @@ export class Dispatcher {
 		this.sessionOverrides.set(key, { ...source, threadId });
 	}
 
-	private async onInteractionEvent(
-		event: InteractionEvent,
-		card: CardSession,
-		flush: FlushController,
-		answerBuffer: AdaptiveTextBuffer,
-		statusPulse: TurnStatusPulse,
-		renderUpdate: () => Promise<boolean>,
-	): Promise<void> {
-		switch (event.type) {
-			case "tool.changed":
-				card.apply("notice.updated", { id: "turn:status", label: "当前状态", status: "running", message: event.state === "running" ? `正在执行 ${event.name}` : event.state === "failed" ? "操作未成功 · 正在处理" : "操作完成 · 正在整理结果" });
-				card.apply("tool.updated", {
-					tool_id: event.callId,
-					name: event.name,
-					status: event.state === "failed" ? "error" : event.state,
-					detail: event.summary,
-				});
-				await flush.schedule(renderUpdate, false, true);
-				break;
-			case "answer.delta":
-				statusPulse.contentStarted();
-				answerBuffer.push(event.text);
-				break;
-			case "reasoning.delta":
-				card.apply("thinking.delta", { text: event.text });
-				break;
-			case "model.fallback":
-				card.apply("notice.updated", { id: `model:${event.turnId}:${event.attempt}`, label: "模型回退", status: "running", message: `${event.from} 暂时不可用，已切换到 ${event.to}` });
-				await flush.schedule(renderUpdate, false, true);
-				break;
-			case "planning.selected":
-				card.apply("notice.updated", { id: `planning:${event.turnId}`, label: "执行规划", status: "running", message: `${event.mode} · 并发 ${event.concurrency} · 子代理上限 ${event.maxSubagents}${event.requiredTools.length ? ` · ${event.requiredTools.join(" → ")}` : ""}` });
-				await flush.schedule(renderUpdate, false, true);
-				break;
-			case "planning.completed":
-				card.apply("notice.updated", { id: `planning:${event.turnId}`, label: "执行规划", status: event.compliant ? "completed" : "error", message: `${event.mode}${event.corrected ? " · 已自动纠正" : ""}` });
-				await flush.schedule(renderUpdate, false, true);
-				break;
-			case "work.changed":
-				card.apply("notice.updated", {
-					id: `work:${event.workId}`,
-					label: event.kind === "subagent" ? "并行子任务" : "异步任务计划",
-					status: event.state === "failed" ? "error" : event.state,
-					message: event.summary ?? (event.state === "queued" ? "已排队" : event.state === "running" ? "运行中" : event.state === "completed" ? "已完成" : event.state === "cancelled" ? "已取消" : "执行失败"),
-				});
-				await flush.schedule(renderUpdate, false, true);
-				break;
-			case "turn.failed":
-				await statusPulse.stop().catch((error) => console.error(`[beemax] turn status presenter failed: ${error instanceof Error ? error.message : String(error)}`));
-				await answerBuffer.flush();
-				card.apply("message.failed", { error: event.error });
-				await flush.schedule(renderUpdate, true);
-				break;
-			case "turn.cancelled":
-				await statusPulse.stop().catch((error) => console.error(`[beemax] turn status presenter failed: ${error instanceof Error ? error.message : String(error)}`));
-				await answerBuffer.flush();
-				card.apply("message.cancelled", { message: "运行已取消" });
-				await flush.schedule(renderUpdate, true);
-				break;
-			case "turn.finished":
-				await statusPulse.stop().catch((error) => console.error(`[beemax] turn status presenter failed: ${error instanceof Error ? error.message : String(error)}`));
-				await answerBuffer.flush();
-				card.apply("message.completed", { answer: card.answerText || event.result.answer, model: event.result.model, duration: event.result.durationMs / 1000, tokens: event.result.usage });
-				await flush.schedule(renderUpdate, true);
-				break;
-			case "approval.requested":
-				{
-				const message = event.details
-					? `等待审批：${event.toolName}\n目标：${event.details.target}\n风险：${event.details.risk} · ${event.details.impact}\n可逆性：${event.details.reversibility}\n回复 1（一次）/ 2（本会话）/ 3（拒绝），或 /stop 取消。`
-					: `等待审批：${event.toolName}\n回复 1（一次）/ 2（本会话）/ 3（拒绝），或 /stop 取消。`;
-				card.apply("approval.updated", {
-					id: `approval:${event.turnId}`,
-					status: "pending",
-					message,
-				});
-				if (!this.platform.sendCard || !this.platform.updateCard) {
-					const result = await this.platform.send(event.scope.chatId, message, { idempotencyKey: `approval:${event.turnId}` });
-					if (!result.success) throw new Error(result.error ?? `Failed to present approval for ${event.toolName}`);
-				} else await flush.schedule(renderUpdate, false, true);
-				break;
-				}
-			case "approval.resolved":
-				card.apply("approval.updated", { id: `approval:${event.turnId}`, status: event.allowed ? "allowed" : "denied", message: `${event.toolName}：${event.allowed ? "已允许" : "已拒绝"}` });
-				await flush.schedule(renderUpdate, false, true);
-				break;
-			case "turn.queued":
-				card.apply("approval.updated", {
-					id: `queue:${event.turnId}`,
-					status: "queued",
-					message: event.mode === "steer"
-						? "已更新当前任务要求"
-						: event.mode === "follow_up"
-							? "已收到补充消息，将在当前任务中继续处理"
-							: `${event.mode === "steer_fallback" ? "当前运行时不支持中途引导，" : ""}${event.replaced ? "已更新下一条待处理消息" : `消息已进入当前会话队列（第 ${event.position} 条）`}`,
-				});
-				await flush.schedule(renderUpdate, false, true);
-				break;
-		}
-	}
 }
 
 function channelDedupeKey(source: InboundMessage["source"]): string {
 	return source.channelInstanceId ? `${source.platform}@${source.channelInstanceId}` : source.platform;
-}
-
-async function settleWithin<T>(operation: Promise<T>, timeoutMs: number): Promise<T | undefined> {
-	let timer: ReturnType<typeof setTimeout> | undefined;
-	try { return await Promise.race([operation, new Promise<undefined>((resolve) => { timer = setTimeout(() => resolve(undefined), Math.max(10, timeoutMs)); })]); }
-	finally { if (timer) clearTimeout(timer); }
 }

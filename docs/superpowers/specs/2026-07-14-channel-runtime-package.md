@@ -73,3 +73,11 @@ Make Channel Runtime a deep platform-neutral module, make Feishu and Telegram in
 ## Further Notes
 
 This slice establishes the package and runtime seam required by future platforms; it does not claim that every platform has been implemented. The default deployment remains one Profile process with multiple independently supervised Channel Instances. Package isolation is not tenant isolation, and Channel Runtime is not an Execution Sandbox.
+
+## Implementation Status
+
+- Implemented `@beemax/channel-runtime`, `@beemax/channel-feishu`, and `@beemax/channel-telegram` as independently buildable packages.
+- Made explicit Channel Instance settings and Credential Refs authoritative, including independent same-platform instances.
+- Moved Feishu CardKit rendering, state, throttling, degradation, and interactive binding behind `InteractionPresenter`; Gateway now supplies only a platform-neutral text fallback.
+- Added package-graph architecture gates and a real `ChannelHost → Dispatcher → Runtime → Delivery` contract test covering concrete instance routing and cancellation.
+- Full release verification remains the completion gate for this slice.

@@ -12,10 +12,6 @@ export { GroupResponseGovernor, type GroupQuietHours, type GroupResponseGovernor
 export { GroupActivationController, decideGroupActivation, decideGroupAdmission, type GroupActivationControllerInput, type GroupActivationControllerOptions, type GroupActivationDecision, type GroupActivationInput, type GroupActivationMode, type GroupActivationSignal, type GroupAdmissionDecision, type GroupAdmissionInput, type GroupAdmissionPolicy } from "@beemax/channel-runtime";
 export { ProfileBindingResolver, assertProfileBindingConfiguration, type ProfileBinding, type ProfileBindingAuthority, type ProfileBindingConflict, type ProfileBindingExplanation, type ProfileBindingPrecedence, type ProfileBindingRoute } from "./core/profile-binding.ts";
 export { prepareAgentMediaInput, type AgentMediaInput } from "./core/media-input.ts";
-export { CardSession } from "./card/session.ts";
-export { renderCard, type CardRenderOptions } from "./card/render.ts";
-export { FlushController } from "./card/flush.ts";
-export { CardTimeline } from "./card/timeline.ts";
 export { PairingStore, type PairingAuthority, type PairingApproval, type PairingRequest, type PairingRequestResult } from "./security/pairing.ts";
 export type {
 	PlatformAdapter,
