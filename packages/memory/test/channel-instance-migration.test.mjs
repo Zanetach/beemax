@@ -252,7 +252,7 @@ test("logical SQLite digest distinguishes adjacent IEEE-754 real values exactly"
 	finally { rmSync(root, { recursive: true, force: true }); }
 });
 
-test("Profile Channel Instance migration reverses its receipt in place under WAL", async () => {
+test("Profile Channel Instance migration restores from its verified snapshot in place under WAL", async () => {
 	const { root, path } = fixture();
 	const beforePath = join(root, "receipt-before.db");
 	const migration = new ProfileChannelInstanceMigration(path);
@@ -271,7 +271,7 @@ test("Profile Channel Instance migration reverses its receipt in place under WAL
 		const prepared = await migration.applyWithBackup({
 			id: "migration-receipt-rollback", platform: "feishu", channelInstanceId: "company-a", backupRef: beforePath,
 		}, beforePath, () => undefined);
-		migration.rollbackApplied(prepared.result, prepared.postMigrationDigest, prepared.preMigrationDigest);
+		migration.rollbackFromBackup(prepared.result, beforePath, prepared.postMigrationDigest, prepared.preMigrationDigest);
 		assert.equal(scalar(path, "SELECT platform FROM memories WHERE id='legacy-memory'"), "feishu");
 		assert.equal(scalar(path, "SELECT channel_instance_id FROM automation_jobs WHERE id='legacy-job'"), null);
 		assert.equal(scalar(path, "SELECT channel_instance_id FROM automation_routes WHERE user_id='user-a'"), "");

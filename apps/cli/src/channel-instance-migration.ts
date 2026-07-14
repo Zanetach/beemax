@@ -162,7 +162,7 @@ export async function rollbackProfileChannelInstanceMigration(input: RollbackPro
 		};
 		await writeJsonAtomically(manifestPath, manifest);
 		const migration = new ProfileChannelInstanceMigration(paths.dbPath);
-		try { migration.rollbackApplied(manifest.result, manifest.postMigrationDigest, manifest.preMigrationDigest); }
+		try { migration.rollbackFromBackup(manifest.result, manifest.backupPath, manifest.postMigrationDigest, manifest.preMigrationDigest); }
 		finally { migration.close(); }
 		verifySqliteDatabase(paths.dbPath);
 

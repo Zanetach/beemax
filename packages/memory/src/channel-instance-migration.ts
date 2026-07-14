@@ -32,21 +32,6 @@ export interface AppliedChannelInstanceMigration extends ChannelInstanceMigratio
 	id: string;
 	backupRef: string;
 	appliedAt: number;
-	receipt: ChannelInstanceMigrationTableReceipt[];
-	migrationAuditTableCreated: boolean;
-}
-
-export interface ChannelInstanceMigrationRowReceipt {
-	key: Record<string, string>;
-	channelInstanceId?: string | null;
-	scopeKey?: string;
-	structuredRoutes?: Record<string, string | null>;
-}
-
-export interface ChannelInstanceMigrationTableReceipt {
-	table: string;
-	storage: ChannelRouteStorage;
-	rows: ChannelInstanceMigrationRowReceipt[];
 }
 
 export interface PreparedChannelInstanceMigration {
@@ -137,26 +122,32 @@ export class ProfileChannelInstanceMigration {
 		return this.db.transaction(() => this.applyInternal(normalized))();
 	}
 
-	/** Reverses exactly the rows recorded by apply, without replacing the live SQLite file or its inode. */
-	rollbackApplied(
+	/** Restores exactly the migrated rows from the verified before snapshot without replacing the live SQLite inode. */
+	rollbackFromBackup(
 		migration: AppliedChannelInstanceMigration,
+		backupPath: string,
 		expectedCurrentDigest: string,
 		expectedRestoredDigest: string,
 	): void {
 		this.assertOpen();
-		this.validateRollbackReceipt(migration);
-		this.db.exec("BEGIN EXCLUSIVE");
+		this.validateRollbackPlan(migration);
+		const beforeSchema = "beemax_migration_before";
+		this.db.prepare(`ATTACH DATABASE ? AS ${quoteIdentifier(beforeSchema)}`).run(backupPath);
 		try {
+			this.db.exec("BEGIN EXCLUSIVE");
 			if (digestDatabase(this.db) !== expectedCurrentDigest) throw new Error("Profile database changed while rollback was prepared");
-			for (const table of migration.receipt) this.rollbackTable(table, migration.platform, migration.channelInstanceId);
+			if (digestDatabase(this.db, beforeSchema) !== expectedRestoredDigest) throw new Error("Restore snapshot does not match the expected pre-migration state");
+			for (const table of migration.tables) this.rollbackTableFromBackup(table, migration.platform, migration.channelInstanceId, beforeSchema);
 			const deleted = this.db.prepare(`DELETE FROM ${MIGRATION_TABLE} WHERE id = ?`).run(migration.id);
 			if (deleted.changes !== 1) throw new Error(`Migration audit ${migration.id} is missing`);
-			if (migration.migrationAuditTableCreated) this.db.exec(`DROP TABLE ${MIGRATION_TABLE}`);
+			if (!this.tableExists(MIGRATION_TABLE, beforeSchema)) this.db.exec(`DROP TABLE ${MIGRATION_TABLE}`);
 			if (digestDatabase(this.db) !== expectedRestoredDigest) throw new Error("Reversed migration does not match the expected pre-migration state");
 			this.db.exec("COMMIT");
 		} catch (error) {
 			if (this.db.inTransaction) this.db.exec("ROLLBACK");
 			throw error;
+		} finally {
+			this.db.exec(`DETACH DATABASE ${quoteIdentifier(beforeSchema)}`);
 		}
 	}
 
@@ -309,116 +300,48 @@ export class ProfileChannelInstanceMigration {
 		}
 	}
 
-	private captureReceipt(plan: ChannelInstanceMigrationPlan): ChannelInstanceMigrationTableReceipt[] {
-		return plan.tables.map((table) => {
-			const descriptor = this.descriptor(table.table, table.storage);
-			const keyColumns = descriptor.keyColumns ?? ["id"];
-			const columns = this.columns(table.table);
-			const capturesScopeKey = descriptor.scopeKey === true
-				&& ["scope_key", "chat_id", "user_id", "thread_id"].every((column) => columns.has(column));
-			const projection = [
-				...keyColumns,
-				...(table.storage === "channel_instance_column" ? ["channel_instance_id"] : []),
-				...(capturesScopeKey ? ["scope_key"] : []),
-				...(descriptor.structuredRouteColumns?.filter((column) => columns.has(column)) ?? []),
-			].map(quoteIdentifier).join(", ");
-			const where = table.storage === "channel_instance_column"
-				? "platform = ? AND (channel_instance_id IS NULL OR channel_instance_id = '')"
-				: "platform = ?";
-			const order = keyColumns.map(quoteIdentifier).join(", ");
-			const sourceRows = this.db.prepare(`SELECT ${projection} FROM ${quoteIdentifier(table.table)} WHERE ${where} ORDER BY ${order}`).all(plan.platform) as Record<string, unknown>[];
-			const rows = sourceRows.map((source): ChannelInstanceMigrationRowReceipt => {
-				const key = Object.fromEntries(keyColumns.map((column) => {
-					const value = source[column];
-					if (typeof value !== "string") throw new Error(`${table.table}.${column} must be text for a reversible migration`);
-					return [column, value];
-				}));
-				const receipt: ChannelInstanceMigrationRowReceipt = { key };
-				if (table.storage === "channel_instance_column") {
-					const value = source.channel_instance_id;
-					if (value !== null && typeof value !== "string") throw new Error(`${table.table}.channel_instance_id must be text or null`);
-					receipt.channelInstanceId = value as string | null;
-				}
-				if (capturesScopeKey) {
-					if (typeof source.scope_key !== "string") throw new Error(`${table.table}.scope_key must be text`);
-					receipt.scopeKey = source.scope_key;
-				}
-				if (descriptor.structuredRouteColumns) {
-					receipt.structuredRoutes = {};
-					for (const column of descriptor.structuredRouteColumns) {
-						if (!columns.has(column)) continue;
-						const value = source[column];
-						if (value !== null && typeof value !== "string") throw new Error(`${table.table}.${column} must be text or null`);
-						receipt.structuredRoutes[column] = value as string | null;
-					}
-				}
-				return receipt;
-			});
-			if (rows.length !== table.rows) throw new Error(`Concurrent change detected while recording ${table.table}`);
-			return { table: table.table, storage: table.storage, rows };
-		});
-	}
-
-	private rollbackTable(table: ChannelInstanceMigrationTableReceipt, platform: string, channelInstanceId: string): void {
+	private rollbackTableFromBackup(table: ChannelInstanceMigrationTablePlan, platform: string, channelInstanceId: string, beforeSchema: string): void {
 		const descriptor = this.descriptor(table.table, table.storage);
 		const keyColumns = descriptor.keyColumns ?? ["id"];
-		const identifier = quoteIdentifier(table.table);
-		for (const row of table.rows) {
-			const assignments: string[] = [];
-			const params: unknown[] = [];
-			if (table.storage === "encoded_platform") {
-				assignments.push("platform = ?");
-				params.push(platform);
-				if (row.scopeKey !== undefined) {
-					if (!descriptor.scopeKey || typeof row.scopeKey !== "string") throw new Error(`${table.table} rollback receipt has invalid scope_key`);
-					assignments.push("scope_key = ?");
-					params.push(row.scopeKey);
-				}
-			} else {
-				if (row.channelInstanceId !== null && typeof row.channelInstanceId !== "string") throw new Error(`${table.table} rollback receipt has invalid channel_instance_id`);
-				assignments.push("channel_instance_id = ?");
-				params.push(row.channelInstanceId);
-				for (const column of descriptor.structuredRouteColumns ?? []) {
-					if (!row.structuredRoutes || !(column in row.structuredRoutes)) continue;
-					const value = row.structuredRoutes[column];
-					if (value !== null && typeof value !== "string") throw new Error(`${table.table} rollback receipt has invalid ${column}`);
-					assignments.push(`${quoteIdentifier(column)} = ?`);
-					params.push(value);
-				}
+		const currentTable = `${quoteIdentifier("main")}.${quoteIdentifier(table.table)}`;
+		const sourceTable = `${quoteIdentifier(beforeSchema)}.${quoteIdentifier(table.table)}`;
+		const keyJoin = keyColumns.map((column) => `source.${quoteIdentifier(column)} = current.${quoteIdentifier(column)}`).join(" AND ");
+		const currentColumns = this.columns(table.table);
+		const params: unknown[] = [];
+		let assignments: string[];
+		let ownershipWhere: string;
+		if (table.storage === "encoded_platform") {
+			assignments = ["platform = source.platform"];
+			if (descriptor.scopeKey && ["scope_key", "chat_id", "user_id", "thread_id"].every((column) => currentColumns.has(column))) {
+				assignments.push("scope_key = source.scope_key");
 			}
-			const keyWhere = keyColumns.map((column) => `${quoteIdentifier(column)} = ?`).join(" AND ");
-			for (const column of keyColumns) params.push(row.key[column]);
-			const ownershipWhere = table.storage === "encoded_platform"
-				? "platform = ?"
-				: "platform = ? AND channel_instance_id = ?";
-			params.push(table.storage === "encoded_platform" ? `${platform}@${channelInstanceId}` : platform);
-			if (table.storage === "channel_instance_column") params.push(channelInstanceId);
-			const result = this.db.prepare(`UPDATE ${identifier} SET ${assignments.join(", ")} WHERE ${keyWhere} AND ${ownershipWhere}`).run(...params);
-			if (result.changes !== 1) throw new Error(`Migrated row in ${table.table} is missing or no longer owned by the target Channel Instance`);
+			ownershipWhere = "source.platform = ? AND current.platform = ?";
+			params.push(platform, `${platform}@${channelInstanceId}`);
+		} else {
+			assignments = ["channel_instance_id = source.channel_instance_id"];
+			for (const column of descriptor.structuredRouteColumns ?? []) {
+				if (currentColumns.has(column)) assignments.push(`${quoteIdentifier(column)} = source.${quoteIdentifier(column)}`);
+			}
+			ownershipWhere = "source.platform = ? AND (source.channel_instance_id IS NULL OR source.channel_instance_id = '') AND current.platform = ? AND current.channel_instance_id = ?";
+			params.push(platform, platform, channelInstanceId);
 		}
+		const result = this.db.prepare(`UPDATE ${currentTable} AS current SET ${assignments.join(", ")} FROM ${sourceTable} AS source WHERE ${keyJoin} AND ${ownershipWhere}`).run(...params);
+		if (result.changes !== table.rows) throw new Error(`Migrated rows in ${table.table} are missing or no longer owned by the target Channel Instance`);
 	}
 
-	private validateRollbackReceipt(migration: AppliedChannelInstanceMigration): void {
-		if (!migration.id || !Array.isArray(migration.receipt) || typeof migration.migrationAuditTableCreated !== "boolean") {
-			throw new Error("Channel instance migration rollback receipt is invalid");
-		}
+	private validateRollbackPlan(migration: AppliedChannelInstanceMigration): void {
+		if (!migration.id || !Array.isArray(migration.tables) || !Number.isSafeInteger(migration.totalRows) || migration.totalRows <= 0) throw new Error("Channel instance migration rollback plan is invalid");
 		validateAddressPart("platform", migration.platform);
 		validateAddressPart("channelInstanceId", migration.channelInstanceId);
-		const planned = new Map(migration.tables.map((table) => [table.table, table]));
-		if (migration.receipt.length !== planned.size) throw new Error("Channel instance migration rollback receipt is incomplete");
 		const received = new Set<string>();
-		for (const table of migration.receipt) {
-			const plan = planned.get(table.table);
-			const descriptor = this.descriptor(table.table, table.storage);
-			if (received.has(table.table) || !plan || plan.storage !== table.storage || plan.rows !== table.rows.length) throw new Error(`Channel instance migration rollback receipt does not match ${table.table}`);
+		let totalRows = 0;
+		for (const table of migration.tables) {
+			if (received.has(table.table) || !Number.isSafeInteger(table.rows) || table.rows <= 0) throw new Error(`Channel instance migration rollback plan does not match ${table.table}`);
+			this.descriptor(table.table, table.storage);
 			received.add(table.table);
-			const keyColumns = descriptor.keyColumns ?? ["id"];
-			for (const row of table.rows) {
-				if (!row || typeof row !== "object" || keyColumns.some((column) => typeof row.key?.[column] !== "string")) {
-					throw new Error(`${table.table} rollback receipt has an invalid row key`);
-				}
-			}
+			totalRows += table.rows;
 		}
+		if (totalRows !== migration.totalRows) throw new Error("Channel instance migration rollback plan row count is invalid");
 	}
 
 	private descriptor(table: string, storage: ChannelRouteStorage): ChannelRouteTableDescriptor {
@@ -455,8 +378,6 @@ export class ProfileChannelInstanceMigration {
 		const plan = this.planInternal(input.platform, input.channelInstanceId);
 		if (plan.blockers.length > 0) throw new Error(`Channel instance migration is blocked:\n${plan.blockers.join("\n")}`);
 		if (plan.totalRows === 0) throw new Error("Channel instance migration has no legacy route data to assign");
-		const receipt = this.captureReceipt(plan);
-		const migrationAuditTableCreated = !this.tableExists(MIGRATION_TABLE);
 		this.createAuditTable();
 		for (const table of plan.tables) this.applyTable(table, input.platform, input.channelInstanceId);
 		this.db.prepare(`
@@ -464,7 +385,7 @@ export class ProfileChannelInstanceMigration {
 				(id, base_platform, channel_instance_id, backup_ref, row_counts_json, total_rows, applied_at)
 			VALUES (?, ?, ?, ?, ?, ?, ?)
 		`).run(input.id, input.platform, input.channelInstanceId, input.backupRef, JSON.stringify(plan.tables), plan.totalRows, input.appliedAt);
-		return { ...plan, id: input.id, backupRef: input.backupRef, appliedAt: input.appliedAt, receipt, migrationAuditTableCreated };
+		return { ...plan, id: input.id, backupRef: input.backupRef, appliedAt: input.appliedAt };
 	}
 
 	private userTables(): string[] {
@@ -473,8 +394,8 @@ export class ProfileChannelInstanceMigration {
 			.filter((name) => name !== MIGRATION_TABLE);
 	}
 
-	private tableExists(table: string): boolean {
-		return this.db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?").get(table) !== undefined;
+	private tableExists(table: string, schema = "main"): boolean {
+		return this.db.prepare(`SELECT 1 FROM ${quoteIdentifier(schema)}.sqlite_master WHERE type = 'table' AND name = ?`).get(table) !== undefined;
 	}
 
 	private columns(table: string): Set<string> {
@@ -508,9 +429,10 @@ export function digestSqliteDatabase(path: string): string {
 	finally { db.close(); }
 }
 
-function digestDatabase(db: DatabaseType): string {
+function digestDatabase(db: DatabaseType, schemaName = "main"): string {
 	const hash = createHash("sha256");
-	const schema = db.prepare(`SELECT type, name, tbl_name, sql FROM sqlite_master
+	const schemaIdentifier = quoteIdentifier(schemaName);
+	const schema = db.prepare(`SELECT type, name, tbl_name, sql FROM ${schemaIdentifier}.sqlite_master
 		WHERE name NOT LIKE 'sqlite_%' ORDER BY type, name`).all() as SchemaRow[];
 	for (const row of schema) {
 		hashValue(hash, row.type);
@@ -519,11 +441,11 @@ function digestDatabase(db: DatabaseType): string {
 		hashValue(hash, row.sql);
 	}
 	for (const table of schema.filter((row) => row.type === "table")) {
-		const tableInfo = db.prepare(`PRAGMA table_info(${quoteIdentifier(table.name)})`).all() as TableInfoRow[];
+		const tableInfo = db.prepare(`PRAGMA ${schemaIdentifier}.table_info(${quoteIdentifier(table.name)})`).all() as TableInfoRow[];
 		if (tableInfo.length === 0) continue;
 		hashValue(hash, table.name);
-		const locator = rowLocator(db, table.name, tableInfo);
-		const cells = tableInfo.map((column) => cellReader(db, table.name, column.name, locator.where));
+		const locator = rowLocator(db, schemaName, table.name, tableInfo);
+		const cells = tableInfo.map((column) => cellReader(db, schemaName, table.name, column.name, locator.where));
 		for (const row of locator.rows) {
 			const params = locator.keys.map((key) => row[key]);
 			for (const value of params) hashValue(hash, value);
@@ -533,16 +455,17 @@ function digestDatabase(db: DatabaseType): string {
 	return hash.digest("hex");
 }
 
-function rowLocator(db: DatabaseType, table: string, tableInfo: TableInfoRow[]): { keys: string[]; where: string; rows: Iterable<Record<string, unknown>> } {
+function rowLocator(db: DatabaseType, schema: string, table: string, tableInfo: TableInfoRow[]): { keys: string[]; where: string; rows: Iterable<Record<string, unknown>> } {
+	const tableReference = `${quoteIdentifier(schema)}.${quoteIdentifier(table)}`;
 	try {
-		const statement = db.prepare(`SELECT rowid AS __beemax_rowid FROM ${quoteIdentifier(table)} ORDER BY rowid`).safeIntegers();
+		const statement = db.prepare(`SELECT rowid AS __beemax_rowid FROM ${tableReference} ORDER BY rowid`).safeIntegers();
 		return { keys: ["__beemax_rowid"], where: "rowid = ?", rows: statement.iterate() as Iterable<Record<string, unknown>> };
 	} catch {
 		const primaryKey = tableInfo.filter((column) => column.pk > 0).sort((left, right) => left.pk - right.pk);
 		if (primaryKey.length === 0) throw new Error(`Cannot create a stable logical digest for table ${table}`);
 		const keys = primaryKey.map((column) => column.name);
 		const projection = keys.map(quoteIdentifier).join(", ");
-		const statement = db.prepare(`SELECT ${projection} FROM ${quoteIdentifier(table)} ORDER BY ${projection}`).safeIntegers();
+		const statement = db.prepare(`SELECT ${projection} FROM ${tableReference} ORDER BY ${projection}`).safeIntegers();
 		return {
 			keys,
 			where: keys.map((key) => `${quoteIdentifier(key)} = ?`).join(" AND "),
@@ -551,12 +474,13 @@ function rowLocator(db: DatabaseType, table: string, tableInfo: TableInfoRow[]):
 	}
 }
 
-function cellReader(db: DatabaseType, table: string, column: string, where: string): { metadata: Database.Statement<unknown[], unknown>; exact: Database.Statement<unknown[], unknown>; chunk: Database.Statement<unknown[], unknown> } {
+function cellReader(db: DatabaseType, schema: string, table: string, column: string, where: string): { metadata: Database.Statement<unknown[], unknown>; exact: Database.Statement<unknown[], unknown>; chunk: Database.Statement<unknown[], unknown> } {
 	const identifier = quoteIdentifier(column);
+	const tableReference = `${quoteIdentifier(schema)}.${quoteIdentifier(table)}`;
 	return {
-		metadata: db.prepare(`SELECT typeof(${identifier}) AS value_type, length(CAST(${identifier} AS BLOB)) AS byte_length FROM ${quoteIdentifier(table)} WHERE ${where}`).safeIntegers(),
-		exact: db.prepare(`SELECT ${identifier} FROM ${quoteIdentifier(table)} WHERE ${where}`).pluck(),
-		chunk: db.prepare(`SELECT substr(CAST(${identifier} AS BLOB), ?, ?) FROM ${quoteIdentifier(table)} WHERE ${where}`).pluck(),
+		metadata: db.prepare(`SELECT typeof(${identifier}) AS value_type, length(CAST(${identifier} AS BLOB)) AS byte_length FROM ${tableReference} WHERE ${where}`).safeIntegers(),
+		exact: db.prepare(`SELECT ${identifier} FROM ${tableReference} WHERE ${where}`).pluck(),
+		chunk: db.prepare(`SELECT substr(CAST(${identifier} AS BLOB), ?, ?) FROM ${tableReference} WHERE ${where}`).pluck(),
 	};
 }
 

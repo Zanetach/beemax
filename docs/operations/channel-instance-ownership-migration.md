@@ -54,7 +54,7 @@ beemax migration channel-instance rollback \
 
 回滚前 BeeMax 会以 64 KiB 内容单元格分块、精确 64 位整数和 IEEE-754 REAL 语义重新计算逻辑 SQLite 摘要并核对迁移后状态；不会把整个数据库或一个超大内容列一次性装入 Node 堆。摘要不同就拒绝，不能用回滚覆盖新的消息、Task、Memory 或 Automation 写入。清单路径、数据库和 before/after 路径全部从所选 Profile 推导，备份通过临时文件和 no-clobber hard link 发布，悬空 symlink 不能把数据引到 Profile 外。成功回滚会保留 `<id>.after.db`，并把清单状态改为 `rolled_back`。
 
-回滚使用持久状态机：`prepared → applied → rollback_prepared → rolled_back`。apply 清单持久化逐表逐行的精确反向 receipt；最终恢复在同一个 SQLite authority、同一个数据库 inode 内用 `BEGIN EXCLUSIVE` 覆盖“最后摘要检查 → receipt 反向更新 → before 摘要复核 → 提交”，不会替换数据库文件，也不手工删除可能仍承载提交页的 WAL/SHM。排队或新到达的 writer 只能在回滚事务提交后继续写入，不会写向已被替换的旧 inode。如果进程在提交前退出，SQLite 会撤销整个反向事务；如果在数据库恢复后、状态发布前退出，重试同一 rollback 会识别 before 摘要并幂等完成。
+回滚使用持久状态机：`prepared → applied → rollback_prepared → rolled_back`。经过摘要验证的 before SQLite snapshot 本身就是精确恢复源；最终恢复在同一个 SQLite authority、同一个数据库 inode 内用 `BEGIN EXCLUSIVE` 覆盖“当前与 before 摘要检查 → SQLite 集合式反向更新 → before 摘要复核 → 提交”，不会把业务行或大型 JSON 装入 Node 堆，不会替换数据库文件，也不手工删除可能仍承载提交页的 WAL/SHM。排队或新到达的 writer 只能在回滚事务提交后继续写入，不会写向已被替换的旧 inode。如果进程在提交前退出，SQLite 会撤销整个反向事务；如果在数据库恢复后、状态发布前退出，重试同一 rollback 会识别 before 摘要并幂等完成。
 
 ## 故障处理
 

@@ -832,7 +832,7 @@ beemax migration channel-instance apply --platform feishu --channel-instance com
 beemax migration channel-instance rollback ~/.beemax/profiles/personal/migrations/channel-instance/assign-company-a.json --yes --profile personal
 ```
 
-`apply` 只处理 BeeMax 基础设施显式登记的路由表，在一个 SQLite 写栅栏和事务中覆盖 before backup、编码式 Memory scope、独立 `channel_instance_id` 路由、逐行反向 receipt、迁移后摘要与 prepared recovery manifest；客户扩展表不会因列名相似而被猜测改写。结构化 scope key 与 Initiative 嵌套路由同步更新。目标唯一键冲突、无效嵌套 JSON 或并发变化全部 fail-closed。`rollback` 从所选 Profile 配置派生并校验所有路径，以精确整数/REAL、分块内容摘要、no-clobber artifact 发布、同一 SQLite inode 内的 exclusive 反向事务和持久状态机支持崩溃后幂等续作；任何后续写入都会阻止恢复，排队 writer 则在回滚提交后继续，避免抹掉新业务数据。详细操作见 [`docs/operations/channel-instance-ownership-migration.md`](../operations/channel-instance-ownership-migration.md)。
+`apply` 只处理 BeeMax 基础设施显式登记的路由表，在一个 SQLite 写栅栏和事务中覆盖 before backup、编码式 Memory scope、独立 `channel_instance_id` 路由、迁移后摘要与 prepared recovery manifest；客户扩展表不会因列名相似而被猜测改写。结构化 scope key 与 Initiative 嵌套路由同步更新。目标唯一键冲突、无效嵌套 JSON 或并发变化全部 fail-closed。`rollback` 从所选 Profile 配置派生并校验所有路径，以经过摘要验证的 before SQLite snapshot 作为精确恢复源，通过集合式 SQL、精确整数/REAL、分块内容摘要、no-clobber artifact 发布、同一 SQLite inode 内的 exclusive 反向事务和持久状态机支持大数据量与崩溃后幂等续作；任何后续写入都会阻止恢复，排队 writer 则在回滚提交后继续，避免抹掉新业务数据。详细操作见 [`docs/operations/channel-instance-ownership-migration.md`](../operations/channel-instance-ownership-migration.md)。
 
 #### 10.2.5 Binding 与 Profile 路由
 
