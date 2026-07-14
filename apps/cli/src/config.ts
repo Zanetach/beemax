@@ -19,8 +19,6 @@ import { DEFAULT_DOCKER_SANDBOX_IMAGE, DEFAULT_RUNTIME_RESOURCE_LIMITS, resolveR
 export { beemaxHome, beemaxRoot, validateProfileName } from "./profile-home.ts";
 
 export interface FeishuConfig {
-	appId: string;
-	appSecret: string;
 	domain: "feishu" | "lark";
 	requireMention: boolean;
 	activation: FeishuActivationSettings;
@@ -37,8 +35,6 @@ export interface FeishuConfig {
 	webhookHost: string;
 	webhookPort: number;
 	webhookPath: string;
-	webhookVerificationToken?: string;
-	webhookEncryptKey?: string;
 	textBatchDelayMs: number;
 	textBatchSplitDelayMs: number;
 	textBatchMaxMessages: number;
@@ -47,7 +43,6 @@ export interface FeishuConfig {
 	retryBaseDelayMs: number;
 }
 export interface TelegramConfig {
-	botToken: string;
 	allowedUsers: string[];
 	allowedChats: string[];
 	allowAllUsers: boolean;
@@ -105,7 +100,7 @@ export interface BeeMaxConfig {
 	};
 	models: Array<{ provider: string; model: string; baseUrl?: string; customProtocol?: CustomProtocol; contextWindow?: number; maxTokens?: number }>;
 	/** Profile-owned channel configuration. A Profile may run its own Gateway. */
-	gateway: { channels: GatewayChannelConfig[]; channelCredentials: Record<string, GatewayChannelCredential>; bindings: GatewayBindingConfig[]; ingress: { maxActive: number; maxActivePerConversation: number }; observation: { retainPerLane: number; minRelevance: number; minCredibility: number; minExpectedValue: number; minConfidence: number; evaluationTimeoutMs: number; maxActiveEvaluations: number; maxActivePerLane: number }; proactiveDelivery: { quietHours?: FeishuActivationSettings["quietHours"]; maxDeliveriesPerWindow: number; deliveryWindowMs: number; maxTrackedLanes: number }; feishu: FeishuConfig; telegram: TelegramConfig };
+	gateway: { channels: GatewayChannelConfig[]; bindings: GatewayBindingConfig[]; ingress: { maxActive: number; maxActivePerConversation: number }; observation: { retainPerLane: number; minRelevance: number; minCredibility: number; minExpectedValue: number; minConfidence: number; evaluationTimeoutMs: number; maxActiveEvaluations: number; maxActivePerLane: number }; proactiveDelivery: { quietHours?: FeishuActivationSettings["quietHours"]; maxDeliveriesPerWindow: number; deliveryWindowMs: number; maxTrackedLanes: number }; feishu: FeishuConfig; telegram: TelegramConfig };
 	memory: {
 		dbPath: string;
 		memberships: MemoryMembership[];
@@ -174,6 +169,8 @@ export interface BeeMaxConfig {
 	paths: {
 		agentDir: string;
 		cwd: string;
+		profileEnvPath: string;
+		channelCredentialEnvironment: "profile" | "ambient";
 	};
 }
 
@@ -227,8 +224,6 @@ export function loadConfig(configPath?: string, profile = "default"): BeeMaxConf
 	const configuredAdmins = parseList(env.FEISHU_ADMINS ?? configuredFeishu?.admins);
 	const requireMention = parseBool(env.FEISHU_REQUIRE_MENTION ?? configuredFeishu?.requireMention ?? true);
 	const feishu: FeishuConfig = {
-		appId,
-		appSecret,
 		domain: (env.FEISHU_DOMAIN ?? configuredFeishu?.domain ?? "feishu") === "lark" ? "lark" : "feishu",
 		requireMention,
 		activation: parseFeishuActivation(configuredFeishu?.activation, requireMention, env),
@@ -245,8 +240,6 @@ export function loadConfig(configPath?: string, profile = "default"): BeeMaxConf
 		webhookHost: str(env.FEISHU_WEBHOOK_HOST ?? configuredFeishu?.webhookHost ?? "127.0.0.1"),
 		webhookPort: Number(env.FEISHU_WEBHOOK_PORT ?? configuredFeishu?.webhookPort ?? 8787),
 		webhookPath: str(env.FEISHU_WEBHOOK_PATH ?? configuredFeishu?.webhookPath ?? "/feishu/events"),
-		webhookVerificationToken: str(env.FEISHU_WEBHOOK_VERIFICATION_TOKEN ?? configuredFeishu?.webhookVerificationToken ?? "") || undefined,
-		webhookEncryptKey: str(env.FEISHU_WEBHOOK_ENCRYPT_KEY ?? configuredFeishu?.webhookEncryptKey ?? "") || undefined,
 		textBatchDelayMs: boundedNumber(env.FEISHU_TEXT_BATCH_DELAY_MS ?? configuredFeishu?.textBatchDelayMs, 600, 0, 60_000),
 		textBatchSplitDelayMs: boundedNumber(env.FEISHU_TEXT_BATCH_SPLIT_DELAY_MS ?? configuredFeishu?.textBatchSplitDelayMs, 2_000, 0, 60_000),
 		textBatchMaxMessages: boundedNumber(env.FEISHU_TEXT_BATCH_MAX_MESSAGES ?? configuredFeishu?.textBatchMaxMessages, 8, 1, 1_000),
@@ -255,8 +248,8 @@ export function loadConfig(configPath?: string, profile = "default"): BeeMaxConf
 		retryBaseDelayMs: boundedNumber(env.FEISHU_RETRY_BASE_DELAY_MS ?? configuredFeishu?.retryBaseDelayMs, 1_000, 0, 30_000),
 	};
 	const configuredTelegram = configuredTelegramChannel?.settings ?? {};
+	const telegramBotToken = str(env.TELEGRAM_BOT_TOKEN);
 	const telegram: TelegramConfig = {
-		botToken: str(env.TELEGRAM_BOT_TOKEN),
 		allowedUsers: parseList(env.TELEGRAM_ALLOWED_USERS ?? configuredTelegram.allowedUsers),
 		allowedChats: parseList(env.TELEGRAM_ALLOWED_CHATS ?? configuredTelegram.allowedChats),
 		allowAllUsers: parseBool(env.TELEGRAM_ALLOW_ALL_USERS ?? configuredTelegram.allowAllUsers ?? false),
@@ -265,11 +258,10 @@ export function loadConfig(configPath?: string, profile = "default"): BeeMaxConf
 	};
 	const channels = cfg.gateway?.channels === undefined
 		? [
-			...(feishu.appId && feishu.appSecret ? [{ id: "feishu-main", adapter: "feishu", enabled: true, credentialRef: "profile-env:feishu", settings: {} }] : []),
-			...(telegram.botToken ? [{ id: "telegram-main", adapter: "telegram", enabled: true, credentialRef: "profile-env:telegram", settings: {} }] : []),
+			...(appId && appSecret ? [{ id: "feishu-main", adapter: "feishu", enabled: true, credentialRef: "profile-env:feishu", settings: {} }] : []),
+			...(telegramBotToken ? [{ id: "telegram-main", adapter: "telegram", enabled: true, credentialRef: "profile-env:telegram", settings: {} }] : []),
 		] satisfies GatewayChannelConfig[]
 		: configuredChannels;
-	const channelCredentials = resolveChannelCredentials(channels, env, { feishu, telegram });
 	const bindings = parseGatewayBindings(cfg.gateway?.bindings, profile, channels);
 	const ingress = {
 		maxActive: boundedNumber(env.BEEMAX_GATEWAY_MAX_ACTIVE ?? cfg.gateway?.ingress?.maxActive, 1_000, 1, 100_000),
@@ -321,7 +313,7 @@ export function loadConfig(configPath?: string, profile = "default"): BeeMaxConf
 			maxTokens,
 		},
 		models: configuredModels,
-		gateway: { channels, channelCredentials, bindings, ingress, observation, proactiveDelivery, feishu, telegram },
+		gateway: { channels, bindings, ingress, observation, proactiveDelivery, feishu, telegram },
 		memory: {
 			dbPath: resolveFrom(location.basePath, str(env.BEEMAX_DB_PATH ?? cfg.memory?.dbPath ?? join(profileDataRoot, location.isHome ? "memory.db" : "beemax.db"))),
 			memberships: parseMemoryMemberships(cfg.memory?.memberships),
@@ -402,6 +394,8 @@ export function loadConfig(configPath?: string, profile = "default"): BeeMaxConf
 		paths: {
 			agentDir: resolveFrom(location.basePath, str(env.BEEMAX_AGENT_DIR ?? cfg.paths?.agentDir ?? (location.isHome ? "." : join(profileDataRoot, "agent")))),
 			cwd: resolveFrom(location.basePath, str(env.BEEMAX_CWD ?? cfg.paths?.cwd ?? (location.isHome ? root : "."))),
+			profileEnvPath: envPath,
+			channelCredentialEnvironment: location.isHome ? "profile" : "ambient",
 		},
 	};
 }
@@ -532,31 +526,29 @@ function parseGatewayChannels(value: unknown): GatewayChannelConfig[] {
 	});
 }
 
-function resolveChannelCredentials(
-	channels: readonly GatewayChannelConfig[],
-	env: Record<string, string | undefined>,
-	legacy: { feishu: FeishuConfig; telegram: TelegramConfig },
-): Record<string, GatewayChannelCredential> {
-	const credentials: Record<string, GatewayChannelCredential> = {};
-	for (const channel of channels) {
-		const ref = channel.credentialRef;
-		if (!ref || credentials[ref]) continue;
-		if (channel.adapter === "feishu") {
-			const values = ref === "profile-env:feishu"
-				? { appId: legacy.feishu.appId, appSecret: legacy.feishu.appSecret, webhookVerificationToken: legacy.feishu.webhookVerificationToken, webhookEncryptKey: legacy.feishu.webhookEncryptKey }
-				: ref === `profile-env:channel:${channel.id}`
-					? { appId: str(env[`${channelEnvPrefix(channel.id)}_APP_ID`]), appSecret: str(env[`${channelEnvPrefix(channel.id)}_APP_SECRET`]), webhookVerificationToken: optional(env[`${channelEnvPrefix(channel.id)}_WEBHOOK_VERIFICATION_TOKEN`]), webhookEncryptKey: optional(env[`${channelEnvPrefix(channel.id)}_WEBHOOK_ENCRYPT_KEY`]) }
-					: undefined;
-			if (values?.appId && values.appSecret) credentials[ref] = { adapter: "feishu", ...values };
-		}
-		if (channel.adapter === "telegram") {
-			const botToken = ref === "profile-env:telegram"
-				? legacy.telegram.botToken
-				: ref === `profile-env:channel:${channel.id}` ? str(env[`${channelEnvPrefix(channel.id)}_BOT_TOKEN`]) : "";
-			if (botToken) credentials[ref] = { adapter: "telegram", botToken };
-		}
+/** Resolve one Channel Secret only at the trusted Adapter boundary; never retain it in BeeMaxConfig. */
+export function consumeChannelCredential<T>(config: BeeMaxConfig, channel: Pick<GatewayChannelConfig, "id" | "adapter" | "credentialRef">, consumer: (credential: Readonly<GatewayChannelCredential>) => T): T | undefined {
+	const ref = channel.credentialRef;
+	if (!ref) return undefined;
+	const env: Record<string, string | undefined> = config.paths.channelCredentialEnvironment === "profile"
+		? readEnvFileSync(config.paths.profileEnvPath)
+		: process.env;
+	if (channel.adapter === "feishu") {
+		const prefix = ref === "profile-env:feishu" ? "FEISHU" : ref === `profile-env:channel:${channel.id}` ? channelEnvPrefix(channel.id) : undefined;
+		if (!prefix) return undefined;
+		const appId = str(env[`${prefix}_APP_ID`]);
+		const appSecret = str(env[`${prefix}_APP_SECRET`]);
+		if (!appId || !appSecret) return undefined;
+		const webhookVerificationToken = optional(env[`${prefix}_WEBHOOK_VERIFICATION_TOKEN`]);
+		const webhookEncryptKey = optional(env[`${prefix}_WEBHOOK_ENCRYPT_KEY`]);
+		return consumer({ adapter: "feishu", appId, appSecret, ...(webhookVerificationToken ? { webhookVerificationToken } : {}), ...(webhookEncryptKey ? { webhookEncryptKey } : {}) });
 	}
-	return credentials;
+	if (channel.adapter === "telegram") {
+		const key = ref === "profile-env:telegram" ? "TELEGRAM_BOT_TOKEN" : ref === `profile-env:channel:${channel.id}` ? `${channelEnvPrefix(channel.id)}_BOT_TOKEN` : undefined;
+		const botToken = key ? str(env[key]) : "";
+		return botToken ? consumer({ adapter: "telegram", botToken }) : undefined;
+	}
+	return undefined;
 }
 
 function channelEnvPrefix(instanceId: string): string {

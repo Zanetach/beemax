@@ -80,4 +80,5 @@ This slice establishes the package and runtime seam required by future platforms
 - Made explicit Channel Instance settings and Credential Refs authoritative, including independent same-platform instances.
 - Moved Feishu CardKit rendering, state, throttling, degradation, and interactive binding behind `InteractionPresenter`; Gateway now supplies only a platform-neutral text fallback.
 - Added package-graph architecture gates and a real `ChannelHost → Dispatcher → Runtime → Delivery` contract test covering concrete instance routing and cancellation.
-- Completion gate passed on 2026-07-14: full build, typecheck, 784-test suite, architecture schema v5, and two-axis Standards/Spec review are clean.
+- Added a shared Feishu/Telegram registration/lifecycle conformance harness and isolated deletion scenarios that physically omit either platform package before building Channel Runtime, Gateway, and the remaining Adapter.
+- Post-review closure on 2026-07-14 removed long-lived Channel Secrets from ordinary config and Adapter settings, aligned Telegram group Activation/observation with the common contract, and passed full build, typecheck, the 796-test suite, architecture schema v5, and both deletion-build scenarios.

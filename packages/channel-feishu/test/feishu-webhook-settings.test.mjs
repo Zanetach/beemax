@@ -48,7 +48,8 @@ test("Feishu batch tuning defaults match Hermes and clamps environment overrides
 
 test("webhook listener rejects non-POST, query paths, and oversized bodies", async () => {
 	const port = await freePort();
-	const adapter = new FeishuAdapter({ ...base, webhookEncryptKey: "key", webhookPort: port, botOpenId: "ou_bot" });
+	const { appId, appSecret, webhookEncryptKey, ...settings } = { ...base, webhookEncryptKey: "key", webhookPort: port, botOpenId: "ou_bot" };
+	const adapter = new FeishuAdapter(settings, (consumer) => consumer({ appId, appSecret, webhookEncryptKey }));
 	try {
 		assert.equal(await adapter.connect(), true);
 		assert.equal((await http(port, "GET", "/feishu/events")).status, 404);

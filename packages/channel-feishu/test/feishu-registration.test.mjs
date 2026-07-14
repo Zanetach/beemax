@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { createFeishuAdapterRegistration } from "../dist/index.js";
+import { FeishuAdapter, loadFeishuSettings } from "../dist/index.js";
 
 test("Feishu registration creates independent Channel Instances from their settings and Credential Refs", () => {
 	const requested = [];
@@ -9,9 +10,9 @@ test("Feishu registration creates independent Channel Instances from their setti
 			domain: "feishu", connectionMode: "websocket", requireMention: true,
 			allowedUsers: ["legacy"], allowedChats: [], allowAllUsers: false,
 		},
-		resolveCredentials: (instance) => {
+		consumeCredentials: (instance, consumer) => {
 			requested.push(`${instance.id}:${instance.credentialRef}`);
-			return { appId: `app-${instance.id}`, appSecret: `secret-${instance.id}` };
+			return consumer({ appId: `app-${instance.id}`, appSecret: `secret-${instance.id}` });
 		},
 	});
 	const first = registration.create({ id: "company-a", adapter: "feishu", enabled: true, credentialRef: "profile-env:channel:company-a", settings: { allowedUsers: ["user-a"] } });
@@ -23,11 +24,18 @@ test("Feishu registration creates independent Channel Instances from their setti
 	assert.deepEqual(requested, ["company-a:profile-env:channel:company-a", "company-b:profile-env:channel:company-b"]);
 });
 
+test("Feishu Adapter strips legacy and excess Secret fields from its retained runtime settings", () => {
+	const legacy = loadFeishuSettings({ FEISHU_APP_ID: "app", FEISHU_APP_SECRET: "secret", FEISHU_WEBHOOK_ENCRYPT_KEY: "encrypt" });
+	const adapter = new FeishuAdapter(legacy, (consumer) => consumer({ appId: "app", appSecret: "secret" }));
+	for (const key of ["appId", "appSecret", "webhookVerificationToken", "webhookEncryptKey"]) assert.equal(key in adapter.settings, false);
+});
+
 test("Feishu registration fails closed on missing credentials and invalid instance settings", () => {
 	const registration = createFeishuAdapterRegistration({
 		defaults: { domain: "feishu", connectionMode: "websocket", requireMention: true, allowedUsers: [], allowedChats: [], allowAllUsers: false },
-		resolveCredentials: (instance) => instance.id === "missing" ? undefined : { appId: "app", appSecret: "secret" },
+		consumeCredentials: (instance, consumer) => instance.id === "missing" ? undefined : consumer({ appId: "app", appSecret: "secret" }),
 	});
 	assert.throws(() => registration.create({ id: "missing", adapter: "feishu", enabled: true, credentialRef: "missing", settings: {} }), /missing.*credentials/i);
 	assert.throws(() => registration.create({ id: "invalid", adapter: "feishu", enabled: true, credentialRef: "invalid", settings: { allowedUsers: "everyone" } }), /allowedUsers/i);
+	assert.throws(() => registration.create({ id: "secret", adapter: "feishu", enabled: true, credentialRef: "secret", settings: { webhookEncryptKey: "must-not-be-config" } }), /unknown.*webhookEncryptKey/i);
 });

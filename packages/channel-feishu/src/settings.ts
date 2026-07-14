@@ -83,8 +83,12 @@ export interface FeishuSettings {
 	retryBaseDelayMs?: number;
 }
 
+export type FeishuRuntimeSettings = Omit<FeishuSettings, "appId" | "appSecret" | "webhookVerificationToken" | "webhookEncryptKey">;
+export interface FeishuCredentials { appId: string; appSecret: string; webhookVerificationToken?: string; webhookEncryptKey?: string; }
+export type FeishuCredentialConsumer = <T>(consumer: (credentials: Readonly<FeishuCredentials>) => T) => T | undefined;
+
 /** Reject webhook settings that would expose an unauthenticated public listener. */
-export function validateFeishuWebhookSettings(settings: FeishuSettings): void {
+export function validateFeishuWebhookSettings(settings: FeishuRuntimeSettings & Pick<FeishuCredentials, "webhookEncryptKey">): void {
 	if (settings.connectionMode !== "webhook") return;
 	if (!settings.webhookEncryptKey?.trim()) {
 		throw new Error("Webhook mode requires FEISHU_WEBHOOK_ENCRYPT_KEY so inbound Feishu events can be authenticated");

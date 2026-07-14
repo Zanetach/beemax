@@ -1,8 +1,10 @@
 # Changelog
 
-## Unreleased
+## Unreleased — 1.2.0 release candidate
 
 ## 1.2.0
+
+> Reserved release section for version consistency checks. These changes remain an engineering release candidate until the GitHub tag and archive are published.
 
 - Added durable Schedule Occurrences with stable due-time identity, renewable fenced claims, bounded retry budgets, explicit skip/run-once misfire policy, and retained one-shot audit history.
 - Separated verified Pi execution settlement from channel delivery through a durable Delivery Outbox, so channel outages retry delivery without replaying the Agent, Task, or Tool work.
@@ -13,8 +15,11 @@
 - Added deterministic multi-instance Profile Bindings, group Conversation/Actor separation, bounded contextual activation and observation, governed proactive delivery, ingress backpressure, and Profile Host lifecycle isolation.
 - Added explicit, fenced migrations for legacy Channel Instance and shared-session ownership, including integrity manifests, rollback protection, and operator diagnostics.
 - Split the platform-neutral Channel Runtime, Feishu Adapter, and Telegram Adapter into independent packages; rich presentation now stays behind the Adapter-owned `InteractionPresenter` seam with declared capability fallbacks.
+- Removed long-lived Feishu and Telegram plaintext credentials from ordinary `BeeMaxConfig` and Adapter settings; Channel Instance `credentialRef` values are consumed through a callback-only trusted boundary and observe rotations without rebuilding the config object.
+- Aligned Telegram groups with the transport-neutral Activation contract: verified mention/reply/command signals, bounded same-Thread contextual follow-ups, and observe-only delivery that cannot enter the Agent message path.
 - Added a hardened Docker Execution Sandbox with CPU, memory, PID, filesystem, network, capability, output, timeout, cancellation, and workspace-access controls while retaining explicit trusted-host execution.
 - Added Ubuntu 24.04 resource high-water gates for RSS, SQLite size, queues, concurrency, systemd limits, and Docker isolation, plus release security evidence for Profile and Memory separation and exactly-once Effects.
+- Added release evidence for independent Profile failure/capacity boundaries, Session migration crash continuation, a shared Feishu/Telegram factory conformance harness, and real builds with either platform Adapter package absent.
 - Hardened clean builds and release archives so stale generated modules cannot mask failures; isolated archive smoke now creates and reloads a Profile and verifies packaged Skills without inheriting host BeeMax state.
 
 ## 1.1.0

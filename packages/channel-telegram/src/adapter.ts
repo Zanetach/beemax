@@ -4,10 +4,9 @@ import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { Readable, Transform } from "node:stream";
 import { pipeline } from "node:stream/promises";
-import { decideGroupActivation, type InboundMessage, type MessageHandler, type PlatformAdapter, type SendOptions, type SendResult } from "@beemax/channel-runtime";
+import { GroupActivationController, type GroupActivationDecision, type GroupActivationMode, type GroupActivationSignal, type InboundMessage, type MessageHandler, type ObservationHandler, type PlatformAdapter, type SendOptions, type SendResult } from "@beemax/channel-runtime";
 
 export interface TelegramSettings {
-	botToken: string;
 	allowedUsers: string[];
 	allowedChats: string[];
 	allowAllUsers: boolean;
@@ -15,7 +14,10 @@ export interface TelegramSettings {
 	retryBaseDelayMs?: number;
 	apiBaseUrl?: string;
 	mediaMaxBytes?: number;
+	activation?: { mode?: GroupActivationMode; respondTo?: GroupActivationSignal[]; ambientObservation?: boolean; activeThreadTtlMs?: number; maxActiveThreads?: number };
 }
+export interface TelegramCredentials { botToken: string; }
+export type TelegramCredentialConsumer = <T>(consumer: (credentials: Readonly<TelegramCredentials>) => T) => T | undefined;
 
 export interface TelegramAdapterDependencies {
 	fetch?: typeof globalThis.fetch;
@@ -37,61 +39,92 @@ interface TelegramMessage {
 	from?: TelegramUser;
 	text?: string;
 	caption?: string;
-	reply_to_message?: { message_id: number; text?: string; caption?: string };
+	message_thread_id?: number;
+	entities?: TelegramMessageEntity[];
+	caption_entities?: TelegramMessageEntity[];
+	reply_to_message?: { message_id: number; text?: string; caption?: string; from?: TelegramUser };
 	photo?: Array<{ file_id: string; width: number; height: number; file_size?: number }>;
 	document?: { file_id: string; file_name?: string; mime_type?: string; file_size?: number };
 	audio?: { file_id: string; file_name?: string; mime_type?: string; file_size?: number };
 	voice?: { file_id: string; mime_type?: string; file_size?: number };
 }
+interface TelegramMessageEntity { type: string; offset: number; length: number; }
 interface TelegramUpdate { update_id: number; message?: TelegramMessage; edited_message?: TelegramMessage; channel_post?: TelegramMessage; }
 
 /** Telegram Bot API Adapter using bounded long polling and no channel-specific Agent runtime. */
 export class TelegramAdapter implements PlatformAdapter {
 	readonly name = "telegram" as const;
 	readonly capabilities = { mediaDelivery: "files", messageEditing: true, interactiveActions: false, richPresentation: false } as const;
-	private readonly settings: Required<Pick<TelegramSettings, "pollingTimeoutSeconds" | "retryBaseDelayMs" | "apiBaseUrl" | "mediaMaxBytes">> & TelegramSettings;
+	private readonly settings: Required<Pick<TelegramSettings, "pollingTimeoutSeconds" | "retryBaseDelayMs" | "apiBaseUrl" | "mediaMaxBytes" | "activation">> & TelegramSettings;
 	private readonly fetchImpl: typeof globalThis.fetch;
+	private readonly consumeCredentials: TelegramCredentialConsumer;
+	private readonly activationController: GroupActivationController;
 	private handler?: MessageHandler;
+	private observationHandler?: ObservationHandler;
 	private abortController?: AbortController;
 	private pollTask?: Promise<void>;
 	private connected = false;
 	private offset = 0;
+	private botId?: number;
+	private botUsername?: string;
 
-	constructor(settings: TelegramSettings, dependencies: TelegramAdapterDependencies = {}) {
-		if (!settings.botToken.trim()) throw new Error("Telegram bot token is required");
+	constructor(settings: TelegramSettings, consumeCredentials: TelegramCredentialConsumer, dependencies: TelegramAdapterDependencies = {}) {
+		if (consumeCredentials((credentials) => Boolean(credentials.botToken.trim())) !== true) throw new Error("Telegram bot token is required");
 		this.settings = {
 			...settings,
-			botToken: settings.botToken.trim(),
 			allowedUsers: normalizeIds(settings.allowedUsers),
 			allowedChats: normalizeIds(settings.allowedChats),
 			pollingTimeoutSeconds: boundedInteger(settings.pollingTimeoutSeconds, 25, 1, 50),
 			retryBaseDelayMs: boundedInteger(settings.retryBaseDelayMs, 1_000, 0, 30_000),
 			apiBaseUrl: (settings.apiBaseUrl ?? "https://api.telegram.org").replace(/\/$/, ""),
 			mediaMaxBytes: boundedInteger(settings.mediaMaxBytes, 25 * 1024 * 1024, 1_024, 100 * 1024 * 1024),
+			activation: {
+				mode: settings.activation?.mode ?? "explicit",
+				respondTo: settings.activation?.respondTo ?? ["mention", "reply", "command"],
+				ambientObservation: settings.activation?.ambientObservation ?? false,
+				activeThreadTtlMs: settings.activation?.activeThreadTtlMs,
+				maxActiveThreads: settings.activation?.maxActiveThreads,
+			},
 		};
 		this.fetchImpl = dependencies.fetch ?? globalThis.fetch;
+		this.consumeCredentials = consumeCredentials;
+		this.activationController = new GroupActivationController({ activeThreadTtlMs: this.settings.activation.activeThreadTtlMs, maxActiveThreads: this.settings.activation.maxActiveThreads });
 	}
 
 	get isConnected(): boolean { return this.connected; }
 
 	onMessage(handler: MessageHandler): void { this.handler = handler; }
+	onObservation(handler: ObservationHandler): void { this.observationHandler = handler; }
 
-	admit(source: { chatId: string; userId?: string; chatType?: "dm" | "group" | "channel" | "thread" }): string | null {
+	admit(source: { chatId: string; userId?: string; chatType?: "dm" | "group" | "channel" | "thread"; threadId?: string; signals?: Partial<Record<GroupActivationSignal, boolean>> }): string | null {
 		if (this.settings.allowedChats.length && !this.settings.allowedChats.includes(source.chatId)) return "chat is not authorized";
 		const actorAuthorized = this.settings.allowAllUsers || Boolean(source.userId && this.settings.allowedUsers.includes(source.userId));
 		if (source.chatType && source.chatType !== "dm") {
-			const decision = decideGroupActivation({ policy: this.settings.allowAllUsers ? "open" : "allowlist", actorIds: source.userId ? [source.userId] : [], actorAuthorized, actorIsAdmin: false, allowlist: this.settings.allowedUsers, mode: "ambient", respondTo: [], signals: {} });
+			const decision = this.decideGroup(source, actorAuthorized);
 			return decision.admitted ? null : decision.reason === "actor_not_allowed" ? "user is not authorized" : decision.reason;
 		}
 		if (!actorAuthorized) return "user is not authorized";
 		return null;
 	}
 
+	private decideGroup(source: { chatId: string; userId?: string; threadId?: string; signals?: Partial<Record<GroupActivationSignal, boolean>> }, actorAuthorized: boolean): GroupActivationDecision {
+		return this.activationController.decide(`${source.chatId}:${source.threadId ?? "root"}`, {
+			policy: this.settings.allowAllUsers ? "open" : "allowlist",
+			actorIds: source.userId ? [source.userId] : [], actorAuthorized, actorIsAdmin: false, allowlist: this.settings.allowedUsers,
+			mode: this.settings.activation.mode ?? "explicit", respondTo: this.settings.activation.respondTo ?? [], signals: source.signals ?? {},
+			ambientObservation: this.settings.activation.ambientObservation,
+		});
+	}
+
 	async connect(): Promise<boolean> {
 		if (this.connected) return true;
 		const controller = new AbortController();
 		this.abortController = controller;
-		try { await this.api<TelegramUser>("getMe", {}, controller.signal); }
+		try {
+			const bot = await this.api<TelegramUser>("getMe", {}, controller.signal);
+			this.botId = bot.id;
+			this.botUsername = bot.username;
+		}
 		catch (error) { if (this.abortController === controller) this.abortController = undefined; throw error; }
 		if (controller.signal.aborted) return false;
 		this.connected = true;
@@ -171,27 +204,38 @@ export class TelegramAdapter implements PlatformAdapter {
 
 	private async dispatchUpdate(update: TelegramUpdate): Promise<void> {
 		const message = update.message ?? update.edited_message ?? update.channel_post;
-		if (!message || !this.handler) return;
+		if (!message || (!this.handler && !this.observationHandler)) return;
 		const chatId = String(message.chat.id);
 		const userId = message.from ? String(message.from.id) : undefined;
 		const chatType = telegramChatType(message.chat.type);
-		if (this.admit({ chatId, userId, chatType })) return;
+		const threadId = message.message_thread_id !== undefined ? String(message.message_thread_id) : undefined;
+		const signals = telegramActivationSignals(message, this.botId, this.botUsername);
 		const media = telegramMedia(message);
 		const text = (message.text ?? message.caption ?? (media ? `[Telegram ${media.messageType}]` : "")).trim();
 		if (!text && !media) return;
+		if (this.settings.allowedChats.length && !this.settings.allowedChats.includes(chatId)) return;
+		const actorAuthorized = this.settings.allowAllUsers || Boolean(userId && this.settings.allowedUsers.includes(userId));
+		const groupDecision = chatType === "dm" ? undefined : this.decideGroup({ chatId, userId, threadId, signals }, actorAuthorized);
+		if (groupDecision && !groupDecision.admitted) return;
+		if (!groupDecision && !actorAuthorized) return;
+		const source = {
+			platform: "telegram", chatId, chatType,
+			...(message.chat.title ? { chatName: message.chat.title } : {}),
+			...(threadId ? { threadId } : {}),
+			...(userId ? { userId } : {}),
+			...(message.from ? { userName: telegramUserName(message.from) } : {}),
+			messageId: String(message.message_id),
+		};
+		if (groupDecision?.admitted && groupDecision.action === "observe") {
+			if (text && this.observationHandler) await this.observationHandler({ text, source, timestamp: message.date * 1_000 });
+			return;
+		}
+		if (!this.handler) return;
 		const downloaded = media ? await this.downloadMedia(media) : undefined;
 		const inbound: InboundMessage = {
 			text,
-			messageType: media?.messageType ?? "text",
-			source: {
-				platform: "telegram",
-				chatId,
-				chatType,
-				...(message.chat.title ? { chatName: message.chat.title } : {}),
-				...(userId ? { userId } : {}),
-				...(message.from ? { userName: telegramUserName(message.from) } : {}),
-				messageId: String(message.message_id),
-			},
+			messageType: media?.messageType ?? (signals.command ? "command" : "text"),
+			source,
 			mediaPaths: downloaded ? [downloaded.path] : [],
 			mediaTypes: downloaded ? [downloaded.mimeType] : [],
 			releaseMedia: downloaded ? () => rm(downloaded.directory, { recursive: true, force: true }) : undefined,
@@ -211,7 +255,8 @@ export class TelegramAdapter implements PlatformAdapter {
 		if (media.fileSize && media.fileSize > this.settings.mediaMaxBytes) throw new Error(`Telegram media exceeds ${this.settings.mediaMaxBytes} byte limit`);
 		const descriptor = await this.api<{ file_path: string; file_size?: number }>("getFile", { file_id: media.fileId });
 		if (descriptor.file_size && descriptor.file_size > this.settings.mediaMaxBytes) throw new Error(`Telegram media exceeds ${this.settings.mediaMaxBytes} byte limit`);
-		const response = await this.fetchImpl(`${this.settings.apiBaseUrl}/file/bot${this.settings.botToken}/${descriptor.file_path}`);
+		const response = await this.consumeCredentials((credentials) => this.fetchImpl(`${this.settings.apiBaseUrl}/file/bot${credentials.botToken}/${descriptor.file_path}`));
+		if (!response) throw new Error("Telegram credentials are unavailable");
 		if (!response.ok || !response.body) throw new Error(`Telegram media download failed: HTTP ${response.status}`);
 		const declared = Number(response.headers.get("content-length"));
 		if (Number.isFinite(declared) && declared > this.settings.mediaMaxBytes) throw new Error(`Telegram media exceeds ${this.settings.mediaMaxBytes} byte limit`);
@@ -233,12 +278,13 @@ export class TelegramAdapter implements PlatformAdapter {
 	}
 
 	private async api<T = unknown>(method: string, body: Record<string, unknown>, signal?: AbortSignal): Promise<T> {
-		const response = await this.fetchImpl(`${this.settings.apiBaseUrl}/bot${this.settings.botToken}/${method}`, {
+		const response = await this.consumeCredentials((credentials) => this.fetchImpl(`${this.settings.apiBaseUrl}/bot${credentials.botToken}/${method}`, {
 			method: "POST",
 			headers: { "content-type": "application/json" },
 			body: JSON.stringify(body),
 			signal,
-		});
+		}));
+		if (!response) throw new Error("Telegram credentials are unavailable");
 		const envelope = await response.json() as TelegramEnvelope<T>;
 		if (!response.ok || !envelope.ok || envelope.result === undefined) {
 			throw new Error(`Telegram ${method} failed${envelope.error_code ? ` (${envelope.error_code})` : ""}: ${envelope.description ?? `HTTP ${response.status}`}`);
@@ -250,7 +296,8 @@ export class TelegramAdapter implements PlatformAdapter {
 		const form = new FormData();
 		form.set("chat_id", chatId);
 		form.set(field, new Blob([await readFile(path)], { type: mimeType ?? "application/octet-stream" }), name ?? basename(path));
-		const response = await this.fetchImpl(`${this.settings.apiBaseUrl}/bot${this.settings.botToken}/${method}`, { method: "POST", body: form });
+		const response = await this.consumeCredentials((credentials) => this.fetchImpl(`${this.settings.apiBaseUrl}/bot${credentials.botToken}/${method}`, { method: "POST", body: form }));
+		if (!response) throw new Error("Telegram credentials are unavailable");
 		const envelope = await response.json() as TelegramEnvelope<{ message_id: number }>;
 		if (!response.ok || !envelope.ok || !envelope.result) throw new Error(`Telegram ${method} failed: ${envelope.description ?? `HTTP ${response.status}`}`);
 		return { success: true, messageId: String(envelope.result.message_id) };
@@ -258,6 +305,20 @@ export class TelegramAdapter implements PlatformAdapter {
 }
 
 function normalizeIds(values: string[]): string[] { return [...new Set(values.map(String).map((value) => value.trim()).filter(Boolean))]; }
+function telegramActivationSignals(message: TelegramMessage, botId?: number, botUsername?: string): Partial<Record<GroupActivationSignal, boolean>> {
+	const text = message.text ?? message.caption ?? "";
+	const entities = message.entities ?? message.caption_entities ?? [];
+	const entityText = (entity: TelegramMessageEntity) => text.slice(entity.offset, entity.offset + entity.length);
+	const normalizedBot = botUsername?.toLowerCase();
+	const mention = Boolean(normalizedBot && entities.some((entity) => entity.type === "mention" && entityText(entity).toLowerCase() === `@${normalizedBot}`));
+	const command = entities.some((entity) => {
+		if (entity.type !== "bot_command" || entity.offset !== 0) return false;
+		const target = entityText(entity).split("@")[1]?.toLowerCase();
+		return !target || target === normalizedBot;
+	});
+	const reply = botId !== undefined && message.reply_to_message?.from?.id === botId;
+	return { mention, command, reply };
+}
 interface TelegramMedia { fileId: string; fileSize?: number; fileName?: string; mimeType?: string; messageType: "image" | "audio" | "file"; }
 function telegramMedia(message: TelegramMessage): TelegramMedia | undefined {
 	if (message.photo?.length) {

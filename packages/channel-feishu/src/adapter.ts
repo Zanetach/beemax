@@ -37,7 +37,7 @@ import type {
 	SendResult,
 	SessionSource,
 } from "@beemax/channel-runtime";
-import { validateFeishuWebhookSettings, type FeishuSettings } from "./settings.ts";
+import { validateFeishuWebhookSettings, type FeishuCredentialConsumer, type FeishuRuntimeSettings } from "./settings.ts";
 import { retryFeishuOperation } from "./retry.ts";
 import { FeishuInteractionPresenter } from "./presentation/presenter.ts";
 import { GroupActivationController, GroupResponseGovernor, type GroupActivationDecision } from "@beemax/channel-runtime";
@@ -54,6 +54,10 @@ const MAX_MEDIA_BATCH_MESSAGES = 8;
 const MAX_MEDIA_BATCH_BYTES = 30 * 1024 * 1024;
 const MAX_PENDING_INBOUND = 1_000;
 const OBSERVE_ONLY = Symbol("observe_only");
+
+export interface FeishuAdapterDependencies {
+	createClient?: (credentials: Readonly<{ appId: string; appSecret: string }>, domain: typeof FEISHU_DOMAIN | typeof LARK_DOMAIN) => Client;
+}
 
 interface PendingInboundEvent {
 	message: InboundMessage;
@@ -96,13 +100,18 @@ export class FeishuAdapter implements PlatformAdapter {
 	private connectionGeneration = 0;
 	private readonly dedupTtlMs = 24 * 60 * 60 * 1000;
 	private readonly maxDedupEntries = 10_000;
-	private readonly settings: FeishuSettings;
+	private readonly settings: FeishuRuntimeSettings;
+	private readonly consumeCredentials: FeishuCredentialConsumer;
+	private readonly dependencies: FeishuAdapterDependencies;
 	private readonly activation: GroupActivationController;
 	private readonly responseGovernor: GroupResponseGovernor;
 	private readonly outboundMessages = new Map<string, number>();
 
-	constructor(settings: FeishuSettings) {
-		this.settings = settings;
+	constructor(settings: FeishuRuntimeSettings, consumeCredentials: FeishuCredentialConsumer = () => undefined, dependencies: FeishuAdapterDependencies = {}) {
+		const { appId: _appId, appSecret: _appSecret, webhookVerificationToken: _verificationToken, webhookEncryptKey: _encryptKey, ...runtimeSettings } = settings as FeishuRuntimeSettings & Partial<{ appId: string; appSecret: string; webhookVerificationToken: string; webhookEncryptKey: string }>;
+		this.settings = runtimeSettings;
+		this.consumeCredentials = consumeCredentials;
+		this.dependencies = dependencies;
 		this.presentation = new FeishuInteractionPresenter(this);
 		this.activation = new GroupActivationController({
 			activeThreadTtlMs: settings.activation?.activeThreadTtlMs,
@@ -139,8 +148,12 @@ export class FeishuAdapter implements PlatformAdapter {
 	}
 
 	async connect(): Promise<boolean> {
-		if (!this.settings.appId || !this.settings.appSecret) throw new Error("Feishu requires FEISHU_APP_ID and FEISHU_APP_SECRET.");
-		validateFeishuWebhookSettings(this.settings);
+		const valid = this.consumeCredentials((credentials) => {
+			if (!credentials.appId.trim() || !credentials.appSecret.trim()) return false;
+			validateFeishuWebhookSettings({ ...this.settings, webhookEncryptKey: credentials.webhookEncryptKey });
+			return true;
+		});
+		if (!valid) throw new Error("Feishu requires FEISHU_APP_ID and FEISHU_APP_SECRET.");
 		this.shuttingDown = false;
 		const generation = ++this.connectionGeneration;
 		try {
@@ -165,18 +178,20 @@ export class FeishuAdapter implements PlatformAdapter {
 		}
 		const domain = this.settings.domain === "lark" ? LARK_DOMAIN : FEISHU_DOMAIN;
 
-		this.client = new lark.Client({
-			appId: this.settings.appId,
-			appSecret: this.settings.appSecret,
+		const client = this.consumeCredentials((credentials) => this.dependencies.createClient?.(credentials, domain) ?? new lark.Client({
+			appId: credentials.appId,
+			appSecret: credentials.appSecret,
 			appType: lark.AppType.SelfBuild,
 			domain,
 			disableTokenCache: false,
 			loggerLevel: lark.LoggerLevel.warn,
-		});
+		}));
+		if (!client) throw new Error("Feishu credentials are unavailable");
+		this.client = client;
 
-		const dispatcher: EventDispatcher = new lark.EventDispatcher({
-			verificationToken: this.settings.webhookVerificationToken,
-			encryptKey: this.settings.webhookEncryptKey,
+		const dispatcher = this.consumeCredentials((credentials) => new lark.EventDispatcher({
+			verificationToken: credentials.webhookVerificationToken,
+			encryptKey: credentials.webhookEncryptKey,
 		}).register({
 			"im.message.receive_v1": async (data) => {
 				await this.onReceive(data);
@@ -194,7 +209,8 @@ export class FeishuAdapter implements PlatformAdapter {
 			"vc.meeting.recording_ready_v1": async (data) => {
 				this.onMeetingRecordingEvent("ready", data);
 			},
-		});
+		}));
+		if (!dispatcher) throw new Error("Feishu credentials are unavailable");
 
 		if (this.settings.connectionMode === "webhook") {
 			const handler = adaptDefault(this.settings.webhookPath ?? "/feishu/events", dispatcher, { autoChallenge: true });
@@ -244,9 +260,9 @@ export class FeishuAdapter implements PlatformAdapter {
 		}
 
 		let wsClient!: WSClient;
-		wsClient = new lark.WSClient({
-			appId: this.settings.appId,
-			appSecret: this.settings.appSecret,
+		const createdWsClient = this.consumeCredentials((credentials) => new lark.WSClient({
+			appId: credentials.appId,
+			appSecret: credentials.appSecret,
 			loggerLevel: lark.LoggerLevel.warn,
 			domain,
 			autoReconnect: true,
@@ -262,7 +278,9 @@ export class FeishuAdapter implements PlatformAdapter {
 				this.connected = false;
 				console.error(`[beemax] Feishu WebSocket connection failed: ${error.message}`);
 			},
-		});
+		}));
+		if (!createdWsClient) throw new Error("Feishu credentials are unavailable");
+		wsClient = createdWsClient;
 		this.wsClient = wsClient;
 
 		await wsClient.start({ eventDispatcher: dispatcher });

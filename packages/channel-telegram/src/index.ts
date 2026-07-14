@@ -1,2 +1,2 @@
-export { TelegramAdapter, type TelegramAdapterDependencies, type TelegramSettings } from "./adapter.ts";
-export { createTelegramAdapterRegistration, normalizeTelegramInstanceSettings, type TelegramAdapterRegistrationOptions, type TelegramCredentials } from "./registration.ts";
+export { TelegramAdapter, type TelegramAdapterDependencies, type TelegramCredentialConsumer, type TelegramCredentials, type TelegramSettings } from "./adapter.ts";
+export { createTelegramAdapterRegistration, normalizeTelegramInstanceSettings, type TelegramAdapterRegistrationOptions } from "./registration.ts";

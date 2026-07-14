@@ -8,7 +8,7 @@
 npm run verify:release
 ```
 
-`verify:release` 依次执行 build、typecheck、Runtime evaluation、当前受支持机器的严格 performance Profile、Memory stability、reliability、security、P0–P10 acceptance 和全量测试。`eval:security` 用真实 SQLite 与 Effect Journal 验收群聊 Private Memory 不披露、跨 Profile Memory 不召回和重复 Effect 不执行；`eval:acceptance` 校验 P0–P10 证据清单、原 PRD 的 TBD 处置，执行 P9 架构收缩门禁，并完成 P10 数据迁移/回滚演练。详细映射由 `evals/original-acceptance-program.json` 维护；增加或删除程序、指标或证据都必须经过代码审查。
+`verify:release` 依次执行 build、typecheck、Runtime evaluation、当前受支持机器的严格 performance Profile、Memory stability、reliability、security、P0–P10 acceptance 和全量测试。`eval:reliability` 包含独立 systemd Profile unit 与双 ProfileHost 故障/容量隔离证据；`eval:security` 用真实 SQLite 与 Effect Journal 验收群聊 Private Memory 不披露、跨 Profile Memory 不召回和重复 Effect 不执行；`eval:acceptance` 校验 P0–P10 证据清单、原 PRD 的 TBD 处置，执行 P9 架构收缩门禁（包括真实平台包删除构建），并完成 P10 数据迁移/回滚演练。详细映射由 `evals/original-acceptance-program.json` 维护；增加或删除程序、指标或证据都必须经过代码审查。
 
 Ubuntu 资源门禁由 CI 和 tag release 在 Ubuntu 24.04 x64 上独立执行 `npm run eval:resources:ubuntu`，并上传带机器声明的 JSON artifact。它不在 macOS 上降级运行；本地复现方式与 RSS、队列、并发、DB 高水位见 [`ubuntu-resource-high-water.md`](ubuntu-resource-high-water.md)。
 

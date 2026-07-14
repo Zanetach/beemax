@@ -30,7 +30,7 @@ import { MemoryStore, memoryPersistencePorts, type OrganizationMemoryPort } from
 import { createFeishuMeetingTools } from "@beemax/feishu-capability";
 import { WeKnoraKnowledgeProvider, createKnowledgeTools } from "@beemax/knowledge";
 import type { SessionSource } from "@beemax/channel-runtime";
-import { beemaxHome, type BeeMaxConfig } from "./config.ts";
+import { beemaxHome, consumeChannelCredential, type BeeMaxConfig } from "./config.ts";
 import { acquireChannelLock } from "./channel-lock.ts";
 import { createTaskAwareConversationContext } from "./runtime-facts.ts";
 import { createProfileRuntime } from "./runtime-composition.ts";
@@ -101,16 +101,12 @@ export async function runGateway(config: BeeMaxConfig): Promise<void> {
 	const profileHost = new ProfileHost(ingress);
 	const pairing = new PairingStore(config.paths.agentDir);
 	let heartbeat: HeartbeatRunner | undefined;
-	const feishuSettings: FeishuSettings = {
-		appId: config.gateway.feishu.appId,
-		appSecret: config.gateway.feishu.appSecret,
+	const feishuSettings: Omit<FeishuSettings, "appId" | "appSecret" | "webhookVerificationToken" | "webhookEncryptKey"> = {
 		domain: config.gateway.feishu.domain,
 		connectionMode: config.gateway.feishu.connectionMode,
 		webhookHost: config.gateway.feishu.webhookHost,
 		webhookPort: config.gateway.feishu.webhookPort,
 		webhookPath: config.gateway.feishu.webhookPath,
-		webhookVerificationToken: config.gateway.feishu.webhookVerificationToken,
-		webhookEncryptKey: config.gateway.feishu.webhookEncryptKey,
 		textBatchDelayMs: config.gateway.feishu.textBatchDelayMs,
 		textBatchSplitDelayMs: config.gateway.feishu.textBatchSplitDelayMs,
 		textBatchMaxMessages: config.gateway.feishu.textBatchMaxMessages,
@@ -140,30 +136,22 @@ export async function runGateway(config: BeeMaxConfig): Promise<void> {
 	const adapterRegistry = new AdapterRegistry();
 	const feishuAdapters = new Map<string, FeishuAdapter>();
 	const feishuInstanceCount = enabledChannels.filter((channel) => channel.adapter === "feishu").length;
-	const { appId: _legacyFeishuAppId, appSecret: _legacyFeishuAppSecret, webhookVerificationToken: _legacyWebhookToken, webhookEncryptKey: _legacyWebhookKey, ...legacyFeishuDefaults } = feishuSettings;
 	adapterRegistry.register(createFeishuAdapterRegistration({
 		defaults: (instance) => instance.credentialRef === "profile-env:feishu"
-			? legacyFeishuDefaults
+			? feishuSettings
 			: {
 				domain: "feishu", connectionMode: "websocket", requireMention: true,
 				allowedUsers: [], allowedChats: [], allowAllUsers: false, groupPolicy: "allowlist", groupRules: {}, admins: [],
 				pairing, ...(feishuInstanceCount === 1 ? { setHomeChat: feishuSettings.setHomeChat } : {}),
 			},
-		resolveCredentials: (instance) => {
-			const credential = instance.credentialRef ? config.gateway.channelCredentials[instance.credentialRef] : undefined;
-			return credential?.adapter === "feishu" ? credential : undefined;
-		},
+		consumeCredentials: (instance, consumer) => consumeChannelCredential(config, instance, (credential) => credential.adapter === "feishu" ? consumer(credential) : undefined),
 		onCreated: (instance, adapter) => { feishuAdapters.set(instance.id, adapter); },
 	}));
-	const { botToken: _legacyTelegramToken, ...legacyTelegramDefaults } = config.gateway.telegram;
 	adapterRegistry.register(createTelegramAdapterRegistration({
 		defaults: (instance) => instance.credentialRef === "profile-env:telegram"
-			? legacyTelegramDefaults
+			? config.gateway.telegram
 			: { allowedUsers: [], allowedChats: [], allowAllUsers: false },
-		resolveCredentials: (instance) => {
-			const credential = instance.credentialRef ? config.gateway.channelCredentials[instance.credentialRef] : undefined;
-			return credential?.adapter === "telegram" ? credential : undefined;
-		},
+		consumeCredentials: (instance, consumer) => consumeChannelCredential(config, instance, (credential) => credential.adapter === "telegram" ? consumer(credential) : undefined),
 	}));
 	const channelHost = new ChannelHost(adapterRegistry, enabledChannels, { connectAttempts: 3, retryBaseDelayMs: 1_000, retryMaxDelayMs: 30_000, requireConnectedOnStart: false });
 	const gatewayVersion = installedVersion();

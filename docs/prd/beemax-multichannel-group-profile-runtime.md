@@ -27,12 +27,14 @@
 | 2026-07-14 | 第九实施切片：安全验收发布门禁 | 将群聊 Private Memory、跨 Profile Memory 与重复 Effect 三项安全阻塞收敛为独立可执行证据 | Codex | `eval:security` 3/3、765 项全量测试及 P10 acceptance 通过；双轴复审均 clean | v1.9-draft |
 | 2026-07-14 | 第十实施切片：Ubuntu 资源高水位门禁 | 为首期 Ubuntu x64 小型规格建立 RSS、队列、并发、DB 与 systemd 的统一可执行合同 | Codex | Ubuntu 24.04 x64 门禁通过（峰值 RSS 436.8 MiB、队列/并发/DB/systemd 合同通过）；767 项全量测试与完整发布门禁通过，Spec 复审 clean、Standards 无硬违规 | v1.10-draft |
 | 2026-07-14 | 第十一实施切片：Docker Execution Sandbox | 明确 Host Execution 不是 Sandbox，并为内置命令/文件 Capability 建立真实容器隔离与取消清理证据 | Codex | build、typecheck、773 项全量测试、发布评估与真实 Docker 开发门禁通过；双轴复审 clean。Ubuntu 24.04 x64 正式 artifact 由 CI/tag 生成，本机证据不冒充正式证据 | v1.11-draft |
+| 2026-07-14 | 第十二实施切片：Channel Runtime 与平台 Adapter 独立包 | 让通用 Runtime、Gateway、Feishu、Telegram 和平台呈现的源码、依赖、发布边界与真实所有权一致 | Codex | 三个独立包、真实 ChannelHost→Gateway→Runtime→Delivery 契约、架构 schema v5 与双轴复审通过 | v1.12-draft |
+| 2026-07-14 | 第十三实施切片：1.2 发布审计闭环 | 消除 Channel Secret 长期配置副本，补齐 Telegram 群聊 Activation、Profile 故障隔离、平台删除构建和 CLI 迁移续作证据 | Codex | callback-only Credential consumer、真实双 Profile 子进程强杀演练、完整共享 Adapter conformance、双向平台删除构建与 Session crash continuation 门禁通过；产品/安全人工审核待签署 | v1.13-rc |
 
 ---
 
 ## 当前实施状态（2026-07-14）
 
-当前已完成第一至第十一实施切片的代码、文档与本地发布门禁；第十一切片的 Ubuntu 24.04 x64 正式证据由已配置的 CI/tag release 生成：
+当前已完成第一至第十三实施切片的工程实现、文档与本地发布门禁；Ubuntu 24.04 x64 的正式资源和 Docker 证据由已配置的 CI/tag release 生成。这里的“完成”表示 1.2 工程发布候选满足自动化合同，不替代 PRD 表头仍待完成的产品、Runtime 与安全负责人签署，也不表示 GitHub tag 已发布：
 
 - 群聊/Channel/Thread 的 Conversation 不再包含当前 Actor；Task Responsibility 仍按 Actor 或可信统一身份归属。
 - `channelInstanceId` 已贯穿 Gateway 入站、投递、Task Plan Completion Notice、Automation Job/Delivery/Route/Media 和 Memory 分区。
@@ -41,7 +43,7 @@
 - 旧 Actor Session transcript、Session Catalog 与 Task owner 提供 additive fallback read。
 - 通用 Group Admission 决策模块已落地，飞书 Adapter 已接入；Ubuntu systemd 已增加可配置 Memory/CPU/Tasks 上限。
 - Profile Binding 已实现 Thread→Conversation→Account→Instance 优先级、同层冲突失败、启动校验与入站 fail-closed；模型不能选择 Profile。
-- Activation 契约已支持 disabled/explicit/contextual/ambient 与 mention/reply/active-thread/command，飞书和 Telegram 共用通用决策边界。
+- Activation 契约已支持 disabled/explicit/contextual/ambient 与 mention/reply/active-thread/command；飞书和 Telegram 共用通用决策边界。Telegram 只信任平台 entity、目标 Bot reply 和同 Thread 有界活动状态，observe-only 内容不进入 Agent 消息路径。
 - Gateway ingress 已实现 Profile 全局和单 Conversation 高水位、拒绝计数和 `/status` 诊断；容量耗尽时仍允许 `/stop`。
 - `beemax binding validate/explain` 已复用 Gateway 强隔离校验，可诊断唯一匹配层级并拒绝冲突、未知实例和跨 Profile 路由。
 - 通用 Active Conversation Lane 已实现有界 TTL/LRU 状态；飞书支持 mention、可信回复、命令及同 Thread 自然追问，不向其他 Thread 扩散。
@@ -54,15 +56,19 @@
 - Legacy 主动目标缺少可信 Conversation Type 时 fail-closed，Heartbeat 多实例路由有歧义时不投递；`delivery_settled` 按 Profile/Channel Instance 记录 delivered/deferred/failed、原因、尝试次数和延迟，媒体投递也具备 lease/token fencing。
 - `beemax binding activate/disable <id>` 仅修改既有 Binding：独占写锁阻止并发 CLI 丢失更新，完整强隔离校验在发布前执行，临时文件 fsync + rename 保证原子替换；未知 Binding 或冲突不会改变原配置。
 - 最小 `ProfileHost` 已成为普通 Interaction 的 Profile 级 admission 权威：仅 healthy/degraded 接收新 Turn，draining/failed/recovering/stopped fail-closed；Gateway 停止时先 drain，再等待已接收 Turn 释放。
+- 独立 systemd `%i` Profile unit、每 Profile 资源限制与双 `ProfileHost` 故障/容量验收共同证明一个 Profile failed/saturated 时另一 Profile 仍可接收 Interaction；该行为进入 `eval:reliability` 和 P10 证据。
 - Profile Host 从 Channel Host 快照推导运行健康并持续更新：单个 Channel Instance 故障进入 degraded，不停止其他 Channel 或 Profile Runtime；核心 authority 不可用才进入 failed。`/status` 可查看 state、accepting、lifecycle rejection 与降级原因。
 - 旧版无 instance 的 Memory、Automation、Initiative 和 Completion Notice 路由数据不再靠运行时猜测归属；管理员使用 `beemax migration channel-instance plan/apply` 显式选择唯一目标实例，所有相关表在同一 Profile SQLite 事务内更新。
 - 迁移会验证目标是该 Profile 中已启用且 adapter 匹配的 Channel Instance，并在 Gateway Profile 锁与 SQLite 写栅栏内创建经完整性校验的快照、数据库审计记录和迁移前后逻辑 SHA-256 清单；结构化 Memory scope、Initiative 嵌套路由和唯一键冲突均在写入前检查。`rollback` 仅在迁移后数据库未发生任何新写入时恢复，并保留迁移后快照。
 - 旧 Actor-scoped 群聊 transcript 不再依赖永久 fallback 或自动任选；管理员通过 `beemax migration session plan/apply` 显式选择一个 legacy Session 作为 canonical shared Conversation 历史。迁移流式复制 Pi JSONL、收敛内容无关的 Session Catalog owner，保留全部 legacy 文件且不自动合并或删除。
 - Session rollback 以 source/target SHA-256、canonical identity、Profile 路径与 Catalog receipt 共同校验；canonical transcript 或偏好一旦出现新变化就 fail-closed。保留期固定为“无自动过期”，未来删除必须进入独立的企业 retention policy 与审计动作。
+- Session Migration 的 CLI 公共入口已覆盖 prepare manifest 写入后、canonical transcript 发布前崩溃的续作：确认 rollback 后安全标记 aborted，不遗留 canonical 文件或猜测重放。
 - `npm run eval:security` 使用真实 SQLite Memory authority 与跨实例 Effect Journal 独立验收：Private DM Claim 不进入群聊 recall、一个 Profile 的 Memory Store 不能由另一 Profile 打开、同一 idempotency key 只能产生一个 committed mutation；该门禁已进入 `verify:release` 与 P10 证据清单。
 - `ubuntu-small-node22` 把 Ubuntu 24.04 x64 小型主机的 systemd 2 GiB/200%/512 tasks、Interaction Queue 500 条/2 MiB、Profile Task 并发 4 与 RSS 1.5 GiB/DB 1 GiB 运维高水位收敛为配置合同；`eval:resources:ubuntu` 用真实队列、Scheduler、SQLite 与 RSS 压测，CI 和 tag release 上传逐次 JSON 证据。
 - Docker 是首个生产 Execution Sandbox；`local` 明确为继承 BeeMax 进程用户权限的 Host Execution Adapter。`mode: all` 不允许静默使用 local，配置拼写错误 fail-closed；内置 `bash/read/write` 统一经过 `ExecutionPort`，其他 Pi 宿主文件 Tool 被移除。
 - 一次一容器的 Docker Adapter 已加入 network/rootfs/capability/no-new-privileges/IPC/CPU/memory/PID/tmpfs/nofile/output 边界、Profile label 和取消/超时强制清理；`eval:sandbox:ubuntu` 用真实 Docker daemon 验证 workspace none/ro/rw 与全部隔离观察。
+- `BeeMaxConfig` 不再保存 Feishu/Telegram 明文 Secret 注册表或 legacy token 字段；`credentialRef` 只在可信 Adapter、doctor、setup/test 边界即时解析受保护的 Profile `.env`，Secret 轮换不要求重载普通配置对象。
+- `eval:architecture` 在两个隔离临时依赖域中真实删除 Feishu 或 Telegram 包并构建 Channel Runtime、Gateway 与剩余 Adapter；Feishu/Telegram factory 同时运行共享 conformance harness。
 
 仍按本 PRD 后续阶段实施，不计为本切片完成：
 
@@ -1167,4 +1173,4 @@ Interaction/Schedule/Event → Situation → durable admission → Objective/Tas
 2. 设计 Web 管理控制台的信息架构和视觉原型。
 3. 在 P1 稳定后评估 Shared Channel Relay 和跨 Profile Delegation。
 
-> 本 PRD 可以进入 P0/P1 技术实施；商业指标 TODO 不阻塞底层架构开发，但不得在正式商业发布材料中保留未经验证的数字。
+> 本 PRD 的 1.2 工程范围已形成发布候选；商业指标 TODO 不阻塞底层 Runtime 发布，但产品、Runtime 与安全负责人审核仍须真实签署，且不得在正式商业发布材料中保留未经验证的数字。

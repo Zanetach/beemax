@@ -4,7 +4,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { MemoryStore } from "@beemax/memory";
-import { loadConfig } from "../dist/config.js";
+import { consumeChannelCredential, loadConfig } from "../dist/config.js";
+
+const readCredential = (config, channel) => consumeChannelCredential(config, channel, (credential) => ({ ...credential }));
 import { activeProfile } from "../dist/profile-home.js";
 import { curatedMemoryPrompt } from "@beemax/core";
 import {
@@ -61,15 +63,16 @@ test("profile creation and Feishu channel configuration keep secrets in a protec
 	assert.equal((await stat(paths.envPath)).mode & 0o777, 0o600);
 
 	const config = loadConfig(paths.configPath, "personal");
-	assert.equal(config.gateway.feishu.appId, "cli_test");
-	assert.equal(config.gateway.feishu.appSecret, 'secret-\\-"-value');
+	assert.doesNotMatch(JSON.stringify(config.gateway), /cli_test|secret-\\-/);
+	assert.deepEqual(readCredential(config, config.gateway.channels[0]), {
+		adapter: "feishu", appId: "cli_test", appSecret: 'secret-\\-"-value', webhookEncryptKey: "test-encryption-key",
+	});
 	assert.deepEqual(config.gateway.feishu.allowedUsers, ["ou_allowed"]);
 	assert.equal(config.gateway.feishu.activation.mode, "contextual");
 	assert.deepEqual(config.gateway.proactiveDelivery, { maxDeliveriesPerWindow: 6, deliveryWindowMs: 60_000, maxTrackedLanes: 10_000 });
 	assert.equal(config.gateway.observation.maxActiveEvaluations, 8);
 	assert.equal(config.gateway.observation.maxActivePerLane, 1);
 	assert.equal(config.gateway.feishu.connectionMode, "webhook");
-	assert.equal(config.gateway.feishu.webhookEncryptKey, "test-encryption-key");
 	assert.match(yaml, /gateway:\n\s+feishu:/);
 	assert.equal(config.subagents.enabled, true);
 	assert.equal(config.subagents.maxConcurrent, 4);
@@ -147,7 +150,8 @@ gateway:
 		settings: { allowedUsers: ["42"], allowedChats: ["100"], allowAllUsers: false, pollingTimeoutSeconds: 20 },
 	}]);
 	assert.deepEqual(config.gateway.bindings, [{ id: "telegram-main-default", profileId: "channels", channelInstanceId: "telegram-main", enabled: true }]);
-	assert.equal(config.gateway.telegram.botToken, "telegram-secret");
+	assert.deepEqual(readCredential(config, config.gateway.channels[0]), { adapter: "telegram", botToken: "telegram-secret" });
+	assert.doesNotMatch(JSON.stringify(config.gateway), /telegram-secret/);
 	assert.deepEqual(config.gateway.telegram.allowedUsers, ["42"]);
 	assert.doesNotMatch(await readFile(paths.configPath, "utf8"), /telegram-secret/);
 });
@@ -174,11 +178,17 @@ test("runtime config resolves distinct Profile environment credentials for same-
 		"",
 	].join("\n"), { mode: 0o600 });
 	const config = loadConfig(paths.configPath, "multi-channel");
-	assert.deepEqual(config.gateway.channelCredentials, {
-		"profile-env:channel:alerts-cn": { adapter: "telegram", botToken: "token-cn" },
-		"profile-env:channel:alerts-eu": { adapter: "telegram", botToken: "token-eu" },
-	});
-	assert.notEqual(config.gateway.channelCredentials[config.gateway.channels[0].credentialRef].botToken, config.gateway.channelCredentials[config.gateway.channels[1].credentialRef].botToken);
+	assert.equal("channelCredentials" in config.gateway, false);
+	assert.doesNotMatch(JSON.stringify(config), /token-cn|token-eu/);
+	assert.deepEqual(readCredential(config, config.gateway.channels[0]), { adapter: "telegram", botToken: "token-cn" });
+	assert.deepEqual(readCredential(config, config.gateway.channels[1]), { adapter: "telegram", botToken: "token-eu" });
+
+	await writeFile(paths.envPath, [
+		'BEEMAX_CHANNEL_ALERTS_CN_BOT_TOKEN="token-cn-rotated"',
+		'BEEMAX_CHANNEL_ALERTS_EU_BOT_TOKEN="token-eu"',
+		"",
+	].join("\n"), { mode: 0o600 });
+	assert.deepEqual(readCredential(config, config.gateway.channels[0]), { adapter: "telegram", botToken: "token-cn-rotated" });
 });
 
 test("runtime config exposes transport-neutral Feishu contextual activation with per-group overrides", async () => {
@@ -230,8 +240,7 @@ test("channel config rejects missing Credential Refs and never activates YAML-em
 	await writeFile(paths.configPath, `gateway:\n  feishu:\n    appId: yaml-app\n    appSecret: yaml-secret\n`);
 	await writeFile(paths.envPath, "", { mode: 0o600 });
 	const ignored = loadConfig(paths.configPath, "secrets");
-	assert.equal(ignored.gateway.feishu.appId, "");
-	assert.equal(ignored.gateway.feishu.appSecret, "");
+	assert.doesNotMatch(JSON.stringify(ignored.gateway), /yaml-app|yaml-secret/);
 	assert.deepEqual(ignored.gateway.channels, []);
 });
 
@@ -245,9 +254,10 @@ test("Telegram channel lifecycle persists only non-secret settings in the regist
 		allowedChats: ["100"],
 	}, { root, home });
 	const config = loadConfig(paths.configPath, "telegram");
-	assert.equal(config.gateway.telegram.botToken, "bot-secret");
 	assert.equal(config.gateway.channels[0].adapter, "telegram");
 	assert.equal(config.gateway.channels[0].credentialRef, "profile-env:telegram");
+	assert.deepEqual(readCredential(config, config.gateway.channels[0]), { adapter: "telegram", botToken: "bot-secret" });
+	assert.doesNotMatch(JSON.stringify(config.gateway), /bot-secret/);
 	assert.doesNotMatch(await readFile(paths.configPath, "utf8"), /bot-secret/);
 	assert.match(await readFile(paths.envPath, "utf8"), /TELEGRAM_BOT_TOKEN/);
 	await removeTelegramChannel("telegram", { root, home });

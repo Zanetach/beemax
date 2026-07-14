@@ -10,7 +10,7 @@
  */
 
 import { buildMainAgentSystemPrompt, buildSubagentSystemPrompt, createSkillCandidateVerifier, createTaskVerifier, createVerifiedObjectiveMemoryPublisher, executeObjectiveDelivery, executePlannedTask, executeSubagentTask, mainAgentTools, readOnlyAgentTools, runGateway } from "./gateway.ts";
-import { beemaxHome, beemaxRoot, loadConfig } from "./config.ts";
+import { beemaxHome, beemaxRoot, consumeChannelCredential, loadConfig } from "./config.ts";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { backupSqliteDatabase, MemoryStore, memoryPersistencePorts, verifySqliteDatabase } from "@beemax/memory";
 import { runDoctor } from "./doctor.ts";
@@ -498,9 +498,7 @@ async function runChannelCommand(parsed: ParsedArgs): Promise<void> {
 		const config = loadConfig(parsed.configPath, profile);
 		if (!config.gateway.channels.length) { console.log("No channels configured."); return; }
 		for (const channel of config.gateway.channels) {
-			const configured = channel.adapter === "feishu"
-				? Boolean(config.gateway.feishu.appId && config.gateway.feishu.appSecret)
-				: channel.adapter === "telegram" ? Boolean(config.gateway.telegram.botToken) : false;
+			const configured = consumeChannelCredential(config, channel, () => true) === true;
 			console.log(`${channel.adapter}  ${configured ? "configured" : "not configured"}  id=${channel.id}  ${channel.enabled ? "enabled" : "disabled"}`);
 		}
 		return;
@@ -517,15 +515,22 @@ async function runChannelCommand(parsed: ParsedArgs): Promise<void> {
 	if (action === "test") {
 		const config = loadConfig(parsed.configPath, profile);
 		const platform = parsed.positionals[2] ?? "feishu";
-		if (platform === "feishu") console.log(await testFeishuCredentials(config.gateway.feishu));
-		else if (platform === "telegram") console.log(await testTelegramCredentials(config.gateway.telegram.botToken));
+		const instance = config.gateway.channels.find((channel) => channel.enabled && channel.adapter === platform);
+		if (!instance) throw new Error(`No enabled ${platform} Channel Instance is configured`);
+		const result = await consumeChannelCredential(config, instance, (credential) => credential.adapter === "feishu" && platform === "feishu"
+			? testFeishuCredentials({ ...credential, domain: config.gateway.feishu.domain })
+			: credential.adapter === "telegram" && platform === "telegram" ? testTelegramCredentials(credential.botToken) : undefined);
+		if (result) console.log(result);
+		else if (platform === "feishu" || platform === "telegram") throw new Error(`Channel Instance '${instance.id}' has no valid credentials`);
 		else throw new Error(`Unknown channel adapter: ${platform}`);
 		return;
 	}
 	if (action === "add" && parsed.positionals[2] === "telegram") {
 		const current = loadConfig(parsed.configPath, profile);
 		const nonInteractive = parsed.options["non-interactive"] === true || !process.stdin.isTTY;
-		let botToken = process.env.TELEGRAM_BOT_TOKEN ?? current.gateway.telegram.botToken;
+		const existingInstance = current.gateway.channels.find((channel) => channel.adapter === "telegram");
+		const existingBotToken = existingInstance ? consumeChannelCredential(current, existingInstance, (credential) => credential.adapter === "telegram" ? credential.botToken : "") : "";
+		let botToken = process.env.TELEGRAM_BOT_TOKEN ?? existingBotToken ?? "";
 		let allowedUsers = splitList(optionString(parsed, "allowed-users") ?? process.env.TELEGRAM_ALLOWED_USERS) ?? current.gateway.telegram.allowedUsers;
 		if (!nonInteractive) {
 			botToken ||= await askOne("Telegram Bot Token: ", true);
@@ -548,9 +553,11 @@ async function runChannelCommand(parsed: ParsedArgs): Promise<void> {
 	}
 	const current = loadConfig(parsed.configPath, profile);
 	const currentFeishu = current.gateway.feishu;
+	const currentFeishuInstance = current.gateway.channels.find((channel) => channel.adapter === "feishu");
+	const currentFeishuCredential = currentFeishuInstance ? consumeChannelCredential(current, currentFeishuInstance, (credential) => credential.adapter === "feishu" ? { appId: credential.appId, appSecret: credential.appSecret, webhookVerificationToken: credential.webhookVerificationToken, webhookEncryptKey: credential.webhookEncryptKey } : undefined) : undefined;
 	const nonInteractive = parsed.options["non-interactive"] === true || !process.stdin.isTTY;
-	let appId = optionString(parsed, "app-id") ?? process.env.FEISHU_APP_ID ?? currentFeishu.appId;
-	let appSecret = process.env.FEISHU_APP_SECRET ?? currentFeishu.appSecret;
+	let appId = optionString(parsed, "app-id") ?? process.env.FEISHU_APP_ID ?? currentFeishuCredential?.appId ?? "";
+	let appSecret = process.env.FEISHU_APP_SECRET ?? currentFeishuCredential?.appSecret ?? "";
 	let allowedUsers = splitList(optionString(parsed, "allowed-users") ?? process.env.FEISHU_ALLOWED_USERS)
 		?? currentFeishu.allowedUsers;
 	if (!nonInteractive) {
@@ -575,8 +582,8 @@ async function runChannelCommand(parsed: ParsedArgs): Promise<void> {
 		webhookHost: optionString(parsed, "webhook-host") ?? currentFeishu.webhookHost,
 		webhookPort: webhookPort(parsed, currentFeishu.webhookPort),
 		webhookPath: optionString(parsed, "webhook-path") ?? currentFeishu.webhookPath,
-		webhookVerificationToken: process.env.FEISHU_WEBHOOK_VERIFICATION_TOKEN ?? currentFeishu.webhookVerificationToken,
-		webhookEncryptKey: process.env.FEISHU_WEBHOOK_ENCRYPT_KEY ?? currentFeishu.webhookEncryptKey,
+		webhookVerificationToken: process.env.FEISHU_WEBHOOK_VERIFICATION_TOKEN ?? currentFeishuCredential?.webhookVerificationToken,
+		webhookEncryptKey: process.env.FEISHU_WEBHOOK_ENCRYPT_KEY ?? currentFeishuCredential?.webhookEncryptKey,
 	});
 	console.log(`Configured Feishu channel for Agent '${profile}'. Run: beemax channel test --profile ${profile}`);
 }

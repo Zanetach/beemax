@@ -4,7 +4,9 @@ import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import test from "node:test";
-import { loadConfig } from "../dist/config.js";
+import { consumeChannelCredential, loadConfig } from "../dist/config.js";
+
+const readCredential = (config, channel) => consumeChannelCredential(config, channel, (credential) => ({ ...credential }));
 import { configureModel } from "../dist/profile-config.js";
 import { runSetup } from "../dist/setup.js";
 import { ensureBuiltinTasks, installedVersion, taskLedgerContextForQuestion } from "../dist/runtime-facts.js";
@@ -105,7 +107,8 @@ test("CLI supports init, model setup, Feishu channel setup, listing, and safe de
 
 	const config = loadConfig(join(home, "profiles", "personal", "config.yaml"), "personal");
 	assert.equal(config.model.apiKey, "custom-key");
-	assert.equal(config.gateway.feishu.appSecret, "feishu-key");
+	assert.equal(readCredential(config, config.gateway.channels.find((channel) => channel.adapter === "feishu")).appSecret, "feishu-key");
+	assert.doesNotMatch(JSON.stringify(config.gateway), /feishu-key/);
 	assert.match(await readFile(join(home, "profiles", "personal", "config.yaml"), "utf8"), /gateway:\n\s+feishu:/);
 	assert.equal(config.paths.agentDir, join(home, "profiles", "personal"));
 
@@ -199,7 +202,7 @@ test("unified setup configures an isolated Profile and Feishu gateway non-intera
 	const profileHome = join(home, "profiles", "assistant");
 	assert.equal((await readFile(join(profileHome, "SOUL.md"), "utf8")).trim(), "You are the dedicated BeeMax operations assistant.");
 	assert.equal(configured.model.provider, "anthropic");
-	assert.equal(configured.gateway.feishu.appId, "cli_gateway");
+	assert.equal(readCredential(configured, configured.gateway.channels.find((channel) => channel.adapter === "feishu")).appId, "cli_gateway");
 	assert.equal(configured.model.baseUrl, undefined);
 	assert.equal((await readFile(join(home, "active-profile"), "utf8")).trim(), "assistant");
 });
@@ -245,7 +248,7 @@ test("base setup creates a local Agent that can be used before any Gateway exist
 			apiKey: "model-secret",
 		}, { doctor: async (_config, options) => options.requireGateway === false }), true);
 		const config = loadConfig(join(home, "profiles", "local", "config.yaml"), "local");
-		assert.equal(config.gateway.feishu.appId, "");
+		assert.equal(config.gateway.channels.length, 0);
 		assert.equal(config.model.provider, "openrouter");
 	} finally {
 		if (previousRoot === undefined) delete process.env.BEEMAX_ROOT; else process.env.BEEMAX_ROOT = previousRoot;
@@ -316,7 +319,7 @@ test("Feishu Gateway QR setup stores generated credentials and authorizes only t
 			probe: async (input) => { assert.deepEqual(input, { appId: "cli_qr", appSecret: "qr-secret", domain: "lark" }); return { botName: "QR Bot" }; },
 		});
 		const config = loadConfig(join(home, "profiles", "qr", "config.yaml"), "qr");
-		assert.equal(config.gateway.feishu.appId, "cli_qr");
+		assert.equal(readCredential(config, config.gateway.channels.find((channel) => channel.adapter === "feishu")).appId, "cli_qr");
 		assert.equal(config.gateway.feishu.domain, "lark");
 		assert.equal(config.gateway.feishu.connectionMode, "websocket");
 		assert.deepEqual(config.gateway.feishu.allowedUsers, ["ou_scanner"]);
@@ -344,7 +347,7 @@ test("Feishu Gateway setup keeps an existing configuration unless replacement is
 			qrRegister: async () => assert.fail("QR registration must not run when existing configuration is kept"),
 		});
 		const config = loadConfig(join(home, "profiles", "keep", "config.yaml"), "keep");
-		assert.equal(config.gateway.feishu.appId, "cli_existing");
+		assert.equal(readCredential(config, config.gateway.channels.find((channel) => channel.adapter === "feishu")).appId, "cli_existing");
 		assert.deepEqual(config.gateway.feishu.allowedUsers, ["ou_existing"]);
 	} finally {
 		if (previousRoot === undefined) delete process.env.BEEMAX_ROOT; else process.env.BEEMAX_ROOT = previousRoot;

@@ -1,15 +1,16 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { legacySessionIdsForSource } from "@beemax/core";
+import { ProfileSessionOwnershipMigration, legacySessionIdsForSource } from "@beemax/core";
 import {
 	applyProfileSessionOwnershipMigration,
 	planProfileSessionOwnershipMigration,
 	rollbackProfileSessionOwnershipMigration,
 } from "../dist/session-ownership-migration.js";
+import { loadConfig } from "../dist/config.js";
 
 const cli = join(process.cwd(), "apps", "cli", "dist", "cli.js");
 
@@ -57,5 +58,30 @@ test("CLI requires explicit Session selection and confirmation before apply and 
 		const manifest = join(profileHome, "migrations", "session-ownership", "session-cli.json");
 		assert.throws(() => run("migration", "session", "rollback", manifest), /requires --yes/i);
 		assert.match(run("migration", "session", "rollback", manifest, "--yes"), /Rolled back Session ownership migration/i);
+	} finally { await rm(home, { recursive: true, force: true }); }
+});
+
+test("CLI resumes a prepared Session migration after a crash before transcript publication", async () => {
+	const home = await mkdtemp(join(tmpdir(), "beemax-session-migration-cli-crash-"));
+	const run = (...args) => execFileSync(process.execPath, [cli, ...args, "--profile", "personal"], { encoding: "utf8", env: { ...process.env, BEEMAX_HOME: home } });
+	try {
+		run("init");
+		const profileHome = join(home, "profiles", "personal");
+		const agentDir = await realpath(loadConfig(join(profileHome, "config.yaml"), "personal").paths.agentDir);
+		const source = { platform: "feishu", channelInstanceId: "company-a", chatId: "group-a", chatType: "group", userId: "alice" };
+		const legacySessionId = legacySessionIdsForSource(source)[0];
+		const sessions = join(profileHome, "sessions");
+		await mkdir(sessions, { recursive: true });
+		await writeFile(join(sessions, `legacy_${legacySessionId}.jsonl`), `${JSON.stringify({ type: "session", version: 3, id: legacySessionId, timestamp: "2026-01-01T00:00:00.000Z", cwd: profileHome })}\n`, { mode: 0o600 });
+		const migrationId = "session-cli-crash";
+		const manifestDirectory = join(profileHome, "migrations", "session-ownership");
+		const manifest = join(manifestDirectory, `${migrationId}.json`);
+		await mkdir(manifestDirectory, { recursive: true });
+		await assert.rejects(new ProfileSessionOwnershipMigration(agentDir).apply({ id: migrationId, source, legacySessionId }, async ({ result }) => {
+			await writeFile(manifest, `${JSON.stringify({ version: 1, status: "prepared", migrationId, profile: "personal", agentDir, appliedAt: result.appliedAt, result }, null, 2)}\n`, { mode: 0o600 });
+			throw new Error("simulated process crash before publication");
+		}), /simulated process crash/);
+		assert.match(run("migration", "session", "rollback", manifest, "--yes"), /Rolled back Session ownership migration/);
+		assert.equal(JSON.parse(await readFile(manifest, "utf8")).status, "aborted");
 	} finally { await rm(home, { recursive: true, force: true }); }
 });

@@ -1,4 +1,4 @@
-import { loadConfig } from "./config.ts";
+import { consumeChannelCredential, loadConfig } from "./config.ts";
 import type { CustomProtocol } from "./config.ts";
 import { registerFeishuBot } from "./feishu-onboarding.ts";
 import { presetFor, renderModelProviderChoices, resolveProviderSelection } from "./model-catalog.ts";
@@ -61,6 +61,10 @@ export async function runSetup(options: SetupOptions, dependencies: SetupDepende
 	if (!exists && options.gatewayOnly) throw new Error(`Agent profile ${options.profile} does not exist; run beemax profile create ${options.profile}`);
 	const current = loadConfig(undefined, options.profile);
 	const currentFeishu = current.gateway.feishu;
+	const currentFeishuInstance = current.gateway.channels.find((channel) => channel.adapter === "feishu");
+	const currentFeishuCredential = currentFeishuInstance ? consumeChannelCredential(current, currentFeishuInstance, (credential) => credential.adapter === "feishu" ? { appId: credential.appId, appSecret: credential.appSecret, webhookVerificationToken: credential.webhookVerificationToken, webhookEncryptKey: credential.webhookEncryptKey } : undefined) : undefined;
+	const currentAppId = currentFeishuCredential?.appId ?? "";
+	const currentAppSecret = currentFeishuCredential?.appSecret ?? "";
 
 	let soul: string | undefined;
 	let provider: string | undefined;
@@ -103,7 +107,7 @@ export async function runSetup(options: SetupOptions, dependencies: SetupDepende
 	let webhookEncryptKey: string | undefined;
 	let usedQrRegistration = false;
 	let probe: Awaited<ReturnType<typeof probeFeishuApp>> | undefined;
-	if (configureGateway && !options.nonInteractive && currentFeishu.appId && currentFeishu.appSecret) {
+	if (configureGateway && !options.nonInteractive && currentAppId && currentAppSecret) {
 		const existingAction = await ask("Existing Feishu configuration (keep or replace)", "keep");
 		if (existingAction === "keep") {
 			configureGateway = false;
@@ -135,12 +139,12 @@ export async function runSetup(options: SetupOptions, dependencies: SetupDepende
 		if (!usedQrRegistration) {
 			domain = options.domain ?? (options.nonInteractive ? currentFeishu.domain : parseDomain(await ask("[2/5] Platform (feishu or lark)", currentFeishu.domain)));
 			if (!options.nonInteractive) console.log("[3/5] App credentials — Feishu Developer Console > Credentials & Basic Info");
-			appId = options.appId ?? (options.nonInteractive ? currentFeishu.appId : await ask("Feishu App ID", currentFeishu.appId));
-			appSecret = options.appSecret ?? (replacingExistingGateway && !options.nonInteractive ? "" : currentFeishu.appSecret);
+			appId = options.appId ?? (options.nonInteractive ? currentAppId : await ask("Feishu App ID", currentAppId));
+			appSecret = options.appSecret ?? (replacingExistingGateway && !options.nonInteractive ? "" : currentAppSecret);
 			if (!appSecret && !options.nonInteractive) appSecret = await ask("Feishu App Secret", undefined, true);
 			connectionMode = options.connectionMode ?? (options.nonInteractive ? currentFeishu.connectionMode : parseConnectionMode(await ask("[4/5] Connection mode (websocket or webhook)", currentFeishu.connectionMode)));
 		}
-		webhookEncryptKey = options.webhookEncryptKey ?? currentFeishu.webhookEncryptKey;
+		webhookEncryptKey = options.webhookEncryptKey ?? currentFeishuCredential?.webhookEncryptKey;
 		if (connectionMode === "webhook" && !webhookEncryptKey && !options.nonInteractive) {
 			webhookEncryptKey = await ask("Feishu webhook encrypt key", undefined, true);
 		}
@@ -180,7 +184,7 @@ export async function runSetup(options: SetupOptions, dependencies: SetupDepende
 			connectionMode, webhookHost: options.webhookHost ?? currentFeishu.webhookHost,
 			webhookPort: options.webhookPort ?? currentFeishu.webhookPort,
 			webhookPath: options.webhookPath ?? currentFeishu.webhookPath,
-			webhookVerificationToken: options.webhookVerificationToken ?? currentFeishu.webhookVerificationToken,
+			webhookVerificationToken: options.webhookVerificationToken ?? currentFeishuCredential?.webhookVerificationToken,
 			webhookEncryptKey,
 		});
 		if (usedQrRegistration) console.log("\nPASS  Feishu application, permissions, events, and card callbacks were configured by QR registration.\n");

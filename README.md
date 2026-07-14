@@ -43,19 +43,17 @@ Pi owns model interaction, tools, session events, and live compaction. BeeMax Co
 
 Linux and macOS require Node.js 22.19 or newer, `curl`, `tar`, `npm`, and either `sha256sum` or `shasum`.
 
-```bash
-curl -fsSL https://raw.githubusercontent.com/Zanetach/beemax/v1.2.0/scripts/bootstrap-install.sh | bash
-```
-
-The installer downloads a checksum-verified release archive containing BeeMax and the vendored Pi source. Application files go to `~/.beemax/app`; the command is installed to `~/.local/bin`.
-
-On Ubuntu and macOS, installation also discovers or installs Tesseract OCR. Set `BEEMAX_INSTALL_MEDIA_DEPS=0` only when the host image manages OCR dependencies separately.
-
-To install from a source checkout:
+The 1.2 branch is an engineering release candidate until the `v1.2.0` GitHub tag and archive are actually published. For candidate validation, install from a source checkout:
 
 ```bash
+git clone https://github.com/Zanetach/beemax.git
+cd beemax
 ./scripts/install.sh
 ```
+
+After publication, the tagged bootstrap installer downloads a checksum-verified release archive containing BeeMax and the vendored Pi source. Application files go to `~/.beemax/app`; the command is installed to `~/.local/bin`.
+
+On Ubuntu and macOS, installation also discovers or installs Tesseract OCR. Set `BEEMAX_INSTALL_MEDIA_DEPS=0` only when the host image manages OCR dependencies separately.
 
 ### 2. Create a Profile
 
@@ -363,7 +361,7 @@ Store `BEEMAX_WEKNORA_API_KEY` in the Profile `.env`.
 
 One Profile Gateway hosts all enabled channel adapters while using exactly one shared Profile Runtime. `AdapterRegistry` creates transports, `ChannelHost` isolates lifecycle failures, and `GatewayDeliveryPort` routes outbound artifacts by platform. Channel adapters normalize identity, messages and media; they do not own Tasks, Memory, Policy, Effects, Verification, recovery, or a second Pi loop.
 
-Non-secret declarations live under `gateway.channels[]`; each entry has an adapter ID, instance ID, enabled state, `credentialRef`, and adapter settings. Built-in channel Secrets remain in the owner-only Profile `.env` and are resolved by `profile-env:<adapter>` without entering YAML, logs, Memory, or model context.
+Non-secret declarations live under `gateway.channels[]`; each entry has an adapter ID, instance ID, enabled state, `credentialRef`, and adapter settings. Built-in channel Secrets remain in the owner-only Profile `.env` and are resolved at the trusted Adapter/diagnostic boundary by `profile-env:<adapter>`. They do not enter YAML, ordinary `BeeMaxConfig`, logs, Memory, or model context; rotating the Profile Secret source does not require rebuilding the ordinary configuration object.
 
 ```yaml
 gateway:
@@ -381,6 +379,9 @@ gateway:
         allowedUsers: ["123456789"]
         allowedChats: []
         allowAllUsers: false
+        activation:
+          mode: explicit
+          respondTo: [mention, reply, command]
 ```
 
 Run `beemax channel list --profile personal` to inspect declarations, `beemax doctor --profile personal` to validate enabled adapters, and the standard Gateway lifecycle commands to run them together.
@@ -407,7 +408,7 @@ Feishu meeting tools cover meeting queries, reservations, participants, host con
 
 ## Telegram
 
-BeeMax uses the Telegram Bot API with bounded long polling, deny-by-default user/chat allowlists, text reply and edit support, typing indicators, native image/file delivery, and bounded temporary downloads for inbound photos, documents, audio, and voice messages. Channels without interactive cards automatically degrade to final text while retaining the same governed Core execution.
+BeeMax uses the Telegram Bot API with bounded long polling, deny-by-default user/chat allowlists, text reply and edit support, typing indicators, native image/file delivery, and bounded temporary downloads for inbound photos, documents, audio, and voice messages. Group activation uses the same transport-neutral contract as Feishu: verified mention/reply/command signals, bounded contextual follow-ups inside the same Telegram Thread, and an optional observe-only path that never becomes an Agent turn. Channels without interactive cards automatically degrade to final text while retaining the same governed Core execution.
 
 Create a bot with BotFather, then run `beemax channel add telegram --profile personal`. The token is prompted securely or read from `TELEGRAM_BOT_TOKEN`; authorized numeric user IDs may be supplied through the prompt or `TELEGRAM_ALLOWED_USERS`.
 
