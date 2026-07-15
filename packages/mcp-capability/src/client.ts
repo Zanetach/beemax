@@ -143,7 +143,7 @@ export class McpManager {
 						timeoutMs: 130_000,
 						impact: `May change state through external MCP server ${name}`,
 					};
-				return withToolPolicy(defineTool({
+				return readyMcpTool(withToolPolicy(defineTool({
 					name: toolName,
 					label: tool.title ?? `${name}: ${tool.name}`,
 					description: `[MCP ${name}/${tool.name}] ${tool.description ?? "External MCP tool"}`,
@@ -168,12 +168,12 @@ export class McpManager {
 							isError: result.isError === true,
 						};
 					},
-				}), policy);
+				}), policy));
 			});
 			const addUtility = (tool: GovernedToolDefinition) => {
 				if (names.has(tool.name)) throw new Error(`MCP utility tool name collision: ${tool.name}`);
 				names.add(tool.name);
-				tools.push(tool);
+				tools.push(readyMcpTool(tool));
 			};
 			if (capabilities?.resources) {
 				addUtility(withToolPolicy(defineTool({
@@ -237,6 +237,10 @@ export function loadMcpConfig(path: string): McpConfig {
 
 function mcpToolName(server: string, tool: string): string {
 	return `mcp_${server}_${tool}`.toLowerCase().replace(/[^a-z0-9_]+/g, "_").replace(/^_+|_+$/g, "").slice(0, 64);
+}
+
+function readyMcpTool<T extends GovernedToolDefinition>(tool: T): T {
+	return Object.assign(tool, { beemaxToolSpec: { kind: "mcp" as const, configured: true, health: "ready" as const } });
 }
 
 function validateServerName(name: string): void {
