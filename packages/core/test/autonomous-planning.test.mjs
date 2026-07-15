@@ -10,8 +10,8 @@ test("planning policy keeps simple conversational requests direct", () => {
 	assert.deepEqual(decision.requiredTools, []);
 	assert.equal(decision.suggestedConcurrency, 1);
 	assert.equal(decision.budget.maxSubagents, 0);
-	assert.equal(decision.budget.maxToolCalls, null);
-	assert.equal(decision.budget.maxTokens, null);
+	assert.equal(decision.budget.maxToolCalls, 8);
+	assert.equal(decision.budget.maxTokens, 12_000);
 	assert.match(decision.reason, /simple|single/i);
 });
 
@@ -31,6 +31,25 @@ test("Agent runtime progressively exposes discovery and restores the full catalo
 	const runtime = new BeeMaxAgentRuntime({ planningPolicy: new AutonomousPlanningPolicy(), createAgent: async () => piSession });
 	await runtime.run({ source, text: "查一下今天的天气", timeoutMs: 1_000 });
 	assert.deepEqual(toolChanges, [["capability_discover"], ["read", "web_search"]]);
+	runtime.dispose();
+});
+
+test("Agent runtime hides capability discovery and Tools for a direct answer with no capability requirement", async () => {
+	const source = { platform: "cli", chatId: "tool-free", chatType: "dm", userId: "local" };
+	const toolChanges = [];
+	const agent = { state: { model: { id: "test" }, messages: [] } };
+	const tools = [{ name: "capability_discover", description: "Discover capabilities" }, { name: "memory_recall", description: "Recall prior context" }, { name: "write", description: "Write a file" }];
+	const runtime = new BeeMaxAgentRuntime({ planningPolicy: new AutonomousPlanningPolicy(), createAgent: async () => ({
+		agent,
+		getAllTools: () => tools,
+		getActiveToolNames: () => tools.map(({ name }) => name),
+		setActiveToolsByName: (names) => { toolChanges.push([...names]); },
+		subscribe: () => () => undefined,
+		prompt: async () => { agent.state.messages = [{ role: "assistant", content: [{ type: "text", text: "direct answer" }], usage: { input: 1, output: 1 } }]; },
+		abort: async () => undefined, dispose: () => undefined,
+	}) });
+	await runtime.run({ source, text: "用两句话解释 Capability Routing，并给出一个例子", timeoutMs: 1_000 });
+	assert.deepEqual(toolChanges, [[], tools.map(({ name }) => name)]);
 	runtime.dispose();
 });
 
@@ -175,6 +194,31 @@ test("Agent runtime reroutes one unresolved Tool failure through capability disc
 	runtime.dispose();
 });
 
+test("Agent runtime aborts an identical failed read-only Tool loop before another model continuation", async () => {
+	const source = { platform: "cli", chatId: "duplicate-read", chatType: "dm", userId: "local" };
+	let listener;
+	let aborts = 0;
+	const agent = { state: { model: { id: "test" }, messages: [] } };
+	const runtime = new BeeMaxAgentRuntime({ planningPolicy: new AutonomousPlanningPolicy(), createAgent: async () => ({
+		agent,
+		getActiveToolNames: () => ["read"],
+		getAllTools: () => [{ name: "read", description: "Read a file", beemaxPolicy: { sideEffect: "none" } }],
+		setActiveToolsByName: () => undefined,
+		subscribe: (next) => { listener = next; return () => undefined; },
+		prompt: async () => {
+			for (const id of ["first", "second"]) {
+				listener({ type: "tool_execution_start", toolCallId: id, toolName: "read", args: { path: "missing.txt" } });
+				listener({ type: "tool_execution_end", toolCallId: id, toolName: "read", result: { error: "missing" }, isError: true });
+			}
+			agent.state.messages = [{ role: "assistant", content: [{ type: "text", text: "still trying" }], usage: { input: 1, output: 1 } }];
+		},
+		abort: async () => { aborts++; }, dispose: () => undefined,
+	}) });
+	await assert.rejects(runtime.run({ source, text: "读取 missing.txt", timeoutMs: 1_000 }), /repeated the same failed read-only Tool call/);
+	assert.equal(aborts, 1);
+	runtime.dispose();
+});
+
 test("Agent runtime never auto-reroutes an unresolved external mutation", async () => {
 	const source = { platform: "cli", chatId: "write-failure", chatType: "dm", userId: "local" };
 	let listener; const prompts = []; const agent = { state: { model: { id: "test" }, messages: [] } };
@@ -267,8 +311,8 @@ test("planning policy delegates one substantial isolated work item", () => {
 	assert.deepEqual(decision.requiredTools, ["task_spawn", "task_wait"]);
 	assert.equal(decision.suggestedConcurrency, 1);
 	assert.equal(decision.budget.maxSubagents, 1);
-	assert.equal(decision.budget.maxToolCalls, null);
-	assert.equal(decision.budget.maxTokens, null);
+	assert.equal(decision.budget.maxToolCalls, 12);
+	assert.equal(decision.budget.maxTokens, 20_000);
 });
 
 test("planning policy keeps one bounded writing and file-verification workflow in the parent Agent", () => {

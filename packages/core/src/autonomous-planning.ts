@@ -48,8 +48,8 @@ export class AutonomousPlanningPolicy {
 		this.capacity = {
 			maxConcurrent: boundedInt(options.maxConcurrent, 3, 1, 20),
 			maxSubagents: boundedInt(options.maxSubagents, 5, 0, 20),
-			maxToolCalls: optionalBoundedInt(options.maxToolCalls, 1, 1_000),
-			maxTokens: optionalBoundedInt(options.maxTokens, 1_000, 10_000_000),
+			maxToolCalls: boundedInt(options.maxToolCalls, 32, 1, 1_000),
+			maxTokens: boundedInt(options.maxTokens, 64_000, 1_000, 10_000_000),
 			maxCorrectiveAttempts: boundedInt(options.maxCorrectiveAttempts, 1, 0, 5),
 		};
 	}
@@ -167,7 +167,4 @@ function estimateIndependentItems(prompt: string): number {
 function has(value: string, pattern: RegExp): boolean { return pattern.test(value); }
 function boundedInt(value: number | undefined, fallback: number, minimum: number, maximum: number): number {
 	return Math.max(minimum, Math.min(maximum, Number.isFinite(value) ? Math.trunc(value!) : fallback));
-}
-function optionalBoundedInt(value: number | undefined, minimum: number, maximum: number): number | null {
-	return value === undefined ? null : Math.max(minimum, Math.min(maximum, Number.isFinite(value) ? Math.trunc(value) : maximum));
 }

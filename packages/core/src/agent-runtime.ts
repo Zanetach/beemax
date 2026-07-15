@@ -299,7 +299,14 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 			// Sub-Agent allowlist or grants execution authority.
 			const prefetchedTools = selectTurnTools(understanding?.capabilityQuery ?? input.text, allTools);
 			const skillLifecycleTools = prefetchedSkills.length ? ["skill_read", "skill_activate", "skill_route", "skill_resource_read", "skill_complete"].filter((name) => allTools.some((tool) => tool.name === name)) : [];
-			const progressiveTools = admittedTools ?? [...new Set(["capability_discover", ...skillLifecycleTools, ...(planning?.requiredTools ?? []), ...prefetchedTools])];
+			const exposeCapabilityDiscovery = Boolean(
+				admittedTools?.includes("capability_discover")
+				|| prefetchedSkills.length
+				|| requestedText !== input.text
+				|| planning?.signals.requiresResearch
+				|| planning?.signals.requiresVerification,
+			);
+			const progressiveTools = admittedTools ?? [...new Set([...(exposeCapabilityDiscovery ? ["capability_discover"] : []), ...skillLifecycleTools, ...(planning?.requiredTools ?? []), ...prefetchedTools])];
 			if (activeTools) session.piSession.setActiveToolsByName(progressiveTools);
 			if (prefetchedSkills.length) promptText = [`<beemax-skill-preflight>Installed matching Skill metadata: ${prefetchedSkills.join(", ")}. Use skill_read with the exact best-matching name before executing the request; do not skip it or infer its instructions.</beemax-skill-preflight>`, promptText].join("\n\n");
 			let observableProgress = false;
@@ -319,6 +326,8 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 			let completionAnswer: string | undefined;
 			let objectiveVerificationOutcome: "accepted" | "rejected" | "unavailable" | undefined;
 			const toolStartedAt = new Map<string, number>();
+			const toolAttemptFingerprints = new Map<string, string>();
+			const failedReadFingerprints = new Map<string, number>();
 			const settledToolProgress: string[] = [];
 			const unresolvedToolProgress: string[] = [];
 			let checkpointedToolProgress = 0;
@@ -348,6 +357,7 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 					clearIdleSettle();
 					const at = Date.now();
 					toolStartedAt.set(event.toolCallId, at);
+					toolAttemptFingerprints.set(event.toolCallId, toolAttemptFingerprint(event.toolName, event.args));
 					this.recordTrace({ type: "tool.started", executionEnvelope, at, toolCallId: event.toolCallId, toolName: event.toolName });
 					observableProgress = true;
 					const expected = planning?.requiredTools[requiredToolsUsed.length];
@@ -360,6 +370,7 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 				} else if (event.type === "tool_execution_end") {
 					const at = Date.now();
 					const toolStart = toolStartedAt.get(event.toolCallId); toolStartedAt.delete(event.toolCallId);
+					const toolFingerprint = toolAttemptFingerprints.get(event.toolCallId); toolAttemptFingerprints.delete(event.toolCallId);
 					this.recordTrace({ type: "tool.settled", executionEnvelope, at, toolCallId: event.toolCallId, toolName: event.toolName, status: event.isError ? "failed" : "succeeded", ...(toolStart === undefined ? {} : { durationMs: Math.max(0, at - toolStart) }) });
 					if (event.toolName === "capability_discover" && !event.isError) {
 						const discovery = capabilityDiscoveryMetadata(event.result, new Set(allTools.map((tool) => tool.name))); discoveredCapabilities = discovery.hasMatches;
@@ -373,7 +384,17 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 						if (!event.isError && event.toolName === "skill_complete" && skillName && prefetchedSkills.includes(skillName)) completedPrefetchedSkills.add(skillName);
 						const sideEffect = toolSideEffects.get(event.toolName);
 						const reroute = sideEffect === undefined ? { allowed: false } : capabilityRuntime.canReroute({ sideEffect, effectStatus: sideEffect === "none" ? "none" : "unknown" });
-						if (event.isError && reroute.allowed) failedReadToolAwaitingReroute = event.toolName;
+						if (event.isError && reroute.allowed) {
+							failedReadToolAwaitingReroute = event.toolName;
+							if (toolFingerprint) {
+								const repeatedFailures = (failedReadFingerprints.get(toolFingerprint) ?? 0) + 1;
+								failedReadFingerprints.set(toolFingerprint, repeatedFailures);
+								if (repeatedFailures >= 2 && !turnAbortReason) {
+									turnAbortReason = `Agent repeated the same failed read-only Tool call (${event.toolName})`;
+									void session.piSession.abort();
+								}
+							}
+						}
 						else if (!event.isError && event.toolName === failedReadToolAwaitingReroute) failedReadToolAwaitingReroute = undefined;
 					}
 					const pending = requiredToolCalls.get(event.toolCallId);
@@ -453,6 +474,7 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 				}
 				if (failedReadToolAwaitingReroute && !discoveredCapabilities && !turnAbortReason) {
 					const failedTool = failedReadToolAwaitingReroute; failedReadToolAwaitingReroute = undefined;
+					if (supportsProgressiveTools && allTools.some((tool) => tool.name === "capability_discover")) session.piSession.setActiveToolsByName([...new Set([...progressiveTools, "capability_discover"])]);
 					await promptSession(`[BeeMax capability reroute: ${failedTool} failed without a recorded equivalent-capability discovery. Use capability_discover now to find an already available alternative, then continue the original request. Do not retry the same external mutation; reconcile any uncertain side effect before another write.]`, { expandPromptTemplates: false });
 				}
 				if (discoveredCapabilities && !turnAbortReason) {
@@ -785,6 +807,11 @@ function skillExecutionName(result: unknown): string | undefined {
 		}
 	}
 	return undefined;
+}
+
+function toolAttemptFingerprint(name: string, args: unknown): string {
+	try { return `${name}\0${JSON.stringify(args)}`; }
+	catch { return `${name}\0<unserializable>`; }
 }
 
 function boundedContractItems(items: readonly string[], maxChars: number): string {
