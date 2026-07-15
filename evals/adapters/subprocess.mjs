@@ -88,8 +88,8 @@ export async function startFixtureAuthorityServer({ serverPath, workspace, signa
 
 export function parityPrompt(scenario) {
 	return [
-		`Agent parity case: ${scenario.id}`,
 		scenario.prompt,
+		`Evaluation case identifier: ${scenario.id}`,
 		"仅操作本次隔离评测目录和本地 fixture；禁止访问真实外部系统；能力缺失时报告阻塞，不得降低目标。",
 	].join("\n\n");
 }

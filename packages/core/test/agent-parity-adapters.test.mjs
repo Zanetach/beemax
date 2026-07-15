@@ -6,9 +6,15 @@ import test from "node:test";
 import { agentParityCorpus } from "../../../evals/agent-parity-corpus.mjs";
 import { parseBeeMaxEvidence, parseCodexEvidence, parseHermesEvidence } from "../../../evals/agent-parity-adapters.mjs";
 import { createIsolatedProfile, filterExecution } from "../../../evals/adapters/beemax-cli.mjs";
-import { collectFixtureEvidence, digestConfiguration, resolveValidatedPublicAddresses, runSubprocess, signFixtureAuthorityEvent } from "../../../evals/adapters/subprocess.mjs";
+import { collectFixtureEvidence, digestConfiguration, parityPrompt, resolveValidatedPublicAddresses, runSubprocess, signFixtureAuthorityEvent } from "../../../evals/adapters/subprocess.mjs";
 
 const research = agentParityCorpus.cases.find((scenario) => scenario.id === "current-research");
+
+test("parity prompts preserve the user request as the leading semantic input", () => {
+	const scenario = agentParityCorpus.cases.find((candidate) => candidate.id === "conversation-short");
+	assert.ok(parityPrompt(scenario).startsWith(scenario.prompt));
+	assert.match(parityPrompt(scenario), /Evaluation case identifier: conversation-short/);
+});
 
 test("Codex adapter derives Tool and token evidence from JSONL events", () => {
 	const stdout = [
