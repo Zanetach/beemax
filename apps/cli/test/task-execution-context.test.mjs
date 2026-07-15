@@ -65,8 +65,8 @@ test("verification Tool Spec re-admits an observed successful read Tool without 
 });
 
 test("verification Tool Spec keeps the observed web Provider and exact-source extractor without exposing competing search routes", () => {
-	const tools = verificationAgentTools([], "Independently verify current public sources", ["agent_reach_search"], true);
-	assert.deepEqual(tools, ["verification_submit", "read", "agent_reach_search", "web_extract"]);
+	const tools = verificationAgentTools([], "Independently verify current public sources", ["exa_web_search"], true);
+	assert.deepEqual(tools, ["verification_submit", "read", "exa_web_search", "web_extract"]);
 	assert.equal(tools.includes("web_search"), false);
 });
 
@@ -76,8 +76,8 @@ test("verification Tool Spec exposes exact-source extraction for external eviden
 
 test("Task-aware verification Tool routing consistently exposes exact-source extraction", () => {
 	assert.deepEqual(
-		verificationAgentToolsForTask([], { title: "研究当前公开趋势", description: "核验来源", acceptanceCriteria: "保留可验证来源" }, ["agent_reach_search"]),
-		["verification_submit", "read", "agent_reach_search", "web_extract"],
+		verificationAgentToolsForTask([], { title: "研究当前公开趋势", description: "核验来源", acceptanceCriteria: "保留可验证来源" }, ["exa_web_search"]),
+		["verification_submit", "read", "exa_web_search", "web_extract"],
 	);
 });
 
@@ -287,7 +287,7 @@ test("independent verification receives the Task Situation", async () => {
 	let prompt = "";
 	let envelope;
 	let emit = () => undefined;
-	let activeTools = ["verification_submit", "capability_discover", "read", "skill_read", "web_search", "agent_reach_search", "web_extract", "write"];
+	let activeTools = ["verification_submit", "capability_discover", "read", "skill_read", "web_search", "exa_web_search", "web_extract", "write"];
 	let toolsDuringPrompt = [];
 	const agent = { state: { model: { id: "test" }, messages: [] } };
 	const factory = async (_source, _profile, receivedEnvelope) => {
@@ -326,12 +326,12 @@ test("independent verification receives the Task Situation", async () => {
 	assert.equal(envelope.verificationProtocol, "task_candidate_v1");
 	assert.equal(envelope.budget.maxToolCalls, 6);
 	assert.equal(envelope.budget.maxTokens, 20_000);
-	assert.deepEqual(toolsDuringPrompt, ["verification_submit", "read", "web_search", "agent_reach_search", "web_extract"]);
+	assert.deepEqual(toolsDuringPrompt, ["verification_submit", "read", "web_search", "exa_web_search", "web_extract"]);
 });
 
 test("independent verification rejects free-text verdicts instead of parsing model-authored envelopes", async () => {
 	for (const answer of ["ACCEPT: unable to verify", '<beemax-verdict>{"status":"accepted","reason":"first","assertions":[]}</beemax-verdict><beemax-verdict>{"status":"accepted","reason":"second","assertions":[]}</beemax-verdict>', '<beemax-verdict>{"status":"unavailable","reason":"source provider offline"}</beemax-verdict>']) {
-		let activeTools = ["verification_submit", "capability_discover", "read", "web_search", "agent_reach_search", "web_extract"];
+		let activeTools = ["verification_submit", "capability_discover", "read", "web_search", "exa_web_search", "web_extract"];
 		const agent = { state: { model: { id: "test" }, messages: [] } };
 		const factory = async () => ({
 			agent, subscribe: () => () => undefined,
@@ -486,7 +486,7 @@ test("independent verification rejects a second structured verdict attempt even 
 
 test("independent verification cannot accept an external URL without fetching it", async () => {
 	let emit = () => undefined;
-	let activeTools = ["verification_submit", "capability_discover", "read", "web_search", "agent_reach_search", "web_extract"];
+	let activeTools = ["verification_submit", "capability_discover", "read", "web_search", "exa_web_search", "web_extract"];
 	const agent = { state: { model: { id: "test" }, messages: [] } };
 	const factory = async () => ({
 		agent, subscribe: (listener) => { emit = listener; return () => undefined; },

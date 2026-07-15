@@ -53,6 +53,22 @@ test("custom model limits drive model-aware compaction instead of a fixed 128K a
 	} finally { rmSync(root, { recursive: true, force: true }); }
 });
 
+test("BeeMax preloads credentials for every configured model fallback Provider", async () => {
+	const root = mkdtempSync(join(tmpdir(), "beemax-model-provider-auth-"));
+	const requestedProviders = [];
+	try {
+		const factory = buildBeeMaxRuntimeFactory({
+			provider: "anthropic", model: "claude-sonnet-4-5", additionalModelProviders: ["openai", "anthropic", "google"],
+			cwd: root, agentDir: join(root, "agent"), getApiKey: (provider) => { requestedProviders.push(provider); return `key:${provider}`; },
+			systemPrompt: "test", skillToolset: "safe", createTools: () => [],
+		});
+		const session = await factory("model-provider-auth", { platform: "cli", chatId: "terminal", chatType: "dm", userId: "user" });
+		try {
+			assert.deepEqual(requestedProviders, ["anthropic", "google", "openai"]);
+		} finally { session.dispose(); }
+	} finally { rmSync(root, { recursive: true, force: true }); }
+});
+
 test("BeeMax runtime connects approved mutating Tool calls to the Effect lifecycle", async () => {
 	const root = mkdtempSync(join(tmpdir(), "beemax-effect-hook-"));
 	const events = [];

@@ -49,6 +49,21 @@ test("Capability selection carries one content-free cognition identity through m
 	assert.equal(usage[0].cognitionId, "cap:test-correlation");
 });
 
+test("semantic capability cognition defaults to a compact decision output budget", async () => {
+	let observedMaxTokens;
+	const port = new PiSemanticCapabilityPort({
+		models: [{ model: { id: "compact-default" } }],
+		maxModelAttempts: 1,
+		complete: async (_model, context, options) => {
+			observedMaxTokens = options.maxTokens;
+			const payload = JSON.parse(context.messages[0].content);
+			return { stopReason: "stop", content: [{ type: "text", text: JSON.stringify({ matches: [{ id: payload.candidates[0].id, name: payload.candidates[0].name, similarity: 0.9 }] }) }] };
+		},
+	});
+	await port.similarities({ query: "known", candidates: [{ id: "tool:known:1", name: "known", text: "Known capability" }], limit: 1 });
+	assert.equal(observedMaxTokens, 2_048);
+});
+
 test("Capability discovery changes execution only through Pi active tools", async () => {
 	const activations = [];
 	const runtime = new CapabilityRuntime({ ranker: new LexicalCapabilityRanker(), activeTools: { setActiveTools(names) { activations.push(names); } } });
@@ -166,6 +181,27 @@ test("model-backed semantic selection receives generic operational signals and v
 	assert.deepEqual(request.candidates[0].signals, descriptor.signals);
 });
 
+test("semantic capability obligations keep distinct requirements but prune redundant alternatives", async () => {
+	const primary = capabilityDescriptor({ kind: "tool", name: "primary_search", description: "Search current evidence", version: "1", activeTools: ["primary_search"] });
+	const backup = capabilityDescriptor({ kind: "tool", name: "backup_search", description: "Alternative search for current evidence", version: "1", activeTools: ["backup_search"] });
+	const analyze = capabilityDescriptor({ kind: "tool", name: "analyze_data", description: "Analyze the retrieved data", version: "1", activeTools: ["analyze_data"] });
+	const port = new ModelBackedSemanticCapabilityPort(async ({ candidates }) => ({ matches: [
+		{ id: candidates.find((candidate) => candidate.name === "primary_search").id, name: "primary_search", similarity: 0.96, requirementId: "current-evidence", necessity: "required" },
+		{ id: candidates.find((candidate) => candidate.name === "backup_search").id, name: "backup_search", similarity: 0.94, requirementId: "current-evidence", necessity: "alternative" },
+		{ id: candidates.find((candidate) => candidate.name === "analyze_data").id, name: "analyze_data", similarity: 0.93, requirementId: "data-analysis", necessity: "required" },
+	] }));
+	const selection = await new CapabilityRuntime({ ranker: new SemanticCapabilityRanker(port) }).discover({ query: "search current evidence and analyze the data", inventory: [primary, backup, analyze], limit: 5 });
+	assert.deepEqual(selection.candidates.map((candidate) => candidate.name), ["primary_search", "analyze_data"]);
+	assert.deepEqual(selection.activatedTools, ["primary_search", "analyze_data"]);
+});
+
+test("semantic selection rejects ambiguous multi-match output without obligation metadata", async () => {
+	const first = capabilityDescriptor({ kind: "tool", name: "primary", description: "Primary route", version: "1", activeTools: ["primary"] });
+	const backup = capabilityDescriptor({ kind: "tool", name: "backup", description: "Backup route", version: "1", activeTools: ["backup"] });
+	const port = new ModelBackedSemanticCapabilityPort(async ({ candidates }) => ({ matches: candidates.map((candidate, index) => ({ id: candidate.id, name: candidate.name, similarity: 0.95 - index * 0.01 })) }));
+	await assert.rejects(() => new SemanticCapabilityRanker(port).rank("use the primary route", [first, backup], 2), /invalid candidate or score/u);
+});
+
 test("model-backed semantic selection rejects invented candidates and out-of-range scores", async () => {
 	const descriptor = capabilityDescriptor({ kind: "tool", name: "known", version: "1", activeTools: ["known"] });
 	for (const match of [{ name: "invented", similarity: 0.9 }, { name: "known", similarity: 99 }]) {
@@ -260,6 +296,19 @@ test("Pi semantic production port extracts a strict JSON envelope from bounded m
 	});
 	const result = await port.similarities({ query: "known", candidates: [{ id: "tool:known:1", name: "known", text: "Known capability" }], limit: 1 });
 	assert.equal(result[0].name, "known");
+});
+
+test("Pi semantic production port normalizes only a bare empty no-match array", async () => {
+	const noMatch = new PiSemanticCapabilityPort({
+		models: [{ model: { id: "bare-empty" } }], maxModelAttempts: 1,
+		complete: async () => ({ stopReason: "stop", content: [{ type: "text", text: "[]" }] }),
+	});
+	assert.deepEqual(await noMatch.similarities({ query: "chat", candidates: [{ id: "tool:known:1", name: "known", text: "Known capability" }], limit: 1 }), []);
+	const bareSelection = new PiSemanticCapabilityPort({
+		models: [{ model: { id: "bare-selection" } }], maxModelAttempts: 1,
+		complete: async () => ({ stopReason: "stop", content: [{ type: "text", text: '[{"id":"tool:known:1","name":"known","similarity":0.9}]' }] }),
+	});
+	await assert.rejects(() => bareSelection.similarities({ query: "known", candidates: [{ id: "tool:known:1", name: "known", text: "Known capability" }], limit: 1 }), /invalid_response/u);
 });
 
 test("Pi semantic production port rejects a mixed valid and malformed match array before failover", async () => {

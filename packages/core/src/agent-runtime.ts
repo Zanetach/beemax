@@ -23,9 +23,10 @@ import { normalizeCapabilityReceiptRef, normalizeSkillLifecycleReceiptRef, type 
 import { createTaskCheckpoint, mergeTaskCheckpoints, renderTaskCheckpoint } from "./task-checkpoint.ts";
 import type { TaskGraphVerifier } from "./task-graph.ts";
 import { CapabilityRuntime, SEMANTIC_CAPABILITY_MINIMUM_SIMILARITY, capabilityVersionOf } from "./capability-runtime.ts";
+import { isTrustedCapabilityProviderAcquisitionTool, isTrustedCapabilityProviderResolutionTool } from "./capability-provider.ts";
 import type { ToolSideEffect } from "./tool-runtime.ts";
 import { MediaUnderstandingRuntime, type MediaUnderstandingPort } from "./media-understanding.ts";
-import { activateToolSpecPlan, buildToolSpecPlan, deferToolSpecPlan, hideToolSpecPlan, renderToolSpecPlan, type ToolSpecInventoryItem } from "./tool-spec-plan.ts";
+import { activateToolSpecPlan, buildToolSpecPlan, deferToolSpecPlan, hideToolSpecPlan, renderToolSpecPlan, restoreProviderToolSpecPlan, type ToolSpecInventoryItem } from "./tool-spec-plan.ts";
 import type { ToolEffectProjectionReader } from "./tool-effect.ts";
 
 export interface AgentRunInput<Source extends BeeMaxRuntimeSource = BeeMaxRuntimeSource> {
@@ -336,7 +337,7 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 			const previousToolBoundary = session.piSession.agent.beforeToolCall;
 			const capabilityRuntime = new CapabilityRuntime();
 			const capabilityPrefetch = allTools.find((tool) => tool.name === "capability_discover") as (typeof allTools[number] & {
-				beemaxCapabilityPrefetch?: (query: string, signal?: AbortSignal, options?: { explicitSkillName?: string }) => Promise<{ cognitionId?: string; candidates: Array<{ kind: "tool" | "mcp" | "skill"; name: string; version?: string; confidence: number }>; activatedTools?: string[]; skills: Array<{ name: string }>; skillBlocker?: { code: "skill_not_installed"; name: string } }>;
+				beemaxCapabilityPrefetch?: (query: string, signal?: AbortSignal, options?: { explicitSkillName?: string }) => Promise<{ cognitionId?: string; candidates: Array<{ kind: "tool" | "mcp" | "skill"; name: string; version?: string; confidence: number }>; activatedTools?: string[]; skills: Array<{ name: string }>; skillBlocker?: { code: "skill_not_installed"; name: string }; providerResolutions?: unknown }>;
 				/** Pre-semantic compatibility seam for injected test/legacy runtimes only. */
 				beemaxSkillPrefetch?: (query: string, signal?: AbortSignal) => Promise<Array<{ name: string; version: string }>>;
 			}) | undefined;
@@ -356,6 +357,8 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 			let admittedSkill: AdmittedSkillIdentity | undefined;
 			let skillAdmissionBlocker: string | undefined;
 			let semanticPrefetchedTools: string[] = [];
+			let semanticRequestedTools: string[] = [];
+			let providerPrefetchAvailability: ProviderAvailabilityMetadata = { recoveries: [], restrictions: [] };
 			const capabilityDecisions = new Map<string, Array<{ kind: "tool" | "mcp" | "skill"; name: string; version?: string; confidence: number }>>();
 			const recordedCapabilityDecisions = new Set<string>();
 			let capabilityPrefetchFailed = false;
@@ -364,8 +367,10 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 				try {
 					const proposal = await capabilityPrefetch.beemaxCapabilityPrefetch(prefetchQuery, cognitionSignal, explicitlyRequestedSkill ? { explicitSkillName: explicitlyRequestedSkill } : undefined);
 					const inventory = new Set(allTools.map((tool) => tool.name));
+					semanticRequestedTools = [...new Set(proposal.candidates.filter((candidate) => candidate.kind !== "skill" && inventory.has(candidate.name)).map((candidate) => candidate.name))].slice(0, 10);
 					const proposedTools = proposal.activatedTools ?? proposal.candidates.filter((candidate) => candidate.kind !== "skill").map((candidate) => candidate.name);
 					semanticPrefetchedTools = [...new Set(proposedTools.filter((name) => inventory.has(name)))].slice(0, 10);
+					if (isTrustedCapabilityProviderResolutionTool(capabilityPrefetch)) providerPrefetchAvailability = providerAvailabilityMetadata(proposal.providerResolutions, inventory);
 					if (proposal.skillBlocker?.code === "skill_not_installed" && proposal.skillBlocker.name === explicitlyRequestedSkill) skillAdmissionBlocker = `Explicit Skill ${proposal.skillBlocker.name} is not installed`;
 					const proposedSkillNames = [...new Set(proposal.skills.map((skill) => skill.name).filter(Boolean))].slice(0, 1);
 					const selectedSkill = proposedSkillNames.length ? proposal.candidates.find((candidate) => candidate.kind === "skill" && candidate.name === proposedSkillNames[0] && candidate.confidence >= SEMANTIC_CAPABILITY_MINIMUM_SIMILARITY) : undefined;
@@ -408,7 +413,7 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 			const skillLifecycleTools = prefetchedSkills.length ? ["skill_read", "skill_activate", "skill_route", "skill_resource_read", "skill_complete"].filter((name) => allTools.some((tool) => tool.name === name)) : [];
 			const exposeCapabilityDiscovery = Boolean(
 				admittedTools?.includes("capability_discover")
-					|| prefetchedSkills.length
+					|| semanticPrefetchedTools.includes("capability_acquire")
 					|| capabilityPrefetchFailed
 					|| (shouldRunCapabilityPrefetch && semanticCapabilityNoMatch && Boolean(
 						workContract?.capabilityRequirements.length
@@ -423,7 +428,15 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 						|| planning?.signals.requiresResearch
 					)),
 			);
-			const proposedProgressiveTools = admittedTools ?? [...new Set([...(exposeCapabilityDiscovery ? ["capability_discover"] : []), ...skillLifecycleTools, ...(planning?.requiredTools ?? []), ...prefetchedTools])];
+			const proposedProgressiveTools = admittedTools ?? [...new Set([...(exposeCapabilityDiscovery ? ["capability_discover"] : []), ...skillLifecycleTools, ...(planning?.requiredTools ?? []), ...semanticRequestedTools, ...prefetchedTools])];
+			const recoveredProviderNames = new Set(providerPrefetchAvailability.recoveries.map((item) => item.toolName));
+			const restrictedProviderReasons = new Map(providerPrefetchAvailability.restrictions.map((item) => [item.toolName, item.reason]));
+			const toolSpecInventory = allTools.map((tool) => {
+				const item = toolSpecInventoryItem(tool, admittedTools, unresolvedEffectTools);
+				if (recoveredProviderNames.has(item.name)) return { ...item, configured: true, health: "ready" as const };
+				const restriction = restrictedProviderReasons.get(item.name);
+				return restriction ? { ...item, configured: restriction !== "configuration_required", health: restriction === "configuration_required" ? "configuration_required" as const : restriction === "provider_unhealthy" ? "unhealthy" as const : "unavailable" as const } : item;
+			});
 			let toolSpecPlan = buildToolSpecPlan({
 				profileId: this.profileId,
 				platform: input.source.platform,
@@ -433,8 +446,10 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 				},
 				selectedToolNames: proposedProgressiveTools.filter((name) => allTools.some((tool) => tool.name === name)),
 				activeSkillToolNames: skillLifecycleTools,
-				tools: allTools.map((tool) => toolSpecInventoryItem(tool, admittedTools, unresolvedEffectTools)),
+				tools: toolSpecInventory,
 			});
+			const prefetchedProviderBlocker = providerPrefetchAvailability.restrictions.find((item) => !item.installable);
+			if (prefetchedProviderBlocker) throw new AgentRunError(prefetchedProviderBlocker.blocker, false, undefined);
 			const activatePlannedTools = (names: readonly string[]): string[] => {
 				const eligible = names.filter((name) => toolSpecPlan.direct.some((entry) => entry.toolName === name) || toolSpecPlan.deferred.some((entry) => entry.toolName === name));
 				if (eligible.length) toolSpecPlan = activateToolSpecPlan(toolSpecPlan, eligible);
@@ -472,6 +487,9 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 			const failedReadFingerprints = new Map<string, number>();
 			const settledToolProgress: string[] = [];
 			const successfulToolNames = new Set<string>();
+			const pendingProviderRequirements = new Map(providerPrefetchAvailability.restrictions
+				.filter((item) => item.installable)
+				.map((item) => [item.toolName, { blocker: item.blocker, acquired: false }]));
 			const unresolvedToolProgress: string[] = [];
 			let checkpointedToolProgress = 0;
 			let eventDelivery = Promise.resolve();
@@ -547,7 +565,8 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 					this.recordTrace({ type: "tool.settled", executionEnvelope, at, toolCallId: event.toolCallId, toolName: event.toolName, status: event.isError ? "failed" : "succeeded", ...(argumentsSha256 ? { argumentsSha256 } : {}), ...(toolStart === undefined ? {} : { durationMs: Math.max(0, at - toolStart) }), ...(toolSpecPlanId ? { toolSpecPlanId } : {}), ...(expected?.origin ?? {}), ...(capabilityReceipt ? { capabilityReceipt } : {}), ...(skillLifecycleReceipt ? { skillLifecycleReceipt } : {}) });
 					if (!event.isError) successfulToolNames.add(event.toolName);
 					if (event.toolName === "capability_discover" && !event.isError) {
-						const discovery = capabilityDiscoveryMetadata(event.result, new Set(allTools.map((tool) => tool.name)));
+						const trustedDiscoveryTool = allTools.find((tool) => tool.name === "capability_discover");
+						const discovery = capabilityDiscoveryMetadata(event.result, new Set(allTools.map((tool) => tool.name)), isTrustedCapabilityProviderResolutionTool(trustedDiscoveryTool));
 						if (discovery.cognitionId && !capabilityDecisions.has(discovery.cognitionId)) {
 							const candidates = discovery.candidates.map(({ kind, name, version, confidence }) => ({ kind, name, ...(version ? { version } : {}), confidence }));
 							capabilityDecisions.set(discovery.cognitionId, candidates);
@@ -562,17 +581,59 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 						const discoveredSkill = discoveredSkillCandidate && validImmutableSkillVersion(discoveredSkillCandidate.version) ? discoveredSkillCandidate : undefined;
 						if (discoveredSkillCandidate && !discoveredSkill && !turnAbortReason) { turnAbortReason = `Selected Skill ${discoveredSkillCandidate.name} lacks immutable version evidence`; void session.piSession.abort(); }
 						if (!admittedSkill && discoveredSkill) { admittedSkill = { name: discoveredSkill.name, version: discoveredSkill.version! }; prefetchedSkills = [discoveredSkill.name]; }
-						if (discovery.restrictions.length) toolSpecPlan = hideToolSpecPlan(toolSpecPlan, discovery.restrictions);
+						for (const recovery of discovery.recoveries) {
+							const inventory = toolSpecInventory.find((tool) => tool.name === recovery.toolName);
+							const hidden = toolSpecPlan.hidden.find((entry) => entry.toolName === recovery.toolName);
+							if (inventory && hidden && ["configuration_required", "provider_unhealthy", "provider_unavailable"].includes(hidden.reason)) toolSpecPlan = restoreProviderToolSpecPlan(toolSpecPlan, [{ ...inventory, configured: true, health: "ready" }]);
+							pendingProviderRequirements.delete(recovery.toolName);
+						}
+						for (const restriction of discovery.restrictions) {
+							if (restriction.installable) pendingProviderRequirements.set(restriction.toolName, { blocker: restriction.blocker, acquired: false });
+						}
+						if (discovery.restrictions.length) toolSpecPlan = hideToolSpecPlan(toolSpecPlan, discovery.restrictions.map(({ toolName, reason }) => ({ toolName, reason })));
 						const activatedTools = activatePlannedTools(discovery.activatedTools.filter((name) => !SKILL_LIFECYCLE_TOOLS.has(name) || Boolean(discoveredSkill)));
+						const unresolvedProvider = discovery.restrictions.find((item) => !item.installable || !activatedTools.includes("capability_acquire"));
+						if (unresolvedProvider && !turnAbortReason) { turnAbortReason = unresolvedProvider.blocker; void session.piSession.abort(); }
 						if (activatedTools.length) {
 							toolSpecPlan = deferToolSpecPlan(toolSpecPlan, ["capability_discover"]);
 							session.piSession.setActiveToolsByName(toolSpecPlan.direct.map((entry) => entry.toolName));
 						}
 						if (activatedTools.length || discovery.restrictions.length) publishToolSpecTransition();
-						discoveredCapabilities = activatedTools.length > 0;
+						discoveredCapabilities = activatedTools.length > 0 && !turnAbortReason;
 						if (discovery.candidates.length || activatedTools.length || discovery.restrictions.length) enqueueEvent({ type: "capability_ranked", candidates: discovery.candidates, activatedTools });
 					}
+					else if (event.toolName === "capability_acquire" && event.isError) {
+						const pending = [...pendingProviderRequirements.entries()].map(([name, requirement]) => `${name}: ${requirement.blocker}`).join("; ");
+						if (!turnAbortReason) { turnAbortReason = pending ? `Capability Provider acquisition failed; ${pending}` : "Capability Provider acquisition failed without a verified result"; void session.piSession.abort(); }
+					}
+					else if (event.toolName === "capability_acquire") {
+						const trustedTool = allTools.find((tool) => tool.name === "capability_acquire");
+						const acquisition = isTrustedCapabilityProviderAcquisitionTool(trustedTool) ? providerAcquisitionMetadata(event.result, new Set(allTools.map((tool) => tool.name))) : undefined;
+						if (!acquisition) {
+							if (!turnAbortReason) { turnAbortReason = "Capability Provider acquisition returned no valid health and authority receipt"; void session.piSession.abort(); }
+						} else if (acquisition.status === "blocked") {
+							if (!turnAbortReason) { turnAbortReason = acquisition.blocker; void session.piSession.abort(); }
+						} else {
+							const inventory = toolSpecInventory.find((tool) => tool.name === acquisition.capability);
+							const requirement = pendingProviderRequirements.get(acquisition.capability);
+							if (!inventory) {
+								if (!turnAbortReason) { turnAbortReason = `Acquired Capability ${acquisition.capability} is absent from the Tool inventory`; void session.piSession.abort(); }
+							} else if (!requirement) {
+								if (!turnAbortReason) { turnAbortReason = `Acquired Capability ${acquisition.capability} was not required by this Objective`; void session.piSession.abort(); }
+							} else {
+								toolSpecPlan = restoreProviderToolSpecPlan(toolSpecPlan, [{ ...inventory, configured: true, health: "ready" }]);
+								requirement.acquired = true;
+								const acquisitionControlsToDefer = [...pendingProviderRequirements.values()].some((item) => !item.acquired)
+									? ["capability_discover"] : ["capability_discover", "capability_acquire"];
+								toolSpecPlan = deferToolSpecPlan(toolSpecPlan, acquisitionControlsToDefer);
+								session.piSession.setActiveToolsByName(toolSpecPlan.direct.map((entry) => entry.toolName));
+								publishToolSpecTransition();
+								discoveredCapabilities = true;
+							}
+						}
+					}
 					else if (event.toolName !== "capability_discover") {
+						if (!event.isError && pendingProviderRequirements.get(event.toolName)?.acquired) pendingProviderRequirements.delete(event.toolName);
 						let validSkillLifecycle = false;
 						if (!event.isError && SKILL_LIFECYCLE_TOOLS.has(event.toolName)) {
 							if (!skillLifecycleReceipt) {
@@ -594,7 +655,8 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 							}
 						}
 						if (!event.isError && validSkillLifecycle && ["skill_activate", "skill_route", "skill_read"].includes(event.toolName)) {
-							const lifecycle = capabilityDiscoveryMetadata(event.result, new Set(allTools.map((tool) => tool.name)));
+							const lifecycleTool = allTools.find((tool) => tool.name === event.toolName);
+							const lifecycle = capabilityDiscoveryMetadata(event.result, new Set(allTools.map((tool) => tool.name)), isTrustedCapabilityProviderResolutionTool(lifecycleTool));
 							if (lifecycle.restrictions.length) toolSpecPlan = hideToolSpecPlan(toolSpecPlan, lifecycle.restrictions);
 							const allowed = allowedSkillRouteTools(event.result, event.toolName, new Set(allTools.map((tool) => tool.name)));
 							const activated = activatePlannedTools(lifecycle.activatedTools.filter((name) => allowed.has(name)));
@@ -718,6 +780,10 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 					source: input.mode === "automation" ? "extension" : undefined,
 					images: promptImages,
 				});
+				const unacquiredProviderRequirements = () => [...pendingProviderRequirements.entries()].filter(([, requirement]) => !requirement.acquired);
+				if (unacquiredProviderRequirements().length && !turnAbortReason) {
+					await promptSession(`[BeeMax Provider correction: the original Objective requires these unavailable Capabilities: ${unacquiredProviderRequirements().map(([name]) => name).join(", ")}. Use capability_acquire now. Do not answer, omit the requirement, or substitute a weaker result.]`, { expandPromptTemplates: false });
+				}
 				const completedMatchingSkill = () => prefetchedSkills.some((name) => activatedPrefetchedSkills.has(name) && completedPrefetchedSkills.has(name));
 					if (prefetchedSkills.length && !completedMatchingSkill() && !turnAbortReason) {
 						await promptSession(`[BeeMax Skill correction: an installed Skill matched this Task (${prefetchedSkills.join(", ")}) but its lifecycle is incomplete. Use skill_read or skill_activate with the exact best-matching name, select its route, read every required module/resource, follow it, and finish with skill_complete before answering. Do not substitute another Skill.]`, { expandPromptTemplates: false });
@@ -729,10 +795,37 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 					await requireToolSpecPublication();
 					await promptSession(`${renderToolSpecPlan(toolSpecPlan)}\n\n[BeeMax capability reroute: ${failedTool} failed without a recorded equivalent-capability discovery. Use capability_discover now to find an already available alternative, then continue the original request. Do not retry the same external mutation; reconcile any uncertain side effect before another write.]`, { expandPromptTemplates: false });
 				}
-				if (discoveredCapabilities && !turnAbortReason) {
-					discoveredCapabilities = false;
-					await requireToolSpecPublication();
-					await promptSession(`${renderToolSpecPlan(toolSpecPlan)}\n\n[BeeMax capability continuation: matching Tools or Skills are now active. Continue the original request using them. Do not repeat capability discovery.]`, { expandPromptTemplates: false });
+					let capabilityContinuations = 0;
+					const capabilityContinuationLimit = Math.max(3, pendingProviderRequirements.size + 1);
+					while (discoveredCapabilities && !turnAbortReason) {
+						// A successful required Tool call can settle the final Provider
+						// obligation in the same assistant turn that acquired it. Do not
+						// consume another model turn after that completion receipt exists.
+						if (capabilityContinuations > 0 && pendingProviderRequirements.size === 0) {
+							discoveredCapabilities = false;
+							break;
+						}
+						discoveredCapabilities = false;
+						if (++capabilityContinuations > capabilityContinuationLimit) {
+							turnAbortReason = "Capability resolution exceeded its bounded continuation budget";
+							break;
+						}
+						await requireToolSpecPublication();
+						await promptSession(`${renderToolSpecPlan(toolSpecPlan)}\n\n[BeeMax capability continuation: matching Tools or Skills are now active. Continue the original request using them. Do not repeat capability discovery.]`, { expandPromptTemplates: false });
+					}
+				if (pendingProviderRequirements.size && !turnAbortReason) {
+					const unacquired = [...pendingProviderRequirements.entries()].filter(([, requirement]) => !requirement.acquired).map(([name]) => name);
+					if (!unacquired.length) {
+						await requireToolSpecPublication();
+						const acquiredButUnused = [...pendingProviderRequirements.keys()];
+						await promptSession(`[BeeMax Provider completion correction: Provider health is verified, but the original Capabilities have not completed successfully. Use these exact Tools now: ${acquiredButUnused.join(", ")}. Do not answer until their successful Tool receipts exist.]`, { expandPromptTemplates: false });
+					}
+					if (pendingProviderRequirements.size) {
+						const unresolved = [...pendingProviderRequirements.entries()].map(([name, requirement]) => requirement.acquired
+							? `${name}: Provider was acquired but the original Capability did not produce a successful Tool receipt`
+							: `${name}: ${requirement.blocker}`);
+						throw new AgentRunError(`Objective cannot complete while required Provider Capabilities remain unresolved: ${unresolved.join("; ")}`, false, undefined);
+					}
 				}
 				const missingTools = planning?.requiredTools.slice(requiredToolsUsed.length) ?? [];
 				let planningCorrected = false;
@@ -1170,9 +1263,13 @@ function releaseTurnInputContext(session: AgentSession, fromIndex: number, rawTe
 	if (messages) session.agent.state.messages = messages;
 }
 
-function capabilityDiscoveryMetadata(result: unknown, knownTools: ReadonlySet<string>): { cognitionId?: string; hasMatches: boolean; candidates: CapabilityRankedCandidate[]; activatedTools: string[]; restrictions: Array<{ toolName: string; reason: "configuration_required" | "provider_unhealthy" | "provider_unavailable" }> } {
+type ProviderRestriction = { toolName: string; reason: "configuration_required" | "provider_unhealthy" | "provider_unavailable"; blocker: string; installable: boolean };
+type ProviderRecovery = { toolName: string };
+type ProviderAvailabilityMetadata = { recoveries: ProviderRecovery[]; restrictions: ProviderRestriction[] };
+
+function capabilityDiscoveryMetadata(result: unknown, knownTools: ReadonlySet<string>, trustProviderRecoveries = false): { cognitionId?: string; hasMatches: boolean; candidates: CapabilityRankedCandidate[]; activatedTools: string[]; recoveries: ProviderRecovery[]; restrictions: ProviderRestriction[] } {
 	const details = result && typeof result === "object" ? (result as { details?: unknown }).details : undefined;
-	if (!details || typeof details !== "object") return { hasMatches: false, candidates: [], activatedTools: [], restrictions: [] };
+	if (!details || typeof details !== "object") return { hasMatches: false, candidates: [], activatedTools: [], recoveries: [], restrictions: [] };
 	const value = details as { cognitionId?: unknown; activatedTools?: unknown; tools?: unknown; skills?: unknown; ranked?: unknown; providerResolutions?: unknown };
 	const cognitionId = validCapabilityCognitionId(value.cognitionId);
 	const validName = (item: unknown): item is string => typeof item === "string" && /^[a-z0-9][a-z0-9._:-]{0,127}$/i.test(item);
@@ -1184,16 +1281,68 @@ function capabilityDiscoveryMetadata(result: unknown, knownTools: ReadonlySet<st
 		const reason: CapabilityRankReason = entry.reason.includes("trigger") ? "trigger" : entry.reason.includes("alias") ? "alias" : entry.reason.includes("exact") ? "exact_name" : entry.reason.includes("name") ? "name" : "lexical";
 		return [{ kind: entry.kind as "tool" | "mcp" | "skill", name: entry.name, ...(validVersion(entry.version) ? { version: entry.version } : {}), score: entry.score, confidence: Math.max(0, Math.min(1, entry.confidence)), reason }];
 	}).slice(0, 10) : [];
-	const restrictions = Array.isArray(value.providerResolutions) ? value.providerResolutions.flatMap((item): Array<{ toolName: string; reason: "configuration_required" | "provider_unhealthy" | "provider_unavailable" }> => {
-		if (!item || typeof item !== "object") return [];
-		const entry = item as { capability?: unknown; status?: unknown; blocker?: { code?: unknown } };
-		if (entry.status !== "blocked" || !validName(entry.capability) || !knownTools.has(entry.capability)) return [];
-		const code = entry.blocker?.code;
+	const availability = trustProviderRecoveries ? providerAvailabilityMetadata(value.providerResolutions, knownTools) : { recoveries: [], restrictions: [] };
+	const recoveries = availability.recoveries;
+	const hasMatches = activatedTools.length > 0 || candidates.length > 0 || recoveries.length > 0;
+	return { ...(cognitionId ? { cognitionId } : {}), hasMatches, candidates, activatedTools, recoveries, restrictions: availability.restrictions };
+}
+
+function providerAvailabilityMetadata(raw: unknown, knownTools: ReadonlySet<string>): ProviderAvailabilityMetadata {
+	if (!Array.isArray(raw)) return { recoveries: [], restrictions: [] };
+	const validIdentifier = (value: unknown, max = 256): value is string => typeof value === "string" && value.length > 0 && value.length <= max && /^[a-z0-9][a-z0-9._:@-]*$/i.test(value);
+	const recoveries: ProviderRecovery[] = [];
+	const restrictions: ProviderRestriction[] = [];
+	for (const item of raw.slice(0, 50)) {
+		if (!item || typeof item !== "object") continue;
+		const entry = item as Record<string, unknown>;
+		if (!validIdentifier(entry.capability, 128) || !knownTools.has(entry.capability)) continue;
+		if (entry.status === "ready") {
+			const selected = entry.selected && typeof entry.selected === "object" ? entry.selected as Record<string, unknown> : undefined;
+			const health = selected?.health && typeof selected.health === "object" ? selected.health as Record<string, unknown> : undefined;
+			if (selected?.installed === true && health?.status === "ready" && validIdentifier(health.evidenceRef, 1_000)) recoveries.push({ toolName: entry.capability });
+			continue;
+		}
+		if (entry.status !== "blocked") continue;
+		const blocker = entry.blocker && typeof entry.blocker === "object" ? entry.blocker as Record<string, unknown> : undefined;
+		const code = blocker?.code;
+		if (!blocker || !["configuration_required", "provider_unhealthy", "provider_unavailable"].includes(String(code)) || typeof blocker.reason !== "string" || !blocker.reason.trim() || blocker.reason.length > 2_000) continue;
+		const required = Array.isArray(blocker.requiredConfiguration) ? blocker.requiredConfiguration : [];
+		if (required.length > 50 || !required.every((value) => validIdentifier(value, 128))) continue;
 		const reason = code === "configuration_required" ? "configuration_required" : code === "provider_unhealthy" ? "provider_unhealthy" : "provider_unavailable";
-		return [{ toolName: entry.capability, reason }];
-	}) : [];
-	const hasMatches = activatedTools.length > 0 || candidates.length > 0;
-	return { ...(cognitionId ? { cognitionId } : {}), hasMatches, candidates, activatedTools, restrictions };
+		const candidates = Array.isArray(entry.candidates) ? entry.candidates : [];
+		const installable = candidates.some((candidate) => candidate && typeof candidate === "object" && (candidate as Record<string, unknown>).installed === false && (candidate as Record<string, unknown>).installable === true);
+		const safeReason = redactCredentialMaterial(blocker.reason.trim()).slice(0, 2_000);
+		restrictions.push({ toolName: entry.capability, reason, installable, blocker: `Capability ${entry.capability} remains unavailable (${String(code)}): ${safeReason}${required.length ? `; required configuration: ${required.join(", ")}` : ""}` });
+	}
+	return { recoveries: [...new Map(recoveries.map((entry) => [entry.toolName, entry])).values()], restrictions: [...new Map(restrictions.map((entry) => [entry.toolName, entry])).values()] };
+}
+
+type ProviderAcquisitionMetadata = { status: "ready"; capability: string } | { status: "blocked"; blocker: string };
+function providerAcquisitionMetadata(result: unknown, knownTools: ReadonlySet<string>): ProviderAcquisitionMetadata | undefined {
+	const details = result && typeof result === "object" ? (result as { details?: unknown }).details : undefined;
+	const raw = details && typeof details === "object" ? (details as { providerAcquisition?: unknown }).providerAcquisition : undefined;
+	if (!raw || typeof raw !== "object") return undefined;
+	const acquisition = raw as Record<string, unknown>;
+	const validIdentifier = (value: unknown, max = 256): value is string => typeof value === "string" && value.length > 0 && value.length <= max && /^[a-z0-9][a-z0-9._:@-]*$/i.test(value);
+	if (!validIdentifier(acquisition.capability, 128) || !knownTools.has(acquisition.capability)) return undefined;
+	if (acquisition.status === "blocked") {
+		const blocker = acquisition.blocker && typeof acquisition.blocker === "object" ? acquisition.blocker as Record<string, unknown> : undefined;
+		const codes = new Set(["configuration_required", "provider_unhealthy", "provider_unavailable", "installation_authorization_required", "installation_denied", "installation_failed", "installation_outcome_unknown"]);
+		if (!blocker || !codes.has(String(blocker.code)) || typeof blocker.reason !== "string" || !blocker.reason.trim() || blocker.reason.length > 2_000) return undefined;
+		const required = Array.isArray(blocker.requiredConfiguration) ? blocker.requiredConfiguration : [];
+		if (required.length > 50 || !required.every((item) => validIdentifier(item, 128))) return undefined;
+		const reason = redactCredentialMaterial(blocker.reason.trim()).slice(0, 2_000);
+		return { status: "blocked", blocker: `Capability ${acquisition.capability} remains unavailable (${String(blocker.code)}): ${reason}${required.length ? `; required configuration: ${required.join(", ")}` : ""}` };
+	}
+	if (acquisition.status !== "ready") return undefined;
+	const selected = acquisition.selected && typeof acquisition.selected === "object" ? acquisition.selected as Record<string, unknown> : undefined;
+	const health = selected?.health && typeof selected.health === "object" ? selected.health as Record<string, unknown> : undefined;
+	if (!selected || !validIdentifier(selected.id, 128) || !["tool", "mcp"].includes(String(selected.kind)) || selected.installed !== true || health?.status !== "ready" || !validIdentifier(health.evidenceRef, 1_000)) return undefined;
+	if (acquisition.installationReceipt !== undefined) {
+		const receipt = acquisition.installationReceipt && typeof acquisition.installationReceipt === "object" ? acquisition.installationReceipt as Record<string, unknown> : undefined;
+		if (!receipt || !validIdentifier(receipt.receiptId, 256) || !Number.isSafeInteger(receipt.installedAt) || Number(receipt.installedAt) < 0 || !validIdentifier(receipt.evidenceRef, 1_000) || !validIdentifier(acquisition.authorityEvidenceRef, 1_000)) return undefined;
+	}
+	return { status: "ready", capability: acquisition.capability };
 }
 
 function validCapabilityCognitionId(value: unknown): string | undefined {

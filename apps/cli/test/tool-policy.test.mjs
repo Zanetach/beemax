@@ -2,14 +2,14 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { mainAgentTools, readOnlyAgentTools } from "../dist/gateway.js";
 
-test("shared read-only policy includes Agent-Reach for every session type", () => {
+test("shared read-only policy includes Exa web search for every session type", () => {
 	const mcpTools = ["mcp_read"];
 	const subagentTools = readOnlyAgentTools(mcpTools);
 	const automationTools = readOnlyAgentTools(mcpTools, ["schedule_list"]);
 	const mainTools = mainAgentTools("safe", mcpTools);
 
 	for (const tools of [subagentTools, automationTools, mainTools]) {
-		assert.ok(tools.includes("agent_reach_search"));
+		assert.ok(tools.includes("exa_web_search"));
 		assert.ok(tools.includes("web_search"));
 		assert.ok(tools.includes("web_extract"));
 		assert.ok(tools.includes("mcp_read"));

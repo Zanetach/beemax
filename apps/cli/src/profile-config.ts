@@ -487,6 +487,7 @@ function defaultProfileYaml(): string {
 		gateway: { feishu: { domain: "feishu", requireMention: true, allowedUsers: [], allowedChats: [], allowAllUsers: false }, channels: [] },
 		memory: { dbPath: "memory.db", memberships: [] },
 		mcp: { configPath: "mcp.json" },
+		capabilityProviders: { installation: { enabled: false, allowedProviders: [] } },
 		knowledge: { enabled: false, provider: "weknora", baseUrl: "http://127.0.0.1:8080", spaces: [] },
 		imageGeneration: { enabled: false, provider: "openai-codex", quality: "medium", outputDir: "cache/images" },
 		mediaUnderstanding: { localOcr: { enabled: true, timeoutMs: 30000 }, auxiliaryVisionEnabled: true },

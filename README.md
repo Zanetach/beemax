@@ -189,7 +189,7 @@ Profiles use the `standard` Toolset by default. Set `agent.toolset: safe` for a 
 
 The safe Toolset keeps read/search, Memory inspection, task status, schedules, Skill inspection, and read-only MCP tools. It excludes shell, file writes, Memory mutation, image generation, scheduling mutation, and mutating MCP tools.
 
-Configured Profile text models perform bounded semantic Tool, MCP, and Skill selection. When every semantic model is unavailable, BeeMax uses bounded lexical recall; a valid semantic “no match” remains empty and never forces an unrelated Skill. Optional Profile preferences optimize equivalent candidates but do not grant execution authority:
+Configured Profile text models perform bounded semantic Tool, MCP, and Skill selection. BeeMax may fail over between configured semantic models, but it does not replace a failed semantic decision with weaker lexical routing; the unchanged Objective remains incomplete with an explicit Provider failure. Lexical recall is used only when a Profile has no configured semantic model. A valid semantic “no match” remains empty and never forces an unrelated Skill. Optional Profile preferences optimize equivalent candidates but do not grant execution authority:
 
 ```yaml
 agent:
@@ -198,12 +198,23 @@ agent:
     skill:source-review: 0.8
   capabilityCognition:
     maxModelAttempts: 2
-    maxTokens: 4096
+    maxTokens: 2048
     timeoutMs: 60000
     maxTotalEstimatedTokens: 300000
 ```
 
-Preference values range from `-1` to `1`. Capability cognition recovery stays inside one total deadline and estimated-token ceiling, giving the first Provider attempt the largest front-loaded weighted share while reserving bounded time for every recovery; `maxModelAttempts` accepts `1`–`5`, while `maxTokens` prevents reasoning-heavy models from exhausting the response before producing the required decision. BeeMax also applies a host-owned, non-persistent Provider request retry budget inside the Execution Envelope deadline, so a stalled request cannot consume the entire Task recovery window. Neither setting authorizes lexical degradation after malformed or empty semantic responses. Policy, Profile scope, Provider health, Effects, and the turn-scoped Tool Spec still decide whether a selected capability can execute.
+Preference values range from `-1` to `1`. Capability cognition recovery stays inside one total deadline and estimated-token ceiling, giving the first Provider attempt the largest front-loaded weighted share while reserving bounded time for every recovery; `maxModelAttempts` accepts `1`–`5`. The compact `maxTokens` default is sized for the bounded JSON decision rather than an open-ended Agent answer, reducing reasoning-heavy Provider stalls without reducing the Agent Turn budget. BeeMax also applies a host-owned, non-persistent Provider request retry budget inside the Execution Envelope deadline, so a stalled request cannot consume the entire Task recovery window. Neither setting authorizes lexical degradation after malformed or empty semantic responses. Policy, Profile scope, Provider health, Effects, and the turn-scoped Tool Spec still decide whether a selected capability can execute.
+
+Missing Provider acquisition is disabled by default. Operators may pre-authorize exact Provider adapters per Profile; the mutating `capability_acquire` Tool still requires runtime approval, installation uses a pinned adapter in the Profile's private directory, and BeeMax resumes the unchanged Objective only after a health probe returns evidence:
+
+```yaml
+capabilityProviders:
+  installation:
+    enabled: true
+    allowedProviders: [exa-mcporter]
+```
+
+The equivalent environment settings are `BEEMAX_PROVIDER_INSTALLATION_ENABLED=true` and `BEEMAX_PROVIDER_INSTALLATION_ALLOW=exa-mcporter`. BeeMax currently ships a pinned Exa/mcporter adapter for restoring `web_search`; arbitrary package names or model-authored shell commands are never accepted. The adapter installs a fixed mcporter dependency closure from BeeMax's SHA-256-verified `package-lock`, disables package lifecycle scripts, runs with a minimal Profile-scoped environment, and publishes through an atomic cross-process lock plus rename. Its manifest content-addresses the executable, configuration, and complete dependency tree; integrity is rechecked before health probes and searches. Interrupted or ambiguous installs leave a durable quarantine; the next acquisition first reconciles the isolated staging state, then retries without overlapping the previous installer. Missing configuration, denied authority, unhealthy installation, and unknown outcomes fail closed instead of producing an evergreen substitute.
 
 Every Capability decision receives a content-free cognition ID that correlates model usage, fallback telemetry, the execution trace, and the eventual verified, rejected, failed, cancelled, or unverified task outcome. Calibration reports keep lexical, frozen-semantic, and live-Provider results separate and measure Top-1, Top-K, required-capability recall, unnecessary activation, no-match precision, completion, latency, tokens, and cost. Versioned threshold trials cannot be promoted when authorization, false-positive, recall, or completion metrics regress.
 

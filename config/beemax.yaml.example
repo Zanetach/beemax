@@ -26,6 +26,13 @@ memory:
 mcp:
   configPath: config/mcp.json
 
+# Disabled by default. Each Provider must be explicitly allowlisted and still
+# passes runtime Tool approval plus post-install health verification.
+capabilityProviders:
+  installation:
+    enabled: false
+    allowedProviders: [] # e.g. [exa-mcporter]
+
 # WeKnora-backed enterprise knowledge. Keep BEEMAX_WEKNORA_API_KEY in .env.
 knowledge:
   enabled: false

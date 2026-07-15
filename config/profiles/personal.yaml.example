@@ -24,6 +24,11 @@ memory:
 mcp:
   configPath: config/profiles/personal.mcp.json
 
+capabilityProviders:
+  installation:
+    enabled: false
+    allowedProviders: [] # e.g. [exa-mcporter]
+
 # Set BEEMAX_WEKNORA_API_KEY in the Profile env file, never in YAML.
 knowledge:
   enabled: false

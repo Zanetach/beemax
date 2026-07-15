@@ -45,6 +45,7 @@ import { setFeishuHomeChat } from "./profile-config.ts";
 import { createMemoryScopeResolver } from "./memory-membership.ts";
 import { createLocalMediaUnderstandingAdapters } from "./local-media-understanding.ts";
 import { createSuccessfulVerificationReceipt, normalizeVerifierEvidenceRefs, parseVerifierSubmission, type SuccessfulVerificationReceipt } from "./verification-protocol.ts";
+import { createProfileCapabilityProviderBundle } from "./capability-provider-composition.ts";
 
 async function runProfileAutomation(
 	runtime: AgentRuntimePort<SessionSource>,
@@ -89,6 +90,7 @@ export async function runGateway(config: BeeMaxConfig): Promise<void> {
 		recordGatewayEvent(config.paths.agentDir, "failed", { profile: config.profile, error });
 		throw new Error(error);
 	}
+	const capabilityProviders = createProfileCapabilityProviderBundle({ profileId: config.profile, agentDir: config.paths.agentDir, installation: config.capabilityProviders.installation });
 	let bindingResolver;
 	try {
 		bindingResolver = assertProfileBindingConfiguration(config.gateway.bindings, { profileId: config.profile, channelInstanceIds: enabledChannels.map((channel) => channel.id) });
@@ -245,8 +247,11 @@ export async function runGateway(config: BeeMaxConfig): Promise<void> {
 		cwd: config.paths.cwd,
 		agentDir: config.paths.agentDir,
 		getApiKey: (provider: string) => config.model.apiKeys[provider] ?? (provider === config.model.provider ? apiKey : undefined),
+		additionalModelProviders: () => configuredRuntimeModels(config).map((model) => model.provider),
 		skillToolset: config.agent.toolset,
 		capabilityPreferences: config.agent.capabilityPreferences,
+		capabilityProviderRuntime: capabilityProviders.runtime,
+		capabilityProviderEnvironment: capabilityProviders.environment,
 		compaction: config.context.compaction,
 		toolResultBudget: { maxEstimatedTokens: config.context.maxToolResultTokens },
 		compactionAudit: (event: ContextCompactionAuditEvent<SessionSource>) => recordGatewayEvent(config.paths.agentDir, "context_compaction", {
@@ -276,7 +281,6 @@ export async function runGateway(config: BeeMaxConfig): Promise<void> {
 	const capabilityRanker = configuredCapabilityRanker(
 		auxiliaryTextModels,
 		(usage) => recordGatewayEvent(config.paths.agentDir, "capability_cognition", { profile: config.profile, ...usage }),
-		({ code, cognitionId }) => recordGatewayEvent(config.paths.agentDir, "capability_cognition_fallback", { profile: config.profile, code, ...(cognitionId ? { cognitionId } : {}) }),
 		config.agent.capabilityCognition,
 	);
 	const createSubagentAgent = buildAgentFactory({
@@ -906,7 +910,7 @@ export function createVerifiedObjectiveMemoryPublisher(memory: Pick<Organization
 	};
 }
 
-const TASK_VERIFICATION_CAPABILITIES = Object.freeze([VERIFICATION_SUBMIT_TOOL_NAME, "read", "web_search", "agent_reach_search", "web_extract"]);
+const TASK_VERIFICATION_CAPABILITIES = Object.freeze([VERIFICATION_SUBMIT_TOOL_NAME, "read", "web_search", "exa_web_search", "web_extract"]);
 
 export function createTaskVerifier(factory: ReturnType<typeof buildAgentFactory>, timeoutMs: number, executionTrace?: ExecutionTraceSink, allowedCapabilities: readonly string[] = TASK_VERIFICATION_CAPABILITIES): TaskGraphVerifier {
 	return async (task, candidate, signal, context) => {
@@ -923,7 +927,7 @@ export function createTaskVerifier(factory: ReturnType<typeof buildAgentFactory>
 		const initialVerificationToolCallBudget = verificationTotalToolCallBudget - correctionToolCallReserve;
 		const initialVerificationTokenBudget = verificationTotalTokenBudget - correctionTokenReserve;
 		const verificationCapabilities = externalUrls.length
-			? allowedCapabilities.filter((name) => name !== "web_search" && name !== "agent_reach_search")
+			? allowedCapabilities.filter((name) => name !== "web_search" && name !== "exa_web_search")
 			: allowedCapabilities;
 		const verificationTask: SubagentTask = {
 			id: `${task.id}:verification:${crypto.randomUUID()}`,

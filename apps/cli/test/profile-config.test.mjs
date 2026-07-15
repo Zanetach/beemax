@@ -83,7 +83,8 @@ test("profile creation and Feishu channel configuration keep secrets in a protec
 	assert.equal(config.agent.sessionIdleMs, 30 * 60_000);
 	assert.equal(config.agent.turnIdleSettleMs, 60_000);
 	assert.deepEqual(config.agent.capabilityPreferences, {});
-	assert.deepEqual(config.agent.capabilityCognition, { maxModelAttempts: 2, maxTokens: 4_096, timeoutMs: 60_000, maxTotalEstimatedTokens: 300_000 });
+	assert.deepEqual(config.agent.capabilityCognition, { maxModelAttempts: 2, maxTokens: 2_048, timeoutMs: 60_000, maxTotalEstimatedTokens: 300_000 });
+	assert.deepEqual(config.capabilityProviders.installation, { enabled: false, allowedProviders: [] });
 	assert.deepEqual(config.context, {
 		maxTurnChars: 12_000,
 		maxToolResultTokens: 12_000,
@@ -143,6 +144,16 @@ test("Profile capability preferences are bounded ranking inputs rather than auth
 	assert.deepEqual(loadConfig(paths.configPath, "preferences").agent.capabilityPreferences, { web_search: 0.8, "skill:source-review": -0.25 });
 	await writeFile(paths.configPath, `agent:\n  capabilityPreferences:\n    web_search: 2\n`);
 	assert.throws(() => loadConfig(paths.configPath, "preferences"), /must be between -1 and 1/u);
+});
+
+test("Profile Provider installation requires an explicit bounded allowlist", async () => {
+	const root = await mkdtemp(join(tmpdir(), "beemax-provider-policy-root-"));
+	const home = await mkdtemp(join(tmpdir(), "beemax-provider-policy-home-"));
+	const paths = await createProfile("provider-policy", { root, home });
+	await writeFile(paths.configPath, `capabilityProviders:\n  installation:\n    enabled: true\n    allowedProviders: [exa-mcporter]\n`);
+	assert.deepEqual(loadConfig(paths.configPath, "provider-policy", { root, home }).capabilityProviders.installation, { enabled: true, allowedProviders: ["exa-mcporter"] });
+	await writeFile(paths.configPath, `capabilityProviders:\n  installation:\n    enabled: true\n    allowedProviders: ["bad provider"]\n`);
+	assert.throws(() => loadConfig(paths.configPath, "provider-policy", { root, home }), /allowedProviders\[0\]/u);
 });
 
 test("runtime config loads registry-based channels while keeping adapter secrets outside YAML", async () => {

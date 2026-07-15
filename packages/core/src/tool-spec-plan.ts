@@ -154,6 +154,27 @@ export function hideToolSpecPlan(plan: ToolSpecPlan, restrictions: readonly { to
 	return freezePlan({ ...plan, planId: planIdentity({ prior: plan.planId, restrictions: [...byName], direct: identityEntries(direct), deferred: identityEntries(deferred), hidden }), direct, deferred, hidden });
 }
 
+/** Re-admits only exact Provider-blocked Tools after trusted acquisition and health evidence. */
+export function restoreProviderToolSpecPlan(plan: ToolSpecPlan, recoveredTools: readonly ToolSpecInventoryItem[]): ToolSpecPlan {
+	if (!recoveredTools.length) return plan;
+	const schemaBudget = { remaining: MAX_TOTAL_SCHEMA_BYTES };
+	const recovered = recoveredTools.map((tool) => normalizeInventoryItem(tool, true, schemaBudget));
+	if (new Set(recovered.map((tool) => tool.name)).size !== recovered.length) throw new Error("Recovered Provider Tools contain duplicate names");
+	const providerReasons = new Set<ToolSpecHiddenReason>(["configuration_required", "provider_unhealthy", "provider_unavailable"]);
+	for (const tool of recovered) {
+		const hidden = plan.hidden.find((entry) => entry.toolName === tool.name);
+		if (!hidden || !providerReasons.has(hidden.reason)) throw new Error(`Tool ${tool.name} is not hidden by Provider availability`);
+		if (hidden.id !== `${tool.kind}:${tool.name}@${tool.version}`) throw new Error(`Recovered Tool ${tool.name} changed immutable identity`);
+		if (hiddenReason(tool, false)) throw new Error(`Recovered Tool ${tool.name} is not healthy and authorized`);
+	}
+	const recoveredNames = new Set(recovered.map((tool) => tool.name));
+	const restoredEntries = recovered.map(publicEntry);
+	const hidden = plan.hidden.filter((entry) => !recoveredNames.has(entry.toolName));
+	const deferred = [...plan.deferred, ...restoredEntries].sort((left, right) => left.toolName.localeCompare(right.toolName));
+	const restored = freezePlan({ ...plan, planId: planIdentity({ prior: plan.planId, providerRecovered: identityEntries(restoredEntries), direct: identityEntries(plan.direct), deferred: identityEntries(deferred), hidden }), deferred, hidden });
+	return activateToolSpecPlan(restored, recovered.map((tool) => tool.name));
+}
+
 /** Renders bounded plan metadata; Pi carries each direct Tool's native schema on the same sampling request. */
 export function renderToolSpecPlan(plan: ToolSpecPlan): string {
 	const modelView = {

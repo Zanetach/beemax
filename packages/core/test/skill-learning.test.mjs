@@ -3,10 +3,10 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { createSkillTools } from "../dist/index.js";
+import { CapabilityProviderRuntime, ModelBackedSemanticCapabilityPort, SemanticCapabilityRanker, createSkillTools } from "../dist/index.js";
 
-function toolsAt(root, inventory = [], verifier, activateTools, promotionAuthority) {
-	return new Map(createSkillTools(root, () => undefined, inventory, verifier, [], activateTools, undefined, promotionAuthority).map((tool) => [tool.name, tool]));
+function toolsAt(root, inventory = [], verifier, activateTools, promotionAuthority, providerRuntime) {
+	return new Map(createSkillTools(root, () => undefined, inventory, verifier, [], activateTools, undefined, promotionAuthority, undefined, providerRuntime).map((tool) => [tool.name, tool]));
 }
 
 test("capability discovery searches the current tool inventory before learning a Skill", async () => {
@@ -37,6 +37,24 @@ test("production capability prefetch returns one semantic Tool/MCP/Skill proposa
 		assert.deepEqual({ ...proposal.candidates[0], version: undefined }, { kind: "mcp", name: "calendar_lookup", version: undefined, confidence: 0.96 });
 		assert.match(proposal.candidates[0].version, /^sha256:[a-f0-9]{64}$/u);
 		assert.deepEqual(proposal.skills, []);
+	} finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("Provider resolution ignores a blocked semantic backup when a required healthy capability satisfies the same obligation", async () => {
+	const root = mkdtempSync(join(tmpdir(), "beemax-provider-alternative-"));
+	try {
+		const ranker = new SemanticCapabilityRanker(new ModelBackedSemanticCapabilityPort(async ({ candidates }) => ({ matches: [
+			{ id: candidates.find((candidate) => candidate.name === "primary_search").id, name: "primary_search", similarity: 0.97, requirementId: "fresh-evidence", necessity: "required" },
+			{ id: candidates.find((candidate) => candidate.name === "backup_search").id, name: "backup_search", similarity: 0.95, requirementId: "fresh-evidence", necessity: "alternative" },
+		] })));
+		const tools = new Map(createSkillTools(root, () => undefined, [
+			{ name: "primary_search", description: "Search fresh public evidence", providers: [{ id: "primary", kind: "tool", capabilities: ["primary_search"], installed: true, health: async () => ({ status: "ready", evidenceRef: "health:primary" }) }] },
+			{ name: "backup_search", description: "Alternative search for fresh public evidence", providers: [{ id: "backup", kind: "tool", capabilities: ["backup_search"], installed: false, install: { source: "catalog", package: "backup", version: "1" }, health: async () => ({ status: "unavailable", reason: "not installed" }) }] },
+		], undefined, [], undefined, ranker).map((tool) => [tool.name, tool]));
+		const proposal = await tools.get("capability_discover").beemaxCapabilityPrefetch("Find fresh public evidence");
+		assert.deepEqual(proposal.candidates.map((candidate) => candidate.name), ["primary_search"]);
+		assert.deepEqual(proposal.activatedTools, ["primary_search"]);
+		assert.deepEqual(proposal.providerResolutions.map((resolution) => [resolution.capability, resolution.status]), [["primary_search", "ready"]]);
 	} finally { rmSync(root, { recursive: true, force: true }); }
 });
 
@@ -130,6 +148,44 @@ test("capability discovery reports matched Tool and MCP Provider health plus exa
 	} finally { rmSync(root, { recursive: true, force: true }); }
 });
 
+test("capability acquisition installs an exact Provider with authority evidence and exposes only the recovered Tool", async () => {
+	const root = mkdtempSync(join(tmpdir(), "beemax-provider-acquisition-"));
+	try {
+		let installed = false;
+		const providerRuntime = new CapabilityProviderRuntime({
+			installAuthority: { authorize: async ({ provider }) => ({ allowed: provider.id === "approved-analysis-mcp", evidenceRef: "approval:analysis-mcp" }) },
+			installer: { install: async (provider) => { installed = provider.id === "approved-analysis-mcp"; return { receiptId: "install:analysis-mcp", installedAt: 42, evidenceRef: "catalog:analysis-mcp" }; } },
+		});
+		const tools = toolsAt(root, [{
+			name: "remote_analysis", description: "Analyze remote structured evidence", triggers: ["remote analysis"], signals: { health: "unavailable" },
+			providers: [{ id: "approved-analysis-mcp", kind: "mcp", capabilities: ["remote_analysis"], installed: false, install: { source: "approved-catalog", package: "approved-analysis-mcp", version: "1.0.0" }, health: async () => installed ? { status: "ready", evidenceRef: "health:analysis-mcp" } : { status: "unavailable", reason: "not installed" } }],
+		}], undefined, undefined, undefined, providerRuntime);
+		const discovered = await tools.get("capability_discover").execute("discover", { query: "remote analysis" });
+		assert.deepEqual(discovered.details.activatedTools, ["capability_acquire"]);
+		assert.equal(discovered.details.providerResolutions[0].status, "blocked");
+		const acquired = await tools.get("capability_acquire").execute("acquire", { capability: "remote_analysis" });
+		assert.equal(acquired.details.providerAcquisition.status, "ready");
+		assert.equal(acquired.details.providerAcquisition.authorityEvidenceRef, "approval:analysis-mcp");
+		assert.equal(acquired.details.providerAcquisition.installationReceipt.receiptId, "install:analysis-mcp");
+		assert.deepEqual(acquired.details.activatedTools, ["remote_analysis"]);
+		assert.equal(tools.get("capability_acquire").beemaxPolicy.approval, "always");
+	} finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("capability acquisition redacts Provider authority errors before they enter model content or details", async () => {
+	const root = mkdtempSync(join(tmpdir(), "beemax-provider-redaction-"));
+	try {
+		const providerRuntime = new CapabilityProviderRuntime({
+			installAuthority: { authorize: async () => ({ allowed: false, reason: "API_KEY=super-secret-value cannot authorize this install" }) },
+		});
+		const tools = toolsAt(root, [{ name: "remote_analysis", description: "Analyze remote evidence", providers: [{ id: "remote-analysis", kind: "mcp", capabilities: ["remote_analysis"], installed: false, install: { source: "approved-catalog", package: "remote-analysis", version: "1.0.0" }, health: async () => ({ status: "ready", evidenceRef: "health:remote-analysis" }) }] }], undefined, undefined, undefined, providerRuntime);
+		const acquired = await tools.get("capability_acquire").execute("acquire", { capability: "remote_analysis" });
+		const serialized = JSON.stringify(acquired);
+		assert.doesNotMatch(serialized, /super-secret-value/);
+		assert.match(serialized, /credential details redacted/i);
+	} finally { rmSync(root, { recursive: true, force: true }); }
+});
+
 test("capability discovery ranks multilingual aliases and excludes negative matches", async () => {
 	const root = mkdtempSync(join(tmpdir(), "beemax-capability-ranking-"));
 	try {
@@ -189,8 +245,30 @@ test("Skill tools progressively activate a project Skill route and only its decl
 		assert.deepEqual(discovery.details.activatedTools, ["skill_activate", "skill_read"]);
 		assert.deepEqual(activated.details.activatedTools, ["skill_route", "skill_complete"]);
 		assert.deepEqual(routed.details.activatedTools, ["skill_resource_read", "skill_complete", "web_search"]);
-		assert.deepEqual(routed.details.providerResolutions, [{ capability: "web_search", status: "blocked", blocker: { code: "provider_unhealthy" } }]);
+		assert.equal(routed.details.providerResolutions[0].capability, "web_search");
+		assert.equal(routed.details.providerResolutions[0].status, "blocked");
+		assert.equal(routed.details.providerResolutions[0].blocker.code, "provider_unhealthy");
+		assert.match(routed.details.providerResolutions[0].blocker.reason, /probe failed/);
+		assert.equal(routed.details.providerResolutions[0].candidates[0].health.status, "unhealthy");
 		assert.deepEqual([activated, routed, resource, completed].map((item) => [item.details.skillLifecycleReceipt.phase, item.details.skillLifecycleReceipt.sourceTool]), [["activated", "skill_activate"], ["routed", "skill_route"], ["resource_read", "skill_resource_read"], ["completed", "skill_complete"]]);
+	} finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("Skill routes resolve a unique legacy Tool alias to its current canonical Tool", async () => {
+	const root = mkdtempSync(join(tmpdir(), "beemax-skill-tool-alias-"));
+	try {
+		const project = join(root, "project-skills"); const skill = join(project, "legacy-search-skill");
+		mkdirSync(join(skill, "modules"), { recursive: true });
+		writeFileSync(join(skill, "SKILL.md"), `---\nname: legacy-search-skill\ndescription: "Use a renamed search capability"\ntriggers: ["legacy search"]\n---\nUse the declared route.`);
+		writeFileSync(join(skill, "manifest.json"), JSON.stringify({ version: 1, routes: { research: { module: "modules/research.md", tools: ["legacy_search"] } } }));
+		writeFileSync(join(skill, "modules", "research.md"), "Search and preserve evidence.");
+		const tools = new Map(createSkillTools(root, () => undefined, [{ name: "current_search", description: "Current canonical search Tool", aliases: ["legacy_search"] }], undefined, [project]).map((tool) => [tool.name, tool]));
+		await tools.get("capability_discover").execute("discover", { query: "legacy search" });
+		await tools.get("skill_activate").execute("activate", { name: "legacy-search-skill" });
+		const routed = await tools.get("skill_route").execute("route", { route: "research" });
+		assert.deepEqual(routed.details.declaredTools, ["legacy_search"]);
+		assert.deepEqual(routed.details.tools, ["current_search"]);
+		assert.deepEqual(routed.details.activatedTools, ["skill_resource_read", "skill_complete", "current_search"]);
 	} finally { rmSync(root, { recursive: true, force: true }); }
 });
 

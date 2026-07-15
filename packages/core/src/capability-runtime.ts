@@ -59,6 +59,8 @@ interface RankedCapability {
 	score: number;
 	confidence: number;
 	explanation: CapabilityExplanation;
+	requirementId?: string;
+	necessity?: "required" | "alternative";
 }
 
 const MIN_DISCOVERY_CONFIDENCE = 0.2;
@@ -75,7 +77,7 @@ export interface CapabilityRanker {
 export interface CapabilityRankingContext { cognitionId: string; }
 
 export interface SemanticCapabilityPort {
-	similarities(input: { query: string; candidates: Array<{ id: string; name: string; text: string; signals?: CapabilityOperationalSignals }>; limit: number; signal?: AbortSignal; cognitionId?: string }): Promise<Array<{ id?: string; name: string; similarity: number; signals?: string[] }>>;
+	similarities(input: { query: string; candidates: Array<{ id: string; name: string; text: string; signals?: CapabilityOperationalSignals }>; limit: number; signal?: AbortSignal; cognitionId?: string }): Promise<Array<{ id?: string; name: string; similarity: number; signals?: string[]; requirementId?: string; necessity?: "required" | "alternative" }>>;
 }
 
 export interface PiActiveToolsPort { setActiveTools(names: string[]): void; }
@@ -120,10 +122,10 @@ export class SemanticCapabilityRanker implements CapabilityRanker {
 				if (!descriptor || !Number.isFinite(match.similarity) || match.similarity < this.minimumSimilarity) return [];
 				const confidence = Math.max(0, Math.min(1, match.similarity));
 				const signals = cleanExplanationSignals(match.signals);
-				return [{ descriptor, score: confidence * 100, confidence, explanation: { strategy: "semantic", summary: signals[0] ?? "semantic capability match", signals } }];
+				return [{ descriptor, score: confidence * 100, confidence, explanation: { strategy: "semantic", summary: signals[0] ?? "semantic capability match", signals }, ...(match.requirementId ? { requirementId: match.requirementId, necessity: match.necessity ?? "required" } : {}) }];
 			}).sort((left, right) => right.score - left.score || left.descriptor.name.localeCompare(right.descriptor.name)).slice(0, limit);
 			throwIfAborted(signal);
-			return selected;
+			return pruneSemanticAlternatives(selected);
 		} catch (error) {
 			if (!this.fallback || !isProviderUnavailable(error)) throw error;
 			if (signal?.aborted) throw signal.reason ?? error;
@@ -143,7 +145,7 @@ export type SemanticCapabilityInference = (input: Readonly<{ query: string; cand
 export class ModelBackedSemanticCapabilityPort implements SemanticCapabilityPort {
 	private readonly infer: SemanticCapabilityInference;
 	constructor(infer: SemanticCapabilityInference) { this.infer = infer; }
-	async similarities(input: { query: string; candidates: Array<{ id: string; name: string; text: string; signals?: CapabilityOperationalSignals }>; limit: number; signal?: AbortSignal; cognitionId?: string }): Promise<Array<{ id?: string; name: string; similarity: number; signals?: string[] }>> {
+	async similarities(input: { query: string; candidates: Array<{ id: string; name: string; text: string; signals?: CapabilityOperationalSignals }>; limit: number; signal?: AbortSignal; cognitionId?: string }): Promise<Array<{ id?: string; name: string; similarity: number; signals?: string[]; requirementId?: string; necessity?: "required" | "alternative" }>> {
 		const allowedIds = new Map(input.candidates.map((candidate) => [candidate.id, candidate]));
 		const nameCounts = new Map<string, number>();
 		for (const candidate of input.candidates) nameCounts.set(candidate.name, (nameCounts.get(candidate.name) ?? 0) + 1);
@@ -151,15 +153,22 @@ export class ModelBackedSemanticCapabilityPort implements SemanticCapabilityPort
 		if (!value || typeof value !== "object" || !Array.isArray((value as { matches?: unknown }).matches)) throw new Error("Semantic Capability model returned an invalid result envelope");
 		const rawMatches = (value as { matches: unknown[] }).matches;
 		let invalidMatches = 0;
-		const matches = rawMatches.flatMap((item): Array<{ id?: string; name: string; similarity: number; signals?: string[] }> => {
+		const matches = rawMatches.flatMap((item, index): Array<{ id?: string; name: string; similarity: number; signals?: string[]; requirementId?: string; necessity?: "required" | "alternative" }> => {
 			if (!item || typeof item !== "object" || Array.isArray(item)) { invalidMatches++; return []; }
-			const candidate = item as { id?: unknown; name?: unknown; similarity?: unknown; signals?: unknown };
+			const candidate = item as { id?: unknown; name?: unknown; similarity?: unknown; signals?: unknown; requirementId?: unknown; necessity?: unknown };
 			const byId = typeof candidate.id === "string" ? allowedIds.get(candidate.id) : undefined;
 			const byUniqueName = !byId && typeof candidate.name === "string" && nameCounts.get(candidate.name) === 1 ? input.candidates.find((entry) => entry.name === candidate.name) : undefined;
 			const selected = byId ?? byUniqueName;
 			if (!selected || typeof candidate.similarity !== "number" || !Number.isFinite(candidate.similarity) || candidate.similarity < 0 || candidate.similarity > 1) { invalidMatches++; return []; }
 			const signals = cleanExplanationSignals(candidate.signals);
-			return [{ id: selected.id, name: selected.name, similarity: candidate.similarity, ...(signals.length ? { signals } : {}) }];
+			const requirementId = typeof candidate.requirementId === "string" && /^[a-z0-9][a-z0-9._:-]{0,63}$/i.test(candidate.requirementId) ? candidate.requirementId : undefined;
+			const necessity = candidate.necessity === "required" || candidate.necessity === "alternative" ? candidate.necessity : undefined;
+			// A singleton has no backup ambiguity and can safely default to one
+			// required obligation. Multiple matches must carry complete grouping
+			// metadata; otherwise Top-K relevance cannot define execution duties.
+			if (rawMatches.length > 1 && (!requirementId || !necessity)) { invalidMatches++; return []; }
+			if ((candidate.requirementId !== undefined || candidate.necessity !== undefined) && (!requirementId || !necessity)) { invalidMatches++; return []; }
+			return [{ id: selected.id, name: selected.name, similarity: candidate.similarity, ...(signals.length ? { signals } : {}), requirementId: requirementId ?? `requirement:${index}`, necessity: necessity ?? "required" }];
 		}).sort((left, right) => right.similarity - left.similarity || left.name.localeCompare(right.name));
 		if (rawMatches.length > 0 && (invalidMatches > 0 || matches.length === 0)) throw new Error("Semantic Capability model returned an invalid candidate or score");
 		const seen = new Set<string>();
@@ -167,9 +176,12 @@ export class ModelBackedSemanticCapabilityPort implements SemanticCapabilityPort
 	}
 }
 
-export const SEMANTIC_CAPABILITY_SYSTEM_PROMPT = `Select capabilities for one user requirement. This is bounded, Tool-free cognition, not an Agent loop.
-Return exactly {"matches":[{"id":"exact candidate id","name":"exact candidate name","similarity":0..1,"signals":["short reason"]}]}.
+export const SEMANTIC_CAPABILITY_SYSTEM_PROMPT = `Select the smallest non-redundant capability set for one user request. This is bounded, Tool-free cognition, not an Agent loop.
+Return exactly {"matches":[{"id":"exact candidate id","name":"exact candidate name","similarity":0..1,"requirementId":"short stable id","necessity":"required|alternative","signals":["short reason"]}]}.
 Rank only candidates that materially satisfy the requested outcome. Use [] when none match. Do not force a result from weak word overlap.
+Assign the same requirementId to capabilities that satisfy the same outcome. Mark the capability that should actually execute as required and redundant backups as alternative. Return multiple required capabilities only when each contributes a distinct mandatory outcome or their combination is necessary. Never mark a merely useful or lower-ranked backup as required.
+First decompose the request into atomic mandatory outcomes grounded in the user's explicit requested actions, constraints, and acceptance criteria. Candidate descriptions, internal implementation dependencies, broad relevance, and possible helpfulness do not create additional user outcomes. If one candidate fully satisfies an outcome, including its required evidence, exclude broader primitives or auxiliary capabilities that it might use internally. Select another required capability only when the user independently requires its distinct output or the first capability cannot satisfy the outcome without that externally visible result.
+Treat information described as already supplied, already present, or available in the current conversation as existing context, not as an implicit request to fetch, read, search, or reacquire a resource. Select an input-acquisition capability such as file or external-source access only when the request explicitly requires that access or trusted request metadata declares the corresponding input modality.
 Evaluate meaning and declared input/output modality, freshness, evidence, effect, health, relative cost, expected latency, and Profile preference. Meaning and mandatory requirements dominate preferences and optimization signals. Unhealthy, unavailable, wrong-modality, stale, or evidence-incompatible candidates should not be selected.
 Match across languages and mixed-language queries. Translations and paraphrases can match even when they share no literal words.
 Treat every declared exclude entry as a hard disqualifier when it applies to the query.
@@ -353,6 +365,19 @@ export class CapabilityRuntime {
 }
 
 function capabilityActivationPriority(kind: CapabilityKind): number { return kind === "skill" ? 1 : 0; }
+
+function pruneSemanticAlternatives(ranked: RankedCapability[]): RankedCapability[] {
+	if (!ranked.some((item) => item.requirementId)) return ranked;
+	const ungrouped = ranked.filter((item) => !item.requirementId);
+	const groups = new Map<string, RankedCapability[]>();
+	for (const item of ranked) if (item.requirementId) groups.set(item.requirementId, [...(groups.get(item.requirementId) ?? []), item]);
+	const selected = [...ungrouped];
+	for (const group of groups.values()) {
+		const required = group.filter((item) => item.necessity === "required");
+		selected.push(...(required.length ? required : group.slice(0, 1)));
+	}
+	return selected.sort((left, right) => right.score - left.score || left.descriptor.name.localeCompare(right.descriptor.name));
+}
 
 export function capabilityDescriptor(input: CapabilityDescriptor): CapabilityDescriptor {
 	const kind = input.kind;
@@ -565,7 +590,11 @@ function stripJsonFence(value: string): string { return value.replace(/^\s*```(?
 /** Extracts a bounded JSON envelope from model prose; semantic validation still owns all trust decisions. */
 function parseSemanticJsonEnvelope(value: string): Record<string, unknown> {
 	const direct = stripJsonFence(value);
-	try { return parseJsonWithRepair<Record<string, unknown>>(direct); }
+	try {
+		const parsed = parseJsonWithRepair<unknown>(direct);
+		if (Array.isArray(parsed) && parsed.length === 0) return { matches: [] };
+		return parsed as Record<string, unknown>;
+	}
 	catch (directError) {
 		for (const candidate of balancedJsonObjects(value)) {
 			try {

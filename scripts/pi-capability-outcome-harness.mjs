@@ -23,14 +23,15 @@ export const LIVE_PI_OUTCOME_BUDGET = Object.freeze({
 	maxModelTurnsPerCase: 4,
 });
 
-export async function executeLivePiCapabilityOutcomeRun({ model, apiKey, threshold, observedRankings }) {
+export async function executeLivePiCapabilityOutcomeRun({ models, model, apiKey, threshold, observedRankings }) {
+	const modelCandidates = livePiModelCandidates({ models, model, apiKey });
 	const rankingByCase = new Map(observedRankings.map((ranking) => [ranking.caseId, ranking]));
 	const runId = `execution:live-pi:${randomUUID()}`;
 	const receipts = [];
 	for (const scenario of capabilityRankingCases) {
 		const ranking = rankingByCase.get(scenario.id);
 		if (!ranking) throw new Error(`Live Pi outcome is missing ranking ${scenario.id}`);
-		receipts.push(await executeLivePiCapabilityTask({ scenario, ranking, threshold, model, apiKey, runId }));
+		receipts.push(await executeLivePiCapabilityTask({ scenario, ranking, threshold, models: modelCandidates, runId }));
 	}
 	const metrics = summarizeLivePiOutcomeReceipts(receipts);
 	return {
@@ -38,7 +39,7 @@ export async function executeLivePiCapabilityOutcomeRun({ model, apiKey, thresho
 		mode: "live_pi",
 		runId,
 		generatedAt: new Date().toISOString(),
-		modelId: `${model.provider}/${model.id}`,
+		modelId: `${modelCandidates[0].model.provider}/${modelCandidates[0].model.id}`,
 		cases: receipts.length,
 		accepted: receipts.filter((receipt) => receipt.verificationStatus === "accepted").length,
 		metrics,
@@ -48,13 +49,14 @@ export async function executeLivePiCapabilityOutcomeRun({ model, apiKey, thresho
 	};
 }
 
-export async function executeLivePiCapabilityTask({ scenario, ranking, threshold, model, apiKey, createAgent, runId = "execution:live-pi" }) {
+export async function executeLivePiCapabilityTask({ scenario, ranking, threshold, models, model, apiKey, createAgent, runId = "execution:live-pi" }) {
 	const root = mkdtempSync(join(tmpdir(), "beemax-live-pi-capability-"));
-	try { return await executeLivePiCapabilityTaskInRoot({ scenario, ranking, threshold, model, apiKey, createAgent, runId }, root); }
+	try { return await executeLivePiCapabilityTaskInRoot({ scenario, ranking, threshold, models: livePiModelCandidates({ models, model, apiKey }), createAgent, runId }, root); }
 	finally { rmSync(root, { recursive: true, force: true }); }
 }
 
-async function executeLivePiCapabilityTaskInRoot({ scenario, ranking, threshold, model, apiKey, createAgent, runId }, root) {
+async function executeLivePiCapabilityTaskInRoot({ scenario, ranking, threshold, models, createAgent, runId }, root) {
+	const primary = models[0];
 	const candidates = ranking.candidates.filter((candidate) => candidate.confidence >= threshold);
 	const descriptors = new Map(capabilityInventory.map((descriptor) => [descriptor.name, descriptor]));
 	const sourceByCapability = new Map(candidates.map((candidate) => [candidate.name, candidate.kind === "skill" ? "skill_complete" : `eval_${candidate.name}`]));
@@ -67,13 +69,14 @@ async function executeLivePiCapabilityTaskInRoot({ scenario, ranking, threshold,
 	const tools = createLivePiEvaluationTools({ candidates, descriptors, sourceByCapability, readSkills, completed, cognitionId: ranking.cognitionId });
 	const factory = createAgent ?? buildBeeMaxRuntimeFactory({
 		provider: "custom",
-		model: model.id,
-		baseUrl: model.baseUrl,
-		customProtocol: model.api,
-		modelLimits: { contextWindow: model.contextWindow, maxTokens: model.maxTokens },
+		model: primary.model.id,
+		baseUrl: primary.model.baseUrl,
+		customProtocol: primary.model.api,
+		modelLimits: { contextWindow: primary.model.contextWindow, maxTokens: primary.model.maxTokens },
 		cwd: root,
 		agentDir: join(root, "agent"),
-		getApiKey: () => apiKey,
+		getApiKey: (provider) => models.find((candidate) => candidate.model.provider === provider)?.apiKey ?? primary.apiKey,
+		additionalModelProviders: models.map((candidate) => candidate.model.provider),
 		systemPrompt: "You are a capability execution evaluator. Read the user's request and the current BeeMax Tool Spec. Call every and only the tools needed to satisfy it. Never claim completion without the tool result. If no tool is needed, answer directly without calling capability_discover. capability_discover is only for an unresolved explicit capability requirement. For a selected Skill, call skill_read with its exact name and then skill_complete with the same name.",
 		skillToolset: "safe",
 		tools: tools.map((tool) => tool.name),
@@ -83,6 +86,8 @@ async function executeLivePiCapabilityTaskInRoot({ scenario, ranking, threshold,
 	const forbidden = scenario.forbidden ?? [];
 	const runtime = new BeeMaxAgentRuntime({
 		profileId: "profile:live-pi-eval",
+		fallbackModels: models.slice(1).map((candidate) => candidate.model),
+		maxModelFallbacks: Math.max(0, models.length - 1),
 		taskLedger: evaluationLedger(),
 		executionTrace: trace,
 		turnUnderstanding: { understand: () => ({ action: "create", goal: scenario.query, constraints: [], acceptanceCriteria: [scenario.query], uncertainties: [], memoryQuery: scenario.query, capabilityQuery: scenario.query, executionMode: "direct", confidence: 1 }) },
@@ -116,6 +121,12 @@ async function executeLivePiCapabilityTaskInRoot({ scenario, ranking, threshold,
 		executionTrace: execution?.events ?? [],
 	};
 	return receipt;
+}
+
+function livePiModelCandidates({ models, model, apiKey }) {
+	if (Array.isArray(models) && models.length && models.every((candidate) => candidate?.model)) return models;
+	if (model) return [{ model, apiKey }];
+	throw new Error("Live Pi Capability outcome requires at least one configured model");
 }
 
 export function summarizeLivePiOutcomeReceipts(receipts) {
@@ -159,11 +170,11 @@ function finiteNonnegative(value) { return Number.isFinite(value) && value >= 0 
 export function createLivePiEvaluationTools({ candidates, descriptors, sourceByCapability, readSkills, completed, cognitionId }) {
 	const direct = candidates.filter((candidate) => candidate.kind !== "skill").map((candidate) => {
 		const sourceTool = sourceByCapability.get(candidate.name);
-		return Object.assign(withToolPolicy(defineTool({ name: sourceTool, label: candidate.name, description: descriptors.get(candidate.name)?.description ?? candidate.name, parameters: Type.Object({}, { additionalProperties: true }), execute: async () => ({ content: [{ type: "text", text: `verified capability result: ${candidate.name}` }], details: { capabilityReceipt: { id: `receipt:live-pi:${candidate.kind}:${candidate.name}:${candidate.version}`, kind: candidate.kind, name: candidate.name, version: candidate.version, sourceTool } }, terminate: true }) }), READ_ONLY_TOOL_POLICY), { beemaxToolSpec: { kind: candidate.kind, version: candidate.version, configured: true, health: "ready", authorized: true } });
+		return Object.assign(withToolPolicy(defineTool({ name: sourceTool, label: candidate.name, description: descriptors.get(candidate.name)?.description ?? candidate.name, parameters: Type.Object({}, { additionalProperties: true }), execute: async () => ({ content: [{ type: "text", text: `verified capability result: ${candidate.name}` }], details: { capabilityReceipt: { id: `receipt:live-pi:${candidate.kind}:${candidate.name}:${candidate.version}`, kind: candidate.kind, name: candidate.name, version: candidate.version, sourceTool } } }) }), READ_ONLY_TOOL_POLICY), { beemaxToolSpec: { kind: candidate.kind, version: candidate.version, configured: true, health: "ready", authorized: true } });
 	});
 	const skills = candidates.filter((candidate) => candidate.kind === "skill");
 	const skillRead = Object.assign(withToolPolicy(defineTool({ name: "skill_read", label: "Read Skill", description: "Read the exact selected Skill before completing it", parameters: Type.Object({ name: Type.String() }), execute: async (toolCallId, args) => { const candidate = skills.find((item) => item.name === args.name); if (!candidate) throw new Error("Unknown selected Skill"); readSkills.add(candidate.name); return { content: [{ type: "text", text: `loaded ${candidate.name}` }], details: { descriptor: { name: candidate.name }, skill: candidate.name, activatedTools: ["skill_complete"], skillLifecycleReceipt: { id: livePiReceiptId("skill-read", candidate, toolCallId), name: candidate.name, version: candidate.version, phase: "read", sourceTool: "skill_read" } } }; } }), READ_ONLY_TOOL_POLICY), { beemaxToolSpec: { kind: "skill", version: "eval:lifecycle", configured: true, health: "ready", authorized: true } });
-	const skillComplete = Object.assign(withToolPolicy(defineTool({ name: "skill_complete", label: "Complete Skill", description: "Complete the Skill after reading it", parameters: Type.Object({ name: Type.String() }), execute: async (toolCallId, args) => { const candidate = skills.find((item) => item.name === args.name); if (!candidate) throw new Error("Unknown selected Skill"); if (!readSkills.has(candidate.name)) throw new Error("Selected Skill must be read before completion"); completed.add(candidate.name); return { content: [{ type: "text", text: `completed ${candidate.name}` }], details: { skill: candidate.name, skillLifecycleReceipt: { id: livePiReceiptId("skill-complete", candidate, toolCallId), name: candidate.name, version: candidate.version, phase: "completed", sourceTool: "skill_complete" }, capabilityReceipt: { id: `receipt:live-pi:skill:${candidate.name}:${candidate.version}`, kind: "skill", name: candidate.name, version: candidate.version, sourceTool: "skill_complete" } }, terminate: true }; } }), READ_ONLY_TOOL_POLICY), { beemaxToolSpec: { kind: "skill", version: "eval:lifecycle", configured: true, health: "ready", authorized: true } });
+	const skillComplete = Object.assign(withToolPolicy(defineTool({ name: "skill_complete", label: "Complete Skill", description: "Complete the Skill after reading it", parameters: Type.Object({ name: Type.String() }), execute: async (toolCallId, args) => { const candidate = skills.find((item) => item.name === args.name); if (!candidate) throw new Error("Unknown selected Skill"); if (!readSkills.has(candidate.name)) throw new Error("Selected Skill must be read before completion"); completed.add(candidate.name); return { content: [{ type: "text", text: `completed ${candidate.name}` }], details: { skill: candidate.name, skillLifecycleReceipt: { id: livePiReceiptId("skill-complete", candidate, toolCallId), name: candidate.name, version: candidate.version, phase: "completed", sourceTool: "skill_complete" }, capabilityReceipt: { id: `receipt:live-pi:skill:${candidate.name}:${candidate.version}`, kind: "skill", name: candidate.name, version: candidate.version, sourceTool: "skill_complete" } } }; } }), READ_ONLY_TOOL_POLICY), { beemaxToolSpec: { kind: "skill", version: "eval:lifecycle", configured: true, health: "ready", authorized: true } });
 	const prefetch = async () => ({ cognitionId, candidates, activatedTools: direct.map((tool) => tool.name), skills: skills.map(({ name }) => ({ name })) });
 	const discover = Object.assign(withToolPolicy(defineTool({ name: "capability_discover", label: "Discover Capabilities", description: "Discover the already selected evaluation capabilities", parameters: Type.Object({ query: Type.Optional(Type.String()) }), execute: async () => ({ content: [{ type: "text", text: "Evaluation capabilities are already selected." }], details: { cognitionId, ranked: candidates, activatedTools: direct.map((tool) => tool.name) } }) }), READ_ONLY_TOOL_POLICY), { beemaxCapabilityPrefetch: prefetch, beemaxToolSpec: { kind: "tool", version: "eval:discovery", configured: true, health: "ready", authorized: true } });
 	return [discover, ...direct, ...(skills.length ? [skillRead, skillComplete] : [])];

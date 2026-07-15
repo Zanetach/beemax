@@ -6,11 +6,11 @@ import { resolve, sep } from "node:path";
 import { defineTool, type ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { MUTATING_TOOL_POLICY, READ_ONLY_TOOL_POLICY, withToolPolicy, type ToolPolicy } from "./tool-runtime.ts";
-import { assertNoCredentialMaterial } from "./credential-material.ts";
+import { assertNoCredentialMaterial, redactCredentialMaterial } from "./credential-material.ts";
 import { SkillRegistry, SkillRuntime } from "./skill-runtime.ts";
 import { rankCapabilityIndex } from "./capability-ranking.ts";
 import { CapabilityRuntime, SEMANTIC_CAPABILITY_MINIMUM_SIMILARITY, capabilityDescriptor, capabilityVersionOf, type CapabilityOperationalSignals, type CapabilityRanker } from "./capability-runtime.ts";
-import { CapabilityProviderRuntime, type CapabilityProviderDescriptor } from "./capability-provider.ts";
+import { CapabilityProviderRuntime, attestCapabilityProviderAcquisitionTool, attestCapabilityProviderResolutionTool, type CapabilityProviderAcquisition, type CapabilityProviderDescriptor, type CapabilityProviderResolution } from "./capability-provider.ts";
 
 const SKILL_NAME = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 
@@ -29,22 +29,23 @@ interface SkillVersionEvent { id: string; kind: "promoted" | "rollback"; name: s
 
 export interface CapabilityMetadata extends Pick<ToolDefinition, "name" | "description"> { parameters?: ToolDefinition["parameters"]; kind?: "tool" | "mcp"; aliases?: readonly string[]; triggers?: readonly string[]; exclude?: readonly string[]; version?: string; providers?: readonly CapabilityProviderDescriptor[]; signals?: CapabilityOperationalSignals; }
 
-export function createSkillTools(agentDir: string, markReloadNeeded: () => void, availableTools: readonly CapabilityMetadata[] = [], verifyCandidate?: SkillCandidateVerifier, additionalSkillRoots: readonly string[] = [], _activateTools?: (names: string[]) => void, capabilityRanker?: CapabilityRanker, promotionAuthority?: SkillCandidatePromotionAuthority, capabilityPreferences?: Readonly<Record<string, number>>): ToolDefinition[] {
+export function createSkillTools(agentDir: string, markReloadNeeded: () => void, availableTools: readonly CapabilityMetadata[] = [], verifyCandidate?: SkillCandidateVerifier, additionalSkillRoots: readonly string[] = [], _activateTools?: (names: string[]) => void, capabilityRanker?: CapabilityRanker, promotionAuthority?: SkillCandidatePromotionAuthority, capabilityPreferences?: Readonly<Record<string, number>>, providerRuntime = new CapabilityProviderRuntime()): ToolDefinition[] {
 	const root = resolve(agentDir, "skills");
 	const candidateRoot = resolve(agentDir, "skill-candidates");
 	const versionRoot = resolve(agentDir, "skill-versions");
 	const registry = new SkillRegistry([root, ...additionalSkillRoots.map((item) => resolve(item))]);
-	const runtime = new SkillRuntime(registry, 200_000, 20, availableTools.map((tool) => tool.name).filter((name) => name !== "bash"));
+	const canonicalToolNames = canonicalToolNameResolver(availableTools.filter((tool) => tool.name !== "bash"));
+	const runtime = new SkillRuntime(registry, 200_000, 20, [...canonicalToolNames.keys()]);
+	const resolveDeclaredTools = (names: readonly string[]) => [...new Set(names.map((name) => canonicalToolNames.get(name) ?? name))];
 	// Selection returns proposed activation metadata; BeeMaxAgentRuntime is the
 	// sole authority that compiles it into the next Pi Tool Spec Plan.
 	const capabilities = new CapabilityRuntime({ ...(capabilityRanker ? { ranker: capabilityRanker } : {}) });
-	const providers = new CapabilityProviderRuntime();
 	const markSkillsChanged = () => { registry.invalidate(); runtime.reset(); markReloadNeeded(); };
 	const selectAvailableCapabilities = async (query: string, limit: number, signal?: AbortSignal) => {
 		const eligibleTools = availableTools.filter((tool) => tool.name !== "bash");
 		const skillInventory = await registry.list();
 		const inventory = [
-			...eligibleTools.map((tool) => capabilityDescriptor({ kind: tool.kind ?? "tool", name: tool.name, description: tool.description, aliases: tool.aliases, triggers: tool.triggers, exclude: tool.exclude, version: tool.version ?? stableCapabilityMetadataVersion(tool), activeTools: [tool.name], ...(tool.signals ? { signals: tool.signals } : {}) })),
+			...eligibleTools.map((tool) => capabilityDescriptor({ kind: tool.kind ?? "tool", name: tool.name, description: tool.description, aliases: tool.aliases, triggers: tool.triggers, exclude: tool.exclude, version: tool.version ?? stableCapabilityMetadataVersion(tool), activeTools: [tool.name], ...(tool.signals ? { signals: tool.providers?.length ? { ...tool.signals, health: "unknown" } : tool.signals } : {}) })),
 			...skillInventory.map((skill) => {
 				const profilePreference = capabilityPreferences?.[`skill:${skill.name}`] ?? capabilityPreferences?.[skill.name];
 				return capabilityDescriptor({ kind: "skill", name: skill.name, description: skill.description, triggers: skill.triggers, exclude: skill.exclude, version: `sha256:${skill.sha256}`, activeTools: ["skill_activate", "skill_read"], signals: { inputModalities: ["text"], outputModalities: ["text"], freshness: "unknown", evidence: "unknown", health: "ready", ...(profilePreference !== undefined ? { profilePreference } : {}) } });
@@ -68,22 +69,27 @@ export function createSkillTools(agentDir: string, markReloadNeeded: () => void,
 		const { selection } = await selectAvailableCapabilities(query, 10, signal);
 		const selectedName = selection.candidates.find((item) => item.kind === "skill" && item.confidence >= SEMANTIC_CAPABILITY_MINIMUM_SIMILARITY)?.name;
 		const selectedSkills = await runtime.admitDiscovered(selectedName ? [selectedName] : []);
-		const activatedTools = [...new Set([...selection.activatedTools.filter((name) => name !== "skill_activate" && name !== "skill_read"), ...(selectedName ? ["skill_activate", "skill_read"] : [])])];
+		const selectedToolNames = selection.candidates.filter((item) => item.kind !== "skill").map((item) => item.name);
+		const providerResolutions = await resolveToolProviders(selectedToolNames, signal);
+		const blockedTools = new Set(providerResolutions.filter((resolution) => resolution.status === "blocked").map((resolution) => resolution.capability));
+		const canAcquire = providerResolutions.some((resolution) => resolution.status === "blocked" && resolution.candidates.some((candidate) => !candidate.installed && candidate.installable));
+		const activatedTools = [...new Set([...selection.activatedTools.filter((name) => name !== "skill_activate" && name !== "skill_read" && !blockedTools.has(name)), ...(canAcquire ? ["capability_acquire"] : []), ...(selectedName ? ["skill_activate", "skill_read"] : [])])];
 		return {
 			cognitionId: selection.cognitionId,
 			candidates: selection.candidates.map(({ kind, name, version, confidence }) => ({ kind, name, version, confidence })),
 			activatedTools,
 			skills: selectedSkills.map(publicSkill),
+			providerResolutions: publicProviderResolutions(providerResolutions),
 		};
 	};
-	const resolveToolProviders = async (toolNames: readonly string[]) => Promise.all(availableTools
+	const resolveToolProviders = async (toolNames: readonly string[], signal?: AbortSignal) => Promise.all(availableTools
 		.filter((tool) => toolNames.includes(tool.name) && tool.providers?.length)
-		.map((tool) => providers.resolve({ capability: tool.name, providers: tool.providers! })));
-	const publicProviderResolutions = (resolutions: Awaited<ReturnType<typeof resolveToolProviders>>) => resolutions.map((resolution) => ({ capability: resolution.capability, status: resolution.status, ...(resolution.blocker ? { blocker: { code: resolution.blocker.code } } : {}) }));
+		.map((tool) => providerRuntime.resolve({ capability: tool.name, providers: tool.providers!, ...(signal ? { signal } : {}) })));
+	const publicProviderResolutions = (resolutions: Awaited<ReturnType<typeof resolveToolProviders>>) => resolutions.map(publicProviderResolution);
 	let signingKeyPromise: Promise<Buffer> | undefined;
 	const signingKey = () => signingKeyPromise ??= skillLearningKey(agentDir);
 	const tools = [
-		Object.assign(defineTool({ name: "capability_discover", label: "Discover Capabilities", description: "Search the tools, active Skills, and isolated Skill candidates actually available in this Profile before concluding a capability is missing.", parameters: Type.Object({ query: Type.String({ minLength: 1, maxLength: 500 }) }), execute: async (_id, params, signal) => {
+		attestCapabilityProviderResolutionTool(Object.assign(defineTool({ name: "capability_discover", label: "Discover Capabilities", description: "Search the tools, active Skills, and isolated Skill candidates actually available in this Profile before concluding a capability is missing.", parameters: Type.Object({ query: Type.String({ minLength: 1, maxLength: 500 }) }), execute: async (_id, params, signal) => {
 			const existingKey = await readSkillLearningKey(agentDir);
 			const candidates = existingKey ? await listCandidates(candidateRoot, existingKey) : [];
 			const matches = <T extends CapabilityMetadata>(items: T[]) => rankCapabilities(params.query, items, 20);
@@ -94,14 +100,17 @@ export function createSkillTools(agentDir: string, markReloadNeeded: () => void,
 			const matchedTools = eligibleTools.filter((tool) => selectedToolNames.has(tool.name)).sort((left, right) => selection.candidates.findIndex((item) => item.name === left.name) - selection.candidates.findIndex((item) => item.name === right.name));
 			const publicTools = matchedTools.map(({ name, description }) => ({ name, description }));
 			const publicSkills = selectedSkills.map(publicSkill);
-			const providerResolutions = await Promise.all(matchedTools.filter((tool) => tool.providers?.length).map((tool) => providers.resolve({ capability: tool.name, providers: tool.providers! })));
+			const providerResolutions = await resolveToolProviders(matchedTools.map((tool) => tool.name), signal);
 			const publicProviders = providerResolutions.flatMap((resolution) => resolution.candidates);
+			const blockedTools = new Set(providerResolutions.filter((resolution) => resolution.status === "blocked").map((resolution) => resolution.capability));
+			const canAcquire = providerResolutions.some((resolution) => resolution.status === "blocked" && resolution.candidates.some((candidate) => !candidate.installed && candidate.installable));
 			const modelVisible = [
 				"Capability discovery results (use these exact names):",
 				...publicSkills.map((skill) => `- skill: ${skill.name} — ${skill.description}`),
 				...matchedTools.map((tool) => `- ${tool.kind === "mcp" ? "mcp" : "tool"}: ${tool.name} — ${tool.description}`),
 				...publicProviders.map((provider) => `- provider: ${provider.id}: ${provider.health.status}${provider.health.reason ? ` — ${provider.health.reason}` : ""}`),
-				...(publicSkills.length || publicTools.length ? ["Matching capabilities are activated for this turn."] : ["No active Skill, Tool, or MCP capability matched this query."]),
+				...(canAcquire ? ["A matching Provider can be acquired with capability_acquire after its installation authority is verified."] : []),
+				...(publicSkills.length || publicTools.length ? ["Matching ready capabilities are activated for this turn."] : ["No active Skill, Tool, or MCP capability matched this query."]),
 			].join("\n");
 			return result(modelVisible, {
 				cognitionId: selection.cognitionId,
@@ -111,18 +120,27 @@ export function createSkillTools(agentDir: string, markReloadNeeded: () => void,
 				candidates: matches(candidates.map((item) => ({ name: item.name, description: item.description, attempts: item.attempts.length }))),
 				providers: publicProviders,
 				providerResolutions: publicProviderResolutions(providerResolutions),
-				activatedTools: selectedSkillNames.length ? selection.activatedTools : selection.activatedTools.filter((name) => name !== "skill_activate" && name !== "skill_read"),
+				activatedTools: [...new Set([...selection.activatedTools.filter((name) => !blockedTools.has(name) && (selectedSkillNames.length || (name !== "skill_activate" && name !== "skill_read"))), ...(canAcquire ? ["capability_acquire"] : [])])],
 			});
-		} }), { beemaxCapabilityPrefetch: prefetchCapabilities }),
+		} }), { beemaxCapabilityPrefetch: prefetchCapabilities })),
+		attestCapabilityProviderAcquisitionTool(defineTool({ name: "capability_acquire", label: "Acquire Capability Provider", description: "Resolve installed Providers first; when none can satisfy the exact capability, install one catalogued Tool or MCP Provider only with trusted authority, then verify health before activation.", parameters: Type.Object({ capability: Type.String({ pattern: "^[a-z0-9][a-z0-9._:-]{0,127}$" }) }), execute: async (_id, params, signal) => {
+			const capability = availableTools.find((tool) => tool.name === params.capability);
+			const acquisition = await providerRuntime.acquire({ capability: params.capability, providers: capability?.providers ?? [], ...(signal ? { signal } : {}) });
+			const visible = publicProviderAcquisition(acquisition);
+			const text = acquisition.status === "ready"
+				? `Provider ${acquisition.selected!.id} is healthy for ${acquisition.capability}; resume the unchanged Objective with ${acquisition.capability}.`
+				: `Capability ${acquisition.capability} remains unavailable (${acquisition.blocker!.code}): ${acquisition.blocker!.reason}${acquisition.blocker!.requiredConfiguration.length ? `; required configuration: ${acquisition.blocker!.requiredConfiguration.join(", ")}` : ""}`;
+			return result(text, { providerAcquisition: visible, activatedTools: acquisition.status === "ready" ? [acquisition.capability] : [] });
+		} })),
 		defineTool({ name: "skill_list", label: "List Skills", description: "List metadata for Profile, project, and global Skills without loading their instruction bodies.", parameters: Type.Object({}), execute: async () => {
 			const skills = await registry.list(); return result(skills.length ? skills.map((item) => `- ${item.name}: ${item.description}`).join("\n") : "No Skills available.", { skills: skills.map(publicSkill) });
 		} }),
 		defineTool({ name: "skill_activate", label: "Activate Skill", description: "Load one discovered Skill's global rules and route table, locking its SHA256 for this execution.", parameters: Type.Object({ name: Type.String({ pattern: "^[a-z0-9]+(?:-[a-z0-9]+)*$" }) }), execute: async (toolCallId, params) => {
 			const activated = await runtime.activate(params.name); return ephemeralResult(activated.instructions, { descriptor: publicSkill(activated.descriptor), routes: activated.routes, state: runtime.snapshot(), activatedTools: ["skill_route", "skill_complete"], skillLifecycleReceipt: skillLifecycleReceipt(activated.descriptor.name, activated.descriptor.sha256, "activated", "skill_activate", toolCallId) });
 		} }),
-		defineTool({ name: "skill_route", label: "Route Skill", description: "Select one declared module route after Skill activation.", parameters: Type.Object({ route: Type.String({ pattern: "^[a-z0-9]+(?:-[a-z0-9]+)*$" }) }), execute: async (toolCallId, params) => {
-			const routed = await runtime.routeTo(params.route); const snapshot = runtime.snapshot(); const providerResolutions = await resolveToolProviders(routed.tools); return result(`Selected Skill route ${routed.route}.`, { ...routed, state: snapshot, activatedTools: ["skill_resource_read", "skill_complete", ...routed.tools], providerResolutions: publicProviderResolutions(providerResolutions), skillLifecycleReceipt: skillLifecycleReceipt(snapshot.skill!, snapshot.sha256!, "routed", "skill_route", toolCallId) });
-		} }),
+		attestCapabilityProviderResolutionTool(defineTool({ name: "skill_route", label: "Route Skill", description: "Select one declared module route after Skill activation.", parameters: Type.Object({ route: Type.String({ pattern: "^[a-z0-9]+(?:-[a-z0-9]+)*$" }) }), execute: async (toolCallId, params) => {
+			const routed = await runtime.routeTo(params.route); const snapshot = runtime.snapshot(); const routedTools = resolveDeclaredTools(routed.tools); const providerResolutions = await resolveToolProviders(routedTools); return result(`Selected Skill route ${routed.route}.`, { ...routed, declaredTools: routed.tools, tools: routedTools, state: snapshot, activatedTools: ["skill_resource_read", "skill_complete", ...routedTools], providerResolutions: publicProviderResolutions(providerResolutions), skillLifecycleReceipt: skillLifecycleReceipt(snapshot.skill!, snapshot.sha256!, "routed", "skill_route", toolCallId) });
+		} })),
 		defineTool({ name: "skill_resource_read", label: "Read Skill Resource", description: "Read one module or reference declared by the active Skill route.", parameters: Type.Object({ path: Type.String({ minLength: 1, maxLength: 500 }) }), execute: async (toolCallId, params) => {
 			const resource = await runtime.readResource(params.path); const snapshot = runtime.snapshot(); return ephemeralResult(resource.content, { ...resource, content: undefined, state: snapshot, skillLifecycleReceipt: skillLifecycleReceipt(snapshot.skill!, snapshot.sha256!, "resource_read", "skill_resource_read", toolCallId) });
 		} }),
@@ -131,15 +149,16 @@ export function createSkillTools(agentDir: string, markReloadNeeded: () => void,
 			if (!summary.skill || !summary.sha256) throw new Error("Completed Skill lacks its immutable identity");
 			return result(`Completed Skill ${summary.skill}${summary.route ? ` via ${summary.route}` : ""}.`, { ...summary, skillLifecycleReceipt: skillLifecycleReceipt(summary.skill, summary.sha256, "completed", "skill_complete", toolCallId), capabilityReceipt: { id: `receipt:skill:${summary.skill}:${summary.sha256}`, kind: "skill", name: summary.skill, version: `sha256:${summary.sha256}`, sourceTool: "skill_complete" } });
 		} }),
-		defineTool({ name: "skill_read", label: "Read Skill (Compatibility)", description: "Compatibility alias that discovers and activates a Profile, project, or global Skill by name.", parameters: Type.Object({ name: Type.String({ pattern: "^[a-z0-9]+(?:-[a-z0-9]+)*$" }) }), execute: async (toolCallId, params) => {
+		attestCapabilityProviderResolutionTool(defineTool({ name: "skill_read", label: "Read Skill (Compatibility)", description: "Compatibility alias that discovers and activates a Profile, project, or global Skill by name.", parameters: Type.Object({ name: Type.String({ pattern: "^[a-z0-9]+(?:-[a-z0-9]+)*$" }) }), execute: async (toolCallId, params) => {
 			await runtime.discover(params.name, 10); const activated = await runtime.activate(params.name); const legacy = activated.routes.length === 1 && activated.routes[0]?.name === "legacy";
 			let activatedTools: string[];
 			let providerResolutions: Awaited<ReturnType<typeof resolveToolProviders>> = [];
-			if (legacy) { const routed = await runtime.routeTo("legacy"); runtime.useActivatedInstructionsAsModule(); activatedTools = ["skill_complete", ...routed.tools]; providerResolutions = await resolveToolProviders(routed.tools); }
+			let sourceDeclaredTools: string[] = [];
+			if (legacy) { const routed = await runtime.routeTo("legacy"); runtime.useActivatedInstructionsAsModule(); sourceDeclaredTools = routed.tools; const routedTools = resolveDeclaredTools(routed.tools); activatedTools = ["skill_complete", ...routedTools]; providerResolutions = await resolveToolProviders(routedTools); }
 			else activatedTools = ["skill_route", "skill_complete"];
 			const declaredTools = legacy ? activatedTools.filter((name) => name !== "skill_complete") : [];
-			return ephemeralResult(activated.instructions, { descriptor: publicSkill(activated.descriptor), routes: activated.routes, state: runtime.snapshot(), legacy, declaredTools, activatedTools, providerResolutions: publicProviderResolutions(providerResolutions), skillLifecycleReceipt: skillLifecycleReceipt(activated.descriptor.name, activated.descriptor.sha256, "read", "skill_read", toolCallId) });
-		} }),
+			return ephemeralResult(activated.instructions, { descriptor: publicSkill(activated.descriptor), routes: activated.routes, state: runtime.snapshot(), legacy, declaredTools, ...(sourceDeclaredTools.length ? { sourceDeclaredTools } : {}), activatedTools, providerResolutions: publicProviderResolutions(providerResolutions), skillLifecycleReceipt: skillLifecycleReceipt(activated.descriptor.name, activated.descriptor.sha256, "read", "skill_read", toolCallId) });
+		} })),
 		defineTool({ name: "skill_create", label: "Create Skill", description: "Create a durable instruction-only Agent Skill after a workflow proves reusable. Requires approval. Never put credentials in skills.", parameters: Type.Object({ name: Type.String({ pattern: "^[a-z0-9]+(?:-[a-z0-9]+)*$", maxLength: 64 }), description: Type.String({ minLength: 10, maxLength: 1024 }), instructions: Type.String({ minLength: 20, maxLength: 30_000 }) }), execute: async (_id, params) => {
 			assertSafeCandidate({ ...params, source: "direct Skill creation" });
 			const path = skillPath(root, params.name); await mkdir(resolve(path, ".."), { recursive: true });
@@ -238,6 +257,7 @@ export function createSkillTools(agentDir: string, markReloadNeeded: () => void,
 	const evolveSkill: ToolPolicy = { ...MUTATING_TOOL_POLICY, sideEffect: "local", risk: "high", reversible: "unknown", impact: "Changes durable instructions that influence future Agent behavior" };
 	const policies: Record<string, ToolPolicy> = {
 		capability_discover: { ...READ_ONLY_TOOL_POLICY },
+		capability_acquire: { ...MUTATING_TOOL_POLICY, sideEffect: "local", risk: "high", approval: "always", reversible: "unknown", maxAttempts: 1, impact: "Installs a versioned Tool or MCP Provider from a trusted catalog after evidence-backed authority" },
 		skill_list: { ...READ_ONLY_TOOL_POLICY },
 		skill_read: { ...READ_ONLY_TOOL_POLICY },
 		skill_activate: { ...READ_ONLY_TOOL_POLICY },
@@ -255,6 +275,17 @@ export function createSkillTools(agentDir: string, markReloadNeeded: () => void,
 	return tools.map((tool) => Object.assign(withToolPolicy(tool, policies[tool.name]!),
 		["skill_activate", "skill_read", "skill_resource_read"].includes(tool.name) ? { persistResultAsSummary: true } : {},
 		tool.name === "skill_complete" ? { beemaxTurnReset: () => runtime.reset() } : {}));
+}
+
+function canonicalToolNameResolver(tools: readonly CapabilityMetadata[]): Map<string, string> {
+	const canonical = new Map(tools.map((tool) => [tool.name, tool.name]));
+	const aliasOwners = new Map<string, Set<string>>();
+	for (const tool of tools) for (const alias of tool.aliases ?? []) {
+		if (!/^[a-z0-9][a-z0-9._:-]{0,127}$/i.test(alias)) continue;
+		aliasOwners.set(alias, new Set([...(aliasOwners.get(alias) ?? []), tool.name]));
+	}
+	for (const [alias, owners] of aliasOwners) if (owners.size === 1 && !canonical.has(alias)) canonical.set(alias, [...owners][0]!);
+	return canonical;
 }
 
 function rankCapabilities<T extends CapabilityMetadata>(query: string, items: readonly T[], limit: number): T[] {
@@ -357,6 +388,33 @@ function deduplicateSkills(skills: Array<{ name: string; description: string; pa
 function skillPath(root: string, name: string): string { if (!SKILL_NAME.test(name) || name.length > 64) throw new Error(`Invalid skill name: ${name}`); const path = resolve(root, name, "SKILL.md"); if (!path.startsWith(`${root}${sep}`)) throw new Error("Skill path escaped managed directory"); return path; }
 function renderSkill(input: { name: string; description: string; instructions: string }): string { const description = input.description.replace(/[\r\n]+/g, " ").trim(); return `---\nname: ${input.name}\ndescription: ${JSON.stringify(description)}\nmetadata:\n  managed-by: beemax\n---\n\n# ${input.name}\n\n${input.instructions.trim()}\n`; }
 function result(text: string, details: unknown) { return { content: [{ type: "text" as const, text }], details }; }
+function publicProviderCandidate(candidate: CapabilityProviderResolution["candidates"][number]) {
+	return {
+		...candidate,
+		health: { ...candidate.health, ...(candidate.health.reason ? { reason: redactCredentialMaterial(candidate.health.reason) } : {}) },
+		...(candidate.configuration ? { configuration: { ...candidate.configuration, instructions: redactCredentialMaterial(candidate.configuration.instructions) } } : {}),
+	};
+}
+function publicProviderResolution(resolution: CapabilityProviderResolution) {
+	return {
+		status: resolution.status,
+		capability: resolution.capability,
+		...(resolution.selected ? { selected: publicProviderCandidate(resolution.selected) } : {}),
+		candidates: resolution.candidates.map(publicProviderCandidate),
+		...(resolution.blocker ? { blocker: { ...resolution.blocker, reason: redactCredentialMaterial(resolution.blocker.reason) } } : {}),
+	};
+}
+function publicProviderAcquisition(acquisition: CapabilityProviderAcquisition) {
+	return {
+		status: acquisition.status,
+		capability: acquisition.capability,
+		...(acquisition.selected ? { selected: publicProviderCandidate(acquisition.selected) } : {}),
+		candidates: acquisition.candidates.map(publicProviderCandidate),
+		...(acquisition.blocker ? { blocker: { ...acquisition.blocker, reason: redactCredentialMaterial(acquisition.blocker.reason) } } : {}),
+		...(acquisition.installationReceipt ? { installationReceipt: acquisition.installationReceipt } : {}),
+		...(acquisition.authorityEvidenceRef ? { authorityEvidenceRef: acquisition.authorityEvidenceRef } : {}),
+	};
+}
 function ephemeralResult(text: string, details: Record<string, unknown>) { return result(text, { ...details, beemaxPersistence: { mode: "summary", text: "[Turn-scoped Skill context omitted; versioned execution metadata retained.]" } }); }
 function publicSkill(skill: { name: string; description: string; sha256: string; priority?: number }) { return { name: skill.name, description: skill.description, sha256: skill.sha256, priority: skill.priority }; }
 function skillLifecycleReceipt(name: string, sha256: string, phase: "activated" | "routed" | "resource_read" | "read" | "completed", sourceTool: "skill_activate" | "skill_route" | "skill_resource_read" | "skill_read" | "skill_complete", discriminator = "stage") {

@@ -25,14 +25,15 @@ const caseByCognitionId = new Map();
 const baseRanker = configuredCapabilityRanker(
 	models,
 	(usage) => cognitionAttempts.push({ caseId: usage.cognitionId ? caseByCognitionId.get(usage.cognitionId) ?? "unknown" : "unknown", ...usage }),
-	({ query }) => fallbackQueries.push(query),
 	config.agent.capabilityCognition,
 );
 const observedRanker = {
 	async rank(query, inventory, limit, signal, context) {
 		const caseId = capabilityRankingCases.find((scenario) => scenario.query === query)?.id ?? "unknown";
 		if (context?.cognitionId) caseByCognitionId.set(context.cognitionId, caseId);
-		const ranked = await baseRanker.rank(query, inventory, limit, signal, context);
+		let ranked;
+		try { ranked = await baseRanker.rank(query, inventory, limit, signal, context); }
+		catch (error) { throw new Error(`Live Capability ranking failed for case ${caseId}: ${error instanceof Error ? error.message : String(error)}`, { cause: error }); }
 		observedRankings.push({ caseId, cognitionId: context?.cognitionId ?? "eval:unknown", candidates: ranked.map((item) => ({ kind: item.descriptor.kind, name: item.descriptor.name, version: item.descriptor.version, confidence: item.confidence, strategy: item.explanation.strategy })) });
 		return ranked;
 	},
@@ -49,7 +50,7 @@ const outcomeExecution = await executeOutcomeBoundCapabilityRun({ mode: "live_pr
 const calibration = outcomeExecution.report;
 const calibrationTrials = await executeCalibrationThresholdTrials({ baselineVersion: CAPABILITY_CALIBRATION_VERSION, baseline: calibration, thresholds: [0.8, 0.9, 0.99], observedRankings, cognitionAttempts });
 const authorityProbe = await executeCapabilityAuthorityProbe();
-const piOutcome = await executeLivePiCapabilityOutcomeRun({ model: models[0].model, apiKey: models[0].apiKey, threshold: SEMANTIC_CAPABILITY_MINIMUM_SIMILARITY, observedRankings });
+const piOutcome = await executeLivePiCapabilityOutcomeRun({ models, threshold: SEMANTIC_CAPABILITY_MINIMUM_SIMILARITY, observedRankings });
 if (report.strategy !== "semantic") failures.push(`Live Capability evaluation did not exclusively observe semantic rankings (strategy=${report.strategy})`);
 if (fallbackQueries.length) failures.push(`Live Capability evaluation used lexical fallback for ${fallbackQueries.length} case(s)`);
 if (report.metrics.top1Accuracy < 0.85) failures.push("Live semantic Capability Top-1 accuracy is below 0.85");

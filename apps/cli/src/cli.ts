@@ -64,6 +64,7 @@ import { createLocalMediaUnderstandingAdapters } from "./local-media-understandi
 import { setProfileBindingEnabled } from "./profile-binding-config.ts";
 import { applyProfileChannelInstanceMigration, planProfileChannelInstanceMigration, rollbackProfileChannelInstanceMigration } from "./channel-instance-migration.ts";
 import { applyProfileSessionOwnershipMigration, planProfileSessionOwnershipMigration, rollbackProfileSessionOwnershipMigration } from "./session-ownership-migration.ts";
+import { createProfileCapabilityProviderBundle } from "./capability-provider-composition.ts";
 
 const PI_SKILLS_BROWSER_TOOLS_COMMIT = "90bb51cae36515a648515b633a81c0c6efc8c74d";
 
@@ -1231,6 +1232,7 @@ async function runChat(config: ReturnType<typeof loadConfig>, requestedMode: { f
 		...requestedMode, isInputTty: process.stdin.isTTY === true, isOutputTty: process.stdout.isTTY === true, term: process.env.TERM,
 	});
 	const apiKey = config.model.apiKey ?? "";
+	const capabilityProviders = createProfileCapabilityProviderBundle({ profileId: config.profile, agentDir: config.paths.agentDir, installation: config.capabilityProviders.installation });
 	const modelCatalog = new ProfileModelCatalog(config);
 	// Full mode renders approval lifecycle from semantic events in its own panel;
 	// Compact/Plain retain the durable text prompt for SSH and scripts.
@@ -1259,13 +1261,14 @@ async function runChat(config: ReturnType<typeof loadConfig>, requestedMode: { f
 	const capabilityRanker = configuredCapabilityRanker(
 		auxiliaryTextModels,
 		(usage) => recordGatewayEvent(config.paths.agentDir, "capability_cognition", { profile: config.profile, ...usage }),
-		({ code, cognitionId }) => recordGatewayEvent(config.paths.agentDir, "capability_cognition_fallback", { profile: config.profile, code, ...(cognitionId ? { cognitionId } : {}) }),
 		config.agent.capabilityCognition,
 	);
 	const createSubagentAgent = buildAgentFactory({
 		profileId: config.profile,
 		capabilityRanker,
 		capabilityPreferences: config.agent.capabilityPreferences,
+		capabilityProviderRuntime: capabilityProviders.runtime,
+		capabilityProviderEnvironment: capabilityProviders.environment,
 		provider: () => config.model.provider,
 		model: () => config.model.model,
 		baseUrl: () => config.model.baseUrl,
@@ -1274,6 +1277,7 @@ async function runChat(config: ReturnType<typeof loadConfig>, requestedMode: { f
 		cwd: config.paths.cwd,
 		agentDir: config.paths.agentDir,
 		getApiKey: (provider: string) => config.model.apiKeys[provider] ?? (provider === config.model.provider ? apiKey : undefined),
+		additionalModelProviders: () => configuredRuntimeModels(config).map((model) => model.provider),
 		compaction: config.context.compaction,
 		toolResultBudget: { maxEstimatedTokens: config.context.maxToolResultTokens },
 		systemPrompt: buildSubagentSystemPrompt(config.agent.systemPrompt),
@@ -1319,6 +1323,8 @@ async function runChat(config: ReturnType<typeof loadConfig>, requestedMode: { f
 		profileId: config.profile,
 		capabilityRanker,
 		capabilityPreferences: config.agent.capabilityPreferences,
+		capabilityProviderRuntime: capabilityProviders.runtime,
+		capabilityProviderEnvironment: capabilityProviders.environment,
 		provider: () => config.model.provider,
 		model: () => config.model.model,
 		baseUrl: () => config.model.baseUrl,
@@ -1327,8 +1333,9 @@ async function runChat(config: ReturnType<typeof loadConfig>, requestedMode: { f
 		cwd: config.paths.cwd,
 		agentDir: config.paths.agentDir,
 		getApiKey: (provider: string) => config.model.apiKeys[provider] ?? (provider === config.model.provider ? apiKey : undefined),
-			compaction: config.context.compaction,
-			toolResultBudget: { maxEstimatedTokens: config.context.maxToolResultTokens },
+		additionalModelProviders: () => configuredRuntimeModels(config).map((model) => model.provider),
+		compaction: config.context.compaction,
+		toolResultBudget: { maxEstimatedTokens: config.context.maxToolResultTokens },
 		systemPrompt: buildMainAgentSystemPrompt(config.agent.systemPrompt),
 		memoryStore: memory,
 		executionPortForSource: executionPortFor(config),

@@ -35,6 +35,7 @@ import {
 	type ExecutionEnvelope,
 	type CapabilityOperationalSignals,
 	type CapabilityRanker,
+	type CapabilityProviderRuntime,
 	type EnterprisePolicyProvider,
 	type MeasuredActionReliability,
 	type ProactiveMutationAuthority,
@@ -59,6 +60,8 @@ export interface AgentFactoryOptions {
 	cwd: string;
 	agentDir: string;
 	getApiKey: (provider: string) => Promise<string | undefined> | string | undefined;
+	/** Configured model Provider ids whose credentials Pi may need during automatic failover. */
+	additionalModelProviders?: readonly string[] | (() => readonly string[]);
 	/** Evaluated when a session is created, enabling a stable per-session memory snapshot. */
 	systemPrompt?: string | (() => string);
 	skillToolset?: "safe" | "standard";
@@ -91,6 +94,10 @@ export interface AgentFactoryOptions {
 	capabilityRanker?: CapabilityRanker;
 	/** Profile-owned ranking preferences keyed by Capability name or kind:name. */
 	capabilityPreferences?: Readonly<Record<string, number>>;
+	/** Trusted Profile-scoped Provider resolver/installer and installation-authority boundary. */
+	capabilityProviderRuntime?: CapabilityProviderRuntime;
+	/** Profile-scoped environment used by Provider-backed built-in Tools. */
+	capabilityProviderEnvironment?: NodeJS.ProcessEnv;
 	/** Optional trusted, versioned enterprise decision source. */
 	enterprisePolicy?: EnterprisePolicyProvider;
 	actionReliability?: (toolName: string) => MeasuredActionReliability;
@@ -127,13 +134,13 @@ export function attestAgentFactoryProfile<T extends Function>(factory: T, profil
 }
 
 export function buildAgentFactory(opts: AgentFactoryOptions) {
-	const webTools = createWebTools();
+	const webTools = createWebTools(opts.capabilityProviderEnvironment ? { env: opts.capabilityProviderEnvironment } : {});
 	const baseCustomTools = [...webTools, ...(opts.customTools ?? [])];
 	const execution = opts.executionPort ?? new LocalExecutionPort();
 	const toolAudit = new FileToolAuditJournal(join(opts.agentDir, "tool-audit.jsonl"));
 	const factory = async (sessionId: string, source: SessionSource, executionEnvelope?: Readonly<ExecutionEnvelope>, legacySessionIds?: string[]) => buildBeeMaxRuntimeFactory<SessionSource>({
 		provider: valueOf(opts.provider), model: valueOf(opts.model), baseUrl: valueOf(opts.baseUrl), customProtocol: valueOf(opts.customProtocol), modelLimits: valueOf(opts.modelLimits), cwd: opts.cwd, agentDir: opts.agentDir,
-		getApiKey: opts.getApiKey, systemPrompt: opts.systemPrompt ?? DEFAULT_SYSTEM_PROMPT, skillToolset: opts.skillToolset ?? "standard",
+		getApiKey: opts.getApiKey, additionalModelProviders: valueOf(opts.additionalModelProviders), systemPrompt: opts.systemPrompt ?? DEFAULT_SYSTEM_PROMPT, skillToolset: opts.skillToolset ?? "standard",
 		tools: opts.tools,
 		toolAudit: toolAudit.append,
 		toolEffects: opts.toolEffects,
@@ -173,7 +180,7 @@ export function buildAgentFactory(opts: AgentFactoryOptions) {
 				});
 			});
 		const skillRoots = [join(opts.cwd, ".agents", "skills"), join(opts.cwd, ".codex", "skills"), join(opts.cwd, "skills"), join(homedir(), ".agents", "skills"), join(homedir(), ".codex", "skills")];
-		const skillTools = createSkillTools(opts.agentDir, onResourcesChanged, inventory, opts.verifySkillCandidate ? (input, signal) => opts.verifySkillCandidate!(source, input, signal) : undefined, skillRoots, activateTools, opts.capabilityRanker, opts.authorizeSkillCandidatePromotion ? (input) => opts.authorizeSkillCandidatePromotion!(source, input) : undefined, opts.capabilityPreferences);
+		const skillTools = createSkillTools(opts.agentDir, onResourcesChanged, inventory, opts.verifySkillCandidate ? (input, signal) => opts.verifySkillCandidate!(source, input, signal) : undefined, skillRoots, activateTools, opts.capabilityRanker, opts.authorizeSkillCandidatePromotion ? (input) => opts.authorizeSkillCandidatePromotion!(source, input) : undefined, opts.capabilityPreferences, opts.capabilityProviderRuntime);
 		return [...executionTools, ...baseCustomTools, ...verificationTools, ...browserTools, ...memoryTools, ...automationTools, ...imageTools, ...skillTools, ...scopedTools];
 		},
 	})(sessionId, source, executionEnvelope, legacySessionIds);

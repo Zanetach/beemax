@@ -168,7 +168,7 @@ test("Agent runtime directly prefetches an explicit Tool request with a calibrat
 
 test("Agent runtime directly prefetches a high-confidence current research Provider", async () => {
 	const source = { platform: "cli", chatId: "prefetched-research", chatType: "dm", userId: "local" };
-	const tools = [{ name: "capability_discover", description: "Discover capabilities" }, ...createWebTools()];
+	const tools = [{ name: "capability_discover", description: "Discover capabilities" }, ...createWebTools({ agentReachAvailable: true })];
 	const toolChanges = [];
 	const agent = { state: { model: { id: "test" }, messages: [] } };
 	const runtime = createRuntime({ planningPolicy: new AutonomousPlanningPolicy(), createAgent: async () => ({
@@ -181,7 +181,7 @@ test("Agent runtime directly prefetches a high-confidence current research Provi
 		abort: async () => undefined, dispose: () => undefined,
 	}) });
 	await runtime.run({ source, text: "截至今天，研究公开发布的 Agent 工具调用趋势，至少实时核验两个来源", timeoutMs: 1_000 });
-	assert.deepEqual(toolChanges[0], ["agent_reach_search"]);
+	assert.deepEqual(toolChanges[0], ["exa_web_search"]);
 	runtime.dispose();
 });
 
@@ -215,11 +215,14 @@ test("Agent runtime deterministically preflights and enforces an installed match
 		abort: async () => undefined,
 		dispose: () => undefined,
 	};
-	const runtime = createRuntime({ createAgent: async () => piSession });
-	await runtime.run({ source, text: "请使用 Skill research-brief 生成一份有真实来源的研究简报", timeoutMs: 1_000 });
+	const runtime = createRuntime({
+		planningPolicy: { decide: () => ({ mode: "direct", requiredTools: [], suggestedConcurrency: 1, budget: { maxSubagents: 0, maxToolCalls: 4, maxTokens: 2_000, maxCorrectiveAttempts: 0 }, signals: { substantialWork: true, requiresVerification: true }, reason: "verify the outcome", directive: () => "Complete and verify the request." }) },
+		createAgent: async () => piSession,
+	});
+	await runtime.run({ source, text: "核验一份研究简报并保留真实来源证据", timeoutMs: 1_000 });
 	assert.match(prompts[0], /Installed matching Skill metadata: research-brief/);
 	assert.match(prompts[1], /Skill correction/);
-	assert.deepEqual(toolChanges[0], ["capability_discover", "skill_read", "skill_activate", "skill_complete"]);
+	assert.deepEqual(toolChanges[0], ["skill_read", "skill_activate", "skill_complete"]);
 	assert.equal(prefetchSignal instanceof AbortSignal, true);
 	runtime.dispose();
 });
@@ -376,9 +379,9 @@ test("Agent runtime does not admit a legacy Skill prefetch without explicit sele
 	runtime.dispose();
 });
 
-test("delegated Chinese research starts with Agent-Reach active instead of degrading before discovery", async () => {
+test("delegated Chinese research starts with Exa web search active instead of degrading before discovery", async () => {
 	const source = { platform: "cli", chatId: "research", chatType: "dm", userId: "local", delegatedTask: { id: "task-research", ownerKey: "cli:local:local" } };
-	const tools = createWebTools();
+	const tools = createWebTools({ agentReachAvailable: true });
 	const activeChanges = [];
 	const agent = { state: { model: { id: "test" }, messages: [] } };
 	const runtime = createRuntime({ createAgent: async () => ({
@@ -392,7 +395,7 @@ test("delegated Chinese research starts with Agent-Reach active instead of degra
 		dispose: () => undefined,
 	}) });
 	await runtime.run({ source, text: "用 agent-reach 网络检索可验证的公开趋势和真实可溯源来源", timeoutMs: 1_000, mode: "automation" });
-	assert.ok(activeChanges[0].includes("agent_reach_search"));
+	assert.ok(activeChanges[0].includes("exa_web_search"));
 	runtime.dispose();
 });
 

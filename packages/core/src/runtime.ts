@@ -64,6 +64,8 @@ export interface BeeMaxRuntimeFactoryOptions<Source extends BeeMaxRuntimeSource 
 	cwd: string;
 	agentDir: string;
 	getApiKey: (provider: string) => Promise<string | undefined> | string | undefined;
+	/** Providers used by configured runtime fallbacks; their Profile credentials are loaded into Pi before a retry. */
+	additionalModelProviders?: readonly string[];
 	systemPrompt: string | (() => string);
 	skillToolset: "safe" | "standard";
 	tools?: string[];
@@ -112,8 +114,11 @@ export function buildBeeMaxRuntimeFactory<Source extends BeeMaxRuntimeSource = B
 	const resolvedModel = resolveRuntimeModel(opts.provider, opts.model, opts.baseUrl, opts.customProtocol, opts.modelLimits);
 	const model = opts.baseUrl ? { ...resolvedModel, baseUrl: opts.baseUrl } : resolvedModel;
 	return async (sessionId: string, source: Source, executionEnvelope?: Readonly<ExecutionEnvelope>, legacySessionIds: string[] = []): Promise<AgentSession> => {
-		const apiKey = await opts.getApiKey(opts.provider);
-		if (apiKey) authStorage.setRuntimeApiKey(model.provider, apiKey);
+		const credentialProviders = [...new Set([opts.provider, ...(opts.additionalModelProviders ?? [])])].sort();
+		for (const provider of credentialProviders) {
+			const apiKey = await opts.getApiKey(provider);
+			if (apiKey) authStorage.setRuntimeApiKey(provider === opts.provider ? model.provider : provider, apiKey);
+		}
 		const settingsManager = SettingsManager.create(cwd, agentDir);
 		const compaction = planContextCompaction({ contextWindow: model.contextWindow || 128_000, ...opts.compaction });
 		const toolResultBudget = opts.toolResultBudget ? normalizeToolResultBudget(opts.toolResultBudget) : undefined;

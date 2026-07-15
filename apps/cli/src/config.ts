@@ -92,6 +92,9 @@ export interface BeeMaxConfig {
 		capabilityPreferences: Record<string, number>;
 		capabilityCognition: { maxModelAttempts: number; maxTokens: number; timeoutMs: number; maxTotalEstimatedTokens: number };
 	};
+	capabilityProviders: {
+		installation: { enabled: boolean; allowedProviders: string[] };
+	};
 	model: {
 		provider: string;
 		model: string;
@@ -309,7 +312,7 @@ export function loadConfig(configPath?: string, profile = "default"): BeeMaxConf
 	const heartbeatChannelInstanceId = optional(env.BEEMAX_HEARTBEAT_CHANNEL_INSTANCE_ID ?? cfg.automation?.heartbeat?.channelInstanceId) ?? (heartbeatInstances.length === 1 ? heartbeatInstances[0]!.id : undefined);
 	const capabilityCognition = {
 		maxModelAttempts: boundedConfiguredInteger(env.BEEMAX_CAPABILITY_COGNITION_MAX_ATTEMPTS ?? cfg.agent?.capabilityCognition?.maxModelAttempts, 2, 1, 5, "agent.capabilityCognition.maxModelAttempts"),
-		maxTokens: boundedConfiguredInteger(env.BEEMAX_CAPABILITY_COGNITION_MAX_TOKENS ?? cfg.agent?.capabilityCognition?.maxTokens, 4_096, 256, 8_192, "agent.capabilityCognition.maxTokens"),
+		maxTokens: boundedConfiguredInteger(env.BEEMAX_CAPABILITY_COGNITION_MAX_TOKENS ?? cfg.agent?.capabilityCognition?.maxTokens, 2_048, 256, 8_192, "agent.capabilityCognition.maxTokens"),
 		timeoutMs: boundedConfiguredInteger(env.BEEMAX_CAPABILITY_COGNITION_TIMEOUT_MS ?? cfg.agent?.capabilityCognition?.timeoutMs, 60_000, 1_000, 60_000, "agent.capabilityCognition.timeoutMs"),
 		maxTotalEstimatedTokens: boundedConfiguredInteger(env.BEEMAX_CAPABILITY_COGNITION_MAX_ESTIMATED_TOKENS ?? cfg.agent?.capabilityCognition?.maxTotalEstimatedTokens, 300_000, 512, 1_000_000, "agent.capabilityCognition.maxTotalEstimatedTokens"),
 	};
@@ -325,6 +328,12 @@ export function loadConfig(configPath?: string, profile = "default"): BeeMaxConf
 			turnIdleSettleMs: boundedNumber(env.BEEMAX_TURN_IDLE_SETTLE_MS ?? cfg.agent?.turnIdleSettleMs, 60_000, 5_000, 5 * 60_000),
 			capabilityPreferences: parseCapabilityPreferences(cfg.agent?.capabilityPreferences),
 			capabilityCognition,
+		},
+		capabilityProviders: {
+			installation: {
+				enabled: parseBool(env.BEEMAX_PROVIDER_INSTALLATION_ENABLED ?? cfg.capabilityProviders?.installation?.enabled ?? false),
+				allowedProviders: parseProviderIds(env.BEEMAX_PROVIDER_INSTALLATION_ALLOW ?? cfg.capabilityProviders?.installation?.allowedProviders),
+			},
 		},
 		model: {
 			provider,
@@ -549,6 +558,13 @@ function parseList(value: unknown): string[] {
 		.split(",")
 		.map((item) => item.trim())
 		.filter(Boolean);
+}
+
+function parseProviderIds(value: unknown): string[] {
+	const providers = [...new Set(parseList(value))];
+	if (providers.length > 100) throw new Error("capabilityProviders.installation.allowedProviders exceeds 100 entries");
+	for (const [index, provider] of providers.entries()) if (!/^[a-z0-9][a-z0-9._:@-]{0,127}$/i.test(provider)) throw new Error(`Invalid capabilityProviders.installation.allowedProviders[${index}]: ${provider}`);
+	return providers;
 }
 
 function parseGatewayChannels(value: unknown): GatewayChannelConfig[] {

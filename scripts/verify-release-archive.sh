@@ -31,6 +31,21 @@ SOURCE="${STAGING}/beemax"
 [[ -f "${SOURCE}/package.json" && -f "${SOURCE}/pi/package.json" ]] || fail "archive source layout is incomplete"
 [[ "$(tr -d '\r\n' < "${SOURCE}/RELEASE_VERSION")" == "${VERSION}" ]] || fail "RELEASE_VERSION does not match ${VERSION}"
 node "${SOURCE}/scripts/verify-release-version.mjs" "${SOURCE}" "${VERSION}" || fail "release version metadata is inconsistent"
+PROVIDER_LOCK_ROOT="${SOURCE}/apps/cli/provider-locks/agent-reach-exa"
+PROVIDER_LOCK="${PROVIDER_LOCK_ROOT}/package-lock.json"
+[[ -f "${PROVIDER_LOCK_ROOT}/package.json" && -f "${PROVIDER_LOCK}" ]] || fail "pinned exa-mcporter Provider lock is missing"
+if command -v shasum >/dev/null 2>&1; then PROVIDER_LOCK_SHA="$(shasum -a 256 "${PROVIDER_LOCK}" | awk '{ print $1 }')"
+elif command -v sha256sum >/dev/null 2>&1; then PROVIDER_LOCK_SHA="$(sha256sum "${PROVIDER_LOCK}" | awk '{ print $1 }')"
+else fail "shasum or sha256sum is required"
+fi
+grep -Fq "EXA_MCPORTER_LOCK_SHA256 = \"${PROVIDER_LOCK_SHA}\"" "${SOURCE}/apps/cli/src/capability-provider-composition.ts" || fail "Provider lock SHA does not match the runtime trust root"
+node --input-type=module -e '
+	import { readFileSync } from "node:fs";
+	const [manifestPath, lockPath] = process.argv.slice(1);
+	const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
+	const lock = JSON.parse(readFileSync(lockPath, "utf8"));
+	if (manifest.dependencies?.mcporter !== "0.9.0" || lock.packages?.["node_modules/mcporter"]?.version !== "0.9.0") process.exit(1);
+' "${PROVIDER_LOCK_ROOT}/package.json" "${PROVIDER_LOCK}" || fail "Provider lock does not contain pinned mcporter 0.9.0"
 if find "${SOURCE}" \( -name .git -o -name node_modules -o -name dist -o -name '*.tsbuildinfo' \) -print -quit | grep -q .; then
 	fail "archive contains Git metadata, node_modules, dist, or TypeScript build state"
 fi

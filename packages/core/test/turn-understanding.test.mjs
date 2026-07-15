@@ -38,11 +38,11 @@ test("Turn tool prefetch uses the shared capability trigger, alias, exclusion, a
 	assert.deepEqual(selectTurnTools("帮我查日程并安排会议", tools), ["calendar_find"]);
 });
 
-test("Turn tool prefetch activates Agent-Reach for Chinese live-web research", () => {
-	const tools = createWebTools();
+test("Turn tool prefetch activates Exa for Chinese live-web research", () => {
+	const tools = createWebTools({ agentReachAvailable: true });
 	const selected = selectTurnTools("收集截至今天可验证的公开趋势，用 agent-reach 网络检索真实可溯源来源", tools);
-	assert.ok(selected.includes("agent_reach_search"));
-	assert.deepEqual(selectTurnTools("截至今天，研究公开发布的 AI Agent 工具调用趋势，至少实时核验两个不同注册域的来源", tools), ["agent_reach_search"]);
+	assert.ok(selected.includes("exa_web_search"));
+	assert.deepEqual(selectTurnTools("截至今天，研究公开发布的 AI Agent 工具调用趋势，至少实时核验两个不同注册域的来源", tools), ["exa_web_search"]);
 });
 
 test("Turn tool prefetch routes generic draft persistence and readback through file Tool metadata", () => {

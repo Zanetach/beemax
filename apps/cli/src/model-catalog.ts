@@ -117,15 +117,14 @@ export function configuredAuxiliaryTextModels(config: BeeMaxConfig): Array<{ mod
 	});
 }
 
-/** Semantic selection is the configured production path; lexical ranking is only the offline/provider-failure path. */
+/** Semantic selection is the configured production path; lexical ranking is used only when this Profile has no semantic model. */
 export function configuredCapabilityRanker(
 	models: Array<{ model: Model<Api>; apiKey?: string }>,
 	onUsage?: NonNullable<PiSemanticCapabilityPortOptions["onUsage"]>,
-	onFallback?: (event: { query: string; code: "provider_unavailable"; cognitionId?: string }) => void,
 	options: Pick<PiSemanticCapabilityPortOptions, "maxModelAttempts" | "maxTokens" | "timeoutMs" | "maxTotalEstimatedTokens"> = {},
 ): CapabilityRanker {
 	const lexical = new LexicalCapabilityRanker();
-	return models.length ? new SemanticCapabilityRanker(new PiSemanticCapabilityPort({ models, ...options, ...(onUsage ? { onUsage } : {}) }), { fallback: lexical, ...(onFallback ? { onFallback } : {}) }) : lexical;
+	return models.length ? new SemanticCapabilityRanker(new PiSemanticCapabilityPort({ models, ...options, ...(onUsage ? { onUsage } : {}) })) : lexical;
 }
 
 /** Configured image-capable Pi models automatically become auxiliary perception adapters. */

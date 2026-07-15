@@ -33,6 +33,29 @@ test("live Pi outcome does not execute ranked candidates on the model's behalf",
 	assert.equal("toolAudit" in receipt, false);
 });
 
+test("live Pi outcome uses the configured semantic model failover chain", async () => {
+	const primary = { provider: "test", id: "primary", input: ["text"], contextWindow: 32_000, maxTokens: 2_000 };
+	const fallback = { provider: "test", id: "fallback", input: ["text"], contextWindow: 32_000, maxTokens: 2_000 };
+	const agent = { state: { model: primary, messages: [] } };
+	const retried = [];
+	const createAgent = async () => ({
+		agent,
+		getAllTools: () => [], getActiveToolNames: () => [], setActiveToolsByName: () => undefined,
+		subscribe: () => () => undefined,
+		prompt: async () => { agent.state.messages = [{ role: "assistant", stopReason: "error", errorMessage: "fetch failed: ETIMEDOUT", content: [], usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: { total: 0 } } }]; },
+		retryWithModel: async (model) => { retried.push(model.id); agent.state.model = model; agent.state.messages = [{ role: "assistant", stopReason: "stop", content: [{ type: "text", text: "No capability is needed." }], usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, cost: { total: 0 } } }]; return true; },
+		abort: async () => undefined, dispose: () => undefined,
+	});
+	const receipt = await executeLivePiCapabilityTask({
+		scenario: { id: "model-failover", query: "hello" },
+		ranking: { cognitionId: "eval:model-failover", candidates: [] }, threshold: 0.75,
+		models: [{ model: primary, apiKey: "primary-key" }, { model: fallback, apiKey: "fallback-key" }],
+		createAgent,
+	});
+	assert.deepEqual(retried, ["fallback"]);
+	assert.equal(receipt.verificationStatus, "accepted");
+});
+
 test("live Pi evaluation lifecycle receipts identify the exact Tool call", async () => {
 	const candidate = { kind: "skill", name: "procedure-conformance-check", version: "sha256:0558f341417a17600924c6796b16a8899f795b20509774696ba80a44503d3197", confidence: 0.99 };
 	const tools = new Map(createLivePiEvaluationTools({
@@ -49,6 +72,24 @@ test("live Pi evaluation lifecycle receipts identify the exact Tool call", async
 	assert.equal(first.details.skillLifecycleReceipt.id, replay.details.skillLifecycleReceipt.id);
 	assert.notEqual(first.details.skillLifecycleReceipt.id, second.details.skillLifecycleReceipt.id);
 	assert.match(first.details.skillLifecycleReceipt.id, /:[a-f0-9]{64}$/u);
+});
+
+test("live Pi evaluation capabilities do not terminate before every required outcome can run", async () => {
+	const directCandidate = { kind: "tool", name: "web_search", version: "eval:1", confidence: 0.99 };
+	const skillCandidate = { kind: "skill", name: "procedure-conformance-check", version: "eval:1", confidence: 0.98 };
+	const tools = new Map(createLivePiEvaluationTools({
+		candidates: [directCandidate, skillCandidate],
+		descriptors: new Map([[directCandidate.name, directCandidate], [skillCandidate.name, skillCandidate]]),
+		sourceByCapability: new Map([[directCandidate.name, "eval_web_search"], [skillCandidate.name, "skill_complete"]]),
+		readSkills: new Set(),
+		completed: new Set(),
+		cognitionId: "eval:multi-capability-continuation",
+	}).map((tool) => [tool.name, tool]));
+	const directResult = await tools.get("eval_web_search").execute("search-call", {});
+	await tools.get("skill_read").execute("read-call", { name: skillCandidate.name });
+	const skillResult = await tools.get("skill_complete").execute("complete-call", { name: skillCandidate.name });
+	assert.equal("terminate" in directResult, false);
+	assert.equal("terminate" in skillResult, false);
 });
 
 test("live Pi execution metrics fail closed when token, latency, turn, or usage budgets regress", () => {

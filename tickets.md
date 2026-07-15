@@ -517,9 +517,9 @@ This ordering is the implementation plan, not a fixed business workflow. Core re
 
 **Blocked by:** Calibrate Capability ranking against real task outcomes.
 
-- [ ] Resolve installed, configured, healthy candidates before considering installation.
-- [ ] Require evidence-backed installation authority and return exact missing configuration or health blockers.
-- [ ] Never replace realtime, publication, real-data, or full-scope requirements with a weaker result without user authorization.
+- [x] Resolve installed, configured, healthy candidates before considering installation.
+- [x] Require evidence-backed installation authority and return exact missing configuration or health blockers.
+- [x] Never replace realtime, publication, real-data, or full-scope requirements with a weaker result without user authorization.
 
 ## Dispatch model Tool Calls through one strict Router
 
