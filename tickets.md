@@ -432,7 +432,7 @@ Work the **frontier**: any ticket whose blockers are all done. Do not bypass blo
 **Blocked by:** Interpret one Turn as a model-backed Work Contract.
 
 - [x] Reject fabricated source spans, unsupported requirements, and internally contradictory clauses.
-- [ ] Preserve uncertainty instead of guessing and route governed actions through existing Policy authority.
+- [x] Preserve uncertainty instead of guessing and route governed actions through existing Policy authority.
 - [x] Keep validation free of business action dictionaries and customer-specific workflow rules.
 
 ## Carry continuation, correction, cancellation, and query through Work Contracts
