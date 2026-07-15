@@ -215,6 +215,7 @@ test("BeeMax preserves source-bound uncertainty in a durable Objective Situation
 	let objective;
 	let prompt = "";
 	let toolsDuringPrompt = [];
+	let writeBoundaryDecision;
 	let activeTools = ["read", "write"];
 	const agent = { state: { model: { id: "test" }, messages: [] } };
 	const runtime = new BeeMaxAgentRuntime({
@@ -227,7 +228,12 @@ test("BeeMax preserves source-bound uncertainty in a durable Objective Situation
 		createAgent: async () => ({ agent,
 			getAllTools: () => [{ name: "read", description: "read evidence", beemaxPolicy: { sideEffect: "none" } }, { name: "write", description: "consequential write", beemaxPolicy: { sideEffect: "external" } }],
 			getActiveToolNames: () => [...activeTools], setActiveToolsByName: (names) => { activeTools = [...names]; }, subscribe: () => () => undefined,
-			prompt: async (text) => { prompt = text; toolsDuringPrompt = [...activeTools]; agent.state.messages = [{ role: "assistant", content: [{ type: "text", text: "done" }], usage: { input: 1, output: 1 } }]; },
+			prompt: async (text) => {
+				prompt = text; toolsDuringPrompt = [...activeTools];
+				activeTools = ["read", "write"];
+				writeBoundaryDecision = await agent.beforeToolCall({ toolCall: { name: "write", arguments: {} } }, new AbortController().signal);
+				agent.state.messages = [{ role: "assistant", content: [{ type: "text", text: "done" }], usage: { input: 1, output: 1 } }];
+			},
 			abort: async () => undefined, dispose: () => undefined }),
 	});
 	try {
@@ -237,6 +243,8 @@ test("BeeMax preserves source-bound uncertainty in a durable Objective Situation
 		assert.match(prompt, /beemax-uncertainty-policy/);
 		assert.match(prompt, /Never guess/);
 		assert.deepEqual(toolsDuringPrompt, ["read"]);
+		assert.equal(writeBoundaryDecision.block, true);
+		assert.match(writeBoundaryDecision.reason, /uncertainty is resolved/);
 	} finally { runtime.dispose(); }
 });
 
@@ -286,4 +294,26 @@ test("failed Work Contract cognition does not orphan a pending proactive Objecti
 		await assert.rejects(runtime.run({ source, text: objective.description, timeoutMs: 20, mode: "automation", objectiveTaskId: objective.id }), /deadline/i);
 		assert.equal(tasks.get(objective.id).status, "pending");
 	} finally { clearTimeout(keepAlive); runtime.dispose(); }
+});
+
+test("failed proactive Objective admission does not create an orphaned running Task Run", async () => {
+	const source = { platform: "feishu", chatId: "proactive-admission", chatType: "dm", userId: "owner" };
+	const objective = { id: "objective:admission", ownerKey: "feishu:proactive-admission:owner", kind: "objective", title: "生成报告", description: "生成报告", status: "pending", recoveryPolicy: "safe_retry", idempotencyKey: "admission", createdAt: 1 };
+	const runs = [];
+	const runtime = new BeeMaxAgentRuntime({
+		taskLedger: {
+			record() { assert.fail("existing Objective must be reused"); },
+			transition() { return false; },
+			recordRun(run) { runs.push(run); }, transitionRun() { return true; },
+			queryTasks(query) { return query.id === objective.id && query.ownerKeys.includes(objective.ownerKey) ? [objective] : []; },
+		},
+		createAgent: async () => { throw new Error("interactive Pi must not start"); },
+		createAutomationAgent: async () => ({ agent: { state: { model: { id: "test" }, messages: [] } }, subscribe: () => () => undefined,
+			prompt: async () => assert.fail("Pi prompt must not start when Objective admission fails"), abort: async () => undefined, dispose: () => undefined }),
+	});
+	try {
+		await assert.rejects(runtime.run({ source, text: objective.description, timeoutMs: 1_000, mode: "automation", objectiveTaskId: objective.id }), /could not start/);
+		assert.equal(runs.length, 0);
+		assert.equal(objective.status, "pending");
+	} finally { runtime.dispose(); }
 });

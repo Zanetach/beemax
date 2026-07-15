@@ -281,11 +281,11 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 				await session.piSession.abort();
 				throw new AgentRunError("Agent turn was cancelled", false, input.signal.reason);
 			}
-			if (ownedTaskRunId && objective) this.taskLedger?.recordRun({ id: ownedTaskRunId, taskId: objective.id, executor: "agent", status: "running", startedAt, ...(executionEnvelope.budget?.deadlineAt ? { leaseExpiresAt: executionEnvelope.budget.deadlineAt + 60_000 } : {}) });
 			if (explicitAutomationObjective && activeObjective?.status === "pending") {
 				if (!this.taskLedger?.transition(activeObjective.id, { status: "running", startedAt })) throw new AgentRunError(`Proactive Objective ${activeObjective.id} could not start`, false, undefined);
 				activeObjective = { ...activeObjective, status: "running", startedAt };
 			}
+			if (ownedTaskRunId && objective) this.taskLedger?.recordRun({ id: ownedTaskRunId, taskId: objective.id, executor: "agent", status: "running", startedAt, ...(executionEnvelope.budget?.deadlineAt ? { leaseExpiresAt: executionEnvelope.budget.deadlineAt + 60_000 } : {}) });
 			const requestedText = explicitSkillRequest(input.text);
 			const taskPreservation = activeObjective && (Boolean(input.objectiveTaskId) || understanding?.action === "continue") ? buildTaskPreservationEnvelope([activeObjective], 6_000) : undefined;
 			const contextAssembly = cognitiveRun && this.context && typeof this.context.assemble === "function"
@@ -310,6 +310,8 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 				if (!admittedTools.length || unknown.length) throw new AgentRunError(unknown.length ? `Execution capability allowlist contains unavailable Tools: ${unknown.join(", ")}` : "Execution capability allowlist is empty", false, undefined);
 			}
 			const toolSideEffects = new Map(allTools.map((tool) => [tool.name, toolSideEffect(tool)]));
+			const unresolvedUncertainty = Boolean(workContract?.uncertainties.length);
+			const previousToolBoundary = session.piSession.agent.beforeToolCall;
 			const capabilityRuntime = new CapabilityRuntime();
 			const skillPrefetch = allTools.find((tool) => tool.name === "capability_discover") as (typeof allTools[number] & { beemaxSkillPrefetch?: (query: string) => Promise<Array<{ name: string }>> }) | undefined;
 			let prefetchedSkills: string[] = [];
@@ -334,7 +336,7 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 					)),
 			);
 			const proposedProgressiveTools = admittedTools ?? [...new Set([...(exposeCapabilityDiscovery ? ["capability_discover"] : []), ...skillLifecycleTools, ...(planning?.requiredTools ?? []), ...prefetchedTools])];
-			const progressiveTools = workContract?.uncertainties.length
+			const progressiveTools = unresolvedUncertainty
 				? proposedProgressiveTools.filter((name) => toolSideEffects.get(name) === "none")
 				: proposedProgressiveTools;
 			if (activeTools) session.piSession.setActiveToolsByName(progressiveTools);
@@ -413,7 +415,7 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 							// discovery again through the explicit reroute path below.
 							session.piSession.setActiveToolsByName([...new Set([
 								...session.piSession.getActiveToolNames().filter((name) => name !== "capability_discover"),
-								...discovery.activatedTools,
+								...discovery.activatedTools.filter((name) => !unresolvedUncertainty || toolSideEffects.get(name) === "none"),
 							])]);
 						}
 						const discoveredSkill = discovery.candidates.find((candidate) => candidate.kind === "skill" && candidate.confidence >= 0.5)?.name;
@@ -496,6 +498,12 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 			const effectiveTimeoutMs = executionTimeoutMs(input.timeoutMs, executionEnvelope.budget?.deadlineAt);
 			const timeout = effectiveTimeoutMs === undefined ? undefined : setTimeout(() => { timedOut = true; void session.piSession.abort(); }, effectiveTimeoutMs);
 			let settlementStatus: ExecutionSettledEvent["status"] = "failed";
+			if (unresolvedUncertainty) {
+				session.piSession.agent.beforeToolCall = async (context, signal) => {
+					if (toolSideEffects.get(context.toolCall.name) !== "none") return { block: true, reason: `Tool ${context.toolCall.name} is blocked until the source-bound Work Contract uncertainty is resolved` };
+					return previousToolBoundary?.(context, signal);
+				};
+			}
 			try {
 				this.recordTrace({ type: "execution.started", executionEnvelope, at: startedAt });
 				await onEvent?.({ type: "execution_started", executionEnvelope });
@@ -662,6 +670,7 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 				if (timeout) clearTimeout(timeout);
 				input.signal?.removeEventListener("abort", abortFromCaller);
 				unsubscribe?.();
+				if (unresolvedUncertainty) session.piSession.agent.beforeToolCall = previousToolBoundary;
 			}
 			const answer = completionAnswer ?? (lastAssistantText(session.piSession.agent, turnMessageStart) || "(no response)");
 			try {
