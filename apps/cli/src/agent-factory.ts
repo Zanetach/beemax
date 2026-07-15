@@ -27,7 +27,7 @@ import {
 	type ExecutionPort,
 	type ToolApprovalDecision,
 	type ToolApprovalRequest,
-	type ToolEffectSink,
+	type ToolEffectAuthorityPort,
 	type CredentialVault,
 	type SkillCandidateVerifier,
 	type SkillCandidateTrialInput,
@@ -67,7 +67,7 @@ export interface AgentFactoryOptions {
 	skillToolset?: "safe" | "standard";
 	tools?: string[];
 	authorizeTool?: (request: ToolApprovalRequest, signal?: AbortSignal) => Promise<ToolApprovalDecision>;
-	toolEffects?: ToolEffectSink;
+	toolEffects?: ToolEffectAuthorityPort;
 	currentTaskId?: (source: SessionSource) => string | undefined;
 	compactionInstructions?: (source: SessionSource) => string | undefined;
 	compaction?: { enabled?: boolean; reserveTokens?: number; keepRecentTokens?: number };
@@ -105,16 +105,16 @@ export interface AgentFactoryOptions {
 	proactiveMutationAuthority?: ProactiveMutationAuthority<SessionSource>;
 }
 
-const agentFactorySecurity = new WeakMap<Function, ToolEffectSink | undefined>();
+const agentFactorySecurity = new WeakMap<Function, ToolEffectAuthorityPort | undefined>();
 const agentFactoryProfiles = new WeakMap<Function, string>();
 
 /** Marks a factory that enters the Core Action Governance hook and binds the Profile Effect authority. */
-export function attestAgentFactorySecurity<T extends Function>(factory: T, toolEffects: ToolEffectSink | undefined): T {
+export function attestAgentFactorySecurity<T extends Function>(factory: T, toolEffects: ToolEffectAuthorityPort | undefined): T {
 	agentFactorySecurity.set(factory, toolEffects);
 	return factory;
 }
 
-export function assertAgentFactorySecurity(factory: Function, expectedEffects: ToolEffectSink): void {
+export function assertAgentFactorySecurity(factory: Function, expectedEffects: ToolEffectAuthorityPort): void {
 	if (!agentFactorySecurity.has(factory) || agentFactorySecurity.get(factory) !== expectedEffects) throw new Error("Channel main Agent must bind Core Action Governance and the shared Profile Effect Authority");
 }
 

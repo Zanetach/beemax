@@ -1,10 +1,11 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { appendFileSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { MemoryStore } from "@beemax/memory";
-import { AgentRunError, AuthStorage, BeeMaxAgentRuntime, buildBeeMaxRuntimeFactory, buildTaskPreservationEnvelope, ConversationContext, createAccessScopeRef, createEnterprisePolicyProvider, createEnterprisePolicyPublisher, createExecutionEnvelope, createSituation, defineTool, FileExecutionTraceStore, getBuiltinModel, isRecoverableModelFailure, MUTATING_TOOL_POLICY, READ_ONLY_TOOL_POLICY, SessionCoordinator, sessionIdForSource, withToolPolicy } from "../dist/index.js";
+import { AgentRunError, AuthStorage, BeeMaxAgentRuntime, buildBeeMaxRuntimeFactory, buildTaskPreservationEnvelope, ConversationContext, createAccessScopeRef, createEnterprisePolicyProvider, createEnterprisePolicyPublisher, createExecutionEnvelope, createSituation, defineTool, FileExecutionTraceStore, FileToolEffectJournal, getBuiltinModel, isRecoverableModelFailure, MUTATING_TOOL_POLICY, READ_ONLY_TOOL_POLICY, SessionCoordinator, sessionIdForSource, withToolPolicy } from "../dist/index.js";
 
 const createRuntime = (options) => new BeeMaxAgentRuntime({ profileId: "profile:test", ...options });
 
@@ -149,6 +150,95 @@ test("BeeMax runtime connects approved mutating Tool calls to the Effect lifecyc
 			assert.match(second.reason, /tool-call budget exceeded/i);
 			assert.equal(events.length, 2);
 		} finally { session.dispose(); }
+	} finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("BeeMax blocks a new external Tool call after the prior call times out with an unknown Effect", async () => {
+	const root = mkdtempSync(join(tmpdir(), "beemax-effect-timeout-replay-"));
+	const source = { platform: "cli", chatId: "terminal", chatType: "dm", userId: "user" };
+	const effects = new FileToolEffectJournal(join(root, "tool-effects.jsonl"));
+	let backendCalls = 0;
+	let alternateBackendCalls = 0;
+	try {
+		const envelope = createExecutionEnvelope({ executionId: "execution:timeout", trigger: { kind: "delegation" }, taskId: "task:timeout", taskRunId: "run:timeout", budget: { maxToolCalls: 5 } });
+		const factory = buildBeeMaxRuntimeFactory({
+			provider: "anthropic", model: "claude-sonnet-4-5", cwd: root, agentDir: join(root, "agent"), getApiKey: () => "test",
+			systemPrompt: "test", skillToolset: "safe", tools: ["external_mutation", "alternate_mutation", "safe_read"], authorizeTool: async () => ({ allowed: true }), toolEffects: effects,
+			createTools: () => [
+				withToolPolicy(defineTool({
+					name: "external_mutation", label: "External mutation", description: "Mutate an external fixture", parameters: {},
+					execute: async () => { backendCalls++; return new Promise(() => undefined); },
+				}), { ...MUTATING_TOOL_POLICY, timeoutMs: 100 }),
+				withToolPolicy(defineTool({
+					name: "alternate_mutation", label: "Alternate mutation", description: "Mutate the same external fixture through another capability", parameters: {},
+					execute: async () => { alternateBackendCalls++; return { content: [], details: {} }; },
+				}), MUTATING_TOOL_POLICY),
+				withToolPolicy(defineTool({ name: "safe_read", label: "Safe read", description: "Inspect external state without changing it", parameters: {}, execute: async () => ({ content: [], details: {} }) }), READ_ONLY_TOOL_POLICY),
+			],
+		});
+		const session = await factory("effect-timeout-replay", source, envelope);
+		try {
+			const firstCall = { id: "call:first", name: "external_mutation", arguments: {} };
+			const firstContext = { assistantMessage: {}, toolCall: firstCall, args: {}, context: {} };
+			assert.equal(await session.agent.beforeToolCall(firstContext), undefined);
+			await assert.rejects(session.getToolDefinition("external_mutation").execute(firstCall.id, {}), /timed out/i);
+			await session.agent.afterToolCall({ ...firstContext, result: { content: [{ type: "text", text: "timed out" }], details: {} }, isError: true });
+			assert.equal(backendCalls, 1);
+			assert.equal(effects.taskProjection({ ownerKey: "cli:terminal:user", taskId: "task:timeout" }).at(-1)?.status, "unknown");
+
+			const retry = await session.agent.beforeToolCall({ ...firstContext, toolCall: { id: "call:retry", name: "external_mutation", arguments: {} } });
+			assert.equal(retry?.block, true);
+			assert.match(retry?.reason ?? "", /unknown|reconcil/i);
+			assert.equal(backendCalls, 1);
+			const alternate = await session.agent.beforeToolCall({ ...firstContext, toolCall: { id: "call:alternate", name: "alternate_mutation", arguments: {} } });
+			assert.equal(alternate?.block, true);
+			assert.match(alternate?.reason ?? "", /unknown|reconcil/i);
+			assert.equal(alternateBackendCalls, 0);
+			assert.equal(await session.agent.beforeToolCall({ ...firstContext, toolCall: { id: "call:read", name: "safe_read", arguments: {} } }), undefined);
+		} finally { session.dispose(); }
+	} finally { effects.close(); rmSync(root, { recursive: true, force: true }); }
+});
+
+test("BeeMax restart blocks replay after a process crashes beyond the external mutation boundary", async () => {
+	const root = mkdtempSync(join(tmpdir(), "beemax-effect-crash-replay-"));
+	const journalPath = join(root, "tool-effects.jsonl");
+	const backendLog = join(root, "backend-calls.log");
+	const runtimeUrl = new URL("../dist/index.js", import.meta.url).href;
+	const source = { platform: "cli", chatId: "terminal", chatType: "dm", userId: "user" };
+	try {
+		const crashed = spawnSync(process.execPath, ["--input-type=module", "-e", `
+			import { appendFileSync } from "node:fs";
+			import { createExecutionEnvelope, FileToolEffectJournal, MUTATING_TOOL_POLICY } from ${JSON.stringify(runtimeUrl)};
+			const source = ${JSON.stringify(source)};
+			const envelope = createExecutionEnvelope({ executionId: "execution:crashed", trigger: { kind: "delegation" }, taskId: "task:crashed", taskRunId: "run:crashed" });
+			const effects = new FileToolEffectJournal(${JSON.stringify(journalPath)});
+			effects.begin({ source, executionEnvelope: envelope, toolCallId: "call:crashed", toolName: "external_mutation", args: {}, policy: MUTATING_TOOL_POLICY });
+			appendFileSync(${JSON.stringify(backendLog)}, "called\\n");
+			process.exit(0);
+		`], { encoding: "utf8" });
+		assert.equal(crashed.status, 0, crashed.stderr);
+
+		const effects = new FileToolEffectJournal(journalPath);
+		try {
+			let restartedBackendCalls = 0;
+			const envelope = createExecutionEnvelope({ executionId: "execution:recovery", trigger: { kind: "recovery" }, taskId: "task:crashed", taskRunId: "run:recovery", budget: { maxToolCalls: 2 }, mode: "recovery" });
+			const factory = buildBeeMaxRuntimeFactory({
+				provider: "anthropic", model: "claude-sonnet-4-5", cwd: root, agentDir: join(root, "agent"), getApiKey: () => "test",
+				systemPrompt: "test", skillToolset: "safe", tools: ["external_mutation"], authorizeTool: async () => ({ allowed: true }), toolEffects: effects,
+				createTools: () => [withToolPolicy(defineTool({
+					name: "external_mutation", label: "External mutation", description: "Mutate an external fixture", parameters: {},
+					execute: async () => { restartedBackendCalls++; appendFileSync(backendLog, "called\\n"); return { content: [], details: {} }; },
+				}), MUTATING_TOOL_POLICY)],
+			});
+			const session = await factory("effect-crash-recovery", source, envelope);
+			try {
+				const blocked = await session.agent.beforeToolCall({ assistantMessage: {}, toolCall: { id: "call:recovery", name: "external_mutation", arguments: {} }, args: {}, context: {} });
+				assert.equal(blocked?.block, true);
+				assert.match(blocked?.reason ?? "", /settle|reconcil/i);
+				assert.equal(restartedBackendCalls, 0);
+				assert.deepEqual(readFileSync(backendLog, "utf8").trim().split("\n"), ["called"]);
+			} finally { session.dispose(); }
+		} finally { effects.close(); }
 	} finally { rmSync(root, { recursive: true, force: true }); }
 });
 

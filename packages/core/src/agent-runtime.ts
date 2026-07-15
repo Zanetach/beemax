@@ -330,9 +330,9 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 				if (!admittedTools.length || unknown.length) throw new AgentRunError(unknown.length ? `Execution capability allowlist contains unavailable Tools: ${unknown.join(", ")}` : "Execution capability allowlist is empty", false, undefined);
 			}
 			const toolSideEffects = new Map(allTools.map((tool) => [tool.name, toolSideEffect(tool)]));
-			const unresolvedEffectTools = new Set(executionEnvelope.taskId
-				? (this.toolEffectProjectionReader?.taskProjection({ ownerKey: input.source.delegatedTask?.ownerKey ?? responsibilityOwnerKey(input.source), taskId: executionEnvelope.taskId }) ?? []).filter((effect) => effect.status === "unknown").map((effect) => effect.tool)
-				: []);
+			const unresolvedTaskEffect = executionEnvelope.taskId
+				? (this.toolEffectProjectionReader?.taskProjection({ ownerKey: input.source.delegatedTask?.ownerKey ?? responsibilityOwnerKey(input.source), taskId: executionEnvelope.taskId }) ?? []).some((effect) => effect.status === "unknown")
+				: false;
 			const unresolvedUncertainty = Boolean(workContract?.uncertainties.length);
 			const previousToolBoundary = session.piSession.agent.beforeToolCall;
 			const capabilityRuntime = new CapabilityRuntime();
@@ -432,7 +432,7 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 			const recoveredProviderNames = new Set(providerPrefetchAvailability.recoveries.map((item) => item.toolName));
 			const restrictedProviderReasons = new Map(providerPrefetchAvailability.restrictions.map((item) => [item.toolName, item.reason]));
 			const toolSpecInventory = allTools.map((tool) => {
-				const item = toolSpecInventoryItem(tool, admittedTools, unresolvedEffectTools);
+				const item = toolSpecInventoryItem(tool, admittedTools, unresolvedTaskEffect);
 				if (recoveredProviderNames.has(item.name)) return { ...item, configured: true, health: "ready" as const };
 				const restriction = restrictedProviderReasons.get(item.name);
 				return restriction ? { ...item, configured: restriction !== "configuration_required", health: restriction === "configuration_required" ? "configuration_required" as const : restriction === "provider_unhealthy" ? "unhealthy" as const : "unavailable" as const } : item;
@@ -1497,7 +1497,7 @@ function meetsOrderedSignal(required: string | undefined, offered: string | unde
 	return requiredIndex >= 0 && offeredIndex >= requiredIndex;
 }
 
-function toolSpecInventoryItem(tool: ToolDefinition | ToolInfo, admittedTools?: readonly string[], unresolvedEffectTools?: ReadonlySet<string>): ToolSpecInventoryItem {
+function toolSpecInventoryItem(tool: ToolDefinition | ToolInfo, admittedTools?: readonly string[], unresolvedTaskEffect = false): ToolSpecInventoryItem {
 	const candidate = tool as typeof tool & { description?: string; parameters?: unknown; beemaxToolSpec?: { kind?: unknown; version?: unknown; configured?: unknown; health?: unknown; authorized?: unknown } };
 	const metadata = candidate.beemaxToolSpec;
 	const kind = metadata?.kind === "mcp" || metadata?.kind === "skill" ? metadata.kind : "tool";
@@ -1515,7 +1515,7 @@ function toolSpecInventoryItem(tool: ToolDefinition | ToolInfo, admittedTools?: 
 		configured: metadata?.configured !== false,
 		health,
 		authorized: metadata?.authorized !== false && (!admittedTools || admittedTools.includes(candidate.name)),
-		...(unresolvedEffectTools?.has(candidate.name) ? { effectStatus: "unknown" as const } : {}),
+		...(unresolvedTaskEffect && toolSideEffect(candidate) !== "none" ? { effectStatus: "unknown" as const } : {}),
 	};
 }
 

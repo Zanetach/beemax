@@ -176,21 +176,25 @@ test("a non-empty Tool catalog fails closed when Pi cannot change the model-visi
 	finally { runtime.dispose(); }
 });
 
-test("unresolved authoritative Task Effects hide the matching mutating Tool from the next Pi plan", async () => {
+test("an unresolved authoritative Task Effect hides every mutating Tool but keeps read-only investigation in the next Pi plan", async () => {
 	const source = { platform: "cli", chatId: "effect-plan", chatType: "dm", userId: "owner", delegatedTask: { id: "task:1", ownerKey: "profile-owner:alpha" } };
 	let prompt = "";
-	let activeTools = ["deliver"];
+	let activeTools = ["deliver", "alternate_mutation", "inspect_state"];
 	let toolsDuringPrompt = [];
 	let queriedOwner = "";
 	const agent = { state: { model: { id: "test" }, messages: [] } };
 	const runtime = createRuntime({
 		profileId: "profile:alpha",
 		toolEffectProjectionReader: { taskProjection: ({ ownerKey }) => { queriedOwner = ownerKey; return [{ id: "effect:1", taskRunId: "run:1", tool: "deliver", status: "unknown", occurredAt: 1 }]; } },
-		createAgent: async () => ({ agent, getAllTools: () => [{ name: "deliver", description: "Deliver", parameters: {}, beemaxPolicy: { sideEffect: "external" } }], getActiveToolNames: () => [...activeTools], setActiveToolsByName: (names) => { activeTools = [...names]; }, subscribe: () => () => undefined, prompt: async (text) => { prompt = text; toolsDuringPrompt = [...activeTools]; agent.state.messages = [{ role: "assistant", content: [{ type: "text", text: "blocked" }], usage: { input: 1, output: 1 } }]; }, abort: async () => undefined, dispose: () => undefined }),
+		createAgent: async () => ({ agent, getAllTools: () => [
+			{ name: "deliver", description: "Deliver", parameters: {}, beemaxPolicy: { sideEffect: "external" } },
+			{ name: "alternate_mutation", description: "Mutate through an alternate Provider", parameters: {}, beemaxPolicy: { sideEffect: "external" } },
+			{ name: "inspect_state", description: "Inspect current Provider state", parameters: {}, beemaxPolicy: { sideEffect: "none" } },
+		], getActiveToolNames: () => [...activeTools], setActiveToolsByName: (names) => { activeTools = [...names]; }, subscribe: () => () => undefined, prompt: async (text) => { prompt = text; toolsDuringPrompt = [...activeTools]; agent.state.messages = [{ role: "assistant", content: [{ type: "text", text: "blocked" }], usage: { input: 1, output: 1 } }]; }, abort: async () => undefined, dispose: () => undefined }),
 	});
 	try {
-		await runtime.run({ source, text: "deliver", timeoutMs: 1_000, executionEnvelope: { schemaVersion: "beemax.execution-envelope.v1", executionId: "execution:1", trigger: { kind: "delegation" }, taskId: "task:1", taskRunId: "run:1", mode: "normal" } });
-		assert.deepEqual(toolsDuringPrompt, []);
+		await runtime.run({ source, text: "deliver", timeoutMs: 1_000, allowedCapabilities: ["deliver", "alternate_mutation", "inspect_state"], executionEnvelope: { schemaVersion: "beemax.execution-envelope.v1", executionId: "execution:1", trigger: { kind: "delegation" }, taskId: "task:1", taskRunId: "run:1", mode: "normal" } });
+		assert.deepEqual(toolsDuringPrompt, ["inspect_state"]);
 		assert.equal(queriedOwner, "profile-owner:alpha");
 		assert.match(prompt, /effect_reconciliation_required/);
 	} finally { runtime.dispose(); }

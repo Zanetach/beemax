@@ -539,7 +539,7 @@ This ordering is the implementation plan, not a fixed business workflow. Core re
 
 - [x] Derive concurrency from declared dependencies and Effect metadata rather than prompt keywords.
 - [x] Reroute failed read-only work to equivalent healthy Providers without changing the Contract.
-- [ ] Prevent blind replay of external writes and prove zero duplicate mutation under timeout and crash injection.
+- [x] Prevent blind replay of external writes and prove zero duplicate mutation under timeout and crash injection.
 
 ## Verify every acceptance criterion against durable receipts
 

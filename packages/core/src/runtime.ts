@@ -16,8 +16,8 @@ import {
 	SettingsManager,
 } from "@earendil-works/pi-coding-agent";
 import { governToolDefinition, normalizeToolResultBudget, toolExecutionModeForPolicy, ToolPolicyRegistry, type ToolPolicy, type ToolResultBudget, type ToolRuntimeAuditSink } from "./tool-runtime.ts";
-import { conversationKey, type AgentScope } from "./agent-scope.ts";
-import { ToolEffectConflictError, type ToolEffectSink } from "./tool-effect.ts";
+import { conversationKey, responsibilityOwnerKey, type AgentScope } from "./agent-scope.ts";
+import { ToolEffectConflictError, type ToolEffectAuthorityPort, type ToolEffectSink } from "./tool-effect.ts";
 import type { ExecutionEnvelope } from "./execution-envelope.ts";
 import { EnterprisePolicyRuntime, type EnterprisePolicyDecision, type EnterprisePolicyProvider } from "./enterprise-policy.ts";
 import { ActionGovernance, type ActionGovernanceDecision, type MeasuredActionReliability } from "./action-governance.ts";
@@ -79,7 +79,7 @@ export interface BeeMaxRuntimeFactoryOptions<Source extends BeeMaxRuntimeSource 
 	toolAudit?: ToolRuntimeAuditSink;
 	/** One Profile-wide context budget applied after every custom Tool/MCP result. */
 	toolResultBudget?: ToolResultBudget;
-	toolEffects?: ToolEffectSink;
+	toolEffects?: ToolEffectAuthorityPort;
 	currentTaskId?: (source: Source) => string | undefined;
 	/** Durable preservation instructions injected into Pi manual and automatic compaction. */
 	compactionInstructions?: (source: Source) => string | undefined;
@@ -262,7 +262,7 @@ async function restoreOrCreateSession(cwd: string, sessionDir: string, sessionId
 	return matchingFiles[0] ? SessionManager.open(join(sessionDir, matchingFiles[0]), sessionDir, cwd) : SessionManager.create(cwd, sessionDir, { id: sessionId });
 }
 
-function installSecurityHook<Source extends BeeMaxRuntimeSource>(session: AgentSession, cwd: string, source: Source, authorizeTool: BeeMaxRuntimeAuthorization<Source> | undefined, policies: ToolPolicyRegistry, enterprisePolicy: EnterprisePolicyProvider | undefined, actionReliability: ((toolName: string) => MeasuredActionReliability) | undefined, executionGrant: ((source: Source) => { taskId: string; allowedCapabilities: string[]; status: "active" } | undefined) | undefined, proactiveMutationAuthority: ProactiveMutationAuthority<Source> | undefined, audit: ToolRuntimeAuditSink | undefined, effects: ToolEffectSink | undefined, currentTaskId: ((source: Source) => string | undefined) | undefined, toolArtifacts: FileToolArtifactStore, toolResultBudget: ToolResultBudget): void {
+function installSecurityHook<Source extends BeeMaxRuntimeSource>(session: AgentSession, cwd: string, source: Source, authorizeTool: BeeMaxRuntimeAuthorization<Source> | undefined, policies: ToolPolicyRegistry, enterprisePolicy: EnterprisePolicyProvider | undefined, actionReliability: ((toolName: string) => MeasuredActionReliability) | undefined, executionGrant: ((source: Source) => { taskId: string; allowedCapabilities: string[]; status: "active" } | undefined) | undefined, proactiveMutationAuthority: ProactiveMutationAuthority<Source> | undefined, audit: ToolRuntimeAuditSink | undefined, effects: ToolEffectAuthorityPort | undefined, currentTaskId: ((source: Source) => string | undefined) | undefined, toolArtifacts: FileToolArtifactStore, toolResultBudget: ToolResultBudget): void {
 	const enterprisePolicies = new EnterprisePolicyRuntime(enterprisePolicy);
 	const governance = new ActionGovernance();
 	let budgetExecutionId: string | undefined;
@@ -323,7 +323,15 @@ function installSecurityHook<Source extends BeeMaxRuntimeSource>(session: AgentS
 			}
 		}
 		const grant = executionGrant?.(source);
-		const governanceInput = { actionId: context.toolCall.id, toolName: context.toolCall.name, toolPolicy: policy, effectStatus: "none" as const, reliability: actionReliability?.(context.toolCall.name) ?? "unknown" as const, ...(enterpriseDecision ? { enterprisePolicy: enterpriseDecision } : {}), ...(grant ? { executionGrant: { id: `task:${grant.taskId}`, ...grant } } : {}) };
+		let effectStatus: "none" | "unknown" = "none";
+		try {
+			effectStatus = unresolvedTaskEffectStatus(effects, source, executionEnvelope?.taskId ?? currentTaskId?.(source) ?? source.delegatedTask?.id, policy);
+		} catch (error) {
+			const reason = `Effect reconciliation authority failed: ${error instanceof Error ? error.message : String(error)}`;
+			audit?.({ phase: "blocked", source, toolName: context.toolCall.name, policy, at: Date.now(), reason, ...(enterprisePolicyAudit ? { enterprisePolicy: enterprisePolicyAudit } : {}) });
+			return { block: true, reason };
+		}
+		const governanceInput = { actionId: context.toolCall.id, toolName: context.toolCall.name, toolPolicy: policy, effectStatus, reliability: actionReliability?.(context.toolCall.name) ?? "unknown" as const, ...(enterpriseDecision ? { enterprisePolicy: enterpriseDecision } : {}), ...(grant ? { executionGrant: { id: `task:${grant.taskId}`, ...grant } } : {}) };
 		let governanceDecision = governance.decide({ ...governanceInput, at: Date.now() });
 		let governanceAudit = governanceAuditMetadata(governanceDecision);
 		if (governanceDecision.outcome === "deny" || governanceDecision.outcome === "missing_evidence") {
@@ -388,6 +396,14 @@ function currentExecutionEnvelope(session: AgentSession): Readonly<ExecutionEnve
 function beginToolEffect(effects: ToolEffectSink | undefined, input: Parameters<ToolEffectSink["begin"]>[0]): string | undefined {
 	try { effects?.begin(input); return undefined; }
 	catch (error) { if (error instanceof ToolEffectConflictError) return error.message; throw error; }
+}
+
+function unresolvedTaskEffectStatus<Source extends BeeMaxRuntimeSource>(effects: ToolEffectAuthorityPort | undefined, source: Source, taskId: string | undefined, policy: ToolPolicy): "none" | "unknown" {
+	if (policy.sideEffect === "none" || !effects || !taskId) return "none";
+	const taskProjection = effects.taskProjection;
+	if (typeof taskProjection !== "function") return "none";
+	const ownerKey = source.delegatedTask?.ownerKey ?? responsibilityOwnerKey(source);
+	return taskProjection.call(effects, { ownerKey, taskId }).some((effect) => effect.status === "unknown") ? "unknown" : "none";
 }
 
 function hardBlockReason(toolName: string, args: unknown, cwd: string): string | undefined {
