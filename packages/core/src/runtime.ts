@@ -15,7 +15,7 @@ import {
 	SessionManager,
 	SettingsManager,
 } from "@earendil-works/pi-coding-agent";
-import { governToolDefinition, normalizeToolResultBudget, ToolPolicyRegistry, type ToolPolicy, type ToolResultBudget, type ToolRuntimeAuditSink } from "./tool-runtime.ts";
+import { governToolDefinition, normalizeToolResultBudget, toolExecutionModeForPolicy, ToolPolicyRegistry, type ToolPolicy, type ToolResultBudget, type ToolRuntimeAuditSink } from "./tool-runtime.ts";
 import { conversationKey, type AgentScope } from "./agent-scope.ts";
 import { ToolEffectConflictError, type ToolEffectSink } from "./tool-effect.ts";
 import type { ExecutionEnvelope } from "./execution-envelope.ts";
@@ -193,6 +193,7 @@ export function buildBeeMaxRuntimeFactory<Source extends BeeMaxRuntimeSource = B
 			tools: policies.enabledNames(),
 			customTools: governedTools, authStorage, modelRegistry, settingsManager, resourceLoader, sessionManager,
 		});
+		installToolExecutionModes(session, policies);
 		if (opts.compactionAudit) session.subscribe((event) => {
 			if (event.type !== "compaction_end" || event.result || !pendingCompaction) return;
 			opts.compactionAudit?.({
@@ -220,6 +221,21 @@ export function buildBeeMaxRuntimeFactory<Source extends BeeMaxRuntimeSource = B
 		installSecurityHook(session, cwd, source, opts.authorizeTool, policies, opts.enterprisePolicy, opts.actionReliability, opts.executionGrant, opts.proactiveMutationAuthority, opts.toolAudit, opts.toolEffects, opts.currentTaskId, toolArtifacts, toolResultBudget);
 		return session;
 	};
+}
+
+/** Keep Pi's active Tool registry synchronized with Core-owned Effect policy across dynamic Tool Spec changes and reloads. */
+function installToolExecutionModes(session: AgentSession, policies: ToolPolicyRegistry): void {
+	const apply = () => {
+		for (const tool of session.agent.state.tools) {
+			const definition = session.getToolDefinition(tool.name);
+			const mode = toolExecutionModeForPolicy(policies.get(tool.name), definition?.executionMode);
+			tool.executionMode = mode;
+			if (definition) definition.executionMode = mode;
+		}
+	};
+	const setActiveToolsByName = session.setActiveToolsByName.bind(session);
+	session.setActiveToolsByName = (names) => { setActiveToolsByName(names); apply(); };
+	apply();
 }
 
 export function filterEligibleSkills(skills: Skill[], toolset: "safe" | "standard"): Skill[] {

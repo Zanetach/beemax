@@ -537,7 +537,7 @@ This ordering is the implementation plan, not a fixed business workflow. Core re
 
 **Blocked by:** Dispatch model Tool Calls through one strict Router.
 
-- [ ] Derive concurrency from declared dependencies and Effect metadata rather than prompt keywords.
+- [x] Derive concurrency from declared dependencies and Effect metadata rather than prompt keywords.
 - [ ] Reroute failed read-only work to equivalent healthy Providers without changing the Contract.
 - [ ] Prevent blind replay of external writes and prove zero duplicate mutation under timeout and crash injection.
 

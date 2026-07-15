@@ -145,12 +145,18 @@ export function withToolPolicy<T extends ToolDefinition>(tool: T, policy: ToolPo
 	return Object.assign(tool, { beemaxPolicy: normalizeToolPolicy(policy) });
 }
 
+/** Compile BeeMax Effect semantics into Pi's native per-Tool execution contract. */
+export function toolExecutionModeForPolicy(policy: ToolPolicy, declared?: "parallel" | "sequential"): "parallel" | "sequential" {
+	if (policy.sideEffect !== "none") return "sequential";
+	return declared === "sequential" ? "sequential" : "parallel";
+}
+
 /** Apply the policy execution contract to a custom first-class Tool. */
 export function governToolDefinition<T extends ToolDefinition>(tool: T, policy: ToolPolicy, source: BeeMaxRuntimeSource, audit?: ToolRuntimeAuditSink, resultBudget?: ToolResultBudget, options: { deferResultProjection?: boolean } = {}): T & GovernedToolDefinition {
 	const normalized = normalizeToolPolicy(policy);
 	const maxEstimatedTokens = resultBudget ? normalizeToolResultBudget(resultBudget).maxEstimatedTokens : Number.POSITIVE_INFINITY;
 	const execute = tool.execute.bind(tool);
-	return Object.assign({ ...tool, async execute(toolCallId: string, params: unknown, signal: AbortSignal | undefined, onUpdate: unknown, ctx: unknown) {
+	return Object.assign({ ...tool, executionMode: toolExecutionModeForPolicy(normalized, tool.executionMode), async execute(toolCallId: string, params: unknown, signal: AbortSignal | undefined, onUpdate: unknown, ctx: unknown) {
 		const startedAt = Date.now();
 		for (let attempt = 1; attempt <= normalized.maxAttempts; attempt++) {
 			audit?.({ phase: "started", source, toolName: tool.name, policy: normalized, at: Date.now(), attempt });

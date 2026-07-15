@@ -67,6 +67,28 @@ test("BeeMax runtime projects oversized Tool output once and exposes its scoped 
 	} finally { rmSync(root, { recursive: true, force: true }); }
 });
 
+test("BeeMax derives Pi Tool concurrency from Policy Effects and preserves explicit read serialization", async () => {
+	const root = mkdtempSync(join(tmpdir(), "beemax-tool-execution-modes-"));
+	try {
+		const factory = buildBeeMaxRuntimeFactory({
+			provider: "anthropic", model: "claude-sonnet-4-5", cwd: root, agentDir: join(root, "agent"), getApiKey: () => "test",
+			systemPrompt: "test", skillToolset: "safe", tools: ["read", "write", "safe_parallel", "safe_serial", "external_mutation"],
+			createTools: () => [
+				withToolPolicy(defineTool({ name: "safe_parallel", label: "Safe parallel", description: "Read", parameters: {}, execute: async () => ({ content: [], details: {} }) }), READ_ONLY_TOOL_POLICY),
+				withToolPolicy(defineTool({ name: "safe_serial", label: "Safe serial", description: "Read serially", parameters: {}, executionMode: "sequential", execute: async () => ({ content: [], details: {} }) }), READ_ONLY_TOOL_POLICY),
+				withToolPolicy(defineTool({ name: "external_mutation", label: "Mutation", description: "Mutate", parameters: {}, executionMode: "parallel", execute: async () => ({ content: [], details: {} }) }), MUTATING_TOOL_POLICY),
+			],
+		});
+		const session = await factory("execution-modes", { platform: "cli", chatId: "terminal", chatType: "dm", userId: "user" });
+		try {
+			const modes = () => Object.fromEntries(session.agent.state.tools.map((tool) => [tool.name, tool.executionMode]));
+			assert.deepEqual(modes(), { artifact_read: "parallel", external_mutation: "sequential", read: "parallel", safe_parallel: "parallel", safe_serial: "sequential", write: "sequential" });
+			session.setActiveToolsByName(["write", "read", "safe_parallel"]);
+			assert.deepEqual(modes(), { write: "sequential", read: "parallel", safe_parallel: "parallel" });
+		} finally { session.dispose(); }
+	} finally { rmSync(root, { recursive: true, force: true }); }
+});
+
 test("custom model limits drive model-aware compaction instead of a fixed 128K assumption", async () => {
 	const root = mkdtempSync(join(tmpdir(), "beemax-custom-model-limits-"));
 	try {
