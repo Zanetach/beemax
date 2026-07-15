@@ -8,7 +8,7 @@
  */
 
 import { AutomationStore } from "@beemax/automation";
-import { ActionGovernance, AutonomyRolloutController, AutomationDeliveryWorker, AutomationScheduler, BeeMaxAgentRuntime, DeliveryDeferredError, DeterministicSituationBuilder, FileCredentialVault, FileCredentialVaultAuditJournal, GroupObservationRecorder, HeartbeatRunner, InitiativeRuntime, InitiativeTriggerService, PiAmbientObservationEvaluator, PiWorkContractBuilder, ProactiveInvestigationRuntime, TaskPlanNoticeDeliveryService, TaskTransitionInitiativeAdapter, ToolApprovalBroker, ToolPolicyRegistry, VERIFICATION_SUBMIT_TOOL_NAME, buildActiveTaskPreservationEnvelope, buildTaskPreservationEnvelope, canonicalUserId, containsCredentialMaterial, conversationKey, responsibilityOwnerKey, responsibilityOwnerKeys, createExecutionEnvelope, createSubagentTools, createTaskCheckpoint, createTaskLedgerTools, createTaskOrchestrationTools, decideInitiativeFromSituation, guardVerifiedObjectiveMemoryPublisher, isVerifiedAutomationOutcome, redactCredentialMaterial, renderTaskCheckpoint, selectTurnTools, type AgentRuntimePort, type AmbientObservationEvaluator, type BeeMaxAgentRunEvent, type BeeMaxAgentRunEventSink, type ContextCompactionAuditEvent, type DeliveryPort, type ExecutionEnvelope, type ExecutionTraceSink, type InitiativeObservation, type ObjectiveDeliveryInput, type SkillCandidateTrialInput, type SkillTrialAssertion, type SkillTrialToolCall, type SubagentTask, type TaskGraphExecutionContext, type TaskGraphExecutionResult, type TaskGraphVerifier, type TaskLedger, type TaskRecord, type ToolEffectProjectionReader, type VerifiedObjectiveMemoryPublisher } from "@beemax/core";
+import { ActionGovernance, AutonomyRolloutController, AutomationDeliveryWorker, AutomationScheduler, BeeMaxAgentRuntime, DeliveryDeferredError, DeterministicSituationBuilder, FileCredentialVault, FileCredentialVaultAuditJournal, GroupObservationRecorder, HeartbeatRunner, InitiativeRuntime, InitiativeTriggerService, PiAmbientObservationEvaluator, PiWorkContractBuilder, ProactiveInvestigationRuntime, TaskPlanNoticeDeliveryService, TaskTransitionInitiativeAdapter, ToolApprovalBroker, ToolPolicyRegistry, VERIFICATION_SUBMIT_TOOL_NAME, buildActiveTaskPreservationEnvelope, buildTaskPreservationEnvelope, canonicalUserId, containsCredentialMaterial, conversationKey, responsibilityOwnerKey, responsibilityOwnerKeys, createExecutionEnvelope, createSubagentTools, createTaskCheckpoint, createTaskLedgerTools, createTaskOrchestrationTools, decideInitiativeFromSituation, guardVerifiedObjectiveMemoryPublisher, isVerifiedAutomationOutcome, redactCredentialMaterial, renderTaskCheckpoint, selectTurnTools, taskCriterionDefinitions, type AgentRuntimePort, type AmbientObservationEvaluator, type BeeMaxAgentRunEvent, type BeeMaxAgentRunEventSink, type ContextCompactionAuditEvent, type DeliveryPort, type ExecutionEnvelope, type ExecutionTraceSink, type InitiativeObservation, type ObjectiveDeliveryInput, type SkillCandidateTrialInput, type SkillTrialAssertion, type SkillTrialToolCall, type SubagentTask, type TaskGraphExecutionContext, type TaskGraphExecutionResult, type TaskGraphVerifier, type TaskLedger, type TaskRecord, type ToolEffectProjectionReader, type VerifiedObjectiveMemoryPublisher } from "@beemax/core";
 import {
 	AdapterRegistry,
 	ChannelHost,
@@ -915,7 +915,7 @@ const TASK_VERIFICATION_CAPABILITIES = Object.freeze([VERIFICATION_SUBMIT_TOOL_N
 export function createTaskVerifier(factory: ReturnType<typeof buildAgentFactory>, timeoutMs: number, executionTrace?: ExecutionTraceSink, allowedCapabilities: readonly string[] = TASK_VERIFICATION_CAPABILITIES): TaskGraphVerifier {
 	return async (task, candidate, signal, context) => {
 		if (!task.executionScope) throw new Error("Verification unavailable: Task execution scope is unavailable");
-		const criteria = verificationCriteria(task.acceptanceCriteria);
+		const criteria = taskCriterionDefinitions(task.acceptanceCriteria);
 		const externalUrls = [...new Set((`${task.description ?? ""}\n${task.acceptanceCriteria ?? ""}\n${candidate.output ?? ""}`.match(/https?:\/\/[^\s<>'"\])}]+/gi) ?? []).map(normalizedEvidenceUrl))];
 		if (externalUrls.some((url) => url.length > 2_048 || containsCredentialMaterial(url))) throw new Error("Verification unavailable: Candidate contains an unsafe or overlong external source URL");
 		if (externalUrls.length > 24) throw new Error(`Verification unavailable: Candidate cited ${externalUrls.length} external URLs, exceeding the bounded exact-source verification limit of 24`);
@@ -942,8 +942,8 @@ export function createTaskVerifier(factory: ReturnType<typeof buildAgentFactory>
 				"For a cited external URL, independently fetch the exact URL with web_extract before binding it as evidence. Use maxChars=3000 unless a specific criterion requires more text. A search result or Candidate citation alone is not an independent fetch. Do not repeat broad research when targeted extraction is sufficient.",
 				`The Candidate contains ${externalUrls.length} unique external URL(s); every one must have a successful exact-source extraction receipt before acceptance.`,
 				externalUrls.length ? `<required-exact-source-urls>\n${JSON.stringify(externalUrls)}\n</required-exact-source-urls>` : "No external source URL was cited in the Candidate.",
-				`Call ${VERIFICATION_SUBMIT_TOOL_NAME} exactly once with the final status, factual reason, and one receipt-bound assertion for every criterion. In evidenceRefs use \"tool:<exact successful Tool name>\"; BeeMax binds every matching successful call to its concrete receipt. Use \"tool-call:<exact Tool call id>\" only when known. Do not use the Candidate itself, paths, excerpts, bare URLs, or prose as evidence. Do not express the verdict only as prose.`,
-				"Use accepted only when independent evidence proves every criterion. Use unavailable when evaluation cannot be completed; never disguise unavailable evidence as acceptance.",
+				`Call ${VERIFICATION_SUBMIT_TOOL_NAME} exactly once with the final status, factual reason, and exactly one receipt-bound assertion for every criterion. Set each assertion status to accepted or rejected. In evidenceRefs use \"tool:<exact successful Tool name>\"; BeeMax binds every matching successful call to its concrete receipt. Use \"tool-call:<exact Tool call id>\" only when known. Do not use the Candidate itself, paths, excerpts, bare URLs, or prose as evidence. Do not express the verdict only as prose.`,
+				"Use accepted only when every criterion assertion is accepted. Use rejected when every criterion was independently evaluated and at least one assertion is rejected. Use unavailable when any criterion cannot be evaluated; never disguise unavailable evidence as acceptance or rejection.",
 				`Task: ${task.title}`,
 				`Goal: ${task.description ?? task.title}`,
 				`Acceptance Criteria: ${task.acceptanceCriteria ?? "none"}`,
@@ -1013,43 +1013,46 @@ export function createTaskVerifier(factory: ReturnType<typeof buildAgentFactory>
 		catch (error) { throw new Error(`Verification unavailable: ${error instanceof Error ? error.message : "verifier returned an invalid verdict envelope"}`); }
 		const reason = typeof parsed.reason === "string" ? parsed.reason.trim().slice(0, 5_000) : "";
 		if (parsed.status === "unavailable") throw new Error(`Verification unavailable: ${reason || "no factual reason supplied"}; attempts=${JSON.stringify(attemptedTools).slice(0, 1_000)}`);
-		if (parsed.status === "rejected") return { accepted: false, feedback: reason || "Acceptance Criteria were not satisfied" };
-		if (parsed.status !== "accepted") throw new Error("Verification unavailable: verifier returned an unknown verdict status");
-		if (!reason) throw new Error("Verification unavailable: accepted verdict omitted its factual reason");
+		if (parsed.status !== "accepted" && parsed.status !== "rejected") throw new Error("Verification unavailable: verifier returned an unknown verdict status");
+		if (!reason) throw new Error(`Verification unavailable: ${parsed.status} verdict omitted its factual reason`);
 		const validEvidenceRefs = new Set([...successfulReceipts.keys()].map((callId) => `tool-call:${callId}`));
-		const assertions = (Array.isArray(parsed.assertions) ? parsed.assertions : []).flatMap((item): Array<{ criterionId: string; evidence: string; evidenceRefs: string[] }> => {
+		const assertions = (Array.isArray(parsed.assertions) ? parsed.assertions : []).flatMap((item): Array<{ status: "accepted" | "rejected" | "unavailable"; criterionId: string; evidence: string; evidenceRefs: string[] }> => {
 			if (!item || typeof item !== "object") return [];
-			const value = item as { criterionId?: unknown; evidence?: unknown; evidenceRefs?: unknown };
-			if (typeof value.criterionId !== "string" || typeof value.evidence !== "string" || !value.evidence.trim() || !Array.isArray(value.evidenceRefs)) return [];
+			const value = item as { status?: unknown; criterionId?: unknown; evidence?: unknown; evidenceRefs?: unknown };
+			if ((value.status !== "accepted" && value.status !== "rejected" && value.status !== "unavailable") || typeof value.criterionId !== "string" || typeof value.evidence !== "string" || !value.evidence.trim() || !Array.isArray(value.evidenceRefs)) return [];
 			const resolved = value.evidenceRefs.map((ref) => typeof ref === "string" ? normalizeVerifierEvidenceRefs(ref, successfulReceipts).filter((receipt) => validEvidenceRefs.has(receipt)) : []);
 			if (resolved.some((receipts) => !receipts.length)) return [];
 			const evidenceRefs = [...new Set(resolved.flat())];
-			return evidenceRefs.length ? [{ criterionId: value.criterionId, evidence: value.evidence.trim(), evidenceRefs }] : [];
+			return evidenceRefs.length ? [{ status: value.status, criterionId: value.criterionId, evidence: value.evidence.trim(), evidenceRefs }] : [];
 		});
 		const coveredCriteria = new Set(assertions.map((assertion) => assertion.criterionId));
-		if (criteria.some((criterion) => !coveredCriteria.has(criterion.id))) {
+		if (criteria.some((criterion) => !coveredCriteria.has(criterion.id)) || assertions.length !== criteria.length || assertions.some((assertion) => !criteria.some((criterion) => criterion.id === assertion.criterionId))) {
 			const submitted = (Array.isArray(parsed.assertions) ? parsed.assertions : []).flatMap((item) => item && typeof item === "object" ? [{
 				criterionId: typeof (item as { criterionId?: unknown }).criterionId === "string" ? (item as { criterionId: string }).criterionId.slice(0, 32) : "invalid",
 				evidenceRefs: Array.isArray((item as { evidenceRefs?: unknown }).evidenceRefs) ? (item as { evidenceRefs: unknown[] }).evidenceRefs.filter((ref): ref is string => typeof ref === "string").map((ref) => ref.slice(0, 256)).slice(0, 20) : [],
 			}] : []);
-			throw new Error(`Verification unavailable: accepted verdict did not bind every criterion to valid evidence receipts; required=${JSON.stringify(criteria.map((criterion) => criterion.id))}; submitted=${JSON.stringify(submitted)}; receipts=${JSON.stringify([...successfulReceipts.values()])}`);
+			throw new Error(`Verification unavailable: verdict did not bind every criterion exactly once to valid evidence receipts; required=${JSON.stringify(criteria.map((criterion) => criterion.id))}; submitted=${JSON.stringify(submitted)}; receipts=${JSON.stringify([...successfulReceipts.values()])}`);
 		}
+		if (assertions.some((assertion) => assertion.status === "unavailable")) throw new Error("Verification unavailable: criterion assertion was unavailable");
+		if (parsed.status === "accepted" && assertions.some((assertion) => assertion.status !== "accepted")) throw new Error("Verification unavailable: accepted verdict contains a non-accepted criterion");
+		if (parsed.status === "rejected" && !assertions.some((assertion) => assertion.status === "rejected")) throw new Error("Verification unavailable: rejected verdict contains no rejected criterion");
 		const receiptTools = [...successfulTools].filter((name) => name !== VERIFICATION_SUBMIT_TOOL_NAME && name !== "capability_discover" && !name.startsWith("skill_") && name !== "task_checkpoint_save");
 		if (requiresExternalEvidence(task) && !successfulTools.has("web_extract")) throw new Error(`Verification unavailable: external or current claims require an independent exact-source extraction receipt; attempts=${JSON.stringify(attemptedTools).slice(0, 1_000)}`);
 		if (requiresExternalEvidence(task) && (!receiptTools.length || !assertions.some((assertion) => assertion.evidenceRefs.some((ref) => ref.startsWith("tool-call:"))))) throw new Error(`Verification unavailable: external or current claims were not bound to a successful evidence Tool receipt; attempts=${JSON.stringify(attemptedTools).slice(0, 1_000)}`);
 		if (externalUrls.length && !externalUrls.every((url) => extractedUrls.has(url))) throw new Error(`Verification unavailable: not every cited external source URL was independently fetched; attempts=${JSON.stringify(attemptedTools).slice(0, 1_000)}`);
-		return { accepted: true, evidence: JSON.stringify({ reason, assertions, receipts: [...successfulReceipts.values()], independentlyFetchedUrls: [...extractedUrls] }).slice(0, 5_000) };
+		const criterionVerifications = assertions.map((assertion) => ({
+			...assertion,
+			criterion: criteria.find((criterion) => criterion.id === assertion.criterionId)!.text,
+			evidenceRefs: assertion.evidenceRefs.map((ref) => successfulReceipts.get(ref.slice("tool-call:".length))!.reference),
+		}));
+		const evidence = JSON.stringify({ reason, assertions, receipts: [...successfulReceipts.values()], independentlyFetchedUrls: [...extractedUrls] }).slice(0, 5_000);
+		return parsed.status === "accepted" ? { accepted: true, evidence, criterionVerifications } : { accepted: false, feedback: reason, criterionVerifications };
 	};
 }
 
 function normalizedEvidenceUrl(value: string): string {
 	try { const url = new URL(value); url.hash = ""; return url.toString().replace(/\/$/, ""); }
 	catch { return value.trim().replace(/\/$/, ""); }
-}
-
-function verificationCriteria(value: string | undefined): Array<{ id: string; text: string }> {
-	const items = (value ?? "Observable outcome is satisfied").split(/\r?\n/).map((line) => line.trim().replace(/^[-*]\s*/, "")).filter(Boolean);
-	return (items.length ? items : ["Observable outcome is satisfied"]).slice(0, 50).map((text, index) => ({ id: `C${index + 1}`, text }));
 }
 
 function requiresExternalEvidence(task: Pick<TaskRecord, "title" | "acceptanceCriteria">): boolean {

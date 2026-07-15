@@ -8,7 +8,15 @@ export type TaskKind = "objective" | "delegated" | "automation";
 export type TaskStatus = "pending" | "running" | "succeeded" | "failed" | "cancelled";
 export type TaskRecoveryPolicy = "never" | "safe_retry";
 export type TaskVerificationStatus = "pending" | "accepted" | "rejected" | "unavailable";
-export type TaskCandidateVerificationResolution = { accepted: true; evidence?: string } | { accepted: false; feedback: string };
+export type TaskCriterionVerificationStatus = "accepted" | "rejected" | "unavailable";
+export interface TaskCriterionVerification {
+	criterionId: string;
+	criterion: string;
+	status: TaskCriterionVerificationStatus;
+	evidence?: string;
+	evidenceRefs: string[];
+}
+export type TaskCandidateVerificationResolution = { accepted: true; evidence?: string; criterionVerifications?: TaskCriterionVerification[] } | { accepted: false; feedback: string; criterionVerifications?: TaskCriterionVerification[] };
 export type TaskPlanStatus = "pending" | "running" | "succeeded" | "failed" | "cancelled";
 export interface TaskArtifact {
 	type: "file" | "url" | "reference";
@@ -66,6 +74,7 @@ export interface TaskRecord {
 	unresolvedIssues?: string[];
 	verificationStatus?: TaskVerificationStatus;
 	verificationFeedback?: string;
+	criterionVerifications?: TaskCriterionVerification[];
 	verificationAttempts?: number;
 	verificationRetryAt?: number;
 	correctiveAttempts?: number;
@@ -81,7 +90,7 @@ export interface TaskRecord {
 	routeIndex?: number;
 }
 
-export type TaskTransition = Pick<TaskRecord, "status"> & Partial<Pick<TaskRecord, "startedAt" | "finishedAt" | "result" | "candidateResult" | "error" | "evidence" | "artifacts" | "unresolvedIssues" | "verificationStatus" | "verificationFeedback" | "correctiveAttempts">>;
+export type TaskTransition = Pick<TaskRecord, "status"> & Partial<Pick<TaskRecord, "startedAt" | "finishedAt" | "result" | "candidateResult" | "error" | "evidence" | "artifacts" | "unresolvedIssues" | "verificationStatus" | "verificationFeedback" | "criterionVerifications" | "correctiveAttempts">>;
 
 export type TaskRunStatus = "running" | "succeeded" | "failed" | "cancelled";
 export interface TaskRunRecord {

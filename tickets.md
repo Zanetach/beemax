@@ -547,9 +547,9 @@ This ordering is the implementation plan, not a fixed business workflow. Core re
 
 **Blocked by:** Validate Work Contracts before execution; Dispatch model Tool Calls through one strict Router.
 
-- [ ] Bind every verifier assertion to a criterion identifier and an existing successful evidence reference.
-- [ ] Reject model-authored prose, bare URLs, and unrelated receipts as completion evidence.
-- [ ] Keep rejected and unavailable criteria durable for corrective execution or Verification Retry.
+- [x] Bind every verifier assertion to a criterion identifier and an existing successful evidence reference.
+- [x] Reject model-authored prose, bare URLs, and unrelated receipts as completion evidence.
+- [x] Keep rejected and unavailable criteria durable for corrective execution or Verification Retry.
 
 ## Complete realtime research without silent fallback
 

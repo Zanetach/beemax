@@ -133,8 +133,8 @@ export class TaskRecoveryRunner {
 				const verification = await this.verify(task, { output: task.candidateResult }, signal);
 				if (signal.aborted) break;
 				const resolution = verification.accepted
-					? { accepted: true as const, evidence: verification.evidence?.slice(0, 5_000) }
-					: { accepted: false as const, feedback: verification.feedback?.trim().slice(0, 5_000) || "Acceptance Criteria were not satisfied" };
+					? { accepted: true as const, evidence: verification.evidence?.slice(0, 5_000), ...(verification.criterionVerifications ? { criterionVerifications: verification.criterionVerifications } : {}) }
+					: { accepted: false as const, feedback: verification.feedback?.trim().slice(0, 5_000) || "Acceptance Criteria were not satisfied", ...(verification.criterionVerifications ? { criterionVerifications: verification.criterionVerifications } : {}) };
 				if (!task.planId && task.kind === "objective" && this.notifyDirectObjective) await this.notifyDirectObjective(task, resolution, signal);
 				if (!this.ledger.resolveCandidateVerification(ownerKeys, task.id, resolution)) {
 					summary.unavailable++; this.ledger.deferCandidateVerification?.(ownerKeys, task.id, attemptedAt); continue;

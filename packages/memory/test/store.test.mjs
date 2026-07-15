@@ -393,6 +393,9 @@ test("Verification unavailable persists across Profile database restarts", async
 		assert.equal(task.verificationStatus, "unavailable");
 		assert.equal(task.result, undefined);
 		assert.equal(task.candidateResult, "candidate");
+		assert.deepEqual(task.criterionVerifications, [{
+			criterionId: "C1", criterion: "Passes an independent check", status: "unavailable", evidence: "verifier offline", evidenceRefs: [],
+		}]);
 		assert.equal(store.taskRuns("verification-task")[0].output, "candidate");
 	} finally { store.close(); rmSync(root, { recursive: true, force: true }); }
 });
@@ -405,13 +408,46 @@ test("Verification Retry promotes a Candidate Result without replaying Task exec
 		graph.createPlan({ id: "retry-verification-plan", ownerKey: "cli:local:local", tasks: [{ id: "retry-verification-task", title: "Verify", acceptanceCriteria: "Passes an independent check" }] }, 10);
 		await graph.run(["cli:local:local"], "retry-verification-plan", async () => ({ output: "candidate" }), { verify: async () => { throw new Error("verifier offline"); } });
 		let executions = 0;
-		const runner = new TaskRecoveryRunner(store, async () => { executions++; return { output: "replayed" }; }, undefined, async (_task, result) => ({ accepted: result.output === "candidate", evidence: "candidate checked" }));
+		const runner = new TaskRecoveryRunner(store, async () => { executions++; return { output: "replayed" }; }, undefined, async (_task, result) => ({
+			accepted: result.output === "candidate", evidence: "candidate checked",
+			criterionVerifications: [{ criterionId: "C1", criterion: "Passes an independent check", status: "accepted", evidence: "candidate checked", evidenceRefs: ["tool-call:retry-read"] }],
+		}));
 		assert.deepEqual(await runner.reverify(["cli:local:local"], "retry-verification-plan"), { attempted: 1, accepted: 1, rejected: 0, unavailable: 0 });
 		assert.equal(executions, 0);
 		const task = store.queryTasks({ ownerKeys: ["cli:local:local"], id: "retry-verification-task" })[0];
 		assert.deepEqual({ status: task.status, verificationStatus: task.verificationStatus, result: task.result, candidateResult: task.candidateResult, evidence: task.evidence }, { status: "succeeded", verificationStatus: "accepted", result: "candidate", candidateResult: undefined, evidence: "candidate checked" });
+		assert.deepEqual(task.criterionVerifications, [{ criterionId: "C1", criterion: "Passes an independent check", status: "accepted", evidence: "candidate checked", evidenceRefs: ["tool-call:retry-read"] }]);
 		const plan = store.queryTaskPlans({ ownerKeys: ["cli:local:local"], id: "retry-verification-plan" })[0];
 		assert.deepEqual({ status: plan.status, succeeded: plan.succeeded, verified: plan.verified }, { status: "succeeded", succeeded: 1, verified: 1 });
+	} finally { store.close(); rmSync(root, { recursive: true, force: true }); }
+});
+
+test("criterion-level rejection receipts survive restart for corrective execution", async () => {
+	const root = mkdtempSync(join(tmpdir(), "beemax-criterion-verification-"));
+	const path = join(root, "memory.db");
+	let store = new MemoryStore(path);
+	try {
+		const graph = new TaskGraph(store);
+		graph.createPlan({ id: "criterion-plan", ownerKey: "cli:local:local", tasks: [{
+			id: "criterion-task", title: "Prepare verified report", acceptanceCriteria: "Report file exists\nDelivery receipt identifies the destination",
+		}] }, 10);
+		await graph.run(["cli:local:local"], "criterion-plan", async () => ({ output: "candidate report" }), { verify: async () => ({
+			accepted: false,
+			feedback: "Delivery was not observed",
+			criterionVerifications: [
+				{ criterionId: "C1", criterion: "Report file exists", status: "accepted", evidence: "The report was read", evidenceRefs: ["tool-call:read-report"] },
+				{ criterionId: "C2", criterion: "Delivery receipt identifies the destination", status: "rejected", evidence: "No delivery was observed", evidenceRefs: ["tool-call:inspect-delivery"] },
+			],
+		}) });
+		store.close();
+		store = new MemoryStore(path);
+		const task = store.queryTasks({ ownerKeys: ["cli:local:local"], id: "criterion-task" })[0];
+		assert.equal(task.verificationStatus, "rejected");
+		assert.equal(task.candidateResult, "candidate report");
+		assert.deepEqual(task.criterionVerifications, [
+			{ criterionId: "C1", criterion: "Report file exists", status: "accepted", evidence: "The report was read", evidenceRefs: ["tool-call:read-report"] },
+			{ criterionId: "C2", criterion: "Delivery receipt identifies the destination", status: "rejected", evidence: "No delivery was observed", evidenceRefs: ["tool-call:inspect-delivery"] },
+		]);
 	} finally { store.close(); rmSync(root, { recursive: true, force: true }); }
 });
 
@@ -428,12 +464,13 @@ test("Verification Retry distinguishes rejected and still-unavailable Candidate 
 		let executions = 0;
 		const runner = new TaskRecoveryRunner(store, async () => { executions++; return { output: "replayed" }; }, undefined, async (task) => {
 			if (task.id === "offline-candidate") throw new Error("still offline");
-			return { accepted: false, feedback: "Candidate is incomplete" };
+			return { accepted: false, feedback: "Candidate is incomplete", criterionVerifications: [{ criterionId: "C1", criterion: "Must be accepted", status: "rejected", evidence: "candidate is incomplete", evidenceRefs: ["tool-call:retry-inspect"] }] };
 		});
 		assert.deepEqual(await runner.reverify(["cli:local:local"], "retry-outcomes-plan"), { attempted: 2, accepted: 0, rejected: 1, unavailable: 1 });
 		assert.equal(executions, 0);
 		const tasks = new Map(store.queryTasks({ ownerKeys: ["cli:local:local"], planIds: ["retry-outcomes-plan"] }).map((task) => [task.id, task]));
 		assert.deepEqual({ status: tasks.get("rejected-candidate").verificationStatus, candidate: tasks.get("rejected-candidate").candidateResult }, { status: "rejected", candidate: "rejected-candidate" });
+		assert.deepEqual(tasks.get("rejected-candidate").criterionVerifications, [{ criterionId: "C1", criterion: "Must be accepted", status: "rejected", evidence: "candidate is incomplete", evidenceRefs: ["tool-call:retry-inspect"] }]);
 		assert.deepEqual({ status: tasks.get("offline-candidate").verificationStatus, candidate: tasks.get("offline-candidate").candidateResult }, { status: "unavailable", candidate: "offline-candidate" });
 	} finally { store.close(); rmSync(root, { recursive: true, force: true }); }
 });
@@ -497,7 +534,10 @@ test("ordinary Task Plan retry replays execution after Candidate Result rejectio
 		await graph.run(["cli:local:local"], "rejected-retry-plan", async () => ({ output: "candidate" }), { verify: async () => { throw new Error("verifier offline"); } });
 		let executions = 0;
 		const contexts = [];
-		const runner = new TaskRecoveryRunner(store, async (_task, _signal, context) => { executions++; contexts.push(context); return { output: "corrected" }; }, undefined, async (_task, result) => result.output === "corrected" ? { accepted: true, evidence: "corrected output checked" } : { accepted: false, feedback: "candidate is incomplete" });
+		const correctionTasks = [];
+		const runner = new TaskRecoveryRunner(store, async (task, _signal, context) => { executions++; correctionTasks.push(task); contexts.push(context); return { output: "corrected" }; }, undefined, async (_task, result) => result.output === "corrected"
+			? { accepted: true, evidence: "corrected output checked", criterionVerifications: [{ criterionId: "C1", criterion: "Output is corrected", status: "accepted", evidence: "corrected output checked", evidenceRefs: ["tool-call:corrected-read"] }] }
+			: { accepted: false, feedback: "candidate is incomplete", criterionVerifications: [{ criterionId: "C1", criterion: "Output is corrected", status: "rejected", evidence: "candidate is incomplete", evidenceRefs: ["tool-call:candidate-read"] }] });
 		assert.deepEqual(await runner.retry(["cli:local:local"], "rejected-retry-plan"), {
 			verification: { attempted: 1, accepted: 0, rejected: 1, unavailable: 0 },
 			prepared: 1, plans: 1, succeeded: 1, failed: 0, cancelled: 0, blocked: [],
@@ -505,8 +545,10 @@ test("ordinary Task Plan retry replays execution after Candidate Result rejectio
 		assert.equal(executions, 1);
 		assert.equal(contexts[0].verificationFeedback, "candidate is incomplete");
 		assert.equal(contexts[0].previousResult, "candidate");
+		assert.deepEqual(correctionTasks[0].criterionVerifications, [{ criterionId: "C1", criterion: "Output is corrected", status: "rejected", evidence: "candidate is incomplete", evidenceRefs: ["tool-call:candidate-read"] }]);
 		const task = store.queryTasks({ ownerKeys: ["cli:local:local"], id: "rejected-retry-task" })[0];
 		assert.deepEqual({ status: task.status, verificationStatus: task.verificationStatus, verificationFeedback: task.verificationFeedback, result: task.result, candidateResult: task.candidateResult }, { status: "succeeded", verificationStatus: "accepted", verificationFeedback: undefined, result: "corrected", candidateResult: undefined });
+		assert.deepEqual(task.criterionVerifications, [{ criterionId: "C1", criterion: "Output is corrected", status: "accepted", evidence: "corrected output checked", evidenceRefs: ["tool-call:corrected-read"] }]);
 	} finally { store.close(); rmSync(root, { recursive: true, force: true }); }
 });
 
