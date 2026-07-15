@@ -12,7 +12,9 @@ test("Turn Understanding distinguishes create, continue, and correction paths ac
 	assert.equal(engine.understand("不是华东客户，改成华南客户", { activeObjective: "制作华东客户周报" }).action, "correct");
 	assert.equal(engine.understand("continue the previous report", { activeObjective: "Prepare report" }).action, "continue");
 	assert.equal(engine.understand("解释 Agent 的 Capability Routing，并给出一个例子").action, "query");
+	assert.equal(engine.understand("用两句话解释 Agent 的 Capability Routing，并给出一个例子").action, "query");
 	assert.equal(engine.understand("Explain capability routing with one example").action, "query");
+	assert.equal(engine.understand("生成一份解释 Capability Routing 的报告").action, "create");
 });
 
 test("Capability Router preselects high-confidence tools without forcing weak matches", () => {

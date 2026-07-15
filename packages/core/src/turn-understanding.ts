@@ -55,6 +55,8 @@ function detectAction(text: string, hasActiveObjective: boolean): TurnAction {
 	if (/不是|改成|更正|纠正|修改为|rather than|change (?:it )?to|correction/.test(actionable)) return "correct";
 	if (hasActiveObjective && /继续|接着|刚才|上一个|之前的|continue|resume|previous|carry on/.test(actionable)) return "continue";
 	if (/^(?:查询|查一下|看看|列出|解释|说明|介绍|为什么|为何|怎么|如何|什么是|what|which|why|how|explain|describe|show|list|find|search)/i.test(actionable)) return "query";
+	const leadingIntent = actionable.split(/[。；;.!?？]/, 1)[0] ?? actionable;
+	if (/(?:解释|说明|介绍|explain|describe)/i.test(leadingIntent) && !/(?:制作|生成|创建|编写|写入|保存|发送|发布|上传|create|generate|write|save|send|publish|upload)/i.test(leadingIntent)) return "query";
 	return "create";
 }
 
