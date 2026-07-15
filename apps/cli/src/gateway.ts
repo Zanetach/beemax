@@ -970,10 +970,12 @@ export function createTaskVerifier(factory: ReturnType<typeof buildAgentFactory>
 
 function parseVerifierVerdict(value: string): { status?: unknown; reason?: unknown; assertions?: unknown } {
 	let normalized = value.trim();
+	const taggedMatches = [...normalized.matchAll(/<beemax-verdict>\s*([\s\S]*?)\s*<\/beemax-verdict>/gi)];
+	if (taggedMatches.length > 1) throw new Error("verifier returned multiple verdict envelopes");
+	if (taggedMatches.length === 1) normalized = taggedMatches[0]![1]!.trim();
 	const fenced = normalized.match(/^```(?:json|xml)?\s*\n?([\s\S]*?)\n?```$/i);
 	if (fenced) normalized = fenced[1]!.trim();
-	const tagged = normalized.match(/^<beemax-verdict>\s*([\s\S]*?)\s*<\/beemax-verdict>$/i);
-	const payload = tagged?.[1]?.trim() ?? normalized;
+	const payload = normalized;
 	if (!payload.startsWith("{") || !payload.endsWith("}")) throw new Error("verifier returned an invalid verdict envelope");
 	try {
 		const parsed = JSON.parse(payload);

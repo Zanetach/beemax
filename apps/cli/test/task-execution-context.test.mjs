@@ -211,7 +211,7 @@ test("independent verification receives the Task Situation", async () => {
 			getActiveToolNames: () => [...activeTools],
 			getAllTools: () => activeTools.map((name) => ({ name })),
 			setActiveToolsByName: (names) => { activeTools = [...names]; },
-			prompt: async (text) => { prompt = text; toolsDuringPrompt = [...activeTools]; agent.state.messages = [{ role: "assistant", content: [{ type: "text", text: '```json\n{"status":"accepted","reason":"All observable criteria passed","assertions":[{"criterionId":"C1","evidence":"Candidate value is Friday","evidenceRefs":["candidate"]}]}\n```' }], usage: { input: 1, output: 1 } }]; },
+			prompt: async (text) => { prompt = text; toolsDuringPrompt = [...activeTools]; agent.state.messages = [{ role: "assistant", content: [{ type: "text", text: 'Verification complete.\n<beemax-verdict>{"status":"accepted","reason":"All observable criteria passed","assertions":[{"criterionId":"C1","evidence":"Candidate value is Friday","evidenceRefs":["candidate"]}]}</beemax-verdict>' }], usage: { input: 1, output: 1 } }]; },
 		abort: async () => undefined, dispose: () => undefined,
 	}; };
 	const verify = createTaskVerifier(factory, 1_000);
@@ -231,8 +231,8 @@ test("independent verification receives the Task Situation", async () => {
 	assert.deepEqual(toolsDuringPrompt, ["capability_discover", "read", "web_search", "agent_reach_search", "web_extract"]);
 });
 
-test("independent verification treats invalid or unavailable verdicts as unavailable instead of acceptance", async () => {
-	for (const answer of ["ACCEPT: unable to verify", '<beemax-verdict>{"status":"unavailable","reason":"source provider offline"}</beemax-verdict>']) {
+test("independent verification treats invalid, multiple, or unavailable verdicts as unavailable instead of acceptance", async () => {
+	for (const answer of ["ACCEPT: unable to verify", '<beemax-verdict>{"status":"accepted","reason":"first","assertions":[]}</beemax-verdict><beemax-verdict>{"status":"accepted","reason":"second","assertions":[]}</beemax-verdict>', '<beemax-verdict>{"status":"unavailable","reason":"source provider offline"}</beemax-verdict>']) {
 		let activeTools = ["capability_discover", "read", "web_search", "agent_reach_search", "web_extract"];
 		const agent = { state: { model: { id: "test" }, messages: [] } };
 		const factory = async () => ({
