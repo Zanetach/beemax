@@ -9,7 +9,7 @@ import { MUTATING_TOOL_POLICY, READ_ONLY_TOOL_POLICY, withToolPolicy, type ToolP
 import { assertNoCredentialMaterial } from "./credential-material.ts";
 import { SkillRegistry, SkillRuntime } from "./skill-runtime.ts";
 import { rankCapabilityIndex } from "./capability-ranking.ts";
-import { CapabilityRuntime, capabilityDescriptor, capabilityVersionOf, type CapabilityRanker } from "./capability-runtime.ts";
+import { CapabilityRuntime, capabilityDescriptor, capabilityVersionOf, type CapabilityOperationalSignals, type CapabilityRanker } from "./capability-runtime.ts";
 import { CapabilityProviderRuntime, type CapabilityProviderDescriptor } from "./capability-provider.ts";
 
 const SKILL_NAME = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
@@ -27,9 +27,9 @@ export type SkillCandidatePromotionAuthority = (input: SkillCandidatePromotionAu
 interface SkillVersionRecord { version: 1; name: string; description: string; instructions: string; source: string; sha256: string; promotedAt: number; authorityEvidenceRef?: string; signature: string; }
 interface SkillVersionEvent { id: string; kind: "promoted" | "rollback"; name: string; fromSha256?: string; toSha256: string; evidenceRef?: string; at: number; signature: string; }
 
-export interface CapabilityMetadata extends Pick<ToolDefinition, "name" | "description"> { kind?: "tool" | "mcp"; aliases?: readonly string[]; triggers?: readonly string[]; exclude?: readonly string[]; version?: string; providers?: readonly CapabilityProviderDescriptor[]; }
+export interface CapabilityMetadata extends Pick<ToolDefinition, "name" | "description"> { parameters?: ToolDefinition["parameters"]; kind?: "tool" | "mcp"; aliases?: readonly string[]; triggers?: readonly string[]; exclude?: readonly string[]; version?: string; providers?: readonly CapabilityProviderDescriptor[]; signals?: CapabilityOperationalSignals; }
 
-export function createSkillTools(agentDir: string, markReloadNeeded: () => void, availableTools: readonly CapabilityMetadata[] = [], verifyCandidate?: SkillCandidateVerifier, additionalSkillRoots: readonly string[] = [], _activateTools?: (names: string[]) => void, capabilityRanker?: CapabilityRanker, promotionAuthority?: SkillCandidatePromotionAuthority): ToolDefinition[] {
+export function createSkillTools(agentDir: string, markReloadNeeded: () => void, availableTools: readonly CapabilityMetadata[] = [], verifyCandidate?: SkillCandidateVerifier, additionalSkillRoots: readonly string[] = [], _activateTools?: (names: string[]) => void, capabilityRanker?: CapabilityRanker, promotionAuthority?: SkillCandidatePromotionAuthority, capabilityPreferences?: Readonly<Record<string, number>>): ToolDefinition[] {
 	const root = resolve(agentDir, "skills");
 	const candidateRoot = resolve(agentDir, "skill-candidates");
 	const versionRoot = resolve(agentDir, "skill-versions");
@@ -40,20 +40,26 @@ export function createSkillTools(agentDir: string, markReloadNeeded: () => void,
 	const capabilities = new CapabilityRuntime({ ...(capabilityRanker ? { ranker: capabilityRanker } : {}) });
 	const providers = new CapabilityProviderRuntime();
 	const markSkillsChanged = () => { registry.invalidate(); runtime.reset(); markReloadNeeded(); };
-	const selectAvailableCapabilities = async (query: string, limit: number) => {
+	const selectAvailableCapabilities = async (query: string, limit: number, signal?: AbortSignal) => {
 		const eligibleTools = availableTools.filter((tool) => tool.name !== "bash");
 		const skillInventory = await registry.list();
 		const inventory = [
-			...eligibleTools.map((tool) => capabilityDescriptor({ kind: tool.kind ?? "tool", name: tool.name, description: tool.description, aliases: tool.aliases, triggers: tool.triggers, exclude: tool.exclude, version: tool.version ?? capabilityVersionOf(tool), activeTools: [tool.name] })),
-			...skillInventory.map((skill) => capabilityDescriptor({ kind: "skill", name: skill.name, description: skill.description, triggers: skill.triggers, exclude: skill.exclude, version: `sha256:${skill.sha256}`, activeTools: ["skill_activate", "skill_read"] })),
+			...eligibleTools.map((tool) => capabilityDescriptor({ kind: tool.kind ?? "tool", name: tool.name, description: tool.description, aliases: tool.aliases, triggers: tool.triggers, exclude: tool.exclude, version: tool.version ?? stableCapabilityMetadataVersion(tool), activeTools: [tool.name], ...(tool.signals ? { signals: tool.signals } : {}) })),
+			...skillInventory.map((skill) => {
+				const profilePreference = capabilityPreferences?.[`skill:${skill.name}`] ?? capabilityPreferences?.[skill.name];
+				return capabilityDescriptor({ kind: "skill", name: skill.name, description: skill.description, triggers: skill.triggers, exclude: skill.exclude, version: `sha256:${skill.sha256}`, activeTools: ["skill_activate", "skill_read"], signals: { inputModalities: ["text"], outputModalities: ["text"], freshness: "unknown", evidence: "unknown", health: "ready", ...(profilePreference !== undefined ? { profilePreference } : {}) } });
+			}),
 		];
-		return { eligibleTools, selection: await capabilities.discover({ query, inventory, limit }) };
+		return { eligibleTools, selection: await capabilities.discover({ query, inventory, limit, ...(signal ? { signal } : {}) }) };
 	};
-	const prefetchSkills = async (query: string) => {
-		const { selection } = await selectAvailableCapabilities(query, 10);
-		const selectedName = selection.candidates.find((item) => item.kind === "skill" && item.confidence >= 0.5)?.name;
-		const selected = await runtime.admitDiscovered(selectedName ? [selectedName] : []);
-		return selected.map(publicSkill);
+	const prefetchCapabilities = async (query: string, signal?: AbortSignal) => {
+		const { selection } = await selectAvailableCapabilities(query, 10, signal);
+		const selectedName = selection.candidates.find((item) => item.kind === "skill")?.name;
+		const selectedSkills = await runtime.admitDiscovered(selectedName ? [selectedName] : []);
+		return {
+			candidates: selection.candidates.map(({ kind, name, confidence }) => ({ kind, name, confidence })),
+			skills: selectedSkills.map(publicSkill),
+		};
 	};
 	const resolveToolProviders = async (toolNames: readonly string[]) => Promise.all(availableTools
 		.filter((tool) => toolNames.includes(tool.name) && tool.providers?.length)
@@ -62,11 +68,11 @@ export function createSkillTools(agentDir: string, markReloadNeeded: () => void,
 	let signingKeyPromise: Promise<Buffer> | undefined;
 	const signingKey = () => signingKeyPromise ??= skillLearningKey(agentDir);
 	const tools = [
-		Object.assign(defineTool({ name: "capability_discover", label: "Discover Capabilities", description: "Search the tools, active Skills, and isolated Skill candidates actually available in this Profile before concluding a capability is missing.", parameters: Type.Object({ query: Type.String({ minLength: 1, maxLength: 500 }) }), execute: async (_id, params) => {
+		Object.assign(defineTool({ name: "capability_discover", label: "Discover Capabilities", description: "Search the tools, active Skills, and isolated Skill candidates actually available in this Profile before concluding a capability is missing.", parameters: Type.Object({ query: Type.String({ minLength: 1, maxLength: 500 }) }), execute: async (_id, params, signal) => {
 			const existingKey = await readSkillLearningKey(agentDir);
 			const candidates = existingKey ? await listCandidates(candidateRoot, existingKey) : [];
 			const matches = <T extends CapabilityMetadata>(items: T[]) => rankCapabilities(params.query, items, 20);
-			const { eligibleTools, selection } = await selectAvailableCapabilities(params.query, 10);
+			const { eligibleTools, selection } = await selectAvailableCapabilities(params.query, 10, signal);
 			const selectedSkillNames = selection.candidates.filter((item) => item.kind === "skill").map((item) => item.name);
 			const selectedSkills = await runtime.admitDiscovered(selectedSkillNames);
 			const selectedToolNames = new Set(selection.candidates.filter((item) => item.kind !== "skill").map((item) => item.name));
@@ -91,7 +97,7 @@ export function createSkillTools(agentDir: string, markReloadNeeded: () => void,
 				providerResolutions: publicProviderResolutions(providerResolutions),
 				activatedTools: selection.activatedTools,
 			});
-		} }), { beemaxSkillPrefetch: prefetchSkills }),
+		} }), { beemaxCapabilityPrefetch: prefetchCapabilities }),
 		defineTool({ name: "skill_list", label: "List Skills", description: "List metadata for Profile, project, and global Skills without loading their instruction bodies.", parameters: Type.Object({}), execute: async () => {
 			const skills = await registry.list(); return result(skills.length ? skills.map((item) => `- ${item.name}: ${item.description}`).join("\n") : "No Skills available.", { skills: skills.map(publicSkill) });
 		} }),
@@ -234,6 +240,18 @@ export function createSkillTools(agentDir: string, markReloadNeeded: () => void,
 
 function rankCapabilities<T extends CapabilityMetadata>(query: string, items: readonly T[], limit: number): T[] {
 	return rankCapabilityIndex(query, items, limit).map(({ item }) => item);
+}
+
+/** Operational health, latency, cost, and Profile preference never change immutable Tool identity. */
+function stableCapabilityMetadataVersion(tool: CapabilityMetadata): string {
+	return capabilityVersionOf({
+		kind: tool.kind ?? "tool", name: tool.name, description: tool.description, parameters: tool.parameters,
+		aliases: tool.aliases, triggers: tool.triggers, exclude: tool.exclude,
+		...(tool.signals ? { signals: {
+			inputModalities: tool.signals.inputModalities, outputModalities: tool.signals.outputModalities,
+			freshness: tool.signals.freshness, evidence: tool.signals.evidence, effect: tool.signals.effect,
+		} } : {}),
+	});
 }
 
 async function listCandidates(root: string, key: Buffer): Promise<SkillCandidate[]> {

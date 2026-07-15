@@ -329,21 +329,60 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 			const unresolvedUncertainty = Boolean(workContract?.uncertainties.length);
 			const previousToolBoundary = session.piSession.agent.beforeToolCall;
 			const capabilityRuntime = new CapabilityRuntime();
-			const skillPrefetch = allTools.find((tool) => tool.name === "capability_discover") as (typeof allTools[number] & { beemaxSkillPrefetch?: (query: string) => Promise<Array<{ name: string }>> }) | undefined;
+			const capabilityPrefetch = allTools.find((tool) => tool.name === "capability_discover") as (typeof allTools[number] & {
+				beemaxCapabilityPrefetch?: (query: string, signal?: AbortSignal) => Promise<{ candidates: Array<{ kind: "tool" | "mcp" | "skill"; name: string; confidence: number }>; skills: Array<{ name: string }> }>;
+				/** Pre-semantic compatibility seam for injected test/legacy runtimes only. */
+				beemaxSkillPrefetch?: (query: string, signal?: AbortSignal) => Promise<Array<{ name: string }>>;
+			}) | undefined;
+			const prefetchQuery = understanding?.capabilityQuery ?? input.text;
+			const lexicalPrefetchHints = selectTurnTools(prefetchQuery, allTools);
+			const shouldRunCapabilityPrefetch = !admittedTools && Boolean(
+				workContract?.capabilityRequirements.length
+				|| planning?.requiredTools.length
+				|| planning?.signals.requiresResearch
+				|| planning?.signals.requiresVerification
+				|| requestsExplicitCapabilityResolution(input.text)
+				|| requestedText !== input.text
+				|| input.source.delegatedTask
+				|| lexicalPrefetchHints.length,
+			);
 			let prefetchedSkills: string[] = [];
-			if (skillPrefetch?.beemaxSkillPrefetch && (!admittedTools || admittedTools.includes("skill_read"))) {
-				try { prefetchedSkills = [...new Set((await skillPrefetch.beemaxSkillPrefetch(understanding?.capabilityQuery ?? input.text)).map((skill) => skill.name).filter(Boolean))].slice(0, 1); }
-				catch { /* capability_discover remains available as the observable recovery path */ }
+			let semanticPrefetchedTools: string[] = [];
+			let capabilityPrefetchFailed = false;
+			let semanticCapabilityNoMatch = false;
+			if (shouldRunCapabilityPrefetch && capabilityPrefetch?.beemaxCapabilityPrefetch) {
+				try {
+					const proposal = await capabilityPrefetch.beemaxCapabilityPrefetch(prefetchQuery, cognitionSignal);
+					const inventory = new Set(allTools.map((tool) => tool.name));
+					semanticPrefetchedTools = [...new Set(proposal.candidates.filter((candidate) => candidate.kind !== "skill" && inventory.has(candidate.name)).map((candidate) => candidate.name))].slice(0, 10);
+					prefetchedSkills = [...new Set(proposal.skills.map((skill) => skill.name).filter(Boolean))].slice(0, 1);
+					semanticCapabilityNoMatch = semanticPrefetchedTools.length === 0 && prefetchedSkills.length === 0;
+				}
+				catch (error) {
+					if (input.signal?.aborted) throw new AgentRunError("Agent turn was cancelled during Capability cognition", false, input.signal.reason);
+					if (deadlineSignal?.aborted) throw new AgentRunError("Execution Envelope deadline expired during Capability cognition", true, error);
+					capabilityPrefetchFailed = true;
+					/* capability_discover remains available as the observable recovery path */
+				}
+			} else if (capabilityPrefetch?.beemaxSkillPrefetch) {
+				try { prefetchedSkills = [...new Set((await capabilityPrefetch.beemaxSkillPrefetch(prefetchQuery, cognitionSignal)).map((skill) => skill.name).filter(Boolean))].slice(0, 1); }
+				catch (error) {
+					if (input.signal?.aborted) throw new AgentRunError("Agent turn was cancelled during Capability cognition", false, input.signal.reason);
+					if (deadlineSignal?.aborted) throw new AgentRunError("Execution Envelope deadline expired during Capability cognition", true, error);
+					capabilityPrefetchFailed = true;
+				}
 			}
 			// Delegated and recovery runs intentionally skip full cognitive context assembly,
 			// but they still need deterministic Tool prefetch from their bounded Task prompt.
 			// Selection only narrows the factory-provided inventory; it never enlarges the
 			// Sub-Agent allowlist or grants execution authority.
-			const prefetchedTools = selectTurnTools(understanding?.capabilityQuery ?? input.text, allTools);
+			const prefetchedTools = capabilityPrefetch?.beemaxCapabilityPrefetch ? semanticPrefetchedTools : lexicalPrefetchHints;
 			const skillLifecycleTools = prefetchedSkills.length ? ["skill_read", "skill_activate", "skill_route", "skill_resource_read", "skill_complete"].filter((name) => allTools.some((tool) => tool.name === name)) : [];
 			const exposeCapabilityDiscovery = Boolean(
 				admittedTools?.includes("capability_discover")
 					|| prefetchedSkills.length
+					|| capabilityPrefetchFailed
+					|| (shouldRunCapabilityPrefetch && semanticCapabilityNoMatch)
 					|| requestedText !== input.text
 					|| (prefetchedTools.length === 0 && (
 						requestsExplicitCapabilityResolution(input.text)

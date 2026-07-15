@@ -1,4 +1,4 @@
-import { builtinProviders, getBuiltinModel, getSupportedThinkingLevels, MediaUnderstandingRuntime, PiVisionMediaUnderstandingAdapter, resolveRuntimeModel, type Api, type MediaUnderstandingAdapter, type Model } from "@beemax/core";
+import { builtinProviders, getBuiltinModel, getSupportedThinkingLevels, LexicalCapabilityRanker, MediaUnderstandingRuntime, PiSemanticCapabilityPort, PiVisionMediaUnderstandingAdapter, resolveRuntimeModel, SemanticCapabilityRanker, type Api, type CapabilityRanker, type MediaUnderstandingAdapter, type Model, type PiSemanticCapabilityPortOptions } from "@beemax/core";
 import type { BeeMaxConfig } from "./config.ts";
 
 export interface ModelProviderPreset {
@@ -115,6 +115,16 @@ export function configuredAuxiliaryTextModels(config: BeeMaxConfig): Array<{ mod
 			return apiKey ? [{ model, apiKey }] : [];
 		} catch { return []; }
 	});
+}
+
+/** Semantic selection is the configured production path; lexical ranking is only the offline/provider-failure path. */
+export function configuredCapabilityRanker(
+	models: Array<{ model: Model<Api>; apiKey?: string }>,
+	onUsage?: NonNullable<PiSemanticCapabilityPortOptions["onUsage"]>,
+	onFallback?: (event: { query: string; code: "provider_unavailable" }) => void,
+): CapabilityRanker {
+	const lexical = new LexicalCapabilityRanker();
+	return models.length ? new SemanticCapabilityRanker(new PiSemanticCapabilityPort({ models, ...(onUsage ? { onUsage } : {}) }), { fallback: lexical, ...(onFallback ? { onFallback } : {}) }) : lexical;
 }
 
 /** Configured image-capable Pi models automatically become auxiliary perception adapters. */

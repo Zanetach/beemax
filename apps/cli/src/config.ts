@@ -88,6 +88,8 @@ export interface BeeMaxConfig {
 		maxSessions: number;
 		sessionIdleMs: number;
 		turnIdleSettleMs: number;
+		/** Optional generic preference weights keyed by name or kind:name; never grants authority. */
+		capabilityPreferences: Record<string, number>;
 	};
 	model: {
 		provider: string;
@@ -313,6 +315,7 @@ export function loadConfig(configPath?: string, profile = "default"): BeeMaxConf
 			maxSessions: parseNumber(env.BEEMAX_MAX_SESSIONS ?? cfg.agent?.maxSessions, 100),
 			sessionIdleMs: parseNumber(env.BEEMAX_SESSION_IDLE_MS ?? cfg.agent?.sessionIdleMs, 30 * 60_000),
 			turnIdleSettleMs: boundedNumber(env.BEEMAX_TURN_IDLE_SETTLE_MS ?? cfg.agent?.turnIdleSettleMs, 60_000, 5_000, 5 * 60_000),
+			capabilityPreferences: parseCapabilityPreferences(cfg.agent?.capabilityPreferences),
 		},
 		model: {
 			provider,
@@ -506,6 +509,19 @@ function taskGrantCapabilities(value: unknown): string[] {
 		if (!/^[A-Za-z][A-Za-z0-9_.:-]{0,127}$/.test(capability)) throw new Error(`Invalid execution.taskGrantCapabilities[${index}]: ${capability}`);
 	}
 	return [...new Set(capabilities)];
+}
+
+function parseCapabilityPreferences(value: unknown): Record<string, number> {
+	if (value === undefined || value === null) return {};
+	if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("agent.capabilityPreferences must be an object");
+	const entries = Object.entries(value as Record<string, unknown>);
+	if (entries.length > 500) throw new Error("agent.capabilityPreferences exceeds 500 entries");
+	return Object.fromEntries(entries.map(([rawName, rawWeight]) => {
+		const name = rawName.trim();
+		if (!name || name.length > 256) throw new Error("agent.capabilityPreferences contains an invalid Capability name");
+		if (typeof rawWeight !== "number" || !Number.isFinite(rawWeight) || rawWeight < -1 || rawWeight > 1) throw new Error(`agent.capabilityPreferences.${name} must be between -1 and 1`);
+		return [name, rawWeight];
+	}));
 }
 function parseNumber(value: unknown, fallback: number): number {
 	const number = Number(value);

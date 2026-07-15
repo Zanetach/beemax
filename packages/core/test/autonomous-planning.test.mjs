@@ -42,7 +42,8 @@ test("Agent runtime hides capability discovery and Tools for a direct answer wit
 	const source = { platform: "cli", chatId: "tool-free", chatType: "dm", userId: "local" };
 	const toolChanges = [];
 	const agent = { state: { model: { id: "test" }, messages: [] } };
-	const tools = [{ name: "capability_discover", description: "Discover capabilities" }, { name: "memory_recall", description: "Recall prior context" }, { name: "write", description: "Write a file" }];
+	let prefetchCalls = 0;
+	const tools = [{ name: "capability_discover", description: "Discover capabilities", beemaxCapabilityPrefetch: async () => { prefetchCalls++; return { candidates: [], skills: [] }; } }, { name: "memory_recall", description: "Recall prior context" }, { name: "write", description: "Write a file" }];
 	const runtime = createRuntime({ planningPolicy: new AutonomousPlanningPolicy(), createAgent: async () => ({
 		agent,
 		getAllTools: () => tools,
@@ -54,6 +55,59 @@ test("Agent runtime hides capability discovery and Tools for a direct answer wit
 	}) });
 	await runtime.run({ source, text: "用两句话解释 Capability Routing，并给出一个例子", timeoutMs: 1_000 });
 	assert.deepEqual(toolChanges, [[], tools.map(({ name }) => name)]);
+	assert.equal(prefetchCalls, 0);
+	runtime.dispose();
+});
+
+test("Agent runtime applies one semantic Tool/MCP/Skill proposal while Pi retains activation authority", async () => {
+	const source = { platform: "cli", chatId: "semantic-mcp", chatType: "dm", userId: "local" };
+	const toolChanges = [];
+	let prefetchCalls = 0;
+	const agent = { state: { model: { id: "test" }, messages: [] } };
+	const tools = [
+		{ name: "capability_discover", description: "Discover capabilities", beemaxCapabilityPrefetch: async () => { prefetchCalls++; return { candidates: [{ kind: "mcp", name: "calendar_lookup", confidence: 0.96 }], skills: [] }; } },
+		{ name: "calendar_lookup", description: "Temporal availability coordination", beemaxToolSpec: { kind: "mcp" } },
+	];
+	const runtime = createRuntime({ createAgent: async () => ({
+		agent,
+		getAllTools: () => tools,
+		getActiveToolNames: () => tools.map(({ name }) => name),
+		setActiveToolsByName: (names) => { toolChanges.push([...names]); },
+		subscribe: () => () => undefined,
+		prompt: async () => { agent.state.messages = [{ role: "assistant", content: [{ type: "text", text: "done" }], usage: { input: 1, output: 1 } }]; },
+		abort: async () => undefined, dispose: () => undefined,
+	}) });
+	await runtime.run({ source, text: "请使用 MCP 安排一次会议", timeoutMs: 1_000 });
+	assert.equal(prefetchCalls, 1);
+	assert.deepEqual(toolChanges[0], ["calendar_lookup"]);
+	runtime.dispose();
+});
+
+test("Agent runtime exposes discovery when an explicit Work Contract capability has no semantic match", async () => {
+	const rawRequest = "使用星际账本能力完成归档";
+	const clause = (text) => ({ text, source: { kind: "raw_request", start: rawRequest.indexOf(text), end: rawRequest.indexOf(text) + text.length } });
+	const toolChanges = [];
+	const agent = { state: { model: { id: "test" }, messages: [] } };
+	const tools = [
+		{ name: "capability_discover", description: "Discover and resolve capabilities", beemaxCapabilityPrefetch: async () => ({ candidates: [], skills: [] }) },
+		{ name: "unrelated_tool", description: "An unrelated local operation" },
+	];
+	const runtime = createRuntime({
+		turnUnderstanding: { understand: () => ({ action: "create", goal: rawRequest, constraints: [], acceptanceCriteria: [rawRequest], uncertainties: [], memoryQuery: rawRequest, capabilityQuery: "星际账本能力", executionMode: "direct", confidence: 0.9 }) },
+		workContractBuilder: { build: async () => ({ source: "model", contract: {
+			schemaVersion: "beemax.work-contract.v1", rawRequest, action: "create", objective: clause(rawRequest),
+			constraints: [], prohibitions: [], acceptanceCriteria: [clause(rawRequest)], capabilityRequirements: [clause("星际账本能力")],
+			uncertainties: [], executionMode: "direct", confidence: 0.9,
+		} }) },
+		createAgent: async () => ({
+			agent, getAllTools: () => tools, getActiveToolNames: () => tools.map(({ name }) => name),
+			setActiveToolsByName: (names) => { toolChanges.push([...names]); }, subscribe: () => () => undefined,
+			prompt: async () => { agent.state.messages = [{ role: "assistant", content: [{ type: "text", text: "blocked pending discovery" }], usage: { input: 1, output: 1 } }]; },
+			abort: async () => undefined, dispose: () => undefined,
+		}),
+	});
+	await runtime.run({ source: { platform: "cli", chatId: "semantic-no-match", chatType: "dm", userId: "local" }, text: rawRequest, timeoutMs: 1_000 });
+	assert.deepEqual(toolChanges[0], ["capability_discover"]);
 	runtime.dispose();
 });
 
@@ -102,12 +156,13 @@ test("Agent runtime deterministically preflights and enforces an installed match
 	const source = { platform: "cli", chatId: "skill-preflight", chatType: "dm", userId: "local" };
 	const prompts = [];
 	const toolChanges = [];
+	let prefetchSignal;
 	let listener;
 	const agent = { state: { model: { id: "test" }, messages: [] } };
 	const capabilityDiscover = {
 		name: "capability_discover",
 		description: "Discover capabilities",
-		beemaxSkillPrefetch: async () => [{ name: "research-brief" }],
+		beemaxSkillPrefetch: async (_query, signal) => { prefetchSignal = signal; return [{ name: "research-brief" }]; },
 	};
 	const piSession = {
 		agent,
@@ -131,6 +186,7 @@ test("Agent runtime deterministically preflights and enforces an installed match
 	assert.match(prompts[0], /Installed matching Skill metadata: research-brief/);
 	assert.match(prompts[1], /Skill correction/);
 	assert.deepEqual(toolChanges[0], ["capability_discover", "skill_read", "skill_activate", "skill_complete"]);
+	assert.equal(prefetchSignal instanceof AbortSignal, true);
 	runtime.dispose();
 });
 

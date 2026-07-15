@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { configuredAuxiliaryTextModels, configuredMediaUnderstanding, ProfileModelCatalog, renderConfiguredModels } from "../dist/model-catalog.js";
+import { configuredAuxiliaryTextModels, configuredCapabilityRanker, configuredMediaUnderstanding, ProfileModelCatalog, renderConfiguredModels } from "../dist/model-catalog.js";
+import { capabilityMetadataForTool } from "../dist/agent-factory.js";
 
 test("configured model list renders actual known capability metadata", () => {
 	const output = renderConfiguredModels({ models: [{ provider: "anthropic", model: "claude-sonnet-4-5" }] });
@@ -47,4 +48,16 @@ test("custom Profile models remain available to tool-free auxiliary cognition", 
 	assert.equal(models[0].model.id, "private");
 	assert.equal(models[0].model.baseUrl, "https://models.example/v1");
 	assert.equal(models[0].apiKey, "secret");
+});
+
+test("Profile composition selects semantic Capability routing whenever a text model is configured", () => {
+	const model = { id: "semantic-test", provider: "test", input: ["text"] };
+	assert.equal(configuredCapabilityRanker([{ model, apiKey: "secret" }]).constructor.name, "SemanticCapabilityRanker");
+	assert.equal(configuredCapabilityRanker([]).constructor.name, "LexicalCapabilityRanker");
+});
+
+test("Tool Spec kind is authoritative for non-prefixed MCP capabilities and Profile preference", () => {
+	const metadata = capabilityMetadataForTool({ name: "calendar_lookup", beemaxToolSpec: { kind: "mcp", health: "ready" } }, { "mcp:calendar_lookup": 0.8, "tool:calendar_lookup": -0.8 });
+	assert.equal(metadata.kind, "mcp");
+	assert.equal(metadata.signals.profilePreference, 0.8);
 });

@@ -189,6 +189,19 @@ Profiles use the `standard` Toolset by default. Set `agent.toolset: safe` for a 
 
 The safe Toolset keeps read/search, Memory inspection, task status, schedules, Skill inspection, and read-only MCP tools. It excludes shell, file writes, Memory mutation, image generation, scheduling mutation, and mutating MCP tools.
 
+Configured Profile text models perform bounded semantic Tool, MCP, and Skill selection. When every semantic model is unavailable, BeeMax uses bounded lexical recall; a valid semantic “no match” remains empty and never forces an unrelated Skill. Optional Profile preferences optimize equivalent candidates but do not grant execution authority:
+
+```yaml
+agent:
+  capabilityPreferences:
+    web_search: 0.4
+    skill:source-review: 0.8
+```
+
+Preference values range from `-1` to `1`. Policy, Profile scope, Provider health, Effects, and the turn-scoped Tool Spec still decide whether a selected capability can execute.
+
+Before a release, refresh the credentialed semantic-routing evidence with `npm run eval:capability-ranking:live -- --profile <profile> --write evals/baselines/capability-ranking-live.json`. The release verifier rejects missing, failed, expired, or implementation-mismatched evidence.
+
 ## Memory and durable work
 
 BeeMax separates chat history from durable organizational evidence.

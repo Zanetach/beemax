@@ -24,6 +24,34 @@ test("capability discovery searches the current tool inventory before learning a
 	} finally { rmSync(root, { recursive: true, force: true }); }
 });
 
+test("production capability prefetch returns one semantic Tool/MCP/Skill proposal without activating it", async () => {
+	const root = mkdtempSync(join(tmpdir(), "beemax-capability-prefetch-"));
+	try {
+		const ranker = { async rank(_query, inventory) {
+			const descriptor = inventory.find((item) => item.name === "calendar_lookup");
+			return [{ descriptor, score: 96, confidence: 0.96, explanation: { strategy: "semantic", summary: "cross-language temporal intent", signals: ["meaning"] } }];
+		} };
+		const tools = new Map(createSkillTools(root, () => undefined, [{ name: "calendar_lookup", description: "Coordinate temporal availability", kind: "mcp" }], undefined, [], undefined, ranker).map((tool) => [tool.name, tool]));
+		const proposal = await tools.get("capability_discover").beemaxCapabilityPrefetch("安排一次会议");
+		assert.deepEqual(proposal.candidates, [{ kind: "mcp", name: "calendar_lookup", confidence: 0.96 }]);
+		assert.deepEqual(proposal.skills, []);
+	} finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("operational health and Profile preference never change immutable Capability versions", async () => {
+	const versions = [];
+	const ranker = { async rank(_query, inventory) { versions.push(inventory[0].version); return []; } };
+	for (const [health, profilePreference] of [["ready", 0.8], ["unverified", -0.4]]) {
+		const root = mkdtempSync(join(tmpdir(), "beemax-capability-version-"));
+		try {
+			const tools = new Map(createSkillTools(root, () => undefined, [{ name: "stable_tool", description: "Stable implementation", parameters: { type: "object" }, signals: { health, profilePreference, inputModalities: ["text"] } }], undefined, [], undefined, ranker).map((tool) => [tool.name, tool]));
+			await tools.get("capability_discover").execute("discover", { query: "stable tool" });
+		} finally { rmSync(root, { recursive: true, force: true }); }
+	}
+	assert.equal(versions.length, 2);
+	assert.equal(versions[0], versions[1]);
+});
+
 test("capability discovery returns clone-safe metadata instead of executable Tool definitions", async () => {
 	const root = mkdtempSync(join(tmpdir(), "beemax-capability-clone-safe-"));
 	try {

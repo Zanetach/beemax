@@ -95,10 +95,10 @@ test("web_search reroutes a failed configured read-only Provider to healthy Agen
 
 test("web Tool Spec availability reflects configured Providers without exposing credentials", () => {
 	const unavailable = new Map(createWebTools({ env: {}, agentReachAvailable: false }).map((tool) => [tool.name, tool]));
-	assert.deepEqual(unavailable.get("web_search").beemaxToolSpec, { kind: "tool", configured: false, health: "configuration_required" });
-	assert.deepEqual(unavailable.get("agent_reach_search").beemaxToolSpec, { kind: "tool", configured: false, health: "configuration_required" });
+	assert.deepEqual(unavailable.get("web_search").beemaxToolSpec, { kind: "tool", configured: false, health: "configuration_required", ranking: { inputModalities: ["text"], outputModalities: ["structured"], freshness: "realtime", evidence: "source_receipt" } });
+	assert.deepEqual(unavailable.get("agent_reach_search").beemaxToolSpec, { kind: "tool", configured: false, health: "configuration_required", ranking: { inputModalities: ["text"], outputModalities: ["text"], freshness: "current", evidence: "source_receipt" } });
 	const configured = new Map(createWebTools({ env: { TAVILY_API_KEY: "credential-must-not-appear" }, agentReachAvailable: false }).map((tool) => [tool.name, tool]));
-	assert.deepEqual(configured.get("web_search").beemaxToolSpec, { kind: "tool", configured: true, health: "unverified" });
+	assert.deepEqual(configured.get("web_search").beemaxToolSpec, { kind: "tool", configured: true, health: "unverified", ranking: { inputModalities: ["text"], outputModalities: ["structured"], freshness: "realtime", evidence: "source_receipt" } });
 	assert.doesNotMatch(JSON.stringify(configured.get("web_search").beemaxToolSpec), /credential-must-not-appear/);
 });
 

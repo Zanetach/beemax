@@ -82,6 +82,7 @@ test("profile creation and Feishu channel configuration keep secrets in a protec
 	assert.equal(config.agent.maxSessions, 100);
 	assert.equal(config.agent.sessionIdleMs, 30 * 60_000);
 	assert.equal(config.agent.turnIdleSettleMs, 60_000);
+	assert.deepEqual(config.agent.capabilityPreferences, {});
 	assert.deepEqual(config.context, {
 		maxTurnChars: 12_000,
 		maxToolResultTokens: 12_000,
@@ -119,6 +120,16 @@ test("profile creation and Feishu channel configuration keep secrets in a protec
 	await deleteProfile("personal", options);
 	await deleteProfile("isolated", options);
 	assert.deepEqual(await listProfiles(options), []);
+});
+
+test("Profile capability preferences are bounded ranking inputs rather than authorization", async () => {
+	const root = await mkdtemp(join(tmpdir(), "beemax-preference-root-"));
+	const home = await mkdtemp(join(tmpdir(), "beemax-preference-home-"));
+	const paths = await createProfile("preferences", { root, home });
+	await writeFile(paths.configPath, `agent:\n  capabilityPreferences:\n    web_search: 0.8\n    skill:source-review: -0.25\n`);
+	assert.deepEqual(loadConfig(paths.configPath, "preferences").agent.capabilityPreferences, { web_search: 0.8, "skill:source-review": -0.25 });
+	await writeFile(paths.configPath, `agent:\n  capabilityPreferences:\n    web_search: 2\n`);
+	assert.throws(() => loadConfig(paths.configPath, "preferences"), /must be between -1 and 1/u);
 });
 
 test("runtime config loads registry-based channels while keeping adapter secrets outside YAML", async () => {

@@ -33,6 +33,7 @@ import {
 	type SkillCandidateTrialInput,
 	type SkillCandidatePromotionAuthorityInput,
 	type ExecutionEnvelope,
+	type CapabilityOperationalSignals,
 	type CapabilityRanker,
 	type EnterprisePolicyProvider,
 	type MeasuredActionReliability,
@@ -88,6 +89,8 @@ export interface AgentFactoryOptions {
 	authorizeSkillCandidatePromotion?: (source: SessionSource, input: SkillCandidatePromotionAuthorityInput) => Promise<{ allowed: boolean; evidenceRef?: string; reason?: string }>;
 	/** Optional lexical/semantic Capability ranker; Pi active Tools remain execution authority. */
 	capabilityRanker?: CapabilityRanker;
+	/** Profile-owned ranking preferences keyed by Capability name or kind:name. */
+	capabilityPreferences?: Readonly<Record<string, number>>;
 	/** Optional trusted, versioned enterprise decision source. */
 	enterprisePolicy?: EnterprisePolicyProvider;
 	actionReliability?: (toolName: string) => MeasuredActionReliability;
@@ -162,9 +165,15 @@ export function buildAgentFactory(opts: AgentFactoryOptions) {
 			: [];
 		const scopedTools = opts.sessionTools?.(source) ?? [];
 		const inventory = [...executionTools, ...baseCustomTools, ...verificationTools, ...browserTools, ...memoryTools, ...automationTools, ...imageTools, ...scopedTools]
-			.map((tool) => Object.assign(tool, { kind: tool.name.startsWith("mcp_") ? "mcp" as const : "tool" as const }));
+			.map((tool) => {
+				const capability = capabilityMetadataForTool(tool, opts.capabilityPreferences);
+				return Object.assign(tool, {
+					kind: capability.kind,
+					signals: capability.signals,
+				});
+			});
 		const skillRoots = [join(opts.cwd, ".agents", "skills"), join(opts.cwd, ".codex", "skills"), join(opts.cwd, "skills"), join(homedir(), ".agents", "skills"), join(homedir(), ".codex", "skills")];
-		const skillTools = createSkillTools(opts.agentDir, onResourcesChanged, inventory, opts.verifySkillCandidate ? (input, signal) => opts.verifySkillCandidate!(source, input, signal) : undefined, skillRoots, activateTools, opts.capabilityRanker, opts.authorizeSkillCandidatePromotion ? (input) => opts.authorizeSkillCandidatePromotion!(source, input) : undefined);
+		const skillTools = createSkillTools(opts.agentDir, onResourcesChanged, inventory, opts.verifySkillCandidate ? (input, signal) => opts.verifySkillCandidate!(source, input, signal) : undefined, skillRoots, activateTools, opts.capabilityRanker, opts.authorizeSkillCandidatePromotion ? (input) => opts.authorizeSkillCandidatePromotion!(source, input) : undefined, opts.capabilityPreferences);
 		return [...executionTools, ...baseCustomTools, ...verificationTools, ...browserTools, ...memoryTools, ...automationTools, ...imageTools, ...skillTools, ...scopedTools];
 		},
 	})(sessionId, source, executionEnvelope, legacySessionIds);
@@ -177,6 +186,25 @@ export function createExecutionRoleTools(executionEnvelope?: Readonly<ExecutionE
 }
 
 function valueOf<T>(value: T | (() => T)): T { return typeof value === "function" ? (value as () => T)() : value; }
+
+function capabilityPreference(preferences: Readonly<Record<string, number>> | undefined, kind: "tool" | "mcp" | "skill", name: string): number | undefined {
+	return preferences?.[`${kind}:${name}`] ?? preferences?.[name];
+}
+
+/** Tool Spec metadata is authoritative; the name prefix remains legacy compatibility only. */
+export function capabilityMetadataForTool(tool: { name: string; beemaxPolicy?: { sideEffect?: "none" | "local" | "external" }; beemaxToolSpec?: { kind?: "tool" | "mcp"; health?: "ready" | "unverified" | "configuration_required" | "unhealthy" | "unavailable"; ranking?: CapabilityOperationalSignals } }, preferences?: Readonly<Record<string, number>>): { kind: "tool" | "mcp"; signals: CapabilityOperationalSignals } {
+	const kind = tool.beemaxToolSpec?.kind ?? (tool.name.startsWith("mcp_") ? "mcp" : "tool");
+	const profilePreference = capabilityPreference(preferences, kind, tool.name);
+	return {
+		kind,
+		signals: {
+			...(tool.beemaxToolSpec?.ranking ?? {}),
+			...(profilePreference !== undefined ? { profilePreference } : {}),
+			...(tool.beemaxPolicy?.sideEffect ? { effect: tool.beemaxPolicy.sideEffect } : {}),
+			health: tool.beemaxToolSpec?.health ?? "unverified",
+		},
+	};
+}
 
 const DEFAULT_SYSTEM_PROMPT = `# BeeMax personal agent
 You are BeeMax, the user's persistent personal assistant accessed through Feishu.

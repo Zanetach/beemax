@@ -34,7 +34,7 @@ import { activeProfile, resolveProfileLocation } from "./profile-home.ts";
 import { installMacLaunchAgent, installSystemdService, runServiceAction, type ServiceAction } from "./service-manager.ts";
 import { resolveServiceLogCommand, serviceDisplayName } from "./service-platform.ts";
 import { runSetup, type SetupOptions } from "./setup.ts";
-import { configuredAuxiliaryTextModels, configuredMediaUnderstanding, configuredRuntimeModels, ProfileModelCatalog, renderModelProviderChoices, resolveProviderSelection } from "./model-catalog.ts";
+import { configuredAuxiliaryTextModels, configuredCapabilityRanker, configuredMediaUnderstanding, configuredRuntimeModels, ProfileModelCatalog, renderModelProviderChoices, resolveProviderSelection } from "./model-catalog.ts";
 import { executionPortFor, executionSafeTools } from "./execution-composition.ts";
 import { createProfileRuntime } from "./runtime-composition.ts";
 import { createProfileControlHandler, renderTaskPlanDetails, renderTaskPlanNotFound, renderTaskPlanRetryResult, renderTaskPlans, renderTaskRecoveryStatus, renderTaskSchedulerStatus, renderTasks, type TaskRecoveryStatus } from "./profile-control.ts";
@@ -42,7 +42,7 @@ import { LocalActivityPresenter, LocalReasoningPresenter, renderChatFooter, type
 import { renderTerminalMarkdown, StreamingTerminalMarkdown } from "./terminal-markdown.ts";
 import { fullScreenEnter, fullScreenExit, resolveChatPresentationMode, type ChatPresentationMode } from "./chat-mode.ts";
 import { FullWorkbench, startFullWorkbenchInput, type FullWorkbenchInput } from "./full-workbench.ts";
-import { inspectGateway, readGatewayLogs } from "./gateway-observability.ts";
+import { inspectGateway, readGatewayLogs, recordGatewayEvent } from "./gateway-observability.ts";
 import { createTaskAwareConversationContext, ensureBuiltinTasks, installedVersion } from "./runtime-facts.ts";
 import { AUTONOMY_LEVELS, AgentRunError, AuthStorage, AutonomyRolloutController, FileCredentialVault, FileCredentialVaultAuditJournal, PiWorkContractBuilder, TaskPlanNoticeDeliveryService, ToolApprovalBroker, buildActiveTaskPreservationEnvelope, buildTaskPreservationEnvelope, compileLongTermMemorySnapshot, conversationKey, createSubagentTools, createTaskLedgerTools, createTaskOrchestrationTools, guardVerifiedObjectiveMemoryPublisher, interactionCommandHelp, parseInteractionCommand, redactCredentialMaterial, responsibilityOwnerKey, responsibilityOwnerKeys, type AutonomyLevel, type AutonomyRolloutAuthority } from "@beemax/core";
 import type { SessionSource } from "@beemax/channel-runtime";
@@ -1256,8 +1256,15 @@ async function runChat(config: ReturnType<typeof loadConfig>, requestedMode: { f
 	};
 	const readOnlyMcpTools = mcp.getTools().filter((tool) => tool.beemaxPolicy?.sideEffect === "none");
 	const auxiliaryTextModels = configuredAuxiliaryTextModels(config);
+	const capabilityRanker = configuredCapabilityRanker(
+		auxiliaryTextModels,
+		(usage) => recordGatewayEvent(config.paths.agentDir, "capability_cognition", { profile: config.profile, ...usage }),
+		({ code }) => recordGatewayEvent(config.paths.agentDir, "capability_cognition_fallback", { profile: config.profile, code }),
+	);
 	const createSubagentAgent = buildAgentFactory({
 		profileId: config.profile,
+		capabilityRanker,
+		capabilityPreferences: config.agent.capabilityPreferences,
 		provider: () => config.model.provider,
 		model: () => config.model.model,
 		baseUrl: () => config.model.baseUrl,
@@ -1309,6 +1316,8 @@ async function runChat(config: ReturnType<typeof loadConfig>, requestedMode: { f
 			const { taskScheduler, planningBudgets, taskPlanRuntime, verifyTask, taskRecovery, objectiveRuntime, subagents, toolEffects, executionTrace } = work;
 			const createAgent = buildAgentFactory({
 		profileId: config.profile,
+		capabilityRanker,
+		capabilityPreferences: config.agent.capabilityPreferences,
 		provider: () => config.model.provider,
 		model: () => config.model.model,
 		baseUrl: () => config.model.baseUrl,

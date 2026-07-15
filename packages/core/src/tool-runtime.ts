@@ -1,6 +1,6 @@
 import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
 import type { BeeMaxRuntimeSource } from "./runtime.ts";
-import type { CapabilityKind } from "./capability-runtime.ts";
+import type { CapabilityKind, CapabilityOperationalSignals } from "./capability-runtime.ts";
 import type { CapabilityProviderHealthStatus } from "./capability-provider.ts";
 
 export type ToolRisk = "low" | "medium" | "high";
@@ -43,6 +43,8 @@ export interface ToolSpecAvailabilityMetadata {
 	configured?: boolean;
 	health?: CapabilityProviderHealthStatus;
 	authorized?: boolean;
+	/** Optional generic selection facts. These influence ranking but never grant authority. */
+	ranking?: CapabilityOperationalSignals;
 }
 export type GovernedToolDefinition = ToolDefinition & { beemaxPolicy?: ToolPolicy; beemaxToolSpec?: ToolSpecAvailabilityMetadata };
 export type ToolRuntimeAuditEvent = {

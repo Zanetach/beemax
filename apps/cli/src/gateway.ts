@@ -40,7 +40,7 @@ import { executionPortFor, executionSafeTools } from "./execution-composition.ts
 import { createProfileControlHandler, type TaskRecoveryStatus } from "./profile-control.ts";
 import { boundGatewayProcessLogs, recordGatewayEvent, writeGatewayState } from "./gateway-observability.ts";
 import { installedVersion } from "./runtime-facts.ts";
-import { configuredAuxiliaryTextModels, configuredMediaUnderstanding, configuredRuntimeModels } from "./model-catalog.ts";
+import { configuredAuxiliaryTextModels, configuredCapabilityRanker, configuredMediaUnderstanding, configuredRuntimeModels } from "./model-catalog.ts";
 import { setFeishuHomeChat } from "./profile-config.ts";
 import { createMemoryScopeResolver } from "./memory-membership.ts";
 import { createLocalMediaUnderstandingAdapters } from "./local-media-understanding.ts";
@@ -246,6 +246,7 @@ export async function runGateway(config: BeeMaxConfig): Promise<void> {
 		agentDir: config.paths.agentDir,
 		getApiKey: (provider: string) => config.model.apiKeys[provider] ?? (provider === config.model.provider ? apiKey : undefined),
 		skillToolset: config.agent.toolset,
+		capabilityPreferences: config.agent.capabilityPreferences,
 		compaction: config.context.compaction,
 		toolResultBudget: { maxEstimatedTokens: config.context.maxToolResultTokens },
 		compactionAudit: (event: ContextCompactionAuditEvent<SessionSource>) => recordGatewayEvent(config.paths.agentDir, "context_compaction", {
@@ -272,8 +273,14 @@ export async function runGateway(config: BeeMaxConfig): Promise<void> {
 		executionPortForSource: executionPortFor(config),
 	};
 	const auxiliaryTextModels = configuredAuxiliaryTextModels(config);
+	const capabilityRanker = configuredCapabilityRanker(
+		auxiliaryTextModels,
+		(usage) => recordGatewayEvent(config.paths.agentDir, "capability_cognition", { profile: config.profile, ...usage }),
+		({ code }) => recordGatewayEvent(config.paths.agentDir, "capability_cognition_fallback", { profile: config.profile, code }),
+	);
 	const createSubagentAgent = buildAgentFactory({
 		...profileAgentDefaults,
+		capabilityRanker,
 		systemPrompt: () => buildSubagentSystemPrompt(profilePrompt(config)),
 		customTools: readOnlyMcpTools,
 		tools: executionSafeTools(config, verificationAgentTools(readOnlyMcpTools.map((tool) => tool.name))),
@@ -339,6 +346,7 @@ export async function runGateway(config: BeeMaxConfig): Promise<void> {
 			const { taskScheduler, planningBudgets, taskPlanRuntime, verifyTask, taskRecovery, objectiveRuntime, subagents, toolEffects, executionTrace } = work;
 			const createAgent = buildAgentFactory({
 		...profileAgentDefaults,
+		capabilityRanker,
 		systemPrompt: () => buildMainAgentSystemPrompt(profilePrompt(config)),
 		tools: executionSafeTools(config, mainAgentTools(config.agent.toolset, [
 			...mainMcpTools.map((tool) => tool.name),
@@ -378,6 +386,7 @@ export async function runGateway(config: BeeMaxConfig): Promise<void> {
 
 			const createAutomationAgent = buildAgentFactory({
 		...profileAgentDefaults,
+		capabilityRanker,
 		automationStore: automation,
 		customTools: [...readOnlyMcpTools, ...feishuMeetingTools],
 			tools: automationToolNames,

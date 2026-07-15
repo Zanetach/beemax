@@ -1,0 +1,277 @@
+{
+  "schemaVersion": 1,
+  "generatedAt": "2026-07-15T10:06:13.657Z",
+  "profile": "e2e-feishu",
+  "models": [
+    "anthropic/glm-5.2"
+  ],
+  "implementationDigest": "sha256:e1021d54d23644567e9eccd9d68f874bd9f9af72b6b1d78f60d7385dc52752db",
+  "threshold": 0.75,
+  "fallbackCases": [],
+  "cognitionAttempts": [
+    {
+      "caseId": "zh-web",
+      "modelId": "anthropic/glm-5.2",
+      "attempt": 1,
+      "estimatedTokens": 4172,
+      "actualTokens": 1152,
+      "durationMs": 7168,
+      "costUsd": 0,
+      "status": "succeeded"
+    },
+    {
+      "caseId": "en-web",
+      "modelId": "anthropic/glm-5.2",
+      "attempt": 1,
+      "estimatedTokens": 4166,
+      "actualTokens": 1024,
+      "durationMs": 5199,
+      "costUsd": 0,
+      "status": "succeeded"
+    },
+    {
+      "caseId": "semantic-web-paraphrase",
+      "modelId": "anthropic/glm-5.2",
+      "attempt": 1,
+      "estimatedTokens": 4173,
+      "actualTokens": 1081,
+      "durationMs": 6344,
+      "costUsd": 0,
+      "status": "succeeded"
+    },
+    {
+      "caseId": "mixed-web",
+      "modelId": "anthropic/glm-5.2",
+      "attempt": 1,
+      "estimatedTokens": 4183,
+      "actualTokens": 1268,
+      "durationMs": 9904,
+      "costUsd": 0,
+      "status": "succeeded"
+    },
+    {
+      "caseId": "zh-meeting",
+      "modelId": "anthropic/glm-5.2",
+      "attempt": 1,
+      "estimatedTokens": 4166,
+      "actualTokens": 1122,
+      "durationMs": 7335,
+      "costUsd": 0,
+      "status": "failed",
+      "failureCode": "invalid_json"
+    },
+    {
+      "caseId": "zh-meeting",
+      "modelId": "anthropic/glm-5.2",
+      "attempt": 2,
+      "estimatedTokens": 4166,
+      "actualTokens": 1136,
+      "durationMs": 7578,
+      "costUsd": 0,
+      "status": "succeeded"
+    },
+    {
+      "caseId": "en-meeting",
+      "modelId": "anthropic/glm-5.2",
+      "attempt": 1,
+      "estimatedTokens": 4165,
+      "actualTokens": 1082,
+      "durationMs": 5649,
+      "costUsd": 0,
+      "status": "succeeded"
+    },
+    {
+      "caseId": "zh-memory",
+      "modelId": "anthropic/glm-5.2",
+      "attempt": 1,
+      "estimatedTokens": 4175,
+      "actualTokens": 1136,
+      "durationMs": 7426,
+      "costUsd": 0,
+      "status": "succeeded"
+    },
+    {
+      "caseId": "zh-file",
+      "modelId": "anthropic/glm-5.2",
+      "attempt": 1,
+      "estimatedTokens": 3697,
+      "actualTokens": 1065,
+      "durationMs": 8911,
+      "costUsd": 0,
+      "status": "succeeded"
+    },
+    {
+      "caseId": "zh-data",
+      "modelId": "anthropic/glm-5.2",
+      "attempt": 1,
+      "estimatedTokens": 4175,
+      "actualTokens": 1097,
+      "durationMs": 5782,
+      "costUsd": 0,
+      "status": "succeeded"
+    },
+    {
+      "caseId": "negative-chat",
+      "modelId": "anthropic/glm-5.2",
+      "attempt": 1,
+      "estimatedTokens": 4172,
+      "actualTokens": 1000,
+      "durationMs": 4410,
+      "costUsd": 0,
+      "status": "succeeded"
+    },
+    {
+      "caseId": "negative-weak-web",
+      "modelId": "anthropic/glm-5.2",
+      "attempt": 1,
+      "estimatedTokens": 4175,
+      "actualTokens": 1314,
+      "durationMs": 11399,
+      "costUsd": 0,
+      "status": "succeeded"
+    },
+    {
+      "caseId": "negative-weak-meeting",
+      "modelId": "anthropic/glm-5.2",
+      "attempt": 1,
+      "estimatedTokens": 4186,
+      "actualTokens": 1432,
+      "durationMs": 13947,
+      "costUsd": 0,
+      "status": "succeeded"
+    },
+    {
+      "caseId": "negative-negated-memory",
+      "modelId": "anthropic/glm-5.2",
+      "attempt": 1,
+      "estimatedTokens": 4190,
+      "actualTokens": 1406,
+      "durationMs": 13184,
+      "costUsd": 0,
+      "status": "succeeded"
+    }
+  ],
+  "observedRankings": [
+    {
+      "caseId": "zh-web",
+      "candidates": [
+        {
+          "name": "web_search",
+          "confidence": 0.98,
+          "strategy": "semantic"
+        }
+      ]
+    },
+    {
+      "caseId": "en-web",
+      "candidates": [
+        {
+          "name": "web_search",
+          "confidence": 0.99,
+          "strategy": "semantic"
+        }
+      ]
+    },
+    {
+      "caseId": "semantic-web-paraphrase",
+      "candidates": [
+        {
+          "name": "web_search",
+          "confidence": 0.98,
+          "strategy": "semantic"
+        }
+      ]
+    },
+    {
+      "caseId": "mixed-web",
+      "candidates": [
+        {
+          "name": "web_search",
+          "confidence": 0.98,
+          "strategy": "semantic"
+        }
+      ]
+    },
+    {
+      "caseId": "zh-meeting",
+      "candidates": [
+        {
+          "name": "meeting_schedule",
+          "confidence": 0.95,
+          "strategy": "semantic"
+        }
+      ]
+    },
+    {
+      "caseId": "en-meeting",
+      "candidates": [
+        {
+          "name": "meeting_schedule",
+          "confidence": 0.98,
+          "strategy": "semantic"
+        }
+      ]
+    },
+    {
+      "caseId": "zh-memory",
+      "candidates": [
+        {
+          "name": "memory_recall",
+          "confidence": 0.97,
+          "strategy": "semantic"
+        }
+      ]
+    },
+    {
+      "caseId": "zh-file",
+      "candidates": [
+        {
+          "name": "file_read",
+          "confidence": 0.95,
+          "strategy": "semantic"
+        }
+      ]
+    },
+    {
+      "caseId": "zh-data",
+      "candidates": [
+        {
+          "name": "data_analyze",
+          "confidence": 0.99,
+          "strategy": "semantic"
+        }
+      ]
+    },
+    {
+      "caseId": "negative-chat",
+      "candidates": []
+    },
+    {
+      "caseId": "negative-weak-web",
+      "candidates": []
+    },
+    {
+      "caseId": "negative-weak-meeting",
+      "candidates": []
+    },
+    {
+      "caseId": "negative-negated-memory",
+      "candidates": []
+    }
+  ],
+  "report": {
+    "strategy": "semantic",
+    "cases": 13,
+    "metrics": {
+      "top1Accuracy": 1,
+      "topKRecall": 1,
+      "forbiddenActivationRate": 0,
+      "noMatchPrecision": 1
+    },
+    "failures": []
+  },
+  "gate": {
+    "passed": true,
+    "failures": []
+  }
+}

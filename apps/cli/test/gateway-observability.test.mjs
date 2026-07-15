@@ -14,9 +14,11 @@ test("gateway observability distinguishes an absent log from a stopped runtime",
 		writeGatewayState(root, { profile: "personal", lifecycle: "stopped", version: "v-test" });
 		recordGatewayEvent(root, "stopped", { reason: "manual" });
 		recordGatewayEvent(root, "context_compaction", { phase: "completed", expectedTaskCount: 2, missingTaskCount: 1, recoveryInjected: true });
+		recordGatewayEvent(root, "capability_cognition_fallback", { profile: "personal", code: "provider_unavailable" });
 		assert.equal(inspectGateway("personal", root).lifecycle, "stopped");
 		assert.match(readGatewayLogs(root), /"event":"stopped"/);
 		assert.match(readGatewayLogs(root), /"event":"context_compaction"/);
+		assert.match(readGatewayLogs(root), /"event":"capability_cognition_fallback"/);
 	} finally { rmSync(root, { recursive: true, force: true }); }
 });
 

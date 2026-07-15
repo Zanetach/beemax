@@ -371,6 +371,21 @@ Bring BeeMax to Hermes Agent feature parity and Codex-level Tool routing, then e
 
 Work the **frontier**: any ticket whose blockers are all done. Do not bypass blocking edges, silently degrade the user's Objective, introduce a second Agent Loop beside Pi, or encode customer business vocabulary in Core.
 
+## Current execution frontier
+
+The active chain is intentionally narrow. Finish one evidence-backed vertical slice before opening the next:
+
+1. Close production semantic Capability routing and its live evidence gate.
+2. Enforce the same Skill lifecycle for prefetched and runtime-discovered Skills.
+3. Acquire a missing Tool or MCP Provider and resume the unchanged Objective.
+4. Dispatch every model Tool Call through one strict Router.
+5. Execute independent reads in parallel without replaying mutations.
+6. Verify every Contract acceptance criterion from durable receipts.
+7. Carry the same guarantees through realtime research, recovery, delivery, context compression, Memory, schedules, Gateway channels, auxiliary vision, and bounded delegation.
+8. Prove Ubuntu stability, fault/resource bounds, Hermes parity, and Codex Tool-routing parity before release.
+
+This ordering is the implementation plan, not a fixed business workflow. Core reasons over versioned Contracts, Capability descriptors, evidence, Effects, scopes, and Policy; enterprise-specific nouns and rules remain supplied by Skills, Providers, configuration, and organizational Memory.
+
 ## Establish the differential Agent benchmark
 
 **What to build:** A reproducible harness runs the same short, long, realtime, Skill, Tool, MCP, file, image, Gateway, failure, and recovery tasks against BeeMax and pinned Codex/Hermes baselines.
@@ -461,15 +476,26 @@ Work the **frontier**: any ticket whose blockers are all done. Do not bypass blo
 
 **Blocked by:** Build a dynamic Tool Spec Plan for each Pi Turn.
 
-- [ ] Make semantic ranking the production path and lexical ranking a bounded recall or offline fallback.
-- [ ] Rank by meaning, input/output modality, freshness, evidence, effect, health, cost, latency, and Profile preference.
-- [ ] Calibrate thresholds with the differential corpus so weak overlap never forces an unrelated Skill.
+- [x] Use configured Profile models for production semantic ranking across Tool, MCP, and Skill candidates; preserve a valid semantic no-match and use bounded lexical recall only when semantic Providers are unavailable.
+- [x] Rank immutable, versioned candidates by meaning, input/output modality, freshness, evidence, effect, health, cost, latency, and Profile preference without allowing preference or model output to grant authority.
+- [x] Fail closed on invented identities, malformed scores, duplicate candidates, excluded or unhealthy capabilities, cancellation, timeout, oversized inventories, and Provider errors without leaking credentials or resetting the total deadline.
+- [x] Commit a source-bound live-model evidence artifact that proves every calibration case used the semantic path; fail release verification on fallback, stale source digests, weak collisions, cross-language errors, or negative-case false positives.
+
+## Calibrate Capability ranking against real task outcomes
+
+**What to build:** BeeMax continuously tunes Capability selection from reproducible task outcomes rather than hand-authored business phrases, while preserving deterministic safety and authority boundaries.
+
+**Blocked by:** Route Capability requirements semantically.
+
+- [ ] Measure Top-1, Top-K, required-capability recall, unnecessary activation, no-match precision, latency, token cost, and downstream task completion on frozen multilingual and unknown-enterprise corpora.
+- [ ] Separate offline lexical, frozen semantic, and real-Provider results so one path cannot hide regressions in another.
+- [ ] Version thresholds and ranking changes with before/after evidence, and reject a calibration that improves aggregate ranking while worsening authorization, false-positive, or completion gates.
 
 ## Enforce one Skill lifecycle for prefetched and discovered Skills
 
 **What to build:** Explicitly selected, prefetched, and runtime-discovered Skills use the same version-locked discover, admit, activate, route, resource-read, execute, and complete lifecycle.
 
-**Blocked by:** Route Capability requirements semantically.
+**Blocked by:** Calibrate Capability ranking against real task outcomes.
 
 - [ ] Require the lifecycle only for explicit or calibrated high-confidence selection.
 - [ ] Merge runtime discovery receipts into the lifecycle gate and enable only declared route Tools.
@@ -479,7 +505,7 @@ Work the **frontier**: any ticket whose blockers are all done. Do not bypass blo
 
 **What to build:** When an installed capability cannot satisfy the Contract, BeeMax searches configured and installable Providers, obtains authority, installs safely, verifies health, and resumes the original Objective.
 
-**Blocked by:** Route Capability requirements semantically.
+**Blocked by:** Calibrate Capability ranking against real task outcomes.
 
 - [ ] Resolve installed, configured, healthy candidates before considering installation.
 - [ ] Require evidence-backed installation authority and return exact missing configuration or health blockers.
