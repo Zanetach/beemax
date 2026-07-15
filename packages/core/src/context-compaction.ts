@@ -102,6 +102,16 @@ function semanticAnchorsFromPreservation(envelope: string): string[] {
 	for (const record of records) {
 		const authoritative = record.authoritative;
 		collectText(anchors, authoritative.title, authoritative.description, authoritative.acceptanceCriteria);
+		collectText(anchors, authoritative.ledgerRereadDirective);
+		const workContract = asRecord(authoritative.workContract);
+		collectWorkContractAnchors(anchors, workContract);
+		if (Array.isArray(authoritative.objectiveRevisions)) for (const revisionValue of authoritative.objectiveRevisions) {
+			const revision = asRecord(revisionValue);
+			collectWorkContractAnchors(anchors, asRecord(revision.workContract));
+			const revisionSituation = asRecord(revision.situation);
+			collectText(anchors, revisionSituation.summary);
+			collectTextList(anchors, revisionSituation.goals, revisionSituation.constraints, revisionSituation.uncertainties);
+		}
 		const situation = asRecord(authoritative.situation);
 		collectText(anchors, situation.summary);
 		collectTextList(anchors, situation.goals, situation.constraints, situation.uncertainties);
@@ -114,8 +124,18 @@ function semanticAnchorsFromPreservation(envelope: string): string[] {
 				collectTextList(anchors, parsed.unresolvedIssues, parsed.completed, parsed.evidenceRefs);
 			} catch { collectText(anchors, checkpoint); }
 		}
+		if (Array.isArray(authoritative.unresolvedCriteria)) for (const item of authoritative.unresolvedCriteria) collectText(anchors, asRecord(item).criterion);
+		collectTextList(anchors, authoritative.unresolvedIssues);
+		if (Array.isArray(authoritative.artifactRefs)) for (const item of authoritative.artifactRefs) collectText(anchors, asRecord(item).uri, asRecord(item).label);
 	}
 	return [...new Set(anchors.map((anchor) => anchor.trim()).filter((anchor) => normalizedText(anchor).length >= 4))];
+}
+
+function collectWorkContractAnchors(anchors: string[], workContract: Record<string, unknown>): void {
+	collectText(anchors, workContract.rawRequest, asRecord(workContract.objective).text, workContract.ledgerRereadDirective);
+	for (const field of ["constraints", "prohibitions", "acceptanceCriteria", "capabilityRequirements", "uncertainties"] as const) {
+		if (Array.isArray(workContract[field])) for (const item of workContract[field]) collectText(anchors, asRecord(item).text);
+	}
 }
 
 function parseTaskPreservationRecords(envelope: string): Array<{ authoritative: Record<string, unknown> }> {

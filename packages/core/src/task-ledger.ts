@@ -3,8 +3,10 @@ import type { DeliveryReceipt, DeliveryTarget } from "./delivery-port.ts";
 import type { AccessScopeRef } from "./access-scope.ts";
 import type { Situation } from "./situation.ts";
 import type { TaskCheckpoint } from "./task-checkpoint.ts";
+import type { WorkContract } from "./work-contract.ts";
 
 export type TaskKind = "objective" | "delegated" | "automation";
+export const MAX_OBJECTIVE_REVISIONS = 20;
 export type TaskStatus = "pending" | "running" | "succeeded" | "failed" | "cancelled";
 export type TaskRecoveryPolicy = "never" | "safe_retry";
 export type TaskVerificationStatus = "pending" | "accepted" | "rejected" | "unavailable";
@@ -88,6 +90,10 @@ export interface TaskRecord {
 	executionScope?: AgentScope;
 	/** Durable semantic understanding. It never grants data or execution access. */
 	situation?: Situation;
+	/** Validated immutable request contract retained across compaction and restart. */
+	workContract?: WorkContract;
+	/** Ordered, bounded amendments to the original Work Contract; history is retained instead of silently overwritten. */
+	objectiveRevisions?: ObjectiveRevision[];
 	/** Opaque authorization provenance established outside the model loop. */
 	accessScopeRef?: AccessScopeRef;
 	/** @deprecated Legacy semantic slots retained for stored-record migration. */
@@ -118,6 +124,8 @@ export interface TaskRecord {
 }
 
 export type TaskTransition = Pick<TaskRecord, "status"> & Partial<Pick<TaskRecord, "startedAt" | "finishedAt" | "result" | "candidateResult" | "error" | "evidence" | "artifacts" | "unresolvedIssues" | "verificationStatus" | "verificationFeedback" | "criterionVerifications" | "correctiveAttempts">>;
+export interface ObjectiveRevision { id: string; workContract: WorkContract; situation: Situation; createdAt: number; }
+export interface ObjectiveRevisionResult { originalWorkContract: WorkContract; revision: ObjectiveRevision; revisions: ObjectiveRevision[]; }
 
 export type TaskRunStatus = "running" | "succeeded" | "failed" | "cancelled";
 export interface TaskRunRecord {
@@ -151,6 +159,7 @@ export interface TaskLedger {
 	record(task: TaskRecord): void;
 	transition(id: string, change: TaskTransition): boolean;
 	updateSituation?(ownerKey: string, taskId: string, situation: Situation): boolean;
+	reviseObjective(ownerKey: string, taskId: string, revision: Pick<ObjectiveRevision, "workContract" | "situation">, now?: number): ObjectiveRevisionResult | undefined;
 	updateVerificationRequirements?(ownerKey: string, taskId: string, requirements: TaskVerificationRequirement[]): boolean;
 	retryObjective?(ownerKey: string, id: string, now?: number): boolean;
 	cancelObjectives?(ownerKey: string, now?: number): number;

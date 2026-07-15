@@ -322,6 +322,77 @@ test("Task Ledger persists structured Sub-Agent artifacts and unresolved issues 
 	} finally { rmSync(root, { recursive: true, force: true }); }
 });
 
+test("Task Ledger persists the validated Work Contract across restart", () => {
+	const root = mkdtempSync(join(tmpdir(), "beemax-task-work-contract-"));
+	const path = join(root, "memory.db");
+	const rawRequest = "生成报告；不要发布；只保存草稿";
+	const workContract = {
+		schemaVersion: "beemax.work-contract.v1", rawRequest, action: "create",
+		objective: { text: "生成报告", source: { kind: "raw_request", start: 0, end: 4 } },
+		constraints: [], prohibitions: [{ text: "不要发布", source: { kind: "raw_request", start: 5, end: 9 } }],
+		acceptanceCriteria: [{ text: "只保存草稿", source: { kind: "raw_request", start: 10, end: 15 } }],
+		capabilityRequirements: [], uncertainties: [], executionMode: "direct", confidence: 0.95,
+	};
+	try {
+		let store = new MemoryStore(path);
+		store.record({ id: "contract-task", ownerKey: "owner", kind: "objective", title: "生成报告", status: "running", createdAt: 1, workContract });
+		store.close();
+		store = new MemoryStore(path);
+		assert.deepEqual(store.queryTasks({ ownerKeys: ["owner"], id: "contract-task" })[0].workContract, workContract);
+		store.close();
+	} finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("Task Ledger atomically revises an owner-scoped Objective idempotently across restart", () => {
+	const root = mkdtempSync(join(tmpdir(), "beemax-task-work-contract-corrections-"));
+	const path = join(root, "memory.db");
+	const correctionRequest = "不要取消，continue；不要改目标";
+	const correction = {
+		schemaVersion: "beemax.work-contract.v1", rawRequest: correctionRequest, action: "correct",
+		objective: { text: "continue", source: { kind: "raw_request", start: 5, end: 13 } },
+		constraints: [{ text: "不要改目标", source: { kind: "raw_request", start: 14, end: 19 } }],
+		prohibitions: [{ text: "不要取消", source: { kind: "raw_request", start: 0, end: 4 } }],
+		acceptanceCriteria: [], capabilityRequirements: [], uncertainties: [], executionMode: "direct", confidence: 0.98,
+	};
+	const situation = { summary: "继续原目标并改用新参数", goals: ["完成原目标"], constraints: ["不要改目标"], uncertainties: [], observations: [], possibleActions: [], relevantMemoryIds: [], relevantTaskIds: [], confidence: 0.98 };
+	try {
+		let store = new MemoryStore(path);
+		store.record({ id: "corrected-contract-task", ownerKey: "owner", kind: "objective", title: "生成报告", status: "running", createdAt: 1 });
+		assert.equal(store.reviseObjective("wrong-owner", "corrected-contract-task", { workContract: correction, situation }, 2), undefined);
+		assert.equal(store.reviseObjective("owner", "corrected-contract-task", { workContract: { ...correction, objective: { text: "其他目标", source: { kind: "active_objective", id: "other-task" } } }, situation }, 2), undefined);
+		const firstRevision = store.reviseObjective("owner", "corrected-contract-task", { workContract: correction, situation }, 2);
+		assert.equal(firstRevision.revision.id, "corrected-contract-task:revision:1");
+		assert.equal(store.reviseObjective("owner", "corrected-contract-task", { workContract: correction, situation }, 3).revision.id, firstRevision.revision.id);
+		assert.deepEqual(store.queryTasks({ ownerKeys: ["owner"], id: "corrected-contract-task" })[0].objectiveRevisions.map((revision) => revision.workContract), [correction]);
+		assert.deepEqual(store.queryTasks({ ownerKeys: ["owner"], id: "corrected-contract-task" })[0].situation, situation);
+		assert.equal(store.queryTasks({ ownerKeys: ["owner"], id: "corrected-contract-task" })[0].workContract.rawRequest, "生成报告");
+		store.close();
+		store = new MemoryStore(path);
+		assert.deepEqual(store.queryTasks({ ownerKeys: ["owner"], id: "corrected-contract-task" })[0].objectiveRevisions.map((revision) => revision.workContract), [correction]);
+		assert.deepEqual(store.queryTasks({ ownerKeys: ["owner"], id: "corrected-contract-task" })[0].situation, situation);
+		store.close();
+	} finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("Task Ledger refuses a correction beyond its durable revision bound without discarding history", () => {
+	const root = mkdtempSync(join(tmpdir(), "beemax-task-work-contract-revision-bound-"));
+	const store = new MemoryStore(join(root, "memory.db"));
+	const situation = { summary: "保留修正历史", goals: ["完成原目标"], constraints: [], uncertainties: [], observations: [], possibleActions: [], relevantMemoryIds: [], relevantTaskIds: [], confidence: 1 };
+	const correction = (index) => {
+		const rawRequest = `修正-${index}`;
+		return { schemaVersion: "beemax.work-contract.v1", rawRequest, action: "correct", objective: { text: rawRequest, source: { kind: "raw_request", start: 0, end: rawRequest.length } }, constraints: [], prohibitions: [], acceptanceCriteria: [], capabilityRequirements: [], uncertainties: [], executionMode: "direct", confidence: 1 };
+	};
+	try {
+		store.record({ id: "bounded-revisions", ownerKey: "owner", kind: "objective", title: "原目标", status: "running", createdAt: 1 });
+		for (let index = 0; index < 20; index++) assert.ok(store.reviseObjective("owner", "bounded-revisions", { workContract: correction(index), situation }, index + 2));
+		assert.equal(store.reviseObjective("owner", "bounded-revisions", { workContract: correction(20), situation }, 22), undefined);
+		const revisions = store.queryTasks({ ownerKeys: ["owner"], id: "bounded-revisions" })[0].objectiveRevisions;
+		assert.equal(revisions.length, 20);
+		assert.equal(revisions[0].workContract.rawRequest, "修正-0");
+		assert.equal(revisions[19].workContract.rawRequest, "修正-19");
+	} finally { store.close(); rmSync(root, { recursive: true, force: true }); }
+});
+
 test("Task Ledger persists capability-derived Verification requirements across restart", () => {
 	const root = mkdtempSync(join(tmpdir(), "beemax-verification-requirements-"));
 	const path = join(root, "memory.db");

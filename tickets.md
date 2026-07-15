@@ -587,8 +587,8 @@ This ordering is the implementation plan, not a fixed business workflow. Core re
 
 **Blocked by:** Validate Work Contracts before execution; Verify every acceptance criterion against durable receipts.
 
-- [ ] Store large Tool results outside prompt history and support bounded on-demand rereading.
-- [ ] Prove multilingual constraints, corrections, and prohibitions survive repeated compaction.
+- [x] Store large Tool results outside prompt history and support bounded on-demand rereading.
+- [x] Prove multilingual constraints, corrections, and prohibitions survive repeated compaction.
 - [ ] Enforce model-specific budgets and demonstrate bounded process memory during long runs.
 
 ## Recall and publish only scope-correct verified Memory

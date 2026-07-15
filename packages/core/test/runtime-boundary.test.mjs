@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { MemoryStore } from "@beemax/memory";
+import { createAssistantMessageEventStream } from "@earendil-works/pi-ai";
 import { AgentRunError, AuthStorage, BeeMaxAgentRuntime, buildBeeMaxRuntimeFactory, buildTaskPreservationEnvelope, ConversationContext, createAccessScopeRef, createEnterprisePolicyProvider, createEnterprisePolicyPublisher, createExecutionEnvelope, createSituation, defineTool, FileExecutionTraceStore, FileToolEffectJournal, getBuiltinModel, isRecoverableModelFailure, MUTATING_TOOL_POLICY, READ_ONLY_TOOL_POLICY, SessionCoordinator, sessionIdForSource, withToolPolicy } from "../dist/index.js";
 
 const createRuntime = (options) => new BeeMaxAgentRuntime({ profileId: "profile:test", ...options });
@@ -870,6 +871,7 @@ test("BeeMax Agent Runtime leaves legacy business context immutable during corre
 	const ledger = {
 		queryTasks: () => [active],
 		updateBusinessContext: () => { updates++; return true; },
+		reviseObjective: (_ownerKey, _id, revision) => { const durable = { id: "objective-1:revision:1", ...revision, createdAt: 2 }; return { originalWorkContract: revision.workContract, revision: durable, revisions: [durable] }; },
 	};
 	const runtime = createRuntime({ taskLedger: ledger, createAgent: async () => {
 		const agent = { state: { model: { id: "test" }, messages: [] } };
@@ -889,14 +891,18 @@ test("BeeMax Agent Runtime corrects durable Situation without replacing scope or
 	const active = {
 		id: "objective-1", ownerKey: "cli:terminal:user", kind: "objective", title: "校准月影协议", status: "running", createdAt: 1,
 		situation: createSituation({ summary: "月影协议采用旧潮汐参数", goals: ["完成校准"], confidence: 0.7 }),
+		workContract: { schemaVersion: "beemax.work-contract.v1", rawRequest: "校准月影协议", action: "create", objective: { text: "校准月影协议", source: { kind: "raw_request", start: 0, end: 6 } }, constraints: [], prohibitions: [], acceptanceCriteria: [], capabilityRequirements: [], uncertainties: [], executionMode: "direct", confidence: 1 },
 		accessScopeRef: originalScope,
 	};
 	let updates = 0;
+	let appendedCorrection;
 	let records = 0;
 	let recalledWithScope;
+	let receivedPrompt = "";
 	const ledger = {
 		queryTasks: () => [active],
 		updateSituation: (ownerKey, id, situation) => { updates++; assert.equal(ownerKey, active.ownerKey); assert.equal(id, active.id); active.situation = situation; return true; },
+		reviseObjective: (ownerKey, id, revision) => { updates++; assert.equal(ownerKey, active.ownerKey); assert.equal(id, active.id); appendedCorrection = revision.workContract; const durable = { id: `${id}:revision:1`, ...revision, createdAt: 2 }; active.situation = revision.situation; active.objectiveRevisions = [durable]; return { originalWorkContract: active.workContract, revision: durable, revisions: [durable] }; },
 		record: () => { records++; },
 		transition: () => true,
 	};
@@ -907,11 +913,15 @@ test("BeeMax Agent Runtime corrects durable Situation without replacing scope or
 		context,
 		taskLedger: ledger,
 		turnUnderstanding: { understand: () => ({ action: "correct", goal: "月影协议改用星潮参数", constraints: ["保留回滚点"], acceptanceCriteria: [], memoryQuery: "月影协议 星潮参数", capabilityQuery: "校准", executionMode: "direct", confidence: 0.9 }) },
-		createAgent: async () => { const agent = { state: { model: { id: "test" }, messages: [] } }; return { agent, subscribe: () => () => undefined, prompt: async () => { agent.state.messages = [{ role: "assistant", content: [{ type: "text", text: "updated" }], usage: { input: 1, output: 1 } }]; }, abort: async () => undefined, dispose: () => undefined }; },
+		createAgent: async () => { const agent = { state: { model: { id: "test" }, messages: [] } }; return { agent, subscribe: () => () => undefined, prompt: async (text) => { receivedPrompt = text; agent.state.messages = [{ role: "assistant", content: [{ type: "text", text: "updated" }], usage: { input: 1, output: 1 } }]; }, abort: async () => undefined, dispose: () => undefined }; },
 	});
 	try {
 		await runtime.run({ source, text: "更正：改用星潮参数", timeoutMs: 1_000, mode: "interactive", objectiveTaskId: active.id, accessScopeRef: replacementScope });
 		assert.equal(updates, 1);
+		assert.equal(appendedCorrection.action, "correct");
+		assert.equal(appendedCorrection.rawRequest, "更正：改用星潮参数");
+		assert.match(receivedPrompt, /objectiveRevisions/);
+		assert.match(receivedPrompt, /更正：改用星潮参数/);
 		assert.equal(records, 0);
 		assert.match(active.situation.summary, /星潮参数/);
 		assert.deepEqual(active.accessScopeRef, originalScope);
@@ -1132,6 +1142,74 @@ test("context compaction preserves active Objective and Acceptance Criteria", as
 		assert.doesNotMatch(compactInstructions, /message-42/);
 		assert.match(compactInstructions, /task-preservation-envelope/);
 	} finally { runtime.dispose(); }
+});
+
+test("successive compactions preserve a multilingual corrected Work Contract", async () => {
+	const root = mkdtempSync(join(tmpdir(), "beemax-successive-compaction-"));
+	const store = new MemoryStore(join(root, "memory.db"));
+	const ownerKey = "cli:compaction:user";
+	const taskId = "objective:report";
+	const rawRequest = "不要取消，continue the same report；改成中文，but do not publish externally";
+	const rawClause = (text) => ({ text, source: { kind: "raw_request", start: rawRequest.indexOf(text), end: rawRequest.indexOf(text) + text.length } });
+	const correction = {
+		schemaVersion: "beemax.work-contract.v1", rawRequest, action: "correct",
+		objective: { text: "生成报告", source: { kind: "active_objective", id: taskId } },
+		constraints: [rawClause("改成中文")], prohibitions: [rawClause("不要取消"), rawClause("but do not publish externally")],
+		acceptanceCriteria: [], capabilityRequirements: [], uncertainties: [], executionMode: "direct", confidence: 0.99,
+	};
+	const accessScopeRef = createAccessScopeRef({ id: "scope:must-not-leak", authority: { kind: "enterprise_system", reference: "iam:must-not-leak" }, issuedAt: 1 });
+	const audits = [];
+	const compactionContexts = [];
+	let summarizing = false;
+	try {
+		store.record({
+			id: taskId, ownerKey, kind: "objective", title: "生成报告", status: "running", createdAt: 1,
+			workContract: { schemaVersion: "beemax.work-contract.v1", rawRequest: "生成报告", action: "create", objective: { text: "生成报告", source: { kind: "raw_request", start: 0, end: 4 } }, constraints: [], prohibitions: [], acceptanceCriteria: [], capabilityRequirements: [], uncertainties: [], executionMode: "direct", confidence: 1 },
+			criterionVerifications: [{ criterionId: "C1", criterion: "保存中文草稿", status: "unavailable", evidenceRefs: [] }],
+			artifacts: [{ type: "reference", uri: "beemax-artifact:sha256:compaction", label: "draft evidence" }], accessScopeRef,
+		});
+		assert.ok(store.reviseObjective(ownerKey, taskId, { workContract: correction, situation: createSituation({ summary: "继续同一报告，改成中文且禁止外部发布", goals: ["完成报告"], constraints: ["改成中文", "禁止外部发布"], confidence: 0.99 }) }, 2));
+		const factory = buildBeeMaxRuntimeFactory({
+			provider: "custom", model: "private-model", baseUrl: "https://models.example.test/v1", modelLimits: { contextWindow: 32_000, maxTokens: 4_096 },
+			cwd: root, agentDir: join(root, "agent"), getApiKey: () => "test", systemPrompt: "test", skillToolset: "safe", createTools: () => [],
+			compaction: { reserveTokens: 4_800, keepRecentTokens: 1_024 },
+			compactionInstructions: () => buildTaskPreservationEnvelope(store.queryTasks({ ownerKeys: [ownerKey], statuses: ["pending", "running"] })),
+			compactionAudit: (event) => audits.push(event),
+		});
+		const session = await factory("successive-compaction", { platform: "cli", chatId: "compaction", chatType: "dm", userId: "user" });
+		try {
+			session.agent.streamFn = (model, context) => {
+				if (summarizing) compactionContexts.push(structuredClone(context));
+				const text = summarizing ? `Continue ${taskId}.` : "ok";
+				const stream = createAssistantMessageEventStream();
+				queueMicrotask(() => stream.push({ type: "done", reason: "stop", message: {
+					role: "assistant", content: [{ type: "text", text }], api: model.api, provider: model.provider, model: model.id,
+					usage: { input: summarizing ? 10 : 600, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: summarizing ? 11 : 601, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+					stopReason: "stop", timestamp: Date.now(),
+				} }));
+				return stream;
+			};
+			for (let round = 0; round < 2; round++) {
+				await session.prompt(`seed compaction ${round + 1}.1 ${"bounded context ".repeat(700)}`);
+				await session.prompt(`seed compaction ${round + 1}.2 ${"bounded context ".repeat(700)}`);
+				summarizing = true;
+				try { await session.compact(); } finally { summarizing = false; }
+				const messages = JSON.stringify(session.agent.state.messages);
+				assert.match(messages, /beemax-task-preservation-recovery/u);
+				assert.match(messages, /不要取消，continue the same report/u);
+			}
+			assert.equal(compactionContexts.length, 2);
+			for (const context of compactionContexts) {
+				const serialized = JSON.stringify(context);
+				assert.match(serialized, /生成报告/u); assert.match(serialized, /不要取消/u); assert.match(serialized, /改成中文/u);
+				assert.match(serialized, /but do not publish externally/u); assert.match(serialized, /beemax-artifact:sha256:compaction/u); assert.match(serialized, /objective:report/u);
+				assert.doesNotMatch(serialized, /scope:must-not-leak|iam:must-not-leak/u);
+			}
+			const completed = audits.filter((event) => event.phase === "completed");
+			assert.equal(completed.length, 2);
+			for (const event of completed) assert.deepEqual({ expectedTaskCount: event.expectedTaskCount, missingTaskCount: event.missingTaskCount, qualityStatus: event.qualityStatus, recoveryInjected: event.recoveryInjected }, { expectedTaskCount: 1, missingTaskCount: 0, qualityStatus: "degraded", recoveryInjected: true });
+		} finally { session.dispose(); }
+	} finally { store.close(); rmSync(root, { recursive: true, force: true }); }
 });
 
 test("Task preservation keeps durable Situation semantics without exposing Access Scope provenance", () => {

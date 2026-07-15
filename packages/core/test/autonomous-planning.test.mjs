@@ -1071,6 +1071,8 @@ test("a responsible direct Turn completes one durable Objective through one veri
 	assert.equal(result.completionId, `objective-completion:${objective.id}`);
 	assert.deepEqual(objective.criterionVerifications, [{ criterionId: "C1", criterion: "报告包含来源", status: "accepted", evidence: "source.md was read", evidenceRefs: ["execution:verification:direct:tool-call:source-1"] }]);
 	assert.match(objective.description, /生成一份有来源的简短报告/);
+	assert.equal(objective.workContract.rawRequest, "生成一份有来源的简短报告");
+	assert.equal(objective.workContract.schemaVersion, "beemax.work-contract.v1");
 	assert.deepEqual(objective.situation.constraints, ["保留证据"]);
 	assert.match(objective.acceptanceCriteria, /报告包含来源/);
 	assert.doesNotMatch(objective.acceptanceCriteria, /生成一份有来源的简短报告|保留证据|weaker substitute/i);

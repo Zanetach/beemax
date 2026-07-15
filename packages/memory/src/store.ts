@@ -16,7 +16,7 @@ import type { Database as DatabaseType } from "better-sqlite3";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { createHash } from "node:crypto";
-import { AUTONOMY_LEVELS, containsCredentialMaterial, createAccessScopeRef, createEnterprisePolicyPublisher, createSituation, interactionCompletionDeliveryKey, multilingualLexicalTerms, objectiveCompletionId, parseTaskCheckpoint, redactCredentialMaterial, renderTaskCheckpoint, unavailableTaskCriterionVerifications, type AutonomyLevel, type AutonomyRolloutEvidence, type AutonomyRolloutRecord, type AutonomyRolloutStateStore, type CompensationProof, type ConversationMemoryPort, type DeliveryReceipt, type DeliveryTarget, type DurableInitiativeTrigger, type DurableInitiativeTriggerInput, type EmergencyStopRecord, type EnterprisePolicyPublisher, type InitiativeObservation, type InitiativeObservationInput, type InitiativeObservationStore, type InitiativeScope, type InitiativeTriggerInbox, type ObjectiveCompletion, type ObjectiveCompletionOutbox, type OrganizationKnowledgeHit, type OrganizationKnowledgeRecall, type ReversibleActionControlPort, type Situation, type TaskCandidateVerificationResolution, type TaskCheckpoint, type TaskDependency, type TaskLedger, type TaskPlanCompletionNotice, type TaskPlanNoticeOutbox, type TaskPlanQuery, type TaskPlanRecord, type TaskPlanTransition, type TaskQuery, type TaskRecord as RuntimeTaskRecord, type TaskRecoveryResult, type TaskRunEffectStateReader, type TaskRunRecord, type TaskRunTransition, type TaskTransition } from "@beemax/core";
+import { AUTONOMY_LEVELS, MAX_OBJECTIVE_REVISIONS, containsCredentialMaterial, createAccessScopeRef, createEnterprisePolicyPublisher, createSituation, decodeStoredWorkContract, interactionCompletionDeliveryKey, multilingualLexicalTerms, objectiveCompletionId, parseTaskCheckpoint, redactCredentialMaterial, renderTaskCheckpoint, unavailableTaskCriterionVerifications, workContractFromLegacyObjective, type AutonomyLevel, type AutonomyRolloutEvidence, type AutonomyRolloutRecord, type AutonomyRolloutStateStore, type CompensationProof, type ConversationMemoryPort, type DeliveryReceipt, type DeliveryTarget, type DurableInitiativeTrigger, type DurableInitiativeTriggerInput, type EmergencyStopRecord, type EnterprisePolicyPublisher, type InitiativeObservation, type InitiativeObservationInput, type InitiativeObservationStore, type InitiativeScope, type InitiativeTriggerInbox, type ObjectiveCompletion, type ObjectiveCompletionOutbox, type OrganizationKnowledgeHit, type OrganizationKnowledgeRecall, type ReversibleActionControlPort, type Situation, type TaskCandidateVerificationResolution, type TaskCheckpoint, type TaskDependency, type TaskLedger, type TaskPlanCompletionNotice, type TaskPlanNoticeOutbox, type TaskPlanQuery, type TaskPlanRecord, type TaskPlanTransition, type TaskQuery, type TaskRecord as RuntimeTaskRecord, type TaskRecoveryResult, type TaskRunEffectStateReader, type TaskRunRecord, type TaskRunTransition, type TaskTransition } from "@beemax/core";
 
 export const MEMORY_CLAIM_KINDS = ["preference", "fact", "decision", "goal", "project", "relationship", "workflow", "exception"] as const;
 const EPISODE_STATUSES = new Set<OrganizationMemoryEpisodeStatus>(["candidate", "verified", "conflicted", "superseded"]);
@@ -401,6 +401,8 @@ export class MemoryStore {
 				execution_scope TEXT,
 				situation TEXT,
 				access_scope_ref TEXT,
+				work_contract TEXT,
+				objective_revisions TEXT,
 				business_context TEXT,
 				status TEXT NOT NULL CHECK (status IN ('pending', 'running', 'succeeded', 'failed', 'cancelled')),
 				parent_id TEXT,
@@ -782,6 +784,8 @@ export class MemoryStore {
 		this.addColumnIfMissing("autonomy_rollout_states", "publisher", "TEXT");
 		this.addColumnIfMissing("tasks", "situation", "TEXT");
 		this.addColumnIfMissing("tasks", "access_scope_ref", "TEXT");
+		this.addColumnIfMissing("tasks", "work_contract", "TEXT");
+		this.addColumnIfMissing("tasks", "objective_revisions", "TEXT");
 		this.addColumnIfMissing("tasks", "business_context", "TEXT");
 		this.addColumnIfMissing("tasks", "artifacts", "TEXT");
 		this.addColumnIfMissing("tasks", "unresolved_issues", "TEXT");
@@ -1753,14 +1757,46 @@ export class MemoryStore {
 	hasTask(id: string): boolean { return Boolean(this.db.prepare("SELECT 1 FROM tasks WHERE id = ? LIMIT 1").get(id)); }
 
 	record(task: RuntimeTaskRecord): void {
-		this.db.prepare(`INSERT INTO tasks (id, owner_key, kind, title, description, acceptance_criteria, recovery_policy, idempotency_key, execution_scope, situation, access_scope_ref, status, parent_id, plan_id, evidence, artifacts, unresolved_issues, verification_outcome, verification_feedback, verification_requirements, criterion_verifications, corrective_attempts, created_at, started_at, finished_at, result, candidate_result, error, checkpoint, checkpoint_at, routes, route_index, updated_at)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-			.run(task.id, task.ownerKey, task.kind, task.title, safeTaskText(task.description), task.acceptanceCriteria ?? null, task.recoveryPolicy ?? "never", task.idempotencyKey ?? null, task.executionScope ? JSON.stringify(task.executionScope) : null, task.situation ? JSON.stringify(task.situation) : null, task.accessScopeRef ? JSON.stringify(task.accessScopeRef) : null, task.status, task.parentId ?? null, task.planId ?? null, safeTaskText(task.evidence), safeTaskArtifacts(task.artifacts), safeUnresolvedIssues(task.unresolvedIssues), task.verificationStatus ?? null, safeTaskText(task.verificationFeedback), safeVerificationRequirements(task.verificationRequirements), safeCriterionVerifications(task.criterionVerifications), task.correctiveAttempts ?? 0, task.createdAt, task.startedAt ?? null, task.finishedAt ?? null, safeTaskText(task.result), safeTaskText(task.candidateResult), safeTaskText(task.error), task.checkpoint ? renderTaskCheckpoint(task.checkpoint) : null, task.checkpointAt ?? null, task.routes ? JSON.stringify(task.routes) : null, task.routeIndex ?? 0, task.createdAt);
+		this.db.prepare(`INSERT INTO tasks (id, owner_key, kind, title, description, acceptance_criteria, recovery_policy, idempotency_key, execution_scope, situation, access_scope_ref, work_contract, objective_revisions, status, parent_id, plan_id, evidence, artifacts, unresolved_issues, verification_outcome, verification_feedback, verification_requirements, criterion_verifications, corrective_attempts, created_at, started_at, finished_at, result, candidate_result, error, checkpoint, checkpoint_at, routes, route_index, updated_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+			.run(task.id, task.ownerKey, task.kind, task.title, safeTaskText(task.description), task.acceptanceCriteria ?? null, task.recoveryPolicy ?? "never", task.idempotencyKey ?? null, task.executionScope ? JSON.stringify(task.executionScope) : null, task.situation ? JSON.stringify(task.situation) : null, task.accessScopeRef ? JSON.stringify(task.accessScopeRef) : null, safeStoredWorkContract(task.workContract), safeStoredObjectiveRevisions(task.objectiveRevisions, task.id), task.status, task.parentId ?? null, task.planId ?? null, safeTaskText(task.evidence), safeTaskArtifacts(task.artifacts), safeUnresolvedIssues(task.unresolvedIssues), task.verificationStatus ?? null, safeTaskText(task.verificationFeedback), safeVerificationRequirements(task.verificationRequirements), safeCriterionVerifications(task.criterionVerifications), task.correctiveAttempts ?? 0, task.createdAt, task.startedAt ?? null, task.finishedAt ?? null, safeTaskText(task.result), safeTaskText(task.candidateResult), safeTaskText(task.error), task.checkpoint ? renderTaskCheckpoint(task.checkpoint) : null, task.checkpointAt ?? null, task.routes ? JSON.stringify(task.routes) : null, task.routeIndex ?? 0, task.createdAt);
 	}
 
 	updateSituation(ownerKey: string, taskId: string, situation: NonNullable<RuntimeTaskRecord["situation"]>): boolean {
 		return this.db.prepare("UPDATE tasks SET situation = ?, updated_at = ? WHERE id = ? AND owner_key = ? AND kind = 'objective' AND status IN ('pending', 'running')")
 			.run(JSON.stringify(situation), Date.now(), taskId, ownerKey).changes === 1;
+	}
+
+	reviseObjective(ownerKey: string, taskId: string, revision: { workContract: NonNullable<RuntimeTaskRecord["workContract"]>; situation: NonNullable<RuntimeTaskRecord["situation"]> }, now = Date.now()): ReturnType<TaskLedger["reviseObjective"]> {
+		const encodedCorrection = safeStoredWorkContract(revision.workContract);
+		const objectiveSource = revision.workContract.objective.source;
+		if (!encodedCorrection || revision.workContract.action !== "correct" || objectiveSource.kind === "active_objective" && objectiveSource.id !== taskId) return undefined;
+		let encodedSituation: string;
+		try { encodedSituation = JSON.stringify(createSituation(revision.situation)); }
+		catch { return undefined; }
+		return this.db.transaction(() => {
+			const row = this.db.prepare("SELECT title, description, work_contract, objective_revisions FROM tasks WHERE id = ? AND owner_key = ? AND kind = 'objective' AND status IN ('pending', 'running')")
+				.get(taskId, ownerKey) as { title: string; description: string | null; work_contract: string | null; objective_revisions: string | null } | undefined;
+			if (!row) return undefined;
+			const storedOriginal = parseStoredWorkContract(row.work_contract);
+			if (row.work_contract !== null && !storedOriginal) return undefined;
+			const originalWorkContract = storedOriginal ?? workContractFromLegacyObjective({ title: row.title, ...(row.description ? { description: row.description } : {}) });
+			const encodedOriginal = safeStoredWorkContract(originalWorkContract);
+			if (!encodedOriginal) return undefined;
+			const parsed = parseStoredObjectiveRevisions(row.objective_revisions, taskId);
+			if (row.objective_revisions !== null && !parsed) return undefined;
+			const existing = parsed ?? [];
+			const last = existing.at(-1);
+			if (last && safeStoredWorkContract(last.workContract) === encodedCorrection) return { originalWorkContract, revision: last, revisions: existing };
+			if (existing.length >= MAX_OBJECTIVE_REVISIONS) return undefined;
+			const objectiveRevision: NonNullable<RuntimeTaskRecord["objectiveRevisions"]>[number] = { id: `${taskId}:revision:${existing.length + 1}`, workContract: revision.workContract, situation: createSituation(revision.situation), createdAt: now };
+			const next = [...existing, objectiveRevision];
+			const encoded = safeStoredObjectiveRevisions(next, taskId);
+			if (!encoded) return undefined;
+			const updated = this.db.prepare("UPDATE tasks SET work_contract = ?, objective_revisions = ?, situation = ?, updated_at = ? WHERE id = ? AND owner_key = ? AND kind = 'objective' AND status IN ('pending', 'running')")
+				.run(encodedOriginal, encoded, encodedSituation, now, taskId, ownerKey).changes === 1;
+			return updated ? { originalWorkContract, revision: objectiveRevision, revisions: next } : undefined;
+		})();
 	}
 
 	updateVerificationRequirements(ownerKey: string, taskId: string, requirements: NonNullable<RuntimeTaskRecord["verificationRequirements"]>): boolean {
@@ -2890,7 +2926,7 @@ interface EventRow {
 }
 
 interface RuntimeTaskRow {
-	id: string; owner_key: string; kind: RuntimeTaskRecord["kind"]; title: string; description: string | null; acceptance_criteria: string | null; recovery_policy: RuntimeTaskRecord["recoveryPolicy"]; idempotency_key: string | null; execution_scope: string | null; situation: string | null; access_scope_ref: string | null; business_context: string | null; status: RuntimeTaskRecord["status"];
+	id: string; owner_key: string; kind: RuntimeTaskRecord["kind"]; title: string; description: string | null; acceptance_criteria: string | null; recovery_policy: RuntimeTaskRecord["recoveryPolicy"]; idempotency_key: string | null; execution_scope: string | null; situation: string | null; access_scope_ref: string | null; work_contract: string | null; objective_revisions: string | null; business_context: string | null; status: RuntimeTaskRecord["status"];
 	parent_id: string | null; plan_id: string | null; evidence: string | null; artifacts: string | null; unresolved_issues: string | null; verification_outcome: RuntimeTaskRecord["verificationStatus"] | null; verification_feedback: string | null; verification_requirements: string | null; criterion_verifications: string | null; verification_attempts: number; verification_retry_at: number | null; corrective_attempts: number; created_at: number; started_at: number | null; finished_at: number | null; result: string | null; candidate_result: string | null; error: string | null;
 	checkpoint: string | null; checkpoint_at: number | null; routes: string | null; route_index: number; effect_receipts: string | null;
 }
@@ -3041,6 +3077,8 @@ function mapRuntimeTask(row: RuntimeTaskRow): RuntimeTaskRecord {
 	const executionScope = parseExecutionScope(row.execution_scope);
 	const situation = parseSituation(row.situation);
 	const accessScopeRef = parseAccessScopeRef(row.access_scope_ref);
+	const workContract = parseStoredWorkContract(row.work_contract);
+	const objectiveRevisions = parseStoredObjectiveRevisions(row.objective_revisions, row.id);
 	const businessContext = parseBusinessContext(row.business_context);
 	const artifacts = parseTaskArtifacts(row.artifacts);
 	const unresolvedIssues = parseUnresolvedIssues(row.unresolved_issues);
@@ -3056,6 +3094,8 @@ function mapRuntimeTask(row: RuntimeTaskRow): RuntimeTaskRecord {
 		...(executionScope ? { executionScope } : {}),
 		...(situation ? { situation } : {}),
 		...(accessScopeRef ? { accessScopeRef } : {}),
+		...(workContract ? { workContract } : {}),
+		...(objectiveRevisions?.length ? { objectiveRevisions } : {}),
 		...(businessContext ? { businessContext } : {}),
 		...(row.parent_id === null ? {} : { parentId: row.parent_id }),
 		...(row.plan_id === null ? {} : { planId: row.plan_id }),
@@ -3125,6 +3165,33 @@ function parseAccessScopeRef(value: string | null): RuntimeTaskRecord["accessSco
 		if (!ref || ref.trust !== "verified") return undefined;
 		return createAccessScopeRef(ref);
 	} catch { return undefined; }
+}
+
+function parseStoredWorkContract(value: string | null): RuntimeTaskRecord["workContract"] {
+	if (!value || value.length > 250_000 || containsCredentialMaterial(value)) return undefined;
+	try { return decodeStoredWorkContract(JSON.parse(value)); }
+	catch { return undefined; }
+}
+
+function parseStoredObjectiveRevisions(value: string | null, taskId: string): RuntimeTaskRecord["objectiveRevisions"] {
+	if (!value || value.length > 1_000_000 || containsCredentialMaterial(value)) return undefined;
+	try {
+		const parsed = JSON.parse(value) as unknown;
+		if (!Array.isArray(parsed) || parsed.length > MAX_OBJECTIVE_REVISIONS) return undefined;
+		const revisions = parsed.map((entry) => parseStoredObjectiveRevision(entry, taskId));
+		if (revisions.some((entry) => !entry)) return undefined;
+		return revisions as NonNullable<RuntimeTaskRecord["objectiveRevisions"]>;
+	} catch { return undefined; }
+}
+
+function parseStoredObjectiveRevision(value: unknown, taskId: string): NonNullable<RuntimeTaskRecord["objectiveRevisions"]>[number] | undefined {
+	if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+	const candidate = value as Record<string, unknown>;
+	const workContract = parseStoredWorkContract(JSON.stringify(candidate.workContract));
+	const situation = parseSituation(typeof candidate.situation === "object" ? JSON.stringify(candidate.situation) : null);
+	const objectiveSource = workContract?.objective.source;
+	if (typeof candidate.id !== "string" || !candidate.id.startsWith(`${taskId}:revision:`) || candidate.id.length > 1_000 || !workContract || workContract.action !== "correct" || objectiveSource?.kind === "active_objective" && objectiveSource.id !== taskId || !situation || !Number.isSafeInteger(candidate.createdAt) || (candidate.createdAt as number) < 0) return undefined;
+	return { id: candidate.id, workContract, situation, createdAt: candidate.createdAt as number };
 }
 
 function parseBusinessContext(value: string | null): RuntimeTaskRecord["businessContext"] {
@@ -3239,6 +3306,21 @@ function mapTaskPlan(row: TaskPlanRow): TaskPlanRecord {
 
 function safeTaskText(value: string | undefined): string | null {
 	return value === undefined ? null : redactCredentialMaterial(value);
+}
+
+function safeStoredWorkContract(value: RuntimeTaskRecord["workContract"]): string | null {
+	if (!value) return null;
+	try {
+		const encoded = JSON.stringify(value);
+		return parseStoredWorkContract(encoded) ? encoded : null;
+	} catch { return null; }
+}
+
+function safeStoredObjectiveRevisions(value: RuntimeTaskRecord["objectiveRevisions"], taskId: string): string | null {
+	if (!value) return null;
+	if (value.length > MAX_OBJECTIVE_REVISIONS || value.some((revision) => !parseStoredObjectiveRevision(revision, taskId))) return null;
+	try { return JSON.stringify(value); }
+	catch { return null; }
 }
 
 function reversibleControlText(value: unknown, field: string, maxLength: number): string {

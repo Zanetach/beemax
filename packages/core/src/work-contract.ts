@@ -187,6 +187,52 @@ export function validateWorkContract(value: unknown, rawRequest: string, options
 	return { schemaVersion: WORK_CONTRACT_SCHEMA_VERSION, rawRequest: requiredRawRequest(rawRequest), ...normalized };
 }
 
+/** Decode a previously validated durable Contract without re-running model-trust comparisons. */
+export function decodeStoredWorkContract(value: unknown): WorkContract | undefined {
+	if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+	try {
+		const contract = value as Record<string, unknown>;
+		if (contract.schemaVersion !== WORK_CONTRACT_SCHEMA_VERSION || typeof contract.rawRequest !== "string" || !contract.rawRequest.trim() || contract.rawRequest.length > 50_000) return undefined;
+		const rawRequest = contract.rawRequest;
+		const list = (field: string): WorkContractClause[] | undefined => {
+			const clauses = contract[field];
+			if (!Array.isArray(clauses) || clauses.length > 100) return undefined;
+			const decoded = clauses.map((clause) => decodeStoredWorkContractClause(clause, rawRequest));
+			return decoded.some((clause) => !clause) ? undefined : decoded as WorkContractClause[];
+		};
+		const objective = decodeStoredWorkContractClause(contract.objective, rawRequest);
+		const constraints = list("constraints"); const prohibitions = list("prohibitions"); const acceptanceCriteria = list("acceptanceCriteria");
+		const capabilityRequirements = list("capabilityRequirements"); const uncertainties = list("uncertainties");
+		if (!objective || !constraints || !prohibitions || !acceptanceCriteria || !capabilityRequirements || !uncertainties) return undefined;
+		return { schemaVersion: WORK_CONTRACT_SCHEMA_VERSION, rawRequest, action: validAction(contract.action), objective, constraints, prohibitions, acceptanceCriteria, capabilityRequirements, uncertainties, executionMode: validExecutionMode(contract.executionMode), confidence: validConfidence(contract.confidence) };
+	} catch { return undefined; }
+}
+
+/** Create an auditable baseline for a pre-Contract Objective during additive storage migration. */
+export function workContractFromLegacyObjective(input: { title: string; description?: string }): WorkContract {
+	const title = input.title.trim();
+	const rawRequest = input.description?.trim() || title;
+	if (!title || !rawRequest) throw new Error("Legacy Objective requires a title or original description");
+	const titleStart = rawRequest.indexOf(title);
+	const objective: WorkContractClause = titleStart >= 0
+		? { text: title, source: { kind: "raw_request", start: titleStart, end: titleStart + title.length } }
+		: { text: rawRequest, source: { kind: "raw_request", start: 0, end: rawRequest.length } };
+	return { schemaVersion: WORK_CONTRACT_SCHEMA_VERSION, rawRequest, action: "create", objective, constraints: [], prohibitions: [], acceptanceCriteria: [], capabilityRequirements: [], uncertainties: [], executionMode: "direct", confidence: 0 };
+}
+
+function decodeStoredWorkContractClause(value: unknown, rawRequest: string): WorkContractClause | undefined {
+	if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+	const clause = value as { text?: unknown; source?: unknown };
+	if (typeof clause.text !== "string" || !clause.text.trim() || clause.text.length > 10_000 || !clause.source || typeof clause.source !== "object" || Array.isArray(clause.source)) return undefined;
+	const source = clause.source as { kind?: unknown; start?: unknown; end?: unknown; field?: unknown; index?: unknown; id?: unknown };
+	if (source.kind === "raw_request") return Number.isSafeInteger(source.start) && Number.isSafeInteger(source.end) && (source.start as number) >= 0 && (source.end as number) > (source.start as number) && rawRequest.slice(source.start as number, source.end as number) === clause.text
+		? { text: clause.text, source: { kind: "raw_request", start: source.start as number, end: source.end as number } } : undefined;
+	if (source.kind === "active_objective") return source.id === undefined || typeof source.id === "string" && source.id.length <= 500
+		? { text: clause.text, source: { kind: "active_objective", ...(typeof source.id === "string" ? { id: source.id } : {}) } } : undefined;
+	if (source.kind !== "turn_understanding" || !["objective", "constraint", "acceptance_criterion", "capability_requirement", "uncertainty"].includes(String(source.field)) || source.index !== undefined && (!Number.isSafeInteger(source.index) || (source.index as number) < 0 || (source.index as number) > 100)) return undefined;
+	return { text: clause.text, source: { kind: "turn_understanding", field: source.field as WorkContractUnderstandingSource["field"], ...(typeof source.index === "number" ? { index: source.index } : {}) } };
+}
+
 export function workContractUnderstanding(contract: WorkContract, fallback: TurnUnderstanding): TurnUnderstanding {
 	const capabilityRequirements = contract.capabilityRequirements.map((clause) => clause.text);
 	return {
