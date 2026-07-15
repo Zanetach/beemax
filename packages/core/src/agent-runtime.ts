@@ -199,7 +199,9 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 		}
 		const trustedInputAccessScope = input.executionEnvelope?.accessScopeRef ?? input.accessScopeRef;
 		const startedAt = Date.now();
-		const absoluteDeadline = input.executionEnvelope?.budget?.deadlineAt ?? (input.timeoutMs === null ? undefined : startedAt + input.timeoutMs);
+		const requestedDeadline = input.timeoutMs === null ? undefined : startedAt + input.timeoutMs;
+		const envelopeDeadline = input.executionEnvelope?.budget?.deadlineAt;
+		const absoluteDeadline = requestedDeadline === undefined ? envelopeDeadline : envelopeDeadline === undefined ? requestedDeadline : Math.min(requestedDeadline, envelopeDeadline);
 		if (input.signal?.aborted) throw new AgentRunError("Agent turn was cancelled", false, input.signal.reason);
 		if (absoluteDeadline !== undefined && absoluteDeadline <= startedAt) throw new AgentRunError("Execution Envelope deadline has expired", true, undefined);
 		const deadlineSignal = absoluteDeadline === undefined ? undefined : AbortSignal.timeout(Math.max(1, absoluteDeadline - startedAt));
@@ -218,17 +220,13 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 			? this.taskLedger.queryTasks({ ownerKeys: objectiveOwnerKeys, ...(input.objectiveTaskId ? { id: input.objectiveTaskId, statuses: ["pending", "running"] as const } : { kinds: ["objective"] as const, statuses: ["pending", "running"] as const }), limit: 1 })[0]
 			: undefined;
 		if (explicitAutomationObjective && !activeObjective) throw new AgentRunError(`Proactive Objective ${input.objectiveTaskId} is not active in this scope`, false, undefined);
-		if (explicitAutomationObjective && activeObjective?.status === "pending") {
-			if (!this.taskLedger?.transition(activeObjective.id, { status: "running", startedAt })) throw new AgentRunError(`Proactive Objective ${activeObjective.id} could not start`, false, undefined);
-			activeObjective = { ...activeObjective, status: "running", startedAt };
-		}
 		const fallbackUnderstanding = cognitiveRun ? this.turnUnderstanding.understand(input.text, { activeObjective: activeObjective?.title }) : undefined;
 		let workContract: WorkContract | undefined;
 		if (fallbackUnderstanding) {
 			try {
 				const trustedContext = { fallback: fallbackUnderstanding, ...(activeObjective ? { activeObjective: { id: activeObjective.id, title: activeObjective.title } } : {}) };
 				const built = await this.workContractBuilder.build({ rawRequest: input.text, ...trustedContext, ...(cognitionSignal ? { signal: cognitionSignal } : {}) });
-				workContract = validateWorkContract(built.contract, input.text, { trustedContext });
+				workContract = validateWorkContract(built.contract, input.text, { trustedContext, requireAcceptanceCriterion: built.source === "model" });
 			} catch (error) {
 				if (input.signal?.aborted) throw new AgentRunError("Agent turn was cancelled", false, input.signal.reason);
 				if (deadlineSignal?.aborted) throw new AgentRunError("Execution Envelope deadline expired during Work Contract cognition", true, error);
@@ -243,6 +241,10 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 			fallback: understanding,
 			...(activeObjective ? { activeObjective: { id: activeObjective.id, title: activeObjective.title, ...(activeObjective.situation ? { situation: activeObjective.situation } : {}) } } : {}),
 		})).situation : undefined;
+		if (explicitAutomationObjective && activeObjective?.status === "pending") {
+			if (!this.taskLedger?.transition(activeObjective.id, { status: "running", startedAt })) throw new AgentRunError(`Proactive Objective ${activeObjective.id} could not start`, false, undefined);
+			activeObjective = { ...activeObjective, status: "running", startedAt };
+		}
 		if (activeObjective && understanding?.action === "correct" && situation) this.taskLedger?.updateSituation?.(activeObjective.ownerKey, activeObjective.id, situation);
 		const accessScopeRef = activeObjective && bindsActiveObjective ? activeObjective.accessScopeRef ?? trustedInputAccessScope : trustedInputAccessScope;
 		const objectiveBinding = explicitAutomationObjective && activeObjective
