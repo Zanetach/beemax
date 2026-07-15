@@ -52,6 +52,7 @@ export {
 	type ProactiveMutationAuthority,
 } from "./runtime.ts";
 export { ToolPolicyRegistry, READ_ONLY_TOOL_POLICY, MUTATING_TOOL_POLICY, boundToolResultContent, governToolDefinition, normalizeToolResultBudget, withToolPolicy, type GovernedToolDefinition, type ToolApprovalMode, type ToolCapabilityGrant, type ToolPolicy, type ToolResultBudget, type ToolRisk, type ToolRuntimeAuditEvent, type ToolRuntimeAuditSink, type ToolSideEffect } from "./tool-runtime.ts";
+export { createVerificationSubmitTool, VERIFICATION_SUBMIT_TOOL_NAME } from "./verification-tools.ts";
 export { FileToolAuditJournal, type DurableToolAuditEvent } from "./tool-audit-journal.ts";
 export { createToolEffectDetails, FileToolEffectJournal, ToolEffectConflictError, type TaskEffectProjection, type ToolEffectAuthorityPort, type ToolEffectFinish, type ToolEffectProjectionReader, type ToolEffectProof, type ToolEffectReceipt, type ToolEffectRecord, type ToolEffectSink, type ToolEffectStart, type ToolEffectStatus } from "./tool-effect.ts";
 export { RUNTIME_FAULT_CATALOG, RUNTIME_FAULT_KINDS, assessRuntimeFaultCoverage, type RuntimeFaultCoverageAssessment, type RuntimeFaultDefinition, type RuntimeFaultKind } from "./runtime-fault-catalog.ts";
@@ -154,7 +155,7 @@ export { DeliveryDeferredError, type DeliveryOptions, type DeliveryPort, type De
 export { sanitizeDisplayText } from "./display-text.ts";
 export type { ExecutionBackend, ExecutionPolicy, ExecutionPort, ExecutionRequest, ExecutionResult, SandboxMode, WorkspaceAccess } from "./execution.ts";
 export { resolveExecutionBackend } from "./execution.ts";
-export { createExecutionEnvelope, type ExecutionBudgetRef, type ExecutionEnvelope, type ExecutionMode, type ExecutionTriggerKind, type ProactiveActionAuthorityRef } from "./execution-envelope.ts";
+export { createExecutionEnvelope, type ExecutionBudgetRef, type ExecutionEnvelope, type ExecutionMode, type ExecutionTriggerKind, type ProactiveActionAuthorityRef, type VerificationProtocol } from "./execution-envelope.ts";
 export { FileExecutionTraceStore, type ExecutionTrace, type ExecutionTraceEvent, type ExecutionTraceInput, type ExecutionTraceQuery, type ExecutionTraceSink } from "./execution-trace.ts";
 export { DEFAULT_DOCKER_SANDBOX_IMAGE, DEFAULT_DOCKER_SANDBOX_LIMITS, DockerExecutionPort, type DockerExecutionOptions } from "./docker-execution.ts";
 export { LocalExecutionPort } from "./local-execution.ts";

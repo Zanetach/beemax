@@ -881,6 +881,9 @@ export class AgentSession {
 			description: definition.description,
 			parameters: definition.parameters,
 			promptGuidelines: definition.promptGuidelines,
+			aliases: definition.aliases,
+			triggers: definition.triggers,
+			exclude: definition.exclude,
 			sourceInfo,
 		}));
 	}

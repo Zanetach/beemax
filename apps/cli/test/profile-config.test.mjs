@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { MemoryStore } from "@beemax/memory";
-import { consumeChannelCredential, loadConfig } from "../dist/config.js";
+import { consumeChannelCredential, loadConfig, profileTaskGrantCapabilities } from "../dist/config.js";
 
 const readCredential = (config, channel) => consumeChannelCredential(config, channel, (credential) => ({ ...credential }));
 import { activeProfile } from "../dist/profile-home.js";
@@ -289,6 +289,20 @@ test("runtime configuration rejects misspelled Execution Sandbox policy instead 
 		await writeFile(paths.configPath, `execution:\n  ${field}: ${value}\n`);
 		assert.throws(() => loadConfig(paths.configPath, "sandbox-policy"), new RegExp(`Invalid execution\\.${field}`));
 	}
+});
+
+test("Profile execution policy explicitly controls unattended workspace-write grants", async () => {
+	const home = await mkdtemp(join(tmpdir(), "beemax-workspace-write-policy-home-"));
+	const paths = await createProfile("workspace-write-policy", { home });
+	const defaulted = loadConfig(paths.configPath, "workspace-write-policy");
+	assert.equal(defaulted.execution.workspaceWritePolicy, "approval-required");
+	assert.deepEqual(profileTaskGrantCapabilities(defaulted), []);
+	await writeFile(paths.configPath, "execution:\n  workspaceWritePolicy: allow-within-workspace\n");
+	const authorized = loadConfig(paths.configPath, "workspace-write-policy");
+	assert.equal(authorized.execution.workspaceWritePolicy, "allow-within-workspace");
+	assert.deepEqual(profileTaskGrantCapabilities(authorized), ["write"]);
+	await writeFile(paths.configPath, "execution:\n  workspaceWritePolicy: allow-everything\n");
+	assert.throws(() => loadConfig(paths.configPath, "workspace-write-policy"), /Invalid execution\.workspaceWritePolicy/);
 });
 
 test("curated memory is bounded and rendered as a session snapshot", async () => {

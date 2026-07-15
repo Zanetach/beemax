@@ -20,6 +20,7 @@ import {
 	createWebTools,
 	createBrowserTools,
 	createExecutionTools,
+	createVerificationSubmitTool,
 	LocalExecutionPort,
 	FileToolAuditJournal,
 	type MediaOutboxPort,
@@ -128,6 +129,7 @@ export function buildAgentFactory(opts: AgentFactoryOptions) {
 		toolResultBudget: opts.toolResultBudget,
 		authorizeTool: opts.authorizeTool ? async (source, toolName, args, policy, signal) => opts.authorizeTool!({ source, toolName, args, policy }, signal) : undefined,
 		createTools: (source, onResourcesChanged, getRuntimeApiKey, activateTools) => {
+			const verificationTools = createExecutionRoleTools(executionEnvelope);
 			const browserTools = createBrowserTools({ credentials: opts.credentials });
 			const executionTools = createExecutionTools(source, opts.cwd, opts.executionPortForSource?.(source) ?? execution);
 			const memoryTools = opts.memoryStore ? createMemoryTools(opts.memoryStore, source, { profileId: opts.profileId, ...opts.resolveMemoryScope?.(source) }) : [];
@@ -143,14 +145,19 @@ export function buildAgentFactory(opts: AgentFactoryOptions) {
 			})]
 			: [];
 		const scopedTools = opts.sessionTools?.(source) ?? [];
-		const inventory = [...executionTools, ...baseCustomTools, ...browserTools, ...memoryTools, ...automationTools, ...imageTools, ...scopedTools]
+		const inventory = [...executionTools, ...baseCustomTools, ...verificationTools, ...browserTools, ...memoryTools, ...automationTools, ...imageTools, ...scopedTools]
 			.map((tool) => Object.assign(tool, { kind: tool.name.startsWith("mcp_") ? "mcp" as const : "tool" as const }));
 		const skillRoots = [join(opts.cwd, ".agents", "skills"), join(opts.cwd, ".codex", "skills"), join(opts.cwd, "skills"), join(homedir(), ".agents", "skills"), join(homedir(), ".codex", "skills")];
 		const skillTools = createSkillTools(opts.agentDir, onResourcesChanged, inventory, opts.verifySkillCandidate ? (input, signal) => opts.verifySkillCandidate!(source, input, signal) : undefined, skillRoots, activateTools, opts.capabilityRanker, opts.authorizeSkillCandidatePromotion ? (input) => opts.authorizeSkillCandidatePromotion!(source, input) : undefined);
-		return [...executionTools, ...baseCustomTools, ...browserTools, ...memoryTools, ...automationTools, ...imageTools, ...skillTools, ...scopedTools];
+		return [...executionTools, ...baseCustomTools, ...verificationTools, ...browserTools, ...memoryTools, ...automationTools, ...imageTools, ...skillTools, ...scopedTools];
 		},
 	})(sessionId, source, executionEnvelope, legacySessionIds);
 	return attestAgentFactorySecurity(factory, opts.toolEffects);
+}
+
+/** Internal protocol Tools are registered only in the execution role that owns them. */
+export function createExecutionRoleTools(executionEnvelope?: Readonly<ExecutionEnvelope>): ToolDefinition[] {
+	return executionEnvelope?.verificationProtocol === "task_candidate_v1" ? [createVerificationSubmitTool()] : [];
 }
 
 function valueOf<T>(value: T | (() => T)): T { return typeof value === "function" ? (value as () => T)() : value; }

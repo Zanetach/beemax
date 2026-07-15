@@ -54,6 +54,21 @@ test("task grants are bound to the active task and expose a content-free snapsho
 	broker.dispose();
 });
 
+test("Profile-authorized workspace writes seed every fresh task grant without widening other capabilities", async () => {
+	const broker = new ToolApprovalBroker(async () => {}, 1_000, undefined, ["write"]);
+	broker.beginTask(source, "turn-a");
+	assert.deepEqual(broker.executionGrant(source), {
+		taskId: "turn-a",
+		allowedCapabilities: ["write"],
+		status: "active",
+	});
+	assert.deepEqual(await broker.authorize({ source, toolName: "write", args: { path: "draft.md" }, policy: MUTATING_TOOL_POLICY }), { allowed: true });
+	broker.beginTask(source, "turn-b");
+	assert.deepEqual(broker.executionGrant(source)?.allowedCapabilities, ["write"]);
+	assert.deepEqual(broker.executionGrant(source)?.allowedCapabilities.includes("bash"), false);
+	broker.dispose();
+});
+
 test("approval lifecycle exposes only redacted presenter-safe card details", async () => {
 	const events = [];
 	const broker = new ToolApprovalBroker(async () => {}, 1_000);

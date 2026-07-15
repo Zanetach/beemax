@@ -491,7 +491,7 @@ function defaultProfileYaml(): string {
 		imageGeneration: { enabled: false, provider: "openai-codex", quality: "medium", outputDir: "cache/images" },
 		mediaUnderstanding: { localOcr: { enabled: true, timeoutMs: 30000 }, auxiliaryVisionEnabled: true },
 		context: { maxTurnChars: 12000, maxToolResultTokens: 12000, compaction: { enabled: true } },
-		execution: { backend: "local", mode: "off", workspaceAccess: "none", image: DEFAULT_DOCKER_SANDBOX_IMAGE, timeoutMs: 180000 },
+		execution: { backend: "local", mode: "off", workspaceAccess: "none", workspaceWritePolicy: "approval-required", image: DEFAULT_DOCKER_SANDBOX_IMAGE, timeoutMs: 180000 },
 		subagents: { enabled: true, maxConcurrent: DEFAULT_RUNTIME_RESOURCE_LIMITS.taskConcurrency, maxChildrenPerOwner: 5, timeoutMs: 900000 },
 		automation: { enabled: true, timezone: "Asia/Shanghai", heartbeat: { enabled: true, every: "30m", activeHours: { start: "08:00", end: "23:00", timezone: "Asia/Shanghai" } } },
 		paths: { agentDir: ".", cwd: "workspace" },

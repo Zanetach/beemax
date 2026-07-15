@@ -10,7 +10,7 @@
  */
 
 import { buildMainAgentSystemPrompt, buildSubagentSystemPrompt, createSkillCandidateVerifier, createTaskVerifier, createVerifiedObjectiveMemoryPublisher, executeObjectiveDelivery, executePlannedTask, executeSubagentTask, mainAgentTools, runGateway, verificationAgentTools } from "./gateway.ts";
-import { beemaxHome, beemaxRoot, consumeChannelCredential, loadConfig } from "./config.ts";
+import { beemaxHome, beemaxRoot, consumeChannelCredential, loadConfig, profileTaskGrantCapabilities } from "./config.ts";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { backupSqliteDatabase, MemoryStore, memoryPersistencePorts, verifySqliteDatabase } from "@beemax/memory";
 import { runDoctor } from "./doctor.ts";
@@ -1236,7 +1236,7 @@ async function runChat(config: ReturnType<typeof loadConfig>, requestedMode: { f
 	// Compact/Plain retain the durable text prompt for SSH and scripts.
 	const localApproval = new ToolApprovalBroker(async (_source, text) => {
 		if (presentationMode !== "full") process.stdout.write(`\n${text}\n`);
-	});
+	}, undefined, undefined, profileTaskGrantCapabilities(config));
 	const memory = new MemoryStore(config.memory.dbPath, config.profile);
 	const persistence = memoryPersistencePorts(memory);
 	const autonomyRollout = new AutonomyRolloutController({ store: persistence.autonomyRollout });

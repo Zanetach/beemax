@@ -116,6 +116,9 @@ describe("AgentSession dynamic tool registration", () => {
 					name: "sdk_tool",
 					label: "SDK Tool",
 					description: "Tool registered through createAgentSession",
+					aliases: ["保存草稿", "save draft"],
+					triggers: ["write the file"],
+					exclude: ["do not write"],
 					parameters: Type.Object({}),
 					execute: async () => ({
 						content: [{ type: "text", text: "ok" }],
@@ -126,6 +129,11 @@ describe("AgentSession dynamic tool registration", () => {
 		});
 
 		const sdkTool = session.getAllTools().find((tool) => tool.name === "sdk_tool");
+		expect(sdkTool).toMatchObject({
+			aliases: ["保存草稿", "save draft"],
+			triggers: ["write the file"],
+			exclude: ["do not write"],
+		});
 		expect(sdkTool?.sourceInfo).toMatchObject({
 			path: "<sdk:sdk_tool>",
 			source: "sdk",

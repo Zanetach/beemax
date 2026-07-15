@@ -242,12 +242,28 @@ async function restoreOrCreateSession(cwd: string, sessionDir: string, sessionId
 function installSecurityHook<Source extends BeeMaxRuntimeSource>(session: AgentSession, cwd: string, source: Source, authorizeTool: BeeMaxRuntimeAuthorization<Source> | undefined, policies: ToolPolicyRegistry, enterprisePolicy: EnterprisePolicyProvider | undefined, actionReliability: ((toolName: string) => MeasuredActionReliability) | undefined, executionGrant: ((source: Source) => { taskId: string; allowedCapabilities: string[]; status: "active" } | undefined) | undefined, proactiveMutationAuthority: ProactiveMutationAuthority<Source> | undefined, audit?: ToolRuntimeAuditSink, effects?: ToolEffectSink, currentTaskId?: (source: Source) => string | undefined): void {
 	const enterprisePolicies = new EnterprisePolicyRuntime(enterprisePolicy);
 	const governance = new ActionGovernance();
+	let budgetExecutionId: string | undefined;
+	let dispatchedToolCalls = 0;
 	const previous = session.agent.beforeToolCall;
 	session.agent.beforeToolCall = async (context, signal) => {
 		const priorResult = await previous?.(context, signal);
 		if (priorResult?.block) return priorResult;
-		const hardBlock = hardBlockReason(context.toolCall.name, context.args, cwd);
 		const policy = policies.get(context.toolCall.name);
+		if (!session.getActiveToolNames().includes(context.toolCall.name)) {
+			const reason = `Tool ${context.toolCall.name} is not active for the current Pi turn`;
+			audit?.({ phase: "blocked", source, toolName: context.toolCall.name, policy, at: Date.now(), reason });
+			return { block: true, reason };
+		}
+		const activeEnvelope = currentExecutionEnvelope(session);
+		if (budgetExecutionId !== activeEnvelope?.executionId) { budgetExecutionId = activeEnvelope?.executionId; dispatchedToolCalls = 0; }
+		const maxToolCalls = activeEnvelope?.budget?.maxToolCalls;
+		if (maxToolCalls !== undefined && dispatchedToolCalls >= maxToolCalls) {
+			const reason = `Agent tool-call budget exceeded (${maxToolCalls})`;
+			audit?.({ phase: "blocked", source, toolName: context.toolCall.name, policy, at: Date.now(), reason });
+			return { block: true, reason };
+		}
+		dispatchedToolCalls++;
+		const hardBlock = hardBlockReason(context.toolCall.name, context.args, cwd);
 		if (hardBlock) { audit?.({ phase: "blocked", source, toolName: context.toolCall.name, policy, at: Date.now(), reason: hardBlock }); return { block: true, reason: hardBlock }; }
 		let enterpriseDecision: EnterprisePolicyDecision | undefined;
 		try {

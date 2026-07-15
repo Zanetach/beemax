@@ -20,7 +20,7 @@ export async function createAgentParityAdapter({ system, options = {} }) {
 	const mcpServerPath = resolve(options.mcpServerPath || `${options.fixtureRoot}/mcp-server.mjs`);
 	return async (scenario, signal) => {
 		const workspace = await isolatedEvaluationWorkspace(options.fixtureRoot, "beemax-parity-beemax-");
-		const isolatedProfile = await createIsolatedProfile({ sourceHome, sourceProfile, workspace: workspace.cwd, system, provider: options.provider, fixtureRoot: options.fixtureRoot });
+		const isolatedProfile = await createIsolatedProfile({ sourceHome, sourceProfile, workspace: workspace.cwd, system, provider: options.provider, fixtureRoot: options.fixtureRoot, workspaceWritePolicy: options.workspaceWritePolicy });
 		const interactionPath = join(isolatedProfile.profileRoot, "interaction-events.jsonl");
 		const tracePath = join(isolatedProfile.profileRoot, "logs", "execution-trace.jsonl");
 		const memoryPath = join(isolatedProfile.profileRoot, "memory.db");
@@ -45,7 +45,7 @@ export async function createAgentParityAdapter({ system, options = {} }) {
 	};
 }
 
-export async function createIsolatedProfile({ sourceHome, sourceProfile, workspace, system, provider, fixtureRoot }) {
+export async function createIsolatedProfile({ sourceHome, sourceProfile, workspace, system, provider, fixtureRoot, workspaceWritePolicy }) {
 	const home = await mkdtemp(join(tmpdir(), "beemax-parity-profile-"));
 	const profile = "parity";
 	const profileRoot = join(home, "profiles", profile);
@@ -54,7 +54,7 @@ export async function createIsolatedProfile({ sourceHome, sourceProfile, workspa
 	for (const name of ["config.yaml", ".env", "SOUL.md", "USER.md", "auth.json", "credentials.vault"]) await copyIfPresent(join(sourceRoot, name), join(profileRoot, name));
 	await copyIfPresent(join(sourceRoot, "state", "credential-vault.key"), join(profileRoot, "state", "credential-vault.key"));
 	if (fixtureRoot) await copyIfPresent(resolve(fixtureRoot, "evaluation-research"), join(profileRoot, "skills", "evaluation-research"));
-	await appendProfileRouting(profileRoot, { BEEMAX_MODEL: system.model, BEEMAX_CWD: workspace, ...(provider ? { BEEMAX_PROVIDER: String(provider) } : {}) });
+	await appendProfileRouting(profileRoot, { BEEMAX_MODEL: system.model, BEEMAX_CWD: workspace, ...(provider ? { BEEMAX_PROVIDER: String(provider) } : {}), ...(workspaceWritePolicy ? { BEEMAX_WORKSPACE_WRITE_POLICY: String(workspaceWritePolicy) } : {}) });
 	return { home, profile, profileRoot, dispose: () => rm(home, { recursive: true, force: true }) };
 }
 

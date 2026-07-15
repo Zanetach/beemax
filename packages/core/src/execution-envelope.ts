@@ -3,6 +3,7 @@ import { createAccessScopeRef, type AccessScopeRef } from "./access-scope.ts";
 
 export type ExecutionTriggerKind = "interaction" | "automation" | "enterprise_event" | "task_transition" | "delegation" | "recovery" | "verification" | "compensation" | "manual";
 export type ExecutionMode = "normal" | "recovery" | "verification" | "correction";
+export type VerificationProtocol = "task_candidate_v1" | "skill_candidate_v1";
 export interface ExecutionBudgetRef { maxToolCalls?: number; maxTokens?: number; deadlineAt?: number; maxCorrectiveAttempts?: number; }
 export interface ProactiveActionAuthorityRef {
 	phase: "forward" | "compensation";
@@ -27,10 +28,13 @@ export interface ExecutionEnvelope {
 	accessScopeRef?: AccessScopeRef;
 	budget?: ExecutionBudgetRef;
 	mode: ExecutionMode;
+	/** Selects the structured verdict contract owned by this verification execution. */
+	verificationProtocol?: VerificationProtocol;
 }
 
 const EXECUTION_TRIGGER_KINDS = new Set<ExecutionTriggerKind>(["interaction", "automation", "enterprise_event", "task_transition", "delegation", "recovery", "verification", "compensation", "manual"]);
 const EXECUTION_MODES = new Set<ExecutionMode>(["normal", "recovery", "verification", "correction"]);
+const VERIFICATION_PROTOCOLS = new Set<VerificationProtocol>(["task_candidate_v1", "skill_candidate_v1"]);
 
 export function createExecutionEnvelope(input: Omit<ExecutionEnvelope, "mode"> & { mode?: ExecutionMode }): Readonly<ExecutionEnvelope> {
 	if (containsCredentialMaterial(JSON.stringify(input))) throw new Error("Execution Envelope cannot contain credential material");
@@ -38,6 +42,8 @@ export function createExecutionEnvelope(input: Omit<ExecutionEnvelope, "mode"> &
 	if ((input.trigger.kind === "compensation") !== Boolean(input.compensatesEffectId)) throw new Error("Execution Envelope Compensation requires an original Effect identity and dedicated trigger");
 	const mode = input.mode ?? "normal";
 	if (!EXECUTION_MODES.has(mode)) throw new Error("Execution Envelope mode is invalid");
+	if (input.verificationProtocol && !VERIFICATION_PROTOCOLS.has(input.verificationProtocol)) throw new Error("Execution Envelope verification protocol is invalid");
+	if (input.verificationProtocol && mode !== "verification") throw new Error("Execution Envelope verification protocol requires verification mode");
 	const budget = input.budget ? createBudget(input.budget) : undefined;
 	const accessScopeRef = input.accessScopeRef ? freezeAccessScope(input.accessScopeRef) : undefined;
 	const proactiveAction = input.proactiveAction ? freezeProactiveAction(input.proactiveAction) : undefined;
@@ -52,6 +58,7 @@ export function createExecutionEnvelope(input: Omit<ExecutionEnvelope, "mode"> &
 		...(accessScopeRef ? { accessScopeRef } : {}),
 		...(budget ? { budget } : {}),
 		mode,
+		...(input.verificationProtocol ? { verificationProtocol: input.verificationProtocol } : {}),
 	});
 }
 

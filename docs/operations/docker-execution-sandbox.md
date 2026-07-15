@@ -11,11 +11,19 @@ execution:
   backend: docker
   mode: all
   workspaceAccess: none # none | ro | rw
+  workspaceWritePolicy: approval-required # approval-required | allow-within-workspace
   image: node:22.19-alpine
   timeoutMs: 180000
 ```
 
 运行 `beemax doctor --profile <name>`。Docker daemon 不可用、`mode: all` 搭配 local，或配置值拼写错误都会失败，不会静默退回宿主执行。
+
+`workspaceWritePolicy` 控制 Profile 是否预先授权内置 `write` Tool：
+
+- `approval-required` 是默认值，每次写入继续走审批；适合交互式 Profile。
+- `allow-within-workspace` 只给当前 Task 的内置 `write` capability 签发 Execution Grant；适合无人值守但工作区受控的 Profile。也可通过 `BEEMAX_WORKSPACE_WRITE_POLICY` 配置。
+
+这个授权不会扩展到 `bash`、MCP 或其他写工具，也不能越过 Enterprise Policy deny、Core hard block、工作区路径校验、Effect reconciliation 或 Sandbox 的 `workspaceAccess`。因此 Docker 配置为 `none`/`ro` 时，Profile 写策略不会把挂载权限提升为 `rw`。
 
 ## 强制边界
 

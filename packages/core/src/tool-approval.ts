@@ -47,12 +47,14 @@ export class ToolApprovalBroker {
 	private readonly sendPrompt: ApprovalPromptSender;
 	private readonly timeoutMs: number;
 	private readonly audit?: ApprovalAuditSink;
+	private readonly profileTaskCapabilities: readonly string[];
 	private readonly listeners = new Set<(event: ToolApprovalEvent) => void>();
 
-	constructor(sendPrompt: ApprovalPromptSender, timeoutMs = DEFAULT_TIMEOUT_MS, audit?: ApprovalAuditSink) {
+	constructor(sendPrompt: ApprovalPromptSender, timeoutMs = DEFAULT_TIMEOUT_MS, audit?: ApprovalAuditSink, profileTaskCapabilities: readonly string[] = []) {
 		this.sendPrompt = sendPrompt;
 		this.timeoutMs = timeoutMs;
 		this.audit = audit;
+		this.profileTaskCapabilities = Object.freeze([...new Set(profileTaskCapabilities.map((name) => requiredCapabilityName(name)))].sort());
 	}
 
 	/** Start a fresh, turn-bounded execution grant. A new task never inherits approvals from the previous task. */
@@ -60,7 +62,7 @@ export class ToolApprovalBroker {
 		const sourceKey = sessionKeyForSource(source);
 		const current = this.taskGrants.get(sourceKey);
 		if (current?.taskId === taskId) return;
-		this.taskGrants.set(sourceKey, { taskId, allowedCapabilities: new Set() });
+		this.taskGrants.set(sourceKey, { taskId, allowedCapabilities: new Set(this.profileTaskCapabilities) });
 	}
 
 	/** End only the matching task so a stale completion cannot revoke a newer turn's grant. */
@@ -164,6 +166,12 @@ export class ToolApprovalBroker {
 	private emit(event: ToolApprovalEvent): void {
 		for (const listener of this.listeners) listener(event);
 	}
+}
+
+function requiredCapabilityName(value: string): string {
+	const normalized = value.trim();
+	if (!/^[a-zA-Z0-9_-]{1,128}$/.test(normalized)) throw new Error("Profile Task Grant capability name is invalid");
+	return normalized;
 }
 
 function parseChoice(text: string): ToolApprovalChoice | undefined {

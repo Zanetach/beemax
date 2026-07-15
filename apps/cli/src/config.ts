@@ -141,6 +141,7 @@ export interface BeeMaxConfig {
 		backend: "local" | "docker";
 		mode: "off" | "all";
 		workspaceAccess: "none" | "ro" | "rw";
+		workspaceWritePolicy: "approval-required" | "allow-within-workspace";
 		image: string;
 		timeoutMs: number;
 	};
@@ -173,6 +174,14 @@ export interface BeeMaxConfig {
 		profileEnvPath: string;
 		channelCredentialEnvironment: "profile" | "ambient";
 	};
+}
+
+const NO_PROFILE_TASK_CAPABILITIES = Object.freeze([] as string[]);
+const WORKSPACE_WRITE_TASK_CAPABILITIES = Object.freeze(["write"]);
+
+/** Compile Profile execution policy into the capabilities seeded into each fresh Task grant. */
+export function profileTaskGrantCapabilities(config: Pick<BeeMaxConfig, "execution">): readonly string[] {
+	return config.execution.workspaceWritePolicy === "allow-within-workspace" ? WORKSPACE_WRITE_TASK_CAPABILITIES : NO_PROFILE_TASK_CAPABILITIES;
 }
 
 export function loadConfig(configPath?: string, profile = "default"): BeeMaxConfig {
@@ -363,6 +372,7 @@ export function loadConfig(configPath?: string, profile = "default"): BeeMaxConf
 			backend: executionBackend(env.BEEMAX_EXECUTION_BACKEND ?? cfg.execution?.backend),
 			mode: sandboxMode(env.BEEMAX_SANDBOX_MODE ?? cfg.execution?.mode),
 			workspaceAccess: workspaceAccess(env.BEEMAX_SANDBOX_WORKSPACE_ACCESS ?? cfg.execution?.workspaceAccess),
+			workspaceWritePolicy: workspaceWritePolicy(env.BEEMAX_WORKSPACE_WRITE_POLICY ?? cfg.execution?.workspaceWritePolicy),
 			image: str(env.BEEMAX_SANDBOX_IMAGE ?? cfg.execution?.image ?? DEFAULT_DOCKER_SANDBOX_IMAGE),
 			timeoutMs: boundedNumber(env.BEEMAX_SANDBOX_TIMEOUT_MS ?? cfg.execution?.timeoutMs, 180_000, 1_000, 600_000),
 		},
@@ -479,6 +489,12 @@ function workspaceAccess(value: unknown): "none" | "ro" | "rw" {
 	if (configured === undefined) return "none";
 	if (configured === "none" || configured === "ro" || configured === "rw") return configured;
 	throw new Error(`Invalid execution.workspaceAccess: ${configured}`);
+}
+function workspaceWritePolicy(value: unknown): "approval-required" | "allow-within-workspace" {
+	const configured = optional(value);
+	if (configured === undefined) return "approval-required";
+	if (configured === "approval-required" || configured === "allow-within-workspace") return configured;
+	throw new Error(`Invalid execution.workspaceWritePolicy: ${configured}`);
 }
 function parseNumber(value: unknown, fallback: number): number {
 	const number = Number(value);

@@ -56,7 +56,7 @@ test("BeeMax runtime connects approved mutating Tool calls to the Effect lifecyc
 	const events = [];
 	const source = { platform: "cli", chatId: "terminal", chatType: "dm", userId: "user" };
 	try {
-		const envelope = createExecutionEnvelope({ executionId: "execution:effect", trigger: { kind: "delegation" }, taskId: "task:envelope" });
+		const envelope = createExecutionEnvelope({ executionId: "execution:effect", trigger: { kind: "delegation" }, taskId: "task:envelope", budget: { maxToolCalls: 1 } });
 		const factory = buildBeeMaxRuntimeFactory({
 			provider: "anthropic", model: "claude-sonnet-4-5", cwd: root, agentDir: join(root, "agent"), getApiKey: () => "test",
 			systemPrompt: "test", skillToolset: "safe", tools: ["mutation"], authorizeTool: async () => ({ allowed: true }),
@@ -73,6 +73,31 @@ test("BeeMax runtime connects approved mutating Tool calls to the Effect lifecyc
 			assert.equal(await session.agent.beforeToolCall(common), undefined);
 			await session.agent.afterToolCall({ ...common, result: { content: [], details: {} }, isError: false });
 			assert.deepEqual(events, [["begin", "task:envelope", "call-1", "mutation"], ["finish", "call-1", "mutation", false]]);
+			const second = await session.agent.beforeToolCall({ ...common, toolCall: { id: "call-2", name: "mutation", arguments: {} } });
+			assert.equal(second.block, true);
+			assert.match(second.reason, /tool-call budget exceeded/i);
+			assert.equal(events.length, 2);
+		} finally { session.dispose(); }
+	} finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("BeeMax rejects a model Tool call that is not in the current Pi Active Tools", async () => {
+	const root = mkdtempSync(join(tmpdir(), "beemax-hidden-tool-call-"));
+	const source = { platform: "cli", chatId: "terminal", chatType: "dm", userId: "user" };
+	let approvals = 0;
+	try {
+		const factory = buildBeeMaxRuntimeFactory({
+			provider: "anthropic", model: "claude-sonnet-4-5", cwd: root, agentDir: join(root, "agent"), getApiKey: () => "test",
+			systemPrompt: "test", skillToolset: "safe", tools: ["mutation"], authorizeTool: async () => { approvals++; return { allowed: true }; },
+			createTools: () => [withToolPolicy(defineTool({ name: "mutation", label: "Mutation", description: "Mutate", parameters: {}, execute: async () => ({ content: [], details: {} }) }), MUTATING_TOOL_POLICY)],
+		});
+		const session = await factory("hidden-tool-call", source);
+		try {
+			session.setActiveToolsByName([]);
+			const blocked = await session.agent.beforeToolCall({ assistantMessage: {}, toolCall: { id: "call-hidden", name: "mutation", arguments: {} }, args: {}, context: {} });
+			assert.equal(blocked.block, true);
+			assert.match(blocked.reason, /not active for the current Pi turn/i);
+			assert.equal(approvals, 0);
 		} finally { session.dispose(); }
 	} finally { rmSync(root, { recursive: true, force: true }); }
 });
@@ -89,6 +114,7 @@ test("Enterprise Policy denies an action before legacy approval and Effect admis
 		});
 		const factory = buildBeeMaxRuntimeFactory({
 			provider: "anthropic", model: "claude-sonnet-4-5", cwd: root, agentDir: join(root, "agent"), getApiKey: () => "test", systemPrompt: "test", skillToolset: "safe", tools: ["mutation"], enterprisePolicy,
+			executionGrant: () => ({ taskId: "task:profile-grant", allowedCapabilities: ["mutation"], status: "active" }),
 			authorizeTool: async () => { approvals++; return { allowed: true }; }, toolAudit: (event) => audit.push(event),
 			toolEffects: { begin() { effects++; return "effect"; }, finish() {} },
 			createTools: () => [withToolPolicy(defineTool({ name: "mutation", label: "Mutation", description: "Mutate", parameters: {}, execute: async () => ({ content: [], details: {} }) }), MUTATING_TOOL_POLICY)],
@@ -774,7 +800,7 @@ test("BeeMax Agent Runtime passes native image attachments to Pi without prompt 
 		},
 	});
 	await runtime.run({ source, text: "describe this", images, timeoutMs: 1_000 });
-	assert.equal(received.text, "describe this");
+	assert.match(received.text, /(?:^|\n\n)describe this$/);
 	assert.deepEqual(received.options.images, images);
 	assert.doesNotMatch(received.text, /aW1hZ2U/);
 	runtime.dispose();

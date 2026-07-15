@@ -6,6 +6,8 @@ import test from "node:test";
 import { MemoryStore } from "@beemax/memory";
 import { createAccessScopeRef, createExecutionEnvelope, createSituation, FileExecutionTraceStore } from "@beemax/core";
 import { buildSubagentSystemPrompt, createTaskVerifier, createVerifiedObjectiveMemoryPublisher, executeObjectiveDelivery, executePlannedTask, verificationAgentTools } from "../dist/gateway.js";
+import { createExecutionRoleTools } from "../dist/agent-factory.js";
+import { createSuccessfulVerificationReceipt, normalizeVerifierEvidenceRefs } from "../dist/verification-protocol.js";
 
 test("Sub-Agents must discover admitted capabilities and fail explicitly instead of weakening the Task contract", () => {
 	const prompt = buildSubagentSystemPrompt();
@@ -17,12 +19,42 @@ test("Sub-Agents must discover admitted capabilities and fail explicitly instead
 test("verification agents receive only the required local read capabilities in addition to shared read-only tools", () => {
 	const tools = verificationAgentTools(["mcp_read"]);
 	assert.ok(tools.includes("read"));
-	assert.ok(tools.includes("capability_discover"));
-	assert.ok(tools.includes("skill_read"));
 	assert.ok(tools.includes("task_checkpoint_save"));
+	assert.ok(tools.includes("verification_submit"));
 	assert.ok(tools.includes("mcp_read"));
+	assert.ok(!tools.includes("capability_discover"));
+	assert.ok(!tools.includes("skill_read"));
 	assert.ok(!tools.includes("write"));
 	assert.ok(!tools.includes("bash"));
+});
+
+test("the internal verdict Tool exists only in verification execution sessions", () => {
+	assert.deepEqual(createExecutionRoleTools().map((tool) => tool.name), []);
+	assert.deepEqual(createExecutionRoleTools({ mode: "normal" }).map((tool) => tool.name), []);
+	assert.deepEqual(createExecutionRoleTools({ mode: "verification", verificationProtocol: "skill_candidate_v1" }).map((tool) => tool.name), []);
+	assert.deepEqual(createExecutionRoleTools({ mode: "verification", verificationProtocol: "task_candidate_v1" }).map((tool) => tool.name), ["verification_submit"]);
+});
+
+test("verification evidence references resolve exact Tool names to concrete call receipts", () => {
+	const receipts = new Map([
+		["read-1", { callId: "read-1", toolName: "read", reference: "execution:e:tool-call:read-1", argumentsSha256: "sha256:a", resultSha256: "sha256:b" }],
+		["read-2", { callId: "read-2", toolName: "read", reference: "execution:e:tool-call:read-2", argumentsSha256: "sha256:c", resultSha256: "sha256:d" }],
+		["search-1", { callId: "search-1", toolName: "web_search", reference: "execution:e:tool-call:search-1", argumentsSha256: "sha256:e", resultSha256: "sha256:f" }],
+	]);
+	assert.deepEqual(normalizeVerifierEvidenceRefs("tool-call:read-1", receipts), ["tool-call:read-1"]);
+	assert.deepEqual(normalizeVerifierEvidenceRefs("tool:web_search", receipts), ["tool-call:search-1"]);
+	assert.deepEqual(normalizeVerifierEvidenceRefs("tool:read", receipts), ["tool-call:read-1", "tool-call:read-2"]);
+	assert.deepEqual(normalizeVerifierEvidenceRefs("read:draft.md", receipts), []);
+	assert.deepEqual(normalizeVerifierEvidenceRefs("candidate", receipts), []);
+});
+
+test("verification receipts preserve content-free argument and result identities and reject empty control results", () => {
+	const receipt = createSuccessfulVerificationReceipt({ executionId: "verify:1", callId: "read:1", toolName: "read", args: { path: "draft.md" }, result: { content: [{ type: "text", text: "draft" }], details: { path: "draft.md" } } });
+	assert.equal(receipt.reference, "execution:verify:1:tool-call:read:1");
+	assert.match(receipt.argumentsSha256, /^sha256:[a-f0-9]{64}$/);
+	assert.match(receipt.resultSha256, /^sha256:[a-f0-9]{64}$/);
+	assert.equal(createSuccessfulVerificationReceipt({ executionId: "verify:1", callId: "empty", toolName: "read", args: {}, result: {} }), undefined);
+	assert.equal(createSuccessfulVerificationReceipt({ executionId: "verify:1", callId: "submit", toolName: "verification_submit", args: {}, result: { details: { verdict: true } } }), undefined);
 });
 
 test("recovered Pi execution receives durable Situation without exposing Access Scope provenance", async () => {
@@ -201,17 +233,26 @@ test("Objective delivery receives Situation Work Context", async () => {
 test("independent verification receives the Task Situation", async () => {
 	let prompt = "";
 	let envelope;
-	let activeTools = ["capability_discover", "read", "skill_read", "web_search", "agent_reach_search", "web_extract", "write"];
+	let emit = () => undefined;
+	let activeTools = ["verification_submit", "capability_discover", "read", "skill_read", "web_search", "agent_reach_search", "web_extract", "write"];
 	let toolsDuringPrompt = [];
 	const agent = { state: { model: { id: "test" }, messages: [] } };
 	const factory = async (_source, _profile, receivedEnvelope) => {
 		envelope = receivedEnvelope;
 		return {
-			agent, subscribe: () => () => undefined,
+			agent, subscribe: (listener) => { emit = listener; return () => undefined; },
 			getActiveToolNames: () => [...activeTools],
 			getAllTools: () => activeTools.map((name) => ({ name })),
 			setActiveToolsByName: (names) => { activeTools = [...names]; },
-			prompt: async (text) => { prompt = text; toolsDuringPrompt = [...activeTools]; agent.state.messages = [{ role: "assistant", content: [{ type: "text", text: 'Verification complete.\n<beemax-verdict>{"status":"accepted","reason":"All observable criteria passed","assertions":[{"criterionId":"C1","evidence":"Candidate value is Friday","evidenceRefs":["candidate"]}]}</beemax-verdict>' }], usage: { input: 1, output: 1 } }]; },
+			prompt: async (text) => {
+				prompt = text; toolsDuringPrompt = [...activeTools];
+				emit({ type: "tool_execution_start", toolCallId: "read-situation", toolName: "read", args: { path: "result.txt" } });
+				emit({ type: "tool_execution_end", toolCallId: "read-situation", toolName: "read", args: { path: "result.txt" }, isError: false, result: { content: [{ type: "text", text: "Friday" }], details: {} } });
+				const args = { status: "accepted", reason: "All observable criteria passed", assertions: [{ criterionId: "C1", evidence: "Observed Friday", evidenceRefs: ["tool:read"] }] };
+				emit({ type: "tool_execution_start", toolCallId: "verdict-situation", toolName: "verification_submit", args });
+				emit({ type: "tool_execution_end", toolCallId: "verdict-situation", toolName: "verification_submit", args, isError: false, result: { content: [], details: {} } });
+				agent.state.messages = [{ role: "assistant", content: [{ type: "text", text: "Verification submitted." }], usage: { input: 1, output: 1 } }];
+			},
 		abort: async () => undefined, dispose: () => undefined,
 	}; };
 	const verify = createTaskVerifier(factory, 1_000);
@@ -228,12 +269,15 @@ test("independent verification receives the Task Situation", async () => {
 	assert.equal(envelope.taskId, "task-verify");
 	assert.equal(envelope.taskRunId, "run-verify");
 	assert.equal(envelope.trigger.kind, "verification");
-	assert.deepEqual(toolsDuringPrompt, ["capability_discover", "read", "web_search", "agent_reach_search", "web_extract"]);
+	assert.equal(envelope.verificationProtocol, "task_candidate_v1");
+	assert.equal(envelope.budget.maxToolCalls, 6);
+	assert.equal(envelope.budget.maxTokens, 50_000);
+	assert.deepEqual(toolsDuringPrompt, ["verification_submit", "read", "web_search", "agent_reach_search", "web_extract"]);
 });
 
-test("independent verification treats invalid, multiple, or unavailable verdicts as unavailable instead of acceptance", async () => {
+test("independent verification rejects free-text verdicts instead of parsing model-authored envelopes", async () => {
 	for (const answer of ["ACCEPT: unable to verify", '<beemax-verdict>{"status":"accepted","reason":"first","assertions":[]}</beemax-verdict><beemax-verdict>{"status":"accepted","reason":"second","assertions":[]}</beemax-verdict>', '<beemax-verdict>{"status":"unavailable","reason":"source provider offline"}</beemax-verdict>']) {
-		let activeTools = ["capability_discover", "read", "web_search", "agent_reach_search", "web_extract"];
+		let activeTools = ["verification_submit", "capability_discover", "read", "web_search", "agent_reach_search", "web_extract"];
 		const agent = { state: { model: { id: "test" }, messages: [] } };
 		const factory = async () => ({
 			agent, subscribe: () => () => undefined,
@@ -246,13 +290,71 @@ test("independent verification treats invalid, multiple, or unavailable verdicts
 	}
 });
 
-test("independent verification cannot accept an external URL without fetching it", async () => {
-	let activeTools = ["capability_discover", "read", "web_search", "agent_reach_search", "web_extract"];
+test("independent verification accepts one schema-valid verdict Tool receipt without parsing free-form model text", async () => {
+	let emit = () => undefined;
+	let activeTools = ["verification_submit", "read"];
 	const agent = { state: { model: { id: "test" }, messages: [] } };
 	const factory = async () => ({
-		agent, subscribe: () => () => undefined,
+		agent,
+		subscribe: (listener) => { emit = listener; return () => undefined; },
+		getActiveToolNames: () => [...activeTools],
+		getAllTools: () => activeTools.map((name) => ({ name })),
+		setActiveToolsByName: (names) => { activeTools = [...names]; },
+		prompt: async () => {
+			emit({ type: "tool_execution_start", toolCallId: "read-1", toolName: "read", args: { path: "draft.md" } });
+			emit({ type: "tool_execution_end", toolCallId: "read-1", toolName: "read", args: { path: "draft.md" }, isError: false, result: { content: [{ type: "text", text: "draft" }], details: {} } });
+			const args = { status: "accepted", reason: "The requested draft exists", assertions: [{ criterionId: "C1", evidence: "draft.md was observed", evidenceRefs: ["tool:read"] }] };
+			emit({ type: "tool_execution_start", toolCallId: "verdict-1", toolName: "verification_submit", args });
+			emit({ type: "tool_execution_end", toolCallId: "verdict-1", toolName: "verification_submit", args, isError: false, result: { content: [{ type: "text", text: "Verdict recorded" }], details: {} } });
+			agent.state.messages = [{ role: "assistant", content: [{ type: "text", text: "I submitted the verdict." }], usage: { input: 1, output: 1 } }];
+		},
+		abort: async () => undefined,
+		dispose: () => undefined,
+	});
+	const verify = createTaskVerifier(factory, 1_000, undefined, ["verification_submit", "read"]);
+	const result = await verify({ id: "task", ownerKey: "owner", kind: "delegated", title: "Verify draft", acceptanceCriteria: "draft exists", status: "running", createdAt: 1, executionScope: { platform: "cli", chatId: "local", chatType: "dm", userId: "local" } }, { output: "draft.md" });
+	assert.equal(result.accepted, true);
+	assert.match(result.evidence, /tool-call:read-1/);
+});
+
+test("independent verification rejects a second structured verdict attempt even when the Tool rejects it", async () => {
+	let emit = () => undefined;
+	let activeTools = ["verification_submit", "read"];
+	const agent = { state: { model: { id: "test" }, messages: [] } };
+	const factory = async () => ({
+		agent, subscribe: (listener) => { emit = listener; return () => undefined; },
 		getActiveToolNames: () => [...activeTools], getAllTools: () => activeTools.map((name) => ({ name })), setActiveToolsByName: (names) => { activeTools = [...names]; },
-		prompt: async () => { agent.state.messages = [{ role: "assistant", content: [{ type: "text", text: '<beemax-verdict>{"status":"accepted","reason":"looks plausible","assertions":[{"criterionId":"C1","evidence":"claimed URL","evidenceRefs":["candidate"]}]}</beemax-verdict>' }], usage: { input: 1, output: 1 } }]; },
+		prompt: async () => {
+			emit({ type: "tool_execution_start", toolCallId: "read-1", toolName: "read", args: { path: "draft.md" } });
+			emit({ type: "tool_execution_end", toolCallId: "read-1", toolName: "read", isError: false, result: {} });
+			const args = { status: "accepted", reason: "observed", assertions: [{ criterionId: "C1", evidence: "observed", evidenceRefs: ["tool:read"] }] };
+			emit({ type: "tool_execution_start", toolCallId: "verdict-1", toolName: "verification_submit", args });
+			emit({ type: "tool_execution_end", toolCallId: "verdict-1", toolName: "verification_submit", isError: false, result: {} });
+			emit({ type: "tool_execution_start", toolCallId: "verdict-2", toolName: "verification_submit", args });
+			emit({ type: "tool_execution_end", toolCallId: "verdict-2", toolName: "verification_submit", isError: true, result: {} });
+			agent.state.messages = [{ role: "assistant", content: [{ type: "text", text: "done" }], usage: { input: 1, output: 1 } }];
+		},
+		abort: async () => undefined, dispose: () => undefined,
+	});
+	const verify = createTaskVerifier(factory, 1_000, undefined, ["verification_submit", "read"]);
+	await assert.rejects(() => verify({ id: "task", ownerKey: "owner", kind: "delegated", title: "Verify", acceptanceCriteria: "draft exists", status: "running", createdAt: 1, executionScope: { platform: "cli", chatId: "local", chatType: "dm", userId: "local" } }, { output: "draft.md" }), /exactly one successful structured verdict/);
+});
+
+test("independent verification cannot accept an external URL without fetching it", async () => {
+	let emit = () => undefined;
+	let activeTools = ["verification_submit", "capability_discover", "read", "web_search", "agent_reach_search", "web_extract"];
+	const agent = { state: { model: { id: "test" }, messages: [] } };
+	const factory = async () => ({
+		agent, subscribe: (listener) => { emit = listener; return () => undefined; },
+		getActiveToolNames: () => [...activeTools], getAllTools: () => activeTools.map((name) => ({ name })), setActiveToolsByName: (names) => { activeTools = [...names]; },
+		prompt: async () => {
+			emit({ type: "tool_execution_start", toolCallId: "search-1", toolName: "web_search", args: { query: "fact" } });
+			emit({ type: "tool_execution_end", toolCallId: "search-1", toolName: "web_search", args: { query: "fact" }, isError: false, result: { content: [{ type: "text", text: "search result" }], details: {} } });
+			const args = { status: "accepted", reason: "looks plausible", assertions: [{ criterionId: "C1", evidence: "claimed URL", evidenceRefs: ["tool:web_search"] }] };
+			emit({ type: "tool_execution_start", toolCallId: "verdict-1", toolName: "verification_submit", args });
+			emit({ type: "tool_execution_end", toolCallId: "verdict-1", toolName: "verification_submit", args, isError: false, result: {} });
+			agent.state.messages = [{ role: "assistant", content: [{ type: "text", text: "submitted" }], usage: { input: 1, output: 1 } }];
+		},
 		abort: async () => undefined, dispose: () => undefined,
 	});
 	const verify = createTaskVerifier(factory, 1_000);
