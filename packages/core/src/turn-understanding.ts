@@ -54,7 +54,7 @@ function detectAction(text: string, hasActiveObjective: boolean): TurnAction {
 	if (/取消|停止|终止|cancel|stop|abort/.test(actionable)) return "cancel";
 	if (/不是|改成|更正|纠正|修改为|rather than|change (?:it )?to|correction/.test(actionable)) return "correct";
 	if (hasActiveObjective && /继续|接着|刚才|上一个|之前的|continue|resume|previous|carry on/.test(actionable)) return "continue";
-	if (/^(?:查询|查一下|看看|列出|what|which|show|list|find|search)/.test(actionable)) return "query";
+	if (/^(?:查询|查一下|看看|列出|解释|说明|介绍|为什么|为何|怎么|如何|什么是|what|which|why|how|explain|describe|show|list|find|search)/i.test(actionable)) return "query";
 	return "create";
 }
 

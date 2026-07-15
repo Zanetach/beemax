@@ -458,7 +458,7 @@ test("a direct conversational answer does not create durable Objective work", as
 		abort: async () => undefined, dispose: () => undefined,
 	}) });
 
-	await runtime.run({ source, text: "What is the answer?", timeoutMs: 1_000 });
+	await runtime.run({ source, text: "解释 Agent 的 Capability Routing，并给出一个例子。仅操作本次隔离评测目录；不要访问外部系统。", timeoutMs: 1_000 });
 
 	assert.equal(tasks.size, 0);
 	runtime.dispose();
