@@ -1,5 +1,5 @@
 import type { AgentScope } from "./agent-scope.ts";
-import type { DeliveryTarget } from "./delivery-port.ts";
+import type { DeliveryReceipt, DeliveryTarget } from "./delivery-port.ts";
 import type { AccessScopeRef } from "./access-scope.ts";
 import type { Situation } from "./situation.ts";
 import type { TaskCheckpoint } from "./task-checkpoint.ts";
@@ -50,6 +50,27 @@ export interface TaskPlanCompletionNotice {
 	planStatus: Extract<TaskPlanStatus, "succeeded" | "failed" | "cancelled">;
 	title: string; taskCount: number; succeeded: number; failed: number; cancelled: number;
 	status: "queued" | "delivering" | "delivered" | "abandoned"; claimToken?: string; attempts: number; nextAttemptAt: number; createdAt: number; abandonedAt?: number; error?: string;
+}
+
+/** One verified Objective payload awaiting durable channel acknowledgement. */
+export interface ObjectiveCompletion {
+	id: string;
+	objectiveId: string;
+	ownerKey: string;
+	planId?: string;
+	target: DeliveryTarget;
+	deliveryIdempotencyKey: string;
+	title: string;
+	result: string;
+	evidence?: string;
+	status: "queued" | "delivering" | "delivered" | "blocked";
+	claimToken?: string;
+	attempts: number;
+	nextAttemptAt: number;
+	createdAt: number;
+	receipt?: DeliveryReceipt;
+	blockedAt?: number;
+	error?: string;
 }
 export type TaskPlanTransition = Pick<TaskPlanRecord, "status" | "taskCount" | "succeeded" | "failed" | "cancelled" | "verified" | "correctiveAttempts"> & Partial<Pick<TaskPlanRecord, "startedAt" | "finishedAt">>;
 export interface TaskPlanQuery { ownerKeys: string[]; id?: string; statuses?: TaskPlanStatus[]; limit?: number; }
@@ -157,6 +178,15 @@ export interface TaskLedger {
 	verificationCandidates?(now?: number, limit?: number, excludePlanIds?: string[]): TaskRecord[];
 	deferCandidateVerification?(ownerKeys: string[], taskId: string, now?: number): boolean;
 	resolveCandidateVerification?(ownerKeys: string[], taskId: string, resolution: TaskCandidateVerificationResolution, now?: number): boolean;
+	enqueueObjectiveCompletion?(ownerKey: string, objectiveId: string, now?: number, notBefore?: number): boolean;
+	getObjectiveCompletion?(id: string): ObjectiveCompletion | undefined;
+	claimObjectiveCompletions?(platform: string, now?: number, limit?: number, leaseMs?: number): ObjectiveCompletion[];
+	completeObjectiveCompletion?(id: string, claimToken: string, receipt: DeliveryReceipt, now?: number): boolean;
+	acknowledgeObjectiveCompletion?(id: string, receipt: DeliveryReceipt, now?: number): boolean;
+	failObjectiveCompletion?(id: string, claimToken: string, now?: number): boolean;
+	deferObjectiveCompletion?(id: string, claimToken: string, retryAt: number, now?: number): boolean;
+	renewObjectiveCompletion?(id: string, claimToken: string, leaseExpiresAt: number): boolean;
+	blockObjectiveCompletion?(id: string, claimToken: string, error: string, now?: number): boolean;
 	prepareTaskCorrections?(maxCorrectiveAttempts: number, now?: number): number;
 	enqueueTaskPlanCompletionNotice?(ownerKey: string, planId: string, now?: number): boolean;
 	claimTaskPlanCompletionNotices?(platform: string, now?: number, limit?: number, leaseMs?: number): TaskPlanCompletionNotice[];

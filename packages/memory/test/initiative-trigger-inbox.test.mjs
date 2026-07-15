@@ -30,6 +30,7 @@ test("durable Initiative Trigger inbox is idempotent and fenced across MemorySto
 		assert.equal(claimedA.length + claimedB.length, 1);
 		const claimed = claimedA[0] ?? claimedB[0];
 		assert.ok(claimed.claimToken);
+		assert.equal(first.renewInitiativeTrigger(claimed.id, claimed.claimToken, Date.now() + 10_000), true);
 		assert.equal(second.completeInitiativeTrigger(claimed.id, "wrong-token", { decision: "observed", observationId: "observation:1", notificationRequired: true }), false);
 		assert.equal(first.completeInitiativeTrigger(claimed.id, claimed.claimToken, { decision: "observed", observationId: "observation:1", notificationRequired: true }), true);
 

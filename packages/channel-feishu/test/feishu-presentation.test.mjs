@@ -1,21 +1,26 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { FeishuAdapter } from "../dist/index.js";
+import { interactionCompletionDeliveryKey } from "@beemax/core";
 
-const source = { platform: "feishu", chatId: "chat", chatType: "dm", userId: "user", messageId: "incoming" };
+const source = { platform: "feishu", chatId: "chat", chatType: "dm", userId: "user", messageId: "incoming", replyToMessageId: "incoming" };
 
 test("Feishu Adapter owns rich Turn presentation and exposes only the Channel Runtime presenter interface", async () => {
 	const cards = [];
 	const bindings = [];
+	const cardKeys = [];
+	const textDeliveries = [];
 	const adapter = new FeishuAdapter({
 		appId: "app", appSecret: "secret", domain: "feishu", connectionMode: "websocket",
 		requireMention: true, allowedUsers: ["user"], allowedChats: [], allowAllUsers: false,
 	});
-	adapter.sendCard = async (_chatId, card) => { cards.push(card); return { success: true, messageId: "card-1" }; };
+	adapter.sendCard = async (_chatId, card, _replyTo, _replyInThread, idempotencyKey) => { cards.push(card); cardKeys.push(idempotencyKey); return { success: true, messageId: "card-1" }; };
 	adapter.updateCard = async (_messageId, card) => { cards.push(card); return { success: true, messageId: "card-1" }; };
 	adapter.sendTyping = async () => undefined;
 	adapter.stopTyping = async () => undefined;
-	adapter.send = async () => ({ success: true, messageId: "text" });
+	adapter.send = async (_chatId, text, options) => { textDeliveries.push({ text, options }); return { success: true, messageId: "text" }; };
+	const streamedAnswer = "x".repeat(50_001);
+	const canonicalResult = streamedAnswer.slice(0, 50_000);
 
 	const turn = adapter.presentation.open({
 		source,
@@ -24,15 +29,19 @@ test("Feishu Adapter owns rich Turn presentation and exposes only the Channel Ru
 		onBinding: (messageId, pendingApprovalId) => bindings.push({ messageId, pendingApprovalId }),
 	});
 	await turn.start();
-	await turn.onEvent({ type: "answer.delta", sessionId: "session", scope: source, turnId: "turn", at: 1, sequence: 1, text: "真实答案" });
-	const result = { answer: "真实答案", model: "test", durationMs: 1, usage: {} };
+	await turn.onEvent({ type: "answer.delta", sessionId: "session", scope: source, turnId: "turn", at: 1, sequence: 1, text: streamedAnswer });
+	const result = { answer: streamedAnswer, model: "test", durationMs: 1, usage: {} };
 	await turn.onEvent({ type: "turn.finished", sessionId: "session", scope: source, turnId: "turn", at: 2, sequence: 2, result });
-	await turn.finish(result.answer);
+	const durableKey = interactionCompletionDeliveryKey("profile", source, source.messageId);
+	const receipt = await turn.finish(canonicalResult, { idempotencyKey: durableKey });
 	await turn.close(false);
 
 	assert.ok(cards.length >= 1);
-	assert.match(JSON.stringify(cards.at(-1)), /真实答案/);
+	assert.match(JSON.stringify(cards.at(-1)), /xxxxx/);
 	assert.deepEqual(bindings.at(-1), { messageId: "card-1", pendingApprovalId: undefined });
+	assert.notEqual(cardKeys[0], durableKey, "transient progress and durable final delivery must not share a Provider key");
+	assert.deepEqual(textDeliveries, [{ text: canonicalResult, options: { idempotencyKey: durableKey, replyTo: "incoming", replyInThread: false } }]);
+	assert.deepEqual(receipt, { idempotencyKey: durableKey, deliveredAt: receipt.deliveredAt, providerMessageId: "text" });
 });
 
 test("Feishu work progress degrades to mandatory text delivery when CardKit is unavailable", async () => {

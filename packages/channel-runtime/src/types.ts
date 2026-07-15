@@ -125,5 +125,6 @@ export type ObservationHandler = (observation: InboundObservation) => void | Pro
 
 export interface SendOptions {
 	replyTo?: string;
+	replyInThread?: boolean;
 	idempotencyKey?: string;
 }

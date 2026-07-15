@@ -8,7 +8,7 @@
  */
 
 import { AutomationStore } from "@beemax/automation";
-import { ActionGovernance, AutonomyRolloutController, AutomationDeliveryWorker, AutomationScheduler, BeeMaxAgentRuntime, DeliveryDeferredError, DeterministicSituationBuilder, FileCredentialVault, FileCredentialVaultAuditJournal, GroupObservationRecorder, HeartbeatRunner, InitiativeRuntime, InitiativeTriggerService, PiAmbientObservationEvaluator, PiWorkContractBuilder, ProactiveInvestigationRuntime, TaskPlanNoticeDeliveryService, TaskTransitionInitiativeAdapter, ToolApprovalBroker, ToolPolicyRegistry, VERIFICATION_SUBMIT_TOOL_NAME, buildActiveTaskPreservationEnvelope, buildTaskPreservationEnvelope, canonicalUserId, containsCredentialMaterial, conversationKey, responsibilityOwnerKey, responsibilityOwnerKeys, createExecutionEnvelope, createSubagentTools, createTaskCheckpoint, createTaskLedgerTools, createTaskOrchestrationTools, decideInitiativeFromSituation, guardVerifiedObjectiveMemoryPublisher, isVerifiedAutomationOutcome, redactCredentialMaterial, renderTaskCheckpoint, selectTurnTools, taskCriterionDefinitions, taskRequiresCurrentSourceEvidence, type AgentRuntimePort, type AmbientObservationEvaluator, type BeeMaxAgentRunEvent, type BeeMaxAgentRunEventSink, type ContextCompactionAuditEvent, type DeliveryPort, type ExecutionEnvelope, type ExecutionTraceSink, type InitiativeObservation, type ObjectiveDeliveryInput, type SkillCandidateTrialInput, type SkillTrialAssertion, type SkillTrialToolCall, type SubagentTask, type TaskGraphExecutionContext, type TaskGraphExecutionResult, type TaskGraphVerifier, type TaskLedger, type TaskRecord, type ToolEffectProjectionReader, type VerifiedObjectiveMemoryPublisher } from "@beemax/core";
+import { ActionGovernance, AutonomyRolloutController, AutomationDeliveryWorker, AutomationScheduler, BeeMaxAgentRuntime, DeliveryDeferredError, DeterministicSituationBuilder, FileCredentialVault, FileCredentialVaultAuditJournal, GroupObservationRecorder, HeartbeatRunner, InitiativeRuntime, InitiativeTriggerService, ObjectiveCompletionDeliveryService, PiAmbientObservationEvaluator, PiWorkContractBuilder, ProactiveInvestigationRuntime, TaskPlanNoticeDeliveryService, TaskTransitionInitiativeAdapter, ToolApprovalBroker, ToolPolicyRegistry, VERIFICATION_SUBMIT_TOOL_NAME, buildActiveTaskPreservationEnvelope, buildTaskPreservationEnvelope, canonicalUserId, containsCredentialMaterial, conversationKey, responsibilityOwnerKey, responsibilityOwnerKeys, createExecutionEnvelope, createSubagentTools, createTaskCheckpoint, createTaskLedgerTools, createTaskOrchestrationTools, decideInitiativeFromSituation, guardVerifiedObjectiveMemoryPublisher, isVerifiedAutomationOutcome, objectiveIdFromCompletionId, redactCredentialMaterial, renderTaskCheckpoint, selectTurnTools, taskCriterionDefinitions, taskRequiresCurrentSourceEvidence, type AgentRuntimePort, type AmbientObservationEvaluator, type BeeMaxAgentRunEvent, type BeeMaxAgentRunEventSink, type ContextCompactionAuditEvent, type DeliveryPort, type ExecutionEnvelope, type ExecutionTraceSink, type InitiativeObservation, type ObjectiveDeliveryInput, type SkillCandidateTrialInput, type SkillTrialAssertion, type SkillTrialToolCall, type SubagentTask, type TaskGraphExecutionContext, type TaskGraphExecutionResult, type TaskGraphVerifier, type TaskLedger, type TaskRecord, type ToolEffectProjectionReader, type VerifiedObjectiveMemoryPublisher } from "@beemax/core";
 import {
 	AdapterRegistry,
 	ChannelHost,
@@ -52,7 +52,7 @@ async function runProfileAutomation(
 	source: SessionSource,
 	prompt: string,
 	options: { key: string; timeoutMs: number; signal?: AbortSignal; executionEnvelope?: Readonly<ExecutionEnvelope>; objectiveTaskId?: string; allowedCapabilities?: string[]; onExecutionStarted?: (envelope:Readonly<ExecutionEnvelope>) => void },
-): Promise<{ answer: string; objectiveId?: string; taskRunId?: string }> {
+): Promise<{ answer: string; objectiveId?: string; taskRunId?: string; completionId?: string }> {
 	const automationSource = { ...source, threadId: `__automation:${options.key}`, messageId: undefined };
 	if (options.signal?.aborted) throw options.signal.reason;
 	let rejectAbort: ((reason: unknown) => void) | undefined;
@@ -79,7 +79,7 @@ async function runProfileAutomation(
 		options.signal?.removeEventListener("abort", abort);
 	}
 	if (!result.answer.trim() || result.answer === "(no response)") throw new Error("Automation agent returned no answer");
-	return { answer: result.answer.trim(), ...(settledEnvelope?.objectiveId ? { objectiveId: settledEnvelope.objectiveId } : {}), ...(settledEnvelope?.taskRunId ? { taskRunId: settledEnvelope.taskRunId } : {}) };
+	return { answer: result.answer.trim(), ...(settledEnvelope?.objectiveId ? { objectiveId: settledEnvelope.objectiveId } : {}), ...(settledEnvelope?.taskRunId ? { taskRunId: settledEnvelope.taskRunId } : {}), ...(result.completionId ? { completionId: result.completionId } : {}) };
 }
 
 export async function runGateway(config: BeeMaxConfig): Promise<void> {
@@ -236,6 +236,7 @@ export async function runGateway(config: BeeMaxConfig): Promise<void> {
 		: undefined;
 
 	let scheduler: AutomationScheduler | undefined;
+	let objectiveCompletions: ObjectiveCompletionDeliveryService[] = [];
 	const resolveMemoryScope = createMemoryScopeResolver(config.memory.memberships);
 	const profileAgentDefaults = {
 		profileId: config.profile,
@@ -322,13 +323,10 @@ export async function runGateway(config: BeeMaxConfig): Promise<void> {
 			});
 		},
 		deliverDirectObjectiveVerification: async (task, resolution) => {
+			if (resolution.accepted) { for (const service of objectiveCompletions) service.wake(); return; }
 			const target = task.executionScope;
 			if (!target?.platform || !target.chatId) throw new Error("Direct Objective delivery scope is unavailable");
-			const text = resolution.accepted
-				? task.candidateResult?.trim() || "任务已通过独立 Verification。"
-				: `任务未通过独立 Verification：${resolution.feedback}`;
-			if (resolution.accepted && task.candidateResult) await publishVerifiedOutcome({ objectiveId: task.id, title: task.title, result: task.candidateResult, ...(resolution.evidence ? { evidence: resolution.evidence } : {}), ...(task.situation ? { situation: task.situation } : {}), ...(task.accessScopeRef ? { accessScopeRef: task.accessScopeRef } : {}), executionScope: target });
-			await deliveryPort.sendText(target, text, { idempotencyKey: `direct-objective:${task.id}:verification:${task.verificationAttempts ?? 0}`, deliveryClass: "proactive" });
+			await deliveryPort.sendText(target, `任务未通过独立 Verification：${resolution.feedback}`, { idempotencyKey: `direct-objective:${task.id}:verification:${task.verificationAttempts ?? 0}`, deliveryClass: "proactive" });
 		},
 		executeSubagent: (task, signal, executionTrace) => executeSubagentTask(createSubagentAgent, task, signal, undefined, undefined, undefined, executionTrace),
 		onTaskPlanError: ({ planId, error }) => console.error(`[beemax] background Task Plan ${planId} failed: ${redactCredentialMaterial(error instanceof Error ? error.message : String(error))}`),
@@ -491,6 +489,12 @@ export async function runGateway(config: BeeMaxConfig): Promise<void> {
 			},
 			approvalBroker,
 			cancelTasks: (source) => subagents?.cancelOwner(source) ?? 0,
+			completionAcknowledger: persistence.completionOutbox,
+			beforeCompletionAcknowledged: async (completionId, source) => {
+				const objectiveId = objectiveIdFromCompletionId(completionId);
+				if (!objectiveId) throw new Error(`Invalid Objective Completion identity: ${completionId}`);
+				await objectiveRuntime.publishAcceptedObjective(responsibilityOwnerKey(source), objectiveId);
+			},
 		},
 		channelAdapter),
 	}));
@@ -499,10 +503,16 @@ export async function runGateway(config: BeeMaxConfig): Promise<void> {
 	const taskPlanNotices = platforms.map((platform) => new TaskPlanNoticeDeliveryService(persistence.completionOutbox, deliveryPort, {
 		platform,
 		deliverObjective: (notice, signal) => objectiveRuntime.settlePlanIfLinked(notice.ownerKey, notice.planId, notice.planStatus, signal),
-		onCycle: (result) => { if (result.claimed) console.info(`[beemax] ${platform} Task Plan notices: delivered=${result.delivered}; deferred=${result.deferred}; failed=${result.failed}`); },
+		onCycle: (result) => { if (result.delivered) for (const service of objectiveCompletions) service.wake(); if (result.claimed) console.info(`[beemax] ${platform} Task Plan notices: delivered=${result.delivered}; deferred=${result.deferred}; failed=${result.failed}`); },
 		onError: (error) => console.error(`[beemax] ${platform} Task Plan notice delivery failed: ${error instanceof Error ? error.message : String(error)}`),
 	}));
-	startupCleanup.push(() => Promise.all(taskPlanNotices.map((service) => service.stop())).then(() => undefined));
+	objectiveCompletions = platforms.map((platform) => new ObjectiveCompletionDeliveryService(persistence.completionOutbox, deliveryPort, {
+		platform,
+		onDelivered: (completion) => objectiveRuntime.publishDelivered(completion),
+		onCycle: (result) => { if (result.claimed) console.info(`[beemax] ${platform} Objective completions: delivered=${result.delivered}; deferred=${result.deferred}; failed=${result.failed}; blocked=${result.blocked}`); },
+		onError: (error) => console.error(`[beemax] ${platform} Objective completion delivery failed: ${error instanceof Error ? error.message : String(error)}`),
+	}));
+	startupCleanup.push(() => Promise.all([...taskPlanNotices, ...objectiveCompletions].map((service) => service.stop())).then(() => undefined));
 
 	scheduler = new AutomationScheduler(automation, async (job, signal) => {
 		const assertClaim = () => { if (signal?.aborted) throw signal.reason; if (job.claimToken && !automation.renewClaim(job.id, job.claimToken, Date.now() + 15 * 60_000)) throw new Error(`Automation lease lost: ${job.id}`); };
@@ -534,7 +544,7 @@ export async function runGateway(config: BeeMaxConfig): Promise<void> {
 			: undefined;
 		if (!isVerifiedAutomationOutcome(objective)) throw new Error(`Automation Objective was not verified: ${objective?.verificationStatus ?? "missing"}`);
 		assertClaim();
-		return { output: answer, delivery: { kind: "text" as const, text: `🗓️ ${job.name}\n\n${answer}`, idempotencyKey: `automation:${job.occurrenceId}` },
+		return { output: answer, ...(automationResult.completionId ? {} : { delivery: { kind: "text" as const, text: `🗓️ ${job.name}\n\n${answer}`, idempotencyKey: `automation:${job.occurrenceId}` } }),
 			...(automationResult.objectiveId ? { objectiveId: automationResult.objectiveId } : {}), ...(automationResult.taskRunId ? { taskRunId: automationResult.taskRunId } : {}) };
 	}, 4);
 	const initiative = new InitiativeRuntime({
@@ -570,7 +580,7 @@ export async function runGateway(config: BeeMaxConfig): Promise<void> {
 				budget: input.budget,
 				mode: "normal",
 			});
-			await runProfileAutomation(runtime, input.executionScope as SessionSource, input.prompt, {
+			const automationResult = await runProfileAutomation(runtime, input.executionScope as SessionSource, input.prompt, {
 				key: `initiative:${input.observation.dedupeKey}`,
 				timeoutMs,
 				objectiveTaskId: input.objective.id,
@@ -578,9 +588,8 @@ export async function runGateway(config: BeeMaxConfig): Promise<void> {
 				executionEnvelope,
 			});
 			const settled = memory.queryTasks({ ownerKeys: [input.objective.ownerKey], id: input.objective.id, kinds: ["objective"], limit: 1 })[0];
-			const materialResult = settled?.status === "succeeded" && settled.verificationStatus === "accepted";
-			if (materialResult) automation.enqueueDelivery(input.executionScope, { kind: "text", text: settled.result!, idempotencyKey: `initiative-result:${input.objective.id}` });
-			return { status: settled?.status === "cancelled" ? "cancelled" : settled?.status === "succeeded" ? "succeeded" : "failed", materialResult };
+			const materialResult = Boolean(automationResult.completionId && isVerifiedAutomationOutcome(settled));
+			return { status: settled?.status === "cancelled" ? "cancelled" : materialResult ? "succeeded" : "failed", materialResult };
 		},
 	});
 	const initiativeTriggers = new InitiativeTriggerService({
@@ -650,6 +659,7 @@ export async function runGateway(config: BeeMaxConfig): Promise<void> {
 	}, 5_000);
 	profileHealthTimer.unref();
 	for (const service of taskPlanNotices) service.start();
+	for (const service of objectiveCompletions) service.start();
 	if (config.automation.enabled) scheduler.start();
 	heartbeat.start();
 	const runInitiativeTriggers = () => {
@@ -682,7 +692,7 @@ export async function runGateway(config: BeeMaxConfig): Promise<void> {
 			if (mediaDeliveryWork) await settleBackgroundWork(mediaDeliveryWork, 30_000, "media delivery worker");
 			try { await heartbeat?.stop(); } catch (error) { console.error(`[beemax] heartbeat shutdown failed: ${String(error)}`); }
 			try { await scheduler?.stop(); } catch (error) { console.error(`[beemax] scheduler shutdown failed: ${String(error)}`); }
-			try { await Promise.all(taskPlanNotices.map((service) => service.stop())); } catch (error) { console.error(`[beemax] Task Plan notice shutdown failed: ${String(error)}`); }
+			try { await Promise.all([...taskPlanNotices, ...objectiveCompletions].map((service) => service.stop())); } catch (error) { console.error(`[beemax] completion delivery shutdown failed: ${String(error)}`); }
 			try { await Promise.all([...dispatchers.values()].map((channelDispatcher) => channelDispatcher.dispose())); } catch (error) { console.error(`[beemax] dispatcher shutdown failed: ${String(error)}`); }
 			try { await profileHost.waitForIdle(5_000); } catch (error) { console.error(`[beemax] Profile Host graceful drain timed out; forcing Runtime disposal: ${String(error)}`); }
 			try { await profileRuntime.dispose(); } catch (error) { console.error(`[beemax] Agent Runtime shutdown failed: ${String(error)}`); }

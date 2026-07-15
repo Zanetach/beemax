@@ -1022,6 +1022,7 @@ test("a responsible direct Turn completes one durable Objective through one veri
 	const source = { platform: "cli", chatId: "direct-work", chatType: "dm", userId: "local" };
 	const tasks = new Map();
 	const runs = new Map();
+	const completions = [];
 	const ledger = {
 		record(task) { tasks.set(task.id, { ...task }); },
 		transition(id, change) { tasks.set(id, { ...tasks.get(id), ...change }); return true; },
@@ -1029,6 +1030,7 @@ test("a responsible direct Turn completes one durable Objective through one veri
 		transitionRun(id, change) { runs.set(id, { ...runs.get(id), ...change }); return true; },
 		queryTasks: (query) => [...tasks.values()].filter((task) => query.ownerKeys.includes(task.ownerKey) && (!query.id || task.id === query.id)),
 		checkpointTask(ownerKey, id, checkpoint) { const task = tasks.get(id); if (!task || task.ownerKey !== ownerKey) return false; tasks.set(id, { ...task, checkpoint }); return true; },
+		enqueueObjectiveCompletion(ownerKey, id) { completions.push({ ownerKey, id }); return true; },
 	};
 	let envelope;
 	let listener;
@@ -1055,15 +1057,18 @@ test("a responsible direct Turn completes one durable Objective through one veri
 		},
 	});
 
-	await runtime.run({ source, text: "生成一份有来源的简短报告", timeoutMs: 1_000 });
+	const result = await runtime.run({ source, text: "生成一份有来源的简短报告", timeoutMs: 1_000 });
 
 	assert.equal(tasks.size, 1);
 	assert.equal(runs.size, 1);
 	const [objective] = [...tasks.values()];
 	const [run] = [...runs.values()];
-	assert.equal(objective.status, "succeeded");
+	assert.equal(objective.status, "running");
 	assert.equal(objective.verificationStatus, "accepted");
-	assert.equal(objective.result, "完成并附来源");
+	assert.equal(objective.candidateResult, "完成并附来源");
+	assert.equal(objective.result, undefined);
+	assert.deepEqual(completions, [{ ownerKey: objective.ownerKey, id: objective.id }]);
+	assert.equal(result.completionId, `objective-completion:${objective.id}`);
 	assert.deepEqual(objective.criterionVerifications, [{ criterionId: "C1", criterion: "报告包含来源", status: "accepted", evidence: "source.md was read", evidenceRefs: ["execution:verification:direct:tool-call:source-1"] }]);
 	assert.match(objective.description, /生成一份有来源的简短报告/);
 	assert.deepEqual(objective.situation.constraints, ["保留证据"]);
@@ -1138,6 +1143,7 @@ test("an Automation Trigger enters the same durable Pi lifecycle as responsible 
 	const source = { platform: "feishu", chatId: "scheduled-work", chatType: "dm", userId: "owner", threadId: "__automation:schedule:job" };
 	const tasks = new Map();
 	const runs = new Map();
+	const completions = [];
 	const ledger = {
 		record(task) { tasks.set(task.id, { ...task }); },
 		transition(id, change) { tasks.set(id, { ...tasks.get(id), ...change }); return true; },
@@ -1145,6 +1151,7 @@ test("an Automation Trigger enters the same durable Pi lifecycle as responsible 
 		transitionRun(id, change) { runs.set(id, { ...runs.get(id), ...change }); return true; },
 		queryTasks: () => [],
 		checkpointTask(ownerKey, id, checkpoint) { const task = tasks.get(id); if (!task || task.ownerKey !== ownerKey) return false; tasks.set(id, { ...task, checkpoint }); return true; },
+		enqueueObjectiveCompletion(ownerKey, id) { completions.push({ ownerKey, id }); return true; },
 	};
 	const contextCalls = [];
 	let receivedEnvelope;
@@ -1174,14 +1181,17 @@ test("an Automation Trigger enters the same durable Pi lifecycle as responsible 
 		},
 	});
 
-	await runtime.run({ source, text: "生成有来源的周期摘要", timeoutMs: 10_000, mode: "automation", executionEnvelope: triggerEnvelope });
+	const result = await runtime.run({ source, text: "生成有来源的周期摘要", timeoutMs: 10_000, mode: "automation", executionEnvelope: triggerEnvelope });
 
 	assert.equal(tasks.size, 1);
 	assert.equal(runs.size, 1);
 	const [objective] = [...tasks.values()];
 	assert.equal(objective.ownerKey, "feishu:scheduled-work:owner");
-	assert.equal(objective.status, "succeeded");
+	assert.equal(objective.status, "running");
 	assert.equal(objective.verificationStatus, "accepted");
+	assert.equal(objective.candidateResult, "摘要完成");
+	assert.deepEqual(completions, [{ ownerKey: objective.ownerKey, id: objective.id }]);
+	assert.equal(result.completionId, `objective-completion:${objective.id}`);
 	assert.equal(objective.checkpoint.source, "pi_turn");
 	assert.deepEqual(objective.checkpoint.completed, ["read:source"]);
 	assert.equal(contextCalls.length, 1);
@@ -1206,6 +1216,7 @@ test("an admitted proactive Objective executes through the same Pi Task Run, che
 	};
 	const tasks = new Map([[objective.id, objective]]);
 	const runs = new Map();
+	const completions = [];
 	const ledger = {
 		record() { assert.fail("admitted Objective must be reused"); },
 		transition(id, change) { tasks.set(id, { ...tasks.get(id), ...change }); return true; },
@@ -1213,6 +1224,7 @@ test("an admitted proactive Objective executes through the same Pi Task Run, che
 		transitionRun(id, change) { runs.set(id, { ...runs.get(id), ...change }); return true; },
 		queryTasks(query) { const task = tasks.get(query.id); return task && query.ownerKeys.includes(task.ownerKey) ? [task] : []; },
 		checkpointTask(ownerKey, id, checkpoint) { const task = tasks.get(id); if (!task || task.ownerKey !== ownerKey) return false; tasks.set(id, { ...task, checkpoint }); return true; },
+		enqueueObjectiveCompletion(ownerKey, id) { completions.push({ ownerKey, id }); return true; },
 	};
 	let listener;
 	let receivedEnvelope;
@@ -1237,11 +1249,14 @@ test("an admitted proactive Objective executes through the same Pi Task Run, che
 		},
 	});
 
-	await runtime.run({ source, text: objective.description, timeoutMs: 10_000, mode: "automation", objectiveTaskId: objective.id, executionEnvelope, allowedCapabilities: ["read"] });
+	const result = await runtime.run({ source, text: objective.description, timeoutMs: 10_000, mode: "automation", objectiveTaskId: objective.id, executionEnvelope, allowedCapabilities: ["read"] });
 
 	assert.equal(tasks.size, 1);
-	assert.equal(tasks.get(objective.id).status, "succeeded");
+	assert.equal(tasks.get(objective.id).status, "running");
 	assert.equal(tasks.get(objective.id).verificationStatus, "accepted");
+	assert.equal(tasks.get(objective.id).candidateResult, "Verified finding");
+	assert.deepEqual(completions, [{ ownerKey: objective.ownerKey, id: objective.id }]);
+	assert.equal(result.completionId, `objective-completion:${objective.id}`);
 	assert.equal(tasks.get(objective.id).checkpoint.source, "pi_turn");
 	assert.equal(runs.size, 1);
 	assert.equal([...runs.values()][0].status, "succeeded");
@@ -1274,12 +1289,14 @@ test("Verification correction reuses the Objective and creates one bounded Corre
 	const source = { platform: "cli", chatId: "direct-correction", chatType: "dm", userId: "local" };
 	const tasks = new Map();
 	const runs = new Map();
+	const completions = [];
 	const ledger = {
 		record(task) { tasks.set(task.id, { ...task }); },
 		transition(id, change) { tasks.set(id, { ...tasks.get(id), ...change }); return true; },
 		recordRun(run) { runs.set(run.id, { ...run }); },
 		transitionRun(id, change) { runs.set(id, { ...runs.get(id), ...change }); return true; },
 		queryTasks: () => [],
+		enqueueObjectiveCompletion(ownerKey, id) { completions.push({ ownerKey, id }); return true; },
 	};
 	let prompts = 0;
 	let verifications = 0;
@@ -1303,8 +1320,10 @@ test("Verification correction reuses the Objective and creates one bounded Corre
 	assert.equal(tasks.size, 1);
 	assert.equal(runs.size, 2);
 	const [objective] = [...tasks.values()];
-	assert.equal(objective.status, "succeeded");
-	assert.equal(objective.result, "已补充来源");
+	assert.equal(objective.status, "running");
+	assert.equal(objective.candidateResult, "已补充来源");
+	assert.equal(objective.result, undefined);
+	assert.deepEqual(completions, [{ ownerKey: objective.ownerKey, id: objective.id }]);
 	assert.equal(objective.correctiveAttempts, 1);
 	assert.deepEqual([...runs.values()].map(({ status, output }) => ({ status, output })), [
 		{ status: "succeeded", output: "草稿" },

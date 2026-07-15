@@ -44,7 +44,7 @@ import { fullScreenEnter, fullScreenExit, resolveChatPresentationMode, type Chat
 import { FullWorkbench, startFullWorkbenchInput, type FullWorkbenchInput } from "./full-workbench.ts";
 import { inspectGateway, readGatewayLogs, recordGatewayEvent } from "./gateway-observability.ts";
 import { createTaskAwareConversationContext, ensureBuiltinTasks, installedVersion } from "./runtime-facts.ts";
-import { AUTONOMY_LEVELS, AgentRunError, AuthStorage, AutonomyRolloutController, FileCredentialVault, FileCredentialVaultAuditJournal, PiWorkContractBuilder, TaskPlanNoticeDeliveryService, ToolApprovalBroker, buildActiveTaskPreservationEnvelope, buildTaskPreservationEnvelope, compileLongTermMemorySnapshot, conversationKey, createSubagentTools, createTaskLedgerTools, createTaskOrchestrationTools, guardVerifiedObjectiveMemoryPublisher, interactionCommandHelp, parseInteractionCommand, redactCredentialMaterial, responsibilityOwnerKey, responsibilityOwnerKeys, type AutonomyLevel, type AutonomyRolloutAuthority } from "@beemax/core";
+import { AUTONOMY_LEVELS, AgentRunError, AuthStorage, AutonomyRolloutController, FileCredentialVault, FileCredentialVaultAuditJournal, ObjectiveCompletionDeliveryService, PiWorkContractBuilder, TaskPlanNoticeDeliveryService, ToolApprovalBroker, buildActiveTaskPreservationEnvelope, buildTaskPreservationEnvelope, compileLongTermMemorySnapshot, conversationKey, createSubagentTools, createTaskLedgerTools, createTaskOrchestrationTools, guardVerifiedObjectiveMemoryPublisher, interactionCommandHelp, objectiveIdFromCompletionId, parseInteractionCommand, redactCredentialMaterial, responsibilityOwnerKey, responsibilityOwnerKeys, type AutonomyLevel, type AutonomyRolloutAuthority, type DeliveryPort } from "@beemax/core";
 import type { SessionSource } from "@beemax/channel-runtime";
 import { PairingStore, assertProfileBindingConfiguration } from "@beemax/gateway";
 import { executeFeishuSmoke } from "./feishu-smoke.ts";
@@ -1288,6 +1288,7 @@ async function runChat(config: ReturnType<typeof loadConfig>, requestedMode: { f
 		sessionTools: (sessionSource) => createTaskLedgerTools(memory, sessionSource),
 		compactionInstructions: (sessionSource) => sessionSource.delegatedTask ? buildTaskPreservationEnvelope(memory.queryTasks({ ownerKeys: [sessionSource.delegatedTask.ownerKey], id: sessionSource.delegatedTask.id, limit: 1 })) : undefined,
 	});
+	let objectiveCompletionDelivery: ObjectiveCompletionDeliveryService | undefined;
 	const profileRuntime = await createProfileRuntime<SessionSource>({
 		work: {
 		agentDir: config.paths.agentDir, ledger: persistence.taskLedger, recoveryQueue: persistence.recoveryQueue, maxConcurrent: config.subagents.maxConcurrent,
@@ -1298,8 +1299,8 @@ async function runChat(config: ReturnType<typeof loadConfig>, requestedMode: { f
 		deliverObjective: (input, signal, executionTrace) => executeObjectiveDelivery(createSubagentAgent, input, signal, config.subagents.timeoutMs, executionTrace),
 		publishVerifiedOutcome: guardVerifiedObjectiveMemoryPublisher(autonomyRollout, createVerifiedObjectiveMemoryPublisher(persistence.organizationMemory)),
 		deliverDirectObjectiveVerification: async (task, resolution) => {
-			const text = resolution.accepted ? task.candidateResult?.trim() || "Task passed independent Verification." : `Task failed independent Verification: ${resolution.feedback}`;
-			process.stdout.write(`\n${text}\n`);
+			if (resolution.accepted) { objectiveCompletionDelivery?.wake(); return; }
+			process.stdout.write(`\nTask failed independent Verification: ${resolution.feedback}\n`);
 		},
 		executeSubagent: (task, signal, executionTrace) => executeSubagentTask(createSubagentAgent, task, signal, undefined, undefined, undefined, executionTrace),
 		onTaskPlanError: ({ planId, error }) => process.stderr.write(`Background Task Plan ${planId} failed: ${redactCredentialMaterial(error instanceof Error ? error.message : String(error))}\n`),
@@ -1423,11 +1424,14 @@ async function runChat(config: ReturnType<typeof loadConfig>, requestedMode: { f
 		let workbench: FullWorkbench | undefined;
 		const prompt = () => presentationMode === "plain" ? "beemax> " : presentationMode === "compact" ? `beemax [${config.model.model}]> ` : `beemax [${config.profile} · ${config.model.provider}/${config.model.model} · ${source.threadId ?? "default"}]> `;
 		const writePrompt = () => { if (!closed && !workbench) process.stdout.write(prompt()); };
-		taskPlanNotices = new TaskPlanNoticeDeliveryService(persistence.completionOutbox, { sendText: async (target, text) => {
+		const localDelivery: DeliveryPort = { sendText: async (target, text, options) => {
 			if (target.platform !== "cli") throw new Error(`Cannot deliver ${target.platform} Task Plan notice through local Chat`);
 			if (workbench) { workbench.notice(text); fullInput?.requestRender(); }
 			else { process.stdout.write(`\n${text}\n`); writePrompt(); }
-		} }, { platform: "cli", deliverObjective: (notice, signal) => objectiveRuntime.settlePlanIfLinked(notice.ownerKey, notice.planId, notice.planStatus, signal) });
+			return { idempotencyKey: options?.idempotencyKey ?? `cli:${crypto.randomUUID()}`, deliveredAt: Date.now() };
+		}, sendMedia: async () => { throw new Error("Local Chat Objective Completion does not deliver media"); } };
+		taskPlanNotices = new TaskPlanNoticeDeliveryService(persistence.completionOutbox, localDelivery, { platform: "cli", deliverObjective: (notice, signal) => objectiveRuntime.settlePlanIfLinked(notice.ownerKey, notice.planId, notice.planStatus, signal), onCycle: (result) => { if (result.delivered) objectiveCompletionDelivery?.wake(); } });
+		objectiveCompletionDelivery = new ObjectiveCompletionDeliveryService(persistence.completionOutbox, localDelivery, { platform: "cli", onDelivered: (completion) => objectiveRuntime.publishDelivered(completion) });
 		let closeInput = () => { closed = true; };
 		const usage = async () => {
 			const current = await runtime.usage(source);
@@ -1483,7 +1487,7 @@ async function runChat(config: ReturnType<typeof loadConfig>, requestedMode: { f
 			workbench = new FullWorkbench({ profile: config.profile, model: `${config.model.provider}/${config.model.model}`, session: source.threadId ?? "default", details: detailsDisplay });
 			process.stdout.write(fullScreenEnter(""));
 		}
-		if (requestedMode.once === undefined) taskPlanNotices.start();
+		if (requestedMode.once === undefined) { taskPlanNotices.start(); objectiveCompletionDelivery.start(); }
 		const runTurn = async (text: string, turnSource: SessionSource) => {
 			workbench?.user(text);
 			let streamed = "";
@@ -1523,6 +1527,14 @@ async function runChat(config: ReturnType<typeof loadConfig>, requestedMode: { f
 			}
 			lastDurationMs = result.durationMs;
 			if (!workbench) process.stdout.write("\n");
+			if (result.completionId) {
+				const objectiveId = objectiveIdFromCompletionId(result.completionId);
+				if (!objectiveId) throw new Error(`Invalid Objective Completion identity: ${result.completionId}`);
+				await objectiveRuntime.publishAcceptedObjective(responsibilityOwnerKey(turnSource), objectiveId);
+				const completion = persistence.completionOutbox.getObjectiveCompletion(result.completionId);
+				if (!completion) throw new Error(`Local Objective Completion is unavailable: ${result.completionId}`);
+				if (!persistence.completionOutbox.acknowledgeObjectiveCompletion(result.completionId, { idempotencyKey: completion.deliveryIdempotencyKey, deliveredAt: Date.now() })) throw new Error(`Local Objective delivery could not acknowledge Completion ${result.completionId}`);
+			}
 			await writeFooter();
 		};
 		const handleLine = async (line: string) => {
@@ -1751,6 +1763,7 @@ async function runChat(config: ReturnType<typeof loadConfig>, requestedMode: { f
 		}
 		} finally {
 			await taskPlanNotices?.stop();
+			await objectiveCompletionDelivery?.stop();
 			if (subagentRefresh) clearInterval(subagentRefresh);
 		fullInput?.stop();
 			if (fullScreenActive) process.stdout.write(fullScreenExit());

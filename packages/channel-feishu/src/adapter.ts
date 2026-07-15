@@ -34,6 +34,7 @@ import type {
 	ObservationHandler,
 	PlatformAdapter,
 	InteractionPresenter,
+	SendOptions,
 	SendResult,
 	SessionSource,
 } from "@beemax/channel-runtime";
@@ -882,17 +883,22 @@ export class FeishuAdapter implements PlatformAdapter {
 
 	// --- outbound --------------------------------------------------------
 
-	async send(chatId: string, content: string, opts?: { idempotencyKey?: string }): Promise<SendResult> {
+	async send(chatId: string, content: string, opts: SendOptions = {}): Promise<SendResult> {
 		const chunks = chunkText(content, MAX_TEXT_LENGTH);
 		let lastId: string | undefined;
 		for (const [index, chunk] of chunks.entries()) {
-			const uuid = opts?.idempotencyKey ? deterministicUuid(`${opts.idempotencyKey}:${index}`) : randomUUID();
+			const uuid = opts.idempotencyKey ? deterministicUuid(index === 0 ? opts.idempotencyKey : `${opts.idempotencyKey}:${index}`) : randomUUID();
 			const payload = { msg_type: "text", content: JSON.stringify({ text: chunk }) };
 			try {
-				const res = await this.retryRequest(() => this.client.im.v1.message.create({
-					params: { receive_id_type: "chat_id" },
-					data: { receive_id: chatId, ...payload, uuid },
-				}));
+				const res = opts.replyTo
+					? await this.retryRequest(() => this.client.im.v1.message.reply({
+						path: { message_id: opts.replyTo! },
+						data: { ...payload, reply_in_thread: Boolean(opts.replyInThread), uuid },
+					}))
+					: await this.retryRequest(() => this.client.im.v1.message.create({
+						params: { receive_id_type: "chat_id" },
+						data: { receive_id: chatId, ...payload, uuid },
+					}));
 				if (res.code !== 0) {
 					return { success: false, error: res.msg ?? `feishu code ${res.code}` };
 				}

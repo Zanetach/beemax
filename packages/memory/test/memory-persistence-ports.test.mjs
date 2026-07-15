@@ -18,6 +18,9 @@ test("focused persistence ports are capability views over one SQLite Memory auth
 		assert.equal(typeof ports.organizationMemory.upsertEpisode, "function");
 		assert.equal(typeof ports.recoveryQueue.reconcileExpiredTaskRuns, "function");
 		assert.equal(typeof ports.completionOutbox.claimTaskPlanCompletionNotices, "function");
+		assert.equal(typeof ports.completionOutbox.claimObjectiveCompletions, "function");
+		assert.equal(typeof ports.completionOutbox.getObjectiveCompletion, "function");
+		assert.equal(typeof ports.completionOutbox.acknowledgeObjectiveCompletion, "function");
 		store.close();
 	} finally { rmSync(root, { recursive: true, force: true }); }
 });

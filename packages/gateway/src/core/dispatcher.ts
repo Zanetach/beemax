@@ -9,6 +9,7 @@ import {
 	type ToolApprovalBroker,
 	type AgentRuntimePort,
 	type DeliveryTarget,
+	type TaskLedger,
 	type TaskPlanProgressEvent,
 } from "@beemax/core";
 import type { InboundMessage, InteractionPresentationPreferences, PlatformAdapter, PlatformCardAction } from "@beemax/channel-runtime";
@@ -50,6 +51,9 @@ export interface DispatcherDeps {
 	/** Shared Profile-level ingress budget; one controller may cover every Channel Instance. */
 	ingress?: GatewayInteractionAdmission;
 	messageDeduplicator?: MessageDeduplicator;
+	/** Commits an interactive Delivery Receipt into the shared Completion Outbox. */
+	completionAcknowledger?: Required<Pick<TaskLedger, "getObjectiveCompletion" | "acknowledgeObjectiveCompletion">>;
+	beforeCompletionAcknowledged?: (completionId: string, source: InboundMessage["source"]) => void | Promise<void>;
 }
 
 export class Dispatcher {
@@ -209,8 +213,13 @@ export class Dispatcher {
 
 	private async runTurn(msg: InboundMessage, onReserved?: () => void): Promise<boolean> {
 		const presenter = this.platform.presentation ?? new TextInteractionPresenter(this.platform);
+		const exactSource = msg.source.messageId ? {
+			...msg.source,
+			originMessageId: msg.source.messageId,
+			replyToMessageId: msg.replyToMessageId ?? msg.source.messageId,
+		} : msg.source;
 		const presentation = presenter.open({
-			source: msg.source,
+			source: exactSource,
 			profileId: this.profileId,
 			preferences: {
 				...this.deps.presentationOptions,
@@ -225,7 +234,7 @@ export class Dispatcher {
 			let result;
 			try {
 				const media = await prepareAgentMediaInput(msg);
-				const turn = this.interaction.dispatch({ type: "message.send", source: msg.source, text: media.text, input: { timeoutMs: this.turnTimeoutMs, mode: "interactive", images: media.images } }, (event) => presentation.onEvent(event));
+				const turn = this.interaction.dispatch({ type: "message.send", source: exactSource, text: media.text, input: { timeoutMs: this.turnTimeoutMs, mode: "interactive", images: media.images } }, (event) => presentation.onEvent(event));
 				onReserved?.();
 				result = await turn;
 				if (!("answer" in result)) throw new Error("Message dispatch did not produce an Agent result");
@@ -235,7 +244,31 @@ export class Dispatcher {
 				await presentation.fail(errorText);
 				return false;
 			}
-			await presentation.finish(result.answer);
+			const completion = result.completionId ? this.deps.completionAcknowledger?.getObjectiveCompletion(result.completionId) : undefined;
+			if (result.completionId) {
+				if (!completion) {
+					console.error(`[beemax] Interactive Objective delivery deferred because its Completion is unavailable: ${result.completionId}`);
+					return true;
+				}
+				let receipt;
+				try {
+					receipt = await presentation.finish(completion.result, { idempotencyKey: completion.deliveryIdempotencyKey, deliveryClass: "interactive" });
+				} catch (error) {
+					console.error(`[beemax] Interactive Objective delivery deferred to Completion Outbox: ${result.completionId} (${error instanceof Error ? error.message : String(error)})`);
+					return true;
+				}
+				if (receipt.idempotencyKey !== completion.deliveryIdempotencyKey) {
+					console.error(`[beemax] Interactive Objective returned an invalid Delivery Receipt; Completion remains queued: ${result.completionId}`);
+					return true;
+				}
+				try { await this.deps.beforeCompletionAcknowledged?.(result.completionId, msg.source); }
+				catch { console.error(`[beemax] Interactive Objective publication deferred to Completion Outbox: ${result.completionId}`); return true; }
+				if (!this.deps.completionAcknowledger!.acknowledgeObjectiveCompletion(result.completionId, receipt)) {
+					console.error(`[beemax] Interactive Objective acknowledgement deferred to Completion Outbox: ${result.completionId}`);
+				}
+			} else {
+				await presentation.finish(result.answer);
+			}
 			return true;
 		} catch (error) {
 			failed = true;

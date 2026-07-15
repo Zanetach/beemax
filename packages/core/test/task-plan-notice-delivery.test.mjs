@@ -27,7 +27,7 @@ test("Task Plan Notice delivery acknowledges success and requeues failure withou
 	]);
 });
 
-test("a successful Plan delivers its Objective result instead of a result-free summary", async () => {
+test("a successful Plan materializes its Objective in the Completion Outbox without a second send path", async () => {
 	const notice = { id: "notice", planId: "plan", ownerKey: "owner", target: { platform: "feishu", chatId: "chat" }, planStatus: "succeeded", title: "Report", taskCount: 2, succeeded: 2, failed: 0, cancelled: 0, status: "delivering", claimToken: "token", attempts: 1, nextAttemptAt: 2, createdAt: 1 };
 	const sent = [];
 	let completed = false;
@@ -42,7 +42,7 @@ test("a successful Plan delivers its Objective result instead of a result-free s
 
 	assert.deepEqual(await service.runOnce(), { claimed: 1, delivered: 1, failed: 0, deferred: 0 });
 	assert.equal(completed, true);
-	assert.deepEqual(sent, [{ target: notice.target, text: "Final user-ready report", options: { idempotencyKey: "notice", deliveryClass: "proactive", deliveryAttempt: 1 } }]);
+	assert.deepEqual(sent, []);
 });
 
 test("governed deferral preserves the durable Notice without consuming its retry budget", async () => {

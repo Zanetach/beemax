@@ -577,9 +577,9 @@ This ordering is the implementation plan, not a fixed business workflow. Core re
 
 **Blocked by:** Recover and verify both Direct and Plan Objectives.
 
-- [ ] Enqueue completion exactly once for every accepted Objective regardless of execution mode.
-- [ ] Retry transient channel failure without replaying Pi or external Effects and retain a Delivery Receipt.
-- [ ] Keep the Objective nonterminal when required delivery remains unverified or permanently blocked.
+- [x] Enqueue completion exactly once for every accepted Objective regardless of execution mode.
+- [x] Retry transient channel failure without replaying Pi or external Effects and retain a Delivery Receipt.
+- [x] Keep the Objective nonterminal when required delivery remains unverified or permanently blocked.
 
 ## Preserve Contracts and responsibility through context compression
 

@@ -7,7 +7,7 @@ import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { MemoryStore } from "../dist/index.js";
 import Database from "better-sqlite3";
-import { createAccessScopeRef, createSituation, createTaskCheckpoint, TaskGraph, TaskPlanRuntime, TaskRecoveryRunner, TaskRecoveryService } from "@beemax/core";
+import { createAccessScopeRef, createSituation, createTaskCheckpoint, interactionCompletionDeliveryKey, ObjectiveCompletionDeliveryService, ObjectiveRuntime, TaskGraph, TaskPlanNoticeDeliveryService, TaskPlanRuntime, TaskRecoveryRunner, TaskRecoveryService } from "@beemax/core";
 
 const claimWorker = fileURLToPath(new URL("./fixtures/task-plan-claim-worker.mjs", import.meta.url));
 
@@ -598,7 +598,8 @@ test("due Verification Retry also completes a direct Objective without a Task Pl
 		assert.equal(executions, 0);
 		assert.deepEqual(notices, [{ id: "direct-objective", resolution: { accepted: true, evidence: "direct candidate checked later" } }]);
 		const objective = store.queryTasks({ ownerKeys: ["cli:local:local"], id: "direct-objective" })[0];
-		assert.deepEqual({ status: objective.status, verificationStatus: objective.verificationStatus, result: objective.result }, { status: "succeeded", verificationStatus: "accepted", result: "direct candidate" });
+		assert.deepEqual({ status: objective.status, verificationStatus: objective.verificationStatus, candidateResult: objective.candidateResult, result: objective.result }, { status: "running", verificationStatus: "accepted", candidateResult: "direct candidate", result: undefined });
+		assert.deepEqual(store.claimObjectiveCompletions("cli", 10 + 24 * 60 * 60_000).map(({ objectiveId }) => objectiveId), ["direct-objective"]);
 	} finally { store.close(); rmSync(root, { recursive: true, force: true }); }
 });
 
@@ -631,7 +632,9 @@ test("two recovery instances cannot verify the same direct Objective responsibil
 		assert.equal(verificationCalls, 1);
 		assert.equal(results.reduce((total, result) => total + result.attempted, 0), 1);
 		assert.equal(results.reduce((total, result) => total + result.accepted, 0), 1);
-		assert.equal(first.queryTasks({ ownerKeys: ["owner"], id: "direct-claimed" })[0].status, "succeeded");
+		const retained = first.queryTasks({ ownerKeys: ["owner"], id: "direct-claimed" })[0];
+		assert.deepEqual({ status: retained.status, verificationStatus: retained.verificationStatus, candidateResult: retained.candidateResult }, { status: "running", verificationStatus: "accepted", candidateResult: "candidate" });
+		assert.deepEqual(first.claimObjectiveCompletions("cli", 10 + 24 * 60 * 60_000).map(({ objectiveId }) => objectiveId), ["direct-claimed"]);
 	} finally { first.close(); second.close(); rmSync(root, { recursive: true, force: true }); }
 });
 
@@ -826,6 +829,126 @@ test("Task Plan Completion Notice Outbox is idempotent and reclaims an expired d
 		assert.equal(store.failTaskPlanCompletionNotice(first[0].id, first[0].claimToken, 150), false);
 		assert.equal(store.completeTaskPlanCompletionNotice(reclaimed[0].id, reclaimed[0].claimToken), true);
 		assert.deepEqual(store.claimTaskPlanCompletionNotices("feishu", 1_000, 10, 50), []);
+	} finally { store.close(); rmSync(root, { recursive: true, force: true }); }
+});
+
+test("Objective Completion Outbox keeps accepted work nonterminal until one durable Delivery Receipt", () => {
+	const root = mkdtempSync(join(tmpdir(), "beemax-objective-completion-outbox-"));
+	const store = new MemoryStore(join(root, "memory.db"));
+	try {
+		const scope = { platform: "feishu", channelInstanceId: "company-a", chatId: "chat", chatType: "thread", userId: "user", threadId: "thread", originMessageId: "om-event", replyToMessageId: "om-thread-root" };
+		store.record({ id: "direct-objective", ownerKey: "feishu:chat:user", kind: "objective", title: "Verified report", status: "running", createdAt: 1, startedAt: 2, executionScope: scope });
+		store.transition("direct-objective", { status: "running", candidateResult: "final report", evidence: "verification:1", verificationStatus: "accepted" });
+
+		assert.equal(store.enqueueObjectiveCompletion("feishu:chat:user", "direct-objective", 100), true);
+		assert.equal(store.enqueueObjectiveCompletion("feishu:chat:user", "direct-objective", 101), true, "idempotent ensure does not create a second row");
+		assert.equal(store.queryTasks({ ownerKeys: ["feishu:chat:user"], id: "direct-objective" })[0].status, "running");
+		const [completion] = store.claimObjectiveCompletions("feishu", 100, 10, 50);
+		assert.deepEqual({ objectiveId: completion.objectiveId, target: completion.target, result: completion.result, attempts: completion.attempts }, {
+			objectiveId: "direct-objective", target: { platform: "feishu", channelInstanceId: "company-a", chatId: "chat", chatType: "thread", userId: "user", threadId: "thread", replyToMessageId: "om-thread-root" }, result: "final report", attempts: 1,
+		});
+		assert.equal(completion.deliveryIdempotencyKey, interactionCompletionDeliveryKey("default", scope, scope.originMessageId));
+		assert.equal(store.completeObjectiveCompletion(completion.id, completion.claimToken, { idempotencyKey: completion.deliveryIdempotencyKey, deliveredAt: 120, providerMessageId: "om-42" }, 121), true);
+		const delivered = store.getObjectiveCompletion(completion.id);
+		assert.deepEqual({ status: delivered.status, claimToken: delivered.claimToken, receipt: delivered.receipt }, {
+			status: "delivered",
+			claimToken: undefined,
+			receipt: { idempotencyKey: completion.deliveryIdempotencyKey, deliveredAt: 120, providerMessageId: "om-42" },
+		});
+		const settled = store.queryTasks({ ownerKeys: ["feishu:chat:user"], id: "direct-objective" })[0];
+		assert.deepEqual({ status: settled.status, result: settled.result, finishedAt: settled.finishedAt }, { status: "succeeded", result: "final report", finishedAt: 121 });
+		assert.deepEqual(store.claimObjectiveCompletions("feishu", 1_000), []);
+	} finally { store.close(); rmSync(root, { recursive: true, force: true }); }
+});
+
+test("permanently blocked Objective delivery retains accepted nonterminal responsibility", () => {
+	const root = mkdtempSync(join(tmpdir(), "beemax-objective-completion-blocked-"));
+	const store = new MemoryStore(join(root, "memory.db"));
+	try {
+		store.record({ id: "blocked-objective", ownerKey: "cli:local:local", kind: "objective", title: "Blocked", status: "running", createdAt: 1, executionScope: { platform: "cli", chatId: "local", chatType: "dm" } });
+		store.transition("blocked-objective", { status: "running", candidateResult: "verified", verificationStatus: "accepted" });
+		assert.equal(store.enqueueObjectiveCompletion("cli:local:local", "blocked-objective", 10), true);
+		const [completion] = store.claimObjectiveCompletions("cli", 10);
+		assert.equal(store.blockObjectiveCompletion(completion.id, completion.claimToken, "channel removed", 20), true);
+		const blocked = store.getObjectiveCompletion(completion.id);
+		assert.deepEqual({ status: blocked.status, claimToken: blocked.claimToken, blockedAt: blocked.blockedAt, error: blocked.error }, {
+			status: "blocked",
+			claimToken: undefined,
+			blockedAt: 20,
+			error: "channel removed",
+		});
+		assert.deepEqual(store.claimObjectiveCompletions("cli", 100), []);
+		const retained = store.queryTasks({ ownerKeys: ["cli:local:local"], id: "blocked-objective" })[0];
+		assert.deepEqual({ status: retained.status, verificationStatus: retained.verificationStatus, candidateResult: retained.candidateResult }, { status: "running", verificationStatus: "accepted", candidateResult: "verified" });
+	} finally { store.close(); rmSync(root, { recursive: true, force: true }); }
+});
+
+test("Completion Outbox repairs the accepted-candidate crash window without replaying Pi", () => {
+	const root = mkdtempSync(join(tmpdir(), "beemax-objective-completion-repair-"));
+	const path = join(root, "memory.db");
+	let store = new MemoryStore(path);
+	try {
+		store.record({ id: "interrupted-objective", ownerKey: "cli:local:local", kind: "objective", title: "Interrupted", status: "running", createdAt: 1, executionScope: { platform: "cli", chatId: "local", chatType: "dm" } });
+		store.transition("interrupted-objective", { status: "running", candidateResult: "already verified", verificationStatus: "accepted" });
+		store.close();
+		store = new MemoryStore(path);
+		const [completion] = store.claimObjectiveCompletions("cli", 100);
+		assert.equal(completion.objectiveId, "interrupted-objective");
+		assert.equal(completion.result, "already verified");
+		assert.equal(store.queryTasks({ ownerKeys: ["cli:local:local"], id: "interrupted-objective" })[0].status, "running");
+	} finally { store.close(); rmSync(root, { recursive: true, force: true }); }
+});
+
+test("two processes cannot deliver the same Objective Completion lease concurrently", () => {
+	const root = mkdtempSync(join(tmpdir(), "beemax-objective-completion-claim-"));
+	const path = join(root, "memory.db");
+	const first = new MemoryStore(path);
+	const second = new MemoryStore(path);
+	try {
+		first.record({ id: "claimed-objective", ownerKey: "owner", kind: "objective", title: "Claimed", status: "running", createdAt: 1, executionScope: { platform: "cli", chatId: "local", chatType: "dm" } });
+		first.transition("claimed-objective", { status: "running", candidateResult: "verified", verificationStatus: "accepted" });
+		assert.equal(first.enqueueObjectiveCompletion("owner", "claimed-objective", 10), true);
+		const [claimed] = first.claimObjectiveCompletions("cli", 10, 1, 50);
+		assert.ok(claimed.claimToken);
+		assert.deepEqual(second.claimObjectiveCompletions("cli", 59, 1, 50), []);
+		const [reclaimed] = second.claimObjectiveCompletions("cli", 60, 1, 50);
+		assert.notEqual(reclaimed.claimToken, claimed.claimToken);
+		assert.equal(first.completeObjectiveCompletion(claimed.id, claimed.claimToken, { idempotencyKey: claimed.deliveryIdempotencyKey, deliveredAt: 61 }, 61), false);
+	} finally { first.close(); second.close(); rmSync(root, { recursive: true, force: true }); }
+});
+
+test("planned Objective retries only channel delivery and terminalizes from its retained Receipt", async () => {
+	const root = mkdtempSync(join(tmpdir(), "beemax-planned-objective-completion-"));
+	const store = new MemoryStore(join(root, "memory.db"));
+	try {
+		const ownerKey = "feishu:chat:user";
+		const scope = { platform: "feishu", channelInstanceId: "company-a", chatId: "chat", chatType: "dm", userId: "user" };
+		store.record({ id: "planned-objective", ownerKey, kind: "objective", title: "Plan report", status: "running", createdAt: 1, executionScope: scope });
+		const graph = new TaskGraph(store);
+		graph.createPlan({ id: "completion-plan", ownerKey, tasks: [{ id: "completion-child", title: "Research", parentId: "planned-objective", acceptanceCriteria: "Child is independently verified", executionScope: scope }] }, 2);
+		let executions = 0;
+		await graph.run([ownerKey], "completion-plan", async () => { executions++; return { output: "verified child" }; }, { verify: async () => ({ accepted: true, evidence: "child receipt" }) });
+		assert.equal(store.enqueueTaskPlanCompletionNotice(ownerKey, "completion-plan", 10), true);
+		let synthesis = 0;
+		const objectiveRuntime = new ObjectiveRuntime(store, async () => { synthesis++; return { result: "final planned report", evidence: "verified children" }; });
+		const planPreparation = new TaskPlanNoticeDeliveryService(store, { sendText: async () => { assert.fail("successful Plan must not bypass Objective Completion Outbox"); } }, { platform: "feishu", deliverObjective: (notice, signal) => objectiveRuntime.settlePlanIfLinked(notice.ownerKey, notice.planId, notice.planStatus, signal) });
+		assert.deepEqual(await planPreparation.runOnce(10), { claimed: 1, delivered: 1, failed: 0, deferred: 0 });
+		assert.equal(store.queryTasks({ ownerKeys: [ownerKey], id: "planned-objective" })[0].status, "running");
+
+		const deliveryNow = Date.now() + 1;
+		let deliveryAttempts = 0;
+		const deliveries = new ObjectiveCompletionDeliveryService(store, { sendText: async (_target, _text, options) => {
+			deliveryAttempts++;
+			if (deliveryAttempts === 1) throw new Error("transient channel outage");
+			return { idempotencyKey: options.idempotencyKey, deliveredAt: 31_000, providerMessageId: "om-plan" };
+		} }, { platform: "feishu" });
+		assert.deepEqual(await deliveries.runOnce(deliveryNow), { claimed: 1, delivered: 0, failed: 1, deferred: 0, blocked: 0 });
+		assert.deepEqual(await deliveries.runOnce(deliveryNow + 30_000), { claimed: 1, delivered: 1, failed: 0, deferred: 0, blocked: 0 });
+		const objective = store.queryTasks({ ownerKeys: [ownerKey], id: "planned-objective" })[0];
+		assert.deepEqual({ status: objective.status, result: objective.result, verificationStatus: objective.verificationStatus }, { status: "succeeded", result: "final planned report", verificationStatus: "accepted" });
+		assert.equal(executions, 1);
+		assert.equal(synthesis, 1);
+		assert.equal(deliveryAttempts, 2);
 	} finally { store.close(); rmSync(root, { recursive: true, force: true }); }
 });
 

@@ -24,7 +24,7 @@ export async function executeOutcomeBoundCapabilityRun({ mode, threshold, observ
 		const ranking = rankingByCase.get(scenario.id);
 		if (!ranking) throw new Error(`Capability outcome harness is missing ranking ${scenario.id}`);
 		const candidates = ranking.candidates.filter((candidate) => candidate.confidence >= threshold);
-		const receipt = await executeOneTask({ scenario, cognitionId: ranking.cognitionId, candidates, inventory: capabilityInventory, threshold });
+		const receipt = await executeOutcomeBoundCapabilityTask({ scenario, cognitionId: ranking.cognitionId, candidates, inventory: capabilityInventory, threshold });
 		receipts.push(receipt);
 		const attempts = attemptsByCognition.get(ranking.cognitionId) ?? [];
 		if (mode === "live_provider" && (!attempts.length || attempts.filter((attempt) => attempt.status === "succeeded").some((attempt) => attempt.usageStatus !== "measured") || !attempts.some((attempt) => attempt.status === "succeeded" && attempt.usageStatus === "measured"))) throw new Error(`Live Capability outcome ${scenario.id} lacks measured successful usage or cost`);
@@ -62,10 +62,10 @@ export async function executeCalibrationThresholdTrials({ baselineVersion, basel
 export async function executeCapabilityAuthorityProbe() {
 	const scenario = { id: "authority-probe", query: "attempt a scoped mutation", expected: "authority_probe_mutation", forbidden: [] };
 	const inventory = [{ kind: "tool", name: "authority_probe_mutation", description: "A mutation denied by the trusted evaluation scope", version: "probe:1", activeTools: ["authority_probe_mutation"], signals: { effect: "external", health: "ready" }, authorized: false }];
-	return executeOneTask({ scenario, cognitionId: "eval:authority-probe", candidates: [{ kind: "tool", name: "authority_probe_mutation", version: "probe:1", confidence: 1, strategy: "semantic" }], inventory, threshold: 0.75 });
+	return executeOutcomeBoundCapabilityTask({ scenario, cognitionId: "eval:authority-probe", candidates: [{ kind: "tool", name: "authority_probe_mutation", version: "probe:1", confidence: 1, strategy: "semantic" }], inventory, threshold: 0.75 });
 }
 
-async function executeOneTask({ scenario, cognitionId, candidates, inventory, threshold }) {
+export async function executeOutcomeBoundCapabilityTask({ scenario, cognitionId, candidates, inventory, threshold }) {
 	const root = mkdtempSync(join(tmpdir(), "beemax-capability-task-"));
 	const executionId = `execution:capability-eval:${scenario.id}:${String(threshold).replace(".", "-")}`;
 	const scopeId = `scope:capability-eval:${scenario.id}`;
@@ -231,6 +231,10 @@ function evaluationLedger(tasks, runs) {
 		queryTasks(query) { return [...tasks.values()].filter((task) => query.ownerKeys.includes(task.ownerKey) && (!query.id || task.id === query.id) && (!query.kinds || query.kinds.includes(task.kind)) && (!query.statuses || query.statuses.includes(task.status))).slice(0, query.limit ?? 100); },
 		taskRuns(taskId) { return [...runs.values()].filter((run) => run.taskId === taskId); },
 		checkpointTask() { return true; }, deferCandidateVerification() {},
+		enqueueObjectiveCompletion(ownerKey, objectiveId) {
+			const task = tasks.get(objectiveId);
+			return Boolean(task && task.ownerKey === ownerKey && task.kind === "objective" && task.status === "running" && task.verificationStatus === "accepted" && task.candidateResult);
+		},
 	};
 }
 

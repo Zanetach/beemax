@@ -28,16 +28,18 @@ test("Gateway delivery honors the declared image-only capability", async () => {
 });
 
 test("Gateway delivery routes through the requested channel instance", async () => {
-	let resolved;
+	let resolved, sent;
 	const port = new GatewayDeliveryPort({
 		resolveAdapter(platform, channelInstanceId) {
 			resolved = { platform, channelInstanceId };
 			return {
 				name: platform,
-				async send() { return { success: true }; },
+				async send(...args) { sent = args; return { success: true, messageId: "reply-1" }; },
 			};
 		},
 	});
-	await port.sendText({ platform: "feishu", channelInstanceId: "company-a", chatId: "group-1" }, "hello");
+	const receipt = await port.sendText({ platform: "feishu", channelInstanceId: "company-a", chatId: "group-1", chatType: "thread", threadId: "thread-1", replyToMessageId: "origin-1" }, "hello", { idempotencyKey: "completion-1" });
 	assert.deepEqual(resolved, { platform: "feishu", channelInstanceId: "company-a" });
+	assert.deepEqual(sent, ["group-1", "hello", { idempotencyKey: "completion-1", replyTo: "origin-1", replyInThread: true }]);
+	assert.deepEqual(receipt, { idempotencyKey: "completion-1", deliveredAt: receipt.deliveredAt, providerMessageId: "reply-1" });
 });

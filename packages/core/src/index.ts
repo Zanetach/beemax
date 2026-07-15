@@ -73,7 +73,7 @@ export {
 export { ConversationContext, type ContextAssembly, type ContextItem, type ContextItemInput, type ContextItemKind, type ConversationContextOptions, type ConversationExchange, type ConversationMemoryPort, type OrganizationKnowledgeHit, type OrganizationKnowledgeKind, type OrganizationKnowledgeRecall, type OrganizationKnowledgeRecallMetrics, type VerifiedRuntimeFacts } from "./conversation-context.ts";
 export { compileLongTermMemorySnapshot, type LongTermMemoryCompiler } from "./personal-memory.ts";
 export { curatedMemoryPrompt } from "./curated-memory.ts";
-export type { TaskArtifact, TaskCandidateVerificationResolution, TaskCriterionVerification, TaskCriterionVerificationStatus, TaskDependency, TaskKind, TaskLedger, TaskPlanCompletionNotice, TaskPlanQuery, TaskPlanRecord, TaskPlanStatus, TaskPlanTransition, TaskQuery, TaskRecord, TaskRecoveryPolicy, TaskRecoveryResult, TaskRunEffectStateReader, TaskRunRecord, TaskRunStatus, TaskRunTransition, TaskStatus, TaskTransition, TaskVerificationRequirement, TaskVerificationStatus } from "./task-ledger.ts";
+export type { ObjectiveCompletion, TaskArtifact, TaskCandidateVerificationResolution, TaskCriterionVerification, TaskCriterionVerificationStatus, TaskDependency, TaskKind, TaskLedger, TaskPlanCompletionNotice, TaskPlanQuery, TaskPlanRecord, TaskPlanStatus, TaskPlanTransition, TaskQuery, TaskRecord, TaskRecoveryPolicy, TaskRecoveryResult, TaskRunEffectStateReader, TaskRunRecord, TaskRunStatus, TaskRunTransition, TaskStatus, TaskTransition, TaskVerificationRequirement, TaskVerificationStatus } from "./task-ledger.ts";
 export { taskCriterionDefinitions, unavailableTaskCriterionVerifications, type TaskCriterionDefinition } from "./task-criteria.ts";
 export { deriveTaskVerificationRequirements, mergeTaskVerificationRequirements, taskRequiresCurrentSourceEvidence, type TaskVerificationCapability } from "./task-verification-requirements.ts";
 export { createTaskCheckpoint, isTaskCheckpoint, mergeTaskCheckpoints, parseTaskCheckpoint, renderTaskCheckpoint, type TaskCheckpoint, type TaskCheckpointInput } from "./task-checkpoint.ts";
@@ -99,6 +99,7 @@ export { EnterprisePolicyRuntime, createEnterprisePolicyProvider, createEnterpri
 export { ActionGovernance, type ActionExecutionGrant, type ActionGovernanceDecision, type ActionGovernanceInput, type ActionGovernanceOutcome, type MeasuredActionReliability } from "./action-governance.ts";
 export { multilingualLexicalTerms } from "./multilingual-lexical.ts";
 export { TaskPlanNoticeDeliveryService, renderTaskPlanCompletionNotice, type TaskPlanProgressEvent, type TaskPlanNoticeDeliveryOptions, type TaskPlanNoticeDeliveryResult, type TaskPlanNoticeOutbox } from "./task-plan-notice-delivery.ts";
+export { ObjectiveCompletionDeliveryService, interactionCompletionDeliveryKey, objectiveCompletionId, objectiveIdFromCompletionId, type ObjectiveCompletionDeliveryOptions, type ObjectiveCompletionDeliveryResult, type ObjectiveCompletionOutbox } from "./objective-completion-delivery.ts";
 export { ProfileTaskScheduler, type ProfileTaskSchedulerOptions, type ProfileTaskSchedulerSnapshot } from "./profile-task-scheduler.ts";
 export { AutonomousPlanningPolicy, PlanningBudgetRegistry, type AutonomousExecutionMode, type AutonomousPlanningDecision, type AutonomousPlanningPolicyOptions, type PlanningResourceBudget, type PlanningSignals } from "./autonomous-planning.ts";
 export {
@@ -158,7 +159,7 @@ export { FileInteractionInputQueueStore, type InteractionInputQueueStore, type I
 export { FileInteractionEventJournal, durableEvent, type DurableInteractionEvent, type InteractionEventJournal } from "./interaction-event-journal.ts";
 export { INTERACTION_PROTOCOL_VERSION, InteractionProtocol, parseInteractionProtocolRequest, sameScope, type InteractionProtocolOptions, type InteractionProtocolRequest, type InteractionProtocolResponse, type ProtocolInteractionAction } from "./interaction-protocol.ts";
 export { INTERACTION_COMMANDS, interactionCommandHelp, parseInteractionCommand, type InteractionCommand, type InteractionCommandDefinition, type InteractionDetailsDisplay } from "./interaction-commands.ts";
-export { DeliveryDeferredError, type DeliveryOptions, type DeliveryPort, type DeliveryTarget, type MediaArtifact } from "./delivery-port.ts";
+export { DeliveryDeferredError, type DeliveryOptions, type DeliveryPort, type DeliveryReceipt, type DeliveryTarget, type MediaArtifact } from "./delivery-port.ts";
 export { sanitizeDisplayText } from "./display-text.ts";
 export type { ExecutionBackend, ExecutionPolicy, ExecutionPort, ExecutionRequest, ExecutionResult, SandboxMode, WorkspaceAccess } from "./execution.ts";
 export { resolveExecutionBackend } from "./execution.ts";

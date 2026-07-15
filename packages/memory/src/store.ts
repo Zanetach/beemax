@@ -16,7 +16,7 @@ import type { Database as DatabaseType } from "better-sqlite3";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { createHash } from "node:crypto";
-import { AUTONOMY_LEVELS, containsCredentialMaterial, createAccessScopeRef, createEnterprisePolicyPublisher, createSituation, multilingualLexicalTerms, parseTaskCheckpoint, redactCredentialMaterial, renderTaskCheckpoint, unavailableTaskCriterionVerifications, type AutonomyLevel, type AutonomyRolloutEvidence, type AutonomyRolloutRecord, type AutonomyRolloutStateStore, type CompensationProof, type ConversationMemoryPort, type DeliveryTarget, type DurableInitiativeTrigger, type DurableInitiativeTriggerInput, type EmergencyStopRecord, type EnterprisePolicyPublisher, type InitiativeObservation, type InitiativeObservationInput, type InitiativeObservationStore, type InitiativeScope, type InitiativeTriggerInbox, type OrganizationKnowledgeHit, type OrganizationKnowledgeRecall, type ReversibleActionControlPort, type Situation, type TaskCandidateVerificationResolution, type TaskCheckpoint, type TaskDependency, type TaskLedger, type TaskPlanCompletionNotice, type TaskPlanNoticeOutbox, type TaskPlanQuery, type TaskPlanRecord, type TaskPlanTransition, type TaskQuery, type TaskRecord as RuntimeTaskRecord, type TaskRecoveryResult, type TaskRunEffectStateReader, type TaskRunRecord, type TaskRunTransition, type TaskTransition } from "@beemax/core";
+import { AUTONOMY_LEVELS, containsCredentialMaterial, createAccessScopeRef, createEnterprisePolicyPublisher, createSituation, interactionCompletionDeliveryKey, multilingualLexicalTerms, objectiveCompletionId, parseTaskCheckpoint, redactCredentialMaterial, renderTaskCheckpoint, unavailableTaskCriterionVerifications, type AutonomyLevel, type AutonomyRolloutEvidence, type AutonomyRolloutRecord, type AutonomyRolloutStateStore, type CompensationProof, type ConversationMemoryPort, type DeliveryReceipt, type DeliveryTarget, type DurableInitiativeTrigger, type DurableInitiativeTriggerInput, type EmergencyStopRecord, type EnterprisePolicyPublisher, type InitiativeObservation, type InitiativeObservationInput, type InitiativeObservationStore, type InitiativeScope, type InitiativeTriggerInbox, type ObjectiveCompletion, type ObjectiveCompletionOutbox, type OrganizationKnowledgeHit, type OrganizationKnowledgeRecall, type ReversibleActionControlPort, type Situation, type TaskCandidateVerificationResolution, type TaskCheckpoint, type TaskDependency, type TaskLedger, type TaskPlanCompletionNotice, type TaskPlanNoticeOutbox, type TaskPlanQuery, type TaskPlanRecord, type TaskPlanTransition, type TaskQuery, type TaskRecord as RuntimeTaskRecord, type TaskRecoveryResult, type TaskRunEffectStateReader, type TaskRunRecord, type TaskRunTransition, type TaskTransition } from "@beemax/core";
 
 export const MEMORY_CLAIM_KINDS = ["preference", "fact", "decision", "goal", "project", "relationship", "workflow", "exception"] as const;
 const EPISODE_STATUSES = new Set<OrganizationMemoryEpisodeStatus>(["candidate", "verified", "conflicted", "superseded"]);
@@ -377,6 +377,18 @@ export class MemoryStore {
 				attempts INTEGER NOT NULL DEFAULT 0, next_attempt_at INTEGER NOT NULL, created_at INTEGER NOT NULL, abandoned_at INTEGER, last_error TEXT
 			);
 			CREATE INDEX IF NOT EXISTS idx_task_plan_completion_notices_due ON task_plan_completion_notices(status, next_attempt_at);
+			CREATE TABLE IF NOT EXISTS objective_completion_outbox (
+				id TEXT PRIMARY KEY, objective_id TEXT NOT NULL UNIQUE REFERENCES tasks(id) ON DELETE CASCADE,
+				owner_key TEXT NOT NULL, plan_id TEXT,
+				platform TEXT NOT NULL, channel_instance_id TEXT, chat_id TEXT NOT NULL, chat_type TEXT, user_id TEXT, thread_id TEXT, reply_to_message_id TEXT,
+				title TEXT NOT NULL, result TEXT NOT NULL, evidence TEXT,
+				delivery_idempotency_key TEXT NOT NULL,
+				status TEXT NOT NULL CHECK (status IN ('queued', 'delivering', 'delivered', 'blocked')),
+				claim_token TEXT, attempts INTEGER NOT NULL DEFAULT 0, next_attempt_at INTEGER NOT NULL,
+				receipt_idempotency_key TEXT, receipt_delivered_at INTEGER, receipt_provider_message_id TEXT,
+				created_at INTEGER NOT NULL, blocked_at INTEGER, last_error TEXT
+			);
+			CREATE INDEX IF NOT EXISTS idx_objective_completion_outbox_due ON objective_completion_outbox(platform, status, next_attempt_at);
 			CREATE TABLE IF NOT EXISTS tasks (
 				id TEXT PRIMARY KEY,
 				owner_key TEXT NOT NULL,
@@ -760,6 +772,9 @@ export class MemoryStore {
 		this.addColumnIfMissing("tasks", "recovery_policy", "TEXT NOT NULL DEFAULT 'never'");
 		this.addColumnIfMissing("tasks", "idempotency_key", "TEXT");
 		this.addColumnIfMissing("tasks", "execution_scope", "TEXT");
+		this.addColumnIfMissing("objective_completion_outbox", "reply_to_message_id", "TEXT");
+		this.addColumnIfMissing("objective_completion_outbox", "delivery_idempotency_key", "TEXT");
+		this.db.prepare("UPDATE objective_completion_outbox SET delivery_idempotency_key = id WHERE delivery_idempotency_key IS NULL OR delivery_idempotency_key = ''").run();
 		this.addColumnIfMissing("initiative_triggers", "execution_scope", "TEXT");
 		this.addColumnIfMissing("initiative_triggers", "channel_instance_id", "TEXT");
 		this.addColumnIfMissing("initiative_observations", "channel_instance_id", "TEXT");
@@ -2027,11 +2042,17 @@ export class MemoryStore {
 	resolveCandidateVerification(ownerKeys: string[], taskId: string, resolution: TaskCandidateVerificationResolution, now = Date.now()): boolean {
 		if (!ownerKeys.length || !taskId.trim()) return false;
 		return this.db.transaction(() => {
-			const row = this.db.prepare(`SELECT plan_id FROM tasks WHERE id = ? AND owner_key IN (${ownerKeys.map(() => "?").join(", ")})
-				AND status IN ('running', 'failed') AND verification_outcome = 'unavailable' AND candidate_result IS NOT NULL`).get(taskId, ...ownerKeys) as { plan_id: string | null } | undefined;
+			const row = this.db.prepare(`SELECT owner_key, kind, plan_id FROM tasks WHERE id = ? AND owner_key IN (${ownerKeys.map(() => "?").join(", ")})
+				AND status IN ('running', 'failed') AND verification_outcome = 'unavailable' AND candidate_result IS NOT NULL`).get(taskId, ...ownerKeys) as { owner_key: string; kind: RuntimeTaskRecord["kind"]; plan_id: string | null } | undefined;
 			if (!row) return false;
 			const criterionVerifications = safeCriterionVerifications(resolution.criterionVerifications);
-			const changed = resolution.accepted
+			const directObjectiveAccepted = resolution.accepted && row.kind === "objective" && row.plan_id === null;
+			const changed = directObjectiveAccepted
+				? this.db.prepare(`UPDATE tasks SET status = 'running', evidence = COALESCE(?, evidence), verification_outcome = 'accepted',
+					verification_feedback = NULL, criterion_verifications = ?, verification_retry_at = NULL, error = NULL, finished_at = NULL, updated_at = ?
+					WHERE id = ? AND status IN ('running', 'failed') AND verification_outcome = 'unavailable' AND candidate_result IS NOT NULL`)
+					.run(safeTaskText(resolution.evidence), criterionVerifications, now, taskId).changes
+				: resolution.accepted
 				? this.db.prepare(`UPDATE tasks SET status = 'succeeded', result = candidate_result, candidate_result = NULL, evidence = COALESCE(?, evidence),
 					verification_outcome = 'accepted', verification_feedback = NULL, criterion_verifications = ?, verification_retry_at = NULL, error = NULL, finished_at = ?, updated_at = ?
 					WHERE id = ? AND status IN ('running', 'failed') AND verification_outcome = 'unavailable' AND candidate_result IS NOT NULL`).run(safeTaskText(resolution.evidence), criterionVerifications, now, now, taskId).changes
@@ -2039,6 +2060,7 @@ export class MemoryStore {
 					WHERE id = ? AND status IN ('running', 'failed') AND verification_outcome = 'unavailable' AND candidate_result IS NOT NULL`)
 					.run(now, safeTaskText(resolution.feedback.slice(0, 5_000)), criterionVerifications, safeTaskText(`Task verification rejected: ${resolution.feedback}`.slice(0, 5_000)), now, taskId).changes;
 			if (changed && row.plan_id) this.syncTaskPlanAfterCandidateVerification(row.plan_id, now);
+			if (changed && directObjectiveAccepted && !this.enqueueObjectiveCompletion(row.owner_key, taskId, now)) throw new Error(`Objective ${taskId} could not enter the durable Completion Outbox`);
 			return changed === 1;
 		})();
 	}
@@ -2060,6 +2082,118 @@ export class MemoryStore {
 			for (const planId of planIds) this.syncTaskPlan(planId, "pending", now, true);
 			return changed;
 		})();
+	}
+
+	enqueueObjectiveCompletion(ownerKey: string, objectiveId: string, now = Date.now(), notBefore = now): boolean {
+		if (!ownerKey.trim() || !objectiveId.trim()) return false;
+		const task = this.db.prepare(`SELECT id, owner_key, plan_id, title, candidate_result, evidence, execution_scope FROM tasks
+			WHERE id = ? AND owner_key = ? AND kind = 'objective' AND status = 'running'
+			AND verification_outcome = 'accepted' AND candidate_result IS NOT NULL`).get(objectiveId, ownerKey) as {
+			id: string; owner_key: string; plan_id: string | null; title: string; candidate_result: string; evidence: string | null; execution_scope: string | null;
+		} | undefined;
+		if (!task) return false;
+		const target = parseExecutionScope(task.execution_scope);
+		if (!target?.platform || !target.chatId || !task.candidate_result.trim()) return false;
+		const id = objectiveCompletionId(task.id);
+		const deliveryIdempotencyKey = target.originMessageId
+			? interactionCompletionDeliveryKey(this.profileId, target, target.originMessageId)
+			: id;
+		const inserted = this.db.prepare(`INSERT OR IGNORE INTO objective_completion_outbox
+			(id, objective_id, owner_key, plan_id, platform, channel_instance_id, chat_id, chat_type, user_id, thread_id, reply_to_message_id, title, result, evidence, delivery_idempotency_key, status, attempts, next_attempt_at, created_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', 0, ?, ?)`).run(
+			id, task.id, task.owner_key, task.plan_id, target.platform, target.channelInstanceId ?? null, target.chatId, target.chatType ?? null,
+			target.userId ?? null, target.threadId ?? null, target.replyToMessageId ?? null, task.title, task.candidate_result.slice(0, 50_000), task.evidence, deliveryIdempotencyKey, Math.max(now, notBefore), now,
+		).changes === 1;
+		if (inserted) return true;
+		const existing = this.db.prepare("SELECT objective_id, owner_key, result, platform, channel_instance_id, chat_id, thread_id, reply_to_message_id, delivery_idempotency_key FROM objective_completion_outbox WHERE id = ?").get(id) as {
+			objective_id: string; owner_key: string; result: string; platform: string; channel_instance_id: string | null; chat_id: string; thread_id: string | null; reply_to_message_id: string | null; delivery_idempotency_key: string;
+		} | undefined;
+		return existing?.objective_id === task.id && existing.owner_key === task.owner_key && existing.result === task.candidate_result.slice(0, 50_000)
+			&& existing.platform === target.platform && existing.channel_instance_id === (target.channelInstanceId ?? null) && existing.chat_id === target.chatId && existing.thread_id === (target.threadId ?? null)
+			&& existing.reply_to_message_id === (target.replyToMessageId ?? null) && existing.delivery_idempotency_key === deliveryIdempotencyKey;
+	}
+
+	getObjectiveCompletion(id: string): ObjectiveCompletion | undefined {
+		if (!id.trim()) return undefined;
+		const row = this.db.prepare("SELECT * FROM objective_completion_outbox WHERE id = ?").get(id) as ObjectiveCompletionRow | undefined;
+		return row ? mapObjectiveCompletion(row) : undefined;
+	}
+
+	claimObjectiveCompletions(platform: string, now = Date.now(), limit = 10, leaseMs = 5 * 60_000): ObjectiveCompletion[] {
+		if (!platform.trim()) return [];
+		return this.db.transaction(() => {
+			for (const row of this.db.prepare(`SELECT owner_key, id FROM tasks WHERE kind = 'objective' AND status = 'running'
+				AND verification_outcome = 'accepted' AND candidate_result IS NOT NULL AND execution_scope IS NOT NULL
+				AND NOT EXISTS (SELECT 1 FROM objective_completion_outbox WHERE objective_id = tasks.id)`).all() as Array<{ owner_key: string; id: string }>) {
+				this.enqueueObjectiveCompletion(row.owner_key, row.id, now);
+			}
+			const rows = this.db.prepare(`SELECT id FROM objective_completion_outbox
+				WHERE platform = ? AND status IN ('queued', 'delivering') AND next_attempt_at <= ?
+				ORDER BY next_attempt_at, created_at LIMIT ?`).all(platform, now, limitOf(limit, 10)) as Array<{ id: string }>;
+			return rows.flatMap((row) => {
+				const claimToken = crypto.randomUUID();
+				const claimed = this.db.prepare(`UPDATE objective_completion_outbox
+					SET status = 'delivering', claim_token = ?, attempts = attempts + 1, next_attempt_at = ?
+					WHERE id = ? AND status IN ('queued', 'delivering') AND next_attempt_at <= ?
+					RETURNING *`).get(claimToken, now + Math.max(1, leaseMs), row.id, now) as ObjectiveCompletionRow | undefined;
+				return claimed ? [mapObjectiveCompletion(claimed)] : [];
+			});
+		})();
+	}
+
+	completeObjectiveCompletion(id: string, claimToken: string, receipt: DeliveryReceipt, now = Date.now()): boolean {
+		return this.settleObjectiveCompletion(id, receipt, now, claimToken);
+	}
+
+	acknowledgeObjectiveCompletion(id: string, receipt: DeliveryReceipt, now = Date.now()): boolean {
+		return this.settleObjectiveCompletion(id, receipt, now);
+	}
+
+	private settleObjectiveCompletion(id: string, receipt: DeliveryReceipt, now: number, claimToken?: string): boolean {
+		if (!id.trim() || !receipt.idempotencyKey.trim() || !Number.isFinite(receipt.deliveredAt) || receipt.deliveredAt < 0) return false;
+		return this.db.transaction(() => {
+			const row = this.db.prepare("SELECT objective_id, result, status, claim_token, delivery_idempotency_key, receipt_idempotency_key FROM objective_completion_outbox WHERE id = ?").get(id) as {
+				objective_id: string; result: string; status: ObjectiveCompletion["status"]; claim_token: string | null; delivery_idempotency_key: string; receipt_idempotency_key: string | null;
+			} | undefined;
+			if (!row) return false;
+			if (receipt.idempotencyKey !== row.delivery_idempotency_key) return false;
+			if (row.status === "delivered") return row.receipt_idempotency_key === receipt.idempotencyKey;
+			if (row.status === "blocked" || (claimToken !== undefined && (row.status !== "delivering" || row.claim_token !== claimToken))) return false;
+			const outboxChanged = this.db.prepare(`UPDATE objective_completion_outbox SET status = 'delivered', claim_token = NULL,
+				receipt_idempotency_key = ?, receipt_delivered_at = ?, receipt_provider_message_id = ?, last_error = NULL
+				WHERE id = ? AND status IN ('queued', 'delivering')`).run(receipt.idempotencyKey, Math.trunc(receipt.deliveredAt), receipt.providerMessageId ?? null, id).changes;
+			if (outboxChanged !== 1) return false;
+			const taskChanged = this.db.prepare(`UPDATE tasks SET status = 'succeeded', result = ?, candidate_result = NULL, finished_at = ?, error = NULL, updated_at = ?
+				WHERE id = ? AND kind = 'objective' AND status = 'running' AND verification_outcome = 'accepted'`).run(row.result, now, now, row.objective_id).changes;
+			if (taskChanged === 1) return true;
+			const terminal = this.db.prepare("SELECT status, result FROM tasks WHERE id = ?").get(row.objective_id) as { status: string; result: string | null } | undefined;
+			if (terminal?.status === "succeeded" && terminal.result === row.result) return true;
+			throw new Error(`Objective ${row.objective_id} could not reach a Terminal Outcome after delivery acknowledgement`);
+		})();
+	}
+
+	renewObjectiveCompletion(id: string, claimToken: string, leaseExpiresAt: number): boolean {
+		return this.db.prepare("UPDATE objective_completion_outbox SET next_attempt_at = ? WHERE id = ? AND status = 'delivering' AND claim_token = ?")
+			.run(leaseExpiresAt, id, claimToken).changes === 1;
+	}
+
+	failObjectiveCompletion(id: string, claimToken: string, now = Date.now()): boolean {
+		const row = this.db.prepare("SELECT attempts FROM objective_completion_outbox WHERE id = ? AND status = 'delivering' AND claim_token = ?").get(id, claimToken) as { attempts: number } | undefined;
+		if (!row) return false;
+		const delay = Math.min(60 * 60_000, 30_000 * (2 ** Math.min(Math.max(0, row.attempts - 1), 7)));
+		return this.db.prepare("UPDATE objective_completion_outbox SET status = 'queued', claim_token = NULL, next_attempt_at = ? WHERE id = ? AND status = 'delivering' AND claim_token = ?")
+			.run(now + delay, id, claimToken).changes === 1;
+	}
+
+	deferObjectiveCompletion(id: string, claimToken: string, retryAt: number, now = Date.now()): boolean {
+		const boundedRetryAt = Math.max(now + 1_000, Math.min(retryAt, now + 7 * 24 * 60 * 60_000));
+		return this.db.prepare("UPDATE objective_completion_outbox SET status = 'queued', attempts = MAX(0, attempts - 1), claim_token = NULL, next_attempt_at = ?, last_error = NULL WHERE id = ? AND status = 'delivering' AND claim_token = ?")
+			.run(boundedRetryAt, id, claimToken).changes === 1;
+	}
+
+	blockObjectiveCompletion(id: string, claimToken: string, error: string, now = Date.now()): boolean {
+		return this.db.prepare("UPDATE objective_completion_outbox SET status = 'blocked', claim_token = NULL, blocked_at = ?, last_error = ? WHERE id = ? AND status = 'delivering' AND claim_token = ?")
+			.run(now, redactCredentialMaterial(error).slice(0, 5_000), id, claimToken).changes === 1;
 	}
 
 	enqueueTaskPlanCompletionNotice(ownerKey: string, planId: string, now = Date.now()): boolean {
@@ -2340,6 +2474,13 @@ export class MemoryStore {
 		})();
 	}
 
+	renewInitiativeTrigger(id: string, claimToken: string, leaseExpiresAt: number): boolean {
+		if (!Number.isFinite(leaseExpiresAt) || leaseExpiresAt <= Date.now()) return false;
+		return this.db.prepare(`UPDATE initiative_triggers SET claim_expires_at = ?, updated_at = ?
+			WHERE id = ? AND profile_id = ? AND status = 'processing' AND claim_token = ?`)
+			.run(Math.trunc(leaseExpiresAt), Date.now(), id, this.profileId, claimToken).changes === 1;
+	}
+
 	completeInitiativeTrigger(id: string, claimToken: string, outcome: { decision: "observed" | "ignored"; observationId?: string; notificationRequired: boolean }): boolean {
 		const row = this.db.prepare("SELECT notification_required, delivery_target FROM initiative_triggers WHERE id = ? AND profile_id = ? AND status = 'processing' AND claim_token = ?")
 			.get(id, this.profileId, claimToken) as { notification_required: number; delivery_target: string | null } | undefined;
@@ -2507,7 +2648,7 @@ export type AutonomyRolloutStore = AutonomyRolloutStateStore;
 export type ConversationMemoryStore = ConversationMemoryPort;
 export type DurableTaskLedger = TaskLedger;
 export type TaskRecoveryQueue = Pick<TaskLedger, "reconcileExpiredTaskRuns" | "recoveryCandidates" | "verificationCandidates" | "deferCandidateVerification" | "resolveCandidateVerification" | "prepareTaskCorrections" | "prepareTaskPlanRetry">;
-export type CompletionOutbox = TaskPlanNoticeOutbox;
+export type CompletionOutbox = TaskPlanNoticeOutbox & ObjectiveCompletionOutbox & Required<Pick<TaskLedger, "getObjectiveCompletion" | "acknowledgeObjectiveCompletion">>;
 export interface MemoryPersistencePorts {
 	organizationMemory: OrganizationMemoryPort;
 	conversationMemory: ConversationMemoryStore;
@@ -2772,6 +2913,15 @@ interface TaskPlanCompletionNoticeRow {
 	status: Exclude<TaskPlanCompletionNotice["status"], "abandoned">; claim_token: string | null; attempts: number; next_attempt_at: number; created_at: number; abandoned_at: number | null; last_error: string | null;
 }
 
+interface ObjectiveCompletionRow {
+	id: string; objective_id: string; owner_key: string; plan_id: string | null;
+	platform: string; channel_instance_id: string | null; chat_id: string; chat_type: string | null; user_id: string | null; thread_id: string | null; reply_to_message_id: string | null;
+	delivery_idempotency_key: string;
+	title: string; result: string; evidence: string | null; status: ObjectiveCompletion["status"]; claim_token: string | null;
+	attempts: number; next_attempt_at: number; receipt_idempotency_key: string | null; receipt_delivered_at: number | null;
+	receipt_provider_message_id: string | null; created_at: number; blocked_at: number | null; last_error: string | null;
+}
+
 function validChatType(value: string | null): DeliveryTarget["chatType"] {
 	return value === "dm" || value === "group" || value === "channel" || value === "thread" ? value : undefined;
 }
@@ -2937,6 +3087,20 @@ function mapTaskPlanCompletionNotice(row: TaskPlanCompletionNoticeRow): TaskPlan
 		planStatus: row.plan_status, title: row.title, taskCount: row.task_count, succeeded: row.succeeded, failed: row.failed, cancelled: row.cancelled,
 		status: row.abandoned_at === null ? row.status : "abandoned", ...(row.claim_token ? { claimToken: row.claim_token } : {}), attempts: row.attempts, nextAttemptAt: row.next_attempt_at, createdAt: row.created_at,
 		...(row.abandoned_at === null ? {} : { abandonedAt: row.abandoned_at }), ...(row.last_error ? { error: row.last_error } : {}),
+	};
+}
+
+function mapObjectiveCompletion(row: ObjectiveCompletionRow): ObjectiveCompletion {
+	const receipt = row.receipt_idempotency_key && row.receipt_delivered_at !== null
+		? { idempotencyKey: row.receipt_idempotency_key, deliveredAt: row.receipt_delivered_at, ...(row.receipt_provider_message_id ? { providerMessageId: row.receipt_provider_message_id } : {}) }
+		: undefined;
+	return {
+		id: row.id, objectiveId: row.objective_id, ownerKey: row.owner_key, ...(row.plan_id ? { planId: row.plan_id } : {}),
+		target: { platform: row.platform, ...(row.channel_instance_id ? { channelInstanceId: row.channel_instance_id } : {}), chatId: row.chat_id, ...(validChatType(row.chat_type) ? { chatType: validChatType(row.chat_type) } : {}), ...(row.user_id ? { userId: row.user_id } : {}), ...(row.thread_id ? { threadId: row.thread_id } : {}), ...(row.reply_to_message_id ? { replyToMessageId: row.reply_to_message_id } : {}) },
+		deliveryIdempotencyKey: row.delivery_idempotency_key,
+		title: row.title, result: row.result, ...(row.evidence ? { evidence: row.evidence } : {}), status: row.status,
+		...(row.claim_token ? { claimToken: row.claim_token } : {}), attempts: row.attempts, nextAttemptAt: row.next_attempt_at, createdAt: row.created_at,
+		...(receipt ? { receipt } : {}), ...(row.blocked_at === null ? {} : { blockedAt: row.blocked_at }), ...(row.last_error ? { error: row.last_error } : {}),
 	};
 }
 

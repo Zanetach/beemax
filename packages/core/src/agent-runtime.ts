@@ -30,6 +30,7 @@ import { activateToolSpecPlan, buildToolSpecPlan, deferToolSpecPlan, hideToolSpe
 import type { ToolEffectProjectionReader } from "./tool-effect.ts";
 import { deriveTaskVerificationRequirements, mergeTaskVerificationRequirements } from "./task-verification-requirements.ts";
 import { sanitizeTaskCriterionVerifications, unavailableTaskCriterionVerifications } from "./task-criteria.ts";
+import { objectiveCompletionId } from "./objective-completion-delivery.ts";
 
 export interface AgentRunInput<Source extends BeeMaxRuntimeSource = BeeMaxRuntimeSource> {
 	source: Source;
@@ -55,6 +56,8 @@ export interface AgentRunResult {
 	model: string;
 	durationMs: number;
 	usage: { input_tokens?: number; output_tokens?: number };
+	/** Durable completion to acknowledge after the caller's interactive delivery succeeds. */
+	completionId?: string;
 }
 
 export interface AgentHistoryEntry {
@@ -288,6 +291,7 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 			mode: understanding?.action === "correct" ? "correction" : "normal",
 		});
 		let activeTaskRunId = ownedTaskRunId;
+		let completionId: string | undefined;
 		return this.sessions.run(input.source, factory, async (session) => {
 			if (executionEnvelope.budget?.deadlineAt !== undefined && executionEnvelope.budget.deadlineAt <= Date.now()) {
 				throw new AgentRunError("Execution Envelope deadline has expired", true, undefined);
@@ -937,7 +941,14 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 							if (verification.accepted) {
 								objectiveVerificationOutcome = "accepted";
 								this.recordTrace({ type: "verification.settled", executionEnvelope, at: Date.now(), status: "accepted" });
-								this.taskLedger?.transition(objective.id, { status: "succeeded", finishedAt: Date.now(), result: candidate.slice(0, 50_000), evidence: verification.evidence?.slice(0, 5_000), verificationStatus: "accepted", criterionVerifications, correctiveAttempts });
+								if (!this.taskLedger?.transition(objective.id, { status: "running", candidateResult: candidate.slice(0, 50_000), evidence: verification.evidence?.slice(0, 5_000), verificationStatus: "accepted", criterionVerifications, correctiveAttempts })) {
+									throw new AgentRunError(`Objective ${objective.id} could not retain its accepted Candidate Outcome`, false, undefined);
+								}
+								const completionAcceptedAt = Date.now();
+								if (!this.taskLedger.enqueueObjectiveCompletion?.(objective.ownerKey, objective.id, completionAcceptedAt, interactive ? completionAcceptedAt + 30_000 : completionAcceptedAt)) {
+									throw new AgentRunError(`Objective ${objective.id} could not enter the durable Completion Outbox`, false, undefined);
+								}
+								completionId = objectiveCompletionId(objective.id);
 								completionAnswer = candidate;
 								break;
 							}
@@ -1023,7 +1034,7 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 				if (await reloadRuntimeResourcesIfNeeded(session.piSession)) console.info("[beemax] skills and resources hot-reloaded after agent evolution");
 			} catch (error) { console.error(`[beemax] resource reload failed: ${errorMessage(error)}`); }
 			if (input.mode !== "automation") this.context?.record(input.source, { user: input.text, assistant: answer }, { accessScopeRef });
-			return { answer, model: modelOf(session.piSession.agent), durationMs: Date.now() - startedAt, usage: usageOf(session.piSession.agent) };
+			return { answer, model: modelOf(session.piSession.agent), durationMs: Date.now() - startedAt, usage: usageOf(session.piSession.agent), ...(completionId ? { completionId } : {}) };
 		}, executionEnvelope).catch((cause) => {
 			if (activeTaskRunId) this.taskLedger?.transitionRun(activeTaskRunId, {
 				status: input.signal?.aborted ? "cancelled" : "failed",

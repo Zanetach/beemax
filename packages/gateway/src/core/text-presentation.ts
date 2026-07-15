@@ -1,4 +1,5 @@
-import type { InteractionEvent } from "@beemax/core";
+import type { DeliveryOptions, DeliveryReceipt, InteractionEvent } from "@beemax/core";
+import { randomUUID } from "node:crypto";
 import type {
 	InteractionPresentationOpen,
 	InteractionPresenter,
@@ -50,9 +51,13 @@ class TextTurnPresentation implements TurnPresentation {
 		if (!result.success) throw new Error(result.error ?? `Failed to present approval for ${event.toolName}`);
 	}
 
-	async finish(answer: string): Promise<void> {
-		const result = await this.platform.send(this.input.source.chatId, answer);
+	async finish(answer: string, options?: DeliveryOptions): Promise<DeliveryReceipt> {
+		const result = await this.platform.send(this.input.source.chatId, answer, {
+			...(options?.idempotencyKey ? { idempotencyKey: options.idempotencyKey } : {}),
+			...(this.input.source.replyToMessageId ? { replyTo: this.input.source.replyToMessageId, replyInThread: Boolean(this.input.source.threadId) } : {}),
+		});
 		if (!result.success) throw new Error(result.error ?? "Text answer delivery failed");
+		return { idempotencyKey: options?.idempotencyKey ?? `interactive:${randomUUID()}`, deliveredAt: Date.now(), ...(result.messageId ? { providerMessageId: result.messageId } : {}) };
 	}
 
 	async fail(error: string): Promise<void> {
