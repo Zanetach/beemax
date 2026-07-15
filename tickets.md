@@ -381,11 +381,21 @@ Work the **frontier**: any ticket whose blockers are all done. Do not bypass blo
 - [x] Record end-to-end success, Tool selection and arguments, latency, tokens, receipt-bound evidence, side effects, recovery, and user interventions.
 - [x] Make native capture fail closed on corpus, fixture, adapter, configuration, environment, source-validation, and candidate/baseline identity drift.
 
+## Reconcile the current parity working tree
+
+**What to build:** Preserve valid Capability, Provider, evaluation, and CI work while separating or removing temporary semantic rules so the next slices start from a green, reviewable baseline.
+
+**Blocked by:** Establish the differential Agent benchmark.
+
+- [ ] Preserve user-owned output artifacts and unrelated changes.
+- [ ] Split mixed changes into independently testable concerns and keep TypeScript, unit, integration, and packaging checks green.
+- [ ] Remove production behavior that maps concrete business phrases directly to lifecycle or delivery decisions.
+
 ## Stabilize direct and durable completion under the corpus
 
 **What to build:** BeeMax completes short, constrained, Tool-backed, and durable tasks repeatedly without semantic-wrapper bias, unnecessary Objective promotion, unbounded capability exploration, or verifier-format flakiness.
 
-**Blocked by:** Establish the differential Agent benchmark.
+**Blocked by:** Reconcile the current parity working tree.
 
 - [ ] Prove short conversation and bilingual negation cases succeed repeatedly on fresh Profiles, keep user constraints, and stay on the direct path unless the Work Contract requires durable responsibility.
 - [ ] Bound model turns, Tool discovery, repeated failed reads, output tokens, no-progress time, and corrective attempts by execution mode while preserving Effect reconciliation and explicit Blockers.
@@ -400,16 +410,6 @@ Work the **frontier**: any ticket whose blockers are all done. Do not bypass blo
 - [ ] Rerun every baseline after any corpus, prompt boundary, adapter, fixture, or scoring change; never compare artifacts with mismatched provenance.
 - [ ] Run unattended on both declared operating systems with real product CLIs, exact versions, isolated per-case state, and no silent retry or downgrade; classify runner infrastructure failures separately.
 - [ ] Preserve reports, checksums, traces or trace digests, environment identity, and the per-dimension comparison gate in versioned CI or release artifacts.
-
-## Reconcile the current parity working tree
-
-**What to build:** Preserve valid Capability, Provider, evaluation, and CI work while separating or removing temporary semantic rules so the next slices start from a green, reviewable baseline.
-
-**Blocked by:** Produce native macOS and Ubuntu parity evidence.
-
-- [ ] Preserve user-owned output artifacts and unrelated changes.
-- [ ] Split mixed changes into independently testable concerns and keep TypeScript, unit, integration, and packaging checks green.
-- [ ] Remove production behavior that maps concrete business phrases directly to lifecycle or delivery decisions.
 
 ## Interpret one Turn as a model-backed Work Contract
 
