@@ -1,6 +1,6 @@
 import type { Agent } from "@earendil-works/pi-agent-core";
 import { clampThinkingLevel, getSupportedThinkingLevels, type Api, type ImageContent, type Model, type ModelThinkingLevel } from "@earendil-works/pi-ai";
-import type { AgentSession, AgentSessionEvent } from "@earendil-works/pi-coding-agent";
+import type { AgentSession, AgentSessionEvent, ToolDefinition, ToolInfo } from "@earendil-works/pi-coding-agent";
 import { ConversationContext } from "./conversation-context.ts";
 import {
 	reloadRuntimeResourcesIfNeeded,
@@ -21,9 +21,10 @@ import { createExecutionEnvelope, type ExecutionEnvelope } from "./execution-env
 import type { ExecutionTraceSink } from "./execution-trace.ts";
 import { createTaskCheckpoint, mergeTaskCheckpoints, renderTaskCheckpoint } from "./task-checkpoint.ts";
 import type { TaskGraphVerifier } from "./task-graph.ts";
-import { CapabilityRuntime } from "./capability-runtime.ts";
+import { CapabilityRuntime, capabilityVersionOf } from "./capability-runtime.ts";
 import type { ToolSideEffect } from "./tool-runtime.ts";
 import { MediaUnderstandingRuntime, type MediaUnderstandingPort } from "./media-understanding.ts";
+import { activateToolSpecPlan, buildToolSpecPlan, renderToolSpecPlan, type ToolSpecInventoryItem } from "./tool-spec-plan.ts";
 
 export interface AgentRunInput<Source extends BeeMaxRuntimeSource = BeeMaxRuntimeSource> {
 	source: Source;
@@ -119,6 +120,8 @@ export interface AgentRuntimePort<Source extends BeeMaxRuntimeSource = BeeMaxRun
 
 export interface BeeMaxAgentRuntimeOptions<Source extends BeeMaxRuntimeSource = BeeMaxRuntimeSource> extends SessionCoordinatorOptions {
 	createAgent: RuntimeSessionFactory<Source>;
+	/** Trusted Profile identity used to scope the turn Tool Spec Plan. */
+	profileId?: string;
 	createAutomationAgent?: RuntimeSessionFactory<Source>;
 	context?: ConversationContext;
 	controlHandler?: AgentControlHandler<Source>;
@@ -153,6 +156,7 @@ export interface BeeMaxAgentRuntimeOptions<Source extends BeeMaxRuntimeSource = 
 export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRuntimeSource> implements AgentRuntimePort<Source> {
 	private readonly sessions: SessionCoordinator<Source>;
 	private readonly createAgent: RuntimeSessionFactory<Source>;
+	private readonly profileId: string;
 	private readonly createAutomationAgent?: RuntimeSessionFactory<Source>;
 	private readonly context?: ConversationContext;
 	private readonly controlHandler?: AgentControlHandler<Source>;
@@ -174,6 +178,7 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 	constructor(options: BeeMaxAgentRuntimeOptions<Source>) {
 		this.sessions = new SessionCoordinator(options);
 		this.createAgent = options.createAgent;
+		this.profileId = options.profileId?.trim().slice(0, 256) || "profile:runtime";
 		this.createAutomationAgent = options.createAutomationAgent;
 		this.context = options.context;
 		this.controlHandler = options.controlHandler;
@@ -302,7 +307,8 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 			let promptImages = input.images;
 			const supportsProgressiveTools = typeof session.piSession.getActiveToolNames === "function" && typeof session.piSession.setActiveToolsByName === "function";
 			const activeTools = supportsProgressiveTools ? session.piSession.getActiveToolNames() : undefined;
-			const allTools = typeof session.piSession.getAllTools === "function" ? session.piSession.getAllTools() : [];
+			const allToolInfo = typeof session.piSession.getAllTools === "function" ? session.piSession.getAllTools() : [];
+			const allTools = allToolInfo.map((tool) => session.piSession.getToolDefinition?.(tool.name) ?? tool);
 			const admittedTools = input.allowedCapabilities ? [...new Set(input.allowedCapabilities.map((name) => name.trim()).filter(Boolean))] : undefined;
 			if (admittedTools) {
 				const inventory = new Set(allTools.map((tool) => tool.name));
@@ -336,10 +342,27 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 					)),
 			);
 			const proposedProgressiveTools = admittedTools ?? [...new Set([...(exposeCapabilityDiscovery ? ["capability_discover"] : []), ...skillLifecycleTools, ...(planning?.requiredTools ?? []), ...prefetchedTools])];
-			const progressiveTools = unresolvedUncertainty
-				? proposedProgressiveTools.filter((name) => toolSideEffects.get(name) === "none")
-				: proposedProgressiveTools;
+			let toolSpecPlan = buildToolSpecPlan({
+				profileId: this.profileId,
+				platform: input.source.platform,
+				workContract: {
+					capabilityRequirements: workContract?.capabilityRequirements.map((clause) => clause.text) ?? [],
+					uncertainties: workContract?.uncertainties.map((clause) => clause.text) ?? [],
+				},
+				selectedToolNames: proposedProgressiveTools.filter((name) => allTools.some((tool) => tool.name === name)),
+				activeSkillToolNames: skillLifecycleTools,
+				tools: allTools.map((tool) => toolSpecInventoryItem(tool, admittedTools)),
+			});
+			const activatePlannedTools = (names: readonly string[]): string[] => {
+				const eligible = names.filter((name) => toolSpecPlan.direct.some((entry) => entry.toolName === name) || toolSpecPlan.deferred.some((entry) => entry.toolName === name));
+				if (eligible.length) toolSpecPlan = activateToolSpecPlan(toolSpecPlan, eligible);
+				const directNames = toolSpecPlan.direct.map((entry) => entry.toolName);
+				if (activeTools) session.piSession.setActiveToolsByName(directNames);
+				return eligible.filter((name) => directNames.includes(name));
+			};
+			const progressiveTools = toolSpecPlan.direct.map((entry) => entry.toolName);
 			if (activeTools) session.piSession.setActiveToolsByName(progressiveTools);
+			promptText = `${renderToolSpecPlan(toolSpecPlan)}\n\n${promptText}`;
 			if (prefetchedSkills.length) promptText = [`<beemax-skill-preflight>Installed matching Skill metadata: ${prefetchedSkills.join(", ")}. Use skill_read with the exact best-matching name before executing the request; do not skip it or infer its instructions.</beemax-skill-preflight>`, promptText].join("\n\n");
 			let observableProgress = false;
 			let toolCalls = 0;
@@ -407,20 +430,19 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 					this.recordTrace({ type: "tool.settled", executionEnvelope, at, toolCallId: event.toolCallId, toolName: event.toolName, status: event.isError ? "failed" : "succeeded", ...(toolStart === undefined ? {} : { durationMs: Math.max(0, at - toolStart) }) });
 					if (!event.isError) successfulToolNames.add(event.toolName);
 					if (event.toolName === "capability_discover" && !event.isError) {
-						const discovery = capabilityDiscoveryMetadata(event.result, new Set(allTools.map((tool) => tool.name))); discoveredCapabilities = discovery.hasMatches;
-						if (discovery.hasMatches && supportsProgressiveTools) {
+						const discovery = capabilityDiscoveryMetadata(event.result, new Set(allTools.map((tool) => tool.name)));
+						const activatedTools = activatePlannedTools(discovery.activatedTools);
+						discoveredCapabilities = activatedTools.length > 0;
+						if (activatedTools.length && supportsProgressiveTools) {
 							// One successful resolution is enough for this route. Keeping the
 							// meta-tool active encourages weaker models to rediscover the same
 							// capability instead of executing it; a later failed read can expose
 							// discovery again through the explicit reroute path below.
-							session.piSession.setActiveToolsByName([...new Set([
-								...session.piSession.getActiveToolNames().filter((name) => name !== "capability_discover"),
-								...discovery.activatedTools.filter((name) => !unresolvedUncertainty || toolSideEffects.get(name) === "none"),
-							])]);
+							session.piSession.setActiveToolsByName([...new Set([...toolSpecPlan.direct.map((entry) => entry.toolName).filter((name) => name !== "capability_discover"), ...activatedTools])]);
 						}
 						const discoveredSkill = discovery.candidates.find((candidate) => candidate.kind === "skill" && candidate.confidence >= 0.5)?.name;
 						if (!prefetchedSkills.length && discoveredSkill) prefetchedSkills = [discoveredSkill];
-						if (discovery.candidates.length || discovery.activatedTools.length) enqueueEvent({ type: "capability_ranked", candidates: discovery.candidates, activatedTools: discovery.activatedTools });
+						if (discovery.candidates.length || activatedTools.length) enqueueEvent({ type: "capability_ranked", candidates: discovery.candidates, activatedTools });
 					}
 					else if (event.toolName !== "capability_discover") {
 						const skillName = skillExecutionName(event.result);
@@ -498,12 +520,11 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 			const effectiveTimeoutMs = executionTimeoutMs(input.timeoutMs, executionEnvelope.budget?.deadlineAt);
 			const timeout = effectiveTimeoutMs === undefined ? undefined : setTimeout(() => { timedOut = true; void session.piSession.abort(); }, effectiveTimeoutMs);
 			let settlementStatus: ExecutionSettledEvent["status"] = "failed";
-			if (unresolvedUncertainty) {
-				session.piSession.agent.beforeToolCall = async (context, signal) => {
-					if (toolSideEffects.get(context.toolCall.name) !== "none") return { block: true, reason: `Tool ${context.toolCall.name} is blocked until the source-bound Work Contract uncertainty is resolved` };
-					return previousToolBoundary?.(context, signal);
-				};
-			}
+			session.piSession.agent.beforeToolCall = async (context, signal) => {
+				if (!toolSpecPlan.direct.some((entry) => entry.toolName === context.toolCall.name)) return { block: true, reason: `Tool ${context.toolCall.name} is not direct in the current immutable Tool Spec Plan` };
+				if (unresolvedUncertainty && toolSideEffects.get(context.toolCall.name) !== "none") return { block: true, reason: `Tool ${context.toolCall.name} is blocked until the source-bound Work Contract uncertainty is resolved` };
+				return previousToolBoundary?.(context, signal);
+			};
 			try {
 				this.recordTrace({ type: "execution.started", executionEnvelope, at: startedAt });
 				await onEvent?.({ type: "execution_started", executionEnvelope });
@@ -528,12 +549,12 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 				}
 				if (failedReadToolAwaitingReroute && !discoveredCapabilities && !turnAbortReason) {
 					const failedTool = failedReadToolAwaitingReroute; failedReadToolAwaitingReroute = undefined;
-					if (supportsProgressiveTools && allTools.some((tool) => tool.name === "capability_discover")) session.piSession.setActiveToolsByName([...new Set([...progressiveTools, "capability_discover"])]);
+					if (supportsProgressiveTools && allTools.some((tool) => tool.name === "capability_discover")) activatePlannedTools(["capability_discover"]);
 					await promptSession(`[BeeMax capability reroute: ${failedTool} failed without a recorded equivalent-capability discovery. Use capability_discover now to find an already available alternative, then continue the original request. Do not retry the same external mutation; reconcile any uncertain side effect before another write.]`, { expandPromptTemplates: false });
 				}
 				if (discoveredCapabilities && !turnAbortReason) {
 					discoveredCapabilities = false;
-					await promptSession("[BeeMax capability continuation: matching Tools or Skills are now active. Continue the original request using them. Do not repeat capability discovery.]", { expandPromptTemplates: false });
+					await promptSession(`${renderToolSpecPlan(toolSpecPlan)}\n\n[BeeMax capability continuation: matching Tools or Skills are now active. Continue the original request using them. Do not repeat capability discovery.]`, { expandPromptTemplates: false });
 				}
 				const missingTools = planning?.requiredTools.slice(requiredToolsUsed.length) ?? [];
 				let planningCorrected = false;
@@ -670,7 +691,7 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 				if (timeout) clearTimeout(timeout);
 				input.signal?.removeEventListener("abort", abortFromCaller);
 				unsubscribe?.();
-				if (unresolvedUncertainty) session.piSession.agent.beforeToolCall = previousToolBoundary;
+				session.piSession.agent.beforeToolCall = previousToolBoundary;
 			}
 			const answer = completionAnswer ?? (lastAssistantText(session.piSession.agent, turnMessageStart) || "(no response)");
 			try {
@@ -940,6 +961,27 @@ function toolSideEffect(tool: unknown): ToolSideEffect | undefined {
 	if (!tool || typeof tool !== "object") return undefined;
 	const sideEffect = (tool as { beemaxPolicy?: { sideEffect?: unknown } }).beemaxPolicy?.sideEffect;
 	return sideEffect === "none" || sideEffect === "local" || sideEffect === "external" ? sideEffect : undefined;
+}
+
+function toolSpecInventoryItem(tool: ToolDefinition | ToolInfo, admittedTools?: readonly string[]): ToolSpecInventoryItem {
+	const candidate = tool as typeof tool & { description?: string; parameters?: unknown; beemaxToolSpec?: { kind?: unknown; version?: unknown; configured?: unknown; health?: unknown; authorized?: unknown } };
+	const metadata = candidate.beemaxToolSpec;
+	const kind = metadata?.kind === "mcp" || metadata?.kind === "skill" ? metadata.kind : "tool";
+	const version = typeof metadata?.version === "string" && metadata.version.trim()
+		? metadata.version
+		: capabilityVersionOf({ name: candidate.name, description: candidate.description, inputSchema: candidate.parameters ?? {} });
+	const health = metadata?.health === "ready" || metadata?.health === "configuration_required" || metadata?.health === "unhealthy" || metadata?.health === "unavailable" ? metadata.health : "unverified";
+	return {
+		kind,
+		name: candidate.name,
+		version,
+		...(candidate.description ? { description: candidate.description } : {}),
+		inputSchema: candidate.parameters ?? {},
+		sideEffect: toolSideEffect(candidate) ?? "external",
+		configured: metadata?.configured !== false,
+		health,
+		authorized: metadata?.authorized !== false && (!admittedTools || admittedTools.includes(candidate.name)),
+	};
 }
 
 export function buildActiveTaskPreservationEnvelope(ledger: Pick<TaskLedger, "queryTasks">, source: BeeMaxRuntimeSource, maxTasks = 100): string | undefined {

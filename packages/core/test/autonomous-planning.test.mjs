@@ -19,8 +19,10 @@ test("Agent runtime progressively exposes discovery and restores the full catalo
 	const source = { platform: "cli", chatId: "fast", chatType: "dm", userId: "local" };
 	const toolChanges = [];
 	const agent = { state: { model: { id: "test" }, messages: [] } };
+	const tools = [{ name: "capability_discover", description: "Discover capabilities" }, { name: "read", description: "Read files" }, { name: "web_search", description: "Search current web evidence" }];
 	const piSession = {
 		agent,
+		getAllTools: () => tools,
 		getActiveToolNames: () => ["read", "web_search"],
 		setActiveToolsByName: (names) => { toolChanges.push([...names]); },
 		subscribe: () => () => undefined,

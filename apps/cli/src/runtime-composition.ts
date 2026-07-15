@@ -118,6 +118,7 @@ export async function createProfileAgentRuntime<Source extends BeeMaxRuntimeSour
 		runtime = new BeeMaxAgentRuntime({
 			...options.runtime,
 			...options.policy,
+			profileId: options.profileId,
 			sessionCatalog: SessionCatalog.forAgentDir<Source>(options.agentDir),
 			controlHandler: options.controlHandler
 				? (input) => options.controlHandler!(runtime, interaction)(input)

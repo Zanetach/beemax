@@ -93,6 +93,15 @@ test("web_search reroutes a failed configured read-only Provider to healthy Agen
 	]);
 });
 
+test("web Tool Spec availability reflects configured Providers without exposing credentials", () => {
+	const unavailable = new Map(createWebTools({ env: {}, agentReachAvailable: false }).map((tool) => [tool.name, tool]));
+	assert.deepEqual(unavailable.get("web_search").beemaxToolSpec, { kind: "tool", configured: false, health: "configuration_required" });
+	assert.deepEqual(unavailable.get("agent_reach_search").beemaxToolSpec, { kind: "tool", configured: false, health: "configuration_required" });
+	const configured = new Map(createWebTools({ env: { TAVILY_API_KEY: "credential-must-not-appear" }, agentReachAvailable: false }).map((tool) => [tool.name, tool]));
+	assert.deepEqual(configured.get("web_search").beemaxToolSpec, { kind: "tool", configured: true, health: "unverified" });
+	assert.doesNotMatch(JSON.stringify(configured.get("web_search").beemaxToolSpec), /credential-must-not-appear/);
+});
+
 test("web_search traverses configured API Providers before Agent-Reach", async () => {
 	const attempts = [];
 	const tools = new Map(createWebTools({

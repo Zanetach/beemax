@@ -141,6 +141,7 @@ export function createWebTools(options: WebToolsOptions = {}): ToolDefinition[] 
 			}
 		},
 	}), {
+		beemaxToolSpec: { kind: "tool" as const, configured: configuredApiSearchProvider(env) || agentReachAvailable, health: configuredApiSearchProvider(env) || agentReachAvailable ? "unverified" as const : "configuration_required" as const },
 		aliases: ["联网搜索", "网络搜索", "公开信息检索"],
 		triggers: ["web_search", "搜索公开网页", "检索公开信息"],
 		priority: 20,
@@ -203,6 +204,7 @@ export function createWebTools(options: WebToolsOptions = {}): ToolDefinition[] 
 			}
 		},
 	}), {
+		beemaxToolSpec: { kind: "tool" as const, configured: agentReachAvailable, health: agentReachAvailable ? "unverified" as const : "configuration_required" as const },
 		aliases: ["Agent-Reach", "联网检索", "网络检索", "实时网络搜索"],
 		triggers: ["agent-reach", "可验证的公开趋势", "真实可溯源来源", "检索公开趋势", "live web research"],
 		priority: 10,

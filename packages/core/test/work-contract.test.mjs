@@ -244,7 +244,7 @@ test("BeeMax preserves source-bound uncertainty in a durable Objective Situation
 		assert.match(prompt, /Never guess/);
 		assert.deepEqual(toolsDuringPrompt, ["read"]);
 		assert.equal(writeBoundaryDecision.block, true);
-		assert.match(writeBoundaryDecision.reason, /uncertainty is resolved/);
+		assert.match(writeBoundaryDecision.reason, /not direct|uncertainty is resolved/);
 	} finally { runtime.dispose(); }
 });
 

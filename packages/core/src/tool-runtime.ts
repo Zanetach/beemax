@@ -1,5 +1,7 @@
 import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
 import type { BeeMaxRuntimeSource } from "./runtime.ts";
+import type { CapabilityKind } from "./capability-runtime.ts";
+import type { CapabilityProviderHealthStatus } from "./capability-provider.ts";
 
 export type ToolRisk = "low" | "medium" | "high";
 export type ToolSideEffect = "none" | "local" | "external";
@@ -34,7 +36,15 @@ export function normalizeToolResultBudget(budget: ToolResultBudget): ToolResultB
 	return { maxEstimatedTokens: Math.max(64, Math.min(value, 1_000_000)) };
 }
 
-export type GovernedToolDefinition = ToolDefinition & { beemaxPolicy?: ToolPolicy };
+/** Trusted composition metadata consumed by the turn-scoped Tool Spec Planner. False/unhealthy facts only restrict exposure. */
+export interface ToolSpecAvailabilityMetadata {
+	kind?: CapabilityKind;
+	version?: string;
+	configured?: boolean;
+	health?: CapabilityProviderHealthStatus;
+	authorized?: boolean;
+}
+export type GovernedToolDefinition = ToolDefinition & { beemaxPolicy?: ToolPolicy; beemaxToolSpec?: ToolSpecAvailabilityMetadata };
 export type ToolRuntimeAuditEvent = {
 	phase: "requested" | "allowed" | "blocked" | "started" | "completed" | "failed";
 	source: BeeMaxRuntimeSource;
