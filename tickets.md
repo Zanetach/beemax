@@ -421,8 +421,8 @@ Work the **frontier**: any ticket whose blockers are all done. Do not bypass blo
 
 **Blocked by:** Reconcile the current parity working tree.
 
-- [ ] Use a strict versioned schema and keep model inference separate from trusted Access Scope and Policy.
-- [ ] Produce the Contract without a separate business-intent loop or fixed customer vocabulary.
+- [x] Use a strict versioned schema and keep model inference separate from trusted Access Scope and Policy.
+- [x] Produce the Contract without a separate business-intent loop or fixed customer vocabulary.
 - [ ] Exercise Chinese, English, mixed-language, paraphrase, and unknown-enterprise inputs end to end.
 
 ## Validate Work Contracts before execution
@@ -431,9 +431,9 @@ Work the **frontier**: any ticket whose blockers are all done. Do not bypass blo
 
 **Blocked by:** Interpret one Turn as a model-backed Work Contract.
 
-- [ ] Reject fabricated source spans, unsupported requirements, and internally contradictory clauses.
+- [x] Reject fabricated source spans, unsupported requirements, and internally contradictory clauses.
 - [ ] Preserve uncertainty instead of guessing and route governed actions through existing Policy authority.
-- [ ] Keep validation free of business action dictionaries and customer-specific workflow rules.
+- [x] Keep validation free of business action dictionaries and customer-specific workflow rules.
 
 ## Carry continuation, correction, cancellation, and query through Work Contracts
 

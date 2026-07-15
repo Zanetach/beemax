@@ -12,7 +12,8 @@ import type { AgentControlHandler, AgentControlInput, AgentControlResult } from 
 import { conversationKey, responsibilityOwnerKey, responsibilityOwnerKeys } from "./agent-scope.ts";
 import type { TaskKind, TaskLedger, TaskPlanRecord, TaskPlanStatus, TaskRecord, TaskRunRecord, TaskStatus } from "./task-ledger.ts";
 import type { AutonomousPlanningDecision, AutonomousPlanningPolicy, PlanningBudgetRegistry } from "./autonomous-planning.ts";
-import { TurnUnderstandingEngine, renderWorkContext, selectTurnTools, type TurnUnderstanding, type TurnUnderstandingPort } from "./turn-understanding.ts";
+import { TurnUnderstandingEngine, selectTurnTools, type TurnUnderstanding, type TurnUnderstandingPort } from "./turn-understanding.ts";
+import { DeterministicWorkContractBuilder, renderWorkContract, validateWorkContract, workContractUnderstanding, type WorkContract, type WorkContractBuilderPort } from "./work-contract.ts";
 import { redactCredentialMaterial } from "./credential-material.ts";
 import type { AccessScopeRef } from "./access-scope.ts";
 import { DeterministicSituationBuilder, type SituationBuilderPort } from "./situation-builder.ts";
@@ -130,6 +131,8 @@ export interface BeeMaxAgentRuntimeOptions<Source extends BeeMaxRuntimeSource = 
 	planningPolicy?: Pick<AutonomousPlanningPolicy, "decide">;
 	planningBudgets?: PlanningBudgetRegistry;
 	turnUnderstanding?: TurnUnderstandingPort;
+	/** Tool-free cognition that proposes a source-bound Work Contract; invalid output falls back deterministically. */
+	workContractBuilder?: WorkContractBuilderPort;
 	/** Async semantic Situation path; defaults to the deterministic compatibility builder. */
 	situationBuilder?: SituationBuilderPort;
 	/** Content-free diagnostic projection keyed by the active Execution Envelope. */
@@ -160,6 +163,7 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 	private readonly planningPolicy?: Pick<AutonomousPlanningPolicy, "decide">;
 	private readonly planningBudgets?: PlanningBudgetRegistry;
 	private readonly turnUnderstanding: TurnUnderstandingPort;
+	private readonly workContractBuilder: WorkContractBuilderPort;
 	private readonly situationBuilder: SituationBuilderPort;
 	private readonly executionTrace?: ExecutionTraceSink;
 	private readonly verifyObjectiveCandidate?: TaskGraphVerifier;
@@ -180,6 +184,7 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 		this.planningPolicy = options.planningPolicy;
 		this.planningBudgets = options.planningBudgets;
 		this.turnUnderstanding = options.turnUnderstanding ?? new TurnUnderstandingEngine();
+		this.workContractBuilder = options.workContractBuilder ?? new DeterministicWorkContractBuilder();
 		this.situationBuilder = options.situationBuilder ?? new DeterministicSituationBuilder();
 		this.executionTrace = options.executionTrace;
 		this.verifyObjectiveCandidate = options.verifyObjectiveCandidate;
@@ -213,7 +218,17 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 			if (!this.taskLedger?.transition(activeObjective.id, { status: "running", startedAt })) throw new AgentRunError(`Proactive Objective ${activeObjective.id} could not start`, false, undefined);
 			activeObjective = { ...activeObjective, status: "running", startedAt };
 		}
-		const understanding = cognitiveRun ? this.turnUnderstanding.understand(input.text, { activeObjective: activeObjective?.title }) : undefined;
+		const fallbackUnderstanding = cognitiveRun ? this.turnUnderstanding.understand(input.text, { activeObjective: activeObjective?.title }) : undefined;
+		let workContract: WorkContract | undefined;
+		if (fallbackUnderstanding) {
+			try {
+				const built = await this.workContractBuilder.build({ rawRequest: input.text, fallback: fallbackUnderstanding, ...(activeObjective ? { activeObjective: { id: activeObjective.id, title: activeObjective.title } } : {}), ...(input.signal ? { signal: input.signal } : {}) });
+				workContract = validateWorkContract(built.contract, input.text, { allowTrustedUnderstandingSources: built.source === "deterministic" });
+			} catch {
+				workContract = (await new DeterministicWorkContractBuilder().build({ rawRequest: input.text, fallback: fallbackUnderstanding, ...(activeObjective ? { activeObjective: { id: activeObjective.id, title: activeObjective.title } } : {}) })).contract;
+			}
+		}
+		const understanding = workContract && fallbackUnderstanding ? workContractUnderstanding(workContract, fallbackUnderstanding) : fallbackUnderstanding;
 		const bindsActiveObjective = Boolean(input.objectiveTaskId) || understanding?.action === "continue" || understanding?.action === "correct";
 		const situation = understanding ? (await this.situationBuilder.build({
 			text: input.text,
@@ -269,7 +284,7 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 				? this.context?.enrich(contextSource, requestedText, { model: modelOf(session.piSession.agent), memoryQuery: understanding?.memoryQuery, situation, accessScopeRef }) ?? requestedText
 				: requestedText);
 			const needsWorkContext = understanding && (understanding.action !== "create" || understanding.executionMode !== "direct" || understanding.constraints.length > 0 || understanding.acceptanceCriteria.length > 0);
-			const enrichedBase = needsWorkContext ? `${renderWorkContext(understanding)}\n\n${recalledText}` : recalledText;
+			const enrichedBase = needsWorkContext && workContract ? `${renderWorkContract(workContract)}\n\n${recalledText}` : recalledText;
 			const enrichedText = contextAssembly ? enrichedBase : [taskPreservation, enrichedBase].filter(Boolean).join("\n\n");
 			const planningScope = conversationKey(input.source);
 			const planningLease = planning && this.planningBudgets ? this.planningBudgets.begin(planningScope, planning, objective?.id) : undefined;

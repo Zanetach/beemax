@@ -8,7 +8,7 @@
  */
 
 import { AutomationStore } from "@beemax/automation";
-import { ActionGovernance, AutonomyRolloutController, AutomationDeliveryWorker, AutomationScheduler, BeeMaxAgentRuntime, DeliveryDeferredError, DeterministicSituationBuilder, FileCredentialVault, FileCredentialVaultAuditJournal, GroupObservationRecorder, HeartbeatRunner, InitiativeRuntime, InitiativeTriggerService, PiAmbientObservationEvaluator, ProactiveInvestigationRuntime, TaskPlanNoticeDeliveryService, TaskTransitionInitiativeAdapter, ToolApprovalBroker, ToolPolicyRegistry, VERIFICATION_SUBMIT_TOOL_NAME, buildActiveTaskPreservationEnvelope, buildTaskPreservationEnvelope, canonicalUserId, containsCredentialMaterial, conversationKey, responsibilityOwnerKey, responsibilityOwnerKeys, createExecutionEnvelope, createSubagentTools, createTaskCheckpoint, createTaskLedgerTools, createTaskOrchestrationTools, decideInitiativeFromSituation, guardVerifiedObjectiveMemoryPublisher, isVerifiedAutomationOutcome, redactCredentialMaterial, renderTaskCheckpoint, selectTurnTools, type AgentRuntimePort, type AmbientObservationEvaluator, type BeeMaxAgentRunEvent, type BeeMaxAgentRunEventSink, type ContextCompactionAuditEvent, type DeliveryPort, type ExecutionEnvelope, type ExecutionTraceSink, type InitiativeObservation, type ObjectiveDeliveryInput, type SkillCandidateTrialInput, type SkillTrialAssertion, type SkillTrialToolCall, type SubagentTask, type TaskGraphExecutionContext, type TaskGraphExecutionResult, type TaskGraphVerifier, type TaskLedger, type TaskRecord, type ToolEffectProjectionReader, type VerifiedObjectiveMemoryPublisher } from "@beemax/core";
+import { ActionGovernance, AutonomyRolloutController, AutomationDeliveryWorker, AutomationScheduler, BeeMaxAgentRuntime, DeliveryDeferredError, DeterministicSituationBuilder, FileCredentialVault, FileCredentialVaultAuditJournal, GroupObservationRecorder, HeartbeatRunner, InitiativeRuntime, InitiativeTriggerService, PiAmbientObservationEvaluator, PiWorkContractBuilder, ProactiveInvestigationRuntime, TaskPlanNoticeDeliveryService, TaskTransitionInitiativeAdapter, ToolApprovalBroker, ToolPolicyRegistry, VERIFICATION_SUBMIT_TOOL_NAME, buildActiveTaskPreservationEnvelope, buildTaskPreservationEnvelope, canonicalUserId, containsCredentialMaterial, conversationKey, responsibilityOwnerKey, responsibilityOwnerKeys, createExecutionEnvelope, createSubagentTools, createTaskCheckpoint, createTaskLedgerTools, createTaskOrchestrationTools, decideInitiativeFromSituation, guardVerifiedObjectiveMemoryPublisher, isVerifiedAutomationOutcome, redactCredentialMaterial, renderTaskCheckpoint, selectTurnTools, type AgentRuntimePort, type AmbientObservationEvaluator, type BeeMaxAgentRunEvent, type BeeMaxAgentRunEventSink, type ContextCompactionAuditEvent, type DeliveryPort, type ExecutionEnvelope, type ExecutionTraceSink, type InitiativeObservation, type ObjectiveDeliveryInput, type SkillCandidateTrialInput, type SkillTrialAssertion, type SkillTrialToolCall, type SubagentTask, type TaskGraphExecutionContext, type TaskGraphExecutionResult, type TaskGraphVerifier, type TaskLedger, type TaskRecord, type ToolEffectProjectionReader, type VerifiedObjectiveMemoryPublisher } from "@beemax/core";
 import {
 	AdapterRegistry,
 	ChannelHost,
@@ -271,6 +271,7 @@ export async function runGateway(config: BeeMaxConfig): Promise<void> {
 		resolveMemoryScope,
 		executionPortForSource: executionPortFor(config),
 	};
+	const auxiliaryTextModels = configuredAuxiliaryTextModels(config);
 	const createSubagentAgent = buildAgentFactory({
 		...profileAgentDefaults,
 		systemPrompt: () => buildSubagentSystemPrompt(profilePrompt(config)),
@@ -390,6 +391,7 @@ export async function runGateway(config: BeeMaxConfig): Promise<void> {
 			runtime: {
 			createAgent,
 			createAutomationAgent,
+			...(auxiliaryTextModels.length ? { workContractBuilder: new PiWorkContractBuilder({ models: auxiliaryTextModels }) } : {}),
 			fallbackModels: configuredRuntimeModels(config),
 			turnIdleSettleMs: config.agent.turnIdleSettleMs,
 			mediaUnderstanding: configuredMediaUnderstanding(config, createLocalMediaUnderstandingAdapters(config.mediaUnderstanding.localOcr)),
@@ -420,7 +422,7 @@ export async function runGateway(config: BeeMaxConfig): Promise<void> {
 	const adapterEntries = channelHost.adapterEntries();
 	const platformInstanceCounts = new Map<string, number>();
 	for (const { adapter } of adapterEntries) platformInstanceCounts.set(adapter.name, (platformInstanceCounts.get(adapter.name) ?? 0) + 1);
-	const observationModels = configuredAuxiliaryTextModels(config);
+	const observationModels = auxiliaryTextModels;
 	const observationEvaluator: AmbientObservationEvaluator = observationModels.length
 		? new PiAmbientObservationEvaluator({
 			models: observationModels,

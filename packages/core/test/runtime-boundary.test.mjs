@@ -584,7 +584,7 @@ test("BeeMax Agent Runtime executes a turn and records context without a Gateway
 	}
 });
 
-test("BeeMax Agent Runtime injects one structured Work Context into the model turn", async () => {
+test("BeeMax Agent Runtime injects one structured Work Contract into the model turn", async () => {
 	const source = { platform: "cli", chatId: "terminal", chatType: "dm", userId: "user" };
 	let received = "";
 	const runtime = new BeeMaxAgentRuntime({
@@ -595,7 +595,8 @@ test("BeeMax Agent Runtime injects one structured Work Context into the model tu
 	});
 	try {
 		await runtime.run({ source, text: "生成中文PDF，不要包含报价", timeoutMs: 1_000, mode: "interactive" });
-		assert.match(received, /<beemax-work-context>/);
+		assert.match(received, /<beemax-work-contract>/);
+		assert.match(received, /beemax\.work-contract\.v1/);
 		assert.match(received, /不要包含报价/);
 	} finally { runtime.dispose(); }
 });
@@ -643,7 +644,7 @@ test("BeeMax Agent Runtime binds continuation understanding to the active Object
 	try {
 		await runtime.run({ source, text: "继续完成刚才的任务", timeoutMs: 1_000, mode: "interactive", objectiveTaskId: "objective-1" });
 		assert.match(received, /"action":"continue"/);
-		assert.match(received, /"goal":"制作华东客户周报"/);
+		assert.match(received, /"objective":\{"text":"制作华东客户周报","source":\{"kind":"active_objective","id":"objective-1"\}\}/);
 		assert.match(received, /task-preservation-envelope/);
 		assert.match(received, /输出PDF并发送给王总/);
 		assert.doesNotMatch(received, /send draft/);

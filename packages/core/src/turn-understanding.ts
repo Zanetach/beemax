@@ -29,7 +29,7 @@ export class TurnUnderstandingEngine implements TurnUnderstandingPort {
 		const goal = text.trim();
 		const normalized = goal.normalize("NFKC").toLocaleLowerCase();
 		const action = detectAction(normalized, Boolean(input.activeObjective));
-		const clauses = goal.split(/[，。；;,.]|\b(?:and|but)\b/iu).map((item) => item.trim()).filter(Boolean);
+		const clauses = goal.split(/[，。；;,]|\b(?:and|but)\b/iu).map((item) => item.trim()).filter(Boolean);
 		const constraints = clauses.filter((item) => /必须|不要|不能|不得|无需|不必|只用|只需|仅|使用|格式|语言|截止|预算|without|must|do not|don't|never|only|no need|deadline|budget/i.test(item));
 		const acceptanceCriteria = clauses.filter((item) => /完成后|发给|发送|交付|生成|保存|上传|发布|after completion|send to|deliver|create|save|upload|publish/i.test(item) && !forbidsDeliveryAction(item));
 		const independentWork = (normalized.match(/并行|分别|独立|同时|parallel|independently|separately/g) ?? []).length;
