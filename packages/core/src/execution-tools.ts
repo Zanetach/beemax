@@ -20,7 +20,7 @@ export function createExecutionTools(source: BeeMaxRuntimeSource, cwd: string, e
 				return { content: [{ type: "text" as const, text: [result.stdout, result.stderr].filter(Boolean).join("\n") || `(exit ${result.exitCode})` }], details: result, isError: result.exitCode !== 0 };
 			},
 		}),
-		defineTool({
+		Object.assign(defineTool({
 			name: "read",
 			label: "Read File",
 			description: "Read a workspace file through BeeMax's configured execution backend.",
@@ -30,8 +30,8 @@ export function createExecutionTools(source: BeeMaxRuntimeSource, cwd: string, e
 				const content = await execution.readFile({ source, cwd, path, signal });
 				return { content: [{ type: "text" as const, text: content.slice(0, 100_000) }], details: { path } };
 			},
-		}),
-		defineTool({
+		}), { aliases: ["读取文件", "查看文件", "read file", "open file"], triggers: ["再次读取", "读取本地文件", "read back", "read the file"] }),
+		Object.assign(defineTool({
 			name: "write",
 			label: "Write File",
 			description: "Write a workspace file through BeeMax's configured execution backend. Requires approval.",
@@ -56,7 +56,7 @@ export function createExecutionTools(source: BeeMaxRuntimeSource, cwd: string, e
 					},
 				};
 			},
-		}),
+		}), { aliases: ["写入文件", "保存文件", "保存草稿", "write file", "save file", "save the draft"], triggers: ["写入本地文件", "保存到本地文件", "write to a file", "save the draft"] }),
 	];
 	return tools.map((tool) => withToolPolicy(tool, tool.name === "read"
 		? { ...READ_ONLY_TOOL_POLICY, impact: "Reads one file inside the configured workspace" }

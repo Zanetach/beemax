@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { createWebTools, TurnUnderstandingEngine, selectTurnTools } from "../dist/index.js";
+import { createExecutionTools, createWebTools, TurnUnderstandingEngine, selectTurnTools } from "../dist/index.js";
 
 test("Turn Understanding distinguishes create, continue, and correction paths across Chinese and English", () => {
 	const engine = new TurnUnderstandingEngine();
@@ -42,6 +42,12 @@ test("Turn tool prefetch activates Agent-Reach for Chinese live-web research", (
 	const tools = createWebTools();
 	const selected = selectTurnTools("收集截至今天可验证的公开趋势，用 agent-reach 网络检索真实可溯源来源", tools);
 	assert.ok(selected.includes("agent_reach_search"));
+});
+
+test("Turn tool prefetch routes generic draft persistence and readback through file Tool metadata", () => {
+	const tools = createExecutionTools({ platform: "cli", chatId: "local", chatType: "dm", userId: "local" }, "/workspace", { execute: async () => ({ stdout: "", stderr: "", exitCode: 0 }), readFile: async () => "", writeFile: async () => undefined });
+	assert.deepEqual(selectTurnTools("Save the draft only as draft.md", tools), ["write"]);
+	assert.deepEqual(selectTurnTools("保存到本地文件，然后再次读取确认", tools), ["read", "write"]);
 });
 
 test("Turn Understanding preserves explicit constraints and acceptance criteria in one Work Context", () => {
