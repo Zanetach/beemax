@@ -64,8 +64,8 @@ export class TaskRecoveryRunner {
 			const direct = candidates.filter((task) => !task.planId);
 			for (const task of direct) attemptedDirectTaskIds.add(task.id);
 			for (let offset = 0; offset < direct.length && !signal?.aborted; offset += concurrency) {
-				const results = await Promise.all(direct.slice(offset, offset + concurrency).map((task) => this.verifyCandidates([task.ownerKey], [task], signal ?? new AbortController().signal, now)));
-				for (const result of results) summary = mergeVerificationResults(summary, result);
+				const results = await Promise.all(direct.slice(offset, offset + concurrency).map((task) => this.runtime.runClaimedTaskVerification(this.ledger, task.ownerKey, task.id, signal, (claimSignal) => this.verifyCandidates([task.ownerKey], [task], claimSignal, now))));
+				for (const result of results) if (result) summary = mergeVerificationResults(summary, result);
 			}
 			const plans = new Map<string, { ownerKey: string; planId: string; tasks: TaskRecord[] }>();
 			for (const task of candidates) {

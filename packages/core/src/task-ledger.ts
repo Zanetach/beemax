@@ -143,6 +143,9 @@ export interface TaskLedger {
 	claimTaskPlanExecution?(ownerKey: string, planId: string, holderId: string, leaseExpiresAt: number, now?: number): boolean;
 	renewTaskPlanExecution?(ownerKey: string, planId: string, holderId: string, leaseExpiresAt: number, now?: number): boolean;
 	releaseTaskPlanExecution?(ownerKey: string, planId: string, holderId: string): boolean;
+	claimTaskVerification?(ownerKey: string, taskId: string, holderId: string, leaseExpiresAt: number, now?: number): boolean;
+	renewTaskVerification?(ownerKey: string, taskId: string, holderId: string, leaseExpiresAt: number, now?: number): boolean;
+	releaseTaskVerification?(ownerKey: string, taskId: string, holderId: string): boolean;
 	queryTaskPlans(query: TaskPlanQuery): TaskPlanRecord[];
 	taskDependencies(taskIds: string[]): TaskDependency[];
 	checkpointTask(ownerKey: string, taskId: string, checkpoint: TaskCheckpoint | string, now?: number): boolean;

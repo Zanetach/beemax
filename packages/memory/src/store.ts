@@ -16,7 +16,7 @@ import type { Database as DatabaseType } from "better-sqlite3";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { createHash } from "node:crypto";
-import { AUTONOMY_LEVELS, containsCredentialMaterial, createAccessScopeRef, createEnterprisePolicyPublisher, createSituation, multilingualLexicalTerms, parseTaskCheckpoint, redactCredentialMaterial, renderTaskCheckpoint, type AutonomyLevel, type AutonomyRolloutEvidence, type AutonomyRolloutRecord, type AutonomyRolloutStateStore, type CompensationProof, type ConversationMemoryPort, type DeliveryTarget, type DurableInitiativeTrigger, type DurableInitiativeTriggerInput, type EmergencyStopRecord, type EnterprisePolicyPublisher, type InitiativeObservation, type InitiativeObservationInput, type InitiativeObservationStore, type InitiativeScope, type InitiativeTriggerInbox, type OrganizationKnowledgeHit, type OrganizationKnowledgeRecall, type ReversibleActionControlPort, type Situation, type TaskCandidateVerificationResolution, type TaskCheckpoint, type TaskDependency, type TaskLedger, type TaskPlanCompletionNotice, type TaskPlanNoticeOutbox, type TaskPlanQuery, type TaskPlanRecord, type TaskPlanTransition, type TaskQuery, type TaskRecord as RuntimeTaskRecord, type TaskRecoveryResult, type TaskRunEffectStateReader, type TaskRunRecord, type TaskRunTransition, type TaskTransition } from "@beemax/core";
+import { AUTONOMY_LEVELS, containsCredentialMaterial, createAccessScopeRef, createEnterprisePolicyPublisher, createSituation, multilingualLexicalTerms, parseTaskCheckpoint, redactCredentialMaterial, renderTaskCheckpoint, unavailableTaskCriterionVerifications, type AutonomyLevel, type AutonomyRolloutEvidence, type AutonomyRolloutRecord, type AutonomyRolloutStateStore, type CompensationProof, type ConversationMemoryPort, type DeliveryTarget, type DurableInitiativeTrigger, type DurableInitiativeTriggerInput, type EmergencyStopRecord, type EnterprisePolicyPublisher, type InitiativeObservation, type InitiativeObservationInput, type InitiativeObservationStore, type InitiativeScope, type InitiativeTriggerInbox, type OrganizationKnowledgeHit, type OrganizationKnowledgeRecall, type ReversibleActionControlPort, type Situation, type TaskCandidateVerificationResolution, type TaskCheckpoint, type TaskDependency, type TaskLedger, type TaskPlanCompletionNotice, type TaskPlanNoticeOutbox, type TaskPlanQuery, type TaskPlanRecord, type TaskPlanTransition, type TaskQuery, type TaskRecord as RuntimeTaskRecord, type TaskRecoveryResult, type TaskRunEffectStateReader, type TaskRunRecord, type TaskRunTransition, type TaskTransition } from "@beemax/core";
 
 export const MEMORY_CLAIM_KINDS = ["preference", "fact", "decision", "goal", "project", "relationship", "workflow", "exception"] as const;
 const EPISODE_STATUSES = new Set<OrganizationMemoryEpisodeStatus>(["candidate", "verified", "conflicted", "superseded"]);
@@ -436,6 +436,13 @@ export class MemoryStore {
 				PRIMARY KEY (task_id, depends_on)
 			);
 			CREATE INDEX IF NOT EXISTS idx_task_dependencies_upstream ON task_dependencies(depends_on);
+			CREATE TABLE IF NOT EXISTS task_verification_claims (
+				task_id TEXT PRIMARY KEY REFERENCES tasks(id) ON DELETE CASCADE,
+				owner_key TEXT NOT NULL,
+				holder_id TEXT NOT NULL,
+				lease_expires_at INTEGER NOT NULL
+			);
+			CREATE INDEX IF NOT EXISTS idx_task_verification_claims_expiry ON task_verification_claims(lease_expires_at);
 
 			CREATE TABLE IF NOT EXISTS memory_events (
 				id TEXT PRIMARY KEY,
@@ -1869,6 +1876,29 @@ export class MemoryStore {
 			.run(planId, ownerKey, holderId).changes === 1;
 	}
 
+	claimTaskVerification(ownerKey: string, taskId: string, holderId: string, leaseExpiresAt: number, now = Date.now()): boolean {
+		if (!ownerKey.trim() || !taskId.trim() || !holderId.trim() || leaseExpiresAt <= now) return false;
+		return this.db.prepare(`INSERT INTO task_verification_claims (task_id, owner_key, holder_id, lease_expires_at)
+			SELECT id, owner_key, ?, ? FROM tasks WHERE id = ? AND owner_key = ? AND status IN ('running', 'failed')
+				AND verification_outcome = 'unavailable' AND candidate_result IS NOT NULL
+			ON CONFLICT(task_id) DO UPDATE SET owner_key = excluded.owner_key, holder_id = excluded.holder_id, lease_expires_at = excluded.lease_expires_at
+			WHERE task_verification_claims.owner_key = excluded.owner_key
+				AND (task_verification_claims.holder_id = excluded.holder_id OR task_verification_claims.lease_expires_at <= ?)`)
+			.run(holderId, leaseExpiresAt, taskId, ownerKey, now).changes === 1;
+	}
+
+	renewTaskVerification(ownerKey: string, taskId: string, holderId: string, leaseExpiresAt: number, now = Date.now()): boolean {
+		if (leaseExpiresAt <= now) return false;
+		return this.db.prepare(`UPDATE task_verification_claims SET lease_expires_at = ?
+			WHERE task_id = ? AND owner_key = ? AND holder_id = ? AND lease_expires_at > ?`)
+			.run(leaseExpiresAt, taskId, ownerKey, holderId, now).changes === 1;
+	}
+
+	releaseTaskVerification(ownerKey: string, taskId: string, holderId: string): boolean {
+		return this.db.prepare("DELETE FROM task_verification_claims WHERE task_id = ? AND owner_key = ? AND holder_id = ?")
+			.run(taskId, ownerKey, holderId).changes === 1;
+	}
+
 	private backfillTaskPlans(id?: string): void {
 		const statement = this.db.prepare(`INSERT OR IGNORE INTO task_plans (id, owner_key, title, status, task_count, succeeded, failed, cancelled, verified, corrective_attempts, created_at, started_at, finished_at)
 			SELECT plan_id, owner_key, 'Task Plan',
@@ -1924,9 +1954,10 @@ export class MemoryStore {
 
 	reconcileExpiredTaskRuns(now = Date.now(), effects?: TaskRunEffectStateReader): TaskRecoveryResult {
 		return this.db.transaction(() => {
-			const rows = this.db.prepare(`SELECT r.id AS run_id, r.task_id, t.owner_key, t.plan_id, t.recovery_policy, t.idempotency_key, t.effect_receipts
+			const rows = this.db.prepare(`SELECT r.id AS run_id, r.task_id, t.owner_key, t.plan_id, t.recovery_policy, t.idempotency_key, t.effect_receipts,
+				t.verification_outcome, t.candidate_result, t.acceptance_criteria
 				FROM task_runs r JOIN tasks t ON t.id = r.task_id
-				WHERE r.status = 'running' AND r.lease_expires_at IS NOT NULL AND r.lease_expires_at <= ?`).all(now) as Array<{ run_id: string; task_id: string; owner_key: string; plan_id: string | null; recovery_policy: string; idempotency_key: string | null; effect_receipts: string | null }>;
+				WHERE r.status = 'running' AND r.lease_expires_at IS NOT NULL AND r.lease_expires_at <= ?`).all(now) as Array<{ run_id: string; task_id: string; owner_key: string; plan_id: string | null; recovery_policy: string; idempotency_key: string | null; effect_receipts: string | null; verification_outcome: RuntimeTaskRecord["verificationStatus"] | null; candidate_result: string | null; acceptance_criteria: string | null }>;
 			let retried = 0; let failed = 0;
 			const affectedPlans = new Map<string, { ownerKey: string; planId: string }>();
 			const reason = "Task Run interrupted after its Execution Lease expired";
@@ -1940,7 +1971,14 @@ export class MemoryStore {
 					: !legacyEffectState!.readable ? `${reason}; automatic replay blocked because durable Effect Receipts are unreadable`
 						: replayBlocked ? `${reason}; automatic replay blocked by durable Effect Receipt` : reason;
 				this.db.prepare("UPDATE task_runs SET status = 'failed', finished_at = ?, error = ? WHERE id = ? AND status = 'running'").run(now, taskReason, row.run_id);
-				if (row.recovery_policy === "safe_retry" && row.idempotency_key && !replayBlocked) {
+				const interruptedVerification = row.candidate_result !== null && row.acceptance_criteria !== null && (row.verification_outcome === "pending" || row.verification_outcome === "unavailable");
+				if (interruptedVerification) {
+					const criterionVerifications = safeCriterionVerifications(unavailableTaskCriterionVerifications(row.acceptance_criteria ?? undefined, taskReason));
+					const changed = this.db.prepare(`UPDATE tasks SET status = 'running', finished_at = NULL, verification_outcome = 'unavailable',
+						criterion_verifications = ?, verification_retry_at = ?, error = ?, updated_at = ? WHERE id = ? AND status = 'running'`)
+						.run(criterionVerifications, now, taskReason, now, row.task_id).changes;
+					retried += changed;
+				} else if (row.recovery_policy === "safe_retry" && row.idempotency_key && !replayBlocked) {
 					const changed = this.db.prepare("UPDATE tasks SET status = 'pending', started_at = NULL, finished_at = NULL, result = NULL, candidate_result = NULL, error = ?, updated_at = ? WHERE id = ? AND status = 'running'").run(taskReason, now, row.task_id).changes;
 					retried += changed;
 				} else {

@@ -567,9 +567,9 @@ This ordering is the implementation plan, not a fixed business workflow. Core re
 
 **Blocked by:** Verify every acceptance criterion against durable receipts.
 
-- [ ] Keep direct candidates visible when Plan IDs are excluded by treating null Plan identity correctly.
-- [ ] Preserve leases, checkpoints, Effects, candidate outcomes, and bounded corrective attempts across restart.
-- [ ] Prove multi-instance claims cannot execute or verify the same responsibility concurrently.
+- [x] Keep direct candidates visible when Plan IDs are excluded by treating null Plan identity correctly.
+- [x] Preserve leases, checkpoints, Effects, candidate outcomes, and bounded corrective attempts across restart.
+- [x] Prove multi-instance claims cannot execute or verify the same responsibility concurrently.
 
 ## Deliver every verified Objective through one Completion Outbox
 

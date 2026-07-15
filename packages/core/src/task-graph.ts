@@ -212,6 +212,7 @@ export class TaskGraph {
 					if (this.ledger.checkpointTask(task.ownerKey, task.id, mergedCheckpoint)) this.recordTrace({ type: "checkpoint.saved", executionEnvelope, at: candidateCheckpoint.at, sizeChars: renderTaskCheckpoint(mergedCheckpoint).length });
 				let verificationEvidence: string | undefined;
 				if (task.acceptanceCriteria) {
+					if (!this.ledger.transition(task.id, { status: "running", candidateResult: candidateOutput, verificationStatus: "pending", correctiveAttempts: attempt - 1 })) return this.persistedOutcome(task, "failed");
 					this.recordTrace({ type: "verification.started", executionEnvelope, at: Date.now() });
 					if (!options.verify) { verificationUnavailable = true; this.recordTrace({ type: "verification.settled", executionEnvelope, at: Date.now(), status: "unavailable" }); throw new Error("Task verification unavailable for defined Acceptance Criteria"); }
 					let verification: TaskGraphVerificationResult;

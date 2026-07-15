@@ -602,6 +602,64 @@ test("due Verification Retry also completes a direct Objective without a Task Pl
 	} finally { store.close(); rmSync(root, { recursive: true, force: true }); }
 });
 
+test("two recovery instances cannot verify the same direct Objective responsibility concurrently", async () => {
+	const root = mkdtempSync(join(tmpdir(), "beemax-direct-verification-claim-"));
+	const path = join(root, "memory.db");
+	const first = new MemoryStore(path);
+	const second = new MemoryStore(path);
+	try {
+		first.record({ id: "direct-claimed", ownerKey: "owner", kind: "objective", title: "Direct work", acceptanceCriteria: "Candidate is checked", status: "running", createdAt: 1, executionScope: { platform: "cli", chatId: "local", chatType: "dm", userId: "local" } });
+		first.transition("direct-claimed", { status: "running", verificationStatus: "unavailable", candidateResult: "candidate", error: "verifier offline" });
+		assert.equal(first.deferCandidateVerification(["owner"], "direct-claimed", 10), true);
+		let verificationCalls = 0;
+		let releaseVerification;
+		const verificationReleased = new Promise((resolve) => { releaseVerification = resolve; });
+		let firstVerificationEntered;
+		const entered = new Promise((resolve) => { firstVerificationEntered = resolve; });
+		const verify = async () => {
+			verificationCalls++;
+			firstVerificationEntered();
+			await verificationReleased;
+			return { accepted: true, evidence: "checked once" };
+		};
+		const firstRun = new TaskRecoveryRunner(first, async () => ({ output: "unused" }), undefined, verify).reverifyDue(10 + 24 * 60 * 60_000);
+		await entered;
+		const secondRun = new TaskRecoveryRunner(second, async () => ({ output: "unused" }), undefined, verify).reverifyDue(10 + 24 * 60 * 60_000);
+		await new Promise((resolve) => setImmediate(resolve));
+		releaseVerification();
+		const results = await Promise.all([firstRun, secondRun]);
+		assert.equal(verificationCalls, 1);
+		assert.equal(results.reduce((total, result) => total + result.attempted, 0), 1);
+		assert.equal(results.reduce((total, result) => total + result.accepted, 0), 1);
+		assert.equal(first.queryTasks({ ownerKeys: ["owner"], id: "direct-claimed" })[0].status, "succeeded");
+	} finally { first.close(); second.close(); rmSync(root, { recursive: true, force: true }); }
+});
+
+test("restart preserves a candidate checkpoint and correction budget when Verification is interrupted", async () => {
+	const root = mkdtempSync(join(tmpdir(), "beemax-verification-interruption-"));
+	const path = join(root, "memory.db");
+	let store = new MemoryStore(path);
+	try {
+		store.record({ id: "interrupted-verification", ownerKey: "owner", kind: "objective", title: "Direct work", acceptanceCriteria: "Candidate is checked", status: "running", createdAt: 1, startedAt: 2, executionScope: { platform: "cli", chatId: "local", chatType: "dm", userId: "local" } });
+		store.recordRun({ id: "run-before-restart", taskId: "interrupted-verification", executor: "agent", status: "running", startedAt: 2, leaseExpiresAt: 20 });
+		store.transition("interrupted-verification", { status: "running", verificationStatus: "pending", candidateResult: "preserved candidate", correctiveAttempts: 1 });
+		assert.equal(store.checkpointTask("owner", "interrupted-verification", createTaskCheckpoint({ taskRunId: "run-before-restart", source: "candidate_outcome", at: 5, completed: ["candidate-outcome"], committedEffectIds: ["effect:observed"], evidenceRefs: ["receipt:source"], unresolvedIssues: [], nextSafeStep: "Verify the retained candidate." }), 5), true);
+		assert.deepEqual(store.verificationCandidates(10).map((task) => task.id), []);
+		store.close();
+		store = new MemoryStore(path);
+		assert.deepEqual(store.reconcileExpiredTaskRuns(21), { retried: 1, failed: 0, affectedPlans: [] });
+		const recovered = store.queryTasks({ ownerKeys: ["owner"], id: "interrupted-verification" })[0];
+		assert.deepEqual({ status: recovered.status, verificationStatus: recovered.verificationStatus, candidateResult: recovered.candidateResult, correctiveAttempts: recovered.correctiveAttempts }, { status: "running", verificationStatus: "unavailable", candidateResult: "preserved candidate", correctiveAttempts: 1 });
+		assert.deepEqual(recovered.checkpoint.committedEffectIds, ["effect:observed"]);
+		assert.deepEqual(recovered.criterionVerifications.map(({ criterionId, status }) => ({ criterionId, status })), [{ criterionId: "C1", status: "unavailable" }]);
+		assert.deepEqual(store.verificationCandidates(21).map((task) => task.id), ["interrupted-verification"]);
+		let executions = 0;
+		const result = await new TaskRecoveryRunner(store, async () => { executions++; return { output: "must not replay" }; }, undefined, async (_task, candidate) => ({ accepted: candidate.output === "preserved candidate", evidence: "checked after restart" })).reverifyDue(21);
+		assert.deepEqual(result, { attempted: 1, accepted: 1, rejected: 0, unavailable: 0 });
+		assert.equal(executions, 0);
+	} finally { store.close(); rmSync(root, { recursive: true, force: true }); }
+});
+
 test("unavailable Verification Retry persists exponential backoff across recovery cycles", async () => {
 	const root = mkdtempSync(join(tmpdir(), "beemax-verification-backoff-"));
 	const store = new MemoryStore(join(root, "memory.db"));

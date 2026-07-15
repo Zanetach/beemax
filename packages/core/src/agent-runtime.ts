@@ -921,7 +921,7 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 					let correctiveAttempts = 0;
 					let correctionInFlight = false;
 					while (true) {
-						this.taskLedger?.transition(objective.id, { status: "running", verificationStatus: "unavailable", candidateResult: candidate.slice(0, 50_000), correctiveAttempts });
+						this.taskLedger?.transition(objective.id, { status: "running", verificationStatus: "pending", candidateResult: candidate.slice(0, 50_000), correctiveAttempts });
 						if (!this.verifyObjectiveCandidate || !activeTaskRunId) {
 							objectiveVerificationOutcome = "unavailable";
 							const unavailableReason = "Independent Verification is unavailable for the durable Objective";
