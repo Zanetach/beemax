@@ -6,7 +6,7 @@ import test from "node:test";
 import { agentParityCorpus } from "../../../evals/agent-parity-corpus.mjs";
 import { parseBeeMaxEvidence, parseCodexEvidence, parseHermesEvidence } from "../../../evals/agent-parity-adapters.mjs";
 import { createIsolatedProfile, filterExecution } from "../../../evals/adapters/beemax-cli.mjs";
-import { collectFixtureEvidence, resolveValidatedPublicAddresses, runSubprocess, signFixtureAuthorityEvent } from "../../../evals/adapters/subprocess.mjs";
+import { collectFixtureEvidence, digestConfiguration, resolveValidatedPublicAddresses, runSubprocess, signFixtureAuthorityEvent } from "../../../evals/adapters/subprocess.mjs";
 
 const research = agentParityCorpus.cases.find((scenario) => scenario.id === "current-research");
 
@@ -321,6 +321,14 @@ test("public address resolution rejects non-public DoH answers", async () => {
 		lookup: async () => [{ address: "198.18.0.81", family: 4 }],
 		fetch: async () => new Response(JSON.stringify({ Status: 0, Answer: [{ type: 1, data: "127.0.0.1" }] }), { status: 200 }),
 	}), /non-public/);
+});
+
+test("configuration digests resolve multiple paths without leaking Array.map callback arguments", async () => {
+	const root = await mkdtemp(join(tmpdir(), "beemax-parity-config-digest-"));
+	try {
+		await Promise.all([writeFile(join(root, "a"), "one"), writeFile(join(root, "b"), "two")]);
+		assert.match(await digestConfiguration([join(root, "a"), join(root, "b")]), /^sha256:[a-f0-9]{64}$/);
+	} finally { await rm(root, { recursive: true, force: true }); }
 });
 
 test("subprocess timeout escalates to the process group and preserves partial output", async () => {

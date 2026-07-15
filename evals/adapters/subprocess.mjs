@@ -162,7 +162,7 @@ function verifyFixtureAuthorityEvent(event, receiptKey) {
 
 export async function digestConfiguration(paths, identity = {}) {
 	const hash = createHash("sha256");
-	for (const path of [...paths].map(resolve).sort()) {
+	for (const path of [...paths].map((value) => resolve(value)).sort()) {
 		hash.update(path.split("/").at(-1) ?? path); hash.update("\0");
 		try { hash.update(await readFile(path)); }
 		catch (error) { if (error?.code === "ENOENT") hash.update("<missing>"); else throw error; }
