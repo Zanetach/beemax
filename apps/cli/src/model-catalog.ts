@@ -122,9 +122,10 @@ export function configuredCapabilityRanker(
 	models: Array<{ model: Model<Api>; apiKey?: string }>,
 	onUsage?: NonNullable<PiSemanticCapabilityPortOptions["onUsage"]>,
 	onFallback?: (event: { query: string; code: "provider_unavailable"; cognitionId?: string }) => void,
+	options: Pick<PiSemanticCapabilityPortOptions, "maxModelAttempts" | "maxTokens" | "timeoutMs" | "maxTotalEstimatedTokens"> = {},
 ): CapabilityRanker {
 	const lexical = new LexicalCapabilityRanker();
-	return models.length ? new SemanticCapabilityRanker(new PiSemanticCapabilityPort({ models, ...(onUsage ? { onUsage } : {}) }), { fallback: lexical, ...(onFallback ? { onFallback } : {}) }) : lexical;
+	return models.length ? new SemanticCapabilityRanker(new PiSemanticCapabilityPort({ models, ...options, ...(onUsage ? { onUsage } : {}) }), { fallback: lexical, ...(onFallback ? { onFallback } : {}) }) : lexical;
 }
 
 /** Configured image-capable Pi models automatically become auxiliary perception adapters. */

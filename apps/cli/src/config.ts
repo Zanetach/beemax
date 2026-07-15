@@ -90,6 +90,7 @@ export interface BeeMaxConfig {
 		turnIdleSettleMs: number;
 		/** Optional generic preference weights keyed by name or kind:name; never grants authority. */
 		capabilityPreferences: Record<string, number>;
+		capabilityCognition: { maxModelAttempts: number; maxTokens: number; timeoutMs: number; maxTotalEstimatedTokens: number };
 	};
 	model: {
 		provider: string;
@@ -306,6 +307,13 @@ export function loadConfig(configPath?: string, profile = "default"): BeeMaxConf
 	const heartbeatPlatform = str(env.BEEMAX_HEARTBEAT_PLATFORM ?? cfg.automation?.heartbeat?.platform ?? channels.find((channel) => channel.enabled)?.adapter ?? "feishu");
 	const heartbeatInstances = channels.filter((channel) => channel.enabled && channel.adapter === heartbeatPlatform);
 	const heartbeatChannelInstanceId = optional(env.BEEMAX_HEARTBEAT_CHANNEL_INSTANCE_ID ?? cfg.automation?.heartbeat?.channelInstanceId) ?? (heartbeatInstances.length === 1 ? heartbeatInstances[0]!.id : undefined);
+	const capabilityCognition = {
+		maxModelAttempts: boundedConfiguredInteger(env.BEEMAX_CAPABILITY_COGNITION_MAX_ATTEMPTS ?? cfg.agent?.capabilityCognition?.maxModelAttempts, 3, 1, 5, "agent.capabilityCognition.maxModelAttempts"),
+		maxTokens: boundedConfiguredInteger(env.BEEMAX_CAPABILITY_COGNITION_MAX_TOKENS ?? cfg.agent?.capabilityCognition?.maxTokens, 4_096, 256, 8_192, "agent.capabilityCognition.maxTokens"),
+		timeoutMs: boundedConfiguredInteger(env.BEEMAX_CAPABILITY_COGNITION_TIMEOUT_MS ?? cfg.agent?.capabilityCognition?.timeoutMs, 60_000, 1_000, 60_000, "agent.capabilityCognition.timeoutMs"),
+		maxTotalEstimatedTokens: boundedConfiguredInteger(env.BEEMAX_CAPABILITY_COGNITION_MAX_ESTIMATED_TOKENS ?? cfg.agent?.capabilityCognition?.maxTotalEstimatedTokens, 300_000, 512, 1_000_000, "agent.capabilityCognition.maxTotalEstimatedTokens"),
+	};
+	if (capabilityCognition.maxTotalEstimatedTokens < capabilityCognition.maxTokens + 512) throw new Error("agent.capabilityCognition.maxTotalEstimatedTokens must exceed maxTokens by at least 512 estimated input tokens");
 	return {
 		profile,
 		agent: {
@@ -316,6 +324,7 @@ export function loadConfig(configPath?: string, profile = "default"): BeeMaxConf
 			sessionIdleMs: parseNumber(env.BEEMAX_SESSION_IDLE_MS ?? cfg.agent?.sessionIdleMs, 30 * 60_000),
 			turnIdleSettleMs: boundedNumber(env.BEEMAX_TURN_IDLE_SETTLE_MS ?? cfg.agent?.turnIdleSettleMs, 60_000, 5_000, 5 * 60_000),
 			capabilityPreferences: parseCapabilityPreferences(cfg.agent?.capabilityPreferences),
+			capabilityCognition,
 		},
 		model: {
 			provider,
@@ -420,6 +429,12 @@ export function loadConfig(configPath?: string, profile = "default"): BeeMaxConf
 function boundedNumber(value: unknown, fallback: number, min: number, max: number): number {
 	const parsed = typeof value === "number" ? value : Number(value);
 	return Number.isFinite(parsed) ? Math.max(min, Math.min(max, Math.trunc(parsed))) : fallback;
+}
+function boundedConfiguredInteger(value: unknown, fallback: number, min: number, max: number, label: string): number {
+	if (value === undefined || value === null || value === "") return fallback;
+	const parsed = typeof value === "number" ? value : Number(value);
+	if (!Number.isSafeInteger(parsed) || parsed < min || parsed > max) throw new Error(`${label} must be an integer between ${min} and ${max}`);
+	return parsed;
 }
 function boundedScore(value: unknown, fallback: number): number {
 	if (value === undefined || value === null || value === "") return fallback;

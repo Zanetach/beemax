@@ -25,13 +25,14 @@ const baseRanker = configuredCapabilityRanker(
 	models,
 	(usage) => cognitionAttempts.push({ caseId: usage.cognitionId ? caseByCognitionId.get(usage.cognitionId) ?? "unknown" : "unknown", ...usage }),
 	({ query }) => fallbackQueries.push(query),
+	config.agent.capabilityCognition,
 );
 const observedRanker = {
 	async rank(query, inventory, limit, signal, context) {
 		const caseId = capabilityRankingCases.find((scenario) => scenario.query === query)?.id ?? "unknown";
 		if (context?.cognitionId) caseByCognitionId.set(context.cognitionId, caseId);
 		const ranked = await baseRanker.rank(query, inventory, limit, signal, context);
-		observedRankings.push({ caseId, cognitionId: context?.cognitionId ?? "eval:unknown", candidates: ranked.map((item) => ({ kind: item.descriptor.kind, name: item.descriptor.name, confidence: item.confidence, strategy: item.explanation.strategy })) });
+		observedRankings.push({ caseId, cognitionId: context?.cognitionId ?? "eval:unknown", candidates: ranked.map((item) => ({ kind: item.descriptor.kind, name: item.descriptor.name, version: item.descriptor.version, confidence: item.confidence, strategy: item.explanation.strategy })) });
 		return ranked;
 	},
 };
@@ -56,6 +57,7 @@ if (report.metrics.noMatchPrecision < 1) failures.push("Live semantic Capability
 if (calibration.metrics.requiredCapabilityRecall < 0.95) failures.push("Live semantic required-Capability recall is below 0.95");
 if (calibration.metrics.unnecessaryActivationRate > 0 || calibration.metrics.forbiddenActivationRate > 0) failures.push("Live semantic Capability routing produced unnecessary or forbidden activation");
 if (calibration.metrics.downstreamTaskCompletionRate < 0.95) failures.push("Live semantic downstream task completion is below 0.95");
+if (calibration.metrics.usageMeasurementRate !== 1) failures.push("Live semantic cost evidence is incomplete");
 
 const artifact = {
 	schemaVersion: 1,

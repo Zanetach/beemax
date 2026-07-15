@@ -133,7 +133,7 @@ test("recovered Pi execution receives durable Situation without exposing Access 
 		budget: { maxCorrectiveAttempts: 2, deadlineAt: envelope.budget.deadlineAt }, mode: "recovery",
 	});
 	assert.ok(Object.isFrozen(envelope));
-	assert.deepEqual(executionTrace.trace({ executionId: "execution:run-situation", accessScopeId: "scope:cloud-whale" }).events.map((event) => event.type), ["execution.started", "execution.settled"]);
+	assert.deepEqual(executionTrace.trace({ executionId: "execution:run-situation", accessScopeId: "scope:cloud-whale" }).events.map((event) => event.type), ["execution.started", "tool_spec.published", "execution.settled"]);
 	rmSync(root, { recursive: true, force: true });
 });
 
@@ -270,7 +270,7 @@ test("Objective delivery receives Situation Work Context", async () => {
 	const trace = executionTrace.trace({ executionId: deliveryEnvelope.executionId });
 	assert.equal(trace.deliveries, 1);
 	assert.equal(trace.deliveryStatus, "succeeded");
-	assert.deepEqual(trace.events.map((event) => event.type), ["delivery.started", "execution.started", "execution.settled", "delivery.settled"]);
+	assert.deepEqual(trace.events.map((event) => event.type), ["delivery.started", "execution.started", "tool_spec.published", "execution.settled", "delivery.settled"]);
 	rmSync(root, { recursive: true, force: true });
 });
 

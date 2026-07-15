@@ -196,9 +196,14 @@ agent:
   capabilityPreferences:
     web_search: 0.4
     skill:source-review: 0.8
+  capabilityCognition:
+    maxModelAttempts: 3
+    maxTokens: 4096
+    timeoutMs: 60000
+    maxTotalEstimatedTokens: 300000
 ```
 
-Preference values range from `-1` to `1`. Policy, Profile scope, Provider health, Effects, and the turn-scoped Tool Spec still decide whether a selected capability can execute.
+Preference values range from `-1` to `1`. Capability cognition recovery stays inside one total deadline and estimated-token ceiling; `maxModelAttempts` accepts `1`–`5`, while `maxTokens` prevents reasoning-heavy models from exhausting the response before producing the required decision. Neither setting authorizes lexical degradation after malformed or empty semantic responses. Policy, Profile scope, Provider health, Effects, and the turn-scoped Tool Spec still decide whether a selected capability can execute.
 
 Every Capability decision receives a content-free cognition ID that correlates model usage, fallback telemetry, the execution trace, and the eventual verified, rejected, failed, cancelled, or unverified task outcome. Calibration reports keep lexical, frozen-semantic, and live-Provider results separate and measure Top-1, Top-K, required-capability recall, unnecessary activation, no-match precision, completion, latency, tokens, and cost. Versioned threshold trials cannot be promoted when authorization, false-positive, recall, or completion metrics regress.
 

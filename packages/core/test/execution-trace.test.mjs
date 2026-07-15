@@ -61,6 +61,32 @@ test("Execution Trace correlates a content-free Capability decision with its ver
 	} finally { rmSync(root, { recursive: true, force: true }); }
 });
 
+test("Execution Trace binds a settled Tool to one Tool Spec plan and one immutable Capability receipt", () => {
+	const directory = mkdtempSync(join(tmpdir(), "beemax-trace-capability-receipt-"));
+	try {
+		const store = new FileExecutionTraceStore(join(directory, "trace.jsonl"));
+		const executionEnvelope = createExecutionEnvelope({ executionId: "execution:receipt", trigger: { kind: "interaction" }, accessScopeRef: createAccessScopeRef({ id: "scope:receipt", authority: { kind: "enterprise_system", reference: "iam:receipt" }, issuedAt: 1 }), budget: { maxToolCalls: 2, maxTokens: 100, maxCorrectiveAttempts: 0 }, mode: "normal" });
+		store.record({ type: "tool_spec.published", executionEnvelope, at: 9, toolSpecPlanId: "tool-plan:sha256:abc", directTools: ["skill_complete"] });
+		store.record({ type: "tool.started", executionEnvelope, at: 10, toolCallId: "call:receipt", toolName: "skill_complete", toolSpecPlanId: "tool-plan:sha256:abc" });
+		store.record({ type: "tool.settled", executionEnvelope, at: 11, toolCallId: "call:receipt", toolName: "skill_complete", toolSpecPlanId: "tool-plan:sha256:abc", status: "succeeded", capabilityReceipt: { id: "receipt:skill-a", kind: "skill", name: "skill-a", version: "sha256:abc", sourceTool: "skill_complete" } });
+		const trace = store.trace({ executionId: "execution:receipt", accessScopeId: "scope:receipt" });
+		assert.deepEqual(trace.events[0].directTools, ["skill_complete"]);
+		assert.equal(trace.events[1].toolSpecPlanId, "tool-plan:sha256:abc");
+		assert.deepEqual(trace.events[2].capabilityReceipt, { id: "receipt:skill-a", kind: "skill", name: "skill-a", version: "sha256:abc", sourceTool: "skill_complete" });
+	} finally { rmSync(directory, { recursive: true, force: true }); }
+});
+
+test("Execution Trace preserves a Capability identity implemented by a differently named Tool", () => {
+	const directory = mkdtempSync(join(tmpdir(), "beemax-trace-composite-capability-"));
+	try {
+		const store = new FileExecutionTraceStore(join(directory, "trace.jsonl"));
+		const executionEnvelope = createExecutionEnvelope({ executionId: "execution:composite", trigger: { kind: "interaction" }, mode: "normal" });
+		store.record({ type: "tool.settled", executionEnvelope, toolCallId: "call:meeting", toolName: "mcp_meeting_schedule", status: "succeeded", capabilityReceipt: { id: "receipt:meeting", kind: "mcp", name: "meeting_schedule", version: "provider:2", sourceTool: "mcp_meeting_schedule" } });
+		assert.deepEqual(store.trace({ executionId: "execution:composite" }).events[0].capabilityReceipt, { id: "receipt:meeting", kind: "mcp", name: "meeting_schedule", version: "provider:2", sourceTool: "mcp_meeting_schedule" });
+		assert.throws(() => store.record({ type: "tool.settled", executionEnvelope, toolCallId: "call:skill", toolName: "other", status: "succeeded", capabilityReceipt: { id: "receipt:skill", kind: "skill", name: "procedure", version: "sha256:abc", sourceTool: "other" } }), /skill_complete/u);
+	} finally { rmSync(directory, { recursive: true, force: true }); }
+});
+
 test("Execution Trace keeps sequence tracking bounded and safely rebuilds an evicted trace", () => {
 	const root = mkdtempSync(join(tmpdir(), "beemax-execution-trace-bounded-"));
 	try {

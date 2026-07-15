@@ -18,7 +18,7 @@ import { redactCredentialMaterial } from "./credential-material.ts";
 import type { AccessScopeRef } from "./access-scope.ts";
 import { DeterministicSituationBuilder, type SituationBuilderPort } from "./situation-builder.ts";
 import { createExecutionEnvelope, type ExecutionEnvelope } from "./execution-envelope.ts";
-import type { ExecutionTraceSink } from "./execution-trace.ts";
+import { normalizeCapabilityReceiptRef, type CapabilityReceiptRef, type ExecutionTraceSink } from "./execution-trace.ts";
 import { createTaskCheckpoint, mergeTaskCheckpoints, renderTaskCheckpoint } from "./task-checkpoint.ts";
 import type { TaskGraphVerifier } from "./task-graph.ts";
 import { CapabilityRuntime, capabilityVersionOf } from "./capability-runtime.ts";
@@ -82,7 +82,7 @@ export interface ModelFallbackEvent { type: "model_fallback"; from: string; to: 
 export interface PlanningDecisionEvent { type: "planning_decision"; mode: "direct" | "delegate" | "dag"; concurrency: number; maxSubagents: number; requiredTools: string[]; }
 export interface PlanningOutcomeEvent { type: "planning_outcome"; mode: "direct" | "delegate" | "dag"; compliant: boolean; corrected: boolean; }
 export type CapabilityRankReason = "exact_name" | "name" | "trigger" | "alias" | "lexical";
-export interface CapabilityRankedCandidate { kind: "tool" | "mcp" | "skill"; name: string; score: number; confidence: number; reason: CapabilityRankReason; }
+export interface CapabilityRankedCandidate { kind: "tool" | "mcp" | "skill"; name: string; version?: string; score: number; confidence: number; reason: CapabilityRankReason; }
 export interface CapabilityRankedEvent { type: "capability_ranked"; candidates: CapabilityRankedCandidate[]; activatedTools: string[]; }
 export interface ContextBuiltEvent { type: "context_built"; included: Array<{ kind: string; source: string; costChars: number }>; released: Array<{ kind: string; source: string; costChars: number }>; contextChars: number; }
 export interface ExecutionStartedEvent { type: "execution_started"; executionEnvelope: Readonly<ExecutionEnvelope>; }
@@ -330,7 +330,7 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 			const previousToolBoundary = session.piSession.agent.beforeToolCall;
 			const capabilityRuntime = new CapabilityRuntime();
 			const capabilityPrefetch = allTools.find((tool) => tool.name === "capability_discover") as (typeof allTools[number] & {
-				beemaxCapabilityPrefetch?: (query: string, signal?: AbortSignal) => Promise<{ cognitionId?: string; candidates: Array<{ kind: "tool" | "mcp" | "skill"; name: string; confidence: number }>; skills: Array<{ name: string }> }>;
+				beemaxCapabilityPrefetch?: (query: string, signal?: AbortSignal) => Promise<{ cognitionId?: string; candidates: Array<{ kind: "tool" | "mcp" | "skill"; name: string; version?: string; confidence: number }>; activatedTools?: string[]; skills: Array<{ name: string }> }>;
 				/** Pre-semantic compatibility seam for injected test/legacy runtimes only. */
 				beemaxSkillPrefetch?: (query: string, signal?: AbortSignal) => Promise<Array<{ name: string }>>;
 			}) | undefined;
@@ -348,7 +348,7 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 			);
 			let prefetchedSkills: string[] = [];
 			let semanticPrefetchedTools: string[] = [];
-			const capabilityDecisions = new Map<string, Array<{ kind: "tool" | "mcp" | "skill"; name: string; confidence: number }>>();
+			const capabilityDecisions = new Map<string, Array<{ kind: "tool" | "mcp" | "skill"; name: string; version?: string; confidence: number }>>();
 			const recordedCapabilityDecisions = new Set<string>();
 			let capabilityPrefetchFailed = false;
 			let semanticCapabilityNoMatch = false;
@@ -356,7 +356,8 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 				try {
 					const proposal = await capabilityPrefetch.beemaxCapabilityPrefetch(prefetchQuery, cognitionSignal);
 					const inventory = new Set(allTools.map((tool) => tool.name));
-					semanticPrefetchedTools = [...new Set(proposal.candidates.filter((candidate) => candidate.kind !== "skill" && inventory.has(candidate.name)).map((candidate) => candidate.name))].slice(0, 10);
+					const proposedTools = proposal.activatedTools ?? proposal.candidates.filter((candidate) => candidate.kind !== "skill").map((candidate) => candidate.name);
+					semanticPrefetchedTools = [...new Set(proposedTools.filter((name) => inventory.has(name)))].slice(0, 10);
 					prefetchedSkills = [...new Set(proposal.skills.map((skill) => skill.name).filter(Boolean))].slice(0, 1);
 					const cognitionId = validCapabilityCognitionId(proposal.cognitionId);
 					if (cognitionId) capabilityDecisions.set(cognitionId, proposal.candidates.slice(0, 20));
@@ -434,6 +435,7 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 			let completionAnswer: string | undefined;
 			let objectiveVerificationOutcome: "accepted" | "rejected" | "unavailable" | undefined;
 			const toolStartedAt = new Map<string, number>();
+			const toolSpecPlanByCall = new Map<string, string>();
 			const toolAttemptFingerprints = new Map<string, string>();
 			const failedReadFingerprints = new Map<string, number>();
 			const settledToolProgress: string[] = [];
@@ -460,20 +462,32 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 				try { await session.piSession.prompt(...args); }
 				finally { promptInFlight = false; clearIdleSettle(); }
 			};
+			let toolSpecPublication = Promise.resolve();
+			let toolSpecPublicationFailure: unknown;
 			const publishToolSpecTransition = () => {
 				const message = { role: "custom" as const, customType: "beemax-tool-spec-transition", content: renderToolSpecPlan(toolSpecPlan), display: false, timestamp: Date.now() };
 				const sender = (session.piSession as typeof session.piSession & { sendCustomMessage?: (message: { customType: string; content: string; display: boolean }, options: { triggerTurn: boolean; deliverAs: "context" }) => Promise<void> }).sendCustomMessage;
-				if (sender) void sender.call(session.piSession, message, { triggerTurn: false, deliverAs: "context" });
-				else session.piSession.agent.state.messages.push(message);
+				const publishedPlan = { planId: toolSpecPlan.planId, directTools: toolSpecPlan.direct.map((entry) => entry.toolName) };
+				if (!sender) {
+					session.piSession.agent.state.messages.push(message);
+					this.recordTrace({ type: "tool_spec.published", executionEnvelope, toolSpecPlanId: publishedPlan.planId, directTools: publishedPlan.directTools });
+					return;
+				}
+				toolSpecPublication = toolSpecPublication.then(async () => {
+					await sender.call(session.piSession, message, { triggerTurn: false, deliverAs: "context" });
+					this.recordTrace({ type: "tool_spec.published", executionEnvelope, toolSpecPlanId: publishedPlan.planId, directTools: publishedPlan.directTools });
+				}).catch((error) => { toolSpecPublicationFailure = error; });
 			};
+			const requireToolSpecPublication = async () => { await toolSpecPublication; if (toolSpecPublicationFailure) throw new AgentRunError("Current Tool Spec Plan could not be delivered to the model context", true, toolSpecPublicationFailure); };
 			const enqueueEvent = (event: BeeMaxAgentRunEvent) => { eventDelivery = eventDelivery.then(() => onEvent?.(event)).then(() => undefined); };
 			const unsubscribe = session.piSession.subscribe((event) => {
 				if (event.type === "tool_execution_start") {
 					clearIdleSettle();
 					const at = Date.now();
 					toolStartedAt.set(event.toolCallId, at);
+					toolSpecPlanByCall.set(event.toolCallId, toolSpecPlan.planId);
 					toolAttemptFingerprints.set(event.toolCallId, toolAttemptFingerprint(event.toolName, event.args));
-					this.recordTrace({ type: "tool.started", executionEnvelope, at, toolCallId: event.toolCallId, toolName: event.toolName });
+					this.recordTrace({ type: "tool.started", executionEnvelope, at, toolCallId: event.toolCallId, toolName: event.toolName, toolSpecPlanId: toolSpecPlan.planId });
 					observableProgress = true;
 					const expected = planning?.requiredTools[requiredToolsUsed.length];
 					if (event.toolName === expected) requiredToolCalls.set(event.toolCallId, { name: event.toolName, args: event.args });
@@ -485,13 +499,15 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 				} else if (event.type === "tool_execution_end") {
 					const at = Date.now();
 					const toolStart = toolStartedAt.get(event.toolCallId); toolStartedAt.delete(event.toolCallId);
+					const toolSpecPlanId = toolSpecPlanByCall.get(event.toolCallId); toolSpecPlanByCall.delete(event.toolCallId);
 					const toolFingerprint = toolAttemptFingerprints.get(event.toolCallId); toolAttemptFingerprints.delete(event.toolCallId);
-					this.recordTrace({ type: "tool.settled", executionEnvelope, at, toolCallId: event.toolCallId, toolName: event.toolName, status: event.isError ? "failed" : "succeeded", ...(toolStart === undefined ? {} : { durationMs: Math.max(0, at - toolStart) }) });
+					const capabilityReceipt = event.isError ? undefined : capabilityReceiptMetadata(event.result, event.toolName);
+					this.recordTrace({ type: "tool.settled", executionEnvelope, at, toolCallId: event.toolCallId, toolName: event.toolName, status: event.isError ? "failed" : "succeeded", ...(toolStart === undefined ? {} : { durationMs: Math.max(0, at - toolStart) }), ...(toolSpecPlanId ? { toolSpecPlanId } : {}), ...(capabilityReceipt ? { capabilityReceipt } : {}) });
 					if (!event.isError) successfulToolNames.add(event.toolName);
 					if (event.toolName === "capability_discover" && !event.isError) {
 						const discovery = capabilityDiscoveryMetadata(event.result, new Set(allTools.map((tool) => tool.name)));
 						if (discovery.cognitionId && !capabilityDecisions.has(discovery.cognitionId)) {
-							const candidates = discovery.candidates.map(({ kind, name, confidence }) => ({ kind, name, confidence }));
+							const candidates = discovery.candidates.map(({ kind, name, version, confidence }) => ({ kind, name, ...(version ? { version } : {}), confidence }));
 							capabilityDecisions.set(discovery.cognitionId, candidates);
 							recordedCapabilityDecisions.add(discovery.cognitionId);
 							this.recordTrace({ type: "capability.decision", executionEnvelope, at, cognitionId: discovery.cognitionId, candidates });
@@ -591,12 +607,15 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 			const timeout = effectiveTimeoutMs === undefined ? undefined : setTimeout(() => { timedOut = true; void session.piSession.abort(); }, effectiveTimeoutMs);
 			let settlementStatus: ExecutionSettledEvent["status"] = "failed";
 			session.piSession.agent.beforeToolCall = async (context, signal) => {
+				try { await requireToolSpecPublication(); }
+				catch { return { block: true, reason: "Current Tool Spec Plan was not delivered to the model context" }; }
 				if (!toolSpecPlan.direct.some((entry) => entry.toolName === context.toolCall.name)) return { block: true, reason: `Tool ${context.toolCall.name} is not direct in the current immutable Tool Spec Plan` };
 				if (unresolvedUncertainty && toolSideEffects.get(context.toolCall.name) !== "none") return { block: true, reason: `Tool ${context.toolCall.name} is blocked until the source-bound Work Contract uncertainty is resolved` };
 				return previousToolBoundary?.(context, signal);
 			};
 			try {
 				this.recordTrace({ type: "execution.started", executionEnvelope, at: startedAt });
+				this.recordTrace({ type: "tool_spec.published", executionEnvelope, toolSpecPlanId: toolSpecPlan.planId, directTools: progressiveTools });
 				for (const [cognitionId, candidates] of capabilityDecisions) {
 					recordedCapabilityDecisions.add(cognitionId);
 					this.recordTrace({ type: "capability.decision", executionEnvelope, at: Date.now(), cognitionId, candidates });
@@ -624,10 +643,12 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 				if (failedReadToolAwaitingReroute && !discoveredCapabilities && !turnAbortReason) {
 					const failedTool = failedReadToolAwaitingReroute; failedReadToolAwaitingReroute = undefined;
 					if (supportsProgressiveTools && allTools.some((tool) => tool.name === "capability_discover")) activatePlannedTools(["capability_discover"]);
+					await requireToolSpecPublication();
 					await promptSession(`${renderToolSpecPlan(toolSpecPlan)}\n\n[BeeMax capability reroute: ${failedTool} failed without a recorded equivalent-capability discovery. Use capability_discover now to find an already available alternative, then continue the original request. Do not retry the same external mutation; reconcile any uncertain side effect before another write.]`, { expandPromptTemplates: false });
 				}
 				if (discoveredCapabilities && !turnAbortReason) {
 					discoveredCapabilities = false;
+					await requireToolSpecPublication();
 					await promptSession(`${renderToolSpecPlan(toolSpecPlan)}\n\n[BeeMax capability continuation: matching Tools or Skills are now active. Continue the original request using them. Do not repeat capability discovery.]`, { expandPromptTemplates: false });
 				}
 				const missingTools = planning?.requiredTools.slice(requiredToolsUsed.length) ?? [];
@@ -1037,12 +1058,13 @@ function capabilityDiscoveryMetadata(result: unknown, knownTools: ReadonlySet<st
 	const value = details as { cognitionId?: unknown; activatedTools?: unknown; tools?: unknown; skills?: unknown; ranked?: unknown; providerResolutions?: unknown };
 	const cognitionId = validCapabilityCognitionId(value.cognitionId);
 	const validName = (item: unknown): item is string => typeof item === "string" && /^[a-z0-9][a-z0-9._:-]{0,127}$/i.test(item);
+	const validVersion = (item: unknown): item is string => typeof item === "string" && /^[a-z0-9][a-z0-9._:@-]{0,255}$/i.test(item);
 	const activatedTools = Array.isArray(value.activatedTools) ? [...new Set(value.activatedTools.filter((item): item is string => validName(item) && knownTools.has(item)))].slice(0, 20) : [];
 	const candidates = Array.isArray(value.ranked) ? value.ranked.flatMap((item): CapabilityRankedCandidate[] => {
 		if (!item || typeof item !== "object") return []; const entry = item as Record<string, unknown>;
 		if (!["tool", "mcp", "skill"].includes(String(entry.kind)) || !validName(entry.name) || typeof entry.score !== "number" || !Number.isFinite(entry.score) || typeof entry.confidence !== "number" || !Number.isFinite(entry.confidence) || typeof entry.reason !== "string") return [];
 		const reason: CapabilityRankReason = entry.reason.includes("trigger") ? "trigger" : entry.reason.includes("alias") ? "alias" : entry.reason.includes("exact") ? "exact_name" : entry.reason.includes("name") ? "name" : "lexical";
-		return [{ kind: entry.kind as "tool" | "mcp" | "skill", name: entry.name, score: entry.score, confidence: Math.max(0, Math.min(1, entry.confidence)), reason }];
+		return [{ kind: entry.kind as "tool" | "mcp" | "skill", name: entry.name, ...(validVersion(entry.version) ? { version: entry.version } : {}), score: entry.score, confidence: Math.max(0, Math.min(1, entry.confidence)), reason }];
 	}).slice(0, 10) : [];
 	const restrictions = Array.isArray(value.providerResolutions) ? value.providerResolutions.flatMap((item): Array<{ toolName: string; reason: "configuration_required" | "provider_unhealthy" | "provider_unavailable" }> => {
 		if (!item || typeof item !== "object") return [];
@@ -1058,6 +1080,14 @@ function capabilityDiscoveryMetadata(result: unknown, knownTools: ReadonlySet<st
 
 function validCapabilityCognitionId(value: unknown): string | undefined {
 	return typeof value === "string" && /^[a-z0-9][a-z0-9._:-]{0,127}$/i.test(value) ? value : undefined;
+}
+
+function capabilityReceiptMetadata(result: unknown, sourceTool: string): CapabilityReceiptRef | undefined {
+	const details = result && typeof result === "object" ? (result as { details?: unknown }).details : undefined;
+	const receipt = details && typeof details === "object" ? (details as { capabilityReceipt?: unknown }).capabilityReceipt : undefined;
+	if (!receipt || typeof receipt !== "object") return undefined;
+	try { const normalized = normalizeCapabilityReceiptRef(receipt); return normalized.sourceTool === sourceTool ? normalized : undefined; }
+	catch { return undefined; }
 }
 
 function toolSideEffect(tool: unknown): ToolSideEffect | undefined {

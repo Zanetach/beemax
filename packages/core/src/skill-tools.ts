@@ -58,7 +58,8 @@ export function createSkillTools(agentDir: string, markReloadNeeded: () => void,
 		const selectedSkills = await runtime.admitDiscovered(selectedName ? [selectedName] : []);
 		return {
 			cognitionId: selection.cognitionId,
-			candidates: selection.candidates.map(({ kind, name, confidence }) => ({ kind, name, confidence })),
+			candidates: selection.candidates.map(({ kind, name, version, confidence }) => ({ kind, name, version, confidence })),
+			activatedTools: selection.activatedTools,
 			skills: selectedSkills.map(publicSkill),
 		};
 	};
@@ -113,7 +114,9 @@ export function createSkillTools(agentDir: string, markReloadNeeded: () => void,
 			const resource = await runtime.readResource(params.path); return ephemeralResult(resource.content, { ...resource, content: undefined, state: runtime.snapshot() });
 		} }),
 		defineTool({ name: "skill_complete", label: "Complete Skill", description: "Complete the turn-scoped Skill execution and retain only its versioned resource summary.", parameters: Type.Object({}), execute: async () => {
-			const summary = runtime.complete(); return result(`Completed Skill ${summary.skill}${summary.route ? ` via ${summary.route}` : ""}.`, summary);
+			const summary = runtime.complete();
+			if (!summary.skill || !summary.sha256) throw new Error("Completed Skill lacks its immutable identity");
+			return result(`Completed Skill ${summary.skill}${summary.route ? ` via ${summary.route}` : ""}.`, { ...summary, capabilityReceipt: { id: `receipt:skill:${summary.skill}:${summary.sha256}`, kind: "skill", name: summary.skill, version: `sha256:${summary.sha256}`, sourceTool: "skill_complete" } });
 		} }),
 		defineTool({ name: "skill_read", label: "Read Skill (Compatibility)", description: "Compatibility alias that discovers and activates a Profile, project, or global Skill by name.", parameters: Type.Object({ name: Type.String({ pattern: "^[a-z0-9]+(?:-[a-z0-9]+)*$" }) }), execute: async (_id, params) => {
 			await runtime.discover(params.name, 10); const activated = await runtime.activate(params.name); const legacy = activated.routes.length === 1 && activated.routes[0]?.name === "legacy";

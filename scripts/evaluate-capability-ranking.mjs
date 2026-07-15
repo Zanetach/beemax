@@ -10,7 +10,7 @@ const observe = (ranker) => {
 	const observedRankings = [];
 	return { observedRankings, ranker: { async rank(query, inventory, limit, signal, context) {
 		const ranked = await ranker.rank(query, inventory, limit, signal, context);
-		observedRankings.push({ caseId: capabilityRankingCases.find((scenario) => scenario.query === query)?.id ?? "unknown", cognitionId: context?.cognitionId ?? "eval:unknown", candidates: ranked.map((item) => ({ kind: item.descriptor.kind, name: item.descriptor.name, confidence: item.confidence, strategy: item.explanation.strategy })) });
+		observedRankings.push({ caseId: capabilityRankingCases.find((scenario) => scenario.query === query)?.id ?? "unknown", cognitionId: context?.cognitionId ?? "eval:unknown", candidates: ranked.map((item) => ({ kind: item.descriptor.kind, name: item.descriptor.name, version: item.descriptor.version, confidence: item.confidence, strategy: item.explanation.strategy })) });
 		return ranked;
 	} } };
 };

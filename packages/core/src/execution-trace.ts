@@ -4,16 +4,18 @@ import type { ExecutionEnvelope, ExecutionMode, ExecutionTriggerKind } from "./e
 
 type ExecutionOutcome = "succeeded" | "failed" | "cancelled";
 export type CapabilityOutcomeStatus = "accepted" | "rejected" | "unverified" | "failed" | "cancelled";
-export interface CapabilityTraceCandidate { kind: "tool" | "mcp" | "skill"; name: string; confidence: number; }
+export interface CapabilityTraceCandidate { kind: "tool" | "mcp" | "skill"; name: string; version?: string; confidence: number; }
+export interface CapabilityReceiptRef { id: string; kind: "tool" | "mcp" | "skill"; name: string; version: string; sourceTool: string; }
 interface TraceInputBase { executionEnvelope: Readonly<ExecutionEnvelope>; at?: number; }
 export type ExecutionTraceInput =
 	| (TraceInputBase & { type: "execution.started" })
 	| (TraceInputBase & { type: "execution.settled"; status: ExecutionOutcome })
 	| (TraceInputBase & { type: "capability.decision"; cognitionId: string; candidates: readonly CapabilityTraceCandidate[] })
 	| (TraceInputBase & { type: "capability.downstream_execution_outcome"; cognitionId: string; status: CapabilityOutcomeStatus })
+	| (TraceInputBase & { type: "tool_spec.published"; toolSpecPlanId: string; directTools: readonly string[] })
 	| (TraceInputBase & { type: "model.turn_settled"; inputTokens: number; outputTokens: number; cacheReadTokens?: number; cacheWriteTokens?: number; costUsd?: number })
-	| (TraceInputBase & { type: "tool.started"; toolCallId: string; toolName: string })
-	| (TraceInputBase & { type: "tool.settled"; toolCallId: string; toolName: string; status: "succeeded" | "failed"; durationMs?: number })
+	| (TraceInputBase & { type: "tool.started"; toolCallId: string; toolName: string; toolSpecPlanId?: string })
+	| (TraceInputBase & { type: "tool.settled"; toolCallId: string; toolName: string; status: "succeeded" | "failed"; durationMs?: number; toolSpecPlanId?: string; capabilityReceipt?: CapabilityReceiptRef })
 	| (TraceInputBase & { type: "effect.started"; effectId: string; toolCallId: string; status: "executing" })
 	| (TraceInputBase & { type: "effect.settled"; effectId: string; toolCallId: string; status: "committed" | "failed" | "unknown" })
 	| (TraceInputBase & { type: "checkpoint.saved"; sizeChars: number })
@@ -46,6 +48,9 @@ export interface ExecutionTraceEvent {
 	sizeChars?: number;
 	cognitionId?: string;
 	candidates?: CapabilityTraceCandidate[];
+	toolSpecPlanId?: string;
+	directTools?: string[];
+	capabilityReceipt?: CapabilityReceiptRef;
 }
 
 export interface ExecutionTraceQuery { executionId: string; accessScopeId?: string; }
@@ -169,6 +174,7 @@ function traceDetails(input: ExecutionTraceInput): Partial<ExecutionTraceEvent> 
 		candidates: safeCapabilityCandidates(input.candidates),
 	};
 	if (input.type === "capability.downstream_execution_outcome") return { cognitionId: safeText(input.cognitionId, "cognitionId", 128), status: input.status };
+	if (input.type === "tool_spec.published") return { toolSpecPlanId: safeText(input.toolSpecPlanId, "toolSpecPlanId", 256), directTools: safeDirectTools(input.directTools) };
 	if (input.type === "model.turn_settled") return {
 		inputTokens: safeNonNegative(input.inputTokens, "inputTokens"), outputTokens: safeNonNegative(input.outputTokens, "outputTokens"),
 		...(input.cacheReadTokens === undefined ? {} : { cacheReadTokens: safeNonNegative(input.cacheReadTokens, "cacheReadTokens") }),
@@ -185,7 +191,8 @@ function traceDetails(input: ExecutionTraceInput): Partial<ExecutionTraceEvent> 
 	if (input.type === "delivery.settled") return { status: input.status };
 	return {
 		toolCallId: safeText(input.toolCallId, "toolCallId", 512), toolName: safeText(input.toolName, "toolName", 512),
-		...(input.type === "tool.settled" ? { status: input.status, ...(input.durationMs === undefined ? {} : { durationMs: safeNonNegative(input.durationMs, "durationMs") }) } : {}),
+		...(input.toolSpecPlanId === undefined ? {} : { toolSpecPlanId: safeText(input.toolSpecPlanId, "toolSpecPlanId", 256) }),
+		...(input.type === "tool.settled" ? { status: input.status, ...(input.durationMs === undefined ? {} : { durationMs: safeNonNegative(input.durationMs, "durationMs") }), ...(input.capabilityReceipt === undefined ? {} : { capabilityReceipt: normalizeCapabilityReceiptRef(input.capabilityReceipt) }) } : {}),
 	};
 }
 
@@ -198,6 +205,24 @@ function safeNonNegative(value: number, field: string): number {
 	if (!Number.isFinite(value) || value < 0) throw new Error(`Execution Trace ${field} must be a non-negative finite number`);
 	return value;
 }
+export function normalizeCapabilityReceiptRef(value: unknown): CapabilityReceiptRef {
+	if (!value || typeof value !== "object") throw new Error("Execution Trace Capability receipt is invalid");
+	const receipt = value as Partial<CapabilityReceiptRef>;
+	if (receipt.kind !== "tool" && receipt.kind !== "mcp" && receipt.kind !== "skill") throw new Error("Execution Trace Capability receipt kind is invalid");
+	const id = safeIdentifier(receipt.id, "capabilityReceipt.id", 256);
+	const name = safeIdentifier(receipt.name, "capabilityReceipt.name", 128);
+	const version = safeIdentifier(receipt.version, "capabilityReceipt.version", 256);
+	const sourceTool = safeIdentifier(receipt.sourceTool, "capabilityReceipt.sourceTool", 128);
+	if (receipt.kind === "skill" && sourceTool !== "skill_complete") throw new Error("Execution Trace Skill receipt must originate from skill_complete");
+	return { id, kind: receipt.kind, name, version, sourceTool };
+}
+function safeIdentifier(value: unknown, field: string, maxLength: number): string { const normalized = typeof value === "string" ? value.trim() : ""; if (!normalized || normalized.length > maxLength || !/^[a-z0-9][a-z0-9._:@-]*$/i.test(normalized)) throw new Error(`Execution Trace ${field} is invalid`); return normalized; }
+function safeDirectTools(values: readonly string[]): string[] {
+	if (!Array.isArray(values) || values.length > 100) throw new Error("Execution Trace direct Tools must be a bounded list");
+	const tools = values.map((value) => safeIdentifier(value, "directTool", 128));
+	if (new Set(tools).size !== tools.length) throw new Error("Execution Trace direct Tools contain duplicates");
+	return tools;
+}
 function safeCapabilityCandidates(values: readonly CapabilityTraceCandidate[]): CapabilityTraceCandidate[] {
 	if (!Array.isArray(values) || values.length > 20) throw new Error("Execution Trace Capability candidates must be a bounded list");
 	const seen = new Set<string>();
@@ -207,7 +232,7 @@ function safeCapabilityCandidates(values: readonly CapabilityTraceCandidate[]): 
 		if (seen.has(`${candidate.kind}:${name}`)) throw new Error("Execution Trace Capability candidates contain duplicates");
 		seen.add(`${candidate.kind}:${name}`);
 		if (!Number.isFinite(candidate.confidence) || candidate.confidence < 0 || candidate.confidence > 1) throw new Error("Execution Trace Capability confidence is invalid");
-		return { kind: candidate.kind, name, confidence: candidate.confidence };
+		return { kind: candidate.kind, name, ...(candidate.version ? { version: safeIdentifier(candidate.version, "Capability version", 256) } : {}), confidence: candidate.confidence };
 	});
 }
 function isCapabilityOutcomeStatus(value: unknown): value is CapabilityOutcomeStatus { return value === "accepted" || value === "rejected" || value === "unverified" || value === "failed" || value === "cancelled"; }

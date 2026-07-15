@@ -304,7 +304,7 @@ test("BeeMax Agent Runtime projects Pi lifecycle events through one Execution Tr
 		assert.equal(trace.outputTokens, 10);
 		assert.equal(trace.cacheReadTokens, 5);
 		assert.equal(trace.costUsd, 0.031);
-		assert.deepEqual(trace.events.map((event) => event.type), ["execution.started", "tool.started", "tool.settled", "model.turn_settled", "execution.settled"]);
+		assert.deepEqual(trace.events.map((event) => event.type), ["execution.started", "tool_spec.published", "tool.started", "tool.settled", "model.turn_settled", "execution.settled"]);
 	} finally { runtime.dispose(); rmSync(root, { recursive: true, force: true }); }
 });
 

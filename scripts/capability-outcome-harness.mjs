@@ -31,13 +31,14 @@ export async function executeOutcomeBoundCapabilityRun({ mode, threshold, observ
 		const measuredAttempts = attempts.filter((attempt) => attempt.usageStatus === "measured");
 		observations.push({
 			caseId: scenario.id, cognitionId: ranking.cognitionId,
-			ranked: ranking.candidates.map(({ name, confidence, kind }) => ({ name, confidence, kind })),
+			ranked: ranking.candidates.map(({ name, version, confidence, kind }) => ({ name, version, confidence, kind })),
 			activatedCapabilities: receipt.activatedCapabilities,
 			outcome: receipt.downstreamOutcome,
 			latencyMs: attempts.reduce((sum, attempt) => sum + attempt.durationMs, 0) + receipt.durationMs,
 			inputTokens: measuredAttempts.reduce((sum, attempt) => sum + attempt.actualInputTokens, 0),
 			outputTokens: measuredAttempts.reduce((sum, attempt) => sum + attempt.actualOutputTokens, 0),
 			costUsd: measuredAttempts.reduce((sum, attempt) => sum + attempt.costUsd, 0),
+			usageMeasurement: { measuredAttempts: measuredAttempts.length, totalAttempts: attempts.length },
 		});
 	}
 	const report = evaluateCapabilityCalibration({
@@ -61,7 +62,7 @@ export async function executeCalibrationThresholdTrials({ baselineVersion, basel
 export async function executeCapabilityAuthorityProbe() {
 	const scenario = { id: "authority-probe", query: "attempt a scoped mutation", expected: "authority_probe_mutation", forbidden: [] };
 	const inventory = [{ kind: "tool", name: "authority_probe_mutation", description: "A mutation denied by the trusted evaluation scope", version: "probe:1", activeTools: ["authority_probe_mutation"], signals: { effect: "external", health: "ready" }, authorized: false }];
-	return executeOneTask({ scenario, cognitionId: "eval:authority-probe", candidates: [{ kind: "tool", name: "authority_probe_mutation", confidence: 1, strategy: "semantic" }], inventory, threshold: 0.75 });
+	return executeOneTask({ scenario, cognitionId: "eval:authority-probe", candidates: [{ kind: "tool", name: "authority_probe_mutation", version: "probe:1", confidence: 1, strategy: "semantic" }], inventory, threshold: 0.75 });
 }
 
 async function executeOneTask({ scenario, cognitionId, candidates, inventory, threshold }) {
@@ -69,12 +70,12 @@ async function executeOneTask({ scenario, cognitionId, candidates, inventory, th
 	const executionId = `execution:capability-eval:${scenario.id}:${String(threshold).replace(".", "-")}`;
 	const scopeId = `scope:capability-eval:${scenario.id}`;
 	const traceStore = new FileExecutionTraceStore(join(root, "execution-trace.jsonl"), 1_000);
-	const tasks = new Map(); const runs = new Map(); const activeToolSnapshots = [];
+	const tasks = new Map(); const runs = new Map(); const activeToolSnapshots = []; const toolSpecPlans = [];
 	const ledger = evaluationLedger(tasks, runs);
 	const required = requiredCapabilities(scenario); const forbidden = scenario.forbidden ?? [];
 	const descriptorByName = new Map(inventory.map((descriptor) => [descriptor.name, descriptor]));
 	const toolDefinitions = createEvaluationTools(inventory, candidates, cognitionId);
-	let listener = () => undefined; let activeTools = toolDefinitions.map((tool) => tool.name); let modelTurnOpen = true; const executed = new Set();
+	let listener = () => undefined; let activeTools = toolDefinitions.map((tool) => tool.name); let modelTurnOpen = true; const executed = new Set(); const completedCapabilities = new Set();
 	const agent = { state: { model: { id: "capability-task-sandbox", input: ["text"], contextWindow: 32_000 }, messages: [] } };
 	const piSession = {
 		agent,
@@ -82,18 +83,23 @@ async function executeOneTask({ scenario, cognitionId, candidates, inventory, th
 		getToolDefinition: (name) => toolDefinitions.find((tool) => tool.name === name),
 		getActiveToolNames: () => [...activeTools],
 		setActiveToolsByName: (names) => { activeTools = [...names]; if (modelTurnOpen) activeToolSnapshots.push([...names]); },
+		sendCustomMessage: async (message) => { const visiblePlan = modelVisibleToolSpecPlan(message?.content); if (visiblePlan && !toolSpecPlans.some((plan) => plan.planId === visiblePlan.planId)) toolSpecPlans.push(visiblePlan); },
 		subscribe: (next) => { listener = next; return () => undefined; },
-		prompt: async () => {
+		prompt: async (promptText) => {
+			const visiblePlan = modelVisibleToolSpecPlan(promptText);
+			if (visiblePlan && !toolSpecPlans.some((plan) => plan.planId === visiblePlan.planId)) toolSpecPlans.push(visiblePlan);
 			const selectedSkills = candidates.filter((candidate) => candidate.kind === "skill").map((candidate) => candidate.name);
-			const requestedTools = [...candidates.filter((candidate) => candidate.kind !== "skill").map((candidate) => candidate.name), ...selectedSkills.flatMap(() => ["skill_read", "skill_complete"])];
-			for (const name of requestedTools) {
-				if (executed.has(name) || !activeTools.includes(name)) continue;
+			const requestedTools = [...candidates.filter((candidate) => candidate.kind !== "skill").flatMap((candidate) => (descriptorByName.get(candidate.name)?.activeTools ?? [candidate.name]).map((name) => ({ name, capability: candidate.name }))), ...selectedSkills.flatMap((skill) => [{ name: "skill_read", capability: skill }, { name: "skill_complete", capability: skill }])];
+			for (const request of requestedTools) {
+				const { name, capability } = request;
+				const executionKey = `${name}:${capability}`;
+				if (executed.has(executionKey) || !activeTools.includes(name)) continue;
 				const tool = toolDefinitions.find((candidate) => candidate.name === name); if (!tool) continue;
-				const callId = `call:${scenario.id}:${name}`; const args = name === "skill_read" ? { name: selectedSkills[0] } : {};
+				const callId = `call:${scenario.id}:${name}:${capability}`; const args = name.startsWith("skill_") ? { name: capability } : {};
 				const boundary = await agent.beforeToolCall?.({ toolCall: { name, arguments: args } }, new AbortController().signal);
 				if (boundary?.block) continue;
-				executed.add(name); listener({ type: "tool_execution_start", toolCallId: callId, toolName: name, args });
-				try { const result = await tool.execute(callId, args, new AbortController().signal); listener({ type: "tool_execution_end", toolCallId: callId, toolName: name, result, isError: false }); }
+				executed.add(executionKey); listener({ type: "tool_execution_start", toolCallId: callId, toolName: name, args });
+				try { const result = await tool.execute(callId, args, new AbortController().signal); const receipt = result?.details?.capabilityReceipt; if (receipt?.name) completedCapabilities.add(receipt.name); listener({ type: "tool_execution_end", toolCallId: callId, toolName: name, result, isError: false }); }
 				catch (error) { listener({ type: "tool_execution_end", toolCallId: callId, toolName: name, result: { error: String(error) }, isError: true }); }
 			}
 			agent.state.messages = [{ role: "assistant", content: [{ type: "text", text: `sandbox outcome ${scenario.id}` }], usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: { total: 0 } } }];
@@ -110,8 +116,8 @@ async function executeOneTask({ scenario, cognitionId, candidates, inventory, th
 		planningPolicy: { decide: () => ({ mode: "direct", requiredTools: [], suggestedConcurrency: 1, budget: { maxSubagents: 0, maxToolCalls: 20, maxTokens: 2_000, maxCorrectiveAttempts: 0 }, signals: { substantialWork: true, requiresVerification: true }, reason: "outcome calibration", directive: () => "[calibration task]" }) },
 		verifyObjectiveCandidate: async (_task, _result, _signal, context) => {
 			const successful = new Set(context?.successfulToolNames ?? []);
-			const requiredExecuted = required.every((name) => descriptorByName.get(name)?.kind === "skill" ? successful.has("skill_complete") : successful.has(name));
-			const forbiddenExecuted = forbidden.some((name) => descriptorByName.get(name)?.kind === "skill" ? successful.has("skill_complete") : successful.has(name));
+			const requiredExecuted = required.every((name) => descriptorByName.get(name)?.kind === "skill" ? completedCapabilities.has(name) : (descriptorByName.get(name)?.activeTools ?? [name]).some((tool) => successful.has(tool)));
+			const forbiddenExecuted = forbidden.some((name) => descriptorByName.get(name)?.kind === "skill" ? completedCapabilities.has(name) : (descriptorByName.get(name)?.activeTools ?? [name]).some((tool) => successful.has(tool)));
 			return { accepted: requiredExecuted && !forbiddenExecuted, feedback: requiredExecuted ? undefined : "required Capability did not produce a successful Tool receipt" };
 		},
 		createAgent: async () => piSession,
@@ -122,12 +128,11 @@ async function executeOneTask({ scenario, cognitionId, candidates, inventory, th
 	finally { runtime.dispose(); }
 	const trace = traceStore.trace({ executionId, accessScopeId: scopeId });
 	if (!trace) { rmSync(root, { recursive: true, force: true }); throw new Error(`Capability outcome task ${scenario.id} produced no Execution Trace`); }
-	const succeededTools = trace.events.filter((event) => event.type === "tool.settled" && event.status === "succeeded").map((event) => event.toolName);
-	const activatedCapabilities = candidates.flatMap((candidate) => candidate.kind === "skill" ? succeededTools.includes("skill_complete") ? [candidate.name] : [] : succeededTools.includes(candidate.name) ? [candidate.name] : []);
+	const activatedCapabilities = activatedCapabilitiesFromTrace(candidates, trace.events);
 	const receipt = {
 		caseId: scenario.id, cognitionId, executionId, accessScopeId: scopeId, threshold,
-		selectedCandidates: candidates.map(({ kind, name, confidence }) => ({ kind, name, confidence })),
-		activeToolSnapshots, activatedCapabilities,
+		selectedCandidates: candidates.map(({ kind, name, version, confidence }) => ({ kind, name, version, confidence })),
+		activeToolSnapshots, toolSpecPlans, activatedCapabilities,
 		status: trace.status, verificationStatus: trace.verificationStatus,
 		downstreamOutcome: trace.capabilityDownstreamOutcomeStatus ?? "unverified",
 		durationMs: trace.durationMs ?? 0,
@@ -137,22 +142,42 @@ async function executeOneTask({ scenario, cognitionId, candidates, inventory, th
 	return receipt;
 }
 
+export function activatedCapabilitiesFromTrace(candidates, events) {
+	const settled = events.filter((event) => event.type === "tool.settled" && event.status === "succeeded");
+	return candidates.flatMap((candidate) => settled.some((event) => event.capabilityReceipt?.kind === candidate.kind && event.capabilityReceipt?.name === candidate.name && event.capabilityReceipt?.version === candidate.version && event.capabilityReceipt?.sourceTool === event.toolName) ? [candidate.name] : []);
+}
+
+function modelVisibleToolSpecPlan(promptText) {
+	if (typeof promptText !== "string") return undefined;
+	const match = promptText.match(/<beemax-tool-spec-plan>\s*([\s\S]*?)\s*<\/beemax-tool-spec-plan>/u);
+	if (!match) return undefined;
+	try {
+		const plan = JSON.parse(match[1]);
+		if (typeof plan.planId !== "string" || !Array.isArray(plan.direct)) return undefined;
+		return { planId: plan.planId, directTools: plan.direct.map((entry) => entry.toolName).filter((name) => typeof name === "string") };
+	} catch { return undefined; }
+}
+
 function createEvaluationTools(inventory, candidates, cognitionId) {
-	const selectedSkill = candidates.find((candidate) => candidate.kind === "skill")?.name;
-	const tools = inventory.filter((descriptor) => descriptor.kind !== "skill").map((descriptor) => ({
-		name: descriptor.name, description: descriptor.description,
+	const selectedSkills = candidates.filter((candidate) => candidate.kind === "skill").map((candidate) => candidate.name);
+	const tools = inventory.filter((descriptor) => descriptor.kind !== "skill").flatMap((descriptor) => (descriptor.activeTools ?? [descriptor.name]).map((sourceTool) => ({
+		name: sourceTool, description: descriptor.description,
 		beemaxPolicy: { sideEffect: descriptor.signals?.effect === "external" ? "external" : descriptor.signals?.effect === "local" ? "local" : "none" },
 		beemaxToolSpec: { kind: descriptor.kind, version: descriptor.version, configured: true, health: descriptor.signals?.health ?? "ready", authorized: descriptor.authorized !== false },
-		execute: async () => ({ content: [{ type: "text", text: `sandbox receipt ${descriptor.name}` }], details: { receiptId: `receipt:${descriptor.name}`, capability: descriptor.name } }),
-	}));
+		execute: async () => ({ content: [{ type: "text", text: `sandbox receipt ${descriptor.name}` }], details: { capabilityReceipt: { id: `receipt:${descriptor.kind}:${descriptor.name}:${descriptor.version}:${sourceTool}`, kind: descriptor.kind, name: descriptor.name, version: descriptor.version, sourceTool } } }),
+	})));
 	const lifecycle = [
-		{ name: "skill_read", description: "Read selected Skill", execute: async () => ({ content: [{ type: "text", text: "skill loaded" }], details: { descriptor: { name: selectedSkill }, activatedTools: ["skill_complete"] } }) },
-		{ name: "skill_activate", description: "Activate selected Skill", execute: async () => ({ content: [{ type: "text", text: "skill active" }], details: { descriptor: { name: selectedSkill }, activatedTools: ["skill_complete"] } }) },
-		{ name: "skill_route", description: "Route selected Skill", execute: async () => ({ content: [{ type: "text", text: "skill routed" }], details: { activatedTools: ["skill_complete"] } }) },
+		{ name: "skill_read", description: "Read selected Skill", execute: async (_id, args) => ({ content: [{ type: "text", text: "skill loaded" }], details: { descriptor: { name: args.name }, skill: args.name, activatedTools: ["skill_complete"] } }) },
+		{ name: "skill_activate", description: "Activate selected Skill", execute: async (_id, args) => ({ content: [{ type: "text", text: "skill active" }], details: { descriptor: { name: args.name }, skill: args.name, activatedTools: ["skill_complete"] } }) },
+		{ name: "skill_route", description: "Route selected Skill", execute: async (_id, args) => ({ content: [{ type: "text", text: "skill routed" }], details: { skill: args.name, activatedTools: ["skill_complete"] } }) },
 		{ name: "skill_resource_read", description: "Read Skill resource", execute: async () => ({ content: [{ type: "text", text: "resource read" }], details: {} }) },
-		{ name: "skill_complete", description: "Complete selected Skill", execute: async () => ({ content: [{ type: "text", text: "skill complete" }], details: { skill: selectedSkill } }) },
+		{ name: "skill_complete", description: "Complete selected Skill", execute: async (_id, args) => {
+			const descriptor = inventory.find((item) => item.kind === "skill" && item.name === args.name);
+			if (!descriptor) throw new Error(`Unknown evaluation Skill ${args.name}`);
+			return { content: [{ type: "text", text: "skill complete" }], details: { skill: args.name, capabilityReceipt: { id: `receipt:skill:${args.name}:${descriptor.version}`, kind: "skill", name: args.name, version: descriptor.version, sourceTool: "skill_complete" } } };
+		} },
 	].map((tool) => ({ ...tool, beemaxPolicy: { sideEffect: "none" }, beemaxToolSpec: { kind: "skill", version: "eval:skill-lifecycle", configured: true, health: "ready", authorized: true } }));
-	const prefetch = async () => ({ cognitionId, candidates, skills: selectedSkill ? [{ name: selectedSkill }] : [] });
+	const prefetch = async () => ({ cognitionId, candidates, activatedTools: candidates.filter((candidate) => candidate.kind !== "skill").flatMap((candidate) => inventory.find((item) => item.name === candidate.name)?.activeTools ?? [candidate.name]), skills: selectedSkills.map((name) => ({ name })) });
 	const discovery = { name: "capability_discover", description: "Discover evaluation capabilities", beemaxPolicy: { sideEffect: "none" }, beemaxToolSpec: { kind: "tool", version: "eval:discovery", configured: true, health: "ready", authorized: true }, beemaxCapabilityPrefetch: prefetch, execute: async () => ({ content: [{ type: "text", text: "discovered" }], details: { cognitionId, ranked: candidates, activatedTools: [] } }) };
 	return [discovery, ...tools, ...lifecycle];
 }

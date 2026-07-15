@@ -20,6 +20,7 @@ export interface CapabilityOutcomeObservation {
 	inputTokens: number;
 	outputTokens: number;
 	costUsd: number;
+	usageMeasurement?: { measuredAttempts: number; totalAttempts: number };
 }
 export interface CapabilityCalibrationMetrics {
 	top1Accuracy: number;
@@ -33,6 +34,7 @@ export interface CapabilityCalibrationMetrics {
 	totalTokens: number;
 	averageTokens: number;
 	totalCostUsd: number;
+	usageMeasurementRate: number;
 }
 export interface CapabilityCalibrationFailure {
 	caseId: string;
@@ -49,7 +51,7 @@ export interface CapabilityCalibrationReport {
 	failures: CapabilityCalibrationFailure[];
 }
 export interface CapabilityCalibrationComparisonFailure {
-	code: "mode_mismatch" | "corpus_mismatch" | "version_not_advanced" | "top1_regression" | "topk_regression" | "required_recall_regression" | "forbidden_activation_regression" | "unnecessary_activation_regression" | "no_match_regression" | "completion_regression" | "latency_regression" | "token_regression" | "cost_regression";
+	code: "mode_mismatch" | "corpus_mismatch" | "version_not_advanced" | "top1_regression" | "topk_regression" | "required_recall_regression" | "forbidden_activation_regression" | "unnecessary_activation_regression" | "no_match_regression" | "completion_regression" | "latency_regression" | "token_regression" | "cost_regression" | "usage_measurement_regression" | "cost_evidence_incomplete";
 	baseline?: number | string;
 	candidate?: number | string;
 }
@@ -94,7 +96,7 @@ export function evaluateCapabilityCalibration(input: {
 	}
 	let positiveCases = 0; let top1 = 0; let allRequiredCases = 0; let requiredTotal = 0; let requiredFound = 0;
 	let forbiddenCases = 0; let forbiddenActivations = 0; let activations = 0; let unnecessary = 0; let negativeCases = 0; let quietNegatives = 0; let accepted = 0;
-	let latency = 0; let tokens = 0; let cost = 0; const failures: CapabilityCalibrationFailure[] = [];
+	let latency = 0; let tokens = 0; let cost = 0; let measuredAttempts = 0; let totalAttempts = 0; const failures: CapabilityCalibrationFailure[] = [];
 	for (const [caseId, labels] of cases) {
 		const observation = observations.get(caseId)!;
 		const ranked = validRanks(observation.ranked).filter((rank) => rank.confidence >= threshold);
@@ -120,6 +122,13 @@ export function evaluateCapabilityCalibration(input: {
 		latency += nonNegative(observation.latencyMs, "latencyMs");
 		tokens += nonNegative(observation.inputTokens, "inputTokens") + nonNegative(observation.outputTokens, "outputTokens");
 		cost += nonNegative(observation.costUsd, "costUsd");
+		if (mode === "live_provider" && !observation.usageMeasurement) throw new Error(`Live Capability calibration observation ${caseId} requires usage measurement evidence`);
+		const measurement = observation.usageMeasurement ?? { measuredAttempts: 0, totalAttempts: 0 };
+		const measured = nonNegativeInteger(measurement.measuredAttempts, "measured usage attempts");
+		const total = nonNegativeInteger(measurement.totalAttempts, "total usage attempts");
+		if (measured > total) throw new Error("Capability calibration measured usage attempts cannot exceed total attempts");
+		if (mode === "live_provider" && total === 0) throw new Error(`Live Capability calibration observation ${caseId} requires at least one Provider attempt`);
+		measuredAttempts += measured; totalAttempts += total;
 	}
 	const count = cases.size;
 	return {
@@ -133,7 +142,7 @@ export function evaluateCapabilityCalibration(input: {
 			noMatchPrecision: negativeCases ? quietNegatives / negativeCases : 1,
 			downstreamTaskCompletionRate: accepted / count,
 			averageLatencyMs: latency / count,
-			totalTokens: tokens, averageTokens: tokens / count, totalCostUsd: rounded(cost),
+			totalTokens: tokens, averageTokens: tokens / count, totalCostUsd: rounded(cost), usageMeasurementRate: totalAttempts ? measuredAttempts / totalAttempts : 1,
 		}, failures,
 	};
 }
@@ -158,6 +167,8 @@ export function compareCapabilityCalibrations(input: {
 	higherIsRegression("unnecessary_activation_regression", baseline.metrics.unnecessaryActivationRate, candidate.metrics.unnecessaryActivationRate);
 	lowerIsRegression("no_match_regression", baseline.metrics.noMatchPrecision, candidate.metrics.noMatchPrecision);
 	lowerIsRegression("completion_regression", baseline.metrics.downstreamTaskCompletionRate, candidate.metrics.downstreamTaskCompletionRate);
+	lowerIsRegression("usage_measurement_regression", baseline.metrics.usageMeasurementRate, candidate.metrics.usageMeasurementRate);
+	if (candidate.metrics.usageMeasurementRate < 1) failures.push({ code: "cost_evidence_incomplete", baseline: 1, candidate: candidate.metrics.usageMeasurementRate });
 	const budget = validRegressionBudget(input.regressionBudget ?? DEFAULT_CAPABILITY_CALIBRATION_REGRESSION_BUDGET);
 	const latencyLimit = baseline.metrics.averageLatencyMs * (1 + budget.latencyRelative) + budget.latencyAbsoluteMs;
 	if (candidate.metrics.averageLatencyMs > latencyLimit) failures.push({ code: "latency_regression", baseline: baseline.metrics.averageLatencyMs, candidate: candidate.metrics.averageLatencyMs });
@@ -177,6 +188,7 @@ function uniqueNames(values: readonly string[], label: string): string[] { if (!
 function safeId(value: string, label: string, max: number): string { const normalized = value?.trim(); if (!normalized || normalized.length > max || !/^[a-z0-9][a-z0-9._:-]*$/i.test(normalized)) throw new Error(`Capability calibration ${label} is invalid`); return normalized; }
 function bounded(value: number, label: string, min: number, max: number): number { if (!Number.isFinite(value) || value < min || value > max) throw new Error(`Capability calibration ${label} is invalid`); return value; }
 function nonNegative(value: number, label: string): number { return bounded(value, label, 0, Number.MAX_SAFE_INTEGER); }
+function nonNegativeInteger(value: number, label: string): number { if (!Number.isSafeInteger(value) || value < 0) throw new Error(`Capability calibration ${label} is invalid`); return value; }
 function validRegressionBudget(value: CapabilityCalibrationRegressionBudget): CapabilityCalibrationRegressionBudget {
 	return {
 		latencyRelative: bounded(value.latencyRelative, "latency regression budget", 0, 10),

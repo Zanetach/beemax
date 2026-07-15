@@ -33,7 +33,9 @@ test("production capability prefetch returns one semantic Tool/MCP/Skill proposa
 		} };
 		const tools = new Map(createSkillTools(root, () => undefined, [{ name: "calendar_lookup", description: "Coordinate temporal availability", kind: "mcp" }], undefined, [], undefined, ranker).map((tool) => [tool.name, tool]));
 		const proposal = await tools.get("capability_discover").beemaxCapabilityPrefetch("安排一次会议");
-		assert.deepEqual(proposal.candidates, [{ kind: "mcp", name: "calendar_lookup", confidence: 0.96 }]);
+		assert.equal(proposal.candidates.length, 1);
+		assert.deepEqual({ ...proposal.candidates[0], version: undefined }, { kind: "mcp", name: "calendar_lookup", version: undefined, confidence: 0.96 });
+		assert.match(proposal.candidates[0].version, /^sha256:[a-f0-9]{64}$/u);
 		assert.deepEqual(proposal.skills, []);
 	} finally { rmSync(root, { recursive: true, force: true }); }
 });
