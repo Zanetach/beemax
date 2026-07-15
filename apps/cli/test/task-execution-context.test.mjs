@@ -16,16 +16,32 @@ test("Sub-Agents must discover admitted capabilities and fail explicitly instead
 	assert.match(prompt, /exact blocker and attempted remedies/);
 });
 
-test("verification agents receive only the required local read capabilities in addition to shared read-only tools", () => {
-	const tools = verificationAgentTools(["mcp_read"]);
+test("verification agents receive a minimal semantic Tool Spec instead of every read-only capability", () => {
+	const tools = verificationAgentTools([
+		{ name: "fixture_status", description: "Read the fixture system status", aliases: ["status Tool"] },
+		{ name: "unrelated_calendar", description: "Read calendar availability" },
+	], "Verify the fixture system status with the status Tool");
 	assert.ok(tools.includes("read"));
-	assert.ok(tools.includes("task_checkpoint_save"));
 	assert.ok(tools.includes("verification_submit"));
-	assert.ok(tools.includes("mcp_read"));
+	assert.ok(tools.includes("fixture_status"));
+	assert.ok(!tools.includes("unrelated_calendar"));
 	assert.ok(!tools.includes("capability_discover"));
+	assert.ok(!tools.includes("task_checkpoint_save"));
+	assert.ok(!tools.includes("grep"));
+	assert.ok(!tools.includes("find"));
+	assert.ok(!tools.includes("ls"));
 	assert.ok(!tools.includes("skill_read"));
 	assert.ok(!tools.includes("write"));
 	assert.ok(!tools.includes("bash"));
+});
+
+test("verification Tool Spec re-admits an observed successful read Tool without lowering semantic thresholds", () => {
+	const tools = verificationAgentTools([
+		{ name: "mcp_fixture_status", description: "Read deterministic system status" },
+		{ name: "mcp_unrelated_calendar", description: "Read calendar availability" },
+	], "验证夹具状态", ["mcp_fixture_status"]);
+	assert.ok(tools.includes("mcp_fixture_status"));
+	assert.ok(!tools.includes("mcp_unrelated_calendar"));
 });
 
 test("the internal verdict Tool exists only in verification execution sessions", () => {

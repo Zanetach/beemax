@@ -8,7 +8,7 @@
  */
 
 import { AutomationStore } from "@beemax/automation";
-import { ActionGovernance, AutonomyRolloutController, AutomationDeliveryWorker, AutomationScheduler, BeeMaxAgentRuntime, DeliveryDeferredError, DeterministicSituationBuilder, FileCredentialVault, FileCredentialVaultAuditJournal, GroupObservationRecorder, HeartbeatRunner, InitiativeRuntime, InitiativeTriggerService, PiAmbientObservationEvaluator, ProactiveInvestigationRuntime, TaskPlanNoticeDeliveryService, TaskTransitionInitiativeAdapter, ToolApprovalBroker, ToolPolicyRegistry, VERIFICATION_SUBMIT_TOOL_NAME, buildActiveTaskPreservationEnvelope, buildTaskPreservationEnvelope, canonicalUserId, containsCredentialMaterial, conversationKey, responsibilityOwnerKey, responsibilityOwnerKeys, createExecutionEnvelope, createSubagentTools, createTaskCheckpoint, createTaskLedgerTools, createTaskOrchestrationTools, decideInitiativeFromSituation, guardVerifiedObjectiveMemoryPublisher, isVerifiedAutomationOutcome, redactCredentialMaterial, renderTaskCheckpoint, type AgentRuntimePort, type AmbientObservationEvaluator, type BeeMaxAgentRunEvent, type BeeMaxAgentRunEventSink, type ContextCompactionAuditEvent, type DeliveryPort, type ExecutionEnvelope, type ExecutionTraceSink, type InitiativeObservation, type ObjectiveDeliveryInput, type SkillCandidateTrialInput, type SkillTrialAssertion, type SkillTrialToolCall, type SubagentTask, type TaskGraphExecutionContext, type TaskGraphExecutionResult, type TaskGraphVerifier, type TaskLedger, type TaskRecord, type ToolEffectProjectionReader, type VerifiedObjectiveMemoryPublisher } from "@beemax/core";
+import { ActionGovernance, AutonomyRolloutController, AutomationDeliveryWorker, AutomationScheduler, BeeMaxAgentRuntime, DeliveryDeferredError, DeterministicSituationBuilder, FileCredentialVault, FileCredentialVaultAuditJournal, GroupObservationRecorder, HeartbeatRunner, InitiativeRuntime, InitiativeTriggerService, PiAmbientObservationEvaluator, ProactiveInvestigationRuntime, TaskPlanNoticeDeliveryService, TaskTransitionInitiativeAdapter, ToolApprovalBroker, ToolPolicyRegistry, VERIFICATION_SUBMIT_TOOL_NAME, buildActiveTaskPreservationEnvelope, buildTaskPreservationEnvelope, canonicalUserId, containsCredentialMaterial, conversationKey, responsibilityOwnerKey, responsibilityOwnerKeys, createExecutionEnvelope, createSubagentTools, createTaskCheckpoint, createTaskLedgerTools, createTaskOrchestrationTools, decideInitiativeFromSituation, guardVerifiedObjectiveMemoryPublisher, isVerifiedAutomationOutcome, redactCredentialMaterial, renderTaskCheckpoint, selectTurnTools, type AgentRuntimePort, type AmbientObservationEvaluator, type BeeMaxAgentRunEvent, type BeeMaxAgentRunEventSink, type ContextCompactionAuditEvent, type DeliveryPort, type ExecutionEnvelope, type ExecutionTraceSink, type InitiativeObservation, type ObjectiveDeliveryInput, type SkillCandidateTrialInput, type SkillTrialAssertion, type SkillTrialToolCall, type SubagentTask, type TaskGraphExecutionContext, type TaskGraphExecutionResult, type TaskGraphVerifier, type TaskLedger, type TaskRecord, type ToolEffectProjectionReader, type VerifiedObjectiveMemoryPublisher } from "@beemax/core";
 import {
 	AdapterRegistry,
 	ChannelHost,
@@ -290,7 +290,7 @@ export async function runGateway(config: BeeMaxConfig): Promise<void> {
 		agentDir: config.paths.agentDir, ledger: persistence.taskLedger, recoveryQueue: persistence.recoveryQueue, maxConcurrent: config.subagents.maxConcurrent,
 		maxSubagents: config.subagents.maxChildrenPerOwner, taskTimeoutMs: config.subagents.timeoutMs, subagentsEnabled: config.subagents.enabled,
 		executeTask: (task, signal, context, executionTrace, effectAuthority) => executePlannedTask(createSubagentAgent, task, task.executionScope as SessionSource, signal, config.subagents.timeoutMs, context, executionTrace, effectAuthority),
-		verifyTaskCandidate: (task, result, signal, context, executionTrace) => createTaskVerifier(createSubagentAgent, config.subagents.timeoutMs, executionTrace, verificationAgentTools(readOnlyMcpTools.map((tool) => tool.name)))(task, result, signal, context),
+		verifyTaskCandidate: (task, result, signal, context, executionTrace) => createTaskVerifier(createSubagentAgent, config.subagents.timeoutMs, executionTrace, verificationAgentTools(readOnlyMcpTools, verificationToolQuery(task), context?.successfulToolNames))(task, result, signal, context),
 		deliverObjective: (input, signal, executionTrace) => executeObjectiveDelivery(createSubagentAgent, input, signal, config.subagents.timeoutMs, executionTrace),
 		publishVerifiedOutcome: async (outcome) => {
 			await publishVerifiedOutcome(outcome);
@@ -1087,10 +1087,18 @@ export function readOnlyAgentTools(mcpTools: string[], additionalTools: string[]
 	];
 }
 
-export function verificationAgentTools(mcpTools: string[]): string[] {
+export function verificationAgentTools(mcpTools: ReadonlyArray<string | { name: string; description?: string; aliases?: readonly string[]; triggers?: readonly string[]; exclude?: readonly string[] }>, query?: string, successfulToolNames: readonly string[] = []): string[] {
 	// Verification receives one explicit read-only inventory. It verifies the
 	// Candidate; it never acquires Skills or dynamically widens its capabilities.
-	return readOnlyAgentTools(mcpTools, [VERIFICATION_SUBMIT_TOOL_NAME, "task_checkpoint_save"]);
+	const candidates = mcpTools.map((tool) => typeof tool === "string" ? { name: tool } : tool);
+	if (!query?.trim()) return readOnlyAgentTools(candidates.map((tool) => tool.name), [VERIFICATION_SUBMIT_TOOL_NAME, "task_checkpoint_save"]);
+	const inventory = new Set(candidates.map((tool) => tool.name));
+	const observedReadTools = successfulToolNames.filter((name) => inventory.has(name));
+	return [...new Set([...TASK_VERIFICATION_CAPABILITIES, ...observedReadTools, ...selectTurnTools(query, candidates, 3)])];
+}
+
+function verificationToolQuery(task: Pick<TaskRecord, "title" | "description" | "acceptanceCriteria">): string {
+	return [task.title, task.description, task.acceptanceCriteria].filter((value): value is string => Boolean(value?.trim())).join("\n");
 }
 
 export function mainAgentTools(toolset: "safe" | "standard", mcpTools: string[]): string[] {

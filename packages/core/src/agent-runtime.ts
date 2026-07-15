@@ -329,6 +329,7 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 			const toolAttemptFingerprints = new Map<string, string>();
 			const failedReadFingerprints = new Map<string, number>();
 			const settledToolProgress: string[] = [];
+			const successfulToolNames = new Set<string>();
 			const unresolvedToolProgress: string[] = [];
 			let checkpointedToolProgress = 0;
 			let eventDelivery = Promise.resolve();
@@ -372,6 +373,7 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 					const toolStart = toolStartedAt.get(event.toolCallId); toolStartedAt.delete(event.toolCallId);
 					const toolFingerprint = toolAttemptFingerprints.get(event.toolCallId); toolAttemptFingerprints.delete(event.toolCallId);
 					this.recordTrace({ type: "tool.settled", executionEnvelope, at, toolCallId: event.toolCallId, toolName: event.toolName, status: event.isError ? "failed" : "succeeded", ...(toolStart === undefined ? {} : { durationMs: Math.max(0, at - toolStart) }) });
+					if (!event.isError) successfulToolNames.add(event.toolName);
 					if (event.toolName === "capability_discover" && !event.isError) {
 						const discovery = capabilityDiscoveryMetadata(event.result, new Set(allTools.map((tool) => tool.name))); discoveredCapabilities = discovery.hasMatches;
 						const discoveredSkill = discovery.candidates.find((candidate) => candidate.kind === "skill" && candidate.confidence >= 0.5)?.name;
@@ -429,7 +431,11 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 				} else if (event.type === "message_end" && event.message.role === "assistant") {
 					const usage = event.message.usage;
 					this.recordTrace({ type: "model.turn_settled", executionEnvelope, at: Date.now(), inputTokens: usage.input, outputTokens: usage.output, cacheReadTokens: usage.cacheRead, cacheWriteTokens: usage.cacheWrite, costUsd: usage.cost?.total ?? 0 });
-					consumedTokens += usage.input + usage.output + usage.cacheRead + usage.cacheWrite;
+					// cacheRead is already-paid, reused context. Charging it again makes a
+					// cache-efficient multi-turn execution exhaust its work budget sooner
+					// than the same uncached work. Trace it above, but budget only newly
+					// processed/generated tokens and cache writes.
+					consumedTokens += usage.input + usage.output + usage.cacheWrite;
 					if (maxTokens !== undefined && consumedTokens > maxTokens && !turnAbortReason) {
 						turnAbortReason = `Agent token budget exceeded (${maxTokens})`;
 						void session.piSession.abort();
@@ -540,7 +546,7 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 						}
 						this.recordTrace({ type: "verification.started", executionEnvelope, at: Date.now() });
 						try {
-							const verification = await this.verifyObjectiveCandidate({ ...objective, status: "running", candidateResult: candidate, correctiveAttempts }, { output: candidate }, input.signal, { taskRunId: activeTaskRunId });
+							const verification = await this.verifyObjectiveCandidate({ ...objective, status: "running", candidateResult: candidate, correctiveAttempts }, { output: candidate }, input.signal, { taskRunId: activeTaskRunId, successfulToolNames: [...successfulToolNames] });
 							if (verification.accepted) {
 								objectiveVerificationOutcome = "accepted";
 								this.recordTrace({ type: "verification.settled", executionEnvelope, at: Date.now(), status: "accepted" });

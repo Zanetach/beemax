@@ -15,7 +15,7 @@ export interface TaskPlanInput {
 }
 export interface TaskGraphExecutionResult { output?: string; evidence?: string; artifacts?: TaskArtifact[]; unresolvedIssues?: string[]; }
 export interface TaskGraphVerificationResult { accepted: boolean; feedback?: string; evidence?: string; }
-export interface TaskGraphVerificationContext { taskRunId: string; }
+export interface TaskGraphVerificationContext { taskRunId: string; successfulToolNames?: readonly string[]; }
 export interface TaskGraphDependencyResult { id: string; title: string; result?: string; evidence?: string; artifacts?: TaskArtifact[]; unresolvedIssues?: string[]; }
 export interface TaskGraphExecutionContext { executionEnvelope: Readonly<ExecutionEnvelope>; taskRunId: string; attempt: number; executionMode: "normal" | "recovery"; maxCorrectiveAttempts: number; verificationFeedback?: string; previousResult?: string; dependencies: TaskGraphDependencyResult[]; checkpoint?: TaskCheckpoint | string; route?: string; saveCheckpoint(value: TaskCheckpoint | string): boolean; }
 export type TaskGraphExecutor = (task: TaskRecord, signal?: AbortSignal, context?: TaskGraphExecutionContext) => Promise<TaskGraphExecutionResult>;

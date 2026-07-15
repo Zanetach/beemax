@@ -397,9 +397,13 @@ Work the **frontier**: any ticket whose blockers are all done. Do not bypass blo
 
 **Blocked by:** Reconcile the current parity working tree.
 
-- [ ] Prove short conversation and bilingual negation cases succeed repeatedly on fresh Profiles, keep user constraints, and stay on the direct path unless the Work Contract requires durable responsibility.
+- [x] Prove short conversation and bilingual negation cases succeed repeatedly on fresh Profiles, keep user constraints, and stay on the direct path unless the Work Contract requires durable responsibility.
 - [ ] Bound model turns, Tool discovery, repeated failed reads, output tokens, no-progress time, and corrective attempts by execution mode while preserving Effect reconciliation and explicit Blockers.
 - [ ] Replace incidental prompt-word decisions with validated Contract signals, and retain regression coverage for contextual “current”, explanatory intent, unique verifier envelopes, fake-IP DNS, and multi-path configuration capture.
+- [x] Budget only newly processed/generated model tokens and cache writes; retain cache-read usage in Trace without charging the execution budget twice.
+- [x] Give Verification a minimal semantic Tool Spec and re-admit successful read-only execution Tools as routing hints while requiring a fresh independent receipt.
+- [ ] Make direct Pi routing reliably execute required Provider, MCP, Effect, Delivery, Schedule, structured, and parallel-read capabilities before Candidate Verification.
+- [ ] Carry successful Tool identities from planned and recovered Task Runs into the same independent Verification routing contract.
 
 ## Produce native macOS and Ubuntu parity evidence
 

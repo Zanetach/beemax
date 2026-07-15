@@ -874,6 +874,28 @@ test("Agent runtime aborts a turn when cumulative model usage exceeds its token 
 	runtime.dispose();
 });
 
+test("Agent runtime token budget does not charge cached input a second time", async () => {
+	const source = { platform: "cli", chatId: "cached-tokens", chatType: "dm", userId: "local" };
+	let listener;
+	let aborts = 0;
+	const agent = { state: { model: { id: "test" }, messages: [] } };
+	const runtime = new BeeMaxAgentRuntime({
+		planningPolicy: new AutonomousPlanningPolicy({ maxTokens: 12_000 }),
+		createAgent: async () => ({
+			agent, subscribe: (next) => { listener = next; return () => undefined; },
+			prompt: async () => {
+				listener({ type: "message_end", message: { role: "assistant", content: [], usage: { input: 500, output: 250, cacheRead: 11_500, cacheWrite: 0 } } });
+				agent.state.messages = [{ role: "assistant", content: [{ type: "text", text: "completed with cached context" }], usage: { input: 500, output: 250, cacheRead: 11_500, cacheWrite: 0 } }];
+			},
+			abort: async () => { aborts++; }, dispose: () => undefined,
+		}),
+	});
+	const result = await runtime.run({ source, text: "Read this file", timeoutMs: 1_000 });
+	assert.equal(result.answer, "completed with cached context");
+	assert.equal(aborts, 0);
+	runtime.dispose();
+});
+
 test("Agent runtime performs one content-free correction when a complex turn skips its required planner", async () => {
 	const source = { platform: "cli", chatId: "planner", chatType: "dm", userId: "local" };
 	let listener;
