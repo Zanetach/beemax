@@ -134,7 +134,7 @@ export class PlanningBudgetRegistry {
 
 function inspectPrompt(prompt: string): PlanningSignals {
 	const lower = prompt.toLowerCase();
-	const requiresResearch = has(lower, /\b(research|investigate|audit|review|compare|benchmark|search|look up|latest|today|real[- ]?time|up[- ]to[- ]date)\b|\bcurrent\s+(?!best\b|most\s+suitable\b)|研究|调研|审查|审核|对标|比较|查(?:一下|找)|查询|搜索|检索|今天|今日|当前(?!最(?:合适|佳|好))|最新|实时/);
+	const requiresResearch = has(lower, /\b(research|investigate|audit|review|compare|benchmark|search|look up|latest|today|real[- ]?time|up[- ]to[- ]date)\b|\bcurrent\s+(?!(?:best|most\s+suitable|goal|task|objective|context|directory|workspace)\b)|研究|调研|审查|审核|对标|比较|查(?:一下|找)|查询|搜索|检索|今天|今日|当前(?!最(?:合适|佳|好)|目标|任务|上下文|目录|工作区)|最新|实时/);
 	const requiresVerification = has(lower, /\b(verify|validate|test|evidence|acceptance|quality)\b|验证|测试|证据|验收|质量/);
 	const requestsParallelism = has(lower, /\b(parallel|concurrent|independently)\b|并行|并发|独立地/);
 	const synthesis = has(lower, /\b(synthesi[sz]e|combine|report|release|implement|build|refactor)\b|汇总|综合|报告|发布|实现|开发|重构/);

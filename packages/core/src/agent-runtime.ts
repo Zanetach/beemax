@@ -763,7 +763,7 @@ function shouldBindDurableObjective<Source extends BeeMaxRuntimeSource>(input: A
 	if (understanding.action === "query") return Boolean(understanding.acceptanceCriteria.length || planning?.signals.requiresResearch || planning?.signals.requiresVerification || planning?.signals.substantialWork);
 	if (understanding.action === "continue" || understanding.action === "correct") return true;
 	if (planning?.mode && planning.mode !== "direct") return true;
-	if (understanding.constraints.length || understanding.acceptanceCriteria.length) return true;
+	if (understanding.acceptanceCriteria.length) return true;
 	return Boolean(planning?.signals.requiresResearch || planning?.signals.requiresVerification || planning?.signals.substantialWork);
 }
 

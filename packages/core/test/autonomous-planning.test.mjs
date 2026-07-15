@@ -284,6 +284,8 @@ test("planning policy distinguishes temporal information needs from ordinary cur
 	assert.equal(policy.decide("查询当前天气").signals.requiresResearch, true);
 	assert.equal(policy.decide("use the current best Skill").signals.requiresResearch, false);
 	assert.equal(policy.decide("使用当前最合适的 Skill").signals.requiresResearch, false);
+	assert.equal(policy.decide("当前目标是继续完成报告，不要改目标").signals.requiresResearch, false);
+	assert.equal(policy.decide("work only in the current workspace").signals.requiresResearch, false);
 });
 
 test("planning policy does not mistake an independent verification capability name for parallel work", () => {
@@ -458,7 +460,7 @@ test("a direct conversational answer does not create durable Objective work", as
 		abort: async () => undefined, dispose: () => undefined,
 	}) });
 
-	await runtime.run({ source, text: "解释 Agent 的 Capability Routing，并给出一个例子。仅操作本次隔离评测目录；不要访问外部系统。", timeoutMs: 1_000 });
+	await runtime.run({ source, text: "当前目标是完成一份 Capability Routing 报告。不要取消，继续完成报告；不要改目标。", timeoutMs: 1_000 });
 
 	assert.equal(tasks.size, 0);
 	runtime.dispose();
