@@ -22,7 +22,7 @@ export interface ProfileAgentRuntimeOptions<Source extends BeeMaxRuntimeSource> 
 	profileId: string;
 	agentDir: string;
 	policy: SessionCoordinatorOptions;
-	runtime: Omit<BeeMaxAgentRuntimeOptions<Source>, keyof SessionCoordinatorOptions | "controlHandler" | "sessionCatalog">;
+	runtime: Omit<BeeMaxAgentRuntimeOptions<Source>, keyof SessionCoordinatorOptions | "controlHandler" | "sessionCatalog" | "profileId">;
 	approvalBroker?: ToolApprovalBroker;
 	cancelSubagents?: (source: Source) => number | Promise<number>;
 	cancelTaskPlans?: (source: Source) => number | Promise<number>;
@@ -77,6 +77,7 @@ export async function createProfileRuntime<Source extends BeeMaxRuntimeSource>(o
 				planningBudgets: work.planningBudgets,
 				taskLedger: options.work.ledger,
 				executionTrace: work.executionTrace,
+				toolEffectProjectionReader: work.toolEffects,
 				verifyObjectiveCandidate: work.verifyTask,
 			},
 			resources,

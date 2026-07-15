@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { BeeMaxAgentRuntime, DeterministicWorkContractBuilder, ModelBackedWorkContractBuilder, TurnUnderstandingEngine, createExecutionEnvelope } from "../dist/index.js";
 
+const createRuntime = (options) => new BeeMaxAgentRuntime({ profileId: "profile:test", ...options });
+
 test("a deterministic Work Contract preserves the Raw Request and separates prohibitions from constraints", async () => {
 	const rawRequest = "生成玄穹折光报告，必须使用中文，不要发布，只保存到 draft.md";
 	const fallback = new TurnUnderstandingEngine().understand(rawRequest);
@@ -138,7 +140,7 @@ test("BeeMax sends the validated Work Contract to Pi and binds its criteria to t
 	let prompt;
 	let objective;
 	const agent = { state: { model: { id: "test" }, messages: [] } };
-	const runtime = new BeeMaxAgentRuntime({
+	const runtime = createRuntime({
 		workContractBuilder: { build: async ({ rawRequest: received }) => {
 			assert.equal(received, rawRequest);
 			return { source: "model", contract: {
@@ -190,7 +192,7 @@ test("BeeMax revalidates claimed trusted provenance against runtime understandin
 	const rawRequest = "生成报告";
 	let prompt = "";
 	const agent = { state: { model: { id: "test" }, messages: [] } };
-	const runtime = new BeeMaxAgentRuntime({
+	const runtime = createRuntime({
 		workContractBuilder: { build: async () => ({ source: "deterministic", contract: {
 			schemaVersion: "beemax.work-contract.v1", rawRequest, action: "create",
 			objective: { text: rawRequest, source: { kind: "raw_request", start: 0, end: rawRequest.length } },
@@ -218,7 +220,7 @@ test("BeeMax preserves source-bound uncertainty in a durable Objective Situation
 	let writeBoundaryDecision;
 	let activeTools = ["read", "write"];
 	const agent = { state: { model: { id: "test" }, messages: [] } };
-	const runtime = new BeeMaxAgentRuntime({
+	const runtime = createRuntime({
 		workContractBuilder: new ModelBackedWorkContractBuilder(async () => ({
 			action: "create", objective: quote("生成 aurora:gate 报告"), constraints: [], prohibitions: [],
 			capabilityRequirements: [], acceptanceCriteria: [quote("生成 aurora:gate 报告")], uncertainties: [quote("若版本不明确则先确认")], executionMode: "direct", confidence: 0.8,
@@ -251,7 +253,7 @@ test("BeeMax preserves source-bound uncertainty in a durable Objective Situation
 test("Work Contract cognition obeys the turn deadline before Pi starts", async () => {
 	let agentCreations = 0;
 	const keepAlive = setTimeout(() => undefined, 100);
-	const runtime = new BeeMaxAgentRuntime({
+	const runtime = createRuntime({
 		workContractBuilder: { build: ({ signal }) => new Promise((_resolve, reject) => {
 			signal.addEventListener("abort", () => reject(signal.reason), { once: true });
 		}) },
@@ -265,7 +267,7 @@ test("Work Contract cognition obeys the turn deadline before Pi starts", async (
 
 test("Work Contract cognition uses the shorter caller timeout when an Envelope deadline is later", async () => {
 	const keepAlive = setTimeout(() => undefined, 100);
-	const runtime = new BeeMaxAgentRuntime({
+	const runtime = createRuntime({
 		workContractBuilder: { build: ({ signal }) => new Promise((_resolve, reject) => signal.addEventListener("abort", () => reject(signal.reason), { once: true })) },
 		createAgent: async () => { throw new Error("Pi must not start"); },
 	});
@@ -280,7 +282,7 @@ test("failed Work Contract cognition does not orphan a pending proactive Objecti
 	const objective = { id: "objective:contract", ownerKey: "feishu:proactive-contract:owner", kind: "objective", title: "生成报告", description: "生成报告", status: "pending", recoveryPolicy: "safe_retry", idempotencyKey: "contract", createdAt: 1 };
 	const tasks = new Map([[objective.id, objective]]);
 	const keepAlive = setTimeout(() => undefined, 100);
-	const runtime = new BeeMaxAgentRuntime({
+	const runtime = createRuntime({
 		taskLedger: {
 			record() { assert.fail("existing Objective must be reused"); },
 			transition(id, change) { tasks.set(id, { ...tasks.get(id), ...change }); return true; },
@@ -300,7 +302,7 @@ test("failed proactive Objective admission does not create an orphaned running T
 	const source = { platform: "feishu", chatId: "proactive-admission", chatType: "dm", userId: "owner" };
 	const objective = { id: "objective:admission", ownerKey: "feishu:proactive-admission:owner", kind: "objective", title: "生成报告", description: "生成报告", status: "pending", recoveryPolicy: "safe_retry", idempotencyKey: "admission", createdAt: 1 };
 	const runs = [];
-	const runtime = new BeeMaxAgentRuntime({
+	const runtime = createRuntime({
 		taskLedger: {
 			record() { assert.fail("existing Objective must be reused"); },
 			transition() { return false; },
@@ -323,7 +325,7 @@ test("pre-prompt proactive setup failure settles its recorded Task Run and resto
 	const objective = { id: "objective:setup", ownerKey: "feishu:proactive-setup:owner", kind: "objective", title: "生成报告", description: "生成报告", status: "pending", recoveryPolicy: "safe_retry", idempotencyKey: "setup", createdAt: 1 };
 	const tasks = new Map([[objective.id, objective]]);
 	const runs = new Map();
-	const runtime = new BeeMaxAgentRuntime({
+	const runtime = createRuntime({
 		taskLedger: {
 			record() { assert.fail("existing Objective must be reused"); },
 			transition(id, change) { tasks.set(id, { ...tasks.get(id), ...change }); return true; },

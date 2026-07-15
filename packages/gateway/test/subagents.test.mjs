@@ -409,11 +409,13 @@ test("parent sessions expose orchestration tools while child sessions stay read-
 	const memoryStore = { remember: () => "id", recall: () => [], list: () => [], forget: () => true };
 	const manager = new SubagentManager({ execute: async () => "done" });
 	const parentFactory = buildAgentFactory({
+		profileId: "profile:test",
 		provider: "anthropic", model: "claude-sonnet-4-5", cwd, agentDir,
 		getApiKey: () => "test", memoryStore,
 		sessionTools: (sessionSource) => createSubagentTools(manager, sessionSource),
 	});
 	const childFactory = buildAgentFactory({
+		profileId: "profile:test",
 		provider: "anthropic", model: "claude-sonnet-4-5", cwd, agentDir,
 		getApiKey: () => "test", memoryStore,
 		tools: ["read", "grep", "find", "ls", "web_search", "web_extract", "memory_recall", "memory_list"],

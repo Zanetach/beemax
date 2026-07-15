@@ -7,6 +7,7 @@ export const TOOL_SPEC_PLAN_SCHEMA_VERSION = "beemax.tool-spec-plan.v1" as const
 const MAX_INVENTORY = 500;
 const MAX_DIRECT_TOOLS = 20;
 const MAX_SCHEMA_BYTES = 64 * 1024;
+const MAX_TOTAL_SCHEMA_BYTES = 512 * 1024;
 
 export type ToolSpecHiddenReason = "policy_or_scope_denied" | "configuration_required" | "provider_unhealthy" | "provider_unavailable" | "unresolved_uncertainty" | "effect_reconciliation_required";
 
@@ -38,7 +39,8 @@ export interface ToolSpecEntry {
 	kind: CapabilityKind;
 	version: string;
 	description?: string;
-	inputSchema: unknown;
+	inputSchema?: unknown;
+	schemaDigest: string;
 	sideEffect: ToolSideEffect;
 }
 
@@ -67,10 +69,11 @@ export function buildToolSpecPlan(input: ToolSpecPlanInput): ToolSpecPlan {
 	const profileId = required(input.profileId, "Tool Spec Profile", 256);
 	const platform = required(input.platform, "Tool Spec platform", 128);
 	if (!Array.isArray(input.tools) || input.tools.length > MAX_INVENTORY) throw new Error(`Tool Spec inventory must contain at most ${MAX_INVENTORY} Tools`);
-	const tools = input.tools.map(normalizeInventoryItem);
-	if (new Set(tools.map((tool) => tool.name)).size !== tools.length) throw new Error("Tool Spec inventory contains duplicate immutable Tool names");
 	const selectedOrder = uniqueNames([...input.selectedToolNames, ...input.activeSkillToolNames]);
 	const selected = new Set(selectedOrder);
+	const schemaBudget = { remaining: MAX_TOTAL_SCHEMA_BYTES };
+	const tools = input.tools.map((tool) => normalizeInventoryItem(tool, selected.has(toolName(tool.name)), schemaBudget));
+	if (new Set(tools.map((tool) => tool.name)).size !== tools.length) throw new Error("Tool Spec inventory contains duplicate immutable Tool names");
 	const byName = new Map(tools.map((tool) => [tool.name, tool]));
 	for (const name of selected) if (!byName.has(name)) throw new Error(`Selected Tool ${name} is not present in the Tool Spec inventory`);
 	const uncertainties = textList(input.workContract.uncertainties, "Work Contract uncertainty", 10_000);
@@ -90,7 +93,7 @@ export function buildToolSpecPlan(input: ToolSpecPlanInput): ToolSpecPlan {
 	const capabilityRequirements = textList(input.workContract.capabilityRequirements, "Work Contract Capability requirement", 10_000);
 	return freezePlan({
 		schemaVersion: TOOL_SPEC_PLAN_SCHEMA_VERSION,
-		planId: planIdentity({ profileId, platform, capabilityRequirements, direct, deferred, hidden }),
+		planId: planIdentity({ profileId, platform, capabilityRequirements, direct: identityEntries(direct), deferred: identityEntries(deferred), hidden }),
 		profileId,
 		platform,
 		capabilityRequirements,
@@ -106,15 +109,49 @@ export function activateToolSpecPlan(plan: ToolSpecPlan, toolNames: readonly str
 	const direct = [...plan.direct];
 	const deferred = [...plan.deferred];
 	const hiddenNames = new Set(plan.hidden.map((entry) => entry.toolName));
+	const promoted: ToolSpecEntry[] = [];
 	for (const name of requested) {
-		if (direct.some((entry) => entry.toolName === name)) continue;
+		const existing = direct.find((entry) => entry.toolName === name);
+		if (existing) { promoted.push(existing); continue; }
 		if (hiddenNames.has(name)) throw new Error(`Tool ${name} is hidden by the current Tool Spec Plan`);
 		const index = deferred.findIndex((entry) => entry.toolName === name);
 		if (index < 0) throw new Error(`Tool ${name} is not present in the current Tool Spec Plan`);
-		if (direct.length >= MAX_DIRECT_TOOLS) throw new Error(`Tool Spec direct exposure exceeds ${MAX_DIRECT_TOOLS} Tools`);
-		direct.push(deferred.splice(index, 1)[0]!);
+		promoted.push(deferred.splice(index, 1)[0]!);
 	}
-	return freezePlan({ ...plan, planId: planIdentity({ prior: plan.planId, activated: requested, direct, deferred, hidden: plan.hidden }), direct, deferred });
+	const promotedNames = new Set(promoted.map((entry) => entry.toolName));
+	const retained = direct.filter((entry) => !promotedNames.has(entry.toolName));
+	const combined = [...retained, ...promoted];
+	const nextDirect = (combined.length <= MAX_DIRECT_TOOLS ? combined : [...promoted, ...retained]).slice(0, MAX_DIRECT_TOOLS);
+	const nextDirectNames = new Set(nextDirect.map((entry) => entry.toolName));
+	const nextDeferred = [...new Map([...deferred, ...promoted, ...direct].filter((entry) => !nextDirectNames.has(entry.toolName)).map((entry) => [entry.toolName, entry])).values()].sort((left, right) => left.toolName.localeCompare(right.toolName));
+	return freezePlan({ ...plan, planId: planIdentity({ prior: plan.planId, activated: requested, direct: identityEntries(nextDirect), deferred: identityEntries(nextDeferred), hidden: plan.hidden }), direct: nextDirect, deferred: nextDeferred });
+}
+
+/** Removes turn-local meta Tools from direct exposure without losing their registry identity. */
+export function deferToolSpecPlan(plan: ToolSpecPlan, toolNames: readonly string[]): ToolSpecPlan {
+	const requested = new Set(uniqueNames(toolNames));
+	const moved = plan.direct.filter((entry) => requested.has(entry.toolName));
+	if (!moved.length) return plan;
+	const direct = plan.direct.filter((entry) => !requested.has(entry.toolName));
+	const deferred = [...plan.deferred, ...moved].sort((left, right) => left.toolName.localeCompare(right.toolName));
+	return freezePlan({ ...plan, planId: planIdentity({ prior: plan.planId, deferredByPolicy: [...requested], direct: identityEntries(direct), deferred: identityEntries(deferred), hidden: plan.hidden }), direct, deferred });
+}
+
+/** Applies trusted dynamic availability results before a Tool can be promoted. */
+export function hideToolSpecPlan(plan: ToolSpecPlan, restrictions: readonly { toolName: string; reason: Extract<ToolSpecHiddenReason, "configuration_required" | "provider_unhealthy" | "provider_unavailable"> }[]): ToolSpecPlan {
+	const byName = new Map(restrictions.map((item) => [toolName(item.toolName), item.reason]));
+	if (!byName.size) return plan;
+	const eligible = [...plan.direct, ...plan.deferred];
+	for (const name of byName.keys()) if (!eligible.some((entry) => entry.toolName === name) && !plan.hidden.some((entry) => entry.toolName === name)) throw new Error(`Tool ${name} is not present in the current Tool Spec Plan`);
+	const hidden = [...plan.hidden];
+	for (const entry of eligible) {
+		const reason = byName.get(entry.toolName);
+		if (reason) hidden.push(Object.freeze({ id: entry.id, toolName: entry.toolName, kind: entry.kind, version: entry.version, reason, requested: true }));
+	}
+	hidden.sort((left, right) => left.toolName.localeCompare(right.toolName));
+	const direct = plan.direct.filter((entry) => !byName.has(entry.toolName));
+	const deferred = plan.deferred.filter((entry) => !byName.has(entry.toolName));
+	return freezePlan({ ...plan, planId: planIdentity({ prior: plan.planId, restrictions: [...byName], direct: identityEntries(direct), deferred: identityEntries(deferred), hidden }), direct, deferred, hidden });
 }
 
 /** Renders bounded plan metadata; Pi carries each direct Tool's native schema on the same sampling request. */
@@ -124,7 +161,7 @@ export function renderToolSpecPlan(plan: ToolSpecPlan): string {
 		planId: plan.planId,
 		profileId: plan.profileId,
 		platform: plan.platform,
-		direct: plan.direct.map(({ id, toolName, kind, version, inputSchema, sideEffect }) => ({ id, toolName, kind, version, schemaDigest: `sha256:${createHash("sha256").update(stableJson(inputSchema)).digest("hex")}`, sideEffect })),
+		direct: plan.direct.map(({ id, toolName, kind, version, schemaDigest, sideEffect }) => ({ id, toolName, kind, version, schemaDigest, sideEffect })),
 		blockedSelected: plan.hidden.filter((entry) => entry.requested).map(({ id, toolName, reason }) => ({ id, toolName, reason })),
 		deferredCount: plan.deferred.length,
 		hiddenCount: plan.hidden.length,
@@ -132,19 +169,22 @@ export function renderToolSpecPlan(plan: ToolSpecPlan): string {
 	return `<beemax-tool-spec-plan>\n${JSON.stringify(modelView).replaceAll("<", "\\u003c")}\n</beemax-tool-spec-plan>`;
 }
 
-function normalizeInventoryItem(input: ToolSpecInventoryItem): ToolSpecInventoryItem {
+type NormalizedInventoryItem = Omit<ToolSpecInventoryItem, "inputSchema"> & { inputSchema?: unknown; schemaDigest: string };
+function normalizeInventoryItem(input: ToolSpecInventoryItem, retainSchema: boolean, budget: { remaining: number }): NormalizedInventoryItem {
 	if (!input || typeof input !== "object") throw new Error("Tool Spec inventory item is invalid");
 	if (input.kind !== "tool" && input.kind !== "mcp" && input.kind !== "skill") throw new Error("Tool Spec Capability kind is invalid");
 	if (input.sideEffect !== "none" && input.sideEffect !== "local" && input.sideEffect !== "external") throw new Error("Tool Spec side effect is invalid");
 	if (!HEALTH_STATUSES.has(input.health)) throw new Error("Tool Spec Provider health is invalid");
 	if (typeof input.configured !== "boolean" || typeof input.authorized !== "boolean") throw new Error("Tool Spec availability facts are invalid");
-	const inputSchema = jsonValue(input.inputSchema, "Tool Spec input schema");
+	const normalizedSchema = jsonValue(input.inputSchema, "Tool Spec input schema", retainSchema ? budget.remaining : 0);
+	if (normalizedSchema.inputSchema !== undefined) budget.remaining -= normalizedSchema.bytes;
 	return Object.freeze({
 		kind: input.kind,
 		name: toolName(input.name),
 		version: required(input.version, "Tool Spec version", 256),
 		...(input.description ? { description: required(input.description, "Tool Spec description", 2_000) } : {}),
-		inputSchema,
+		...(normalizedSchema.inputSchema === undefined ? {} : { inputSchema: normalizedSchema.inputSchema }),
+		schemaDigest: normalizedSchema.schemaDigest,
 		sideEffect: input.sideEffect,
 		configured: input.configured,
 		health: input.health,
@@ -153,7 +193,7 @@ function normalizeInventoryItem(input: ToolSpecInventoryItem): ToolSpecInventory
 	});
 }
 
-function hiddenReason(tool: ToolSpecInventoryItem, unresolvedUncertainty: boolean): ToolSpecHiddenReason | undefined {
+function hiddenReason(tool: NormalizedInventoryItem, unresolvedUncertainty: boolean): ToolSpecHiddenReason | undefined {
 	if (!tool.authorized) return "policy_or_scope_denied";
 	if (!tool.configured || tool.health === "configuration_required") return "configuration_required";
 	if (tool.health === "unhealthy") return "provider_unhealthy";
@@ -163,16 +203,17 @@ function hiddenReason(tool: ToolSpecInventoryItem, unresolvedUncertainty: boolea
 	return undefined;
 }
 
-function publicEntry(tool: ToolSpecInventoryItem): ToolSpecEntry {
-	return deepFreeze({ id: `${tool.kind}:${tool.name}@${tool.version}`, toolName: tool.name, kind: tool.kind, version: tool.version, ...(tool.description ? { description: tool.description } : {}), inputSchema: tool.inputSchema, sideEffect: tool.sideEffect });
+function publicEntry(tool: NormalizedInventoryItem): ToolSpecEntry {
+	return deepFreeze({ id: `${tool.kind}:${tool.name}@${tool.version}`, toolName: tool.name, kind: tool.kind, version: tool.version, ...(tool.description ? { description: tool.description } : {}), ...(tool.inputSchema === undefined ? {} : { inputSchema: tool.inputSchema }), schemaDigest: tool.schemaDigest, sideEffect: tool.sideEffect });
 }
-function hiddenEntry(tool: ToolSpecInventoryItem, reason: ToolSpecHiddenReason, requested: boolean): HiddenToolSpecEntry {
+function hiddenEntry(tool: NormalizedInventoryItem, reason: ToolSpecHiddenReason, requested: boolean): HiddenToolSpecEntry {
 	return Object.freeze({ id: `${tool.kind}:${tool.name}@${tool.version}`, toolName: tool.name, kind: tool.kind, version: tool.version, reason, requested });
 }
 function freezePlan(plan: ToolSpecPlan): ToolSpecPlan {
 	return Object.freeze({ ...plan, capabilityRequirements: Object.freeze([...plan.capabilityRequirements]), direct: Object.freeze([...plan.direct]), deferred: Object.freeze([...plan.deferred]), hidden: Object.freeze([...plan.hidden]) });
 }
 function planIdentity(value: unknown): string { return `tool-plan:sha256:${createHash("sha256").update(stableJson(value)).digest("hex")}`; }
+function identityEntries(entries: readonly ToolSpecEntry[]): unknown[] { return entries.map(({ id, toolName, kind, version, schemaDigest, sideEffect }) => ({ id, toolName, kind, version, schemaDigest, sideEffect })); }
 function stableJson(value: unknown): string {
 	if (Array.isArray(value)) return `[${value.map(stableJson).join(",")}]`;
 	if (value && typeof value === "object") return `{${Object.entries(value as Record<string, unknown>).sort(([left], [right]) => left.localeCompare(right)).map(([key, item]) => `${JSON.stringify(key)}:${stableJson(item)}`).join(",")}}`;
@@ -189,11 +230,13 @@ function textList(values: readonly string[], label: string, maxLength: number): 
 	if (!Array.isArray(values) || values.length > 100) throw new Error(`${label} list is invalid`);
 	return Object.freeze([...new Set(values.map((value) => required(value, label, maxLength)))]);
 }
-function jsonValue(value: unknown, label: string): unknown {
+function jsonValue(value: unknown, label: string, retainBudget: number): { inputSchema?: unknown; schemaDigest: string; bytes: number } {
 	let serialized: string;
 	try { serialized = JSON.stringify(value); } catch { throw new Error(`${label} must be JSON serializable`); }
-	if (serialized === undefined || Buffer.byteLength(serialized) > MAX_SCHEMA_BYTES) throw new Error(`${label} exceeds ${MAX_SCHEMA_BYTES} bytes`);
-	return deepFreeze(JSON.parse(serialized));
+	const bytes = serialized === undefined ? Number.POSITIVE_INFINITY : Buffer.byteLength(serialized);
+	if (serialized === undefined || bytes > MAX_SCHEMA_BYTES) throw new Error(`${label} exceeds ${MAX_SCHEMA_BYTES} bytes`);
+	const schemaDigest = `sha256:${createHash("sha256").update(serialized).digest("hex")}`;
+	return bytes <= retainBudget ? { inputSchema: deepFreeze(JSON.parse(serialized)), schemaDigest, bytes } : { schemaDigest, bytes };
 }
 function deepFreeze<T>(value: T): T {
 	if (value && typeof value === "object" && !Object.isFrozen(value)) { for (const item of Object.values(value as Record<string, unknown>)) deepFreeze(item); Object.freeze(value); }

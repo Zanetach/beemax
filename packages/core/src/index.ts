@@ -52,7 +52,7 @@ export {
 	type ProactiveMutationAuthority,
 } from "./runtime.ts";
 export { ToolPolicyRegistry, READ_ONLY_TOOL_POLICY, MUTATING_TOOL_POLICY, boundToolResultContent, governToolDefinition, normalizeToolResultBudget, withToolPolicy, type GovernedToolDefinition, type ToolApprovalMode, type ToolCapabilityGrant, type ToolPolicy, type ToolResultBudget, type ToolRisk, type ToolRuntimeAuditEvent, type ToolRuntimeAuditSink, type ToolSideEffect, type ToolSpecAvailabilityMetadata } from "./tool-runtime.ts";
-export { TOOL_SPEC_PLAN_SCHEMA_VERSION, activateToolSpecPlan, buildToolSpecPlan, renderToolSpecPlan, type HiddenToolSpecEntry, type ToolSpecEntry, type ToolSpecHiddenReason, type ToolSpecInventoryItem, type ToolSpecPlan, type ToolSpecPlanInput } from "./tool-spec-plan.ts";
+export { TOOL_SPEC_PLAN_SCHEMA_VERSION, activateToolSpecPlan, buildToolSpecPlan, deferToolSpecPlan, hideToolSpecPlan, renderToolSpecPlan, type HiddenToolSpecEntry, type ToolSpecEntry, type ToolSpecHiddenReason, type ToolSpecInventoryItem, type ToolSpecPlan, type ToolSpecPlanInput } from "./tool-spec-plan.ts";
 export { createVerificationSubmitTool, VERIFICATION_SUBMIT_TOOL_NAME } from "./verification-tools.ts";
 export { FileToolAuditJournal, type DurableToolAuditEvent } from "./tool-audit-journal.ts";
 export { createToolEffectDetails, FileToolEffectJournal, ToolEffectConflictError, type TaskEffectProjection, type ToolEffectAuthorityPort, type ToolEffectFinish, type ToolEffectProjectionReader, type ToolEffectProof, type ToolEffectReceipt, type ToolEffectRecord, type ToolEffectSink, type ToolEffectStart, type ToolEffectStatus } from "./tool-effect.ts";

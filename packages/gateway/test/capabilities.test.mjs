@@ -52,6 +52,7 @@ test("Pi keeps Skill metadata out of the base prompt and hot-reloads the registr
 		"---\nname: existing\ndescription: Existing verified workflow\n---\n\n# Existing\n\nFollow the verified workflow.\n");
 	const memoryStore = { remember: () => "id", recall: () => [], list: () => [], forget: () => true };
 	const factory = buildAgentFactory({
+		profileId: "profile:test",
 		provider: "anthropic", model: "claude-sonnet-4-5", cwd, agentDir,
 		getApiKey: () => "test", memoryStore, authorizeTool: async () => ({ allowed: true }),
 	});

@@ -29,13 +29,15 @@ interface SkillVersionEvent { id: string; kind: "promoted" | "rollback"; name: s
 
 export interface CapabilityMetadata extends Pick<ToolDefinition, "name" | "description"> { kind?: "tool" | "mcp"; aliases?: readonly string[]; triggers?: readonly string[]; exclude?: readonly string[]; version?: string; providers?: readonly CapabilityProviderDescriptor[]; }
 
-export function createSkillTools(agentDir: string, markReloadNeeded: () => void, availableTools: readonly CapabilityMetadata[] = [], verifyCandidate?: SkillCandidateVerifier, additionalSkillRoots: readonly string[] = [], activateTools?: (names: string[]) => void, capabilityRanker?: CapabilityRanker, promotionAuthority?: SkillCandidatePromotionAuthority): ToolDefinition[] {
+export function createSkillTools(agentDir: string, markReloadNeeded: () => void, availableTools: readonly CapabilityMetadata[] = [], verifyCandidate?: SkillCandidateVerifier, additionalSkillRoots: readonly string[] = [], _activateTools?: (names: string[]) => void, capabilityRanker?: CapabilityRanker, promotionAuthority?: SkillCandidatePromotionAuthority): ToolDefinition[] {
 	const root = resolve(agentDir, "skills");
 	const candidateRoot = resolve(agentDir, "skill-candidates");
 	const versionRoot = resolve(agentDir, "skill-versions");
 	const registry = new SkillRegistry([root, ...additionalSkillRoots.map((item) => resolve(item))]);
 	const runtime = new SkillRuntime(registry, 200_000, 20, availableTools.map((tool) => tool.name).filter((name) => name !== "bash"));
-	const capabilities = new CapabilityRuntime({ ...(capabilityRanker ? { ranker: capabilityRanker } : {}), ...(activateTools ? { activeTools: { setActiveTools: activateTools } } : {}) });
+	// Selection returns proposed activation metadata; BeeMaxAgentRuntime is the
+	// sole authority that compiles it into the next Pi Tool Spec Plan.
+	const capabilities = new CapabilityRuntime({ ...(capabilityRanker ? { ranker: capabilityRanker } : {}) });
 	const providers = new CapabilityProviderRuntime();
 	const markSkillsChanged = () => { registry.invalidate(); runtime.reset(); markReloadNeeded(); };
 	const selectAvailableCapabilities = async (query: string, limit: number) => {
@@ -51,9 +53,12 @@ export function createSkillTools(agentDir: string, markReloadNeeded: () => void,
 		const { selection } = await selectAvailableCapabilities(query, 10);
 		const selectedName = selection.candidates.find((item) => item.kind === "skill" && item.confidence >= 0.5)?.name;
 		const selected = await runtime.admitDiscovered(selectedName ? [selectedName] : []);
-		if (selected.length) activateTools?.(["skill_read"]);
 		return selected.map(publicSkill);
 	};
+	const resolveToolProviders = async (toolNames: readonly string[]) => Promise.all(availableTools
+		.filter((tool) => toolNames.includes(tool.name) && tool.providers?.length)
+		.map((tool) => providers.resolve({ capability: tool.name, providers: tool.providers! })));
+	const publicProviderResolutions = (resolutions: Awaited<ReturnType<typeof resolveToolProviders>>) => resolutions.map((resolution) => ({ capability: resolution.capability, status: resolution.status, ...(resolution.blocker ? { blocker: { code: resolution.blocker.code } } : {}) }));
 	let signingKeyPromise: Promise<Buffer> | undefined;
 	const signingKey = () => signingKeyPromise ??= skillLearningKey(agentDir);
 	const tools = [
@@ -83,6 +88,7 @@ export function createSkillTools(agentDir: string, markReloadNeeded: () => void,
 				ranked: selection.candidates.map((item) => ({ ...item, reason: item.explanation.summary })),
 				candidates: matches(candidates.map((item) => ({ name: item.name, description: item.description, attempts: item.attempts.length }))),
 				providers: publicProviders,
+				providerResolutions: publicProviderResolutions(providerResolutions),
 				activatedTools: selection.activatedTools,
 			});
 		} }), { beemaxSkillPrefetch: prefetchSkills }),
@@ -90,10 +96,10 @@ export function createSkillTools(agentDir: string, markReloadNeeded: () => void,
 			const skills = await registry.list(); return result(skills.length ? skills.map((item) => `- ${item.name}: ${item.description}`).join("\n") : "No Skills available.", { skills: skills.map(publicSkill) });
 		} }),
 		defineTool({ name: "skill_activate", label: "Activate Skill", description: "Load one discovered Skill's global rules and route table, locking its SHA256 for this execution.", parameters: Type.Object({ name: Type.String({ pattern: "^[a-z0-9]+(?:-[a-z0-9]+)*$" }) }), execute: async (_id, params) => {
-			const activated = await runtime.activate(params.name); activateTools?.(["skill_route", "skill_complete"]); return ephemeralResult(activated.instructions, { descriptor: publicSkill(activated.descriptor), routes: activated.routes, state: runtime.snapshot() });
+			const activated = await runtime.activate(params.name); return ephemeralResult(activated.instructions, { descriptor: publicSkill(activated.descriptor), routes: activated.routes, state: runtime.snapshot(), activatedTools: ["skill_route", "skill_complete"] });
 		} }),
 		defineTool({ name: "skill_route", label: "Route Skill", description: "Select one declared module route after Skill activation.", parameters: Type.Object({ route: Type.String({ pattern: "^[a-z0-9]+(?:-[a-z0-9]+)*$" }) }), execute: async (_id, params) => {
-			const routed = await runtime.routeTo(params.route); activateTools?.(["skill_resource_read", "skill_complete", ...routed.tools]); return result(`Selected Skill route ${routed.route}.`, { ...routed, state: runtime.snapshot() });
+			const routed = await runtime.routeTo(params.route); const providerResolutions = await resolveToolProviders(routed.tools); return result(`Selected Skill route ${routed.route}.`, { ...routed, state: runtime.snapshot(), activatedTools: ["skill_resource_read", "skill_complete", ...routed.tools], providerResolutions: publicProviderResolutions(providerResolutions) });
 		} }),
 		defineTool({ name: "skill_resource_read", label: "Read Skill Resource", description: "Read one module or reference declared by the active Skill route.", parameters: Type.Object({ path: Type.String({ minLength: 1, maxLength: 500 }) }), execute: async (_id, params) => {
 			const resource = await runtime.readResource(params.path); return ephemeralResult(resource.content, { ...resource, content: undefined, state: runtime.snapshot() });
@@ -103,9 +109,11 @@ export function createSkillTools(agentDir: string, markReloadNeeded: () => void,
 		} }),
 		defineTool({ name: "skill_read", label: "Read Skill (Compatibility)", description: "Compatibility alias that discovers and activates a Profile, project, or global Skill by name.", parameters: Type.Object({ name: Type.String({ pattern: "^[a-z0-9]+(?:-[a-z0-9]+)*$" }) }), execute: async (_id, params) => {
 			await runtime.discover(params.name, 10); const activated = await runtime.activate(params.name); const legacy = activated.routes.length === 1 && activated.routes[0]?.name === "legacy";
-			if (legacy) { const routed = await runtime.routeTo("legacy"); runtime.useActivatedInstructionsAsModule(); activateTools?.(["skill_complete", ...routed.tools]); }
-			else activateTools?.(["skill_route", "skill_complete"]);
-			return ephemeralResult(activated.instructions, { descriptor: publicSkill(activated.descriptor), routes: activated.routes, state: runtime.snapshot(), legacy });
+			let activatedTools: string[];
+			let providerResolutions: Awaited<ReturnType<typeof resolveToolProviders>> = [];
+			if (legacy) { const routed = await runtime.routeTo("legacy"); runtime.useActivatedInstructionsAsModule(); activatedTools = ["skill_complete", ...routed.tools]; providerResolutions = await resolveToolProviders(routed.tools); }
+			else activatedTools = ["skill_route", "skill_complete"];
+			return ephemeralResult(activated.instructions, { descriptor: publicSkill(activated.descriptor), routes: activated.routes, state: runtime.snapshot(), legacy, activatedTools, providerResolutions: publicProviderResolutions(providerResolutions) });
 		} }),
 		defineTool({ name: "skill_create", label: "Create Skill", description: "Create a durable instruction-only Agent Skill after a workflow proves reusable. Requires approval. Never put credentials in skills.", parameters: Type.Object({ name: Type.String({ pattern: "^[a-z0-9]+(?:-[a-z0-9]+)*$", maxLength: 64 }), description: Type.String({ minLength: 10, maxLength: 1024 }), instructions: Type.String({ minLength: 20, maxLength: 30_000 }) }), execute: async (_id, params) => {
 			assertSafeCandidate({ ...params, source: "direct Skill creation" });

@@ -6,6 +6,8 @@ import test from "node:test";
 import { MemoryStore } from "@beemax/memory";
 import { AgentRunError, AuthStorage, BeeMaxAgentRuntime, buildBeeMaxRuntimeFactory, buildTaskPreservationEnvelope, ConversationContext, createAccessScopeRef, createEnterprisePolicyProvider, createEnterprisePolicyPublisher, createExecutionEnvelope, createSituation, defineTool, FileExecutionTraceStore, getBuiltinModel, isRecoverableModelFailure, MUTATING_TOOL_POLICY, SessionCoordinator, sessionIdForSource, withToolPolicy } from "../dist/index.js";
 
+const createRuntime = (options) => new BeeMaxAgentRuntime({ profileId: "profile:test", ...options });
+
 test("BeeMax Core owns the runtime primitive boundary", () => {
 	assert.equal(typeof AuthStorage.create, "function");
 	assert.equal(typeof defineTool, "function");
@@ -215,7 +217,7 @@ test("BeeMax Agent Runtime carries one structured Execution Envelope into the Pi
 	let factoryEnvelope;
 	let session;
 	const lifecycle = [];
-	const runtime = new BeeMaxAgentRuntime({ createAgent: async (_sessionId, _source, receivedEnvelope) => {
+	const runtime = createRuntime({ createAgent: async (_sessionId, _source, receivedEnvelope) => {
 		factoryEnvelope = receivedEnvelope;
 		const agent = { state: { model: { id: "test" }, messages: [] } };
 		session = { agent, subscribe: () => () => undefined, prompt: async () => { assert.equal(session.beemaxExecutionEnvelope, envelope); agent.state.messages = [{ role: "assistant", content: [{ type: "text", text: "done" }], usage: { input: 1, output: 1 } }]; }, abort: async () => undefined, dispose: () => undefined };
@@ -237,7 +239,7 @@ test("BeeMax Agent Runtime carries one structured Execution Envelope into the Pi
 test("a Turn with no new assistant message never reuses a stale Session answer", async () => {
 	const source = { platform: "cli", chatId: "stale-answer", chatType: "dm", userId: "user" };
 	const agent = { state: { model: { id: "test" }, messages: [{ role: "assistant", content: [{ type: "text", text: "old verified report" }], usage: { input: 1, output: 1 } }] } };
-	const runtime = new BeeMaxAgentRuntime({ createAgent: async () => ({
+	const runtime = createRuntime({ createAgent: async () => ({
 		agent,
 		subscribe: () => () => undefined,
 		prompt: async () => undefined,
@@ -254,7 +256,7 @@ test("a Turn with no new assistant message never reuses a stale Session answer",
 test("Turn-scoped Memory and execution guidance are released while the raw user request remains in Session history", async () => {
 	const source = { platform: "cli", chatId: "released-guidance", chatType: "dm", userId: "user" };
 	const agent = { state: { model: { id: "test" }, messages: [] } };
-	const runtime = new BeeMaxAgentRuntime({
+	const runtime = createRuntime({
 		planningPolicy: { decide: () => ({ mode: "direct", requiredTools: [], suggestedConcurrency: 1, budget: { maxSubagents: 0, maxToolCalls: null, maxTokens: null, maxCorrectiveAttempts: 0 }, signals: {}, reason: "test", directive: () => "[BeeMax execution policy: internal-only]" }) },
 		context: { enrich: (_source, text) => `[Relevant curated memory]\nold evidence\n[/Relevant curated memory]\n\nCurrent user request:\n${text}`, record: () => undefined },
 		createAgent: async () => ({
@@ -279,7 +281,7 @@ test("BeeMax Agent Runtime projects Pi lifecycle events through one Execution Tr
 	let listener;
 	const agent = { state: { model: { id: "test" }, messages: [] } };
 	const executionTrace = new FileExecutionTraceStore(join(root, "execution-trace.jsonl"));
-	const runtime = new BeeMaxAgentRuntime({
+	const runtime = createRuntime({
 		executionTrace,
 		createAgent: async () => ({
 			agent, subscribe: (next) => { listener = next; return () => undefined; },
@@ -309,7 +311,7 @@ test("BeeMax Agent Runtime projects Pi lifecycle events through one Execution Tr
 test("BeeMax Agent Runtime lists only Task Plans visible to the conversation owners", () => {
 	let query;
 	let taskQuery;
-	const runtime = new BeeMaxAgentRuntime({
+	const runtime = createRuntime({
 		createAgent: async () => { throw new Error("unused"); },
 		taskLedger: {
 			queryTaskPlans(input) { query = input; return [{ id: "plan", ownerKey: input.ownerKeys[0], title: "Plan", status: "running", taskCount: 2, succeeded: 1, failed: 0, cancelled: 0, verified: 1, correctiveAttempts: 0, createdAt: 1 }]; },
@@ -561,7 +563,7 @@ test("BeeMax Agent Runtime executes a turn and records context without a Gateway
 	const memory = new MemoryStore(join(root, "memory.db"));
 	const source = { platform: "cli", chatId: "terminal", chatType: "dm", userId: "user" };
 	try {
-		const runtime = new BeeMaxAgentRuntime({
+		const runtime = createRuntime({
 			context: new ConversationContext(memory),
 			createAgent: async () => {
 				const agent = { state: { model: { id: "test-model" }, messages: [] } };
@@ -587,7 +589,7 @@ test("BeeMax Agent Runtime executes a turn and records context without a Gateway
 test("BeeMax Agent Runtime injects one structured Work Contract into the model turn", async () => {
 	const source = { platform: "cli", chatId: "terminal", chatType: "dm", userId: "user" };
 	let received = "";
-	const runtime = new BeeMaxAgentRuntime({
+	const runtime = createRuntime({
 		createAgent: async () => {
 			const agent = { state: { model: { id: "test-model" }, messages: [] } };
 			return { agent, subscribe: () => () => undefined, prompt: async (text) => { received = text; agent.state.messages = [{ role: "assistant", content: [{ type: "text", text: "done" }], usage: { input: 1, output: 1 } }]; }, abort: async () => undefined, dispose: () => undefined };
@@ -604,7 +606,7 @@ test("BeeMax Agent Runtime injects one structured Work Contract into the model t
 test("BeeMax Agent Runtime preserves identity-looking text without compiling fixed business slots", async () => {
 	const source = { platform: "cli", chatId: "terminal", chatType: "dm", userId: "user" };
 	let received = "";
-	const runtime = new BeeMaxAgentRuntime({ createAgent: async () => {
+	const runtime = createRuntime({ createAgent: async () => {
 		const agent = { state: { model: { id: "test-model" }, messages: [] } };
 		return { agent, subscribe: () => () => undefined, prompt: async (text) => { received = text; agent.state.messages = [{ role: "assistant", content: [{ type: "text", text: "done" }], usage: { input: 1, output: 1 } }]; }, abort: async () => undefined, dispose: () => undefined };
 	} });
@@ -619,7 +621,7 @@ test("BeeMax Agent Runtime preserves identity-looking text without compiling fix
 test("BeeMax Agent Runtime ignores removed business-context input instead of treating it as authority", async () => {
 	const source = { platform: "cli", chatId: "terminal", chatType: "dm", userId: "user" };
 	let received = "";
-	const runtime = new BeeMaxAgentRuntime({ createAgent: async () => {
+	const runtime = createRuntime({ createAgent: async () => {
 		const agent = { state: { model: { id: "test-model" }, messages: [] } };
 		return { agent, subscribe: () => () => undefined, prompt: async (text) => { received = text; agent.state.messages = [{ role: "assistant", content: [{ type: "text", text: "done" }], usage: { input: 1, output: 1 } }]; }, abort: async () => undefined, dispose: () => undefined };
 	} });
@@ -633,7 +635,7 @@ test("BeeMax Agent Runtime binds continuation understanding to the active Object
 	const source = { platform: "cli", chatId: "terminal", chatType: "dm", userId: "user" };
 	let received = "";
 	let recallOptions;
-	const runtime = new BeeMaxAgentRuntime({
+	const runtime = createRuntime({
 		context: new ConversationContext({ recall: (_query, options) => { recallOptions = options; return []; }, recordCandidate: () => "candidate" }),
 		taskLedger: { queryTasks: () => [{ id: "objective-1", ownerKey: "cli:terminal:user", kind: "objective", title: "制作华东客户周报", description: "必须使用中文", acceptanceCriteria: "输出PDF并发送给王总", status: "running", createdAt: 1, businessContext: { subject: { type: "customer", id: "A" }, object: { type: "order", id: "PO-1" } }, effectReceipts: [{ id: "effect-1", tool: "feishu_send", operation: "send draft", sideEffect: "mutation", status: "committed", externalRef: "message-42", occurredAt: 2 }] }] },
 		createAgent: async () => {
@@ -662,7 +664,7 @@ test("BeeMax Agent Runtime leaves legacy business context immutable during corre
 		queryTasks: () => [active],
 		updateBusinessContext: () => { updates++; return true; },
 	};
-	const runtime = new BeeMaxAgentRuntime({ taskLedger: ledger, createAgent: async () => {
+	const runtime = createRuntime({ taskLedger: ledger, createAgent: async () => {
 		const agent = { state: { model: { id: "test" }, messages: [] } };
 		return { agent, subscribe: () => () => undefined, prompt: async () => { agent.state.messages = [{ role: "assistant", content: [{ type: "text", text: "updated" }], usage: { input: 1, output: 1 } }]; }, abort: async () => undefined, dispose: () => undefined };
 	} });
@@ -694,7 +696,7 @@ test("BeeMax Agent Runtime corrects durable Situation without replacing scope or
 	const context = new ConversationContext({ recall: () => [], recordCandidate: () => "candidate" }, {
 		resolveMemoryScope: (_runtimeSource, ref) => { recalledWithScope = ref; return {}; },
 	});
-	const runtime = new BeeMaxAgentRuntime({
+	const runtime = createRuntime({
 		context,
 		taskLedger: ledger,
 		turnUnderstanding: { understand: () => ({ action: "correct", goal: "月影协议改用星潮参数", constraints: ["保留回滚点"], acceptanceCriteria: [], memoryQuery: "月影协议 星潮参数", capabilityQuery: "校准", executionMode: "direct", confidence: 0.9 }) },
@@ -714,7 +716,7 @@ test("BeeMax Agent Runtime uses the Turn Understanding memory query for recall",
 	const source = { platform: "cli", chatId: "terminal", chatType: "dm", userId: "user" };
 	let recalledQuery = "";
 	const memory = { recall: (query) => { recalledQuery = query; return []; }, recordCandidate: () => "candidate" };
-	const runtime = new BeeMaxAgentRuntime({
+	const runtime = createRuntime({
 		context: new ConversationContext(memory),
 		turnUnderstanding: { understand: (text) => ({ action: "create", goal: text, constraints: ["客户约束"], acceptanceCriteria: [], memoryQuery: "customer-a delivery requirements", capabilityQuery: text, executionMode: "direct", confidence: 0.9 }) },
 		createAgent: async () => { const agent = { state: { model: { id: "test" }, messages: [] } }; return { agent, subscribe: () => () => undefined, prompt: async () => { agent.state.messages = [{ role: "assistant", content: [{ type: "text", text: "done" }], usage: { input: 1, output: 1 } }]; }, abort: async () => undefined, dispose: () => undefined }; },
@@ -740,7 +742,7 @@ test("BeeMax Agent Runtime keeps inferred business identity semantic while trust
 			? { organizationId: "org:trusted", subject: { type: "realm", id: "authorized" } }
 			: {},
 	});
-	const runtime = new BeeMaxAgentRuntime({
+	const runtime = createRuntime({
 		context,
 		turnUnderstanding: { understand: () => ({
 			action: "create",
@@ -769,7 +771,7 @@ test("BeeMax Agent Runtime rejects a pre-aborted turn before creating an agent s
 	const source = { platform: "cli", chatId: "terminal", chatType: "dm", userId: "user" };
 	const controller = new AbortController();
 	let aborts = 0;
-	const runtime = new BeeMaxAgentRuntime({
+	const runtime = createRuntime({
 		createAgent: async () => ({
 			agent: { state: { model: { id: "test" }, messages: [] } },
 			subscribe: () => () => undefined,
@@ -788,7 +790,7 @@ test("BeeMax Agent Runtime passes native image attachments to Pi without prompt 
 	const source = { platform: "cli", chatId: "terminal", chatType: "dm", userId: "user" };
 	const images = [{ type: "image", mimeType: "image/png", data: "aW1hZ2U=" }];
 	let received;
-	const runtime = new BeeMaxAgentRuntime({
+	const runtime = createRuntime({
 		createAgent: async () => {
 			const agent = { state: { model: { id: "vision-test", provider: "test", input: ["text", "image"] }, messages: [] } };
 			return {
@@ -813,7 +815,7 @@ test("BeeMax Agent Runtime exposes Pi native steer and follow-up only during an 
 	let release;
 	const delivered = [];
 	let piSession;
-	const runtime = new BeeMaxAgentRuntime({
+	const runtime = createRuntime({
 		createAgent: async () => {
 			const agent = { state: { model: { id: "test" }, messages: [] } };
 			piSession = {
@@ -843,7 +845,7 @@ test("BeeMax Agent Runtime automatically continues a safe transient failure on a
 	const fallback = { provider: "test", id: "fallback", input: ["text"], reasoning: false };
 	const events = [];
 	let retriedWith;
-	const runtime = new BeeMaxAgentRuntime({
+	const runtime = createRuntime({
 		fallbackModels: [fallback],
 		createAgent: async () => {
 			const agent = { state: { model: { provider: "test", id: "primary" }, messages: [] } };
@@ -866,7 +868,7 @@ test("BeeMax Agent Runtime refuses automatic model replay after observable outpu
 	const source = { platform: "cli", chatId: "terminal", chatType: "dm", userId: "user" };
 	let listener;
 	let retries = 0;
-	const runtime = new BeeMaxAgentRuntime({
+	const runtime = createRuntime({
 		fallbackModels: [{ provider: "test", id: "fallback", input: ["text"], reasoning: false }],
 		createAgent: async () => {
 			const agent = { state: { model: { provider: "test", id: "primary" }, messages: [] } };
@@ -887,7 +889,7 @@ test("BeeMax Agent Runtime exposes explicit context compaction only for an idle 
 	const envelope = createExecutionEnvelope({ executionId: "execution:compaction", trigger: { kind: "interaction" }, taskRunId: "run:compaction", mode: "normal" });
 	let compactions = 0;
 	let piSession;
-	const runtime = new BeeMaxAgentRuntime({
+	const runtime = createRuntime({
 		createAgent: async () => {
 			piSession = {
 			agent: { state: { model: { id: "test" }, messages: [] } },
@@ -910,7 +912,7 @@ test("BeeMax Agent Runtime exposes explicit context compaction only for an idle 
 test("context compaction preserves active Objective and Acceptance Criteria", async () => {
 	const source = { platform: "cli", chatId: "terminal", chatType: "dm", userId: "user" };
 	let compactInstructions = "";
-	const runtime = new BeeMaxAgentRuntime({
+	const runtime = createRuntime({
 		taskLedger: { queryTasks: () => [{ id: "objective-1", ownerKey: "cli:terminal:user", kind: "objective", title: "生成客户报告", description: "必须使用中文", acceptanceCriteria: "输出PDF并发送给王总", status: "running", createdAt: 1, effectReceipts: [{ id: "effect-1", tool: "feishu_send", operation: "send report", sideEffect: "mutation", status: "committed", externalRef: "message-42", occurredAt: 2 }] }] },
 		createAgent: async () => ({ agent: { state: { model: { id: "test" }, messages: [] } }, subscribe: () => () => undefined, prompt: async () => undefined, abort: async () => undefined, compact: async (instructions) => { compactInstructions = instructions; }, dispose: () => undefined }),
 	});
@@ -948,7 +950,7 @@ test("Task preservation keeps durable Situation semantics without exposing Acces
 test("BeeMax Agent Runtime exposes session history, snapshots, and idle reset through Core", async () => {
 	const source = { platform: "cli", chatId: "terminal", chatType: "dm", userId: "user", threadId: "thread-1" };
 	let disposed = 0;
-	const runtime = new BeeMaxAgentRuntime({
+	const runtime = createRuntime({
 		createAgent: async () => {
 			const agent = { state: { model: { id: "test" }, messages: [{ role: "user", content: "hello" }, { role: "assistant", content: [{ type: "text", text: "hi" }], usage: { input: 1, output: 1, cacheRead: 2, cacheWrite: 3 } }] } };
 			let thinkingLevel = "off";

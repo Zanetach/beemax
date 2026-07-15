@@ -25,7 +25,7 @@ import {
 import { createFeishuAdapterRegistration, type FeishuAdapter, type FeishuSettings } from "@beemax/channel-feishu";
 import { createTelegramAdapterRegistration } from "@beemax/channel-telegram";
 import { loadMcpConfig, McpManager } from "@beemax/mcp-capability";
-import { buildAgentFactory } from "./agent-factory.ts";
+import { buildAgentFactory, profileIdForAgentFactory } from "./agent-factory.ts";
 import { MemoryStore, memoryPersistencePorts, type OrganizationMemoryPort } from "@beemax/memory";
 import { createFeishuMeetingTools } from "@beemax/feishu-capability";
 import { WeKnoraKnowledgeProvider, createKnowledgeTools } from "@beemax/knowledge";
@@ -727,6 +727,7 @@ export async function executeSubagentTask(
 	executionEnvelope?: Readonly<ExecutionEnvelope>,
 	executionTrace?: ExecutionTraceSink,
 	allowedCapabilities?: readonly string[],
+	toolEffectProjectionReader?: ToolEffectProjectionReader,
 ): Promise<string> {
 	if (!task.source.platform?.trim()) throw new Error("Delegated Task source platform is unavailable");
 	const source: SessionSource = {
@@ -736,7 +737,7 @@ export async function executeSubagentTask(
 		messageId: undefined,
 		delegatedTask: { id: task.id, ownerKey: task.ownerKey },
 	};
-	const runtime = new BeeMaxAgentRuntime({ createAgent: factory, executionTrace });
+	const runtime = new BeeMaxAgentRuntime({ createAgent: factory, profileId: profileIdForAgentFactory(factory), executionTrace, toolEffectProjectionReader });
 	try {
 		const envelope = executionEnvelope ?? createExecutionEnvelope({ executionId: task.taskRunId ? `execution:${task.taskRunId}` : `execution:${crypto.randomUUID()}`, trigger: { kind: "delegation", id: task.id }, ...(task.parentId ? { objectiveId: task.parentId } : {}), taskId: task.id, ...(task.taskRunId ? { taskRunId: task.taskRunId } : {}), ...(runtimeTimeoutMs === null ? {} : { budget: { deadlineAt: Date.now() + runtimeTimeoutMs } }) });
 		const result = await runtime.run({ source, signal, timeoutMs: runtimeTimeoutMs, expandPromptTemplates: false, mode: "automation", executionEnvelope: envelope, ...(allowedCapabilities ? { allowedCapabilities: [...allowedCapabilities] } : {}), text: [
@@ -796,7 +797,7 @@ export async function executePlannedTask(
 		mode: graphEnvelope?.mode ?? (context?.attempt && context.attempt > 1 ? "correction" : context?.executionMode ?? "normal"),
 	});
 	const checkpointEvent = nativeCheckpointRecorder(task, context, effectAuthority);
-	return parsePlannedTaskResult(await executeSubagentTask(factory, delegated, signal ?? new AbortController().signal, null, checkpointEvent, executionEnvelope, executionTrace));
+	return parsePlannedTaskResult(await executeSubagentTask(factory, delegated, signal ?? new AbortController().signal, null, checkpointEvent, executionEnvelope, executionTrace, undefined, effectAuthority));
 }
 
 function nativeCheckpointRecorder(task: TaskRecord, context: TaskGraphExecutionContext | undefined, effects: ToolEffectProjectionReader | undefined): BeeMaxAgentRunEventSink | undefined {

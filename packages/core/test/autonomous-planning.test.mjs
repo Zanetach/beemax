@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { AutonomousPlanningPolicy, BeeMaxAgentRuntime, createAccessScopeRef, createExecutionEnvelope, createWebTools, PlanningBudgetRegistry } from "../dist/index.js";
 
+const createRuntime = (options) => new BeeMaxAgentRuntime({ profileId: "profile:test", ...options });
+
 test("planning policy keeps simple conversational requests direct", () => {
 	const policy = new AutonomousPlanningPolicy({ maxConcurrent: 8 });
 	const decision = policy.decide("What model are you using?");
@@ -30,7 +32,7 @@ test("Agent runtime progressively exposes discovery and restores the full catalo
 		abort: async () => undefined,
 		dispose: () => undefined,
 	};
-	const runtime = new BeeMaxAgentRuntime({ planningPolicy: new AutonomousPlanningPolicy(), createAgent: async () => piSession });
+	const runtime = createRuntime({ planningPolicy: new AutonomousPlanningPolicy(), createAgent: async () => piSession });
 	await runtime.run({ source, text: "查一下今天的天气", timeoutMs: 1_000 });
 	assert.deepEqual(toolChanges, [["capability_discover"], ["read", "web_search"]]);
 	runtime.dispose();
@@ -41,7 +43,7 @@ test("Agent runtime hides capability discovery and Tools for a direct answer wit
 	const toolChanges = [];
 	const agent = { state: { model: { id: "test" }, messages: [] } };
 	const tools = [{ name: "capability_discover", description: "Discover capabilities" }, { name: "memory_recall", description: "Recall prior context" }, { name: "write", description: "Write a file" }];
-	const runtime = new BeeMaxAgentRuntime({ planningPolicy: new AutonomousPlanningPolicy(), createAgent: async () => ({
+	const runtime = createRuntime({ planningPolicy: new AutonomousPlanningPolicy(), createAgent: async () => ({
 		agent,
 		getAllTools: () => tools,
 		getActiveToolNames: () => tools.map(({ name }) => name),
@@ -63,7 +65,7 @@ test("Agent runtime directly prefetches an explicit Tool request with a calibrat
 		{ name: "capability_discover", description: "Discover capabilities" },
 		{ name: "mcp_fixture_structured_lookup", description: "Lookup a fixture entity with selected fields" },
 	];
-	const runtime = new BeeMaxAgentRuntime({ planningPolicy: new AutonomousPlanningPolicy(), createAgent: async () => ({
+	const runtime = createRuntime({ planningPolicy: new AutonomousPlanningPolicy(), createAgent: async () => ({
 		agent,
 		getAllTools: () => tools,
 		getActiveToolNames: () => tools.map(({ name }) => name),
@@ -82,7 +84,7 @@ test("Agent runtime directly prefetches a high-confidence current research Provi
 	const tools = [{ name: "capability_discover", description: "Discover capabilities" }, ...createWebTools()];
 	const toolChanges = [];
 	const agent = { state: { model: { id: "test" }, messages: [] } };
-	const runtime = new BeeMaxAgentRuntime({ planningPolicy: new AutonomousPlanningPolicy(), createAgent: async () => ({
+	const runtime = createRuntime({ planningPolicy: new AutonomousPlanningPolicy(), createAgent: async () => ({
 		agent,
 		getAllTools: () => tools,
 		getActiveToolNames: () => tools.map(({ name }) => name),
@@ -124,7 +126,7 @@ test("Agent runtime deterministically preflights and enforces an installed match
 		abort: async () => undefined,
 		dispose: () => undefined,
 	};
-	const runtime = new BeeMaxAgentRuntime({ createAgent: async () => piSession });
+	const runtime = createRuntime({ createAgent: async () => piSession });
 	await runtime.run({ source, text: "请生成一份有真实来源的研究简报", timeoutMs: 1_000 });
 	assert.match(prompts[0], /Installed matching Skill metadata: research-brief/);
 	assert.match(prompts[1], /Skill correction/);
@@ -137,7 +139,7 @@ test("delegated Chinese research starts with Agent-Reach active instead of degra
 	const tools = createWebTools();
 	const activeChanges = [];
 	const agent = { state: { model: { id: "test" }, messages: [] } };
-	const runtime = new BeeMaxAgentRuntime({ createAgent: async () => ({
+	const runtime = createRuntime({ createAgent: async () => ({
 		agent,
 		getAllTools: () => tools,
 		getActiveToolNames: () => tools.map(({ name }) => name),
@@ -159,7 +161,7 @@ test("Agent runtime settles a model turn after bounded visible-output inactivity
 	let fallback;
 	let aborts = 0;
 	const agent = { state: { model: { id: "test" }, messages: [] } };
-	const runtime = new BeeMaxAgentRuntime({
+	const runtime = createRuntime({
 		turnIdleSettleMs: 20,
 		createAgent: async () => ({
 			agent,
@@ -190,7 +192,7 @@ test("Agent runtime continues once after capability discovery so activated tools
 	const prompts = [];
 	const events = [];
 	const agent = { state: { model: { id: "test" }, messages: [] } };
-	const runtime = new BeeMaxAgentRuntime({ planningPolicy: new AutonomousPlanningPolicy(), createAgent: async () => ({
+	const runtime = createRuntime({ planningPolicy: new AutonomousPlanningPolicy(), createAgent: async () => ({
 		agent,
 		getActiveToolNames: () => [...activeTools],
 		getAllTools: () => [{ name: "capability_discover", description: "Discover", beemaxPolicy: { sideEffect: "none" } }, { name: "web_search", description: "Search", beemaxPolicy: { sideEffect: "none" } }],
@@ -216,7 +218,7 @@ test("Agent runtime continues once after capability discovery so activated tools
 test("Agent runtime reroutes one unresolved Tool failure through capability discovery before giving up", async () => {
 	const source = { platform: "cli", chatId: "reroute", chatType: "dm", userId: "local" };
 	let listener; const prompts = []; const agent = { state: { model: { id: "test" }, messages: [] } };
-	const runtime = new BeeMaxAgentRuntime({ createAgent: async () => ({
+	const runtime = createRuntime({ createAgent: async () => ({
 		agent, getActiveToolNames: () => ["capability_discover", "read", "primary_search", "alternate_search"], setActiveToolsByName: () => undefined,
 		getAllTools: () => [{ name: "read", description: "Read context", beemaxPolicy: { sideEffect: "none" } }, { name: "primary_search", description: "Primary search", beemaxPolicy: { sideEffect: "none" } }, { name: "alternate_search", description: "Alternate search", beemaxPolicy: { sideEffect: "none" } }],
 		subscribe: (next) => { listener = next; return () => undefined; },
@@ -246,7 +248,7 @@ test("Agent runtime aborts an identical failed read-only Tool loop before anothe
 	let listener;
 	let aborts = 0;
 	const agent = { state: { model: { id: "test" }, messages: [] } };
-	const runtime = new BeeMaxAgentRuntime({ planningPolicy: new AutonomousPlanningPolicy(), createAgent: async () => ({
+	const runtime = createRuntime({ planningPolicy: new AutonomousPlanningPolicy(), createAgent: async () => ({
 		agent,
 		getActiveToolNames: () => ["read"],
 		getAllTools: () => [{ name: "read", description: "Read a file", beemaxPolicy: { sideEffect: "none" } }],
@@ -269,7 +271,7 @@ test("Agent runtime aborts an identical failed read-only Tool loop before anothe
 test("Agent runtime never auto-reroutes an unresolved external mutation", async () => {
 	const source = { platform: "cli", chatId: "write-failure", chatType: "dm", userId: "local" };
 	let listener; const prompts = []; const agent = { state: { model: { id: "test" }, messages: [] } };
-	const runtime = new BeeMaxAgentRuntime({ createAgent: async () => ({
+	const runtime = createRuntime({ createAgent: async () => ({
 		agent, getActiveToolNames: () => ["capability_discover", "external_write"], setActiveToolsByName: () => undefined,
 		getAllTools: () => [{ name: "external_write", description: "Write externally", beemaxPolicy: { sideEffect: "external" } }],
 		subscribe: (next) => { listener = next; return () => undefined; },
@@ -284,7 +286,7 @@ test("Agent runtime never auto-reroutes an unresolved external mutation", async 
 test("Capability event validation rejects unregistered names and free-form ranking content", async () => {
 	const source = { platform: "cli", chatId: "capability-event-boundary", chatType: "dm", userId: "local" };
 	let listener; const events = []; const agent = { state: { model: { id: "test" }, messages: [] } };
-	const runtime = new BeeMaxAgentRuntime({ createAgent: async () => ({
+	const runtime = createRuntime({ createAgent: async () => ({
 		agent, getActiveToolNames: () => ["capability_discover", "safe_search"], setActiveToolsByName: () => undefined,
 		getAllTools: () => [{ name: "safe_search", description: "Safe search", beemaxPolicy: { sideEffect: "none" } }],
 		subscribe: (next) => { listener = next; return () => undefined; },
@@ -302,7 +304,7 @@ test("Agent runtime releases Skill bodies at turn boundaries while retaining exe
 	const source = { platform: "cli", chatId: "skill-context", chatType: "dm", userId: "local" };
 	const agent = { state: { model: { id: "test" }, messages: [{ role: "toolResult", toolCallId: "old", toolName: "skill_resource_read", content: [{ type: "text", text: "old sensitive skill body" }], details: { sha256: "old-hash" } }] } };
 	let historicalAtPrompt = "";
-	const runtime = new BeeMaxAgentRuntime({ createAgent: async () => ({
+	const runtime = createRuntime({ createAgent: async () => ({
 		agent, getActiveToolNames: () => ["capability_discover"], setActiveToolsByName: () => undefined, subscribe: () => () => undefined,
 		prompt: async () => {
 			historicalAtPrompt = agent.state.messages[0].content[0].text;
@@ -319,7 +321,7 @@ test("Agent runtime releases Skill bodies at turn boundaries while retaining exe
 test("BeeMax explicit Skill commands enter the enforced runtime lifecycle instead of Pi body expansion", async () => {
 	const source = { platform: "cli", chatId: "explicit-skill", chatType: "dm", userId: "local" }; let received = "";
 	const agent = { state: { model: { id: "test" }, messages: [] } };
-	const runtime = new BeeMaxAgentRuntime({ context: { enrich: (_source, text) => `verified facts\n\n${text}`, record: () => undefined }, createAgent: async () => ({
+	const runtime = createRuntime({ context: { enrich: (_source, text) => `verified facts\n\n${text}`, record: () => undefined }, createAgent: async () => ({
 		agent, getActiveToolNames: () => ["capability_discover"], setActiveToolsByName: () => undefined, subscribe: () => () => undefined,
 		prompt: async (text) => { received = text; agent.state.messages = [{ role: "assistant", content: [{ type: "text", text: "done" }], usage: { input: 1, output: 1 } }]; }, abort: async () => undefined, dispose: () => undefined,
 	}) });
@@ -448,7 +450,7 @@ test("Agent runtime injects a deterministic planning directive without changing 
 	const runEvents = [];
 	const budgets = new PlanningBudgetRegistry();
 	const agent = { state: { model: { id: "test" }, messages: [] } };
-	const runtime = new BeeMaxAgentRuntime({
+	const runtime = createRuntime({
 		planningPolicy: new AutonomousPlanningPolicy(),
 		planningBudgets: budgets,
 		context: { enrich: (_source, text) => text, record: (_source, exchange) => recorded.push(exchange) },
@@ -478,7 +480,7 @@ test("interactive runs persist an Objective and keep background DAG Objectives r
 	};
 	let listener;
 	const agent = { state: { model: { id: "test" }, messages: [] } };
-	const runtime = new BeeMaxAgentRuntime({
+	const runtime = createRuntime({
 		taskLedger: ledger,
 		planningPolicy: new AutonomousPlanningPolicy(),
 		createAgent: async () => ({
@@ -507,7 +509,7 @@ test("durable Objectives retain arbitrary identity-looking text only through Sit
 	const tasks = new Map();
 	const ledger = { record(task) { tasks.set(task.id, { ...task }); }, transition(id, change) { tasks.set(id, { ...tasks.get(id), ...change }); return true; }, queryTasks: () => [] };
 	const agent = { state: { model: { id: "test" }, messages: [] } };
-	const runtime = new BeeMaxAgentRuntime({ taskLedger: ledger, planningPolicy: new AutonomousPlanningPolicy(), createAgent: async () => ({
+	const runtime = createRuntime({ taskLedger: ledger, planningPolicy: new AutonomousPlanningPolicy(), createAgent: async () => ({
 		agent, subscribe: () => () => undefined,
 		prompt: async () => { agent.state.messages = [{ role: "assistant", content: [{ type: "text", text: "accepted" }], usage: { input: 1, output: 1 } }]; },
 		abort: async () => undefined, dispose: () => undefined,
@@ -526,7 +528,7 @@ test("new durable Objectives preserve Situation and trusted Access Scope provena
 	const ledger = { record(task) { tasks.set(task.id, { ...task }); }, transition(id, change) { tasks.set(id, { ...tasks.get(id), ...change }); return true; }, queryTasks: () => [] };
 	const accessScopeRef = createAccessScopeRef({ id: "scope:aurora", authority: { kind: "membership_registry", reference: "membership:aurora" }, issuedAt: 1 });
 	const agent = { state: { model: { id: "test" }, messages: [] } };
-	const runtime = new BeeMaxAgentRuntime({ taskLedger: ledger, createAgent: async () => ({
+	const runtime = createRuntime({ taskLedger: ledger, createAgent: async () => ({
 		agent, subscribe: () => () => undefined,
 		prompt: async () => { agent.state.messages = [{ role: "assistant", content: [{ type: "text", text: "accepted" }], usage: { input: 1, output: 1 } }]; },
 		abort: async () => undefined, dispose: () => undefined,
@@ -553,7 +555,7 @@ test("a direct conversational answer does not create durable Objective work", as
 		transition(id, change) { tasks.set(id, { ...tasks.get(id), ...change }); return true; },
 	};
 	const agent = { state: { model: { id: "test" }, messages: [] } };
-	const runtime = new BeeMaxAgentRuntime({ taskLedger: ledger, planningPolicy: new AutonomousPlanningPolicy(), createAgent: async () => ({
+	const runtime = createRuntime({ taskLedger: ledger, planningPolicy: new AutonomousPlanningPolicy(), createAgent: async () => ({
 		agent, subscribe: () => () => undefined,
 		prompt: async () => { agent.state.messages = [{ role: "assistant", content: [{ type: "text", text: "42" }], usage: { input: 1, output: 1 } }]; },
 		abort: async () => undefined, dispose: () => undefined,
@@ -580,7 +582,7 @@ test("a responsible direct Turn completes one durable Objective through one veri
 	let envelope;
 	let listener;
 	const agent = { state: { model: { id: "test" }, messages: [] } };
-	const runtime = new BeeMaxAgentRuntime({
+	const runtime = createRuntime({
 		taskLedger: ledger,
 		planningPolicy: new AutonomousPlanningPolicy(),
 		turnUnderstanding: { understand: (text) => ({ action: "create", goal: text, constraints: ["保留证据"], acceptanceCriteria: ["报告包含来源"], memoryQuery: text, capabilityQuery: text, executionMode: "direct", confidence: 0.9 }) },
@@ -632,7 +634,7 @@ test("a rejected Objective returns a blocker and fails its Task Run instead of r
 		recordRun(run) { runs.set(run.id, { ...run }); }, transitionRun(id, change) { runs.set(id, { ...runs.get(id), ...change }); return true; }, queryTasks: () => [],
 	};
 	const agent = { state: { model: { id: "test" }, messages: [] } };
-	const runtime = new BeeMaxAgentRuntime({
+	const runtime = createRuntime({
 		taskLedger: ledger,
 		turnUnderstanding: { understand: (text) => ({ action: "create", goal: text, constraints: [], acceptanceCriteria: ["必须包含来源"], memoryQuery: text, capabilityQuery: text, executionMode: "direct", confidence: 0.9 }) },
 		verifyObjectiveCandidate: async () => ({ accepted: false, feedback: "缺少来源证据" }),
@@ -663,7 +665,7 @@ test("an Automation Trigger enters the same durable Pi lifecycle as responsible 
 	let listener;
 	const agent = { state: { model: { id: "test" }, messages: [] } };
 	const triggerEnvelope = createExecutionEnvelope({ executionId: "automation:job:1700000000000", trigger: { kind: "automation", id: "schedule:job:1700000000000" }, budget: { deadlineAt: Date.now() + 10_000 }, mode: "normal" });
-	const runtime = new BeeMaxAgentRuntime({
+	const runtime = createRuntime({
 		taskLedger: ledger,
 		turnUnderstanding: { understand: (text) => ({ action: "create", goal: text, constraints: ["保留来源"], acceptanceCriteria: ["摘要包含来源"], memoryQuery: "相关历史摘要", capabilityQuery: text, executionMode: "direct", confidence: 0.88 }) },
 		context: { assemble: (contextSource, text, options) => { contextCalls.push({ contextSource, ...options }); return { text: `${text}\n[recalled organization context]`, items: [], released: [], totalChars: text.length }; }, record: () => undefined },
@@ -733,7 +735,7 @@ test("an admitted proactive Objective executes through the same Pi Task Run, che
 		executionId: "initiative:observation-1", trigger: { kind: "enterprise_event", id: "event:1" },
 		objectiveId: objective.id, taskId: objective.id, budget: { maxToolCalls: 4, maxTokens: 4_000, deadlineAt: Date.now() + 10_000, maxCorrectiveAttempts: 1 }, mode: "normal",
 	});
-	const runtime = new BeeMaxAgentRuntime({
+	const runtime = createRuntime({
 		taskLedger: ledger,
 		verifyObjectiveCandidate: async (_task, result) => ({ accepted: result.output === "Verified finding", evidence: "checked:source" }),
 		createAgent: async () => { throw new Error("interactive Agent must not run"); },
@@ -770,7 +772,7 @@ test("a failed proactive Pi startup returns its durable Objective to recoverable
 		transition(id, change) { tasks.set(id, { ...tasks.get(id), ...change }); return true; },
 		queryTasks(query) { const task = tasks.get(query.id); return task && query.ownerKeys.includes(task.ownerKey) ? [task] : []; },
 	};
-	const runtime = new BeeMaxAgentRuntime({
+	const runtime = createRuntime({
 		taskLedger: ledger,
 		createAgent: async () => { throw new Error("interactive Agent must not run"); },
 		createAutomationAgent: async () => { throw new Error("temporary startup failure"); },
@@ -795,7 +797,7 @@ test("Verification correction reuses the Objective and creates one bounded Corre
 	let prompts = 0;
 	let verifications = 0;
 	const agent = { state: { model: { id: "test" }, messages: [] } };
-	const runtime = new BeeMaxAgentRuntime({
+	const runtime = createRuntime({
 		taskLedger: ledger,
 		planningPolicy: new AutonomousPlanningPolicy(),
 		turnUnderstanding: { understand: (text) => ({ action: "create", goal: text, constraints: [], acceptanceCriteria: ["包含来源"], memoryQuery: text, capabilityQuery: text, executionMode: "direct", confidence: 0.9 }) },
@@ -833,7 +835,7 @@ test("an explicit continuation Turn reuses the active Objective", async () => {
 		queryTasks: (query) => query.ownerKeys.includes(active.ownerKey) && query.statuses?.includes("running") ? [active] : [],
 	};
 	const agent = { state: { model: { id: "test" }, messages: [] } };
-	const runtime = new BeeMaxAgentRuntime({ taskLedger: ledger, planningPolicy: new AutonomousPlanningPolicy(), createAgent: async () => ({
+	const runtime = createRuntime({ taskLedger: ledger, planningPolicy: new AutonomousPlanningPolicy(), createAgent: async () => ({
 		agent, subscribe: () => () => undefined,
 		prompt: async () => { agent.state.messages = [{ role: "assistant", content: [{ type: "text", text: "Still running" }], usage: { input: 1, output: 1 } }]; },
 		abort: async () => undefined, dispose: () => undefined,
@@ -861,7 +863,7 @@ test("Agent runtime aborts a turn that exceeds its planned tool-call budget", as
 	let listener;
 	let aborts = 0;
 	const agent = { state: { model: { id: "test" }, messages: [] } };
-	const runtime = new BeeMaxAgentRuntime({
+	const runtime = createRuntime({
 		planningPolicy: new AutonomousPlanningPolicy({ maxToolCalls: 8 }),
 		createAgent: async () => ({
 			agent,
@@ -884,7 +886,7 @@ test("Execution Envelope enforces tool-call budget without a planning policy", a
 	let listener;
 	let aborts = 0;
 	const agent = { state: { model: { id: "test" }, messages: [] } };
-	const runtime = new BeeMaxAgentRuntime({ createAgent: async () => ({
+	const runtime = createRuntime({ createAgent: async () => ({
 		agent, subscribe: (next) => { listener = next; return () => undefined; },
 		prompt: async () => {
 			listener({ type: "tool_execution_start", toolCallId: "tool-1", toolName: "read" });
@@ -903,7 +905,7 @@ test("Execution Envelope rejects an expired execution before Pi is prompted", as
 	const source = { platform: "cli", chatId: "expired-envelope", chatType: "dm", userId: "local" };
 	let prompts = 0;
 	const agent = { state: { model: { id: "test" }, messages: [] } };
-	const runtime = new BeeMaxAgentRuntime({ createAgent: async () => ({ agent, subscribe: () => () => undefined, prompt: async () => { prompts++; }, abort: async () => undefined, dispose: () => undefined }) });
+	const runtime = createRuntime({ createAgent: async () => ({ agent, subscribe: () => () => undefined, prompt: async () => { prompts++; }, abort: async () => undefined, dispose: () => undefined }) });
 	const executionEnvelope = createExecutionEnvelope({ executionId: "execution:expired", trigger: { kind: "automation" }, budget: { deadlineAt: Date.now() - 1 }, mode: "normal" });
 	await assert.rejects(runtime.run({ source, text: "run", timeoutMs: null, mode: "automation", executionEnvelope }), /deadline.*expired/i);
 	assert.equal(prompts, 0);
@@ -915,7 +917,7 @@ test("Agent runtime aborts a turn when cumulative model usage exceeds its token 
 	let listener;
 	let aborts = 0;
 	const agent = { state: { model: { id: "test" }, messages: [] } };
-	const runtime = new BeeMaxAgentRuntime({
+	const runtime = createRuntime({
 		planningPolicy: new AutonomousPlanningPolicy({ maxTokens: 12_000 }),
 		createAgent: async () => ({
 			agent, subscribe: (next) => { listener = next; return () => undefined; },
@@ -936,7 +938,7 @@ test("Agent runtime token budget does not charge cached input a second time", as
 	let listener;
 	let aborts = 0;
 	const agent = { state: { model: { id: "test" }, messages: [] } };
-	const runtime = new BeeMaxAgentRuntime({
+	const runtime = createRuntime({
 		planningPolicy: new AutonomousPlanningPolicy({ maxTokens: 12_000 }),
 		createAgent: async () => ({
 			agent, subscribe: (next) => { listener = next; return () => undefined; },
@@ -958,7 +960,7 @@ test("Agent runtime performs one content-free correction when a complex turn ski
 	let listener;
 	const prompts = [];
 	const agent = { state: { model: { id: "test" }, messages: [] } };
-	const runtime = new BeeMaxAgentRuntime({ planningPolicy: new AutonomousPlanningPolicy(), createAgent: async () => ({
+	const runtime = createRuntime({ planningPolicy: new AutonomousPlanningPolicy(), createAgent: async () => ({
 		agent, subscribe: (next) => { listener = next; return () => undefined; },
 		prompt: async (text) => {
 			prompts.push(text);
@@ -978,9 +980,12 @@ test("Agent runtime aborts repeated Task Plan rejection inside one live Pi turn 
 	let listener;
 	let aborts = 0;
 	const agent = { state: { model: { id: "test" }, messages: [] } };
-	const runtime = new BeeMaxAgentRuntime({ planningPolicy: new AutonomousPlanningPolicy(), createAgent: async () => ({
+	let activeTools = ["task_plan_execute"];
+	const runtime = createRuntime({ planningPolicy: new AutonomousPlanningPolicy(), createAgent: async () => ({
 		agent,
 		getAllTools: () => [{ name: "task_plan_execute", beemaxPolicy: { sideEffect: "local" } }],
+		getActiveToolNames: () => [...activeTools],
+		setActiveToolsByName: (names) => { activeTools = [...names]; },
 		subscribe: (next) => { listener = next; return () => undefined; },
 		prompt: async () => {
 			for (let attempt = 1; attempt <= 2; attempt++) {
@@ -1002,7 +1007,7 @@ test("delegated execution cannot finish after spawn without waiting for its Sub-
 	let listener;
 	let prompts = 0;
 	const agent = { state: { model: { id: "test" }, messages: [] } };
-	const runtime = new BeeMaxAgentRuntime({ planningPolicy: new AutonomousPlanningPolicy(), createAgent: async () => ({
+	const runtime = createRuntime({ planningPolicy: new AutonomousPlanningPolicy(), createAgent: async () => ({
 		agent, subscribe: (next) => { listener = next; return () => undefined; },
 		prompt: async () => {
 			prompts++;

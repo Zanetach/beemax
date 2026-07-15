@@ -5,9 +5,14 @@ import { join } from "node:path";
 import test from "node:test";
 import { MemoryStore } from "@beemax/memory";
 import { createAccessScopeRef, createExecutionEnvelope, createSituation, FileExecutionTraceStore } from "@beemax/core";
-import { buildMainAgentSystemPrompt, buildSubagentSystemPrompt, createTaskVerifier, createVerifiedObjectiveMemoryPublisher, executeObjectiveDelivery, executePlannedTask, verificationAgentTools, verificationAgentToolsForTask } from "../dist/gateway.js";
-import { createExecutionRoleTools } from "../dist/agent-factory.js";
+import { buildMainAgentSystemPrompt, buildSubagentSystemPrompt, createTaskVerifier as createTaskVerifierRaw, createVerifiedObjectiveMemoryPublisher, executeObjectiveDelivery as executeObjectiveDeliveryRaw, executePlannedTask as executePlannedTaskRaw, verificationAgentTools, verificationAgentToolsForTask } from "../dist/gateway.js";
+import { attestAgentFactoryProfile, createExecutionRoleTools } from "../dist/agent-factory.js";
 import { createSuccessfulVerificationReceipt, normalizeVerifierEvidenceRefs } from "../dist/verification-protocol.js";
+
+const scopedFactory = (factory) => attestAgentFactoryProfile(factory, "profile:test");
+const executePlannedTask = (factory, ...args) => executePlannedTaskRaw(scopedFactory(factory), ...args);
+const executeObjectiveDelivery = (factory, ...args) => executeObjectiveDeliveryRaw(scopedFactory(factory), ...args);
+const createTaskVerifier = (factory, ...args) => createTaskVerifierRaw(scopedFactory(factory), ...args);
 
 test("Sub-Agents must discover admitted capabilities and fail explicitly instead of weakening the Task contract", () => {
 	const prompt = buildSubagentSystemPrompt();

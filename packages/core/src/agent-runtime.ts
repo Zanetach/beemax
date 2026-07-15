@@ -24,7 +24,8 @@ import type { TaskGraphVerifier } from "./task-graph.ts";
 import { CapabilityRuntime, capabilityVersionOf } from "./capability-runtime.ts";
 import type { ToolSideEffect } from "./tool-runtime.ts";
 import { MediaUnderstandingRuntime, type MediaUnderstandingPort } from "./media-understanding.ts";
-import { activateToolSpecPlan, buildToolSpecPlan, renderToolSpecPlan, type ToolSpecInventoryItem } from "./tool-spec-plan.ts";
+import { activateToolSpecPlan, buildToolSpecPlan, deferToolSpecPlan, hideToolSpecPlan, renderToolSpecPlan, type ToolSpecInventoryItem } from "./tool-spec-plan.ts";
+import type { ToolEffectProjectionReader } from "./tool-effect.ts";
 
 export interface AgentRunInput<Source extends BeeMaxRuntimeSource = BeeMaxRuntimeSource> {
 	source: Source;
@@ -121,7 +122,7 @@ export interface AgentRuntimePort<Source extends BeeMaxRuntimeSource = BeeMaxRun
 export interface BeeMaxAgentRuntimeOptions<Source extends BeeMaxRuntimeSource = BeeMaxRuntimeSource> extends SessionCoordinatorOptions {
 	createAgent: RuntimeSessionFactory<Source>;
 	/** Trusted Profile identity used to scope the turn Tool Spec Plan. */
-	profileId?: string;
+	profileId: string;
 	createAutomationAgent?: RuntimeSessionFactory<Source>;
 	context?: ConversationContext;
 	controlHandler?: AgentControlHandler<Source>;
@@ -140,6 +141,8 @@ export interface BeeMaxAgentRuntimeOptions<Source extends BeeMaxRuntimeSource = 
 	situationBuilder?: SituationBuilderPort;
 	/** Content-free diagnostic projection keyed by the active Execution Envelope. */
 	executionTrace?: ExecutionTraceSink;
+	/** Trusted Profile-local Effect projection used to hide Tools with unresolved writes for the active Task. */
+	toolEffectProjectionReader?: ToolEffectProjectionReader;
 	/** Independent completion authority for durable interactive Candidate Outcomes. */
 	verifyObjectiveCandidate?: TaskGraphVerifier;
 	/** Shared perception seam used when the active Pi model cannot consume media natively. */
@@ -170,6 +173,7 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 	private readonly workContractBuilder: WorkContractBuilderPort;
 	private readonly situationBuilder: SituationBuilderPort;
 	private readonly executionTrace?: ExecutionTraceSink;
+	private readonly toolEffectProjectionReader?: ToolEffectProjectionReader;
 	private readonly verifyObjectiveCandidate?: TaskGraphVerifier;
 	private readonly mediaUnderstanding: MediaUnderstandingPort;
 	private readonly turnIdleSettleMs: number | null;
@@ -178,7 +182,8 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 	constructor(options: BeeMaxAgentRuntimeOptions<Source>) {
 		this.sessions = new SessionCoordinator(options);
 		this.createAgent = options.createAgent;
-		this.profileId = options.profileId?.trim().slice(0, 256) || "profile:runtime";
+		this.profileId = options.profileId?.trim();
+		if (!this.profileId || this.profileId.length > 256) throw new Error("Trusted Profile identity is required for Agent Runtime composition and must not exceed 256 characters");
 		this.createAutomationAgent = options.createAutomationAgent;
 		this.context = options.context;
 		this.controlHandler = options.controlHandler;
@@ -192,6 +197,7 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 		this.workContractBuilder = options.workContractBuilder ?? new DeterministicWorkContractBuilder();
 		this.situationBuilder = options.situationBuilder ?? new DeterministicSituationBuilder();
 		this.executionTrace = options.executionTrace;
+		this.toolEffectProjectionReader = options.toolEffectProjectionReader;
 		this.verifyObjectiveCandidate = options.verifyObjectiveCandidate;
 		this.mediaUnderstanding = options.mediaUnderstanding ?? new MediaUnderstandingRuntime([]);
 		this.turnIdleSettleMs = options.turnIdleSettleMs === null ? null : Math.max(10, Math.min(options.turnIdleSettleMs ?? 60_000, 300_000));
@@ -309,6 +315,7 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 			const activeTools = supportsProgressiveTools ? session.piSession.getActiveToolNames() : undefined;
 			const allToolInfo = typeof session.piSession.getAllTools === "function" ? session.piSession.getAllTools() : [];
 			const allTools = allToolInfo.map((tool) => session.piSession.getToolDefinition?.(tool.name) ?? tool);
+			if (allTools.length && !supportsProgressiveTools) throw new AgentRunError("Pi session does not support turn-scoped Tool activation", false, undefined);
 			const admittedTools = input.allowedCapabilities ? [...new Set(input.allowedCapabilities.map((name) => name.trim()).filter(Boolean))] : undefined;
 			if (admittedTools) {
 				const inventory = new Set(allTools.map((tool) => tool.name));
@@ -316,6 +323,9 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 				if (!admittedTools.length || unknown.length) throw new AgentRunError(unknown.length ? `Execution capability allowlist contains unavailable Tools: ${unknown.join(", ")}` : "Execution capability allowlist is empty", false, undefined);
 			}
 			const toolSideEffects = new Map(allTools.map((tool) => [tool.name, toolSideEffect(tool)]));
+			const unresolvedEffectTools = new Set(executionEnvelope.taskId
+				? (this.toolEffectProjectionReader?.taskProjection({ ownerKey: input.source.delegatedTask?.ownerKey ?? responsibilityOwnerKey(input.source), taskId: executionEnvelope.taskId }) ?? []).filter((effect) => effect.status === "unknown").map((effect) => effect.tool)
+				: []);
 			const unresolvedUncertainty = Boolean(workContract?.uncertainties.length);
 			const previousToolBoundary = session.piSession.agent.beforeToolCall;
 			const capabilityRuntime = new CapabilityRuntime();
@@ -351,7 +361,7 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 				},
 				selectedToolNames: proposedProgressiveTools.filter((name) => allTools.some((tool) => tool.name === name)),
 				activeSkillToolNames: skillLifecycleTools,
-				tools: allTools.map((tool) => toolSpecInventoryItem(tool, admittedTools)),
+				tools: allTools.map((tool) => toolSpecInventoryItem(tool, admittedTools, unresolvedEffectTools)),
 			});
 			const activatePlannedTools = (names: readonly string[]): string[] => {
 				const eligible = names.filter((name) => toolSpecPlan.direct.some((entry) => entry.toolName === name) || toolSpecPlan.deferred.some((entry) => entry.toolName === name));
@@ -407,6 +417,12 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 				try { await session.piSession.prompt(...args); }
 				finally { promptInFlight = false; clearIdleSettle(); }
 			};
+			const publishToolSpecTransition = () => {
+				const message = { role: "custom" as const, customType: "beemax-tool-spec-transition", content: renderToolSpecPlan(toolSpecPlan), display: false, timestamp: Date.now() };
+				const sender = (session.piSession as typeof session.piSession & { sendCustomMessage?: (message: { customType: string; content: string; display: boolean }, options: { triggerTurn: boolean; deliverAs: "context" }) => Promise<void> }).sendCustomMessage;
+				if (sender) void sender.call(session.piSession, message, { triggerTurn: false, deliverAs: "context" });
+				else session.piSession.agent.state.messages.push(message);
+			};
 			const enqueueEvent = (event: BeeMaxAgentRunEvent) => { eventDelivery = eventDelivery.then(() => onEvent?.(event)).then(() => undefined); };
 			const unsubscribe = session.piSession.subscribe((event) => {
 				if (event.type === "tool_execution_start") {
@@ -431,20 +447,25 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 					if (!event.isError) successfulToolNames.add(event.toolName);
 					if (event.toolName === "capability_discover" && !event.isError) {
 						const discovery = capabilityDiscoveryMetadata(event.result, new Set(allTools.map((tool) => tool.name)));
+						if (discovery.restrictions.length) toolSpecPlan = hideToolSpecPlan(toolSpecPlan, discovery.restrictions);
 						const activatedTools = activatePlannedTools(discovery.activatedTools);
-						discoveredCapabilities = activatedTools.length > 0;
-						if (activatedTools.length && supportsProgressiveTools) {
-							// One successful resolution is enough for this route. Keeping the
-							// meta-tool active encourages weaker models to rediscover the same
-							// capability instead of executing it; a later failed read can expose
-							// discovery again through the explicit reroute path below.
-							session.piSession.setActiveToolsByName([...new Set([...toolSpecPlan.direct.map((entry) => entry.toolName).filter((name) => name !== "capability_discover"), ...activatedTools])]);
+						if (activatedTools.length) {
+							toolSpecPlan = deferToolSpecPlan(toolSpecPlan, ["capability_discover"]);
+							session.piSession.setActiveToolsByName(toolSpecPlan.direct.map((entry) => entry.toolName));
 						}
+						if (activatedTools.length || discovery.restrictions.length) publishToolSpecTransition();
+						discoveredCapabilities = activatedTools.length > 0;
 						const discoveredSkill = discovery.candidates.find((candidate) => candidate.kind === "skill" && candidate.confidence >= 0.5)?.name;
 						if (!prefetchedSkills.length && discoveredSkill) prefetchedSkills = [discoveredSkill];
-						if (discovery.candidates.length || activatedTools.length) enqueueEvent({ type: "capability_ranked", candidates: discovery.candidates, activatedTools });
+						if (discovery.candidates.length || activatedTools.length || discovery.restrictions.length) enqueueEvent({ type: "capability_ranked", candidates: discovery.candidates, activatedTools });
 					}
 					else if (event.toolName !== "capability_discover") {
+						if (!event.isError && ["skill_activate", "skill_route", "skill_read"].includes(event.toolName)) {
+							const lifecycle = capabilityDiscoveryMetadata(event.result, new Set(allTools.map((tool) => tool.name)));
+							if (lifecycle.restrictions.length) toolSpecPlan = hideToolSpecPlan(toolSpecPlan, lifecycle.restrictions);
+							const activated = activatePlannedTools(lifecycle.activatedTools);
+							if (activated.length || lifecycle.restrictions.length) publishToolSpecTransition();
+						}
 						const skillName = skillExecutionName(event.result);
 						if (!event.isError && (event.toolName === "skill_activate" || event.toolName === "skill_read") && skillName && prefetchedSkills.includes(skillName)) activatedPrefetchedSkills.add(skillName);
 						if (!event.isError && event.toolName === "skill_complete" && skillName && prefetchedSkills.includes(skillName)) completedPrefetchedSkills.add(skillName);
@@ -533,7 +554,7 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 				if (input.images?.length) {
 					const mediaStartedAt = Date.now();
 					const preparedMedia = await this.mediaUnderstanding.prepare({ text, images: input.images, primaryModel: mediaModelOf(session.piSession.agent), signal: input.signal });
-					promptText = preparedMedia.text;
+					promptText = [renderToolSpecPlan(toolSpecPlan), prefetchedSkills.length ? `<beemax-skill-preflight>Installed matching Skill metadata: ${prefetchedSkills.join(", ")}. Use skill_read with the exact best-matching name before executing the request; do not skip it or infer its instructions.</beemax-skill-preflight>` : undefined, preparedMedia.text].filter(Boolean).join("\n\n");
 					promptImages = preparedMedia.images;
 					await onEvent?.({ type: "media_understood", route: preparedMedia.route === "none" ? "adapter" : preparedMedia.route, adapterIds: preparedMedia.receipts.map((receipt) => receipt.adapterId), receiptCount: preparedMedia.receipts.length, failureCount: preparedMedia.failures.length, durationMs: Math.max(0, Date.now() - mediaStartedAt) });
 				}
@@ -550,7 +571,7 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 				if (failedReadToolAwaitingReroute && !discoveredCapabilities && !turnAbortReason) {
 					const failedTool = failedReadToolAwaitingReroute; failedReadToolAwaitingReroute = undefined;
 					if (supportsProgressiveTools && allTools.some((tool) => tool.name === "capability_discover")) activatePlannedTools(["capability_discover"]);
-					await promptSession(`[BeeMax capability reroute: ${failedTool} failed without a recorded equivalent-capability discovery. Use capability_discover now to find an already available alternative, then continue the original request. Do not retry the same external mutation; reconcile any uncertain side effect before another write.]`, { expandPromptTemplates: false });
+					await promptSession(`${renderToolSpecPlan(toolSpecPlan)}\n\n[BeeMax capability reroute: ${failedTool} failed without a recorded equivalent-capability discovery. Use capability_discover now to find an already available alternative, then continue the original request. Do not retry the same external mutation; reconcile any uncertain side effect before another write.]`, { expandPromptTemplates: false });
 				}
 				if (discoveredCapabilities && !turnAbortReason) {
 					discoveredCapabilities = false;
@@ -685,6 +706,7 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 				await onEvent?.({ type: "execution_settled", executionEnvelope, status: settlementStatus });
 				releaseTurnInputContext(session.piSession, turnMessageStart, input.text);
 				releaseHistoricalSkillContext(session.piSession, turnMessageStart);
+				releaseHistoricalToolSpecContext(session.piSession, turnMessageStart);
 				(session.piSession as typeof session.piSession & { beemaxResetTurnResources?: () => void }).beemaxResetTurnResources?.();
 				if (activeTools) session.piSession.setActiveToolsByName(activeTools);
 				if (planningLease) this.planningBudgets?.end(planningScope, planningLease);
@@ -922,6 +944,16 @@ function releaseHistoricalSkillContext(session: AgentSession, fromIndex = 0): vo
 	if (messages) session.agent.state.messages = messages;
 }
 
+function releaseHistoricalToolSpecContext(session: AgentSession, fromIndex = 0): void {
+	const current = session.agent.state.messages; let messages: typeof current | undefined;
+	for (let index = Math.max(0, fromIndex); index < current.length; index++) {
+		const message = current[index]!;
+		if (message.role !== "custom" || message.customType !== "beemax-tool-spec-transition" || message.content === "[Turn-scoped Tool Spec transition released.]") continue;
+		messages ??= [...current]; messages[index] = { ...message, content: "[Turn-scoped Tool Spec transition released.]" };
+	}
+	if (messages) session.agent.state.messages = messages;
+}
+
 function releaseTurnInputContext(session: AgentSession, fromIndex: number, rawText: string): void {
 	const current = session.agent.state.messages;
 	let messages: typeof current | undefined;
@@ -941,11 +973,11 @@ function releaseTurnInputContext(session: AgentSession, fromIndex: number, rawTe
 	if (messages) session.agent.state.messages = messages;
 }
 
-function capabilityDiscoveryMetadata(result: unknown, knownTools: ReadonlySet<string>): { hasMatches: boolean; candidates: CapabilityRankedCandidate[]; activatedTools: string[] } {
+function capabilityDiscoveryMetadata(result: unknown, knownTools: ReadonlySet<string>): { hasMatches: boolean; candidates: CapabilityRankedCandidate[]; activatedTools: string[]; restrictions: Array<{ toolName: string; reason: "configuration_required" | "provider_unhealthy" | "provider_unavailable" }> } {
 	const details = result && typeof result === "object" ? (result as { details?: unknown }).details : undefined;
-	if (!details || typeof details !== "object") return { hasMatches: false, candidates: [], activatedTools: [] };
-	const value = details as { activatedTools?: unknown; tools?: unknown; skills?: unknown; ranked?: unknown };
-	const validName = (item: unknown): item is string => typeof item === "string" && /^[a-z0-9][a-z0-9_-]{0,127}$/.test(item);
+	if (!details || typeof details !== "object") return { hasMatches: false, candidates: [], activatedTools: [], restrictions: [] };
+	const value = details as { activatedTools?: unknown; tools?: unknown; skills?: unknown; ranked?: unknown; providerResolutions?: unknown };
+	const validName = (item: unknown): item is string => typeof item === "string" && /^[a-z0-9][a-z0-9._:-]{0,127}$/i.test(item);
 	const activatedTools = Array.isArray(value.activatedTools) ? [...new Set(value.activatedTools.filter((item): item is string => validName(item) && knownTools.has(item)))].slice(0, 20) : [];
 	const candidates = Array.isArray(value.ranked) ? value.ranked.flatMap((item): CapabilityRankedCandidate[] => {
 		if (!item || typeof item !== "object") return []; const entry = item as Record<string, unknown>;
@@ -953,8 +985,16 @@ function capabilityDiscoveryMetadata(result: unknown, knownTools: ReadonlySet<st
 		const reason: CapabilityRankReason = entry.reason.includes("trigger") ? "trigger" : entry.reason.includes("alias") ? "alias" : entry.reason.includes("exact") ? "exact_name" : entry.reason.includes("name") ? "name" : "lexical";
 		return [{ kind: entry.kind as "tool" | "mcp" | "skill", name: entry.name, score: entry.score, confidence: Math.max(0, Math.min(1, entry.confidence)), reason }];
 	}).slice(0, 10) : [];
+	const restrictions = Array.isArray(value.providerResolutions) ? value.providerResolutions.flatMap((item): Array<{ toolName: string; reason: "configuration_required" | "provider_unhealthy" | "provider_unavailable" }> => {
+		if (!item || typeof item !== "object") return [];
+		const entry = item as { capability?: unknown; status?: unknown; blocker?: { code?: unknown } };
+		if (entry.status !== "blocked" || !validName(entry.capability) || !knownTools.has(entry.capability)) return [];
+		const code = entry.blocker?.code;
+		const reason = code === "configuration_required" ? "configuration_required" : code === "provider_unhealthy" ? "provider_unhealthy" : "provider_unavailable";
+		return [{ toolName: entry.capability, reason }];
+	}) : [];
 	const hasMatches = activatedTools.length > 0 || candidates.length > 0;
-	return { hasMatches, candidates, activatedTools };
+	return { hasMatches, candidates, activatedTools, restrictions };
 }
 
 function toolSideEffect(tool: unknown): ToolSideEffect | undefined {
@@ -963,7 +1003,7 @@ function toolSideEffect(tool: unknown): ToolSideEffect | undefined {
 	return sideEffect === "none" || sideEffect === "local" || sideEffect === "external" ? sideEffect : undefined;
 }
 
-function toolSpecInventoryItem(tool: ToolDefinition | ToolInfo, admittedTools?: readonly string[]): ToolSpecInventoryItem {
+function toolSpecInventoryItem(tool: ToolDefinition | ToolInfo, admittedTools?: readonly string[], unresolvedEffectTools?: ReadonlySet<string>): ToolSpecInventoryItem {
 	const candidate = tool as typeof tool & { description?: string; parameters?: unknown; beemaxToolSpec?: { kind?: unknown; version?: unknown; configured?: unknown; health?: unknown; authorized?: unknown } };
 	const metadata = candidate.beemaxToolSpec;
 	const kind = metadata?.kind === "mcp" || metadata?.kind === "skill" ? metadata.kind : "tool";
@@ -981,6 +1021,7 @@ function toolSpecInventoryItem(tool: ToolDefinition | ToolInfo, admittedTools?: 
 		configured: metadata?.configured !== false,
 		health,
 		authorized: metadata?.authorized !== false && (!admittedTools || admittedTools.includes(candidate.name)),
+		...(unresolvedEffectTools?.has(candidate.name) ? { effectStatus: "unknown" as const } : {}),
 	};
 }
 

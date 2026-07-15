@@ -451,9 +451,9 @@ Work the **frontier**: any ticket whose blockers are all done. Do not bypass blo
 
 **Blocked by:** Validate Work Contracts before execution.
 
-- [ ] Keep large catalogs out of the initial context and expose only valid immutable Tool identifiers and schemas.
-- [ ] Make newly activated Tools visible on the next Pi sampling request without restarting the Agent Loop.
-- [ ] Prevent hidden, unhealthy, unconfigured, or unauthorized Tools from becoming executable.
+- [x] Keep large catalogs out of the initial context and expose only valid immutable Tool identifiers and schemas.
+- [x] Make newly activated Tools visible on the next Pi sampling request without restarting the Agent Loop.
+- [x] Prevent hidden, unhealthy, unconfigured, or unauthorized Tools from becoming executable.
 
 ## Route Capability requirements semantically
 

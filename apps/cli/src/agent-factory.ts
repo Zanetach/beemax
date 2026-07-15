@@ -96,6 +96,7 @@ export interface AgentFactoryOptions {
 }
 
 const agentFactorySecurity = new WeakMap<Function, ToolEffectSink | undefined>();
+const agentFactoryProfiles = new WeakMap<Function, string>();
 
 /** Marks a factory that enters the Core Action Governance hook and binds the Profile Effect authority. */
 export function attestAgentFactorySecurity<T extends Function>(factory: T, toolEffects: ToolEffectSink | undefined): T {
@@ -105,6 +106,21 @@ export function attestAgentFactorySecurity<T extends Function>(factory: T, toolE
 
 export function assertAgentFactorySecurity(factory: Function, expectedEffects: ToolEffectSink): void {
 	if (!agentFactorySecurity.has(factory) || agentFactorySecurity.get(factory) !== expectedEffects) throw new Error("Channel main Agent must bind Core Action Governance and the shared Profile Effect Authority");
+}
+
+/** Recovers only the trusted Profile identity bound by the factory composition root. */
+export function profileIdForAgentFactory(factory: Function): string {
+	const profileId = agentFactoryProfiles.get(factory);
+	if (!profileId) throw new Error("Agent factory is not bound to a trusted Profile identity");
+	return profileId;
+}
+
+/** Binds a factory to a Profile at a trusted composition or isolated test boundary. */
+export function attestAgentFactoryProfile<T extends Function>(factory: T, profileId: string): T {
+	const normalized = profileId.trim();
+	if (!normalized || normalized.length > 256) throw new Error("Agent factory Profile identity is invalid");
+	agentFactoryProfiles.set(factory, normalized);
+	return factory;
 }
 
 export function buildAgentFactory(opts: AgentFactoryOptions) {
@@ -152,7 +168,7 @@ export function buildAgentFactory(opts: AgentFactoryOptions) {
 		return [...executionTools, ...baseCustomTools, ...verificationTools, ...browserTools, ...memoryTools, ...automationTools, ...imageTools, ...skillTools, ...scopedTools];
 		},
 	})(sessionId, source, executionEnvelope, legacySessionIds);
-	return attestAgentFactorySecurity(factory, opts.toolEffects);
+	return attestAgentFactoryProfile(attestAgentFactorySecurity(factory, opts.toolEffects), opts.profileId);
 }
 
 /** Internal protocol Tools are registered only in the execution role that owns them. */

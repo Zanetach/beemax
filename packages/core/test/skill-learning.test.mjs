@@ -17,7 +17,7 @@ test("capability discovery searches the current tool inventory before learning a
 		const discovered = await tools.get("capability_discover").execute("discover", { query: "calendar" });
 		assert.deepEqual(discovered.details.tools, [{ name: "calendar_find", description: "Find free calendar time" }]);
 		assert.deepEqual(discovered.details.activatedTools, ["calendar_find"]);
-		assert.deepEqual(activations, [["calendar_find"]]);
+		assert.deepEqual(activations, []);
 		assert.deepEqual(discovered.details.skills, []);
 		assert.equal(existsSync(join(root, "state", "skill-learning.key")), false);
 		assert.equal(tools.get("capability_discover").beemaxPolicy.sideEffect, "none");
@@ -85,7 +85,8 @@ test("capability discovery applies one Top-K budget across Tools and Skills", as
 		assert.deepEqual(discovered.details.skills.map((item) => item.name), ["report-review"]);
 		assert.equal(discovered.details.ranked.some((item) => item.kind === "mcp"), true);
 		assert.equal(discovered.details.ranked.every((item) => Number.isFinite(item.score) && item.confidence >= 0 && item.confidence <= 1 && item.reason.length > 0), true);
-		assert.deepEqual(activations, [[...discovered.details.tools.map((item) => item.name), "skill_activate", "skill_read"]]);
+		assert.deepEqual(activations, []);
+		assert.deepEqual(discovered.details.activatedTools, [...discovered.details.tools.map((item) => item.name), "skill_activate", "skill_read"]);
 		await assert.rejects(() => tools.get("skill_activate").execute("activate-loser", { name: "zzz-review" }), /must be discovered/i);
 		assert.doesNotThrow(() => structuredClone(discovered));
 	} finally { rmSync(root, { recursive: true, force: true }); }
@@ -100,14 +101,18 @@ test("Skill tools progressively activate a project Skill route and only its decl
 		writeFileSync(join(skill, "manifest.json"), JSON.stringify({ version: 1, routes: { review: { module: "modules/review.md", tools: ["web_search"] } } }));
 		writeFileSync(join(skill, "modules", "review.md"), "Review only material claims.");
 		const activations = [];
-		const tools = new Map(createSkillTools(root, () => undefined, [{ name: "web_search", description: "Search public sources" }], undefined, [project], (names) => activations.push(names)).map((tool) => [tool.name, tool]));
+		const tools = new Map(createSkillTools(root, () => undefined, [{ name: "web_search", description: "Search public sources", providers: [{ id: "search-provider", kind: "tool", capabilities: ["web_search"], installed: true, health: async () => ({ status: "unhealthy", reason: "probe failed" }) }] }], undefined, [project], (names) => activations.push(names)).map((tool) => [tool.name, tool]));
 		const discovery = await tools.get("capability_discover").execute("discover", { query: "report review" });
 		assert.deepEqual(discovery.details.skills.map((item) => item.name), ["report-review"]);
 		const activated = await tools.get("skill_activate").execute("activate", { name: "report-review" }); assert.match(activated.content[0].text, /route table/);
-		await tools.get("skill_route").execute("route", { route: "review" });
+		const routed = await tools.get("skill_route").execute("route", { route: "review" });
 		assert.equal((await tools.get("skill_resource_read").execute("read", { path: "modules/review.md" })).content[0].text, "Review only material claims.");
 		assert.equal((await tools.get("skill_complete").execute("complete", {})).details.state, "completed");
-		assert.deepEqual(activations, [["skill_activate", "skill_read"], ["skill_route", "skill_complete"], ["skill_resource_read", "skill_complete", "web_search"]]);
+		assert.deepEqual(activations, []);
+		assert.deepEqual(discovery.details.activatedTools, ["skill_activate", "skill_read"]);
+		assert.deepEqual(activated.details.activatedTools, ["skill_route", "skill_complete"]);
+		assert.deepEqual(routed.details.activatedTools, ["skill_resource_read", "skill_complete", "web_search"]);
+		assert.deepEqual(routed.details.providerResolutions, [{ capability: "web_search", status: "blocked", blocker: { code: "provider_unhealthy" } }]);
 	} finally { rmSync(root, { recursive: true, force: true }); }
 });
 
@@ -227,7 +232,8 @@ test("legacy skill_read preserves one-call activation for self-contained Skills"
 		await tools.get("skill_create").execute("create", { name: "legacy-review", description: "Review a source using the legacy workflow", instructions: "Search the primary source and produce a concise review." });
 		const read = await tools.get("skill_read").execute("read", { name: "legacy-review" });
 		assert.equal(read.details.legacy, true); assert.equal(read.details.state.state, "module_loaded"); assert.match(read.content[0].text, /Search the primary source/);
-		assert.deepEqual(activations.at(-1), ["skill_complete"]);
+		assert.deepEqual(activations, []);
+		assert.deepEqual(read.details.activatedTools, ["skill_complete"]);
 	} finally { rmSync(root, { recursive: true, force: true }); }
 });
 
