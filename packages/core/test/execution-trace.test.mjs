@@ -76,6 +76,33 @@ test("Execution Trace binds a settled Tool to one Tool Spec plan and one immutab
 	} finally { rmSync(directory, { recursive: true, force: true }); }
 });
 
+test("Execution Trace persists a content-free Tool dispatch receipt", () => {
+	const directory = mkdtempSync(join(tmpdir(), "beemax-trace-dispatch-receipt-"));
+	try {
+		const store = new FileExecutionTraceStore(join(directory, "trace.jsonl"));
+		const executionEnvelope = createExecutionEnvelope({ executionId: "execution:dispatch", trigger: { kind: "interaction" }, mode: "normal" });
+		store.record({
+			type: "tool.settled", executionEnvelope, toolCallId: "call:invalid", toolName: "search", status: "failed",
+			dispatchReceipt: { stage: "validation", code: "arguments_invalid", outcome: "rejected", retryable: true },
+		});
+		assert.deepEqual(store.trace({ executionId: "execution:dispatch" }).events[0].dispatchReceipt, {
+			stage: "validation", code: "arguments_invalid", outcome: "rejected", retryable: true,
+		});
+		assert.throws(() => store.record({
+			type: "tool.settled", executionEnvelope, toolCallId: "call:forged", toolName: "search", status: "failed",
+			dispatchReceipt: { stage: "SECRET", code: "arguments_invalid", outcome: "rejected", retryable: true },
+		}), /dispatch receipt/i);
+		assert.throws(() => store.record({
+			type: "tool.settled", executionEnvelope, toolCallId: "call:inconsistent", toolName: "search", status: "failed",
+			dispatchReceipt: { stage: "execution", code: "arguments_invalid", outcome: "failed", retryable: true },
+		}), /dispatch receipt/i);
+		assert.throws(() => store.record({
+			type: "tool.settled", executionEnvelope, toolCallId: "call:status", toolName: "search", status: "succeeded",
+			dispatchReceipt: { stage: "validation", code: "arguments_invalid", outcome: "rejected", retryable: true },
+		}), /dispatch receipt/i);
+	} finally { rmSync(directory, { recursive: true, force: true }); }
+});
+
 test("Execution Trace preserves content-free ordered Skill lifecycle receipts", () => {
 	const directory = mkdtempSync(join(tmpdir(), "beemax-trace-skill-lifecycle-"));
 	try {

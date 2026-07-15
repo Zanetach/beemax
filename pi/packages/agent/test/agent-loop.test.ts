@@ -307,6 +307,184 @@ describe("agentLoop with AgentMessage", () => {
 		}
 	});
 
+	it("should classify an invented Tool identifier as a routing rejection", async () => {
+		const context: AgentContext = { systemPrompt: "", messages: [], tools: [] };
+		let callIndex = 0;
+		const streamFn = () => {
+			const stream = new MockAssistantStream();
+			queueMicrotask(() => {
+				const message = callIndex++ === 0
+					? createAssistantMessage([{ type: "toolCall", id: "missing-1", name: "invented_tool", arguments: {} }], "toolUse")
+					: createAssistantMessage([{ type: "text", text: "corrected" }]);
+				stream.push({ type: "done", reason: message.stopReason, message });
+			});
+			return stream;
+		};
+
+		const events: AgentEvent[] = [];
+		for await (const event of agentLoop([createUserMessage("do it")], context, { model: createModel(), convertToLlm: identityConverter }, undefined, streamFn)) events.push(event);
+		const settled = events.find((event) => event.type === "tool_execution_end");
+		expect(settled?.type === "tool_execution_end" ? settled.result.details : undefined).toEqual({
+			dispatchError: { stage: "routing", code: "tool_not_found", retryable: true },
+		});
+	});
+
+	it("should classify malformed Tool arguments without exposing their values", async () => {
+		const secret = "sk-test-agent-loop-secret";
+		const schema = Type.Object({ count: Type.Integer() });
+		const tool: AgentTool<typeof schema, { count: number }> = {
+			name: "count",
+			label: "Count",
+			description: "Count",
+			parameters: schema,
+			execute: async () => ({ content: [{ type: "text", text: "unexpected" }], details: {} }),
+		};
+		const context: AgentContext = { systemPrompt: "", messages: [], tools: [tool] };
+		let callIndex = 0;
+		const streamFn = () => {
+			const stream = new MockAssistantStream();
+			queueMicrotask(() => {
+				const message = callIndex++ === 0
+					? createAssistantMessage([{ type: "toolCall", id: "invalid-1", name: "count", arguments: { count: secret } }], "toolUse")
+					: createAssistantMessage([{ type: "text", text: "corrected" }]);
+				stream.push({ type: "done", reason: message.stopReason, message });
+			});
+			return stream;
+		};
+
+		const events: AgentEvent[] = [];
+		for await (const event of agentLoop([createUserMessage("count")], context, { model: createModel(), convertToLlm: identityConverter }, undefined, streamFn)) events.push(event);
+		const settled = events.find((event) => event.type === "tool_execution_end");
+		expect(settled?.type === "tool_execution_end" ? settled.result.details : undefined).toEqual({
+			dispatchError: { stage: "validation", code: "arguments_invalid", retryable: true },
+		});
+		const resultText = settled?.type === "tool_execution_end" ? JSON.stringify(settled.result) : "";
+		expect(resultText).not.toContain(secret);
+	});
+
+	it("should classify a beforeToolCall denial as an authorization rejection", async () => {
+		const schema = Type.Object({ value: Type.String() });
+		const tool: AgentTool<typeof schema, { value: string }> = {
+			name: "write",
+			label: "Write",
+			description: "Write",
+			parameters: schema,
+			execute: async () => ({ content: [], details: {} }),
+		};
+		const context: AgentContext = { systemPrompt: "", messages: [], tools: [tool] };
+		let callIndex = 0;
+		const streamFn = () => {
+			const stream = new MockAssistantStream();
+			queueMicrotask(() => {
+				const message = callIndex++ === 0
+					? createAssistantMessage([{ type: "toolCall", id: "blocked-1", name: "write", arguments: { value: "x" } }], "toolUse")
+					: createAssistantMessage([{ type: "text", text: "blocked" }]);
+				stream.push({ type: "done", reason: message.stopReason, message });
+			});
+			return stream;
+		};
+
+		const events: AgentEvent[] = [];
+		for await (const event of agentLoop([createUserMessage("write")], context, {
+			model: createModel(), convertToLlm: identityConverter,
+			beforeToolCall: async () => ({ block: true, reason: "approval required" }),
+		}, undefined, streamFn)) events.push(event);
+		const settled = events.find((event) => event.type === "tool_execution_end");
+		expect(settled?.type === "tool_execution_end" ? settled.result.details : undefined).toEqual({
+			dispatchError: { stage: "authorization", code: "blocked", retryable: false },
+		});
+	});
+
+	it("should redact credential-bearing Tool execution errors before they enter model context", async () => {
+		const credential = "sk-1234567890abcdefghijklmnop";
+		const schema = Type.Object({});
+		const tool: AgentTool<typeof schema, Record<string, never>> = {
+			name: "remote_read", label: "Remote read", description: "Remote read", parameters: schema,
+			execute: async () => { throw new Error(`upstream rejected api_key=${credential}`); },
+		};
+		const context: AgentContext = { systemPrompt: "", messages: [], tools: [tool] };
+		let callIndex = 0;
+		const streamFn = () => {
+			const stream = new MockAssistantStream();
+			queueMicrotask(() => {
+				const message = callIndex++ === 0
+					? createAssistantMessage([{ type: "toolCall", id: "remote-1", name: "remote_read", arguments: {} }], "toolUse")
+					: createAssistantMessage([{ type: "text", text: "reported failure" }]);
+				stream.push({ type: "done", reason: message.stopReason, message });
+			});
+			return stream;
+		};
+
+		const events: AgentEvent[] = [];
+		for await (const event of agentLoop([createUserMessage("read")], context, { model: createModel(), convertToLlm: identityConverter }, undefined, streamFn)) events.push(event);
+		const settled = events.find((event) => event.type === "tool_execution_end");
+		const serialized = settled?.type === "tool_execution_end" ? JSON.stringify(settled.result) : "";
+		expect(serialized).not.toContain(credential);
+		expect(serialized).toContain("redacted");
+		expect(settled?.type === "tool_execution_end" ? settled.result.details : undefined).toEqual({
+			dispatchError: { stage: "execution", code: "execution_failed", retryable: true },
+		});
+	});
+
+	it("should preserve an execution Dispatch Error when afterToolCall adds diagnostic details", async () => {
+		const schema = Type.Object({});
+		const tool: AgentTool<typeof schema, Record<string, never>> = {
+			name: "read", label: "Read", description: "Read", parameters: schema,
+			execute: async () => { throw new Error("upstream unavailable"); },
+		};
+		const context: AgentContext = { systemPrompt: "", messages: [], tools: [tool] };
+		let callIndex = 0;
+		const streamFn = () => {
+			const stream = new MockAssistantStream();
+			queueMicrotask(() => {
+				const message = callIndex++ === 0
+					? createAssistantMessage([{ type: "toolCall", id: "read-1", name: "read", arguments: {} }], "toolUse")
+					: createAssistantMessage([{ type: "text", text: "done" }]);
+				stream.push({ type: "done", reason: message.stopReason, message });
+			});
+			return stream;
+		};
+		const events: AgentEvent[] = [];
+		for await (const event of agentLoop([createUserMessage("read")], context, {
+			model: createModel(), convertToLlm: identityConverter,
+			afterToolCall: async () => ({ details: { provider: "primary" } }),
+		}, undefined, streamFn)) events.push(event);
+		const settled = events.find((event) => event.type === "tool_execution_end");
+		expect(settled?.type === "tool_execution_end" ? settled.result.details : undefined).toEqual({
+			provider: "primary",
+			dispatchError: { stage: "execution", code: "execution_failed", retryable: true },
+		});
+	});
+
+	it("should classify an afterToolCall rejection as a finalization failure", async () => {
+		const schema = Type.Object({});
+		const tool: AgentTool<typeof schema, Record<string, never>> = {
+			name: "read", label: "Read", description: "Read", parameters: schema,
+			execute: async () => ({ content: [{ type: "text", text: "candidate" }], details: {} }),
+		};
+		const context: AgentContext = { systemPrompt: "", messages: [], tools: [tool] };
+		let callIndex = 0;
+		const streamFn = () => {
+			const stream = new MockAssistantStream();
+			queueMicrotask(() => {
+				const message = callIndex++ === 0
+					? createAssistantMessage([{ type: "toolCall", id: "read-2", name: "read", arguments: {} }], "toolUse")
+					: createAssistantMessage([{ type: "text", text: "done" }]);
+				stream.push({ type: "done", reason: message.stopReason, message });
+			});
+			return stream;
+		};
+		const events: AgentEvent[] = [];
+		for await (const event of agentLoop([createUserMessage("read")], context, {
+			model: createModel(), convertToLlm: identityConverter,
+			afterToolCall: async () => ({ isError: true, content: [{ type: "text", text: "postcondition failed" }] }),
+		}, undefined, streamFn)) events.push(event);
+		const settled = events.find((event) => event.type === "tool_execution_end");
+		expect(settled?.type === "tool_execution_end" ? settled.result.details : undefined).toEqual({
+			dispatchError: { stage: "finalization", code: "finalization_failed", retryable: false },
+		});
+	});
+
 	it("should not execute tool calls from a length-truncated assistant message", async () => {
 		const toolSchema = Type.Object({ value: Type.String() });
 		const executed: string[] = [];

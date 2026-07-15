@@ -16,6 +16,31 @@ interface JsonSchemaObject {
 	oneOf?: JsonSchemaObject[];
 }
 
+export interface ToolArgumentsValidationIssue {
+	path: string;
+	keyword: string;
+}
+
+/**
+ * A content-safe validation failure. The model receives field locations and
+ * constraint kinds, while the rejected argument values stay out of error
+ * messages, logs, and subsequent model context.
+ */
+export class ToolArgumentsValidationError extends Error {
+	readonly issues: readonly ToolArgumentsValidationIssue[];
+
+	constructor(issues: readonly ToolArgumentsValidationIssue[]) {
+		const boundedIssues = issues.slice(0, 20).map((issue) => ({
+			path: issue.path.slice(0, 256),
+			keyword: issue.keyword.slice(0, 64),
+		}));
+		const formatted = boundedIssues.map((issue) => `  - ${issue.path}: ${issue.keyword} constraint was not satisfied`).join("\n");
+		super(`Validation failed for requested Tool:\n${formatted || "  - root: schema constraint was not satisfied"}`);
+		this.name = "ToolArgumentsValidationError";
+		this.issues = boundedIssues;
+	}
+}
+
 function getSchemaTypes(schema: JsonSchemaObject): string[] {
 	if (typeof schema.type === "string") {
 		return [schema.type];
@@ -298,13 +323,9 @@ export function validateToolArguments(tool: Tool, toolCall: ToolCall): any {
 		return args;
 	}
 
-	const errors =
-		validator
-			.Errors(args)
-			.map((error) => `  - ${formatValidationPath(error)}: ${error.message}`)
-			.join("\n") || "Unknown validation error";
-
-	const errorMessage = `Validation failed for tool "${toolCall.name}":\n${errors}\n\nReceived arguments:\n${JSON.stringify(toolCall.arguments, null, 2)}`;
-
-	throw new Error(errorMessage);
+	const issues = [...validator.Errors(args)].map((error) => ({
+		path: formatValidationPath(error),
+		keyword: typeof error.keyword === "string" && error.keyword ? error.keyword : "schema",
+	}));
+	throw new ToolArgumentsValidationError(issues);
 }

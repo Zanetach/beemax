@@ -489,6 +489,38 @@ test("Agent runtime reroutes one unresolved Tool failure through capability disc
 	runtime.dispose();
 });
 
+test("Agent runtime asks Pi to correct malformed arguments without treating them as a Provider outage", async () => {
+	const source = { platform: "cli", chatId: "argument-correction", chatType: "dm", userId: "local" };
+	let listener;
+	const prompts = [];
+	const traceEvents = [];
+	const agent = { state: { model: { id: "test" }, messages: [] } };
+	const runtime = createRuntime({ executionTrace: { record(event) { traceEvents.push(event); } }, createAgent: async () => ({
+		agent,
+		getActiveToolNames: () => ["capability_discover", "primary_search"],
+		setActiveToolsByName: () => undefined,
+		getAllTools: () => [{ name: "primary_search", description: "Primary search", beemaxPolicy: { sideEffect: "none" } }],
+		subscribe: (next) => { listener = next; return () => undefined; },
+		prompt: async (text) => {
+			prompts.push(text);
+			listener({
+				type: "tool_execution_end", toolCallId: "invalid", toolName: "primary_search", isError: true,
+				result: { content: [{ type: "text", text: "query: required constraint was not satisfied" }], details: { dispatchError: { stage: "validation", code: "arguments_invalid", retryable: true } } },
+			});
+			agent.state.messages = [{ role: "assistant", content: [{ type: "text", text: "will correct through Pi" }], usage: { input: 1, output: 1 } }];
+		},
+		abort: async () => undefined, dispose: () => undefined,
+	}) });
+
+	await runtime.run({ source, text: "find current evidence", timeoutMs: 1_000 });
+	assert.equal(prompts.length, 1);
+	assert.doesNotMatch(prompts.join("\n"), /capability reroute/i);
+	assert.deepEqual(traceEvents.find((event) => event.type === "tool.settled")?.dispatchReceipt, {
+		stage: "validation", code: "arguments_invalid", outcome: "rejected", retryable: true,
+	});
+	runtime.dispose();
+});
+
 test("Agent runtime aborts an identical failed read-only Tool loop before another model continuation", async () => {
 	const source = { platform: "cli", chatId: "duplicate-read", chatType: "dm", userId: "local" };
 	let listener;

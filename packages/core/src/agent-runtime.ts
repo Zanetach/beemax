@@ -19,7 +19,7 @@ import { redactCredentialMaterial } from "./credential-material.ts";
 import type { AccessScopeRef } from "./access-scope.ts";
 import { DeterministicSituationBuilder, type SituationBuilderPort } from "./situation-builder.ts";
 import { createExecutionEnvelope, type ExecutionEnvelope } from "./execution-envelope.ts";
-import { normalizeCapabilityReceiptRef, normalizeSkillLifecycleReceiptRef, type CapabilityReceiptRef, type ExecutionTraceSink, type SkillLifecycleReceiptRef } from "./execution-trace.ts";
+import { normalizeCapabilityReceiptRef, normalizeSkillLifecycleReceiptRef, type CapabilityReceiptRef, type ExecutionTraceSink, type SkillLifecycleReceiptRef, type ToolDispatchReceipt } from "./execution-trace.ts";
 import { createTaskCheckpoint, mergeTaskCheckpoints, renderTaskCheckpoint } from "./task-checkpoint.ts";
 import type { TaskGraphVerifier } from "./task-graph.ts";
 import { CapabilityRuntime, SEMANTIC_CAPABILITY_MINIMUM_SIMILARITY, capabilityVersionOf } from "./capability-runtime.ts";
@@ -544,7 +544,7 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 					const originatingToolSpecPlanId = assistantExpected?.toolSpecPlanId ?? toolSpecPlan.planId;
 					toolSpecPlanByCall.set(event.toolCallId, originatingToolSpecPlanId);
 					toolAttemptFingerprints.set(event.toolCallId, toolAttemptFingerprint(event.toolName, event.args));
-					this.recordTrace({ type: "tool.started", executionEnvelope, at, toolCallId: event.toolCallId, toolName: event.toolName, argumentsSha256, toolSpecPlanId: originatingToolSpecPlanId, ...(assistantExpected?.origin ?? {}) });
+					this.recordTrace({ type: "tool.started", executionEnvelope, at, toolCallId: event.toolCallId, toolName: traceableToolName(event.toolName), argumentsSha256, toolSpecPlanId: originatingToolSpecPlanId, ...(assistantExpected?.origin ?? {}) });
 					observableProgress = true;
 					const expected = planning?.requiredTools[requiredToolsUsed.length];
 					if (event.toolName === expected) requiredToolCalls.set(event.toolCallId, { name: event.toolName, args: event.args });
@@ -562,7 +562,8 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 					const toolFingerprint = toolAttemptFingerprints.get(event.toolCallId); toolAttemptFingerprints.delete(event.toolCallId);
 					const capabilityReceipt = event.isError ? undefined : capabilityReceiptMetadata(event.result, event.toolName);
 					const skillLifecycleReceipt = event.isError ? undefined : skillLifecycleReceiptMetadata(event.result, event.toolName);
-					this.recordTrace({ type: "tool.settled", executionEnvelope, at, toolCallId: event.toolCallId, toolName: event.toolName, status: event.isError ? "failed" : "succeeded", ...(argumentsSha256 ? { argumentsSha256 } : {}), ...(toolStart === undefined ? {} : { durationMs: Math.max(0, at - toolStart) }), ...(toolSpecPlanId ? { toolSpecPlanId } : {}), ...(expected?.origin ?? {}), ...(capabilityReceipt ? { capabilityReceipt } : {}), ...(skillLifecycleReceipt ? { skillLifecycleReceipt } : {}) });
+					const dispatchReceipt = toolDispatchReceipt(event.isError, event.result);
+					this.recordTrace({ type: "tool.settled", executionEnvelope, at, toolCallId: event.toolCallId, toolName: traceableToolName(event.toolName), status: event.isError ? "failed" : "succeeded", dispatchReceipt, ...(argumentsSha256 ? { argumentsSha256 } : {}), ...(toolStart === undefined ? {} : { durationMs: Math.max(0, at - toolStart) }), ...(toolSpecPlanId ? { toolSpecPlanId } : {}), ...(expected?.origin ?? {}), ...(capabilityReceipt ? { capabilityReceipt } : {}), ...(skillLifecycleReceipt ? { skillLifecycleReceipt } : {}) });
 					if (!event.isError) successfulToolNames.add(event.toolName);
 					if (event.toolName === "capability_discover" && !event.isError) {
 						const trustedDiscoveryTool = allTools.find((tool) => tool.name === "capability_discover");
@@ -665,7 +666,7 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 						if (event.isError && SKILL_LIFECYCLE_TOOLS.has(event.toolName)) skillLifecycleBlocker = skillLifecycleFailureBlocker(event.result, event.toolName);
 						const sideEffect = toolSideEffects.get(event.toolName);
 						const reroute = sideEffect === undefined ? { allowed: false } : capabilityRuntime.canReroute({ sideEffect, effectStatus: sideEffect === "none" ? "none" : "unknown" });
-						if (event.isError && reroute.allowed) {
+						if (event.isError && dispatchReceipt.stage === "execution" && dispatchReceipt.retryable && reroute.allowed) {
 							failedReadToolAwaitingReroute = event.toolName;
 							if (toolFingerprint) {
 								const repeatedFailures = (failedReadFingerprints.get(toolFingerprint) ?? 0) + 1;
@@ -1157,6 +1158,12 @@ function toolAttemptFingerprint(name: string, args: unknown): string {
 	catch { return `${name}\0<unserializable>`; }
 }
 
+function traceableToolName(name: string): string {
+	const normalized = name.trim();
+	if (/^[a-z0-9][a-z0-9._:-]{0,127}$/iu.test(normalized) && redactCredentialMaterial(normalized) === normalized) return normalized;
+	return `unregistered:sha256:${createHash("sha256").update(name).digest("hex")}`;
+}
+
 function opaqueIdentitySha256(value: string): string { return `sha256:${createHash("sha256").update(value).digest("hex")}`; }
 function boundedProviderResponseId(value: string | undefined): string | undefined {
 	const normalized = value?.trim();
@@ -1266,6 +1273,26 @@ function releaseTurnInputContext(session: AgentSession, fromIndex: number, rawTe
 type ProviderRestriction = { toolName: string; reason: "configuration_required" | "provider_unhealthy" | "provider_unavailable"; blocker: string; installable: boolean };
 type ProviderRecovery = { toolName: string };
 type ProviderAvailabilityMetadata = { recoveries: ProviderRecovery[]; restrictions: ProviderRestriction[] };
+
+function toolDispatchReceipt(isError: boolean, result: unknown): ToolDispatchReceipt {
+	if (!isError) return { stage: "execution", code: "completed", outcome: "succeeded", retryable: false };
+	const details = result && typeof result === "object" ? (result as { details?: unknown }).details : undefined;
+	const raw = details && typeof details === "object" ? (details as { dispatchError?: unknown }).dispatchError : undefined;
+	if (!raw || typeof raw !== "object") return { stage: "execution", code: "execution_failed", outcome: "failed", retryable: true };
+	const entry = raw as Record<string, unknown>;
+	const stages = new Set<ToolDispatchReceipt["stage"]>(["routing", "validation", "authorization", "execution", "finalization"]);
+	const codes = new Set<ToolDispatchReceipt["code"]>(["tool_not_found", "arguments_invalid", "blocked", "cancelled", "response_truncated", "execution_failed", "finalization_failed"]);
+	if (!stages.has(entry.stage as ToolDispatchReceipt["stage"]) || !codes.has(entry.code as ToolDispatchReceipt["code"]) || typeof entry.retryable !== "boolean") return { stage: "execution", code: "execution_failed", outcome: "failed", retryable: true };
+	const stage = entry.stage as ToolDispatchReceipt["stage"];
+	const code = entry.code as ToolDispatchReceipt["code"];
+	const expected = code === "tool_not_found" ? { stage: "routing", retryable: true }
+		: code === "arguments_invalid" || code === "response_truncated" ? { stage: "validation", retryable: true }
+			: code === "blocked" || code === "cancelled" ? { stage: "authorization", retryable: false }
+				: code === "execution_failed" ? { stage: "execution", retryable: true }
+					: { stage: "finalization", retryable: false };
+	if (stage !== expected.stage || entry.retryable !== expected.retryable) return { stage: "execution", code: "execution_failed", outcome: "failed", retryable: true };
+	return { stage, code, outcome: stage === "routing" || stage === "validation" || stage === "authorization" ? "rejected" : "failed", retryable: entry.retryable };
+}
 
 function capabilityDiscoveryMetadata(result: unknown, knownTools: ReadonlySet<string>, trustProviderRecoveries = false): { cognitionId?: string; hasMatches: boolean; candidates: CapabilityRankedCandidate[]; activatedTools: string[]; recoveries: ProviderRecovery[]; restrictions: ProviderRestriction[] } {
 	const details = result && typeof result === "object" ? (result as { details?: unknown }).details : undefined;

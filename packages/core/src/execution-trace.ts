@@ -7,6 +7,9 @@ export type CapabilityOutcomeStatus = "accepted" | "rejected" | "unverified" | "
 export interface CapabilityTraceCandidate { kind: "tool" | "mcp" | "skill"; name: string; version?: string; confidence: number; }
 export interface CapabilityReceiptRef { id: string; kind: "tool" | "mcp" | "skill"; name: string; version: string; sourceTool: string; }
 export interface SkillLifecycleReceiptRef { id: string; name: string; version: string; phase: "activated" | "routed" | "resource_read" | "read" | "completed"; sourceTool: "skill_activate" | "skill_route" | "skill_resource_read" | "skill_read" | "skill_complete"; }
+export type ToolDispatchStage = "routing" | "validation" | "authorization" | "execution" | "finalization";
+export type ToolDispatchCode = "completed" | "tool_not_found" | "arguments_invalid" | "blocked" | "cancelled" | "response_truncated" | "execution_failed" | "finalization_failed";
+export interface ToolDispatchReceipt { stage: ToolDispatchStage; code: ToolDispatchCode; outcome: "succeeded" | "rejected" | "failed"; retryable: boolean; }
 export type ProviderResponseStatus = "reported" | "unavailable";
 export interface AssistantToolCallRef { toolCallId: string; toolName: string; argumentsSha256: string; }
 interface AssistantTurnTraceInput { assistantTurnId?: string; providerResponseStatus?: ProviderResponseStatus; providerResponseIdentitySha256?: string; }
@@ -19,7 +22,7 @@ export type ExecutionTraceInput =
 	| (TraceInputBase & { type: "tool_spec.published"; toolSpecPlanId: string; directTools: readonly string[] })
 	| (TraceInputBase & AssistantTurnTraceInput & { type: "model.turn_settled"; inputTokens: number; outputTokens: number; cacheReadTokens?: number; cacheWriteTokens?: number; costUsd?: number; assistantToolCalls?: readonly AssistantToolCallRef[] })
 	| (TraceInputBase & AssistantTurnTraceInput & { type: "tool.started"; toolCallId: string; toolName: string; argumentsSha256?: string; toolSpecPlanId?: string })
-	| (TraceInputBase & AssistantTurnTraceInput & { type: "tool.settled"; toolCallId: string; toolName: string; argumentsSha256?: string; status: "succeeded" | "failed"; durationMs?: number; toolSpecPlanId?: string; capabilityReceipt?: CapabilityReceiptRef; skillLifecycleReceipt?: SkillLifecycleReceiptRef })
+	| (TraceInputBase & AssistantTurnTraceInput & { type: "tool.settled"; toolCallId: string; toolName: string; argumentsSha256?: string; status: "succeeded" | "failed"; durationMs?: number; toolSpecPlanId?: string; dispatchReceipt?: ToolDispatchReceipt; capabilityReceipt?: CapabilityReceiptRef; skillLifecycleReceipt?: SkillLifecycleReceiptRef })
 	| (TraceInputBase & { type: "effect.started"; effectId: string; toolCallId: string; status: "executing" })
 	| (TraceInputBase & { type: "effect.settled"; effectId: string; toolCallId: string; status: "committed" | "failed" | "unknown" })
 	| (TraceInputBase & { type: "checkpoint.saved"; sizeChars: number })
@@ -56,6 +59,7 @@ export interface ExecutionTraceEvent {
 	directTools?: string[];
 	capabilityReceipt?: CapabilityReceiptRef;
 	skillLifecycleReceipt?: SkillLifecycleReceiptRef;
+	dispatchReceipt?: ToolDispatchReceipt;
 	assistantTurnId?: string;
 	providerResponseStatus?: ProviderResponseStatus;
 	providerResponseIdentitySha256?: string;
@@ -206,8 +210,38 @@ function traceDetails(input: ExecutionTraceInput): Partial<ExecutionTraceEvent> 
 		...(input.argumentsSha256 === undefined ? {} : { argumentsSha256: safeSha256(input.argumentsSha256, "argumentsSha256") }),
 		...(input.toolSpecPlanId === undefined ? {} : { toolSpecPlanId: safeText(input.toolSpecPlanId, "toolSpecPlanId", 256) }),
 		...assistantTurnDetails(input),
-		...(input.type === "tool.settled" ? { status: input.status, ...(input.durationMs === undefined ? {} : { durationMs: safeNonNegative(input.durationMs, "durationMs") }), ...(input.capabilityReceipt === undefined ? {} : { capabilityReceipt: normalizeCapabilityReceiptRef(input.capabilityReceipt) }), ...(input.skillLifecycleReceipt === undefined ? {} : { skillLifecycleReceipt: normalizeSkillLifecycleReceiptRef(input.skillLifecycleReceipt) }) } : {}),
+		...(input.type === "tool.settled" ? { status: input.status, ...(input.durationMs === undefined ? {} : { durationMs: safeNonNegative(input.durationMs, "durationMs") }), ...(input.dispatchReceipt === undefined ? {} : { dispatchReceipt: normalizeToolDispatchReceiptForStatus(input.dispatchReceipt, input.status) }), ...(input.capabilityReceipt === undefined ? {} : { capabilityReceipt: normalizeCapabilityReceiptRef(input.capabilityReceipt) }), ...(input.skillLifecycleReceipt === undefined ? {} : { skillLifecycleReceipt: normalizeSkillLifecycleReceiptRef(input.skillLifecycleReceipt) }) } : {}),
 	};
+}
+
+export function normalizeToolDispatchReceipt(value: unknown): ToolDispatchReceipt {
+	if (!value || typeof value !== "object") throw new Error("Execution Trace Tool dispatch receipt is invalid");
+	const receipt = value as Partial<ToolDispatchReceipt>;
+	const stages = new Set<ToolDispatchStage>(["routing", "validation", "authorization", "execution", "finalization"]);
+	const codes = new Set<ToolDispatchCode>(["completed", "tool_not_found", "arguments_invalid", "blocked", "cancelled", "response_truncated", "execution_failed", "finalization_failed"]);
+	if (!stages.has(receipt.stage as ToolDispatchStage) || !codes.has(receipt.code as ToolDispatchCode) || !["succeeded", "rejected", "failed"].includes(String(receipt.outcome)) || typeof receipt.retryable !== "boolean") throw new Error("Execution Trace Tool dispatch receipt is invalid");
+	const expected = expectedToolDispatchReceipt(receipt.code as ToolDispatchCode);
+	if (receipt.stage !== expected.stage || receipt.outcome !== expected.outcome || receipt.retryable !== expected.retryable) throw new Error("Execution Trace Tool dispatch receipt is inconsistent");
+	return { stage: receipt.stage!, code: receipt.code!, outcome: receipt.outcome!, retryable: receipt.retryable };
+}
+
+function normalizeToolDispatchReceiptForStatus(value: unknown, status: "succeeded" | "failed"): ToolDispatchReceipt {
+	const receipt = normalizeToolDispatchReceipt(value);
+	if ((status === "succeeded") !== (receipt.outcome === "succeeded")) throw new Error("Execution Trace Tool dispatch receipt does not match Tool status");
+	return receipt;
+}
+
+function expectedToolDispatchReceipt(code: ToolDispatchCode): Omit<ToolDispatchReceipt, "code"> {
+	switch (code) {
+		case "completed": return { stage: "execution", outcome: "succeeded", retryable: false };
+		case "tool_not_found": return { stage: "routing", outcome: "rejected", retryable: true };
+		case "arguments_invalid": return { stage: "validation", outcome: "rejected", retryable: true };
+		case "response_truncated": return { stage: "validation", outcome: "rejected", retryable: true };
+		case "blocked": return { stage: "authorization", outcome: "rejected", retryable: false };
+		case "cancelled": return { stage: "authorization", outcome: "rejected", retryable: false };
+		case "execution_failed": return { stage: "execution", outcome: "failed", retryable: true };
+		case "finalization_failed": return { stage: "finalization", outcome: "failed", retryable: false };
+	}
 }
 
 function assistantTurnDetails(input: AssistantTurnTraceInput): Pick<ExecutionTraceEvent, "assistantTurnId" | "providerResponseStatus" | "providerResponseIdentitySha256"> {
