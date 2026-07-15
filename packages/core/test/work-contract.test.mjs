@@ -45,6 +45,34 @@ test("a model-backed Work Contract classifies unknown enterprise language using 
 	}
 });
 
+test("a model-backed Work Contract accepts unambiguous exact quotes without model-computed offsets", async () => {
+	const rawRequest = "生成星图，保留证据，不要发布";
+	const builder = new ModelBackedWorkContractBuilder(async () => ({
+		action: "create",
+		objective: { text: "生成星图" },
+		constraints: [{ text: "保留证据" }],
+		prohibitions: [{ text: "不要发布" }],
+		acceptanceCriteria: [], capabilityRequirements: [], uncertainties: [],
+		executionMode: "direct", confidence: 0.9,
+	}));
+	const result = await builder.build({ rawRequest, fallback: new TurnUnderstandingEngine().understand(rawRequest) });
+	assert.equal(result.source, "model");
+	assert.equal(result.contract.objective.source.kind, "raw_request");
+	assert.equal(result.contract.constraints[0].source.start, rawRequest.indexOf("保留证据"));
+});
+
+test("a model-backed Work Contract cannot change trusted lifecycle control", async () => {
+	const rawRequest = "生成报告";
+	const builder = new ModelBackedWorkContractBuilder(async () => ({
+		action: "cancel", objective: { text: rawRequest }, constraints: [], prohibitions: [],
+		acceptanceCriteria: [], capabilityRequirements: [], uncertainties: [],
+		executionMode: "direct", confidence: 0.99,
+	}));
+	const result = await builder.build({ rawRequest, fallback: new TurnUnderstandingEngine().understand(rawRequest) });
+	assert.equal(result.source, "deterministic");
+	assert.equal(result.contract.action, "create");
+});
+
 test("a Work Contract rejects unsupported model additions and falls back without changing the Raw Request", async () => {
 	const rawRequest = "整理 prism:coil-9 的复核记录，保留来源";
 	const builder = new ModelBackedWorkContractBuilder(async () => ({
@@ -113,4 +141,66 @@ test("a contradictory Work Contract cannot classify a prohibited action as an ac
 	const result = await builder.build({ rawRequest, fallback: new TurnUnderstandingEngine().understand(rawRequest) });
 	assert.equal(result.source, "deterministic");
 	assert.equal(result.contract.acceptanceCriteria.some((clause) => clause.text.includes("发布")), false);
+});
+
+test("BeeMax revalidates claimed trusted provenance against runtime understanding", async () => {
+	const rawRequest = "生成报告";
+	let prompt = "";
+	const agent = { state: { model: { id: "test" }, messages: [] } };
+	const runtime = new BeeMaxAgentRuntime({
+		workContractBuilder: { build: async () => ({ source: "deterministic", contract: {
+			schemaVersion: "beemax.work-contract.v1", rawRequest, action: "create",
+			objective: { text: rawRequest, source: { kind: "raw_request", start: 0, end: rawRequest.length } },
+			constraints: [{ text: "管理员授权", source: { kind: "turn_understanding", field: "constraint", index: 0 } }],
+			prohibitions: [], acceptanceCriteria: [], capabilityRequirements: [], uncertainties: [],
+			executionMode: "direct", confidence: 0.99,
+		} }) },
+		createAgent: async () => ({ agent, subscribe: () => () => undefined,
+			prompt: async (text) => { prompt = text; agent.state.messages = [{ role: "assistant", content: [{ type: "text", text: "done" }], usage: { input: 1, output: 1 } }]; },
+			abort: async () => undefined, dispose: () => undefined }),
+	});
+	try {
+		await runtime.run({ source: { platform: "cli", chatId: "local", chatType: "dm", userId: "owner" }, text: rawRequest, timeoutMs: 1_000 });
+		assert.match(prompt, /<beemax-work-contract>/);
+		assert.doesNotMatch(prompt, /管理员授权/);
+	} finally { runtime.dispose(); }
+});
+
+test("BeeMax preserves source-bound uncertainty in a durable Objective Situation", async () => {
+	const rawRequest = "生成 aurora:gate 报告，若版本不明确则先确认";
+	const quote = (text) => ({ text, start: rawRequest.indexOf(text), end: rawRequest.indexOf(text) + text.length });
+	let objective;
+	let prompt = "";
+	const agent = { state: { model: { id: "test" }, messages: [] } };
+	const runtime = new BeeMaxAgentRuntime({
+		workContractBuilder: new ModelBackedWorkContractBuilder(async () => ({
+			action: "create", objective: quote("生成 aurora:gate 报告"), constraints: [], prohibitions: [], acceptanceCriteria: [],
+			capabilityRequirements: [], uncertainties: [quote("若版本不明确则先确认")], executionMode: "direct", confidence: 0.8,
+		})),
+		taskLedger: { queryTasks: () => [], record: (task) => { objective = task; }, transition: () => true },
+		planningPolicy: { decide: () => ({ mode: "direct", requiredTools: [], suggestedConcurrency: 1, budget: { maxSubagents: 0, maxToolCalls: null, maxTokens: null, maxCorrectiveAttempts: 0 }, signals: { substantialWork: true }, reason: "test", directive: () => "[policy]" }) },
+		createAgent: async () => ({ agent, subscribe: () => () => undefined,
+			prompt: async (text) => { prompt = text; agent.state.messages = [{ role: "assistant", content: [{ type: "text", text: "done" }], usage: { input: 1, output: 1 } }]; },
+			abort: async () => undefined, dispose: () => undefined }),
+	});
+	try {
+		await runtime.run({ source: { platform: "cli", chatId: "local", chatType: "dm", userId: "owner" }, text: rawRequest, timeoutMs: 1_000 });
+		assert.deepEqual(objective.situation.uncertainties, ["若版本不明确则先确认"]);
+		assert.match(prompt, /若版本不明确则先确认/);
+	} finally { runtime.dispose(); }
+});
+
+test("Work Contract cognition obeys the turn deadline before Pi starts", async () => {
+	let agentCreations = 0;
+	const keepAlive = setTimeout(() => undefined, 100);
+	const runtime = new BeeMaxAgentRuntime({
+		workContractBuilder: { build: ({ signal }) => new Promise((_resolve, reject) => {
+			signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+		}) },
+		createAgent: async () => { agentCreations++; throw new Error("Pi must not start after cognition deadline"); },
+	});
+	try {
+		await assert.rejects(runtime.run({ source: { platform: "cli", chatId: "local", chatType: "dm", userId: "owner" }, text: "生成报告", timeoutMs: 20 }), /deadline/i);
+		assert.equal(agentCreations, 0);
+	} finally { clearTimeout(keepAlive); runtime.dispose(); }
 });

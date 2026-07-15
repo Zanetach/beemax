@@ -765,7 +765,7 @@ test("BeeMax Agent Runtime keeps inferred business identity semantic while trust
 	} finally { runtime.dispose(); }
 });
 
-test("BeeMax Agent Runtime propagates an external abort signal to the active turn", async () => {
+test("BeeMax Agent Runtime rejects a pre-aborted turn before creating an agent session", async () => {
 	const source = { platform: "cli", chatId: "terminal", chatType: "dm", userId: "user" };
 	const controller = new AbortController();
 	let aborts = 0;
@@ -780,7 +780,7 @@ test("BeeMax Agent Runtime propagates an external abort signal to the active tur
 	});
 	controller.abort();
 	await assert.rejects(runtime.run({ source, text: "work", timeoutMs: 10_000, signal: controller.signal }), /cancelled/);
-	assert.equal(aborts, 1);
+	assert.equal(aborts, 0);
 	runtime.dispose();
 });
 

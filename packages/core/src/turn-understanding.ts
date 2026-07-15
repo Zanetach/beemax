@@ -8,6 +8,7 @@ export interface TurnUnderstanding {
 	goal: string;
 	constraints: string[];
 	acceptanceCriteria: string[];
+	uncertainties?: string[];
 	memoryQuery: string;
 	capabilityQuery: string;
 	executionMode: TurnExecutionMode;
@@ -41,6 +42,7 @@ export class TurnUnderstandingEngine implements TurnUnderstandingPort {
 			goal: resolvedGoal,
 			constraints: [...new Set(constraints)],
 			acceptanceCriteria: [...new Set(acceptanceCriteria)],
+			uncertainties: [],
 			memoryQuery: resolvedQuery,
 			capabilityQuery: resolvedQuery,
 			executionMode,

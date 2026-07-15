@@ -53,6 +53,7 @@ export class DeterministicSituationBuilder implements SituationBuilderPort {
 			summary: input.fallback.goal,
 			goals: [input.fallback.goal],
 			constraints: input.fallback.constraints,
+			uncertainties: input.fallback.uncertainties ?? [],
 			relevantMemoryIds: (input.evidence ?? []).filter((item) => item.source.kind === "memory").map((item) => item.id),
 			relevantTaskIds: [...(active ? [active.id] : []), ...(input.evidence ?? []).filter((item) => item.source.kind === "task_ledger").map((item) => item.id)],
 			observations: facts,

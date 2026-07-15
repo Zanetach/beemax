@@ -114,7 +114,10 @@ export class PiWorkContractBuilder implements WorkContractBuilderPort {
 					const text = response.content.flatMap((block) => block.type === "text" ? [block.text] : []).join("\n").trim();
 					if (!text) throw new Error("Work Contract model returned no text");
 					return parseJsonWithRepair<Record<string, unknown>>(stripJsonFence(text));
-				} catch (error) { lastError = error; }
+				} catch (error) {
+					if (input.signal?.aborted) throw input.signal.reason ?? error;
+					lastError = error;
+				}
 			}
 			throw lastError ?? new Error("Work Contract models unavailable");
 		});
@@ -139,33 +142,43 @@ export class ModelBackedWorkContractBuilder implements WorkContractBuilderPort {
 		try {
 			const rawRequest = requiredRawRequest(input.rawRequest);
 			const proposal = normalizeModelProposal(await this.infer({ rawRequest, ...(input.activeObjective ? { activeObjective: input.activeObjective } : {}), ...(input.signal ? { signal: input.signal } : {}) }), rawRequest);
+			if (proposal.action !== input.fallback.action || proposal.executionMode !== input.fallback.executionMode) throw new Error("Model Work Contract lifecycle does not match trusted Turn Understanding");
+			if (proposal.action === "continue" && input.activeObjective) proposal.objective = { text: input.activeObjective.title, source: { kind: "active_objective", ...(input.activeObjective.id ? { id: input.activeObjective.id } : {}) } };
 			return {
-				contract: validateWorkContract({ schemaVersion: WORK_CONTRACT_SCHEMA_VERSION, rawRequest, ...proposal }, rawRequest),
+				contract: validateWorkContract({ schemaVersion: WORK_CONTRACT_SCHEMA_VERSION, rawRequest, ...proposal }, rawRequest, { trustedContext: { fallback: input.fallback, ...(input.activeObjective ? { activeObjective: input.activeObjective } : {}) } }),
 				source: "model",
 			};
-		} catch {
+		} catch (error) {
+			if (input.signal?.aborted) throw input.signal.reason ?? error;
 			return this.fallback.build(input);
 		}
 	}
 }
 
-export function validateWorkContract(value: unknown, rawRequest: string, options: { allowTrustedUnderstandingSources?: boolean } = {}): WorkContract {
+export interface WorkContractValidationContext {
+	fallback: TurnUnderstanding;
+	activeObjective?: { id?: string; title: string };
+}
+
+export function validateWorkContract(value: unknown, rawRequest: string, options: { trustedContext?: WorkContractValidationContext } = {}): WorkContract {
 	if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Work Contract must be an object");
 	const contract = value as Record<string, unknown>;
 	if (contract.schemaVersion !== WORK_CONTRACT_SCHEMA_VERSION) throw new Error("Work Contract schema version is unsupported");
 	if (contract.rawRequest !== rawRequest) throw new Error("Work Contract Raw Request is not immutable");
-	const allowTrusted = options.allowTrustedUnderstandingSources === true;
+	const trustedContext = options.trustedContext;
 	const normalized: Omit<WorkContract, "schemaVersion" | "rawRequest"> = {
 		action: validAction(contract.action),
-		objective: validateContractClause(contract.objective, rawRequest, "objective", allowTrusted),
-		constraints: validateContractClauseList(contract.constraints, rawRequest, "constraints", allowTrusted),
-		prohibitions: validateContractClauseList(contract.prohibitions, rawRequest, "prohibitions", false),
-		acceptanceCriteria: validateContractClauseList(contract.acceptanceCriteria, rawRequest, "acceptance criteria", allowTrusted),
-		capabilityRequirements: validateContractClauseList(contract.capabilityRequirements, rawRequest, "capability requirements", allowTrusted),
-		uncertainties: validateContractClauseList(contract.uncertainties, rawRequest, "uncertainties", allowTrusted),
+		objective: validateContractClause(contract.objective, rawRequest, "objective", trustedContext),
+		constraints: validateContractClauseList(contract.constraints, rawRequest, "constraints", trustedContext),
+		prohibitions: validateContractClauseList(contract.prohibitions, rawRequest, "prohibitions"),
+		acceptanceCriteria: validateContractClauseList(contract.acceptanceCriteria, rawRequest, "acceptance criteria", trustedContext),
+		capabilityRequirements: validateContractClauseList(contract.capabilityRequirements, rawRequest, "capability requirements", trustedContext),
+		uncertainties: validateContractClauseList(contract.uncertainties, rawRequest, "uncertainties", trustedContext),
 		executionMode: validExecutionMode(contract.executionMode),
 		confidence: validConfidence(contract.confidence),
 	};
+	if (trustedContext && (normalized.action !== trustedContext.fallback.action || normalized.executionMode !== trustedContext.fallback.executionMode)) throw new Error("Work Contract lifecycle control is not supported by trusted Turn Understanding");
+	if (normalized.action === "continue" && trustedContext?.activeObjective && (normalized.objective.source.kind !== "active_objective" || normalized.objective.text !== trustedContext.activeObjective.title || normalized.objective.source.id !== trustedContext.activeObjective.id)) throw new Error("Work Contract continuation is not linked to the active Objective");
 	assertCategorySeparation(normalized.constraints, normalized.prohibitions, normalized.acceptanceCriteria);
 	return { schemaVersion: WORK_CONTRACT_SCHEMA_VERSION, rawRequest: requiredRawRequest(rawRequest), ...normalized };
 }
@@ -177,6 +190,7 @@ export function workContractUnderstanding(contract: WorkContract, fallback: Turn
 		goal: contract.objective.text,
 		constraints: [...new Set([...contract.constraints, ...contract.prohibitions].map((clause) => clause.text))],
 		acceptanceCriteria: contract.acceptanceCriteria.map((clause) => clause.text),
+		uncertainties: contract.uncertainties.map((clause) => clause.text),
 		memoryQuery: fallback.memoryQuery,
 		capabilityQuery: [...capabilityRequirements, fallback.capabilityQuery].filter(Boolean).join("\n"),
 		executionMode: contract.executionMode,
@@ -258,28 +272,42 @@ function sourceBoundFallbackClause(text: string, rawRequest: string, field: Work
 	return { text, source: { kind: "turn_understanding", field, ...(index === undefined ? {} : { index }) } };
 }
 
-function validateContractClauseList(value: unknown, rawRequest: string, label: string, allowTrusted: boolean): WorkContractClause[] {
+function validateContractClauseList(value: unknown, rawRequest: string, label: string, trustedContext?: WorkContractValidationContext): WorkContractClause[] {
 	if (!Array.isArray(value) || value.length > 100) throw new Error(`Work Contract ${label} must be a bounded list`);
-	const result = value.map((clause) => validateContractClause(clause, rawRequest, label, allowTrusted));
+	const result = value.map((clause) => validateContractClause(clause, rawRequest, label, trustedContext));
 	if (new Set(result.map(clauseKey)).size !== result.length) throw new Error(`Work Contract ${label} contains duplicate sources`);
 	return result;
 }
 
-function validateContractClause(value: unknown, rawRequest: string, label: string, allowTrusted: boolean): WorkContractClause {
+function validateContractClause(value: unknown, rawRequest: string, label: string, trustedContext?: WorkContractValidationContext): WorkContractClause {
 	if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(`Work Contract ${label} clause is invalid`);
 	const clause = value as Record<string, unknown>;
 	if (typeof clause.text !== "string" || !clause.text.trim() || clause.text.length > 10_000) throw new Error(`Work Contract ${label} text is invalid`);
 	if (!clause.source || typeof clause.source !== "object" || Array.isArray(clause.source)) throw new Error(`Work Contract ${label} source is invalid`);
 	const source = clause.source as Record<string, unknown>;
 	if (source.kind === "raw_request") return modelClause({ text: clause.text, start: source.start, end: source.end }, rawRequest, label);
-	if (!allowTrusted) throw new Error(`Work Contract ${label} must be supported by a Raw Request source span`);
+	if (!trustedContext) throw new Error(`Work Contract ${label} must be supported by a Raw Request source span`);
 	if (source.kind === "active_objective") {
-		if (source.id !== undefined && (typeof source.id !== "string" || !source.id.trim() || source.id.length > 500)) throw new Error("Work Contract active Objective source is invalid");
-		return { text: clause.text, source: { kind: "active_objective", ...(typeof source.id === "string" ? { id: source.id } : {}) } };
+		const active = trustedContext.activeObjective;
+		if (!active || clause.text !== active.title || source.id !== active.id) throw new Error("Work Contract active Objective source does not match trusted runtime state");
+		return { text: clause.text, source: { kind: "active_objective", ...(active.id ? { id: active.id } : {}) } };
 	}
 	if (source.kind !== "turn_understanding" || !["objective", "constraint", "acceptance_criterion", "capability_requirement", "uncertainty"].includes(String(source.field))) throw new Error(`Work Contract ${label} trusted source is invalid`);
 	if (source.index !== undefined && (!Number.isSafeInteger(source.index) || (source.index as number) < 0 || (source.index as number) > 100)) throw new Error(`Work Contract ${label} trusted source index is invalid`);
-	return { text: clause.text, source: { kind: "turn_understanding", field: source.field as WorkContractUnderstandingSource["field"], ...(typeof source.index === "number" ? { index: source.index } : {}) } };
+	const field = source.field as WorkContractUnderstandingSource["field"];
+	const index = typeof source.index === "number" ? source.index : undefined;
+	const expected = trustedUnderstandingValue(trustedContext.fallback, field, index);
+	if (clause.text !== expected) throw new Error(`Work Contract ${label} trusted source text does not match Turn Understanding`);
+	return { text: clause.text, source: { kind: "turn_understanding", field, ...(index === undefined ? {} : { index }) } };
+}
+
+function trustedUnderstandingValue(fallback: TurnUnderstanding, field: WorkContractUnderstandingSource["field"], index?: number): string | undefined {
+	if (field === "objective") return index === undefined ? fallback.goal : undefined;
+	if (field === "constraint") return index === undefined ? undefined : fallback.constraints[index];
+	if (field === "acceptance_criterion") return index === undefined ? undefined : fallback.acceptanceCriteria[index];
+	if (field === "capability_requirement") return index === undefined ? fallback.capabilityQuery : undefined;
+	if (field === "uncertainty") return index === undefined ? undefined : fallback.uncertainties?.[index];
+	return undefined;
 }
 
 function validAction(value: unknown): TurnAction {

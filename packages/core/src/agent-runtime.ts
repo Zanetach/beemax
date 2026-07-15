@@ -199,6 +199,11 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 		}
 		const trustedInputAccessScope = input.executionEnvelope?.accessScopeRef ?? input.accessScopeRef;
 		const startedAt = Date.now();
+		const absoluteDeadline = input.executionEnvelope?.budget?.deadlineAt ?? (input.timeoutMs === null ? undefined : startedAt + input.timeoutMs);
+		if (input.signal?.aborted) throw new AgentRunError("Agent turn was cancelled", false, input.signal.reason);
+		if (absoluteDeadline !== undefined && absoluteDeadline <= startedAt) throw new AgentRunError("Execution Envelope deadline has expired", true, undefined);
+		const deadlineSignal = absoluteDeadline === undefined ? undefined : AbortSignal.timeout(Math.max(1, absoluteDeadline - startedAt));
+		const cognitionSignal = input.signal && deadlineSignal ? AbortSignal.any([input.signal, deadlineSignal]) : input.signal ?? deadlineSignal;
 		const interactive = input.mode === "interactive" || !input.mode;
 		const responsibleAutomation = input.mode === "automation"
 			&& input.executionEnvelope?.trigger.kind === "automation"
@@ -208,7 +213,6 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 		const explicitAutomationObjective = input.mode === "automation" && Boolean(input.objectiveTaskId);
 		const cognitiveRun = interactive || responsibleAutomation || explicitAutomationObjective;
 		const contextSource = input.mode === "automation" ? { ...input.source, threadId: undefined } : input.source;
-		const planning = interactive ? this.planningPolicy?.decide(input.text) : undefined;
 		const objectiveOwnerKeys = responsibilityOwnerKeys(input.source);
 		let activeObjective = (interactive || explicitAutomationObjective) && this.taskLedger && typeof this.taskLedger.queryTasks === "function"
 			? this.taskLedger.queryTasks({ ownerKeys: objectiveOwnerKeys, ...(input.objectiveTaskId ? { id: input.objectiveTaskId, statuses: ["pending", "running"] as const } : { kinds: ["objective"] as const, statuses: ["pending", "running"] as const }), limit: 1 })[0]
@@ -222,14 +226,18 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 		let workContract: WorkContract | undefined;
 		if (fallbackUnderstanding) {
 			try {
-				const built = await this.workContractBuilder.build({ rawRequest: input.text, fallback: fallbackUnderstanding, ...(activeObjective ? { activeObjective: { id: activeObjective.id, title: activeObjective.title } } : {}), ...(input.signal ? { signal: input.signal } : {}) });
-				workContract = validateWorkContract(built.contract, input.text, { allowTrustedUnderstandingSources: built.source === "deterministic" });
-			} catch {
+				const trustedContext = { fallback: fallbackUnderstanding, ...(activeObjective ? { activeObjective: { id: activeObjective.id, title: activeObjective.title } } : {}) };
+				const built = await this.workContractBuilder.build({ rawRequest: input.text, ...trustedContext, ...(cognitionSignal ? { signal: cognitionSignal } : {}) });
+				workContract = validateWorkContract(built.contract, input.text, { trustedContext });
+			} catch (error) {
+				if (input.signal?.aborted) throw new AgentRunError("Agent turn was cancelled", false, input.signal.reason);
+				if (deadlineSignal?.aborted) throw new AgentRunError("Execution Envelope deadline expired during Work Contract cognition", true, error);
 				workContract = (await new DeterministicWorkContractBuilder().build({ rawRequest: input.text, fallback: fallbackUnderstanding, ...(activeObjective ? { activeObjective: { id: activeObjective.id, title: activeObjective.title } } : {}) })).contract;
 			}
 		}
 		const understanding = workContract && fallbackUnderstanding ? workContractUnderstanding(workContract, fallbackUnderstanding) : fallbackUnderstanding;
-		const bindsActiveObjective = Boolean(input.objectiveTaskId) || understanding?.action === "continue" || understanding?.action === "correct";
+		const planning = interactive ? this.planningPolicy?.decide(input.text) : undefined;
+		const bindsActiveObjective = Boolean(input.objectiveTaskId) || fallbackUnderstanding?.action === "continue" || fallbackUnderstanding?.action === "correct";
 		const situation = understanding ? (await this.situationBuilder.build({
 			text: input.text,
 			fallback: understanding,
@@ -283,8 +291,7 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 			const recalledText = contextAssembly?.text ?? (cognitiveRun
 				? this.context?.enrich(contextSource, requestedText, { model: modelOf(session.piSession.agent), memoryQuery: understanding?.memoryQuery, situation, accessScopeRef }) ?? requestedText
 				: requestedText);
-			const needsWorkContext = understanding && (understanding.action !== "create" || understanding.executionMode !== "direct" || understanding.constraints.length > 0 || understanding.acceptanceCriteria.length > 0);
-			const enrichedBase = needsWorkContext && workContract ? `${renderWorkContract(workContract)}\n\n${recalledText}` : recalledText;
+			const enrichedBase = workContract ? `${renderWorkContract(workContract)}\n\n${recalledText}` : recalledText;
 			const enrichedText = contextAssembly ? enrichedBase : [taskPreservation, enrichedBase].filter(Boolean).join("\n\n");
 			const planningScope = conversationKey(input.source);
 			const planningLease = planning && this.planningBudgets ? this.planningBudgets.begin(planningScope, planning, objective?.id) : undefined;
