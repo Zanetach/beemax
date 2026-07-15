@@ -136,13 +136,14 @@ test("Skill tools progressively activate a project Skill route and only its decl
 		assert.deepEqual(discovery.details.skills.map((item) => item.name), ["report-review"]);
 		const activated = await tools.get("skill_activate").execute("activate", { name: "report-review" }); assert.match(activated.content[0].text, /route table/);
 		const routed = await tools.get("skill_route").execute("route", { route: "review" });
-		assert.equal((await tools.get("skill_resource_read").execute("read", { path: "modules/review.md" })).content[0].text, "Review only material claims.");
-		assert.equal((await tools.get("skill_complete").execute("complete", {})).details.state, "completed");
+		const resource = await tools.get("skill_resource_read").execute("read", { path: "modules/review.md" }); assert.equal(resource.content[0].text, "Review only material claims.");
+		const completed = await tools.get("skill_complete").execute("complete", {}); assert.equal(completed.details.state, "completed");
 		assert.deepEqual(activations, []);
 		assert.deepEqual(discovery.details.activatedTools, ["skill_activate", "skill_read"]);
 		assert.deepEqual(activated.details.activatedTools, ["skill_route", "skill_complete"]);
 		assert.deepEqual(routed.details.activatedTools, ["skill_resource_read", "skill_complete", "web_search"]);
 		assert.deepEqual(routed.details.providerResolutions, [{ capability: "web_search", status: "blocked", blocker: { code: "provider_unhealthy" } }]);
+		assert.deepEqual([activated, routed, resource, completed].map((item) => [item.details.skillLifecycleReceipt.phase, item.details.skillLifecycleReceipt.sourceTool]), [["activated", "skill_activate"], ["routed", "skill_route"], ["resource_read", "skill_resource_read"], ["completed", "skill_complete"]]);
 	} finally { rmSync(root, { recursive: true, force: true }); }
 });
 
@@ -264,6 +265,7 @@ test("legacy skill_read preserves one-call activation for self-contained Skills"
 		assert.equal(read.details.legacy, true); assert.equal(read.details.state.state, "module_loaded"); assert.match(read.content[0].text, /Search the primary source/);
 		assert.deepEqual(activations, []);
 		assert.deepEqual(read.details.activatedTools, ["skill_complete"]);
+		assert.deepEqual([read.details.skillLifecycleReceipt.phase, read.details.skillLifecycleReceipt.sourceTool], ["read", "skill_read"]);
 	} finally { rmSync(root, { recursive: true, force: true }); }
 });
 

@@ -18,7 +18,7 @@ import { redactCredentialMaterial } from "./credential-material.ts";
 import type { AccessScopeRef } from "./access-scope.ts";
 import { DeterministicSituationBuilder, type SituationBuilderPort } from "./situation-builder.ts";
 import { createExecutionEnvelope, type ExecutionEnvelope } from "./execution-envelope.ts";
-import { normalizeCapabilityReceiptRef, type CapabilityReceiptRef, type ExecutionTraceSink } from "./execution-trace.ts";
+import { normalizeCapabilityReceiptRef, normalizeSkillLifecycleReceiptRef, type CapabilityReceiptRef, type ExecutionTraceSink, type SkillLifecycleReceiptRef } from "./execution-trace.ts";
 import { createTaskCheckpoint, mergeTaskCheckpoints, renderTaskCheckpoint } from "./task-checkpoint.ts";
 import type { TaskGraphVerifier } from "./task-graph.ts";
 import { CapabilityRuntime, capabilityVersionOf } from "./capability-runtime.ts";
@@ -502,7 +502,8 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 					const toolSpecPlanId = toolSpecPlanByCall.get(event.toolCallId); toolSpecPlanByCall.delete(event.toolCallId);
 					const toolFingerprint = toolAttemptFingerprints.get(event.toolCallId); toolAttemptFingerprints.delete(event.toolCallId);
 					const capabilityReceipt = event.isError ? undefined : capabilityReceiptMetadata(event.result, event.toolName);
-					this.recordTrace({ type: "tool.settled", executionEnvelope, at, toolCallId: event.toolCallId, toolName: event.toolName, status: event.isError ? "failed" : "succeeded", ...(toolStart === undefined ? {} : { durationMs: Math.max(0, at - toolStart) }), ...(toolSpecPlanId ? { toolSpecPlanId } : {}), ...(capabilityReceipt ? { capabilityReceipt } : {}) });
+					const skillLifecycleReceipt = event.isError ? undefined : skillLifecycleReceiptMetadata(event.result, event.toolName);
+					this.recordTrace({ type: "tool.settled", executionEnvelope, at, toolCallId: event.toolCallId, toolName: event.toolName, status: event.isError ? "failed" : "succeeded", ...(toolStart === undefined ? {} : { durationMs: Math.max(0, at - toolStart) }), ...(toolSpecPlanId ? { toolSpecPlanId } : {}), ...(capabilityReceipt ? { capabilityReceipt } : {}), ...(skillLifecycleReceipt ? { skillLifecycleReceipt } : {}) });
 					if (!event.isError) successfulToolNames.add(event.toolName);
 					if (event.toolName === "capability_discover" && !event.isError) {
 						const discovery = capabilityDiscoveryMetadata(event.result, new Set(allTools.map((tool) => tool.name)));
@@ -1087,6 +1088,14 @@ function capabilityReceiptMetadata(result: unknown, sourceTool: string): Capabil
 	const receipt = details && typeof details === "object" ? (details as { capabilityReceipt?: unknown }).capabilityReceipt : undefined;
 	if (!receipt || typeof receipt !== "object") return undefined;
 	try { const normalized = normalizeCapabilityReceiptRef(receipt); return normalized.sourceTool === sourceTool ? normalized : undefined; }
+	catch { return undefined; }
+}
+
+function skillLifecycleReceiptMetadata(result: unknown, sourceTool: string): SkillLifecycleReceiptRef | undefined {
+	const details = result && typeof result === "object" ? (result as { details?: unknown }).details : undefined;
+	const receipt = details && typeof details === "object" ? (details as { skillLifecycleReceipt?: unknown }).skillLifecycleReceipt : undefined;
+	if (!receipt || typeof receipt !== "object") return undefined;
+	try { const normalized = normalizeSkillLifecycleReceiptRef(receipt); return normalized.sourceTool === sourceTool ? normalized : undefined; }
 	catch { return undefined; }
 }
 

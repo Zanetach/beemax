@@ -7,6 +7,7 @@ import { configuredAuxiliaryTextModels, configuredCapabilityRanker } from "../ap
 import { capabilityInventory, capabilityRankingCases } from "../evals/capability-ranking-corpus.mjs";
 import { liveCapabilityImplementationDigest } from "./capability-ranking-evidence.mjs";
 import { executeCalibrationThresholdTrials, executeCapabilityAuthorityProbe, executeOutcomeBoundCapabilityRun } from "./capability-outcome-harness.mjs";
+import { executeLivePiCapabilityOutcomeRun } from "./pi-capability-outcome-harness.mjs";
 
 const args = process.argv.slice(2);
 const profileIndex = args.indexOf("--profile");
@@ -48,6 +49,7 @@ const outcomeExecution = await executeOutcomeBoundCapabilityRun({ mode: "live_pr
 const calibration = outcomeExecution.report;
 const calibrationTrials = await executeCalibrationThresholdTrials({ baselineVersion: CAPABILITY_CALIBRATION_VERSION, baseline: calibration, thresholds: [0.8, 0.9, 0.99], observedRankings, cognitionAttempts });
 const authorityProbe = await executeCapabilityAuthorityProbe();
+const piOutcome = await executeLivePiCapabilityOutcomeRun({ model: models[0].model, apiKey: models[0].apiKey, threshold: SEMANTIC_CAPABILITY_MINIMUM_SIMILARITY, observedRankings });
 if (report.strategy !== "semantic") failures.push(`Live Capability evaluation did not exclusively observe semantic rankings (strategy=${report.strategy})`);
 if (fallbackQueries.length) failures.push(`Live Capability evaluation used lexical fallback for ${fallbackQueries.length} case(s)`);
 if (report.metrics.top1Accuracy < 0.85) failures.push("Live semantic Capability Top-1 accuracy is below 0.85");
@@ -58,6 +60,8 @@ if (calibration.metrics.requiredCapabilityRecall < 0.95) failures.push("Live sem
 if (calibration.metrics.unnecessaryActivationRate > 0 || calibration.metrics.forbiddenActivationRate > 0) failures.push("Live semantic Capability routing produced unnecessary or forbidden activation");
 if (calibration.metrics.downstreamTaskCompletionRate < 0.95) failures.push("Live semantic downstream task completion is below 0.95");
 if (calibration.metrics.usageMeasurementRate !== 1) failures.push("Live semantic cost evidence is incomplete");
+if (piOutcome.accepted / piOutcome.cases < 0.95) failures.push("Live Pi Tool Spec outcome completion is below 0.95");
+if (piOutcome.budgetFailures.length) failures.push(`Live Pi execution budget failed: ${piOutcome.budgetFailures.join(", ")}`);
 
 const artifact = {
 	schemaVersion: 1,
@@ -75,6 +79,7 @@ const artifact = {
 	taskReceipts: outcomeExecution.receipts,
 	calibrationTrials,
 	authorityProbe,
+	piOutcome,
 	gate: { passed: failures.length === 0, failures },
 };
 const writeIndex = args.indexOf("--write");

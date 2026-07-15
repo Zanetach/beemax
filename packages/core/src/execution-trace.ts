@@ -6,6 +6,7 @@ type ExecutionOutcome = "succeeded" | "failed" | "cancelled";
 export type CapabilityOutcomeStatus = "accepted" | "rejected" | "unverified" | "failed" | "cancelled";
 export interface CapabilityTraceCandidate { kind: "tool" | "mcp" | "skill"; name: string; version?: string; confidence: number; }
 export interface CapabilityReceiptRef { id: string; kind: "tool" | "mcp" | "skill"; name: string; version: string; sourceTool: string; }
+export interface SkillLifecycleReceiptRef { id: string; name: string; version: string; phase: "activated" | "routed" | "resource_read" | "read" | "completed"; sourceTool: "skill_activate" | "skill_route" | "skill_resource_read" | "skill_read" | "skill_complete"; }
 interface TraceInputBase { executionEnvelope: Readonly<ExecutionEnvelope>; at?: number; }
 export type ExecutionTraceInput =
 	| (TraceInputBase & { type: "execution.started" })
@@ -15,7 +16,7 @@ export type ExecutionTraceInput =
 	| (TraceInputBase & { type: "tool_spec.published"; toolSpecPlanId: string; directTools: readonly string[] })
 	| (TraceInputBase & { type: "model.turn_settled"; inputTokens: number; outputTokens: number; cacheReadTokens?: number; cacheWriteTokens?: number; costUsd?: number })
 	| (TraceInputBase & { type: "tool.started"; toolCallId: string; toolName: string; toolSpecPlanId?: string })
-	| (TraceInputBase & { type: "tool.settled"; toolCallId: string; toolName: string; status: "succeeded" | "failed"; durationMs?: number; toolSpecPlanId?: string; capabilityReceipt?: CapabilityReceiptRef })
+	| (TraceInputBase & { type: "tool.settled"; toolCallId: string; toolName: string; status: "succeeded" | "failed"; durationMs?: number; toolSpecPlanId?: string; capabilityReceipt?: CapabilityReceiptRef; skillLifecycleReceipt?: SkillLifecycleReceiptRef })
 	| (TraceInputBase & { type: "effect.started"; effectId: string; toolCallId: string; status: "executing" })
 	| (TraceInputBase & { type: "effect.settled"; effectId: string; toolCallId: string; status: "committed" | "failed" | "unknown" })
 	| (TraceInputBase & { type: "checkpoint.saved"; sizeChars: number })
@@ -51,6 +52,7 @@ export interface ExecutionTraceEvent {
 	toolSpecPlanId?: string;
 	directTools?: string[];
 	capabilityReceipt?: CapabilityReceiptRef;
+	skillLifecycleReceipt?: SkillLifecycleReceiptRef;
 }
 
 export interface ExecutionTraceQuery { executionId: string; accessScopeId?: string; }
@@ -192,7 +194,7 @@ function traceDetails(input: ExecutionTraceInput): Partial<ExecutionTraceEvent> 
 	return {
 		toolCallId: safeText(input.toolCallId, "toolCallId", 512), toolName: safeText(input.toolName, "toolName", 512),
 		...(input.toolSpecPlanId === undefined ? {} : { toolSpecPlanId: safeText(input.toolSpecPlanId, "toolSpecPlanId", 256) }),
-		...(input.type === "tool.settled" ? { status: input.status, ...(input.durationMs === undefined ? {} : { durationMs: safeNonNegative(input.durationMs, "durationMs") }), ...(input.capabilityReceipt === undefined ? {} : { capabilityReceipt: normalizeCapabilityReceiptRef(input.capabilityReceipt) }) } : {}),
+		...(input.type === "tool.settled" ? { status: input.status, ...(input.durationMs === undefined ? {} : { durationMs: safeNonNegative(input.durationMs, "durationMs") }), ...(input.capabilityReceipt === undefined ? {} : { capabilityReceipt: normalizeCapabilityReceiptRef(input.capabilityReceipt) }), ...(input.skillLifecycleReceipt === undefined ? {} : { skillLifecycleReceipt: normalizeSkillLifecycleReceiptRef(input.skillLifecycleReceipt) }) } : {}),
 	};
 }
 
@@ -215,6 +217,19 @@ export function normalizeCapabilityReceiptRef(value: unknown): CapabilityReceipt
 	const sourceTool = safeIdentifier(receipt.sourceTool, "capabilityReceipt.sourceTool", 128);
 	if (receipt.kind === "skill" && sourceTool !== "skill_complete") throw new Error("Execution Trace Skill receipt must originate from skill_complete");
 	return { id, kind: receipt.kind, name, version, sourceTool };
+}
+export function normalizeSkillLifecycleReceiptRef(value: unknown): SkillLifecycleReceiptRef {
+	if (!value || typeof value !== "object") throw new Error("Execution Trace Skill lifecycle receipt is invalid");
+	const receipt = value as Partial<SkillLifecycleReceiptRef>;
+	const sourceByPhase = { activated: "skill_activate", routed: "skill_route", resource_read: "skill_resource_read", read: "skill_read", completed: "skill_complete" } as const;
+	if (!receipt.phase || !(receipt.phase in sourceByPhase)) throw new Error("Execution Trace Skill lifecycle phase is invalid");
+	const id = safeIdentifier(receipt.id, "skillLifecycleReceipt.id", 256);
+	const name = safeIdentifier(receipt.name, "skillLifecycleReceipt.name", 128);
+	const version = safeIdentifier(receipt.version, "skillLifecycleReceipt.version", 256);
+	const sourceTool = safeIdentifier(receipt.sourceTool, "skillLifecycleReceipt.sourceTool", 128);
+	const expectedSource = sourceByPhase[receipt.phase];
+	if (sourceTool !== expectedSource) throw new Error(`Execution Trace Skill lifecycle ${receipt.phase} receipt must originate from ${expectedSource}`);
+	return { id, name, version, phase: receipt.phase, sourceTool: expectedSource };
 }
 function safeIdentifier(value: unknown, field: string, maxLength: number): string { const normalized = typeof value === "string" ? value.trim() : ""; if (!normalized || normalized.length > maxLength || !/^[a-z0-9][a-z0-9._:@-]*$/i.test(normalized)) throw new Error(`Execution Trace ${field} is invalid`); return normalized; }
 function safeDirectTools(values: readonly string[]): string[] {

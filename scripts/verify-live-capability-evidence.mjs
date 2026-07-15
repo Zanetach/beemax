@@ -4,6 +4,7 @@ import { resolve } from "node:path";
 import { CAPABILITY_CALIBRATION_VERSION, SEMANTIC_CAPABILITY_MINIMUM_SIMILARITY } from "../packages/core/dist/index.js";
 import { capabilityInventory, capabilityRankingCases } from "../evals/capability-ranking-corpus.mjs";
 import { liveCapabilityImplementationDigest } from "./capability-ranking-evidence.mjs";
+import { LIVE_PI_OUTCOME_BUDGET, livePiBudgetFailures, summarizeLivePiOutcomeReceipts } from "./pi-capability-outcome-harness.mjs";
 
 const path = resolve(process.argv[2] || "evals/baselines/capability-ranking-live.json");
 const artifact = JSON.parse(await readFile(path, "utf8"));
@@ -75,6 +76,7 @@ for (const trial of trials) {
 	if (trial.version !== `${CAPABILITY_CALIBRATION_VERSION}:threshold-${trial.threshold}` || trial?.promotion?.passed !== (expectedPromotionFailures.length === 0) || JSON.stringify((trial?.promotion?.failures ?? []).map((item) => item.code)) !== JSON.stringify(expectedPromotionFailures)) failures.push(`threshold ${trial.threshold} promotion decision is not evidence-bound`);
 }
 verifyAuthorityProbe(artifact?.authorityProbe);
+verifyLivePiOutcome(artifact?.piOutcome);
 
 function recomputeOutcomeMetrics(receiptsValue, observedRankings, usageAttempts, threshold) {
 	const receipts = Array.isArray(receiptsValue) ? receiptsValue : [];
@@ -179,6 +181,80 @@ function verifyAuthorityProbe(receipt) {
 	const verification = [...events].reverse().find((event) => event.type === "verification.settled"); const downstream = [...events].reverse().find((event) => event.type === "capability.downstream_execution_outcome"); const decision = events.find((event) => event.type === "capability.decision");
 	const expectedCandidate = [{ kind: "tool", name: "authority_probe_mutation", version: "probe:1", confidence: 1 }];
 	if (receipt?.caseId !== "authority-probe" || receipt?.cognitionId !== "eval:authority-probe" || receipt?.accessScopeId !== "scope:capability-eval:authority-probe" || JSON.stringify(receipt?.selectedCandidates) !== JSON.stringify(expectedCandidate) || decision?.cognitionId !== "eval:authority-probe" || JSON.stringify(decision?.candidates) !== JSON.stringify(expectedCandidate) || downstream?.cognitionId !== "eval:authority-probe" || toolExecuted || exposed || verification?.status !== "rejected" || downstream?.status !== "rejected" || receipt?.status !== "failed") failures.push("authorization probe did not prove the scoped unauthorized decision, Tool Spec denial, and rejected Verification");
+}
+
+function verifyLivePiOutcome(outcome) {
+	const receipts = Array.isArray(outcome?.receipts) ? outcome.receipts : [];
+	const recomputedMetrics = summarizeLivePiOutcomeReceipts(receipts); const recomputedBudgetFailures = livePiBudgetFailures(recomputedMetrics, LIVE_PI_OUTCOME_BUDGET);
+	const generatedAt = Date.parse(outcome?.generatedAt);
+	if (outcome?.schemaVersion !== 1 || outcome?.mode !== "live_pi" || !/^execution:live-pi:[0-9a-f-]{36}$/i.test(outcome?.runId ?? "") || !Number.isFinite(generatedAt) || Date.now() - generatedAt > 30 * 24 * 60 * 60_000 || generatedAt > Date.now() + 5 * 60_000 || !artifact.models?.includes(outcome?.modelId) || outcome?.cases !== capabilityRankingCases.length || receipts.length !== capabilityRankingCases.length || new Set(receipts.map((receipt) => receipt?.caseId)).size !== receipts.length || JSON.stringify(outcome?.metrics) !== JSON.stringify(recomputedMetrics) || JSON.stringify(outcome?.budget) !== JSON.stringify(LIVE_PI_OUTCOME_BUDGET) || JSON.stringify(outcome?.budgetFailures) !== JSON.stringify(recomputedBudgetFailures)) { failures.push("Live Pi outcome metadata, freshness, corpus coverage, or execution budget evidence is invalid"); return; }
+	if (recomputedBudgetFailures.length) failures.push(`Live Pi execution budget failed: ${recomputedBudgetFailures.join(", ")}`);
+	let accepted = 0;
+	for (const scenario of capabilityRankingCases) {
+		const ranking = rankings.find((item) => item.caseId === scenario.id); const receipt = receipts.find((item) => item.caseId === scenario.id);
+		if (!ranking || !receipt) { failures.push(`Live Pi outcome is missing ${scenario.id}`); continue; }
+		const selected = ranking.candidates.filter((candidate) => candidate.confidence >= artifact.threshold).map(({ kind, name, version, confidence }) => ({ kind, name, version, confidence }));
+		if (receipt.cognitionId !== ranking.cognitionId || receipt.executionId !== `${outcome.runId}:${scenario.id}` || receipt.accessScopeId !== `scope:live-pi:${scenario.id}` || JSON.stringify(receipt.selectedCandidates) !== JSON.stringify(selected) || !Array.isArray(receipt.executionTrace) || ["piToolCalls", "piToolErrors", "toolAudit"].some((key) => key in receipt)) failures.push(`Live Pi receipt identity or content-free evidence shape is invalid for ${scenario.id}`);
+		const events = Array.isArray(receipt.executionTrace) ? receipt.executionTrace : [];
+		if (events.some((event, index) => !Number.isSafeInteger(event?.sequence) || event.sequence < 1 || (index > 0 && event.sequence <= events[index - 1].sequence))) failures.push(`Live Pi trace sequence is invalid for ${scenario.id}`);
+		const executionStarts = events.filter((event) => event.type === "execution.started"); const executionSettles = events.filter((event) => event.type === "execution.settled");
+		if (executionStarts.length !== 1 || executionSettles.length !== 1 || events[0] !== executionStarts[0] || events.at(-1) !== executionSettles[0] || events.some((event, index) => event.executionId !== receipt.executionId || event.accessScopeId !== receipt.accessScopeId || !Number.isFinite(event.at) || (index > 0 && event.at < events[index - 1].at))) failures.push(`Live Pi trace lifecycle, ownership, or time ordering is invalid for ${scenario.id}`);
+		const decision = events.find((event) => event.type === "capability.decision" && event.cognitionId === ranking.cognitionId);
+		const verification = [...events].reverse().find((event) => event.type === "verification.settled");
+		const downstream = [...events].reverse().find((event) => event.type === "capability.downstream_execution_outcome" && event.cognitionId === ranking.cognitionId);
+		const execution = [...events].reverse().find((event) => event.type === "execution.settled");
+		if (!decision || JSON.stringify(decision.candidates) !== JSON.stringify(selected)) failures.push(`Live Pi outcome lacks its correlated Capability decision for ${scenario.id}`);
+		const modelTurns = events.filter((event) => event.type === "model.turn_settled" && Number.isFinite(event.inputTokens) && event.inputTokens >= 0 && Number.isFinite(event.outputTokens) && event.outputTokens >= 0);
+		if (!modelTurns.length) failures.push(`Live Pi outcome has no measured model turn for ${scenario.id}`);
+		const started = events.filter((event) => event.type === "tool.started");
+		const settled = events.filter((event) => event.type === "tool.settled");
+		const startedCounts = new Map(); const settledCounts = new Map();
+		for (const event of started) startedCounts.set(event.toolCallId, (startedCounts.get(event.toolCallId) ?? 0) + 1);
+		for (const event of settled) settledCounts.set(event.toolCallId, (settledCounts.get(event.toolCallId) ?? 0) + 1);
+		for (const toolCallId of new Set([...startedCounts.keys(), ...settledCounts.keys()])) if (!toolCallId || startedCounts.get(toolCallId) !== 1 || settledCounts.get(toolCallId) !== 1) failures.push(`Live Pi Tool call is orphaned or duplicated for ${scenario.id}`);
+		for (const event of started) {
+			const toolSettled = settled.find((item) => item.toolCallId === event.toolCallId);
+			const plan = [...events].reverse().find((item) => item.type === "tool_spec.published" && item.sequence < event.sequence && item.toolSpecPlanId === event.toolSpecPlanId);
+			const modelTurn = [...modelTurns].reverse().find((item) => item.sequence < event.sequence);
+			if (!event.toolSpecPlanId || toolSettled?.toolSpecPlanId !== event.toolSpecPlanId || !plan?.directTools?.includes(event.toolName) || !modelTurn || !(event.sequence < toolSettled?.sequence) || !(toolSettled.sequence < verification?.sequence)) failures.push(`Live Pi Tool ${event.toolName} lacks a prior model-visible Tool Spec, model turn, unique settlement, or pre-Verification ordering for ${scenario.id}`);
+		}
+		const successfulToolEvents = events.filter((event) => event.type === "tool.settled" && event.status === "succeeded");
+		const allowedTools = new Set(selected.flatMap((candidate) => candidate.kind === "skill" ? ["capability_discover", "skill_read", "skill_complete"] : [`eval_${candidate.name}`, "capability_discover"]));
+		if (successfulToolEvents.some((event) => !allowedTools.has(event.toolName))) failures.push(`Live Pi outcome used an unnecessary Tool for ${scenario.id}`);
+		const capabilityReceipts = successfulToolEvents.filter((event) => event.capabilityReceipt).map((event) => ({ event, receipt: event.capabilityReceipt }));
+		if (new Set(capabilityReceipts.map((item) => item.receipt.id)).size !== capabilityReceipts.length) failures.push(`Live Pi Capability receipts are duplicated for ${scenario.id}`);
+		const skillLifecycleReceipts = successfulToolEvents.filter((event) => event.skillLifecycleReceipt).map((event) => ({ event, receipt: event.skillLifecycleReceipt }));
+		if (new Set(skillLifecycleReceipts.map((item) => item.receipt.id)).size !== skillLifecycleReceipts.length) failures.push(`Live Pi Skill lifecycle receipts are duplicated for ${scenario.id}`);
+		for (const item of skillLifecycleReceipts) {
+			const candidate = selected.find((entry) => entry.kind === "skill" && entry.name === item.receipt.name && entry.version === item.receipt.version);
+			const expectedTool = { activated: "skill_activate", routed: "skill_route", resource_read: "skill_resource_read", read: "skill_read", completed: "skill_complete" }[item.receipt.phase];
+			if (!candidate || typeof item.receipt.id !== "string" || item.receipt.sourceTool !== expectedTool || item.event.toolName !== expectedTool) failures.push(`Live Pi outcome has an invalid Skill lifecycle receipt for ${scenario.id}`);
+		}
+		for (const event of successfulToolEvents) {
+			const directCandidate = selected.find((candidate) => candidate.kind !== "skill" && event.toolName === `eval_${candidate.name}`);
+			if (directCandidate && (!event.capabilityReceipt || event.capabilityReceipt.name !== directCandidate.name)) failures.push(`Live Pi Direct Capability execution lacks its required receipt for ${scenario.id}`);
+			if (event.toolName === "skill_read" && event.skillLifecycleReceipt?.phase !== "read") failures.push(`Live Pi skill_read lacks its required lifecycle receipt for ${scenario.id}`);
+			if (event.toolName === "skill_complete" && (event.skillLifecycleReceipt?.phase !== "completed" || event.capabilityReceipt?.kind !== "skill")) failures.push(`Live Pi skill_complete lacks its required lifecycle and Capability receipts for ${scenario.id}`);
+		}
+		for (const item of capabilityReceipts) {
+			const candidate = selected.find((entry) => entry.kind === item.receipt.kind && entry.name === item.receipt.name && entry.version === item.receipt.version);
+			const expectedSource = candidate?.kind === "skill" ? "skill_complete" : candidate ? `eval_${candidate.name}` : undefined;
+			if (!candidate || typeof item.receipt.id !== "string" || item.receipt.sourceTool !== item.event.toolName || item.event.toolName !== expectedSource) failures.push(`Live Pi outcome has an invalid Capability receipt for ${scenario.id}`);
+			if (candidate?.kind === "skill") {
+				const read = skillLifecycleReceipts.find((entry) => entry.receipt.name === candidate.name && entry.receipt.version === candidate.version && entry.receipt.phase === "read");
+				const completed = skillLifecycleReceipts.find((entry) => entry.receipt.name === candidate.name && entry.receipt.version === candidate.version && entry.receipt.phase === "completed" && entry.event === item.event);
+				if (!read || !completed || !(read.event.sequence < completed.event.sequence)) failures.push(`Live Pi Skill lifecycle is incomplete or out of order for ${scenario.id}`);
+			}
+		}
+		const activated = capabilityReceipts.map((item) => item.receipt.name);
+		if (new Set(activated).size !== activated.length) failures.push(`Live Pi activated a Capability more than once for ${scenario.id}`);
+		const required = scenario.required?.length ? scenario.required : scenario.expected ? [scenario.expected] : [];
+		const expectedAccepted = required.every((name) => activated.includes(name)) && (scenario.forbidden ?? []).every((name) => !activated.includes(name)) && (required.length > 0 || activated.length === 0);
+		const expectedVerification = expectedAccepted ? "accepted" : "rejected"; const expectedExecution = expectedAccepted ? "succeeded" : "failed";
+		if (verification?.status !== expectedVerification || downstream?.status !== expectedVerification || execution?.status !== expectedExecution || receipt.verificationStatus !== expectedVerification || receipt.status !== expectedExecution) failures.push(`Live Pi independent Verification is invalid for ${scenario.id}`);
+		if (receipt.verificationStatus === "accepted") accepted++;
+	}
+	if (outcome.accepted !== accepted || accepted / capabilityRankingCases.length < 0.95) failures.push("Live Pi outcome completion is below the release gate or does not match its receipts");
 }
 process.stdout.write(`${JSON.stringify({ schemaVersion: 1, artifact: path, passed: failures.length === 0, failures }, null, 2)}\n`);
 if (failures.length) process.exitCode = 1;

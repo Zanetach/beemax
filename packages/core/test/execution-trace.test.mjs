@@ -76,6 +76,22 @@ test("Execution Trace binds a settled Tool to one Tool Spec plan and one immutab
 	} finally { rmSync(directory, { recursive: true, force: true }); }
 });
 
+test("Execution Trace preserves content-free ordered Skill lifecycle receipts", () => {
+	const directory = mkdtempSync(join(tmpdir(), "beemax-trace-skill-lifecycle-"));
+	try {
+		const store = new FileExecutionTraceStore(join(directory, "trace.jsonl"));
+		const executionEnvelope = createExecutionEnvelope({ executionId: "execution:skill-lifecycle", trigger: { kind: "interaction" }, mode: "normal" });
+		store.record({ type: "tool.settled", executionEnvelope, at: 1, toolCallId: "call:read", toolName: "skill_read", status: "succeeded", skillLifecycleReceipt: { id: "receipt:read", name: "procedure", version: "sha256:abc", phase: "read", sourceTool: "skill_read" } });
+		store.record({ type: "tool.settled", executionEnvelope, at: 2, toolCallId: "call:complete", toolName: "skill_complete", status: "succeeded", skillLifecycleReceipt: { id: "receipt:complete", name: "procedure", version: "sha256:abc", phase: "completed", sourceTool: "skill_complete" } });
+		const events = store.trace({ executionId: "execution:skill-lifecycle" }).events;
+		assert.deepEqual(events.map((event) => event.skillLifecycleReceipt), [
+			{ id: "receipt:read", name: "procedure", version: "sha256:abc", phase: "read", sourceTool: "skill_read" },
+			{ id: "receipt:complete", name: "procedure", version: "sha256:abc", phase: "completed", sourceTool: "skill_complete" },
+		]);
+		assert.throws(() => store.record({ type: "tool.settled", executionEnvelope, toolCallId: "call:invalid", toolName: "skill_complete", status: "succeeded", skillLifecycleReceipt: { id: "receipt:invalid", name: "procedure", version: "sha256:abc", phase: "read", sourceTool: "skill_complete" } }), /must originate from skill_read/u);
+	} finally { rmSync(directory, { recursive: true, force: true }); }
+});
+
 test("Execution Trace preserves a Capability identity implemented by a differently named Tool", () => {
 	const directory = mkdtempSync(join(tmpdir(), "beemax-trace-composite-capability-"));
 	try {

@@ -105,18 +105,18 @@ export function createSkillTools(agentDir: string, markReloadNeeded: () => void,
 			const skills = await registry.list(); return result(skills.length ? skills.map((item) => `- ${item.name}: ${item.description}`).join("\n") : "No Skills available.", { skills: skills.map(publicSkill) });
 		} }),
 		defineTool({ name: "skill_activate", label: "Activate Skill", description: "Load one discovered Skill's global rules and route table, locking its SHA256 for this execution.", parameters: Type.Object({ name: Type.String({ pattern: "^[a-z0-9]+(?:-[a-z0-9]+)*$" }) }), execute: async (_id, params) => {
-			const activated = await runtime.activate(params.name); return ephemeralResult(activated.instructions, { descriptor: publicSkill(activated.descriptor), routes: activated.routes, state: runtime.snapshot(), activatedTools: ["skill_route", "skill_complete"] });
+			const activated = await runtime.activate(params.name); return ephemeralResult(activated.instructions, { descriptor: publicSkill(activated.descriptor), routes: activated.routes, state: runtime.snapshot(), activatedTools: ["skill_route", "skill_complete"], skillLifecycleReceipt: skillLifecycleReceipt(activated.descriptor.name, activated.descriptor.sha256, "activated", "skill_activate") });
 		} }),
 		defineTool({ name: "skill_route", label: "Route Skill", description: "Select one declared module route after Skill activation.", parameters: Type.Object({ route: Type.String({ pattern: "^[a-z0-9]+(?:-[a-z0-9]+)*$" }) }), execute: async (_id, params) => {
-			const routed = await runtime.routeTo(params.route); const providerResolutions = await resolveToolProviders(routed.tools); return result(`Selected Skill route ${routed.route}.`, { ...routed, state: runtime.snapshot(), activatedTools: ["skill_resource_read", "skill_complete", ...routed.tools], providerResolutions: publicProviderResolutions(providerResolutions) });
+			const routed = await runtime.routeTo(params.route); const snapshot = runtime.snapshot(); const providerResolutions = await resolveToolProviders(routed.tools); return result(`Selected Skill route ${routed.route}.`, { ...routed, state: snapshot, activatedTools: ["skill_resource_read", "skill_complete", ...routed.tools], providerResolutions: publicProviderResolutions(providerResolutions), skillLifecycleReceipt: skillLifecycleReceipt(snapshot.skill!, snapshot.sha256!, "routed", "skill_route", routed.route) });
 		} }),
 		defineTool({ name: "skill_resource_read", label: "Read Skill Resource", description: "Read one module or reference declared by the active Skill route.", parameters: Type.Object({ path: Type.String({ minLength: 1, maxLength: 500 }) }), execute: async (_id, params) => {
-			const resource = await runtime.readResource(params.path); return ephemeralResult(resource.content, { ...resource, content: undefined, state: runtime.snapshot() });
+			const resource = await runtime.readResource(params.path); const snapshot = runtime.snapshot(); return ephemeralResult(resource.content, { ...resource, content: undefined, state: snapshot, skillLifecycleReceipt: skillLifecycleReceipt(snapshot.skill!, snapshot.sha256!, "resource_read", "skill_resource_read", resource.sha256) });
 		} }),
 		defineTool({ name: "skill_complete", label: "Complete Skill", description: "Complete the turn-scoped Skill execution and retain only its versioned resource summary.", parameters: Type.Object({}), execute: async () => {
 			const summary = runtime.complete();
 			if (!summary.skill || !summary.sha256) throw new Error("Completed Skill lacks its immutable identity");
-			return result(`Completed Skill ${summary.skill}${summary.route ? ` via ${summary.route}` : ""}.`, { ...summary, capabilityReceipt: { id: `receipt:skill:${summary.skill}:${summary.sha256}`, kind: "skill", name: summary.skill, version: `sha256:${summary.sha256}`, sourceTool: "skill_complete" } });
+			return result(`Completed Skill ${summary.skill}${summary.route ? ` via ${summary.route}` : ""}.`, { ...summary, skillLifecycleReceipt: skillLifecycleReceipt(summary.skill, summary.sha256, "completed", "skill_complete"), capabilityReceipt: { id: `receipt:skill:${summary.skill}:${summary.sha256}`, kind: "skill", name: summary.skill, version: `sha256:${summary.sha256}`, sourceTool: "skill_complete" } });
 		} }),
 		defineTool({ name: "skill_read", label: "Read Skill (Compatibility)", description: "Compatibility alias that discovers and activates a Profile, project, or global Skill by name.", parameters: Type.Object({ name: Type.String({ pattern: "^[a-z0-9]+(?:-[a-z0-9]+)*$" }) }), execute: async (_id, params) => {
 			await runtime.discover(params.name, 10); const activated = await runtime.activate(params.name); const legacy = activated.routes.length === 1 && activated.routes[0]?.name === "legacy";
@@ -124,7 +124,7 @@ export function createSkillTools(agentDir: string, markReloadNeeded: () => void,
 			let providerResolutions: Awaited<ReturnType<typeof resolveToolProviders>> = [];
 			if (legacy) { const routed = await runtime.routeTo("legacy"); runtime.useActivatedInstructionsAsModule(); activatedTools = ["skill_complete", ...routed.tools]; providerResolutions = await resolveToolProviders(routed.tools); }
 			else activatedTools = ["skill_route", "skill_complete"];
-			return ephemeralResult(activated.instructions, { descriptor: publicSkill(activated.descriptor), routes: activated.routes, state: runtime.snapshot(), legacy, activatedTools, providerResolutions: publicProviderResolutions(providerResolutions) });
+			return ephemeralResult(activated.instructions, { descriptor: publicSkill(activated.descriptor), routes: activated.routes, state: runtime.snapshot(), legacy, activatedTools, providerResolutions: publicProviderResolutions(providerResolutions), skillLifecycleReceipt: skillLifecycleReceipt(activated.descriptor.name, activated.descriptor.sha256, "read", "skill_read") });
 		} }),
 		defineTool({ name: "skill_create", label: "Create Skill", description: "Create a durable instruction-only Agent Skill after a workflow proves reusable. Requires approval. Never put credentials in skills.", parameters: Type.Object({ name: Type.String({ pattern: "^[a-z0-9]+(?:-[a-z0-9]+)*$", maxLength: 64 }), description: Type.String({ minLength: 10, maxLength: 1024 }), instructions: Type.String({ minLength: 20, maxLength: 30_000 }) }), execute: async (_id, params) => {
 			assertSafeCandidate({ ...params, source: "direct Skill creation" });
@@ -345,3 +345,7 @@ function renderSkill(input: { name: string; description: string; instructions: s
 function result(text: string, details: unknown) { return { content: [{ type: "text" as const, text }], details }; }
 function ephemeralResult(text: string, details: Record<string, unknown>) { return result(text, { ...details, beemaxPersistence: { mode: "summary", text: "[Turn-scoped Skill context omitted; versioned execution metadata retained.]" } }); }
 function publicSkill(skill: { name: string; description: string; sha256: string; priority?: number }) { return { name: skill.name, description: skill.description, sha256: skill.sha256, priority: skill.priority }; }
+function skillLifecycleReceipt(name: string, sha256: string, phase: "activated" | "routed" | "resource_read" | "read" | "completed", sourceTool: "skill_activate" | "skill_route" | "skill_resource_read" | "skill_read" | "skill_complete", discriminator = "stage") {
+	const suffix = createHash("sha256").update(discriminator).digest("hex").slice(0, 16);
+	return { id: `receipt:skill-lifecycle:${phase}:${name}:${sha256}:${suffix}`, name, version: `sha256:${sha256}`, phase, sourceTool };
+}

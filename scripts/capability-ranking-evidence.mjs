@@ -22,6 +22,7 @@ export const LIVE_CAPABILITY_EVIDENCE_SOURCES = Object.freeze([
 	"evals/capability-ranking-corpus.mjs",
 	"scripts/capability-ranking-evidence.mjs",
 	"scripts/capability-outcome-harness.mjs",
+	"scripts/pi-capability-outcome-harness.mjs",
 	"scripts/evaluate-live-capability-ranking.mjs",
 	"scripts/verify-live-capability-evidence.mjs",
 	"package.json",
