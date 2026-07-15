@@ -30,6 +30,9 @@ data/
 *.db-shm
 *.db-wal
 
+# eval harness exports (contain full prompt/tool content)
+evals/harness/out/
+
 # vendored Pi source build artifacts
 pi/packages/*/dist/
 

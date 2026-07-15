@@ -41,6 +41,7 @@
     "typecheck": "tsgo --noEmit"
   },
   "devDependencies": {
+    "@anthropic-ai/sdk": "^0.111.0",
     "@types/better-sqlite3": "^7.6.13",
     "@types/node": "22.19.19",
     "@typescript/native-preview": "^7.0.0-dev.20260120.1",
