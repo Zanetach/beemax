@@ -216,7 +216,7 @@ test("independent verification receives the Task Situation", async () => {
 	}; };
 	const verify = createTaskVerifier(factory, 1_000);
 	const result = await verify({
-		id: "task-verify", ownerKey: "cli:local:local", kind: "delegated", title: "Verify delivery", status: "running", createdAt: 1,
+		id: "task-verify", ownerKey: "cli:local:local", kind: "delegated", title: "Verify delivery", description: "仅操作当前隔离评测目录。", status: "running", createdAt: 1,
 		executionScope: { platform: "cli", chatId: "local", chatType: "dm", userId: "local" },
 		situation: createSituation({ summary: "棱镜节点需要独立验证", goals: ["确认结果"], confidence: 0.9 }),
 		acceptanceCriteria: "Matches the order",

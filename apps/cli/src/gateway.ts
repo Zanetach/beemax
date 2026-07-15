@@ -992,8 +992,8 @@ function verificationCriteria(value: string | undefined): Array<{ id: string; te
 	return (items.length ? items : ["Observable outcome is satisfied"]).slice(0, 50).map((text, index) => ({ id: `C${index + 1}`, text }));
 }
 
-function requiresExternalEvidence(task: Pick<TaskRecord, "title" | "description" | "acceptanceCriteria">): boolean {
-	return /\b(?:research|search|latest|today|real[- ]?time|source|citation|official|external)\b|\bcurrent\s+(?!best\b|most\s+suitable\b)|研究|调研|搜索|检索|查询|当前(?!最(?:合适|佳|好))|最新|今日|实时|来源|引用|官方|外部/i.test(`${task.title}\n${task.description ?? ""}\n${task.acceptanceCriteria ?? ""}`);
+function requiresExternalEvidence(task: Pick<TaskRecord, "title" | "acceptanceCriteria">): boolean {
+	return /\b(?:research|search|latest|today|real[- ]?time|source|citation|official|external)\b|\bcurrent\s+(?!best\b|most\s+suitable\b)|研究|调研|搜索|检索|查询|当前(?!最(?:合适|佳|好))|最新|今日|实时|来源|引用|官方|外部/i.test(`${task.title}\n${task.acceptanceCriteria ?? ""}`);
 }
 
 function durableWorkContext(task: Pick<TaskRecord, "situation">): string | undefined {
