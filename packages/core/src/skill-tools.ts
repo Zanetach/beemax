@@ -57,6 +57,7 @@ export function createSkillTools(agentDir: string, markReloadNeeded: () => void,
 		const selectedName = selection.candidates.find((item) => item.kind === "skill")?.name;
 		const selectedSkills = await runtime.admitDiscovered(selectedName ? [selectedName] : []);
 		return {
+			cognitionId: selection.cognitionId,
 			candidates: selection.candidates.map(({ kind, name, confidence }) => ({ kind, name, confidence })),
 			skills: selectedSkills.map(publicSkill),
 		};
@@ -89,6 +90,7 @@ export function createSkillTools(agentDir: string, markReloadNeeded: () => void,
 				...(publicSkills.length || publicTools.length ? ["Matching capabilities are activated for this turn."] : ["No active Skill, Tool, or MCP capability matched this query."]),
 			].join("\n");
 			return result(modelVisible, {
+				cognitionId: selection.cognitionId,
 				tools: publicTools,
 				skills: publicSkills,
 				ranked: selection.candidates.map((item) => ({ ...item, reason: item.explanation.summary })),

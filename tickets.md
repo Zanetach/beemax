@@ -487,9 +487,14 @@ This ordering is the implementation plan, not a fixed business workflow. Core re
 
 **Blocked by:** Route Capability requirements semantically.
 
-- [ ] Measure Top-1, Top-K, required-capability recall, unnecessary activation, no-match precision, latency, token cost, and downstream task completion on frozen multilingual and unknown-enterprise corpora.
-- [ ] Separate offline lexical, frozen semantic, and real-Provider results so one path cannot hide regressions in another.
+- [x] Measure Top-1, Top-K, required-capability recall, unnecessary activation, no-match precision, latency, token cost, and downstream task completion on frozen multilingual and unknown-enterprise corpora.
+- [x] Separate offline lexical, frozen semantic, and real-Provider results so one path cannot hide regressions in another.
 - [ ] Version thresholds and ranking changes with before/after evidence, and reject a calibration that improves aggregate ranking while worsening authorization, false-positive, or completion gates.
+- [ ] Preserve the prior ranking implementation's calibration artifact, not only alternate thresholds on one implementation, before promoting a new ranking version.
+- [ ] Bind every Skill completion to one immutable Skill identity so multi-Skill outcomes cannot be projected from a shared lifecycle Tool receipt.
+- [ ] Make live evidence reject duplicate or unknown receipts and bind Tool execution to the Tool Spec plan and event order that exposed it.
+- [ ] Mark Provider cost evidence incomplete when a failed attempt has no measured usage; do not promote cost claims from a lower-bound total.
+- [ ] Strengthen the authority probe and report verifier with explicit schema, mode, corpus, threshold, scope, cognition, and unauthorized-candidate identity checks.
 
 ## Enforce one Skill lifecycle for prefetched and discovered Skills
 

@@ -3,10 +3,14 @@ import { containsCredentialMaterial } from "./credential-material.ts";
 import type { ExecutionEnvelope, ExecutionMode, ExecutionTriggerKind } from "./execution-envelope.ts";
 
 type ExecutionOutcome = "succeeded" | "failed" | "cancelled";
+export type CapabilityOutcomeStatus = "accepted" | "rejected" | "unverified" | "failed" | "cancelled";
+export interface CapabilityTraceCandidate { kind: "tool" | "mcp" | "skill"; name: string; confidence: number; }
 interface TraceInputBase { executionEnvelope: Readonly<ExecutionEnvelope>; at?: number; }
 export type ExecutionTraceInput =
 	| (TraceInputBase & { type: "execution.started" })
 	| (TraceInputBase & { type: "execution.settled"; status: ExecutionOutcome })
+	| (TraceInputBase & { type: "capability.decision"; cognitionId: string; candidates: readonly CapabilityTraceCandidate[] })
+	| (TraceInputBase & { type: "capability.downstream_execution_outcome"; cognitionId: string; status: CapabilityOutcomeStatus })
 	| (TraceInputBase & { type: "model.turn_settled"; inputTokens: number; outputTokens: number; cacheReadTokens?: number; cacheWriteTokens?: number; costUsd?: number })
 	| (TraceInputBase & { type: "tool.started"; toolCallId: string; toolName: string })
 	| (TraceInputBase & { type: "tool.settled"; toolCallId: string; toolName: string; status: "succeeded" | "failed"; durationMs?: number })
@@ -29,7 +33,7 @@ export interface ExecutionTraceEvent {
 	triggerKind: ExecutionTriggerKind;
 	mode: ExecutionMode;
 	at: number;
-	status?: ExecutionOutcome | "executing" | "committed" | "unknown" | "accepted" | "rejected" | "unavailable";
+	status?: ExecutionOutcome | "executing" | "committed" | "unknown" | "accepted" | "rejected" | "unverified" | "unavailable";
 	inputTokens?: number;
 	outputTokens?: number;
 	cacheReadTokens?: number;
@@ -40,6 +44,8 @@ export interface ExecutionTraceEvent {
 	durationMs?: number;
 	effectId?: string;
 	sizeChars?: number;
+	cognitionId?: string;
+	candidates?: CapabilityTraceCandidate[];
 }
 
 export interface ExecutionTraceQuery { executionId: string; accessScopeId?: string; }
@@ -64,6 +70,8 @@ export interface ExecutionTrace {
 	verificationStatus?: "accepted" | "rejected" | "unavailable";
 	deliveries: number;
 	deliveryStatus?: "succeeded" | "failed";
+	capabilityDecisions: number;
+	capabilityDownstreamOutcomeStatus?: CapabilityOutcomeStatus;
 	inputTokens: number;
 	outputTokens: number;
 	cacheReadTokens: number;
@@ -119,6 +127,7 @@ export class FileExecutionTraceStore implements ExecutionTraceSink {
 		const costUsd = events.reduce((sum, event) => sum + (event.costUsd ?? 0), 0);
 		const verification = [...events].reverse().find((event) => event.type === "verification.settled");
 		const delivery = [...events].reverse().find((event) => event.type === "delivery.settled");
+		const capabilityOutcome = [...events].reverse().find((event) => event.type === "capability.downstream_execution_outcome");
 		return {
 			executionId, ...(first.objectiveId ? { objectiveId: first.objectiveId } : {}), ...(first.taskId ? { taskId: first.taskId } : {}),
 			...(first.taskRunId ? { taskRunId: first.taskRunId } : {}), ...(accessScopeId ? { accessScopeId } : {}), triggerKind: first.triggerKind, mode: first.mode,
@@ -134,6 +143,8 @@ export class FileExecutionTraceStore implements ExecutionTraceSink {
 			...(verification?.status === "accepted" || verification?.status === "rejected" || verification?.status === "unavailable" ? { verificationStatus: verification.status } : {}),
 			deliveries: events.filter((event) => event.type === "delivery.started").length,
 			...(delivery?.status === "succeeded" || delivery?.status === "failed" ? { deliveryStatus: delivery.status } : {}),
+			capabilityDecisions: events.filter((event) => event.type === "capability.decision").length,
+			...(isCapabilityOutcomeStatus(capabilityOutcome?.status) ? { capabilityDownstreamOutcomeStatus: capabilityOutcome.status } : {}),
 			inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens, costUsd, events,
 		};
 	}
@@ -153,6 +164,11 @@ export class FileExecutionTraceStore implements ExecutionTraceSink {
 function traceDetails(input: ExecutionTraceInput): Partial<ExecutionTraceEvent> {
 	if (input.type === "execution.started") return {};
 	if (input.type === "execution.settled") return { status: input.status };
+	if (input.type === "capability.decision") return {
+		cognitionId: safeText(input.cognitionId, "cognitionId", 128),
+		candidates: safeCapabilityCandidates(input.candidates),
+	};
+	if (input.type === "capability.downstream_execution_outcome") return { cognitionId: safeText(input.cognitionId, "cognitionId", 128), status: input.status };
 	if (input.type === "model.turn_settled") return {
 		inputTokens: safeNonNegative(input.inputTokens, "inputTokens"), outputTokens: safeNonNegative(input.outputTokens, "outputTokens"),
 		...(input.cacheReadTokens === undefined ? {} : { cacheReadTokens: safeNonNegative(input.cacheReadTokens, "cacheReadTokens") }),
@@ -182,6 +198,19 @@ function safeNonNegative(value: number, field: string): number {
 	if (!Number.isFinite(value) || value < 0) throw new Error(`Execution Trace ${field} must be a non-negative finite number`);
 	return value;
 }
+function safeCapabilityCandidates(values: readonly CapabilityTraceCandidate[]): CapabilityTraceCandidate[] {
+	if (!Array.isArray(values) || values.length > 20) throw new Error("Execution Trace Capability candidates must be a bounded list");
+	const seen = new Set<string>();
+	return values.map((candidate) => {
+		if (!candidate || !["tool", "mcp", "skill"].includes(candidate.kind)) throw new Error("Execution Trace Capability kind is invalid");
+		const name = safeText(candidate.name, "Capability name", 128);
+		if (seen.has(`${candidate.kind}:${name}`)) throw new Error("Execution Trace Capability candidates contain duplicates");
+		seen.add(`${candidate.kind}:${name}`);
+		if (!Number.isFinite(candidate.confidence) || candidate.confidence < 0 || candidate.confidence > 1) throw new Error("Execution Trace Capability confidence is invalid");
+		return { kind: candidate.kind, name, confidence: candidate.confidence };
+	});
+}
+function isCapabilityOutcomeStatus(value: unknown): value is CapabilityOutcomeStatus { return value === "accepted" || value === "rejected" || value === "unverified" || value === "failed" || value === "cancelled"; }
 function isTraceEvent(value: unknown): value is ExecutionTraceEvent {
 	if (!value || typeof value !== "object") return false;
 	if (containsCredentialMaterial(JSON.stringify(value))) return false;

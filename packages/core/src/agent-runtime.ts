@@ -330,7 +330,7 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 			const previousToolBoundary = session.piSession.agent.beforeToolCall;
 			const capabilityRuntime = new CapabilityRuntime();
 			const capabilityPrefetch = allTools.find((tool) => tool.name === "capability_discover") as (typeof allTools[number] & {
-				beemaxCapabilityPrefetch?: (query: string, signal?: AbortSignal) => Promise<{ candidates: Array<{ kind: "tool" | "mcp" | "skill"; name: string; confidence: number }>; skills: Array<{ name: string }> }>;
+				beemaxCapabilityPrefetch?: (query: string, signal?: AbortSignal) => Promise<{ cognitionId?: string; candidates: Array<{ kind: "tool" | "mcp" | "skill"; name: string; confidence: number }>; skills: Array<{ name: string }> }>;
 				/** Pre-semantic compatibility seam for injected test/legacy runtimes only. */
 				beemaxSkillPrefetch?: (query: string, signal?: AbortSignal) => Promise<Array<{ name: string }>>;
 			}) | undefined;
@@ -348,6 +348,8 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 			);
 			let prefetchedSkills: string[] = [];
 			let semanticPrefetchedTools: string[] = [];
+			const capabilityDecisions = new Map<string, Array<{ kind: "tool" | "mcp" | "skill"; name: string; confidence: number }>>();
+			const recordedCapabilityDecisions = new Set<string>();
 			let capabilityPrefetchFailed = false;
 			let semanticCapabilityNoMatch = false;
 			if (shouldRunCapabilityPrefetch && capabilityPrefetch?.beemaxCapabilityPrefetch) {
@@ -356,6 +358,8 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 					const inventory = new Set(allTools.map((tool) => tool.name));
 					semanticPrefetchedTools = [...new Set(proposal.candidates.filter((candidate) => candidate.kind !== "skill" && inventory.has(candidate.name)).map((candidate) => candidate.name))].slice(0, 10);
 					prefetchedSkills = [...new Set(proposal.skills.map((skill) => skill.name).filter(Boolean))].slice(0, 1);
+					const cognitionId = validCapabilityCognitionId(proposal.cognitionId);
+					if (cognitionId) capabilityDecisions.set(cognitionId, proposal.candidates.slice(0, 20));
 					semanticCapabilityNoMatch = semanticPrefetchedTools.length === 0 && prefetchedSkills.length === 0;
 				}
 				catch (error) {
@@ -486,6 +490,12 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 					if (!event.isError) successfulToolNames.add(event.toolName);
 					if (event.toolName === "capability_discover" && !event.isError) {
 						const discovery = capabilityDiscoveryMetadata(event.result, new Set(allTools.map((tool) => tool.name)));
+						if (discovery.cognitionId && !capabilityDecisions.has(discovery.cognitionId)) {
+							const candidates = discovery.candidates.map(({ kind, name, confidence }) => ({ kind, name, confidence }));
+							capabilityDecisions.set(discovery.cognitionId, candidates);
+							recordedCapabilityDecisions.add(discovery.cognitionId);
+							this.recordTrace({ type: "capability.decision", executionEnvelope, at, cognitionId: discovery.cognitionId, candidates });
+						}
 						if (discovery.restrictions.length) toolSpecPlan = hideToolSpecPlan(toolSpecPlan, discovery.restrictions);
 						const activatedTools = activatePlannedTools(discovery.activatedTools);
 						if (activatedTools.length) {
@@ -587,6 +597,10 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 			};
 			try {
 				this.recordTrace({ type: "execution.started", executionEnvelope, at: startedAt });
+				for (const [cognitionId, candidates] of capabilityDecisions) {
+					recordedCapabilityDecisions.add(cognitionId);
+					this.recordTrace({ type: "capability.decision", executionEnvelope, at: Date.now(), cognitionId, candidates });
+				}
 				await onEvent?.({ type: "execution_started", executionEnvelope });
 				if (contextAssembly) await onEvent?.({ type: "context_built", included: contextAssembly.included.map(({ kind, source, costChars }) => ({ kind, source, costChars })), released: contextAssembly.released.map(({ kind, source, costChars }) => ({ kind, source, costChars })), contextChars: contextAssembly.contextChars });
 				if (planning) await onEvent?.({ type: "planning_decision", mode: planning.mode, concurrency: planning.suggestedConcurrency, maxSubagents: planning.budget.maxSubagents, requiredTools: [...planning.requiredTools] });
@@ -741,6 +755,11 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 			} finally {
 				clearIdleSettle();
 				await eventDelivery;
+				const capabilityOutcomeStatus = settlementStatus === "cancelled" ? "cancelled"
+					: objectiveVerificationOutcome === "accepted" ? "accepted"
+						: objectiveVerificationOutcome === "rejected" ? "rejected"
+							: settlementStatus === "failed" ? "failed" : "unverified";
+				for (const cognitionId of recordedCapabilityDecisions) this.recordTrace({ type: "capability.downstream_execution_outcome", executionEnvelope, at: Date.now(), cognitionId, status: capabilityOutcomeStatus });
 				this.recordTrace({ type: "execution.settled", executionEnvelope, at: Date.now(), status: settlementStatus });
 				await onEvent?.({ type: "execution_settled", executionEnvelope, status: settlementStatus });
 				releaseTurnInputContext(session.piSession, turnMessageStart, input.text);
@@ -1012,10 +1031,11 @@ function releaseTurnInputContext(session: AgentSession, fromIndex: number, rawTe
 	if (messages) session.agent.state.messages = messages;
 }
 
-function capabilityDiscoveryMetadata(result: unknown, knownTools: ReadonlySet<string>): { hasMatches: boolean; candidates: CapabilityRankedCandidate[]; activatedTools: string[]; restrictions: Array<{ toolName: string; reason: "configuration_required" | "provider_unhealthy" | "provider_unavailable" }> } {
+function capabilityDiscoveryMetadata(result: unknown, knownTools: ReadonlySet<string>): { cognitionId?: string; hasMatches: boolean; candidates: CapabilityRankedCandidate[]; activatedTools: string[]; restrictions: Array<{ toolName: string; reason: "configuration_required" | "provider_unhealthy" | "provider_unavailable" }> } {
 	const details = result && typeof result === "object" ? (result as { details?: unknown }).details : undefined;
 	if (!details || typeof details !== "object") return { hasMatches: false, candidates: [], activatedTools: [], restrictions: [] };
-	const value = details as { activatedTools?: unknown; tools?: unknown; skills?: unknown; ranked?: unknown; providerResolutions?: unknown };
+	const value = details as { cognitionId?: unknown; activatedTools?: unknown; tools?: unknown; skills?: unknown; ranked?: unknown; providerResolutions?: unknown };
+	const cognitionId = validCapabilityCognitionId(value.cognitionId);
 	const validName = (item: unknown): item is string => typeof item === "string" && /^[a-z0-9][a-z0-9._:-]{0,127}$/i.test(item);
 	const activatedTools = Array.isArray(value.activatedTools) ? [...new Set(value.activatedTools.filter((item): item is string => validName(item) && knownTools.has(item)))].slice(0, 20) : [];
 	const candidates = Array.isArray(value.ranked) ? value.ranked.flatMap((item): CapabilityRankedCandidate[] => {
@@ -1033,7 +1053,11 @@ function capabilityDiscoveryMetadata(result: unknown, knownTools: ReadonlySet<st
 		return [{ toolName: entry.capability, reason }];
 	}) : [];
 	const hasMatches = activatedTools.length > 0 || candidates.length > 0;
-	return { hasMatches, candidates, activatedTools, restrictions };
+	return { ...(cognitionId ? { cognitionId } : {}), hasMatches, candidates, activatedTools, restrictions };
+}
+
+function validCapabilityCognitionId(value: unknown): string | undefined {
+	return typeof value === "string" && /^[a-z0-9][a-z0-9._:-]{0,127}$/i.test(value) ? value : undefined;
 }
 
 function toolSideEffect(tool: unknown): ToolSideEffect | undefined {

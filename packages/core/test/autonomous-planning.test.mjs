@@ -62,13 +62,14 @@ test("Agent runtime hides capability discovery and Tools for a direct answer wit
 test("Agent runtime applies one semantic Tool/MCP/Skill proposal while Pi retains activation authority", async () => {
 	const source = { platform: "cli", chatId: "semantic-mcp", chatType: "dm", userId: "local" };
 	const toolChanges = [];
+	const traceEvents = [];
 	let prefetchCalls = 0;
 	const agent = { state: { model: { id: "test" }, messages: [] } };
 	const tools = [
-		{ name: "capability_discover", description: "Discover capabilities", beemaxCapabilityPrefetch: async () => { prefetchCalls++; return { candidates: [{ kind: "mcp", name: "calendar_lookup", confidence: 0.96 }], skills: [] }; } },
+		{ name: "capability_discover", description: "Discover capabilities", beemaxCapabilityPrefetch: async () => { prefetchCalls++; return { cognitionId: "cap:semantic-mcp", candidates: [{ kind: "mcp", name: "calendar_lookup", confidence: 0.96 }], skills: [] }; } },
 		{ name: "calendar_lookup", description: "Temporal availability coordination", beemaxToolSpec: { kind: "mcp" } },
 	];
-	const runtime = createRuntime({ createAgent: async () => ({
+	const runtime = createRuntime({ executionTrace: { record(event) { traceEvents.push(event); } }, createAgent: async () => ({
 		agent,
 		getAllTools: () => tools,
 		getActiveToolNames: () => tools.map(({ name }) => name),
@@ -80,6 +81,10 @@ test("Agent runtime applies one semantic Tool/MCP/Skill proposal while Pi retain
 	await runtime.run({ source, text: "请使用 MCP 安排一次会议", timeoutMs: 1_000 });
 	assert.equal(prefetchCalls, 1);
 	assert.deepEqual(toolChanges[0], ["calendar_lookup"]);
+	assert.deepEqual(traceEvents.filter((event) => event.type.startsWith("capability.")), [
+		{ type: "capability.decision", executionEnvelope: traceEvents[0].executionEnvelope, at: traceEvents.find((event) => event.type === "capability.decision").at, cognitionId: "cap:semantic-mcp", candidates: [{ kind: "mcp", name: "calendar_lookup", confidence: 0.96 }] },
+		{ type: "capability.downstream_execution_outcome", executionEnvelope: traceEvents[0].executionEnvelope, at: traceEvents.find((event) => event.type === "capability.downstream_execution_outcome").at, cognitionId: "cap:semantic-mcp", status: "unverified" },
+	]);
 	runtime.dispose();
 });
 

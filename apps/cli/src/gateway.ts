@@ -276,7 +276,7 @@ export async function runGateway(config: BeeMaxConfig): Promise<void> {
 	const capabilityRanker = configuredCapabilityRanker(
 		auxiliaryTextModels,
 		(usage) => recordGatewayEvent(config.paths.agentDir, "capability_cognition", { profile: config.profile, ...usage }),
-		({ code }) => recordGatewayEvent(config.paths.agentDir, "capability_cognition_fallback", { profile: config.profile, code }),
+		({ code, cognitionId }) => recordGatewayEvent(config.paths.agentDir, "capability_cognition_fallback", { profile: config.profile, code, ...(cognitionId ? { cognitionId } : {}) }),
 	);
 	const createSubagentAgent = buildAgentFactory({
 		...profileAgentDefaults,

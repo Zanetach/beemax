@@ -200,7 +200,9 @@ agent:
 
 Preference values range from `-1` to `1`. Policy, Profile scope, Provider health, Effects, and the turn-scoped Tool Spec still decide whether a selected capability can execute.
 
-Before a release, refresh the credentialed semantic-routing evidence with `npm run eval:capability-ranking:live -- --profile <profile> --write evals/baselines/capability-ranking-live.json`. The release verifier rejects missing, failed, expired, or implementation-mismatched evidence.
+Every Capability decision receives a content-free cognition ID that correlates model usage, fallback telemetry, the execution trace, and the eventual verified, rejected, failed, cancelled, or unverified task outcome. Calibration reports keep lexical, frozen-semantic, and live-Provider results separate and measure Top-1, Top-K, required-capability recall, unnecessary activation, no-match precision, completion, latency, tokens, and cost. Versioned threshold trials cannot be promoted when authorization, false-positive, recall, or completion metrics regress.
+
+Before a release, refresh the credentialed semantic-routing and outcome evidence with `npm run eval:capability-ranking:live -- --profile <profile> --write evals/baselines/capability-ranking-live.json`. The release verifier independently recomputes rankings, correlated task outcomes, usage, costs, and threshold promotion decisions; it rejects missing, failed, expired, fallback-backed, or implementation-mismatched evidence.
 
 ## Memory and durable work
 

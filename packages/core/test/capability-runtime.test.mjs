@@ -22,7 +22,7 @@ test("lexical and semantic Capability rankers return one candidate shape with ex
 		async similarities() { return [{ name: "web_search", similarity: 0.93, signals: ["public evidence intent"] }]; },
 	}) }).discover({ query: "investigate material using primary sources", inventory, limit: 5 });
 	for (const selection of [lexical, semantic]) {
-		assert.deepEqual(Object.keys(selection).sort(), ["activatedTools", "candidates", "query"]);
+		assert.deepEqual(Object.keys(selection).sort(), ["activatedTools", "candidates", "cognitionId", "query"]);
 		assert.deepEqual(Object.keys(selection.candidates[0]).sort(), ["confidence", "explanation", "kind", "name", "score", "version"]);
 		assert.deepEqual(Object.keys(selection.candidates[0].explanation).sort(), ["signals", "strategy", "summary"]);
 		assert.equal(selection.candidates[0].name, "web_search");
@@ -30,6 +30,23 @@ test("lexical and semantic Capability rankers return one candidate shape with ex
 	}
 	assert.equal(lexical.candidates[0].explanation.strategy, "lexical");
 	assert.equal(semantic.candidates[0].explanation.strategy, "semantic");
+});
+
+test("Capability selection carries one content-free cognition identity through model usage", async () => {
+	let receivedCognitionId;
+	const usage = [];
+	const port = new PiSemanticCapabilityPort({
+		models: [{ model: { id: "correlated" } }], maxModelAttempts: 1, onUsage(event) { usage.push(event); },
+		complete: async (_model, context) => {
+			const payload = JSON.parse(context.messages[0].content);
+			return { stopReason: "stop", content: [{ type: "text", text: JSON.stringify({ matches: [{ id: payload.candidates[0].id, name: payload.candidates[0].name, similarity: 0.9 }] }) }] };
+		},
+	});
+	const ranker = new SemanticCapabilityRanker({ async similarities(input) { receivedCognitionId = input.cognitionId; return port.similarities(input); } });
+	const selection = await new CapabilityRuntime({ ranker }).discover({ query: "known", inventory: [capabilityDescriptor({ kind: "tool", name: "known", version: "1", activeTools: ["known"] })], cognitionId: "cap:test-correlation" });
+	assert.equal(selection.cognitionId, "cap:test-correlation");
+	assert.equal(receivedCognitionId, "cap:test-correlation");
+	assert.equal(usage[0].cognitionId, "cap:test-correlation");
 });
 
 test("Capability discovery changes execution only through Pi active tools", async () => {
@@ -74,7 +91,9 @@ test("semantic ranking falls back to bounded lexical recall only when its provid
 	assert.equal(selection.candidates[0].explanation.strategy, "lexical");
 	assert.match(selection.candidates[0].explanation.summary, /semantic provider unavailable/u);
 	assert.equal(JSON.stringify(selection).includes("secret"), false);
-	assert.deepEqual(fallbacks, [{ query: "查找公开证据", code: "provider_unavailable" }]);
+	assert.equal(fallbacks.length, 1);
+	assert.deepEqual({ query: fallbacks[0].query, code: fallbacks[0].code }, { query: "查找公开证据", code: "provider_unavailable" });
+	assert.match(fallbacks[0].cognitionId, /^cap:/u);
 });
 
 test("semantic ranking recognizes a typed Undici timeout through the Provider cause chain", async () => {
@@ -230,6 +249,7 @@ test("Pi semantic production port gives one configured model a bounded repair at
 	assert.equal(result[0].name, "known");
 	assert.equal(usage[0].failureCode, "invalid_response");
 	assert.equal(usage[0].actualTokens, 16);
+	assert.equal(usage[0].usageStatus, "partial");
 	assert.equal(usage[1].status, "succeeded");
 });
 
@@ -292,6 +312,7 @@ test("Pi semantic production port reports bounded estimated and actual cognition
 	assert.equal(usage.length, 1);
 	assert.equal(usage[0].status, "succeeded");
 	assert.equal(usage[0].actualTokens, 30);
+	assert.equal(usage[0].usageStatus, "partial");
 	assert.ok(usage[0].durationMs >= 0);
 	assert.ok(usage[0].estimatedTokens >= usage[0].actualTokens);
 });

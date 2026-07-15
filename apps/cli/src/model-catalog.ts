@@ -121,7 +121,7 @@ export function configuredAuxiliaryTextModels(config: BeeMaxConfig): Array<{ mod
 export function configuredCapabilityRanker(
 	models: Array<{ model: Model<Api>; apiKey?: string }>,
 	onUsage?: NonNullable<PiSemanticCapabilityPortOptions["onUsage"]>,
-	onFallback?: (event: { query: string; code: "provider_unavailable" }) => void,
+	onFallback?: (event: { query: string; code: "provider_unavailable"; cognitionId?: string }) => void,
 ): CapabilityRanker {
 	const lexical = new LexicalCapabilityRanker();
 	return models.length ? new SemanticCapabilityRanker(new PiSemanticCapabilityPort({ models, ...(onUsage ? { onUsage } : {}) }), { fallback: lexical, ...(onFallback ? { onFallback } : {}) }) : lexical;

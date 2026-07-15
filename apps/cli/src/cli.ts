@@ -1259,7 +1259,7 @@ async function runChat(config: ReturnType<typeof loadConfig>, requestedMode: { f
 	const capabilityRanker = configuredCapabilityRanker(
 		auxiliaryTextModels,
 		(usage) => recordGatewayEvent(config.paths.agentDir, "capability_cognition", { profile: config.profile, ...usage }),
-		({ code }) => recordGatewayEvent(config.paths.agentDir, "capability_cognition_fallback", { profile: config.profile, code }),
+		({ code, cognitionId }) => recordGatewayEvent(config.paths.agentDir, "capability_cognition_fallback", { profile: config.profile, code, ...(cognitionId ? { cognitionId } : {}) }),
 	);
 	const createSubagentAgent = buildAgentFactory({
 		profileId: config.profile,

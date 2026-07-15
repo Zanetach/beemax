@@ -21,7 +21,7 @@ test("Execution Trace correlates content-free lifecycle events and derives one e
 		assert.deepEqual(store.trace({ executionId: "execution:run-7", accessScopeId: "scope:ops" }), {
 			executionId: "execution:run-7", objectiveId: "objective-2", taskId: "task-3", taskRunId: "run-7", accessScopeId: "scope:ops",
 			triggerKind: "recovery", mode: "recovery", status: "succeeded", startedAt: 100, settledAt: 160, durationMs: 60,
-			modelTurns: 1, toolCalls: 1, effects: 0, unknownEffects: 0, checkpoints: 0, verifications: 0, deliveries: 0, inputTokens: 30, outputTokens: 10, cacheReadTokens: 0, cacheWriteTokens: 0, costUsd: 0.02,
+			modelTurns: 1, toolCalls: 1, effects: 0, unknownEffects: 0, checkpoints: 0, verifications: 0, deliveries: 0, capabilityDecisions: 0, inputTokens: 30, outputTokens: 10, cacheReadTokens: 0, cacheWriteTokens: 0, costUsd: 0.02,
 			events: [
 				{ sequence: 1, type: "execution.started", executionId: "execution:run-7", objectiveId: "objective-2", taskId: "task-3", taskRunId: "run-7", accessScopeId: "scope:ops", triggerKind: "recovery", mode: "recovery", at: 100 },
 				{ sequence: 2, type: "model.turn_settled", executionId: "execution:run-7", objectiveId: "objective-2", taskId: "task-3", taskRunId: "run-7", accessScopeId: "scope:ops", triggerKind: "recovery", mode: "recovery", at: 120, inputTokens: 30, outputTokens: 10, costUsd: 0.02 },
@@ -39,6 +39,25 @@ test("Execution Trace refuses credential-bearing operational identifiers", () =>
 		const executionEnvelope = createExecutionEnvelope({ executionId: "execution:safe", trigger: { kind: "interaction" }, mode: "normal" });
 		assert.throws(() => store.record({ type: "tool.started", executionEnvelope, at: 1, toolCallId: "call-1", toolName: "Authorization: Bearer trace-secret" }), /credential/i);
 		assert.equal(store.trace({ executionId: "execution:safe" }), undefined);
+	} finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("Execution Trace correlates a content-free Capability decision with its verified task outcome", () => {
+	const root = mkdtempSync(join(tmpdir(), "beemax-capability-outcome-trace-"));
+	try {
+		const store = new FileExecutionTraceStore(join(root, "trace.jsonl"));
+		const executionEnvelope = createExecutionEnvelope({ executionId: "execution:capability", trigger: { kind: "interaction" }, objectiveId: "objective:capability", mode: "normal" });
+		store.record({ type: "execution.started", executionEnvelope, at: 1 });
+		store.record({ type: "capability.decision", executionEnvelope, at: 2, cognitionId: "cap:decision-1", candidates: [{ kind: "tool", name: "web_search", confidence: 0.93 }] });
+		store.record({ type: "capability.downstream_execution_outcome", executionEnvelope, at: 9, cognitionId: "cap:decision-1", status: "accepted" });
+		store.record({ type: "execution.settled", executionEnvelope, at: 10, status: "succeeded" });
+		const trace = store.trace({ executionId: "execution:capability" });
+		assert.equal(trace.capabilityDecisions, 1);
+		assert.equal(trace.capabilityDownstreamOutcomeStatus, "accepted");
+		assert.deepEqual(trace.events.slice(1, 3), [
+			{ sequence: 2, type: "capability.decision", executionId: "execution:capability", objectiveId: "objective:capability", triggerKind: "interaction", mode: "normal", at: 2, cognitionId: "cap:decision-1", candidates: [{ kind: "tool", name: "web_search", confidence: 0.93 }] },
+			{ sequence: 3, type: "capability.downstream_execution_outcome", executionId: "execution:capability", objectiveId: "objective:capability", triggerKind: "interaction", mode: "normal", at: 9, cognitionId: "cap:decision-1", status: "accepted" },
+		]);
 	} finally { rmSync(root, { recursive: true, force: true }); }
 });
 

@@ -5,6 +5,9 @@ import { resolve } from "node:path";
 export const LIVE_CAPABILITY_EVIDENCE_SOURCES = Object.freeze([
 	"packages/core/src/capability-runtime.ts",
 	"packages/core/src/capability-ranking.ts",
+	"packages/core/src/capability-ranking-evaluation.ts",
+	"packages/core/src/capability-calibration.ts",
+	"packages/core/src/execution-trace.ts",
 	"packages/core/src/skill-tools.ts",
 	"packages/core/src/tool-runtime.ts",
 	"packages/core/src/tool-spec-plan.ts",
@@ -18,6 +21,7 @@ export const LIVE_CAPABILITY_EVIDENCE_SOURCES = Object.freeze([
 	"apps/cli/src/cli.ts",
 	"evals/capability-ranking-corpus.mjs",
 	"scripts/capability-ranking-evidence.mjs",
+	"scripts/capability-outcome-harness.mjs",
 	"scripts/evaluate-live-capability-ranking.mjs",
 	"scripts/verify-live-capability-evidence.mjs",
 	"package.json",

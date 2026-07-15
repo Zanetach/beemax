@@ -40,3 +40,11 @@ test("Capability ranking evaluation exposes misses instead of hiding them behind
 	assert.equal(report.metrics.forbiddenActivationRate, 1);
 	assert.deepEqual(report.failures.map((failure) => failure.code), ["top1_miss", "topk_miss", "forbidden_activation"]);
 });
+
+test("Capability ranking evaluation requires every declared Capability for a multi-capability task", async () => {
+	const ranker = new SemanticCapabilityRanker({ similarities: async () => [{ name: "web_search", similarity: 0.9 }] });
+	const report = await evaluateCapabilityRanking({ ranker, inventory, cases: [{ id: "multi", query: "research and recall prior decisions", expected: "web_search", required: ["web_search", "memory_recall"] }] });
+	assert.equal(report.metrics.top1Accuracy, 1);
+	assert.equal(report.metrics.topKRecall, 0);
+	assert.deepEqual(report.failures.map((failure) => failure.code), ["topk_miss"]);
+});
