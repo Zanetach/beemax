@@ -170,7 +170,7 @@ export class ToolApprovalBroker {
 
 function requiredCapabilityName(value: string): string {
 	const normalized = value.trim();
-	if (!/^[a-zA-Z0-9_-]{1,128}$/.test(normalized)) throw new Error("Profile Task Grant capability name is invalid");
+	if (!/^[A-Za-z][A-Za-z0-9_.:-]{0,127}$/.test(normalized)) throw new Error("Profile Task Grant capability name is invalid");
 	return normalized;
 }
 

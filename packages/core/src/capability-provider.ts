@@ -1,5 +1,5 @@
 export type CapabilityProviderKind = "tool" | "mcp";
-export type CapabilityProviderHealthStatus = "ready" | "configuration_required" | "unhealthy" | "unavailable";
+export type CapabilityProviderHealthStatus = "ready" | "unverified" | "configuration_required" | "unhealthy" | "unavailable";
 
 export interface CapabilityProviderHealth {
 	status: CapabilityProviderHealthStatus;
@@ -88,7 +88,7 @@ export class CapabilityProviderRuntime {
 			return Object.freeze({ id: provider.id, kind: provider.kind, installed: provider.installed, health, ...(provider.configuration ? { configuration: provider.configuration } : {}), installable: Boolean(provider.install) });
 		}));
 		candidates.sort((left, right) => healthPriority(left.health.status) - healthPriority(right.health.status) || Number(right.installed) - Number(left.installed) || left.id.localeCompare(right.id));
-		const selected = candidates.find((candidate) => candidate.installed && candidate.health.status === "ready");
+		const selected = candidates.find((candidate) => candidate.installed && (candidate.health.status === "ready" || candidate.health.status === "unverified"));
 		if (selected) return { status: "ready", capability, selected, candidates };
 		return { status: "blocked", capability, candidates, blocker: blockerFor(candidates) };
 	}
@@ -142,7 +142,7 @@ function providerConfiguration(input: CapabilityProviderConfiguration): Capabili
 }
 
 function providerHealth(input: CapabilityProviderHealth): CapabilityProviderHealth {
-	if (!["ready", "configuration_required", "unhealthy", "unavailable"].includes(input.status)) throw new Error("Capability Provider health status is invalid");
+	if (!["ready", "unverified", "configuration_required", "unhealthy", "unavailable"].includes(input.status)) throw new Error("Capability Provider health status is invalid");
 	return Object.freeze({ status: input.status, ...(input.reason ? { reason: required(input.reason, "Provider health reason", 2_000) } : {}), ...(input.evidenceRef ? { evidenceRef: required(input.evidenceRef, "Provider health evidence", 1_000) } : {}), ...(input.missingConfiguration ? { missingConfiguration: Object.freeze([...new Set(input.missingConfiguration.map((value) => required(value, "Missing configuration key", 128)))]) } : {}) });
 }
 
@@ -159,7 +159,7 @@ function blockerFor(candidates: readonly CapabilityProviderCandidate[]): Capabil
 	return { code: "provider_unavailable", reason: candidates.length ? candidates.map((candidate) => `${candidate.id}: ${candidate.health.reason ?? "unavailable"}`).join("; ") : "No Tool or MCP Provider candidate matched the required capability", requiredConfiguration: [] };
 }
 
-function healthPriority(status: CapabilityProviderHealthStatus): number { return status === "ready" ? 0 : status === "configuration_required" ? 1 : status === "unhealthy" ? 2 : 3; }
+function healthPriority(status: CapabilityProviderHealthStatus): number { return status === "ready" ? 0 : status === "unverified" ? 1 : status === "configuration_required" ? 2 : status === "unhealthy" ? 3 : 4; }
 function normalized(value: string): string { return value.normalize("NFKC").trim().toLocaleLowerCase(); }
 function required(value: string, label: string, maxLength: number): string { const normalizedValue = value?.trim(); if (!normalizedValue || normalizedValue.length > maxLength) throw new Error(`${label} must be between 1 and ${maxLength} characters`); return normalizedValue; }
 function safeReason(error: unknown): string { return error instanceof Error ? error.message.slice(0, 2_000) : String(error).slice(0, 2_000); }

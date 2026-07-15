@@ -69,6 +69,13 @@ test("Profile-authorized workspace writes seed every fresh task grant without wi
 	broker.dispose();
 });
 
+test("Profile Task Grants accept the same namespaced capability identities as configuration", () => {
+	const broker = new ToolApprovalBroker(async () => {}, 1_000, undefined, ["mcp.partner:deliver-v2"]);
+	broker.beginTask(source, "turn-namespaced");
+	assert.deepEqual(broker.executionGrant(source)?.allowedCapabilities, ["mcp.partner:deliver-v2"]);
+	broker.dispose();
+});
+
 test("approval lifecycle exposes only redacted presenter-safe card details", async () => {
 	const events = [];
 	const broker = new ToolApprovalBroker(async () => {}, 1_000);

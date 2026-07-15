@@ -17,7 +17,9 @@ export function rankCapabilityIndex<T extends RankableCapability>(query: string,
 		const triggerHits = triggers.filter((term) => normalized.includes(normalize(term))).length;
 		const aliasHits = aliases.filter((term) => normalized.includes(normalize(term))).length;
 		const termHits = terms.filter((term) => haystack.includes(term)).length;
-		const score = (normalized === name ? 100 : normalized.includes(name) ? 40 : 0) + triggerHits * 60 + aliasHits * 50 + termHits * 5;
+		const nameTermHits = terms.filter((term) => name.includes(term)).length;
+		const normalizedNamePhrase = name.replace(/[^\p{L}\p{N}]+/gu, " ").trim();
+		const score = (normalized === name || normalized === normalizedNamePhrase ? 100 : normalized.includes(name) ? 40 : 0) + triggerHits * 60 + aliasHits * 50 + nameTermHits * 20 + termHits * 5;
 		if (!score) return [];
 		return [{ item, score, confidence: Math.min(1, score / 100), reason: triggerHits ? `matched ${triggerHits} trigger(s)` : aliasHits ? `matched ${aliasHits} alias(es)` : `matched ${termHits} lexical term(s)` }];
 	}).sort((left, right) => right.score - left.score || (left.item.priority ?? 1_000) - (right.item.priority ?? 1_000) || left.item.name.localeCompare(right.item.name)).slice(0, Math.max(1, Math.min(limit, 100)));

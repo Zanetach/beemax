@@ -40,6 +40,8 @@ interface RankedCapability {
 	explanation: CapabilityExplanation;
 }
 
+const MIN_DISCOVERY_CONFIDENCE = 0.2;
+
 export interface CapabilityRanker {
 	rank(query: string, inventory: readonly CapabilityDescriptor[], limit: number): Promise<RankedCapability[]>;
 }
@@ -91,7 +93,9 @@ export class CapabilityRuntime {
 		const limit = Math.max(1, Math.min(Math.trunc(input.limit ?? 10), 100));
 		const inventory = input.inventory.map((descriptor) => capabilityDescriptor(descriptor));
 		const allowed = new Map(inventory.map((descriptor) => [`${descriptor.kind}:${descriptor.name}:${descriptor.version}`, descriptor]));
-		const ranked = (await this.ranker.rank(query, inventory, limit)).filter((match) => allowed.has(`${match.descriptor.kind}:${match.descriptor.name}:${match.descriptor.version}`)).slice(0, limit);
+		const ranked = (await this.ranker.rank(query, inventory, limit))
+			.filter((match) => match.confidence >= MIN_DISCOVERY_CONFIDENCE && allowed.has(`${match.descriptor.kind}:${match.descriptor.name}:${match.descriptor.version}`))
+			.slice(0, limit);
 		// Candidate relevance and Pi Tool activation are different orderings: expose
 		// ranked candidates as-is, but activate direct execution Tools before the
 		// Skill control Tools that can progressively expand the turn inventory.

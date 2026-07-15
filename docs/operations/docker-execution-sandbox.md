@@ -12,6 +12,7 @@ execution:
   mode: all
   workspaceAccess: none # none | ro | rw
   workspaceWritePolicy: approval-required # approval-required | allow-within-workspace
+  taskGrantCapabilities: [] # explicit exact Tool capability names; no wildcards
   image: node:22.19-alpine
   timeoutMs: 180000
 ```
@@ -24,6 +25,8 @@ execution:
 - `allow-within-workspace` 只给当前 Task 的内置 `write` capability 签发 Execution Grant；适合无人值守但工作区受控的 Profile。也可通过 `BEEMAX_WORKSPACE_WRITE_POLICY` 配置。
 
 这个授权不会扩展到 `bash`、MCP 或其他写工具，也不能越过 Enterprise Policy deny、Core hard block、工作区路径校验、Effect reconciliation 或 Sandbox 的 `workspaceAccess`。因此 Docker 配置为 `none`/`ro` 时，Profile 写策略不会把挂载权限提升为 `rw`。
+
+`taskGrantCapabilities` 用于企业或运维方显式预授权当前 Profile 中可无人值守执行的具体 Tool。它默认空、按精确 capability 名匹配、拒绝 `*` 等通配符，并且每个新 Task 都重新签发；也可用逗号分隔的 `BEEMAX_TASK_GRANT_CAPABILITIES` 配置。该列表只免除重复的人机批准，不会绕过 Enterprise Policy、Tool Policy、Effect Authority、Scope 或 Sandbox 边界。
 
 ## 强制边界
 

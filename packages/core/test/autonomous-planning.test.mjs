@@ -53,7 +53,7 @@ test("Agent runtime hides capability discovery and Tools for a direct answer wit
 	runtime.dispose();
 });
 
-test("Agent runtime exposes discovery for an explicit Tool request when lexical prefetch is inconclusive", async () => {
+test("Agent runtime directly prefetches an explicit Tool request with a calibrated name match", async () => {
 	const source = { platform: "cli", chatId: "explicit-tool", chatType: "dm", userId: "local" };
 	const toolChanges = [];
 	const agent = { state: { model: { id: "test" }, messages: [] } };
@@ -71,7 +71,26 @@ test("Agent runtime exposes discovery for an explicit Tool request when lexical 
 		abort: async () => undefined, dispose: () => undefined,
 	}) });
 	await runtime.run({ source, text: "调用 fixture structured lookup Tool：entityId 必须为 fixture-42", timeoutMs: 1_000 });
-	assert.deepEqual(toolChanges[0], ["capability_discover"]);
+	assert.deepEqual(toolChanges[0], ["mcp_fixture_structured_lookup"]);
+	runtime.dispose();
+});
+
+test("Agent runtime directly prefetches a high-confidence current research Provider", async () => {
+	const source = { platform: "cli", chatId: "prefetched-research", chatType: "dm", userId: "local" };
+	const tools = [{ name: "capability_discover", description: "Discover capabilities" }, ...createWebTools()];
+	const toolChanges = [];
+	const agent = { state: { model: { id: "test" }, messages: [] } };
+	const runtime = new BeeMaxAgentRuntime({ planningPolicy: new AutonomousPlanningPolicy(), createAgent: async () => ({
+		agent,
+		getAllTools: () => tools,
+		getActiveToolNames: () => tools.map(({ name }) => name),
+		setActiveToolsByName: (names) => { toolChanges.push([...names]); },
+		subscribe: () => () => undefined,
+		prompt: async () => { agent.state.messages = [{ role: "assistant", content: [{ type: "text", text: "done" }], usage: { input: 1, output: 1 } }]; },
+		abort: async () => undefined, dispose: () => undefined,
+	}) });
+	await runtime.run({ source, text: "截至今天，研究公开发布的 Agent 工具调用趋势，至少实时核验两个来源", timeoutMs: 1_000 });
+	assert.deepEqual(toolChanges[0], ["agent_reach_search"]);
 	runtime.dispose();
 });
 
@@ -164,14 +183,16 @@ test("Agent runtime settles a model turn after bounded visible-output inactivity
 test("Agent runtime continues once after capability discovery so activated tools can run", async () => {
 	const source = { platform: "cli", chatId: "progressive", chatType: "dm", userId: "local" };
 	let listener;
+	let activeTools = ["capability_discover", "web_search"];
+	const toolSelections = [];
 	const prompts = [];
 	const events = [];
 	const agent = { state: { model: { id: "test" }, messages: [] } };
 	const runtime = new BeeMaxAgentRuntime({ planningPolicy: new AutonomousPlanningPolicy(), createAgent: async () => ({
 		agent,
-		getActiveToolNames: () => ["capability_discover", "web_search"],
-		getAllTools: () => [{ name: "web_search", description: "Search", beemaxPolicy: { sideEffect: "none" } }],
-		setActiveToolsByName: () => undefined,
+		getActiveToolNames: () => [...activeTools],
+		getAllTools: () => [{ name: "capability_discover", description: "Discover", beemaxPolicy: { sideEffect: "none" } }, { name: "web_search", description: "Search", beemaxPolicy: { sideEffect: "none" } }],
+		setActiveToolsByName: (names) => { activeTools = [...names]; toolSelections.push([...names]); },
 		subscribe: (next) => { listener = next; return () => undefined; },
 		prompt: async (text) => {
 			prompts.push(text);
@@ -184,6 +205,8 @@ test("Agent runtime continues once after capability discovery so activated tools
 	assert.equal(prompts.length, 2);
 	assert.match(prompts[1], /capability continuation/i);
 	assert.doesNotMatch(prompts[1], /current weather/i);
+	assert.ok(toolSelections.some((names) => names.length === 1 && names[0] === "web_search"));
+	assert.deepEqual(activeTools, ["capability_discover", "web_search"]);
 	assert.deepEqual(events.filter((event) => event.type === "capability_ranked"), [{ type: "capability_ranked", candidates: [{ kind: "tool", name: "web_search", score: 60, confidence: 0.6, reason: "trigger" }], activatedTools: ["web_search"] }]);
 	runtime.dispose();
 });
@@ -316,6 +339,14 @@ test("planning policy keeps a single bounded Tool query direct even with evaluat
 	assert.equal(decision.signals.requiresResearch, true);
 	assert.equal(decision.mode, "direct");
 	assert.deepEqual(decision.requiredTools, []);
+});
+
+test("planning policy gives multi-source direct research enough token budget without changing simple Turns", () => {
+	const policy = new AutonomousPlanningPolicy();
+	const decision = policy.decide("截至今天，研究公开发布的 Agent 工具调用趋势，至少实时核验两个不同来源");
+	assert.equal(decision.mode, "direct");
+	assert.equal(decision.budget.maxTokens, 20_000);
+	assert.equal(policy.decide("What model are you using?").budget.maxTokens, 12_000);
 });
 
 test("planning policy consistently escalates substantial bilingual work", () => {
@@ -554,12 +585,14 @@ test("a responsible direct Turn completes one durable Objective through one veri
 		verifyObjectiveCandidate: async (_objective, result, _signal, context) => {
 			assert.equal(result.output, "完成并附来源");
 			assert.equal(context.taskRunId, envelope.taskRunId);
+			assert.deepEqual(context.successfulToolNames, ["read"]);
 			return { accepted: true, evidence: "来源已检查" };
 		},
 		createAgent: async (_id, _source, receivedEnvelope) => {
 			envelope = receivedEnvelope;
 			return { agent, subscribe: (next) => { listener = next; return () => undefined; }, prompt: async () => {
-				listener({ type: "tool_execution_end", toolCallId: "source-1", toolName: "read", result: {}, isError: false });
+				listener({ type: "tool_execution_start", toolCallId: "source-1", toolName: "read", args: { path: "source.md" } });
+				listener({ type: "tool_execution_end", toolCallId: "source-1", toolName: "read", result: { content: [{ type: "text", text: "source evidence" }] }, isError: false });
 				listener({ type: "turn_end", message: { role: "assistant", content: [] }, toolResults: [] });
 				agent.state.messages = [{ role: "assistant", content: [{ type: "text", text: "完成并附来源" }], usage: { input: 1, output: 1 } }];
 			}, abort: async () => undefined, dispose: () => undefined };

@@ -17,11 +17,13 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { existsSync } from "node:fs";
 import { defineTool, type ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { READ_ONLY_TOOL_POLICY, withToolPolicy } from "./tool-runtime.ts";
+import { redactCredentialMaterial } from "./credential-material.ts";
 
-const SEARCH_TIMEOUT_MS = 15_000;
+const SEARCH_TIMEOUT_MS = 30_000;
 const EXTRACT_TIMEOUT_MS = 20_000;
 const MAX_RESPONSE_BYTES = 2 * 1024 * 1024;
 const MAX_REDIRECTS = 5;
@@ -30,17 +32,38 @@ const execFileAsync = promisify(execFile);
 
 export interface WebToolsOptions {
 	env?: NodeJS.ProcessEnv;
+	agentReachAvailable?: boolean;
+	apiSearch?: (provider: WebApiProvider, query: string, maxResults: number, env: NodeJS.ProcessEnv, signal: AbortSignal) => Promise<WebSearchProviderResult>;
+	agentReachSearch?: (query: string, maxResults: number, signal?: AbortSignal) => Promise<string>;
+	agentReachHealth?: (signal: AbortSignal) => Promise<boolean>;
 }
 
-interface SearchResult {
+export interface SearchResult {
 	title: string;
 	url: string;
 	snippet: string;
 	score?: number;
 }
 
+export interface WebSearchProviderResult {
+	provider: string;
+	results: SearchResult[];
+}
+
+interface WebSearchProviderAttempt {
+	provider: string;
+	status: "succeeded" | "empty" | "failed";
+	durationMs: number;
+	reasonCode?: "timeout" | "authentication" | "rate_limited" | "provider_unavailable" | "request_failed";
+}
+
+export type WebApiProvider = "tavily" | "brave" | "searxng";
+
 export function createWebTools(options: WebToolsOptions = {}): ToolDefinition[] {
 	const env = options.env ?? process.env;
+	const agentReachAvailable = options.agentReachAvailable ?? agentReachInstallationAvailable(env);
+	const executeApiSearch = options.apiSearch ?? searchWebProvider;
+	const executeAgentReachSearch = options.agentReachSearch ?? ((query: string, maxResults: number, signal?: AbortSignal) => agentReachSearchText(query, maxResults, env, signal));
 
 	const webSearch = Object.assign(defineTool({
 		name: "web_search",
@@ -57,17 +80,64 @@ export function createWebTools(options: WebToolsOptions = {}): ToolDefinition[] 
 			const query = params.query.trim();
 			if (!query) return textResult("Search query cannot be empty", { provider: "none", resultCount: 0 }, true);
 			const maxResults = clamp(params.maxResults ?? 5, 1, 10);
+			const providerAttempts: WebSearchProviderAttempt[] = [];
 			try {
 				const requestSignal = signal ?? new AbortController().signal;
-				const { provider, results } = await searchWeb(query, maxResults, env, requestSignal);
+				if (!configuredApiSearchProvider(env) && agentReachAvailable) {
+					const startedAt = Date.now();
+					try {
+						const result = await executeAgentReachSearch(query, maxResults, requestSignal);
+						providerAttempts.push(providerAttempt("agent-reach", publicUrls(compactAgentReachOutput(result, maxResults)).length ? "succeeded" : "empty", startedAt));
+						return agentReachSearchResult(result, maxResults, providerAttempts);
+					} catch (error) {
+						providerAttempts.push(providerAttempt("agent-reach", "failed", startedAt, error));
+						throw error;
+					}
+				}
+				let searched: WebSearchProviderResult | undefined;
+				let lastEmptyProvider: string | undefined;
+				const attempts: string[] = [];
+				for (const provider of configuredApiSearchProviders(env)) {
+					const startedAt = Date.now();
+					try {
+						searched = await executeApiSearch(provider, query, maxResults, env, requestSignal);
+						if (searched.results.length) {
+							providerAttempts.push(providerAttempt(provider, "succeeded", startedAt));
+							break;
+						}
+						lastEmptyProvider = searched.provider;
+						providerAttempts.push(providerAttempt(provider, "empty", startedAt));
+						searched = undefined;
+					} catch (error) {
+						providerAttempts.push(providerAttempt(provider, "failed", startedAt, error));
+						attempts.push(`${provider}: ${safeProviderError(error)}`);
+					}
+				}
+				if (!searched) {
+					if (!agentReachAvailable) {
+						if (lastEmptyProvider) return textResult(`No web results found for: ${query}`, { provider: lastEmptyProvider, resultCount: 0, attempts: providerAttempts });
+						throw new Error(attempts.length ? `Configured web Providers failed: ${attempts.join("; ")}` : "No search Provider is configured");
+					}
+					const startedAt = Date.now();
+					try {
+						const result = await executeAgentReachSearch(query, maxResults, requestSignal);
+						providerAttempts.push(providerAttempt("agent-reach", publicUrls(compactAgentReachOutput(result, maxResults)).length ? "succeeded" : "empty", startedAt));
+						return agentReachSearchResult(result, maxResults, providerAttempts);
+					} catch (fallbackError) {
+						providerAttempts.push(providerAttempt("agent-reach", "failed", startedAt, fallbackError));
+						throw new Error(`${attempts.length ? `Configured web Providers failed: ${attempts.join("; ")}; ` : ""}Agent-Reach fallback failed: ${safeProviderError(fallbackError)}`);
+					}
+				}
+				const { provider, results } = searched;
 				if (!results.length) return textResult(`No web results found for: ${query}`, { provider, resultCount: 0 });
 				return textResult(formatSearchResults(query, provider, results), {
 					provider,
 					resultCount: results.length,
 					results,
+					attempts: providerAttempts,
 				});
 			} catch (error) {
-				return textResult(`Web search failed: ${errorMessage(error)}`, { provider: "unknown", resultCount: 0 }, true);
+				return textResult(`Web search failed: ${safeProviderError(error)}`, { provider: "unknown", resultCount: 0, attempts: providerAttempts }, true);
 			}
 		},
 	}), {
@@ -78,6 +148,7 @@ export function createWebTools(options: WebToolsOptions = {}): ToolDefinition[] 
 			configuredWebProvider("tavily", "TAVILY_API_KEY", Boolean(env.TAVILY_API_KEY?.trim()), "Configure the Tavily API credential reference for this Profile."),
 			configuredWebProvider("brave", "BRAVE_SEARCH_API_KEY", Boolean(env.BRAVE_SEARCH_API_KEY?.trim()), "Configure the Brave Search API credential reference for this Profile."),
 			configuredWebProvider("searxng", "SEARXNG_URL", Boolean(env.SEARXNG_URL?.trim()), "Configure the public SearXNG endpoint URL for this Profile."),
+			agentReachWebProvider(agentReachAvailable, env, options.agentReachHealth),
 		],
 	});
 
@@ -107,7 +178,7 @@ export function createWebTools(options: WebToolsOptions = {}): ToolDefinition[] 
 				].join("\n");
 				return textResult(body, page);
 			} catch (error) {
-				return textResult(`Web extraction failed: ${errorMessage(error)}`, { url: params.url }, true);
+				return textResult(`Web extraction failed: ${safeProviderError(error)}`, { status: "failed" }, true);
 			}
 		},
 	}), {
@@ -118,16 +189,17 @@ export function createWebTools(options: WebToolsOptions = {}): ToolDefinition[] 
 	const agentReachSearch = Object.assign(defineTool({
 		name: "agent_reach_search",
 		label: "Agent Reach Search",
-		description: "Search the live web through Agent-Reach's configured Exa channel. Use for semantic/current web research; falls back with a clear setup message when Agent-Reach is unavailable.",
+		description: "Search the live web through Agent-Reach's configured Exa channel for semantic/current research, independent public sources, citations, and trend verification. 通过实时公开网络研究当前趋势，核验多个独立来源并保留引用。",
 		parameters: Type.Object({ query: Type.String({ description: "Semantic web search query" }), maxResults: Type.Optional(Type.Integer({ minimum: 1, maximum: 10 })) }),
 		execute: async (_id, params, signal) => {
 			const query = params.query.trim();
 			if (!query) return textResult("Search query cannot be empty", { provider: "agent-reach" }, true);
 			try {
-				const output = await agentReachSearchText(query, clamp(params.maxResults ?? 5, 1, 10), env, signal);
+				const maxResults = clamp(params.maxResults ?? 5, 1, 10);
+				const output = compactAgentReachOutput(await executeAgentReachSearch(query, maxResults, signal), maxResults);
 				return textResult(output, { provider: "agent-reach-exa" });
 			} catch (error) {
-				return textResult(`Agent-Reach search unavailable: ${errorMessage(error)}. Run 'agent-reach doctor' and configure the Exa channel.`, { provider: "agent-reach-exa" }, true);
+				return textResult(`Agent-Reach search unavailable: ${safeProviderError(error)}. Run 'agent-reach doctor' and configure the Exa channel.`, { provider: "agent-reach-exa" }, true);
 			}
 		},
 	}), {
@@ -143,6 +215,35 @@ export function createWebTools(options: WebToolsOptions = {}): ToolDefinition[] 
 	return [webSearch, agentReachSearch, webExtract].map((tool) => withToolPolicy(tool, publicResearchPolicy));
 }
 
+function agentReachSearchResult(value: string, maxResults: number, attempts: readonly WebSearchProviderAttempt[] = []) {
+	const output = compactAgentReachOutput(value, maxResults);
+	const urls = publicUrls(output);
+	return textResult(output || "No Agent-Reach results found.", {
+		provider: "agent-reach-exa",
+		resultCount: urls.length,
+		results: urls.map((url) => ({ url })),
+		attempts,
+	});
+}
+
+function providerAttempt(provider: string, status: WebSearchProviderAttempt["status"], startedAt: number, error?: unknown): WebSearchProviderAttempt {
+	return {
+		provider,
+		status,
+		durationMs: Math.max(0, Date.now() - startedAt),
+		...(error === undefined ? {} : { reasonCode: providerFailureReasonCode(error) }),
+	};
+}
+
+function providerFailureReasonCode(error: unknown): NonNullable<WebSearchProviderAttempt["reasonCode"]> {
+	const message = errorMessage(error).toLowerCase();
+	if (/timeout|timed out|abort/.test(message)) return "timeout";
+	if (/401|403|credential|unauthori[sz]ed|forbidden|auth/.test(message)) return "authentication";
+	if (/429|rate.?limit|too many requests/.test(message)) return "rate_limited";
+	if (/\b5\d\d\b|unavailable|connection|network/.test(message)) return "provider_unavailable";
+	return "request_failed";
+}
+
 function configuredWebProvider(id: string, key: string, configured: boolean, instructions: string) {
 	return Object.freeze({
 		id,
@@ -151,9 +252,68 @@ function configuredWebProvider(id: string, key: string, configured: boolean, ins
 		installed: true,
 		configuration: Object.freeze({ required: Object.freeze([key]), instructions }),
 		health: async () => configured
-			? { status: "ready" as const, evidenceRef: `configuration:${id}` }
+			? { status: "unverified" as const, reason: `${id} is configured; health will be established by a web_search execution receipt` }
 			: { status: "configuration_required" as const, reason: `${key} is not configured`, missingConfiguration: Object.freeze([key]) },
 	});
+}
+
+function agentReachWebProvider(available: boolean, env: NodeJS.ProcessEnv, healthProbe?: (signal: AbortSignal) => Promise<boolean>) {
+	return Object.freeze({
+		id: "agent-reach",
+		kind: "tool" as const,
+		capabilities: Object.freeze(["web_search"]),
+		installed: available,
+		configuration: Object.freeze({ required: Object.freeze(["AGENT_REACH_INSTALLATION"]), instructions: "Install and configure Agent-Reach's Exa channel for this runtime user." }),
+		health: async (signal: AbortSignal) => {
+			if (!available) return { status: "configuration_required" as const, reason: "Agent-Reach Exa is not installed or configured", missingConfiguration: Object.freeze(["AGENT_REACH_INSTALLATION"]) };
+			try {
+				const ready = await (healthProbe ?? ((probeSignal) => agentReachHealth(env, probeSignal)))(signal);
+				return ready ? { status: "ready" as const, evidenceRef: "health:agent-reach-exa" } : { status: "unhealthy" as const, reason: "Agent-Reach is installed but the Exa MCP server or search Tool is not healthy" };
+			} catch (error) {
+				return { status: "unhealthy" as const, reason: `Agent-Reach health probe failed: ${safeProviderError(error)}` };
+			}
+		},
+	});
+}
+
+function configuredApiSearchProvider(env: NodeJS.ProcessEnv): boolean {
+	return configuredApiSearchProviders(env).length > 0;
+}
+
+function configuredApiSearchProviders(env: NodeJS.ProcessEnv): WebApiProvider[] {
+	return [env.TAVILY_API_KEY?.trim() ? "tavily" as const : undefined, env.BRAVE_SEARCH_API_KEY?.trim() ? "brave" as const : undefined, env.SEARXNG_URL?.trim() ? "searxng" as const : undefined].filter((value): value is WebApiProvider => Boolean(value));
+}
+
+function agentReachInstallationAvailable(env: NodeJS.ProcessEnv): boolean {
+	const binary = env.BEEMAX_AGENT_REACH_MCPORTER?.trim() || join(homedir(), ".agent-reach", "mcporter", "node_modules", ".bin", "mcporter");
+	const config = env.BEEMAX_AGENT_REACH_CONFIG?.trim() || join(homedir(), ".agent-reach", "mcporter.json");
+	return existsSync(binary) && existsSync(config);
+}
+
+async function agentReachHealth(env: NodeJS.ProcessEnv, signal: AbortSignal): Promise<boolean> {
+	const binary = env.BEEMAX_AGENT_REACH_MCPORTER?.trim() || join(homedir(), ".agent-reach", "mcporter", "node_modules", ".bin", "mcporter");
+	const config = env.BEEMAX_AGENT_REACH_CONFIG?.trim() || join(homedir(), ".agent-reach", "mcporter.json");
+	const { stdout } = await execFileAsync(binary, ["--config", config, "list", "exa", "--json"], { signal: combinedSignal(signal, 10_000), timeout: 10_000, maxBuffer: 256 * 1024 });
+	const result = JSON.parse(stdout) as { status?: unknown; tools?: Array<{ name?: unknown }> };
+	return result.status === "ok" && Boolean(result.tools?.some((tool) => tool.name === "web_search_exa"));
+}
+
+function publicUrls(value: string): string[] {
+	return [...new Set(String(value).match(/https?:\/\/[^\s<>()\]"']+/g) ?? [])];
+}
+
+function compactAgentReachOutput(value: string, maxResults: number): string {
+	const blocks = String(value).split(/\n\s*---\s*\n/g).map((block) => block.trim()).filter(Boolean).slice(0, maxResults);
+	const compact = blocks.map((block, index) => {
+		const field = (name: string) => block.match(new RegExp(`^${name}:\\s*(.+)$`, "im"))?.[1]?.trim();
+		const title = field("Title") ?? `Result ${index + 1}`;
+		const url = field("URL");
+		const published = field("Published");
+		const highlights = block.match(/^Highlights:\s*([\s\S]*)$/im)?.[1]?.replace(/\s+/g, " ").trim().slice(0, 700);
+		return [`[${index + 1}] ${title}`, url ? `URL: ${url}` : undefined, published && published !== "N/A" ? `Published: ${published}` : undefined, highlights ? `Snippet: ${highlights}${highlights.length === 700 ? "…" : ""}` : undefined].filter(Boolean).join("\n");
+	}).filter((block) => publicUrls(block).length > 0);
+	if (compact.length) return compact.join("\n\n");
+	return String(value).trim().slice(0, 6_000) || "No Agent-Reach results found.";
 }
 
 async function agentReachSearchText(query: string, maxResults: number, env: NodeJS.ProcessEnv, signal?: AbortSignal): Promise<string> {
@@ -167,23 +327,24 @@ async function agentReachSearchText(query: string, maxResults: number, env: Node
 	} finally { clearTimeout(timeout); }
 }
 
-async function searchWeb(
+async function searchWebProvider(
+	provider: WebApiProvider,
 	query: string,
 	maxResults: number,
 	env: NodeJS.ProcessEnv,
 	signal: AbortSignal,
 ): Promise<{ provider: string; results: SearchResult[] }> {
-	if (env.TAVILY_API_KEY?.trim()) {
+	if (provider === "tavily" && env.TAVILY_API_KEY?.trim()) {
 		return { provider: "tavily", results: await searchTavily(query, maxResults, env.TAVILY_API_KEY.trim(), signal) };
 	}
-	if (env.BRAVE_SEARCH_API_KEY?.trim()) {
+	if (provider === "brave" && env.BRAVE_SEARCH_API_KEY?.trim()) {
 		return { provider: "brave", results: await searchBrave(query, maxResults, env.BRAVE_SEARCH_API_KEY.trim(), signal) };
 	}
-	if (env.SEARXNG_URL?.trim()) {
+	if (provider === "searxng" && env.SEARXNG_URL?.trim()) {
 		return { provider: "searxng", results: await searchSearxng(query, maxResults, env.SEARXNG_URL.trim(), signal) };
 	}
 	throw new Error(
-		"No search provider configured. Set TAVILY_API_KEY, BRAVE_SEARCH_API_KEY, or SEARXNG_URL.",
+		`Search Provider ${provider} is not configured.`,
 	);
 }
 
@@ -375,7 +536,11 @@ function textResult(text: string, details: unknown, isError = false) {
 async function requireOk(response: Response, label: string): Promise<void> {
 	if (response.ok) return;
 	const body = (await response.text().catch(() => "")).slice(0, 300);
-	throw new Error(`${label} returned HTTP ${response.status}${body ? `: ${body}` : ""}`);
+	throw new Error(`${label} returned HTTP ${response.status}${body ? `: ${redactCredentialMaterial(body)}` : ""}`);
+}
+
+function safeProviderError(error: unknown): string {
+	return redactCredentialMaterial(errorMessage(error)).slice(0, 500);
 }
 
 function isTextContentType(contentType: string): boolean {

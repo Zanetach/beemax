@@ -118,6 +118,7 @@ test("MCP tools are discovered, callable, and mutating tools require approval", 
 		assert.equal(status[0].prompts, 1);
 		const tools = new Map(manager.getTools().map((tool) => [tool.name, tool]));
 		assert.equal(tools.get("mcp_smoke_echo").beemaxPolicy.approval, "never");
+		assert.deepEqual(tools.get("mcp_smoke_echo").aliases, ["echo", "smoke echo", "smoke/echo"]);
 		assert.equal(tools.get("mcp_smoke_mutate").beemaxPolicy.approval, "always");
 		assert.equal(tools.get("mcp_smoke_resource_read").beemaxPolicy.sideEffect, "none");
 		const result = await tools.get("mcp_smoke_echo").execute(

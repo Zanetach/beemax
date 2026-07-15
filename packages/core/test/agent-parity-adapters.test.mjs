@@ -5,15 +5,28 @@ import { join } from "node:path";
 import test from "node:test";
 import { agentParityCorpus } from "../../../evals/agent-parity-corpus.mjs";
 import { parseBeeMaxEvidence, parseCodexEvidence, parseHermesEvidence } from "../../../evals/agent-parity-adapters.mjs";
-import { createIsolatedProfile, filterExecution } from "../../../evals/adapters/beemax-cli.mjs";
+import { createIsolatedProfile, filterExecution, scenarioTaskGrantCapabilities } from "../../../evals/adapters/beemax-cli.mjs";
 import { collectFixtureEvidence, digestConfiguration, parityPrompt, resolveValidatedPublicAddresses, runSubprocess, signFixtureAuthorityEvent } from "../../../evals/adapters/subprocess.mjs";
 
 const research = agentParityCorpus.cases.find((scenario) => scenario.id === "current-research");
+
+test("BeeMax parity grants only fixture mutation capabilities required by the current scenario", () => {
+	const pool = ["mcp_agent_parity_deliver", "mcp_agent_parity_schedule_delivery", "mcp_agent_parity_recover_step", "mcp_agent_parity_send_unknown"];
+	const byId = (id) => scenarioTaskGrantCapabilities(pool, agentParityCorpus.cases.find((scenario) => scenario.id === id));
+	assert.deepEqual(byId("conversation-short"), []);
+	assert.deepEqual(byId("gateway-direct"), ["mcp_agent_parity_deliver"]);
+	assert.deepEqual(byId("scheduled-work"), ["mcp_agent_parity_schedule_delivery"]);
+	assert.deepEqual(byId("provider-failure-recovery"), ["mcp_agent_parity_recover_step"]);
+	assert.deepEqual(byId("unknown-effect"), ["mcp_agent_parity_send_unknown"]);
+});
 
 test("parity prompts preserve the user request as the leading semantic input", () => {
 	const scenario = agentParityCorpus.cases.find((candidate) => candidate.id === "conversation-short");
 	assert.ok(parityPrompt(scenario).startsWith(scenario.prompt));
 	assert.match(parityPrompt(scenario), /Evaluation case identifier: conversation-short/);
+	const currentResearch = agentParityCorpus.cases.find((candidate) => candidate.id === "current-research");
+	assert.match(parityPrompt(currentResearch), /公开来源.*只读网络 Provider/);
+	assert.doesNotMatch(parityPrompt(currentResearch), /禁止访问真实外部系统/);
 });
 
 test("Codex adapter derives Tool and token evidence from JSONL events", () => {
@@ -55,6 +68,9 @@ test("current research accepts only independent final sources bound to successfu
 	const fabricated = parseCodexEvidence({ scenario: research, stdout: stdout.replaceAll("source-b.test", "fabricated.test").replace('result":"https://source-a.test/current https://fabricated.test/current', 'result":"https://source-a.test/current https://source-b.test/current'), stderr: "", exitCode: 0, durationMs: 1, validatedSourceRefs: urls });
 	assert.equal(fabricated.outcomeVerified, false);
 	assert.equal(fabricated.objectiveDegraded, true);
+	const queryReceipt = ["https://source-a.test/current?id=1", "https://source-b.test/current?id=1"];
+	const queryMismatch = parseCodexEvidence({ scenario: research, stdout: stdout.replaceAll("/current", "/current?id=2"), stderr: "", exitCode: 0, durationMs: 1, validatedSourceRefs: queryReceipt });
+	assert.equal(queryMismatch.outcomeVerified, false);
 });
 
 test("Hermes adapter derives Tool and token evidence from persisted Session messages", () => {
@@ -195,11 +211,57 @@ test("BeeMax adapter requires accepted Verification for a successful Objective",
 	assert.deepEqual(accepted.toolCalls.map((call) => call.name), ["web_search"]);
 	assert.deepEqual(accepted.toolCalls[0].argumentEvidence, { kind: "diagnostic_trace_correlation", reference: "execution-1:call-1" });
 	assert.equal(accepted.toolCalls[0].argumentsValid, true);
-	assert.deepEqual(accepted.evidenceKinds, ["tool", "source", "verification"]);
+	assert.deepEqual(accepted.evidenceKinds, ["tool", "verification"]);
 	assert.equal(accepted.duplicateEffects, 0);
 	assert.equal(accepted.evidenceRefs.task.id, "objective-1");
 	const unavailable = parseBeeMaxEvidence({ ...base, tasks: [{ ...base.tasks[0], status: "running", verificationOutcome: "unavailable" }] });
 	assert.equal(unavailable.status, "blocked");
+});
+
+test("BeeMax adapter canonically binds trailing-slash answer citations to validated receipts", () => {
+	const urls = ["https://source-a.test/report", "https://source-b.test/fact"];
+	const result = parseBeeMaxEvidence({
+		scenario: research,
+		stdout: "",
+		stderr: "",
+		exitCode: 0,
+		durationMs: 1,
+		interactionEvents: [],
+		executionTrace: [{ type: "tool.started", triggerKind: "interaction", executionId: "main", toolCallId: "search", toolName: "web_search" }, { type: "tool.settled", triggerKind: "interaction", executionId: "main", toolCallId: "search", toolName: "web_search", status: "succeeded" }],
+		tasks: [{ id: "objective", parentId: null, status: "succeeded", verificationOutcome: "accepted", result: "Sources: https://source-a.test/report/ and https://source-b.test/fact/", evidence: JSON.stringify({ independentlyFetchedUrls: urls }) }],
+		effects: [],
+		validatedSourceRefs: urls,
+	});
+	assert.equal(result.outcomeVerified, true);
+	assert.equal(result.objectiveDegraded, false);
+});
+
+test("BeeMax adapter does not claim source evidence when public validation is insufficient", () => {
+	const result = parseBeeMaxEvidence({
+		scenario: research, stdout: "", stderr: "", exitCode: 0, durationMs: 1, interactionEvents: [], executionTrace: [], effects: [], validatedSourceRefs: [],
+		tasks: [{ id: "objective", parentId: null, status: "succeeded", verificationOutcome: "accepted", result: "unsupported", evidence: "https://source-a.test/report https://source-b.test/fact" }],
+	});
+	assert.equal(result.evidenceKinds.includes("source"), false);
+});
+
+test("BeeMax adapter accepts a completed turn-local Tool result only when its receipt and output contract agree", () => {
+	const scenario = agentParityCorpus.cases.find((candidate) => candidate.id === "tool-arguments");
+	const result = parseBeeMaxEvidence({
+		scenario,
+		stdout: "fixture-42 status ready owner fixture",
+		stderr: "",
+		exitCode: 0,
+		durationMs: 12,
+		interactionEvents: [{ type: "turn.finished", turnId: "turn-local", result: { usage: { input_tokens: 4, output_tokens: 2 } } }],
+		tasks: [],
+		effects: [],
+		executionTrace: [
+			{ type: "tool.started", triggerKind: "interaction", executionId: "local", toolCallId: "lookup", toolName: "mcp_agent_parity_structured_lookup" },
+			{ type: "tool.settled", triggerKind: "interaction", executionId: "local", toolCallId: "lookup", toolName: "mcp_agent_parity_structured_lookup", status: "succeeded" },
+		],
+	});
+	assert.equal(result.status, "succeeded");
+	assert.equal(result.outcomeVerified, true);
 });
 
 test("BeeMax adapter scores the full Objective graph but excludes verifier Tool calls", () => {
@@ -269,15 +331,16 @@ test("BeeMax parity profiles copy only configuration and credentials into fresh 
 		writeFile(join(sourceRoot, "logs", "execution-trace.jsonl"), "must-not-copy"),
 		writeFile(join(sourceRoot, "state", "credential-vault.key"), "fixture-key"),
 	]);
-	const isolated = await createIsolatedProfile({ sourceHome, sourceProfile: "source", workspace, system: { model: "fixture-model" }, provider: "custom", fixtureRoot: new URL("../../../evals/fixtures/agent-parity", import.meta.url).pathname });
+	const isolated = await createIsolatedProfile({ sourceHome, sourceProfile: "source", workspace, system: { model: "fixture-model" }, provider: "custom", fixtureRoot: new URL("../../../evals/fixtures/agent-parity", import.meta.url).pathname, taskGrantCapabilities: ["mcp_agent_parity_deliver", "mcp_agent_parity_schedule_delivery"] });
 	try {
 		assert.equal(await readFile(join(isolated.profileRoot, "auth.json"), "utf8"), "{}");
 		assert.equal(await readFile(join(isolated.profileRoot, "state", "credential-vault.key"), "utf8"), "fixture-key");
 		assert.match(await readFile(join(isolated.profileRoot, ".env"), "utf8"), /BEEMAX_MODEL="fixture-model"/);
 		assert.ok((await readFile(join(isolated.profileRoot, ".env"), "utf8")).includes(`BEEMAX_CWD=${JSON.stringify(workspace)}`));
+		assert.match(await readFile(join(isolated.profileRoot, ".env"), "utf8"), /BEEMAX_TASK_GRANT_CAPABILITIES="mcp_agent_parity_deliver,mcp_agent_parity_schedule_delivery"/);
 		await assert.rejects(readFile(join(isolated.profileRoot, "memory.db")), /ENOENT/);
 		await assert.rejects(readFile(join(isolated.profileRoot, "logs", "execution-trace.jsonl")), /ENOENT/);
-		assert.match(await readFile(join(isolated.profileRoot, "skills", "evaluation-research", "SKILL.md"), "utf8"), /evaluation/i);
+		await assert.rejects(readFile(join(isolated.profileRoot, "skills", "evaluation-research", "SKILL.md")), /ENOENT/);
 	} finally {
 		await isolated.dispose();
 		await rm(root, { recursive: true, force: true });

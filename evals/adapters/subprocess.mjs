@@ -90,7 +90,7 @@ export function parityPrompt(scenario) {
 	return [
 		scenario.prompt,
 		`Evaluation case identifier: ${scenario.id}`,
-		"仅操作本次隔离评测目录和本地 fixture；禁止访问真实外部系统；能力缺失时报告阻塞，不得降低目标。",
+		"文件和变更操作仅限本次隔离评测目录与本地 fixture；禁止修改、投递或调用真实外部业务系统。任务需要公开来源时，可以使用已配置的只读网络 Provider。能力缺失时报告准确阻塞，不得降低目标。",
 	].join("\n\n");
 }
 
@@ -200,7 +200,7 @@ export async function validatePublicSources(value, minimum, signal) {
 		try {
 			const { response, finalUrl } = await fetchValidatedPublicUrl(url, controller.signal);
 			const domain = registrableDomain(new URL(finalUrl).hostname);
-			if (response.ok && isPublicHttpUrl(finalUrl) && !domains.has(domain)) { accepted.push(redactedPublicUrl(url)); domains.add(domain); }
+			if (response.ok && isPublicHttpUrl(finalUrl) && !domains.has(domain)) { accepted.push(normalizedPublicUrl(url)); domains.add(domain); }
 			await response.body?.cancel().catch(() => {});
 		} catch { /* inaccessible or non-public output is not source evidence */ }
 		finally { clearTimeout(timer); signal?.removeEventListener("abort", onAbort); }
@@ -275,8 +275,6 @@ function publicUrls(value) {
 function normalizedPublicUrl(value) {
 	const url = new URL(value); url.username = ""; url.password = ""; url.hash = ""; return url.toString();
 }
-
-function redactedPublicUrl(value) { const url = new URL(value); url.search = ""; return normalizedPublicUrl(url); }
 
 function isPublicHttpUrl(value) {
 	try {

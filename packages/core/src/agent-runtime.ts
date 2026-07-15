@@ -303,9 +303,11 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 				admittedTools?.includes("capability_discover")
 					|| prefetchedSkills.length
 					|| requestedText !== input.text
-					|| requestsExplicitCapabilityResolution(input.text)
-					|| planning?.signals.requiresResearch
-					|| planning?.signals.requiresVerification,
+					|| (prefetchedTools.length === 0 && (
+						requestsExplicitCapabilityResolution(input.text)
+						|| planning?.signals.requiresResearch
+						|| planning?.signals.requiresVerification
+					)),
 			);
 			const progressiveTools = admittedTools ?? [...new Set([...(exposeCapabilityDiscovery ? ["capability_discover"] : []), ...skillLifecycleTools, ...(planning?.requiredTools ?? []), ...prefetchedTools])];
 			if (activeTools) session.piSession.setActiveToolsByName(progressiveTools);
@@ -377,6 +379,16 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 					if (!event.isError) successfulToolNames.add(event.toolName);
 					if (event.toolName === "capability_discover" && !event.isError) {
 						const discovery = capabilityDiscoveryMetadata(event.result, new Set(allTools.map((tool) => tool.name))); discoveredCapabilities = discovery.hasMatches;
+						if (discovery.hasMatches && supportsProgressiveTools) {
+							// One successful resolution is enough for this route. Keeping the
+							// meta-tool active encourages weaker models to rediscover the same
+							// capability instead of executing it; a later failed read can expose
+							// discovery again through the explicit reroute path below.
+							session.piSession.setActiveToolsByName([...new Set([
+								...session.piSession.getActiveToolNames().filter((name) => name !== "capability_discover"),
+								...discovery.activatedTools,
+							])]);
+						}
 						const discoveredSkill = discovery.candidates.find((candidate) => candidate.kind === "skill" && candidate.confidence >= 0.5)?.name;
 						if (!prefetchedSkills.length && discoveredSkill) prefetchedSkills = [discoveredSkill];
 						if (discovery.candidates.length || discovery.activatedTools.length) enqueueEvent({ type: "capability_ranked", candidates: discovery.candidates, activatedTools: discovery.activatedTools });

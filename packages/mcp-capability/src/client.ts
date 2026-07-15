@@ -147,6 +147,7 @@ export class McpManager {
 					name: toolName,
 					label: tool.title ?? `${name}: ${tool.name}`,
 					description: `[MCP ${name}/${tool.name}] ${tool.description ?? "External MCP tool"}`,
+					aliases: [tool.name, `${name} ${tool.name}`, `${name}/${tool.name}`],
 					parameters: tool.inputSchema as TSchema,
 					execute: async (_id, params, signal) => {
 						const result = await client.callTool(

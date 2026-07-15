@@ -25,7 +25,7 @@ npm run eval:agent-parity:capture -- \
   --mode best-native \
   --adapter evals/adapters/codex-cli.mjs \
   --system codex --version 0.144.1 --model gpt-5.6-sol \
-  --adapter-options '{"fixtureRoot":"evals/fixtures/agent-parity","provider":"custom:ark"}' \
+  --adapter-options '{"fixtureRoot":"evals/fixtures/agent-parity"}' \
   --machine-profile darwin-26-arm64 \
   --network-condition live-public-uncontrolled --timeout-ms 180000 \
   --write evals/baselines/agent-parity/codex-native.json
@@ -34,7 +34,7 @@ npm run eval:agent-parity:capture -- \
   --mode best-native \
   --adapter evals/adapters/hermes-cli.mjs \
   --system hermes --version 0.15.1 --model glm-5-2-260617 \
-  --adapter-options '{"fixtureRoot":"evals/fixtures/agent-parity","profile":"e2e-feishu","provider":"custom"}' \
+  --adapter-options '{"fixtureRoot":"evals/fixtures/agent-parity","provider":"custom:ark"}' \
   --machine-profile darwin-26-arm64 \
   --network-condition live-public-uncontrolled --timeout-ms 180000 \
   --write evals/baselines/agent-parity/hermes-native.json
@@ -43,13 +43,13 @@ npm run eval:agent-parity:capture -- \
   --mode best-native \
   --adapter evals/adapters/beemax-cli.mjs \
   --system beemax --version 1.2.0 --model glm-5.2 \
-  --adapter-options '{"fixtureRoot":"evals/fixtures/agent-parity"}' \
+  --adapter-options '{"fixtureRoot":"evals/fixtures/agent-parity","profile":"e2e-feishu","provider":"custom","workspaceWritePolicy":"allow-within-workspace","taskGrantCapabilities":["mcp_agent_parity_deliver","mcp_agent_parity_schedule_delivery","mcp_agent_parity_recover_step","mcp_agent_parity_send_unknown"]}' \
   --machine-profile darwin-26-arm64 \
   --network-condition live-public-uncontrolled --timeout-ms 180000 \
   --write evals/baselines/agent-parity/beemax-native.json
 ```
 
-Adapter configuration such as a BeeMax Profile or Hermes Provider can be passed as inline JSON with `--adapter-options`. Do not include credentials: the report records evidence identities and digests, not secrets or raw Provider configuration.
+Adapter configuration such as a BeeMax Profile or Hermes Provider is pinned as inline JSON with `--adapter-options`. BeeMax's four fixture mutation capabilities are exact per-Task grants for the disposable loopback authority; they are benchmark configuration, not product defaults or semantic business rules. Do not include credentials: the report records evidence identities and digests, not secrets or raw Provider configuration.
 
 Compare best supported native configurations:
 

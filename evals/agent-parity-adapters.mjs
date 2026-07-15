@@ -114,6 +114,13 @@ export function parseBeeMaxEvidence(input) {
 	const sourceRefs = input.scenario.outputContract.minPublicSources > 0 ? (input.validatedSourceRefs ?? []) : [...new Set([...publicSourceRefs(objective?.evidence), ...(input.validatedSourceRefs ?? [])])];
 	const result = resultFromEvidence(input, { status, inputTokens, outputTokens, calls, duplicateEffects: input.fixtureEvidence ? input.fixtureEvidence.duplicateEffects : committedEffects.length - new Set(committedEffects.map((effect) => effect.id)).size, answer: objective?.result ?? input.stdout, sourceRefs, recovered: input.scenario.id === "provider-failure-recovery" ? status === "succeeded" && Boolean(objective?.checkpoint) : null });
 	result.evidenceKinds = [...new Set([...beeMaxAuthorityEvidenceKinds(objective, input.effects, calls.filter((call) => call.status === "succeeded")), ...(input.fixtureEvidence?.kinds ?? [])])];
+	if (input.scenario.outputContract.minPublicSources > 0 && sourceRefs.length < input.scenario.outputContract.minPublicSources) result.evidenceKinds = result.evidenceKinds.filter((kind) => kind !== "source");
+	if (!objective && result.status === "blocked" && input.exitCode === 0 && input.stdout.trim() && result.outcomeVerified
+		&& input.scenario.requiredCapabilities.every((capability) => result.toolCalls.some((call) => call.name === capability && call.status === "succeeded"))
+		&& input.scenario.requiredEvidenceKinds.every((kind) => result.evidenceKinds.includes(kind))) {
+		result.status = "succeeded";
+		result.objectiveDegraded = false;
+	}
 	result.evidenceRefs = {
 		kind: "beemax_durable_authorities",
 		turnId: turn?.turnId,
@@ -225,9 +232,9 @@ function verifyOutput(contract, answer, fixtureEvidence, sourceRefs) {
 	if (!contract) return false;
 	const normalized = String(answer ?? "").normalize("NFKC").toLocaleLowerCase();
 	const facts = fixtureEvidence?.facts ?? {};
-	const answerSources = publicSourceRefs(answer);
-	const receiptSources = new Set(sourceRefs);
-	const boundSources = answerSources.filter((url) => receiptSources.has(url));
+	const answerSources = publicSourceRefs(answer, true);
+	const receiptSources = new Set(sourceRefs.map(sourceIdentity));
+	const boundSources = answerSources.filter((url) => receiptSources.has(sourceIdentity(url)));
 	const independentDomains = new Set(boundSources.flatMap((value) => { try { return [registrableDomain(new URL(value).hostname)]; } catch { return []; } }));
 	return contract.requiredAnyGroups.every((group) => group.some((term) => normalized.includes(term.toLocaleLowerCase())))
 		&& !contract.forbidden.some((term) => normalized.includes(term.toLocaleLowerCase()))
@@ -235,6 +242,16 @@ function verifyOutput(contract, answer, fixtureEvidence, sourceRefs) {
 		&& contract.requiredAuthorityIds.every((id) => facts.authorityIds?.includes(id))
 		&& Object.entries(contract.requiredFacts).every(([key, value]) => facts[key] === value)
 		&& Object.entries(contract.minimumFacts).every(([key, value]) => Number(facts[key]) >= Number(value));
+}
+function sourceIdentity(value) {
+	try {
+		const url = new URL(value);
+		url.username = ""; url.password = ""; url.hash = "";
+		for (const key of [...url.searchParams.keys()]) if (/^(?:utm_.+|gclid|fbclid|msclkid)$/i.test(key)) url.searchParams.delete(key);
+		url.searchParams.sort();
+		url.pathname = url.pathname.replace(/\/+$/, "") || "/";
+		return url.toString();
+	} catch { return String(value); }
 }
 function isToolItem(item) { return !["agent_message", "reasoning", "error", "plan"].includes(item.type); }
 function codexToolSucceeded(item) {
@@ -285,12 +302,12 @@ function toolName(item) { return item.name ?? item.tool_name ?? item.tool ?? ite
 function isRoutingControl(name) { return /^(capability_discover|skill_(?:activate|read|route|resource_read|complete)|tool_search)$/.test(name); }
 function finite(value) { return Number.isFinite(Number(value)) ? Math.max(0, Number(value)) : 0; }
 function digest(value) { return `sha256:${createHash("sha256").update(String(value)).digest("hex")}`; }
-function publicSourceRefs(value) {
+function publicSourceRefs(value, preserveQuery = false) {
 	const refs = new Set();
 	for (const match of String(value ?? "").matchAll(/https?:\/\/[^\s<>"'\\]+/gi)) {
 		try {
 			const url = new URL(match[0].replace(/[),.;]+$/, ""));
-			url.username = ""; url.password = ""; url.search = ""; url.hash = "";
+			url.username = ""; url.password = ""; if (!preserveQuery) url.search = ""; url.hash = "";
 			refs.add(url.toString());
 		} catch { /* malformed model output is not evidence */ }
 		if (refs.size >= 20) break;

@@ -9,7 +9,7 @@
  *   beemax model      Show / set the configured model
  */
 
-import { buildMainAgentSystemPrompt, buildSubagentSystemPrompt, createSkillCandidateVerifier, createTaskVerifier, createVerifiedObjectiveMemoryPublisher, executeObjectiveDelivery, executePlannedTask, executeSubagentTask, mainAgentTools, runGateway, verificationAgentTools } from "./gateway.ts";
+import { buildMainAgentSystemPrompt, buildSubagentSystemPrompt, createSkillCandidateVerifier, createTaskVerifier, createVerifiedObjectiveMemoryPublisher, executeObjectiveDelivery, executePlannedTask, executeSubagentTask, mainAgentTools, runGateway, verificationAgentTools, verificationAgentToolsForTask } from "./gateway.ts";
 import { beemaxHome, beemaxRoot, consumeChannelCredential, loadConfig, profileTaskGrantCapabilities } from "./config.ts";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { backupSqliteDatabase, MemoryStore, memoryPersistencePorts, verifySqliteDatabase } from "@beemax/memory";
@@ -1281,7 +1281,7 @@ async function runChat(config: ReturnType<typeof loadConfig>, requestedMode: { f
 		maxSubagents: config.subagents.maxChildrenPerOwner, taskTimeoutMs: config.subagents.timeoutMs, subagentsEnabled: config.subagents.enabled,
 		backgroundRecoveryEnabled: requestedMode.once === undefined,
 		executeTask: (task, signal, context, executionTrace, effectAuthority) => executePlannedTask(createSubagentAgent, task, task.executionScope as SessionSource, signal, config.subagents.timeoutMs, context, executionTrace, effectAuthority),
-		verifyTaskCandidate: (task, result, signal, context, executionTrace) => createTaskVerifier(createSubagentAgent, config.subagents.timeoutMs, executionTrace, verificationAgentTools(readOnlyMcpTools, [task.title, task.description, task.acceptanceCriteria].filter(Boolean).join("\n"), context?.successfulToolNames))(task, result, signal, context),
+		verifyTaskCandidate: (task, result, signal, context, executionTrace) => createTaskVerifier(createSubagentAgent, config.subagents.timeoutMs, executionTrace, verificationAgentToolsForTask(readOnlyMcpTools, task, context?.successfulToolNames))(task, result, signal, context),
 		deliverObjective: (input, signal, executionTrace) => executeObjectiveDelivery(createSubagentAgent, input, signal, config.subagents.timeoutMs, executionTrace),
 		publishVerifiedOutcome: guardVerifiedObjectiveMemoryPublisher(autonomyRollout, createVerifiedObjectiveMemoryPublisher(persistence.organizationMemory)),
 		deliverDirectObjectiveVerification: async (task, resolution) => {

@@ -60,8 +60,8 @@
       "source": "workspace-package",
       "capture": {
         "adapter": "evals/adapters/beemax-cli.mjs",
-        "bestNativeOptions": { "fixtureRoot": "evals/fixtures/agent-parity", "profile": "e2e-feishu", "provider": "custom", "workspaceWritePolicy": "allow-within-workspace" },
-        "sameModelOptions": { "fixtureRoot": "evals/fixtures/agent-parity", "profile": "e2e-feishu", "provider": "custom", "workspaceWritePolicy": "allow-within-workspace" }
+        "bestNativeOptions": { "fixtureRoot": "evals/fixtures/agent-parity", "profile": "e2e-feishu", "provider": "custom", "workspaceWritePolicy": "allow-within-workspace", "taskGrantCapabilities": ["mcp_agent_parity_deliver", "mcp_agent_parity_schedule_delivery", "mcp_agent_parity_recover_step", "mcp_agent_parity_send_unknown"] },
+        "sameModelOptions": { "fixtureRoot": "evals/fixtures/agent-parity", "profile": "e2e-feishu", "provider": "custom", "workspaceWritePolicy": "allow-within-workspace", "taskGrantCapabilities": ["mcp_agent_parity_deliver", "mcp_agent_parity_schedule_delivery", "mcp_agent_parity_recover_step", "mcp_agent_parity_send_unknown"] }
       }
     },
     {

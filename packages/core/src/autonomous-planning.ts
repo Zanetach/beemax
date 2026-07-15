@@ -94,10 +94,11 @@ export class AutonomousPlanningPolicy {
 			? Math.min(this.capacity.maxSubagents, Math.max(suggestedConcurrency, signals.independentWorkItems))
 			: mode === "delegate" ? Math.min(1, this.capacity.maxSubagents) : 0;
 		const scale = mode === "dag" ? Math.max(2, maxSubagents) : mode === "delegate" ? 1 : 0;
+		const directTokenTarget = signals.requiresResearch || signals.requiresVerification ? 20_000 : 12_000;
 		const budget: PlanningResourceBudget = {
 			maxSubagents,
 			maxToolCalls: this.capacity.maxToolCalls === null ? null : Math.min(this.capacity.maxToolCalls, mode === "direct" ? 8 : Math.max(12, scale * 8)),
-			maxTokens: this.capacity.maxTokens === null ? null : Math.min(this.capacity.maxTokens, mode === "direct" ? 12_000 : Math.max(20_000, scale * 16_000)),
+			maxTokens: this.capacity.maxTokens === null ? null : Math.min(this.capacity.maxTokens, mode === "direct" ? directTokenTarget : Math.max(20_000, scale * 16_000)),
 			maxCorrectiveAttempts: mode === "direct" ? 0 : this.capacity.maxCorrectiveAttempts,
 		};
 		const requiredTools = mode === "dag" ? ["task_plan_execute"] as const : mode === "delegate" ? ["task_spawn", "task_wait"] as const : [];

@@ -38,6 +38,16 @@ test("Capability discovery changes execution only through Pi active tools", asyn
 	assert.equal("execute" in selection.candidates[0], false);
 });
 
+test("Capability discovery does not activate a Tool from one weak description-word collision", async () => {
+	const activations = [];
+	const weakInventory = [capabilityDescriptor({ kind: "mcp", name: "activate_workflow", description: "Activate a pinned research workflow", version: "mcp:workflow:v1", activeTools: ["activate_workflow"] })];
+	const runtime = new CapabilityRuntime({ activeTools: { setActiveTools(names) { activations.push(names); } } });
+	const selection = await runtime.discover({ query: "research current public information", inventory: weakInventory });
+	assert.deepEqual(selection.candidates, []);
+	assert.deepEqual(selection.activatedTools, []);
+	assert.deepEqual(activations, [[]]);
+});
+
 test("Capability reroute rejects mutation replay and unresolved Effects before Policy runs again", () => {
 	const runtime = new CapabilityRuntime();
 	assert.deepEqual(runtime.canReroute({ sideEffect: "none", effectStatus: "failed" }), { allowed: true, reason: "read-only capability failed without an unresolved Effect" });

@@ -38,6 +38,18 @@ test("Provider resolution reports exact configuration requirements without expos
 	assert.doesNotMatch(JSON.stringify(result), /secret-value/);
 });
 
+test("Provider resolution admits configured-but-unverified execution without claiming observed health", async () => {
+	const runtime = new CapabilityProviderRuntime();
+	const result = await runtime.resolve({
+		capability: "public web research",
+		providers: [{ id: "brave", kind: "tool", capabilities: ["public web research"], installed: true, health: async () => ({ status: "unverified", reason: "health is established by execution" }) }],
+	});
+	assert.equal(result.status, "ready");
+	assert.equal(result.selected?.id, "brave");
+	assert.equal(result.selected?.health.status, "unverified");
+	assert.equal(result.blocker, undefined);
+});
+
 test("Provider acquisition installs an external candidate only after explicit authority and returns a health-checked receipt", async () => {
 	let installed = false;
 	const provider = {

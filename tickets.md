@@ -387,9 +387,9 @@ Work the **frontier**: any ticket whose blockers are all done. Do not bypass blo
 
 **Blocked by:** Establish the differential Agent benchmark.
 
-- [ ] Preserve user-owned output artifacts and unrelated changes.
-- [ ] Split mixed changes into independently testable concerns and keep TypeScript, unit, integration, and packaging checks green.
-- [ ] Remove production behavior that maps concrete business phrases directly to lifecycle or delivery decisions.
+- [x] Preserve user-owned output artifacts and unrelated changes.
+- [x] Split mixed changes into independently testable concerns and keep TypeScript, unit, integration, and packaging checks green.
+- [x] Remove production behavior that maps concrete business phrases directly to lifecycle or delivery decisions.
 
 ## Stabilize direct and durable completion under the corpus
 

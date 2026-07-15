@@ -142,6 +142,7 @@ export interface BeeMaxConfig {
 		mode: "off" | "all";
 		workspaceAccess: "none" | "ro" | "rw";
 		workspaceWritePolicy: "approval-required" | "allow-within-workspace";
+		taskGrantCapabilities: string[];
 		image: string;
 		timeoutMs: number;
 	};
@@ -176,12 +177,12 @@ export interface BeeMaxConfig {
 	};
 }
 
-const NO_PROFILE_TASK_CAPABILITIES = Object.freeze([] as string[]);
-const WORKSPACE_WRITE_TASK_CAPABILITIES = Object.freeze(["write"]);
-
 /** Compile Profile execution policy into the capabilities seeded into each fresh Task grant. */
 export function profileTaskGrantCapabilities(config: Pick<BeeMaxConfig, "execution">): readonly string[] {
-	return config.execution.workspaceWritePolicy === "allow-within-workspace" ? WORKSPACE_WRITE_TASK_CAPABILITIES : NO_PROFILE_TASK_CAPABILITIES;
+	return [...new Set([
+		...(config.execution.workspaceWritePolicy === "allow-within-workspace" ? ["write"] : []),
+		...config.execution.taskGrantCapabilities,
+	])];
 }
 
 export function loadConfig(configPath?: string, profile = "default"): BeeMaxConfig {
@@ -373,6 +374,7 @@ export function loadConfig(configPath?: string, profile = "default"): BeeMaxConf
 			mode: sandboxMode(env.BEEMAX_SANDBOX_MODE ?? cfg.execution?.mode),
 			workspaceAccess: workspaceAccess(env.BEEMAX_SANDBOX_WORKSPACE_ACCESS ?? cfg.execution?.workspaceAccess),
 			workspaceWritePolicy: workspaceWritePolicy(env.BEEMAX_WORKSPACE_WRITE_POLICY ?? cfg.execution?.workspaceWritePolicy),
+			taskGrantCapabilities: taskGrantCapabilities(env.BEEMAX_TASK_GRANT_CAPABILITIES ?? cfg.execution?.taskGrantCapabilities),
 			image: str(env.BEEMAX_SANDBOX_IMAGE ?? cfg.execution?.image ?? DEFAULT_DOCKER_SANDBOX_IMAGE),
 			timeoutMs: boundedNumber(env.BEEMAX_SANDBOX_TIMEOUT_MS ?? cfg.execution?.timeoutMs, 180_000, 1_000, 600_000),
 		},
@@ -495,6 +497,15 @@ function workspaceWritePolicy(value: unknown): "approval-required" | "allow-with
 	if (configured === undefined) return "approval-required";
 	if (configured === "approval-required" || configured === "allow-within-workspace") return configured;
 	throw new Error(`Invalid execution.workspaceWritePolicy: ${configured}`);
+}
+function taskGrantCapabilities(value: unknown): string[] {
+	if (value === undefined || value === null || value === "") return [];
+	const entries = Array.isArray(value) ? value : String(value).split(",");
+	const capabilities = entries.map((entry) => String(entry).trim()).filter(Boolean);
+	for (const [index, capability] of capabilities.entries()) {
+		if (!/^[A-Za-z][A-Za-z0-9_.:-]{0,127}$/.test(capability)) throw new Error(`Invalid execution.taskGrantCapabilities[${index}]: ${capability}`);
+	}
+	return [...new Set(capabilities)];
 }
 function parseNumber(value: unknown, fallback: number): number {
 	const number = Number(value);

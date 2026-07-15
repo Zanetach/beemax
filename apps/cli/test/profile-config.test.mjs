@@ -305,6 +305,26 @@ test("Profile execution policy explicitly controls unattended workspace-write gr
 	assert.throws(() => loadConfig(paths.configPath, "workspace-write-policy"), /Invalid execution\.workspaceWritePolicy/);
 });
 
+test("Profile execution policy explicitly grants configured Tool capabilities per Task", async () => {
+	const home = await mkdtemp(join(tmpdir(), "beemax-task-capability-policy-home-"));
+	const paths = await createProfile("task-capability-policy", { home });
+	await writeFile(paths.configPath, `execution:
+  taskGrantCapabilities:
+    - mcp_partner_deliver
+    - mcp_partner_schedule
+    - mcp_partner_deliver
+`);
+	const configured = loadConfig(paths.configPath, "task-capability-policy");
+	assert.deepEqual(configured.execution.taskGrantCapabilities, ["mcp_partner_deliver", "mcp_partner_schedule"]);
+	assert.deepEqual(profileTaskGrantCapabilities(configured), ["mcp_partner_deliver", "mcp_partner_schedule"]);
+
+	await writeFile(paths.configPath, `execution:
+  taskGrantCapabilities:
+    - "*"
+`);
+	assert.throws(() => loadConfig(paths.configPath, "task-capability-policy"), /Invalid execution\.taskGrantCapabilities\[0\]/);
+});
+
 test("curated memory is bounded and rendered as a session snapshot", async () => {
 	const root = await mkdtemp(join(tmpdir(), "beemax-curated-memory-"));
 	await writeFile(join(root, "USER.md"), "Prefers concise Chinese reports.\n");

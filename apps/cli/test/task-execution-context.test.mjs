@@ -5,7 +5,7 @@ import { join } from "node:path";
 import test from "node:test";
 import { MemoryStore } from "@beemax/memory";
 import { createAccessScopeRef, createExecutionEnvelope, createSituation, FileExecutionTraceStore } from "@beemax/core";
-import { buildSubagentSystemPrompt, createTaskVerifier, createVerifiedObjectiveMemoryPublisher, executeObjectiveDelivery, executePlannedTask, verificationAgentTools } from "../dist/gateway.js";
+import { buildMainAgentSystemPrompt, buildSubagentSystemPrompt, createTaskVerifier, createVerifiedObjectiveMemoryPublisher, executeObjectiveDelivery, executePlannedTask, verificationAgentTools, verificationAgentToolsForTask } from "../dist/gateway.js";
 import { createExecutionRoleTools } from "../dist/agent-factory.js";
 import { createSuccessfulVerificationReceipt, normalizeVerifierEvidenceRefs } from "../dist/verification-protocol.js";
 
@@ -14,6 +14,12 @@ test("Sub-Agents must discover admitted capabilities and fail explicitly instead
 	assert.match(prompt, /capability_discover/);
 	assert.match(prompt, /Never replace the requested outcome, evidence standard, quality level, or mandatory constraint with a weaker substitute/);
 	assert.match(prompt, /exact blocker and attempted remedies/);
+});
+
+test("main Agent preserves a minimal material citation set for independent verification", () => {
+	const prompt = buildMainAgentSystemPrompt("Profile prompt");
+	assert.match(prompt, /smallest sufficient set of material citations/i);
+	assert.match(prompt, /every cited external URL/i);
 });
 
 test("verification agents receive a minimal semantic Tool Spec instead of every read-only capability", () => {
@@ -42,6 +48,23 @@ test("verification Tool Spec re-admits an observed successful read Tool without 
 	], "验证夹具状态", ["mcp_fixture_status"]);
 	assert.ok(tools.includes("mcp_fixture_status"));
 	assert.ok(!tools.includes("mcp_unrelated_calendar"));
+});
+
+test("verification Tool Spec keeps the observed web Provider and exact-source extractor without exposing competing search routes", () => {
+	const tools = verificationAgentTools([], "Independently verify current public sources", ["agent_reach_search"], true);
+	assert.deepEqual(tools, ["verification_submit", "read", "agent_reach_search", "web_extract"]);
+	assert.equal(tools.includes("web_search"), false);
+});
+
+test("verification Tool Spec exposes exact-source extraction for external evidence from any Provider", () => {
+	assert.deepEqual(verificationAgentTools([{ name: "mcp_public_source", description: "Read public evidence" }], "Verify the cited source", ["mcp_public_source"], true), ["verification_submit", "read", "mcp_public_source", "web_extract"]);
+});
+
+test("Task-aware verification Tool routing consistently exposes exact-source extraction", () => {
+	assert.deepEqual(
+		verificationAgentToolsForTask([], { title: "研究当前公开趋势", description: "核验来源", acceptanceCriteria: "保留可验证来源" }, ["agent_reach_search"]),
+		["verification_submit", "read", "agent_reach_search", "web_extract"],
+	);
 });
 
 test("the internal verdict Tool exists only in verification execution sessions", () => {
@@ -287,7 +310,7 @@ test("independent verification receives the Task Situation", async () => {
 	assert.equal(envelope.trigger.kind, "verification");
 	assert.equal(envelope.verificationProtocol, "task_candidate_v1");
 	assert.equal(envelope.budget.maxToolCalls, 6);
-	assert.equal(envelope.budget.maxTokens, 50_000);
+	assert.equal(envelope.budget.maxTokens, 20_000);
 	assert.deepEqual(toolsDuringPrompt, ["verification_submit", "read", "web_search", "agent_reach_search", "web_extract"]);
 });
 
@@ -333,6 +356,91 @@ test("independent verification accepts one schema-valid verdict Tool receipt wit
 	assert.match(result.evidence, /tool-call:read-1/);
 });
 
+test("independent verification does not let a fresh correction Session judge prior content-free receipts", async () => {
+	let emit = () => undefined;
+	let activeTools = ["verification_submit", "read"];
+	let prompts = 0;
+	const agent = { state: { model: { id: "test" }, messages: [] } };
+	const factory = async () => ({
+		agent,
+		subscribe: (listener) => { emit = listener; return () => undefined; },
+		getActiveToolNames: () => [...activeTools], getAllTools: () => ["verification_submit", "read"].map((name) => ({ name })), setActiveToolsByName: (names) => { activeTools = [...names]; },
+		prompt: async () => {
+			prompts++;
+			if (prompts === 1) {
+				emit({ type: "tool_execution_start", toolCallId: "read-correction", toolName: "read", args: { path: "draft.md" } });
+				emit({ type: "tool_execution_end", toolCallId: "read-correction", toolName: "read", isError: false, result: { content: [{ type: "text", text: "draft" }], details: {} } });
+			}
+			agent.state.messages = [{ role: "assistant", content: [{ type: "text", text: "done" }], usage: { input: 1, output: 1 } }];
+		},
+		abort: async () => undefined, dispose: () => undefined,
+	});
+	await assert.rejects(
+		() => createTaskVerifier(factory, 1_000, undefined, ["verification_submit", "read"])({ id: "task", ownerKey: "owner", kind: "delegated", title: "Verify draft", acceptanceCriteria: "draft exists", status: "running", createdAt: 1, executionScope: { platform: "cli", chatId: "local", chatType: "dm", userId: "local" } }, { output: "draft.md" }),
+		/fresh Session cannot safely judge/,
+	);
+	assert.equal(prompts, 1);
+});
+
+test("independent verification gets one bounded evidence correction when its first Turn calls no Tool", async () => {
+	let emit = () => undefined;
+	let activeTools = ["verification_submit", "read"];
+	let prompts = 0;
+	const sessionSources = [];
+	const agent = { state: { model: { id: "test" }, messages: [] } };
+	const factory = async (_sessionId, source) => {
+		sessionSources.push(source);
+		return ({
+		agent, subscribe: (listener) => { emit = listener; return () => undefined; },
+		getActiveToolNames: () => [...activeTools], getAllTools: () => ["verification_submit", "read"].map((name) => ({ name })), setActiveToolsByName: (names) => { activeTools = [...names]; },
+		prompt: async () => {
+			prompts++;
+			if (prompts === 2) {
+				emit({ type: "tool_execution_start", toolCallId: "read-after-correction", toolName: "read", args: { path: "draft.md" } });
+				emit({ type: "tool_execution_end", toolCallId: "read-after-correction", toolName: "read", isError: false, result: { content: [{ type: "text", text: "draft" }], details: {} } });
+				const args = { status: "accepted", reason: "The corrected check observed the draft", assertions: [{ criterionId: "C1", evidence: "draft observed", evidenceRefs: ["tool:read"] }] };
+				emit({ type: "tool_execution_start", toolCallId: "verdict-after-correction", toolName: "verification_submit", args });
+				emit({ type: "tool_execution_end", toolCallId: "verdict-after-correction", toolName: "verification_submit", args, isError: false, result: { content: [{ type: "text", text: "recorded" }], details: {} } });
+			}
+			agent.state.messages = [{ role: "assistant", content: [{ type: "text", text: "done" }], usage: { input: 1, output: 1 } }];
+		}, abort: async () => undefined, dispose: () => undefined,
+		});
+	};
+	const result = await createTaskVerifier(factory, 1_000, undefined, ["verification_submit", "read"])({ id: "task", ownerKey: "owner", kind: "delegated", title: "Verify draft", acceptanceCriteria: "draft exists", status: "running", createdAt: 1, executionScope: { platform: "cli", chatId: "local", chatType: "dm", userId: "local" } }, { output: "draft.md" });
+	assert.equal(prompts, 2);
+	assert.equal(sessionSources.length, 2);
+	assert.notEqual(sessionSources[0].threadId, sessionSources[1].threadId);
+	assert.equal(result.accepted, true);
+	assert.match(result.evidence, /:submit:tool-call:read-after-correction/);
+});
+
+test("independent verification refuses to carry search-only receipts into a fresh correction Session", async () => {
+	let emit = () => undefined;
+	let activeTools = ["verification_submit", "web_search", "web_extract"];
+	let prompts = 0;
+	const agent = { state: { model: { id: "test" }, messages: [] } };
+	const factory = async () => ({
+		agent, subscribe: (listener) => { emit = listener; return () => undefined; },
+		getActiveToolNames: () => [...activeTools], getAllTools: () => ["verification_submit", "web_search", "web_extract"].map((name) => ({ name })), setActiveToolsByName: (names) => { activeTools = [...names]; },
+		prompt: async () => {
+			prompts++;
+			if (prompts === 1) {
+				emit({ type: "tool_execution_start", toolCallId: "search-only", toolName: "web_search", args: { query: "fact" } });
+				emit({ type: "tool_execution_end", toolCallId: "search-only", toolName: "web_search", isError: false, result: { content: [{ type: "text", text: "https://source.example/report" }] } });
+			}
+			agent.state.messages = [{ role: "assistant", content: [{ type: "text", text: "done" }], usage: { input: 1, output: 1 } }];
+		}, abort: async () => undefined, dispose: () => undefined,
+	});
+	await assert.rejects(
+		() => createTaskVerifier(factory, 1_000, undefined, activeTools)(
+			{ id: "task", ownerKey: "owner", kind: "delegated", title: "Verify current source", acceptanceCriteria: "source is current", status: "running", createdAt: 1, executionScope: { platform: "cli", chatId: "local", chatType: "dm", userId: "local" } },
+			{ output: "Finding https://source.example/report" },
+		),
+		/fresh Session cannot safely judge/,
+	);
+	assert.equal(prompts, 1);
+});
+
 test("independent verification rejects a second structured verdict attempt even when the Tool rejects it", async () => {
 	let emit = () => undefined;
 	let activeTools = ["verification_submit", "read"];
@@ -375,4 +483,68 @@ test("independent verification cannot accept an external URL without fetching it
 	});
 	const verify = createTaskVerifier(factory, 1_000);
 	await assert.rejects(() => verify({ id: "task", ownerKey: "owner", kind: "delegated", title: "Verify URL", status: "running", createdAt: 1, executionScope: { platform: "cli", chatId: "local", chatType: "dm", userId: "local" } }, { output: "Source: https://example.com/fact" }), /not every cited external source URL was independently fetched/);
+});
+
+test("independent verification cannot accept current research from search receipts alone", async () => {
+	let emit = () => undefined;
+	const activeTools = ["verification_submit", "web_search", "web_extract"];
+	const agent = { state: { model: { id: "test" }, messages: [] } };
+	const factory = async () => ({
+		agent, subscribe: (listener) => { emit = listener; return () => undefined; },
+		getActiveToolNames: () => [...activeTools], getAllTools: () => activeTools.map((name) => ({ name })), setActiveToolsByName: () => undefined,
+		prompt: async () => {
+			emit({ type: "tool_execution_start", toolCallId: "search-only", toolName: "web_search", args: { query: "current trend" } });
+			emit({ type: "tool_execution_end", toolCallId: "search-only", toolName: "web_search", isError: false, result: { content: [{ type: "text", text: "current source summary" }] } });
+			const args = { status: "accepted", reason: "search returned a summary", assertions: [{ criterionId: "C1", evidence: "summary", evidenceRefs: ["tool:web_search"] }] };
+			emit({ type: "tool_execution_start", toolCallId: "verdict-search", toolName: "verification_submit", args });
+			emit({ type: "tool_execution_end", toolCallId: "verdict-search", toolName: "verification_submit", isError: false, result: {} });
+			agent.state.messages = [{ role: "assistant", content: [{ type: "text", text: "submitted" }], usage: { input: 1, output: 1 } }];
+		}, abort: async () => undefined, dispose: () => undefined,
+	});
+	const verify = createTaskVerifier(factory, 1_000, undefined, activeTools);
+	await assert.rejects(
+		() => verify({ id: "task", ownerKey: "owner", kind: "delegated", title: "Verify current public research", acceptanceCriteria: "current sources are independently verified", status: "running", createdAt: 1, executionScope: { platform: "cli", chatId: "local", chatType: "dm", userId: "local" } }, { output: "A current trend summary without preserved URLs" }),
+		/exact-source extraction receipt/,
+	);
+});
+
+test("independent verification derives enough Tool budget to fetch every cited source", async () => {
+	let emit = () => undefined;
+	let envelope;
+	const urls = Array.from({ length: 7 }, (_, index) => `https://source-${index + 1}.example/report`);
+	let activeTools = ["verification_submit", "web_search", "web_extract"];
+	let toolsDuringPrompt = [];
+	let verificationPrompt = "";
+	const agent = { state: { model: { id: "test" }, messages: [] } };
+	const factory = async (_source, _profile, receivedEnvelope) => {
+		envelope = receivedEnvelope;
+		return {
+			agent, subscribe: (listener) => { emit = listener; return () => undefined; },
+			getActiveToolNames: () => [...activeTools], getAllTools: () => activeTools.map((name) => ({ name })), setActiveToolsByName: (names) => { activeTools = [...names]; },
+			prompt: async (text) => {
+				verificationPrompt = text;
+				toolsDuringPrompt = [...activeTools];
+				for (const [index, url] of urls.entries()) {
+					const callId = `extract-${index + 1}`;
+					emit({ type: "tool_execution_start", toolCallId: callId, toolName: "web_extract", args: { url } });
+					emit({ type: "tool_execution_end", toolCallId: callId, toolName: "web_extract", isError: false, result: { content: [{ type: "text", text: `source ${index + 1}` }] } });
+				}
+				const args = { status: "accepted", reason: "all cited sources fetched", assertions: [{ criterionId: "C1", evidence: "sources fetched", evidenceRefs: ["tool:web_extract"] }] };
+				emit({ type: "tool_execution_start", toolCallId: "verdict-all", toolName: "verification_submit", args });
+				emit({ type: "tool_execution_end", toolCallId: "verdict-all", toolName: "verification_submit", isError: false, result: {} });
+				agent.state.messages = [{ role: "assistant", content: [{ type: "text", text: "submitted" }], usage: { input: 1, output: 1 } }];
+			}, abort: async () => undefined, dispose: () => undefined,
+		};
+	};
+	const verify = createTaskVerifier(factory, 1_000, undefined, activeTools);
+	const result = await verify(
+		{ id: "task", ownerKey: "owner", kind: "delegated", title: "Verify current public research", acceptanceCriteria: "all cited sources are independently verified", status: "running", createdAt: 1, executionScope: { platform: "cli", chatId: "local", chatType: "dm", userId: "local" } },
+		{ output: `${"context ".repeat(3_000)}\n${urls.map((url) => `Source: ${url}`).join("\n")}` },
+	);
+	assert.equal(result.accepted, true);
+	assert.equal(envelope.budget.maxToolCalls, 11);
+	assert.equal(envelope.budget.maxTokens, 34_000);
+	assert.equal(toolsDuringPrompt.includes("web_search"), false);
+	assert.match(verificationPrompt, /required-exact-source-urls/);
+	assert.match(verificationPrompt, /source-7\.example/);
 });
