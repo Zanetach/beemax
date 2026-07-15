@@ -15,13 +15,14 @@ import {
 	SessionManager,
 	SettingsManager,
 } from "@earendil-works/pi-coding-agent";
-import { boundToolResultContent, governToolDefinition, normalizeToolResultBudget, ToolPolicyRegistry, type ToolPolicy, type ToolResultBudget, type ToolRuntimeAuditSink } from "./tool-runtime.ts";
-import type { AgentScope } from "./agent-scope.ts";
+import { governToolDefinition, normalizeToolResultBudget, ToolPolicyRegistry, type ToolPolicy, type ToolResultBudget, type ToolRuntimeAuditSink } from "./tool-runtime.ts";
+import { conversationKey, type AgentScope } from "./agent-scope.ts";
 import { ToolEffectConflictError, type ToolEffectSink } from "./tool-effect.ts";
 import type { ExecutionEnvelope } from "./execution-envelope.ts";
 import { EnterprisePolicyRuntime, type EnterprisePolicyDecision, type EnterprisePolicyProvider } from "./enterprise-policy.ts";
 import { ActionGovernance, type ActionGovernanceDecision, type MeasuredActionReliability } from "./action-governance.ts";
 import { evaluateCompactionQuality, planContextCompaction, recoverCompactionPreservation, taskIdsFromCompactionPreservation } from "./context-compaction.ts";
+import { createToolArtifactReadTool, FileToolArtifactStore } from "./tool-artifact-store.ts";
 
 export type BeeMaxRuntimeSource = AgentScope;
 
@@ -108,6 +109,7 @@ export function buildBeeMaxRuntimeFactory<Source extends BeeMaxRuntimeSource = B
 	const cwd = resolve(opts.cwd);
 	const agentDir = resolve(opts.agentDir);
 	const sessionDir = join(agentDir, "sessions", "feishu");
+	const toolArtifacts = new FileToolArtifactStore(join(agentDir, "artifacts", "tool-results"));
 	mkdirSync(sessionDir, { recursive: true });
 	const authStorage = AuthStorage.create(join(agentDir, "auth.json"));
 	const modelRegistry = ModelRegistry.create(authStorage, join(agentDir, "models.json"));
@@ -121,7 +123,7 @@ export function buildBeeMaxRuntimeFactory<Source extends BeeMaxRuntimeSource = B
 		}
 		const settingsManager = SettingsManager.create(cwd, agentDir);
 		const compaction = planContextCompaction({ contextWindow: model.contextWindow || 128_000, ...opts.compaction });
-		const toolResultBudget = opts.toolResultBudget ? normalizeToolResultBudget(opts.toolResultBudget) : undefined;
+		const toolResultBudget = normalizeToolResultBudget(opts.toolResultBudget ?? { maxEstimatedTokens: 12_000 });
 		settingsManager.setRuntimeCompactionSettings({ enabled: compaction.enabled, reserveTokens: compaction.reserveTokens, keepRecentTokens: compaction.keepRecentTokens });
 		settingsManager.setRuntimeProviderRetrySettings(normalizeProviderRetry(opts.providerRetry));
 		const configuredPrompt = typeof opts.systemPrompt === "function" ? opts.systemPrompt() : opts.systemPrompt;
@@ -135,11 +137,7 @@ export function buildBeeMaxRuntimeFactory<Source extends BeeMaxRuntimeSource = B
 			// Discovery is owned by capability_discover. Keep Skills registered for
 			// explicit /skill:name compatibility without injecting the full catalog.
 			skillsOverride: (base) => ({ ...base, skills: filterEligibleSkills(base.skills, opts.skillToolset).map((skill) => ({ ...skill, disableModelInvocation: true })) }),
-			extensionFactories: opts.compactionInstructions || opts.compactionAudit || toolResultBudget ? [{ name: "beemax-context-governance", factory: (pi) => {
-				if (toolResultBudget) pi.on("tool_result", (event) => {
-					const bounded = boundToolResultContent(event.content, { maxBytes: 10 * 1024 * 1024, maxEstimatedTokens: toolResultBudget.maxEstimatedTokens });
-					return bounded.truncated ? { content: bounded.content as typeof event.content } : undefined;
-				});
+			extensionFactories: opts.compactionInstructions || opts.compactionAudit ? [{ name: "beemax-context-governance", factory: (pi) => {
 				if (opts.compactionInstructions || opts.compactionAudit) {
 				pi.on("session_before_compact", (event) => {
 					let preservation: string | undefined;
@@ -176,19 +174,20 @@ export function buildBeeMaxRuntimeFactory<Source extends BeeMaxRuntimeSource = B
 		await resourceLoader.reload();
 		const sessionManager = await restoreOrCreateSession(cwd, sessionDir, sessionId, legacySessionIds);
 		let sessionRef: AgentSession | undefined;
-		const customTools = opts.createTools(
+		const customTools = [...opts.createTools(
 			source,
 			() => markRuntimeResourcesChanged(sessionRef),
 			(provider) => authStorage.getApiKey(provider, { includeFallback: false }),
 			(names) => sessionRef?.setActiveToolsByName([...new Set([...sessionRef.getActiveToolNames(), "capability_discover", ...names])]),
-		);
+		), createToolArtifactReadTool(toolArtifacts, conversationKey(source))];
+		if (new Set(customTools.map((tool) => tool.name)).size !== customTools.length) throw new Error("Runtime custom Tool inventory contains duplicate names");
 		const turnResetters = customTools.flatMap((tool) => typeof (tool as ToolDefinition & { beemaxTurnReset?: () => void }).beemaxTurnReset === "function" ? [(tool as ToolDefinition & { beemaxTurnReset: () => void }).beemaxTurnReset] : []);
 		const policies = new ToolPolicyRegistry(customTools);
-		policies.enable(opts.tools ?? [
+		policies.enable([...new Set([...(opts.tools ?? [
 			"read", "bash", "edit", "write", "grep", "find", "ls", "web_search", "web_extract",
 			...customTools.map((tool) => tool.name),
-		]);
-		const governedTools = customTools.map((tool) => governToolDefinition(tool, policies.get(tool.name), source, opts.toolAudit, toolResultBudget));
+		]), "artifact_read"])]);
+		const governedTools = customTools.map((tool) => governToolDefinition(tool, policies.get(tool.name), source, opts.toolAudit, toolResultBudget, { deferResultProjection: true }));
 		const { session, modelFallbackMessage } = await createAgentSession({
 			cwd, agentDir, model,
 			tools: policies.enabledNames(),
@@ -218,7 +217,7 @@ export function buildBeeMaxRuntimeFactory<Source extends BeeMaxRuntimeSource = B
 			if (taskId) opts.toolEffects?.interruptTask?.(taskId);
 		};
 		if (modelFallbackMessage) console.warn(`[beemax] ${modelFallbackMessage}`);
-		installSecurityHook(session, cwd, source, opts.authorizeTool, policies, opts.enterprisePolicy, opts.actionReliability, opts.executionGrant, opts.proactiveMutationAuthority, opts.toolAudit, opts.toolEffects, opts.currentTaskId);
+		installSecurityHook(session, cwd, source, opts.authorizeTool, policies, opts.enterprisePolicy, opts.actionReliability, opts.executionGrant, opts.proactiveMutationAuthority, opts.toolAudit, opts.toolEffects, opts.currentTaskId, toolArtifacts, toolResultBudget);
 		return session;
 	};
 }
@@ -247,7 +246,7 @@ async function restoreOrCreateSession(cwd: string, sessionDir: string, sessionId
 	return matchingFiles[0] ? SessionManager.open(join(sessionDir, matchingFiles[0]), sessionDir, cwd) : SessionManager.create(cwd, sessionDir, { id: sessionId });
 }
 
-function installSecurityHook<Source extends BeeMaxRuntimeSource>(session: AgentSession, cwd: string, source: Source, authorizeTool: BeeMaxRuntimeAuthorization<Source> | undefined, policies: ToolPolicyRegistry, enterprisePolicy: EnterprisePolicyProvider | undefined, actionReliability: ((toolName: string) => MeasuredActionReliability) | undefined, executionGrant: ((source: Source) => { taskId: string; allowedCapabilities: string[]; status: "active" } | undefined) | undefined, proactiveMutationAuthority: ProactiveMutationAuthority<Source> | undefined, audit?: ToolRuntimeAuditSink, effects?: ToolEffectSink, currentTaskId?: (source: Source) => string | undefined): void {
+function installSecurityHook<Source extends BeeMaxRuntimeSource>(session: AgentSession, cwd: string, source: Source, authorizeTool: BeeMaxRuntimeAuthorization<Source> | undefined, policies: ToolPolicyRegistry, enterprisePolicy: EnterprisePolicyProvider | undefined, actionReliability: ((toolName: string) => MeasuredActionReliability) | undefined, executionGrant: ((source: Source) => { taskId: string; allowedCapabilities: string[]; status: "active" } | undefined) | undefined, proactiveMutationAuthority: ProactiveMutationAuthority<Source> | undefined, audit: ToolRuntimeAuditSink | undefined, effects: ToolEffectSink | undefined, currentTaskId: ((source: Source) => string | undefined) | undefined, toolArtifacts: FileToolArtifactStore, toolResultBudget: ToolResultBudget): void {
 	const enterprisePolicies = new EnterprisePolicyRuntime(enterprisePolicy);
 	const governance = new ActionGovernance();
 	let budgetExecutionId: string | undefined;
@@ -335,14 +334,21 @@ function installSecurityHook<Source extends BeeMaxRuntimeSource>(session: AgentS
 	const previousAfter = session.agent.afterToolCall;
 	session.agent.afterToolCall = async (context, signal) => {
 		const policy = policies.get(context.toolCall.name);
+		let result: Awaited<ReturnType<NonNullable<typeof previousAfter>>> | undefined;
 		try {
-			const result = await previousAfter?.(context, signal);
+			result = await previousAfter?.(context, signal);
 			effects?.finish({ source, executionEnvelope: currentExecutionEnvelope(session), toolCallId: context.toolCall.id, toolName: context.toolCall.name, policy, isError: result?.isError ?? context.isError, details: result?.details ?? context.result.details });
-			return result;
 		} catch (error) {
 			effects?.finish({ source, executionEnvelope: currentExecutionEnvelope(session), toolCallId: context.toolCall.id, toolName: context.toolCall.name, policy, isError: true });
 			throw error;
 		}
+		const projection = await toolArtifacts.project({
+			scopeId: conversationKey(source), executionId: currentExecutionEnvelope(session)?.executionId,
+			toolCallId: context.toolCall.id, toolName: context.toolCall.name,
+			result: { content: result?.content ?? context.result.content, details: result?.details ?? context.result.details, terminate: result?.terminate ?? context.result.terminate },
+			budget: { maxBytes: policy.maxResultBytes, maxEstimatedTokens: toolResultBudget.maxEstimatedTokens },
+		});
+		return { ...result, content: projection.result.content, details: projection.result.details, terminate: projection.result.terminate };
 	};
 }
 

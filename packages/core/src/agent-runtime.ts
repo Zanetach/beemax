@@ -635,6 +635,11 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 					}
 					else if (event.toolName !== "capability_discover") {
 						if (!event.isError && pendingProviderRequirements.get(event.toolName)?.acquired) pendingProviderRequirements.delete(event.toolName);
+						const outputArtifact = event.isError ? undefined : toolArtifactMetadata(event.result);
+						if (outputArtifact && event.toolName !== "artifact_read") {
+							const activated = activatePlannedTools(["artifact_read"]);
+							if (activated.length) publishToolSpecTransition();
+						}
 						let validSkillLifecycle = false;
 						if (!event.isError && SKILL_LIFECYCLE_TOOLS.has(event.toolName)) {
 							if (!skillLifecycleReceipt) {
@@ -1292,6 +1297,14 @@ function toolDispatchReceipt(isError: boolean, result: unknown): ToolDispatchRec
 					: { stage: "finalization", retryable: false };
 	if (stage !== expected.stage || entry.retryable !== expected.retryable) return { stage: "execution", code: "execution_failed", outcome: "failed", retryable: true };
 	return { stage, code, outcome: stage === "routing" || stage === "validation" || stage === "authorization" ? "rejected" : "failed", retryable: entry.retryable };
+}
+
+function toolArtifactMetadata(result: unknown): { ref: string } | undefined {
+	const details = result && typeof result === "object" ? (result as { details?: unknown }).details : undefined;
+	const raw = details && typeof details === "object" ? (details as { toolArtifact?: unknown }).toolArtifact : undefined;
+	if (!raw || typeof raw !== "object") return undefined;
+	const ref = (raw as { ref?: unknown }).ref;
+	return typeof ref === "string" && /^beemax-artifact:sha256:[a-f0-9]{64}$/u.test(ref) ? { ref } : undefined;
 }
 
 function capabilityDiscoveryMetadata(result: unknown, knownTools: ReadonlySet<string>, trustProviderRecoveries = false): { cognitionId?: string; hasMatches: boolean; candidates: CapabilityRankedCandidate[]; activatedTools: string[]; recoveries: ProviderRecovery[]; restrictions: ProviderRestriction[] } {

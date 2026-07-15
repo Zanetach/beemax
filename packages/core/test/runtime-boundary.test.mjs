@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { MemoryStore } from "@beemax/memory";
-import { AgentRunError, AuthStorage, BeeMaxAgentRuntime, buildBeeMaxRuntimeFactory, buildTaskPreservationEnvelope, ConversationContext, createAccessScopeRef, createEnterprisePolicyProvider, createEnterprisePolicyPublisher, createExecutionEnvelope, createSituation, defineTool, FileExecutionTraceStore, getBuiltinModel, isRecoverableModelFailure, MUTATING_TOOL_POLICY, SessionCoordinator, sessionIdForSource, withToolPolicy } from "../dist/index.js";
+import { AgentRunError, AuthStorage, BeeMaxAgentRuntime, buildBeeMaxRuntimeFactory, buildTaskPreservationEnvelope, ConversationContext, createAccessScopeRef, createEnterprisePolicyProvider, createEnterprisePolicyPublisher, createExecutionEnvelope, createSituation, defineTool, FileExecutionTraceStore, getBuiltinModel, isRecoverableModelFailure, MUTATING_TOOL_POLICY, READ_ONLY_TOOL_POLICY, SessionCoordinator, sessionIdForSource, withToolPolicy } from "../dist/index.js";
 
 const createRuntime = (options) => new BeeMaxAgentRuntime({ profileId: "profile:test", ...options });
 
@@ -32,6 +32,37 @@ test("BeeMax applies Profile compaction policy as an in-memory Pi session settin
 		const session = await factory("compaction-settings", { platform: "cli", chatId: "terminal", chatType: "dm", userId: "user" });
 		try {
 			assert.deepEqual(session.compactionSettings, { enabled: false, reserveTokens: 12_000, keepRecentTokens: 16_000 });
+		} finally { session.dispose(); }
+	} finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("BeeMax runtime projects oversized Tool output once and exposes its scoped Artifact reader", async () => {
+	const root = mkdtempSync(join(tmpdir(), "beemax-runtime-tool-artifact-"));
+	const source = { platform: "cli", chatId: "artifact-runtime", chatType: "dm", userId: "user" };
+	try {
+		const factory = buildBeeMaxRuntimeFactory({
+			provider: "anthropic", model: "claude-sonnet-4-5", cwd: root, agentDir: join(root, "agent"), getApiKey: () => "test",
+			systemPrompt: "test", skillToolset: "safe", tools: ["large_result"],
+			createTools: () => [withToolPolicy(defineTool({
+				name: "large_result", label: "Large result", description: "Return a large fixture", parameters: {},
+				execute: async () => ({ content: [{ type: "text", text: "runtime-evidence\n".repeat(4_000) }], details: { provider: "fixture" } }),
+			}), { ...READ_ONLY_TOOL_POLICY, maxResultBytes: 1_024 })],
+		});
+		const session = await factory("artifact-runtime", source);
+		try {
+			const tools = session.getAllTools();
+			assert.ok(tools.some((tool) => tool.name === "artifact_read"));
+			const large = session.getToolDefinition("large_result");
+			const reader = session.getToolDefinition("artifact_read");
+			assert.ok(large); assert.ok(reader);
+			const raw = await large.execute("call:large", {});
+			assert.doesNotMatch(JSON.stringify(raw), /artifact_ref=/u);
+			const toolCall = { id: "call:large", name: "large_result", arguments: {} };
+			const projected = await session.agent.afterToolCall({ assistantMessage: {}, toolCall, args: {}, context: {}, result: raw, isError: false });
+			assert.match(projected.content.at(-1).text, /artifact_ref=/u);
+			assert.equal(projected.details.provider, "fixture");
+			const read = await reader.execute("call:read", { ref: projected.details.toolArtifact.ref, offset: 0, maxChars: 500 });
+			assert.match(read.content[0].text, /^runtime-evidence/u);
 		} finally { session.dispose(); }
 	} finally { rmSync(root, { recursive: true, force: true }); }
 });

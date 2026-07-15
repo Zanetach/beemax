@@ -146,7 +146,7 @@ export function withToolPolicy<T extends ToolDefinition>(tool: T, policy: ToolPo
 }
 
 /** Apply the policy execution contract to a custom first-class Tool. */
-export function governToolDefinition<T extends ToolDefinition>(tool: T, policy: ToolPolicy, source: BeeMaxRuntimeSource, audit?: ToolRuntimeAuditSink, resultBudget?: ToolResultBudget): T & GovernedToolDefinition {
+export function governToolDefinition<T extends ToolDefinition>(tool: T, policy: ToolPolicy, source: BeeMaxRuntimeSource, audit?: ToolRuntimeAuditSink, resultBudget?: ToolResultBudget, options: { deferResultProjection?: boolean } = {}): T & GovernedToolDefinition {
 	const normalized = normalizeToolPolicy(policy);
 	const maxEstimatedTokens = resultBudget ? normalizeToolResultBudget(resultBudget).maxEstimatedTokens : Number.POSITIVE_INFINITY;
 	const execute = tool.execute.bind(tool);
@@ -159,7 +159,7 @@ export function governToolDefinition<T extends ToolDefinition>(tool: T, policy: 
 			const effectiveSignal = signal ? AbortSignal.any([signal, timeoutController.signal]) : timeoutController.signal;
 			try {
 				const result = await abortable(execute(toolCallId, params as never, effectiveSignal, onUpdate as never, ctx as never), effectiveSignal, tool.name);
-				const bounded = boundToolResult(result, normalized.maxResultBytes, maxEstimatedTokens);
+				const bounded = options.deferResultProjection ? measureToolResult(result) : boundToolResult(result, normalized.maxResultBytes, maxEstimatedTokens);
 				if ((bounded.result as { isError?: boolean }).isError === true) {
 					const errorBlock = bounded.result.content.find((block) => block.type === "text" && "text" in block && typeof block.text === "string");
 					const message = errorBlock && "text" in errorBlock && typeof errorBlock.text === "string" ? errorBlock.text.slice(0, 500) : "Tool returned an error result";
@@ -180,6 +180,21 @@ export function governToolDefinition<T extends ToolDefinition>(tool: T, policy: 
 		}
 		throw new Error(`Tool ${tool.name} exhausted its retry policy`);
 	} }, { beemaxPolicy: normalized }) as T & GovernedToolDefinition;
+}
+
+function measureToolResult<T extends { content: Array<{ type: string; text?: string; data?: string }>; details: unknown }>(result: T): { result: T; bytes: number; estimatedTokens: number; truncated: false } {
+	let bytes = 0; let tokenUnits = 0;
+	for (const block of result.content) {
+		if (block.type === "text" && typeof block.text === "string") { bytes += Buffer.byteLength(block.text); tokenUnits += estimatedTokenUnits(block.text); }
+		else if (block.type === "image" && typeof block.data === "string") { bytes += estimatedBase64PayloadBytes(block.data); tokenUnits += 4_800; }
+		else tokenUnits += 256;
+	}
+	return { result, bytes, estimatedTokens: Math.ceil(tokenUnits / 4), truncated: false };
+}
+
+function estimatedBase64PayloadBytes(value: string): number {
+	const padding = value.endsWith("==") ? 2 : value.endsWith("=") ? 1 : 0;
+	return Math.floor((value.length - padding) * 3 / 4);
 }
 
 function abortable<T>(operation: Promise<T>, signal: AbortSignal, toolName: string): Promise<T> {

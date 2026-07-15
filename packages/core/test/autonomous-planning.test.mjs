@@ -461,6 +461,43 @@ test("Agent runtime continues once after capability discovery so activated tools
 	runtime.dispose();
 });
 
+test("Agent runtime promotes artifact_read only after a Tool produces a scoped Artifact receipt", async () => {
+	const source = { platform: "cli", chatId: "artifact-progressive", chatType: "dm", userId: "local" };
+	let listener; let activeTools = ["capability_discover", "web_search", "artifact_read"];
+	const selections = []; const prompts = []; let transitionPublished = false;
+	const agent = { state: { model: { id: "test" }, messages: [] } };
+	const tools = [
+		{ name: "capability_discover", description: "Discover", beemaxPolicy: { sideEffect: "none" } },
+		{ name: "web_search", description: "Search", beemaxPolicy: { sideEffect: "none" } },
+		{ name: "artifact_read", description: "Read a scoped Tool Artifact", beemaxPolicy: { sideEffect: "none" } },
+	];
+	const runtime = createRuntime({ planningPolicy: new AutonomousPlanningPolicy(), createAgent: async () => ({
+		agent, getAllTools: () => tools, getActiveToolNames: () => [...activeTools],
+		setActiveToolsByName: (names) => { activeTools = [...names]; selections.push([...names]); },
+		subscribe: (next) => { listener = next; return () => undefined; },
+		prompt: async (text) => {
+			prompts.push(text);
+			if (prompts.length === 1) {
+				assert.deepEqual(activeTools, ["capability_discover"]);
+				listener({ type: "tool_execution_end", toolCallId: "discover", toolName: "capability_discover", result: { details: { activatedTools: ["web_search"], ranked: [{ kind: "tool", name: "web_search", score: 60, confidence: 0.6, reason: "matched trigger" }] } }, isError: false });
+			} else {
+				assert.deepEqual(activeTools, ["web_search"]);
+				listener({ type: "tool_execution_end", toolCallId: "search", toolName: "web_search", result: { details: { toolArtifact: { ref: `beemax-artifact:sha256:${"a".repeat(64)}` } } }, isError: false });
+				assert.deepEqual(activeTools, ["web_search", "artifact_read"]);
+				transitionPublished = agent.state.messages.some((message) => message.customType === "beemax-tool-spec-transition" && /artifact_read/u.test(message.content));
+			}
+			agent.state.messages = [{ role: "assistant", content: [{ type: "text", text: "done" }], usage: { input: 1, output: 1 } }];
+		},
+		abort: async () => undefined, dispose: () => undefined,
+	}) });
+	await runtime.run({ source, text: "search current weather", timeoutMs: 1_000 });
+	assert.equal(prompts.length, 2);
+	assert.ok(selections.some((names) => names.length === 2 && names.includes("web_search") && names.includes("artifact_read")));
+	assert.equal(transitionPublished, true);
+	assert.deepEqual(activeTools, ["capability_discover", "web_search", "artifact_read"]);
+	runtime.dispose();
+});
+
 test("Agent runtime reroutes one unresolved Tool failure through capability discovery before giving up", async () => {
 	const source = { platform: "cli", chatId: "reroute", chatType: "dm", userId: "local" };
 	let listener; const prompts = []; const agent = { state: { model: { id: "test" }, messages: [] } };

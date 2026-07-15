@@ -528,7 +528,7 @@ This ordering is the implementation plan, not a fixed business workflow. Core re
 **Blocked by:** Build a dynamic Tool Spec Plan for each Pi Turn; Acquire missing Tool and MCP Providers without degrading the Objective.
 
 - [x] Reject invented identifiers and repair or return actionable errors for malformed names and arguments without bypassing schema checks.
-- [ ] Persist oversized or binary output as bounded Artifacts and preserve only safe summaries and references in model context.
+- [x] Persist oversized or binary output as bounded Artifacts and preserve only safe summaries and references in model context.
 - [x] Produce a traceable Route and Tool Receipt for every attempted dispatch.
 
 ## Execute independent Tools in parallel and reroute safely
