@@ -34,7 +34,7 @@ test("live Pi outcome does not execute ranked candidates on the model's behalf",
 });
 
 test("live Pi evaluation lifecycle receipts identify the exact Tool call", async () => {
-	const candidate = { kind: "skill", name: "procedure-conformance-check", version: "eval:1", confidence: 0.99 };
+	const candidate = { kind: "skill", name: "procedure-conformance-check", version: "sha256:0558f341417a17600924c6796b16a8899f795b20509774696ba80a44503d3197", confidence: 0.99 };
 	const tools = new Map(createLivePiEvaluationTools({
 		candidates: [candidate],
 		descriptors: new Map([[candidate.name, candidate]]),

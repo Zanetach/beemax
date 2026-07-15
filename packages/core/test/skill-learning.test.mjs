@@ -40,6 +40,53 @@ test("production capability prefetch returns one semantic Tool/MCP/Skill proposa
 	} finally { rmSync(root, { recursive: true, force: true }); }
 });
 
+test("Skill lifecycle admission ignores an uncalibrated low-confidence fallback match", async () => {
+	const root = mkdtempSync(join(tmpdir(), "beemax-skill-admission-floor-"));
+	try {
+		const project = join(root, "project-skills");
+		const skill = join(project, "weak-review");
+		mkdirSync(skill, { recursive: true });
+		writeFileSync(join(skill, "SKILL.md"), `---\nname: weak-review\ndescription: "Review supplied material"\n---\nReview the supplied material.`);
+		const ranker = { async rank(_query, inventory) {
+			const descriptor = inventory.find((item) => item.name === "weak-review");
+			return [{ descriptor, score: 74, confidence: 0.74, explanation: { strategy: "lexical", summary: "weak fallback overlap", signals: ["weak overlap"] } }];
+		} };
+		const tools = new Map(createSkillTools(root, () => undefined, [], undefined, [project], undefined, ranker).map((tool) => [tool.name, tool]));
+		const proposal = await tools.get("capability_discover").beemaxCapabilityPrefetch("explain review methods");
+		assert.deepEqual(proposal.skills, []);
+		assert.deepEqual(proposal.activatedTools, []);
+		const discovered = await tools.get("capability_discover").execute("discover", { query: "explain review methods" });
+		assert.deepEqual(discovered.details.skills, []);
+		assert.deepEqual(discovered.details.activatedTools, []);
+		await assert.rejects(() => tools.get("skill_activate").execute("activate", { name: "weak-review" }), /must be discovered/i);
+		const explicit = await tools.get("capability_discover").beemaxCapabilityPrefetch("weak-review", undefined, { explicitSkillName: "weak-review" });
+		assert.deepEqual(explicit.skills.map((item) => item.name), ["weak-review"]);
+		assert.deepEqual(explicit.activatedTools, ["skill_activate", "skill_read"]);
+		assert.match((await tools.get("skill_activate").execute("explicit-activate", { name: "weak-review" })).content[0].text, /Review the supplied material/);
+	} finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("an unavailable explicit Skill never falls through to a different semantic Skill", async () => {
+	const root = mkdtempSync(join(tmpdir(), "beemax-explicit-skill-missing-"));
+	try {
+		const project = join(root, "project-skills");
+		const alternative = join(project, "alternative-review");
+		mkdirSync(alternative, { recursive: true });
+		writeFileSync(join(alternative, "SKILL.md"), `---\nname: alternative-review\ndescription: "Review alternate material"\n---\nUse the alternate workflow.`);
+		const ranker = { async rank(_query, inventory) {
+			const descriptor = inventory.find((item) => item.name === "alternative-review");
+			return [{ descriptor, score: 99, confidence: 0.99, explanation: { strategy: "semantic", summary: "similar but not exact", signals: ["semantic similarity"] } }];
+		} };
+		const tools = new Map(createSkillTools(root, () => undefined, [], undefined, [project], undefined, ranker).map((tool) => [tool.name, tool]));
+		const proposal = await tools.get("capability_discover").beemaxCapabilityPrefetch("missing-review", undefined, { explicitSkillName: "missing-review" });
+		assert.deepEqual(proposal.skills, []);
+		assert.deepEqual(proposal.candidates, []);
+		assert.deepEqual(proposal.activatedTools, []);
+		assert.deepEqual(proposal.skillBlocker, { code: "skill_not_installed", name: "missing-review" });
+		await assert.rejects(() => tools.get("skill_activate").execute("activate", { name: "alternative-review" }), /must be discovered/i);
+	} finally { rmSync(root, { recursive: true, force: true }); }
+});
+
 test("operational health and Profile preference never change immutable Capability versions", async () => {
 	const versions = [];
 	const ranker = { async rank(_query, inventory) { versions.push(inventory[0].version); return []; } };

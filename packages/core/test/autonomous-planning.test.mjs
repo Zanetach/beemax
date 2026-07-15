@@ -191,11 +191,12 @@ test("Agent runtime deterministically preflights and enforces an installed match
 	const toolChanges = [];
 	let prefetchSignal;
 	let listener;
+	const version = `sha256:${"a".repeat(64)}`;
 	const agent = { state: { model: { id: "test" }, messages: [] } };
 	const capabilityDiscover = {
 		name: "capability_discover",
 		description: "Discover capabilities",
-		beemaxSkillPrefetch: async (_query, signal) => { prefetchSignal = signal; return [{ name: "research-brief" }]; },
+		beemaxCapabilityPrefetch: async (_query, signal) => { prefetchSignal = signal; return { cognitionId: "cap:research-brief", candidates: [{ kind: "skill", name: "research-brief", version, confidence: 0.96 }], activatedTools: ["skill_activate", "skill_read"], skills: [{ name: "research-brief" }] }; },
 	};
 	const piSession = {
 		agent,
@@ -206,8 +207,8 @@ test("Agent runtime deterministically preflights and enforces an installed match
 		prompt: async (text) => {
 			prompts.push(text);
 			if (prompts.length === 2) {
-				listener({ type: "tool_execution_end", toolCallId: "skill", toolName: "skill_read", isError: false, result: { details: { descriptor: { name: "research-brief" }, state: { skill: "research-brief" } } } });
-				listener({ type: "tool_execution_end", toolCallId: "skill-complete", toolName: "skill_complete", isError: false, result: { details: { skill: "research-brief" } } });
+				listener({ type: "tool_execution_end", toolCallId: "skill", toolName: "skill_read", isError: false, result: { details: { descriptor: { name: "research-brief" }, state: { skill: "research-brief" }, skillLifecycleReceipt: { id: "receipt:read", name: "research-brief", version, phase: "read", sourceTool: "skill_read" } } } });
+				listener({ type: "tool_execution_end", toolCallId: "skill-complete", toolName: "skill_complete", isError: false, result: { details: { skill: "research-brief", skillLifecycleReceipt: { id: "receipt:complete", name: "research-brief", version, phase: "completed", sourceTool: "skill_complete" }, capabilityReceipt: { id: "receipt:skill", kind: "skill", name: "research-brief", version, sourceTool: "skill_complete" } } } });
 			}
 			agent.state.messages = [{ role: "assistant", content: [{ type: "text", text: "done" }], usage: { input: 1, output: 1 } }];
 		},
@@ -215,11 +216,163 @@ test("Agent runtime deterministically preflights and enforces an installed match
 		dispose: () => undefined,
 	};
 	const runtime = createRuntime({ createAgent: async () => piSession });
-	await runtime.run({ source, text: "请生成一份有真实来源的研究简报", timeoutMs: 1_000 });
+	await runtime.run({ source, text: "请使用 Skill research-brief 生成一份有真实来源的研究简报", timeoutMs: 1_000 });
 	assert.match(prompts[0], /Installed matching Skill metadata: research-brief/);
 	assert.match(prompts[1], /Skill correction/);
 	assert.deepEqual(toolChanges[0], ["capability_discover", "skill_read", "skill_activate", "skill_complete"]);
 	assert.equal(prefetchSignal instanceof AbortSignal, true);
+	runtime.dispose();
+});
+
+test("Agent runtime refuses to complete a selected Skill from name-only results without lifecycle receipts", async () => {
+	const source = { platform: "cli", chatId: "skill-receipt-required", chatType: "dm", userId: "local" };
+	let listener;
+	let prompts = 0;
+	const version = `sha256:${"b".repeat(64)}`;
+	const agent = { state: { model: { id: "test" }, messages: [] } };
+	const capabilityDiscover = {
+		name: "capability_discover", description: "Discover capabilities",
+		beemaxCapabilityPrefetch: async () => ({ cognitionId: "cap:receipt-required", candidates: [{ kind: "skill", name: "receipt-review", version, confidence: 0.97 }], activatedTools: ["skill_read"], skills: [{ name: "receipt-review" }] }),
+	};
+	const tools = [capabilityDiscover, { name: "skill_read", description: "Read Skill" }, { name: "skill_complete", description: "Complete Skill" }];
+	const runtime = createRuntime({ createAgent: async () => ({
+		agent, getAllTools: () => tools, getActiveToolNames: () => tools.map(({ name }) => name), setActiveToolsByName: () => undefined,
+		subscribe: (next) => { listener = next; return () => undefined; },
+		prompt: async () => {
+			prompts++;
+			if (prompts === 2) {
+				listener({ type: "tool_execution_end", toolCallId: "read", toolName: "skill_read", isError: false, result: { details: { skill: "receipt-review" } } });
+				listener({ type: "tool_execution_end", toolCallId: "complete", toolName: "skill_complete", isError: false, result: { details: { skill: "receipt-review" } } });
+			}
+			agent.state.messages = [{ role: "assistant", content: [{ type: "text", text: "done" }], usage: { input: 1, output: 1 } }];
+		}, abort: async () => undefined, dispose: () => undefined,
+	}) });
+	await assert.rejects(runtime.run({ source, text: "Use the receipt review Skill", timeoutMs: 1_000 }), /lifecycle receipt|did not complete/i);
+	runtime.dispose();
+});
+
+test("runtime-discovered Skills enter the same version-locked receipt lifecycle as prefetched Skills", async () => {
+	const source = { platform: "cli", chatId: "runtime-skill-lifecycle", chatType: "dm", userId: "local" };
+	let listener;
+	let prompts = 0;
+	const toolChanges = [];
+	const version = `sha256:${"e".repeat(64)}`;
+	const agent = { state: { model: { id: "test" }, messages: [] } };
+	const capabilityDiscover = {
+		name: "capability_discover", description: "Discover capabilities",
+		beemaxCapabilityPrefetch: async () => ({ cognitionId: "cap:initial-no-match", candidates: [], activatedTools: [], skills: [] }),
+	};
+	const tools = [capabilityDiscover, ...["skill_activate", "skill_read", "skill_route", "skill_resource_read", "skill_complete"].map((name) => ({ name, description: name }))];
+	const runtime = createRuntime({ createAgent: async () => ({
+		agent, getAllTools: () => tools, getActiveToolNames: () => tools.map(({ name }) => name), setActiveToolsByName: (names) => { toolChanges.push([...names]); },
+		subscribe: (next) => { listener = next; return () => undefined; },
+		prompt: async () => {
+			prompts++;
+			if (prompts === 1) listener({ type: "tool_execution_end", toolCallId: "discover", toolName: "capability_discover", isError: false, result: { details: {
+				cognitionId: "cap:runtime-skill", activatedTools: ["skill_activate", "skill_read"], skills: [{ name: "runtime-review" }],
+				ranked: [{ kind: "skill", name: "runtime-review", version, score: 98, confidence: 0.98, reason: "semantic capability match" }],
+			} } });
+			if (prompts === 2) {
+				listener({ type: "tool_execution_end", toolCallId: "read", toolName: "skill_read", isError: false, result: { details: { skill: "runtime-review", activatedTools: ["skill_complete"], legacy: true, declaredTools: [], skillLifecycleReceipt: { id: "receipt:runtime-read", name: "runtime-review", version, phase: "read", sourceTool: "skill_read" } } } });
+				listener({ type: "tool_execution_end", toolCallId: "complete", toolName: "skill_complete", isError: false, result: { details: { skill: "runtime-review", skillLifecycleReceipt: { id: "receipt:runtime-complete", name: "runtime-review", version, phase: "completed", sourceTool: "skill_complete" }, capabilityReceipt: { id: "receipt:runtime-skill", kind: "skill", name: "runtime-review", version, sourceTool: "skill_complete" } } } });
+			}
+			agent.state.messages = [{ role: "assistant", content: [{ type: "text", text: "done" }], usage: { input: 1, output: 1 } }];
+		}, abort: async () => undefined, dispose: () => undefined,
+	}) });
+	await runtime.run({ source, text: "Find and use the runtime review Skill", timeoutMs: 1_000 });
+	assert.equal(prompts, 3);
+	assert.ok(toolChanges.some((names) => names.includes("skill_read") && names.includes("skill_activate")));
+	runtime.dispose();
+});
+
+test("an incomplete selected Skill reports its concrete route or resource blocker without substituting another Skill", async () => {
+	const source = { platform: "cli", chatId: "skill-resource-blocker", chatType: "dm", userId: "local" };
+	let listener;
+	let prompts = 0;
+	const version = `sha256:${"f".repeat(64)}`;
+	const agent = { state: { model: { id: "test" }, messages: [] } };
+	const tools = [
+		{ name: "capability_discover", description: "Discover capabilities", beemaxCapabilityPrefetch: async () => ({ cognitionId: "cap:missing-module", candidates: [{ kind: "skill", name: "module-review", version, confidence: 0.99 }], activatedTools: ["skill_read"], skills: [{ name: "module-review" }] }) },
+		{ name: "skill_read", description: "Read Skill" }, { name: "skill_complete", description: "Complete Skill" },
+	];
+	const runtime = createRuntime({ createAgent: async () => ({
+		agent, getAllTools: () => tools, getActiveToolNames: () => tools.map(({ name }) => name), setActiveToolsByName: () => undefined,
+		subscribe: (next) => { listener = next; return () => undefined; }, prompt: async () => {
+			prompts++;
+			if (prompts === 1) listener({ type: "tool_execution_end", toolCallId: "read", toolName: "skill_read", isError: true, result: { content: [{ type: "text", text: "Skill referenced resource is unavailable: modules/missing-review.md" }] } });
+			agent.state.messages = [{ role: "assistant", content: [{ type: "text", text: "blocked" }], usage: { input: 1, output: 1 } }];
+		}, abort: async () => undefined, dispose: () => undefined,
+	}) });
+	await assert.rejects(runtime.run({ source, text: "Use Skill module-review", timeoutMs: 1_000 }), /modules\/missing-review\.md/i);
+	runtime.dispose();
+});
+
+test("Agent runtime rejects a selected Skill proposal that lacks immutable version evidence", async () => {
+	const source = { platform: "cli", chatId: "skill-version-required", chatType: "dm", userId: "local" };
+	let prompts = 0;
+	const agent = { state: { model: { id: "test" }, messages: [] } };
+	const tools = [
+		{ name: "capability_discover", description: "Discover capabilities", beemaxCapabilityPrefetch: async () => ({ cognitionId: "cap:versionless", candidates: [{ kind: "skill", name: "versionless-review", confidence: 0.99 }], activatedTools: ["skill_read"], skills: [{ name: "versionless-review" }] }) },
+		{ name: "skill_read", description: "Read Skill" }, { name: "skill_complete", description: "Complete Skill" },
+	];
+	const runtime = createRuntime({ createAgent: async () => ({ agent, getAllTools: () => tools, getActiveToolNames: () => tools.map(({ name }) => name), setActiveToolsByName: () => undefined, subscribe: () => () => undefined, prompt: async () => { prompts++; }, abort: async () => undefined, dispose: () => undefined }) });
+	await assert.rejects(runtime.run({ source, text: "Use Skill versionless-review", timeoutMs: 1_000 }), /immutable version/i);
+	assert.equal(prompts, 0);
+	runtime.dispose();
+});
+
+test("Agent runtime rejects mutable Skill version labels before Pi execution", async () => {
+	const source = { platform: "cli", chatId: "skill-mutable-version", chatType: "dm", userId: "local" };
+	let prompts = 0;
+	const agent = { state: { model: { id: "test" }, messages: [] } };
+	const tools = [
+		{ name: "capability_discover", description: "Discover capabilities", beemaxCapabilityPrefetch: async () => ({ cognitionId: "cap:mutable-version", candidates: [{ kind: "skill", name: "mutable-review", version: "latest", confidence: 0.99 }], activatedTools: ["skill_read"], skills: [{ name: "mutable-review" }] }) },
+		{ name: "skill_read", description: "Read Skill" }, { name: "skill_complete", description: "Complete Skill" },
+	];
+	const runtime = createRuntime({ createAgent: async () => ({ agent, getAllTools: () => tools, getActiveToolNames: () => tools.map(({ name }) => name), setActiveToolsByName: () => undefined, subscribe: () => () => undefined, prompt: async () => { prompts++; }, abort: async () => undefined, dispose: () => undefined }) });
+	await assert.rejects(runtime.run({ source, text: "Use Skill mutable-review", timeoutMs: 1_000 }), /immutable version/i);
+	assert.equal(prompts, 0);
+	runtime.dispose();
+});
+
+test("Agent runtime reports an explicitly requested missing Skill before Pi can substitute another one", async () => {
+	const source = { platform: "cli", chatId: "explicit-skill-missing", chatType: "dm", userId: "local" };
+	let prompts = 0;
+	const agent = { state: { model: { id: "test" }, messages: [] } };
+	const tools = [{ name: "capability_discover", description: "Discover capabilities", beemaxCapabilityPrefetch: async (_query, _signal, options) => ({ cognitionId: "cap:missing", candidates: [], activatedTools: [], skills: [], skillBlocker: { code: "skill_not_installed", name: options.explicitSkillName } }) }];
+	const runtime = createRuntime({ createAgent: async () => ({ agent, getAllTools: () => tools, getActiveToolNames: () => ["capability_discover"], setActiveToolsByName: () => undefined, subscribe: () => () => undefined, prompt: async () => { prompts++; }, abort: async () => undefined, dispose: () => undefined }) });
+	await assert.rejects(runtime.run({ source, text: "/skill:missing-review perform the requested workflow", timeoutMs: 1_000 }), /missing-review.*not installed/i);
+	assert.equal(prompts, 0);
+	runtime.dispose();
+});
+
+test("Agent runtime enforces an explicit Skill name even when a prefetch adapter proposes an alternative", async () => {
+	const source = { platform: "cli", chatId: "explicit-skill-exclusive", chatType: "dm", userId: "local" };
+	let prompts = 0;
+	const version = `sha256:${"a".repeat(64)}`;
+	const agent = { state: { model: { id: "test" }, messages: [] } };
+	const tools = [
+		{ name: "capability_discover", description: "Discover capabilities", beemaxCapabilityPrefetch: async () => ({ cognitionId: "cap:wrong-skill", candidates: [{ kind: "skill", name: "alternative-review", version, confidence: 0.99 }], activatedTools: ["skill_read"], skills: [{ name: "alternative-review" }] }) },
+		{ name: "skill_read", description: "Read Skill" }, { name: "skill_complete", description: "Complete Skill" },
+	];
+	const runtime = createRuntime({ createAgent: async () => ({ agent, getAllTools: () => tools, getActiveToolNames: () => tools.map(({ name }) => name), setActiveToolsByName: () => undefined, subscribe: () => () => undefined, prompt: async () => { prompts++; }, abort: async () => undefined, dispose: () => undefined }) });
+	await assert.rejects(runtime.run({ source, text: "/skill:required-review perform the requested workflow", timeoutMs: 1_000 }), /required-review.*not installed|required-review.*unavailable/i);
+	assert.equal(prompts, 0);
+	runtime.dispose();
+});
+
+test("Agent runtime does not admit a legacy Skill prefetch without explicit selection or calibrated confidence", async () => {
+	const source = { platform: "cli", chatId: "legacy-skill-confidence", chatType: "dm", userId: "local", delegatedTask: { id: "legacy-review", ownerKey: "cli:local:local" } };
+	let prompts = 0;
+	const version = `sha256:${"1".repeat(64)}`;
+	const agent = { state: { model: { id: "test" }, messages: [] } };
+	const tools = [
+		{ name: "capability_discover", description: "Discover capabilities", beemaxSkillPrefetch: async () => [{ name: "legacy-review", version }] },
+		{ name: "skill_read", description: "Read Skill" }, { name: "skill_complete", description: "Complete Skill" },
+	];
+	const runtime = createRuntime({ createAgent: async () => ({ agent, getAllTools: () => tools, getActiveToolNames: () => tools.map(({ name }) => name), setActiveToolsByName: () => undefined, subscribe: () => () => undefined, prompt: async () => { prompts++; agent.state.messages = [{ role: "assistant", content: [{ type: "text", text: "explained without executing a Skill" }], usage: { input: 1, output: 1 } }]; }, abort: async () => undefined, dispose: () => undefined }) });
+	await runtime.run({ source, text: "Explain review methods", timeoutMs: 1_000 });
+	assert.equal(prompts, 1);
 	runtime.dispose();
 });
 
@@ -410,11 +563,21 @@ test("Agent runtime releases Skill bodies at turn boundaries while retaining exe
 });
 
 test("BeeMax explicit Skill commands enter the enforced runtime lifecycle instead of Pi body expansion", async () => {
-	const source = { platform: "cli", chatId: "explicit-skill", chatType: "dm", userId: "local" }; let received = "";
+	const source = { platform: "cli", chatId: "explicit-skill", chatType: "dm", userId: "local" }; let received = ""; let listener;
+	const version = `sha256:${"b".repeat(64)}`;
 	const agent = { state: { model: { id: "test" }, messages: [] } };
+	const tools = [
+		{ name: "capability_discover", description: "Discover capabilities", beemaxCapabilityPrefetch: async () => ({ cognitionId: "cap:explicit-contract-review", candidates: [{ kind: "skill", name: "contract-review", version, confidence: 1 }], activatedTools: ["skill_read"], skills: [{ name: "contract-review" }] }) },
+		{ name: "skill_read", description: "Read Skill" }, { name: "skill_complete", description: "Complete Skill" },
+	];
 	const runtime = createRuntime({ context: { enrich: (_source, text) => `verified facts\n\n${text}`, record: () => undefined }, createAgent: async () => ({
-		agent, getActiveToolNames: () => ["capability_discover"], setActiveToolsByName: () => undefined, subscribe: () => () => undefined,
-		prompt: async (text) => { received = text; agent.state.messages = [{ role: "assistant", content: [{ type: "text", text: "done" }], usage: { input: 1, output: 1 } }]; }, abort: async () => undefined, dispose: () => undefined,
+		agent, getAllTools: () => tools, getActiveToolNames: () => tools.map(({ name }) => name), setActiveToolsByName: () => undefined, subscribe: (next) => { listener = next; return () => undefined; },
+		prompt: async (text) => {
+			received = text;
+			listener({ type: "tool_execution_end", toolCallId: "read", toolName: "skill_read", isError: false, result: { details: { skill: "contract-review", activatedTools: ["skill_complete"], legacy: true, declaredTools: [], skillLifecycleReceipt: { id: "receipt:explicit-read", name: "contract-review", version, phase: "read", sourceTool: "skill_read" } } } });
+			listener({ type: "tool_execution_end", toolCallId: "complete", toolName: "skill_complete", isError: false, result: { details: { skill: "contract-review", skillLifecycleReceipt: { id: "receipt:explicit-complete", name: "contract-review", version, phase: "completed", sourceTool: "skill_complete" }, capabilityReceipt: { id: "receipt:explicit-skill", kind: "skill", name: "contract-review", version, sourceTool: "skill_complete" } } } });
+			agent.state.messages = [{ role: "assistant", content: [{ type: "text", text: "done" }], usage: { input: 1, output: 1 } }];
+		}, abort: async () => undefined, dispose: () => undefined,
 	}) });
 	await runtime.run({ source, text: "/skill:contract-review inspect this", timeoutMs: 1_000 });
 	assert.match(received, /verified facts/); assert.match(received, /Explicit Skill request: contract-review/); assert.match(received, /capability_discover/); assert.doesNotMatch(received, /<skill name=/);

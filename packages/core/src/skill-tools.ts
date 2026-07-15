@@ -9,7 +9,7 @@ import { MUTATING_TOOL_POLICY, READ_ONLY_TOOL_POLICY, withToolPolicy, type ToolP
 import { assertNoCredentialMaterial } from "./credential-material.ts";
 import { SkillRegistry, SkillRuntime } from "./skill-runtime.ts";
 import { rankCapabilityIndex } from "./capability-ranking.ts";
-import { CapabilityRuntime, capabilityDescriptor, capabilityVersionOf, type CapabilityOperationalSignals, type CapabilityRanker } from "./capability-runtime.ts";
+import { CapabilityRuntime, SEMANTIC_CAPABILITY_MINIMUM_SIMILARITY, capabilityDescriptor, capabilityVersionOf, type CapabilityOperationalSignals, type CapabilityRanker } from "./capability-runtime.ts";
 import { CapabilityProviderRuntime, type CapabilityProviderDescriptor } from "./capability-provider.ts";
 
 const SKILL_NAME = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
@@ -52,14 +52,27 @@ export function createSkillTools(agentDir: string, markReloadNeeded: () => void,
 		];
 		return { eligibleTools, selection: await capabilities.discover({ query, inventory, limit, ...(signal ? { signal } : {}) }) };
 	};
-	const prefetchCapabilities = async (query: string, signal?: AbortSignal) => {
+	const prefetchCapabilities = async (query: string, signal?: AbortSignal, options?: { explicitSkillName?: string }) => {
+		if (options?.explicitSkillName) {
+			const explicitSkill = (await registry.list()).find((skill) => skill.name === options.explicitSkillName);
+			const cognitionId = `cap:explicit:${createHash("sha256").update(options.explicitSkillName).digest("hex").slice(0, 32)}`;
+			const selectedSkills = await runtime.admitDiscovered(explicitSkill ? [explicitSkill.name] : []);
+			if (!explicitSkill) return { cognitionId, candidates: [], activatedTools: [], skills: [], skillBlocker: { code: "skill_not_installed" as const, name: options.explicitSkillName } };
+			return {
+				cognitionId,
+				candidates: [{ kind: "skill" as const, name: explicitSkill.name, version: `sha256:${explicitSkill.sha256}`, confidence: 1 }],
+				activatedTools: ["skill_activate", "skill_read"],
+				skills: selectedSkills.map(publicSkill),
+			};
+		}
 		const { selection } = await selectAvailableCapabilities(query, 10, signal);
-		const selectedName = selection.candidates.find((item) => item.kind === "skill")?.name;
+		const selectedName = selection.candidates.find((item) => item.kind === "skill" && item.confidence >= SEMANTIC_CAPABILITY_MINIMUM_SIMILARITY)?.name;
 		const selectedSkills = await runtime.admitDiscovered(selectedName ? [selectedName] : []);
+		const activatedTools = [...new Set([...selection.activatedTools.filter((name) => name !== "skill_activate" && name !== "skill_read"), ...(selectedName ? ["skill_activate", "skill_read"] : [])])];
 		return {
 			cognitionId: selection.cognitionId,
 			candidates: selection.candidates.map(({ kind, name, version, confidence }) => ({ kind, name, version, confidence })),
-			activatedTools: selection.activatedTools,
+			activatedTools,
 			skills: selectedSkills.map(publicSkill),
 		};
 	};
@@ -75,7 +88,7 @@ export function createSkillTools(agentDir: string, markReloadNeeded: () => void,
 			const candidates = existingKey ? await listCandidates(candidateRoot, existingKey) : [];
 			const matches = <T extends CapabilityMetadata>(items: T[]) => rankCapabilities(params.query, items, 20);
 			const { eligibleTools, selection } = await selectAvailableCapabilities(params.query, 10, signal);
-			const selectedSkillNames = selection.candidates.filter((item) => item.kind === "skill").map((item) => item.name);
+			const selectedSkillNames = selection.candidates.filter((item) => item.kind === "skill" && item.confidence >= SEMANTIC_CAPABILITY_MINIMUM_SIMILARITY).map((item) => item.name);
 			const selectedSkills = await runtime.admitDiscovered(selectedSkillNames);
 			const selectedToolNames = new Set(selection.candidates.filter((item) => item.kind !== "skill").map((item) => item.name));
 			const matchedTools = eligibleTools.filter((tool) => selectedToolNames.has(tool.name)).sort((left, right) => selection.candidates.findIndex((item) => item.name === left.name) - selection.candidates.findIndex((item) => item.name === right.name));
@@ -98,7 +111,7 @@ export function createSkillTools(agentDir: string, markReloadNeeded: () => void,
 				candidates: matches(candidates.map((item) => ({ name: item.name, description: item.description, attempts: item.attempts.length }))),
 				providers: publicProviders,
 				providerResolutions: publicProviderResolutions(providerResolutions),
-				activatedTools: selection.activatedTools,
+				activatedTools: selectedSkillNames.length ? selection.activatedTools : selection.activatedTools.filter((name) => name !== "skill_activate" && name !== "skill_read"),
 			});
 		} }), { beemaxCapabilityPrefetch: prefetchCapabilities }),
 		defineTool({ name: "skill_list", label: "List Skills", description: "List metadata for Profile, project, and global Skills without loading their instruction bodies.", parameters: Type.Object({}), execute: async () => {
@@ -124,7 +137,8 @@ export function createSkillTools(agentDir: string, markReloadNeeded: () => void,
 			let providerResolutions: Awaited<ReturnType<typeof resolveToolProviders>> = [];
 			if (legacy) { const routed = await runtime.routeTo("legacy"); runtime.useActivatedInstructionsAsModule(); activatedTools = ["skill_complete", ...routed.tools]; providerResolutions = await resolveToolProviders(routed.tools); }
 			else activatedTools = ["skill_route", "skill_complete"];
-			return ephemeralResult(activated.instructions, { descriptor: publicSkill(activated.descriptor), routes: activated.routes, state: runtime.snapshot(), legacy, activatedTools, providerResolutions: publicProviderResolutions(providerResolutions), skillLifecycleReceipt: skillLifecycleReceipt(activated.descriptor.name, activated.descriptor.sha256, "read", "skill_read", toolCallId) });
+			const declaredTools = legacy ? activatedTools.filter((name) => name !== "skill_complete") : [];
+			return ephemeralResult(activated.instructions, { descriptor: publicSkill(activated.descriptor), routes: activated.routes, state: runtime.snapshot(), legacy, declaredTools, activatedTools, providerResolutions: publicProviderResolutions(providerResolutions), skillLifecycleReceipt: skillLifecycleReceipt(activated.descriptor.name, activated.descriptor.sha256, "read", "skill_read", toolCallId) });
 		} }),
 		defineTool({ name: "skill_create", label: "Create Skill", description: "Create a durable instruction-only Agent Skill after a workflow proves reusable. Requires approval. Never put credentials in skills.", parameters: Type.Object({ name: Type.String({ pattern: "^[a-z0-9]+(?:-[a-z0-9]+)*$", maxLength: 64 }), description: Type.String({ minLength: 10, maxLength: 1024 }), instructions: Type.String({ minLength: 20, maxLength: 30_000 }) }), execute: async (_id, params) => {
 			assertSafeCandidate({ ...params, source: "direct Skill creation" });

@@ -22,7 +22,7 @@ import { createExecutionEnvelope, type ExecutionEnvelope } from "./execution-env
 import { normalizeCapabilityReceiptRef, normalizeSkillLifecycleReceiptRef, type CapabilityReceiptRef, type ExecutionTraceSink, type SkillLifecycleReceiptRef } from "./execution-trace.ts";
 import { createTaskCheckpoint, mergeTaskCheckpoints, renderTaskCheckpoint } from "./task-checkpoint.ts";
 import type { TaskGraphVerifier } from "./task-graph.ts";
-import { CapabilityRuntime, capabilityVersionOf } from "./capability-runtime.ts";
+import { CapabilityRuntime, SEMANTIC_CAPABILITY_MINIMUM_SIMILARITY, capabilityVersionOf } from "./capability-runtime.ts";
 import type { ToolSideEffect } from "./tool-runtime.ts";
 import { MediaUnderstandingRuntime, type MediaUnderstandingPort } from "./media-understanding.ts";
 import { activateToolSpecPlan, buildToolSpecPlan, deferToolSpecPlan, hideToolSpecPlan, renderToolSpecPlan, type ToolSpecInventoryItem } from "./tool-spec-plan.ts";
@@ -93,6 +93,8 @@ interface AssistantTurnOrigin { assistantTurnId: string; providerResponseStatus:
 interface AssistantToolOrigin { origin: AssistantTurnOrigin; toolName: string; argumentsSha256: string; toolSpecPlanId: string; }
 export type BeeMaxAgentRunEvent = AgentSessionEvent | ModelFallbackEvent | PlanningDecisionEvent | PlanningOutcomeEvent | CapabilityRankedEvent | ContextBuiltEvent | ExecutionStartedEvent | ExecutionSettledEvent | MediaUnderstoodEvent;
 export type BeeMaxAgentRunEventSink = (event: BeeMaxAgentRunEvent) => void | Promise<void>;
+const SKILL_LIFECYCLE_TOOLS = new Set(["skill_activate", "skill_read", "skill_route", "skill_resource_read", "skill_complete"]);
+interface AdmittedSkillIdentity { name: string; version: string; }
 /** Gateway-facing runtime contract; implementations may be local or remote. */
 export interface AgentRuntimePort<Source extends BeeMaxRuntimeSource = BeeMaxRuntimeSource> {
 	run(input: AgentRunInput<Source>, onEvent?: BeeMaxAgentRunEventSink): Promise<AgentRunResult>;
@@ -301,6 +303,7 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 			}
 			if (ownedTaskRunId && objective) this.taskLedger?.recordRun({ id: ownedTaskRunId, taskId: objective.id, executor: "agent", status: "running", startedAt, ...(executionEnvelope.budget?.deadlineAt ? { leaseExpiresAt: executionEnvelope.budget.deadlineAt + 60_000 } : {}) });
 			const requestedText = explicitSkillRequest(input.text);
+			const explicitlyRequestedSkill = explicitSkillName(input.text);
 			const taskPreservation = activeObjective && (Boolean(input.objectiveTaskId) || understanding?.action === "continue") ? buildTaskPreservationEnvelope([activeObjective], 6_000) : undefined;
 			const contextAssembly = cognitiveRun && this.context && typeof this.context.assemble === "function"
 				? this.context.assemble(contextSource, requestedText, { model: modelOf(session.piSession.agent), memoryQuery: understanding?.memoryQuery, situation, accessScopeRef }, taskPreservation ? [{ kind: "task_preservation", source: "task_ledger", priority: 110, compressible: false, text: taskPreservation }] : []) : undefined;
@@ -333,9 +336,9 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 			const previousToolBoundary = session.piSession.agent.beforeToolCall;
 			const capabilityRuntime = new CapabilityRuntime();
 			const capabilityPrefetch = allTools.find((tool) => tool.name === "capability_discover") as (typeof allTools[number] & {
-				beemaxCapabilityPrefetch?: (query: string, signal?: AbortSignal) => Promise<{ cognitionId?: string; candidates: Array<{ kind: "tool" | "mcp" | "skill"; name: string; version?: string; confidence: number }>; activatedTools?: string[]; skills: Array<{ name: string }> }>;
+				beemaxCapabilityPrefetch?: (query: string, signal?: AbortSignal, options?: { explicitSkillName?: string }) => Promise<{ cognitionId?: string; candidates: Array<{ kind: "tool" | "mcp" | "skill"; name: string; version?: string; confidence: number }>; activatedTools?: string[]; skills: Array<{ name: string }>; skillBlocker?: { code: "skill_not_installed"; name: string } }>;
 				/** Pre-semantic compatibility seam for injected test/legacy runtimes only. */
-				beemaxSkillPrefetch?: (query: string, signal?: AbortSignal) => Promise<Array<{ name: string }>>;
+				beemaxSkillPrefetch?: (query: string, signal?: AbortSignal) => Promise<Array<{ name: string; version: string }>>;
 			}) | undefined;
 			const prefetchQuery = understanding?.capabilityQuery ?? input.text;
 			const lexicalPrefetchHints = selectTurnTools(prefetchQuery, allTools);
@@ -350,6 +353,8 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 				|| lexicalPrefetchHints.length,
 			);
 			let prefetchedSkills: string[] = [];
+			let admittedSkill: AdmittedSkillIdentity | undefined;
+			let skillAdmissionBlocker: string | undefined;
 			let semanticPrefetchedTools: string[] = [];
 			const capabilityDecisions = new Map<string, Array<{ kind: "tool" | "mcp" | "skill"; name: string; version?: string; confidence: number }>>();
 			const recordedCapabilityDecisions = new Set<string>();
@@ -357,11 +362,16 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 			let semanticCapabilityNoMatch = false;
 			if (shouldRunCapabilityPrefetch && capabilityPrefetch?.beemaxCapabilityPrefetch) {
 				try {
-					const proposal = await capabilityPrefetch.beemaxCapabilityPrefetch(prefetchQuery, cognitionSignal);
+					const proposal = await capabilityPrefetch.beemaxCapabilityPrefetch(prefetchQuery, cognitionSignal, explicitlyRequestedSkill ? { explicitSkillName: explicitlyRequestedSkill } : undefined);
 					const inventory = new Set(allTools.map((tool) => tool.name));
 					const proposedTools = proposal.activatedTools ?? proposal.candidates.filter((candidate) => candidate.kind !== "skill").map((candidate) => candidate.name);
 					semanticPrefetchedTools = [...new Set(proposedTools.filter((name) => inventory.has(name)))].slice(0, 10);
-					prefetchedSkills = [...new Set(proposal.skills.map((skill) => skill.name).filter(Boolean))].slice(0, 1);
+					if (proposal.skillBlocker?.code === "skill_not_installed" && proposal.skillBlocker.name === explicitlyRequestedSkill) skillAdmissionBlocker = `Explicit Skill ${proposal.skillBlocker.name} is not installed`;
+					const proposedSkillNames = [...new Set(proposal.skills.map((skill) => skill.name).filter(Boolean))].slice(0, 1);
+					const selectedSkill = proposedSkillNames.length ? proposal.candidates.find((candidate) => candidate.kind === "skill" && candidate.name === proposedSkillNames[0] && candidate.confidence >= SEMANTIC_CAPABILITY_MINIMUM_SIMILARITY) : undefined;
+					if (proposedSkillNames.length && !validImmutableSkillVersion(selectedSkill?.version)) skillAdmissionBlocker ??= `Selected Skill ${proposedSkillNames[0]} lacks immutable version evidence`;
+					if (selectedSkill && validImmutableSkillVersion(selectedSkill.version)) { admittedSkill = { name: selectedSkill.name, version: selectedSkill.version }; prefetchedSkills = [admittedSkill.name]; }
+					if (!prefetchedSkills.length) semanticPrefetchedTools = semanticPrefetchedTools.filter((name) => !SKILL_LIFECYCLE_TOOLS.has(name));
 					const cognitionId = validCapabilityCognitionId(proposal.cognitionId);
 					if (cognitionId) capabilityDecisions.set(cognitionId, proposal.candidates.slice(0, 20));
 					semanticCapabilityNoMatch = semanticPrefetchedTools.length === 0 && prefetchedSkills.length === 0;
@@ -372,13 +382,23 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 					capabilityPrefetchFailed = true;
 					/* capability_discover remains available as the observable recovery path */
 				}
-			} else if (capabilityPrefetch?.beemaxSkillPrefetch) {
-				try { prefetchedSkills = [...new Set((await capabilityPrefetch.beemaxSkillPrefetch(prefetchQuery, cognitionSignal)).map((skill) => skill.name).filter(Boolean))].slice(0, 1); }
+			} else if (explicitlyRequestedSkill && capabilityPrefetch?.beemaxSkillPrefetch) {
+				try {
+					const selected = (await capabilityPrefetch.beemaxSkillPrefetch(prefetchQuery, cognitionSignal)).find((candidate) => candidate.name === explicitlyRequestedSkill);
+					if (selected && validImmutableSkillVersion(selected.version)) { admittedSkill = { name: selected.name, version: selected.version }; prefetchedSkills = [selected.name]; }
+					else if (selected) skillAdmissionBlocker = `Selected Skill ${selected.name} lacks immutable version evidence`;
+				}
 				catch (error) {
 					if (input.signal?.aborted) throw new AgentRunError("Agent turn was cancelled during Capability cognition", false, input.signal.reason);
 					if (deadlineSignal?.aborted) throw new AgentRunError("Execution Envelope deadline expired during Capability cognition", true, error);
 					capabilityPrefetchFailed = true;
 				}
+			}
+			if (explicitlyRequestedSkill && admittedSkill?.name !== explicitlyRequestedSkill) {
+				admittedSkill = undefined;
+				prefetchedSkills = [];
+				semanticPrefetchedTools = semanticPrefetchedTools.filter((name) => !SKILL_LIFECYCLE_TOOLS.has(name));
+				skillAdmissionBlocker ??= `Explicit Skill ${explicitlyRequestedSkill} is not installed or unavailable`;
 			}
 			// Delegated and recovery runs intentionally skip full cognitive context assembly,
 			// but they still need deterministic Tool prefetch from their bounded Task prompt.
@@ -439,6 +459,8 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 			let discoveredCapabilities = false;
 			const activatedPrefetchedSkills = new Set<string>();
 			const completedPrefetchedSkills = new Set<string>();
+			const activeSkillVersions = new Map<string, string>();
+			let skillLifecycleBlocker: string | undefined;
 			let failedReadToolAwaitingReroute: string | undefined;
 			let completionAnswer: string | undefined;
 			let objectiveVerificationOutcome: "accepted" | "rejected" | "unavailable" | undefined;
@@ -532,28 +554,53 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 							recordedCapabilityDecisions.add(discovery.cognitionId);
 							this.recordTrace({ type: "capability.decision", executionEnvelope, at, cognitionId: discovery.cognitionId, candidates });
 						}
+						const discoveredSkillCandidate = discovery.candidates.find((candidate) => candidate.kind === "skill" && candidate.confidence >= SEMANTIC_CAPABILITY_MINIMUM_SIMILARITY && (!explicitlyRequestedSkill || candidate.name === explicitlyRequestedSkill));
+						if (explicitlyRequestedSkill && discovery.candidates.some((candidate) => candidate.kind === "skill" && candidate.confidence >= SEMANTIC_CAPABILITY_MINIMUM_SIMILARITY && candidate.name !== explicitlyRequestedSkill) && !discoveredSkillCandidate && !turnAbortReason) {
+							turnAbortReason = `Explicit Skill ${explicitlyRequestedSkill} is not installed or unavailable`;
+							void session.piSession.abort();
+						}
+						const discoveredSkill = discoveredSkillCandidate && validImmutableSkillVersion(discoveredSkillCandidate.version) ? discoveredSkillCandidate : undefined;
+						if (discoveredSkillCandidate && !discoveredSkill && !turnAbortReason) { turnAbortReason = `Selected Skill ${discoveredSkillCandidate.name} lacks immutable version evidence`; void session.piSession.abort(); }
+						if (!admittedSkill && discoveredSkill) { admittedSkill = { name: discoveredSkill.name, version: discoveredSkill.version! }; prefetchedSkills = [discoveredSkill.name]; }
 						if (discovery.restrictions.length) toolSpecPlan = hideToolSpecPlan(toolSpecPlan, discovery.restrictions);
-						const activatedTools = activatePlannedTools(discovery.activatedTools);
+						const activatedTools = activatePlannedTools(discovery.activatedTools.filter((name) => !SKILL_LIFECYCLE_TOOLS.has(name) || Boolean(discoveredSkill)));
 						if (activatedTools.length) {
 							toolSpecPlan = deferToolSpecPlan(toolSpecPlan, ["capability_discover"]);
 							session.piSession.setActiveToolsByName(toolSpecPlan.direct.map((entry) => entry.toolName));
 						}
 						if (activatedTools.length || discovery.restrictions.length) publishToolSpecTransition();
 						discoveredCapabilities = activatedTools.length > 0;
-						const discoveredSkill = discovery.candidates.find((candidate) => candidate.kind === "skill" && candidate.confidence >= 0.5)?.name;
-						if (!prefetchedSkills.length && discoveredSkill) prefetchedSkills = [discoveredSkill];
 						if (discovery.candidates.length || activatedTools.length || discovery.restrictions.length) enqueueEvent({ type: "capability_ranked", candidates: discovery.candidates, activatedTools });
 					}
 					else if (event.toolName !== "capability_discover") {
-						if (!event.isError && ["skill_activate", "skill_route", "skill_read"].includes(event.toolName)) {
+						let validSkillLifecycle = false;
+						if (!event.isError && SKILL_LIFECYCLE_TOOLS.has(event.toolName)) {
+							if (!skillLifecycleReceipt) {
+								if (!turnAbortReason) { turnAbortReason = `Selected Skill ${event.toolName} result lacks a valid lifecycle receipt`; void session.piSession.abort(); }
+							} else {
+								if (!admittedSkill || admittedSkill.name !== skillLifecycleReceipt.name) {
+									if (!turnAbortReason) { turnAbortReason = `Skill ${skillLifecycleReceipt.name} was not admitted by explicit or calibrated Capability selection`; void session.piSession.abort(); }
+								} else if (admittedSkill.version !== skillLifecycleReceipt.version) {
+									if (!turnAbortReason) { turnAbortReason = `Skill ${skillLifecycleReceipt.name} lifecycle version changed after selection`; void session.piSession.abort(); }
+								} else if (["routed", "resource_read", "completed"].includes(skillLifecycleReceipt.phase) && activeSkillVersions.get(skillLifecycleReceipt.name) !== skillLifecycleReceipt.version) {
+									if (!turnAbortReason) { turnAbortReason = `Skill ${skillLifecycleReceipt.name} lifecycle receipt is out of order`; void session.piSession.abort(); }
+								} else if (skillLifecycleReceipt.phase === "completed" && (!capabilityReceipt || capabilityReceipt.kind !== "skill" || capabilityReceipt.name !== skillLifecycleReceipt.name || capabilityReceipt.version !== skillLifecycleReceipt.version)) {
+									if (!turnAbortReason) { turnAbortReason = `Skill ${skillLifecycleReceipt.name} completion lacks its matching Capability receipt`; void session.piSession.abort(); }
+								} else {
+									validSkillLifecycle = true;
+									if (skillLifecycleReceipt.phase === "activated" || skillLifecycleReceipt.phase === "read") { activeSkillVersions.set(skillLifecycleReceipt.name, skillLifecycleReceipt.version); activatedPrefetchedSkills.add(skillLifecycleReceipt.name); }
+									if (skillLifecycleReceipt.phase === "completed") completedPrefetchedSkills.add(skillLifecycleReceipt.name);
+								}
+							}
+						}
+						if (!event.isError && validSkillLifecycle && ["skill_activate", "skill_route", "skill_read"].includes(event.toolName)) {
 							const lifecycle = capabilityDiscoveryMetadata(event.result, new Set(allTools.map((tool) => tool.name)));
 							if (lifecycle.restrictions.length) toolSpecPlan = hideToolSpecPlan(toolSpecPlan, lifecycle.restrictions);
-							const activated = activatePlannedTools(lifecycle.activatedTools);
+							const allowed = allowedSkillRouteTools(event.result, event.toolName, new Set(allTools.map((tool) => tool.name)));
+							const activated = activatePlannedTools(lifecycle.activatedTools.filter((name) => allowed.has(name)));
 							if (activated.length || lifecycle.restrictions.length) publishToolSpecTransition();
 						}
-						const skillName = skillExecutionName(event.result);
-						if (!event.isError && (event.toolName === "skill_activate" || event.toolName === "skill_read") && skillName && prefetchedSkills.includes(skillName)) activatedPrefetchedSkills.add(skillName);
-						if (!event.isError && event.toolName === "skill_complete" && skillName && prefetchedSkills.includes(skillName)) completedPrefetchedSkills.add(skillName);
+						if (event.isError && SKILL_LIFECYCLE_TOOLS.has(event.toolName)) skillLifecycleBlocker = skillLifecycleFailureBlocker(event.result, event.toolName);
 						const sideEffect = toolSideEffects.get(event.toolName);
 						const reroute = sideEffect === undefined ? { allowed: false } : capabilityRuntime.canReroute({ sideEffect, effectStatus: sideEffect === "none" ? "none" : "unknown" });
 						if (event.isError && reroute.allowed) {
@@ -649,6 +696,7 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 				return previousToolBoundary?.(context, signal);
 			};
 			try {
+				if (skillAdmissionBlocker) throw new AgentRunError(skillAdmissionBlocker, false, undefined);
 				this.recordTrace({ type: "execution.started", executionEnvelope, at: startedAt });
 				this.recordTrace({ type: "tool_spec.published", executionEnvelope, toolSpecPlanId: toolSpecPlan.planId, directTools: progressiveTools });
 				for (const [cognitionId, candidates] of capabilityDecisions) {
@@ -671,9 +719,9 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 					images: promptImages,
 				});
 				const completedMatchingSkill = () => prefetchedSkills.some((name) => activatedPrefetchedSkills.has(name) && completedPrefetchedSkills.has(name));
-				if (prefetchedSkills.length && !completedMatchingSkill() && !turnAbortReason) {
-					await promptSession(`[BeeMax Skill correction: an installed Skill matched this Task (${prefetchedSkills.join(", ")}) but its lifecycle is incomplete. Use skill_read or skill_activate with the exact best-matching name, select its route, read every required module/resource, follow it, and finish with skill_complete before answering. Do not substitute another Skill.]`, { expandPromptTemplates: false });
-					if (!completedMatchingSkill()) throw new AgentRunError(`Agent did not complete the installed matching Skill lifecycle: ${prefetchedSkills.join(", ")}`, false, undefined);
+					if (prefetchedSkills.length && !completedMatchingSkill() && !turnAbortReason) {
+						await promptSession(`[BeeMax Skill correction: an installed Skill matched this Task (${prefetchedSkills.join(", ")}) but its lifecycle is incomplete. Use skill_read or skill_activate with the exact best-matching name, select its route, read every required module/resource, follow it, and finish with skill_complete before answering. Do not substitute another Skill.]`, { expandPromptTemplates: false });
+						if (!completedMatchingSkill()) throw new AgentRunError(`${skillLifecycleBlocker ? `${skillLifecycleBlocker}; ` : ""}Agent did not complete the installed matching Skill lifecycle: ${prefetchedSkills.join(", ")}`, false, undefined);
 				}
 				if (failedReadToolAwaitingReroute && !discoveredCapabilities && !turnAbortReason) {
 					const failedTool = failedReadToolAwaitingReroute; failedReadToolAwaitingReroute = undefined;
@@ -1011,21 +1059,6 @@ function objectiveObservableAcceptanceCriteria(acceptanceCriteria: readonly stri
 	return "The delivered result provides observable evidence that the Objective outcome was achieved and every constraint recorded in its Situation was preserved.";
 }
 
-function skillExecutionName(result: unknown): string | undefined {
-	if (!result || typeof result !== "object") return undefined;
-	const details = (result as { details?: unknown }).details;
-	if (!details || typeof details !== "object") return undefined;
-	const record = details as Record<string, unknown>;
-	if (typeof record.skill === "string") return record.skill;
-	for (const value of [record.descriptor, record.state]) {
-		if (value && typeof value === "object") {
-			const name = (value as { name?: unknown; skill?: unknown }).name ?? (value as { skill?: unknown }).skill;
-			if (typeof name === "string") return name;
-		}
-	}
-	return undefined;
-}
-
 function toolAttemptFingerprint(name: string, args: unknown): string {
 	try { return `${name}\0${JSON.stringify(args)}`; }
 	catch { return `${name}\0<unserializable>`; }
@@ -1167,6 +1200,10 @@ function validCapabilityCognitionId(value: unknown): string | undefined {
 	return typeof value === "string" && /^[a-z0-9][a-z0-9._:-]{0,127}$/i.test(value) ? value : undefined;
 }
 
+function validImmutableSkillVersion(value: unknown): value is string {
+	return typeof value === "string" && /^sha256:[a-f0-9]{64}$/i.test(value);
+}
+
 function capabilityReceiptMetadata(result: unknown, sourceTool: string): CapabilityReceiptRef | undefined {
 	const details = result && typeof result === "object" ? (result as { details?: unknown }).details : undefined;
 	const receipt = details && typeof details === "object" ? (details as { capabilityReceipt?: unknown }).capabilityReceipt : undefined;
@@ -1181,6 +1218,25 @@ function skillLifecycleReceiptMetadata(result: unknown, sourceTool: string): Ski
 	if (!receipt || typeof receipt !== "object") return undefined;
 	try { const normalized = normalizeSkillLifecycleReceiptRef(receipt); return normalized.sourceTool === sourceTool ? normalized : undefined; }
 	catch { return undefined; }
+}
+
+function allowedSkillRouteTools(result: unknown, sourceTool: string, knownTools: ReadonlySet<string>): ReadonlySet<string> {
+	const allowed = new Set<string>();
+	if (sourceTool === "skill_activate") { allowed.add("skill_route"); allowed.add("skill_complete"); }
+	if (sourceTool === "skill_read") { allowed.add("skill_route"); allowed.add("skill_complete"); }
+	if (sourceTool === "skill_route") { allowed.add("skill_resource_read"); allowed.add("skill_complete"); }
+	const details = result && typeof result === "object" ? (result as { details?: unknown }).details : undefined;
+	if (!details || typeof details !== "object") return allowed;
+	const record = details as { tools?: unknown; declaredTools?: unknown; legacy?: unknown };
+	const declared = sourceTool === "skill_route" ? record.tools : sourceTool === "skill_read" && record.legacy === true ? record.declaredTools : [];
+	if (Array.isArray(declared)) for (const name of declared) if (typeof name === "string" && knownTools.has(name)) allowed.add(name);
+	return allowed;
+}
+
+function skillLifecycleFailureBlocker(result: unknown, sourceTool: string): string {
+	const content = result && typeof result === "object" ? (result as { content?: unknown }).content : undefined;
+	const detail = Array.isArray(content) ? content.flatMap((item) => item && typeof item === "object" && (item as { type?: unknown }).type === "text" && typeof (item as { text?: unknown }).text === "string" ? [(item as { text: string }).text] : []).join(" ").replace(/\s+/gu, " ").trim() : "";
+	return `Selected Skill lifecycle failed at ${sourceTool}${detail ? `: ${redactCredentialMaterial(detail).slice(0, 1_000)}` : ""}`;
 }
 
 function toolSideEffect(tool: unknown): ToolSideEffect | undefined {
@@ -1259,6 +1315,7 @@ function explicitSkillRequest(text: string): string {
 	const match = text.match(/^\/skill:([a-z0-9]+(?:-[a-z0-9]+)*)(?:\s+([\s\S]*))?$/i); if (!match) return text;
 	return `[Explicit Skill request: ${match[1]}]\nUse capability_discover with this exact Skill name, then follow skill_activate, skill_route, skill_resource_read, and skill_complete. Do not expand or read SKILL.md directly.${match[2]?.trim() ? `\n\nUser request: ${match[2].trim()}` : ""}`;
 }
+function explicitSkillName(text: string): string | undefined { return text.match(/^\/skill:([a-z0-9]+(?:-[a-z0-9]+)*)(?:\s|$)/i)?.[1]?.toLowerCase(); }
 
 function completedPlanningTool(toolName: string, result: unknown, args: unknown, delegatedTaskId?: string): { accepted: boolean; delegatedTaskId?: string } {
 	const details = result && typeof result === "object" ? (result as { details?: unknown }).details : undefined;

@@ -195,6 +195,7 @@ function sandboxToolResultMessage(toolCallId, toolName, result, isError) {
 
 function createEvaluationTools(inventory, candidates, cognitionId) {
 	const selectedSkills = candidates.filter((candidate) => candidate.kind === "skill").map((candidate) => candidate.name);
+	const readSkills = new Set();
 	const tools = inventory.filter((descriptor) => descriptor.kind !== "skill").flatMap((descriptor) => (descriptor.activeTools ?? [descriptor.name]).map((sourceTool) => ({
 		name: sourceTool, description: descriptor.description,
 		beemaxPolicy: { sideEffect: descriptor.signals?.effect === "external" ? "external" : descriptor.signals?.effect === "local" ? "local" : "none" },
@@ -202,14 +203,20 @@ function createEvaluationTools(inventory, candidates, cognitionId) {
 		execute: async () => ({ content: [{ type: "text", text: `sandbox receipt ${descriptor.name}` }], details: { capabilityReceipt: { id: `receipt:${descriptor.kind}:${descriptor.name}:${descriptor.version}:${sourceTool}`, kind: descriptor.kind, name: descriptor.name, version: descriptor.version, sourceTool } } }),
 	})));
 	const lifecycle = [
-		{ name: "skill_read", description: "Read selected Skill", execute: async (_id, args) => ({ content: [{ type: "text", text: "skill loaded" }], details: { descriptor: { name: args.name }, skill: args.name, activatedTools: ["skill_complete"] } }) },
+		{ name: "skill_read", description: "Read selected Skill", execute: async (id, args) => {
+			const descriptor = inventory.find((item) => item.kind === "skill" && item.name === args.name);
+			if (!descriptor) throw new Error(`Unknown evaluation Skill ${args.name}`);
+			readSkills.add(args.name);
+			return { content: [{ type: "text", text: "skill loaded" }], details: { descriptor: { name: args.name }, skill: args.name, activatedTools: ["skill_complete"], declaredTools: [], skillLifecycleReceipt: { id: `receipt:skill-read:${args.name}:${id}`, name: args.name, version: descriptor.version, phase: "read", sourceTool: "skill_read" } } };
+		} },
 		{ name: "skill_activate", description: "Activate selected Skill", execute: async (_id, args) => ({ content: [{ type: "text", text: "skill active" }], details: { descriptor: { name: args.name }, skill: args.name, activatedTools: ["skill_complete"] } }) },
 		{ name: "skill_route", description: "Route selected Skill", execute: async (_id, args) => ({ content: [{ type: "text", text: "skill routed" }], details: { skill: args.name, activatedTools: ["skill_complete"] } }) },
 		{ name: "skill_resource_read", description: "Read Skill resource", execute: async () => ({ content: [{ type: "text", text: "resource read" }], details: {} }) },
-		{ name: "skill_complete", description: "Complete selected Skill", execute: async (_id, args) => {
+		{ name: "skill_complete", description: "Complete selected Skill", execute: async (id, args) => {
 			const descriptor = inventory.find((item) => item.kind === "skill" && item.name === args.name);
 			if (!descriptor) throw new Error(`Unknown evaluation Skill ${args.name}`);
-			return { content: [{ type: "text", text: "skill complete" }], details: { skill: args.name, capabilityReceipt: { id: `receipt:skill:${args.name}:${descriptor.version}`, kind: "skill", name: args.name, version: descriptor.version, sourceTool: "skill_complete" } } };
+			if (!readSkills.has(args.name)) throw new Error(`Evaluation Skill ${args.name} must be read before completion`);
+			return { content: [{ type: "text", text: "skill complete" }], details: { skill: args.name, skillLifecycleReceipt: { id: `receipt:skill-complete:${args.name}:${id}`, name: args.name, version: descriptor.version, phase: "completed", sourceTool: "skill_complete" }, capabilityReceipt: { id: `receipt:skill:${args.name}:${descriptor.version}:${id}`, kind: "skill", name: args.name, version: descriptor.version, sourceTool: "skill_complete" } } };
 		} },
 	].map((tool) => ({ ...tool, beemaxPolicy: { sideEffect: "none" }, beemaxToolSpec: { kind: "skill", version: "eval:skill-lifecycle", configured: true, health: "ready", authorized: true } }));
 	const prefetch = async () => ({ cognitionId, candidates, activatedTools: candidates.filter((candidate) => candidate.kind !== "skill").flatMap((candidate) => inventory.find((item) => item.name === candidate.name)?.activeTools ?? [candidate.name]), skills: selectedSkills.map((name) => ({ name })) });

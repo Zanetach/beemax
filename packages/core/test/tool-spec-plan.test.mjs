@@ -198,16 +198,24 @@ test("Skill route activation enters the Tool Spec Plan before the next Pi sample
 	let activeTools = ["skill_route", "route_tool"];
 	let routeBoundary;
 	let transitionContext = "";
+	const version = `sha256:${"c".repeat(64)}`;
 	const agent = { state: { model: { id: "test" }, messages: [] } };
 	const tools = [
+		{ name: "capability_discover", description: "Discover Skill", parameters: {}, beemaxPolicy: { sideEffect: "none" }, beemaxCapabilityPrefetch: async () => ({ cognitionId: "cap:route", candidates: [{ kind: "skill", name: "route-skill", version, confidence: 0.98 }], activatedTools: ["skill_activate", "skill_read"], skills: [{ name: "route-skill" }] }) },
+		{ name: "skill_activate", description: "Activate Skill", parameters: {}, beemaxPolicy: { sideEffect: "none" } },
+		{ name: "skill_read", description: "Read Skill", parameters: {}, beemaxPolicy: { sideEffect: "none" } },
 		{ name: "skill_route", description: "Route Skill", parameters: {}, beemaxPolicy: { sideEffect: "none" } },
+		{ name: "skill_resource_read", description: "Read Skill resource", parameters: {}, beemaxPolicy: { sideEffect: "none" } },
+		{ name: "skill_complete", description: "Complete Skill", parameters: {}, beemaxPolicy: { sideEffect: "none" } },
 		{ name: "route_tool", description: "Execute declared route", parameters: {}, beemaxPolicy: { sideEffect: "none" } },
 	];
 	const runtime = createRuntime({ createAgent: async () => ({ agent, getAllTools: () => tools, getActiveToolNames: () => [...activeTools], setActiveToolsByName: (names) => { activeTools = [...names]; }, subscribe: (next) => { listener = next; return () => undefined; }, prompt: async () => {
-		listener({ type: "tool_execution_end", toolCallId: "route:1", toolName: "skill_route", isError: false, result: { details: { activatedTools: ["route_tool"] } } });
-		transitionContext = agent.state.messages.find((message) => message.role === "custom" && message.customType === "beemax-tool-spec-transition")?.content ?? "";
+		listener({ type: "tool_execution_end", toolCallId: "activate:1", toolName: "skill_activate", isError: false, result: { details: { skill: "route-skill", activatedTools: ["skill_route", "skill_complete"], skillLifecycleReceipt: { id: "receipt:activate", name: "route-skill", version, phase: "activated", sourceTool: "skill_activate" } } } });
+		listener({ type: "tool_execution_end", toolCallId: "route:1", toolName: "skill_route", isError: false, result: { details: { skill: "route-skill", tools: ["route_tool"], activatedTools: ["skill_resource_read", "skill_complete", "route_tool"], skillLifecycleReceipt: { id: "receipt:route", name: "route-skill", version, phase: "routed", sourceTool: "skill_route" } } } });
+		transitionContext = agent.state.messages.filter((message) => message.role === "custom" && message.customType === "beemax-tool-spec-transition").at(-1)?.content ?? "";
 		listener({ type: "message_end", message: { role: "assistant", responseId: "response:route-tool", content: [{ type: "toolCall", id: "route-tool:1", name: "route_tool", arguments: {} }], usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0 } } });
 		routeBoundary = await agent.beforeToolCall({ toolCall: { id: "route-tool:1", name: "route_tool", arguments: {} } }, new AbortController().signal);
+		listener({ type: "tool_execution_end", toolCallId: "complete:1", toolName: "skill_complete", isError: false, result: { details: { skill: "route-skill", skillLifecycleReceipt: { id: "receipt:complete", name: "route-skill", version, phase: "completed", sourceTool: "skill_complete" }, capabilityReceipt: { id: "receipt:skill", kind: "skill", name: "route-skill", version, sourceTool: "skill_complete" } } } });
 		agent.state.messages = [{ role: "assistant", content: [{ type: "text", text: "done" }], usage: { input: 1, output: 1 } }];
 	}, abort: async () => undefined, dispose: () => undefined }) });
 	try {
@@ -215,6 +223,33 @@ test("Skill route activation enters the Tool Spec Plan before the next Pi sample
 		assert.equal(routeBoundary?.block, undefined);
 		assert.match(transitionContext, /route_tool/);
 		assert.match(transitionContext, /tool-plan:sha256:/);
+	} finally { runtime.dispose(); }
+});
+
+test("Skill route activation cannot expose a Tool absent from the declared route", async () => {
+	const source = { platform: "cli", chatId: "skill-route-undeclared", chatType: "dm", userId: "owner" };
+	let listener;
+	let routeBoundary;
+	let activeTools = ["skill_route", "route_tool"];
+	const version = `sha256:${"d".repeat(64)}`;
+	const agent = { state: { model: { id: "test" }, messages: [] } };
+	const tools = [
+		{ name: "capability_discover", description: "Discover Skill", parameters: {}, beemaxPolicy: { sideEffect: "none" }, beemaxCapabilityPrefetch: async () => ({ cognitionId: "cap:undeclared", candidates: [{ kind: "skill", name: "route-skill", version, confidence: 0.98 }], activatedTools: ["skill_activate"], skills: [{ name: "route-skill" }] }) },
+		...['skill_activate', 'skill_read', 'skill_route', 'skill_resource_read', 'skill_complete'].map((name) => ({ name, description: name, parameters: {}, beemaxPolicy: { sideEffect: "none" } })),
+		{ name: "route_tool", description: "Undeclared route Tool", parameters: {}, beemaxPolicy: { sideEffect: "none" } },
+	];
+	const runtime = createRuntime({ createAgent: async () => ({ agent, getAllTools: () => tools, getActiveToolNames: () => [...activeTools], setActiveToolsByName: (names) => { activeTools = [...names]; }, subscribe: (next) => { listener = next; return () => undefined; }, prompt: async () => {
+		listener({ type: "tool_execution_end", toolCallId: "activate", toolName: "skill_activate", isError: false, result: { details: { skill: "route-skill", activatedTools: ["skill_route"], skillLifecycleReceipt: { id: "receipt:activate", name: "route-skill", version, phase: "activated", sourceTool: "skill_activate" } } } });
+		listener({ type: "tool_execution_end", toolCallId: "route", toolName: "skill_route", isError: false, result: { details: { skill: "route-skill", tools: [], activatedTools: ["route_tool", "skill_complete"], skillLifecycleReceipt: { id: "receipt:route", name: "route-skill", version, phase: "routed", sourceTool: "skill_route" } } } });
+		listener({ type: "message_end", message: { role: "assistant", responseId: "response:undeclared", content: [{ type: "toolCall", id: "route-tool", name: "route_tool", arguments: {} }], usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0 } } });
+		routeBoundary = await agent.beforeToolCall({ toolCall: { id: "route-tool", name: "route_tool", arguments: {} } }, new AbortController().signal);
+		listener({ type: "tool_execution_end", toolCallId: "complete", toolName: "skill_complete", isError: false, result: { details: { skill: "route-skill", skillLifecycleReceipt: { id: "receipt:complete", name: "route-skill", version, phase: "completed", sourceTool: "skill_complete" }, capabilityReceipt: { id: "receipt:skill", kind: "skill", name: "route-skill", version, sourceTool: "skill_complete" } } } });
+		agent.state.messages = [{ role: "assistant", content: [{ type: "text", text: "done" }], usage: { input: 1, output: 1 } }];
+	}, abort: async () => undefined, dispose: () => undefined }) });
+	try {
+		await runtime.run({ source, text: "Use the route Skill", timeoutMs: 1_000 });
+		assert.equal(routeBoundary?.block, true);
+		assert.match(routeBoundary?.reason ?? "", /not direct/i);
 	} finally { runtime.dispose(); }
 });
 

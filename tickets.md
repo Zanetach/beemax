@@ -507,9 +507,9 @@ This ordering is the implementation plan, not a fixed business workflow. Core re
 
 **Blocked by:** Calibrate Capability ranking against real task outcomes.
 
-- [ ] Require the lifecycle only for explicit or calibrated high-confidence selection.
-- [ ] Merge runtime discovery receipts into the lifecycle gate and enable only declared route Tools.
-- [ ] Report missing modules, invalid resources, failed routes, and incomplete execution without silently substituting another Skill.
+- [x] Require the lifecycle only for explicit or calibrated high-confidence selection.
+- [x] Merge runtime discovery receipts into the lifecycle gate and enable only declared route Tools.
+- [x] Report missing modules, invalid resources, failed routes, and incomplete execution without silently substituting another Skill.
 
 ## Acquire missing Tool and MCP Providers without degrading the Objective
 
