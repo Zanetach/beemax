@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { AutonomousPlanningPolicy, BeeMaxAgentRuntime, createAccessScopeRef, createExecutionEnvelope, createWebTools, PlanningBudgetRegistry } from "../dist/index.js";
+import { attestCapabilityProviderAcquisitionTool, attestCapabilityProviderResolutionTool } from "../dist/capability-provider.js";
 
 const createRuntime = (options) => new BeeMaxAgentRuntime({ profileId: "profile:test", ...options });
 const bindAssistantTurn = (listener, calls, responseId = "response:test") => listener({
@@ -500,10 +501,14 @@ test("Agent runtime promotes artifact_read only after a Tool produces a scoped A
 
 test("Agent runtime reroutes one unresolved Tool failure through capability discovery before giving up", async () => {
 	const source = { platform: "cli", chatId: "reroute", chatType: "dm", userId: "local" };
-	let listener; const prompts = []; const agent = { state: { model: { id: "test" }, messages: [] } };
-	const runtime = createRuntime({ createAgent: async () => ({
+	let listener; const prompts = []; const traceEvents = []; const agent = { state: { model: { id: "test" }, messages: [] } };
+	const runtime = createRuntime({ executionTrace: { record: (event) => { traceEvents.push(event); } }, createAgent: async () => ({
 		agent, getActiveToolNames: () => ["capability_discover", "read", "primary_search", "alternate_search"], setActiveToolsByName: () => undefined,
-		getAllTools: () => [{ name: "read", description: "Read context", beemaxPolicy: { sideEffect: "none" } }, { name: "primary_search", description: "Primary search", beemaxPolicy: { sideEffect: "none" } }, { name: "alternate_search", description: "Alternate search", beemaxPolicy: { sideEffect: "none" } }],
+		getAllTools: () => [
+			{ name: "read", description: "Read context", beemaxPolicy: { sideEffect: "none" }, beemaxToolSpec: { configured: true, health: "ready", ranking: { inputModalities: ["text"], outputModalities: ["text"], freshness: "static", evidence: "source_receipt" } } },
+			{ name: "primary_search", description: "Primary search", beemaxPolicy: { sideEffect: "none" }, beemaxToolSpec: { configured: true, health: "ready", ranking: { inputModalities: ["text"], outputModalities: ["structured"], freshness: "realtime", evidence: "source_receipt" } } },
+			{ name: "alternate_search", description: "Alternate search", beemaxPolicy: { sideEffect: "none" }, beemaxToolSpec: { configured: true, health: "ready", ranking: { inputModalities: ["text"], outputModalities: ["structured"], freshness: "realtime", evidence: "source_receipt" } } },
+		],
 		subscribe: (next) => { listener = next; return () => undefined; },
 		prompt: async (text) => {
 			prompts.push(text);
@@ -511,7 +516,7 @@ test("Agent runtime reroutes one unresolved Tool failure through capability disc
 				listener({ type: "tool_execution_end", toolCallId: "failed", toolName: "primary_search", result: {}, isError: true });
 				listener({ type: "tool_execution_end", toolCallId: "context", toolName: "read", result: {}, isError: false });
 			}
-			if (prompts.length === 2) listener({ type: "tool_execution_end", toolCallId: "discover", toolName: "capability_discover", result: { details: { activatedTools: ["alternate_search"], ranked: [{ kind: "tool", name: "alternate_search", score: 60, confidence: 0.6, reason: "matched trigger" }] } }, isError: false });
+			if (prompts.length === 2) listener({ type: "tool_execution_end", toolCallId: "discover", toolName: "capability_discover", result: { details: { cognitionId: "cap:reroute-1", activatedTools: ["alternate_search"], ranked: [{ kind: "tool", name: "alternate_search", score: 60, confidence: 0.6, reason: "matched trigger" }] } }, isError: false });
 			if (prompts.length === 3) listener({ type: "tool_execution_end", toolCallId: "alternate", toolName: "alternate_search", result: {}, isError: false });
 			agent.state.messages = [{ role: "assistant", content: [{ type: "text", text: "done" }], usage: { input: 1, output: 1 } }];
 		},
@@ -523,7 +528,124 @@ test("Agent runtime reroutes one unresolved Tool failure through capability disc
 	assert.match(prompts[1], /capability_discover/);
 	assert.match(prompts[1], /do not retry the same external mutation/i);
 	assert.match(prompts[2], /capability continuation/i);
+	assert.deepEqual(traceEvents.find((event) => event.type === "capability.rerouted"), {
+		type: "capability.rerouted", executionEnvelope: traceEvents[0].executionEnvelope,
+		at: traceEvents.find((event) => event.type === "capability.rerouted")?.at,
+		cognitionId: "cap:reroute-1", failedTool: "primary_search", alternativeTool: "alternate_search",
+	});
 	runtime.dispose();
+});
+
+test("Agent runtime does not reroute a read-only Tool failure that succeeds later in the same Turn", async () => {
+	const source = { platform: "cli", chatId: "read-recovered", chatType: "dm", userId: "local" };
+	let listener; let prompts = 0; const agent = { state: { model: { id: "test" }, messages: [] } };
+	const tools = [{ name: "primary_search", description: "Primary", beemaxPolicy: { sideEffect: "none" }, beemaxToolSpec: { configured: true, health: "ready", ranking: { inputModalities: ["text"], outputModalities: ["structured"], freshness: "realtime", evidence: "source_receipt" } } }];
+	const runtime = createRuntime({ createAgent: async () => ({
+		agent, getActiveToolNames: () => ["primary_search"], setActiveToolsByName: () => undefined, getAllTools: () => tools,
+		subscribe: (next) => { listener = next; return () => undefined; },
+		prompt: async () => {
+			prompts++;
+			listener({ type: "tool_execution_end", toolCallId: "failed", toolName: "primary_search", result: {}, isError: true });
+			listener({ type: "tool_execution_end", toolCallId: "recovered", toolName: "primary_search", result: {}, isError: false });
+			agent.state.messages = [{ role: "assistant", content: [{ type: "text", text: "done" }], usage: { input: 1, output: 1 } }];
+		}, abort: async () => undefined, dispose: () => undefined,
+	}) });
+	await runtime.run({ source, text: "find current evidence", timeoutMs: 1_000 });
+	assert.equal(prompts, 1);
+	runtime.dispose();
+});
+
+test("Agent runtime accepts an equivalent read reroute only after trusted Provider health recovery", async () => {
+	const source = { platform: "cli", chatId: "reroute-provider-recovery", chatType: "dm", userId: "local" };
+	let listener; let prompts = 0; const agent = { state: { model: { id: "test" }, messages: [] } };
+	const capabilityDiscover = attestCapabilityProviderResolutionTool({ name: "capability_discover", description: "Discover", beemaxPolicy: { sideEffect: "none" } });
+	const tools = [
+		capabilityDiscover,
+		{ name: "primary_search", description: "Primary", beemaxPolicy: { sideEffect: "none" }, beemaxToolSpec: { configured: true, health: "ready", ranking: { inputModalities: ["text"], outputModalities: ["structured"], freshness: "realtime", evidence: "source_receipt" } } },
+		{ name: "recovered_search", description: "Recovered", beemaxPolicy: { sideEffect: "none" }, beemaxToolSpec: { configured: false, health: "unverified", ranking: { inputModalities: ["text"], outputModalities: ["structured"], freshness: "realtime", evidence: "verified" } } },
+	];
+	const runtime = createRuntime({ createAgent: async () => ({
+		agent, getActiveToolNames: () => tools.map(({ name }) => name), setActiveToolsByName: () => undefined, getAllTools: () => tools,
+		subscribe: (next) => { listener = next; return () => undefined; },
+		prompt: async () => {
+			prompts++;
+			if (prompts === 1) listener({ type: "tool_execution_end", toolCallId: "failed", toolName: "primary_search", result: {}, isError: true });
+			if (prompts === 2) listener({ type: "tool_execution_end", toolCallId: "discover", toolName: "capability_discover", isError: false, result: { details: {
+				cognitionId: "cap:trusted-recovery", activatedTools: ["recovered_search"], ranked: [{ kind: "tool", name: "recovered_search", score: 95, confidence: 0.95, reason: "semantic match" }],
+				providerResolutions: [{ capability: "recovered_search", status: "ready", selected: { id: "recovered-provider", kind: "tool", installed: true, health: { status: "ready", evidenceRef: "health:recovered" } } }],
+			} } });
+			if (prompts === 3) listener({ type: "tool_execution_end", toolCallId: "recovered", toolName: "recovered_search", result: {}, isError: false });
+			agent.state.messages = [{ role: "assistant", content: [{ type: "text", text: "done" }], usage: { input: 1, output: 1 } }];
+		}, abort: async () => undefined, dispose: () => undefined,
+	}) });
+	await runtime.run({ source, text: "find verified realtime evidence", timeoutMs: 1_000 });
+	assert.equal(prompts, 3);
+	runtime.dispose();
+});
+
+test("Agent runtime acquires an installable equivalent read Provider and resumes the unchanged Contract", async () => {
+	const source = { platform: "cli", chatId: "reroute-provider-acquire", chatType: "dm", userId: "local" };
+	let listener; let prompts = 0; const agent = { state: { model: { id: "test" }, messages: [] } };
+	const capabilityDiscover = attestCapabilityProviderResolutionTool({ name: "capability_discover", description: "Discover", beemaxPolicy: { sideEffect: "none" } });
+	const capabilityAcquire = attestCapabilityProviderAcquisitionTool({ name: "capability_acquire", description: "Acquire", beemaxPolicy: { sideEffect: "local" } });
+	const tools = [
+		capabilityDiscover, capabilityAcquire,
+		{ name: "primary_search", description: "Primary", beemaxPolicy: { sideEffect: "none" }, beemaxToolSpec: { configured: true, health: "ready", ranking: { inputModalities: ["text"], outputModalities: ["structured"], freshness: "realtime", evidence: "source_receipt" } } },
+		{ name: "installable_search", description: "Installable", beemaxPolicy: { sideEffect: "none" }, beemaxToolSpec: { configured: false, health: "unavailable", ranking: { inputModalities: ["text"], outputModalities: ["structured"], freshness: "realtime", evidence: "verified" } } },
+	];
+	const runtime = createRuntime({ createAgent: async () => ({
+		agent, getActiveToolNames: () => tools.map(({ name }) => name), setActiveToolsByName: () => undefined, getAllTools: () => tools,
+		subscribe: (next) => { listener = next; return () => undefined; },
+		prompt: async () => {
+			prompts++;
+			if (prompts === 1) listener({ type: "tool_execution_end", toolCallId: "failed", toolName: "primary_search", result: {}, isError: true });
+			if (prompts === 2) listener({ type: "tool_execution_end", toolCallId: "discover", toolName: "capability_discover", isError: false, result: { details: {
+				cognitionId: "cap:installable-reroute", activatedTools: ["capability_acquire"], ranked: [{ kind: "tool", name: "installable_search", score: 96, confidence: 0.96, reason: "semantic match" }],
+				providerResolutions: [{ capability: "installable_search", status: "blocked", candidates: [{ id: "installable-provider", kind: "tool", installed: false, installable: true, health: { status: "unavailable", reason: "not installed" } }], blocker: { code: "provider_unavailable", reason: "installable-provider is not installed", requiredConfiguration: [] } }],
+			} } });
+			if (prompts === 3) listener({ type: "tool_execution_end", toolCallId: "acquire", toolName: "capability_acquire", isError: false, result: { details: { providerAcquisition: { capability: "installable_search", status: "ready", selected: { id: "installable-provider", kind: "tool", installed: true, health: { status: "ready", evidenceRef: "health:installed" } } } } } });
+			if (prompts === 4) listener({ type: "tool_execution_end", toolCallId: "installed", toolName: "installable_search", isError: false, result: {} });
+			agent.state.messages = [{ role: "assistant", content: [{ type: "text", text: "done" }], usage: { input: 1, output: 1 } }];
+		}, abort: async () => undefined, dispose: () => undefined,
+	}) });
+	await runtime.run({ source, text: "find verified realtime evidence", timeoutMs: 1_000 });
+	assert.equal(prompts, 4);
+	runtime.dispose();
+});
+
+test("Agent runtime rejects read reroutes that cannot prove equivalent health, modality, freshness, and evidence", async () => {
+	for (const variant of [
+		{ name: "stale", configured: true, health: "ready", input: ["text"], output: ["structured"], freshness: "static", evidence: "source_receipt" },
+		{ name: "unverified", configured: true, health: "unverified", input: ["text"], output: ["structured"], freshness: "realtime", evidence: "source_receipt" },
+		{ name: "self-reported", configured: true, health: "ready", input: ["text"], output: ["structured"], freshness: "realtime", evidence: "self_reported" },
+		{ name: "wrong-input", configured: true, health: "ready", input: ["file"], output: ["structured"], freshness: "realtime", evidence: "source_receipt" },
+		{ name: "wrong-output", configured: true, health: "ready", input: ["text"], output: ["text"], freshness: "realtime", evidence: "source_receipt" },
+		{ name: "unconfigured", configured: false, health: "ready", input: ["text"], output: ["structured"], freshness: "realtime", evidence: "source_receipt" },
+		{ name: "undeclared-contract", configured: true, health: "ready" },
+		{ name: "untraceable-selection", configured: true, health: "ready", input: ["text"], output: ["structured"], freshness: "realtime", evidence: "verified" },
+	]) {
+		const source = { platform: "cli", chatId: `reroute-${variant.name}`, chatType: "dm", userId: "local" };
+		let listener; const prompts = []; const events = []; const agent = { state: { model: { id: "test" }, messages: [] } };
+		const runtime = createRuntime({ createAgent: async () => ({
+			agent, getActiveToolNames: () => ["capability_discover", "primary_search", "weak_alternate"], setActiveToolsByName: () => undefined,
+			getAllTools: () => [
+				{ name: "primary_search", description: "Realtime source search", beemaxPolicy: { sideEffect: "none" }, beemaxToolSpec: { configured: true, health: "ready", ranking: { inputModalities: ["text"], outputModalities: ["structured"], freshness: "realtime", evidence: "source_receipt" } } },
+				{ name: "weak_alternate", description: "Weaker alternate", beemaxPolicy: { sideEffect: "none" }, beemaxToolSpec: { configured: variant.configured, health: variant.health, ...(variant.input ? { ranking: { inputModalities: variant.input, outputModalities: variant.output, freshness: variant.freshness, evidence: variant.evidence } } : {}) } },
+			],
+			subscribe: (next) => { listener = next; return () => undefined; },
+			prompt: async () => {
+				prompts.push("prompt");
+				if (prompts.length === 1) listener({ type: "tool_execution_end", toolCallId: "failed", toolName: "primary_search", result: {}, isError: true });
+				if (prompts.length === 2) listener({ type: "tool_execution_end", toolCallId: "discover", toolName: "capability_discover", result: { details: { activatedTools: ["weak_alternate"], ranked: [{ kind: "tool", name: "weak_alternate", score: 90, confidence: 0.9, reason: "semantic alternate" }] } }, isError: false });
+				agent.state.messages = [{ role: "assistant", content: [{ type: "text", text: "weaker answer" }], usage: { input: 1, output: 1 } }];
+			},
+			abort: async () => undefined, dispose: () => undefined,
+		}) });
+		await assert.rejects(runtime.run({ source, text: "find realtime evidence with source receipts", timeoutMs: 1_000 }, (event) => { events.push(event); }), /equivalent healthy read-only capability/i, variant.name);
+		assert.equal(prompts.length, 2, variant.name);
+		assert.deepEqual(events.find((event) => event.type === "capability_ranked")?.activatedTools, [], variant.name);
+		runtime.dispose();
+	}
 });
 
 test("Agent runtime asks Pi to correct malformed arguments without treating them as a Provider outage", async () => {

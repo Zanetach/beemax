@@ -22,7 +22,7 @@ import { createExecutionEnvelope, type ExecutionEnvelope } from "./execution-env
 import { normalizeCapabilityReceiptRef, normalizeSkillLifecycleReceiptRef, type CapabilityReceiptRef, type ExecutionTraceSink, type SkillLifecycleReceiptRef, type ToolDispatchReceipt } from "./execution-trace.ts";
 import { createTaskCheckpoint, mergeTaskCheckpoints, renderTaskCheckpoint } from "./task-checkpoint.ts";
 import type { TaskGraphVerifier } from "./task-graph.ts";
-import { CapabilityRuntime, SEMANTIC_CAPABILITY_MINIMUM_SIMILARITY, capabilityVersionOf } from "./capability-runtime.ts";
+import { CapabilityRuntime, SEMANTIC_CAPABILITY_MINIMUM_SIMILARITY, capabilityVersionOf, type CapabilityOperationalSignals } from "./capability-runtime.ts";
 import { isTrustedCapabilityProviderAcquisitionTool, isTrustedCapabilityProviderResolutionTool } from "./capability-provider.ts";
 import type { ToolSideEffect } from "./tool-runtime.ts";
 import { MediaUnderstandingRuntime, type MediaUnderstandingPort } from "./media-understanding.ts";
@@ -476,7 +476,7 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 			const completedPrefetchedSkills = new Set<string>();
 			const activeSkillVersions = new Map<string, string>();
 			let skillLifecycleBlocker: string | undefined;
-			let failedReadToolAwaitingReroute: string | undefined;
+			let readReroute: { failedTool: string; contractAlternatives: Set<string>; eligibleAlternatives: Set<string>; discoveryAttempted: boolean; cognitionId?: string } | undefined;
 			let completionAnswer: string | undefined;
 			let objectiveVerificationOutcome: "accepted" | "rejected" | "unavailable" | undefined;
 			const toolStartedAt = new Map<string, number>();
@@ -568,6 +568,18 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 					if (event.toolName === "capability_discover" && !event.isError) {
 						const trustedDiscoveryTool = allTools.find((tool) => tool.name === "capability_discover");
 						const discovery = capabilityDiscoveryMetadata(event.result, new Set(allTools.map((tool) => tool.name)), isTrustedCapabilityProviderResolutionTool(trustedDiscoveryTool));
+						const pendingReadReroute = readReroute;
+						const readyRecoveries = new Set(discovery.recoveries.map((recovery) => recovery.toolName));
+						const selectedReadAlternatives = pendingReadReroute && discovery.cognitionId
+							? new Set(discovery.candidates.filter((candidate) => candidate.kind !== "skill").map((candidate) => candidate.name))
+							: undefined;
+						if (pendingReadReroute) {
+							pendingReadReroute.discoveryAttempted = true;
+							pendingReadReroute.cognitionId = discovery.cognitionId;
+							pendingReadReroute.contractAlternatives = new Set([...(selectedReadAlternatives ?? [])].filter((name) => isEquivalentReadContract(allTools, pendingReadReroute.failedTool, name)));
+							pendingReadReroute.eligibleAlternatives = new Set(discovery.activatedTools.filter((name) => pendingReadReroute.contractAlternatives.has(name)
+								&& isHealthyReadAlternative(allTools, name, readyRecoveries)));
+						}
 						if (discovery.cognitionId && !capabilityDecisions.has(discovery.cognitionId)) {
 							const candidates = discovery.candidates.map(({ kind, name, version, confidence }) => ({ kind, name, ...(version ? { version } : {}), confidence }));
 							capabilityDecisions.set(discovery.cognitionId, candidates);
@@ -589,11 +601,15 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 							pendingProviderRequirements.delete(recovery.toolName);
 						}
 						for (const restriction of discovery.restrictions) {
-							if (restriction.installable) pendingProviderRequirements.set(restriction.toolName, { blocker: restriction.blocker, acquired: false });
+							if (restriction.installable && (!pendingReadReroute || pendingReadReroute.contractAlternatives.has(restriction.toolName))) pendingProviderRequirements.set(restriction.toolName, { blocker: restriction.blocker, acquired: false });
 						}
 						if (discovery.restrictions.length) toolSpecPlan = hideToolSpecPlan(toolSpecPlan, discovery.restrictions.map(({ toolName, reason }) => ({ toolName, reason })));
-						const activatedTools = activatePlannedTools(discovery.activatedTools.filter((name) => !SKILL_LIFECYCLE_TOOLS.has(name) || Boolean(discoveredSkill)));
-						const unresolvedProvider = discovery.restrictions.find((item) => !item.installable || !activatedTools.includes("capability_acquire"));
+						const activatedTools = activatePlannedTools(discovery.activatedTools.filter((name) => {
+							if (pendingReadReroute) return pendingReadReroute.eligibleAlternatives.has(name) || (name === "capability_acquire" && discovery.restrictions.some((restriction) => restriction.installable && pendingReadReroute.contractAlternatives.has(restriction.toolName)));
+							return !SKILL_LIFECYCLE_TOOLS.has(name) || Boolean(discoveredSkill);
+						}));
+						const relevantRestrictions = pendingReadReroute ? discovery.restrictions.filter((item) => pendingReadReroute.contractAlternatives.has(item.toolName)) : discovery.restrictions;
+						const unresolvedProvider = relevantRestrictions.find((item) => !item.installable || !activatedTools.includes("capability_acquire"));
 						if (unresolvedProvider && !turnAbortReason) { turnAbortReason = unresolvedProvider.blocker; void session.piSession.abort(); }
 						if (activatedTools.length) {
 							toolSpecPlan = deferToolSpecPlan(toolSpecPlan, ["capability_discover"]);
@@ -624,6 +640,7 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 							} else {
 								toolSpecPlan = restoreProviderToolSpecPlan(toolSpecPlan, [{ ...inventory, configured: true, health: "ready" }]);
 								requirement.acquired = true;
+								if (readReroute?.contractAlternatives.has(acquisition.capability)) readReroute.eligibleAlternatives.add(acquisition.capability);
 								const acquisitionControlsToDefer = [...pendingProviderRequirements.values()].some((item) => !item.acquired)
 									? ["capability_discover"] : ["capability_discover", "capability_acquire"];
 								toolSpecPlan = deferToolSpecPlan(toolSpecPlan, acquisitionControlsToDefer);
@@ -672,7 +689,7 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 						const sideEffect = toolSideEffects.get(event.toolName);
 						const reroute = sideEffect === undefined ? { allowed: false } : capabilityRuntime.canReroute({ sideEffect, effectStatus: sideEffect === "none" ? "none" : "unknown" });
 						if (event.isError && dispatchReceipt.stage === "execution" && dispatchReceipt.retryable && reroute.allowed) {
-							failedReadToolAwaitingReroute = event.toolName;
+							readReroute = { failedTool: event.toolName, contractAlternatives: new Set(), eligibleAlternatives: new Set(), discoveryAttempted: false };
 							if (toolFingerprint) {
 								const repeatedFailures = (failedReadFingerprints.get(toolFingerprint) ?? 0) + 1;
 								failedReadFingerprints.set(toolFingerprint, repeatedFailures);
@@ -682,7 +699,11 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 								}
 							}
 						}
-						else if (!event.isError && event.toolName === failedReadToolAwaitingReroute) failedReadToolAwaitingReroute = undefined;
+						else if (!event.isError && event.toolName === readReroute?.failedTool) readReroute = undefined;
+						else if (!event.isError && readReroute?.eligibleAlternatives.has(event.toolName)) {
+							if (readReroute.cognitionId) this.recordTrace({ type: "capability.rerouted", executionEnvelope, at, cognitionId: readReroute.cognitionId, failedTool: readReroute.failedTool, alternativeTool: event.toolName });
+							readReroute = undefined;
+						}
 					}
 					const pending = requiredToolCalls.get(event.toolCallId);
 					requiredToolCalls.delete(event.toolCallId);
@@ -795,8 +816,8 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 						await promptSession(`[BeeMax Skill correction: an installed Skill matched this Task (${prefetchedSkills.join(", ")}) but its lifecycle is incomplete. Use skill_read or skill_activate with the exact best-matching name, select its route, read every required module/resource, follow it, and finish with skill_complete before answering. Do not substitute another Skill.]`, { expandPromptTemplates: false });
 						if (!completedMatchingSkill()) throw new AgentRunError(`${skillLifecycleBlocker ? `${skillLifecycleBlocker}; ` : ""}Agent did not complete the installed matching Skill lifecycle: ${prefetchedSkills.join(", ")}`, false, undefined);
 				}
-				if (failedReadToolAwaitingReroute && !discoveredCapabilities && !turnAbortReason) {
-					const failedTool = failedReadToolAwaitingReroute; failedReadToolAwaitingReroute = undefined;
+				if (readReroute && !readReroute.discoveryAttempted && !turnAbortReason) {
+					const failedTool = readReroute.failedTool;
 					if (supportsProgressiveTools && allTools.some((tool) => tool.name === "capability_discover")) activatePlannedTools(["capability_discover"]);
 					await requireToolSpecPublication();
 					await promptSession(`${renderToolSpecPlan(toolSpecPlan)}\n\n[BeeMax capability reroute: ${failedTool} failed without a recorded equivalent-capability discovery. Use capability_discover now to find an already available alternative, then continue the original request. Do not retry the same external mutation; reconcile any uncertain side effect before another write.]`, { expandPromptTemplates: false });
@@ -819,6 +840,7 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 						await requireToolSpecPublication();
 						await promptSession(`${renderToolSpecPlan(toolSpecPlan)}\n\n[BeeMax capability continuation: matching Tools or Skills are now active. Continue the original request using them. Do not repeat capability discovery.]`, { expandPromptTemplates: false });
 					}
+				if (readReroute && readReroute.discoveryAttempted && !turnAbortReason) throw new AgentRunError(`No equivalent healthy read-only capability completed after ${readReroute.failedTool} failed`, false, undefined);
 				if (pendingProviderRequirements.size && !turnAbortReason) {
 					const unacquired = [...pendingProviderRequirements.entries()].filter(([, requirement]) => !requirement.acquired).map(([name]) => name);
 					if (!unacquired.length) {
@@ -1432,6 +1454,47 @@ function toolSideEffect(tool: unknown): ToolSideEffect | undefined {
 	if (!tool || typeof tool !== "object") return undefined;
 	const sideEffect = (tool as { beemaxPolicy?: { sideEffect?: unknown } }).beemaxPolicy?.sideEffect;
 	return sideEffect === "none" || sideEffect === "local" || sideEffect === "external" ? sideEffect : undefined;
+}
+
+type ReadAlternativeTool = ToolDefinition | ToolInfo;
+type ReadAlternativeMetadata = {
+	configured?: unknown;
+	health?: unknown;
+	ranking?: CapabilityOperationalSignals;
+};
+
+function isEquivalentReadContract(tools: readonly ReadAlternativeTool[], failedName: string, alternativeName: string): boolean {
+	if (failedName === alternativeName) return false;
+	const failed = tools.find((tool) => tool.name === failedName);
+	const alternative = tools.find((tool) => tool.name === alternativeName);
+	if (!failed || !alternative || toolSideEffect(failed) !== "none" || toolSideEffect(alternative) !== "none") return false;
+	const failedMetadata = (failed as ReadAlternativeTool & { beemaxToolSpec?: ReadAlternativeMetadata }).beemaxToolSpec;
+	const alternativeMetadata = (alternative as ReadAlternativeTool & { beemaxToolSpec?: ReadAlternativeMetadata }).beemaxToolSpec;
+	const required = failedMetadata?.ranking;
+	const offered = alternativeMetadata?.ranking;
+	if (!required || !offered) return false;
+	if (!coversModalities(required.inputModalities, offered.inputModalities) || !coversModalities(required.outputModalities, offered.outputModalities)) return false;
+	if (!meetsOrderedSignal(required.freshness, offered.freshness, ["static", "periodic", "current", "realtime"])) return false;
+	return meetsOrderedSignal(required.evidence, offered.evidence, ["none", "self_reported", "source_receipt", "verified"]);
+}
+
+function isHealthyReadAlternative(tools: readonly ReadAlternativeTool[], alternativeName: string, readyRecoveries: ReadonlySet<string>): boolean {
+	const alternative = tools.find((tool) => tool.name === alternativeName);
+	const metadata = (alternative as ReadAlternativeTool & { beemaxToolSpec?: ReadAlternativeMetadata } | undefined)?.beemaxToolSpec;
+	const recoveredReady = readyRecoveries.has(alternativeName);
+	return Boolean(alternative && (recoveredReady || (metadata?.configured !== false && metadata?.health === "ready")));
+}
+
+function coversModalities(required: readonly string[] | undefined, offered: readonly string[] | undefined): boolean {
+	if (!required?.length || !offered?.length) return false;
+	const normalized = new Set(offered.map((value) => value.normalize("NFKC").toLocaleLowerCase()));
+	return required.every((value) => normalized.has(value.normalize("NFKC").toLocaleLowerCase()));
+}
+
+function meetsOrderedSignal(required: string | undefined, offered: string | undefined, levels: readonly string[]): boolean {
+	const requiredIndex = required === undefined || required === "unknown" ? -1 : levels.indexOf(required);
+	const offeredIndex = offered === undefined || offered === "unknown" ? -1 : levels.indexOf(offered);
+	return requiredIndex >= 0 && offeredIndex >= requiredIndex;
 }
 
 function toolSpecInventoryItem(tool: ToolDefinition | ToolInfo, admittedTools?: readonly string[], unresolvedEffectTools?: ReadonlySet<string>): ToolSpecInventoryItem {

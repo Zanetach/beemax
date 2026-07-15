@@ -18,6 +18,7 @@ export type ExecutionTraceInput =
 	| (TraceInputBase & { type: "execution.started" })
 	| (TraceInputBase & { type: "execution.settled"; status: ExecutionOutcome })
 	| (TraceInputBase & { type: "capability.decision"; cognitionId: string; candidates: readonly CapabilityTraceCandidate[] })
+	| (TraceInputBase & { type: "capability.rerouted"; cognitionId: string; failedTool: string; alternativeTool: string })
 	| (TraceInputBase & { type: "capability.downstream_execution_outcome"; cognitionId: string; status: CapabilityOutcomeStatus })
 	| (TraceInputBase & { type: "tool_spec.published"; toolSpecPlanId: string; directTools: readonly string[] })
 	| (TraceInputBase & AssistantTurnTraceInput & { type: "model.turn_settled"; inputTokens: number; outputTokens: number; cacheReadTokens?: number; cacheWriteTokens?: number; costUsd?: number; assistantToolCalls?: readonly AssistantToolCallRef[] })
@@ -54,6 +55,8 @@ export interface ExecutionTraceEvent {
 	effectId?: string;
 	sizeChars?: number;
 	cognitionId?: string;
+	failedTool?: string;
+	alternativeTool?: string;
 	candidates?: CapabilityTraceCandidate[];
 	toolSpecPlanId?: string;
 	directTools?: string[];
@@ -186,6 +189,11 @@ function traceDetails(input: ExecutionTraceInput): Partial<ExecutionTraceEvent> 
 	if (input.type === "capability.decision") return {
 		cognitionId: safeText(input.cognitionId, "cognitionId", 128),
 		candidates: safeCapabilityCandidates(input.candidates),
+	};
+	if (input.type === "capability.rerouted") return {
+		cognitionId: safeIdentifier(input.cognitionId, "cognitionId", 128),
+		failedTool: safeIdentifier(input.failedTool, "failedTool", 128),
+		alternativeTool: safeIdentifier(input.alternativeTool, "alternativeTool", 128),
 	};
 	if (input.type === "capability.downstream_execution_outcome") return { cognitionId: safeText(input.cognitionId, "cognitionId", 128), status: input.status };
 	if (input.type === "tool_spec.published") return { toolSpecPlanId: safeText(input.toolSpecPlanId, "toolSpecPlanId", 256), directTools: safeDirectTools(input.directTools) };

@@ -61,6 +61,20 @@ test("Execution Trace correlates a content-free Capability decision with its ver
 	} finally { rmSync(root, { recursive: true, force: true }); }
 });
 
+test("Execution Trace persists the exact successful read-only Capability reroute", () => {
+	const root = mkdtempSync(join(tmpdir(), "beemax-capability-reroute-trace-"));
+	try {
+		const store = new FileExecutionTraceStore(join(root, "trace.jsonl"));
+		const executionEnvelope = createExecutionEnvelope({ executionId: "execution:reroute", trigger: { kind: "interaction" }, mode: "normal" });
+		store.record({ type: "capability.rerouted", executionEnvelope, at: 7, cognitionId: "cap:reroute-1", failedTool: "primary_search", alternativeTool: "alternate_search" });
+		assert.deepEqual(store.trace({ executionId: "execution:reroute" }).events[0], {
+			sequence: 1, type: "capability.rerouted", executionId: "execution:reroute", triggerKind: "interaction", mode: "normal", at: 7,
+			cognitionId: "cap:reroute-1", failedTool: "primary_search", alternativeTool: "alternate_search",
+		});
+		assert.throws(() => store.record({ type: "capability.rerouted", executionEnvelope, cognitionId: "cap:reroute-2", failedTool: "Authorization: Bearer secret", alternativeTool: "alternate_search" }), /credential|invalid/i);
+	} finally { rmSync(root, { recursive: true, force: true }); }
+});
+
 test("Execution Trace binds a settled Tool to one Tool Spec plan and one immutable Capability receipt", () => {
 	const directory = mkdtempSync(join(tmpdir(), "beemax-trace-capability-receipt-"));
 	try {
