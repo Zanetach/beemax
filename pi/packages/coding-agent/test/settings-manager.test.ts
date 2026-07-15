@@ -25,6 +25,14 @@ describe("SettingsManager", () => {
 		}
 	});
 
+	it("applies host runtime Provider retry settings without persisting them", () => {
+		writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ retry: { provider: { timeoutMs: 120_000, maxRetries: 4, maxRetryDelayMs: 30_000 } } }));
+		const manager = SettingsManager.create(projectDir, agentDir);
+		manager.setRuntimeProviderRetrySettings({ timeoutMs: 60_000, maxRetries: 2, maxRetryDelayMs: 5_000 });
+		expect(manager.getProviderRetrySettings()).toEqual({ timeoutMs: 60_000, maxRetries: 2, maxRetryDelayMs: 5_000 });
+		expect(JSON.parse(readFileSync(join(agentDir, "settings.json"), "utf8")).retry.provider).toEqual({ timeoutMs: 120_000, maxRetries: 4, maxRetryDelayMs: 30_000 });
+	});
+
 	describe("preserves externally added settings", () => {
 		it("should preserve enabledModels when changing thinking level", async () => {
 			// Create initial settings file

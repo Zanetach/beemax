@@ -92,6 +92,38 @@ test("Execution Trace preserves content-free ordered Skill lifecycle receipts", 
 	} finally { rmSync(directory, { recursive: true, force: true }); }
 });
 
+test("Execution Trace preserves one assistant Turn and Provider response identity across its Tool calls", () => {
+	const directory = mkdtempSync(join(tmpdir(), "beemax-trace-assistant-turn-"));
+	try {
+		const store = new FileExecutionTraceStore(join(directory, "trace.jsonl"));
+		const executionEnvelope = createExecutionEnvelope({ executionId: "execution:assistant-turn", trigger: { kind: "interaction" }, mode: "normal" });
+		const origin = { assistantTurnId: "assistant-turn:11111111-1111-4111-8111-111111111111", providerResponseStatus: "reported", providerResponseIdentitySha256: "sha256:011de32caf5048121bdb7da124f82177b6b8a11a0c3e08ba47489bf3c88692d0" };
+		const toolCall = { toolCallId: "call:origin", toolName: "read", argumentsSha256: "sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a" };
+		store.record({ type: "model.turn_settled", executionEnvelope, at: 1, inputTokens: 10, outputTokens: 2, assistantToolCalls: [toolCall], ...origin });
+		store.record({ type: "tool.started", executionEnvelope, at: 2, ...toolCall, ...origin });
+		store.record({ type: "tool.settled", executionEnvelope, at: 3, ...toolCall, status: "succeeded", ...origin });
+		const events = store.trace({ executionId: "execution:assistant-turn" }).events;
+		assert.deepEqual(events.map((event) => ({ assistantTurnId: event.assistantTurnId, providerResponseStatus: event.providerResponseStatus, providerResponseIdentitySha256: event.providerResponseIdentitySha256 })), [origin, origin, origin]);
+		assert.deepEqual(events[0].assistantToolCalls, [toolCall]);
+		assert.deepEqual(events.slice(1).map((event) => event.argumentsSha256), [toolCall.argumentsSha256, toolCall.argumentsSha256]);
+	} finally { rmSync(directory, { recursive: true, force: true }); }
+});
+
+test("Execution Trace records unavailable Provider response identity without inventing one", () => {
+	const directory = mkdtempSync(join(tmpdir(), "beemax-trace-provider-unavailable-"));
+	try {
+		const store = new FileExecutionTraceStore(join(directory, "trace.jsonl"));
+		const executionEnvelope = createExecutionEnvelope({ executionId: "execution:provider-unavailable", trigger: { kind: "interaction" }, mode: "normal" });
+		const origin = { assistantTurnId: "assistant-turn:22222222-2222-4222-8222-222222222222", providerResponseStatus: "unavailable" };
+		store.record({ type: "model.turn_settled", executionEnvelope, at: 1, inputTokens: 4, outputTokens: 1, ...origin });
+		assert.deepEqual(store.trace({ executionId: "execution:provider-unavailable" }).events[0], {
+			sequence: 1, type: "model.turn_settled", executionId: "execution:provider-unavailable", triggerKind: "interaction", mode: "normal", at: 1, inputTokens: 4, outputTokens: 1, ...origin,
+		});
+		assert.throws(() => store.record({ type: "model.turn_settled", executionEnvelope, inputTokens: 1, outputTokens: 1, assistantTurnId: "assistant-turn:reported", providerResponseStatus: "reported" }), /providerResponseIdentitySha256 is invalid/u);
+		assert.throws(() => store.record({ type: "model.turn_settled", executionEnvelope, inputTokens: 1, outputTokens: 1, ...origin, providerResponseIdentitySha256: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" }), /cannot carry an identity/u);
+	} finally { rmSync(directory, { recursive: true, force: true }); }
+});
+
 test("Execution Trace preserves a Capability identity implemented by a differently named Tool", () => {
 	const directory = mkdtempSync(join(tmpdir(), "beemax-trace-composite-capability-"));
 	try {

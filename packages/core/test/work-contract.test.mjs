@@ -218,6 +218,7 @@ test("BeeMax preserves source-bound uncertainty in a durable Objective Situation
 	let prompt = "";
 	let toolsDuringPrompt = [];
 	let writeBoundaryDecision;
+	let listener;
 	let activeTools = ["read", "write"];
 	const agent = { state: { model: { id: "test" }, messages: [] } };
 	const runtime = createRuntime({
@@ -229,11 +230,12 @@ test("BeeMax preserves source-bound uncertainty in a durable Objective Situation
 		planningPolicy: { decide: () => ({ mode: "direct", requiredTools: [], suggestedConcurrency: 1, budget: { maxSubagents: 0, maxToolCalls: null, maxTokens: null, maxCorrectiveAttempts: 0 }, signals: { substantialWork: true }, reason: "test", directive: () => "[policy]" }) },
 		createAgent: async () => ({ agent,
 			getAllTools: () => [{ name: "read", description: "read evidence", beemaxPolicy: { sideEffect: "none" } }, { name: "write", description: "consequential write", beemaxPolicy: { sideEffect: "external" } }],
-			getActiveToolNames: () => [...activeTools], setActiveToolsByName: (names) => { activeTools = [...names]; }, subscribe: () => () => undefined,
+			getActiveToolNames: () => [...activeTools], setActiveToolsByName: (names) => { activeTools = [...names]; }, subscribe: (next) => { listener = next; return () => undefined; },
 			prompt: async (text) => {
 				prompt = text; toolsDuringPrompt = [...activeTools];
 				activeTools = ["read", "write"];
-				writeBoundaryDecision = await agent.beforeToolCall({ toolCall: { name: "write", arguments: {} } }, new AbortController().signal);
+				listener({ type: "message_end", message: { role: "assistant", responseId: "response:uncertain-write", content: [{ type: "toolCall", id: "write:uncertain", name: "write", arguments: {} }], usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0 } } });
+				writeBoundaryDecision = await agent.beforeToolCall({ toolCall: { id: "write:uncertain", name: "write", arguments: {} } }, new AbortController().signal);
 				agent.state.messages = [{ role: "assistant", content: [{ type: "text", text: "done" }], usage: { input: 1, output: 1 } }];
 			},
 			abort: async () => undefined, dispose: () => undefined }),

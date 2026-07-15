@@ -206,6 +206,7 @@ test("Skill route activation enters the Tool Spec Plan before the next Pi sample
 	const runtime = createRuntime({ createAgent: async () => ({ agent, getAllTools: () => tools, getActiveToolNames: () => [...activeTools], setActiveToolsByName: (names) => { activeTools = [...names]; }, subscribe: (next) => { listener = next; return () => undefined; }, prompt: async () => {
 		listener({ type: "tool_execution_end", toolCallId: "route:1", toolName: "skill_route", isError: false, result: { details: { activatedTools: ["route_tool"] } } });
 		transitionContext = agent.state.messages.find((message) => message.role === "custom" && message.customType === "beemax-tool-spec-transition")?.content ?? "";
+		listener({ type: "message_end", message: { role: "assistant", responseId: "response:route-tool", content: [{ type: "toolCall", id: "route-tool:1", name: "route_tool", arguments: {} }], usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0 } } });
 		routeBoundary = await agent.beforeToolCall({ toolCall: { id: "route-tool:1", name: "route_tool", arguments: {} } }, new AbortController().signal);
 		agent.state.messages = [{ role: "assistant", content: [{ type: "text", text: "done" }], usage: { input: 1, output: 1 } }];
 	}, abort: async () => undefined, dispose: () => undefined }) });

@@ -4,7 +4,7 @@ import { resolve } from "node:path";
 import { CAPABILITY_CALIBRATION_VERSION, SEMANTIC_CAPABILITY_MINIMUM_SIMILARITY } from "../packages/core/dist/index.js";
 import { capabilityInventory, capabilityRankingCases } from "../evals/capability-ranking-corpus.mjs";
 import { liveCapabilityImplementationDigest } from "./capability-ranking-evidence.mjs";
-import { LIVE_PI_OUTCOME_BUDGET, livePiBudgetFailures, summarizeLivePiOutcomeReceipts } from "./pi-capability-outcome-harness.mjs";
+import { LIVE_PI_OUTCOME_BUDGET } from "./pi-capability-outcome-harness.mjs";
 
 const path = resolve(process.argv[2] || "evals/baselines/capability-ranking-live.json");
 const artifact = JSON.parse(await readFile(path, "utf8"));
@@ -119,6 +119,12 @@ function verifyTaskReceipt(receipt, scenario, ranking, selectedNames, threshold)
 	const successfulTools = settledTools.map((event) => event.toolName);
 	const startedEvents = events.filter((item) => item.type === "tool.started");
 	const allSettledEvents = events.filter((item) => item.type === "tool.settled");
+	const modelTurns = events.filter((event) => event.type === "model.turn_settled");
+	const allModelToolCalls = modelTurns.flatMap((event) => (event.assistantToolCalls ?? []).map((call) => ({ event, call })));
+	if (!modelTurns.length || new Set(modelTurns.map((event) => event.assistantTurnId)).size !== modelTurns.length || modelTurns.some((event) => {
+		const toolCalls = Array.isArray(event.assistantToolCalls) ? event.assistantToolCalls : [];
+		return !/^assistant-turn:[0-9a-f-]{36}$/i.test(event.assistantTurnId ?? "") || event.providerResponseStatus !== "reported" || !/^sha256:[a-f0-9]{64}$/i.test(event.providerResponseIdentitySha256 ?? "") || toolCalls.length > 100 || new Set(toolCalls.map((call) => call?.toolCallId)).size !== toolCalls.length || toolCalls.some((call) => typeof call?.toolCallId !== "string" || !call.toolCallId || typeof call.toolName !== "string" || !call.toolName || !/^sha256:[a-f0-9]{64}$/i.test(call.argumentsSha256 ?? ""));
+	}) || new Set(allModelToolCalls.map(({ call }) => call?.toolCallId)).size !== allModelToolCalls.length) failures.push(`task receipt lacks valid globally unique Provider-backed model Turn evidence for ${scenario.id}`);
 	const startedCounts = new Map(); const settledCounts = new Map();
 	for (const event of startedEvents) startedCounts.set(event.toolCallId, (startedCounts.get(event.toolCallId) ?? 0) + 1);
 	for (const event of allSettledEvents) settledCounts.set(event.toolCallId, (settledCounts.get(event.toolCallId) ?? 0) + 1);
@@ -126,7 +132,14 @@ function verifyTaskReceipt(receipt, scenario, ranking, selectedNames, threshold)
 	for (const event of startedEvents) {
 		const toolSettled = allSettledEvents.find((item) => item.toolCallId === event.toolCallId);
 		const plan = [...events].reverse().find((item) => item.type === "tool_spec.published" && item.sequence < event.sequence && item.toolSpecPlanId === event.toolSpecPlanId);
-		if (!event.toolSpecPlanId || toolSettled?.toolSpecPlanId !== event.toolSpecPlanId || !plan?.directTools?.includes(event.toolName) || !(event.sequence < toolSettled?.sequence) || !(toolSettled.sequence < verification?.sequence)) failures.push(`Tool ${event.toolName} lacks a prior model-visible Tool Spec, unique settlement, or pre-Verification ordering for ${scenario.id}`);
+		const modelTurn = modelTurns.find((item) => item.assistantTurnId === event.assistantTurnId);
+		const modelToolCall = modelTurn?.assistantToolCalls?.find((item) => item.toolCallId === event.toolCallId);
+		const originMatches = modelTurn && modelToolCall?.toolName === event.toolName && modelToolCall.argumentsSha256 === event.argumentsSha256 && toolSettled?.assistantTurnId === modelTurn.assistantTurnId && toolSettled.toolName === modelToolCall.toolName && toolSettled.argumentsSha256 === modelToolCall.argumentsSha256 && event.providerResponseStatus === modelTurn.providerResponseStatus && event.providerResponseIdentitySha256 === modelTurn.providerResponseIdentitySha256 && toolSettled.providerResponseStatus === modelTurn.providerResponseStatus && toolSettled.providerResponseIdentitySha256 === modelTurn.providerResponseIdentitySha256;
+		if (!event.toolSpecPlanId || toolSettled?.toolSpecPlanId !== event.toolSpecPlanId || !plan?.directTools?.includes(event.toolName) || !originMatches || !(modelTurn.sequence < event.sequence) || !(event.sequence < toolSettled?.sequence) || !(toolSettled.sequence < verification?.sequence)) failures.push(`Tool ${event.toolName} lacks its exact Provider-backed model Turn, prior Tool Spec, unique settlement, or pre-Verification ordering for ${scenario.id}`);
+	}
+	for (const { event: modelTurn, call: modelToolCall } of allModelToolCalls) {
+		const started = startedEvents.find((event) => event.toolCallId === modelToolCall.toolCallId); const settled = allSettledEvents.find((event) => event.toolCallId === modelToolCall.toolCallId);
+		if (startedCounts.get(modelToolCall.toolCallId) !== 1 || settledCounts.get(modelToolCall.toolCallId) !== 1 || started?.assistantTurnId !== modelTurn.assistantTurnId || settled?.assistantTurnId !== modelTurn.assistantTurnId) failures.push(`model Tool call lacks one exact same-Turn execution for ${scenario.id}`);
 	}
 	for (const toolName of successfulTools) if (!receipt.activeToolSnapshots.some((snapshot) => Array.isArray(snapshot) && snapshot.includes(toolName))) failures.push(`Tool ${toolName} executed outside the Tool Spec snapshots for ${scenario.id}`);
 	const selectedCandidates = ranking.candidates.filter((candidate) => candidate.confidence >= threshold);
@@ -185,7 +198,7 @@ function verifyAuthorityProbe(receipt) {
 
 function verifyLivePiOutcome(outcome) {
 	const receipts = Array.isArray(outcome?.receipts) ? outcome.receipts : [];
-	const recomputedMetrics = summarizeLivePiOutcomeReceipts(receipts); const recomputedBudgetFailures = livePiBudgetFailures(recomputedMetrics, LIVE_PI_OUTCOME_BUDGET);
+	const recomputedMetrics = independentlySummarizeLivePiOutcomeReceipts(receipts); const recomputedBudgetFailures = independentlyVerifyLivePiBudget(recomputedMetrics, LIVE_PI_OUTCOME_BUDGET);
 	const generatedAt = Date.parse(outcome?.generatedAt);
 	if (outcome?.schemaVersion !== 1 || outcome?.mode !== "live_pi" || !/^execution:live-pi:[0-9a-f-]{36}$/i.test(outcome?.runId ?? "") || !Number.isFinite(generatedAt) || Date.now() - generatedAt > 30 * 24 * 60 * 60_000 || generatedAt > Date.now() + 5 * 60_000 || !artifact.models?.includes(outcome?.modelId) || outcome?.cases !== capabilityRankingCases.length || receipts.length !== capabilityRankingCases.length || new Set(receipts.map((receipt) => receipt?.caseId)).size !== receipts.length || JSON.stringify(outcome?.metrics) !== JSON.stringify(recomputedMetrics) || JSON.stringify(outcome?.budget) !== JSON.stringify(LIVE_PI_OUTCOME_BUDGET) || JSON.stringify(outcome?.budgetFailures) !== JSON.stringify(recomputedBudgetFailures)) { failures.push("Live Pi outcome metadata, freshness, corpus coverage, or execution budget evidence is invalid"); return; }
 	if (recomputedBudgetFailures.length) failures.push(`Live Pi execution budget failed: ${recomputedBudgetFailures.join(", ")}`);
@@ -205,7 +218,13 @@ function verifyLivePiOutcome(outcome) {
 		const execution = [...events].reverse().find((event) => event.type === "execution.settled");
 		if (!decision || JSON.stringify(decision.candidates) !== JSON.stringify(selected)) failures.push(`Live Pi outcome lacks its correlated Capability decision for ${scenario.id}`);
 		const modelTurns = events.filter((event) => event.type === "model.turn_settled" && Number.isFinite(event.inputTokens) && event.inputTokens >= 0 && Number.isFinite(event.outputTokens) && event.outputTokens >= 0);
+		const allModelToolCalls = modelTurns.flatMap((event) => (event.assistantToolCalls ?? []).map((call) => ({ event, call })));
 		if (!modelTurns.length) failures.push(`Live Pi outcome has no measured model turn for ${scenario.id}`);
+		if (new Set(modelTurns.map((event) => event.assistantTurnId)).size !== modelTurns.length || modelTurns.some((event) => {
+			const toolCalls = Array.isArray(event.assistantToolCalls) ? event.assistantToolCalls : [];
+			const validToolCalls = toolCalls.length <= 100 && new Set(toolCalls.map((call) => call?.toolCallId)).size === toolCalls.length && toolCalls.every((call) => typeof call?.toolCallId === "string" && call.toolCallId && typeof call.toolName === "string" && call.toolName && /^sha256:[a-f0-9]{64}$/i.test(call.argumentsSha256 ?? ""));
+			return !/^assistant-turn:[0-9a-f-]{36}$/i.test(event.assistantTurnId ?? "") || !validToolCalls || event.providerResponseStatus !== "reported" && event.providerResponseStatus !== "unavailable" || event.providerResponseStatus === "reported" && !/^sha256:[a-f0-9]{64}$/i.test(event.providerResponseIdentitySha256 ?? "") || event.providerResponseStatus === "unavailable" && (event.providerResponseIdentitySha256 !== undefined || toolCalls.length > 0);
+		}) || new Set(allModelToolCalls.map(({ call }) => call?.toolCallId)).size !== allModelToolCalls.length) failures.push(`Live Pi model Turn, global Tool-call identity, or Provider response identity is invalid for ${scenario.id}`);
 		const started = events.filter((event) => event.type === "tool.started");
 		const settled = events.filter((event) => event.type === "tool.settled");
 		const startedCounts = new Map(); const settledCounts = new Map();
@@ -215,8 +234,14 @@ function verifyLivePiOutcome(outcome) {
 		for (const event of started) {
 			const toolSettled = settled.find((item) => item.toolCallId === event.toolCallId);
 			const plan = [...events].reverse().find((item) => item.type === "tool_spec.published" && item.sequence < event.sequence && item.toolSpecPlanId === event.toolSpecPlanId);
-			const modelTurn = [...modelTurns].reverse().find((item) => item.sequence < event.sequence);
-			if (!event.toolSpecPlanId || toolSettled?.toolSpecPlanId !== event.toolSpecPlanId || !plan?.directTools?.includes(event.toolName) || !modelTurn || !(event.sequence < toolSettled?.sequence) || !(toolSettled.sequence < verification?.sequence)) failures.push(`Live Pi Tool ${event.toolName} lacks a prior model-visible Tool Spec, model turn, unique settlement, or pre-Verification ordering for ${scenario.id}`);
+			const modelTurn = modelTurns.find((item) => item.assistantTurnId === event.assistantTurnId);
+			const modelToolCall = modelTurn?.assistantToolCalls?.find((item) => item.toolCallId === event.toolCallId);
+			const originMatches = modelTurn && modelTurn.providerResponseStatus === "reported" && modelToolCall?.toolName === event.toolName && modelToolCall.argumentsSha256 === event.argumentsSha256 && toolSettled?.assistantTurnId === modelTurn.assistantTurnId && toolSettled.toolName === modelToolCall.toolName && toolSettled.argumentsSha256 === modelToolCall.argumentsSha256 && event.providerResponseStatus === modelTurn.providerResponseStatus && event.providerResponseIdentitySha256 === modelTurn.providerResponseIdentitySha256 && toolSettled.providerResponseStatus === modelTurn.providerResponseStatus && toolSettled.providerResponseIdentitySha256 === modelTurn.providerResponseIdentitySha256;
+			if (!event.toolSpecPlanId || toolSettled?.toolSpecPlanId !== event.toolSpecPlanId || !plan?.directTools?.includes(event.toolName) || !originMatches || !(modelTurn.sequence < event.sequence) || !(event.sequence < toolSettled?.sequence) || !(toolSettled.sequence < verification?.sequence)) failures.push(`Live Pi Tool ${event.toolName} lacks its exact assistant Turn, Provider response, prior Tool Spec, unique settlement, or pre-Verification ordering for ${scenario.id}`);
+		}
+		for (const { event: modelTurn, call: modelToolCall } of allModelToolCalls) {
+			const startedEvent = started.find((event) => event.toolCallId === modelToolCall.toolCallId); const settledEvent = settled.find((event) => event.toolCallId === modelToolCall.toolCallId);
+			if (startedCounts.get(modelToolCall.toolCallId) !== 1 || settledCounts.get(modelToolCall.toolCallId) !== 1 || startedEvent?.assistantTurnId !== modelTurn.assistantTurnId || settledEvent?.assistantTurnId !== modelTurn.assistantTurnId) failures.push(`Live Pi assistant Tool call lacks one exact same-Turn execution for ${scenario.id}`);
 		}
 		const successfulToolEvents = events.filter((event) => event.type === "tool.settled" && event.status === "succeeded");
 		const allowedTools = new Set(selected.flatMap((candidate) => candidate.kind === "skill" ? ["capability_discover", "skill_read", "skill_complete"] : [`eval_${candidate.name}`, "capability_discover"]));
@@ -256,5 +281,40 @@ function verifyLivePiOutcome(outcome) {
 	}
 	if (outcome.accepted !== accepted || accepted / capabilityRankingCases.length < 0.95) failures.push("Live Pi outcome completion is below the release gate or does not match its receipts");
 }
+
+function independentlySummarizeLivePiOutcomeReceipts(receipts) {
+	const cases = receipts.length;
+	let modelTurns = 0; let measuredTurns = 0; let providerReportedTurns = 0; let providerUnavailableTurns = 0; let totalInputTokens = 0; let totalOutputTokens = 0; let totalCostUsd = 0; let totalDurationMs = 0; let maxDurationMs = 0; let maxTokensPerCase = 0; let maxModelTurnsPerCase = 0;
+	for (const receipt of receipts) {
+		const events = Array.isArray(receipt?.executionTrace) ? receipt.executionTrace : [];
+		const turns = events.filter((event) => event?.type === "model.turn_settled");
+		const inputTokens = turns.reduce((total, event) => total + independentFiniteNonnegative(event.inputTokens), 0);
+		const outputTokens = turns.reduce((total, event) => total + independentFiniteNonnegative(event.outputTokens), 0);
+		const started = events.find((event) => event?.type === "execution.started");
+		const settled = [...events].reverse().find((event) => event?.type === "execution.settled");
+		const durationMs = Number.isFinite(started?.at) && Number.isFinite(settled?.at) ? Math.max(0, settled.at - started.at) : 0;
+		modelTurns += turns.length;
+		measuredTurns += turns.filter((event) => Number.isFinite(event.inputTokens) && event.inputTokens >= 0 && Number.isFinite(event.outputTokens) && event.outputTokens >= 0 && event.inputTokens + event.outputTokens > 0).length;
+		providerReportedTurns += turns.filter((event) => event.providerResponseStatus === "reported").length;
+		providerUnavailableTurns += turns.filter((event) => event.providerResponseStatus === "unavailable").length;
+		totalInputTokens += inputTokens; totalOutputTokens += outputTokens;
+		totalCostUsd += turns.reduce((total, event) => total + independentFiniteNonnegative(event.costUsd), 0);
+		totalDurationMs += durationMs; maxDurationMs = Math.max(maxDurationMs, durationMs); maxTokensPerCase = Math.max(maxTokensPerCase, inputTokens + outputTokens); maxModelTurnsPerCase = Math.max(maxModelTurnsPerCase, turns.length);
+	}
+	return { cases, modelTurns, usageMeasurementRate: modelTurns ? measuredTurns / modelTurns : 0, providerReportedTurns, providerUnavailableTurns, providerResponseReportingRate: modelTurns ? providerReportedTurns / modelTurns : 0, totalInputTokens, totalOutputTokens, totalTokens: totalInputTokens + totalOutputTokens, averageTokensPerCase: cases ? (totalInputTokens + totalOutputTokens) / cases : 0, maxTokensPerCase, totalCostUsd: Math.round(totalCostUsd * 1e12) / 1e12, costEvidence: totalCostUsd > 0 ? "provider_reported" : "unpriced", averageDurationMs: cases ? totalDurationMs / cases : 0, maxDurationMs, maxModelTurnsPerCase };
+}
+
+function independentlyVerifyLivePiBudget(metrics, budget) {
+	const budgetFailures = [];
+	if (metrics.usageMeasurementRate !== 1) budgetFailures.push("usage_incomplete");
+	if (metrics.averageTokensPerCase > budget.maxAverageTokensPerCase) budgetFailures.push("average_tokens_exceeded");
+	if (metrics.maxTokensPerCase > budget.maxTokensPerCase) budgetFailures.push("case_tokens_exceeded");
+	if (metrics.averageDurationMs > budget.maxAverageDurationMs) budgetFailures.push("average_duration_exceeded");
+	if (metrics.maxDurationMs > budget.maxDurationMs) budgetFailures.push("case_duration_exceeded");
+	if (metrics.maxModelTurnsPerCase > budget.maxModelTurnsPerCase) budgetFailures.push("model_turns_exceeded");
+	return budgetFailures;
+}
+
+function independentFiniteNonnegative(value) { return Number.isFinite(value) && value >= 0 ? value : 0; }
 process.stdout.write(`${JSON.stringify({ schemaVersion: 1, artifact: path, passed: failures.length === 0, failures }, null, 2)}\n`);
 if (failures.length) process.exitCode = 1;

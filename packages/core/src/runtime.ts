@@ -82,6 +82,8 @@ export interface BeeMaxRuntimeFactoryOptions<Source extends BeeMaxRuntimeSource 
 	compactionInstructions?: (source: Source) => string | undefined;
 	/** Optional Profile overrides; omitted values scale from the selected model context window. */
 	compaction?: { enabled?: boolean; reserveTokens?: number; keepRecentTokens?: number };
+	/** Host-owned transient Provider retry policy; the Execution Envelope still owns the total deadline. */
+	providerRetry?: { timeoutMs?: number; maxRetries?: number; maxRetryDelayMs?: number };
 	/** Content-free compaction lifecycle and durable-preservation quality observations. */
 	compactionAudit?: (event: ContextCompactionAuditEvent<Source>) => void;
 }
@@ -116,6 +118,7 @@ export function buildBeeMaxRuntimeFactory<Source extends BeeMaxRuntimeSource = B
 		const compaction = planContextCompaction({ contextWindow: model.contextWindow || 128_000, ...opts.compaction });
 		const toolResultBudget = opts.toolResultBudget ? normalizeToolResultBudget(opts.toolResultBudget) : undefined;
 		settingsManager.setRuntimeCompactionSettings({ enabled: compaction.enabled, reserveTokens: compaction.reserveTokens, keepRecentTokens: compaction.keepRecentTokens });
+		settingsManager.setRuntimeProviderRetrySettings(normalizeProviderRetry(opts.providerRetry));
 		const configuredPrompt = typeof opts.systemPrompt === "function" ? opts.systemPrompt() : opts.systemPrompt;
 		const channelPrompt = [configuredPrompt, curatedMemoryPrompt(agentDir, source), channelContextFor(source)].filter(Boolean).join("\n\n");
 		let pendingCompaction: { preservation?: string; taskIds: string[]; tokensBefore?: number } | undefined;
@@ -406,6 +409,20 @@ function boundedModelLimit(value: number | undefined, fallback: number, min: num
 	if (value === undefined) return fallback;
 	if (!Number.isFinite(value)) throw new Error("Custom model limits must be finite numbers");
 	return Math.max(min, Math.min(Math.trunc(value), max));
+}
+
+function normalizeProviderRetry(value: BeeMaxRuntimeFactoryOptions["providerRetry"]): { timeoutMs: number; maxRetries: number; maxRetryDelayMs: number } {
+	return {
+		timeoutMs: boundedRuntimeInteger(value?.timeoutMs, 60_000, 1_000, 300_000, "Provider timeout"),
+		maxRetries: boundedRuntimeInteger(value?.maxRetries, 2, 0, 5, "Provider retry count"),
+		maxRetryDelayMs: boundedRuntimeInteger(value?.maxRetryDelayMs, 5_000, 0, 60_000, "Provider retry delay"),
+	};
+}
+
+function boundedRuntimeInteger(value: number | undefined, fallback: number, min: number, max: number, label: string): number {
+	const resolved = value ?? fallback;
+	if (!Number.isSafeInteger(resolved) || resolved < min || resolved > max) throw new Error(`${label} must be an integer between ${min} and ${max}`);
+	return resolved;
 }
 
 function channelContextFor(source: BeeMaxRuntimeSource): string {

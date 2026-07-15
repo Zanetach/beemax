@@ -83,7 +83,7 @@ test("profile creation and Feishu channel configuration keep secrets in a protec
 	assert.equal(config.agent.sessionIdleMs, 30 * 60_000);
 	assert.equal(config.agent.turnIdleSettleMs, 60_000);
 	assert.deepEqual(config.agent.capabilityPreferences, {});
-	assert.deepEqual(config.agent.capabilityCognition, { maxModelAttempts: 3, maxTokens: 4_096, timeoutMs: 60_000, maxTotalEstimatedTokens: 300_000 });
+	assert.deepEqual(config.agent.capabilityCognition, { maxModelAttempts: 2, maxTokens: 4_096, timeoutMs: 60_000, maxTotalEstimatedTokens: 300_000 });
 	assert.deepEqual(config.context, {
 		maxTurnChars: 12_000,
 		maxToolResultTokens: 12_000,

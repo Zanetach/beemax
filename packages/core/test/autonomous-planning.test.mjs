@@ -3,6 +3,15 @@ import test from "node:test";
 import { AutonomousPlanningPolicy, BeeMaxAgentRuntime, createAccessScopeRef, createExecutionEnvelope, createWebTools, PlanningBudgetRegistry } from "../dist/index.js";
 
 const createRuntime = (options) => new BeeMaxAgentRuntime({ profileId: "profile:test", ...options });
+const bindAssistantTurn = (listener, calls, responseId = "response:test") => listener({
+	type: "message_end",
+	message: {
+		role: "assistant",
+		responseId,
+		content: calls.map(({ id, name, args = {} }) => ({ type: "toolCall", id, name, arguments: args })),
+		usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0 },
+	},
+});
 
 test("planning policy keeps simple conversational requests direct", () => {
 	const policy = new AutonomousPlanningPolicy({ maxConcurrent: 8 });
@@ -113,6 +122,25 @@ test("Agent runtime exposes discovery when an explicit Work Contract capability 
 	});
 	await runtime.run({ source: { platform: "cli", chatId: "semantic-no-match", chatType: "dm", userId: "local" }, text: rawRequest, timeoutMs: 1_000 });
 	assert.deepEqual(toolChanges[0], ["capability_discover"]);
+	runtime.dispose();
+});
+
+test("Agent runtime preserves a semantic no-match when only outcome verification is required", async () => {
+	const rawRequest = "不要回顾以前的聊天记录，只回答本次请求未调用记忆";
+	const toolChanges = [];
+	const agent = { state: { model: { id: "test" }, messages: [] } };
+	const tools = [{ name: "capability_discover", description: "Discover capabilities", beemaxCapabilityPrefetch: async () => ({ candidates: [], skills: [] }) }];
+	const runtime = createRuntime({
+		planningPolicy: { decide: () => ({ mode: "direct", requiredTools: [], suggestedConcurrency: 1, budget: { maxSubagents: 0, maxToolCalls: 4, maxTokens: 2_000, maxCorrectiveAttempts: 0 }, signals: { substantialWork: true, requiresVerification: true }, reason: "verify the outcome", directive: () => "Complete and verify the request." }) },
+		turnUnderstanding: { understand: () => ({ action: "create", goal: rawRequest, constraints: [], acceptanceCriteria: [rawRequest], uncertainties: [], memoryQuery: rawRequest, capabilityQuery: rawRequest, executionMode: "direct", confidence: 1 }) },
+		workContractBuilder: { build: async () => ({ source: "model", contract: { schemaVersion: "beemax.work-contract.v1", rawRequest, action: "create", objective: { text: rawRequest, source: { kind: "raw_request", start: 0, end: rawRequest.length } }, constraints: [], prohibitions: [], acceptanceCriteria: [], capabilityRequirements: [], uncertainties: [], executionMode: "direct", confidence: 1 } }) },
+		createAgent: async () => ({
+			agent, getAllTools: () => tools, getActiveToolNames: () => tools.map(({ name }) => name), setActiveToolsByName: (names) => { toolChanges.push([...names]); }, subscribe: () => () => undefined,
+			prompt: async () => { agent.state.messages = [{ role: "assistant", content: [{ type: "text", text: "本次请求未调用记忆" }], usage: { input: 1, output: 1 } }]; }, abort: async () => undefined, dispose: () => undefined,
+		}),
+	});
+	await runtime.run({ source: { platform: "cli", chatId: "verification-no-match", chatType: "dm", userId: "local" }, text: rawRequest, timeoutMs: 1_000 });
+	assert.deepEqual(toolChanges[0], []);
 	runtime.dispose();
 });
 
@@ -229,6 +257,7 @@ test("Agent runtime settles a model turn after bounded visible-output inactivity
 			subscribe: (next) => { listener = next; return () => undefined; },
 			prompt: async () => {
 				agent.state.messages = [{ role: "assistant", content: [{ type: "text", text: "completed result" }], usage: { input: 1, output: 1 } }];
+				bindAssistantTurn(listener, [{ id: "orphaned-tool", name: "read" }]);
 				listener({ type: "tool_execution_start", toolCallId: "orphaned-tool", toolName: "read", args: {} });
 				listener({ type: "message_update", message: agent.state.messages[0], assistantMessageEvent: { type: "text_delta", delta: "completed result" } });
 				await new Promise((resolve) => { finishPrompt = resolve; fallback = setTimeout(resolve, 200); });
@@ -316,6 +345,7 @@ test("Agent runtime aborts an identical failed read-only Tool loop before anothe
 		setActiveToolsByName: () => undefined,
 		subscribe: (next) => { listener = next; return () => undefined; },
 		prompt: async () => {
+			bindAssistantTurn(listener, ["first", "second"].map((id) => ({ id, name: "read", args: { path: "missing.txt" } })));
 			for (const id of ["first", "second"]) {
 				listener({ type: "tool_execution_start", toolCallId: id, toolName: "read", args: { path: "missing.txt" } });
 				listener({ type: "tool_execution_end", toolCallId: id, toolName: "read", result: { error: "missing" }, isError: true });
@@ -518,7 +548,7 @@ test("Agent runtime injects a deterministic planning directive without changing 
 		createAgent: async () => ({
 			agent,
 			subscribe: (next) => { runtimeListener = next; return () => undefined; },
-			prompt: async (text) => { received = text; runtimeListener({ type: "tool_execution_start", toolCallId: "plan", toolName: "task_plan_execute", args: {} }); runtimeListener({ type: "tool_execution_end", toolCallId: "plan", toolName: "task_plan_execute", result: { details: { planId: "plan-1", accepted: true, status: "running" } }, isError: false }); agent.state.messages = [{ role: "assistant", content: [{ type: "text", text: "done" }], usage: { input: 1, output: 1 } }]; },
+			prompt: async (text) => { received = text; bindAssistantTurn(runtimeListener, [{ id: "plan", name: "task_plan_execute" }]); runtimeListener({ type: "tool_execution_start", toolCallId: "plan", toolName: "task_plan_execute", args: {} }); runtimeListener({ type: "tool_execution_end", toolCallId: "plan", toolName: "task_plan_execute", result: { details: { planId: "plan-1", accepted: true, status: "running" } }, isError: false }); agent.state.messages = [{ role: "assistant", content: [{ type: "text", text: "done" }], usage: { input: 1, output: 1 } }]; },
 			abort: async () => undefined,
 			dispose: () => undefined,
 		}),
@@ -547,6 +577,7 @@ test("interactive runs persist an Objective and keep background DAG Objectives r
 		createAgent: async () => ({
 			agent, subscribe: (next) => { listener = next; return () => undefined; },
 			prompt: async () => {
+				bindAssistantTurn(listener, [{ id: "plan", name: "task_plan_execute" }]);
 				listener({ type: "tool_execution_start", toolCallId: "plan", toolName: "task_plan_execute", args: {} });
 				listener({ type: "tool_execution_end", toolCallId: "plan", toolName: "task_plan_execute", result: { details: { planId: "plan", accepted: true, status: "running" } }, isError: false });
 				agent.state.messages = [{ role: "assistant", content: [{ type: "text", text: "Work accepted" }], usage: { input: 1, output: 1 } }];
@@ -656,6 +687,7 @@ test("a responsible direct Turn completes one durable Objective through one veri
 		createAgent: async (_id, _source, receivedEnvelope) => {
 			envelope = receivedEnvelope;
 			return { agent, subscribe: (next) => { listener = next; return () => undefined; }, prompt: async () => {
+				bindAssistantTurn(listener, [{ id: "source-1", name: "read", args: { path: "source.md" } }]);
 				listener({ type: "tool_execution_start", toolCallId: "source-1", toolName: "read", args: { path: "source.md" } });
 				listener({ type: "tool_execution_end", toolCallId: "source-1", toolName: "read", result: { content: [{ type: "text", text: "source evidence" }] }, isError: false });
 				listener({ type: "turn_end", message: { role: "assistant", content: [] }, toolResults: [] });
@@ -930,6 +962,7 @@ test("Agent runtime aborts a turn that exceeds its planned tool-call budget", as
 			agent,
 			subscribe: (next) => { listener = next; return () => undefined; },
 			prompt: async () => {
+				bindAssistantTurn(listener, Array.from({ length: 9 }, (_, index) => ({ id: `tool-${index}`, name: "read" })));
 				for (let index = 0; index < 9; index++) listener({ type: "tool_execution_start", toolCallId: `tool-${index}`, toolName: "read" });
 				agent.state.messages = [{ role: "assistant", content: [{ type: "text", text: "should not succeed" }], usage: { input: 1, output: 1 } }];
 			},
@@ -950,6 +983,7 @@ test("Execution Envelope enforces tool-call budget without a planning policy", a
 	const runtime = createRuntime({ createAgent: async () => ({
 		agent, subscribe: (next) => { listener = next; return () => undefined; },
 		prompt: async () => {
+			bindAssistantTurn(listener, [{ id: "tool-1", name: "read" }, { id: "tool-2", name: "read" }]);
 			listener({ type: "tool_execution_start", toolCallId: "tool-1", toolName: "read" });
 			listener({ type: "tool_execution_start", toolCallId: "tool-2", toolName: "read" });
 			agent.state.messages = [{ role: "assistant", content: [{ type: "text", text: "over budget" }], usage: { input: 1, output: 1 } }];
@@ -1025,7 +1059,7 @@ test("Agent runtime performs one content-free correction when a complex turn ski
 		agent, subscribe: (next) => { listener = next; return () => undefined; },
 		prompt: async (text) => {
 			prompts.push(text);
-			if (prompts.length === 2) { listener({ type: "tool_execution_start", toolCallId: "plan", toolName: "task_plan_execute", args: {} }); listener({ type: "tool_execution_end", toolCallId: "plan", toolName: "task_plan_execute", result: { details: { planId: "plan-1", accepted: true, status: "running" } }, isError: false }); }
+			if (prompts.length === 2) { bindAssistantTurn(listener, [{ id: "plan", name: "task_plan_execute" }]); listener({ type: "tool_execution_start", toolCallId: "plan", toolName: "task_plan_execute", args: {} }); listener({ type: "tool_execution_end", toolCallId: "plan", toolName: "task_plan_execute", result: { details: { planId: "plan-1", accepted: true, status: "running" } }, isError: false }); }
 			agent.state.messages = [{ role: "assistant", content: [{ type: "text", text: "done" }], usage: { input: 1, output: 1 } }];
 		}, abort: async () => undefined, dispose: () => undefined,
 	}) });
@@ -1049,6 +1083,7 @@ test("Agent runtime aborts repeated Task Plan rejection inside one live Pi turn 
 		setActiveToolsByName: (names) => { activeTools = [...names]; },
 		subscribe: (next) => { listener = next; return () => undefined; },
 		prompt: async () => {
+			bindAssistantTurn(listener, [1, 2].map((attempt) => ({ id: `plan-${attempt}`, name: "task_plan_execute" })));
 			for (let attempt = 1; attempt <= 2; attempt++) {
 				listener({ type: "tool_execution_start", toolCallId: `plan-${attempt}`, toolName: "task_plan_execute", args: {} });
 				listener({ type: "tool_execution_end", toolCallId: `plan-${attempt}`, toolName: "task_plan_execute", result: {}, isError: true });
@@ -1072,7 +1107,7 @@ test("delegated execution cannot finish after spawn without waiting for its Sub-
 		agent, subscribe: (next) => { listener = next; return () => undefined; },
 		prompt: async () => {
 			prompts++;
-			if (prompts === 1) { listener({ type: "tool_execution_start", toolCallId: "spawn", toolName: "task_spawn", args: {} }); listener({ type: "tool_execution_end", toolCallId: "spawn", toolName: "task_spawn", result: { details: { id: "child-1", status: "queued" } }, isError: false }); }
+			if (prompts === 1) { bindAssistantTurn(listener, [{ id: "spawn", name: "task_spawn" }]); listener({ type: "tool_execution_start", toolCallId: "spawn", toolName: "task_spawn", args: {} }); listener({ type: "tool_execution_end", toolCallId: "spawn", toolName: "task_spawn", result: { details: { id: "child-1", status: "queued" } }, isError: false }); }
 			agent.state.messages = [{ role: "assistant", content: [{ type: "text", text: "premature" }], usage: { input: 1, output: 1 } }];
 		}, abort: async () => undefined, dispose: () => undefined,
 	}) });

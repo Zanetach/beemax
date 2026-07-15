@@ -308,7 +308,7 @@ export function loadConfig(configPath?: string, profile = "default"): BeeMaxConf
 	const heartbeatInstances = channels.filter((channel) => channel.enabled && channel.adapter === heartbeatPlatform);
 	const heartbeatChannelInstanceId = optional(env.BEEMAX_HEARTBEAT_CHANNEL_INSTANCE_ID ?? cfg.automation?.heartbeat?.channelInstanceId) ?? (heartbeatInstances.length === 1 ? heartbeatInstances[0]!.id : undefined);
 	const capabilityCognition = {
-		maxModelAttempts: boundedConfiguredInteger(env.BEEMAX_CAPABILITY_COGNITION_MAX_ATTEMPTS ?? cfg.agent?.capabilityCognition?.maxModelAttempts, 3, 1, 5, "agent.capabilityCognition.maxModelAttempts"),
+		maxModelAttempts: boundedConfiguredInteger(env.BEEMAX_CAPABILITY_COGNITION_MAX_ATTEMPTS ?? cfg.agent?.capabilityCognition?.maxModelAttempts, 2, 1, 5, "agent.capabilityCognition.maxModelAttempts"),
 		maxTokens: boundedConfiguredInteger(env.BEEMAX_CAPABILITY_COGNITION_MAX_TOKENS ?? cfg.agent?.capabilityCognition?.maxTokens, 4_096, 256, 8_192, "agent.capabilityCognition.maxTokens"),
 		timeoutMs: boundedConfiguredInteger(env.BEEMAX_CAPABILITY_COGNITION_TIMEOUT_MS ?? cfg.agent?.capabilityCognition?.timeoutMs, 60_000, 1_000, 60_000, "agent.capabilityCognition.timeoutMs"),
 		maxTotalEstimatedTokens: boundedConfiguredInteger(env.BEEMAX_CAPABILITY_COGNITION_MAX_ESTIMATED_TOKENS ?? cfg.agent?.capabilityCognition?.maxTotalEstimatedTokens, 300_000, 512, 1_000_000, "agent.capabilityCognition.maxTotalEstimatedTokens"),

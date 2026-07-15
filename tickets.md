@@ -496,7 +496,7 @@ This ordering is the implementation plan, not a fixed business workflow. Core re
 - [x] Mark Provider cost evidence incomplete when a failed attempt has no measured usage; do not promote cost claims from a lower-bound total.
 - [x] Strengthen the authority probe and report verifier with explicit schema, mode, corpus, threshold, scope, cognition, and unauthorized-candidate identity checks.
 - [x] Add a separate live-Pi outcome lane where the configured model reads the Tool Spec, chooses Tools, and satisfies independent Acceptance Criteria; keep the deterministic routing harness as infrastructure evidence rather than treating it as model task-completion proof.
-- [ ] Bind each Pi-originated Tool call to its exact assistant Turn and Provider response identity in the durable Execution Trace; do not infer model causality from event order alone.
+- [x] Bind each Pi-originated Tool call to its exact assistant Turn and Provider response identity in the durable Execution Trace; do not infer model causality from event order alone.
 - [ ] Sign live evaluation artifacts in trusted CI and verify run provenance, freshness, model identity, trace digest, and Provider request evidence before release; repository JSON self-consistency is not cryptographic attestation.
 - [ ] Require authoritative model pricing or Provider cost attestation before enabling a release cost-regression gate; keep unknown pricing explicitly `unpriced` and never reinterpret it as zero-cost execution.
 - [ ] Replace positional Capability ranker factory arguments with one named configuration object shared by CLI, Gateway, and evaluation entrypoints.

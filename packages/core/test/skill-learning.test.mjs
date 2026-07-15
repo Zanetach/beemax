@@ -269,6 +269,20 @@ test("legacy skill_read preserves one-call activation for self-contained Skills"
 	} finally { rmSync(root, { recursive: true, force: true }); }
 });
 
+test("repeated Skill lifecycle calls retain replay identity without colliding across Tool calls", async () => {
+	const root = mkdtempSync(join(tmpdir(), "beemax-skill-receipt-identity-"));
+	try {
+		const tools = toolsAt(root);
+		await tools.get("skill_create").execute("create", { name: "receipt-review", description: "Review evidence with stable lifecycle receipts", instructions: "Inspect the supplied evidence and return a concise verified result." });
+		const first = await tools.get("skill_read").execute("read-call-one", { name: "receipt-review" });
+		const replay = await tools.get("skill_read").execute("read-call-one", { name: "receipt-review" });
+		const second = await tools.get("skill_read").execute("read-call-two", { name: "receipt-review" });
+		assert.equal(first.details.skillLifecycleReceipt.id, replay.details.skillLifecycleReceipt.id);
+		assert.notEqual(first.details.skillLifecycleReceipt.id, second.details.skillLifecycleReceipt.id);
+		assert.match(first.details.skillLifecycleReceipt.id, /:[a-f0-9]{64}$/u);
+	} finally { rmSync(root, { recursive: true, force: true }); }
+});
+
 test("Skill verification never persists credential material returned as evidence", async () => {
 	const root = mkdtempSync(join(tmpdir(), "beemax-skill-evidence-secret-"));
 	try {

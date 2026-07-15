@@ -13,6 +13,15 @@ const scopedFactory = (factory) => attestAgentFactoryProfile(factory, "profile:t
 const executePlannedTask = (factory, ...args) => executePlannedTaskRaw(scopedFactory(factory), ...args);
 const executeObjectiveDelivery = (factory, ...args) => executeObjectiveDeliveryRaw(scopedFactory(factory), ...args);
 const createTaskVerifier = (factory, ...args) => createTaskVerifierRaw(scopedFactory(factory), ...args);
+const bindAssistantTurn = (emit, calls, responseId = "response:verification-test") => emit({
+	type: "message_end",
+	message: {
+		role: "assistant",
+		responseId,
+		content: calls.map(({ id, name, args = {} }) => ({ type: "toolCall", id, name, arguments: args })),
+		usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0 },
+	},
+});
 
 test("Sub-Agents must discover admitted capabilities and fail explicitly instead of weakening the Task contract", () => {
 	const prompt = buildSubagentSystemPrompt();
@@ -290,9 +299,10 @@ test("independent verification receives the Task Situation", async () => {
 			setActiveToolsByName: (names) => { activeTools = [...names]; },
 			prompt: async (text) => {
 				prompt = text; toolsDuringPrompt = [...activeTools];
+				const args = { status: "accepted", reason: "All observable criteria passed", assertions: [{ criterionId: "C1", evidence: "Observed Friday", evidenceRefs: ["tool:read"] }] };
+				bindAssistantTurn(emit, [{ id: "read-situation", name: "read", args: { path: "result.txt" } }, { id: "verdict-situation", name: "verification_submit", args }]);
 				emit({ type: "tool_execution_start", toolCallId: "read-situation", toolName: "read", args: { path: "result.txt" } });
 				emit({ type: "tool_execution_end", toolCallId: "read-situation", toolName: "read", args: { path: "result.txt" }, isError: false, result: { content: [{ type: "text", text: "Friday" }], details: {} } });
-				const args = { status: "accepted", reason: "All observable criteria passed", assertions: [{ criterionId: "C1", evidence: "Observed Friday", evidenceRefs: ["tool:read"] }] };
 				emit({ type: "tool_execution_start", toolCallId: "verdict-situation", toolName: "verification_submit", args });
 				emit({ type: "tool_execution_end", toolCallId: "verdict-situation", toolName: "verification_submit", args, isError: false, result: { content: [], details: {} } });
 				agent.state.messages = [{ role: "assistant", content: [{ type: "text", text: "Verification submitted." }], usage: { input: 1, output: 1 } }];
@@ -345,9 +355,10 @@ test("independent verification accepts one schema-valid verdict Tool receipt wit
 		getAllTools: () => activeTools.map((name) => ({ name })),
 		setActiveToolsByName: (names) => { activeTools = [...names]; },
 		prompt: async () => {
+			const args = { status: "accepted", reason: "The requested draft exists", assertions: [{ criterionId: "C1", evidence: "draft.md was observed", evidenceRefs: ["tool:read"] }] };
+			bindAssistantTurn(emit, [{ id: "read-1", name: "read", args: { path: "draft.md" } }, { id: "verdict-1", name: "verification_submit", args }]);
 			emit({ type: "tool_execution_start", toolCallId: "read-1", toolName: "read", args: { path: "draft.md" } });
 			emit({ type: "tool_execution_end", toolCallId: "read-1", toolName: "read", args: { path: "draft.md" }, isError: false, result: { content: [{ type: "text", text: "draft" }], details: {} } });
-			const args = { status: "accepted", reason: "The requested draft exists", assertions: [{ criterionId: "C1", evidence: "draft.md was observed", evidenceRefs: ["tool:read"] }] };
 			emit({ type: "tool_execution_start", toolCallId: "verdict-1", toolName: "verification_submit", args });
 			emit({ type: "tool_execution_end", toolCallId: "verdict-1", toolName: "verification_submit", args, isError: false, result: { content: [{ type: "text", text: "Verdict recorded" }], details: {} } });
 			agent.state.messages = [{ role: "assistant", content: [{ type: "text", text: "I submitted the verdict." }], usage: { input: 1, output: 1 } }];
@@ -373,6 +384,7 @@ test("independent verification does not let a fresh correction Session judge pri
 		prompt: async () => {
 			prompts++;
 			if (prompts === 1) {
+				bindAssistantTurn(emit, [{ id: "read-correction", name: "read", args: { path: "draft.md" } }]);
 				emit({ type: "tool_execution_start", toolCallId: "read-correction", toolName: "read", args: { path: "draft.md" } });
 				emit({ type: "tool_execution_end", toolCallId: "read-correction", toolName: "read", isError: false, result: { content: [{ type: "text", text: "draft" }], details: {} } });
 			}
@@ -401,9 +413,10 @@ test("independent verification gets one bounded evidence correction when its fir
 		prompt: async () => {
 			prompts++;
 			if (prompts === 2) {
+				const args = { status: "accepted", reason: "The corrected check observed the draft", assertions: [{ criterionId: "C1", evidence: "draft observed", evidenceRefs: ["tool:read"] }] };
+				bindAssistantTurn(emit, [{ id: "read-after-correction", name: "read", args: { path: "draft.md" } }, { id: "verdict-after-correction", name: "verification_submit", args }]);
 				emit({ type: "tool_execution_start", toolCallId: "read-after-correction", toolName: "read", args: { path: "draft.md" } });
 				emit({ type: "tool_execution_end", toolCallId: "read-after-correction", toolName: "read", isError: false, result: { content: [{ type: "text", text: "draft" }], details: {} } });
-				const args = { status: "accepted", reason: "The corrected check observed the draft", assertions: [{ criterionId: "C1", evidence: "draft observed", evidenceRefs: ["tool:read"] }] };
 				emit({ type: "tool_execution_start", toolCallId: "verdict-after-correction", toolName: "verification_submit", args });
 				emit({ type: "tool_execution_end", toolCallId: "verdict-after-correction", toolName: "verification_submit", args, isError: false, result: { content: [{ type: "text", text: "recorded" }], details: {} } });
 			}
@@ -430,6 +443,7 @@ test("independent verification refuses to carry search-only receipts into a fres
 		prompt: async () => {
 			prompts++;
 			if (prompts === 1) {
+				bindAssistantTurn(emit, [{ id: "search-only", name: "web_search", args: { query: "fact" } }]);
 				emit({ type: "tool_execution_start", toolCallId: "search-only", toolName: "web_search", args: { query: "fact" } });
 				emit({ type: "tool_execution_end", toolCallId: "search-only", toolName: "web_search", isError: false, result: { content: [{ type: "text", text: "https://source.example/report" }] } });
 			}
@@ -454,9 +468,10 @@ test("independent verification rejects a second structured verdict attempt even 
 		agent, subscribe: (listener) => { emit = listener; return () => undefined; },
 		getActiveToolNames: () => [...activeTools], getAllTools: () => activeTools.map((name) => ({ name })), setActiveToolsByName: (names) => { activeTools = [...names]; },
 		prompt: async () => {
+			const args = { status: "accepted", reason: "observed", assertions: [{ criterionId: "C1", evidence: "observed", evidenceRefs: ["tool:read"] }] };
+			bindAssistantTurn(emit, [{ id: "read-1", name: "read", args: { path: "draft.md" } }, { id: "verdict-1", name: "verification_submit", args }, { id: "verdict-2", name: "verification_submit", args }]);
 			emit({ type: "tool_execution_start", toolCallId: "read-1", toolName: "read", args: { path: "draft.md" } });
 			emit({ type: "tool_execution_end", toolCallId: "read-1", toolName: "read", isError: false, result: {} });
-			const args = { status: "accepted", reason: "observed", assertions: [{ criterionId: "C1", evidence: "observed", evidenceRefs: ["tool:read"] }] };
 			emit({ type: "tool_execution_start", toolCallId: "verdict-1", toolName: "verification_submit", args });
 			emit({ type: "tool_execution_end", toolCallId: "verdict-1", toolName: "verification_submit", isError: false, result: {} });
 			emit({ type: "tool_execution_start", toolCallId: "verdict-2", toolName: "verification_submit", args });
@@ -477,9 +492,10 @@ test("independent verification cannot accept an external URL without fetching it
 		agent, subscribe: (listener) => { emit = listener; return () => undefined; },
 		getActiveToolNames: () => [...activeTools], getAllTools: () => activeTools.map((name) => ({ name })), setActiveToolsByName: (names) => { activeTools = [...names]; },
 		prompt: async () => {
+			const args = { status: "accepted", reason: "looks plausible", assertions: [{ criterionId: "C1", evidence: "claimed URL", evidenceRefs: ["tool:web_search"] }] };
+			bindAssistantTurn(emit, [{ id: "search-1", name: "web_search", args: { query: "fact" } }, { id: "verdict-1", name: "verification_submit", args }]);
 			emit({ type: "tool_execution_start", toolCallId: "search-1", toolName: "web_search", args: { query: "fact" } });
 			emit({ type: "tool_execution_end", toolCallId: "search-1", toolName: "web_search", args: { query: "fact" }, isError: false, result: { content: [{ type: "text", text: "search result" }], details: {} } });
-			const args = { status: "accepted", reason: "looks plausible", assertions: [{ criterionId: "C1", evidence: "claimed URL", evidenceRefs: ["tool:web_search"] }] };
 			emit({ type: "tool_execution_start", toolCallId: "verdict-1", toolName: "verification_submit", args });
 			emit({ type: "tool_execution_end", toolCallId: "verdict-1", toolName: "verification_submit", args, isError: false, result: {} });
 			agent.state.messages = [{ role: "assistant", content: [{ type: "text", text: "submitted" }], usage: { input: 1, output: 1 } }];
@@ -498,9 +514,10 @@ test("independent verification cannot accept current research from search receip
 		agent, subscribe: (listener) => { emit = listener; return () => undefined; },
 		getActiveToolNames: () => [...activeTools], getAllTools: () => activeTools.map((name) => ({ name })), setActiveToolsByName: () => undefined,
 		prompt: async () => {
+			const args = { status: "accepted", reason: "search returned a summary", assertions: [{ criterionId: "C1", evidence: "summary", evidenceRefs: ["tool:web_search"] }] };
+			bindAssistantTurn(emit, [{ id: "search-only", name: "web_search", args: { query: "current trend" } }, { id: "verdict-search", name: "verification_submit", args }]);
 			emit({ type: "tool_execution_start", toolCallId: "search-only", toolName: "web_search", args: { query: "current trend" } });
 			emit({ type: "tool_execution_end", toolCallId: "search-only", toolName: "web_search", isError: false, result: { content: [{ type: "text", text: "current source summary" }] } });
-			const args = { status: "accepted", reason: "search returned a summary", assertions: [{ criterionId: "C1", evidence: "summary", evidenceRefs: ["tool:web_search"] }] };
 			emit({ type: "tool_execution_start", toolCallId: "verdict-search", toolName: "verification_submit", args });
 			emit({ type: "tool_execution_end", toolCallId: "verdict-search", toolName: "verification_submit", isError: false, result: {} });
 			agent.state.messages = [{ role: "assistant", content: [{ type: "text", text: "submitted" }], usage: { input: 1, output: 1 } }];
@@ -529,12 +546,13 @@ test("independent verification derives enough Tool budget to fetch every cited s
 			prompt: async (text) => {
 				verificationPrompt = text;
 				toolsDuringPrompt = [...activeTools];
+				const args = { status: "accepted", reason: "all cited sources fetched", assertions: [{ criterionId: "C1", evidence: "sources fetched", evidenceRefs: ["tool:web_extract"] }] };
+				bindAssistantTurn(emit, [...urls.map((url, index) => ({ id: `extract-${index + 1}`, name: "web_extract", args: { url } })), { id: "verdict-all", name: "verification_submit", args }]);
 				for (const [index, url] of urls.entries()) {
 					const callId = `extract-${index + 1}`;
 					emit({ type: "tool_execution_start", toolCallId: callId, toolName: "web_extract", args: { url } });
 					emit({ type: "tool_execution_end", toolCallId: callId, toolName: "web_extract", isError: false, result: { content: [{ type: "text", text: `source ${index + 1}` }] } });
 				}
-				const args = { status: "accepted", reason: "all cited sources fetched", assertions: [{ criterionId: "C1", evidence: "sources fetched", evidenceRefs: ["tool:web_extract"] }] };
 				emit({ type: "tool_execution_start", toolCallId: "verdict-all", toolName: "verification_submit", args });
 				emit({ type: "tool_execution_end", toolCallId: "verdict-all", toolName: "verification_submit", isError: false, result: {} });
 				agent.state.messages = [{ role: "assistant", content: [{ type: "text", text: "submitted" }], usage: { input: 1, output: 1 } }];

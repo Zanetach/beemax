@@ -90,19 +90,39 @@ async function executeOneTask({ scenario, cognitionId, candidates, inventory, th
 			if (visiblePlan && !toolSpecPlans.some((plan) => plan.planId === visiblePlan.planId)) toolSpecPlans.push(visiblePlan);
 			const selectedSkills = candidates.filter((candidate) => candidate.kind === "skill").map((candidate) => candidate.name);
 			const requestedTools = [...candidates.filter((candidate) => candidate.kind !== "skill").flatMap((candidate) => (descriptorByName.get(candidate.name)?.activeTools ?? [candidate.name]).map((name) => ({ name, capability: candidate.name }))), ...selectedSkills.flatMap((skill) => [{ name: "skill_read", capability: skill }, { name: "skill_complete", capability: skill }])];
-			for (const request of requestedTools) {
-				const { name, capability } = request;
+			const calls = requestedTools.flatMap(({ name, capability }) => {
 				const executionKey = `${name}:${capability}`;
-				if (executed.has(executionKey) || !activeTools.includes(name)) continue;
-				const tool = toolDefinitions.find((candidate) => candidate.name === name); if (!tool) continue;
-				const callId = `call:${scenario.id}:${name}:${capability}`; const args = name.startsWith("skill_") ? { name: capability } : {};
-				const boundary = await agent.beforeToolCall?.({ toolCall: { name, arguments: args } }, new AbortController().signal);
-				if (boundary?.block) continue;
+				if (executed.has(executionKey) || !activeTools.includes(name) || !toolDefinitions.some((tool) => tool.name === name)) return [];
+				return [{ name, capability, executionKey, callId: `call:${scenario.id}:${name}:${capability}`, args: name.startsWith("skill_") ? { name: capability } : {} }];
+			});
+			const assistantMessage = sandboxAssistantMessage(scenario.id, executed.size, calls);
+			listener({ type: "message_start", message: assistantMessage });
+			listener({ type: "message_end", message: assistantMessage });
+			const toolResults = [];
+			for (const { name, capability, executionKey, callId, args } of calls) {
+				const tool = toolDefinitions.find((candidate) => candidate.name === name);
+				if (!tool) continue;
 				executed.add(executionKey); listener({ type: "tool_execution_start", toolCallId: callId, toolName: name, args });
-				try { const result = await tool.execute(callId, args, new AbortController().signal); const receipt = result?.details?.capabilityReceipt; if (receipt?.name) completedCapabilities.add(receipt.name); listener({ type: "tool_execution_end", toolCallId: callId, toolName: name, result, isError: false }); }
-				catch (error) { listener({ type: "tool_execution_end", toolCallId: callId, toolName: name, result: { error: String(error) }, isError: true }); }
+				const boundary = await agent.beforeToolCall?.({ toolCall: { id: callId, name, arguments: args } }, new AbortController().signal);
+				if (boundary?.block) {
+					const result = { content: [{ type: "text", text: boundary.reason ?? `Tool ${name} was blocked` }], details: { blocked: true } };
+					listener({ type: "tool_execution_end", toolCallId: callId, toolName: name, result, isError: true });
+					const message = sandboxToolResultMessage(callId, name, result, true); toolResults.push(message); listener({ type: "message_start", message }); listener({ type: "message_end", message });
+					continue;
+				}
+				try {
+					const result = await tool.execute(callId, args, new AbortController().signal); const receipt = result?.details?.capabilityReceipt;
+					if (receipt?.name) completedCapabilities.add(receipt.name);
+					listener({ type: "tool_execution_end", toolCallId: callId, toolName: name, result, isError: false });
+					const message = sandboxToolResultMessage(callId, name, result, false); toolResults.push(message); listener({ type: "message_start", message }); listener({ type: "message_end", message });
+				} catch (error) {
+					const result = { content: [{ type: "text", text: String(error) }], details: { failure: true } };
+					listener({ type: "tool_execution_end", toolCallId: callId, toolName: name, result, isError: true });
+					const message = sandboxToolResultMessage(callId, name, result, true); toolResults.push(message); listener({ type: "message_start", message }); listener({ type: "message_end", message });
+				}
 			}
-			agent.state.messages = [{ role: "assistant", content: [{ type: "text", text: `sandbox outcome ${scenario.id}` }], usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: { total: 0 } } }];
+			listener({ type: "turn_end", message: assistantMessage, toolResults });
+			agent.state.messages = [...agent.state.messages, assistantMessage, ...toolResults];
 			modelTurnOpen = false;
 		},
 		abort: async () => undefined,
@@ -156,6 +176,21 @@ function modelVisibleToolSpecPlan(promptText) {
 		if (typeof plan.planId !== "string" || !Array.isArray(plan.direct)) return undefined;
 		return { planId: plan.planId, directTools: plan.direct.map((entry) => entry.toolName).filter((name) => typeof name === "string") };
 	} catch { return undefined; }
+}
+
+function sandboxAssistantMessage(scenarioId, attempt, calls) {
+	return {
+		role: "assistant",
+		content: calls.length ? calls.map((call) => ({ type: "toolCall", id: call.callId, name: call.name, arguments: call.args })) : [{ type: "text", text: `sandbox outcome ${scenarioId}` }],
+		api: "openai-completions", provider: "custom", model: "capability-task-sandbox",
+		responseId: `provider-response:${scenarioId}:${attempt}`,
+		usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+		stopReason: calls.length ? "toolUse" : "stop", timestamp: Date.now(),
+	};
+}
+
+function sandboxToolResultMessage(toolCallId, toolName, result, isError) {
+	return { role: "toolResult", toolCallId, toolName, content: result?.content ?? [], details: result?.details, isError, timestamp: Date.now() };
 }
 
 function createEvaluationTools(inventory, candidates, cognitionId) {

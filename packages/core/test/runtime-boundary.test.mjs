@@ -286,9 +286,9 @@ test("BeeMax Agent Runtime projects Pi lifecycle events through one Execution Tr
 		createAgent: async () => ({
 			agent, subscribe: (next) => { listener = next; return () => undefined; },
 			prompt: async () => {
+				listener({ type: "message_end", message: { role: "assistant", responseId: "provider-response-trace", content: [{ type: "toolCall", id: "call:trace", name: "read", arguments: {} }], usage: { input: 30, output: 10, cacheRead: 5, cacheWrite: 0, totalTokens: 45, cost: { input: 0.01, output: 0.02, cacheRead: 0.001, cacheWrite: 0, total: 0.031 } } } });
 				listener({ type: "tool_execution_start", toolCallId: "call:trace", toolName: "read" });
 				listener({ type: "tool_execution_end", toolCallId: "call:trace", toolName: "read", isError: false, result: {} });
-				listener({ type: "message_end", message: { role: "assistant", content: [], usage: { input: 30, output: 10, cacheRead: 5, cacheWrite: 0, totalTokens: 45, cost: { input: 0.01, output: 0.02, cacheRead: 0.001, cacheWrite: 0, total: 0.031 } } } });
 				agent.state.messages = [{ role: "assistant", content: [{ type: "text", text: "done" }], usage: { input: 30, output: 10 } }];
 			},
 			abort: async () => undefined, dispose: () => undefined,
@@ -304,8 +304,56 @@ test("BeeMax Agent Runtime projects Pi lifecycle events through one Execution Tr
 		assert.equal(trace.outputTokens, 10);
 		assert.equal(trace.cacheReadTokens, 5);
 		assert.equal(trace.costUsd, 0.031);
-		assert.deepEqual(trace.events.map((event) => event.type), ["execution.started", "tool_spec.published", "tool.started", "tool.settled", "model.turn_settled", "execution.settled"]);
+		assert.deepEqual(trace.events.map((event) => event.type), ["execution.started", "tool_spec.published", "model.turn_settled", "tool.started", "tool.settled", "execution.settled"]);
+		const modelTurn = trace.events.find((event) => event.type === "model.turn_settled");
+		const toolEvents = trace.events.filter((event) => event.type === "tool.started" || event.type === "tool.settled");
+		assert.match(modelTurn.assistantTurnId, /^assistant-turn:[0-9a-f-]{36}$/u);
+		assert.equal(modelTurn.providerResponseStatus, "reported");
+		assert.equal(modelTurn.providerResponseIdentitySha256, "sha256:f08939b808f7a026c8c7cb9318e124d429747de84fc6d884df0767acbc5bbcef");
+		assert.deepEqual(modelTurn.assistantToolCalls, [{ toolCallId: "call:trace", toolName: "read", argumentsSha256: "sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a" }]);
+		assert.deepEqual(toolEvents.map((event) => [event.assistantTurnId, event.providerResponseStatus, event.providerResponseIdentitySha256, event.argumentsSha256]), [[modelTurn.assistantTurnId, "reported", modelTurn.providerResponseIdentitySha256, modelTurn.assistantToolCalls[0].argumentsSha256], [modelTurn.assistantTurnId, "reported", modelTurn.providerResponseIdentitySha256, modelTurn.assistantToolCalls[0].argumentsSha256]]);
 	} finally { runtime.dispose(); rmSync(root, { recursive: true, force: true }); }
+});
+
+test("BeeMax Agent Runtime rejects Tool calls without a Provider response identity or exact model-emitted shape", async () => {
+	for (const variant of [
+		{ name: "missing-response", responseId: undefined, emittedName: "read", emittedArgs: { path: "a" }, startedName: "read", startedArgs: { path: "a" }, error: /Provider did not report a response identity/u },
+		{ name: "changed-name", responseId: "response:changed-name", emittedName: "read", emittedArgs: { path: "a" }, startedName: "write", startedArgs: { path: "a" }, error: /does not exactly match/u },
+		{ name: "changed-args", responseId: "response:changed-args", emittedName: "read", emittedArgs: { path: "a" }, startedName: "read", startedArgs: { path: "b" }, error: /does not exactly match/u },
+	]) {
+		let listener;
+		const agent = { state: { model: { id: "test" }, messages: [] } };
+		const runtime = createRuntime({ createAgent: async () => ({
+			agent, subscribe: (next) => { listener = next; return () => undefined; },
+			prompt: async () => {
+				listener({ type: "message_end", message: { role: "assistant", ...(variant.responseId ? { responseId: variant.responseId } : {}), content: [{ type: "toolCall", id: `call:${variant.name}`, name: variant.emittedName, arguments: variant.emittedArgs }], usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0 } } });
+				listener({ type: "tool_execution_start", toolCallId: `call:${variant.name}`, toolName: variant.startedName, args: variant.startedArgs });
+				agent.state.messages = [{ role: "assistant", content: [{ type: "text", text: "must not complete" }], usage: { input: 1, output: 1 } }];
+			}, abort: async () => undefined, dispose: () => undefined,
+		}) });
+		await assert.rejects(runtime.run({ source: { platform: "cli", chatId: variant.name, chatType: "dm", userId: "local" }, text: "run", timeoutMs: 1_000 }), variant.error);
+		runtime.dispose();
+	}
+});
+
+test("BeeMax Agent Runtime bounds canonical Tool argument identity work before execution", async () => {
+	let deep = {};
+	for (let index = 0; index < 34; index++) deep = { child: deep };
+	for (const [name, argumentsValue, error] of [
+		["depth", deep, /depth limit/u],
+		["nodes", { values: Array.from({ length: 10_001 }, () => null) }, /10000-node/u],
+		["bytes", { text: "x".repeat(300_000) }, /256 KiB/u],
+	]) {
+		let listener;
+		const agent = { state: { model: { id: "test" }, messages: [] } };
+		const runtime = createRuntime({ createAgent: async () => ({
+			agent, subscribe: (next) => { listener = next; return () => undefined; },
+			prompt: async () => { listener({ type: "message_end", message: { role: "assistant", responseId: `response:${name}`, content: [{ type: "toolCall", id: `call:${name}`, name: "read", arguments: argumentsValue }], usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0 } } }); },
+			abort: async () => undefined, dispose: () => undefined,
+		}) });
+		await assert.rejects(runtime.run({ source: { platform: "cli", chatId: `bounded-${name}`, chatType: "dm", userId: "local" }, text: "run", timeoutMs: 1_000 }), error);
+		runtime.dispose();
+	}
 });
 
 test("BeeMax Agent Runtime lists only Task Plans visible to the conversation owners", () => {
@@ -874,7 +922,7 @@ test("BeeMax Agent Runtime refuses automatic model replay after observable outpu
 			const agent = { state: { model: { provider: "test", id: "primary" }, messages: [] } };
 			return {
 				agent, subscribe: (next) => { listener = next; return () => undefined; },
-				prompt: async () => { listener({ type: "tool_execution_start", toolCallId: "write-1", toolName: "write" }); agent.state.messages = [{ role: "assistant", stopReason: "error", errorMessage: "503 overloaded", content: [], usage: { input: 1, output: 0 } }]; },
+				prompt: async () => { listener({ type: "message_end", message: { role: "assistant", responseId: "response-write-1", content: [{ type: "toolCall", id: "write-1", name: "write", arguments: {} }], usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, cost: { total: 0 } } } }); listener({ type: "tool_execution_start", toolCallId: "write-1", toolName: "write" }); agent.state.messages = [{ role: "assistant", stopReason: "error", errorMessage: "503 overloaded", content: [], usage: { input: 1, output: 0 } }]; },
 				retryWithModel: async () => { retries++; return true; }, abort: async () => undefined, dispose: () => undefined,
 			};
 		},

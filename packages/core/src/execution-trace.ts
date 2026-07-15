@@ -7,6 +7,9 @@ export type CapabilityOutcomeStatus = "accepted" | "rejected" | "unverified" | "
 export interface CapabilityTraceCandidate { kind: "tool" | "mcp" | "skill"; name: string; version?: string; confidence: number; }
 export interface CapabilityReceiptRef { id: string; kind: "tool" | "mcp" | "skill"; name: string; version: string; sourceTool: string; }
 export interface SkillLifecycleReceiptRef { id: string; name: string; version: string; phase: "activated" | "routed" | "resource_read" | "read" | "completed"; sourceTool: "skill_activate" | "skill_route" | "skill_resource_read" | "skill_read" | "skill_complete"; }
+export type ProviderResponseStatus = "reported" | "unavailable";
+export interface AssistantToolCallRef { toolCallId: string; toolName: string; argumentsSha256: string; }
+interface AssistantTurnTraceInput { assistantTurnId?: string; providerResponseStatus?: ProviderResponseStatus; providerResponseIdentitySha256?: string; }
 interface TraceInputBase { executionEnvelope: Readonly<ExecutionEnvelope>; at?: number; }
 export type ExecutionTraceInput =
 	| (TraceInputBase & { type: "execution.started" })
@@ -14,9 +17,9 @@ export type ExecutionTraceInput =
 	| (TraceInputBase & { type: "capability.decision"; cognitionId: string; candidates: readonly CapabilityTraceCandidate[] })
 	| (TraceInputBase & { type: "capability.downstream_execution_outcome"; cognitionId: string; status: CapabilityOutcomeStatus })
 	| (TraceInputBase & { type: "tool_spec.published"; toolSpecPlanId: string; directTools: readonly string[] })
-	| (TraceInputBase & { type: "model.turn_settled"; inputTokens: number; outputTokens: number; cacheReadTokens?: number; cacheWriteTokens?: number; costUsd?: number })
-	| (TraceInputBase & { type: "tool.started"; toolCallId: string; toolName: string; toolSpecPlanId?: string })
-	| (TraceInputBase & { type: "tool.settled"; toolCallId: string; toolName: string; status: "succeeded" | "failed"; durationMs?: number; toolSpecPlanId?: string; capabilityReceipt?: CapabilityReceiptRef; skillLifecycleReceipt?: SkillLifecycleReceiptRef })
+	| (TraceInputBase & AssistantTurnTraceInput & { type: "model.turn_settled"; inputTokens: number; outputTokens: number; cacheReadTokens?: number; cacheWriteTokens?: number; costUsd?: number; assistantToolCalls?: readonly AssistantToolCallRef[] })
+	| (TraceInputBase & AssistantTurnTraceInput & { type: "tool.started"; toolCallId: string; toolName: string; argumentsSha256?: string; toolSpecPlanId?: string })
+	| (TraceInputBase & AssistantTurnTraceInput & { type: "tool.settled"; toolCallId: string; toolName: string; argumentsSha256?: string; status: "succeeded" | "failed"; durationMs?: number; toolSpecPlanId?: string; capabilityReceipt?: CapabilityReceiptRef; skillLifecycleReceipt?: SkillLifecycleReceiptRef })
 	| (TraceInputBase & { type: "effect.started"; effectId: string; toolCallId: string; status: "executing" })
 	| (TraceInputBase & { type: "effect.settled"; effectId: string; toolCallId: string; status: "committed" | "failed" | "unknown" })
 	| (TraceInputBase & { type: "checkpoint.saved"; sizeChars: number })
@@ -53,6 +56,11 @@ export interface ExecutionTraceEvent {
 	directTools?: string[];
 	capabilityReceipt?: CapabilityReceiptRef;
 	skillLifecycleReceipt?: SkillLifecycleReceiptRef;
+	assistantTurnId?: string;
+	providerResponseStatus?: ProviderResponseStatus;
+	providerResponseIdentitySha256?: string;
+	assistantToolCalls?: AssistantToolCallRef[];
+	argumentsSha256?: string;
 }
 
 export interface ExecutionTraceQuery { executionId: string; accessScopeId?: string; }
@@ -182,6 +190,8 @@ function traceDetails(input: ExecutionTraceInput): Partial<ExecutionTraceEvent> 
 		...(input.cacheReadTokens === undefined ? {} : { cacheReadTokens: safeNonNegative(input.cacheReadTokens, "cacheReadTokens") }),
 		...(input.cacheWriteTokens === undefined ? {} : { cacheWriteTokens: safeNonNegative(input.cacheWriteTokens, "cacheWriteTokens") }),
 		...(input.costUsd === undefined ? {} : { costUsd: safeNonNegative(input.costUsd, "costUsd") }),
+		...assistantTurnDetails(input),
+		...(input.assistantToolCalls === undefined ? {} : { assistantToolCalls: safeAssistantToolCalls(input.assistantToolCalls) }),
 	};
 	if (input.type === "effect.started" || input.type === "effect.settled") return {
 		effectId: safeText(input.effectId, "effectId", 512), toolCallId: safeText(input.toolCallId, "toolCallId", 512), status: input.status,
@@ -193,9 +203,40 @@ function traceDetails(input: ExecutionTraceInput): Partial<ExecutionTraceEvent> 
 	if (input.type === "delivery.settled") return { status: input.status };
 	return {
 		toolCallId: safeText(input.toolCallId, "toolCallId", 512), toolName: safeText(input.toolName, "toolName", 512),
+		...(input.argumentsSha256 === undefined ? {} : { argumentsSha256: safeSha256(input.argumentsSha256, "argumentsSha256") }),
 		...(input.toolSpecPlanId === undefined ? {} : { toolSpecPlanId: safeText(input.toolSpecPlanId, "toolSpecPlanId", 256) }),
+		...assistantTurnDetails(input),
 		...(input.type === "tool.settled" ? { status: input.status, ...(input.durationMs === undefined ? {} : { durationMs: safeNonNegative(input.durationMs, "durationMs") }), ...(input.capabilityReceipt === undefined ? {} : { capabilityReceipt: normalizeCapabilityReceiptRef(input.capabilityReceipt) }), ...(input.skillLifecycleReceipt === undefined ? {} : { skillLifecycleReceipt: normalizeSkillLifecycleReceiptRef(input.skillLifecycleReceipt) }) } : {}),
 	};
+}
+
+function assistantTurnDetails(input: AssistantTurnTraceInput): Pick<ExecutionTraceEvent, "assistantTurnId" | "providerResponseStatus" | "providerResponseIdentitySha256"> {
+	if (input.assistantTurnId === undefined && input.providerResponseStatus === undefined && input.providerResponseIdentitySha256 === undefined) return {};
+	const assistantTurnId = safeIdentifier(input.assistantTurnId, "assistantTurnId", 128);
+	if (input.providerResponseStatus !== "reported" && input.providerResponseStatus !== "unavailable") throw new Error("Execution Trace Provider response status is invalid");
+	if (input.providerResponseStatus === "reported") {
+		const providerResponseIdentitySha256 = safeSha256(input.providerResponseIdentitySha256, "providerResponseIdentitySha256");
+		return { assistantTurnId, providerResponseStatus: "reported", providerResponseIdentitySha256 };
+	}
+	if (input.providerResponseIdentitySha256 !== undefined) throw new Error("Execution Trace unavailable Provider response cannot carry an identity");
+	return { assistantTurnId, providerResponseStatus: "unavailable" };
+}
+
+function safeAssistantToolCalls(values: readonly AssistantToolCallRef[]): AssistantToolCallRef[] {
+	if (!Array.isArray(values) || values.length > 100) throw new Error("Execution Trace assistant Tool calls must be a bounded list");
+	const seen = new Set<string>();
+	return values.map((value) => {
+		const toolCallId = safeIdentifier(value?.toolCallId, "assistantToolCall.toolCallId", 512);
+		if (seen.has(toolCallId)) throw new Error("Execution Trace assistant Tool calls contain duplicate identities");
+		seen.add(toolCallId);
+		return { toolCallId, toolName: safeIdentifier(value?.toolName, "assistantToolCall.toolName", 128), argumentsSha256: safeSha256(value?.argumentsSha256, "assistantToolCall.argumentsSha256") };
+	});
+}
+
+function safeSha256(value: unknown, field: string): string {
+	const normalized = typeof value === "string" ? value.trim() : "";
+	if (!/^sha256:[a-f0-9]{64}$/i.test(normalized)) throw new Error(`Execution Trace ${field} is invalid`);
+	return normalized.toLowerCase();
 }
 
 function safeText(value: string, field: string, maxLength: number): string {

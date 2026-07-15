@@ -237,6 +237,7 @@ export class PiSemanticCapabilityPort implements SemanticCapabilityPort {
 				const modelId = `${candidate.model.provider}/${candidate.model.id}`.slice(0, 256);
 				let failureCode: CapabilityCognitionFailureCode = "provider_error";
 				let attemptTimeoutSignal: AbortSignal | undefined;
+				let attemptTimeout: ReturnType<typeof setTimeout> | undefined;
 				let actualTokens: number | undefined;
 				let actualInputTokens: number | undefined;
 				let actualOutputTokens: number | undefined;
@@ -247,25 +248,34 @@ export class PiSemanticCapabilityPort implements SemanticCapabilityPort {
 					estimatedTokensUsed += estimatedAttemptTokens;
 					const remainingMs = deadlineAt - Date.now();
 					if (remainingMs <= 0) { failureCode = "total_deadline"; throw new Error(`Semantic Capability total deadline expired after ${timeoutMs}ms`); }
-					attemptTimeoutSignal = AbortSignal.timeout(remainingMs);
+					// Front-load the likely successful attempt while reserving a bounded
+					// weighted share for every recovery. The original deadline never moves.
+					const remainingAttempts = attempts.length - index;
+					const attemptTimeoutController = new AbortController();
+					attemptTimeoutSignal = attemptTimeoutController.signal;
+					const attemptTimeoutMs = remainingAttempts === 1 ? remainingMs : Math.floor(remainingMs * 2 / (remainingAttempts + 1));
+					attemptTimeout = setTimeout(() => attemptTimeoutController.abort(new Error("Semantic Capability Provider attempt timed out")), Math.max(1, attemptTimeoutMs));
 					const signal = input.signal ? AbortSignal.any([input.signal, attemptTimeoutSignal]) : attemptTimeoutSignal;
 					let response: Awaited<ReturnType<typeof complete>>;
 					try {
-						response = await complete(candidate.model, {
+						response = await settleAgainstAbort(complete(candidate.model, {
 							systemPrompt: SEMANTIC_CAPABILITY_SYSTEM_PROMPT,
 							messages: [{ role: "user", content: serializedInput, timestamp: Date.now() }],
-						}, { apiKey: candidate.apiKey, maxTokens, signal });
+						}, { apiKey: candidate.apiKey, maxTokens, signal }), signal);
 					} catch (error) {
-						failureCode = attemptTimeoutSignal.aborted ? "total_deadline" : classifyCapabilityProviderFailure(error);
+						failureCode = attemptTimeoutSignal.aborted ? (Date.now() >= deadlineAt ? "total_deadline" : "provider_unavailable") : classifyCapabilityProviderFailure(error);
 						throw error;
-					}
+					} finally { if (attemptTimeout) clearTimeout(attemptTimeout); }
 					const usage = response.usage;
 					actualInputTokens = usage ? Math.max(0, usage.input) + Math.max(0, usage.cacheRead ?? 0) : undefined;
 					actualOutputTokens = usage ? Math.max(0, usage.output) + Math.max(0, usage.cacheWrite ?? 0) : undefined;
 					actualTokens = actualInputTokens === undefined || actualOutputTokens === undefined ? undefined : actualInputTokens + actualOutputTokens;
 					costUsd = usage && Number.isFinite(usage.cost?.total) ? Math.max(0, usage.cost.total) : undefined;
 					if (actualTokens !== undefined && actualTokens > estimatedAttemptTokens) { failureCode = "usage_exceeded"; throw new Error("Semantic Capability Provider usage exceeded its conservative attempt budget"); }
-					if (response.stopReason === "error" || response.stopReason === "aborted") { failureCode = response.stopReason === "aborted" && attemptTimeoutSignal.aborted ? "total_deadline" : "provider_stop"; throw new Error(`Semantic Capability model stopped with ${response.stopReason}`); }
+					if (response.stopReason === "error" || response.stopReason === "aborted") {
+						failureCode = response.stopReason === "aborted" && attemptTimeoutSignal.aborted ? (Date.now() >= deadlineAt ? "total_deadline" : "provider_unavailable") : "provider_stop";
+						throw new Error(`Semantic Capability model stopped with ${response.stopReason}`);
+					}
 					const text = response.content.flatMap((block) => block.type === "text" ? [block.text] : []).join("\n").trim();
 					if (!text) { failureCode = "empty_response"; throw new Error("Semantic Capability model returned no text"); }
 					let parsed: Record<string, unknown>;
@@ -277,7 +287,7 @@ export class PiSemanticCapabilityPort implements SemanticCapabilityPort {
 					return parsed;
 				} catch (error) {
 					if (input.signal?.aborted) failureCode = "cancelled";
-					else if (attemptTimeoutSignal?.aborted && failureCode === "provider_error") failureCode = "total_deadline";
+					else if (attemptTimeoutSignal?.aborted && failureCode === "provider_error") failureCode = Date.now() >= deadlineAt ? "total_deadline" : "provider_unavailable";
 					options.onUsage?.({ ...(input.cognitionId ? { cognitionId: input.cognitionId } : {}), modelId, attempt: index + 1, estimatedTokens: estimatedAttemptTokens, ...(actualTokens !== undefined ? { actualTokens } : {}), ...(actualInputTokens !== undefined ? { actualInputTokens } : {}), ...(actualOutputTokens !== undefined ? { actualOutputTokens } : {}), durationMs: Date.now() - attemptStartedAt, ...(costUsd !== undefined ? { costUsd } : {}), usageStatus: cognitionUsageStatus(actualInputTokens, actualOutputTokens, costUsd), status: "failed", failureCode });
 					if (input.signal?.aborted) throw input.signal.reason ?? error;
 					lastFailureCode = failureCode;
@@ -475,6 +485,17 @@ function capabilityMetadataChars(descriptor: Pick<CapabilityDescriptor, "name" |
 }
 
 function throwIfAborted(signal?: AbortSignal): void { if (signal?.aborted) throw signal.reason ?? new Error("Capability selection was cancelled"); }
+
+function settleAgainstAbort<T>(work: Promise<T>, signal: AbortSignal): Promise<T> {
+	if (signal.aborted) return Promise.reject(signal.reason ?? new Error("Capability Provider attempt was cancelled"));
+	return new Promise<T>((resolve, reject) => {
+		let settled = false;
+		const finish = (callback: () => void) => { if (settled) return; settled = true; signal.removeEventListener("abort", abort); callback(); };
+		const abort = () => finish(() => reject(signal.reason ?? new Error("Capability Provider attempt was cancelled")));
+		signal.addEventListener("abort", abort, { once: true });
+		work.then((value) => finish(() => resolve(value)), (error) => finish(() => reject(error)));
+	});
+}
 
 function isProviderUnavailable(error: unknown): error is CapabilityCognitionError { return error instanceof CapabilityCognitionError && error.providerUnavailable; }
 

@@ -279,23 +279,61 @@ test("Pi semantic production port rejects a mixed valid and malformed match arra
 	assert.equal(result[0].name, "known");
 });
 
-test("Pi semantic production port never resets the total deadline for another Provider attempt", async () => {
+test("Pi semantic production port reserves total-deadline time for a second Provider attempt", async () => {
 	const calledModels = [];
 	const startedAt = Date.now();
+	let slowAbortedAt = 0;
 	const port = new PiSemanticCapabilityPort({
-		models: [{ model: { id: "slow" } }, { model: { id: "must-not-reset-timeout" } }], timeoutMs: 100,
+		models: [{ model: { id: "slow" } }, { model: { id: "recovery" } }], timeoutMs: 1_000, maxModelAttempts: 2,
 		complete: async (model, _context, options) => {
 			calledModels.push(model.id);
+			if (model.id === "recovery") return { stopReason: "stop", content: [{ type: "text", text: JSON.stringify({ matches: [{ id: "tool:known:1", name: "known", similarity: 0.9 }] }) }] };
 			await new Promise((resolve, reject) => {
 				if (options.signal.aborted) { reject(options.signal.reason); return; }
 				const keepAlive = setTimeout(() => reject(new Error("test Provider ignored cancellation")), 1_000);
-				options.signal.addEventListener("abort", () => { clearTimeout(keepAlive); reject(options.signal.reason); }, { once: true });
+				options.signal.addEventListener("abort", () => { slowAbortedAt = Date.now(); clearTimeout(keepAlive); reject(options.signal.reason); }, { once: true });
 			});
 		},
 	});
-	await assert.rejects(() => port.similarities({ query: "known", candidates: [{ id: "tool:known:1", name: "known", text: "Known capability" }], limit: 1 }));
-	assert.deepEqual(calledModels, ["slow"]);
-	assert.ok(Date.now() - startedAt < 500, "the total deadline must not reset for the next Provider");
+	const result = await port.similarities({ query: "known", candidates: [{ id: "tool:known:1", name: "known", text: "Known capability" }], limit: 1 });
+	assert.equal(result[0].name, "known");
+	assert.deepEqual(calledModels, ["slow", "recovery"]);
+	assert.ok(slowAbortedAt - startedAt >= 600, "the first attempt must receive the weighted majority of the total deadline");
+	assert.ok(Date.now() - startedAt < 1_500, "recovery must stay inside the original total deadline");
+});
+
+test("Pi semantic production port reports an aborted attempt slice without claiming the total deadline expired", async () => {
+	const usage = [];
+	const port = new PiSemanticCapabilityPort({
+		models: [{ model: { id: "slice-timeout" } }, { model: { id: "recovery" } }], timeoutMs: 1_000, maxModelAttempts: 2, onUsage(event) { usage.push(event); },
+		complete: async (model, _context, options) => {
+			if (model.id === "recovery") return { stopReason: "stop", content: [{ type: "text", text: JSON.stringify({ matches: [] }) }], usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0 } };
+			await new Promise((resolve) => {
+				const keepAlive = setTimeout(resolve, 2_000);
+				options.signal.addEventListener("abort", () => { clearTimeout(keepAlive); resolve(); }, { once: true });
+			});
+			return { stopReason: "aborted", content: [], usage: { input: 1, output: 0, cacheRead: 0, cacheWrite: 0 } };
+		},
+	});
+	await port.similarities({ query: "known", candidates: [{ id: "tool:known:1", name: "known", text: "Known capability" }], limit: 1 });
+	assert.equal(usage[0].failureCode, "provider_unavailable");
+	assert.equal(usage[1].status, "succeeded");
+});
+
+test("Pi semantic production port enforces its deadline when a Provider ignores cancellation", async () => {
+	const usage = [];
+	const port = new PiSemanticCapabilityPort({
+		models: [{ model: { id: "ignores-signal" } }], timeoutMs: 100, maxModelAttempts: 2, onUsage(event) { usage.push(event); },
+		complete: async () => new Promise(() => {}),
+	});
+	const outcome = await Promise.race([
+		port.similarities({ query: "known", candidates: [{ id: "tool:known:1", name: "known", text: "Known capability" }], limit: 1 }).then(() => "settled", () => "settled"),
+		new Promise((resolve) => setTimeout(() => resolve("hung"), 500)),
+	]);
+	assert.equal(outcome, "settled");
+	assert.equal(usage.length, 2);
+	assert.equal(usage[0].failureCode, "provider_unavailable");
+	assert.equal(usage[1].failureCode, "total_deadline");
 });
 
 test("Pi semantic production port reports bounded estimated and actual cognition usage", async () => {

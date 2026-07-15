@@ -1,4 +1,5 @@
 import type { Agent } from "@earendil-works/pi-agent-core";
+import { createHash } from "node:crypto";
 import { clampThinkingLevel, getSupportedThinkingLevels, type Api, type ImageContent, type Model, type ModelThinkingLevel } from "@earendil-works/pi-ai";
 import type { AgentSession, AgentSessionEvent, ToolDefinition, ToolInfo } from "@earendil-works/pi-coding-agent";
 import { ConversationContext } from "./conversation-context.ts";
@@ -88,6 +89,8 @@ export interface ContextBuiltEvent { type: "context_built"; included: Array<{ ki
 export interface ExecutionStartedEvent { type: "execution_started"; executionEnvelope: Readonly<ExecutionEnvelope>; }
 export interface ExecutionSettledEvent { type: "execution_settled"; executionEnvelope: Readonly<ExecutionEnvelope>; status: "succeeded" | "failed" | "cancelled"; }
 export interface MediaUnderstoodEvent { type: "media_understood"; route: "native" | "adapter"; adapterIds: string[]; receiptCount: number; failureCount: number; durationMs: number; }
+interface AssistantTurnOrigin { assistantTurnId: string; providerResponseStatus: "reported" | "unavailable"; providerResponseIdentitySha256?: string; }
+interface AssistantToolOrigin { origin: AssistantTurnOrigin; toolName: string; argumentsSha256: string; toolSpecPlanId: string; }
 export type BeeMaxAgentRunEvent = AgentSessionEvent | ModelFallbackEvent | PlanningDecisionEvent | PlanningOutcomeEvent | CapabilityRankedEvent | ContextBuiltEvent | ExecutionStartedEvent | ExecutionSettledEvent | MediaUnderstoodEvent;
 export type BeeMaxAgentRunEventSink = (event: BeeMaxAgentRunEvent) => void | Promise<void>;
 /** Gateway-facing runtime contract; implementations may be local or remote. */
@@ -387,12 +390,17 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 				admittedTools?.includes("capability_discover")
 					|| prefetchedSkills.length
 					|| capabilityPrefetchFailed
-					|| (shouldRunCapabilityPrefetch && semanticCapabilityNoMatch)
+					|| (shouldRunCapabilityPrefetch && semanticCapabilityNoMatch && Boolean(
+						workContract?.capabilityRequirements.length
+						|| planning?.requiredTools.length
+						|| planning?.signals.requiresResearch
+						|| requestsExplicitCapabilityResolution(input.text)
+						|| input.source.delegatedTask
+					))
 					|| requestedText !== input.text
 					|| (prefetchedTools.length === 0 && (
 						requestsExplicitCapabilityResolution(input.text)
 						|| planning?.signals.requiresResearch
-						|| planning?.signals.requiresVerification
 					)),
 			);
 			const proposedProgressiveTools = admittedTools ?? [...new Set([...(exposeCapabilityDiscovery ? ["capability_discover"] : []), ...skillLifecycleTools, ...(planning?.requiredTools ?? []), ...prefetchedTools])];
@@ -436,6 +444,8 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 			let objectiveVerificationOutcome: "accepted" | "rejected" | "unavailable" | undefined;
 			const toolStartedAt = new Map<string, number>();
 			const toolSpecPlanByCall = new Map<string, string>();
+			const toolOriginByCall = new Map<string, AssistantToolOrigin>();
+			const toolArgumentsByCall = new Map<string, string>();
 			const toolAttemptFingerprints = new Map<string, string>();
 			const failedReadFingerprints = new Map<string, number>();
 			const settledToolProgress: string[] = [];
@@ -481,13 +491,20 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 			const requireToolSpecPublication = async () => { await toolSpecPublication; if (toolSpecPublicationFailure) throw new AgentRunError("Current Tool Spec Plan could not be delivered to the model context", true, toolSpecPublicationFailure); };
 			const enqueueEvent = (event: BeeMaxAgentRunEvent) => { eventDelivery = eventDelivery.then(() => onEvent?.(event)).then(() => undefined); };
 			const unsubscribe = session.piSession.subscribe((event) => {
+				if (event.type === "turn_end") { toolOriginByCall.clear(); toolArgumentsByCall.clear(); }
 				if (event.type === "tool_execution_start") {
 					clearIdleSettle();
 					const at = Date.now();
+					const assistantExpected = toolOriginByCall.get(event.toolCallId);
+					const argumentsSha256 = toolArgumentsSha256(event.args ?? {});
+					const exactModelCall = assistantExpected && assistantExpected.toolName === event.toolName && assistantExpected.argumentsSha256 === argumentsSha256;
+					if (!exactModelCall && !turnAbortReason) { turnAbortReason = `Tool ${event.toolName} does not exactly match the Provider-backed assistant Tool call`; void session.piSession.abort(); }
+					toolArgumentsByCall.set(event.toolCallId, argumentsSha256);
 					toolStartedAt.set(event.toolCallId, at);
-					toolSpecPlanByCall.set(event.toolCallId, toolSpecPlan.planId);
+					const originatingToolSpecPlanId = assistantExpected?.toolSpecPlanId ?? toolSpecPlan.planId;
+					toolSpecPlanByCall.set(event.toolCallId, originatingToolSpecPlanId);
 					toolAttemptFingerprints.set(event.toolCallId, toolAttemptFingerprint(event.toolName, event.args));
-					this.recordTrace({ type: "tool.started", executionEnvelope, at, toolCallId: event.toolCallId, toolName: event.toolName, toolSpecPlanId: toolSpecPlan.planId });
+					this.recordTrace({ type: "tool.started", executionEnvelope, at, toolCallId: event.toolCallId, toolName: event.toolName, argumentsSha256, toolSpecPlanId: originatingToolSpecPlanId, ...(assistantExpected?.origin ?? {}) });
 					observableProgress = true;
 					const expected = planning?.requiredTools[requiredToolsUsed.length];
 					if (event.toolName === expected) requiredToolCalls.set(event.toolCallId, { name: event.toolName, args: event.args });
@@ -500,10 +517,12 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 					const at = Date.now();
 					const toolStart = toolStartedAt.get(event.toolCallId); toolStartedAt.delete(event.toolCallId);
 					const toolSpecPlanId = toolSpecPlanByCall.get(event.toolCallId); toolSpecPlanByCall.delete(event.toolCallId);
+					const expected = toolOriginByCall.get(event.toolCallId); toolOriginByCall.delete(event.toolCallId);
+					const argumentsSha256 = toolArgumentsByCall.get(event.toolCallId); toolArgumentsByCall.delete(event.toolCallId);
 					const toolFingerprint = toolAttemptFingerprints.get(event.toolCallId); toolAttemptFingerprints.delete(event.toolCallId);
 					const capabilityReceipt = event.isError ? undefined : capabilityReceiptMetadata(event.result, event.toolName);
 					const skillLifecycleReceipt = event.isError ? undefined : skillLifecycleReceiptMetadata(event.result, event.toolName);
-					this.recordTrace({ type: "tool.settled", executionEnvelope, at, toolCallId: event.toolCallId, toolName: event.toolName, status: event.isError ? "failed" : "succeeded", ...(toolStart === undefined ? {} : { durationMs: Math.max(0, at - toolStart) }), ...(toolSpecPlanId ? { toolSpecPlanId } : {}), ...(capabilityReceipt ? { capabilityReceipt } : {}), ...(skillLifecycleReceipt ? { skillLifecycleReceipt } : {}) });
+					this.recordTrace({ type: "tool.settled", executionEnvelope, at, toolCallId: event.toolCallId, toolName: event.toolName, status: event.isError ? "failed" : "succeeded", ...(argumentsSha256 ? { argumentsSha256 } : {}), ...(toolStart === undefined ? {} : { durationMs: Math.max(0, at - toolStart) }), ...(toolSpecPlanId ? { toolSpecPlanId } : {}), ...(expected?.origin ?? {}), ...(capabilityReceipt ? { capabilityReceipt } : {}), ...(skillLifecycleReceipt ? { skillLifecycleReceipt } : {}) });
 					if (!event.isError) successfulToolNames.add(event.toolName);
 					if (event.toolName === "capability_discover" && !event.isError) {
 						const discovery = capabilityDiscoveryMetadata(event.result, new Set(allTools.map((tool) => tool.name)));
@@ -581,7 +600,19 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 					if (typeof this.taskLedger?.checkpointTask === "function" && this.taskLedger.checkpointTask(objective.ownerKey, objective.id, mergeTaskCheckpoints(latest?.checkpoint, checkpoint))) checkpointedToolProgress = settledToolProgress.length;
 				} else if (event.type === "message_end" && event.message.role === "assistant") {
 					const usage = event.message.usage;
-					this.recordTrace({ type: "model.turn_settled", executionEnvelope, at: Date.now(), inputTokens: usage.input, outputTokens: usage.output, cacheReadTokens: usage.cacheRead, cacheWriteTokens: usage.cacheWrite, costUsd: usage.cost?.total ?? 0 });
+					const providerResponseId = boundedProviderResponseId(event.message.responseId);
+					const providerResponseIdentitySha256 = providerResponseId ? opaqueIdentitySha256(providerResponseId) : undefined;
+					const origin: AssistantTurnOrigin = { assistantTurnId: `assistant-turn:${crypto.randomUUID()}`, providerResponseStatus: providerResponseIdentitySha256 ? "reported" : "unavailable", ...(providerResponseIdentitySha256 ? { providerResponseIdentitySha256 } : {}) };
+					const assistantToolCalls = event.message.content.filter((block) => block.type === "toolCall").map((block) => ({ toolCallId: block.id, toolName: block.name, argumentsSha256: toolArgumentsSha256(block.arguments) }));
+					if (assistantToolCalls.length && !providerResponseIdentitySha256 && !turnAbortReason) { turnAbortReason = "Provider did not report a response identity for an assistant Tool call"; void session.piSession.abort(); }
+					for (const block of assistantToolCalls) {
+						if (toolOriginByCall.has(block.toolCallId)) {
+							if (!turnAbortReason) { turnAbortReason = `Assistant emitted duplicate Tool call identity ${block.toolCallId}`; void session.piSession.abort(); }
+							continue;
+						}
+						if (providerResponseIdentitySha256) toolOriginByCall.set(block.toolCallId, { origin, toolName: block.toolName, argumentsSha256: block.argumentsSha256, toolSpecPlanId: toolSpecPlan.planId });
+					}
+					this.recordTrace({ type: "model.turn_settled", executionEnvelope, at: Date.now(), inputTokens: usage.input, outputTokens: usage.output, cacheReadTokens: usage.cacheRead, cacheWriteTokens: usage.cacheWrite, costUsd: usage.cost?.total ?? 0, assistantToolCalls, ...origin });
 					// cacheRead is already-paid, reused context. Charging it again makes a
 					// cache-efficient multi-turn execution exhaust its work budget sooner
 					// than the same uncached work. Trace it above, but budget only newly
@@ -610,6 +641,9 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 			session.piSession.agent.beforeToolCall = async (context, signal) => {
 				try { await requireToolSpecPublication(); }
 				catch { return { block: true, reason: "Current Tool Spec Plan was not delivered to the model context" }; }
+				const expectedToolCall = toolOriginByCall.get(context.toolCall.id);
+				if (!expectedToolCall || expectedToolCall.origin.providerResponseStatus !== "reported") return { block: true, reason: `Tool ${context.toolCall.name} is not bound to a Provider-backed assistant Turn` };
+				if (expectedToolCall.toolName !== context.toolCall.name || expectedToolCall.argumentsSha256 !== toolArgumentsSha256(context.toolCall.arguments)) return { block: true, reason: `Tool ${context.toolCall.name} does not exactly match its assistant Tool call` };
 				if (!toolSpecPlan.direct.some((entry) => entry.toolName === context.toolCall.name)) return { block: true, reason: `Tool ${context.toolCall.name} is not direct in the current immutable Tool Spec Plan` };
 				if (unresolvedUncertainty && toolSideEffects.get(context.toolCall.name) !== "none") return { block: true, reason: `Tool ${context.toolCall.name} is blocked until the source-bound Work Contract uncertainty is resolved` };
 				return previousToolBoundary?.(context, signal);
@@ -995,6 +1029,56 @@ function skillExecutionName(result: unknown): string | undefined {
 function toolAttemptFingerprint(name: string, args: unknown): string {
 	try { return `${name}\0${JSON.stringify(args)}`; }
 	catch { return `${name}\0<unserializable>`; }
+}
+
+function opaqueIdentitySha256(value: string): string { return `sha256:${createHash("sha256").update(value).digest("hex")}`; }
+function boundedProviderResponseId(value: string | undefined): string | undefined {
+	const normalized = value?.trim();
+	return normalized && normalized.length <= 4_096 ? normalized : undefined;
+}
+function toolArgumentsSha256(value: unknown): string {
+	const hash = createHash("sha256");
+	const stack: Array<{ kind: "value"; value: unknown; depth: number } | { kind: "text"; value: string }> = [{ kind: "value", value, depth: 0 }];
+	let nodes = 0; let bytes = 0;
+	const update = (text: string) => {
+		bytes += Buffer.byteLength(text);
+		if (bytes > 256 * 1_024) throw new Error("Assistant Tool arguments exceed the 256 KiB canonical identity limit");
+		hash.update(text);
+	};
+	while (stack.length) {
+		const item = stack.pop()!;
+		if (item.kind === "text") { update(item.value); continue; }
+		if (++nodes > 10_000) throw new Error("Assistant Tool arguments exceed the 10000-node canonical identity limit");
+		if (item.depth > 32) throw new Error("Assistant Tool arguments exceed the canonical identity depth limit");
+		const current = item.value;
+		if (current === null || typeof current === "string" || typeof current === "boolean") { update(JSON.stringify(current)); continue; }
+		if (typeof current === "number") {
+			if (!Number.isFinite(current)) throw new Error("Assistant Tool arguments contain a non-finite number");
+			update(JSON.stringify(current)); continue;
+		}
+		if (Array.isArray(current)) {
+			stack.push({ kind: "text", value: "]" });
+			for (let index = current.length - 1; index >= 0; index--) {
+				if (index < current.length - 1) stack.push({ kind: "text", value: "," });
+				stack.push({ kind: "value", value: current[index] === undefined ? null : current[index], depth: item.depth + 1 });
+			}
+			stack.push({ kind: "text", value: "[" }); continue;
+		}
+		if (current && typeof current === "object") {
+			const entries = Object.entries(current as Record<string, unknown>).filter(([, child]) => child !== undefined).sort(([left], [right]) => left < right ? -1 : left > right ? 1 : 0);
+			stack.push({ kind: "text", value: "}" });
+			for (let index = entries.length - 1; index >= 0; index--) {
+				const [key, child] = entries[index]!;
+				if (index < entries.length - 1) stack.push({ kind: "text", value: "," });
+				stack.push({ kind: "value", value: child, depth: item.depth + 1 });
+				stack.push({ kind: "text", value: ":" });
+				stack.push({ kind: "text", value: JSON.stringify(key) });
+			}
+			stack.push({ kind: "text", value: "{" }); continue;
+		}
+		throw new Error("Assistant Tool arguments are not JSON values");
+	}
+	return `sha256:${hash.digest("hex")}`;
 }
 
 function boundedContractItems(items: readonly string[], maxChars: number): string {
