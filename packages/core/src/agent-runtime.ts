@@ -241,10 +241,6 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 			fallback: understanding,
 			...(activeObjective ? { activeObjective: { id: activeObjective.id, title: activeObjective.title, ...(activeObjective.situation ? { situation: activeObjective.situation } : {}) } } : {}),
 		})).situation : undefined;
-		if (explicitAutomationObjective && activeObjective?.status === "pending") {
-			if (!this.taskLedger?.transition(activeObjective.id, { status: "running", startedAt })) throw new AgentRunError(`Proactive Objective ${activeObjective.id} could not start`, false, undefined);
-			activeObjective = { ...activeObjective, status: "running", startedAt };
-		}
 		if (activeObjective && understanding?.action === "correct" && situation) this.taskLedger?.updateSituation?.(activeObjective.ownerKey, activeObjective.id, situation);
 		const accessScopeRef = activeObjective && bindsActiveObjective ? activeObjective.accessScopeRef ?? trustedInputAccessScope : trustedInputAccessScope;
 		const objectiveBinding = explicitAutomationObjective && activeObjective
@@ -286,6 +282,10 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 				throw new AgentRunError("Agent turn was cancelled", false, input.signal.reason);
 			}
 			if (ownedTaskRunId && objective) this.taskLedger?.recordRun({ id: ownedTaskRunId, taskId: objective.id, executor: "agent", status: "running", startedAt, ...(executionEnvelope.budget?.deadlineAt ? { leaseExpiresAt: executionEnvelope.budget.deadlineAt + 60_000 } : {}) });
+			if (explicitAutomationObjective && activeObjective?.status === "pending") {
+				if (!this.taskLedger?.transition(activeObjective.id, { status: "running", startedAt })) throw new AgentRunError(`Proactive Objective ${activeObjective.id} could not start`, false, undefined);
+				activeObjective = { ...activeObjective, status: "running", startedAt };
+			}
 			const requestedText = explicitSkillRequest(input.text);
 			const taskPreservation = activeObjective && (Boolean(input.objectiveTaskId) || understanding?.action === "continue") ? buildTaskPreservationEnvelope([activeObjective], 6_000) : undefined;
 			const contextAssembly = cognitiveRun && this.context && typeof this.context.assemble === "function"
@@ -333,7 +333,10 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 						|| planning?.signals.requiresVerification
 					)),
 			);
-			const progressiveTools = admittedTools ?? [...new Set([...(exposeCapabilityDiscovery ? ["capability_discover"] : []), ...skillLifecycleTools, ...(planning?.requiredTools ?? []), ...prefetchedTools])];
+			const proposedProgressiveTools = admittedTools ?? [...new Set([...(exposeCapabilityDiscovery ? ["capability_discover"] : []), ...skillLifecycleTools, ...(planning?.requiredTools ?? []), ...prefetchedTools])];
+			const progressiveTools = workContract?.uncertainties.length
+				? proposedProgressiveTools.filter((name) => toolSideEffects.get(name) === "none")
+				: proposedProgressiveTools;
 			if (activeTools) session.piSession.setActiveToolsByName(progressiveTools);
 			if (prefetchedSkills.length) promptText = [`<beemax-skill-preflight>Installed matching Skill metadata: ${prefetchedSkills.join(", ")}. Use skill_read with the exact best-matching name before executing the request; do not skip it or infer its instructions.</beemax-skill-preflight>`, promptText].join("\n\n");
 			let observableProgress = false;

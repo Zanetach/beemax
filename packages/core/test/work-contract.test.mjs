@@ -28,7 +28,7 @@ test("a model-backed Work Contract classifies unknown enterprise language using 
 			objective: span("校准 nebula:realm-7 的潮窗"),
 			constraints: [span("保留回滚点")],
 			prohibitions: [span("不要修改原始矩阵")],
-			acceptanceCriteria: [span("核验后输出证据")],
+		acceptanceCriteria: [span("校准 nebula:realm-7 的潮窗"), span("核验后输出证据")],
 			capabilityRequirements: [span("核验")],
 			uncertainties: [span("潮窗")],
 			executionMode: "direct",
@@ -85,6 +85,19 @@ test("a model-backed Work Contract cannot omit trusted prohibitions or acceptanc
 	assert.deepEqual(result.contract.prohibitions.map((clause) => clause.text), ["不要发布"]);
 });
 
+test("a prohibition cannot satisfy coverage by masquerading as an acceptance criterion", async () => {
+	const rawRequest = "生成报告，不要发布";
+	const builder = new ModelBackedWorkContractBuilder(async () => ({
+		action: "create", objective: { text: "生成报告" }, constraints: [], prohibitions: [],
+		acceptanceCriteria: [{ text: "生成报告" }, { text: "不要发布" }], capabilityRequirements: [], uncertainties: [],
+		executionMode: "direct", confidence: 0.99,
+	}));
+	const result = await builder.build({ rawRequest, fallback: new TurnUnderstandingEngine().understand(rawRequest) });
+	assert.equal(result.source, "deterministic");
+	assert.deepEqual(result.contract.prohibitions.map((clause) => clause.text), ["不要发布"]);
+	assert.equal(result.contract.acceptanceCriteria.some((clause) => clause.text === "不要发布"), false);
+});
+
 test("model-proposed executable work must declare an observable acceptance criterion", async () => {
 	const rawRequest = "校准 nebula:gate";
 	const builder = new ModelBackedWorkContractBuilder(async () => ({
@@ -130,7 +143,7 @@ test("BeeMax sends the validated Work Contract to Pi and binds its criteria to t
 			assert.equal(received, rawRequest);
 			return { source: "model", contract: {
 				schemaVersion: "beemax.work-contract.v1", rawRequest, action: "create", objective: clause("生成报告"),
-				constraints: [clause("必须中文")], prohibitions: [clause("不要发布")], acceptanceCriteria: [clause("只保存草稿")],
+			constraints: [clause("必须中文")], prohibitions: [clause("不要发布")], acceptanceCriteria: [clause("生成报告"), clause("只保存草稿")],
 				capabilityRequirements: [clause("保存")], uncertainties: [], executionMode: "direct", confidence: 0.9,
 			} };
 		} },
@@ -201,6 +214,8 @@ test("BeeMax preserves source-bound uncertainty in a durable Objective Situation
 	const quote = (text) => ({ text, start: rawRequest.indexOf(text), end: rawRequest.indexOf(text) + text.length });
 	let objective;
 	let prompt = "";
+	let toolsDuringPrompt = [];
+	let activeTools = ["read", "write"];
 	const agent = { state: { model: { id: "test" }, messages: [] } };
 	const runtime = new BeeMaxAgentRuntime({
 		workContractBuilder: new ModelBackedWorkContractBuilder(async () => ({
@@ -209,16 +224,19 @@ test("BeeMax preserves source-bound uncertainty in a durable Objective Situation
 		})),
 		taskLedger: { queryTasks: () => [], record: (task) => { objective = task; }, transition: () => true },
 		planningPolicy: { decide: () => ({ mode: "direct", requiredTools: [], suggestedConcurrency: 1, budget: { maxSubagents: 0, maxToolCalls: null, maxTokens: null, maxCorrectiveAttempts: 0 }, signals: { substantialWork: true }, reason: "test", directive: () => "[policy]" }) },
-		createAgent: async () => ({ agent, subscribe: () => () => undefined,
-			prompt: async (text) => { prompt = text; agent.state.messages = [{ role: "assistant", content: [{ type: "text", text: "done" }], usage: { input: 1, output: 1 } }]; },
+		createAgent: async () => ({ agent,
+			getAllTools: () => [{ name: "read", description: "read evidence", beemaxPolicy: { sideEffect: "none" } }, { name: "write", description: "consequential write", beemaxPolicy: { sideEffect: "external" } }],
+			getActiveToolNames: () => [...activeTools], setActiveToolsByName: (names) => { activeTools = [...names]; }, subscribe: () => () => undefined,
+			prompt: async (text) => { prompt = text; toolsDuringPrompt = [...activeTools]; agent.state.messages = [{ role: "assistant", content: [{ type: "text", text: "done" }], usage: { input: 1, output: 1 } }]; },
 			abort: async () => undefined, dispose: () => undefined }),
 	});
 	try {
-		await runtime.run({ source: { platform: "cli", chatId: "local", chatType: "dm", userId: "owner" }, text: rawRequest, timeoutMs: 1_000 });
+		await runtime.run({ source: { platform: "cli", chatId: "local", chatType: "dm", userId: "owner" }, text: rawRequest, timeoutMs: 1_000, allowedCapabilities: ["read", "write"] });
 		assert.deepEqual(objective.situation.uncertainties, ["若版本不明确则先确认"]);
 		assert.match(prompt, /若版本不明确则先确认/);
 		assert.match(prompt, /beemax-uncertainty-policy/);
 		assert.match(prompt, /Never guess/);
+		assert.deepEqual(toolsDuringPrompt, ["read"]);
 	} finally { runtime.dispose(); }
 });
 

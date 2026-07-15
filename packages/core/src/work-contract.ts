@@ -182,6 +182,7 @@ export function validateWorkContract(value: unknown, rawRequest: string, options
 	if (normalized.action === "continue" && trustedContext?.activeObjective && (normalized.objective.source.kind !== "active_objective" || normalized.objective.text !== trustedContext.activeObjective.title || normalized.objective.source.id !== trustedContext.activeObjective.id)) throw new Error("Work Contract continuation is not linked to the active Objective");
 	if (options.requireAcceptanceCriterion && (normalized.action === "create" || normalized.action === "correct") && normalized.acceptanceCriteria.length === 0) throw new Error("Model Work Contract executable work requires an observable acceptance criterion");
 	if (trustedContext) assertTrustedClauseCoverage(normalized, trustedContext.fallback);
+	assertCriterionVerifiability(normalized, options.requireAcceptanceCriterion === true);
 	assertCategorySeparation(normalized.constraints, normalized.prohibitions, normalized.acceptanceCriteria);
 	return { schemaVersion: WORK_CONTRACT_SCHEMA_VERSION, rawRequest: requiredRawRequest(rawRequest), ...normalized };
 }
@@ -371,12 +372,25 @@ function assertCategorySeparation(constraints: readonly WorkContractClause[], pr
 }
 
 function assertTrustedClauseCoverage(contract: Omit<WorkContract, "schemaVersion" | "rawRequest">, fallback: TurnUnderstanding): void {
-	const constraintTexts = new Set([...contract.constraints, ...contract.prohibitions, ...contract.acceptanceCriteria].map((clause) => normalized(clause.text)));
-	for (const expected of fallback.constraints) if (!constraintTexts.has(normalized(expected))) throw new Error("Work Contract omitted a trusted constraint or prohibition");
+	const constraintTexts = new Set(contract.constraints.map((clause) => normalized(clause.text)));
+	const prohibitionTexts = new Set(contract.prohibitions.map((clause) => normalized(clause.text)));
 	const criterionTexts = new Set(contract.acceptanceCriteria.map((clause) => normalized(clause.text)));
+	const trustedCriteria = new Set(fallback.acceptanceCriteria.map(normalized));
+	for (const expected of fallback.constraints) {
+		const key = normalized(expected);
+		const covered = isProhibition(expected) ? prohibitionTexts.has(key) : constraintTexts.has(key) || (trustedCriteria.has(key) && criterionTexts.has(key));
+		if (!covered) throw new Error("Work Contract omitted or misclassified a trusted constraint or prohibition");
+	}
 	for (const expected of fallback.acceptanceCriteria) if (!criterionTexts.has(normalized(expected))) throw new Error("Work Contract omitted a trusted acceptance criterion");
 	const uncertaintyTexts = new Set(contract.uncertainties.map((clause) => normalized(clause.text)));
 	for (const expected of fallback.uncertainties ?? []) if (!uncertaintyTexts.has(normalized(expected))) throw new Error("Work Contract omitted a trusted uncertainty");
+}
+
+function assertCriterionVerifiability(contract: Omit<WorkContract, "schemaVersion" | "rawRequest">, strictModelProposal: boolean): void {
+	for (const criterion of contract.acceptanceCriteria) if (isProhibition(criterion.text)) throw new Error("Work Contract acceptance criterion cannot be a prohibition");
+	if (!strictModelProposal || (contract.action !== "create" && contract.action !== "correct")) return;
+	const objectiveKey = normalized(contract.objective.text);
+	if (!contract.acceptanceCriteria.some((criterion) => normalized(criterion.text) === objectiveKey)) throw new Error("Model Work Contract must bind executable Objective text to an acceptance criterion");
 }
 
 function modelClauseList(value: unknown, rawRequest: string, label: string): WorkContractClause[] {
