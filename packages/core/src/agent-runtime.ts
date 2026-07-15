@@ -679,6 +679,11 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 			if (input.mode !== "automation") this.context?.record(input.source, { user: input.text, assistant: answer }, { accessScopeRef });
 			return { answer, model: modelOf(session.piSession.agent), durationMs: Date.now() - startedAt, usage: usageOf(session.piSession.agent) };
 		}, executionEnvelope).catch((cause) => {
+			if (activeTaskRunId) this.taskLedger?.transitionRun(activeTaskRunId, {
+				status: input.signal?.aborted ? "cancelled" : "failed",
+				finishedAt: Date.now(),
+				error: redactCredentialMaterial(errorMessage(cause)).slice(0, 5_000),
+			});
 			if (explicitAutomationObjective && objective) {
 				this.taskLedger?.transition(objective.id, input.signal?.aborted
 					? { status: "cancelled", finishedAt: Date.now(), error: "Proactive execution was cancelled" }

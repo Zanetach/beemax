@@ -317,3 +317,29 @@ test("failed proactive Objective admission does not create an orphaned running T
 		assert.equal(objective.status, "pending");
 	} finally { runtime.dispose(); }
 });
+
+test("pre-prompt proactive setup failure settles its recorded Task Run and restores the Objective", async () => {
+	const source = { platform: "feishu", chatId: "proactive-setup", chatType: "dm", userId: "owner" };
+	const objective = { id: "objective:setup", ownerKey: "feishu:proactive-setup:owner", kind: "objective", title: "生成报告", description: "生成报告", status: "pending", recoveryPolicy: "safe_retry", idempotencyKey: "setup", createdAt: 1 };
+	const tasks = new Map([[objective.id, objective]]);
+	const runs = new Map();
+	const runtime = new BeeMaxAgentRuntime({
+		taskLedger: {
+			record() { assert.fail("existing Objective must be reused"); },
+			transition(id, change) { tasks.set(id, { ...tasks.get(id), ...change }); return true; },
+			recordRun(run) { runs.set(run.id, { ...run }); },
+			transitionRun(id, change) { const run = runs.get(id); if (!run) return false; runs.set(id, { ...run, ...change }); return true; },
+			queryTasks(query) { const task = tasks.get(query.id); return task && query.ownerKeys.includes(task.ownerKey) ? [task] : []; },
+		},
+		createAgent: async () => { throw new Error("interactive Pi must not start"); },
+		createAutomationAgent: async () => ({ agent: { state: { model: { id: "test" }, messages: [] } },
+			getAllTools: () => [{ name: "read", beemaxPolicy: { sideEffect: "none" } }], getActiveToolNames: () => ["read"], setActiveToolsByName: () => undefined,
+			subscribe: () => () => undefined, prompt: async () => assert.fail("Pi prompt must not start"), abort: async () => undefined, dispose: () => undefined }),
+	});
+	try {
+		await assert.rejects(runtime.run({ source, text: objective.description, timeoutMs: 1_000, mode: "automation", objectiveTaskId: objective.id, allowedCapabilities: ["missing"] }), /unavailable Tools/);
+		assert.equal(tasks.get(objective.id).status, "pending");
+		assert.equal(runs.size, 1);
+		assert.equal([...runs.values()][0].status, "failed");
+	} finally { runtime.dispose(); }
+});
