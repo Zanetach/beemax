@@ -399,6 +399,7 @@ export class MemoryStore {
 				verification_status TEXT CHECK (verification_status IN ('pending', 'accepted', 'rejected')),
 				verification_outcome TEXT CHECK (verification_outcome IN ('pending', 'accepted', 'rejected', 'unavailable')),
 				verification_feedback TEXT,
+				verification_requirements TEXT,
 				criterion_verifications TEXT,
 				verification_attempts INTEGER NOT NULL DEFAULT 0,
 				verification_retry_at INTEGER,
@@ -766,6 +767,7 @@ export class MemoryStore {
 		this.addColumnIfMissing("tasks", "verification_status", "TEXT");
 		this.addColumnIfMissing("tasks", "verification_outcome", "TEXT");
 		this.addColumnIfMissing("tasks", "verification_feedback", "TEXT");
+		this.addColumnIfMissing("tasks", "verification_requirements", "TEXT");
 		this.addColumnIfMissing("tasks", "criterion_verifications", "TEXT");
 		this.addColumnIfMissing("tasks", "verification_attempts", "INTEGER NOT NULL DEFAULT 0");
 		this.addColumnIfMissing("tasks", "verification_retry_at", "INTEGER");
@@ -1729,14 +1731,21 @@ export class MemoryStore {
 	hasTask(id: string): boolean { return Boolean(this.db.prepare("SELECT 1 FROM tasks WHERE id = ? LIMIT 1").get(id)); }
 
 	record(task: RuntimeTaskRecord): void {
-		this.db.prepare(`INSERT INTO tasks (id, owner_key, kind, title, description, acceptance_criteria, recovery_policy, idempotency_key, execution_scope, situation, access_scope_ref, status, parent_id, plan_id, evidence, artifacts, unresolved_issues, verification_outcome, verification_feedback, criterion_verifications, corrective_attempts, created_at, started_at, finished_at, result, candidate_result, error, checkpoint, checkpoint_at, routes, route_index, updated_at)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-			.run(task.id, task.ownerKey, task.kind, task.title, safeTaskText(task.description), task.acceptanceCriteria ?? null, task.recoveryPolicy ?? "never", task.idempotencyKey ?? null, task.executionScope ? JSON.stringify(task.executionScope) : null, task.situation ? JSON.stringify(task.situation) : null, task.accessScopeRef ? JSON.stringify(task.accessScopeRef) : null, task.status, task.parentId ?? null, task.planId ?? null, safeTaskText(task.evidence), safeTaskArtifacts(task.artifacts), safeUnresolvedIssues(task.unresolvedIssues), task.verificationStatus ?? null, safeTaskText(task.verificationFeedback), safeCriterionVerifications(task.criterionVerifications), task.correctiveAttempts ?? 0, task.createdAt, task.startedAt ?? null, task.finishedAt ?? null, safeTaskText(task.result), safeTaskText(task.candidateResult), safeTaskText(task.error), task.checkpoint ? renderTaskCheckpoint(task.checkpoint) : null, task.checkpointAt ?? null, task.routes ? JSON.stringify(task.routes) : null, task.routeIndex ?? 0, task.createdAt);
+		this.db.prepare(`INSERT INTO tasks (id, owner_key, kind, title, description, acceptance_criteria, recovery_policy, idempotency_key, execution_scope, situation, access_scope_ref, status, parent_id, plan_id, evidence, artifacts, unresolved_issues, verification_outcome, verification_feedback, verification_requirements, criterion_verifications, corrective_attempts, created_at, started_at, finished_at, result, candidate_result, error, checkpoint, checkpoint_at, routes, route_index, updated_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+			.run(task.id, task.ownerKey, task.kind, task.title, safeTaskText(task.description), task.acceptanceCriteria ?? null, task.recoveryPolicy ?? "never", task.idempotencyKey ?? null, task.executionScope ? JSON.stringify(task.executionScope) : null, task.situation ? JSON.stringify(task.situation) : null, task.accessScopeRef ? JSON.stringify(task.accessScopeRef) : null, task.status, task.parentId ?? null, task.planId ?? null, safeTaskText(task.evidence), safeTaskArtifacts(task.artifacts), safeUnresolvedIssues(task.unresolvedIssues), task.verificationStatus ?? null, safeTaskText(task.verificationFeedback), safeVerificationRequirements(task.verificationRequirements), safeCriterionVerifications(task.criterionVerifications), task.correctiveAttempts ?? 0, task.createdAt, task.startedAt ?? null, task.finishedAt ?? null, safeTaskText(task.result), safeTaskText(task.candidateResult), safeTaskText(task.error), task.checkpoint ? renderTaskCheckpoint(task.checkpoint) : null, task.checkpointAt ?? null, task.routes ? JSON.stringify(task.routes) : null, task.routeIndex ?? 0, task.createdAt);
 	}
 
 	updateSituation(ownerKey: string, taskId: string, situation: NonNullable<RuntimeTaskRecord["situation"]>): boolean {
 		return this.db.prepare("UPDATE tasks SET situation = ?, updated_at = ? WHERE id = ? AND owner_key = ? AND kind = 'objective' AND status IN ('pending', 'running')")
 			.run(JSON.stringify(situation), Date.now(), taskId, ownerKey).changes === 1;
+	}
+
+	updateVerificationRequirements(ownerKey: string, taskId: string, requirements: NonNullable<RuntimeTaskRecord["verificationRequirements"]>): boolean {
+		const encoded = safeVerificationRequirements(requirements);
+		if (!encoded) return false;
+		return this.db.prepare("UPDATE tasks SET verification_requirements = ?, updated_at = ? WHERE id = ? AND owner_key = ? AND status IN ('pending', 'running')")
+			.run(encoded, Date.now(), taskId, ownerKey).changes === 1;
 	}
 
 	transition(id: string, change: TaskTransition): boolean {
@@ -2703,7 +2712,7 @@ interface EventRow {
 
 interface RuntimeTaskRow {
 	id: string; owner_key: string; kind: RuntimeTaskRecord["kind"]; title: string; description: string | null; acceptance_criteria: string | null; recovery_policy: RuntimeTaskRecord["recoveryPolicy"]; idempotency_key: string | null; execution_scope: string | null; situation: string | null; access_scope_ref: string | null; business_context: string | null; status: RuntimeTaskRecord["status"];
-	parent_id: string | null; plan_id: string | null; evidence: string | null; artifacts: string | null; unresolved_issues: string | null; verification_outcome: RuntimeTaskRecord["verificationStatus"] | null; verification_feedback: string | null; criterion_verifications: string | null; verification_attempts: number; verification_retry_at: number | null; corrective_attempts: number; created_at: number; started_at: number | null; finished_at: number | null; result: string | null; candidate_result: string | null; error: string | null;
+	parent_id: string | null; plan_id: string | null; evidence: string | null; artifacts: string | null; unresolved_issues: string | null; verification_outcome: RuntimeTaskRecord["verificationStatus"] | null; verification_feedback: string | null; verification_requirements: string | null; criterion_verifications: string | null; verification_attempts: number; verification_retry_at: number | null; corrective_attempts: number; created_at: number; started_at: number | null; finished_at: number | null; result: string | null; candidate_result: string | null; error: string | null;
 	checkpoint: string | null; checkpoint_at: number | null; routes: string | null; route_index: number; effect_receipts: string | null;
 }
 
@@ -2847,6 +2856,7 @@ function mapRuntimeTask(row: RuntimeTaskRow): RuntimeTaskRecord {
 	const businessContext = parseBusinessContext(row.business_context);
 	const artifacts = parseTaskArtifacts(row.artifacts);
 	const unresolvedIssues = parseUnresolvedIssues(row.unresolved_issues);
+	const verificationRequirements = parseVerificationRequirements(row.verification_requirements);
 	const criterionVerifications = parseCriterionVerifications(row.criterion_verifications);
 	return {
 		id: row.id, ownerKey: row.owner_key, kind: row.kind, title: row.title, status: row.status,
@@ -2866,6 +2876,7 @@ function mapRuntimeTask(row: RuntimeTaskRow): RuntimeTaskRecord {
 		...(unresolvedIssues ? { unresolvedIssues } : {}),
 		...(row.verification_outcome === null ? {} : { verificationStatus: row.verification_outcome }),
 		...(row.verification_feedback === null ? {} : { verificationFeedback: row.verification_feedback }),
+		...(verificationRequirements ? { verificationRequirements } : {}),
 		...(criterionVerifications ? { criterionVerifications } : {}),
 		...(row.verification_attempts ? { verificationAttempts: row.verification_attempts } : {}),
 		...(row.verification_retry_at === null ? {} : { verificationRetryAt: row.verification_retry_at }),
@@ -2961,6 +2972,28 @@ function parseUnresolvedIssues(value: string | null): string[] | undefined {
 	} catch { return undefined; }
 }
 
+function parseVerificationRequirements(value: string | null): RuntimeTaskRecord["verificationRequirements"] {
+	if (!value) return undefined;
+	try {
+		const parsed = JSON.parse(value) as unknown;
+		if (!Array.isArray(parsed)) return undefined;
+		const capabilities = new Set<string>();
+		const requirements = parsed.slice(0, 50).flatMap((item) => {
+			if (!item || typeof item !== "object") return [];
+			const entry = item as { capability?: unknown; freshness?: unknown; evidence?: unknown };
+			if (typeof entry.capability !== "string") return [];
+			const capability = entry.capability.trim();
+			if (!/^[a-z0-9][a-z0-9._:-]{0,127}$/iu.test(capability) || capabilities.has(capability) || containsCredentialMaterial(capability)) return [];
+			const freshness = ["static", "periodic", "current", "realtime"].includes(String(entry.freshness)) ? entry.freshness as "static" | "periodic" | "current" | "realtime" : undefined;
+			const evidence = ["none", "self_reported", "source_receipt", "verified"].includes(String(entry.evidence)) ? entry.evidence as "none" | "self_reported" | "source_receipt" | "verified" : undefined;
+			if (!freshness && !evidence) return [];
+			capabilities.add(capability);
+			return [{ capability, ...(freshness ? { freshness } : {}), ...(evidence ? { evidence } : {}) }];
+		});
+		return requirements.length ? requirements : undefined;
+	} catch { return undefined; }
+}
+
 function parseCriterionVerifications(value: string | null): RuntimeTaskRecord["criterionVerifications"] {
 	if (!value) return undefined;
 	try {
@@ -3039,6 +3072,11 @@ function safeUnresolvedIssues(value: RuntimeTaskRecord["unresolvedIssues"]): str
 function safeCriterionVerifications(value: RuntimeTaskRecord["criterionVerifications"]): string | null {
 	const verifications = parseCriterionVerifications(value === undefined ? null : JSON.stringify(value));
 	return verifications ? JSON.stringify(verifications) : null;
+}
+
+function safeVerificationRequirements(value: RuntimeTaskRecord["verificationRequirements"]): string | null {
+	const requirements = parseVerificationRequirements(value === undefined ? null : JSON.stringify(value));
+	return requirements ? JSON.stringify(requirements) : null;
 }
 
 function scopeWhere(opts: Omit<RecallOptions, "limit">, alias: string): { where: string; params: unknown[] } {

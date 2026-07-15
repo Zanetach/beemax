@@ -557,9 +557,9 @@ This ordering is the implementation plan, not a fixed business workflow. Core re
 
 **Blocked by:** Acquire missing Tool and MCP Providers without degrading the Objective; Verify every acceptance criterion against durable receipts.
 
-- [ ] Derive freshness and source requirements from the Work Contract rather than a hardcoded weather, price, or news vocabulary.
-- [ ] Prove no current external claim can pass without a successful source receipt.
-- [ ] Exercise configured, unconfigured, offline, timeout, and alternate-provider paths without evergreen substitution.
+- [x] Derive freshness and source requirements from the Work Contract rather than a hardcoded weather, price, or news vocabulary.
+- [x] Prove no current external claim can pass without a successful source receipt.
+- [x] Exercise configured, unconfigured, offline, timeout, and alternate-provider paths without evergreen substitution.
 
 ## Recover and verify both Direct and Plan Objectives
 

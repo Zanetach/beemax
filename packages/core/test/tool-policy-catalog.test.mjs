@@ -124,6 +124,32 @@ test("web_search reroutes a failed configured read-only Provider to healthy exa-
 	]);
 });
 
+test("web_search returns an exact configuration blocker instead of evergreen content when no Provider exists", async () => {
+	const tools = new Map(createWebTools({ env: {}, agentReachAvailable: false }).map((tool) => [tool.name, tool]));
+	const result = await tools.get("web_search").execute("search", { query: "qx-17 zorb flux" }, new AbortController().signal);
+	assert.equal(result.isError, true);
+	assert.match(result.content[0].text, /No search Provider is configured/);
+	assert.deepEqual(result.details.attempts, []);
+	assert.doesNotMatch(result.content[0].text, /evergreen|general background|best effort/i);
+});
+
+test("web_search preserves timeout and offline attempts when every configured route fails", async () => {
+	const tools = new Map(createWebTools({
+		env: { TAVILY_API_KEY: "configured" },
+		agentReachAvailable: true,
+		apiSearch: async () => { throw new Error("request timed out after 30s"); },
+		agentReachSearch: async () => { throw new Error("network offline"); },
+	}).map((tool) => [tool.name, tool]));
+	const result = await tools.get("web_search").execute("search", { query: "qx-17 zorb flux" }, new AbortController().signal);
+	assert.equal(result.isError, true);
+	assert.deepEqual(result.details.attempts.map(({ provider, status, reasonCode }) => ({ provider, status, reasonCode })), [
+		{ provider: "tavily", status: "failed", reasonCode: "timeout" },
+		{ provider: "exa-mcporter", status: "failed", reasonCode: "provider_unavailable" },
+	]);
+	assert.match(result.content[0].text, /tavily.*timed out.*Exa\/mcporter fallback failed.*network offline/i);
+	assert.doesNotMatch(result.content[0].text, /evergreen|general background|best effort/i);
+});
+
 test("web Tool Spec availability reflects configured Providers without exposing credentials", () => {
 	const unavailable = new Map(createWebTools({ env: {}, agentReachAvailable: false }).map((tool) => [tool.name, tool]));
 	assert.deepEqual(unavailable.get("web_search").beemaxToolSpec, { kind: "tool", configured: false, health: "configuration_required", ranking: { inputModalities: ["text"], outputModalities: ["structured"], freshness: "realtime", evidence: "source_receipt" } });

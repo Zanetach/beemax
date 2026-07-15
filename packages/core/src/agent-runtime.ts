@@ -28,6 +28,8 @@ import type { ToolSideEffect } from "./tool-runtime.ts";
 import { MediaUnderstandingRuntime, type MediaUnderstandingPort } from "./media-understanding.ts";
 import { activateToolSpecPlan, buildToolSpecPlan, deferToolSpecPlan, hideToolSpecPlan, renderToolSpecPlan, restoreProviderToolSpecPlan, type ToolSpecInventoryItem } from "./tool-spec-plan.ts";
 import type { ToolEffectProjectionReader } from "./tool-effect.ts";
+import { deriveTaskVerificationRequirements, mergeTaskVerificationRequirements } from "./task-verification-requirements.ts";
+import { sanitizeTaskCriterionVerifications, unavailableTaskCriterionVerifications } from "./task-criteria.ts";
 
 export interface AgentRunInput<Source extends BeeMaxRuntimeSource = BeeMaxRuntimeSource> {
 	source: Source;
@@ -448,6 +450,19 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 				activeSkillToolNames: skillLifecycleTools,
 				tools: toolSpecInventory,
 			});
+			const verificationCapabilityInventory = allTools.map((tool) => ({
+				name: tool.name,
+				signals: (tool as typeof tool & { beemaxToolSpec?: { ranking?: CapabilityOperationalSignals } }).beemaxToolSpec?.ranking,
+			}));
+			let taskVerificationRequirements = objective?.verificationRequirements ?? [];
+			const persistTaskVerificationRequirements = (names: readonly string[]) => {
+				const derived = deriveTaskVerificationRequirements(names, verificationCapabilityInventory);
+				if (!derived.length) return;
+				taskVerificationRequirements = mergeTaskVerificationRequirements(taskVerificationRequirements, derived);
+				const taskId = executionEnvelope.taskId;
+				if (taskId) this.taskLedger?.updateVerificationRequirements?.(input.source.delegatedTask?.ownerKey ?? responsibilityOwnerKey(input.source), taskId, taskVerificationRequirements);
+			};
+			persistTaskVerificationRequirements(proposedProgressiveTools);
 			const prefetchedProviderBlocker = providerPrefetchAvailability.restrictions.find((item) => !item.installable);
 			if (prefetchedProviderBlocker) throw new AgentRunError(prefetchedProviderBlocker.blocker, false, undefined);
 			const activatePlannedTools = (names: readonly string[]): string[] => {
@@ -455,6 +470,7 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 				if (eligible.length) toolSpecPlan = activateToolSpecPlan(toolSpecPlan, eligible);
 				const directNames = toolSpecPlan.direct.map((entry) => entry.toolName);
 				if (activeTools) session.piSession.setActiveToolsByName(directNames);
+				persistTaskVerificationRequirements(eligible);
 				return eligible.filter((name) => directNames.includes(name));
 			};
 			const progressiveTools = toolSpecPlan.direct.map((entry) => entry.toolName);
@@ -908,17 +924,20 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 						this.taskLedger?.transition(objective.id, { status: "running", verificationStatus: "unavailable", candidateResult: candidate.slice(0, 50_000), correctiveAttempts });
 						if (!this.verifyObjectiveCandidate || !activeTaskRunId) {
 							objectiveVerificationOutcome = "unavailable";
+							const unavailableReason = "Independent Verification is unavailable for the durable Objective";
+							this.taskLedger?.transition(objective.id, { status: "running", error: unavailableReason, candidateResult: candidate.slice(0, 50_000), verificationStatus: "unavailable", criterionVerifications: unavailableTaskCriterionVerifications(objective.acceptanceCriteria, unavailableReason), correctiveAttempts });
 							this.taskLedger?.deferCandidateVerification?.([objective.ownerKey], objective.id, Date.now());
 							completionAnswer = "任务尚未完成：独立 Verification 当前不可用。Candidate Outcome 已保留，Objective 仍处于 incomplete 状态；请恢复验证能力后重试。";
 							break;
 						}
 						this.recordTrace({ type: "verification.started", executionEnvelope, at: Date.now() });
 						try {
-							const verification = await this.verifyObjectiveCandidate({ ...objective, status: "running", candidateResult: candidate, correctiveAttempts }, { output: candidate }, input.signal, { taskRunId: activeTaskRunId, successfulToolNames: [...successfulToolNames] });
+							const verification = await this.verifyObjectiveCandidate({ ...objective, status: "running", candidateResult: candidate, correctiveAttempts, ...(taskVerificationRequirements.length ? { verificationRequirements: taskVerificationRequirements } : {}) }, { output: candidate }, input.signal, { taskRunId: activeTaskRunId, successfulToolNames: [...successfulToolNames] });
+							const criterionVerifications = sanitizeTaskCriterionVerifications(verification.criterionVerifications);
 							if (verification.accepted) {
 								objectiveVerificationOutcome = "accepted";
 								this.recordTrace({ type: "verification.settled", executionEnvelope, at: Date.now(), status: "accepted" });
-								this.taskLedger?.transition(objective.id, { status: "succeeded", finishedAt: Date.now(), result: candidate.slice(0, 50_000), evidence: verification.evidence?.slice(0, 5_000), verificationStatus: "accepted", correctiveAttempts });
+								this.taskLedger?.transition(objective.id, { status: "succeeded", finishedAt: Date.now(), result: candidate.slice(0, 50_000), evidence: verification.evidence?.slice(0, 5_000), verificationStatus: "accepted", criterionVerifications, correctiveAttempts });
 								completionAnswer = candidate;
 								break;
 							}
@@ -926,12 +945,12 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 							this.recordTrace({ type: "verification.settled", executionEnvelope, at: Date.now(), status: "rejected" });
 							if (correctiveAttempts >= maxCorrectiveAttempts) {
 								objectiveVerificationOutcome = "rejected";
-								this.taskLedger?.transition(objective.id, { status: "failed", finishedAt: Date.now(), error: `Objective verification rejected: ${feedback}`, candidateResult: candidate.slice(0, 50_000), verificationStatus: "rejected", verificationFeedback: feedback, correctiveAttempts });
+								this.taskLedger?.transition(objective.id, { status: "failed", finishedAt: Date.now(), error: `Objective verification rejected: ${feedback}`, candidateResult: candidate.slice(0, 50_000), verificationStatus: "rejected", verificationFeedback: feedback, criterionVerifications, correctiveAttempts });
 								completionAnswer = `任务未通过独立 Verification，不能作为完成结果交付。原因：${feedback}`;
 								break;
 							}
 							correctiveAttempts++;
-							this.taskLedger?.transition(objective.id, { status: "running", candidateResult: candidate.slice(0, 50_000), verificationStatus: "rejected", verificationFeedback: feedback, correctiveAttempts });
+							this.taskLedger?.transition(objective.id, { status: "running", candidateResult: candidate.slice(0, 50_000), verificationStatus: "rejected", verificationFeedback: feedback, criterionVerifications, correctiveAttempts });
 							this.taskLedger?.transitionRun(activeTaskRunId, { status: "succeeded", finishedAt: Date.now(), output: candidate.slice(0, 50_000) });
 							this.recordTrace({ type: "execution.settled", executionEnvelope, at: Date.now(), status: "succeeded" });
 							await onEvent?.({ type: "execution_settled", executionEnvelope, status: "succeeded" });
@@ -957,7 +976,8 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 							if (correctionInFlight || input.signal?.aborted || turnAbortReason) throw error;
 							this.recordTrace({ type: "verification.settled", executionEnvelope, at: Date.now(), status: "unavailable" });
 							objectiveVerificationOutcome = "unavailable";
-							this.taskLedger?.transition(objective.id, { status: "running", error: redactCredentialMaterial(errorMessage(error)).slice(0, 5_000), candidateResult: candidate.slice(0, 50_000), verificationStatus: "unavailable", correctiveAttempts });
+							const unavailableReason = redactCredentialMaterial(errorMessage(error)).slice(0, 5_000);
+							this.taskLedger?.transition(objective.id, { status: "running", error: unavailableReason, candidateResult: candidate.slice(0, 50_000), verificationStatus: "unavailable", criterionVerifications: unavailableTaskCriterionVerifications(objective.acceptanceCriteria, unavailableReason), correctiveAttempts });
 							this.taskLedger?.deferCandidateVerification?.([objective.ownerKey], objective.id, Date.now());
 							completionAnswer = `任务尚未完成：独立 Verification 暂时不可用（${redactCredentialMaterial(errorMessage(error)).slice(0, 1_000)}）。Candidate Outcome 已保留，恢复验证能力后可继续。`;
 							break;

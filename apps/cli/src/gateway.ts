@@ -8,7 +8,7 @@
  */
 
 import { AutomationStore } from "@beemax/automation";
-import { ActionGovernance, AutonomyRolloutController, AutomationDeliveryWorker, AutomationScheduler, BeeMaxAgentRuntime, DeliveryDeferredError, DeterministicSituationBuilder, FileCredentialVault, FileCredentialVaultAuditJournal, GroupObservationRecorder, HeartbeatRunner, InitiativeRuntime, InitiativeTriggerService, PiAmbientObservationEvaluator, PiWorkContractBuilder, ProactiveInvestigationRuntime, TaskPlanNoticeDeliveryService, TaskTransitionInitiativeAdapter, ToolApprovalBroker, ToolPolicyRegistry, VERIFICATION_SUBMIT_TOOL_NAME, buildActiveTaskPreservationEnvelope, buildTaskPreservationEnvelope, canonicalUserId, containsCredentialMaterial, conversationKey, responsibilityOwnerKey, responsibilityOwnerKeys, createExecutionEnvelope, createSubagentTools, createTaskCheckpoint, createTaskLedgerTools, createTaskOrchestrationTools, decideInitiativeFromSituation, guardVerifiedObjectiveMemoryPublisher, isVerifiedAutomationOutcome, redactCredentialMaterial, renderTaskCheckpoint, selectTurnTools, taskCriterionDefinitions, type AgentRuntimePort, type AmbientObservationEvaluator, type BeeMaxAgentRunEvent, type BeeMaxAgentRunEventSink, type ContextCompactionAuditEvent, type DeliveryPort, type ExecutionEnvelope, type ExecutionTraceSink, type InitiativeObservation, type ObjectiveDeliveryInput, type SkillCandidateTrialInput, type SkillTrialAssertion, type SkillTrialToolCall, type SubagentTask, type TaskGraphExecutionContext, type TaskGraphExecutionResult, type TaskGraphVerifier, type TaskLedger, type TaskRecord, type ToolEffectProjectionReader, type VerifiedObjectiveMemoryPublisher } from "@beemax/core";
+import { ActionGovernance, AutonomyRolloutController, AutomationDeliveryWorker, AutomationScheduler, BeeMaxAgentRuntime, DeliveryDeferredError, DeterministicSituationBuilder, FileCredentialVault, FileCredentialVaultAuditJournal, GroupObservationRecorder, HeartbeatRunner, InitiativeRuntime, InitiativeTriggerService, PiAmbientObservationEvaluator, PiWorkContractBuilder, ProactiveInvestigationRuntime, TaskPlanNoticeDeliveryService, TaskTransitionInitiativeAdapter, ToolApprovalBroker, ToolPolicyRegistry, VERIFICATION_SUBMIT_TOOL_NAME, buildActiveTaskPreservationEnvelope, buildTaskPreservationEnvelope, canonicalUserId, containsCredentialMaterial, conversationKey, responsibilityOwnerKey, responsibilityOwnerKeys, createExecutionEnvelope, createSubagentTools, createTaskCheckpoint, createTaskLedgerTools, createTaskOrchestrationTools, decideInitiativeFromSituation, guardVerifiedObjectiveMemoryPublisher, isVerifiedAutomationOutcome, redactCredentialMaterial, renderTaskCheckpoint, selectTurnTools, taskCriterionDefinitions, taskRequiresCurrentSourceEvidence, type AgentRuntimePort, type AmbientObservationEvaluator, type BeeMaxAgentRunEvent, type BeeMaxAgentRunEventSink, type ContextCompactionAuditEvent, type DeliveryPort, type ExecutionEnvelope, type ExecutionTraceSink, type InitiativeObservation, type ObjectiveDeliveryInput, type SkillCandidateTrialInput, type SkillTrialAssertion, type SkillTrialToolCall, type SubagentTask, type TaskGraphExecutionContext, type TaskGraphExecutionResult, type TaskGraphVerifier, type TaskLedger, type TaskRecord, type ToolEffectProjectionReader, type VerifiedObjectiveMemoryPublisher } from "@beemax/core";
 import {
 	AdapterRegistry,
 	ChannelHost,
@@ -916,6 +916,8 @@ export function createTaskVerifier(factory: ReturnType<typeof buildAgentFactory>
 	return async (task, candidate, signal, context) => {
 		if (!task.executionScope) throw new Error("Verification unavailable: Task execution scope is unavailable");
 		const criteria = taskCriterionDefinitions(task.acceptanceCriteria);
+		const currentSourceCapabilities = requiredCurrentSourceCapabilities(task);
+		const currentSourceRequired = taskRequiresCurrentSourceEvidence(task.verificationRequirements);
 		const externalUrls = [...new Set((`${task.description ?? ""}\n${task.acceptanceCriteria ?? ""}\n${candidate.output ?? ""}`.match(/https?:\/\/[^\s<>'"\])}]+/gi) ?? []).map(normalizedEvidenceUrl))];
 		if (externalUrls.some((url) => url.length > 2_048 || containsCredentialMaterial(url))) throw new Error("Verification unavailable: Candidate contains an unsafe or overlong external source URL");
 		if (externalUrls.length > 24) throw new Error(`Verification unavailable: Candidate cited ${externalUrls.length} external URLs, exceeding the bounded exact-source verification limit of 24`);
@@ -927,7 +929,7 @@ export function createTaskVerifier(factory: ReturnType<typeof buildAgentFactory>
 		const initialVerificationToolCallBudget = verificationTotalToolCallBudget - correctionToolCallReserve;
 		const initialVerificationTokenBudget = verificationTotalTokenBudget - correctionTokenReserve;
 		const verificationCapabilities = externalUrls.length
-			? allowedCapabilities.filter((name) => name !== "web_search" && name !== "exa_web_search")
+			? [...new Set([...allowedCapabilities.filter((name) => name !== "web_search" && name !== "exa_web_search"), "web_extract"])]
 			: allowedCapabilities;
 		const verificationTask: SubagentTask = {
 			id: `${task.id}:verification:${crypto.randomUUID()}`,
@@ -942,6 +944,9 @@ export function createTaskVerifier(factory: ReturnType<typeof buildAgentFactory>
 				"For a cited external URL, independently fetch the exact URL with web_extract before binding it as evidence. Use maxChars=3000 unless a specific criterion requires more text. A search result or Candidate citation alone is not an independent fetch. Do not repeat broad research when targeted extraction is sufficient.",
 				`The Candidate contains ${externalUrls.length} unique external URL(s); every one must have a successful exact-source extraction receipt before acceptance.`,
 				externalUrls.length ? `<required-exact-source-urls>\n${JSON.stringify(externalUrls)}\n</required-exact-source-urls>` : "No external source URL was cited in the Candidate.",
+				currentSourceRequired
+					? `The durable Work Contract requires current source evidence. At least one assertion must bind a successful receipt from one of these selected capabilities: ${JSON.stringify([...currentSourceCapabilities])}.`
+					: "The durable Work Contract does not declare a current source-evidence requirement.",
 				`Call ${VERIFICATION_SUBMIT_TOOL_NAME} exactly once with the final status, factual reason, and exactly one receipt-bound assertion for every criterion. Set each assertion status to accepted or rejected. In evidenceRefs use \"tool:<exact successful Tool name>\"; BeeMax binds every matching successful call to its concrete receipt. Use \"tool-call:<exact Tool call id>\" only when known. Do not use the Candidate itself, paths, excerpts, bare URLs, or prose as evidence. Do not express the verdict only as prose.`,
 				"Use accepted only when every criterion assertion is accepted. Use rejected when every criterion was independently evaluated and at least one assertion is rejected. Use unavailable when any criterion cannot be evaluated; never disguise unavailable evidence as acceptance or rejection.",
 				`Task: ${task.title}`,
@@ -1036,9 +1041,11 @@ export function createTaskVerifier(factory: ReturnType<typeof buildAgentFactory>
 		if (assertions.some((assertion) => assertion.status === "unavailable")) throw new Error("Verification unavailable: criterion assertion was unavailable");
 		if (parsed.status === "accepted" && assertions.some((assertion) => assertion.status !== "accepted")) throw new Error("Verification unavailable: accepted verdict contains a non-accepted criterion");
 		if (parsed.status === "rejected" && !assertions.some((assertion) => assertion.status === "rejected")) throw new Error("Verification unavailable: rejected verdict contains no rejected criterion");
-		const receiptTools = [...successfulTools].filter((name) => name !== VERIFICATION_SUBMIT_TOOL_NAME && name !== "capability_discover" && !name.startsWith("skill_") && name !== "task_checkpoint_save");
-		if (requiresExternalEvidence(task) && !successfulTools.has("web_extract")) throw new Error(`Verification unavailable: external or current claims require an independent exact-source extraction receipt; attempts=${JSON.stringify(attemptedTools).slice(0, 1_000)}`);
-		if (requiresExternalEvidence(task) && (!receiptTools.length || !assertions.some((assertion) => assertion.evidenceRefs.some((ref) => ref.startsWith("tool-call:"))))) throw new Error(`Verification unavailable: external or current claims were not bound to a successful evidence Tool receipt; attempts=${JSON.stringify(attemptedTools).slice(0, 1_000)}`);
+		const currentSourceReceiptRefs = new Set([...successfulReceipts.values()]
+			.filter((receipt) => currentSourceCapabilities.has(receipt.toolName))
+			.map((receipt) => `tool-call:${receipt.callId}`));
+		if (currentSourceRequired && currentSourceReceiptRefs.size === 0) throw new Error(`Verification unavailable: durable Work Contract requires a successful required current-source capability receipt; required=${JSON.stringify([...currentSourceCapabilities])}; attempts=${JSON.stringify(attemptedTools).slice(0, 1_000)}`);
+		if (currentSourceRequired && !assertions.some((assertion) => assertion.evidenceRefs.some((ref) => currentSourceReceiptRefs.has(ref)))) throw new Error(`Verification unavailable: current external claim was not bound to its required source receipt; required=${JSON.stringify([...currentSourceCapabilities])}`);
 		if (externalUrls.length && !externalUrls.every((url) => extractedUrls.has(url))) throw new Error(`Verification unavailable: not every cited external source URL was independently fetched; attempts=${JSON.stringify(attemptedTools).slice(0, 1_000)}`);
 		const criterionVerifications = assertions.map((assertion) => ({
 			...assertion,
@@ -1055,8 +1062,11 @@ function normalizedEvidenceUrl(value: string): string {
 	catch { return value.trim().replace(/\/$/, ""); }
 }
 
-function requiresExternalEvidence(task: Pick<TaskRecord, "title" | "acceptanceCriteria">): boolean {
-	return /\b(?:research|search|latest|today|real[- ]?time|source|citation|official|external)\b|\bcurrent\s+(?!(?:best|most\s+suitable|goal|task|objective|context|directory|workspace)\b)|研究|调研|搜索|检索|查询|当前(?!最(?:合适|佳|好)|目标|任务|上下文|目录|工作区)|最新|今日|实时|来源|引用|官方|外部/i.test(`${task.title}\n${task.acceptanceCriteria ?? ""}`);
+function requiredCurrentSourceCapabilities(task: Pick<TaskRecord, "verificationRequirements">): Set<string> {
+	return new Set((task.verificationRequirements ?? []).filter((item) =>
+		(item.freshness === "current" || item.freshness === "realtime")
+		&& (item.evidence === "source_receipt" || item.evidence === "verified")
+	).map((item) => item.capability));
 }
 
 function durableWorkContext(task: Pick<TaskRecord, "situation">): string | undefined {
@@ -1158,10 +1168,10 @@ export function verificationAgentTools(mcpTools: ReadonlyArray<string | { name: 
 
 export function verificationAgentToolsForTask(
 	mcpTools: ReadonlyArray<string | { name: string; description?: string; aliases?: readonly string[]; triggers?: readonly string[]; exclude?: readonly string[] }>,
-	task: Pick<TaskRecord, "title" | "description" | "acceptanceCriteria">,
+	task: Pick<TaskRecord, "title" | "description" | "acceptanceCriteria" | "verificationRequirements">,
 	successfulToolNames: readonly string[] = [],
 ): string[] {
-	return verificationAgentTools(mcpTools, verificationToolQuery(task), successfulToolNames, requiresExternalEvidence(task));
+	return verificationAgentTools(mcpTools, verificationToolQuery(task), [...successfulToolNames, ...requiredCurrentSourceCapabilities(task)], false);
 }
 
 function verificationToolQuery(task: Pick<TaskRecord, "title" | "description" | "acceptanceCriteria">): string {

@@ -74,10 +74,19 @@ test("verification Tool Spec exposes exact-source extraction for external eviden
 	assert.deepEqual(verificationAgentTools([{ name: "mcp_public_source", description: "Read public evidence" }], "Verify the cited source", ["mcp_public_source"], true), ["verification_submit", "read", "mcp_public_source", "web_extract"]);
 });
 
-test("Task-aware verification Tool routing consistently exposes exact-source extraction", () => {
+test("Task-aware verification Tool routing re-admits the structurally required source capability", () => {
 	assert.deepEqual(
-		verificationAgentToolsForTask([], { title: "研究当前公开趋势", description: "核验来源", acceptanceCriteria: "保留可验证来源" }, ["exa_web_search"]),
-		["verification_submit", "read", "exa_web_search", "web_extract"],
+		verificationAgentToolsForTask(
+			[{ name: "temporal_evidence_feed", description: "Resolve qx-17 state" }],
+			{
+				title: "qx-17 zorb flux",
+				description: "naru vek tal",
+				acceptanceCriteria: "zorb receipt attached",
+				verificationRequirements: [{ capability: "temporal_evidence_feed", freshness: "realtime", evidence: "source_receipt" }],
+			},
+			[],
+		),
+		["verification_submit", "read", "temporal_evidence_feed"],
 	);
 });
 
@@ -551,28 +560,60 @@ test("independent verification cannot accept an external URL without fetching it
 	await assert.rejects(() => verify({ id: "task", ownerKey: "owner", kind: "delegated", title: "Verify URL", status: "running", createdAt: 1, executionScope: { platform: "cli", chatId: "local", chatType: "dm", userId: "local" } }, { output: "Source: https://example.com/fact" }), /not every cited external source URL was independently fetched/);
 });
 
-test("independent verification cannot accept current research from search receipts alone", async () => {
+test("independent verification cannot accept an unknown-domain current claim from an unrelated receipt", async () => {
 	let emit = () => undefined;
-	const activeTools = ["verification_submit", "web_search", "web_extract"];
+	const activeTools = ["verification_submit", "read", "temporal_evidence_feed"];
 	const agent = { state: { model: { id: "test" }, messages: [] } };
 	const factory = async () => ({
 		agent, subscribe: (listener) => { emit = listener; return () => undefined; },
 		getActiveToolNames: () => [...activeTools], getAllTools: () => activeTools.map((name) => ({ name })), setActiveToolsByName: () => undefined,
 		prompt: async () => {
-			const args = { status: "accepted", reason: "search returned a summary", assertions: [{ status: "accepted", criterionId: "C1", evidence: "summary", evidenceRefs: ["tool:web_search"] }] };
-			bindAssistantTurn(emit, [{ id: "search-only", name: "web_search", args: { query: "current trend" } }, { id: "verdict-search", name: "verification_submit", args }]);
-			emit({ type: "tool_execution_start", toolCallId: "search-only", toolName: "web_search", args: { query: "current trend" } });
-			emit({ type: "tool_execution_end", toolCallId: "search-only", toolName: "web_search", isError: false, result: { content: [{ type: "text", text: "current source summary" }] } });
-			emit({ type: "tool_execution_start", toolCallId: "verdict-search", toolName: "verification_submit", args });
-			emit({ type: "tool_execution_end", toolCallId: "verdict-search", toolName: "verification_submit", isError: false, result: {} });
+			const args = { status: "accepted", reason: "local note looked plausible", assertions: [{ status: "accepted", criterionId: "C1", evidence: "local note", evidenceRefs: ["tool:read"] }] };
+			bindAssistantTurn(emit, [{ id: "local-only", name: "read", args: { path: "note.txt" } }, { id: "verdict-local", name: "verification_submit", args }]);
+			emit({ type: "tool_execution_start", toolCallId: "local-only", toolName: "read", args: { path: "note.txt" } });
+			emit({ type: "tool_execution_end", toolCallId: "local-only", toolName: "read", isError: false, result: { content: [{ type: "text", text: "qx-17 guess" }] } });
+			emit({ type: "tool_execution_start", toolCallId: "verdict-local", toolName: "verification_submit", args });
+			emit({ type: "tool_execution_end", toolCallId: "verdict-local", toolName: "verification_submit", isError: false, result: {} });
 			agent.state.messages = [{ role: "assistant", content: [{ type: "text", text: "submitted" }], usage: { input: 1, output: 1 } }];
 		}, abort: async () => undefined, dispose: () => undefined,
 	});
 	const verify = createTaskVerifier(factory, 1_000, undefined, activeTools);
 	await assert.rejects(
-		() => verify({ id: "task", ownerKey: "owner", kind: "delegated", title: "Verify current public research", acceptanceCriteria: "current sources are independently verified", status: "running", createdAt: 1, executionScope: { platform: "cli", chatId: "local", chatType: "dm", userId: "local" } }, { output: "A current trend summary without preserved URLs" }),
-		/exact-source extraction receipt/,
+		() => verify({
+			id: "task", ownerKey: "owner", kind: "delegated", title: "qx-17 zorb flux", acceptanceCriteria: "zorb receipt attached",
+			verificationRequirements: [{ capability: "temporal_evidence_feed", freshness: "realtime", evidence: "source_receipt" }],
+			status: "running", createdAt: 1, executionScope: { platform: "cli", chatId: "local", chatType: "dm", userId: "local" },
+		}, { output: "naru vek tal" }),
+		/required current-source capability receipt/,
 	);
+});
+
+test("independent verification accepts an unknown-domain current claim from its selected alternate Provider receipt", async () => {
+	let emit = () => undefined;
+	const activeTools = ["verification_submit", "temporal_evidence_feed_alt"];
+	const agent = { state: { model: { id: "test" }, messages: [] } };
+	const factory = async () => ({
+		agent, subscribe: (listener) => { emit = listener; return () => undefined; },
+		getActiveToolNames: () => [...activeTools], getAllTools: () => activeTools.map((name) => ({ name })), setActiveToolsByName: () => undefined,
+		prompt: async () => {
+			const args = { status: "accepted", reason: "alternate source returned the qx-17 snapshot", assertions: [{ status: "accepted", criterionId: "C1", evidence: "snapshot observed", evidenceRefs: ["tool:temporal_evidence_feed_alt"] }] };
+			bindAssistantTurn(emit, [{ id: "alternate-source", name: "temporal_evidence_feed_alt", args: { key: "qx-17" } }, { id: "verdict-alt", name: "verification_submit", args }]);
+			emit({ type: "tool_execution_start", toolCallId: "alternate-source", toolName: "temporal_evidence_feed_alt", args: { key: "qx-17" } });
+			emit({ type: "tool_execution_end", toolCallId: "alternate-source", toolName: "temporal_evidence_feed_alt", isError: false, result: { content: [{ type: "text", text: "qx-17 snapshot at t=42" }] } });
+			emit({ type: "tool_execution_start", toolCallId: "verdict-alt", toolName: "verification_submit", args });
+			emit({ type: "tool_execution_end", toolCallId: "verdict-alt", toolName: "verification_submit", isError: false, result: {} });
+			agent.state.messages = [{ role: "assistant", content: [{ type: "text", text: "submitted" }], usage: { input: 1, output: 1 } }];
+		}, abort: async () => undefined, dispose: () => undefined,
+	});
+	const result = await createTaskVerifier(factory, 1_000, undefined, activeTools)({
+		id: "task", ownerKey: "owner", kind: "delegated", title: "qx-17 zorb flux", acceptanceCriteria: "zorb receipt attached",
+		verificationRequirements: [{ capability: "temporal_evidence_feed_alt", freshness: "realtime", evidence: "source_receipt" }],
+		status: "running", createdAt: 1, executionScope: { platform: "cli", chatId: "local", chatType: "dm", userId: "local" },
+	}, { output: "naru vek tal" });
+	assert.equal(result.accepted, true);
+	assert.match(result.evidence, /temporal_evidence_feed_alt/);
+	assert.equal(result.criterionVerifications[0].evidenceRefs.length, 1);
+	assert.match(result.criterionVerifications[0].evidenceRefs[0], /^execution:verification:[^:]+:tool-call:alternate-source$/);
 });
 
 test("independent verification derives enough Tool budget to fetch every cited source", async () => {

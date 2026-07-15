@@ -322,6 +322,22 @@ test("Task Ledger persists structured Sub-Agent artifacts and unresolved issues 
 	} finally { rmSync(root, { recursive: true, force: true }); }
 });
 
+test("Task Ledger persists capability-derived Verification requirements across restart", () => {
+	const root = mkdtempSync(join(tmpdir(), "beemax-verification-requirements-"));
+	const path = join(root, "memory.db");
+	let store = new MemoryStore(path);
+	try {
+		store.record({ id: "requirement-task", ownerKey: "cli:local:local", kind: "delegated", title: "Resolve qx-17", status: "running", createdAt: 1 });
+		assert.equal(store.updateVerificationRequirements("wrong-owner", "requirement-task", [{ capability: "temporal_evidence_feed", freshness: "realtime", evidence: "source_receipt" }]), false);
+		assert.equal(store.updateVerificationRequirements("cli:local:local", "requirement-task", [{ capability: "temporal_evidence_feed", freshness: "realtime", evidence: "source_receipt" }]), true);
+		store.close();
+		store = new MemoryStore(path);
+		assert.deepEqual(store.queryTasks({ ownerKeys: ["cli:local:local"], id: "requirement-task" })[0].verificationRequirements, [
+			{ capability: "temporal_evidence_feed", freshness: "realtime", evidence: "source_receipt" },
+		]);
+	} finally { store.close(); rmSync(root, { recursive: true, force: true }); }
+});
+
 test("Task Ledger exposes legacy business context as read-only migration evidence", () => {
 	const root = mkdtempSync(join(tmpdir(), "beemax-task-update-business-context-"));
 	const path = join(root, "memory.db");

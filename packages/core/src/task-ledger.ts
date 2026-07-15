@@ -16,6 +16,11 @@ export interface TaskCriterionVerification {
 	evidence?: string;
 	evidenceRefs: string[];
 }
+export interface TaskVerificationRequirement {
+	capability: string;
+	freshness?: "static" | "periodic" | "current" | "realtime";
+	evidence?: "none" | "self_reported" | "source_receipt" | "verified";
+}
 export type TaskCandidateVerificationResolution = { accepted: true; evidence?: string; criterionVerifications?: TaskCriterionVerification[] } | { accepted: false; feedback: string; criterionVerifications?: TaskCriterionVerification[] };
 export type TaskPlanStatus = "pending" | "running" | "succeeded" | "failed" | "cancelled";
 export interface TaskArtifact {
@@ -74,6 +79,7 @@ export interface TaskRecord {
 	unresolvedIssues?: string[];
 	verificationStatus?: TaskVerificationStatus;
 	verificationFeedback?: string;
+	verificationRequirements?: TaskVerificationRequirement[];
 	criterionVerifications?: TaskCriterionVerification[];
 	verificationAttempts?: number;
 	verificationRetryAt?: number;
@@ -124,6 +130,7 @@ export interface TaskLedger {
 	record(task: TaskRecord): void;
 	transition(id: string, change: TaskTransition): boolean;
 	updateSituation?(ownerKey: string, taskId: string, situation: Situation): boolean;
+	updateVerificationRequirements?(ownerKey: string, taskId: string, requirements: TaskVerificationRequirement[]): boolean;
 	retryObjective?(ownerKey: string, id: string, now?: number): boolean;
 	cancelObjectives?(ownerKey: string, now?: number): number;
 	activeObjectivePlanIds?(ownerKey: string): string[];

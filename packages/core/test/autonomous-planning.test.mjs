@@ -989,6 +989,8 @@ test("new durable Objectives preserve Situation and trusted Access Scope provena
 	assert.equal(objective.businessContext, undefined);
 	assert.equal(objective.status, "running");
 	assert.equal(objective.verificationStatus, "unavailable");
+	assert.ok(objective.criterionVerifications?.length);
+	assert.ok(objective.criterionVerifications.every((criterion) => criterion.status === "unavailable"));
 	assert.equal(objective.candidateResult, "accepted");
 	assert.equal(objective.result, undefined);
 	assert.match(result.answer, /任务尚未完成.*Verification/);
@@ -1039,7 +1041,7 @@ test("a responsible direct Turn completes one durable Objective through one veri
 			assert.equal(result.output, "完成并附来源");
 			assert.equal(context.taskRunId, envelope.taskRunId);
 			assert.deepEqual(context.successfulToolNames, ["read"]);
-			return { accepted: true, evidence: "来源已检查" };
+			return { accepted: true, evidence: "来源已检查", criterionVerifications: [{ criterionId: "C1", criterion: "报告包含来源", status: "accepted", evidence: "source.md was read", evidenceRefs: ["execution:verification:direct:tool-call:source-1"] }] };
 		},
 		createAgent: async (_id, _source, receivedEnvelope) => {
 			envelope = receivedEnvelope;
@@ -1062,6 +1064,7 @@ test("a responsible direct Turn completes one durable Objective through one veri
 	assert.equal(objective.status, "succeeded");
 	assert.equal(objective.verificationStatus, "accepted");
 	assert.equal(objective.result, "完成并附来源");
+	assert.deepEqual(objective.criterionVerifications, [{ criterionId: "C1", criterion: "报告包含来源", status: "accepted", evidence: "source.md was read", evidenceRefs: ["execution:verification:direct:tool-call:source-1"] }]);
 	assert.match(objective.description, /生成一份有来源的简短报告/);
 	assert.deepEqual(objective.situation.constraints, ["保留证据"]);
 	assert.match(objective.acceptanceCriteria, /报告包含来源/);
@@ -1073,6 +1076,40 @@ test("a responsible direct Turn completes one durable Objective through one veri
 	assert.equal(envelope.taskRunId, run.id);
 	assert.equal(objective.checkpoint.source, "pi_turn");
 	assert.deepEqual(objective.checkpoint.completed, ["read:source-1"]);
+	runtime.dispose();
+});
+
+test("Work Contract capability selection persists generic realtime source requirements without domain keywords", async () => {
+	const rawRequest = "用 qx-17 脉冲镜像完成星历核验，结果必须对应 qx-17 即时源快照";
+	const source = { platform: "cli", chatId: "unknown-realtime", chatType: "dm", userId: "local" };
+	const clause = (text) => ({ text, source: { kind: "raw_request", start: rawRequest.indexOf(text), end: rawRequest.indexOf(text) + text.length } });
+	const tasks = new Map();
+	const runs = new Map();
+	const requirementUpdates = [];
+	const ledger = {
+		record(task) { tasks.set(task.id, { ...task }); },
+		transition(id, change) { tasks.set(id, { ...tasks.get(id), ...change }); return true; },
+		recordRun(run) { runs.set(run.id, { ...run }); },
+		transitionRun(id, change) { runs.set(id, { ...runs.get(id), ...change }); return true; },
+		queryTasks: (query) => [...tasks.values()].filter((task) => query.ownerKeys.includes(task.ownerKey) && (!query.id || task.id === query.id)),
+		updateVerificationRequirements(ownerKey, id, requirements) { requirementUpdates.push({ ownerKey, id, requirements }); const task = tasks.get(id); if (!task || task.ownerKey !== ownerKey) return false; tasks.set(id, { ...task, verificationRequirements: structuredClone(requirements) }); return true; },
+		checkpointTask: () => true,
+	};
+	const tools = [
+		{ name: "capability_discover", description: "Discover capabilities", beemaxCapabilityPrefetch: async () => ({ cognitionId: "cap:qx17", candidates: [{ kind: "tool", name: "temporal_evidence_feed", confidence: 0.97 }], activatedTools: ["temporal_evidence_feed"], skills: [] }) },
+		{ name: "temporal_evidence_feed", description: "Resolve arbitrary temporal evidence", beemaxPolicy: { sideEffect: "none" }, beemaxToolSpec: { kind: "tool", version: "fixture:1", configured: true, health: "ready", authorized: true, ranking: { inputModalities: ["text"], outputModalities: ["structured"], freshness: "realtime", evidence: "source_receipt" } } },
+	];
+	const agent = { state: { model: { id: "test" }, messages: [] } };
+	const runtime = createRuntime({
+		taskLedger: ledger,
+		turnUnderstanding: { understand: () => ({ action: "create", goal: rawRequest, constraints: [], acceptanceCriteria: [rawRequest, "结果必须对应 qx-17 即时源快照"], uncertainties: [], memoryQuery: rawRequest, capabilityQuery: "qx-17 脉冲镜像", executionMode: "direct", confidence: 0.95 }) },
+		workContractBuilder: { build: async () => ({ source: "model", contract: { schemaVersion: "beemax.work-contract.v1", rawRequest, action: "create", objective: clause(rawRequest), constraints: [], prohibitions: [], acceptanceCriteria: [clause(rawRequest), clause("结果必须对应 qx-17 即时源快照")], capabilityRequirements: [clause("qx-17 脉冲镜像")], uncertainties: [], executionMode: "direct", confidence: 0.95 } }) },
+		verifyObjectiveCandidate: async () => ({ accepted: true, evidence: "fixture verification" }),
+		createAgent: async () => ({ agent, getAllTools: () => tools, getActiveToolNames: () => tools.map(({ name }) => name), setActiveToolsByName: () => undefined, subscribe: () => () => undefined, prompt: async () => { agent.state.messages = [{ role: "assistant", content: [{ type: "text", text: "qx-17 result" }], usage: { input: 1, output: 1 } }]; }, abort: async () => undefined, dispose: () => undefined }),
+	});
+	await runtime.run({ source, text: rawRequest, timeoutMs: 1_000 });
+	const [objective] = [...tasks.values()];
+	assert.deepEqual({ requirements: objective.verificationRequirements, updates: requirementUpdates }, { requirements: [{ capability: "temporal_evidence_feed", freshness: "realtime", evidence: "source_receipt" }], updates: [{ ownerKey: objective.ownerKey, id: objective.id, requirements: [{ capability: "temporal_evidence_feed", freshness: "realtime", evidence: "source_receipt" }] }] });
 	runtime.dispose();
 });
 

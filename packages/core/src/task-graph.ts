@@ -3,7 +3,7 @@ import { containsCredentialMaterial, redactCredentialMaterial } from "./credenti
 import { createExecutionEnvelope, type ExecutionEnvelope } from "./execution-envelope.ts";
 import type { ExecutionTraceInput, ExecutionTraceSink } from "./execution-trace.ts";
 import { createTaskCheckpoint, mergeTaskCheckpoints, renderTaskCheckpoint, type TaskCheckpoint } from "./task-checkpoint.ts";
-import { unavailableTaskCriterionVerifications } from "./task-criteria.ts";
+import { sanitizeTaskCriterionVerifications, unavailableTaskCriterionVerifications } from "./task-criteria.ts";
 
 const DEFAULT_EXECUTION_LEASE_MS = 61 * 60_000;
 
@@ -215,7 +215,8 @@ export class TaskGraph {
 					this.recordTrace({ type: "verification.started", executionEnvelope, at: Date.now() });
 					if (!options.verify) { verificationUnavailable = true; this.recordTrace({ type: "verification.settled", executionEnvelope, at: Date.now(), status: "unavailable" }); throw new Error("Task verification unavailable for defined Acceptance Criteria"); }
 					let verification: TaskGraphVerificationResult;
-					try { verification = await options.verify({ ...task, status: "running", startedAt: taskStartedAt }, result, executionSignal, { taskRunId: runId }); }
+					const verificationTask = this.ledger.queryTasks({ ownerKeys: [task.ownerKey], id: task.id, limit: 1 })[0] ?? task;
+					try { verification = await options.verify({ ...verificationTask, status: "running", startedAt: taskStartedAt }, result, executionSignal, { taskRunId: runId }); }
 					catch (error) { verificationUnavailable = !executionSignal.aborted; this.recordTrace({ type: "verification.settled", executionEnvelope, at: Date.now(), status: "unavailable" }); throw error; }
 					if (executionSignal.aborted) throw executionSignal.reason ?? new Error("Task verification interrupted");
 					if (!verification.accepted) {
@@ -224,7 +225,7 @@ export class TaskGraph {
 						previousResult = result.output?.slice(0, 50_000);
 						const finishedAt = Date.now();
 						if (!this.ledger.transitionRun(runId, { status: "failed", finishedAt, error: `Task verification rejected: ${verificationFeedback}` })) return this.persistedOutcome(task, "failed");
-						criterionVerifications = sanitizeCriterionVerifications(verification.criterionVerifications);
+						criterionVerifications = sanitizeTaskCriterionVerifications(verification.criterionVerifications);
 						if (attempt <= maxCorrectiveAttempts) {
 							if (!this.ledger.transition(task.id, { status: "pending", candidateResult: previousResult, error: `Task verification rejected: ${verificationFeedback}`, verificationStatus: "rejected", verificationFeedback, criterionVerifications, correctiveAttempts: attempt - 1 })) return this.persistedOutcome(task, "failed");
 							continue;
@@ -234,7 +235,7 @@ export class TaskGraph {
 					}
 					this.recordTrace({ type: "verification.settled", executionEnvelope, at: Date.now(), status: "accepted" });
 					verificationEvidence = verification.evidence?.slice(0, 5_000);
-					criterionVerifications = sanitizeCriterionVerifications(verification.criterionVerifications);
+					criterionVerifications = sanitizeTaskCriterionVerifications(verification.criterionVerifications);
 				}
 				const finishedAt = Date.now();
 				const output = candidateOutput;
@@ -290,22 +291,6 @@ function sanitizeUnresolvedIssues(value: string[] | undefined): string[] | undef
 	if (!value) return undefined;
 	const issues = value.slice(0, 20).map((issue) => redactCredentialMaterial(issue.trim()).slice(0, 2_000)).filter(Boolean);
 	return issues.length ? issues : undefined;
-}
-
-function sanitizeCriterionVerifications(value: TaskCriterionVerification[] | undefined): TaskCriterionVerification[] | undefined {
-	if (!value) return undefined;
-	const ids = new Set<string>();
-	const verifications = value.slice(0, 100).flatMap((item) => {
-		if (!item || !["accepted", "rejected", "unavailable"].includes(item.status)) return [];
-		const criterionId = item.criterionId?.trim().slice(0, 128);
-		const criterion = item.criterion?.trim().slice(0, 2_000);
-		if (!criterionId || !criterion || ids.has(criterionId) || containsCredentialMaterial(`${criterionId}\n${criterion}`)) return [];
-		const evidence = item.evidence?.trim() ? redactCredentialMaterial(item.evidence.trim()).slice(0, 5_000) : undefined;
-		const evidenceRefs = [...new Set((item.evidenceRefs ?? []).slice(0, 50).map((ref) => ref.trim().slice(0, 1_000)).filter((ref) => ref && !containsCredentialMaterial(ref)))];
-		ids.add(criterionId);
-		return [{ criterionId, criterion, status: item.status, ...(evidence ? { evidence } : {}), evidenceRefs }];
-	});
-	return verifications.length ? verifications : undefined;
 }
 
 function mergeTaskEvidence(execution: string | undefined, verification: string | undefined): string | undefined {
