@@ -301,10 +301,11 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 			const skillLifecycleTools = prefetchedSkills.length ? ["skill_read", "skill_activate", "skill_route", "skill_resource_read", "skill_complete"].filter((name) => allTools.some((tool) => tool.name === name)) : [];
 			const exposeCapabilityDiscovery = Boolean(
 				admittedTools?.includes("capability_discover")
-				|| prefetchedSkills.length
-				|| requestedText !== input.text
-				|| planning?.signals.requiresResearch
-				|| planning?.signals.requiresVerification,
+					|| prefetchedSkills.length
+					|| requestedText !== input.text
+					|| requestsExplicitCapabilityResolution(input.text)
+					|| planning?.signals.requiresResearch
+					|| planning?.signals.requiresVerification,
 			);
 			const progressiveTools = admittedTools ?? [...new Set([...(exposeCapabilityDiscovery ? ["capability_discover"] : []), ...skillLifecycleTools, ...(planning?.requiredTools ?? []), ...prefetchedTools])];
 			if (activeTools) session.piSession.setActiveToolsByName(progressiveTools);
@@ -828,6 +829,12 @@ function boundedContractItems(items: readonly string[], maxChars: number): strin
 		result += `${result ? "\n" : ""}${line}`;
 	}
 	return result;
+}
+
+/** Detects an explicit request to resolve Agent infrastructure, never business vocabulary. */
+function requestsExplicitCapabilityResolution(text: string): boolean {
+	return /(?:调用|使用|通过|借助|接入|配置|安装|加载|启用|查找|找到)[^。；;.!?？\n]{0,80}(?:tool|mcp|provider|skill|plugin|工具|技能|插件)/iu.test(text)
+		|| /\b(?:call|use|via|through|with|configure|install|load|enable|find)\b[^.;!?\n]{0,80}\b(?:tool|mcp|provider|skill|plugin)s?\b/iu.test(text);
 }
 
 function releaseHistoricalSkillContext(session: AgentSession, fromIndex = 0): void {

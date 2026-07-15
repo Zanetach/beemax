@@ -53,6 +53,28 @@ test("Agent runtime hides capability discovery and Tools for a direct answer wit
 	runtime.dispose();
 });
 
+test("Agent runtime exposes discovery for an explicit Tool request when lexical prefetch is inconclusive", async () => {
+	const source = { platform: "cli", chatId: "explicit-tool", chatType: "dm", userId: "local" };
+	const toolChanges = [];
+	const agent = { state: { model: { id: "test" }, messages: [] } };
+	const tools = [
+		{ name: "capability_discover", description: "Discover capabilities" },
+		{ name: "mcp_fixture_structured_lookup", description: "Lookup a fixture entity with selected fields" },
+	];
+	const runtime = new BeeMaxAgentRuntime({ planningPolicy: new AutonomousPlanningPolicy(), createAgent: async () => ({
+		agent,
+		getAllTools: () => tools,
+		getActiveToolNames: () => tools.map(({ name }) => name),
+		setActiveToolsByName: (names) => { toolChanges.push([...names]); },
+		subscribe: () => () => undefined,
+		prompt: async () => { agent.state.messages = [{ role: "assistant", content: [{ type: "text", text: "blocked until discovery" }], usage: { input: 1, output: 1 } }]; },
+		abort: async () => undefined, dispose: () => undefined,
+	}) });
+	await runtime.run({ source, text: "调用 fixture structured lookup Tool：entityId 必须为 fixture-42", timeoutMs: 1_000 });
+	assert.deepEqual(toolChanges[0], ["capability_discover"]);
+	runtime.dispose();
+});
+
 test("Agent runtime deterministically preflights and enforces an installed matching Skill before execution", async () => {
 	const source = { platform: "cli", chatId: "skill-preflight", chatType: "dm", userId: "local" };
 	const prompts = [];
