@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
 	OPEN_WORLD_CONTRACT_SCHEMA_VERSION,
+	WORK_CONTRACT_ADJUDICATION_SCHEMA_VERSION,
 	WORK_CONTRACT_SCHEMA_VERSION,
 	createOpenWorldContract,
 } from "../dist/index.js";
@@ -29,10 +30,23 @@ function workContract() {
 	};
 }
 
+function admittedWorkContract() {
+	const cognitionUsage = { inputTokens: 20, outputTokens: 10, cacheReadTokens: 0, cacheWriteTokens: 0, costUsd: 0.001, modelIdentities: ["primary/model", "reviewer/model"] };
+	return {
+		contract: workContract(), source: "model", cognitionUsage, cognitionBudgetChargeTokens: 100,
+		semanticAdjudication: {
+			schemaVersion: WORK_CONTRACT_ADJUDICATION_SCHEMA_VERSION,
+			inventorySchemaVersion: "beemax.semantic-inventory.v1",
+			primaryModelIdentity: "primary/model", reviewerModelIdentity: "reviewer/model", reviewMode: "different_models", independentSamples: true,
+			cognitionUsage, cognitionBudgetChargeTokens: 100,
+		},
+	};
+}
+
 test("an open-world contract binds every atomic outcome to capabilities, evidence, and requested artifacts", () => {
 	const contract = createOpenWorldContract({
 		id: "contract:gold-weekly-report",
-		workContract: workContract(),
+		admission: admittedWorkContract(),
 		outcomes: [
 			{ id: "outcome:research", acceptanceCriterionIndex: 0, capabilityRequirementIds: ["capability:research"], evidenceRequirementIds: ["evidence:sources"] },
 			{ id: "outcome:html", acceptanceCriterionIndex: 1, capabilityRequirementIds: ["capability:html"], artifactRequirementIds: ["artifact:html"], evidenceRequirementIds: ["evidence:html"] },
@@ -63,10 +77,10 @@ test("an open-world contract binds every atomic outcome to capabilities, evidenc
 	assert.equal(Object.isFrozen(contract.outcomes[0]), true);
 });
 
-test("an open-world contract rejects omitted outcomes and unbound capability requirements", () => {
+test("an open-world contract rejects an omitted atomic outcome", () => {
 	const base = {
 		id: "contract:incomplete",
-		workContract: workContract(),
+		admission: admittedWorkContract(),
 		outcomes: [
 			{ id: "outcome:research", acceptanceCriterionIndex: 0, capabilityRequirementIds: ["capability:research"], evidenceRequirementIds: ["evidence:sources"] },
 			{ id: "outcome:html", acceptanceCriterionIndex: 1, capabilityRequirementIds: ["capability:html"], evidenceRequirementIds: ["evidence:html"] },
@@ -84,4 +98,37 @@ test("an open-world contract rejects omitted outcomes and unbound capability req
 	};
 
 	assert.throws(() => createOpenWorldContract(base), /every Work Contract acceptance criterion/i);
+});
+
+test("one Capability requirement cannot be assigned to multiple atomic outcomes", () => {
+	const input = {
+		id: "contract:duplicate-capability-binding",
+		admission: admittedWorkContract(),
+		outcomes: [
+			{ id: "outcome:research", acceptanceCriterionIndex: 0, capabilityRequirementIds: ["capability:research"], evidenceRequirementIds: ["evidence:sources"] },
+			{ id: "outcome:html", acceptanceCriterionIndex: 1, capabilityRequirementIds: ["capability:research", "capability:html"], evidenceRequirementIds: ["evidence:html"] },
+			{ id: "outcome:pdf", acceptanceCriterionIndex: 2, capabilityRequirementIds: ["capability:pdf"], evidenceRequirementIds: ["evidence:pdf"] },
+		],
+		capabilityRequirements: [
+			{ id: "capability:research", workContractClauseIndex: 0, operation: "observe", expectedOutputs: ["market-source-records"] },
+			{ id: "capability:html", workContractClauseIndex: 1, operation: "transform", expectedOutputs: ["text/html"] },
+			{ id: "capability:pdf", workContractClauseIndex: 2, operation: "transform", expectedOutputs: ["application/pdf"] },
+		],
+		artifactRequirements: [],
+		evidenceRequirements: [
+			{ id: "evidence:sources", kinds: ["observation"] },
+			{ id: "evidence:html", kinds: ["artifact"] },
+			{ id: "evidence:pdf", kinds: ["artifact"] },
+		],
+	};
+
+	assert.throws(() => createOpenWorldContract(input), /capability requirement.*exactly once/i);
+});
+
+test("a structurally valid but semantically unadmitted Work Contract cannot enter the open-world graph", () => {
+	assert.throws(() => createOpenWorldContract({
+		id: "contract:unadmitted",
+		admission: { contract: workContract(), source: "deterministic" },
+		outcomes: [], capabilityRequirements: [], artifactRequirements: [], evidenceRequirements: [],
+	}), /admitted Work Contract/i);
 });

@@ -1,5 +1,5 @@
 import { containsCredentialMaterial } from "./credential-material.ts";
-import { validateWorkContract, type WorkContract, type WorkContractClause } from "./work-contract.ts";
+import { hasSemanticWorkContractAdjudication, validateWorkContract, type WorkContract, type WorkContractBuildResult, type WorkContractClause } from "./work-contract.ts";
 
 export const OPEN_WORLD_CONTRACT_SCHEMA_VERSION = "beemax.open-world-contract.v1" as const;
 
@@ -47,7 +47,7 @@ export interface OpenWorldContract {
 
 export interface OpenWorldContractInput {
 	id: string;
-	workContract: WorkContract;
+	admission: WorkContractBuildResult;
 	outcomes: readonly {
 		id: string;
 		acceptanceCriterionIndex: number;
@@ -77,7 +77,8 @@ const OUTCOME_EVIDENCE_KINDS = new Set<OutcomeEvidenceKind>(["observation", "eff
  */
 export function createOpenWorldContract(input: OpenWorldContractInput): Readonly<OpenWorldContract> {
 	if (containsCredentialMaterial(JSON.stringify(input))) throw new Error("Open-world contract cannot contain credential material");
-	const workContract = validateWorkContract(input.workContract, input.workContract.rawRequest);
+	if (!input.admission || !hasSemanticWorkContractAdjudication(input.admission)) throw new Error("Open-world contract requires an admitted Work Contract with semantic adjudication");
+	const workContract = validateWorkContract(input.admission.contract, input.admission.contract.rawRequest);
 	const id = reference(input.id, "contract id");
 	const outcomesInput = boundedList(input.outcomes, "outcomes", 1, 100);
 	const capabilitiesInput = boundedList(input.capabilityRequirements, "capability requirements", 0, 100);
@@ -119,7 +120,7 @@ export function createOpenWorldContract(input: OpenWorldContractInput): Readonly
 		return Object.freeze({ id: reference(item.id, "outcome id"), acceptanceCriterion: freezeClause(criterion), capabilityRequirementIds: Object.freeze(capabilityRequirementIds), artifactRequirementIds: Object.freeze(artifactRequirementIds), evidenceRequirementIds: Object.freeze(evidenceRequirementIds) });
 	});
 	assertExactIndexCoverage(outcomesInput.map((item) => item.acceptanceCriterionIndex), workContract.acceptanceCriteria.length, "every Work Contract acceptance criterion");
-	assertAllReferenced(outcomes.flatMap((item) => item.capabilityRequirementIds), capabilityIds, "capability requirement");
+	assertExactlyOnceReferenced(outcomes.flatMap((item) => item.capabilityRequirementIds), capabilityIds, "capability requirement");
 	assertAllReferenced(outcomes.flatMap((item) => item.artifactRequirementIds), artifactIds, "artifact requirement");
 	assertAllReferenced(outcomes.flatMap((item) => item.evidenceRequirementIds), evidenceIds, "evidence requirement");
 
@@ -198,6 +199,12 @@ function assertExactIndexCoverage(indexes: readonly number[], expectedCount: num
 function assertAllReferenced(actual: readonly string[], expected: ReadonlySet<string>, label: string): void {
 	const referenced = new Set(actual);
 	for (const id of expected) if (!referenced.has(id)) throw new Error(`Open-world ${label} '${id}' is not bound to an outcome`);
+}
+
+function assertExactlyOnceReferenced(actual: readonly string[], expected: ReadonlySet<string>, label: string): void {
+	const counts = new Map<string, number>();
+	for (const id of actual) counts.set(id, (counts.get(id) ?? 0) + 1);
+	if (actual.length !== expected.size || [...expected].some((id) => counts.get(id) !== 1)) throw new Error(`Open-world contract must bind every ${label} exactly once`);
 }
 
 function mediaType(value: string): string {
