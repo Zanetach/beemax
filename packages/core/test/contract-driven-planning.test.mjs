@@ -112,7 +112,7 @@ test("an admitted prohibition against delegation keeps planned work in the paren
 });
 
 test("parent-only execution constraints keep planned work in the parent Agent across natural phrasings", () => {
-	for (const parentOnlyConstraint of ["所有工作必须由父代理执行", "只能由主代理执行", "must be executed by the parent agent"]) {
+	for (const parentOnlyConstraint of ["所有工作必须由父代理执行", "只能由主代理执行", "must be executed by the parent agent", "This task should be handled solely by the parent agent", "任务应由父代理独立完成"]) {
 		const request = `${rawRequest}，${parentOnlyConstraint}`;
 		const sourceClause = (text) => {
 			const start = request.indexOf(text);
@@ -131,6 +131,28 @@ test("parent-only execution constraints keep planned work in the parent Agent ac
 		assert.equal(decision.mode, "direct", parentOnlyConstraint);
 		assert.equal(decision.budget.maxSubagents, 0, parentOnlyConstraint);
 		assert.match(decision.reason, /prohibits delegation/i);
+	}
+});
+
+test("a parent Agent reviewing Sub-Agent work does not prohibit delegation", () => {
+	for (const reviewConstraint of ["The parent agent must review work completed by subagents", "父代理必须审核子代理完成的工作"]) {
+		const request = `${rawRequest}，${reviewConstraint}`;
+		const sourceClause = (text) => {
+			const start = request.indexOf(text);
+			return { text, source: { kind: "raw_request", start, end: start + text.length } };
+		};
+		const contract = workContract({
+			rawRequest: request,
+			objective: sourceClause(request),
+			constraints: [sourceClause(reviewConstraint)],
+			acceptanceCriteria: [sourceClause("过去一周黄金走势"), sourceClause("输出 HTML"), sourceClause("PDF")],
+			capabilityRequirements: [sourceClause("调研过去一周黄金走势"), sourceClause("输出 HTML"), sourceClause("PDF")],
+			executionMode: "plan",
+		});
+		const decision = new AutonomousPlanningPolicy().decide(planningAdmission(contract));
+
+		assert.equal(decision.mode, "delegate", reviewConstraint);
+		assert.equal(decision.budget.maxSubagents, 1, reviewConstraint);
 	}
 });
 
