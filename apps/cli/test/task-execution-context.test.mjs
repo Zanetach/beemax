@@ -4,13 +4,14 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { MemoryStore } from "@beemax/memory";
-import { createAccessScopeRef, createExecutionEnvelope, createSituation, FileExecutionTraceStore } from "@beemax/core";
-import { buildMainAgentSystemPrompt, buildSubagentSystemPrompt, createTaskVerifier as createTaskVerifierRaw, createVerifiedObjectiveMemoryPublisher, executeObjectiveDelivery as executeObjectiveDeliveryRaw, executePlannedTask as executePlannedTaskRaw, verificationAgentTools, verificationAgentToolsForTask } from "../dist/gateway.js";
+import { createAccessScopeRef, createExecutionEnvelope, createSituation, FileExecutionTraceStore, MUTATING_TOOL_POLICY } from "@beemax/core";
+import { buildMainAgentSystemPrompt, buildSubagentSystemPrompt, createTaskVerifier as createTaskVerifierRaw, createVerifiedObjectiveMemoryPublisher, executeObjectiveDelivery as executeObjectiveDeliveryRaw, executePlannedTask as executePlannedTaskRaw, executeSubagentTask as executeSubagentTaskRaw, verificationAgentTools, verificationAgentToolsForTask } from "../dist/gateway.js";
 import { attestAgentFactoryProfile, createExecutionRoleTools } from "../dist/agent-factory.js";
 import { createSuccessfulVerificationReceipt, normalizeVerifierEvidenceRefs } from "../dist/verification-protocol.js";
 
 const scopedFactory = (factory) => attestAgentFactoryProfile(factory, "profile:test");
 const executePlannedTask = (factory, ...args) => executePlannedTaskRaw(scopedFactory(factory), ...args);
+const executeSubagentTask = (factory, ...args) => executeSubagentTaskRaw(scopedFactory(factory), ...args);
 const executeObjectiveDelivery = (factory, ...args) => executeObjectiveDeliveryRaw(scopedFactory(factory), ...args);
 const createTaskVerifier = (factory, ...args) => createTaskVerifierRaw(scopedFactory(factory), ...args);
 const bindAssistantTurn = (emit, calls, responseId = "response:verification-test") => emit({
@@ -175,6 +176,36 @@ test("planned Pi execution consumes Effect projections from the authority", asyn
 	assert.match(prompt, /<authoritative-effects>/);
 	assert.match(prompt, /"status":"committed"/);
 	assert.match(prompt, /message-42/);
+});
+
+for (const authorityLoss of ["objective cancellation", "Task Run lease loss"]) test(`Gateway delegated execution fails the mutating boundary on ${authorityLoss}`, async () => {
+	const mutation = { name: "mutate", label: "Mutate", description: "Mutate", parameters: {}, beemaxPolicy: MUTATING_TOOL_POLICY, execute: async () => ({ content: [], details: {} }) };
+	let listener;
+	let boundary;
+	let authorityCheck;
+	const agent = { state: { model: { id: "test" }, messages: [], tools: [mutation] }, beforeToolCall: undefined };
+	const factory = async () => ({
+		agent,
+		subscribe: (next) => { listener = next; return () => undefined; },
+		getAllTools: () => [mutation], getToolDefinition: () => mutation,
+		getActiveToolNames: () => [mutation.name], setActiveToolsByName: () => undefined,
+		prompt: async () => {
+			listener({ type: "message_end", message: { role: "assistant", responseId: `response:${authorityLoss}`, content: [{ type: "toolCall", id: `call:${authorityLoss}`, name: mutation.name, arguments: {} }], usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, cost: { total: 0 } } } });
+			boundary = await agent.beforeToolCall({ assistantMessage: {}, toolCall: { id: `call:${authorityLoss}`, name: mutation.name, arguments: {} }, args: {}, context: {} });
+			agent.state.messages = [{ role: "assistant", content: [{ type: "text", text: '<beemax-task-result>{"output":"fenced","evidence":"","artifacts":[],"unresolvedIssues":[]}</beemax-task-result>' }], usage: { input: 1, output: 1 } }];
+		},
+		abort: async () => undefined, dispose: () => undefined,
+	});
+	const ledger = {
+		isTaskRunExecutionActive: (...args) => { authorityCheck = args; return false; },
+		transitionRun: () => true,
+	};
+	await executeSubagentTask(factory, {
+		id: "task-gateway-fence", ownerKey: "cli:local:local", source: { platform: "cli", chatId: "local", chatType: "dm", userId: "local" }, name: "Apply change", goal: "Use mutate to apply the change", capability: "mutation", status: "running", createdAt: 1,
+	}, new AbortController().signal, 1_000, undefined, createExecutionEnvelope({ executionId: `execution:${authorityLoss}`, trigger: { kind: "delegation", id: "task-gateway-fence" }, objectiveId: "objective-gateway-fence", taskId: "task-gateway-fence", taskRunId: "run-gateway-fence" }), undefined, [mutation.name], undefined, ledger);
+	assert.equal(boundary?.block, true);
+	assert.match(boundary?.reason ?? "", /no active durable Execution Holder authority/i);
+	assert.deepEqual(authorityCheck?.slice(0, 4), ["cli:local:local", "objective-gateway-fence", "task-gateway-fence", "run-gateway-fence"]);
 });
 
 test("planned Pi execution returns structured evidence, artifacts, and unresolved issues", async () => {

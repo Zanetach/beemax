@@ -1,9 +1,11 @@
 #!/usr/bin/env node
-import { CAPABILITY_CALIBRATION_VERSION, evaluateCapabilityRanking, SEMANTIC_CAPABILITY_MINIMUM_SIMILARITY } from "../packages/core/dist/index.js";
+import { AuthStorage, CAPABILITY_CALIBRATION_VERSION, evaluateCapabilityRanking, PiWorkContractBuilder, SEMANTIC_CAPABILITY_MINIMUM_SIMILARITY } from "../packages/core/dist/index.js";
+import { completeSimple } from "@earendil-works/pi-ai/compat";
+import { createHash } from "node:crypto";
 import { writeFile } from "node:fs/promises";
-import { resolve } from "node:path";
+import { join, resolve } from "node:path";
 import { loadConfig } from "../apps/cli/dist/config.js";
-import { configuredAuxiliaryTextModels, configuredCapabilityRanker } from "../apps/cli/dist/model-catalog.js";
+import { configuredCapabilityRanker, resolveProfileCognitionModels } from "../apps/cli/dist/model-catalog.js";
 import { capabilityInventory, capabilityRankingCases } from "../evals/capability-ranking-corpus.mjs";
 import { liveCapabilityImplementationDigest } from "./capability-ranking-evidence.mjs";
 import { executeCalibrationThresholdTrials, executeCapabilityAuthorityProbe, executeOutcomeBoundCapabilityRun } from "./capability-outcome-harness.mjs";
@@ -15,8 +17,48 @@ const profile = profileIndex >= 0 ? args[profileIndex + 1]?.trim() : process.env
 if (!profile) throw new Error("Live Capability ranking evaluation requires --profile <name> or BEEMAX_PROFILE");
 
 const config = loadConfig(undefined, profile);
-const models = configuredAuxiliaryTextModels(config);
+const profileAuth = AuthStorage.create(join(config.paths.agentDir, "auth.json"));
+const profileCognitionModels = await resolveProfileCognitionModels(config, async (provider) => {
+	return profileAuth.getApiKey(provider, { includeFallback: false });
+});
+// The release gate deliberately keeps credential lookup dynamic even for a
+// statically configured key, so every receipt proves the same just-in-time
+// credential boundary used by short-lived OAuth tokens.
+const credentialResolutionEvents = [];
+const liveCognitionModels = profileCognitionModels.map((candidate) => ({
+	model: candidate.model,
+	getApiKey: async () => {
+		credentialResolutionEvents.push({
+			provider: candidate.model.provider,
+			modelIdentity: `${candidate.model.provider}/${candidate.model.id}/${candidate.model.api}`,
+			source: candidate.apiKey ? "profile_config" : "profile_auth_storage",
+		});
+		return candidate.apiKey ?? await candidate.getApiKey?.();
+	},
+}));
+const models = [];
+for (const candidate of liveCognitionModels) {
+	const apiKey = await candidate.getApiKey();
+	if (apiKey) models.push({ model: candidate.model, apiKey });
+}
 if (!models.length) throw new Error(`Profile ${profile} has no configured, authenticated text model for live semantic evaluation`);
+const workContractProviderTurns = [];
+const workContractBuilder = new PiWorkContractBuilder({
+	models: liveCognitionModels,
+	complete: async (model, context, options) => {
+		const response = await completeSimple(model, context, options);
+		const modelIdentity = `${model.provider}/${model.id}/${model.api}`;
+		const lane = context.systemPrompt.includes("Independently inventory") ? "semantic_inventory" : "work_contract";
+		const usage = {
+			inputTokens: finiteNonnegative(response.usage?.input), outputTokens: finiteNonnegative(response.usage?.output),
+			cacheReadTokens: finiteNonnegative(response.usage?.cacheRead), cacheWriteTokens: finiteNonnegative(response.usage?.cacheWrite),
+			costUsd: finiteNonnegative(response.usage?.cost?.total),
+		};
+		const providerResponseIdentitySha256 = `sha256:${createHash("sha256").update(JSON.stringify({ modelIdentity, lane, stopReason: response.stopReason, content: response.content, usage })).digest("hex")}`;
+		workContractProviderTurns.push({ modelIdentity, lane, providerResponseIdentitySha256, ...usage });
+		return response;
+	},
+});
 
 const fallbackQueries = [];
 const cognitionAttempts = [];
@@ -50,7 +92,14 @@ const outcomeExecution = await executeOutcomeBoundCapabilityRun({ mode: "live_pr
 const calibration = outcomeExecution.report;
 const calibrationTrials = await executeCalibrationThresholdTrials({ baselineVersion: CAPABILITY_CALIBRATION_VERSION, baseline: calibration, thresholds: [0.8, 0.9, 0.99], observedRankings, cognitionAttempts });
 const authorityProbe = await executeCapabilityAuthorityProbe();
-const piOutcome = await executeLivePiCapabilityOutcomeRun({ models, threshold: SEMANTIC_CAPABILITY_MINIMUM_SIMILARITY, observedRankings });
+const piOutcome = await executeLivePiCapabilityOutcomeRun({
+	models: liveCognitionModels,
+	threshold: SEMANTIC_CAPABILITY_MINIMUM_SIMILARITY,
+	observedRankings,
+	workContractBuilder,
+	getCredentialResolutionEvents: () => credentialResolutionEvents.map((event) => ({ ...event })),
+	getWorkContractProviderTurns: () => workContractProviderTurns.map((turn) => ({ ...turn })),
+});
 if (report.strategy !== "semantic") failures.push(`Live Capability evaluation did not exclusively observe semantic rankings (strategy=${report.strategy})`);
 if (fallbackQueries.length) failures.push(`Live Capability evaluation used lexical fallback for ${fallbackQueries.length} case(s)`);
 if (report.metrics.top1Accuracy < 0.85) failures.push("Live semantic Capability Top-1 accuracy is below 0.85");
@@ -63,6 +112,7 @@ if (calibration.metrics.downstreamTaskCompletionRate < 0.95) failures.push("Live
 if (calibration.metrics.usageMeasurementRate !== 1) failures.push("Live semantic cost evidence is incomplete");
 if (piOutcome.accepted / piOutcome.cases < 0.95) failures.push("Live Pi Tool Spec outcome completion is below 0.95");
 if (piOutcome.budgetFailures.length) failures.push(`Live Pi execution budget failed: ${piOutcome.budgetFailures.join(", ")}`);
+if (piOutcome.workContractFailures.length) failures.push(`Live Pi production Work Contract composition failed: ${piOutcome.workContractFailures.join(", ")}`);
 
 const artifact = {
 	schemaVersion: 1,
@@ -91,3 +141,5 @@ if (writeIndex >= 0) {
 }
 process.stdout.write(`${JSON.stringify(artifact, null, 2)}\n`);
 if (failures.length) process.exitCode = 1;
+
+function finiteNonnegative(value) { return Number.isFinite(value) && value >= 0 ? value : 0; }

@@ -274,10 +274,10 @@ function agentReachWebProvider(available: () => boolean, env: NodeJS.ProcessEnv,
 		install: Object.freeze({ source: "beemax-provider-lock", package: "mcporter", version: EXA_MCPORTER_PROVIDER_VERSION }),
 		configuration: Object.freeze({ required: Object.freeze([]), instructions: "Enable the Profile-scoped exa-mcporter Provider installation policy, then acquire this pinned Provider." }),
 		health: async (signal: AbortSignal) => {
-			if (!available()) return { status: "unavailable" as const, reason: "The Profile-scoped exa-mcporter Provider is not installed" };
+			if (!available()) return { status: "unavailable" as const, installationState: "absent" as const, evidenceRef: "health:exa-mcporter:installation-absent", reason: "The Profile-scoped exa-mcporter Provider installation is observably absent" };
 			try {
 				const ready = await (healthProbe ?? ((probeSignal) => agentReachHealth(env, probeSignal)))(signal);
-				return ready ? { status: "ready" as const, evidenceRef: "health:exa-mcporter" } : { status: "unhealthy" as const, reason: "The exa-mcporter Provider is installed but its Exa search Tool is not healthy" };
+				return ready ? { status: "ready" as const, installationState: "present" as const, evidenceRef: "health:exa-mcporter" } : { status: "unhealthy" as const, installationState: "present" as const, reason: "The exa-mcporter Provider is installed but its Exa search Tool is not healthy" };
 			} catch (error) {
 				return { status: "unhealthy" as const, reason: `exa-mcporter health probe failed: ${safeProviderError(error)}` };
 			}

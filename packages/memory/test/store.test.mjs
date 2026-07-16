@@ -7,7 +7,7 @@ import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { MemoryStore } from "../dist/index.js";
 import Database from "better-sqlite3";
-import { createAccessScopeRef, createSituation, createTaskCheckpoint, interactionCompletionDeliveryKey, ObjectiveCompletionDeliveryService, ObjectiveRuntime, TaskGraph, TaskPlanNoticeDeliveryService, TaskPlanRuntime, TaskRecoveryRunner, TaskRecoveryService } from "@beemax/core";
+import { BeeMaxAgentRuntime, createAccessScopeRef, createSituation, createTaskCheckpoint, DeterministicWorkContractBuilder, interactionCompletionDeliveryKey, MUTATING_TOOL_POLICY, ObjectiveCompletionDeliveryService, ObjectiveRuntime, TaskGraph, TaskPlanNoticeDeliveryService, TaskPlanRuntime, TaskRecoveryRunner, TaskRecoveryService } from "@beemax/core";
 
 const claimWorker = fileURLToPath(new URL("./fixtures/task-plan-claim-worker.mjs", import.meta.url));
 
@@ -25,6 +25,13 @@ function runClaimWorker(request, expectedCode = 0) {
 			? resolve(stdout.trim())
 			: reject(new Error(`claim worker exited code=${code} signal=${signal}: ${stderr}`)));
 	});
+}
+
+function recordSucceededObjectiveRun(store, objectiveId, output, id = `run:${objectiveId}`) {
+	const now = Date.now();
+	store.recordRun({ id, taskId: objectiveId, executor: "agent", status: "running", startedAt: now, leaseExpiresAt: now + 60_000 });
+	assert.equal(store.transitionRun(id, { status: "succeeded", finishedAt: now + 1, output }), true);
+	return id;
 }
 
 test("natural-language recall is safe and stays inside the requesting conversation", () => {
@@ -245,16 +252,17 @@ test("runtime Task ledger persists delegated lifecycle independently from memory
 	const root = mkdtempSync(join(tmpdir(), "beemax-runtime-task-ledger-"));
 	const store = new MemoryStore(join(root, "memory.db"));
 	try {
+		const leaseExpiresAt = Date.now() + 10_000;
 		store.record({ id: "child-1", ownerKey: "cli:local:local", kind: "delegated", title: "Research", acceptanceCriteria: "Includes a source", verificationStatus: "pending", correctiveAttempts: 0, status: "pending", createdAt: 100 });
 		store.transition("child-1", { status: "running", startedAt: 110 });
+		store.recordRun({ id: "run-1", taskId: "child-1", executor: "subagent", status: "running", startedAt: 110, leaseExpiresAt });
 		store.transition("child-1", { status: "succeeded", finishedAt: 120, result: "done", evidence: "ACCEPT: source checked", verificationStatus: "accepted", correctiveAttempts: 1 });
-		store.recordRun({ id: "run-1", taskId: "child-1", executor: "subagent", status: "running", startedAt: 110 });
 		store.transitionRun("run-1", { status: "succeeded", finishedAt: 120, output: "done" });
 		assert.deepEqual(store.queryTasks({ ownerKeys: ["cli:local:local"] }), [{
 			id: "child-1", ownerKey: "cli:local:local", kind: "delegated", title: "Research", acceptanceCriteria: "Includes a source",
 			status: "succeeded", evidence: "ACCEPT: source checked", verificationStatus: "accepted", correctiveAttempts: 1, createdAt: 100, startedAt: 110, finishedAt: 120, result: "done",
 		}]);
-		assert.deepEqual(store.taskRuns("child-1"), [{ id: "run-1", taskId: "child-1", executor: "subagent", status: "succeeded", startedAt: 110, finishedAt: 120, output: "done" }]);
+		assert.deepEqual(store.taskRuns("child-1"), [{ id: "run-1", taskId: "child-1", executor: "subagent", status: "succeeded", startedAt: 110, leaseExpiresAt, finishedAt: 120, output: "done" }]);
 		assert.equal(store.listTasks().length, 0);
 	} finally {
 		store.close();
@@ -349,6 +357,7 @@ test("Task Ledger atomically revises an owner-scoped Objective idempotently acro
 	const correctionRequest = "不要取消，continue；不要改目标";
 	const correction = {
 		schemaVersion: "beemax.work-contract.v1", rawRequest: correctionRequest, action: "correct",
+		targetObjective: { kind: "active_objective", id: "corrected-contract-task" },
 		objective: { text: "continue", source: { kind: "raw_request", start: 5, end: 13 } },
 		constraints: [{ text: "不要改目标", source: { kind: "raw_request", start: 14, end: 19 } }],
 		prohibitions: [{ text: "不要取消", source: { kind: "raw_request", start: 0, end: 4 } }],
@@ -359,7 +368,7 @@ test("Task Ledger atomically revises an owner-scoped Objective idempotently acro
 		let store = new MemoryStore(path);
 		store.record({ id: "corrected-contract-task", ownerKey: "owner", kind: "objective", title: "生成报告", status: "running", createdAt: 1 });
 		assert.equal(store.reviseObjective("wrong-owner", "corrected-contract-task", { workContract: correction, situation }, 2), undefined);
-		assert.equal(store.reviseObjective("owner", "corrected-contract-task", { workContract: { ...correction, objective: { text: "其他目标", source: { kind: "active_objective", id: "other-task" } } }, situation }, 2), undefined);
+		assert.equal(store.reviseObjective("owner", "corrected-contract-task", { workContract: { ...correction, targetObjective: { kind: "active_objective", id: "other-task" } }, situation }, 2), undefined);
 		const firstRevision = store.reviseObjective("owner", "corrected-contract-task", { workContract: correction, situation }, 2);
 		assert.equal(firstRevision.revision.id, "corrected-contract-task:revision:1");
 		assert.equal(store.reviseObjective("owner", "corrected-contract-task", { workContract: correction, situation }, 3).revision.id, firstRevision.revision.id);
@@ -374,13 +383,43 @@ test("Task Ledger atomically revises an owner-scoped Objective idempotently acro
 	} finally { rmSync(root, { recursive: true, force: true }); }
 });
 
+test("legacy correction revisions without a target recover with their owning Objective identity", () => {
+	const root = mkdtempSync(join(tmpdir(), "beemax-legacy-objective-revision-target-"));
+	const path = join(root, "memory.db");
+	const taskId = "legacy-correction";
+	const situation = { summary: "保留旧修正", goals: ["继续原目标"], constraints: [], uncertainties: [], observations: [], possibleActions: [], relevantMemoryIds: [], relevantTaskIds: [], confidence: 0.9 };
+	const rawRequest = "改成中文";
+	const legacyContract = { schemaVersion: "beemax.work-contract.v1", rawRequest, action: "correct", objective: { text: rawRequest, source: { kind: "raw_request", start: 0, end: rawRequest.length } }, constraints: [], prohibitions: [], acceptanceCriteria: [], capabilityRequirements: [], uncertainties: [], executionMode: "direct", confidence: 0.9 };
+	let store = new MemoryStore(path);
+	try {
+		store.record({ id: taskId, ownerKey: "owner", kind: "objective", title: "报告", status: "running", createdAt: 1 });
+		store.close();
+		const raw = new Database(path);
+		raw.prepare("UPDATE tasks SET objective_revisions = ? WHERE id = ?").run(JSON.stringify([{ id: `${taskId}:revision:1`, workContract: legacyContract, situation, createdAt: 2 }]), taskId);
+		raw.close();
+		store = new MemoryStore(path);
+		const restored = store.queryTasks({ ownerKeys: ["owner"], id: taskId })[0];
+		assert.deepEqual(restored.objectiveRevisions[0].workContract.targetObjective, { kind: "active_objective", id: taskId });
+		const nextRaw = "保留目标，改成英文";
+		const next = { schemaVersion: "beemax.work-contract.v1", rawRequest: nextRaw, action: "correct", targetObjective: { kind: "active_objective", id: taskId }, objective: { text: nextRaw, source: { kind: "raw_request", start: 0, end: nextRaw.length } }, constraints: [], prohibitions: [], acceptanceCriteria: [], capabilityRequirements: [], uncertainties: [], executionMode: "direct", confidence: 0.95 };
+		assert.equal(store.reviseObjective("owner", taskId, { workContract: next, situation }, 3).revisions.length, 2);
+		store.close();
+		const normalizedDb = new Database(path, { readonly: true });
+		const persisted = JSON.parse(normalizedDb.prepare("SELECT objective_revisions FROM tasks WHERE id = ?").get(taskId).objective_revisions);
+		normalizedDb.close();
+		assert.deepEqual(persisted[0].workContract.targetObjective, { kind: "active_objective", id: taskId }, "the next durable write must migrate the legacy revision to its canonical target-bound shape");
+		store = new MemoryStore(path);
+		assert.equal(store.queryTasks({ ownerKeys: ["owner"], id: taskId })[0].objectiveRevisions.length, 2);
+	} finally { try { store.close(); } catch {} rmSync(root, { recursive: true, force: true }); }
+});
+
 test("Task Ledger refuses a correction beyond its durable revision bound without discarding history", () => {
 	const root = mkdtempSync(join(tmpdir(), "beemax-task-work-contract-revision-bound-"));
 	const store = new MemoryStore(join(root, "memory.db"));
 	const situation = { summary: "保留修正历史", goals: ["完成原目标"], constraints: [], uncertainties: [], observations: [], possibleActions: [], relevantMemoryIds: [], relevantTaskIds: [], confidence: 1 };
 	const correction = (index) => {
 		const rawRequest = `修正-${index}`;
-		return { schemaVersion: "beemax.work-contract.v1", rawRequest, action: "correct", objective: { text: rawRequest, source: { kind: "raw_request", start: 0, end: rawRequest.length } }, constraints: [], prohibitions: [], acceptanceCriteria: [], capabilityRequirements: [], uncertainties: [], executionMode: "direct", confidence: 1 };
+		return { schemaVersion: "beemax.work-contract.v1", rawRequest, action: "correct", targetObjective: { kind: "active_objective", id: "bounded-revisions" }, objective: { text: rawRequest, source: { kind: "raw_request", start: 0, end: rawRequest.length } }, constraints: [], prohibitions: [], acceptanceCriteria: [], capabilityRequirements: [], uncertainties: [], executionMode: "direct", confidence: 1 };
 	};
 	try {
 		store.record({ id: "bounded-revisions", ownerKey: "owner", kind: "objective", title: "原目标", status: "running", createdAt: 1 });
@@ -451,6 +490,307 @@ test("failed Objectives can be explicitly reopened for a safe retry", () => {
 		assert.equal(objective.finishedAt, undefined);
 		assert.equal(objective.error, undefined);
 	} finally { store.close(); rmSync(root, { recursive: true, force: true }); }
+});
+
+test("Task Plan admission rejects Tasks spanning more than one Objective root", () => {
+	const root = mkdtempSync(join(tmpdir(), "beemax-plan-objective-root-reject-"));
+	const store = new MemoryStore(join(root, "memory.db"));
+	try {
+		store.record({ id: "objective-a", ownerKey: "owner", kind: "objective", title: "First Objective", status: "running", createdAt: 1 });
+		store.record({ id: "objective-b", ownerKey: "owner", kind: "objective", title: "Second Objective", status: "running", createdAt: 2 });
+		assert.throws(() => store.recordPlan([
+			{ id: "task-a", ownerKey: "owner", kind: "delegated", title: "First work", status: "pending", parentId: "objective-a", planId: "cross-root-plan", createdAt: 3 },
+			{ id: "task-b", ownerKey: "owner", kind: "delegated", title: "Second work", status: "pending", parentId: "objective-b", planId: "cross-root-plan", createdAt: 4 },
+		], [], { id: "cross-root-plan", ownerKey: "owner", title: "Invalid cross-root Plan", status: "pending", taskCount: 2, succeeded: 0, failed: 0, cancelled: 0, verified: 0, correctiveAttempts: 0, createdAt: 3 }), /Objective roots?/i);
+		assert.deepEqual(store.queryTasks({ ownerKeys: ["owner"], planIds: ["cross-root-plan"] }), []);
+		assert.deepEqual(store.queryTaskPlans({ ownerKeys: ["owner"], id: "cross-root-plan" }), []);
+	} finally { store.close(); rmSync(root, { recursive: true, force: true }); }
+});
+
+test("Task Plan admission accepts multiple Task generations under one Objective root", () => {
+	const root = mkdtempSync(join(tmpdir(), "beemax-plan-objective-root-accept-"));
+	const store = new MemoryStore(join(root, "memory.db"));
+	try {
+		store.record({ id: "objective", ownerKey: "owner", kind: "objective", title: "Objective", status: "running", createdAt: 1 });
+		store.recordPlan([
+			{ id: "child", ownerKey: "owner", kind: "delegated", title: "Child", status: "pending", parentId: "objective", planId: "nested-plan", createdAt: 2 },
+			{ id: "grandchild", ownerKey: "owner", kind: "delegated", title: "Grandchild", status: "pending", parentId: "child", planId: "nested-plan", createdAt: 3 },
+		], [], { id: "nested-plan", ownerKey: "owner", title: "Nested Plan", status: "pending", taskCount: 2, succeeded: 0, failed: 0, cancelled: 0, verified: 0, correctiveAttempts: 0, createdAt: 2 });
+		assert.deepEqual(store.queryTasks({ ownerKeys: ["owner"], planIds: ["nested-plan"] }).map((task) => task.id).sort(), ["child", "grandchild"]);
+		assert.equal(store.queryTaskPlans({ ownerKeys: ["owner"], id: "nested-plan" })[0].taskCount, 2);
+	} finally { store.close(); rmSync(root, { recursive: true, force: true }); }
+});
+
+test("Task Plan admission rejects mixing Objective-rooted and rootless Tasks", () => {
+	const root = mkdtempSync(join(tmpdir(), "beemax-plan-mixed-root-reject-"));
+	const store = new MemoryStore(join(root, "memory.db"));
+	try {
+		store.record({ id: "objective", ownerKey: "owner", kind: "objective", title: "Objective", status: "running", createdAt: 1 });
+		assert.throws(() => store.recordPlan([
+			{ id: "rooted", ownerKey: "owner", kind: "delegated", title: "Rooted", status: "pending", parentId: "objective", planId: "mixed-plan", createdAt: 2 },
+			{ id: "rootless", ownerKey: "owner", kind: "delegated", title: "Rootless", status: "pending", planId: "mixed-plan", createdAt: 2 },
+		], [], { id: "mixed-plan", ownerKey: "owner", title: "Mixed Plan", status: "pending", taskCount: 2, succeeded: 0, failed: 0, cancelled: 0, verified: 0, correctiveAttempts: 0, createdAt: 2 }), /mix Objective-rooted and rootless/i);
+		assert.deepEqual(store.queryTaskPlans({ ownerKeys: ["owner"], id: "mixed-plan" }), []);
+	} finally { store.close(); rmSync(root, { recursive: true, force: true }); }
+});
+
+test("Task Plan admission cannot create new work below a terminal Objective", () => {
+	const root = mkdtempSync(join(tmpdir(), "beemax-plan-terminal-objective-reject-"));
+	const store = new MemoryStore(join(root, "memory.db"));
+	try {
+		store.record({ id: "objective", ownerKey: "owner", kind: "objective", title: "Objective", status: "cancelled", createdAt: 1, finishedAt: 2 });
+		assert.throws(() => store.recordPlan([
+			{ id: "late-task", ownerKey: "owner", kind: "delegated", title: "Late", status: "pending", parentId: "objective", planId: "late-plan", createdAt: 3 },
+		], [], { id: "late-plan", ownerKey: "owner", title: "Late Plan", status: "pending", taskCount: 1, succeeded: 0, failed: 0, cancelled: 0, verified: 0, correctiveAttempts: 0, createdAt: 3 }), /terminal/i);
+		assert.deepEqual(store.queryTasks({ ownerKeys: ["owner"], id: "late-task" }), []);
+	} finally { store.close(); rmSync(root, { recursive: true, force: true }); }
+});
+
+test("targeted Objective cancellation is owner-scoped and atomically settles linked work", () => {
+	const root = mkdtempSync(join(tmpdir(), "beemax-objective-target-cancel-"));
+	const store = new MemoryStore(join(root, "memory.db"));
+	try {
+		store.record({ id: "objective-a", ownerKey: "owner", kind: "objective", title: "Keep", status: "running", createdAt: 1 });
+		store.record({ id: "objective-b", ownerKey: "owner", kind: "objective", title: "Cancel", status: "running", createdAt: 2 });
+		store.recordPlan([
+			{ id: "child-b", ownerKey: "owner", kind: "delegated", title: "Child", status: "running", parentId: "objective-b", planId: "plan-b", createdAt: 3 },
+			{ id: "grandchild-b", ownerKey: "owner", kind: "delegated", title: "Grandchild", status: "running", parentId: "child-b", planId: "plan-b", createdAt: 4 },
+		], [], { id: "plan-b", ownerKey: "owner", title: "Plan", status: "running", taskCount: 2, succeeded: 0, failed: 0, cancelled: 0, verified: 0, correctiveAttempts: 0, createdAt: 3 });
+		store.record({ id: "foreign-child", ownerKey: "other", kind: "delegated", title: "Foreign", status: "running", parentId: "objective-b", createdAt: 4 });
+		store.recordRun({ id: "run-b", taskId: "child-b", executor: "agent", status: "running", startedAt: 4 });
+		store.recordRun({ id: "grandchild-run-b", taskId: "grandchild-b", executor: "subagent", status: "running", startedAt: 5 });
+		assert.equal(store.cancelObjective("other", "objective-b", 5), undefined);
+		assert.deepEqual(store.cancelObjective("owner", "objective-b", 6), { ownerKey: "owner", objectiveId: "objective-b", taskIds: ["objective-b", "child-b", "grandchild-b"], planIds: ["plan-b"] });
+		assert.equal(store.queryTasks({ ownerKeys: ["owner"], id: "objective-a" })[0].status, "running");
+		assert.equal(store.queryTasks({ ownerKeys: ["owner"], id: "objective-b" })[0].status, "cancelled");
+		assert.equal(store.queryTasks({ ownerKeys: ["owner"], id: "child-b" })[0].status, "cancelled");
+		assert.equal(store.queryTasks({ ownerKeys: ["owner"], id: "grandchild-b" })[0].status, "cancelled");
+		assert.equal(store.queryTasks({ ownerKeys: ["other"], id: "foreign-child" })[0].status, "running");
+		assert.deepEqual({ status: store.taskRuns("child-b")[0].status, cancellationRequestedAt: store.taskRuns("child-b")[0].cancellationRequestedAt }, { status: "running", cancellationRequestedAt: 6 });
+		assert.deepEqual({ status: store.taskRuns("grandchild-b")[0].status, cancellationRequestedAt: store.taskRuns("grandchild-b")[0].cancellationRequestedAt }, { status: "running", cancellationRequestedAt: 6 });
+		assert.equal(store.queryTaskPlans({ ownerKeys: ["owner"], id: "plan-b" })[0].status, "cancelled");
+	} finally { store.close(); rmSync(root, { recursive: true, force: true }); }
+});
+
+test("Objective interruption claims fence competing Runtimes until durable holders converge", () => {
+	const root = mkdtempSync(join(tmpdir(), "beemax-objective-interruption-claim-"));
+	const path = join(root, "memory.db");
+	const first = new MemoryStore(path);
+	const second = new MemoryStore(path);
+	try {
+		const ownerKey = "owner";
+		first.record({ id: "claimed-objective", ownerKey, kind: "objective", title: "Claimed", status: "running", createdAt: 1 });
+		first.recordRun({ id: "objective-holder", taskId: "claimed-objective", executor: "agent", status: "running", startedAt: 2, leaseExpiresAt: 1_000 });
+		assert.ok(first.cancelObjective(ownerKey, "claimed-objective", 10));
+		assert.equal(first.objectiveInterruptionConvergence(ownerKey, "claimed-objective", 11).pendingExecutions, 1);
+		const claimA = first.claimObjectiveInterruptions([ownerKey], "runtime-a", 100, 11)[0];
+		assert.equal(claimA.objectiveId, "claimed-objective");
+		assert.deepEqual(second.claimObjectiveInterruptions([ownerKey], "runtime-b", 100, 11), []);
+		assert.equal(second.failObjectiveInterruption(ownerKey, "claimed-objective", "stale", 12, "runtime-b"), false);
+		assert.equal(second.settleObjectiveInterruption(ownerKey, "claimed-objective", 12, "runtime-b"), false);
+		const reclaimed = second.claimObjectiveInterruptions([ownerKey], "runtime-b", 200, 101)[0];
+		assert.equal(reclaimed.objectiveId, "claimed-objective", "an expired claim lease must be reclaimable");
+		assert.equal(first.failObjectiveInterruption(ownerKey, "claimed-objective", "stale holder", 102, "runtime-a", claimA.claimToken), false);
+		assert.equal(second.failObjectiveInterruption(ownerKey, "claimed-objective", "holder still active", 102, "runtime-b", reclaimed.claimToken), true);
+		const claimB = second.claimObjectiveInterruptions([ownerKey], "runtime-b", 200, 103)[0];
+		assert.equal(claimB.objectiveId, "claimed-objective");
+		const claimBNextGeneration = second.claimObjectiveInterruptions([ownerKey], "runtime-b", 210, 104)[0];
+		assert.notEqual(claimBNextGeneration.claimToken, claimB.claimToken, "every claim must carry a unique generation token even for one Runtime");
+		assert.equal(second.failObjectiveInterruption(ownerKey, "claimed-objective", "ABA stale generation", 105, "runtime-b", claimB.claimToken), false);
+		assert.equal(second.settleObjectiveInterruption(ownerKey, "claimed-objective", 105, "runtime-b", claimBNextGeneration.claimToken), false);
+		assert.equal(first.transitionRun("objective-holder", { status: "cancelled", finishedAt: 104, error: "cancelled at durable boundary" }), true);
+		assert.equal(second.settleObjectiveInterruption(ownerKey, "claimed-objective", 106, "runtime-b", claimBNextGeneration.claimToken), true);
+		assert.deepEqual(first.pendingObjectiveInterruptions([ownerKey]), []);
+	} finally { first.close(); second.close(); rmSync(root, { recursive: true, force: true }); }
+});
+
+test("Task Run admission, renewal, success, and interruption settlement share one durable cancellation fence", () => {
+	const root = mkdtempSync(join(tmpdir(), "beemax-task-run-cancellation-fence-"));
+	const path = join(root, "memory.db");
+	const store = new MemoryStore(path);
+	try {
+		const ownerKey = "owner";
+		store.record({ id: "fenced-objective", ownerKey, kind: "objective", title: "Objective", status: "running", createdAt: 1 });
+		store.record({ id: "fenced-task", ownerKey, kind: "delegated", title: "Task", status: "running", parentId: "fenced-objective", createdAt: 2 });
+		store.recordRun({ id: "fenced-run", taskId: "fenced-task", executor: "agent", status: "running", startedAt: 3, leaseExpiresAt: 1_000 });
+		assert.ok(store.cancelObjective(ownerKey, "fenced-objective", 10));
+		assert.throws(() => store.recordRun({ id: "late-run", taskId: "fenced-task", executor: "agent", status: "running", startedAt: 11, leaseExpiresAt: 1_000 }), /terminal/i);
+		assert.equal(store.renewTaskRunLease("fenced-run", 2_000, 11), false, "a cancellation-requested holder cannot renew");
+		assert.equal(store.transitionRun("fenced-run", { status: "succeeded", finishedAt: 12, output: "stale" }), false, "a stale executor cannot commit success");
+
+		const raw = new Database(path);
+		try { raw.prepare("UPDATE task_runs SET cancellation_requested_at = NULL WHERE id = ?").run("fenced-run"); }
+		finally { raw.close(); }
+		assert.equal(store.objectiveInterruptionConvergence(ownerKey, "fenced-objective", 13).pendingExecutions, 1, "all running descendants count even if a legacy row lacks the cancellation marker");
+		const claim = store.claimObjectiveInterruptions([ownerKey], "runtime", 100, 13)[0];
+		assert.equal(store.settleObjectiveInterruption(ownerKey, "fenced-objective", 14, "runtime", claim.claimToken), false);
+		assert.equal(store.transitionRun("fenced-run", { status: "cancelled", finishedAt: 15, error: "fenced" }), true);
+		assert.equal(store.settleObjectiveInterruption(ownerKey, "fenced-objective", 16, "runtime", claim.claimToken), true);
+	} finally { store.close(); rmSync(root, { recursive: true, force: true }); }
+});
+
+test("an expired Task Run lease cannot revive and a live lease only extends monotonically", () => {
+	const root = mkdtempSync(join(tmpdir(), "beemax-task-run-lease-generation-"));
+	const store = new MemoryStore(join(root, "memory.db"));
+	try {
+		store.record({ id: "lease-objective", ownerKey: "owner", kind: "objective", title: "Objective", status: "running", createdAt: 1 });
+		store.recordRun({ id: "lease-run", taskId: "lease-objective", executor: "agent", status: "running", startedAt: 2, leaseExpiresAt: 100 });
+		assert.equal(store.renewTaskRunLease("lease-run", 200, 100), false, "an expired lease must never regain authority");
+		assert.equal(store.renewTaskRunLease("lease-run", 150, 50), true);
+		assert.equal(store.renewTaskRunLease("lease-run", 140, 60), false, "a renewal cannot shorten or replay an older lease generation");
+		assert.equal(store.taskRuns("lease-objective")[0].leaseExpiresAt, 150);
+	} finally { store.close(); rmSync(root, { recursive: true, force: true }); }
+});
+
+test("Task and Task Run success settle atomically behind one active lease and Objective ancestry fence", () => {
+	const root = mkdtempSync(join(tmpdir(), "beemax-atomic-task-run-settlement-"));
+	const store = new MemoryStore(join(root, "memory.db"));
+	try {
+		store.record({ id: "atomic-objective", ownerKey: "owner", kind: "objective", title: "Objective", status: "running", createdAt: 1 });
+		store.record({ id: "atomic-task", ownerKey: "owner", kind: "delegated", title: "Task", parentId: "atomic-objective", status: "running", createdAt: 2 });
+		store.recordRun({ id: "atomic-run", taskId: "atomic-task", executor: "subagent", status: "running", startedAt: 3, leaseExpiresAt: 100 });
+		assert.equal(store.settleTaskRunAndTask({ ownerKey: "owner", taskId: "atomic-task", taskRunId: "atomic-run", task: { status: "succeeded", finishedAt: 10, result: "done" }, run: { status: "succeeded", finishedAt: 10, output: "done" } }, 10), true);
+		assert.equal(store.queryTasks({ ownerKeys: ["owner"], id: "atomic-task" })[0].status, "succeeded");
+		assert.equal(store.taskRuns("atomic-task")[0].status, "succeeded");
+
+		store.record({ id: "expired-task", ownerKey: "owner", kind: "delegated", title: "Expired", parentId: "atomic-objective", status: "running", createdAt: 11 });
+		store.recordRun({ id: "expired-run", taskId: "expired-task", executor: "subagent", status: "running", startedAt: 12, leaseExpiresAt: 20 });
+		assert.equal(store.settleTaskRunAndTask({ ownerKey: "owner", taskId: "expired-task", taskRunId: "expired-run", task: { status: "succeeded", finishedAt: 21, result: "stale" }, run: { status: "succeeded", finishedAt: 21, output: "stale" } }, 21), false);
+		assert.equal(store.queryTasks({ ownerKeys: ["owner"], id: "expired-task" })[0].status, "running", "rejected settlement must not commit only the Task side");
+		assert.equal(store.taskRuns("expired-task")[0].status, "running", "rejected settlement must not commit only the Run side");
+
+		store.record({ id: "cancelled-objective", ownerKey: "owner", kind: "objective", title: "Cancelled Objective", status: "running", createdAt: 22 });
+		store.record({ id: "cancelled-task", ownerKey: "owner", kind: "delegated", title: "Cancelled Task", parentId: "cancelled-objective", status: "running", createdAt: 23 });
+		store.recordRun({ id: "cancelled-run", taskId: "cancelled-task", executor: "subagent", status: "running", startedAt: 24, leaseExpiresAt: 100 });
+		assert.ok(store.cancelObjective("owner", "cancelled-objective", 25));
+		assert.equal(store.settleTaskRunAndTask({ ownerKey: "owner", taskId: "cancelled-task", taskRunId: "cancelled-run", task: { status: "succeeded", finishedAt: 26, result: "stale" }, run: { status: "succeeded", finishedAt: 26, output: "stale" } }, 26), false);
+		assert.equal(store.queryTasks({ ownerKeys: ["owner"], id: "cancelled-task" })[0].status, "cancelled");
+		assert.equal(store.taskRuns("cancelled-task")[0].status, "running");
+	} finally { store.close(); rmSync(root, { recursive: true, force: true }); }
+});
+
+test("atomic Task and Task Run success rejects mismatched persisted outputs", () => {
+	const root = mkdtempSync(join(tmpdir(), "beemax-task-run-output-lineage-"));
+	const store = new MemoryStore(join(root, "memory.db"));
+	try {
+		store.record({ id: "lineage-task", ownerKey: "owner", kind: "delegated", title: "Lineage", status: "running", createdAt: 1 });
+		store.recordRun({ id: "lineage-run", taskId: "lineage-task", executor: "subagent", status: "running", startedAt: 10, leaseExpiresAt: 200 });
+		assert.equal(store.settleTaskRunAndTask({ ownerKey: "owner", taskId: "lineage-task", taskRunId: "lineage-run", task: { status: "succeeded", finishedAt: 100, result: "task-v1" }, run: { status: "succeeded", finishedAt: 100, output: "run-v2" } }, 100), false);
+		assert.equal(store.queryTasks({ ownerKeys: ["owner"], id: "lineage-task" })[0].status, "running");
+		assert.equal(store.taskRuns("lineage-task")[0].status, "running");
+	} finally { store.close(); rmSync(root, { recursive: true, force: true }); }
+});
+
+test("legacy NULL Task Run leases migrate to finite expiry and become reconcilable", () => {
+	const root = mkdtempSync(join(tmpdir(), "beemax-task-run-null-lease-migration-"));
+	const path = join(root, "memory.db");
+	let store = new MemoryStore(path);
+	try {
+		store.record({ id: "legacy-objective", ownerKey: "owner", kind: "objective", title: "Legacy", status: "running", createdAt: 1 });
+		store.recordRun({ id: "legacy-run", taskId: "legacy-objective", executor: "agent", status: "running", startedAt: 10, leaseExpiresAt: 20 });
+		store.close();
+		const raw = new Database(path);
+		try { raw.prepare("UPDATE task_runs SET lease_expires_at = NULL WHERE id = ?").run("legacy-run"); }
+		finally { raw.close(); }
+		store = new MemoryStore(path);
+		assert.equal(store.taskRuns("legacy-objective")[0].leaseExpiresAt, 30_010);
+		assert.equal(store.reconcileExpiredTaskRuns(30_011).failed, 1);
+		assert.equal(store.taskRuns("legacy-objective")[0].status, "failed");
+	} finally { try { store.close(); } catch {} rmSync(root, { recursive: true, force: true }); }
+});
+
+test("two Runtimes sharing SQLite block a post-cancellation mutation until the durable holder converges", async () => {
+	const root = mkdtempSync(join(tmpdir(), "beemax-objective-cross-runtime-boundary-"));
+	const path = join(root, "memory.db");
+	const first = new MemoryStore(path);
+	const second = new MemoryStore(path);
+	const source = { platform: "cli", chatId: "cross-runtime", chatType: "dm", userId: "user" };
+	const ownerKey = "cli:cross-runtime:user";
+	const objectiveId = "cross-runtime-objective";
+	let releaseSecond;
+	const continueSecond = new Promise((resolve) => { releaseSecond = resolve; });
+	let firstBoundaryResolve;
+	const firstBoundary = new Promise((resolve) => { firstBoundaryResolve = resolve; });
+	let secondBoundary;
+	const mutation = { name: "mutate", label: "Mutate", description: "Mutate", parameters: {}, beemaxPolicy: MUTATING_TOOL_POLICY, execute: async () => ({ content: [], details: {} }) };
+	const session = () => {
+		let listener;
+		const active = new Set([mutation.name]);
+		const agent = { state: { model: { id: "test" }, messages: [], tools: [mutation] }, beforeToolCall: undefined };
+		return {
+			agent,
+			subscribe: (next) => { listener = next; return () => undefined; },
+			getAllTools: () => [mutation], getToolDefinition: () => mutation,
+			getActiveToolNames: () => [...active], setActiveToolsByName: (names) => { active.clear(); for (const name of names) active.add(name); },
+			prompt: async () => {
+				const message = (id) => ({ type: "message_end", message: { role: "assistant", responseId: `response:${id}`, content: [{ type: "toolCall", id, name: mutation.name, arguments: {} }], usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, cost: { total: 0 } } } });
+				listener(message("mutation-1"));
+				assert.equal(await agent.beforeToolCall({ assistantMessage: {}, toolCall: { id: "mutation-1", name: mutation.name, arguments: {} }, args: {}, context: {} }), undefined);
+				firstBoundaryResolve();
+				await continueSecond;
+				listener(message("mutation-2"));
+				secondBoundary = await agent.beforeToolCall({ assistantMessage: {}, toolCall: { id: "mutation-2", name: mutation.name, arguments: {} }, args: {}, context: {} });
+				agent.state.messages.push({ role: "assistant", content: [{ type: "text", text: "stopped" }], usage: { input: 1, output: 1 } });
+			},
+			abort: async () => undefined, dispose: () => undefined,
+		};
+	};
+	let runtimeA; let runtimeB;
+	try {
+		first.record({ id: objectiveId, ownerKey, kind: "objective", title: "Cross Runtime", description: "continue durable work", status: "running", createdAt: 1 });
+		runtimeA = new BeeMaxAgentRuntime({ profileId: "profile:test", taskLedger: first, workContractBuilder: new DeterministicWorkContractBuilder(), createAgent: async () => session() });
+		runtimeB = new BeeMaxAgentRuntime({
+			profileId: "profile:test", taskLedger: second, workContractBuilder: new DeterministicWorkContractBuilder(), objectiveInterruptionTimeoutMs: 500,
+			interruptObjectiveWork: async (_runtimeSource, cancellation) => ({ interruptedEffects: 0, pendingExecutions: second.objectiveInterruptionConvergence(ownerKey, cancellation.objectiveId).pendingExecutions }),
+			createAgent: async () => { const agent = { state: { model: { id: "test" }, messages: [] } }; return { agent, subscribe: () => () => undefined, prompt: async () => { agent.state.messages = [{ role: "assistant", content: [{ type: "text", text: "ok" }], usage: { input: 1, output: 1 } }]; }, abort: async () => undefined, dispose: () => undefined }; },
+		});
+		const running = runtimeA.run({ source, text: "继续这个任务", objectiveTaskId: objectiveId, allowedCapabilities: [mutation.name], timeoutMs: 5_000 });
+		await firstBoundary;
+		const cancelled = await runtimeB.run({ source, text: "取消这个任务", timeoutMs: 2_000 });
+		assert.match(cancelled.answer, /requires reconciliation|await convergence/i);
+		assert.equal(second.pendingObjectiveInterruptions([ownerKey]).length, 1);
+		releaseSecond();
+		await assert.rejects(running, /Durable Task Run execution authority was lost/i);
+		assert.equal(secondBoundary?.block, true);
+		assert.match(secondBoundary?.reason ?? "", /cancelled|holder.*no longer active|no active durable Execution Holder authority/i);
+		assert.equal(second.pendingObjectiveInterruptions([ownerKey]).length, 1, "pending must remain until a claimed retry observes holder convergence");
+		await runtimeB.run({ source, text: "现在几点", timeoutMs: 2_000 });
+		assert.deepEqual(second.pendingObjectiveInterruptions([ownerKey]), []);
+	} finally { runtimeA?.dispose(); runtimeB?.dispose(); first.close(); second.close(); rmSync(root, { recursive: true, force: true }); }
+});
+
+test("Objective interruption remains durable until runtime settlement without replacing its cancelled Terminal Outcome", () => {
+	const root = mkdtempSync(join(tmpdir(), "beemax-objective-interruption-durable-"));
+	const path = join(root, "memory.db");
+	const ownerKey = "owner";
+	const expectedInterruption = {
+		ownerKey,
+		objectiveId: "interrupted-objective",
+		taskIds: ["interrupted-objective", "interrupted-child"],
+		planIds: ["interrupted-plan"],
+		retry: true,
+	};
+	let store = new MemoryStore(path);
+	try {
+		store.record({ id: "interrupted-objective", ownerKey, kind: "objective", title: "Interrupted Objective", status: "running", createdAt: 1 });
+		store.recordPlan([
+			{ id: "interrupted-child", ownerKey, kind: "delegated", title: "Interrupted Child", status: "running", parentId: "interrupted-objective", planId: "interrupted-plan", createdAt: 2 },
+		], [], { id: "interrupted-plan", ownerKey, title: "Interrupted Plan", status: "running", taskCount: 1, succeeded: 0, failed: 0, cancelled: 0, verified: 0, correctiveAttempts: 0, createdAt: 2 });
+
+		assert.ok(store.cancelObjective(ownerKey, "interrupted-objective", 10));
+		assert.deepEqual(store.pendingObjectiveInterruptions([ownerKey]), [expectedInterruption]);
+		assert.equal(store.failObjectiveInterruption(ownerKey, "interrupted-objective", "Provider failed with Authorization: Bearer abcdefghijklmnopqrstuvwxyz", 11), true);
+
+		store.close();
+		store = new MemoryStore(path);
+		assert.deepEqual(store.pendingObjectiveInterruptions([ownerKey]), [expectedInterruption]);
+		assert.equal(store.queryTasks({ ownerKeys: [ownerKey], id: "interrupted-objective" })[0].error, "Cancelled by user; runtime interruption pending: [credential details redacted]");
+
+		assert.equal(store.settleObjectiveInterruption(ownerKey, "interrupted-objective", 12), true);
+		assert.deepEqual(store.pendingObjectiveInterruptions([ownerKey]), []);
+		const settled = store.queryTasks({ ownerKeys: [ownerKey], id: "interrupted-objective" })[0];
+		assert.deepEqual({ status: settled.status, error: settled.error }, { status: "cancelled", error: "Cancelled by user" });
+	} finally { try { store.close(); } catch {} rmSync(root, { recursive: true, force: true }); }
 });
 
 test("active Objective Plan lookup is not truncated by newer terminal Task history", () => {
@@ -661,6 +1001,7 @@ test("due Verification Retry also completes a direct Objective without a Task Pl
 	try {
 		store.record({ id: "direct-objective", ownerKey: "cli:local:local", kind: "objective", title: "Direct verified work", acceptanceCriteria: "Candidate is independently checked", status: "running", createdAt: 1, startedAt: 2, executionScope: { platform: "cli", chatId: "local", chatType: "dm", userId: "local" } });
 		store.transition("direct-objective", { status: "running", verificationStatus: "unavailable", candidateResult: "direct candidate", error: "verifier offline" });
+		recordSucceededObjectiveRun(store, "direct-objective", "direct candidate");
 		assert.equal(store.deferCandidateVerification(["cli:local:local"], "direct-objective", 10), true);
 		assert.deepEqual(store.verificationCandidates(10 + 24 * 60 * 60_000, 10, ["already-attempted-plan"]).map((task) => task.id), ["direct-objective"]);
 		let executions = 0; const notices = [];
@@ -682,6 +1023,7 @@ test("two recovery instances cannot verify the same direct Objective responsibil
 	try {
 		first.record({ id: "direct-claimed", ownerKey: "owner", kind: "objective", title: "Direct work", acceptanceCriteria: "Candidate is checked", status: "running", createdAt: 1, executionScope: { platform: "cli", chatId: "local", chatType: "dm", userId: "local" } });
 		first.transition("direct-claimed", { status: "running", verificationStatus: "unavailable", candidateResult: "candidate", error: "verifier offline" });
+		recordSucceededObjectiveRun(first, "direct-claimed", "candidate");
 		assert.equal(first.deferCandidateVerification(["owner"], "direct-claimed", 10), true);
 		let verificationCalls = 0;
 		let releaseVerification;
@@ -729,8 +1071,9 @@ test("restart preserves a candidate checkpoint and correction budget when Verifi
 		assert.deepEqual(store.verificationCandidates(21).map((task) => task.id), ["interrupted-verification"]);
 		let executions = 0;
 		const result = await new TaskRecoveryRunner(store, async () => { executions++; return { output: "must not replay" }; }, undefined, async (_task, candidate) => ({ accepted: candidate.output === "preserved candidate", evidence: "checked after restart" })).reverifyDue(21);
-		assert.deepEqual(result, { attempted: 1, accepted: 1, rejected: 0, unavailable: 0 });
+		assert.deepEqual(result, { attempted: 1, accepted: 0, rejected: 0, unavailable: 1 }, "a reconciled failed Run cannot authorize recovered delivery");
 		assert.equal(executions, 0);
+		assert.equal(store.queryTasks({ ownerKeys: ["owner"], id: "interrupted-verification" })[0].verificationStatus, "unavailable");
 	} finally { store.close(); rmSync(root, { recursive: true, force: true }); }
 });
 
@@ -910,6 +1253,7 @@ test("Objective Completion Outbox keeps accepted work nonterminal until one dura
 		const scope = { platform: "feishu", channelInstanceId: "company-a", chatId: "chat", chatType: "thread", userId: "user", threadId: "thread", originMessageId: "om-event", replyToMessageId: "om-thread-root" };
 		store.record({ id: "direct-objective", ownerKey: "feishu:chat:user", kind: "objective", title: "Verified report", status: "running", createdAt: 1, startedAt: 2, executionScope: scope });
 		store.transition("direct-objective", { status: "running", candidateResult: "final report", evidence: "verification:1", verificationStatus: "accepted" });
+		recordSucceededObjectiveRun(store, "direct-objective", "final report");
 
 		assert.equal(store.enqueueObjectiveCompletion("feishu:chat:user", "direct-objective", 100), true);
 		assert.equal(store.enqueueObjectiveCompletion("feishu:chat:user", "direct-objective", 101), true, "idempotent ensure does not create a second row");
@@ -932,12 +1276,232 @@ test("Objective Completion Outbox keeps accepted work nonterminal until one dura
 	} finally { store.close(); rmSync(root, { recursive: true, force: true }); }
 });
 
+test("Direct Objective acceptance atomically settles its leased Run before another process can claim Completion", () => {
+	const root = mkdtempSync(join(tmpdir(), "beemax-direct-objective-atomic-completion-"));
+	const path = join(root, "memory.db");
+	const first = new MemoryStore(path);
+	const second = new MemoryStore(path);
+	try {
+		const ownerKey = "cli:local:local";
+		first.record({ id: "atomic-objective", ownerKey, kind: "objective", title: "Atomic completion", status: "running", createdAt: 1, startedAt: 2, executionScope: { platform: "cli", chatId: "local", chatType: "dm", userId: "local" } });
+		first.recordRun({ id: "atomic-run", taskId: "atomic-objective", executor: "agent", status: "running", startedAt: 10, leaseExpiresAt: 200 });
+		assert.deepEqual(second.claimObjectiveCompletions("cli", 50), [], "an unverified running Run is not deliverable");
+		assert.equal(first.settleDirectObjectiveCompletion({ ownerKey, objectiveId: "atomic-objective", taskRunId: "atomic-run", candidateResult: "verified result", evidence: "receipt:verified" }, 100), true);
+		const [completion] = second.claimObjectiveCompletions("cli", 100);
+		assert.equal(completion.taskRunId, "atomic-run");
+		assert.equal(completion.result, "verified result");
+		assert.deepEqual(first.taskRuns("atomic-objective").map(({ id, status, output }) => ({ id, status, output })), [{ id: "atomic-run", status: "succeeded", output: "verified result" }]);
+		assert.deepEqual({ verificationStatus: first.queryTasks({ ownerKeys: [ownerKey], id: "atomic-objective" })[0].verificationStatus, candidateResult: first.queryTasks({ ownerKeys: [ownerKey], id: "atomic-objective" })[0].candidateResult }, { verificationStatus: "accepted", candidateResult: "verified result" });
+	} finally { second.close(); first.close(); rmSync(root, { recursive: true, force: true }); }
+});
+
+test("Direct Objective atomic acceptance fails closed when its Run lease has expired", () => {
+	const root = mkdtempSync(join(tmpdir(), "beemax-direct-objective-expired-lease-"));
+	const store = new MemoryStore(join(root, "memory.db"));
+	try {
+		const ownerKey = "cli:local:local";
+		store.record({ id: "expired-objective", ownerKey, kind: "objective", title: "Expired", status: "running", createdAt: 1, executionScope: { platform: "cli", chatId: "local", chatType: "dm" } });
+		store.recordRun({ id: "expired-run", taskId: "expired-objective", executor: "agent", status: "running", startedAt: 10, leaseExpiresAt: 100 });
+		assert.equal(store.settleDirectObjectiveCompletion({ ownerKey, objectiveId: "expired-objective", taskRunId: "expired-run", candidateResult: "must not publish" }, 100), false);
+		const objective = store.queryTasks({ ownerKeys: [ownerKey], id: "expired-objective" })[0];
+		assert.deepEqual({ status: objective.status, verificationStatus: objective.verificationStatus, candidateResult: objective.candidateResult }, { status: "running", verificationStatus: undefined, candidateResult: undefined });
+		assert.equal(store.taskRuns("expired-objective")[0].status, "running");
+		assert.deepEqual(store.claimObjectiveCompletions("cli", 101), []);
+	} finally { store.close(); rmSync(root, { recursive: true, force: true }); }
+});
+
+test("Completion claim rejects an Outbox row after the Objective Candidate changes", () => {
+	const root = mkdtempSync(join(tmpdir(), "beemax-objective-stale-candidate-"));
+	const store = new MemoryStore(join(root, "memory.db"));
+	try {
+		const ownerKey = "cli:local:local";
+		store.record({ id: "stale-objective", ownerKey, kind: "objective", title: "Stale candidate", status: "running", createdAt: 1, executionScope: { platform: "cli", chatId: "local", chatType: "dm" } });
+		store.recordRun({ id: "stale-run", taskId: "stale-objective", executor: "agent", status: "running", startedAt: 10, leaseExpiresAt: 200 });
+		assert.equal(store.settleDirectObjectiveCompletion({ ownerKey, objectiveId: "stale-objective", taskRunId: "stale-run", candidateResult: "candidate-v1" }, 100), true);
+		assert.equal(store.transition("stale-objective", { status: "running", candidateResult: "candidate-v2", verificationStatus: "accepted" }), true);
+		assert.deepEqual(store.claimObjectiveCompletions("cli", 100), []);
+	} finally { store.close(); rmSync(root, { recursive: true, force: true }); }
+});
+
+test("stale Completion claim tokens cannot mutate or terminalize a newer Objective Candidate", () => {
+	const root = mkdtempSync(join(tmpdir(), "beemax-objective-stale-token-"));
+	const store = new MemoryStore(join(root, "memory.db"));
+	try {
+		const ownerKey = "cli:local:local";
+		store.record({ id: "stale-token-objective", ownerKey, kind: "objective", title: "Stale token", status: "running", createdAt: 1, executionScope: { platform: "cli", chatId: "local", chatType: "dm" } });
+		store.recordRun({ id: "stale-token-run", taskId: "stale-token-objective", executor: "agent", status: "running", startedAt: 10, leaseExpiresAt: 200 });
+		assert.equal(store.settleDirectObjectiveCompletion({ ownerKey, objectiveId: "stale-token-objective", taskRunId: "stale-token-run", candidateResult: "candidate-v1" }, 100), true);
+		const [completion] = store.claimObjectiveCompletions("cli", 100, 1, 50);
+		assert.equal(store.transition("stale-token-objective", { status: "running", candidateResult: "candidate-v2", verificationStatus: "accepted" }), true);
+		const receipt = { idempotencyKey: completion.deliveryIdempotencyKey, deliveredAt: 101 };
+		assert.equal(store.recordObjectiveCompletionReceipt(completion.id, receipt, 101), false);
+		assert.equal(store.renewObjectiveCompletion(completion.id, completion.claimToken, 200, 101), false);
+		assert.equal(store.deferObjectiveCompletion(completion.id, completion.claimToken, 200, 101), false);
+		assert.equal(store.failObjectiveCompletion(completion.id, completion.claimToken, 101), false);
+		assert.equal(store.blockObjectiveCompletion(completion.id, completion.claimToken, "stale", 101), false);
+		assert.equal(store.completeObjectiveCompletion(completion.id, completion.claimToken, receipt, 102), false);
+		assert.equal(store.acknowledgeObjectiveCompletion(completion.id, receipt, 102), false);
+		const objective = store.queryTasks({ ownerKeys: [ownerKey], id: "stale-token-objective" })[0];
+		assert.deepEqual({ status: objective.status, candidateResult: objective.candidateResult }, { status: "running", candidateResult: "candidate-v2" });
+	} finally { store.close(); rmSync(root, { recursive: true, force: true }); }
+});
+
+test("Objective Completion lease renewal is live, monotonic, and lineage fenced", () => {
+	const root = mkdtempSync(join(tmpdir(), "beemax-objective-completion-renewal-"));
+	const store = new MemoryStore(join(root, "memory.db"));
+	try {
+		const ownerKey = "cli:local:local";
+		store.record({ id: "renew-objective", ownerKey, kind: "objective", title: "Renew", status: "running", createdAt: 1, executionScope: { platform: "cli", chatId: "local", chatType: "dm" } });
+		store.recordRun({ id: "renew-run", taskId: "renew-objective", executor: "agent", status: "running", startedAt: 10, leaseExpiresAt: 200 });
+		assert.equal(store.settleDirectObjectiveCompletion({ ownerKey, objectiveId: "renew-objective", taskRunId: "renew-run", candidateResult: "verified" }, 100), true);
+		const [completion] = store.claimObjectiveCompletions("cli", 100, 1, 50);
+		assert.equal(store.renewObjectiveCompletion(completion.id, completion.claimToken, 200, 120), true);
+		assert.equal(store.renewObjectiveCompletion(completion.id, completion.claimToken, 180, 130), false, "a lease cannot be shortened");
+		assert.equal(store.renewObjectiveCompletion(completion.id, completion.claimToken, 300, 200), false, "an expired lease cannot be revived");
+	} finally { store.close(); rmSync(root, { recursive: true, force: true }); }
+});
+
+test("recovery binds only the latest succeeded Objective Run and rejects an older matching output", () => {
+	const root = mkdtempSync(join(tmpdir(), "beemax-objective-latest-run-lineage-"));
+	const store = new MemoryStore(join(root, "memory.db"));
+	try {
+		const ownerKey = "cli:local:local";
+		store.record({ id: "latest-run-objective", ownerKey, kind: "objective", title: "Latest Run", acceptanceCriteria: "checked", status: "running", createdAt: 1, executionScope: { platform: "cli", chatId: "local", chatType: "dm" } });
+		store.transition("latest-run-objective", { status: "running", candidateResult: "candidate-v1", verificationStatus: "unavailable" });
+		for (const [id, output, finishedAt] of [["older-run", "candidate-v1", 20], ["newer-run", "candidate-v2", 30]]) {
+			store.recordRun({ id, taskId: "latest-run-objective", executor: "agent", status: "running", startedAt: finishedAt - 1, leaseExpiresAt: Date.now() + 60_000 });
+			assert.equal(store.transitionRun(id, { status: "succeeded", finishedAt, output }), true);
+		}
+		assert.equal(store.resolveCandidateVerification([ownerKey], "latest-run-objective", { accepted: true, evidence: "checked" }, 100), false);
+		assert.equal(store.queryTasks({ ownerKeys: [ownerKey], id: "latest-run-objective" })[0].verificationStatus, "unavailable");
+		assert.deepEqual(store.claimObjectiveCompletions("cli", 100), []);
+	} finally { store.close(); rmSync(root, { recursive: true, force: true }); }
+});
+
+test("Direct Objective recovery cannot accept a Candidate without an authoritative succeeded Run", () => {
+	const root = mkdtempSync(join(tmpdir(), "beemax-objective-recovery-no-run-"));
+	const store = new MemoryStore(join(root, "memory.db"));
+	try {
+		const ownerKey = "cli:local:local";
+		store.record({ id: "unproven-recovery", ownerKey, kind: "objective", title: "Unproven", acceptanceCriteria: "Candidate is checked", status: "running", createdAt: 1, executionScope: { platform: "cli", chatId: "local", chatType: "dm" } });
+		store.transition("unproven-recovery", { status: "running", verificationStatus: "unavailable", candidateResult: "candidate" });
+		assert.equal(store.resolveCandidateVerification([ownerKey], "unproven-recovery", { accepted: true, evidence: "verification only" }, 100), false);
+		assert.equal(store.queryTasks({ ownerKeys: [ownerKey], id: "unproven-recovery" })[0].verificationStatus, "unavailable");
+		assert.deepEqual(store.claimObjectiveCompletions("cli", 100), []);
+	} finally { store.close(); rmSync(root, { recursive: true, force: true }); }
+});
+
+test("legacy Completion Outbox rows backfill only when a matching succeeded Objective Run proves lineage", () => {
+	const root = mkdtempSync(join(tmpdir(), "beemax-objective-outbox-lineage-migration-"));
+	const path = join(root, "memory.db");
+	const legacy = new Database(path);
+	legacy.exec(`CREATE TABLE objective_completion_outbox (
+		id TEXT PRIMARY KEY, objective_id TEXT NOT NULL UNIQUE, owner_key TEXT NOT NULL, plan_id TEXT,
+		platform TEXT NOT NULL, channel_instance_id TEXT, chat_id TEXT NOT NULL, chat_type TEXT, user_id TEXT, thread_id TEXT, reply_to_message_id TEXT,
+		title TEXT NOT NULL, result TEXT NOT NULL, evidence TEXT, delivery_idempotency_key TEXT NOT NULL,
+		status TEXT NOT NULL CHECK (status IN ('queued', 'delivering', 'delivered', 'blocked')), claim_token TEXT,
+		attempts INTEGER NOT NULL DEFAULT 0, next_attempt_at INTEGER NOT NULL,
+		receipt_idempotency_key TEXT, receipt_delivered_at INTEGER, receipt_provider_message_id TEXT,
+		created_at INTEGER NOT NULL, blocked_at INTEGER, last_error TEXT
+	)`);
+	legacy.close();
+	let store = new MemoryStore(path);
+	try {
+		const ownerKey = "cli:local:local";
+		for (const id of ["legacy-proven", "legacy-unproven"]) {
+			store.record({ id, ownerKey, kind: "objective", title: id, status: "running", createdAt: 1, executionScope: { platform: "cli", chatId: "local", chatType: "dm", userId: "local" } });
+			store.transition(id, { status: "running", candidateResult: `${id}-result`, verificationStatus: "accepted" });
+		}
+		const authoritativeRunId = recordSucceededObjectiveRun(store, "legacy-proven", "legacy-proven-result", "legacy-proven-run");
+		store.close();
+		const migrated = new Database(path);
+		const insert = migrated.prepare(`INSERT INTO objective_completion_outbox
+			(id, objective_id, owner_key, platform, chat_id, chat_type, user_id, title, result, delivery_idempotency_key, status, attempts, next_attempt_at, created_at)
+			VALUES (?, ?, ?, 'cli', 'local', 'dm', 'local', ?, ?, ?, 'queued', 0, 10, 10)`);
+		for (const id of ["legacy-proven", "legacy-unproven"]) insert.run(`objective-completion:${id}`, id, ownerKey, id, `${id}-result`, `objective-completion:${id}`);
+		migrated.close();
+		store = new MemoryStore(path);
+		const claimed = store.claimObjectiveCompletions("cli", 100);
+		assert.deepEqual(claimed.map(({ objectiveId, taskRunId }) => ({ objectiveId, taskRunId })), [{ objectiveId: "legacy-proven", taskRunId: authoritativeRunId }]);
+		assert.equal(store.getObjectiveCompletion("objective-completion:legacy-unproven"), undefined);
+	} finally { try { store.close(); } catch {} rmSync(root, { recursive: true, force: true }); }
+});
+
+test("Objective cancellation fences Completion delivery and retains a matching late Receipt", () => {
+	const root = mkdtempSync(join(tmpdir(), "beemax-objective-completion-cancel-race-"));
+	const store = new MemoryStore(join(root, "memory.db"));
+	try {
+		const ownerKey = "feishu:chat:user";
+		store.record({ id: "cancelled-delivery", ownerKey, kind: "objective", title: "Cancel delivery", status: "running", createdAt: 1, executionScope: { platform: "feishu", chatId: "chat", chatType: "dm", userId: "user" } });
+		store.transition("cancelled-delivery", { status: "running", candidateResult: "verified result", verificationStatus: "accepted" });
+		recordSucceededObjectiveRun(store, "cancelled-delivery", "verified result");
+		assert.equal(store.enqueueObjectiveCompletion(ownerKey, "cancelled-delivery", 10), true);
+		const [claimed] = store.claimObjectiveCompletions("feishu", 10, 1, 50);
+		assert.ok(claimed.claimToken);
+		assert.deepEqual(store.cancelObjective(ownerKey, "cancelled-delivery", 20), { ownerKey, objectiveId: "cancelled-delivery", taskIds: ["cancelled-delivery"], planIds: [] });
+		assert.deepEqual(store.claimObjectiveCompletions("feishu", 1_000), []);
+		assert.equal(store.completeObjectiveCompletion(claimed.id, claimed.claimToken, { idempotencyKey: "wrong", deliveredAt: 21 }, 22), false);
+		assert.equal(store.completeObjectiveCompletion(claimed.id, claimed.claimToken, { idempotencyKey: claimed.deliveryIdempotencyKey, deliveredAt: 21, providerMessageId: "om-after-cancel" }, 22), true);
+		const outbox = store.getObjectiveCompletion(claimed.id);
+		assert.deepEqual({ status: outbox.status, receipt: outbox.receipt }, { status: "blocked", receipt: { idempotencyKey: claimed.deliveryIdempotencyKey, deliveredAt: 21, providerMessageId: "om-after-cancel" } });
+		assert.equal(store.queryTasks({ ownerKeys: [ownerKey], id: "cancelled-delivery" })[0].status, "cancelled");
+	} finally { store.close(); rmSync(root, { recursive: true, force: true }); }
+});
+
+test("Objective Completion worker retains a provider Receipt when cancellation wins after send", async () => {
+	const root = mkdtempSync(join(tmpdir(), "beemax-objective-completion-worker-cancel-race-"));
+	const store = new MemoryStore(join(root, "memory.db"));
+	try {
+		const ownerKey = "feishu:chat:user";
+		store.record({ id: "worker-cancelled-delivery", ownerKey, kind: "objective", title: "Worker race", status: "running", createdAt: 1, executionScope: { platform: "feishu", chatId: "chat", chatType: "dm", userId: "user" } });
+		store.transition("worker-cancelled-delivery", { status: "running", candidateResult: "verified result", verificationStatus: "accepted" });
+		recordSucceededObjectiveRun(store, "worker-cancelled-delivery", "verified result");
+		assert.equal(store.enqueueObjectiveCompletion(ownerKey, "worker-cancelled-delivery", 10), true);
+		let sends = 0;
+		const worker = new ObjectiveCompletionDeliveryService(store, { sendText: async (_target, _text, options) => {
+			sends++;
+			assert.ok(store.cancelObjective(ownerKey, "worker-cancelled-delivery", 11));
+			return { idempotencyKey: options.idempotencyKey, deliveredAt: 12, providerMessageId: "om-race" };
+		} }, { platform: "feishu" });
+		assert.deepEqual(await worker.runOnce(10), { claimed: 1, delivered: 1, failed: 0, deferred: 0, blocked: 0 });
+		assert.equal(sends, 1);
+		const outbox = store.getObjectiveCompletion("objective-completion:worker-cancelled-delivery");
+		assert.deepEqual({ status: outbox.status, receipt: outbox.receipt }, { status: "blocked", receipt: { idempotencyKey: outbox.deliveryIdempotencyKey, deliveredAt: 12, providerMessageId: "om-race" } });
+		assert.deepEqual(store.claimObjectiveCompletions("feishu", 1_000), []);
+	} finally { store.close(); rmSync(root, { recursive: true, force: true }); }
+});
+
+test("Objective Completion worker does not confuse a permanent channel block with cancellation", async () => {
+	const root = mkdtempSync(join(tmpdir(), "beemax-objective-completion-channel-block-race-"));
+	const store = new MemoryStore(join(root, "memory.db"));
+	try {
+		const ownerKey = "feishu:chat:user";
+		const objectiveId = "channel-blocked-delivery";
+		store.record({ id: objectiveId, ownerKey, kind: "objective", title: "Channel block", status: "running", createdAt: 1, executionScope: { platform: "feishu", chatId: "chat", chatType: "dm", userId: "user" } });
+		store.transition(objectiveId, { status: "running", candidateResult: "verified result", verificationStatus: "accepted" });
+		recordSucceededObjectiveRun(store, objectiveId, "verified result");
+		assert.equal(store.enqueueObjectiveCompletion(ownerKey, objectiveId, 10), true);
+		const completionId = `objective-completion:${objectiveId}`;
+		const worker = new ObjectiveCompletionDeliveryService(store, { sendText: async (_target, _text, options) => {
+			const delivering = store.getObjectiveCompletion(completionId);
+			assert.ok(delivering.claimToken);
+			assert.equal(store.blockObjectiveCompletion(completionId, delivering.claimToken, "channel removed", 11), true);
+			return { idempotencyKey: options.idempotencyKey, deliveredAt: 12, providerMessageId: "om-channel-block" };
+		} }, { platform: "feishu" });
+		assert.deepEqual(await worker.runOnce(10), { claimed: 1, delivered: 0, failed: 1, deferred: 0, blocked: 0 });
+		const outbox = store.getObjectiveCompletion(completionId);
+		assert.deepEqual({ status: outbox.status, error: outbox.error, providerMessageId: outbox.receipt.providerMessageId }, { status: "blocked", error: "channel removed", providerMessageId: "om-channel-block" });
+		assert.equal(store.queryTasks({ ownerKeys: [ownerKey], id: objectiveId })[0].status, "running");
+	} finally { store.close(); rmSync(root, { recursive: true, force: true }); }
+});
+
 test("permanently blocked Objective delivery retains accepted nonterminal responsibility", () => {
 	const root = mkdtempSync(join(tmpdir(), "beemax-objective-completion-blocked-"));
 	const store = new MemoryStore(join(root, "memory.db"));
 	try {
 		store.record({ id: "blocked-objective", ownerKey: "cli:local:local", kind: "objective", title: "Blocked", status: "running", createdAt: 1, executionScope: { platform: "cli", chatId: "local", chatType: "dm" } });
 		store.transition("blocked-objective", { status: "running", candidateResult: "verified", verificationStatus: "accepted" });
+		recordSucceededObjectiveRun(store, "blocked-objective", "verified");
 		assert.equal(store.enqueueObjectiveCompletion("cli:local:local", "blocked-objective", 10), true);
 		const [completion] = store.claimObjectiveCompletions("cli", 10);
 		assert.equal(store.blockObjectiveCompletion(completion.id, completion.claimToken, "channel removed", 20), true);
@@ -961,6 +1525,7 @@ test("Completion Outbox repairs the accepted-candidate crash window without repl
 	try {
 		store.record({ id: "interrupted-objective", ownerKey: "cli:local:local", kind: "objective", title: "Interrupted", status: "running", createdAt: 1, executionScope: { platform: "cli", chatId: "local", chatType: "dm" } });
 		store.transition("interrupted-objective", { status: "running", candidateResult: "already verified", verificationStatus: "accepted" });
+		recordSucceededObjectiveRun(store, "interrupted-objective", "already verified");
 		store.close();
 		store = new MemoryStore(path);
 		const [completion] = store.claimObjectiveCompletions("cli", 100);
@@ -978,6 +1543,7 @@ test("two processes cannot deliver the same Objective Completion lease concurren
 	try {
 		first.record({ id: "claimed-objective", ownerKey: "owner", kind: "objective", title: "Claimed", status: "running", createdAt: 1, executionScope: { platform: "cli", chatId: "local", chatType: "dm" } });
 		first.transition("claimed-objective", { status: "running", candidateResult: "verified", verificationStatus: "accepted" });
+		recordSucceededObjectiveRun(first, "claimed-objective", "verified");
 		assert.equal(first.enqueueObjectiveCompletion("owner", "claimed-objective", 10), true);
 		const [claimed] = first.claimObjectiveCompletions("cli", 10, 1, 50);
 		assert.ok(claimed.claimToken);
@@ -1484,7 +2050,7 @@ test("a process failure after repeated lease heartbeats remains fenced until rec
 	} finally { store.close(); rmSync(root, { recursive: true, force: true }); }
 });
 
-test("reconciliation closes the Task-success Run-running terminal commit window", async () => {
+test("a process crash inside atomic success settlement leaves neither Task nor Run succeeded", async () => {
 	const root = mkdtempSync(join(tmpdir(), "beemax-terminal-window-crash-"));
 	const path = join(root, "memory.db"); const executionLog = join(root, "executions.jsonl");
 	let store = new MemoryStore(path);
@@ -1492,13 +2058,14 @@ test("reconciliation closes the Task-success Run-running terminal commit window"
 		new TaskGraph(store).createPlan({ id: "terminal-window-plan", ownerKey: "owner", tasks: [{ id: "terminal-window-task", title: "Task", recoveryPolicy: "safe_retry", idempotencyKey: "terminal-window-plan:task", executionScope: { platform: "cli", chatId: "local", chatType: "dm", userId: "local" } }] });
 		store.close(); await runClaimWorker({ databasePath: path, executionLog, mode: "crash-after-terminal-task-write" }, 20);
 		store = new MemoryStore(path);
-		assert.equal(store.queryTasks({ ownerKeys: ["owner"], id: "terminal-window-task" })[0].status, "succeeded");
+		assert.equal(store.queryTasks({ ownerKeys: ["owner"], id: "terminal-window-task" })[0].status, "running");
 		const run = store.taskRuns("terminal-window-task")[0];
 		assert.equal(run.status, "running");
 		assert.equal(store.queryTaskPlans({ ownerKeys: ["owner"], id: "terminal-window-plan" })[0].status, "running");
-		assert.deepEqual(store.reconcileExpiredTaskRuns(run.leaseExpiresAt), { retried: 0, failed: 0, affectedPlans: [{ ownerKey: "owner", planId: "terminal-window-plan" }] });
+		assert.deepEqual(store.reconcileExpiredTaskRuns(run.leaseExpiresAt), { retried: 1, failed: 0, affectedPlans: [{ ownerKey: "owner", planId: "terminal-window-plan" }] });
 		assert.equal(store.taskRuns("terminal-window-task")[0].status, "failed");
-		assert.equal(store.queryTaskPlans({ ownerKeys: ["owner"], id: "terminal-window-plan" })[0].status, "succeeded");
+		assert.equal(store.queryTasks({ ownerKeys: ["owner"], id: "terminal-window-task" })[0].status, "pending");
+		assert.equal(store.queryTaskPlans({ ownerKeys: ["owner"], id: "terminal-window-plan" })[0].status, "pending");
 	} finally { store.close(); rmSync(root, { recursive: true, force: true }); }
 });
 

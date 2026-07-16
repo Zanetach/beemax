@@ -132,7 +132,7 @@ export async function executeOutcomeBoundCapabilityTask({ scenario, cognitionId,
 	const runtime = new BeeMaxAgentRuntime({
 		profileId: "profile:capability-eval", taskLedger: ledger, executionTrace: traceStore,
 		turnUnderstanding: { understand: () => ({ action: "create", goal: rawRequest, constraints: [], acceptanceCriteria: [rawRequest], uncertainties: [], memoryQuery: rawRequest, capabilityQuery: rawRequest, executionMode: "direct", confidence: 1 }) },
-		workContractBuilder: { build: async () => ({ source: "model", contract: { schemaVersion: "beemax.work-contract.v1", rawRequest, action: "create", objective: clause, constraints: [], prohibitions: [], acceptanceCriteria: [clause], capabilityRequirements: [clause], uncertainties: [], executionMode: "direct", confidence: 1 } }) },
+		workContractBuilder: { build: async () => ({ source: "deterministic", contract: { schemaVersion: "beemax.work-contract.v1", rawRequest, action: "create", objective: clause, constraints: [], prohibitions: [], acceptanceCriteria: [clause], capabilityRequirements: [clause], uncertainties: [], executionMode: "direct", confidence: 1 } }) },
 		planningPolicy: { decide: () => ({ mode: "direct", requiredTools: [], suggestedConcurrency: 1, budget: { maxSubagents: 0, maxToolCalls: 20, maxTokens: 2_000, maxCorrectiveAttempts: 0 }, signals: { substantialWork: true, requiresVerification: true }, reason: "outcome calibration", directive: () => "[calibration task]" }) },
 		verifyObjectiveCandidate: async (_task, _result, _signal, context) => {
 			const successful = new Set(context?.successfulToolNames ?? []);
@@ -231,9 +231,12 @@ function evaluationLedger(tasks, runs) {
 		queryTasks(query) { return [...tasks.values()].filter((task) => query.ownerKeys.includes(task.ownerKey) && (!query.id || task.id === query.id) && (!query.kinds || query.kinds.includes(task.kind)) && (!query.statuses || query.statuses.includes(task.status))).slice(0, query.limit ?? 100); },
 		taskRuns(taskId) { return [...runs.values()].filter((run) => run.taskId === taskId); },
 		checkpointTask() { return true; }, deferCandidateVerification() {},
-		enqueueObjectiveCompletion(ownerKey, objectiveId) {
-			const task = tasks.get(objectiveId);
-			return Boolean(task && task.ownerKey === ownerKey && task.kind === "objective" && task.status === "running" && task.verificationStatus === "accepted" && task.candidateResult);
+		settleDirectObjectiveCompletion(settlement) {
+			const task = tasks.get(settlement.objectiveId); const run = runs.get(settlement.taskRunId);
+			if (!task || task.ownerKey !== settlement.ownerKey || task.kind !== "objective" || task.status !== "running" || !run || run.taskId !== task.id || run.status !== "running") return false;
+			tasks.set(task.id, { ...task, candidateResult: settlement.candidateResult, evidence: settlement.evidence, verificationStatus: "accepted", criterionVerifications: settlement.criterionVerifications, correctiveAttempts: settlement.correctiveAttempts });
+			runs.set(run.id, { ...run, status: "succeeded", finishedAt: Date.now(), output: settlement.candidateResult });
+			return true;
 		},
 	};
 }

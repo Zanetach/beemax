@@ -457,7 +457,7 @@ This ordering is the implementation plan, not a fixed business workflow. Core re
 **Blocked by:** Validate Work Contracts before execution.
 
 - [ ] Cover negation, double negation, reversals, pronouns, omitted subjects, and cross-language corrections.
-- [ ] Preserve the original Objective and revision chain without duplicate or misbound work.
+- [x] Preserve the original Objective and revision chain without duplicate or misbound work.
 - [ ] Contract the legacy regex understanding path after all callers migrate and regression tests are red-capable.
 
 ## Build a dynamic Tool Spec Plan for each Pi Turn

@@ -37,7 +37,11 @@ test("Effect authority projects its lifecycle into the bound Execution Trace", (
 		const effectId = effects.begin({ source, executionEnvelope, taskId: "task:effect", toolCallId: "call:effect", toolName: "write", policy: { ...MUTATING_TOOL_POLICY, sideEffect: "local" } });
 		effects.finish({ source, executionEnvelope, toolCallId: "call:effect", toolName: "write", policy: { ...MUTATING_TOOL_POLICY, sideEffect: "local" }, isError: false });
 		const interruptedId = effects.begin({ source, executionEnvelope, taskId: "task:effect", toolCallId: "call:interrupted", toolName: "external_write", policy: MUTATING_TOOL_POLICY });
+		assert.equal(effects.unresolvedTaskEffects({ ownerKey: "cli:local:local", taskIds: ["task:effect"] }), 1);
 		assert.equal(effects.interruptTask("task:effect"), 1);
+		assert.equal(effects.unresolvedTaskEffects({ ownerKey: "cli:local:local", taskIds: ["task:effect"] }), 1, "an unknown interrupted Effect remains unresolved");
+		assert.equal(effects.reconcile(interruptedId, { status: "failed", operation: "cancelled before commit" }), true);
+		assert.equal(effects.unresolvedTaskEffects({ ownerKey: "cli:local:local", taskIds: ["task:effect"] }), 0);
 		const execution = trace.trace({ executionId: "execution:effect" });
 		assert.equal(execution.effects, 2);
 		assert.equal(execution.unknownEffects, 1);
@@ -46,6 +50,7 @@ test("Effect authority projects its lifecycle into the bound Execution Trace", (
 			{ type: "effect.settled", effectId, status: "committed" },
 			{ type: "effect.started", effectId: interruptedId, status: "executing" },
 			{ type: "effect.settled", effectId: interruptedId, status: "unknown" },
+			{ type: "effect.settled", effectId: interruptedId, status: "failed" },
 		]);
 	} finally { rmSync(root, { recursive: true, force: true }); }
 });

@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { BeeMaxAgentRuntime, DeterministicSituationBuilder, ModelBackedSituationBuilder, TurnUnderstandingEngine, createAccessScopeRef, createSituation } from "../dist/index.js";
+import { BeeMaxAgentRuntime, DeterministicSituationBuilder, DeterministicWorkContractBuilder, ModelBackedSituationBuilder, TurnUnderstandingEngine, createAccessScopeRef, createSituation } from "../dist/index.js";
 
-const createRuntime = (options) => new BeeMaxAgentRuntime({ profileId: "profile:test", ...options });
+const createRuntime = (options) => new BeeMaxAgentRuntime({ profileId: "profile:test", workContractBuilder: new DeterministicWorkContractBuilder(), ...options });
 
 const fallback = (text) => new TurnUnderstandingEngine().understand(text);
 

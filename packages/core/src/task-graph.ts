@@ -167,9 +167,10 @@ export class TaskGraph {
 			if (attempt > firstAttempt && !this.ledger.transition(task.id, { status: "running", startedAt, verificationStatus: "pending", correctiveAttempts: attempt - 1 })) return this.persistedOutcome(task, "failed");
 			const runId = crypto.randomUUID();
 			const executionMode = options.executionMode ?? "normal";
+			const objectiveId = this.objectiveRootId(task);
 			const executionEnvelope = createExecutionEnvelope({
 				executionId: `execution:${runId}`, trigger: { kind: executionMode === "recovery" ? "recovery" : "task_transition", id: task.id },
-				...(task.parentId ? { objectiveId: task.parentId } : {}), taskId: task.id, taskRunId: runId,
+				...(objectiveId ? { objectiveId } : {}), taskId: task.id, taskRunId: runId,
 				...(task.accessScopeRef ? { accessScopeRef: task.accessScopeRef } : {}), budget: { maxCorrectiveAttempts },
 				mode: attempt > 1 ? "correction" : executionMode,
 			});
@@ -241,12 +242,12 @@ export class TaskGraph {
 				const finishedAt = Date.now();
 				const output = candidateOutput;
 				const evidence = mergeTaskEvidence(executionEvidence, verificationEvidence);
-				if (!this.ledger.transition(task.id, { status: "succeeded", finishedAt, result: output, evidence, artifacts, unresolvedIssues, ...(task.acceptanceCriteria ? { verificationStatus: "accepted" as const, verificationFeedback: undefined, criterionVerifications, correctiveAttempts: attempt - 1 } : {}) })) {
-					const outcome = this.persistedOutcome(task, "failed");
-					this.ledger.transitionRun(runId, { status: outcome, finishedAt, error: outcome === "succeeded" ? undefined : `Task already reached Terminal Outcome: ${outcome}` });
-					return outcome;
-				}
-				this.ledger.transitionRun(runId, { status: "succeeded", finishedAt, output });
+				if (!this.ledger.settleTaskRunAndTask) throw new Error("Atomic Task Run and Task success settlement is unavailable");
+				if (!this.ledger.settleTaskRunAndTask({
+					ownerKey: task.ownerKey, taskId: task.id, taskRunId: runId,
+					task: { status: "succeeded", finishedAt, result: output, evidence, artifacts, unresolvedIssues, ...(task.acceptanceCriteria ? { verificationStatus: "accepted" as const, verificationFeedback: undefined, criterionVerifications, correctiveAttempts: attempt - 1 } : {}) },
+					run: { status: "succeeded", finishedAt, output },
+				})) throw new Error("Atomic Task Run and Task success settlement was rejected");
 				return "succeeded";
 			} catch (error) {
 				const finishedAt = Date.now();
@@ -270,6 +271,18 @@ export class TaskGraph {
 
 	private recordTrace(event: ExecutionTraceInput): void {
 		try { this.executionTrace?.record(event); } catch { /* Trace is diagnostic and cannot change Task authority. */ }
+	}
+
+	private objectiveRootId(task: TaskRecord): string | undefined {
+		let current: TaskRecord | undefined = task;
+		const visited = new Set<string>();
+		while (current && !visited.has(current.id)) {
+			visited.add(current.id);
+			if (current.kind === "objective") return current.id;
+			if (!current.parentId) return undefined;
+			current = this.ledger.queryTasks({ ownerKeys: [task.ownerKey], id: current.parentId, limit: 1 })[0];
+		}
+		return undefined;
 	}
 
 	private persistedOutcome(task: TaskRecord, fallback: "succeeded" | "failed" | "cancelled"): "succeeded" | "failed" | "cancelled" {

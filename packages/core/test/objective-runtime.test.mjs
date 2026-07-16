@@ -4,11 +4,25 @@ import { createAccessScopeRef, createSituation, ObjectiveRuntime } from "../dist
 
 function ledgerFixture(records) {
 	const tasks = new Map(records.map((task) => [task.id, { ...task }]));
+	const runs = new Map();
 	const completions = new Set();
 	return {
 		tasks,
+		runs,
 		completions,
 		record(task) { tasks.set(task.id, { ...task }); },
+		recordRun(run) { runs.set(run.id, { ...run }); },
+		transitionRun(id, change) { const run = runs.get(id); if (!run || run.status !== "running") return false; runs.set(id, { ...run, ...change }); return true; },
+		renewTaskRunLease(id, leaseExpiresAt, now = Date.now()) { const run = runs.get(id); if (!run || run.status !== "running" || run.leaseExpiresAt <= now || leaseExpiresAt <= run.leaseExpiresAt) return false; runs.set(id, { ...run, leaseExpiresAt }); return true; },
+		settleDirectObjectiveCompletion(settlement) {
+			const objective = tasks.get(settlement.objectiveId);
+			const run = runs.get(settlement.taskRunId);
+			if (!objective || objective.ownerKey !== settlement.ownerKey || objective.status !== "running" || !run || run.taskId !== objective.id || run.status !== "running" || run.leaseExpiresAt <= Date.now()) return false;
+			tasks.set(objective.id, { ...objective, candidateResult: settlement.candidateResult, evidence: settlement.evidence, verificationStatus: "accepted" });
+			runs.set(run.id, { ...run, status: "succeeded", output: settlement.candidateResult });
+			completions.add(objective.id);
+			return true;
+		},
 		transition(id, change) {
 			const current = tasks.get(id);
 			if (!current || !["pending", "running"].includes(current.status)) return false;
@@ -201,4 +215,40 @@ test("a retried successful Plan reopens and delivers its failed parent Objective
 	assert.equal((await runtime.deliverPlan("owner", "plan")).status, "succeeded");
 	assert.equal(ledger.tasks.get("objective").status, "running");
 	assert.equal(ledger.tasks.get("objective").candidateResult, "final");
+});
+
+test("planned Objective synthesis renews its finite Task Run lease until atomic completion", async () => {
+	const ledger = ledgerFixture([
+		{ id: "objective", ownerKey: "owner", kind: "objective", title: "Long synthesis", status: "running", createdAt: 1 },
+		{ id: "child", ownerKey: "owner", kind: "delegated", title: "Research", parentId: "objective", planId: "plan", status: "succeeded", result: "verified", verificationStatus: "accepted", createdAt: 2 },
+	]);
+	let renewals = 0;
+	const renew = ledger.renewTaskRunLease.bind(ledger);
+	ledger.renewTaskRunLease = (...args) => { renewals++; return renew(...args); };
+	const runtime = new ObjectiveRuntime(ledger, async () => {
+		await new Promise((resolve) => setTimeout(resolve, 450));
+		return { result: "long synthesis completed" };
+	}, undefined, { taskRunLeaseMs: 300 });
+	assert.equal((await runtime.deliverPlan("owner", "plan")).status, "succeeded");
+	assert.ok(renewals >= 2);
+	assert.equal([...ledger.runs.values()][0].status, "succeeded");
+});
+
+test("planned Objective synthesis fails closed when its Task Run lease is lost", async () => {
+	const ledger = ledgerFixture([
+		{ id: "objective", ownerKey: "owner", kind: "objective", title: "Lost lease", status: "running", createdAt: 1 },
+		{ id: "child", ownerKey: "owner", kind: "delegated", title: "Research", parentId: "objective", planId: "plan", status: "succeeded", result: "verified", verificationStatus: "accepted", createdAt: 2 },
+	]);
+	ledger.renewTaskRunLease = () => false;
+	const runtime = new ObjectiveRuntime(ledger, async (_input, signal) => {
+		await new Promise((resolve, reject) => {
+			const timeout = setTimeout(resolve, 1_000);
+			signal.addEventListener("abort", () => { clearTimeout(timeout); reject(signal.reason); }, { once: true });
+		});
+		return { result: "must not settle" };
+	}, undefined, { taskRunLeaseMs: 300 });
+	const outcome = await runtime.deliverPlan("owner", "plan");
+	assert.equal(outcome.status, "failed");
+	assert.match(outcome.error, /lost its durable Task Run lease/);
+	assert.equal(ledger.tasks.get("objective").candidateResult, undefined);
 });

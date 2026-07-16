@@ -22,7 +22,7 @@ export function interactionCompletionDeliveryKey(profileId: string, scope: Pick<
 
 export interface ObjectiveCompletionDeliveryResult { claimed: number; delivered: number; failed: number; deferred: number; blocked: number; }
 export type ObjectiveCompletionOutbox = Required<Pick<TaskLedger,
-	"claimObjectiveCompletions" | "completeObjectiveCompletion" | "failObjectiveCompletion"
+	"claimObjectiveCompletions" | "recordObjectiveCompletionReceipt" | "isObjectiveCompletionCancelledAfterDelivery" | "completeObjectiveCompletion" | "failObjectiveCompletion"
 >> & Partial<Pick<TaskLedger, "getObjectiveCompletion" | "renewObjectiveCompletion" | "deferObjectiveCompletion" | "blockObjectiveCompletion">>;
 
 export interface ObjectiveCompletionDeliveryOptions {
@@ -117,14 +117,19 @@ export class ObjectiveCompletionDeliveryService {
 			if (!this.outbox.renewObjectiveCompletion?.(completion.id, completion.claimToken!, Date.now() + this.leaseMs)) controller.abort(new Error(`Objective Completion lease lost: ${completion.id}`));
 		}, this.leaseHeartbeatMs) : undefined;
 		heartbeat?.unref();
+		let providerReceipt: ObjectiveCompletion["receipt"];
 		try {
-			const receipt = await this.delivery.sendText(completion.target, completion.result, { idempotencyKey: completion.deliveryIdempotencyKey, deliveryClass: "proactive", deliveryAttempt: completion.attempts });
-			if (controller.signal.aborted) throw controller.signal.reason;
+			const receipt = completion.receipt ?? await this.delivery.sendText(completion.target, completion.result, { idempotencyKey: completion.deliveryIdempotencyKey, deliveryClass: "proactive", deliveryAttempt: completion.attempts });
 			if (!receipt || receipt.idempotencyKey !== completion.deliveryIdempotencyKey) throw new Error(`Channel returned an invalid Delivery Receipt for ${completion.id}`);
+			providerReceipt = receipt;
+			if (!completion.receipt && !this.outbox.recordObjectiveCompletionReceipt(completion.id, receipt, now)) throw new Error(`Objective Completion Receipt could not be retained: ${completion.id}`);
+			if (this.isBlockedAfterDeliveredCancellation(completion.id, receipt)) return "delivered";
+			if (controller.signal.aborted) throw controller.signal.reason;
 			await this.options.onDelivered?.({ ...completion, status: "delivered", receipt });
 			if (!completion.claimToken || !this.outbox.completeObjectiveCompletion(completion.id, completion.claimToken, receipt, now)) throw new Error(`Objective Completion acknowledgement failed: ${completion.id}`);
 			return "delivered";
 		} catch (error) {
+			if (providerReceipt && this.isBlockedAfterDeliveredCancellation(completion.id, providerReceipt)) return "delivered";
 			if (error instanceof DeliveryDeferredError && completion.claimToken && this.outbox.deferObjectiveCompletion?.(completion.id, completion.claimToken, error.retryAt, now)) return "deferred";
 			if (completion.claimToken && completion.attempts >= this.maxAttempts && this.outbox.blockObjectiveCompletion?.(completion.id, completion.claimToken, error instanceof Error ? error.message : String(error), now)) {
 				this.options.onError?.(error);
@@ -136,6 +141,10 @@ export class ObjectiveCompletionDeliveryService {
 			if (heartbeat) clearInterval(heartbeat);
 			this.controllers.delete(controller);
 		}
+	}
+
+	private isBlockedAfterDeliveredCancellation(id: string, receipt: NonNullable<ObjectiveCompletion["receipt"]>): boolean {
+		return this.outbox.isObjectiveCompletionCancelledAfterDelivery(id, receipt);
 	}
 
 	private schedule(delay: number): void {

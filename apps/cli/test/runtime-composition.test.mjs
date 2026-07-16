@@ -5,7 +5,25 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createProfileAgentRuntime, createProfileRuntime } from "../dist/runtime-composition.js";
 import { attestAgentFactorySecurity } from "../dist/agent-factory.js";
+import { DeterministicWorkContractBuilder } from "@beemax/core";
 import { MemoryStore } from "@beemax/memory";
+
+test("Profile Agent composition rejects missing Work Contract cognition before starting resources", async () => {
+	const root = await mkdtemp(join(tmpdir(), "beemax-profile-runtime-admission-"));
+	const events = [];
+	try {
+		await assert.rejects(createProfileAgentRuntime({
+			profileId: "personal",
+			agentDir: root,
+			policy: {},
+			runtime: { createAgent: async () => { throw new Error("unused"); } },
+			resources: [{ name: "memory", start: () => { events.push("start:memory"); }, dispose: () => { events.push("dispose:memory"); } }],
+		}), /Work Contract Builder is required/i);
+		assert.deepEqual(events, []);
+	} finally {
+		await rm(root, { recursive: true, force: true });
+	}
+});
 
 test("Profile Agent composition gives every surface the same durable interaction and session wiring", async () => {
 	const root = await mkdtemp(join(tmpdir(), "beemax-profile-runtime-"));
@@ -15,6 +33,7 @@ test("Profile Agent composition gives every surface the same durable interaction
 		agentDir: root,
 		policy: { maxSessions: 2 },
 		runtime: {
+			workContractBuilder: new DeterministicWorkContractBuilder(),
 			createAgent: async () => ({
 				agent: { state: { model: { id: "test" }, messages: [] } },
 				subscribe: () => () => undefined,
@@ -48,7 +67,7 @@ test("Profile Runtime rolls back partial startup and disposes owned resources in
 		profileId: "personal",
 		agentDir: root,
 		policy: {},
-		runtime: { createAgent: async () => { throw new Error("unused"); } },
+		runtime: { workContractBuilder: new DeterministicWorkContractBuilder(), createAgent: async () => { throw new Error("unused"); } },
 	};
 	try {
 		await assert.rejects(createProfileAgentRuntime({ ...options, resources: [resource("memory"), resource("effects"), resource("recovery", true)] }), /failed:recovery/);
@@ -70,7 +89,7 @@ test("Profile Runtime attempts every owned resource disposal before reporting sh
 		profileId: "personal",
 		agentDir: root,
 		policy: {},
-		runtime: { createAgent: async () => { throw new Error("unused"); } },
+		runtime: { workContractBuilder: new DeterministicWorkContractBuilder(), createAgent: async () => { throw new Error("unused"); } },
 		resources: [
 			{ name: "memory", dispose: () => { events.push("dispose:memory"); } },
 			{ name: "effects", dispose: () => { events.push("dispose:effects"); throw new Error("effects close failed"); } },
@@ -100,7 +119,7 @@ test("Profile Runtime composes the durable work graph and Pi graph through one s
 			composed = true;
 			return {
 				profileId: "personal", agentDir: root, policy: {},
-				runtime: { planningPolicy: work.planningPolicy, planningBudgets: work.planningBudgets, taskLedger: memory, createAgent: attestAgentFactorySecurity(async () => ({ agent: { state: { model: { id: "test" }, messages: [] } }, subscribe: () => () => undefined, prompt: async () => undefined, abort: async () => undefined, dispose: () => undefined }), work.toolEffects) },
+				runtime: { workContractBuilder: new DeterministicWorkContractBuilder(), planningPolicy: work.planningPolicy, planningBudgets: work.planningBudgets, taskLedger: memory, createAgent: attestAgentFactorySecurity(async () => ({ agent: { state: { model: { id: "test" }, messages: [] } }, subscribe: () => () => undefined, prompt: async () => undefined, abort: async () => undefined, dispose: () => undefined }), work.toolEffects) },
 			};
 		},
 	});
@@ -124,7 +143,7 @@ test("channel composition cannot start a main Agent without the shared Governanc
 				executeTask: async () => ({}), verifyTaskCandidate: async () => ({ accepted: true }), deliverObjective: async () => ({ result: "done" }), executeSubagent: async () => "done",
 			},
 			resources: [{ name: "memory", dispose: () => memory.close() }],
-			compose: () => ({ profileId: "personal", agentDir: root, policy: {}, runtime: { createAgent: async () => ({}) } }),
+			compose: () => ({ profileId: "personal", agentDir: root, policy: {}, runtime: { workContractBuilder: new DeterministicWorkContractBuilder(), createAgent: async () => ({}) } }),
 		}), /Governance.*Effect Authority/i);
 	} finally {
 		try { memory.close(); } catch { /* disposed by failed composition */ }

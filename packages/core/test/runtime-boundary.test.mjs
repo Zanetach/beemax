@@ -4,11 +4,13 @@ import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+
+const semanticReview = Object.freeze({ schemaVersion: "beemax.work-contract-adjudication.v1", inventorySchemaVersion: "beemax.semantic-inventory.v1", primaryModelIdentity: "test/primary/test", reviewerModelIdentity: "test/reviewer/test", reviewMode: "different_models", independentSamples: true, cognitionUsage: { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, costUsd: 0, modelIdentities: ["test/primary/test", "test/reviewer/test"] }, cognitionBudgetChargeTokens: 1 });
 import { MemoryStore } from "@beemax/memory";
 import { createAssistantMessageEventStream } from "@earendil-works/pi-ai";
-import { AgentRunError, AuthStorage, BeeMaxAgentRuntime, buildBeeMaxRuntimeFactory, buildTaskPreservationEnvelope, ConversationContext, createAccessScopeRef, createEnterprisePolicyProvider, createEnterprisePolicyPublisher, createExecutionEnvelope, createSituation, defineTool, FileExecutionTraceStore, FileToolEffectJournal, getBuiltinModel, isRecoverableModelFailure, MUTATING_TOOL_POLICY, READ_ONLY_TOOL_POLICY, SessionCoordinator, sessionIdForSource, withToolPolicy } from "../dist/index.js";
+import { AgentRunError, AuthStorage, BeeMaxAgentRuntime, buildBeeMaxRuntimeFactory, buildTaskPreservationEnvelope, ConversationContext, createAccessScopeRef, createEnterprisePolicyProvider, createEnterprisePolicyPublisher, createExecutionEnvelope, createSituation, defineTool, DeterministicWorkContractBuilder, FileExecutionTraceStore, FileToolEffectJournal, getBuiltinModel, isRecoverableModelFailure, MUTATING_TOOL_POLICY, READ_ONLY_TOOL_POLICY, SessionCoordinator, sessionIdForSource, withToolPolicy } from "../dist/index.js";
 
-const createRuntime = (options) => new BeeMaxAgentRuntime({ profileId: "profile:test", ...options });
+const createRuntime = (options) => new BeeMaxAgentRuntime({ profileId: "profile:test", workContractBuilder: new DeterministicWorkContractBuilder(), ...options });
 
 test("BeeMax Core owns the runtime primitive boundary", () => {
 	assert.equal(typeof AuthStorage.create, "function");
@@ -21,6 +23,122 @@ test("BeeMax Core owns the runtime primitive boundary", () => {
 	assert.equal(isRecoverableModelFailure(new Error("fetch failed")), true);
 	assert.equal(isRecoverableModelFailure({ status: 401 }), false);
 	assert.equal(isRecoverableModelFailure(new Error("invalid API key")), false);
+});
+
+test("runtime usage follows assistant events across in-turn state compaction without counting history twice", async () => {
+	const source = { platform: "cli", chatId: "usage-compaction", chatType: "dm", userId: "user", delegatedTask: { id: "task:usage", ownerKey: "owner:usage" } };
+	const historical = Array.from({ length: 5 }, (_, index) => ({ role: "assistant", content: [{ type: "text", text: `historical-${index}` }], usage: { input: 100, output: 50 } }));
+	const summary = { role: "assistant", content: [{ type: "text", text: "compaction summary" }], usage: { input: 0, output: 0 } };
+	const first = { role: "assistant", content: [{ type: "text", text: "first" }], usage: { input: 10, output: 2, cacheRead: 0, cacheWrite: 0, cost: { total: 0 } } };
+	const second = { role: "assistant", content: [{ type: "text", text: "final" }], usage: { input: 20, output: 3, cacheRead: 0, cacheWrite: 0, cost: { total: 0 } } };
+	const agent = { state: { model: { id: "test" }, messages: historical } };
+	let listener;
+	const runtime = createRuntime({
+		createAutomationAgent: async () => ({
+			agent,
+			subscribe: (next) => { listener = next; return () => undefined; },
+			prompt: async () => {
+				listener({ type: "message_end", message: first });
+				agent.state.messages.push(first);
+				listener({ type: "message_end", message: second });
+				// Simulate Pi replacing/compacting the in-turn transcript after both
+				// Provider events have already been observed by the runtime.
+				agent.state.messages = [summary, second];
+			},
+			abort: async () => undefined,
+			dispose: () => undefined,
+		}),
+		createAgent: async () => assert.fail("delegated automation must use the automation factory"),
+	});
+	try {
+		const result = await runtime.run({
+			source, mode: "automation", text: "execute delegated task", timeoutMs: 1_000,
+			executionEnvelope: createExecutionEnvelope({ executionId: "execution:usage-compaction", trigger: { kind: "delegation", id: "task:usage" }, taskId: "task:usage", taskRunId: "run:usage-compaction" }),
+		});
+		assert.equal(result.answer, "final");
+		assert.deepEqual(result.usage, { input_tokens: 30, output_tokens: 5 });
+	} finally { runtime.dispose(); }
+});
+
+test("runtime preserves an assistant error event when in-turn state compaction shortens history", async () => {
+	const source = { platform: "cli", chatId: "error-compaction", chatType: "dm", userId: "user", delegatedTask: { id: "task:error", ownerKey: "owner:error" } };
+	const historical = Array.from({ length: 5 }, (_, index) => ({ role: "assistant", content: [{ type: "text", text: `historical-${index}` }], usage: { input: 100, output: 50 } }));
+	const summary = { role: "assistant", content: [{ type: "text", text: "compaction summary" }], usage: { input: 0, output: 0 } };
+	const failed = { role: "assistant", content: [], stopReason: "error", errorMessage: "503 compacted failure", usage: { input: 10, output: 0, cacheRead: 0, cacheWrite: 0, cost: { total: 0 } } };
+	const agent = { state: { model: { id: "test" }, messages: historical } };
+	let listener;
+	const runtime = createRuntime({
+		createAutomationAgent: async () => ({
+			agent,
+			subscribe: (next) => { listener = next; return () => undefined; },
+			prompt: async () => {
+				listener({ type: "message_end", message: failed });
+				agent.state.messages = [summary, failed];
+			},
+			abort: async () => undefined,
+			dispose: () => undefined,
+		}),
+		createAgent: async () => assert.fail("delegated automation must use the automation factory"),
+	});
+	try {
+		await assert.rejects(runtime.run({
+			source, mode: "automation", text: "execute delegated task", timeoutMs: 1_000,
+			executionEnvelope: createExecutionEnvelope({ executionId: "execution:error-compaction", trigger: { kind: "delegation", id: "task:error" }, taskId: "task:error", taskRunId: "run:error-compaction" }),
+		}), /503 compacted failure/u);
+	} finally { runtime.dispose(); }
+});
+
+test("an observed empty assistant success does not revive state-only text", async () => {
+	const source = { platform: "cli", chatId: "event-empty-success", chatType: "dm", userId: "user", delegatedTask: { id: "task:event-empty", ownerKey: "owner:event-empty" } };
+	const historical = { role: "assistant", content: [{ type: "text", text: "historical" }], usage: { input: 1, output: 1 } };
+	const emptySuccess = { role: "assistant", stopReason: "stop", content: [], usage: { input: 2, output: 0, cacheRead: 0, cacheWrite: 0, cost: { total: 0 } } };
+	const stateOnlyText = { role: "assistant", stopReason: "stop", content: [{ type: "text", text: "state-only stale answer" }], usage: { input: 2, output: 3 } };
+	const agent = { state: { model: { id: "test" }, messages: [historical] } };
+	let listener;
+	const runtime = createRuntime({
+		createAutomationAgent: async () => ({
+			agent,
+			subscribe: (next) => { listener = next; return () => undefined; },
+			prompt: async () => {
+				listener({ type: "message_end", message: emptySuccess });
+				agent.state.messages = [historical, stateOnlyText];
+			},
+			abort: async () => undefined,
+			dispose: () => undefined,
+		}),
+		createAgent: async () => assert.fail("delegated automation must use the automation factory"),
+	});
+	try {
+		const result = await runtime.run({ source, mode: "automation", text: "execute delegated task", timeoutMs: 1_000 });
+		assert.equal(result.answer, "(no response)");
+		assert.deepEqual(result.usage, { input_tokens: 2, output_tokens: 0 });
+	} finally { runtime.dispose(); }
+});
+
+test("an observed assistant success does not revive a state-only error", async () => {
+	const source = { platform: "cli", chatId: "event-success-old-error", chatType: "dm", userId: "user", delegatedTask: { id: "task:event-success", ownerKey: "owner:event-success" } };
+	const historical = { role: "assistant", content: [{ type: "text", text: "historical" }], usage: { input: 1, output: 1 } };
+	const success = { role: "assistant", stopReason: "stop", content: [{ type: "text", text: "fresh success" }], usage: { input: 2, output: 2, cacheRead: 0, cacheWrite: 0, cost: { total: 0 } } };
+	const stateOnlyError = { role: "assistant", stopReason: "error", errorMessage: "503 stale state failure", content: [], usage: { input: 2, output: 0 } };
+	const agent = { state: { model: { id: "test" }, messages: [historical] } };
+	let listener;
+	const runtime = createRuntime({
+		createAutomationAgent: async () => ({
+			agent,
+			subscribe: (next) => { listener = next; return () => undefined; },
+			prompt: async () => {
+				listener({ type: "message_end", message: success });
+				agent.state.messages = [historical, stateOnlyError];
+			},
+			abort: async () => undefined,
+			dispose: () => undefined,
+		}),
+		createAgent: async () => assert.fail("delegated automation must use the automation factory"),
+	});
+	try {
+		const result = await runtime.run({ source, mode: "automation", text: "execute delegated task", timeoutMs: 1_000 });
+		assert.equal(result.answer, "fresh success");
+	} finally { runtime.dispose(); }
 });
 
 test("BeeMax applies Profile compaction policy as an in-memory Pi session setting", async () => {
@@ -864,6 +982,501 @@ test("BeeMax Agent Runtime binds continuation understanding to the active Object
 	} finally { runtime.dispose(); }
 });
 
+test("validated create Contract does not reuse work because request text resembles continuation", async () => {
+	const source = { platform: "cli", chatId: "semantic-create", chatType: "dm", userId: "user" };
+	const rawRequest = "continue 是报告标题，创建新草稿";
+	const active = { id: "objective-a", ownerKey: "cli:semantic-create:user", kind: "objective", title: "旧报告", description: "旧报告", status: "running", createdAt: 1 };
+	const tasks = [active];
+	let prompt = "";
+	const clause = { text: rawRequest, source: { kind: "raw_request", start: 0, end: rawRequest.length } };
+	const runtime = createRuntime({
+		workContractBuilder: { build: async () => ({ source: "model", cognitionBudgetChargeTokens: 1, semanticAdjudication: semanticReview, contract: {
+			schemaVersion: "beemax.work-contract.v1", rawRequest, action: "create", objective: clause,
+			constraints: [], prohibitions: [], acceptanceCriteria: [clause], capabilityRequirements: [], uncertainties: [], executionMode: "direct", confidence: 0.99,
+		} }) },
+		taskLedger: {
+			queryTasks: (query) => tasks.filter((task) => (!query.id || task.id === query.id) && (!query.ownerKeys || query.ownerKeys.includes(task.ownerKey)) && (!query.statuses || query.statuses.includes(task.status))),
+			record: (task) => tasks.push(task),
+			transition: (id, change) => { const index = tasks.findIndex((task) => task.id === id); if (index < 0) return false; tasks[index] = { ...tasks[index], ...change }; return true; },
+		},
+		planningPolicy: { decide: () => ({ mode: "direct", requiredTools: [], suggestedConcurrency: 1, budget: { maxSubagents: 0, maxToolCalls: null, maxTokens: null, maxCorrectiveAttempts: 0 }, signals: { substantialWork: true }, reason: "test", directive: () => "[policy]" }) },
+		createAgent: async () => { const agent = { state: { model: { id: "test" }, messages: [] } }; return { agent, subscribe: () => () => undefined, prompt: async (text) => { prompt = text; agent.state.messages = [{ role: "assistant", content: [{ type: "text", text: "created" }], usage: { input: 1, output: 1 } }]; }, abort: async () => undefined, dispose: () => undefined }; },
+	});
+	try {
+		await runtime.run({ source, text: rawRequest, timeoutMs: 1_000, mode: "interactive" });
+		assert.equal(tasks.filter((task) => task.kind === "objective").length, 2);
+		assert.equal(tasks.find((task) => task.id !== active.id)?.workContract?.action, "create");
+		assert.match(prompt, /"action":"create"/);
+	} finally { runtime.dispose(); }
+});
+
+test("a targeted query references an Objective without mutating its durable lifecycle", async () => {
+	const source = { platform: "cli", chatId: "semantic-query", chatType: "dm", userId: "user" };
+	const rawRequest = "What is the current status of that report?";
+	const active = { id: "objective-report", ownerKey: "cli:semantic-query:user", kind: "objective", title: "Quarterly report", status: "running", accessScopeRef: createAccessScopeRef({ id: "scope:report", authority: { kind: "membership_registry", reference: "membership:report" }, issuedAt: 1 }), createdAt: 1 };
+	let executionEnvelope;
+	let prompt = "";
+	const clause = { text: rawRequest, source: { kind: "raw_request", start: 0, end: rawRequest.length } };
+	const fail = () => assert.fail("read-only query must not mutate the Task Ledger");
+	const runtime = createRuntime({
+		workContractBuilder: { build: async () => ({ source: "model", cognitionBudgetChargeTokens: 1, semanticAdjudication: semanticReview, contract: { schemaVersion: "beemax.work-contract.v1", rawRequest, action: "query", targetObjective: { kind: "active_objective", id: active.id }, objective: clause, constraints: [], prohibitions: [], acceptanceCriteria: [], capabilityRequirements: [], uncertainties: [], executionMode: "direct", confidence: 0.99 } }) },
+		taskLedger: { queryTasks: (query) => query.ownerKeys.includes(active.ownerKey) && (!query.id || query.id === active.id) && (!query.statuses || query.statuses.includes(active.status)) ? [active] : [], record: fail, transition: fail, recordRun: fail, transitionRun: fail, reviseObjective: fail, cancelObjective: fail, enqueueObjectiveCompletion: fail },
+		planningPolicy: { decide: () => ({ mode: "direct", requiredTools: [], suggestedConcurrency: 1, budget: { maxSubagents: 0, maxToolCalls: null, maxTokens: null, maxCorrectiveAttempts: 0 }, signals: { substantialWork: true, requiresResearch: true }, reason: "test", directive: () => "[policy]" }) },
+		createAgent: async () => { const agent = { state: { model: { id: "test" }, messages: [] } }; return { agent, subscribe: () => () => undefined, prompt: async (text) => { prompt = text; agent.state.messages = [{ role: "assistant", content: [{ type: "text", text: "still running" }], usage: { input: 1, output: 1 } }]; }, abort: async () => undefined, dispose: () => undefined }; },
+	});
+	try {
+		const result = await runtime.run({ source, text: rawRequest, timeoutMs: 1_000, mode: "interactive", objectiveTaskId: active.id }, (event) => { if (event.type === "execution_started") executionEnvelope = event.executionEnvelope; });
+		assert.equal(result.answer, "still running");
+		assert.equal(active.status, "running");
+		assert.equal(executionEnvelope.objectiveId, active.id);
+		assert.equal(executionEnvelope.taskId, undefined);
+		assert.match(prompt, /task-preservation-envelope/);
+	} finally { runtime.dispose(); }
+});
+
+test("an explicit Objective identity must resolve and agree with the semantic Contract before Pi", async () => {
+	const source = { platform: "cli", chatId: "explicit-objective", chatType: "dm", userId: "user" };
+	let cognition = 0;
+	let agents = 0;
+	const runtime = createRuntime({
+		taskLedger: { queryTasks: () => [] },
+		workContractBuilder: { build: async () => { cognition++; throw new Error("must not run"); } },
+		createAgent: async () => { agents++; throw new Error("must not start Pi"); },
+	});
+	try {
+		await assert.rejects(runtime.run({ source, text: "continue", timeoutMs: 1_000, objectiveTaskId: "missing" }), /not active in this scope/i);
+		assert.equal(cognition, 0);
+		assert.equal(agents, 0);
+	} finally { runtime.dispose(); }
+	const active = { id: "bound", ownerKey: "cli:explicit-objective:user", kind: "objective", title: "Bound", status: "running", createdAt: 1 };
+	const createText = "Create something else";
+	const clause = { text: createText, source: { kind: "raw_request", start: 0, end: createText.length } };
+	const mismatch = createRuntime({
+		taskLedger: { queryTasks: () => [active], record: () => assert.fail("conflicting Contract must not mutate") },
+		workContractBuilder: { build: async () => ({ source: "model", cognitionBudgetChargeTokens: 1, semanticAdjudication: semanticReview, contract: { schemaVersion: "beemax.work-contract.v1", rawRequest: createText, action: "create", objective: clause, constraints: [], prohibitions: [], acceptanceCriteria: [clause], capabilityRequirements: [], uncertainties: [], executionMode: "direct", confidence: 0.99 } }) },
+		createAgent: async () => assert.fail("conflicting Contract must not start Pi"),
+	});
+	try { await assert.rejects(mismatch.run({ source, text: createText, timeoutMs: 1_000, objectiveTaskId: active.id }), /must target explicitly bound Objective/i); }
+	finally { mismatch.dispose(); }
+});
+
+test("semantic admission can select create work with more than twenty active Objectives", async () => {
+	const source = { platform: "cli", chatId: "many-objectives", chatType: "dm", userId: "user" };
+	const ownerKey = "cli:many-objectives:user";
+	const tasks = Array.from({ length: 21 }, (_, index) => ({ id: `existing-${index}`, ownerKey, kind: "objective", title: `Existing ${index}`, status: "running", createdAt: index }));
+	const rawRequest = "Create a new independent report";
+	const clause = { text: rawRequest, source: { kind: "raw_request", start: 0, end: rawRequest.length } };
+	let created;
+	const runtime = createRuntime({
+		taskLedger: { queryTasks: () => tasks, record: (task) => { created = task; }, transition: () => true },
+		workContractBuilder: { build: async ({ activeObjectives }) => { assert.equal(activeObjectives.length, 21); return { source: "model", cognitionBudgetChargeTokens: 1, semanticAdjudication: semanticReview, contract: { schemaVersion: "beemax.work-contract.v1", rawRequest, action: "create", objective: clause, constraints: [], prohibitions: [], acceptanceCriteria: [clause], capabilityRequirements: [], uncertainties: [], executionMode: "direct", confidence: 0.99 } }; } },
+		planningPolicy: { decide: () => ({ mode: "direct", requiredTools: [], suggestedConcurrency: 1, budget: { maxSubagents: 0, maxToolCalls: null, maxTokens: null, maxCorrectiveAttempts: 0 }, signals: { substantialWork: true }, reason: "test", directive: () => "[policy]" }) },
+		createAgent: async () => { const agent = { state: { model: { id: "test" }, messages: [] } }; return { agent, subscribe: () => () => undefined, prompt: async () => { agent.state.messages = [{ role: "assistant", content: [{ type: "text", text: "created" }], usage: { input: 1, output: 1 } }]; }, abort: async () => undefined, dispose: () => undefined }; },
+	});
+	try { await runtime.run({ source, text: rawRequest, timeoutMs: 1_000 }); assert.equal(created.workContract.action, "create"); }
+	finally { runtime.dispose(); }
+});
+
+test("validated cancel Contract terminalizes only its selected Objective without starting Pi", async () => {
+	const source = { platform: "cli", chatId: "semantic-cancel", chatType: "dm", userId: "user" };
+	const rawRequest = "不要停止市场分析，取消周报";
+	const tasks = [
+		{ id: "objective-market", ownerKey: "cli:semantic-cancel:user", kind: "objective", title: "市场分析", status: "running", createdAt: 2 },
+		{ id: "objective-report", ownerKey: "cli:semantic-cancel:user", kind: "objective", title: "周报", status: "running", createdAt: 1 },
+	];
+	let agentCreations = 0;
+	const clause = (text) => ({ text, source: { kind: "raw_request", start: rawRequest.indexOf(text), end: rawRequest.indexOf(text) + text.length } });
+	const runtime = createRuntime({
+		workContractBuilder: { build: async ({ activeObjectives }) => {
+			assert.deepEqual(activeObjectives.map(({ id }) => id).sort(), ["objective-market", "objective-report"]);
+			return { source: "model", cognitionBudgetChargeTokens: 1, semanticAdjudication: semanticReview, contract: {
+				schemaVersion: "beemax.work-contract.v1", rawRequest, action: "cancel", targetObjective: { kind: "active_objective", id: "objective-report" }, objective: clause("取消周报"),
+				constraints: [], prohibitions: [clause("不要停止市场分析")], acceptanceCriteria: [], capabilityRequirements: [], uncertainties: [], executionMode: "direct", confidence: 0.99,
+			} };
+		} },
+		taskLedger: {
+			queryTasks: (query) => tasks.filter((task) => (!query.id || task.id === query.id) && (!query.ownerKeys || query.ownerKeys.includes(task.ownerKey)) && (!query.statuses || query.statuses.includes(task.status))),
+			record: () => assert.fail("cancel must not create an Objective"), transition: () => assert.fail("cancel must use the owner-scoped cancellation authority"),
+			cancelObjective: (ownerKey, id, now) => { const task = tasks.find((candidate) => candidate.ownerKey === ownerKey && candidate.id === id && ["pending", "running"].includes(candidate.status)); if (!task) return undefined; Object.assign(task, { status: "cancelled", finishedAt: now, error: "Cancelled by user" }); return { objectiveId: id, taskIds: [id], planIds: [] }; },
+		},
+		interruptObjectiveWork: (_source, cancellation) => { assert.equal(tasks.find((task) => task.id === cancellation.objectiveId).status, "cancelled"); return { interruptedEffects: 0 }; },
+		createAgent: async () => { agentCreations++; throw new Error("Pi must not start for admitted cancellation"); },
+	});
+	try {
+		const result = await runtime.run({ source, text: rawRequest, timeoutMs: 1_000, mode: "interactive" });
+		assert.equal(result.answer, "Cancelled Objective 周报.");
+		assert.equal(tasks.find((task) => task.id === "objective-report").status, "cancelled");
+		assert.equal(tasks.find((task) => task.id === "objective-market").status, "running");
+		assert.equal(agentCreations, 0);
+	} finally { runtime.dispose(); }
+});
+
+test("targeted cancellation aborts a concurrently running Objective session across threads", async () => {
+	const workerSource = { platform: "cli", chatId: "shared", chatType: "dm", userId: "user", threadId: "worker" };
+	const controlSource = { ...workerSource, threadId: "control" };
+	const ownerKey = "cli:shared:user";
+	const objective = { id: "objective-live", ownerKey, kind: "objective", title: "Long report", description: "Build the long report", status: "running", createdAt: 1 };
+	let promptStartedResolve;
+	const promptStarted = new Promise((resolve) => { promptStartedResolve = resolve; });
+	let rejectPrompt;
+	let aborts = 0;
+	const taskLedger = {
+		queryTasks: (query) => query.ownerKeys.includes(ownerKey) && (!query.id || query.id === objective.id) && (!query.statuses || query.statuses.includes(objective.status)) ? [objective] : [],
+		transition: (_id, change) => { if (!["pending", "running"].includes(objective.status)) return false; Object.assign(objective, change); return true; },
+		cancelObjective: (_ownerKey, id, now) => { if (id !== objective.id || !["pending", "running"].includes(objective.status)) return undefined; Object.assign(objective, { status: "cancelled", finishedAt: now }); return { objectiveId: id, taskIds: [id], planIds: [] }; },
+	};
+	const rawCancel = "Cancel the long report";
+	const runtime = createRuntime({
+		taskLedger,
+		workContractBuilder: { build: async ({ rawRequest }) => { assert.equal(rawRequest, rawCancel); return { source: "model", cognitionBudgetChargeTokens: 1, semanticAdjudication: semanticReview, contract: { schemaVersion: "beemax.work-contract.v1", rawRequest, action: "cancel", targetObjective: { kind: "active_objective", id: objective.id }, objective: { text: rawRequest, source: { kind: "raw_request", start: 0, end: rawRequest.length } }, constraints: [], prohibitions: [], acceptanceCriteria: [], capabilityRequirements: [], uncertainties: [], executionMode: "direct", confidence: 0.99 } }; } },
+		createAgent: async () => { throw new Error("cancel must not start Pi"); },
+		createAutomationAgent: async () => { const agent = { state: { model: { id: "test" }, messages: [] } }; return { agent, subscribe: () => () => undefined, prompt: async () => { promptStartedResolve(); await new Promise((_resolve, reject) => { rejectPrompt = reject; }); }, abort: async () => { aborts++; rejectPrompt?.(new Error("objective interrupted")); }, dispose: () => undefined }; },
+		interruptObjectiveWork: async () => ({ interruptedEffects: 0 }),
+	});
+	try {
+		const running = runtime.run({ source: workerSource, text: objective.description, timeoutMs: 5_000, mode: "automation", objectiveTaskId: objective.id });
+		await promptStarted;
+		const cancelled = await runtime.run({ source: controlSource, text: rawCancel, timeoutMs: 1_000, mode: "interactive" });
+		assert.match(cancelled.answer, /Cancelled Objective Long report/);
+		await assert.rejects(running, /objective interrupted/i);
+		assert.equal(aborts, 1);
+		assert.equal(objective.status, "cancelled");
+	} finally { runtime.dispose(); }
+});
+
+test("a failed Objective runtime interruption is retried and settled by the next Turn", async () => {
+	const source = { platform: "cli", chatId: "interruption-retry", chatType: "dm", userId: "user" };
+	const ownerKey = "cli:interruption-retry:user";
+	const objective = { id: "objective-retry-interruption", ownerKey, kind: "objective", title: "Long report", status: "running", createdAt: 1 };
+	const rawCancel = "Cancel the long report";
+	const rawNext = "What time is it?";
+	let interruptionAttempts = 0;
+	let agentCreations = 0;
+	let pendingInterruption;
+	const runtime = createRuntime({
+		taskLedger: {
+			queryTasks: (query) => query.ownerKeys.includes(ownerKey) && (!query.id || query.id === objective.id) && (!query.statuses || query.statuses.includes(objective.status)) ? [objective] : [],
+			cancelObjective: (_ownerKey, id, now) => {
+				if (id !== objective.id || !["pending", "running"].includes(objective.status)) return undefined;
+				Object.assign(objective, { status: "cancelled", finishedAt: now });
+				return { objectiveId: id, taskIds: [id], planIds: [] };
+			},
+			pendingObjectiveInterruptions: () => pendingInterruption ? [pendingInterruption] : [],
+			failObjectiveInterruption: (pendingOwnerKey, objectiveId) => {
+				pendingInterruption = { ownerKey: pendingOwnerKey, objectiveId, taskIds: [objectiveId], planIds: [], retry: true };
+				return true;
+			},
+			settleObjectiveInterruption: (_pendingOwnerKey, objectiveId) => {
+				if (pendingInterruption?.objectiveId !== objectiveId) return false;
+				pendingInterruption = undefined;
+				return true;
+			},
+		},
+		workContractBuilder: { build: async ({ rawRequest }) => {
+			const clause = { text: rawRequest, source: { kind: "raw_request", start: 0, end: rawRequest.length } };
+			return rawRequest === rawCancel
+				? { source: "model", cognitionBudgetChargeTokens: 1, semanticAdjudication: semanticReview, contract: { schemaVersion: "beemax.work-contract.v1", rawRequest, action: "cancel", targetObjective: { kind: "active_objective", id: objective.id }, objective: clause, constraints: [], prohibitions: [], acceptanceCriteria: [], capabilityRequirements: [], uncertainties: [], executionMode: "direct", confidence: 0.99 } }
+				: { source: "model", cognitionBudgetChargeTokens: 1, semanticAdjudication: semanticReview, contract: { schemaVersion: "beemax.work-contract.v1", rawRequest, action: "query", objective: clause, constraints: [], prohibitions: [], acceptanceCriteria: [], capabilityRequirements: [], uncertainties: [], executionMode: "direct", confidence: 0.99 } };
+		} },
+		interruptObjectiveWork: async (_runtimeSource, cancellation) => {
+			assert.equal(cancellation.objectiveId, objective.id);
+			interruptionAttempts++;
+			if (interruptionAttempts === 1) throw new Error("interruption adapter temporarily unavailable");
+			return { interruptedEffects: 0 };
+		},
+		createAgent: async () => {
+			agentCreations++;
+			const agent = { state: { model: { id: "test" }, messages: [] } };
+			return { agent, subscribe: () => () => undefined, prompt: async () => { agent.state.messages = [{ role: "assistant", content: [{ type: "text", text: "12:00" }], usage: { input: 1, output: 1 } }]; }, abort: async () => undefined, dispose: () => undefined };
+		},
+	});
+	try {
+		const cancelled = await runtime.run({ source, text: rawCancel, timeoutMs: 1_000, mode: "interactive" });
+		assert.match(cancelled.answer, /runtime interruption requires reconciliation/i);
+		assert.equal(objective.status, "cancelled");
+		assert.equal(interruptionAttempts, 1);
+		assert.equal(agentCreations, 0);
+
+		const next = await runtime.run({ source, text: rawNext, timeoutMs: 1_000, mode: "interactive" });
+		assert.equal(next.answer, "12:00");
+		assert.equal(interruptionAttempts, 2);
+
+		await runtime.run({ source, text: rawNext, timeoutMs: 1_000, mode: "interactive" });
+		assert.equal(interruptionAttempts, 2, "a settled interruption must not replay on later Turns");
+	} finally { runtime.dispose(); }
+});
+
+test("a non-settling Objective interruption adapter is bounded and releases its durable claim", async () => {
+	const source = { platform: "cli", chatId: "interruption-timeout", chatType: "dm", userId: "user" };
+	const ownerKey = "cli:interruption-timeout:user";
+	const interruption = { ownerKey, objectiveId: "objective-timeout", taskIds: ["objective-timeout"], planIds: [], retry: true };
+	let failures = 0;
+	const runtime = createRuntime({
+		objectiveInterruptionTimeoutMs: 100,
+		taskLedger: {
+			queryTasks: () => [],
+			pendingObjectiveInterruptions: () => [interruption],
+			claimObjectiveInterruptions: (_owners, _holder, _lease, _now, _limit) => [interruption],
+			failObjectiveInterruption: (_owner, _objective, error, _now, holder) => { assert.match(error, /timed out|abort/i); assert.match(holder, /^objective-interruption:/); failures++; return true; },
+		},
+		interruptObjectiveWork: async () => new Promise(() => undefined),
+		createAgent: async () => { const agent = { state: { model: { id: "test" }, messages: [] } }; return { agent, subscribe: () => () => undefined, prompt: async () => { agent.state.messages = [{ role: "assistant", content: [{ type: "text", text: "available" }], usage: { input: 1, output: 1 } }]; }, abort: async () => undefined, dispose: () => undefined }; },
+	});
+	try {
+		const started = Date.now();
+		const result = await runtime.run({ source, text: "What time is it?", timeoutMs: 1_000 });
+		assert.equal(result.answer, "available");
+		assert.ok(Date.now() - started < 800);
+		assert.equal(failures, 1);
+	} finally { runtime.dispose(); }
+});
+
+test("delegated Execution Envelopes revalidate objective, task, and run identity at every mutating Tool boundary", async () => {
+	const source = { platform: "cli", chatId: "delegated-fence", chatType: "dm", userId: "user", delegatedTask: { id: "child-task", ownerKey: "owner:delegated" } };
+	const mutation = { name: "mutate", label: "Mutate", description: "Mutate", parameters: {}, beemaxPolicy: MUTATING_TOOL_POLICY, execute: async () => ({ content: [], details: {} }) };
+	let checked;
+	let boundary;
+	const runtime = createRuntime({
+		taskLedger: {
+			queryTasks: () => [],
+			isTaskRunExecutionActive: (...args) => { checked = args; return false; },
+			transitionRun: () => true,
+		},
+		createAgent: async () => {
+			let listener;
+			const active = new Set([mutation.name]);
+			const agent = { state: { model: { id: "test" }, messages: [], tools: [mutation] }, beforeToolCall: undefined };
+			return {
+				agent,
+				subscribe: (next) => { listener = next; return () => undefined; },
+				getAllTools: () => [mutation], getToolDefinition: () => mutation,
+				getActiveToolNames: () => [...active], setActiveToolsByName: (names) => { active.clear(); for (const name of names) active.add(name); },
+				prompt: async () => {
+					listener({ type: "message_end", message: { role: "assistant", responseId: "response:delegated", content: [{ type: "toolCall", id: "call:delegated", name: mutation.name, arguments: {} }], usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, cost: { total: 0 } } } });
+					boundary = await agent.beforeToolCall({ assistantMessage: {}, toolCall: { id: "call:delegated", name: mutation.name, arguments: {} }, args: {}, context: {} });
+					agent.state.messages.push({ role: "assistant", content: [{ type: "text", text: "fenced" }], usage: { input: 1, output: 1 } });
+				},
+				abort: async () => undefined, dispose: () => undefined,
+			};
+		},
+	});
+	try {
+		await runtime.run({ source, mode: "automation", text: "execute delegated task", allowedCapabilities: [mutation.name], timeoutMs: 1_000, executionEnvelope: createExecutionEnvelope({ executionId: "execution:delegated", trigger: { kind: "delegation", id: "child-task" }, objectiveId: "root-objective", taskId: "child-task", taskRunId: "run:delegated" }) });
+		assert.equal(boundary?.block, true);
+		assert.match(boundary?.reason ?? "", /durable Execution Holder/i);
+		assert.deepEqual(checked?.slice(0, 4), ["owner:delegated", "root-objective", "child-task", "run:delegated"]);
+	} finally { runtime.dispose(); }
+});
+
+test("durable delegated mutations fail closed when no Task Ledger authority is composed", async () => {
+	const source = { platform: "cli", chatId: "delegated-no-authority", chatType: "dm", userId: "user", delegatedTask: { id: "child-task", ownerKey: "owner:delegated" } };
+	const mutation = { name: "mutate", label: "Mutate", description: "Mutate", parameters: {}, beemaxPolicy: MUTATING_TOOL_POLICY, execute: async () => ({ content: [], details: {} }) };
+	let boundary;
+	const runtime = createRuntime({
+		createAgent: async () => {
+			let listener;
+			const agent = { state: { model: { id: "test" }, messages: [], tools: [mutation] }, beforeToolCall: undefined };
+			return {
+				agent, subscribe: (next) => { listener = next; return () => undefined; },
+				getAllTools: () => [mutation], getToolDefinition: () => mutation,
+				getActiveToolNames: () => [mutation.name], setActiveToolsByName: () => undefined,
+				prompt: async () => {
+					listener({ type: "message_end", message: { role: "assistant", responseId: "response:no-authority", content: [{ type: "toolCall", id: "call:no-authority", name: mutation.name, arguments: {} }], usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, cost: { total: 0 } } } });
+					boundary = await agent.beforeToolCall({ assistantMessage: {}, toolCall: { id: "call:no-authority", name: mutation.name, arguments: {} }, args: {}, context: {} });
+					agent.state.messages.push({ role: "assistant", content: [{ type: "text", text: "fenced" }], usage: { input: 1, output: 1 } });
+				},
+				abort: async () => undefined, dispose: () => undefined,
+			};
+		},
+	});
+	try {
+		await runtime.run({ source, mode: "automation", text: "execute delegated task", allowedCapabilities: [mutation.name], timeoutMs: 1_000, executionEnvelope: createExecutionEnvelope({ executionId: "execution:no-authority", trigger: { kind: "delegation", id: "child-task" }, objectiveId: "root-objective", taskId: "child-task", taskRunId: "run:no-authority" }) });
+		assert.equal(boundary?.block, true);
+		assert.match(boundary?.reason ?? "", /no active durable Execution Holder authority/i);
+	} finally { runtime.dispose(); }
+});
+
+async function inspectEffectfulRuntimeBoundary(executionEnvelope) {
+	const source = { platform: "cli", chatId: executionEnvelope.executionId, chatType: "dm", userId: "user" };
+	const mutation = { name: "mutate", label: "Mutate", description: "Mutate", parameters: {}, beemaxPolicy: MUTATING_TOOL_POLICY, execute: async () => ({ content: [], details: {} }) };
+	let boundary;
+	let previousBoundaryCalls = 0;
+	const runtime = createRuntime({
+		createAgent: async () => {
+			let listener;
+			const active = new Set([mutation.name]);
+			const agent = {
+				state: { model: { id: "test" }, messages: [], tools: [mutation] },
+				beforeToolCall: async () => { previousBoundaryCalls++; return undefined; },
+			};
+			return {
+				agent,
+				subscribe: (next) => { listener = next; return () => undefined; },
+				getAllTools: () => [mutation], getToolDefinition: () => mutation,
+				getActiveToolNames: () => [...active], setActiveToolsByName: (names) => { active.clear(); for (const name of names) active.add(name); },
+				prompt: async () => {
+					listener({ type: "message_end", message: { role: "assistant", responseId: `response:${executionEnvelope.executionId}`, content: [{ type: "toolCall", id: "call:mutation", name: mutation.name, arguments: {} }], usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, cost: { total: 0 } } } });
+					boundary = await agent.beforeToolCall({ assistantMessage: {}, toolCall: { id: "call:mutation", name: mutation.name, arguments: {} }, args: {}, context: {} });
+					const completed = { role: "assistant", stopReason: "stop", content: [{ type: "text", text: "done" }], usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, cost: { total: 0 } } };
+					listener({ type: "message_end", message: completed });
+					agent.state.messages = [completed];
+				},
+				abort: async () => undefined, dispose: () => undefined,
+			};
+		},
+	});
+	try {
+		await runtime.run({ source, text: "perform the admitted mutation", allowedCapabilities: [mutation.name], timeoutMs: 1_000, executionEnvelope });
+		return { boundary, previousBoundaryCalls };
+	} finally { runtime.dispose(); }
+}
+
+test("effectful Tool calls fail closed when durable objective and task identity omit the Task Run", async () => {
+	const result = await inspectEffectfulRuntimeBoundary(createExecutionEnvelope({ executionId: "execution:partial-no-run", trigger: { kind: "interaction" }, objectiveId: "objective:partial", taskId: "task:partial" }));
+	assert.equal(result.boundary?.block, true);
+	assert.match(result.boundary?.reason ?? "", /complete objective, task, and Task Run identity/i);
+	assert.equal(result.previousBoundaryCalls, 0);
+});
+
+test("effectful Tool calls fail closed when durable task and run identity omit the Objective", async () => {
+	const result = await inspectEffectfulRuntimeBoundary(createExecutionEnvelope({ executionId: "execution:partial-no-objective", trigger: { kind: "interaction" }, taskId: "task:partial", taskRunId: "run:partial" }));
+	assert.equal(result.boundary?.block, true);
+	assert.match(result.boundary?.reason ?? "", /complete objective, task, and Task Run identity/i);
+	assert.equal(result.previousBoundaryCalls, 0);
+});
+
+test("effectful Tool calls without durable identity retain the ordinary interaction governance path", async () => {
+	const result = await inspectEffectfulRuntimeBoundary(createExecutionEnvelope({ executionId: "execution:ordinary-mutation", trigger: { kind: "interaction" } }));
+	assert.equal(result.boundary, undefined);
+	assert.equal(result.previousBoundaryCalls, 1);
+});
+
+test("an unbounded Agent turn still owns a finite renewable Task Run lease", async () => {
+	const source = { platform: "cli", chatId: "renewable-agent-run", chatType: "dm", userId: "user" };
+	const tasks = [];
+	let recordedRun;
+	let renewals = 0;
+	const runtime = createRuntime({
+		taskRunLeaseMs: 300,
+		taskLedger: {
+			queryTasks: ({ id, statuses }) => tasks.filter((task) => (!id || task.id === id) && (!statuses || statuses.includes(task.status))),
+			record: (task) => tasks.push({ ...task }),
+			transition: (id, change) => { const task = tasks.find((item) => item.id === id); if (!task) return false; Object.assign(task, change); return true; },
+			recordRun: (run) => { recordedRun = run; },
+			renewTaskRunLease: (_id, leaseExpiresAt, now) => { assert.ok(leaseExpiresAt > now); renewals++; return true; },
+			transitionRun: () => true,
+		},
+		createAgent: async () => { const agent = { state: { model: { id: "test" }, messages: [] } }; return { agent, subscribe: () => () => undefined, prompt: async () => { await new Promise((resolve) => setTimeout(resolve, 230)); agent.state.messages = [{ role: "assistant", content: [{ type: "text", text: "done" }], usage: { input: 1, output: 1 } }]; }, abort: async () => undefined, dispose: () => undefined }; },
+	});
+	try {
+		await runtime.run({ source, mode: "automation", text: "完成这个长期任务", timeoutMs: null, executionEnvelope: createExecutionEnvelope({ executionId: "execution:renewable", trigger: { kind: "automation", id: "job" } }) });
+		assert.equal(recordedRun.leaseExpiresAt - recordedRun.startedAt, 300);
+		assert.ok(renewals >= 1);
+	} finally { runtime.dispose(); }
+});
+
+test("a lost Task Run lease fails explicitly even when Pi abort resolves normally", async () => {
+	const source = { platform: "cli", chatId: "lease-loss", chatType: "dm", userId: "user", delegatedTask: { id: "task-lease-loss", ownerKey: "owner:lease-loss" } };
+	const settlements = [];
+	let aborts = 0;
+	const runtime = createRuntime({
+		taskRunLeaseMs: 300,
+		taskLedger: {
+			renewTaskRunLease: () => false,
+			transitionRun: (_id, change) => { settlements.push(change.status); return true; },
+		},
+		createAgent: async () => {
+			const agent = { state: { model: { id: "test" }, messages: [] } };
+			return {
+				agent, subscribe: () => () => undefined,
+				prompt: async () => { await new Promise((resolve) => setTimeout(resolve, 180)); agent.state.messages = [{ role: "assistant", content: [{ type: "text", text: "done" }], usage: { input: 1, output: 1 } }]; },
+				abort: async () => { aborts++; }, dispose: () => undefined,
+			};
+		},
+	});
+	try {
+		await assert.rejects(runtime.run({ source, mode: "automation", text: "finish the delegated task", timeoutMs: 1_000, executionEnvelope: createExecutionEnvelope({ executionId: "execution:lease-loss", trigger: { kind: "delegation", id: "task-lease-loss" }, objectiveId: "objective-lease-loss", taskId: "task-lease-loss", taskRunId: "run:lease-loss" }) }), /Task Run execution authority was lost/i);
+		assert.ok(aborts >= 1);
+		assert.equal(settlements.includes("succeeded"), false);
+	} finally { runtime.dispose(); }
+});
+
+test("a rejected local Objective abort cannot be reported as an unqualified cancellation", async () => {
+	const workerSource = { platform: "cli", chatId: "abort-failure", chatType: "dm", userId: "user", threadId: "worker" };
+	const controlSource = { ...workerSource, threadId: "control" };
+	const ownerKey = "cli:abort-failure:user";
+	const objective = { id: "objective-abort-failure", ownerKey, kind: "objective", title: "Long report", description: "Build the long report", status: "running", createdAt: 1 };
+	let promptStartedResolve;
+	const promptStarted = new Promise((resolve) => { promptStartedResolve = resolve; });
+	let rejectPrompt;
+	let aborts = 0;
+	const rawCancel = "Cancel the long report";
+	const runtime = createRuntime({
+		taskLedger: {
+			queryTasks: (query) => query.ownerKeys.includes(ownerKey) && (!query.id || query.id === objective.id) && (!query.statuses || query.statuses.includes(objective.status)) ? [objective] : [],
+			transition: (_id, change) => { if (!["pending", "running"].includes(objective.status)) return false; Object.assign(objective, change); return true; },
+			cancelObjective: (_ownerKey, id, now) => { if (id !== objective.id || !["pending", "running"].includes(objective.status)) return undefined; Object.assign(objective, { status: "cancelled", finishedAt: now }); return { objectiveId: id, taskIds: [id], planIds: [] }; },
+		},
+		workContractBuilder: { build: async ({ rawRequest }) => ({ source: "model", cognitionBudgetChargeTokens: 1, semanticAdjudication: semanticReview, contract: { schemaVersion: "beemax.work-contract.v1", rawRequest, action: "cancel", targetObjective: { kind: "active_objective", id: objective.id }, objective: { text: rawRequest, source: { kind: "raw_request", start: 0, end: rawRequest.length } }, constraints: [], prohibitions: [], acceptanceCriteria: [], capabilityRequirements: [], uncertainties: [], executionMode: "direct", confidence: 0.99 } }) },
+		createAgent: async () => { throw new Error("cancel must not start Pi"); },
+		createAutomationAgent: async () => {
+			const agent = { state: { model: { id: "test" }, messages: [] } };
+			return {
+				agent,
+				subscribe: () => () => undefined,
+				prompt: async () => { promptStartedResolve(); await new Promise((_resolve, reject) => { rejectPrompt = reject; }); },
+				abort: async () => { aborts++; throw new Error("local session abort failed"); },
+				dispose: () => undefined,
+			};
+		},
+		interruptObjectiveWork: async () => ({ interruptedEffects: 0 }),
+	});
+	let running;
+	try {
+		running = runtime.run({ source: workerSource, text: objective.description, timeoutMs: 5_000, mode: "automation", objectiveTaskId: objective.id });
+		await promptStarted;
+		const cancelled = await runtime.run({ source: controlSource, text: rawCancel, timeoutMs: 1_000, mode: "interactive" });
+		assert.match(cancelled.answer, /cancelled objective long report/i);
+		assert.match(cancelled.answer, /reconciliation|interruption.*failed|runtime.*unknown/i);
+		assert.doesNotMatch(cancelled.answer, /^Cancelled Objective Long report\.$/);
+		assert.equal(aborts, 1);
+		assert.equal(objective.status, "cancelled");
+	} finally {
+		rejectPrompt?.(new Error("test cleanup"));
+		await running?.catch(() => undefined);
+		runtime.dispose();
+	}
+});
+
+test("validated correction Contract revises only its selected Objective among active work", async () => {
+	const source = { platform: "cli", chatId: "semantic-correction", chatType: "dm", userId: "user" };
+	const rawRequest = "不要改市场分析，把周报改成中文";
+	const originalContract = (text) => ({ schemaVersion: "beemax.work-contract.v1", rawRequest: text, action: "create", objective: { text, source: { kind: "raw_request", start: 0, end: text.length } }, constraints: [], prohibitions: [], acceptanceCriteria: [], capabilityRequirements: [], uncertainties: [], executionMode: "direct", confidence: 1 });
+	const tasks = [
+		{ id: "objective-market", ownerKey: "cli:semantic-correction:user", kind: "objective", title: "市场分析", description: "市场分析", workContract: originalContract("市场分析"), status: "running", createdAt: 2 },
+		{ id: "objective-report", ownerKey: "cli:semantic-correction:user", kind: "objective", title: "周报", description: "周报", workContract: originalContract("周报"), status: "running", createdAt: 1 },
+	];
+	const clause = (text) => ({ text, source: { kind: "raw_request", start: rawRequest.indexOf(text), end: rawRequest.indexOf(text) + text.length } });
+	const runtime = createRuntime({
+		workContractBuilder: { build: async () => ({ source: "model", cognitionBudgetChargeTokens: 1, semanticAdjudication: semanticReview, contract: {
+			schemaVersion: "beemax.work-contract.v1", rawRequest, action: "correct", targetObjective: { kind: "active_objective", id: "objective-report" }, objective: clause("把周报改成中文"),
+			constraints: [], prohibitions: [clause("不要改市场分析")], acceptanceCriteria: [clause("把周报改成中文")], capabilityRequirements: [], uncertainties: [], executionMode: "direct", confidence: 0.99,
+		} }) },
+		taskLedger: {
+			queryTasks: (query) => tasks.filter((task) => (!query.id || task.id === query.id) && (!query.ownerKeys || query.ownerKeys.includes(task.ownerKey)) && (!query.statuses || query.statuses.includes(task.status))),
+			record: () => assert.fail("correction must not create an Objective"), transition: () => true,
+			reviseObjective: (ownerKey, id, revision) => { assert.equal(ownerKey, tasks[1].ownerKey); assert.equal(id, "objective-report"); const durable = { id: `${id}:revision:1`, ...revision, createdAt: 3 }; tasks[1].objectiveRevisions = [durable]; return { originalWorkContract: tasks[1].workContract, revision: durable, revisions: [durable] }; },
+		},
+		createAgent: async () => { const agent = { state: { model: { id: "test" }, messages: [] } }; return { agent, subscribe: () => () => undefined, prompt: async () => { agent.state.messages = [{ role: "assistant", content: [{ type: "text", text: "updated" }], usage: { input: 1, output: 1 } }]; }, abort: async () => undefined, dispose: () => undefined }; },
+	});
+	try {
+		await runtime.run({ source, text: rawRequest, timeoutMs: 1_000, mode: "interactive" });
+		assert.equal(tasks[0].objectiveRevisions, undefined);
+		assert.equal(tasks[1].objectiveRevisions.length, 1);
+		assert.deepEqual(tasks[1].objectiveRevisions[0].workContract.prohibitions.map((item) => item.text), ["不要改市场分析"]);
+	} finally { runtime.dispose(); }
+});
+
 test("BeeMax Agent Runtime leaves legacy business context immutable during correction", async () => {
 	const source = { platform: "cli", chatId: "terminal", chatType: "dm", userId: "user" };
 	const active = { id: "objective-1", ownerKey: "cli:terminal:user", kind: "objective", title: "处理采购记录", status: "running", createdAt: 1, businessContext: { subject: { type: "account", id: "A" }, object: { type: "purchase", id: "PO-1" } } };
@@ -1091,7 +1704,13 @@ test("BeeMax Agent Runtime refuses automatic model replay after observable outpu
 			const agent = { state: { model: { provider: "test", id: "primary" }, messages: [] } };
 			return {
 				agent, subscribe: (next) => { listener = next; return () => undefined; },
-				prompt: async () => { listener({ type: "message_end", message: { role: "assistant", responseId: "response-write-1", content: [{ type: "toolCall", id: "write-1", name: "write", arguments: {} }], usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, cost: { total: 0 } } } }); listener({ type: "tool_execution_start", toolCallId: "write-1", toolName: "write" }); agent.state.messages = [{ role: "assistant", stopReason: "error", errorMessage: "503 overloaded", content: [], usage: { input: 1, output: 0 } }]; },
+				prompt: async () => {
+					listener({ type: "message_end", message: { role: "assistant", responseId: "response-write-1", content: [{ type: "toolCall", id: "write-1", name: "write", arguments: {} }], usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, cost: { total: 0 } } } });
+					listener({ type: "tool_execution_start", toolCallId: "write-1", toolName: "write" });
+					const failure = { role: "assistant", stopReason: "error", errorMessage: "503 overloaded", content: [], usage: { input: 1, output: 0, cacheRead: 0, cacheWrite: 0, cost: { total: 0 } } };
+					listener({ type: "message_end", message: failure });
+					agent.state.messages = [failure];
+				},
 				retryWithModel: async () => { retries++; return true; }, abort: async () => undefined, dispose: () => undefined,
 			};
 		},

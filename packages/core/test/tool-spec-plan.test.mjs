@@ -3,10 +3,10 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { BeeMaxAgentRuntime, CapabilityProviderRuntime, activateToolSpecPlan, buildToolSpecPlan, createSkillTools, renderToolSpecPlan } from "../dist/index.js";
+import { BeeMaxAgentRuntime, CapabilityProviderRuntime, DeterministicWorkContractBuilder, activateToolSpecPlan, buildToolSpecPlan, createSkillTools, renderToolSpecPlan } from "../dist/index.js";
 import { attestCapabilityProviderResolutionTool } from "../dist/capability-provider.js";
 
-const createRuntime = (options) => new BeeMaxAgentRuntime({ profileId: "profile:test", ...options });
+const createRuntime = (options) => new BeeMaxAgentRuntime({ profileId: "profile:test", workContractBuilder: new DeterministicWorkContractBuilder(), ...options });
 
 const tool = (overrides) => ({
 	kind: "tool", name: "read", version: "tool:read:v1", description: "Read evidence",

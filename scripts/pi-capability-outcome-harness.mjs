@@ -10,6 +10,7 @@ import {
 	createAccessScopeRef,
 	createExecutionEnvelope,
 	defineTool,
+	hasSemanticWorkContractAdjudication,
 	READ_ONLY_TOOL_POLICY,
 	withToolPolicy,
 } from "../packages/core/dist/index.js";
@@ -23,7 +24,7 @@ export const LIVE_PI_OUTCOME_BUDGET = Object.freeze({
 	maxModelTurnsPerCase: 4,
 });
 
-export async function executeLivePiCapabilityOutcomeRun({ models, model, apiKey, threshold, observedRankings }) {
+export async function executeLivePiCapabilityOutcomeRun({ models, model, apiKey, threshold, observedRankings, workContractBuilder, getCredentialResolutionEvents, getWorkContractProviderTurns }) {
 	const modelCandidates = livePiModelCandidates({ models, model, apiKey });
 	const rankingByCase = new Map(observedRankings.map((ranking) => [ranking.caseId, ranking]));
 	const runId = `execution:live-pi:${randomUUID()}`;
@@ -31,9 +32,10 @@ export async function executeLivePiCapabilityOutcomeRun({ models, model, apiKey,
 	for (const scenario of capabilityRankingCases) {
 		const ranking = rankingByCase.get(scenario.id);
 		if (!ranking) throw new Error(`Live Pi outcome is missing ranking ${scenario.id}`);
-		receipts.push(await executeLivePiCapabilityTask({ scenario, ranking, threshold, models: modelCandidates, runId }));
+		receipts.push(await executeLivePiCapabilityTask({ scenario, ranking, threshold, models: modelCandidates, runId, workContractBuilder, getCredentialResolutionEvents, getWorkContractProviderTurns }));
 	}
 	const metrics = summarizeLivePiOutcomeReceipts(receipts);
+	const workContractFailures = livePiProductionWorkContractFailures(receipts);
 	return {
 		schemaVersion: 1,
 		mode: "live_pi",
@@ -45,17 +47,19 @@ export async function executeLivePiCapabilityOutcomeRun({ models, model, apiKey,
 		metrics,
 		budget: LIVE_PI_OUTCOME_BUDGET,
 		budgetFailures: livePiBudgetFailures(metrics, LIVE_PI_OUTCOME_BUDGET),
+		workContractFailures,
 		receipts,
 	};
 }
 
-export async function executeLivePiCapabilityTask({ scenario, ranking, threshold, models, model, apiKey, createAgent, runId = "execution:live-pi" }) {
+export async function executeLivePiCapabilityTask({ scenario, ranking, threshold, models, model, apiKey, createAgent, workContractBuilder, getCredentialResolutionEvents, getWorkContractProviderTurns, runId = "execution:live-pi" }) {
+	if (!workContractBuilder?.build) throw new Error("Live Pi Capability outcome requires an explicit Work Contract Builder");
 	const root = mkdtempSync(join(tmpdir(), "beemax-live-pi-capability-"));
-	try { return await executeLivePiCapabilityTaskInRoot({ scenario, ranking, threshold, models: livePiModelCandidates({ models, model, apiKey }), createAgent, runId }, root); }
+	try { return await executeLivePiCapabilityTaskInRoot({ scenario, ranking, threshold, models: livePiModelCandidates({ models, model, apiKey }), createAgent, workContractBuilder, getCredentialResolutionEvents, getWorkContractProviderTurns, runId }, root); }
 	finally { rmSync(root, { recursive: true, force: true }); }
 }
 
-async function executeLivePiCapabilityTaskInRoot({ scenario, ranking, threshold, models, createAgent, runId }, root) {
+async function executeLivePiCapabilityTaskInRoot({ scenario, ranking, threshold, models, createAgent, workContractBuilder, getCredentialResolutionEvents, getWorkContractProviderTurns, runId }, root) {
 	const primary = models[0];
 	const candidates = ranking.candidates.filter((candidate) => candidate.confidence >= threshold);
 	const descriptors = new Map(capabilityInventory.map((descriptor) => [descriptor.name, descriptor]));
@@ -75,7 +79,10 @@ async function executeLivePiCapabilityTaskInRoot({ scenario, ranking, threshold,
 		modelLimits: { contextWindow: primary.model.contextWindow, maxTokens: primary.model.maxTokens },
 		cwd: root,
 		agentDir: join(root, "agent"),
-		getApiKey: (provider) => models.find((candidate) => candidate.model.provider === provider)?.apiKey ?? primary.apiKey,
+		getApiKey: async (provider) => {
+			const candidate = models.find((item) => item.model.provider === provider) ?? primary;
+			return candidate.apiKey ?? await candidate.getApiKey?.();
+		},
 		additionalModelProviders: models.map((candidate) => candidate.model.provider),
 		systemPrompt: "You are a capability execution evaluator. Read the user's request and the current BeeMax Tool Spec. Call every and only the tools needed to satisfy it. Never claim completion without the tool result. If no tool is needed, answer directly without calling capability_discover. capability_discover is only for an unresolved explicit capability requirement. For a selected Skill, call skill_read with its exact name and then skill_complete with the same name.",
 		skillToolset: "safe",
@@ -84,6 +91,40 @@ async function executeLivePiCapabilityTaskInRoot({ scenario, ranking, threshold,
 	});
 	const required = scenario.required?.length ? scenario.required : scenario.expected ? [scenario.expected] : [];
 	const forbidden = scenario.forbidden ?? [];
+	let workContractEvidence = { source: "unavailable", cognitionBudgetChargeTokens: 0, credentialResolverReads: 0, credentialResolutions: [], providerTurns: [] };
+	const observedWorkContractBuilder = {
+		build: async (input) => {
+			const resolutionsBefore = credentialResolutionEvents(getCredentialResolutionEvents).length;
+			const providerTurnsBefore = workContractProviderTurns(getWorkContractProviderTurns).length;
+			try {
+				const built = await workContractBuilder.build(input);
+				const credentialResolutions = credentialResolutionEvents(getCredentialResolutionEvents).slice(resolutionsBefore);
+				const providerTurns = workContractProviderTurns(getWorkContractProviderTurns).slice(providerTurnsBefore);
+				workContractEvidence = {
+					source: built.source,
+					semanticAdjudicationValid: built.source === "model" && hasSemanticWorkContractAdjudication(built),
+					...(built.source === "model" && built.semanticAdjudication ? { semanticAdjudication: structuredClone(built.semanticAdjudication) } : {}),
+					...(built.source === "model" && built.cognitionUsage ? { cognitionUsage: structuredClone(built.cognitionUsage) } : {}),
+					cognitionBudgetChargeTokens: built.source === "model" && Number.isFinite(built.cognitionBudgetChargeTokens) ? built.cognitionBudgetChargeTokens : 0,
+					credentialResolverReads: credentialResolutions.length,
+					credentialResolutions,
+					providerTurns,
+				};
+				return built;
+			} catch (error) {
+				const credentialResolutions = credentialResolutionEvents(getCredentialResolutionEvents).slice(resolutionsBefore);
+				const providerTurns = workContractProviderTurns(getWorkContractProviderTurns).slice(providerTurnsBefore);
+				workContractEvidence = {
+					...workContractEvidence,
+					credentialResolverReads: credentialResolutions.length,
+					credentialResolutions,
+					providerTurns,
+					failure: "work_contract_admission_failed",
+				};
+				throw error;
+			}
+		},
+	};
 	const runtime = new BeeMaxAgentRuntime({
 		profileId: "profile:live-pi-eval",
 		fallbackModels: models.slice(1).map((candidate) => candidate.model),
@@ -91,7 +132,7 @@ async function executeLivePiCapabilityTaskInRoot({ scenario, ranking, threshold,
 		taskLedger: evaluationLedger(),
 		executionTrace: trace,
 		turnUnderstanding: { understand: () => ({ action: "create", goal: scenario.query, constraints: [], acceptanceCriteria: [scenario.query], uncertainties: [], memoryQuery: scenario.query, capabilityQuery: scenario.query, executionMode: "direct", confidence: 1 }) },
-		workContractBuilder: { build: async () => ({ source: "model", contract: { schemaVersion: "beemax.work-contract.v1", rawRequest: scenario.query, action: "create", objective: clause(scenario.query), constraints: [], prohibitions: [], acceptanceCriteria: [clause(scenario.query)], capabilityRequirements: candidates.length ? [clause(scenario.query)] : [], uncertainties: [], executionMode: "direct", confidence: 1 } }) },
+		workContractBuilder: observedWorkContractBuilder,
 		planningPolicy: { decide: () => ({ mode: "direct", requiredTools: [], suggestedConcurrency: 1, budget: { maxSubagents: 0, maxToolCalls: 12, maxTokens: 8_000, maxCorrectiveAttempts: 1 }, signals: { substantialWork: true, requiresVerification: true }, reason: "live Pi capability outcome", directive: () => "Use the current Tool Spec to complete the request; do not describe hypothetical calls." }) },
 		verifyObjectiveCandidate: async (_task, _answer, _signal, context) => {
 			const successful = new Set(context?.successfulToolNames ?? []);
@@ -118,9 +159,23 @@ async function executeLivePiCapabilityTaskInRoot({ scenario, ranking, threshold,
 		status: execution?.status ?? "failed",
 		verificationStatus: execution?.verificationStatus ?? "unavailable",
 		answerChars: typeof result?.answer === "string" ? result.answer.length : 0,
+		workContract: workContractEvidence,
 		executionTrace: execution?.events ?? [],
 	};
 	return receipt;
+}
+
+export function livePiProductionWorkContractFailures(receipts) {
+	const failures = [];
+	for (const receipt of receipts) {
+		const caseId = typeof receipt?.caseId === "string" && receipt.caseId ? receipt.caseId : "unknown";
+		const evidence = receipt?.workContract;
+		if (evidence?.source !== "model") failures.push(`${caseId}:source_not_model`);
+		if (!validProductionSemanticEvidence(evidence)) failures.push(`${caseId}:semantic_adjudication_missing`);
+		if (!Number.isFinite(evidence?.cognitionBudgetChargeTokens) || evidence.cognitionBudgetChargeTokens <= 0) failures.push(`${caseId}:cognition_charge_missing`);
+		if (!validCredentialResolutionEvidence(evidence)) failures.push(`${caseId}:credential_resolver_unread`);
+	}
+	return failures;
 }
 
 function livePiModelCandidates({ models, model, apiKey }) {
@@ -166,6 +221,35 @@ export function livePiBudgetFailures(metrics, budget = LIVE_PI_OUTCOME_BUDGET) {
 }
 
 function finiteNonnegative(value) { return Number.isFinite(value) && value >= 0 ? value : 0; }
+function credentialResolutionEvents(read) { const value = typeof read === "function" ? read() : []; return Array.isArray(value) ? value : []; }
+function workContractProviderTurns(read) { const value = typeof read === "function" ? read() : []; return Array.isArray(value) ? value : []; }
+function validProductionSemanticEvidence(evidence) {
+	const adjudication = evidence?.semanticAdjudication; const usage = evidence?.cognitionUsage;
+	if (evidence?.semanticAdjudicationValid !== true || adjudication?.schemaVersion !== "beemax.work-contract-adjudication.v1" || adjudication?.inventorySchemaVersion !== "beemax.semantic-inventory.v1" || adjudication?.independentSamples !== true) return false;
+	if (typeof adjudication.primaryModelIdentity !== "string" || !adjudication.primaryModelIdentity || typeof adjudication.reviewerModelIdentity !== "string" || !adjudication.reviewerModelIdentity) return false;
+	if (adjudication.reviewMode === "different_models" ? adjudication.primaryModelIdentity === adjudication.reviewerModelIdentity : adjudication.reviewMode !== "same_model_independent_samples" || adjudication.primaryModelIdentity !== adjudication.reviewerModelIdentity) return false;
+	if (!Number.isFinite(adjudication.cognitionBudgetChargeTokens) || adjudication.cognitionBudgetChargeTokens !== evidence.cognitionBudgetChargeTokens) return false;
+	return validCognitionUsage(usage) && evidence.cognitionBudgetChargeTokens >= cognitionUsageTokens(usage) && usage.modelIdentities.includes(adjudication.primaryModelIdentity) && usage.modelIdentities.includes(adjudication.reviewerModelIdentity) && validProviderTurnEvidence(evidence, usage, adjudication);
+}
+function validCognitionUsage(usage) { return usage && [usage.inputTokens, usage.outputTokens, usage.cacheReadTokens, usage.cacheWriteTokens, usage.costUsd].every((value) => Number.isFinite(value) && value >= 0) && Array.isArray(usage.modelIdentities) && usage.modelIdentities.length >= 2 && usage.modelIdentities.every((value) => typeof value === "string" && value); }
+function cognitionUsageTokens(usage) { return usage.inputTokens + usage.outputTokens + usage.cacheWriteTokens; }
+function validCredentialResolutionEvidence(evidence) {
+	const resolutions = evidence?.credentialResolutions;
+	if (!Array.isArray(resolutions) || !resolutions.length || evidence.credentialResolverReads !== resolutions.length) return false;
+	if (!resolutions.every((item) => item && typeof item.provider === "string" && item.provider && typeof item.modelIdentity === "string" && item.modelIdentity && (item.source === "profile_auth_storage" || item.source === "profile_config"))) return false;
+	const identities = new Set(resolutions.map((item) => item.modelIdentity)); const adjudication = evidence.semanticAdjudication;
+	if (!identities.has(adjudication?.primaryModelIdentity) || !identities.has(adjudication?.reviewerModelIdentity)) return false;
+	const resolutionCounts = countBy(resolutions, (item) => item.modelIdentity); const turnCounts = countBy(evidence.providerTurns ?? [], (item) => item.modelIdentity);
+	return [...turnCounts].every(([identity, count]) => (resolutionCounts.get(identity) ?? 0) >= count);
+}
+function validProviderTurnEvidence(evidence, usage, adjudication) {
+	const turns = evidence?.providerTurns;
+	if (!Array.isArray(turns) || turns.length < 2 || !turns.every((turn) => turn && (turn.lane === "work_contract" || turn.lane === "semantic_inventory") && typeof turn.modelIdentity === "string" && /^sha256:[a-f0-9]{64}$/u.test(turn.providerResponseIdentitySha256 ?? "") && [turn.inputTokens, turn.outputTokens, turn.cacheReadTokens, turn.cacheWriteTokens, turn.costUsd].every((value) => Number.isFinite(value) && value >= 0))) return false;
+	if (new Set(turns.map((turn) => turn.providerResponseIdentitySha256)).size !== turns.length || !turns.some((turn) => turn.lane === "work_contract" && turn.modelIdentity === adjudication.primaryModelIdentity) || !turns.some((turn) => turn.lane === "semantic_inventory" && turn.modelIdentity === adjudication.reviewerModelIdentity)) return false;
+	const sum = (key) => turns.reduce((total, turn) => total + turn[key], 0);
+	return sum("inputTokens") === usage.inputTokens && sum("outputTokens") === usage.outputTokens && sum("cacheReadTokens") === usage.cacheReadTokens && sum("cacheWriteTokens") === usage.cacheWriteTokens && Math.abs(sum("costUsd") - usage.costUsd) < 1e-12;
+}
+function countBy(items, keyOf) { const counts = new Map(); for (const item of items) { const key = keyOf(item); counts.set(key, (counts.get(key) ?? 0) + 1); } return counts; }
 
 export function createLivePiEvaluationTools({ candidates, descriptors, sourceByCapability, readSkills, completed, cognitionId }) {
 	const direct = candidates.filter((candidate) => candidate.kind !== "skill").map((candidate) => {
@@ -183,4 +267,4 @@ export function createLivePiEvaluationTools({ candidates, descriptors, sourceByC
 function livePiReceiptId(phase, candidate, toolCallId) { return `receipt:live-pi:${phase}:${candidate.name}:${candidate.version}:${createHash("sha256").update(toolCallId).digest("hex")}`; }
 
 function clause(text) { return { text, source: { kind: "raw_request", start: 0, end: text.length } }; }
-function evaluationLedger() { const tasks = new Map(); const runs = new Map(); return { record(task) { tasks.set(task.id, { ...task }); }, transition(id, change) { const task = tasks.get(id); if (!task) return false; tasks.set(id, { ...task, ...change }); return true; }, recordRun(run) { runs.set(run.id, { ...run }); }, transitionRun(id, change) { const run = runs.get(id); if (!run) return false; runs.set(id, { ...run, ...change }); return true; }, queryTasks(query) { return [...tasks.values()].filter((task) => query.ownerKeys.includes(task.ownerKey) && (!query.id || task.id === query.id)).slice(0, query.limit ?? 100); }, taskRuns(taskId) { return [...runs.values()].filter((run) => run.taskId === taskId); }, checkpointTask() { return true; }, deferCandidateVerification() {}, enqueueObjectiveCompletion(ownerKey, id) { const task = tasks.get(id); return Boolean(task && task.ownerKey === ownerKey && task.status === "running" && task.verificationStatus === "accepted" && task.candidateResult); } }; }
+function evaluationLedger() { const tasks = new Map(); const runs = new Map(); return { record(task) { tasks.set(task.id, { ...task }); }, transition(id, change) { const task = tasks.get(id); if (!task) return false; tasks.set(id, { ...task, ...change }); return true; }, recordRun(run) { runs.set(run.id, { ...run }); }, transitionRun(id, change) { const run = runs.get(id); if (!run) return false; runs.set(id, { ...run, ...change }); return true; }, settleDirectObjectiveCompletion(settlement) { const task = tasks.get(settlement.objectiveId); const run = runs.get(settlement.taskRunId); if (!task || task.ownerKey !== settlement.ownerKey || task.status !== "running" || !run || run.taskId !== task.id || run.status !== "running") return false; tasks.set(task.id, { ...task, candidateResult: settlement.candidateResult, evidence: settlement.evidence, verificationStatus: "accepted", criterionVerifications: settlement.criterionVerifications, correctiveAttempts: settlement.correctiveAttempts }); runs.set(run.id, { ...run, status: "succeeded", finishedAt: Date.now(), output: settlement.candidateResult }); return true; }, queryTasks(query) { return [...tasks.values()].filter((task) => query.ownerKeys.includes(task.ownerKey) && (!query.id || task.id === query.id)).slice(0, query.limit ?? 100); }, taskRuns(taskId) { return [...runs.values()].filter((run) => run.taskId === taskId); }, checkpointTask() { return true; }, deferCandidateVerification() {} }; }

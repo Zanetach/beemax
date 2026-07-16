@@ -5,6 +5,8 @@ export type CapabilityProviderHealthStatus = "ready" | "unverified" | "configura
 
 export interface CapabilityProviderHealth {
 	status: CapabilityProviderHealthStatus;
+	/** Observed installation presence. `absent` is required to safely clear an outcome-unknown quarantine for retry. */
+	installationState?: "present" | "absent" | "unknown";
 	reason?: string;
 	evidenceRef?: string;
 	missingConfiguration?: readonly string[];
@@ -91,6 +93,8 @@ export class CapabilityProviderRuntime {
 	private readonly installTimeoutMs: number;
 	private readonly installer?: CapabilityProviderInstaller;
 	private readonly installAuthority?: CapabilityProviderInstallAuthority;
+	private readonly installerSettlements = new Map<string, Promise<CapabilityProviderInstallReceipt>>();
+	private readonly installationOutcomeUnknown = new Map<string, { observedAt: number; reason: string }>();
 
 	constructor(options: CapabilityProviderRuntimeOptions = {}) {
 		this.healthTimeoutMs = Math.max(100, Math.min(Math.trunc(options.healthTimeoutMs ?? 5_000), 60_000));
@@ -118,6 +122,8 @@ export class CapabilityProviderRuntime {
 		const providers = input.providers.map(providerDescriptor).filter((provider) => provider.capabilities.some((value) => normalized(value) === normalized(capability)));
 		const current = await this.resolve({ capability, providers, ...(input.signal ? { signal: input.signal } : {}) });
 		if (current.status === "ready") return current;
+		const quarantined = providers.filter((candidate) => this.installationOutcomeUnknown.has(candidate.id)).sort((left, right) => left.id.localeCompare(right.id))[0];
+		if (quarantined) return this.reconcileUnknownInstallation(capability, quarantined, current, input.signal);
 		const provider = providers.filter((candidate) => !candidate.installed && candidate.install).sort((left, right) => left.id.localeCompare(right.id))[0];
 		if (!provider) return current;
 		if (!this.installAuthority) return { ...current, blocker: { code: "installation_authorization_required", reason: `Provider ${provider.id} requires explicit installation authority`, requiredConfiguration: [] } };
@@ -137,20 +143,85 @@ export class CapabilityProviderRuntime {
 		if (!this.installer) return { ...current, blocker: { code: "installation_failed", reason: `No trusted installer is configured for Provider ${provider.id}`, requiredConfiguration: [] } };
 		if (!provider.health) return { ...current, blocker: { code: "installation_failed", reason: `Provider ${provider.id} cannot be installed because no post-install health probe is defined`, requiredConfiguration: [] }, authorityEvidenceRef };
 		try {
-			const installAbort = new AbortController();
-			const effectiveSignal = input.signal ? AbortSignal.any([input.signal, installAbort.signal]) : installAbort.signal;
-			const receipt = installReceipt(await bounded(() => this.installer!.install(provider, effectiveSignal), this.installTimeoutMs, input.signal, () => installAbort.abort(new ProviderInstallationOutcomeUnknownError(`Provider ${provider.id} installation timed out after ${this.installTimeoutMs}ms`)), `Provider ${provider.id} installation timed out after ${this.installTimeoutMs}ms`, ProviderInstallationOutcomeUnknownError));
+			const receipt = await this.installProvider(provider, input.signal);
+			this.installationOutcomeUnknown.delete(provider.id);
 			const verified = await this.resolve({ capability, providers: providers.map((candidate) => candidate.id === provider.id ? { ...candidate, installed: true } : candidate), ...(input.signal ? { signal: input.signal } : {}) });
 			if (verified.status !== "ready" || verified.selected?.health.status !== "ready" || !verified.selected.health.evidenceRef?.trim()) return { ...verified, status: "blocked", selected: undefined, blocker: { code: "installation_failed", reason: `Provider ${provider.id} was installed but did not pass its health check: ${verified.blocker?.reason ?? verified.selected?.health.reason ?? "verified ready evidence is unavailable"}`, requiredConfiguration: verified.blocker?.requiredConfiguration ?? [] }, installationReceipt: receipt, authorityEvidenceRef };
 			return { ...verified, installationReceipt: receipt, authorityEvidenceRef };
 		} catch (error) {
-			if (error instanceof ProviderInstallationOutcomeUnknownError || input.signal?.aborted) return { ...current, blocker: { code: "installation_outcome_unknown", reason: `Provider ${provider.id} installation was interrupted and may still have changed host state; reconcile Provider health before retrying: ${safeReason(error)}`, requiredConfiguration: [] }, authorityEvidenceRef };
+			if (error instanceof ProviderInstallationOutcomeUnknownError || input.signal?.aborted) {
+				this.installationOutcomeUnknown.set(provider.id, { observedAt: Date.now(), reason: safeReason(error) });
+				return { ...current, blocker: { code: "installation_outcome_unknown", reason: `Provider ${provider.id} installation was interrupted and may still have changed host state; reconcile Provider health before retrying: ${safeReason(error)}`, requiredConfiguration: [] }, authorityEvidenceRef };
+			}
 			return { ...current, blocker: { code: "installation_failed", reason: `Provider ${provider.id} installation failed: ${safeReason(error)}`, requiredConfiguration: [] } };
+		}
+	}
+
+	private async reconcileUnknownInstallation(capability: string, provider: NormalizedCapabilityProviderDescriptor, current: CapabilityProviderResolution, signal?: AbortSignal): Promise<CapabilityProviderAcquisition> {
+		const unknown = this.installationOutcomeUnknown.get(provider.id)!;
+		const health = await this.probeHealth(provider, signal);
+		const observedCandidate: CapabilityProviderCandidate = Object.freeze({
+			id: provider.id, kind: provider.kind, installed: health.status === "ready", health,
+			...(provider.configuration ? { configuration: provider.configuration } : {}), installable: Boolean(provider.install),
+		});
+		const candidates = current.candidates.map((candidate) => candidate.id === provider.id ? observedCandidate : candidate);
+		candidates.sort((left, right) => healthPriority(left.health.status) - healthPriority(right.health.status) || Number(right.installed) - Number(left.installed) || left.id.localeCompare(right.id));
+		if (health.status === "ready" && health.evidenceRef) {
+			if (this.installerSettlements.has(provider.id)) return { status: "blocked", capability, candidates, blocker: {
+				code: "installation_outcome_unknown", reason: `Provider ${provider.id} reports ready, but the interrupted installer is still settling; reconciliation must wait for that operation to converge.`, requiredConfiguration: [],
+			} };
+			this.installationOutcomeUnknown.delete(provider.id);
+			return { status: "ready", capability, selected: observedCandidate, candidates };
+		}
+		if (health.status === "unavailable" && health.installationState === "absent" && health.evidenceRef) {
+			if (this.installerSettlements.has(provider.id)) return { status: "blocked", capability, candidates, blocker: {
+				code: "installation_outcome_unknown", reason: `Provider ${provider.id} reports an absent installation, but the interrupted installer is still settling; absence must be observed again after that operation converges.`, requiredConfiguration: [],
+			} };
+			this.installationOutcomeUnknown.delete(provider.id);
+			return { status: "blocked", capability, candidates, blocker: {
+				code: "provider_unavailable",
+				reason: `${provider.id}: ${health.reason ?? "installation is observably absent"}; absence evidence ${health.evidenceRef} cleared the prior outcome-unknown quarantine. A separate acquisition with fresh authority is required before retry.`,
+				requiredConfiguration: [],
+			} };
+		}
+		return { status: "blocked", capability, candidates, blocker: {
+			code: "installation_outcome_unknown",
+			reason: `Provider ${provider.id} installation outcome remains unknown since ${unknown.observedAt}: ${health.reason ?? unknown.reason}. A ready health result with evidence, or explicit absent installation evidence, is required before retry.`,
+			requiredConfiguration: [],
+		} };
+	}
+
+	private async installProvider(provider: CapabilityProviderDescriptor, signal?: AbortSignal): Promise<CapabilityProviderInstallReceipt> {
+		while (true) {
+			const existing = this.installerSettlements.get(provider.id);
+			if (existing) {
+				try {
+					return await bounded(() => existing, this.installTimeoutMs, signal, () => undefined, `Provider ${provider.id} installer settlement timed out after ${this.installTimeoutMs}ms`, ProviderInstallationSettlementTimeoutError);
+				} catch (error) {
+					if (signal?.aborted) throw error;
+					if (error instanceof ProviderInstallationSettlementTimeoutError) throw new ProviderInstallationOutcomeUnknownError(error.message);
+					throw new ProviderInstallationOutcomeUnknownError(`Provider ${provider.id} shared installation did not settle successfully: ${safeReason(error)}`);
+				}
+			}
+
+			const installAbort = new AbortController();
+			const effectiveSignal = signal ? AbortSignal.any([signal, installAbort.signal]) : installAbort.signal;
+			let settlement: Promise<CapabilityProviderInstallReceipt>;
+			const operation = Promise.resolve().then(() => this.installer!.install(provider, effectiveSignal)).then(installReceipt);
+			settlement = operation.finally(() => {
+				if (this.installerSettlements.get(provider.id) === settlement) this.installerSettlements.delete(provider.id);
+			});
+			this.installerSettlements.set(provider.id, settlement);
+			return bounded(() => settlement, this.installTimeoutMs, signal, () => installAbort.abort(new ProviderInstallationOutcomeUnknownError(`Provider ${provider.id} installation timed out after ${this.installTimeoutMs}ms`)), `Provider ${provider.id} installation timed out after ${this.installTimeoutMs}ms`, ProviderInstallationOutcomeUnknownError);
 		}
 	}
 
 	private async inspectHealth(provider: CapabilityProviderDescriptor, signal?: AbortSignal): Promise<CapabilityProviderHealth> {
 		if (!provider.installed) return { status: "unavailable", reason: `Provider ${provider.id} is not installed` };
+		return this.probeHealth(provider, signal);
+	}
+
+	private async probeHealth(provider: CapabilityProviderDescriptor, signal?: AbortSignal): Promise<CapabilityProviderHealth> {
 		if (!provider.health) return { status: "unverified", reason: `Provider ${provider.id} has no observed health evidence` };
 		try {
 			const timeout = new AbortController();
@@ -176,7 +247,10 @@ function providerConfiguration(input: CapabilityProviderConfiguration): Capabili
 
 function providerHealth(input: CapabilityProviderHealth): CapabilityProviderHealth {
 	if (!["ready", "unverified", "configuration_required", "unhealthy", "unavailable"].includes(input.status)) throw new Error("Capability Provider health status is invalid");
-	return Object.freeze({ status: input.status, ...(input.reason ? { reason: safeText(input.reason, "Provider health reason", 2_000) } : {}), ...(input.evidenceRef ? { evidenceRef: evidenceReference(input.evidenceRef, "Provider health evidence") } : {}), ...(input.missingConfiguration ? { missingConfiguration: Object.freeze([...new Set(input.missingConfiguration.map((value) => identifier(value, "Missing configuration key", 128)))]) } : {}) });
+	if (input.installationState !== undefined && !["present", "absent", "unknown"].includes(input.installationState)) throw new Error("Capability Provider installation state is invalid");
+	if (input.status === "ready" && input.installationState === "absent") throw new Error("A ready Provider cannot report an absent installation");
+	if (input.installationState === "absent" && input.status !== "unavailable") throw new Error("An absent Provider installation must report unavailable health");
+	return Object.freeze({ status: input.status, ...(input.installationState ? { installationState: input.installationState } : {}), ...(input.reason ? { reason: safeText(input.reason, "Provider health reason", 2_000) } : {}), ...(input.evidenceRef ? { evidenceRef: evidenceReference(input.evidenceRef, "Provider health evidence") } : {}), ...(input.missingConfiguration ? { missingConfiguration: Object.freeze([...new Set(input.missingConfiguration.map((value) => identifier(value, "Missing configuration key", 128)))]) } : {}) });
 }
 
 function installReceipt(input: CapabilityProviderInstallReceipt): CapabilityProviderInstallReceipt {
@@ -201,6 +275,7 @@ function safeText(value: string, label: string, maxLength: number): string { ret
 function safeReason(error: unknown): string { return redactCredentialMaterial(error instanceof Error ? error.message.slice(0, 2_000) : String(error).slice(0, 2_000)); }
 
 class ProviderInstallationOutcomeUnknownError extends Error {}
+class ProviderInstallationSettlementTimeoutError extends Error {}
 
 function bounded<T>(operation: () => Promise<T>, timeoutMs: number, signal: AbortSignal | undefined, onTimeout: () => void, timeoutMessage: string, TimeoutError: new (message: string) => Error = Error): Promise<T> {
 	return new Promise<T>((resolve, reject) => {

@@ -11,6 +11,8 @@ test("accepted Objective delivery retains the provider receipt and acknowledges 
 	const calls = [];
 	const service = new ObjectiveCompletionDeliveryService({
 		claimObjectiveCompletions: () => [item],
+		recordObjectiveCompletionReceipt: (id, receipt) => { calls.push({ kind: "receipt", id, receipt }); return true; },
+		isObjectiveCompletionCancelledAfterDelivery: () => false,
 		completeObjectiveCompletion: (id, claimToken, receipt) => { calls.push({ kind: "complete", id, claimToken, receipt }); return true; },
 		failObjectiveCompletion: () => false,
 	}, { sendText: async (target, text, options) => {
@@ -19,7 +21,7 @@ test("accepted Objective delivery retains the provider receipt and acknowledges 
 	} }, { platform: "feishu" });
 
 	assert.deepEqual(await service.runOnce(90), { claimed: 1, delivered: 1, failed: 0, deferred: 0, blocked: 0 });
-	assert.deepEqual(calls.map((call) => call.kind), ["send", "complete"]);
+	assert.deepEqual(calls.map((call) => call.kind), ["send", "receipt", "complete"]);
 	assert.deepEqual(calls[1].receipt, { idempotencyKey: item.deliveryIdempotencyKey, deliveredAt: 100, providerMessageId: "om-1" });
 });
 
@@ -28,6 +30,8 @@ test("Memory publication failure requeues the same provider delivery before term
 	const calls = [];
 	const service = new ObjectiveCompletionDeliveryService({
 		claimObjectiveCompletions: () => [item],
+		recordObjectiveCompletionReceipt: () => { calls.push("receipt"); return true; },
+		isObjectiveCompletionCancelledAfterDelivery: () => false,
 		completeObjectiveCompletion: () => { calls.push("complete"); return true; },
 		failObjectiveCompletion: () => { calls.push("requeue"); return true; },
 	}, { sendText: async (_target, _text, options) => {
@@ -36,7 +40,55 @@ test("Memory publication failure requeues the same provider delivery before term
 	} }, { platform: "feishu", onDelivered: async () => { calls.push("publish"); throw new Error("memory unavailable"); } });
 
 	assert.deepEqual(await service.runOnce(90), { claimed: 1, delivered: 0, failed: 1, deferred: 0, blocked: 0 });
-	assert.deepEqual(calls, [`send:${item.deliveryIdempotencyKey}`, "publish", "requeue"]);
+	assert.deepEqual(calls, [`send:${item.deliveryIdempotencyKey}`, "receipt", "publish", "requeue"]);
+});
+
+test("a retained provider Receipt resumes publication without sending the message again", async () => {
+	const receipt = { idempotencyKey: "delivery:objective-1", deliveredAt: 100, providerMessageId: "om-1" };
+	const item = completion({ receipt });
+	const calls = [];
+	const service = new ObjectiveCompletionDeliveryService({
+		claimObjectiveCompletions: () => [item],
+		recordObjectiveCompletionReceipt: () => assert.fail("retained Receipt must not be rewritten"),
+		isObjectiveCompletionCancelledAfterDelivery: () => false,
+		completeObjectiveCompletion: () => { calls.push("complete"); return true; },
+		failObjectiveCompletion: () => false,
+	}, { sendText: async () => assert.fail("retained Receipt must prevent duplicate send") }, { platform: "feishu", onDelivered: async () => { calls.push("publish"); } });
+	assert.deepEqual(await service.runOnce(90), { claimed: 1, delivered: 1, failed: 0, deferred: 0, blocked: 0 });
+	assert.deepEqual(calls, ["publish", "complete"]);
+});
+
+test("a delivery that wins before Objective cancellation is classified as delivered without late Memory publication", async () => {
+	const item = completion();
+	let retained;
+	let publications = 0;
+	const service = new ObjectiveCompletionDeliveryService({
+		claimObjectiveCompletions: () => [item],
+		recordObjectiveCompletionReceipt: (_id, receipt) => { retained = receipt; return true; },
+		isObjectiveCompletionCancelledAfterDelivery: (_id, receipt) => receipt === retained,
+		completeObjectiveCompletion: () => assert.fail("cancelled Completion must remain blocked"),
+		failObjectiveCompletion: () => assert.fail("successful external delivery must not be reported failed"),
+	}, { sendText: async (_target, _text, options) => ({ idempotencyKey: options.idempotencyKey, deliveredAt: 100, providerMessageId: "om-late" }) }, {
+		platform: "feishu", onDelivered: async () => { publications++; throw new Error("cancelled Objective is unavailable"); },
+	});
+	assert.deepEqual(await service.runOnce(90), { claimed: 1, delivered: 1, failed: 0, deferred: 0, blocked: 0 });
+	assert.equal(publications, 0);
+});
+
+test("a non-cancellation block with a retained Receipt is never misreported as delivered", async () => {
+	const item = completion();
+	let retained;
+	let failed = 0;
+	const service = new ObjectiveCompletionDeliveryService({
+		claimObjectiveCompletions: () => [item],
+		recordObjectiveCompletionReceipt: (_id, receipt) => { retained = receipt; return true; },
+		isObjectiveCompletionCancelledAfterDelivery: () => false,
+		completeObjectiveCompletion: () => false,
+		failObjectiveCompletion: () => { failed++; return false; },
+	}, { sendText: async (_target, _text, options) => ({ idempotencyKey: options.idempotencyKey, deliveredAt: 100, providerMessageId: "om-blocked" }) }, { platform: "feishu" });
+	assert.deepEqual(await service.runOnce(90), { claimed: 1, delivered: 0, failed: 1, deferred: 0, blocked: 0 });
+	assert.equal(retained.providerMessageId, "om-blocked");
+	assert.equal(failed, 1);
 });
 
 test("transient channel failure requeues delivery without executing Objective work", async () => {
@@ -44,6 +96,8 @@ test("transient channel failure requeues delivery without executing Objective wo
 	let sends = 0, failed = 0;
 	const service = new ObjectiveCompletionDeliveryService({
 		claimObjectiveCompletions: () => [item],
+		recordObjectiveCompletionReceipt: () => false,
+		isObjectiveCompletionCancelledAfterDelivery: () => false,
 		completeObjectiveCompletion: () => false,
 		failObjectiveCompletion: () => { failed++; return true; },
 	}, { sendText: async () => { sends++; throw new Error("offline"); } }, { platform: "feishu" });
@@ -58,6 +112,8 @@ test("governed deferral preserves retry budget and exhausted poison delivery bec
 	const deferred = [], blocked = [];
 	const service = new ObjectiveCompletionDeliveryService({
 		claimObjectiveCompletions: () => [deferredItem, poisonItem],
+		recordObjectiveCompletionReceipt: () => false,
+		isObjectiveCompletionCancelledAfterDelivery: () => false,
 		completeObjectiveCompletion: () => false,
 		failObjectiveCompletion: () => false,
 		deferObjectiveCompletion: (...args) => { deferred.push(args); return true; },

@@ -199,9 +199,12 @@ function verifyAuthorityProbe(receipt) {
 function verifyLivePiOutcome(outcome) {
 	const receipts = Array.isArray(outcome?.receipts) ? outcome.receipts : [];
 	const recomputedMetrics = independentlySummarizeLivePiOutcomeReceipts(receipts); const recomputedBudgetFailures = independentlyVerifyLivePiBudget(recomputedMetrics, LIVE_PI_OUTCOME_BUDGET);
+	const recomputedWorkContractFailures = independentlyVerifyProductionWorkContracts(receipts);
 	const generatedAt = Date.parse(outcome?.generatedAt);
 	if (outcome?.schemaVersion !== 1 || outcome?.mode !== "live_pi" || !/^execution:live-pi:[0-9a-f-]{36}$/i.test(outcome?.runId ?? "") || !Number.isFinite(generatedAt) || Date.now() - generatedAt > 30 * 24 * 60 * 60_000 || generatedAt > Date.now() + 5 * 60_000 || !artifact.models?.includes(outcome?.modelId) || outcome?.cases !== capabilityRankingCases.length || receipts.length !== capabilityRankingCases.length || new Set(receipts.map((receipt) => receipt?.caseId)).size !== receipts.length || JSON.stringify(outcome?.metrics) !== JSON.stringify(recomputedMetrics) || JSON.stringify(outcome?.budget) !== JSON.stringify(LIVE_PI_OUTCOME_BUDGET) || JSON.stringify(outcome?.budgetFailures) !== JSON.stringify(recomputedBudgetFailures)) { failures.push("Live Pi outcome metadata, freshness, corpus coverage, or execution budget evidence is invalid"); return; }
+	if (JSON.stringify(outcome?.workContractFailures) !== JSON.stringify(recomputedWorkContractFailures)) { failures.push("Live Pi production Work Contract composition evidence is invalid"); return; }
 	if (recomputedBudgetFailures.length) failures.push(`Live Pi execution budget failed: ${recomputedBudgetFailures.join(", ")}`);
+	if (recomputedWorkContractFailures.length) failures.push(`Live Pi production Work Contract composition failed: ${recomputedWorkContractFailures.join(", ")}`);
 	let accepted = 0;
 	for (const scenario of capabilityRankingCases) {
 		const ranking = rankings.find((item) => item.caseId === scenario.id); const receipt = receipts.find((item) => item.caseId === scenario.id);
@@ -281,6 +284,53 @@ function verifyLivePiOutcome(outcome) {
 	}
 	if (outcome.accepted !== accepted || accepted / capabilityRankingCases.length < 0.95) failures.push("Live Pi outcome completion is below the release gate or does not match its receipts");
 }
+
+function independentlyVerifyProductionWorkContracts(receipts) {
+	const workContractFailures = [];
+	for (const receipt of receipts) {
+		const caseId = typeof receipt?.caseId === "string" && receipt.caseId ? receipt.caseId : "unknown";
+		const evidence = receipt?.workContract;
+		if (evidence?.source !== "model") workContractFailures.push(`${caseId}:source_not_model`);
+		if (!independentlyValidSemanticWorkContractEvidence(evidence)) workContractFailures.push(`${caseId}:semantic_adjudication_missing`);
+		if (!Number.isFinite(evidence?.cognitionBudgetChargeTokens) || evidence.cognitionBudgetChargeTokens <= 0) workContractFailures.push(`${caseId}:cognition_charge_missing`);
+		if (!independentlyValidCredentialResolutionEvidence(evidence)) workContractFailures.push(`${caseId}:credential_resolver_unread`);
+	}
+	return workContractFailures;
+}
+
+function independentlyValidSemanticWorkContractEvidence(evidence) {
+	const adjudication = evidence?.semanticAdjudication; const usage = evidence?.cognitionUsage;
+	if (evidence?.semanticAdjudicationValid !== true || adjudication?.schemaVersion !== "beemax.work-contract-adjudication.v1" || adjudication?.inventorySchemaVersion !== "beemax.semantic-inventory.v1" || adjudication?.independentSamples !== true) return false;
+	const primary = adjudication.primaryModelIdentity; const reviewer = adjudication.reviewerModelIdentity;
+	if (typeof primary !== "string" || !primary || typeof reviewer !== "string" || !reviewer) return false;
+	if (adjudication.reviewMode === "different_models" ? primary === reviewer : adjudication.reviewMode !== "same_model_independent_samples" || primary !== reviewer) return false;
+	if (!Number.isFinite(adjudication.cognitionBudgetChargeTokens) || adjudication.cognitionBudgetChargeTokens !== evidence.cognitionBudgetChargeTokens) return false;
+	if (!usage || ![usage.inputTokens, usage.outputTokens, usage.cacheReadTokens, usage.cacheWriteTokens, usage.costUsd].every((value) => Number.isFinite(value) && value >= 0) || !Array.isArray(usage.modelIdentities) || usage.modelIdentities.length < 2 || !usage.modelIdentities.every((value) => typeof value === "string" && value)) return false;
+	if (evidence.cognitionBudgetChargeTokens < usage.inputTokens + usage.outputTokens + usage.cacheWriteTokens) return false;
+	if (!usage.modelIdentities.includes(primary) || !usage.modelIdentities.includes(reviewer)) return false;
+	return [primary, reviewer].every((identity) => artifact.models.some((modelId) => identity.startsWith(`${modelId}/`))) && independentlyValidWorkContractProviderTurns(evidence, usage, adjudication);
+}
+
+function independentlyValidCredentialResolutionEvidence(evidence) {
+	const resolutions = evidence?.credentialResolutions;
+	if (!Array.isArray(resolutions) || !resolutions.length || evidence.credentialResolverReads !== resolutions.length) return false;
+	if (!resolutions.every((item) => item && typeof item.provider === "string" && item.provider && typeof item.modelIdentity === "string" && item.modelIdentity && (item.source === "profile_auth_storage" || item.source === "profile_config"))) return false;
+	const identities = new Set(resolutions.map((item) => item.modelIdentity)); const adjudication = evidence.semanticAdjudication;
+	if (!identities.has(adjudication?.primaryModelIdentity) || !identities.has(adjudication?.reviewerModelIdentity)) return false;
+	const resolutionCounts = countBy(resolutions, (item) => item.modelIdentity); const turnCounts = countBy(evidence.providerTurns ?? [], (item) => item.modelIdentity);
+	return [...turnCounts].every(([identity, count]) => (resolutionCounts.get(identity) ?? 0) >= count);
+}
+
+function independentlyValidWorkContractProviderTurns(evidence, usage, adjudication) {
+	const turns = evidence?.providerTurns;
+	if (!Array.isArray(turns) || turns.length < 2 || !turns.every((turn) => turn && (turn.lane === "work_contract" || turn.lane === "semantic_inventory") && typeof turn.modelIdentity === "string" && /^sha256:[a-f0-9]{64}$/i.test(turn.providerResponseIdentitySha256 ?? "") && [turn.inputTokens, turn.outputTokens, turn.cacheReadTokens, turn.cacheWriteTokens, turn.costUsd].every((value) => Number.isFinite(value) && value >= 0))) return false;
+	if (new Set(turns.map((turn) => turn.providerResponseIdentitySha256)).size !== turns.length) return false;
+	if (!turns.some((turn) => turn.lane === "work_contract" && turn.modelIdentity === adjudication.primaryModelIdentity) || !turns.some((turn) => turn.lane === "semantic_inventory" && turn.modelIdentity === adjudication.reviewerModelIdentity)) return false;
+	const sum = (key) => turns.reduce((total, turn) => total + turn[key], 0);
+	return sum("inputTokens") === usage.inputTokens && sum("outputTokens") === usage.outputTokens && sum("cacheReadTokens") === usage.cacheReadTokens && sum("cacheWriteTokens") === usage.cacheWriteTokens && Math.abs(sum("costUsd") - usage.costUsd) < 1e-12;
+}
+
+function countBy(items, keyOf) { const counts = new Map(); for (const item of items) { const key = keyOf(item); counts.set(key, (counts.get(key) ?? 0) + 1); } return counts; }
 
 function independentlySummarizeLivePiOutcomeReceipts(receipts) {
 	const cases = receipts.length;

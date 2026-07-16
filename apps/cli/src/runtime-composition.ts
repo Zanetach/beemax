@@ -10,6 +10,7 @@ import {
 	type AgentControlHandler,
 	type ToolApprovalBroker,
 	type SessionCoordinatorOptions,
+	type WorkContractBuilderPort,
 } from "@beemax/core";
 import { join } from "node:path";
 import { recordOperationalMetric } from "./operational-metrics.ts";
@@ -22,7 +23,8 @@ export interface ProfileAgentRuntimeOptions<Source extends BeeMaxRuntimeSource> 
 	profileId: string;
 	agentDir: string;
 	policy: SessionCoordinatorOptions;
-	runtime: Omit<BeeMaxAgentRuntimeOptions<Source>, keyof SessionCoordinatorOptions | "controlHandler" | "sessionCatalog" | "profileId">;
+	runtime: Omit<BeeMaxAgentRuntimeOptions<Source>, keyof SessionCoordinatorOptions | "controlHandler" | "sessionCatalog" | "profileId" | "workContractBuilder">
+		& { workContractBuilder: WorkContractBuilderPort };
 	approvalBroker?: ToolApprovalBroker;
 	cancelSubagents?: (source: Source) => number | Promise<number>;
 	cancelTaskPlans?: (source: Source) => number | Promise<number>;
@@ -101,6 +103,7 @@ export async function createProfileRuntime<Source extends BeeMaxRuntimeSource>(o
 export async function createProfileAgentRuntime<Source extends BeeMaxRuntimeSource>(
 	options: ProfileAgentRuntimeOptions<Source>,
 ): Promise<ProfileAgentRuntime<Source>> {
+	if (!options.runtime.workContractBuilder) throw new Error("Profile Agent Runtime Work Contract Builder is required");
 	const started: ProfileRuntimeResource[] = [];
 	try {
 		for (const resource of options.resources ?? []) {

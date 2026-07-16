@@ -3,13 +3,14 @@ import test from "node:test";
 import { fauxAssistantMessage, registerFauxProvider } from "@earendil-works/pi-ai/compat";
 import {
 	BeeMaxAgentRuntime,
+	DeterministicWorkContractBuilder,
 	MediaUnderstandingRuntime,
 	MediaUnderstandingUnavailableError,
 	PiVisionMediaUnderstandingAdapter,
 	renderMediaUnderstandingEvidence,
 } from "../dist/index.js";
 
-const createRuntime = (options) => new BeeMaxAgentRuntime({ profileId: "profile:test", ...options });
+const createRuntime = (options) => new BeeMaxAgentRuntime({ profileId: "profile:test", workContractBuilder: new DeterministicWorkContractBuilder(), ...options });
 
 const image = { type: "image", mimeType: "image/png", data: Buffer.from("pixels").toString("base64") };
 const textModel = { provider: "test", id: "text", input: ["text"] };

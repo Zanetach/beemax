@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { EXA_MCPORTER_LOCK_SHA256, EXA_MCPORTER_PROVIDER_VERSION, createProfileCapabilityProviderBundle } from "../dist/capability-provider-composition.js";
-import { createWebTools } from "../../../packages/core/dist/index.js";
+import { CapabilityProviderRuntime, createWebTools } from "../../../packages/core/dist/index.js";
 
 const provider = (installed) => ({
 	id: "exa-mcporter", kind: "tool", capabilities: ["web_search"], installed,
@@ -73,32 +73,84 @@ test("Profile Provider composition serializes concurrent installation and atomic
 	} finally { rmSync(root, { recursive: true, force: true }); }
 });
 
-test("interrupted Provider installation creates a durable quarantine and the next acquisition reconciles before retry", async () => {
+test("interrupted Provider installation requires an evidence-backed reconciliation acquisition before retry", async () => {
 	const root = mkdtempSync(join(tmpdir(), "beemax-profile-provider-quarantine-"));
 	let commands = 0;
+	let installationStartedResolve;
+	const installationStarted = new Promise((resolve) => { installationStartedResolve = resolve; });
 	try {
 		const bundle = createProfileCapabilityProviderBundle({
 			profileId: "profile:test", agentDir: root,
 			installation: { enabled: true, allowedProviders: ["exa-mcporter"] },
 			runCommand: async (_command, _args, options) => {
 				commands++;
-				if (commands === 1) await new Promise((_, reject) => options.signal.addEventListener("abort", () => reject(options.signal.reason), { once: true }));
+				if (commands === 1) {
+					installationStartedResolve();
+					await new Promise((_, reject) => options.signal.addEventListener("abort", () => reject(options.signal.reason), { once: true }));
+				}
 				await mkdir(join(options.cwd, "node_modules", "mcporter", "dist"), { recursive: true });
 				await writeFile(join(options.cwd, "node_modules", "mcporter", "dist", "cli.js"), "stub");
 			},
 		});
-		const descriptor = { ...provider(() => commands > 1), health: async () => commands > 1 ? { status: "ready", evidenceRef: "health:exa-mcporter" } : { status: "unavailable", reason: "not installed" } };
+		const descriptor = { ...provider(() => commands > 1), health: async () => commands > 1 ? { status: "ready", installationState: "present", evidenceRef: "health:exa-mcporter" } : { status: "unavailable", installationState: "absent", evidenceRef: "health:exa-mcporter:absent", reason: "installation is observably absent" } };
 		const controller = new AbortController();
 		const first = bundle.runtime.acquire({ capability: "web_search", providers: [descriptor], signal: controller.signal });
-		await new Promise((resolve) => setTimeout(resolve, 30));
+		await installationStarted;
 		controller.abort(new Error("cancelled by test"));
 		const interrupted = await first;
 		assert.equal(interrupted.blocker?.code, "installation_outcome_unknown");
-		await new Promise((resolve) => setTimeout(resolve, 30));
+		const attached = await bundle.runtime.acquire({ capability: "web_search", providers: [descriptor] });
+		assert.equal(attached.blocker?.code, "installation_outcome_unknown");
+		assert.equal(commands, 1, "the reconciliation acquisition must not overlap or retry the interrupted install");
+		let reconciled;
+		const reconciliationDeadline = Date.now() + 5_000;
+		do {
+			await new Promise((resolve) => setTimeout(resolve, 10));
+			reconciled = await bundle.runtime.acquire({ capability: "web_search", providers: [descriptor] });
+			if (reconciled.blocker?.code !== "installation_outcome_unknown") break;
+		} while (Date.now() < reconciliationDeadline);
+		assert.equal(reconciled.blocker?.code, "provider_unavailable");
+		assert.equal(commands, 1, "explicit absence reconciliation must not install");
 		const retry = await bundle.runtime.acquire({ capability: "web_search", providers: [descriptor] });
 		assert.equal(retry.status, "ready", JSON.stringify(retry));
 		assert.equal(commands, 2);
 	} finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("a Runtime bounds acquisition while the same Provider installer is still settling", async () => {
+	let attempts = 0;
+	let installationStartedResolve;
+	let releaseFirstResolve;
+	const installationStarted = new Promise((resolve) => { installationStartedResolve = resolve; });
+	const releaseFirst = new Promise((resolve) => { releaseFirstResolve = resolve; });
+	const runtime = new CapabilityProviderRuntime({
+		installTimeoutMs: 100,
+		installAuthority: { authorize: async () => ({ allowed: true, evidenceRef: "authority:test" }) },
+		installer: { install: async () => {
+			attempts++;
+			if (attempts === 1) {
+				installationStartedResolve();
+				await releaseFirst;
+				throw new Error("interrupted installer cleanup settled");
+			}
+			releaseFirstResolve();
+			return { receiptId: "receipt:test", installedAt: 1, evidenceRef: "install:test" };
+		} },
+	});
+	const descriptor = { ...provider(false), health: async () => ({ status: "ready", evidenceRef: "health:test" }) };
+	const controller = new AbortController();
+	try {
+		const first = runtime.acquire({ capability: "web_search", providers: [descriptor], signal: controller.signal });
+		await installationStarted;
+		controller.abort(new Error("cancelled by test"));
+		assert.equal((await first).blocker?.code, "installation_outcome_unknown");
+
+		const retry = await runtime.acquire({ capability: "web_search", providers: [descriptor] });
+		assert.equal(retry.blocker?.code, "installation_outcome_unknown");
+		assert.equal(attempts, 1, "the Runtime must not overlap a still-settling installer for the same Provider");
+	} finally {
+		releaseFirstResolve();
+	}
 });
 
 test("Profile Provider composition rejects a symlinked installation root", async () => {

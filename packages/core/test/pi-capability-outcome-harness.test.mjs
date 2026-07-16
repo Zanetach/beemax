@@ -4,7 +4,8 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import test from "node:test";
-import { createLivePiEvaluationTools, executeLivePiCapabilityTask, livePiBudgetFailures, summarizeLivePiOutcomeReceipts } from "../../../scripts/pi-capability-outcome-harness.mjs";
+import { DeterministicWorkContractBuilder, PiWorkContractBuilder } from "../dist/index.js";
+import { createLivePiEvaluationTools, executeLivePiCapabilityTask, livePiBudgetFailures, livePiProductionWorkContractFailures, summarizeLivePiOutcomeReceipts } from "../../../scripts/pi-capability-outcome-harness.mjs";
 
 test("live Pi outcome does not execute ranked candidates on the model's behalf", async () => {
 	const agent = { state: { model: { id: "no-tool-model", input: ["text"], contextWindow: 32_000 }, messages: [] } };
@@ -25,12 +26,15 @@ test("live Pi outcome does not execute ranked candidates on the model's behalf",
 		model: { provider: "test", id: "no-tool-model" },
 		apiKey: "unused",
 		createAgent,
+		workContractBuilder: new DeterministicWorkContractBuilder(),
 	});
 	assert.equal(receipt.verificationStatus, "rejected");
 	assert.equal(receipt.executionTrace.some((event) => event.type === "tool.started"), false);
 	assert.equal("piToolCalls" in receipt, false);
 	assert.equal("piToolErrors" in receipt, false);
 	assert.equal("toolAudit" in receipt, false);
+	assert.equal(receipt.workContract.source, "deterministic");
+	assert.deepEqual(livePiProductionWorkContractFailures([receipt]), ["model-must-call:source_not_model", "model-must-call:semantic_adjudication_missing", "model-must-call:cognition_charge_missing", "model-must-call:credential_resolver_unread"]);
 });
 
 test("live Pi outcome uses the configured semantic model failover chain", async () => {
@@ -51,9 +55,85 @@ test("live Pi outcome uses the configured semantic model failover chain", async 
 		ranking: { cognitionId: "eval:model-failover", candidates: [] }, threshold: 0.75,
 		models: [{ model: primary, apiKey: "primary-key" }, { model: fallback, apiKey: "fallback-key" }],
 		createAgent,
+		workContractBuilder: new DeterministicWorkContractBuilder(),
 	});
 	assert.deepEqual(retried, ["fallback"]);
 	assert.equal(receipt.verificationStatus, "accepted");
+});
+
+test("production Work Contract credential failure blocks live Pi while isolated routing remains independently injectable", async () => {
+	const model = { provider: "test", id: "oauth-expired", api: "openai-completions", input: ["text"], contextWindow: 32_000, maxTokens: 2_000 };
+	let credentialReads = 0;
+	const credentialEvents = [];
+	let agentCreations = 0;
+	const workContractBuilder = new PiWorkContractBuilder({
+		models: [{ model, getApiKey: async () => { credentialReads++; credentialEvents.push(testCredentialResolution(model)); throw new Error("OAuth refresh failed"); } }],
+		complete: async () => assert.fail("a Provider must not be called without a credential"),
+	});
+	const receipt = await executeLivePiCapabilityTask({
+		scenario: { id: "oauth-fail-closed", query: "look up current sources", expected: "web_search" },
+		ranking: { cognitionId: "eval:oauth-fail-closed", candidates: [{ kind: "tool", name: "web_search", version: "eval:1", confidence: 0.99 }] },
+		threshold: 0.75,
+		models: [{ model, getApiKey: async () => undefined }],
+		workContractBuilder,
+		getCredentialResolutionEvents: () => credentialEvents,
+		createAgent: async () => { agentCreations++; throw new Error("Pi must not start after Work Contract admission fails"); },
+	});
+	assert.equal(agentCreations, 0);
+	assert.equal(receipt.status, "failed");
+	assert.equal(receipt.workContract.credentialResolverReads > 0, true);
+	assert.equal(receipt.workContract.failure, "work_contract_admission_failed");
+	assert.equal(livePiProductionWorkContractFailures([receipt]).some((failure) => failure === "oauth-fail-closed:source_not_model"), true);
+});
+
+test("actual Pi Work Contract composition records model adjudication, charge, and dynamic credential evidence", async () => {
+	const rawRequest = "hello";
+	const model = { provider: "test", id: "semantic", api: "openai-completions", input: ["text"], contextWindow: 32_000, maxTokens: 2_000 };
+	let credentialReads = 0;
+	const credentialEvents = [];
+	const providerTurns = [];
+	const response = (value) => ({ role: "assistant", stopReason: "stop", content: [{ type: "text", text: JSON.stringify(value) }], usage: { input: 2, output: 2, cacheRead: 0, cacheWrite: 0, totalTokens: 4, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } }, timestamp: Date.now() });
+	const workContractBuilder = new PiWorkContractBuilder({
+		models: [{ model, getApiKey: async () => { credentialReads++; credentialEvents.push(testCredentialResolution(model)); return `oauth-${credentialReads}`; } }],
+		complete: async (_model, context) => {
+			const inventory = context.systemPrompt.includes("Independently inventory");
+			providerTurns.push(testProviderTurn(model, inventory ? "semantic_inventory" : "work_contract", inventory ? "b" : "a", 2, 2));
+			return response(inventory
+				? { schemaVersion: "beemax.semantic-inventory.v1", action: "create", confidence: 0.99, segments: [{ text: rawRequest, occurrence: 0, roles: ["objective", "acceptance_criterion"] }] }
+				: { action: "create", objective: { text: rawRequest }, constraints: [], prohibitions: [], acceptanceCriteria: [{ text: rawRequest }], capabilityRequirements: [], uncertainties: [], executionMode: "direct", confidence: 0.99 });
+		},
+	});
+	const agent = { state: { model, messages: [] } };
+	const receipt = await executeLivePiCapabilityTask({
+		scenario: { id: "production-composition", query: rawRequest },
+		ranking: { cognitionId: "eval:production-composition", candidates: [] },
+		threshold: 0.75,
+		models: [{ model, getApiKey: async () => undefined }],
+		workContractBuilder,
+		getCredentialResolutionEvents: () => credentialEvents,
+		getWorkContractProviderTurns: () => providerTurns,
+		createAgent: async () => ({
+			agent, getAllTools: () => [], getActiveToolNames: () => [], setActiveToolsByName: () => undefined, subscribe: () => () => undefined,
+			prompt: async () => { agent.state.messages = [{ role: "assistant", stopReason: "stop", content: [{ type: "text", text: "hello" }], usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, cost: { total: 0 } } }]; },
+			abort: async () => undefined, dispose: () => undefined,
+		}),
+	});
+	assert.equal(receipt.workContract.source, "model");
+	assert.equal(receipt.workContract.semanticAdjudicationValid, true);
+	assert.equal(receipt.workContract.cognitionBudgetChargeTokens > 0, true);
+	assert.equal(receipt.workContract.credentialResolverReads, 2);
+	assert.deepEqual(receipt.workContract.credentialResolutions, [testCredentialResolution(model), testCredentialResolution(model)]);
+	assert.equal(receipt.workContract.providerTurns.length, 2);
+	assert.deepEqual(livePiProductionWorkContractFailures([receipt]), []);
+});
+
+test("production live Pi receipt gate requires model adjudication, cognition charge, and a credential read for every case", () => {
+	assert.deepEqual(livePiProductionWorkContractFailures([{ caseId: "complete", workContract: productionWorkContractEvidence("test/semantic/openai-completions") }]), []);
+	assert.deepEqual(livePiProductionWorkContractFailures([{ caseId: "missing", workContract: { source: "model", semanticAdjudicationValid: false, cognitionBudgetChargeTokens: 0, credentialResolverReads: 0, credentialResolutions: [] } }]), [
+		"missing:semantic_adjudication_missing",
+		"missing:cognition_charge_missing",
+		"missing:credential_resolver_unread",
+	]);
 });
 
 test("live Pi evaluation lifecycle receipts identify the exact Tool call", async () => {
@@ -107,7 +187,7 @@ test("live Pi execution metrics fail closed when token, latency, turn, or usage 
 });
 
 test("live evidence verifier rejects raw diagnostics and a Tool call detached from its assistant Turn and Tool Spec", () => {
-	const baseline = JSON.parse(readFileSync(resolve("evals/baselines/capability-ranking-live.json"), "utf8"));
+	const baseline = withValidProductionWorkContractEvidence(JSON.parse(readFileSync(resolve("evals/baselines/capability-ranking-live.json"), "utf8")));
 	const receipt = baseline.piOutcome.receipts.find((item) => item.executionTrace.some((event) => event.type === "tool.started"));
 	receipt.piToolCalls = [{ toolName: "should_not_be_persisted", args: { secret: "redacted" } }];
 	const started = receipt.executionTrace.find((event) => event.type === "tool.started");
@@ -131,7 +211,7 @@ test("live evidence verifier rejects raw diagnostics and a Tool call detached fr
 });
 
 test("live evidence verifier rejects deterministic receipts without their Provider-backed model Turn", () => {
-	const baseline = JSON.parse(readFileSync(resolve("evals/baselines/capability-ranking-live.json"), "utf8"));
+	const baseline = withValidProductionWorkContractEvidence(JSON.parse(readFileSync(resolve("evals/baselines/capability-ranking-live.json"), "utf8")));
 	const receipt = baseline.taskReceipts.find((item) => item.executionTrace.some((event) => event.type === "tool.started"));
 	receipt.executionTrace = receipt.executionTrace.filter((event) => event.type !== "model.turn_settled");
 	const root = mkdtempSync(join(tmpdir(), "beemax-deterministic-turn-mutation-"));
@@ -146,7 +226,7 @@ test("live evidence verifier rejects deterministic receipts without their Provid
 });
 
 test("live evidence verifier rejects one model Tool call claimed by two assistant Turns", () => {
-	const baseline = JSON.parse(readFileSync(resolve("evals/baselines/capability-ranking-live.json"), "utf8"));
+	const baseline = withValidProductionWorkContractEvidence(JSON.parse(readFileSync(resolve("evals/baselines/capability-ranking-live.json"), "utf8")));
 	const receipt = baseline.piOutcome.receipts.find((item) => item.executionTrace.filter((event) => event.type === "model.turn_settled").length > 1);
 	const turns = receipt.executionTrace.filter((event) => event.type === "model.turn_settled");
 	const sourceTurn = turns.find((turn) => turn.assistantToolCalls?.length);
@@ -163,8 +243,29 @@ test("live evidence verifier rejects one model Tool call claimed by two assistan
 	} finally { rmSync(root, { recursive: true, force: true }); }
 });
 
+test("live evidence verifier rejects uncorrelated Work Contract credential, Provider Turn, and semantic evidence", () => {
+	const source = withValidProductionWorkContractEvidence(JSON.parse(readFileSync(resolve("evals/baselines/capability-ranking-live.json"), "utf8")));
+	const root = mkdtempSync(join(tmpdir(), "beemax-work-contract-evidence-mutation-"));
+	try {
+		const mutations = [
+			(receipt) => { receipt.workContract.credentialResolverReads = 0; },
+			(receipt) => { receipt.workContract.providerTurns[0].inputTokens++; },
+			(receipt) => { receipt.workContract.semanticAdjudication.primaryModelIdentity = "unrelated/model/api"; },
+			(receipt) => { receipt.workContract.cognitionBudgetChargeTokens = 1; receipt.workContract.semanticAdjudication.cognitionBudgetChargeTokens = 1; },
+		];
+		for (const [index, mutate] of mutations.entries()) {
+			const artifact = structuredClone(source); mutate(artifact.piOutcome.receipts[0]);
+			const path = join(root, `evidence-${index}.json`); writeFileSync(path, `${JSON.stringify(artifact)}\n`, "utf8");
+			const result = spawnSync(process.execPath, [resolve("scripts/verify-live-capability-evidence.mjs"), path], { encoding: "utf8" });
+			assert.notEqual(result.status, 0);
+			const report = JSON.parse(result.stdout);
+			assert.equal(report.failures.some((failure) => failure.includes("production Work Contract composition")), true);
+		}
+	} finally { rmSync(root, { recursive: true, force: true }); }
+});
+
 test("live evidence verifier independently rejects every generated metric and budget mutation", () => {
-	const source = JSON.parse(readFileSync(resolve("evals/baselines/capability-ranking-live.json"), "utf8"));
+	const source = withValidProductionWorkContractEvidence(JSON.parse(readFileSync(resolve("evals/baselines/capability-ranking-live.json"), "utf8")));
 	const root = mkdtempSync(join(tmpdir(), "beemax-live-pi-metrics-mutation-"));
 	try {
 		for (const section of ["metrics", "budget"]) for (const key of Object.keys(source.piOutcome[section])) {
@@ -180,3 +281,28 @@ test("live evidence verifier independently rejects every generated metric and bu
 		}
 	} finally { rmSync(root, { recursive: true, force: true }); }
 });
+
+function withValidProductionWorkContractEvidence(artifact) {
+	const identity = `${artifact.models[0]}/openai-completions`;
+	for (const receipt of artifact.piOutcome.receipts) receipt.workContract = productionWorkContractEvidence(identity);
+	artifact.piOutcome.workContractFailures = [];
+	return artifact;
+}
+
+function productionWorkContractEvidence(identity) {
+	const provider = identity.split("/")[0];
+	const cognitionUsage = { inputTokens: 2, outputTokens: 2, cacheReadTokens: 0, cacheWriteTokens: 0, costUsd: 0, modelIdentities: [identity, identity] };
+	return {
+		source: "model", semanticAdjudicationValid: true, cognitionBudgetChargeTokens: 12, cognitionUsage,
+		semanticAdjudication: { schemaVersion: "beemax.work-contract-adjudication.v1", inventorySchemaVersion: "beemax.semantic-inventory.v1", primaryModelIdentity: identity, reviewerModelIdentity: identity, reviewMode: "same_model_independent_samples", independentSamples: true, cognitionUsage, cognitionBudgetChargeTokens: 12 },
+		credentialResolverReads: 2,
+		credentialResolutions: [{ provider, modelIdentity: identity, source: "profile_auth_storage" }, { provider, modelIdentity: identity, source: "profile_auth_storage" }],
+		providerTurns: [
+			{ modelIdentity: identity, lane: "work_contract", providerResponseIdentitySha256: `sha256:${"a".repeat(64)}`, inputTokens: 1, outputTokens: 1, cacheReadTokens: 0, cacheWriteTokens: 0, costUsd: 0 },
+			{ modelIdentity: identity, lane: "semantic_inventory", providerResponseIdentitySha256: `sha256:${"b".repeat(64)}`, inputTokens: 1, outputTokens: 1, cacheReadTokens: 0, cacheWriteTokens: 0, costUsd: 0 },
+		],
+	};
+}
+
+function testCredentialResolution(model) { return { provider: model.provider, modelIdentity: `${model.provider}/${model.id}/${model.api}`, source: "profile_auth_storage" }; }
+function testProviderTurn(model, lane, digestCharacter, inputTokens, outputTokens) { return { modelIdentity: `${model.provider}/${model.id}/${model.api}`, lane, providerResponseIdentitySha256: `sha256:${digestCharacter.repeat(64)}`, inputTokens, outputTokens, cacheReadTokens: 0, cacheWriteTokens: 0, costUsd: 0 }; }

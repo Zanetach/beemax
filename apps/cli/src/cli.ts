@@ -34,7 +34,7 @@ import { activeProfile, resolveProfileLocation } from "./profile-home.ts";
 import { installMacLaunchAgent, installSystemdService, runServiceAction, type ServiceAction } from "./service-manager.ts";
 import { resolveServiceLogCommand, serviceDisplayName } from "./service-platform.ts";
 import { runSetup, type SetupOptions } from "./setup.ts";
-import { configuredAuxiliaryTextModels, configuredCapabilityRanker, configuredMediaUnderstanding, configuredRuntimeModels, ProfileModelCatalog, renderModelProviderChoices, resolveProviderSelection } from "./model-catalog.ts";
+import { configuredAuxiliaryTextModels, configuredCapabilityRanker, configuredMediaUnderstanding, configuredRuntimeModels, ProfileModelCatalog, renderModelProviderChoices, resolveProfileCognitionModels, resolveProviderSelection } from "./model-catalog.ts";
 import { executionPortFor, executionSafeTools } from "./execution-composition.ts";
 import { createProfileRuntime } from "./runtime-composition.ts";
 import { createProfileControlHandler, renderTaskPlanDetails, renderTaskPlanNotFound, renderTaskPlanRetryResult, renderTaskPlans, renderTaskRecoveryStatus, renderTaskSchedulerStatus, renderTasks, type TaskRecoveryStatus } from "./profile-control.ts";
@@ -1232,6 +1232,8 @@ async function runChat(config: ReturnType<typeof loadConfig>, requestedMode: { f
 		...requestedMode, isInputTty: process.stdin.isTTY === true, isOutputTty: process.stdout.isTTY === true, term: process.env.TERM,
 	});
 	const apiKey = config.model.apiKey ?? "";
+	const profileAuth = AuthStorage.create(join(config.paths.agentDir, "auth.json"));
+	const cognitionModels = await resolveProfileCognitionModels(config, (provider) => profileAuth.getApiKey(provider, { includeFallback: false }));
 	const capabilityProviders = createProfileCapabilityProviderBundle({ profileId: config.profile, agentDir: config.paths.agentDir, installation: config.capabilityProviders.installation });
 	const modelCatalog = new ProfileModelCatalog(config);
 	// Full mode renders approval lifecycle from semantic events in its own panel;
@@ -1294,7 +1296,7 @@ async function runChat(config: ReturnType<typeof loadConfig>, requestedMode: { f
 		agentDir: config.paths.agentDir, ledger: persistence.taskLedger, recoveryQueue: persistence.recoveryQueue, maxConcurrent: config.subagents.maxConcurrent,
 		maxSubagents: config.subagents.maxChildrenPerOwner, taskTimeoutMs: config.subagents.timeoutMs, subagentsEnabled: config.subagents.enabled,
 		backgroundRecoveryEnabled: requestedMode.once === undefined,
-		executeTask: (task, signal, context, executionTrace, effectAuthority) => executePlannedTask(createSubagentAgent, task, task.executionScope as SessionSource, signal, config.subagents.timeoutMs, context, executionTrace, effectAuthority),
+		executeTask: (task, signal, context, executionTrace, effectAuthority) => executePlannedTask(createSubagentAgent, task, task.executionScope as SessionSource, signal, config.subagents.timeoutMs, context, executionTrace, effectAuthority, persistence.taskLedger),
 		verifyTaskCandidate: (task, result, signal, context, executionTrace) => createTaskVerifier(createSubagentAgent, config.subagents.timeoutMs, executionTrace, verificationAgentToolsForTask(readOnlyMcpTools, task, context?.successfulToolNames))(task, result, signal, context),
 		deliverObjective: (input, signal, executionTrace) => executeObjectiveDelivery(createSubagentAgent, input, signal, config.subagents.timeoutMs, executionTrace),
 		publishVerifiedOutcome: guardVerifiedObjectiveMemoryPublisher(autonomyRollout, createVerifiedObjectiveMemoryPublisher(persistence.organizationMemory)),
@@ -1302,7 +1304,7 @@ async function runChat(config: ReturnType<typeof loadConfig>, requestedMode: { f
 			if (resolution.accepted) { objectiveCompletionDelivery?.wake(); return; }
 			process.stdout.write(`\nTask failed independent Verification: ${resolution.feedback}\n`);
 		},
-		executeSubagent: (task, signal, executionTrace) => executeSubagentTask(createSubagentAgent, task, signal, undefined, undefined, undefined, executionTrace),
+		executeSubagent: (task, signal, executionTrace) => executeSubagentTask(createSubagentAgent, task, signal, undefined, undefined, undefined, executionTrace, undefined, undefined, persistence.taskLedger),
 		onTaskPlanError: ({ planId, error }) => process.stderr.write(`Background Task Plan ${planId} failed: ${redactCredentialMaterial(error instanceof Error ? error.message : String(error))}\n`),
 		onRecoveryStatus: (_status, cycle) => {
 			if (!cycle) return;
@@ -1356,7 +1358,7 @@ async function runChat(config: ReturnType<typeof loadConfig>, requestedMode: { f
 		sessionTools: (sessionSource) => [
 			...(subagents ? [
 				...createSubagentTools(subagents, sessionSource, { objectiveTaskId: () => planningBudgets.currentObjectiveTaskId(conversationKey(sessionSource)) }),
-				...createTaskOrchestrationTools(memory, sessionSource, (task, signal, context) => taskScheduler.run(task.ownerKey, () => executePlannedTask(createSubagentAgent, task, sessionSource, signal, config.subagents.timeoutMs, context, executionTrace, toolEffects), signal), { maxConcurrent: config.subagents.maxConcurrent, planRuntime: taskPlanRuntime, verify: verifyTask, planningDecision: () => planningBudgets.current(conversationKey(sessionSource)), objectiveTaskId: () => planningBudgets.currentObjectiveTaskId(conversationKey(sessionSource)), executionTrace }),
+				...createTaskOrchestrationTools(memory, sessionSource, (task, signal, context) => taskScheduler.run(task.ownerKey, () => executePlannedTask(createSubagentAgent, task, sessionSource, signal, config.subagents.timeoutMs, context, executionTrace, toolEffects, persistence.taskLedger), signal), { maxConcurrent: config.subagents.maxConcurrent, planRuntime: taskPlanRuntime, verify: verifyTask, planningDecision: () => planningBudgets.current(conversationKey(sessionSource)), objectiveTaskId: () => planningBudgets.currentObjectiveTaskId(conversationKey(sessionSource)), executionTrace }),
 			] : []),
 			...createTaskLedgerTools(memory, sessionSource),
 			...(knowledgeProvider ? createKnowledgeTools(knowledgeProvider, sessionSource, {
@@ -1371,7 +1373,20 @@ async function runChat(config: ReturnType<typeof loadConfig>, requestedMode: { f
 		policy: { maxSessions: config.agent.maxSessions, sessionIdleMs: config.agent.sessionIdleMs },
 			runtime: {
 			createAgent,
-			...(auxiliaryTextModels.length ? { workContractBuilder: new PiWorkContractBuilder({ models: auxiliaryTextModels }) } : {}),
+			interruptObjectiveWork: (sessionSource, cancellation) => {
+				const ownerKeys = responsibilityOwnerKeys(sessionSource);
+				let pendingExecutions = 0;
+				for (const planId of cancellation.planIds) {
+					taskRecovery.cancel(ownerKeys, planId);
+				}
+				let interruptedEffects = 0;
+				for (const taskId of cancellation.taskIds) interruptedEffects += toolEffects.interruptTask(taskId);
+				const ownerKey = cancellation.ownerKey;
+				pendingExecutions += memory.objectiveInterruptionConvergence(ownerKey, cancellation.objectiveId).pendingExecutions;
+				pendingExecutions += toolEffects.unresolvedTaskEffects?.({ ownerKey, taskIds: cancellation.taskIds }) ?? 0;
+				return { interruptedEffects, pendingExecutions };
+			},
+			workContractBuilder: new PiWorkContractBuilder({ models: cognitionModels }),
 			fallbackModels: configuredRuntimeModels(config),
 			turnIdleSettleMs: config.agent.turnIdleSettleMs,
 			mediaUnderstanding: configuredMediaUnderstanding(config, createLocalMediaUnderstandingAdapters(config.mediaUnderstanding.localOcr)),

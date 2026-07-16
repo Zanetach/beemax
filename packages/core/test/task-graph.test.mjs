@@ -15,6 +15,7 @@ function memoryLedger() {
 		record(task) { tasks.set(task.id, { ...task }); },
 		transition(id, change) { tasks.set(id, { ...tasks.get(id), ...change }); return true; },
 		recordRun(run) { runs.set(run.id, { ...run }); }, transitionRun(id, change) { runs.set(id, { ...runs.get(id), ...change }); return true; },
+		settleTaskRunAndTask(settlement) { const task = tasks.get(settlement.taskId); const run = runs.get(settlement.taskRunId); if (!task || task.ownerKey !== settlement.ownerKey || task.status !== "running" || !run || run.taskId !== settlement.taskId || run.status !== "running") return false; tasks.set(task.id, { ...task, ...settlement.task }); runs.set(run.id, { ...run, ...settlement.run }); return true; },
 		renewTaskRunLease(id, leaseExpiresAt) { const run = runs.get(id); if (!run || run.status !== "running") return false; run.leaseExpiresAt = leaseExpiresAt; return true; },
 		recordPlan(records, edges, plan) { for (const task of records) this.record(task); dependencies.push(...edges); if (plan) plans.set(plan.id, { ...plan }); },
 		transitionPlan(id, change) { plans.set(id, { ...plans.get(id), ...change }); return true; },
@@ -210,6 +211,18 @@ test("TaskGraph fails execution when its Task Run lease can no longer be renewed
 	}), { leaseMs: 1_000, leaseHeartbeatMs: 5 });
 	assert.deepEqual(result, { succeeded: 0, failed: 1, cancelled: 0, blocked: [] });
 	assert.match(ledger.tasks.get("task").error, /Lease could not be renewed/);
+});
+
+for (const atomicPort of ["rejects", "is unavailable"]) test(`TaskGraph fails closed when atomic success settlement ${atomicPort}`, async () => {
+	const ledger = memoryLedger();
+	if (atomicPort === "rejects") ledger.settleTaskRunAndTask = () => false;
+	else delete ledger.settleTaskRunAndTask;
+	const graph = new TaskGraph(ledger);
+	graph.createPlan({ id: `atomic-${atomicPort}`, ownerKey: "cli:local:local", tasks: [{ id: "task", title: "Task" }] });
+	const result = await graph.run(["cli:local:local"], `atomic-${atomicPort}`, async () => ({ output: "candidate" }));
+	assert.deepEqual(result, { succeeded: 0, failed: 1, cancelled: 0, blocked: [] });
+	assert.equal(ledger.tasks.get("task").status, "failed");
+	assert.equal([...ledger.runs.values()].some((run) => run.status === "succeeded"), false);
 });
 
 test("TaskGraph only succeeds when an independent verifier accepts the result", async () => {

@@ -153,3 +153,125 @@ test("Provider acquisition bounds authority and installer calls that ignore canc
 	assert.equal(installResult.blocker?.code, "installation_outcome_unknown");
 	assert.match(installResult.blocker?.reason ?? "", /timed out/i);
 });
+
+test("all Provider installation waiters observe an interrupted shared outcome without retrying", async () => {
+	let installs = 0;
+	let installed = false;
+	let installStarted;
+	const started = new Promise((resolve) => { installStarted = resolve; });
+	let waiterAuthorized;
+	const secondAuthorization = new Promise((resolve) => { waiterAuthorized = resolve; });
+	let authorizations = 0;
+	const provider = {
+		id: "shared-interrupted", kind: "mcp", capabilities: ["research"], installed: () => installed,
+		install: { source: "approved-catalog", package: "shared-interrupted", version: "1.0.0" },
+		health: async () => installed ? { status: "ready", evidenceRef: "health:shared-interrupted" } : { status: "unavailable", reason: "not installed" },
+	};
+	const runtime = new CapabilityProviderRuntime({
+		installAuthority: { authorize: async () => {
+			authorizations++;
+			if (authorizations === 2) waiterAuthorized();
+			return { allowed: true, evidenceRef: "approval:shared-interrupted" };
+		} },
+		installer: { install: async (_provider, signal) => {
+			installs++;
+			if (installs > 1) {
+				installed = true;
+				return { receiptId: "duplicate-install", installedAt: Date.now(), evidenceRef: "duplicate-install" };
+			}
+			installStarted();
+			await new Promise((_resolve, reject) => signal.addEventListener("abort", () => reject(signal.reason), { once: true }));
+			installed = true;
+			return { receiptId: "unexpected", installedAt: Date.now(), evidenceRef: "unexpected" };
+		} },
+	});
+	const creatorAbort = new AbortController();
+	const creator = runtime.acquire({ capability: "research", providers: [provider], signal: creatorAbort.signal });
+	await started;
+	const waiter = runtime.acquire({ capability: "research", providers: [provider] });
+	await secondAuthorization;
+	await new Promise((resolve) => setImmediate(resolve));
+	creatorAbort.abort(new Error("creator cancelled"));
+	const [creatorResult, waiterResult] = await Promise.all([creator, waiter]);
+	assert.equal(creatorResult.blocker?.code, "installation_outcome_unknown");
+	assert.equal(waiterResult.blocker?.code, "installation_outcome_unknown");
+	assert.equal(installs, 1, "a waiter must not retry an installation whose outcome requires reconciliation");
+});
+
+test("a later Provider acquisition reconciles stale installed=false with observed ready evidence", async () => {
+	let installs = 0;
+	let healthMode = "absent";
+	let firstStarted;
+	const started = new Promise((resolve) => { firstStarted = resolve; });
+	const provider = {
+		id: "reconciled-present", kind: "mcp", capabilities: ["research"], installed: false,
+		install: { source: "approved-catalog", package: "reconciled-present", version: "1.0.0" },
+		health: async () => healthMode === "ready"
+			? { status: "ready", installationState: "present", evidenceRef: "health:reconciled-present" }
+			: { status: "unavailable", reason: "not installed" },
+	};
+	const runtime = new CapabilityProviderRuntime({
+		installAuthority: { authorize: async () => ({ allowed: true, evidenceRef: "approval:reconciled-present" }) },
+		installer: { install: async (_provider, signal) => {
+			installs++;
+			if (installs > 1) return { receiptId: "duplicate", installedAt: Date.now(), evidenceRef: "duplicate" };
+			firstStarted();
+			await new Promise((_resolve, reject) => signal.addEventListener("abort", () => reject(signal.reason), { once: true }));
+			return { receiptId: "unknown", installedAt: Date.now(), evidenceRef: "unknown" };
+		} },
+	});
+	const controller = new AbortController();
+	const interrupted = runtime.acquire({ capability: "research", providers: [provider], signal: controller.signal });
+	await started;
+	controller.abort(new Error("interrupted after host mutation"));
+	assert.equal((await interrupted).blocker?.code, "installation_outcome_unknown");
+	healthMode = "ready";
+	const reconciled = await runtime.acquire({ capability: "research", providers: [provider] });
+	assert.equal(reconciled.status, "ready");
+	assert.equal(reconciled.selected?.health.evidenceRef, "health:reconciled-present");
+	assert.equal(installs, 1);
+});
+
+test("an outcome-unknown Provider remains blocked until absence has explicit health evidence", async () => {
+	let installs = 0;
+	let healthMode = "unknown";
+	let firstStarted;
+	const started = new Promise((resolve) => { firstStarted = resolve; });
+	const provider = {
+		id: "reconciled-absent", kind: "tool", capabilities: ["research"], installed: false,
+		install: { source: "approved-catalog", package: "reconciled-absent", version: "1.0.0" },
+		health: async () => healthMode === "ready"
+			? { status: "ready", installationState: "present", evidenceRef: "health:ready:reconciled-absent" }
+			: healthMode === "absent-evidence"
+				? { status: "unavailable", installationState: "absent", evidenceRef: "health:absent:reconciled-absent", reason: "installation is observably absent" }
+				: { status: "unavailable", reason: "not installed, but no observed absence evidence" },
+	};
+	const runtime = new CapabilityProviderRuntime({
+		installAuthority: { authorize: async () => ({ allowed: true, evidenceRef: "approval:reconciled-absent" }) },
+		installer: { install: async (_provider, signal) => {
+			installs++;
+			if (installs === 1) {
+				firstStarted();
+				await new Promise((_resolve, reject) => signal.addEventListener("abort", () => reject(signal.reason), { once: true }));
+			}
+			healthMode = "ready";
+			return { receiptId: `install:${installs}`, installedAt: Date.now(), evidenceRef: `install:${installs}` };
+		} },
+	});
+	const controller = new AbortController();
+	const interrupted = runtime.acquire({ capability: "research", providers: [provider], signal: controller.signal });
+	await started;
+	controller.abort(new Error("interrupted after possible host mutation"));
+	assert.equal((await interrupted).blocker?.code, "installation_outcome_unknown");
+	const stillUnknown = await runtime.acquire({ capability: "research", providers: [provider] });
+	assert.equal(stillUnknown.blocker?.code, "installation_outcome_unknown");
+	assert.equal(installs, 1);
+	healthMode = "absent-evidence";
+	const absent = await runtime.acquire({ capability: "research", providers: [provider] });
+	assert.equal(absent.blocker?.code, "provider_unavailable");
+	assert.match(absent.blocker?.reason ?? "", /observably absent/i);
+	assert.equal(installs, 1, "the reconciliation call must not reinstall");
+	const retried = await runtime.acquire({ capability: "research", providers: [provider] });
+	assert.equal(retried.status, "ready");
+	assert.equal(installs, 2, "a separate authorized acquisition may retry after explicit absence evidence");
+});

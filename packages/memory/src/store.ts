@@ -15,8 +15,8 @@ import Database from "better-sqlite3";
 import type { Database as DatabaseType } from "better-sqlite3";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
-import { createHash } from "node:crypto";
-import { AUTONOMY_LEVELS, MAX_OBJECTIVE_REVISIONS, containsCredentialMaterial, createAccessScopeRef, createEnterprisePolicyPublisher, createSituation, decodeStoredWorkContract, interactionCompletionDeliveryKey, multilingualLexicalTerms, objectiveCompletionId, parseTaskCheckpoint, redactCredentialMaterial, renderTaskCheckpoint, unavailableTaskCriterionVerifications, workContractFromLegacyObjective, type AutonomyLevel, type AutonomyRolloutEvidence, type AutonomyRolloutRecord, type AutonomyRolloutStateStore, type CompensationProof, type ConversationMemoryPort, type DeliveryReceipt, type DeliveryTarget, type DurableInitiativeTrigger, type DurableInitiativeTriggerInput, type EmergencyStopRecord, type EnterprisePolicyPublisher, type InitiativeObservation, type InitiativeObservationInput, type InitiativeObservationStore, type InitiativeScope, type InitiativeTriggerInbox, type ObjectiveCompletion, type ObjectiveCompletionOutbox, type OrganizationKnowledgeHit, type OrganizationKnowledgeRecall, type ReversibleActionControlPort, type Situation, type TaskCandidateVerificationResolution, type TaskCheckpoint, type TaskDependency, type TaskLedger, type TaskPlanCompletionNotice, type TaskPlanNoticeOutbox, type TaskPlanQuery, type TaskPlanRecord, type TaskPlanTransition, type TaskQuery, type TaskRecord as RuntimeTaskRecord, type TaskRecoveryResult, type TaskRunEffectStateReader, type TaskRunRecord, type TaskRunTransition, type TaskTransition } from "@beemax/core";
+import { createHash, randomUUID } from "node:crypto";
+import { AUTONOMY_LEVELS, MAX_OBJECTIVE_REVISIONS, containsCredentialMaterial, createAccessScopeRef, createEnterprisePolicyPublisher, createSituation, decodeStoredWorkContract, interactionCompletionDeliveryKey, multilingualLexicalTerms, objectiveCompletionId, parseTaskCheckpoint, redactCredentialMaterial, renderTaskCheckpoint, unavailableTaskCriterionVerifications, workContractFromLegacyObjective, type AutonomyLevel, type AutonomyRolloutEvidence, type AutonomyRolloutRecord, type AutonomyRolloutStateStore, type CompensationProof, type ConversationMemoryPort, type DeliveryReceipt, type DeliveryTarget, type DirectObjectiveCompletionSettlement, type DurableInitiativeTrigger, type DurableInitiativeTriggerInput, type EmergencyStopRecord, type EnterprisePolicyPublisher, type InitiativeObservation, type InitiativeObservationInput, type InitiativeObservationStore, type InitiativeScope, type InitiativeTriggerInbox, type ObjectiveCancellationResult, type ObjectiveCompletion, type ObjectiveCompletionOutbox, type ObjectiveInterruptionRecord, type OrganizationKnowledgeHit, type OrganizationKnowledgeRecall, type ReversibleActionControlPort, type Situation, type TaskCandidateVerificationResolution, type TaskCheckpoint, type TaskDependency, type TaskLedger, type TaskPlanCompletionNotice, type TaskPlanNoticeOutbox, type TaskPlanQuery, type TaskPlanRecord, type TaskPlanTransition, type TaskQuery, type TaskRecord as RuntimeTaskRecord, type TaskRecoveryResult, type TaskRunAndTaskSuccessSettlement, type TaskRunEffectStateReader, type TaskRunRecord, type TaskRunTransition, type TaskTransition } from "@beemax/core";
 
 export const MEMORY_CLAIM_KINDS = ["preference", "fact", "decision", "goal", "project", "relationship", "workflow", "exception"] as const;
 const EPISODE_STATUSES = new Set<OrganizationMemoryEpisodeStatus>(["candidate", "verified", "conflicted", "superseded"]);
@@ -379,6 +379,7 @@ export class MemoryStore {
 			CREATE INDEX IF NOT EXISTS idx_task_plan_completion_notices_due ON task_plan_completion_notices(status, next_attempt_at);
 			CREATE TABLE IF NOT EXISTS objective_completion_outbox (
 				id TEXT PRIMARY KEY, objective_id TEXT NOT NULL UNIQUE REFERENCES tasks(id) ON DELETE CASCADE,
+				task_run_id TEXT NOT NULL REFERENCES task_runs(id),
 				owner_key TEXT NOT NULL, plan_id TEXT,
 				platform TEXT NOT NULL, channel_instance_id TEXT, chat_id TEXT NOT NULL, chat_type TEXT, user_id TEXT, thread_id TEXT, reply_to_message_id TEXT,
 				title TEXT NOT NULL, result TEXT NOT NULL, evidence TEXT,
@@ -439,6 +440,7 @@ export class MemoryStore {
 				status TEXT NOT NULL CHECK (status IN ('running', 'succeeded', 'failed', 'cancelled')),
 				started_at INTEGER NOT NULL,
 				lease_expires_at INTEGER,
+				cancellation_requested_at INTEGER,
 				finished_at INTEGER,
 				output TEXT,
 				error TEXT
@@ -776,6 +778,7 @@ export class MemoryStore {
 		this.addColumnIfMissing("tasks", "execution_scope", "TEXT");
 		this.addColumnIfMissing("objective_completion_outbox", "reply_to_message_id", "TEXT");
 		this.addColumnIfMissing("objective_completion_outbox", "delivery_idempotency_key", "TEXT");
+		this.addColumnIfMissing("objective_completion_outbox", "task_run_id", "TEXT REFERENCES task_runs(id)");
 		this.db.prepare("UPDATE objective_completion_outbox SET delivery_idempotency_key = id WHERE delivery_idempotency_key IS NULL OR delivery_idempotency_key = ''").run();
 		this.addColumnIfMissing("initiative_triggers", "execution_scope", "TEXT");
 		this.addColumnIfMissing("initiative_triggers", "channel_instance_id", "TEXT");
@@ -800,6 +803,9 @@ export class MemoryStore {
 		this.addColumnIfMissing("tasks", "candidate_result", "TEXT");
 		this.addColumnIfMissing("tasks", "corrective_attempts", "INTEGER NOT NULL DEFAULT 0");
 		this.addColumnIfMissing("tasks", "updated_at", "INTEGER NOT NULL DEFAULT 0");
+		this.addColumnIfMissing("tasks", "interruption_holder_id", "TEXT");
+		this.addColumnIfMissing("tasks", "interruption_lease_expires_at", "INTEGER");
+		this.addColumnIfMissing("tasks", "interruption_claim_token", "TEXT");
 		this.addColumnIfMissing("tasks", "checkpoint", "TEXT");
 		this.addColumnIfMissing("tasks", "checkpoint_at", "INTEGER");
 		this.addColumnIfMissing("tasks", "effect_receipts", "TEXT");
@@ -807,6 +813,10 @@ export class MemoryStore {
 		this.addColumnIfMissing("tasks", "route_index", "INTEGER NOT NULL DEFAULT 0");
 		this.addColumnIfMissing("task_plans", "paused_at", "INTEGER");
 		this.addColumnIfMissing("task_runs", "lease_expires_at", "INTEGER");
+		this.addColumnIfMissing("task_runs", "cancellation_requested_at", "INTEGER");
+		// Legacy unbounded holders become finite from their original start time. A live
+		// executor will renew them; an abandoned row becomes eligible for reconciliation.
+		this.db.prepare("UPDATE task_runs SET lease_expires_at = started_at + 30000 WHERE status = 'running' AND lease_expires_at IS NULL").run();
 		this.addColumnIfMissing("task_plan_completion_notices", "claim_token", "TEXT");
 		this.addColumnIfMissing("task_plan_completion_notices", "channel_instance_id", "TEXT");
 		this.addColumnIfMissing("task_plan_completion_notices", "chat_type", "TEXT");
@@ -1770,7 +1780,8 @@ export class MemoryStore {
 	reviseObjective(ownerKey: string, taskId: string, revision: { workContract: NonNullable<RuntimeTaskRecord["workContract"]>; situation: NonNullable<RuntimeTaskRecord["situation"]> }, now = Date.now()): ReturnType<TaskLedger["reviseObjective"]> {
 		const encodedCorrection = safeStoredWorkContract(revision.workContract);
 		const objectiveSource = revision.workContract.objective.source;
-		if (!encodedCorrection || revision.workContract.action !== "correct" || objectiveSource.kind === "active_objective" && objectiveSource.id !== taskId) return undefined;
+		const targetObjectiveId = revision.workContract.targetObjective?.id ?? (objectiveSource.kind === "active_objective" ? objectiveSource.id : undefined);
+		if (!encodedCorrection || revision.workContract.action !== "correct" || targetObjectiveId !== taskId) return undefined;
 		let encodedSituation: string;
 		try { encodedSituation = JSON.stringify(createSituation(revision.situation)); }
 		catch { return undefined; }
@@ -1840,8 +1851,144 @@ export class MemoryStore {
 			WHERE id = ? AND owner_key = ? AND kind = 'objective' AND status = 'failed'`).run(now, now, id, ownerKey).changes === 1;
 	}
 
+	cancelObjective(ownerKey: string, id: string, now = Date.now()): ObjectiveCancellationResult | undefined {
+		return this.db.transaction(() => this.cancelObjectiveInTransaction(ownerKey, id, now))();
+	}
+
 	cancelObjectives(ownerKey: string, now = Date.now()): number {
-		return this.db.prepare("UPDATE tasks SET status = 'cancelled', finished_at = ?, error = 'Cancelled by user', updated_at = ? WHERE owner_key = ? AND kind = 'objective' AND status IN ('pending', 'running')").run(now, now, ownerKey).changes;
+		return this.db.transaction(() => {
+			const ids = this.db.prepare("SELECT id FROM tasks WHERE owner_key = ? AND kind = 'objective' AND status IN ('pending', 'running')").all(ownerKey).map((row) => (row as { id: string }).id);
+			return ids.reduce((count, id) => count + Number(this.cancelObjectiveInTransaction(ownerKey, id, now) !== undefined), 0);
+		})();
+	}
+
+	private cancelObjectiveInTransaction(ownerKey: string, id: string, now: number): ObjectiveCancellationResult | undefined {
+		const objective = this.db.prepare("SELECT id FROM tasks WHERE id = ? AND owner_key = ? AND kind = 'objective' AND status IN ('pending', 'running')").get(id, ownerKey);
+		if (!objective) return undefined;
+		const descendants = this.db.prepare(`WITH RECURSIVE objective_tree(id, plan_id, status) AS (
+			SELECT id, plan_id, status FROM tasks WHERE parent_id = ? AND owner_key = ?
+			UNION
+			SELECT child.id, child.plan_id, child.status FROM tasks child JOIN objective_tree parent ON child.parent_id = parent.id WHERE child.owner_key = ?
+		) SELECT id, plan_id, status FROM objective_tree`).all(id, ownerKey, ownerKey) as Array<{ id: string; plan_id: string | null; status: RuntimeTaskRecord["status"] }>;
+		const activeDescendants = descendants.filter((task) => task.status === "pending" || task.status === "running");
+		const taskIds = [...new Set([id, ...descendants.map((child) => child.id)])];
+		const linkedPlanIds = [...new Set(activeDescendants.flatMap((child) => child.plan_id ? [child.plan_id] : []))]
+			.filter((planId) => Boolean(this.db.prepare("SELECT 1 FROM task_plans WHERE id = ? AND owner_key = ?").get(planId, ownerKey)));
+		const planIds = linkedPlanIds.filter((planId) => !this.db.prepare(`WITH RECURSIVE objective_tree(id) AS (
+			SELECT id FROM tasks WHERE id = ? AND owner_key = ? AND kind = 'objective'
+			UNION
+			SELECT child.id FROM tasks child JOIN objective_tree parent ON child.parent_id = parent.id WHERE child.owner_key = ?
+		) SELECT 1 FROM tasks WHERE plan_id = ? AND owner_key = ? AND status IN ('pending', 'running')
+			AND id NOT IN (SELECT id FROM objective_tree) LIMIT 1`).get(id, ownerKey, ownerKey, planId, ownerKey));
+		this.db.prepare(`WITH RECURSIVE objective_tree(id) AS (
+			SELECT id FROM tasks WHERE id = ? AND owner_key = ? AND kind = 'objective'
+			UNION
+			SELECT child.id FROM tasks child JOIN objective_tree parent ON child.parent_id = parent.id WHERE child.owner_key = ?
+		) UPDATE task_runs SET cancellation_requested_at = ?, error = 'Objective cancellation requested'
+			WHERE task_id IN (SELECT id FROM objective_tree) AND status = 'running'`).run(id, ownerKey, ownerKey, now);
+		this.db.prepare(`WITH RECURSIVE objective_tree(id) AS (
+			SELECT id FROM tasks WHERE id = ? AND owner_key = ? AND kind = 'objective'
+			UNION
+			SELECT child.id FROM tasks child JOIN objective_tree parent ON child.parent_id = parent.id WHERE child.owner_key = ?
+		) UPDATE tasks SET status = 'cancelled', finished_at = ?, error = 'Objective cancelled by user', updated_at = ?
+			WHERE id IN (SELECT id FROM objective_tree) AND owner_key = ? AND status IN ('pending', 'running')`).run(id, ownerKey, ownerKey, now, now, ownerKey);
+		this.db.prepare("UPDATE tasks SET error = 'Cancelled by user; runtime interruption pending', interruption_holder_id = NULL, interruption_lease_expires_at = NULL, interruption_claim_token = NULL, updated_at = ? WHERE id = ? AND owner_key = ? AND kind = 'objective' AND status = 'cancelled'").run(now, id, ownerKey);
+		this.db.prepare(`UPDATE objective_completion_outbox SET status = 'blocked', claim_token = NULL, blocked_at = ?, last_error = 'Objective cancelled by user'
+			WHERE objective_id = ? AND owner_key = ? AND status IN ('queued', 'delivering')`).run(now, id, ownerKey);
+		this.db.prepare(`WITH RECURSIVE objective_tree(id) AS (
+			SELECT id FROM tasks WHERE id = ? AND owner_key = ? AND kind = 'objective'
+			UNION
+			SELECT child.id FROM tasks child JOIN objective_tree parent ON child.parent_id = parent.id WHERE child.owner_key = ?
+		) DELETE FROM task_verification_claims WHERE owner_key = ? AND task_id IN (SELECT id FROM objective_tree)`).run(id, ownerKey, ownerKey, ownerKey);
+		for (const planId of planIds) this.db.prepare("DELETE FROM task_plan_execution_claims WHERE plan_id = ? AND owner_key = ?").run(planId, ownerKey);
+		for (const planId of linkedPlanIds) this.syncTaskPlanFromTasks(planId, now);
+		return { ownerKey, objectiveId: id, taskIds, planIds };
+	}
+
+	pendingObjectiveInterruptions(ownerKeys: string[], limit = 10): ObjectiveInterruptionRecord[] {
+		if (!ownerKeys.length) return [];
+		const objectives = this.db.prepare(`SELECT id, owner_key FROM tasks WHERE owner_key IN (${ownerKeys.map(() => "?").join(", ")})
+			AND kind = 'objective' AND status = 'cancelled' AND error LIKE 'Cancelled by user; runtime interruption pending%' ORDER BY updated_at LIMIT ?`)
+			.all(...ownerKeys, limitOf(limit, 10)) as Array<{ id: string; owner_key: string }>;
+		return objectives.map(({ id, owner_key: ownerKey }) => {
+			const descendants = this.db.prepare(`WITH RECURSIVE objective_tree(id, plan_id) AS (
+				SELECT id, plan_id FROM tasks WHERE parent_id = ? AND owner_key = ?
+				UNION
+				SELECT child.id, child.plan_id FROM tasks child JOIN objective_tree parent ON child.parent_id = parent.id WHERE child.owner_key = ?
+			) SELECT id, plan_id FROM objective_tree`).all(id, ownerKey, ownerKey) as Array<{ id: string; plan_id: string | null }>;
+			const taskIds = [...new Set([id, ...descendants.map((task) => task.id)])];
+			const linkedPlanIds = [...new Set(descendants.flatMap((task) => task.plan_id ? [task.plan_id] : []))];
+			const planIds = linkedPlanIds.filter((planId) => !this.db.prepare(`WITH RECURSIVE objective_tree(id) AS (
+				SELECT id FROM tasks WHERE id = ? AND owner_key = ? AND kind = 'objective'
+				UNION
+				SELECT child.id FROM tasks child JOIN objective_tree parent ON child.parent_id = parent.id WHERE child.owner_key = ?
+			) SELECT 1 FROM tasks WHERE plan_id = ? AND owner_key = ? AND status IN ('pending', 'running') AND id NOT IN (SELECT id FROM objective_tree) LIMIT 1`).get(id, ownerKey, ownerKey, planId, ownerKey));
+			return { ownerKey, objectiveId: id, taskIds, planIds, retry: true };
+		});
+	}
+
+	claimObjectiveInterruptions(ownerKeys: string[], holderId: string, leaseExpiresAt: number, now = Date.now(), limit = 10): Array<ObjectiveInterruptionRecord & { claimToken: string; claimLeaseExpiresAt: number }> {
+		if (!ownerKeys.length || !holderId.trim() || !Number.isFinite(leaseExpiresAt) || leaseExpiresAt <= now) return [];
+		return this.db.transaction(() => {
+			const ids = this.db.prepare(`SELECT id, owner_key FROM tasks WHERE owner_key IN (${ownerKeys.map(() => "?").join(",")})
+				AND kind = 'objective' AND status = 'cancelled' AND error LIKE 'Cancelled by user; runtime interruption pending%'
+				AND (interruption_holder_id IS NULL OR interruption_holder_id = ? OR interruption_lease_expires_at <= ?)
+				ORDER BY updated_at LIMIT ?`).all(...ownerKeys, holderId, now, limitOf(limit, 10)) as Array<{ id: string; owner_key: string }>;
+			const claimed: Array<ObjectiveInterruptionRecord & { claimToken: string; claimLeaseExpiresAt: number }> = [];
+			for (const candidate of ids) {
+				const claimToken = randomUUID();
+				const changed = this.db.prepare(`UPDATE tasks SET interruption_holder_id = ?, interruption_lease_expires_at = ?, interruption_claim_token = ?
+					WHERE id = ? AND owner_key = ? AND kind = 'objective' AND status = 'cancelled'
+					AND error LIKE 'Cancelled by user; runtime interruption pending%'
+					AND (interruption_holder_id IS NULL OR interruption_holder_id = ? OR interruption_lease_expires_at <= ?)`).run(holderId, leaseExpiresAt, claimToken, candidate.id, candidate.owner_key, holderId, now).changes;
+				if (changed !== 1) continue;
+				const record = this.pendingObjectiveInterruptions([candidate.owner_key], 100).find((item) => item.objectiveId === candidate.id);
+				if (record) claimed.push({ ...record, claimToken, claimLeaseExpiresAt: leaseExpiresAt });
+			}
+			return claimed;
+		}).immediate();
+	}
+
+	objectiveInterruptionConvergence(ownerKey: string, objectiveId: string, now = Date.now()): { pendingExecutions: number } {
+		const row = this.db.prepare(`WITH RECURSIVE objective_tree(id) AS (
+			SELECT id FROM tasks WHERE id = ? AND owner_key = ? AND kind = 'objective' AND status = 'cancelled'
+			UNION
+			SELECT child.id FROM tasks child JOIN objective_tree parent ON child.parent_id = parent.id WHERE child.owner_key = ?
+		) SELECT COUNT(*) AS count FROM task_runs WHERE task_id IN (SELECT id FROM objective_tree) AND status = 'running'`).get(objectiveId, ownerKey, ownerKey) as { count: number };
+		return { pendingExecutions: row.count };
+	}
+
+	isObjectiveExecutionActive(ownerKey: string, objectiveId: string, taskRunId: string, now = Date.now()): boolean {
+		return this.isTaskRunExecutionActive(ownerKey, objectiveId, objectiveId, taskRunId, now);
+	}
+
+	isTaskRunExecutionActive(ownerKey: string, objectiveId: string, taskId: string, taskRunId: string, now = Date.now()): boolean {
+		return Boolean(this.db.prepare(`WITH RECURSIVE objective_tree(id) AS (
+			SELECT id FROM tasks WHERE id = ? AND owner_key = ? AND kind = 'objective' AND status IN ('pending','running')
+			UNION SELECT child.id FROM tasks child JOIN objective_tree parent ON child.parent_id = parent.id WHERE child.owner_key = ?
+		) SELECT 1 FROM task_runs run JOIN tasks task ON task.id = run.task_id
+			WHERE run.id = ? AND run.task_id = ? AND task.owner_key = ? AND task.status IN ('pending','running')
+			AND task.id IN (SELECT id FROM objective_tree) AND run.status = 'running' AND run.cancellation_requested_at IS NULL
+			AND run.lease_expires_at IS NOT NULL AND run.lease_expires_at > ?`).get(objectiveId, ownerKey, ownerKey, taskRunId, taskId, ownerKey, now));
+	}
+
+	settleObjectiveInterruption(ownerKey: string, objectiveId: string, now = Date.now(), holderId?: string, claimToken?: string): boolean {
+		return this.db.prepare(`UPDATE tasks SET error = 'Cancelled by user', interruption_holder_id = NULL, interruption_lease_expires_at = NULL, interruption_claim_token = NULL, updated_at = ? WHERE id = ? AND owner_key = ? AND kind = 'objective'
+			AND status = 'cancelled' AND error LIKE 'Cancelled by user; runtime interruption pending%'
+			AND ((interruption_holder_id IS NULL AND interruption_claim_token IS NULL AND ? IS NULL AND ? IS NULL)
+				OR (interruption_holder_id = ? AND interruption_claim_token = ? AND interruption_lease_expires_at > ?))
+			AND NOT EXISTS (WITH RECURSIVE objective_tree(id) AS (
+				SELECT id FROM tasks WHERE id = ? AND owner_key = ? AND kind = 'objective'
+				UNION SELECT child.id FROM tasks child JOIN objective_tree parent ON child.parent_id = parent.id WHERE child.owner_key = ?
+			) SELECT 1 FROM task_runs WHERE task_id IN (SELECT id FROM objective_tree) AND status = 'running')`).run(now, objectiveId, ownerKey, holderId ?? null, claimToken ?? null, holderId ?? null, claimToken ?? null, now, objectiveId, ownerKey, ownerKey).changes === 1;
+	}
+
+	failObjectiveInterruption(ownerKey: string, objectiveId: string, error: string, now = Date.now(), holderId?: string, claimToken?: string): boolean {
+		const message = redactCredentialMaterial(error).slice(0, 4_900);
+		return this.db.prepare(`UPDATE tasks SET error = ?, interruption_holder_id = NULL, interruption_lease_expires_at = NULL, interruption_claim_token = NULL, updated_at = ? WHERE id = ? AND owner_key = ? AND kind = 'objective'
+			AND status = 'cancelled' AND error LIKE 'Cancelled by user; runtime interruption pending%'
+			AND ((interruption_holder_id IS NULL AND interruption_claim_token IS NULL AND ? IS NULL AND ? IS NULL)
+				OR (interruption_holder_id = ? AND interruption_claim_token = ? AND interruption_lease_expires_at > ?))`).run(`Cancelled by user; runtime interruption pending: ${message}`, now, objectiveId, ownerKey, holderId ?? null, claimToken ?? null, holderId ?? null, claimToken ?? null, now).changes === 1;
 	}
 
 	activeObjectivePlanIds(ownerKey: string): string[] {
@@ -1850,18 +1997,69 @@ export class MemoryStore {
 	}
 
 	recordRun(run: TaskRunRecord): void {
-		this.db.prepare("INSERT INTO task_runs (id, task_id, executor, status, started_at, lease_expires_at, finished_at, output, error) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")
-			.run(run.id, run.taskId, run.executor, run.status, run.startedAt, run.leaseExpiresAt ?? null, run.finishedAt ?? null, safeTaskText(run.output), safeTaskText(run.error));
+		this.db.transaction(() => {
+			const lineage = this.db.prepare(`WITH RECURSIVE lineage(id, owner_key, kind, status, parent_id) AS (
+				SELECT id, owner_key, kind, status, parent_id FROM tasks WHERE id = ?
+				UNION SELECT parent.id, parent.owner_key, parent.kind, parent.status, parent.parent_id FROM tasks parent JOIN lineage child ON parent.id = child.parent_id
+			) SELECT * FROM lineage`).all(run.taskId) as Array<{ id: string; owner_key: string; kind: string; status: string; parent_id: string | null }>;
+			if (!lineage.length) throw new Error(`Task Run ${run.id} owning Task ${run.taskId} is unavailable`);
+			const ownerKey = lineage[0]!.owner_key;
+			if (lineage.at(-1)?.parent_id) throw new Error(`Task Run ${run.id} has an unresolved Objective ancestry`);
+			if (lineage.some((item) => item.owner_key !== ownerKey || !["pending", "running"].includes(item.status))) throw new Error(`Task Run ${run.id} owning Task or Objective ancestor is terminal or outside its owner scope`);
+			const leaseExpiresAt = run.status === "running" ? run.leaseExpiresAt ?? run.startedAt + 30_000 : run.leaseExpiresAt;
+			if (run.status === "running" && leaseExpiresAt! <= run.startedAt) throw new Error(`Task Run ${run.id} requires a finite future Execution Lease`);
+			this.db.prepare("INSERT INTO task_runs (id, task_id, executor, status, started_at, lease_expires_at, cancellation_requested_at, finished_at, output, error) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+				.run(run.id, run.taskId, run.executor, run.status, run.startedAt, leaseExpiresAt ?? null, run.cancellationRequestedAt ?? null, run.finishedAt ?? null, safeTaskText(run.output), safeTaskText(run.error));
+		}).immediate();
 	}
 
 	transitionRun(id: string, change: TaskRunTransition): boolean {
-		const result = this.db.prepare("UPDATE task_runs SET status = ?, finished_at = COALESCE(?, finished_at), output = COALESCE(?, output), error = COALESCE(?, error) WHERE id = ? AND status = 'running'")
-			.run(change.status, change.finishedAt ?? null, safeTaskText(change.output), safeTaskText(change.error), id);
+		const now = Date.now();
+		const successFence = change.status === "succeeded" ? `AND cancellation_requested_at IS NULL AND lease_expires_at IS NOT NULL AND lease_expires_at > ?
+			AND EXISTS (SELECT 1 FROM tasks task WHERE task.id = task_runs.task_id AND task.status IN ('running','succeeded'))
+			AND NOT EXISTS (WITH RECURSIVE lineage(id, kind, status, parent_id) AS (
+				SELECT id, kind, status, parent_id FROM tasks WHERE id = task_runs.task_id
+				UNION SELECT parent.id, parent.kind, parent.status, parent.parent_id FROM tasks parent JOIN lineage child ON parent.id = child.parent_id
+			) SELECT 1 FROM lineage WHERE kind = 'objective' AND status NOT IN ('pending','running'))` : "";
+		const result = this.db.prepare(`UPDATE task_runs SET status = ?, finished_at = COALESCE(?, finished_at), output = COALESCE(?, output), error = COALESCE(?, error) WHERE id = ? AND status = 'running' ${successFence}`)
+			.run(change.status, change.finishedAt ?? null, safeTaskText(change.output), safeTaskText(change.error), id, ...(change.status === "succeeded" ? [now] : []));
 		return result.changes === 1;
 	}
 
-	renewTaskRunLease(id: string, leaseExpiresAt: number): boolean {
-		return this.db.prepare("UPDATE task_runs SET lease_expires_at = ? WHERE id = ? AND status = 'running'").run(leaseExpiresAt, id).changes === 1;
+	settleTaskRunAndTask(settlement: TaskRunAndTaskSuccessSettlement, now = Date.now()): boolean {
+		if (settlement.task.status !== "succeeded" || settlement.run.status !== "succeeded" || !Number.isFinite(now)) return false;
+		if (safeTaskText(settlement.task.result) !== safeTaskText(settlement.run.output)) return false;
+		const rollback = Symbol("atomic Task Run settlement rejected");
+		try {
+			return this.db.transaction(() => {
+				const runChanged = this.db.prepare(`UPDATE task_runs SET status = 'succeeded', finished_at = COALESCE(?, finished_at), output = COALESCE(?, output), error = NULL
+					WHERE id = ? AND task_id = ? AND status = 'running' AND cancellation_requested_at IS NULL
+					AND lease_expires_at IS NOT NULL AND lease_expires_at > ?
+					AND EXISTS (SELECT 1 FROM tasks task WHERE task.id = ? AND task.owner_key = ? AND task.status = 'running')
+					AND NOT EXISTS (WITH RECURSIVE lineage(id, kind, status, parent_id) AS (
+						SELECT id, kind, status, parent_id FROM tasks WHERE id = ?
+						UNION SELECT parent.id, parent.kind, parent.status, parent.parent_id FROM tasks parent JOIN lineage child ON parent.id = child.parent_id
+					) SELECT 1 FROM lineage WHERE kind = 'objective' AND status NOT IN ('pending','running'))`)
+					.run(settlement.run.finishedAt ?? null, safeTaskText(settlement.run.output), settlement.taskRunId, settlement.taskId, now, settlement.taskId, settlement.ownerKey, settlement.taskId).changes;
+				if (runChanged !== 1) return false;
+				if (!this.transition(settlement.taskId, settlement.task)) throw rollback;
+				return true;
+			}).immediate();
+		} catch (error) {
+			if (error === rollback) return false;
+			throw error;
+		}
+	}
+
+	renewTaskRunLease(id: string, leaseExpiresAt: number, now = Date.now()): boolean {
+		if (!Number.isFinite(leaseExpiresAt) || leaseExpiresAt <= now) return false;
+		return this.db.prepare(`UPDATE task_runs SET lease_expires_at = ? WHERE id = ? AND status = 'running' AND cancellation_requested_at IS NULL
+			AND lease_expires_at IS NOT NULL AND lease_expires_at > ? AND lease_expires_at < ?
+			AND EXISTS (SELECT 1 FROM tasks task WHERE task.id = task_runs.task_id AND task.status IN ('pending','running'))
+			AND NOT EXISTS (WITH RECURSIVE lineage(id, kind, status, parent_id) AS (
+				SELECT id, kind, status, parent_id FROM tasks WHERE id = task_runs.task_id
+				UNION SELECT parent.id, parent.kind, parent.status, parent.parent_id FROM tasks parent JOIN lineage child ON parent.id = child.parent_id
+			) SELECT 1 FROM lineage WHERE kind = 'objective' AND status NOT IN ('pending','running'))`).run(leaseExpiresAt, id, now, leaseExpiresAt).changes === 1;
 	}
 
 	taskRuns(taskId: string): TaskRunRecord[] {
@@ -1884,12 +2082,32 @@ export class MemoryStore {
 
 	recordPlan(tasks: RuntimeTaskRecord[], dependencies: TaskDependency[], plan?: TaskPlanRecord): void {
 		this.db.transaction(() => {
+			if (plan) {
+				if (tasks.some((task) => task.planId !== plan.id || task.ownerKey !== plan.ownerKey)) throw new Error(`Task Plan ${plan.id} contains a Task outside its owner or Plan identity`);
+				const byId = new Map(tasks.map((task) => [task.id, task]));
+				const roots = new Set<string>();
+				for (const task of tasks) {
+					let parentId = task.parentId;
+					const visited = new Set([task.id]);
+					while (parentId && byId.has(parentId)) {
+						if (visited.has(parentId)) throw new Error(`Task Plan ${plan.id} contains a parent cycle`);
+						visited.add(parentId); parentId = byId.get(parentId)!.parentId;
+					}
+					roots.add(parentId ? `objective:${parentId}` : "rootless");
+				}
+				if (roots.size > 1) throw new Error(`Task Plan ${plan.id} cannot span multiple Objective roots or mix Objective-rooted and rootless Tasks`);
+				const root = [...roots][0];
+				if (root?.startsWith("objective:")) {
+					const objectiveId = root.slice("objective:".length);
+					if (!this.db.prepare("SELECT 1 FROM tasks WHERE id = ? AND owner_key = ? AND kind = 'objective' AND status IN ('pending', 'running')").get(objectiveId, plan.ownerKey)) throw new Error(`Task Plan ${plan.id} Objective root is unavailable or terminal in its owner scope`);
+				}
+			}
 			if (plan) this.db.prepare(`INSERT INTO task_plans (id, owner_key, title, status, task_count, succeeded, failed, cancelled, verified, corrective_attempts, created_at, started_at, finished_at)
 				VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(plan.id, plan.ownerKey, plan.title, plan.status, plan.taskCount, plan.succeeded, plan.failed, plan.cancelled, plan.verified, plan.correctiveAttempts, plan.createdAt, plan.startedAt ?? null, plan.finishedAt ?? null);
 			for (const task of tasks) this.record(task);
 			const insert = this.db.prepare("INSERT INTO task_dependencies (task_id, depends_on) VALUES (?, ?)");
 			for (const edge of dependencies) insert.run(edge.taskId, edge.dependsOn);
-		})();
+		}).immediate();
 	}
 
 	transitionPlan(id: string, change: TaskPlanTransition): boolean {
@@ -2078,11 +2296,13 @@ export class MemoryStore {
 	resolveCandidateVerification(ownerKeys: string[], taskId: string, resolution: TaskCandidateVerificationResolution, now = Date.now()): boolean {
 		if (!ownerKeys.length || !taskId.trim()) return false;
 		return this.db.transaction(() => {
-			const row = this.db.prepare(`SELECT owner_key, kind, plan_id FROM tasks WHERE id = ? AND owner_key IN (${ownerKeys.map(() => "?").join(", ")})
-				AND status IN ('running', 'failed') AND verification_outcome = 'unavailable' AND candidate_result IS NOT NULL`).get(taskId, ...ownerKeys) as { owner_key: string; kind: RuntimeTaskRecord["kind"]; plan_id: string | null } | undefined;
+			const row = this.db.prepare(`SELECT owner_key, kind, plan_id, candidate_result FROM tasks WHERE id = ? AND owner_key IN (${ownerKeys.map(() => "?").join(", ")})
+				AND status IN ('running', 'failed') AND verification_outcome = 'unavailable' AND candidate_result IS NOT NULL`).get(taskId, ...ownerKeys) as { owner_key: string; kind: RuntimeTaskRecord["kind"]; plan_id: string | null; candidate_result: string } | undefined;
 			if (!row) return false;
 			const criterionVerifications = safeCriterionVerifications(resolution.criterionVerifications);
 			const directObjectiveAccepted = resolution.accepted && row.kind === "objective" && row.plan_id === null;
+			const latestSucceededRun = directObjectiveAccepted ? this.latestSucceededObjectiveRun(taskId) : undefined;
+			if (directObjectiveAccepted && latestSucceededRun?.output !== row.candidate_result) return false;
 			const changed = directObjectiveAccepted
 				? this.db.prepare(`UPDATE tasks SET status = 'running', evidence = COALESCE(?, evidence), verification_outcome = 'accepted',
 					verification_feedback = NULL, criterion_verifications = ?, verification_retry_at = NULL, error = NULL, finished_at = NULL, updated_at = ?
@@ -2098,7 +2318,7 @@ export class MemoryStore {
 			if (changed && row.plan_id) this.syncTaskPlanAfterCandidateVerification(row.plan_id, now);
 			if (changed && directObjectiveAccepted && !this.enqueueObjectiveCompletion(row.owner_key, taskId, now)) throw new Error(`Objective ${taskId} could not enter the durable Completion Outbox`);
 			return changed === 1;
-		})();
+		}).immediate();
 	}
 
 	prepareTaskCorrections(maxCorrectiveAttempts: number, now = Date.now()): number {
@@ -2120,7 +2340,39 @@ export class MemoryStore {
 		})();
 	}
 
-	enqueueObjectiveCompletion(ownerKey: string, objectiveId: string, now = Date.now(), notBefore = now): boolean {
+	settleDirectObjectiveCompletion(settlement: DirectObjectiveCompletionSettlement, now = Date.now()): boolean {
+		const candidateResult = safeTaskText(settlement.candidateResult)?.slice(0, 50_000);
+		const evidence = safeTaskText(settlement.evidence);
+		const criterionVerifications = safeCriterionVerifications(settlement.criterionVerifications);
+		if (!settlement.ownerKey.trim() || !settlement.objectiveId.trim() || !settlement.taskRunId.trim() || !candidateResult?.trim() || !Number.isFinite(now)) return false;
+		const rollback = Symbol("direct Objective completion settlement rejected");
+		try {
+			return this.db.transaction(() => {
+				const objective = this.db.prepare(`SELECT id, owner_key, plan_id, title, execution_scope FROM tasks
+					WHERE id = ? AND owner_key = ? AND kind = 'objective' AND status = 'running'`).get(settlement.objectiveId, settlement.ownerKey) as {
+					id: string; owner_key: string; plan_id: string | null; title: string; execution_scope: string | null;
+				} | undefined;
+				if (!objective || !parseExecutionScope(objective.execution_scope)) return false;
+				const runChanged = this.db.prepare(`UPDATE task_runs SET status = 'succeeded', finished_at = ?, output = ?, error = NULL
+					WHERE id = ? AND task_id = ? AND status = 'running' AND cancellation_requested_at IS NULL
+					AND lease_expires_at IS NOT NULL AND lease_expires_at > ?`).run(now, candidateResult, settlement.taskRunId, settlement.objectiveId, now).changes;
+				if (runChanged !== 1) return false;
+				const objectiveChanged = this.db.prepare(`UPDATE tasks SET status = 'running', candidate_result = ?, evidence = COALESCE(?, evidence),
+					verification_outcome = 'accepted', verification_feedback = NULL, criterion_verifications = ?, corrective_attempts = COALESCE(?, corrective_attempts),
+					verification_retry_at = NULL, error = NULL, finished_at = NULL, updated_at = ?
+					WHERE id = ? AND owner_key = ? AND kind = 'objective' AND status = 'running'`)
+					.run(candidateResult, evidence, criterionVerifications, settlement.correctiveAttempts ?? null, now, settlement.objectiveId, settlement.ownerKey).changes;
+				if (objectiveChanged !== 1) throw rollback;
+				if (!this.enqueueObjectiveCompletion(settlement.ownerKey, settlement.objectiveId, now, settlement.notBefore ?? now, settlement.taskRunId)) throw rollback;
+				return true;
+			}).immediate();
+		} catch (error) {
+			if (error === rollback) return false;
+			throw error;
+		}
+	}
+
+	enqueueObjectiveCompletion(ownerKey: string, objectiveId: string, now = Date.now(), notBefore = now, boundTaskRunId?: string): boolean {
 		if (!ownerKey.trim() || !objectiveId.trim()) return false;
 		const task = this.db.prepare(`SELECT id, owner_key, plan_id, title, candidate_result, evidence, execution_scope FROM tasks
 			WHERE id = ? AND owner_key = ? AND kind = 'objective' AND status = 'running'
@@ -2128,6 +2380,10 @@ export class MemoryStore {
 			id: string; owner_key: string; plan_id: string | null; title: string; candidate_result: string; evidence: string | null; execution_scope: string | null;
 		} | undefined;
 		if (!task) return false;
+		const authoritativeRun = boundTaskRunId
+			? this.db.prepare("SELECT id, output FROM task_runs WHERE id = ? AND task_id = ? AND status = 'succeeded' AND output = ?").get(boundTaskRunId, task.id, task.candidate_result) as { id: string; output: string | null } | undefined
+			: this.latestSucceededObjectiveRun(task.id);
+		if (!authoritativeRun || authoritativeRun.output !== task.candidate_result) return false;
 		const target = parseExecutionScope(task.execution_scope);
 		if (!target?.platform || !target.chatId || !task.candidate_result.trim()) return false;
 		const id = objectiveCompletionId(task.id);
@@ -2135,42 +2391,66 @@ export class MemoryStore {
 			? interactionCompletionDeliveryKey(this.profileId, target, target.originMessageId)
 			: id;
 		const inserted = this.db.prepare(`INSERT OR IGNORE INTO objective_completion_outbox
-			(id, objective_id, owner_key, plan_id, platform, channel_instance_id, chat_id, chat_type, user_id, thread_id, reply_to_message_id, title, result, evidence, delivery_idempotency_key, status, attempts, next_attempt_at, created_at)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', 0, ?, ?)`).run(
-			id, task.id, task.owner_key, task.plan_id, target.platform, target.channelInstanceId ?? null, target.chatId, target.chatType ?? null,
+			(id, objective_id, task_run_id, owner_key, plan_id, platform, channel_instance_id, chat_id, chat_type, user_id, thread_id, reply_to_message_id, title, result, evidence, delivery_idempotency_key, status, attempts, next_attempt_at, created_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', 0, ?, ?)`).run(
+			id, task.id, authoritativeRun.id, task.owner_key, task.plan_id, target.platform, target.channelInstanceId ?? null, target.chatId, target.chatType ?? null,
 			target.userId ?? null, target.threadId ?? null, target.replyToMessageId ?? null, task.title, task.candidate_result.slice(0, 50_000), task.evidence, deliveryIdempotencyKey, Math.max(now, notBefore), now,
 		).changes === 1;
 		if (inserted) return true;
-		const existing = this.db.prepare("SELECT objective_id, owner_key, result, platform, channel_instance_id, chat_id, thread_id, reply_to_message_id, delivery_idempotency_key FROM objective_completion_outbox WHERE id = ?").get(id) as {
-			objective_id: string; owner_key: string; result: string; platform: string; channel_instance_id: string | null; chat_id: string; thread_id: string | null; reply_to_message_id: string | null; delivery_idempotency_key: string;
+		const existing = this.db.prepare("SELECT objective_id, task_run_id, owner_key, result, platform, channel_instance_id, chat_id, thread_id, reply_to_message_id, delivery_idempotency_key FROM objective_completion_outbox WHERE id = ?").get(id) as {
+			objective_id: string; task_run_id: string | null; owner_key: string; result: string; platform: string; channel_instance_id: string | null; chat_id: string; thread_id: string | null; reply_to_message_id: string | null; delivery_idempotency_key: string;
 		} | undefined;
-		return existing?.objective_id === task.id && existing.owner_key === task.owner_key && existing.result === task.candidate_result.slice(0, 50_000)
+		const samePayload = existing?.objective_id === task.id && existing.owner_key === task.owner_key && existing.result === task.candidate_result.slice(0, 50_000)
 			&& existing.platform === target.platform && existing.channel_instance_id === (target.channelInstanceId ?? null) && existing.chat_id === target.chatId && existing.thread_id === (target.threadId ?? null)
 			&& existing.reply_to_message_id === (target.replyToMessageId ?? null) && existing.delivery_idempotency_key === deliveryIdempotencyKey;
+		if (!samePayload) return false;
+		if (existing!.task_run_id === authoritativeRun.id) return true;
+		if (existing!.task_run_id !== null) return false;
+		return this.db.prepare("UPDATE objective_completion_outbox SET task_run_id = ? WHERE id = ? AND task_run_id IS NULL AND result = ?")
+			.run(authoritativeRun.id, id, task.candidate_result.slice(0, 50_000)).changes === 1;
+	}
+
+	private latestSucceededObjectiveRun(objectiveId: string): { id: string; output: string | null } | undefined {
+		return this.db.prepare(`SELECT id, output FROM task_runs WHERE task_id = ? AND status = 'succeeded'
+			ORDER BY COALESCE(finished_at, started_at) DESC, started_at DESC, id DESC LIMIT 1`).get(objectiveId) as { id: string; output: string | null } | undefined;
+	}
+
+	private objectiveCompletionLineageIsCurrent(id: string): boolean {
+		return Boolean(this.db.prepare(`SELECT 1 FROM objective_completion_outbox outbox
+			JOIN tasks objective ON objective.id = outbox.objective_id AND objective.owner_key = outbox.owner_key
+			JOIN task_runs run ON run.id = outbox.task_run_id AND run.task_id = objective.id
+			WHERE outbox.id = ? AND objective.status = 'running' AND objective.verification_outcome = 'accepted'
+			AND objective.candidate_result = outbox.result AND run.status = 'succeeded' AND run.output = outbox.result`).get(id));
 	}
 
 	getObjectiveCompletion(id: string): ObjectiveCompletion | undefined {
 		if (!id.trim()) return undefined;
 		const row = this.db.prepare("SELECT * FROM objective_completion_outbox WHERE id = ?").get(id) as ObjectiveCompletionRow | undefined;
-		return row ? mapObjectiveCompletion(row) : undefined;
+		return row?.task_run_id ? mapObjectiveCompletion(row) : undefined;
 	}
 
 	claimObjectiveCompletions(platform: string, now = Date.now(), limit = 10, leaseMs = 5 * 60_000): ObjectiveCompletion[] {
 		if (!platform.trim()) return [];
 		return this.db.transaction(() => {
 			for (const row of this.db.prepare(`SELECT owner_key, id FROM tasks WHERE kind = 'objective' AND status = 'running'
-				AND verification_outcome = 'accepted' AND candidate_result IS NOT NULL AND execution_scope IS NOT NULL
-				AND NOT EXISTS (SELECT 1 FROM objective_completion_outbox WHERE objective_id = tasks.id)`).all() as Array<{ owner_key: string; id: string }>) {
+				AND verification_outcome = 'accepted' AND candidate_result IS NOT NULL AND execution_scope IS NOT NULL`).all() as Array<{ owner_key: string; id: string }>) {
 				this.enqueueObjectiveCompletion(row.owner_key, row.id, now);
 			}
-			const rows = this.db.prepare(`SELECT id FROM objective_completion_outbox
-				WHERE platform = ? AND status IN ('queued', 'delivering') AND next_attempt_at <= ?
-				ORDER BY next_attempt_at, created_at LIMIT ?`).all(platform, now, limitOf(limit, 10)) as Array<{ id: string }>;
+			const rows = this.db.prepare(`SELECT outbox.id FROM objective_completion_outbox outbox
+				JOIN tasks objective ON objective.id = outbox.objective_id AND objective.owner_key = outbox.owner_key
+				JOIN task_runs run ON run.id = outbox.task_run_id AND run.task_id = objective.id AND run.status = 'succeeded'
+				WHERE outbox.platform = ? AND outbox.status IN ('queued', 'delivering') AND outbox.next_attempt_at <= ? AND objective.status = 'running'
+				AND objective.verification_outcome = 'accepted' AND objective.candidate_result = outbox.result AND run.output = outbox.result
+				ORDER BY outbox.next_attempt_at, outbox.created_at LIMIT ?`).all(platform, now, limitOf(limit, 10)) as Array<{ id: string }>;
 			return rows.flatMap((row) => {
 				const claimToken = crypto.randomUUID();
 				const claimed = this.db.prepare(`UPDATE objective_completion_outbox
 					SET status = 'delivering', claim_token = ?, attempts = attempts + 1, next_attempt_at = ?
 					WHERE id = ? AND status IN ('queued', 'delivering') AND next_attempt_at <= ?
+					AND EXISTS (SELECT 1 FROM tasks objective JOIN task_runs run ON run.id = objective_completion_outbox.task_run_id
+						WHERE objective.id = objective_completion_outbox.objective_id AND objective.owner_key = objective_completion_outbox.owner_key
+						AND objective.status = 'running' AND objective.verification_outcome = 'accepted' AND objective.candidate_result = objective_completion_outbox.result
+						AND run.task_id = objective.id AND run.status = 'succeeded' AND run.output = objective_completion_outbox.result)
 					RETURNING *`).get(claimToken, now + Math.max(1, leaseMs), row.id, now) as ObjectiveCompletionRow | undefined;
 				return claimed ? [mapObjectiveCompletion(claimed)] : [];
 			});
@@ -2179,6 +2459,37 @@ export class MemoryStore {
 
 	completeObjectiveCompletion(id: string, claimToken: string, receipt: DeliveryReceipt, now = Date.now()): boolean {
 		return this.settleObjectiveCompletion(id, receipt, now, claimToken);
+	}
+
+	recordObjectiveCompletionReceipt(id: string, receipt: DeliveryReceipt, _now = Date.now()): boolean {
+		if (!id.trim() || !receipt.idempotencyKey.trim() || !Number.isFinite(receipt.deliveredAt) || receipt.deliveredAt < 0) return false;
+		return this.db.transaction(() => {
+			const row = this.db.prepare("SELECT objective_id, status, delivery_idempotency_key, receipt_idempotency_key, receipt_delivered_at, receipt_provider_message_id FROM objective_completion_outbox WHERE id = ?").get(id) as {
+				objective_id: string; status: ObjectiveCompletion["status"]; delivery_idempotency_key: string; receipt_idempotency_key: string | null; receipt_delivered_at: number | null; receipt_provider_message_id: string | null;
+			} | undefined;
+			if (!row || row.delivery_idempotency_key !== receipt.idempotencyKey) return false;
+			if (row.receipt_idempotency_key) return row.receipt_idempotency_key === receipt.idempotencyKey
+				&& row.receipt_delivered_at === Math.trunc(receipt.deliveredAt) && row.receipt_provider_message_id === (receipt.providerMessageId ?? null);
+			if (row.status === "blocked") {
+				if (!this.objectiveCompletionLineageIsCurrent(id)) {
+					const objective = this.db.prepare("SELECT status FROM tasks WHERE id = ?").get(row.objective_id) as { status: RuntimeTaskRecord["status"] } | undefined;
+					if (objective?.status !== "cancelled") return false;
+				}
+			} else if (!this.objectiveCompletionLineageIsCurrent(id)) return false;
+			return this.db.prepare(`UPDATE objective_completion_outbox SET receipt_idempotency_key = ?, receipt_delivered_at = ?, receipt_provider_message_id = ?
+				WHERE id = ? AND receipt_idempotency_key IS NULL`).run(receipt.idempotencyKey, Math.trunc(receipt.deliveredAt), receipt.providerMessageId ?? null, id).changes === 1;
+		}).immediate();
+	}
+
+	isObjectiveCompletionCancelledAfterDelivery(id: string, receipt: DeliveryReceipt): boolean {
+		if (!id.trim() || !receipt.idempotencyKey.trim() || !Number.isFinite(receipt.deliveredAt) || receipt.deliveredAt < 0) return false;
+		return Boolean(this.db.prepare(`SELECT 1 FROM objective_completion_outbox outbox
+			JOIN tasks objective ON objective.id = outbox.objective_id AND objective.owner_key = outbox.owner_key
+			WHERE outbox.id = ? AND outbox.status = 'blocked' AND objective.status = 'cancelled'
+			AND outbox.delivery_idempotency_key = ? AND outbox.receipt_idempotency_key = ?
+			AND outbox.receipt_delivered_at = ? AND outbox.receipt_provider_message_id IS ?`).get(
+			id, receipt.idempotencyKey, receipt.idempotencyKey, Math.trunc(receipt.deliveredAt), receipt.providerMessageId ?? null,
+		));
 	}
 
 	acknowledgeObjectiveCompletion(id: string, receipt: DeliveryReceipt, now = Date.now()): boolean {
@@ -2194,7 +2505,13 @@ export class MemoryStore {
 			if (!row) return false;
 			if (receipt.idempotencyKey !== row.delivery_idempotency_key) return false;
 			if (row.status === "delivered") return row.receipt_idempotency_key === receipt.idempotencyKey;
-			if (row.status === "blocked" || (claimToken !== undefined && (row.status !== "delivering" || row.claim_token !== claimToken))) return false;
+			if (row.status === "blocked") {
+				const objective = this.db.prepare("SELECT status FROM tasks WHERE id = ?").get(row.objective_id) as { status: RuntimeTaskRecord["status"] } | undefined;
+				if (objective?.status !== "cancelled") return false;
+				return this.recordObjectiveCompletionReceipt(id, receipt, now);
+			}
+			if (claimToken !== undefined && (row.status !== "delivering" || row.claim_token !== claimToken)) return false;
+			if (!this.objectiveCompletionLineageIsCurrent(id)) return false;
 			const outboxChanged = this.db.prepare(`UPDATE objective_completion_outbox SET status = 'delivered', claim_token = NULL,
 				receipt_idempotency_key = ?, receipt_delivered_at = ?, receipt_provider_message_id = ?, last_error = NULL
 				WHERE id = ? AND status IN ('queued', 'delivering')`).run(receipt.idempotencyKey, Math.trunc(receipt.deliveredAt), receipt.providerMessageId ?? null, id).changes;
@@ -2205,31 +2522,46 @@ export class MemoryStore {
 			const terminal = this.db.prepare("SELECT status, result FROM tasks WHERE id = ?").get(row.objective_id) as { status: string; result: string | null } | undefined;
 			if (terminal?.status === "succeeded" && terminal.result === row.result) return true;
 			throw new Error(`Objective ${row.objective_id} could not reach a Terminal Outcome after delivery acknowledgement`);
-		})();
+		}).immediate();
 	}
 
-	renewObjectiveCompletion(id: string, claimToken: string, leaseExpiresAt: number): boolean {
-		return this.db.prepare("UPDATE objective_completion_outbox SET next_attempt_at = ? WHERE id = ? AND status = 'delivering' AND claim_token = ?")
-			.run(leaseExpiresAt, id, claimToken).changes === 1;
+	renewObjectiveCompletion(id: string, claimToken: string, leaseExpiresAt: number, now = Date.now()): boolean {
+		if (!Number.isFinite(leaseExpiresAt) || !Number.isFinite(now) || leaseExpiresAt <= now) return false;
+		return this.db.transaction(() => this.db.prepare(`UPDATE objective_completion_outbox SET next_attempt_at = ?
+			WHERE id = ? AND status = 'delivering' AND claim_token = ? AND next_attempt_at > ? AND next_attempt_at < ?
+			AND EXISTS (SELECT 1 FROM tasks objective JOIN task_runs run ON run.id = objective_completion_outbox.task_run_id
+				WHERE objective.id = objective_completion_outbox.objective_id AND objective.owner_key = objective_completion_outbox.owner_key
+				AND objective.status = 'running' AND objective.verification_outcome = 'accepted' AND objective.candidate_result = objective_completion_outbox.result
+				AND run.task_id = objective.id AND run.status = 'succeeded' AND run.output = objective_completion_outbox.result)`)
+			.run(leaseExpiresAt, id, claimToken, now, leaseExpiresAt).changes === 1).immediate();
 	}
 
 	failObjectiveCompletion(id: string, claimToken: string, now = Date.now()): boolean {
-		const row = this.db.prepare("SELECT attempts FROM objective_completion_outbox WHERE id = ? AND status = 'delivering' AND claim_token = ?").get(id, claimToken) as { attempts: number } | undefined;
-		if (!row) return false;
-		const delay = Math.min(60 * 60_000, 30_000 * (2 ** Math.min(Math.max(0, row.attempts - 1), 7)));
-		return this.db.prepare("UPDATE objective_completion_outbox SET status = 'queued', claim_token = NULL, next_attempt_at = ? WHERE id = ? AND status = 'delivering' AND claim_token = ?")
-			.run(now + delay, id, claimToken).changes === 1;
+		return this.db.transaction(() => {
+			if (!this.objectiveCompletionLineageIsCurrent(id)) return false;
+			const row = this.db.prepare("SELECT attempts FROM objective_completion_outbox WHERE id = ? AND status = 'delivering' AND claim_token = ?").get(id, claimToken) as { attempts: number } | undefined;
+			if (!row) return false;
+			const delay = Math.min(60 * 60_000, 30_000 * (2 ** Math.min(Math.max(0, row.attempts - 1), 7)));
+			return this.db.prepare("UPDATE objective_completion_outbox SET status = 'queued', claim_token = NULL, next_attempt_at = ? WHERE id = ? AND status = 'delivering' AND claim_token = ?")
+				.run(now + delay, id, claimToken).changes === 1;
+		}).immediate();
 	}
 
 	deferObjectiveCompletion(id: string, claimToken: string, retryAt: number, now = Date.now()): boolean {
 		const boundedRetryAt = Math.max(now + 1_000, Math.min(retryAt, now + 7 * 24 * 60 * 60_000));
-		return this.db.prepare("UPDATE objective_completion_outbox SET status = 'queued', attempts = MAX(0, attempts - 1), claim_token = NULL, next_attempt_at = ?, last_error = NULL WHERE id = ? AND status = 'delivering' AND claim_token = ?")
-			.run(boundedRetryAt, id, claimToken).changes === 1;
+		return this.db.transaction(() => {
+			if (!this.objectiveCompletionLineageIsCurrent(id)) return false;
+			return this.db.prepare("UPDATE objective_completion_outbox SET status = 'queued', attempts = MAX(0, attempts - 1), claim_token = NULL, next_attempt_at = ?, last_error = NULL WHERE id = ? AND status = 'delivering' AND claim_token = ?")
+				.run(boundedRetryAt, id, claimToken).changes === 1;
+		}).immediate();
 	}
 
 	blockObjectiveCompletion(id: string, claimToken: string, error: string, now = Date.now()): boolean {
-		return this.db.prepare("UPDATE objective_completion_outbox SET status = 'blocked', claim_token = NULL, blocked_at = ?, last_error = ? WHERE id = ? AND status = 'delivering' AND claim_token = ?")
-			.run(now, redactCredentialMaterial(error).slice(0, 5_000), id, claimToken).changes === 1;
+		return this.db.transaction(() => {
+			if (!this.objectiveCompletionLineageIsCurrent(id)) return false;
+			return this.db.prepare("UPDATE objective_completion_outbox SET status = 'blocked', claim_token = NULL, blocked_at = ?, last_error = ? WHERE id = ? AND status = 'delivering' AND claim_token = ?")
+				.run(now, redactCredentialMaterial(error).slice(0, 5_000), id, claimToken).changes === 1;
+		}).immediate();
 	}
 
 	enqueueTaskPlanCompletionNotice(ownerKey: string, planId: string, now = Date.now()): boolean {
@@ -2933,7 +3265,7 @@ interface RuntimeTaskRow {
 
 interface TaskRunRow {
 	id: string; task_id: string; executor: TaskRunRecord["executor"]; status: TaskRunRecord["status"];
-	started_at: number; lease_expires_at: number | null; finished_at: number | null; output: string | null; error: string | null;
+	started_at: number; lease_expires_at: number | null; cancellation_requested_at: number | null; finished_at: number | null; output: string | null; error: string | null;
 }
 
 interface TaskPlanRow {
@@ -2950,7 +3282,7 @@ interface TaskPlanCompletionNoticeRow {
 }
 
 interface ObjectiveCompletionRow {
-	id: string; objective_id: string; owner_key: string; plan_id: string | null;
+	id: string; objective_id: string; task_run_id: string | null; owner_key: string; plan_id: string | null;
 	platform: string; channel_instance_id: string | null; chat_id: string; chat_type: string | null; user_id: string | null; thread_id: string | null; reply_to_message_id: string | null;
 	delivery_idempotency_key: string;
 	title: string; result: string; evidence: string | null; status: ObjectiveCompletion["status"]; claim_token: string | null;
@@ -3135,7 +3467,7 @@ function mapObjectiveCompletion(row: ObjectiveCompletionRow): ObjectiveCompletio
 		? { idempotencyKey: row.receipt_idempotency_key, deliveredAt: row.receipt_delivered_at, ...(row.receipt_provider_message_id ? { providerMessageId: row.receipt_provider_message_id } : {}) }
 		: undefined;
 	return {
-		id: row.id, objectiveId: row.objective_id, ownerKey: row.owner_key, ...(row.plan_id ? { planId: row.plan_id } : {}),
+		id: row.id, objectiveId: row.objective_id, taskRunId: row.task_run_id!, ownerKey: row.owner_key, ...(row.plan_id ? { planId: row.plan_id } : {}),
 		target: { platform: row.platform, ...(row.channel_instance_id ? { channelInstanceId: row.channel_instance_id } : {}), chatId: row.chat_id, ...(validChatType(row.chat_type) ? { chatType: validChatType(row.chat_type) } : {}), ...(row.user_id ? { userId: row.user_id } : {}), ...(row.thread_id ? { threadId: row.thread_id } : {}), ...(row.reply_to_message_id ? { replyToMessageId: row.reply_to_message_id } : {}) },
 		deliveryIdempotencyKey: row.delivery_idempotency_key,
 		title: row.title, result: row.result, ...(row.evidence ? { evidence: row.evidence } : {}), status: row.status,
@@ -3187,11 +3519,17 @@ function parseStoredObjectiveRevisions(value: string | null, taskId: string): Ru
 function parseStoredObjectiveRevision(value: unknown, taskId: string): NonNullable<RuntimeTaskRecord["objectiveRevisions"]>[number] | undefined {
 	if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
 	const candidate = value as Record<string, unknown>;
-	const workContract = parseStoredWorkContract(JSON.stringify(candidate.workContract));
+	const rawWorkContract = candidate.workContract && typeof candidate.workContract === "object" && !Array.isArray(candidate.workContract)
+		&& (candidate.workContract as Record<string, unknown>).action === "correct" && (candidate.workContract as Record<string, unknown>).targetObjective === undefined
+		? { ...(candidate.workContract as Record<string, unknown>), targetObjective: { kind: "active_objective", id: taskId } }
+		: candidate.workContract;
+	const workContract = parseStoredWorkContract(JSON.stringify(rawWorkContract));
 	const situation = parseSituation(typeof candidate.situation === "object" ? JSON.stringify(candidate.situation) : null);
 	const objectiveSource = workContract?.objective.source;
-	if (typeof candidate.id !== "string" || !candidate.id.startsWith(`${taskId}:revision:`) || candidate.id.length > 1_000 || !workContract || workContract.action !== "correct" || objectiveSource?.kind === "active_objective" && objectiveSource.id !== taskId || !situation || !Number.isSafeInteger(candidate.createdAt) || (candidate.createdAt as number) < 0) return undefined;
-	return { id: candidate.id, workContract, situation, createdAt: candidate.createdAt as number };
+	const targetObjectiveId = workContract?.targetObjective?.id ?? (objectiveSource?.kind === "active_objective" ? objectiveSource.id : undefined);
+	if (typeof candidate.id !== "string" || !candidate.id.startsWith(`${taskId}:revision:`) || candidate.id.length > 1_000 || !workContract || workContract.action !== "correct" || targetObjectiveId !== undefined && targetObjectiveId !== taskId || !situation || !Number.isSafeInteger(candidate.createdAt) || (candidate.createdAt as number) < 0) return undefined;
+	const boundWorkContract = targetObjectiveId ? workContract : { ...workContract, targetObjective: { kind: "active_objective" as const, id: taskId } };
+	return { id: candidate.id, workContract: boundWorkContract, situation, createdAt: candidate.createdAt as number };
 }
 
 function parseBusinessContext(value: string | null): RuntimeTaskRecord["businessContext"] {
@@ -3289,6 +3627,7 @@ function mapTaskRun(row: TaskRunRow): TaskRunRecord {
 	return {
 		id: row.id, taskId: row.task_id, executor: row.executor, status: row.status, startedAt: row.started_at,
 		...(row.lease_expires_at === null ? {} : { leaseExpiresAt: row.lease_expires_at }),
+		...(row.cancellation_requested_at === null ? {} : { cancellationRequestedAt: row.cancellation_requested_at }),
 		...(row.finished_at === null ? {} : { finishedAt: row.finished_at }),
 		...(row.output === null ? {} : { output: row.output }),
 		...(row.error === null ? {} : { error: row.error }),
@@ -3318,8 +3657,10 @@ function safeStoredWorkContract(value: RuntimeTaskRecord["workContract"]): strin
 
 function safeStoredObjectiveRevisions(value: RuntimeTaskRecord["objectiveRevisions"], taskId: string): string | null {
 	if (!value) return null;
-	if (value.length > MAX_OBJECTIVE_REVISIONS || value.some((revision) => !parseStoredObjectiveRevision(revision, taskId))) return null;
-	try { return JSON.stringify(value); }
+	if (value.length > MAX_OBJECTIVE_REVISIONS) return null;
+	const normalized = value.map((revision) => parseStoredObjectiveRevision(revision, taskId));
+	if (normalized.some((revision) => !revision)) return null;
+	try { return JSON.stringify(normalized); }
 	catch { return null; }
 }
 

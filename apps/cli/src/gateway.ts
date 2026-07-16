@@ -8,7 +8,7 @@
  */
 
 import { AutomationStore } from "@beemax/automation";
-import { ActionGovernance, AutonomyRolloutController, AutomationDeliveryWorker, AutomationScheduler, BeeMaxAgentRuntime, DeliveryDeferredError, DeterministicSituationBuilder, FileCredentialVault, FileCredentialVaultAuditJournal, GroupObservationRecorder, HeartbeatRunner, InitiativeRuntime, InitiativeTriggerService, ObjectiveCompletionDeliveryService, PiAmbientObservationEvaluator, PiWorkContractBuilder, ProactiveInvestigationRuntime, TaskPlanNoticeDeliveryService, TaskTransitionInitiativeAdapter, ToolApprovalBroker, ToolPolicyRegistry, VERIFICATION_SUBMIT_TOOL_NAME, buildActiveTaskPreservationEnvelope, buildTaskPreservationEnvelope, canonicalUserId, containsCredentialMaterial, conversationKey, responsibilityOwnerKey, responsibilityOwnerKeys, createExecutionEnvelope, createSubagentTools, createTaskCheckpoint, createTaskLedgerTools, createTaskOrchestrationTools, decideInitiativeFromSituation, guardVerifiedObjectiveMemoryPublisher, isVerifiedAutomationOutcome, objectiveIdFromCompletionId, redactCredentialMaterial, renderTaskCheckpoint, selectTurnTools, taskCriterionDefinitions, taskRequiresCurrentSourceEvidence, type AgentRuntimePort, type AmbientObservationEvaluator, type BeeMaxAgentRunEvent, type BeeMaxAgentRunEventSink, type ContextCompactionAuditEvent, type DeliveryPort, type ExecutionEnvelope, type ExecutionTraceSink, type InitiativeObservation, type ObjectiveDeliveryInput, type SkillCandidateTrialInput, type SkillTrialAssertion, type SkillTrialToolCall, type SubagentTask, type TaskGraphExecutionContext, type TaskGraphExecutionResult, type TaskGraphVerifier, type TaskLedger, type TaskRecord, type ToolEffectProjectionReader, type VerifiedObjectiveMemoryPublisher } from "@beemax/core";
+import { ActionGovernance, AuthStorage, AutonomyRolloutController, AutomationDeliveryWorker, AutomationScheduler, BeeMaxAgentRuntime, DeliveryDeferredError, DeterministicSituationBuilder, FileCredentialVault, FileCredentialVaultAuditJournal, GroupObservationRecorder, HeartbeatRunner, InitiativeRuntime, InitiativeTriggerService, ObjectiveCompletionDeliveryService, PiAmbientObservationEvaluator, PiWorkContractBuilder, ProactiveInvestigationRuntime, TaskPlanNoticeDeliveryService, TaskTransitionInitiativeAdapter, ToolApprovalBroker, ToolPolicyRegistry, VERIFICATION_SUBMIT_TOOL_NAME, buildActiveTaskPreservationEnvelope, buildTaskPreservationEnvelope, canonicalUserId, containsCredentialMaterial, conversationKey, responsibilityOwnerKey, responsibilityOwnerKeys, createExecutionEnvelope, createSubagentTools, createTaskCheckpoint, createTaskLedgerTools, createTaskOrchestrationTools, decideInitiativeFromSituation, guardVerifiedObjectiveMemoryPublisher, isVerifiedAutomationOutcome, objectiveIdFromCompletionId, redactCredentialMaterial, renderTaskCheckpoint, selectTurnTools, taskCriterionDefinitions, taskRequiresCurrentSourceEvidence, type AgentRuntimePort, type AmbientObservationEvaluator, type BeeMaxAgentRunEvent, type BeeMaxAgentRunEventSink, type ContextCompactionAuditEvent, type DeliveryPort, type ExecutionEnvelope, type ExecutionTraceSink, type InitiativeObservation, type ObjectiveDeliveryInput, type SkillCandidateTrialInput, type SkillTrialAssertion, type SkillTrialToolCall, type SubagentTask, type TaskGraphExecutionContext, type TaskGraphExecutionResult, type TaskGraphVerifier, type TaskLedger, type TaskRecord, type ToolEffectProjectionReader, type VerifiedObjectiveMemoryPublisher } from "@beemax/core";
 import {
 	AdapterRegistry,
 	ChannelHost,
@@ -40,7 +40,7 @@ import { executionPortFor, executionSafeTools } from "./execution-composition.ts
 import { createProfileControlHandler, type TaskRecoveryStatus } from "./profile-control.ts";
 import { boundGatewayProcessLogs, recordGatewayEvent, writeGatewayState } from "./gateway-observability.ts";
 import { installedVersion } from "./runtime-facts.ts";
-import { configuredAuxiliaryTextModels, configuredCapabilityRanker, configuredMediaUnderstanding, configuredRuntimeModels } from "./model-catalog.ts";
+import { configuredAuxiliaryTextModels, configuredCapabilityRanker, configuredMediaUnderstanding, configuredRuntimeModels, resolveProfileCognitionModels } from "./model-catalog.ts";
 import { setFeishuHomeChat } from "./profile-config.ts";
 import { createMemoryScopeResolver } from "./memory-membership.ts";
 import { createLocalMediaUnderstandingAdapters } from "./local-media-understanding.ts";
@@ -89,6 +89,16 @@ export async function runGateway(config: BeeMaxConfig): Promise<void> {
 		writeGatewayState(config.paths.agentDir, { profile: config.profile, lifecycle: "failed", version: installedVersion(), pid: process.pid, stoppedAt: new Date().toISOString(), lastError: error });
 		recordGatewayEvent(config.paths.agentDir, "failed", { profile: config.profile, error });
 		throw new Error(error);
+	}
+	const profileAuth = AuthStorage.create(join(config.paths.agentDir, "auth.json"));
+	let cognitionModels: Awaited<ReturnType<typeof resolveProfileCognitionModels>>;
+	try {
+		cognitionModels = await resolveProfileCognitionModels(config, (provider) => profileAuth.getApiKey(provider, { includeFallback: false }));
+	} catch (error) {
+		const message = (error instanceof Error ? error.message : String(error)).slice(0, 500);
+		writeGatewayState(config.paths.agentDir, { profile: config.profile, lifecycle: "failed", version: installedVersion(), pid: process.pid, stoppedAt: new Date().toISOString(), lastError: message });
+		recordGatewayEvent(config.paths.agentDir, "failed", { profile: config.profile, error: message });
+		throw error;
 	}
 	const capabilityProviders = createProfileCapabilityProviderBundle({ profileId: config.profile, agentDir: config.paths.agentDir, installation: config.capabilityProviders.installation });
 	let bindingResolver;
@@ -303,7 +313,7 @@ export async function runGateway(config: BeeMaxConfig): Promise<void> {
 		work: {
 		agentDir: config.paths.agentDir, ledger: persistence.taskLedger, recoveryQueue: persistence.recoveryQueue, maxConcurrent: config.subagents.maxConcurrent,
 		maxSubagents: config.subagents.maxChildrenPerOwner, taskTimeoutMs: config.subagents.timeoutMs, subagentsEnabled: config.subagents.enabled,
-		executeTask: (task, signal, context, executionTrace, effectAuthority) => executePlannedTask(createSubagentAgent, task, task.executionScope as SessionSource, signal, config.subagents.timeoutMs, context, executionTrace, effectAuthority),
+		executeTask: (task, signal, context, executionTrace, effectAuthority) => executePlannedTask(createSubagentAgent, task, task.executionScope as SessionSource, signal, config.subagents.timeoutMs, context, executionTrace, effectAuthority, persistence.taskLedger),
 		verifyTaskCandidate: (task, result, signal, context, executionTrace) => createTaskVerifier(createSubagentAgent, config.subagents.timeoutMs, executionTrace, verificationAgentToolsForTask(readOnlyMcpTools, task, context?.successfulToolNames))(task, result, signal, context),
 		deliverObjective: (input, signal, executionTrace) => executeObjectiveDelivery(createSubagentAgent, input, signal, config.subagents.timeoutMs, executionTrace),
 		publishVerifiedOutcome: async (outcome) => {
@@ -328,7 +338,7 @@ export async function runGateway(config: BeeMaxConfig): Promise<void> {
 			if (!target?.platform || !target.chatId) throw new Error("Direct Objective delivery scope is unavailable");
 			await deliveryPort.sendText(target, `任务未通过独立 Verification：${resolution.feedback}`, { idempotencyKey: `direct-objective:${task.id}:verification:${task.verificationAttempts ?? 0}`, deliveryClass: "proactive" });
 		},
-		executeSubagent: (task, signal, executionTrace) => executeSubagentTask(createSubagentAgent, task, signal, undefined, undefined, undefined, executionTrace),
+		executeSubagent: (task, signal, executionTrace) => executeSubagentTask(createSubagentAgent, task, signal, undefined, undefined, undefined, executionTrace, undefined, undefined, persistence.taskLedger),
 		onTaskPlanError: ({ planId, error }) => console.error(`[beemax] background Task Plan ${planId} failed: ${redactCredentialMaterial(error instanceof Error ? error.message : String(error))}`),
 		onRecoveryStatus: (_status, cycle) => {
 			if (!cycle) return;
@@ -361,7 +371,7 @@ export async function runGateway(config: BeeMaxConfig): Promise<void> {
 		sessionTools: (source) => [
 			...(subagents ? [
 				...createSubagentTools(subagents, source, { objectiveTaskId: () => planningBudgets.currentObjectiveTaskId(conversationKey(source)) }),
-				...createTaskOrchestrationTools(memory, source, (task, signal, context) => taskScheduler.run(task.ownerKey, () => executePlannedTask(createSubagentAgent, task, source, signal, config.subagents.timeoutMs, context, executionTrace, toolEffects), signal), { maxConcurrent: config.subagents.maxConcurrent, planRuntime: taskPlanRuntime, verify: verifyTask, planningDecision: () => planningBudgets.current(conversationKey(source)), objectiveTaskId: () => planningBudgets.currentObjectiveTaskId(conversationKey(source)), executionTrace }),
+				...createTaskOrchestrationTools(memory, source, (task, signal, context) => taskScheduler.run(task.ownerKey, () => executePlannedTask(createSubagentAgent, task, source, signal, config.subagents.timeoutMs, context, executionTrace, toolEffects, persistence.taskLedger), signal), { maxConcurrent: config.subagents.maxConcurrent, planRuntime: taskPlanRuntime, verify: verifyTask, planningDecision: () => planningBudgets.current(conversationKey(source)), objectiveTaskId: () => planningBudgets.currentObjectiveTaskId(conversationKey(source)), executionTrace }),
 			] : []),
 			...createTaskLedgerTools(memory, source),
 			...(knowledgeProvider ? createKnowledgeTools(knowledgeProvider, source, {
@@ -403,7 +413,20 @@ export async function runGateway(config: BeeMaxConfig): Promise<void> {
 			runtime: {
 			createAgent,
 			createAutomationAgent,
-			...(auxiliaryTextModels.length ? { workContractBuilder: new PiWorkContractBuilder({ models: auxiliaryTextModels }) } : {}),
+			interruptObjectiveWork: (source, cancellation) => {
+				const ownerKeys = responsibilityOwnerKeys(source);
+				let pendingExecutions = 0;
+				for (const planId of cancellation.planIds) {
+					taskRecovery.cancel(ownerKeys, planId);
+				}
+				let interruptedEffects = 0;
+				for (const taskId of cancellation.taskIds) interruptedEffects += toolEffects.interruptTask(taskId);
+				const ownerKey = cancellation.ownerKey;
+				pendingExecutions += memory.objectiveInterruptionConvergence(ownerKey, cancellation.objectiveId).pendingExecutions;
+				pendingExecutions += toolEffects.unresolvedTaskEffects?.({ ownerKey, taskIds: cancellation.taskIds }) ?? 0;
+				return { interruptedEffects, pendingExecutions };
+			},
+			workContractBuilder: new PiWorkContractBuilder({ models: cognitionModels }),
 			fallbackModels: configuredRuntimeModels(config),
 			turnIdleSettleMs: config.agent.turnIdleSettleMs,
 			mediaUnderstanding: configuredMediaUnderstanding(config, createLocalMediaUnderstandingAdapters(config.mediaUnderstanding.localOcr)),
@@ -752,6 +775,7 @@ export async function executeSubagentTask(
 	executionTrace?: ExecutionTraceSink,
 	allowedCapabilities?: readonly string[],
 	toolEffectProjectionReader?: ToolEffectProjectionReader,
+	taskLedger?: TaskLedger,
 ): Promise<string> {
 	if (!task.source.platform?.trim()) throw new Error("Delegated Task source platform is unavailable");
 	const source: SessionSource = {
@@ -761,7 +785,7 @@ export async function executeSubagentTask(
 		messageId: undefined,
 		delegatedTask: { id: task.id, ownerKey: task.ownerKey },
 	};
-	const runtime = new BeeMaxAgentRuntime({ createAgent: factory, profileId: profileIdForAgentFactory(factory), executionTrace, toolEffectProjectionReader });
+	const runtime = new BeeMaxAgentRuntime({ createAgent: factory, profileId: profileIdForAgentFactory(factory), executionTrace, toolEffectProjectionReader, taskLedger });
 	try {
 		const envelope = executionEnvelope ?? createExecutionEnvelope({ executionId: task.taskRunId ? `execution:${task.taskRunId}` : `execution:${crypto.randomUUID()}`, trigger: { kind: "delegation", id: task.id }, ...(task.parentId ? { objectiveId: task.parentId } : {}), taskId: task.id, ...(task.taskRunId ? { taskRunId: task.taskRunId } : {}), ...(runtimeTimeoutMs === null ? {} : { budget: { deadlineAt: Date.now() + runtimeTimeoutMs } }) });
 		const result = await runtime.run({ source, signal, timeoutMs: runtimeTimeoutMs, expandPromptTemplates: false, mode: "automation", executionEnvelope: envelope, ...(allowedCapabilities ? { allowedCapabilities: [...allowedCapabilities] } : {}), text: [
@@ -790,6 +814,7 @@ export async function executePlannedTask(
 	context?: TaskGraphExecutionContext,
 	executionTrace?: ExecutionTraceSink,
 	effectAuthority?: ToolEffectProjectionReader,
+	taskLedger?: TaskLedger,
 ): Promise<TaskGraphExecutionResult> {
 	const authoritativeEffects = effectAuthority?.taskProjection({ ownerKey: task.ownerKey, taskId: task.id }).filter((effect) => !containsCredentialMaterial(JSON.stringify(effect))).slice(-100);
 	const executionContextParts = [
@@ -821,7 +846,7 @@ export async function executePlannedTask(
 		mode: graphEnvelope?.mode ?? (context?.attempt && context.attempt > 1 ? "correction" : context?.executionMode ?? "normal"),
 	});
 	const checkpointEvent = nativeCheckpointRecorder(task, context, effectAuthority);
-	return parsePlannedTaskResult(await executeSubagentTask(factory, delegated, signal ?? new AbortController().signal, null, checkpointEvent, executionEnvelope, executionTrace, undefined, effectAuthority));
+	return parsePlannedTaskResult(await executeSubagentTask(factory, delegated, signal ?? new AbortController().signal, null, checkpointEvent, executionEnvelope, executionTrace, undefined, effectAuthority, taskLedger));
 }
 
 function nativeCheckpointRecorder(task: TaskRecord, context: TaskGraphExecutionContext | undefined, effects: ToolEffectProjectionReader | undefined): BeeMaxAgentRunEventSink | undefined {
@@ -1096,7 +1121,7 @@ export function createSkillCandidateVerifier(factory: ReturnType<typeof buildAge
 			const executionEnvelope = createExecutionEnvelope({ executionId: `verification:${runId}`, trigger: { kind: "verification", id: task.id }, taskId: task.id, taskRunId: runId, budget: { deadlineAt: createdAt + timeoutMs }, mode: "verification", verificationProtocol: "skill_candidate_v1" });
 			const verdict = await executeSubagentTask(factory, task, signal ?? new AbortController().signal, timeoutMs, (event) => {
 				if (event.type === "tool_execution_end" && !event.isError) toolCalls.push({ callId: event.toolCallId, name: event.toolName });
-			}, executionEnvelope, executionTrace);
+			}, executionEnvelope, executionTrace, undefined, undefined, ledger);
 			const firstLine = verdict.split(/\r?\n/, 1)[0]?.trim() ?? "";
 			const evidenceBody = verdict.split(/\r?\n/).slice(1).join("\n").trim();
 			const assertions = parseSkillTrialAssertions(evidenceBody);

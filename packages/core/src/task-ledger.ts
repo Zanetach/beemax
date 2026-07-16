@@ -58,6 +58,7 @@ export interface TaskPlanCompletionNotice {
 export interface ObjectiveCompletion {
 	id: string;
 	objectiveId: string;
+	taskRunId: string;
 	ownerKey: string;
 	planId?: string;
 	target: DeliveryTarget;
@@ -73,6 +74,16 @@ export interface ObjectiveCompletion {
 	receipt?: DeliveryReceipt;
 	blockedAt?: number;
 	error?: string;
+}
+export interface DirectObjectiveCompletionSettlement {
+	ownerKey: string;
+	objectiveId: string;
+	taskRunId: string;
+	candidateResult: string;
+	evidence?: string;
+	criterionVerifications?: TaskCriterionVerification[];
+	correctiveAttempts?: number;
+	notBefore?: number;
 }
 export type TaskPlanTransition = Pick<TaskPlanRecord, "status" | "taskCount" | "succeeded" | "failed" | "cancelled" | "verified" | "correctiveAttempts"> & Partial<Pick<TaskPlanRecord, "startedAt" | "finishedAt">>;
 export interface TaskPlanQuery { ownerKeys: string[]; id?: string; statuses?: TaskPlanStatus[]; limit?: number; }
@@ -126,6 +137,10 @@ export interface TaskRecord {
 export type TaskTransition = Pick<TaskRecord, "status"> & Partial<Pick<TaskRecord, "startedAt" | "finishedAt" | "result" | "candidateResult" | "error" | "evidence" | "artifacts" | "unresolvedIssues" | "verificationStatus" | "verificationFeedback" | "criterionVerifications" | "correctiveAttempts">>;
 export interface ObjectiveRevision { id: string; workContract: WorkContract; situation: Situation; createdAt: number; }
 export interface ObjectiveRevisionResult { originalWorkContract: WorkContract; revision: ObjectiveRevision; revisions: ObjectiveRevision[]; }
+export interface ObjectiveCancellationResult { ownerKey: string; objectiveId: string; taskIds: string[]; planIds: string[]; retry?: boolean; }
+export interface ObjectiveInterruptionRecord extends ObjectiveCancellationResult {}
+export interface ObjectiveInterruptionClaim extends ObjectiveInterruptionRecord { claimToken: string; claimLeaseExpiresAt: number; }
+export interface ObjectiveInterruptionConvergence { pendingExecutions: number; }
 
 export type TaskRunStatus = "running" | "succeeded" | "failed" | "cancelled";
 export interface TaskRunRecord {
@@ -135,11 +150,19 @@ export interface TaskRunRecord {
 	status: TaskRunStatus;
 	startedAt: number;
 	leaseExpiresAt?: number;
+	cancellationRequestedAt?: number;
 	finishedAt?: number;
 	output?: string;
 	error?: string;
 }
 export type TaskRunTransition = Pick<TaskRunRecord, "status"> & Partial<Pick<TaskRunRecord, "finishedAt" | "output" | "error">>;
+export interface TaskRunAndTaskSuccessSettlement {
+	ownerKey: string;
+	taskId: string;
+	taskRunId: string;
+	task: TaskTransition & { status: "succeeded" };
+	run: TaskRunTransition & { status: "succeeded" };
+}
 export interface TaskRecoveryPlanRef { ownerKey: string; planId: string; }
 export interface TaskRecoveryResult { retried: number; failed: number; affectedPlans: TaskRecoveryPlanRef[]; }
 export interface TaskRunEffectStateReader { taskRunReplayState(query: { ownerKey: string; taskId: string; taskRunId: string }): "clear" | "blocked"; }
@@ -162,10 +185,19 @@ export interface TaskLedger {
 	reviseObjective(ownerKey: string, taskId: string, revision: Pick<ObjectiveRevision, "workContract" | "situation">, now?: number): ObjectiveRevisionResult | undefined;
 	updateVerificationRequirements?(ownerKey: string, taskId: string, requirements: TaskVerificationRequirement[]): boolean;
 	retryObjective?(ownerKey: string, id: string, now?: number): boolean;
+	cancelObjective?(ownerKey: string, id: string, now?: number): ObjectiveCancellationResult | undefined;
+	pendingObjectiveInterruptions?(ownerKeys: string[], limit?: number): ObjectiveInterruptionRecord[];
+	claimObjectiveInterruptions?(ownerKeys: string[], holderId: string, leaseExpiresAt: number, now?: number, limit?: number): ObjectiveInterruptionClaim[];
+	objectiveInterruptionConvergence?(ownerKey: string, objectiveId: string, now?: number): ObjectiveInterruptionConvergence;
+	isObjectiveExecutionActive?(ownerKey: string, objectiveId: string, taskRunId: string, now?: number): boolean;
+	isTaskRunExecutionActive?(ownerKey: string, objectiveId: string, taskId: string, taskRunId: string, now?: number): boolean;
+	settleObjectiveInterruption?(ownerKey: string, objectiveId: string, now?: number, holderId?: string, claimToken?: string): boolean;
+	failObjectiveInterruption?(ownerKey: string, objectiveId: string, error: string, now?: number, holderId?: string, claimToken?: string): boolean;
 	cancelObjectives?(ownerKey: string, now?: number): number;
 	activeObjectivePlanIds?(ownerKey: string): string[];
 	recordRun(run: TaskRunRecord): void;
 	transitionRun(id: string, change: TaskRunTransition): boolean;
+	settleTaskRunAndTask?(settlement: TaskRunAndTaskSuccessSettlement, now?: number): boolean;
 	queryTasks(query: TaskQuery): TaskRecord[];
 	taskRuns(taskId: string): TaskRunRecord[];
 	recordPlan(tasks: TaskRecord[], dependencies: TaskDependency[], plan?: TaskPlanRecord): void;
@@ -187,14 +219,17 @@ export interface TaskLedger {
 	verificationCandidates?(now?: number, limit?: number, excludePlanIds?: string[]): TaskRecord[];
 	deferCandidateVerification?(ownerKeys: string[], taskId: string, now?: number): boolean;
 	resolveCandidateVerification?(ownerKeys: string[], taskId: string, resolution: TaskCandidateVerificationResolution, now?: number): boolean;
+	settleDirectObjectiveCompletion?(settlement: DirectObjectiveCompletionSettlement, now?: number): boolean;
 	enqueueObjectiveCompletion?(ownerKey: string, objectiveId: string, now?: number, notBefore?: number): boolean;
 	getObjectiveCompletion?(id: string): ObjectiveCompletion | undefined;
 	claimObjectiveCompletions?(platform: string, now?: number, limit?: number, leaseMs?: number): ObjectiveCompletion[];
+	recordObjectiveCompletionReceipt?(id: string, receipt: DeliveryReceipt, now?: number): boolean;
+	isObjectiveCompletionCancelledAfterDelivery?(id: string, receipt: DeliveryReceipt): boolean;
 	completeObjectiveCompletion?(id: string, claimToken: string, receipt: DeliveryReceipt, now?: number): boolean;
 	acknowledgeObjectiveCompletion?(id: string, receipt: DeliveryReceipt, now?: number): boolean;
 	failObjectiveCompletion?(id: string, claimToken: string, now?: number): boolean;
 	deferObjectiveCompletion?(id: string, claimToken: string, retryAt: number, now?: number): boolean;
-	renewObjectiveCompletion?(id: string, claimToken: string, leaseExpiresAt: number): boolean;
+	renewObjectiveCompletion?(id: string, claimToken: string, leaseExpiresAt: number, now?: number): boolean;
 	blockObjectiveCompletion?(id: string, claimToken: string, error: string, now?: number): boolean;
 	prepareTaskCorrections?(maxCorrectiveAttempts: number, now?: number): number;
 	enqueueTaskPlanCompletionNotice?(ownerKey: string, planId: string, now?: number): boolean;
@@ -204,7 +239,7 @@ export interface TaskLedger {
 	deferTaskPlanCompletionNotice?(id: string, claimToken: string, retryAt: number, now?: number): boolean;
 	renewTaskPlanCompletionNotice?(id: string, claimToken: string, leaseExpiresAt: number): boolean;
 	abandonTaskPlanCompletionNotice?(id: string, claimToken: string, error: string, now?: number): boolean;
-	renewTaskRunLease?(id: string, leaseExpiresAt: number): boolean;
+	renewTaskRunLease?(id: string, leaseExpiresAt: number, now?: number): boolean;
 	prepareTaskPlanRetry(ownerKeys: string[], planId: string, maxCorrectiveAttempts?: number): number;
 	cancelTaskPlan(ownerKeys: string[], planId: string, now?: number): number;
 	failTaskPlan?(ownerKeys: string[], planId: string, holderId: string, error: string, now?: number): number;

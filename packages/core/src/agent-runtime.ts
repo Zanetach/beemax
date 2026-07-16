@@ -11,10 +11,10 @@ import { SessionCoordinator, type RuntimeSessionFactory, type RuntimeSessionSnap
 import { SessionCatalog, type SavedSessionChoice, type SessionPreferences } from "./session-catalog.ts";
 import type { AgentControlHandler, AgentControlInput, AgentControlResult } from "./agent-control.ts";
 import { conversationKey, responsibilityOwnerKey, responsibilityOwnerKeys } from "./agent-scope.ts";
-import type { TaskKind, TaskLedger, TaskPlanRecord, TaskPlanStatus, TaskRecord, TaskRunRecord, TaskStatus } from "./task-ledger.ts";
+import type { ObjectiveCancellationResult, TaskKind, TaskLedger, TaskPlanRecord, TaskPlanStatus, TaskRecord, TaskRunRecord, TaskStatus } from "./task-ledger.ts";
 import type { AutonomousPlanningDecision, AutonomousPlanningPolicy, PlanningBudgetRegistry } from "./autonomous-planning.ts";
 import { TurnUnderstandingEngine, selectTurnTools, type TurnUnderstanding, type TurnUnderstandingPort } from "./turn-understanding.ts";
-import { DeterministicWorkContractBuilder, renderWorkContract, validateWorkContract, workContractUnderstanding, type WorkContract, type WorkContractBuilderPort } from "./work-contract.ts";
+import { WorkContractCognitionError, hasSemanticWorkContractAdjudication, renderWorkContract, validateWorkContract, workContractFromLegacyObjective, workContractUnderstanding, type WorkContract, type WorkContractBuilderPort, type WorkContractCognitionUsage } from "./work-contract.ts";
 import { redactCredentialMaterial } from "./credential-material.ts";
 import type { AccessScopeRef } from "./access-scope.ts";
 import { DeterministicSituationBuilder, type SituationBuilderPort } from "./situation-builder.ts";
@@ -130,6 +130,8 @@ export interface AgentRuntimePort<Source extends BeeMaxRuntimeSource = BeeMaxRun
 	dispose(): void;
 }
 
+export interface ObjectiveRuntimeInterruptionResult { interruptedEffects: number; pendingExecutions?: number; }
+
 export interface BeeMaxAgentRuntimeOptions<Source extends BeeMaxRuntimeSource = BeeMaxRuntimeSource> extends SessionCoordinatorOptions {
 	createAgent: RuntimeSessionFactory<Source>;
 	/** Trusted Profile identity used to scope the turn Tool Spec Plan. */
@@ -142,14 +144,21 @@ export interface BeeMaxAgentRuntimeOptions<Source extends BeeMaxRuntimeSource = 
 	fallbackModels?: Model<Api>[];
 	maxModelFallbacks?: number;
 	taskLedger?: TaskLedger;
+	/** Interrupts live Task Plans and Effects after the durable cancellation fence commits. */
+	interruptObjectiveWork?: (source: Source, cancellation: ObjectiveCancellationResult, signal?: AbortSignal) => ObjectiveRuntimeInterruptionResult | Promise<ObjectiveRuntimeInterruptionResult>;
+	objectiveInterruptionTimeoutMs?: number;
+	/** Renewable durable holder lease for direct Agent Task Runs. */
+	taskRunLeaseMs?: number;
 	/** Deterministic per-turn execution admission and resource policy. */
 	planningPolicy?: Pick<AutonomousPlanningPolicy, "decide">;
 	planningBudgets?: PlanningBudgetRegistry;
 	turnUnderstanding?: TurnUnderstandingPort;
-	/** Tool-free cognition that proposes a source-bound Work Contract; invalid output falls back deterministically. */
+	/** Tool-free cognition that proposes a source-bound Work Contract; invalid semantic output blocks before Pi. */
 	workContractBuilder?: WorkContractBuilderPort;
 	/** Async semantic Situation path; defaults to the deterministic compatibility builder. */
 	situationBuilder?: SituationBuilderPort;
+	/** Configurable semantic admission floor; applies only to model-proposed Work Contracts. */
+	minimumWorkContractConfidence?: number;
 	/** Content-free diagnostic projection keyed by the active Execution Envelope. */
 	executionTrace?: ExecutionTraceSink;
 	/** Trusted Profile-local Effect projection used to hide Tools with unresolved writes for the active Task. */
@@ -178,10 +187,15 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 	private readonly fallbackModels: Model<Api>[];
 	private readonly maxModelFallbacks: number;
 	private readonly taskLedger?: TaskLedger;
+	private readonly interruptObjectiveWork?: (source: Source, cancellation: ObjectiveCancellationResult, signal?: AbortSignal) => ObjectiveRuntimeInterruptionResult | Promise<ObjectiveRuntimeInterruptionResult>;
+	private readonly objectiveInterruptionTimeoutMs: number;
+	private readonly taskRunLeaseMs: number;
+	private readonly objectiveInterruptionHolderId = `objective-interruption:${crypto.randomUUID()}`;
 	private readonly planningPolicy?: Pick<AutonomousPlanningPolicy, "decide">;
 	private readonly planningBudgets?: PlanningBudgetRegistry;
 	private readonly turnUnderstanding: TurnUnderstandingPort;
 	private readonly workContractBuilder: WorkContractBuilderPort;
+	private readonly minimumWorkContractConfidence: number;
 	private readonly situationBuilder: SituationBuilderPort;
 	private readonly executionTrace?: ExecutionTraceSink;
 	private readonly toolEffectProjectionReader?: ToolEffectProjectionReader;
@@ -189,6 +203,7 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 	private readonly mediaUnderstanding: MediaUnderstandingPort;
 	private readonly turnIdleSettleMs: number | null;
 	private readonly supplementalMediaControllers = new Map<string, Set<AbortController>>();
+	private readonly objectiveInterruptions = new Map<string, Set<() => Promise<void>>>();
 
 	constructor(options: BeeMaxAgentRuntimeOptions<Source>) {
 		this.sessions = new SessionCoordinator(options);
@@ -202,10 +217,16 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 		this.fallbackModels = options.fallbackModels ?? [];
 		this.maxModelFallbacks = Math.max(0, Math.min(options.maxModelFallbacks ?? 2, 5));
 		this.taskLedger = options.taskLedger;
+		this.interruptObjectiveWork = options.interruptObjectiveWork;
+		this.objectiveInterruptionTimeoutMs = Math.max(100, Math.min(options.objectiveInterruptionTimeoutMs ?? 2_000, 30_000));
+		this.taskRunLeaseMs = Math.max(300, Math.min(options.taskRunLeaseMs ?? 30_000, 300_000));
 		this.planningPolicy = options.planningPolicy;
 		this.planningBudgets = options.planningBudgets;
 		this.turnUnderstanding = options.turnUnderstanding ?? new TurnUnderstandingEngine();
-		this.workContractBuilder = options.workContractBuilder ?? new DeterministicWorkContractBuilder();
+		this.workContractBuilder = options.workContractBuilder ?? {
+			build: async () => { throw new Error("MODEL_UNAVAILABLE: semantic Work Contract cognition is not configured for this runtime"); },
+		};
+		this.minimumWorkContractConfidence = Math.max(0, Math.min(options.minimumWorkContractConfidence ?? 0.6, 1));
 		this.situationBuilder = options.situationBuilder ?? new DeterministicSituationBuilder();
 		this.executionTrace = options.executionTrace;
 		this.toolEffectProjectionReader = options.toolEffectProjectionReader;
@@ -238,26 +259,106 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 		const cognitiveRun = interactive || responsibleAutomation || explicitAutomationObjective;
 		const contextSource = input.mode === "automation" ? { ...input.source, threadId: undefined } : input.source;
 		const objectiveOwnerKeys = responsibilityOwnerKeys(input.source);
-		let activeObjective = (interactive || explicitAutomationObjective) && this.taskLedger && typeof this.taskLedger.queryTasks === "function"
-			? this.taskLedger.queryTasks({ ownerKeys: objectiveOwnerKeys, ...(input.objectiveTaskId ? { id: input.objectiveTaskId, statuses: ["pending", "running"] as const } : { kinds: ["objective"] as const, statuses: ["pending", "running"] as const }), limit: 1 })[0]
-			: undefined;
-		if (explicitAutomationObjective && !activeObjective) throw new AgentRunError(`Proactive Objective ${input.objectiveTaskId} is not active in this scope`, false, undefined);
-		const fallbackUnderstanding = cognitiveRun ? this.turnUnderstanding.understand(input.text, { activeObjective: activeObjective?.title }) : undefined;
+		await this.retryPendingObjectiveInterruptions(input.source, objectiveOwnerKeys, cognitionSignal);
+		const activeObjectiveCandidates = (interactive || explicitAutomationObjective) && this.taskLedger && typeof this.taskLedger.queryTasks === "function"
+			? this.taskLedger.queryTasks({ ownerKeys: objectiveOwnerKeys, kinds: ["objective"], statuses: ["pending", "running"], ...(input.objectiveTaskId ? { id: input.objectiveTaskId } : {}), limit: input.objectiveTaskId ? 1 : 100 })
+			: [];
+		let activeObjective = input.objectiveTaskId ? activeObjectiveCandidates[0] : undefined;
+		if (input.objectiveTaskId && !activeObjective) throw new AgentRunError(`Objective ${input.objectiveTaskId} is not active in this scope`, false, undefined);
+		if (explicitAutomationObjective && activeObjective?.objectiveRevisions?.length) {
+			activeObjective = { ...activeObjective, situation: activeObjective.objectiveRevisions.at(-1)!.situation };
+		}
+		const compatibilityObjective = activeObjective ?? (activeObjectiveCandidates.length === 1 ? activeObjectiveCandidates[0] : undefined);
+		const fallbackUnderstanding = cognitiveRun ? this.turnUnderstanding.understand(input.text, { activeObjective: compatibilityObjective?.title }) : undefined;
+		const planning = interactive ? this.planningPolicy?.decide(input.text) : undefined;
+		// Semantic admission is control-plane cognition, not Pi execution. A caller-
+		// supplied Execution Envelope remains the hard end-to-end ceiling, while the
+		// autonomous planning budget below governs only the subsequent Pi loop.
+		const cognitionTokenLimit = input.executionEnvelope?.budget?.maxTokens;
 		let workContract: WorkContract | undefined;
-		if (fallbackUnderstanding) {
+		let workContractCognitionUsage: WorkContractCognitionUsage | undefined;
+		let workContractCognitionBudgetChargeTokens = 0;
+		if (fallbackUnderstanding && explicitAutomationObjective && activeObjective) {
+			// Execute the already-admitted durable Contract. Reinterpreting its original
+			// description as a fresh lifecycle command can make an Objective self-cancel.
+			workContract = compileEffectiveObjectiveWorkContract(activeObjective);
+		} else if (fallbackUnderstanding) {
 			try {
-				const trustedContext = { fallback: fallbackUnderstanding, ...(activeObjective ? { activeObjective: { id: activeObjective.id, title: activeObjective.title } } : {}) };
-				const built = await this.workContractBuilder.build({ rawRequest: input.text, ...trustedContext, ...(cognitionSignal ? { signal: cognitionSignal } : {}) });
-				workContract = validateWorkContract(built.contract, input.text, { trustedContext, requireAcceptanceCriterion: built.source === "model" });
+				const activeObjectives = activeObjectiveCandidates.map((task) => ({ id: task.id, title: task.title }));
+				const trustedContext = { fallback: fallbackUnderstanding, activeObjectives, ...(compatibilityObjective ? { activeObjective: { id: compatibilityObjective.id, title: compatibilityObjective.title } } : {}) };
+				const built = await this.workContractBuilder.build({ rawRequest: input.text, ...trustedContext, ...(cognitionTokenLimit !== undefined ? { maxCognitionTokens: cognitionTokenLimit } : {}), ...(cognitionSignal ? { signal: cognitionSignal } : {}) });
+				if (!hasSemanticWorkContractAdjudication(built)) throw new Error("Model Work Contract is missing independent semantic adjudication evidence");
+				workContractCognitionUsage = built.cognitionUsage ?? built.semanticAdjudication?.cognitionUsage;
+				workContractCognitionBudgetChargeTokens = built.source === "model" ? built.cognitionBudgetChargeTokens : 0;
+				workContract = validateWorkContract(built.contract, input.text, { trustedContext, requireAcceptanceCriterion: built.source === "model", enforceFallbackUnderstanding: built.source !== "model" });
+				if (built.source === "model" && workContract.confidence < this.minimumWorkContractConfidence) throw new Error(`Model Work Contract confidence ${workContract.confidence} is below the admission threshold ${this.minimumWorkContractConfidence}`);
+				const envelopeTokenLimit = input.executionEnvelope?.budget?.maxTokens;
+				if (envelopeTokenLimit !== undefined && workContractCognitionBudgetChargeTokens > envelopeTokenLimit) throw new Error(`Work Contract cognition exceeded the Execution Envelope token budget (${envelopeTokenLimit})`);
 			} catch (error) {
-				if (input.signal?.aborted) throw new AgentRunError("Agent turn was cancelled", false, input.signal.reason);
-				if (deadlineSignal?.aborted) throw new AgentRunError("Execution Envelope deadline expired during Work Contract cognition", true, error);
-				workContract = (await new DeterministicWorkContractBuilder().build({ rawRequest: input.text, fallback: fallbackUnderstanding, ...(activeObjective ? { activeObjective: { id: activeObjective.id, title: activeObjective.title } } : {}) })).contract;
+				if (error instanceof WorkContractCognitionError) {
+					workContractCognitionUsage = error.cognitionUsage;
+					workContractCognitionBudgetChargeTokens = error.cognitionBudgetChargeTokens;
+				}
+				if (input.signal?.aborted) throw new AgentRunError("Agent turn was cancelled", false, input.signal.reason, false, workContractCognitionUsage);
+				if (deadlineSignal?.aborted) throw new AgentRunError("Execution Envelope deadline expired during Work Contract cognition", true, error, false, workContractCognitionUsage);
+				throw new AgentRunError(`Work Contract admission blocked: ${errorMessage(error)}`, true, error, false, workContractCognitionUsage);
 			}
 		}
-		const understanding = workContract && fallbackUnderstanding ? workContractUnderstanding(workContract, fallbackUnderstanding) : fallbackUnderstanding;
-		const planning = interactive ? this.planningPolicy?.decide(input.text) : undefined;
-		const bindsActiveObjective = Boolean(input.objectiveTaskId) || fallbackUnderstanding?.action === "continue" || fallbackUnderstanding?.action === "correct";
+		const targetObjectiveId = workContract?.targetObjective?.id;
+		if (targetObjectiveId) {
+			activeObjective = activeObjectiveCandidates.find((candidate) => candidate.id === targetObjectiveId);
+			if (!activeObjective) throw new AgentRunError(`Work Contract target ${targetObjectiveId} is not an active Objective in this scope`, false, undefined);
+		} else if (!explicitAutomationObjective) activeObjective = undefined;
+		if (interactive && input.objectiveTaskId && targetObjectiveId !== input.objectiveTaskId) throw new AgentRunError(`Work Contract must target explicitly bound Objective ${input.objectiveTaskId}`, false, undefined);
+		const understanding = workContract && fallbackUnderstanding
+			? { ...workContractUnderstanding(workContract, fallbackUnderstanding), ...(activeObjective && workContract.action === "continue" ? { goal: activeObjective.title } : {}) }
+			: fallbackUnderstanding;
+		const referencesActiveObjective = Boolean(activeObjective && (input.objectiveTaskId || workContract?.targetObjective));
+		if (workContract?.action === "cancel") {
+			if (!activeObjective || !referencesActiveObjective) throw new AgentRunError("Work Contract cancellation does not identify one active Objective", false, undefined);
+			const cancelledObjective = activeObjective;
+			const cancellation = this.taskLedger?.cancelObjective?.(cancelledObjective.ownerKey, cancelledObjective.id, startedAt);
+			if (!cancellation) throw new AgentRunError(`Objective ${activeObjective.id} could not be cancelled`, false, undefined);
+			const claimed = this.taskLedger?.claimObjectiveInterruptions?.([cancelledObjective.ownerKey], this.objectiveInterruptionHolderId, Date.now() + this.objectiveInterruptionTimeoutMs * 2 + 1_000, Date.now(), 10)
+				.find((item) => item.objectiveId === cancelledObjective.id);
+			if (this.taskLedger?.claimObjectiveInterruptions && !claimed) {
+				return { answer: `Cancelled Objective ${activeObjective.title}; durable execution is fenced, but runtime interruption is being reconciled by another Runtime.`, model: "beemax/work-contract", durationMs: Date.now() - startedAt, usage: cognitionResultUsage(workContractCognitionUsage) };
+			}
+			const interruptionResponsibility = claimed ?? cancellation;
+			const localInterruption = await this.interruptLocalObjective(cancellation.taskIds, cognitionSignal);
+			let interruption: ObjectiveRuntimeInterruptionResult = { interruptedEffects: 0 };
+			let interruptionError: unknown;
+			try {
+				if (!this.interruptObjectiveWork) throw new Error("Objective runtime interruption adapter is unavailable");
+				interruption = await this.boundedObjectiveInterruption((interruptionSignal) => this.interruptObjectiveWork!(input.source, interruptionResponsibility, interruptionSignal), cognitionSignal);
+			}
+			catch (error) { interruptionError = error; }
+			const pendingReasons = [
+				...(localInterruption.failed ? [`${localInterruption.failed} local execution interruption(s) failed`] : []),
+				...(interruption.pendingExecutions ? [`${interruption.pendingExecutions} execution stop(s) await convergence`] : []),
+				...(interruptionError ? [redactCredentialMaterial(errorMessage(interruptionError)).slice(0, 500)] : []),
+			];
+			const interruptionHolderId = claimed ? this.objectiveInterruptionHolderId : undefined;
+			const interruptionClaimToken = claimed?.claimToken;
+			if (pendingReasons.length) {
+				const released = this.taskLedger?.failObjectiveInterruption?.(cancelledObjective.ownerKey, cancelledObjective.id, pendingReasons.join("; "), Date.now(), interruptionHolderId, interruptionClaimToken);
+				if (released === false) pendingReasons.push("interruption claim changed before failure acknowledgement");
+			} else if (this.taskLedger?.settleObjectiveInterruption && !this.taskLedger.settleObjectiveInterruption(cancelledObjective.ownerKey, cancelledObjective.id, Date.now(), interruptionHolderId, interruptionClaimToken)) {
+				const reason = "durable execution holders have not converged";
+				const released = this.taskLedger?.failObjectiveInterruption?.(cancelledObjective.ownerKey, cancelledObjective.id, reason, Date.now(), interruptionHolderId, interruptionClaimToken);
+				pendingReasons.push(released === false ? `${reason}; interruption claim changed before settlement` : reason);
+			}
+			const answer = pendingReasons.length
+				? `Cancelled Objective ${activeObjective.title}; durable execution is fenced, but runtime interruption requires reconciliation: ${pendingReasons.join("; ")}.`
+				: interruption.interruptedEffects
+				? `Cancelled Objective ${activeObjective.title}; ${interruption.interruptedEffects} interrupted Effect(s) require reconciliation before their external outcome is known.`
+				: `Cancelled Objective ${activeObjective.title}.`;
+			return { answer, model: "beemax/work-contract", durationMs: Date.now() - startedAt, usage: cognitionResultUsage(workContractCognitionUsage) };
+		}
+		if (input.executionEnvelope?.budget?.maxTokens !== undefined
+			&& workContractCognitionBudgetChargeTokens >= input.executionEnvelope.budget.maxTokens) {
+			throw new AgentRunError(`Work Contract cognition exhausted the Execution Envelope token budget (${input.executionEnvelope.budget.maxTokens}) before Pi execution`, false, undefined, false, workContractCognitionUsage);
+		}
 		const situation = understanding ? (await this.situationBuilder.build({
 			text: input.text,
 			fallback: understanding,
@@ -269,11 +370,12 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 			if (!revision) throw new AgentRunError(`Objective ${activeObjective.id} could not retain its correction`, false, undefined);
 			activeObjective = { ...activeObjective, workContract: revision.originalWorkContract, situation: revision.revision.situation, objectiveRevisions: revision.revisions };
 		}
-		const accessScopeRef = activeObjective && bindsActiveObjective ? activeObjective.accessScopeRef ?? trustedInputAccessScope : trustedInputAccessScope;
+		const accessScopeRef = activeObjective && referencesActiveObjective ? activeObjective.accessScopeRef ?? trustedInputAccessScope : trustedInputAccessScope;
+		const reusesActiveObjective = Boolean(activeObjective && (explicitAutomationObjective || workContract?.action === "continue" || workContract?.action === "correct"));
 		const objectiveBinding = explicitAutomationObjective && activeObjective
 			? { task: activeObjective, created: false }
-			: (responsibleAutomation || (interactive && shouldBindDurableObjective(input, understanding, planning)))
-				? this.createObjective(input, startedAt, situation, accessScopeRef, understanding?.acceptanceCriteria, workContract)
+			: (responsibleAutomation || (interactive && shouldBindDurableObjective(input, understanding, planning) && !(workContract?.action === "query" && referencesActiveObjective)))
+				? this.createObjective(input, startedAt, situation, accessScopeRef, understanding?.acceptanceCriteria, workContract, reusesActiveObjective ? activeObjective : undefined)
 				: undefined;
 		const objective = objectiveBinding?.task;
 		const supportsTaskRuns = typeof this.taskLedger?.recordRun === "function" && typeof this.taskLedger?.transitionRun === "function";
@@ -295,9 +397,12 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 			...(input.timeoutMs === null && !objective ? {} : { budget: { ...(objective ? { maxCorrectiveAttempts: 1 } : {}), ...(input.timeoutMs === null ? {} : { deadlineAt: startedAt + input.timeoutMs }) } }),
 			mode: understanding?.action === "correct" ? "correction" : "normal",
 		});
-		let activeTaskRunId = ownedTaskRunId;
+		let activeTaskRunId = executionEnvelope.taskRunId;
+		let activeTaskRunSettled = false;
 		let completionId: string | undefined;
+		let turnResourceCleanup: (() => void) | undefined;
 		return this.sessions.run(input.source, factory, async (session) => {
+			let unregisterObjectiveInterruption: (() => void) | undefined;
 			if (executionEnvelope.budget?.deadlineAt !== undefined && executionEnvelope.budget.deadlineAt <= Date.now()) {
 				throw new AgentRunError("Execution Envelope deadline has expired", true, undefined);
 			}
@@ -313,10 +418,31 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 				if (!this.taskLedger?.transition(activeObjective.id, { status: "running", startedAt })) throw new AgentRunError(`Proactive Objective ${activeObjective.id} could not start`, false, undefined);
 				activeObjective = { ...activeObjective, status: "running", startedAt };
 			}
-			if (ownedTaskRunId && objective) this.taskLedger?.recordRun({ id: ownedTaskRunId, taskId: objective.id, executor: "agent", status: "running", startedAt, ...(executionEnvelope.budget?.deadlineAt ? { leaseExpiresAt: executionEnvelope.budget.deadlineAt + 60_000 } : {}) });
+			if (ownedTaskRunId && objective) this.taskLedger?.recordRun({ id: ownedTaskRunId, taskId: objective.id, executor: "agent", status: "running", startedAt, leaseExpiresAt: startedAt + this.taskRunLeaseMs });
+			const planningScope = conversationKey(input.source);
+			let planningLease: string | undefined;
+			let taskRunLeaseLost = false;
+			const assertTaskRunAuthority = () => {
+				if (taskRunLeaseLost) throw new AgentRunError("Durable Task Run execution authority was lost", false, undefined);
+			};
+			const taskRunLeaseHeartbeat = activeTaskRunId && this.taskLedger?.renewTaskRunLease ? setInterval(() => {
+				const runId = activeTaskRunId;
+				if (!runId || taskRunLeaseLost) return;
+				try {
+					if (!this.taskLedger?.renewTaskRunLease?.(runId, Date.now() + this.taskRunLeaseMs, Date.now())) { taskRunLeaseLost = true; void session.piSession.abort(); }
+				} catch { taskRunLeaseLost = true; void session.piSession.abort(); }
+			}, Math.max(100, Math.trunc(this.taskRunLeaseMs / 3))) : undefined;
+			let turnResourcesCleaned = false;
+			const cleanupTurnResources = () => {
+				if (turnResourcesCleaned) return;
+				turnResourcesCleaned = true;
+				if (taskRunLeaseHeartbeat) clearInterval(taskRunLeaseHeartbeat);
+				if (planningLease) this.planningBudgets?.end(planningScope, planningLease);
+			};
+			turnResourceCleanup = cleanupTurnResources;
 			const requestedText = explicitSkillRequest(input.text);
 			const explicitlyRequestedSkill = explicitSkillName(input.text);
-			const taskPreservation = activeObjective && (Boolean(input.objectiveTaskId) || understanding?.action === "continue" || understanding?.action === "correct") ? buildTaskPreservationEnvelope([activeObjective], 6_000) : undefined;
+			const taskPreservation = activeObjective && referencesActiveObjective ? buildTaskPreservationEnvelope([activeObjective], 6_000) : undefined;
 			const contextAssembly = cognitiveRun && this.context && typeof this.context.assemble === "function"
 				? this.context.assemble(contextSource, requestedText, { model: modelOf(session.piSession.agent), memoryQuery: understanding?.memoryQuery, situation, accessScopeRef }, taskPreservation ? [{ kind: "task_preservation", source: "task_ledger", priority: 110, compressible: false, text: taskPreservation }] : []) : undefined;
 			const recalledText = contextAssembly?.text ?? (cognitiveRun
@@ -324,8 +450,7 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 				: requestedText);
 			const enrichedBase = workContract ? `${renderWorkContract(workContract)}\n\n${recalledText}` : recalledText;
 			const enrichedText = contextAssembly ? enrichedBase : [taskPreservation, enrichedBase].filter(Boolean).join("\n\n");
-			const planningScope = conversationKey(input.source);
-			const planningLease = planning && this.planningBudgets ? this.planningBudgets.begin(planningScope, planning, objective?.id) : undefined;
+			planningLease = planning && this.planningBudgets ? this.planningBudgets.begin(planningScope, planning, objective?.id) : undefined;
 			const text = planning ? `${enrichedText}\n\n${planning.directive(objective?.id)}` : enrichedText;
 			let promptText = text;
 			let promptImages = input.images;
@@ -489,8 +614,23 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 			let observableProgress = false;
 			let toolCalls = 0;
 			let consumedTokens = 0;
+			let turnAssistantMessageObserved = false;
+			let lastTurnAssistantText = "";
+			let lastTurnAssistantFailure: Error | undefined;
+			let turnUsageObserved = false;
+			let turnInputTokens = 0;
+			let turnOutputTokens = 0;
+			const currentTurnAssistantText = (): string => turnAssistantMessageObserved
+				? lastTurnAssistantText
+				: lastAssistantText(session.piSession.agent, turnMessageStart);
+			const currentTurnAssistantFailure = (): Error | undefined => turnAssistantMessageObserved
+				? lastTurnAssistantFailure
+				: lastAssistantFailure(session.piSession.agent, turnMessageStart);
 			const maxToolCalls = minimumLimit(executionEnvelope.budget?.maxToolCalls, planning?.budget.maxToolCalls ?? undefined);
-			const maxTokens = minimumLimit(executionEnvelope.budget?.maxTokens, planning?.budget.maxTokens ?? undefined);
+			const envelopeExecutionTokens = executionEnvelope.budget?.maxTokens === undefined
+				? undefined
+				: Math.max(0, executionEnvelope.budget.maxTokens - workContractCognitionBudgetChargeTokens);
+			const maxTokens = minimumLimit(envelopeExecutionTokens, planning?.budget.maxTokens ?? undefined);
 			let turnAbortReason: string | undefined;
 			const requiredToolsUsed: string[] = [];
 			const requiredToolCalls = new Map<string, { name: string; args?: unknown }>();
@@ -761,6 +901,17 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 					if (typeof this.taskLedger?.checkpointTask === "function" && this.taskLedger.checkpointTask(objective.ownerKey, objective.id, mergeTaskCheckpoints(latest?.checkpoint, checkpoint))) checkpointedToolProgress = settledToolProgress.length;
 				} else if (event.type === "message_end" && event.message.role === "assistant") {
 					const usage = event.message.usage;
+					turnAssistantMessageObserved = true;
+					lastTurnAssistantText = event.message.content
+						.filter((block): block is Extract<typeof block, { type: "text" }> => block.type === "text")
+						.map((block) => block.text)
+						.join("");
+					lastTurnAssistantFailure = event.message.stopReason === "error"
+						? new Error(event.message.errorMessage ?? "Model request failed")
+						: undefined;
+					turnUsageObserved = true;
+					turnInputTokens += finiteTokenCount(usage.input);
+					turnOutputTokens += finiteTokenCount(usage.output);
 					const providerResponseId = boundedProviderResponseId(event.message.responseId);
 					const providerResponseIdentitySha256 = providerResponseId ? opaqueIdentitySha256(providerResponseId) : undefined;
 					const origin: AssistantTurnOrigin = { assistantTurnId: `assistant-turn:${crypto.randomUUID()}`, providerResponseStatus: providerResponseIdentitySha256 ? "reported" : "unavailable", ...(providerResponseIdentitySha256 ? { providerResponseIdentitySha256 } : {}) };
@@ -799,17 +950,38 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 			const effectiveTimeoutMs = executionTimeoutMs(input.timeoutMs, executionEnvelope.budget?.deadlineAt);
 			const timeout = effectiveTimeoutMs === undefined ? undefined : setTimeout(() => { timedOut = true; void session.piSession.abort(); }, effectiveTimeoutMs);
 			let settlementStatus: ExecutionSettledEvent["status"] = "failed";
-			session.piSession.agent.beforeToolCall = async (context, signal) => {
+				session.piSession.agent.beforeToolCall = async (context, signal) => {
 				try { await requireToolSpecPublication(); }
 				catch { return { block: true, reason: "Current Tool Spec Plan was not delivered to the model context" }; }
 				const expectedToolCall = toolOriginByCall.get(context.toolCall.id);
 				if (!expectedToolCall || expectedToolCall.origin.providerResponseStatus !== "reported") return { block: true, reason: `Tool ${context.toolCall.name} is not bound to a Provider-backed assistant Turn` };
-				if (expectedToolCall.toolName !== context.toolCall.name || expectedToolCall.argumentsSha256 !== toolArgumentsSha256(context.toolCall.arguments)) return { block: true, reason: `Tool ${context.toolCall.name} does not exactly match its assistant Tool call` };
-				if (!toolSpecPlan.direct.some((entry) => entry.toolName === context.toolCall.name)) return { block: true, reason: `Tool ${context.toolCall.name} is not direct in the current immutable Tool Spec Plan` };
-				if (unresolvedUncertainty && toolSideEffects.get(context.toolCall.name) !== "none") return { block: true, reason: `Tool ${context.toolCall.name} is blocked until the source-bound Work Contract uncertainty is resolved` };
+					if (expectedToolCall.toolName !== context.toolCall.name || expectedToolCall.argumentsSha256 !== toolArgumentsSha256(context.toolCall.arguments)) return { block: true, reason: `Tool ${context.toolCall.name} does not exactly match its assistant Tool call` };
+					if (!toolSpecPlan.direct.some((entry) => entry.toolName === context.toolCall.name)) return { block: true, reason: `Tool ${context.toolCall.name} is not direct in the current immutable Tool Spec Plan` };
+					if (toolSideEffects.get(context.toolCall.name) !== "none") {
+						const durableObjectiveId = executionEnvelope.objectiveId;
+						const durableTaskId = executionEnvelope.taskId;
+						const durableRunId = executionEnvelope.taskRunId;
+						const hasDurableIdentity = Boolean(durableObjectiveId || durableTaskId || durableRunId);
+						if (hasDurableIdentity) {
+							if (!durableObjectiveId || !durableTaskId || !durableRunId) return { block: true, reason: `Tool ${context.toolCall.name} requires complete Objective, Task, and Task Run identity for durable execution` };
+							const durableOwnerKey = input.source.delegatedTask?.ownerKey ?? objective?.ownerKey ?? responsibilityOwnerKey(input.source);
+							const active = this.taskLedger?.isTaskRunExecutionActive
+								? this.taskLedger.isTaskRunExecutionActive(durableOwnerKey, durableObjectiveId, durableTaskId, durableRunId, Date.now())
+								: durableObjectiveId === durableTaskId && this.taskLedger?.isObjectiveExecutionActive
+									? this.taskLedger.isObjectiveExecutionActive(durableOwnerKey, durableObjectiveId, durableRunId, Date.now())
+									: undefined;
+							if (active !== true || taskRunLeaseLost) return { block: true, reason: `Objective ${durableObjectiveId} has no active durable Execution Holder authority` };
+						}
+					}
+					if (unresolvedUncertainty && toolSideEffects.get(context.toolCall.name) !== "none") return { block: true, reason: `Tool ${context.toolCall.name} is blocked until the source-bound Work Contract uncertainty is resolved` };
 				return previousToolBoundary?.(context, signal);
 			};
+			unregisterObjectiveInterruption = executionEnvelope.objectiveId ? this.registerObjectiveInterruption(executionEnvelope.objectiveId, () => session.piSession.abort()) : undefined;
 			try {
+				if (objective && typeof this.taskLedger?.cancelObjective === "function" && typeof this.taskLedger.queryTasks === "function"
+					&& !this.taskLedger.queryTasks({ ownerKeys: [objective.ownerKey], id: objective.id, statuses: ["pending", "running"], limit: 1 })[0]) {
+					throw new AgentRunError(`Objective ${objective.id} is no longer active`, false, undefined);
+				}
 				if (skillAdmissionBlocker) throw new AgentRunError(skillAdmissionBlocker, false, undefined);
 				this.recordTrace({ type: "execution.started", executionEnvelope, at: startedAt });
 				this.recordTrace({ type: "tool_spec.published", executionEnvelope, toolSpecPlanId: toolSpecPlan.planId, directTools: progressiveTools });
@@ -832,13 +1004,16 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 					source: input.mode === "automation" ? "extension" : undefined,
 					images: promptImages,
 				});
+				assertTaskRunAuthority();
 				const unacquiredProviderRequirements = () => [...pendingProviderRequirements.entries()].filter(([, requirement]) => !requirement.acquired);
 				if (unacquiredProviderRequirements().length && !turnAbortReason) {
 					await promptSession(`[BeeMax Provider correction: the original Objective requires these unavailable Capabilities: ${unacquiredProviderRequirements().map(([name]) => name).join(", ")}. Use capability_acquire now. Do not answer, omit the requirement, or substitute a weaker result.]`, { expandPromptTemplates: false });
+					assertTaskRunAuthority();
 				}
 				const completedMatchingSkill = () => prefetchedSkills.some((name) => activatedPrefetchedSkills.has(name) && completedPrefetchedSkills.has(name));
 					if (prefetchedSkills.length && !completedMatchingSkill() && !turnAbortReason) {
 						await promptSession(`[BeeMax Skill correction: an installed Skill matched this Task (${prefetchedSkills.join(", ")}) but its lifecycle is incomplete. Use skill_read or skill_activate with the exact best-matching name, select its route, read every required module/resource, follow it, and finish with skill_complete before answering. Do not substitute another Skill.]`, { expandPromptTemplates: false });
+						assertTaskRunAuthority();
 						if (!completedMatchingSkill()) throw new AgentRunError(`${skillLifecycleBlocker ? `${skillLifecycleBlocker}; ` : ""}Agent did not complete the installed matching Skill lifecycle: ${prefetchedSkills.join(", ")}`, false, undefined);
 				}
 				if (readReroute && !readReroute.discoveryAttempted && !turnAbortReason) {
@@ -846,6 +1021,7 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 					if (supportsProgressiveTools && allTools.some((tool) => tool.name === "capability_discover")) activatePlannedTools(["capability_discover"]);
 					await requireToolSpecPublication();
 					await promptSession(`${renderToolSpecPlan(toolSpecPlan)}\n\n[BeeMax capability reroute: ${failedTool} failed without a recorded equivalent-capability discovery. Use capability_discover now to find an already available alternative, then continue the original request. Do not retry the same external mutation; reconcile any uncertain side effect before another write.]`, { expandPromptTemplates: false });
+					assertTaskRunAuthority();
 				}
 					let capabilityContinuations = 0;
 					const capabilityContinuationLimit = Math.max(3, pendingProviderRequirements.size + 1);
@@ -864,6 +1040,7 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 						}
 						await requireToolSpecPublication();
 						await promptSession(`${renderToolSpecPlan(toolSpecPlan)}\n\n[BeeMax capability continuation: matching Tools or Skills are now active. Continue the original request using them. Do not repeat capability discovery.]`, { expandPromptTemplates: false });
+						assertTaskRunAuthority();
 					}
 				if (readReroute && readReroute.discoveryAttempted && !turnAbortReason) throw new AgentRunError(`No equivalent healthy read-only capability completed after ${readReroute.failedTool} failed`, false, undefined);
 				if (pendingProviderRequirements.size && !turnAbortReason) {
@@ -872,6 +1049,7 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 						await requireToolSpecPublication();
 						const acquiredButUnused = [...pendingProviderRequirements.keys()];
 						await promptSession(`[BeeMax Provider completion correction: Provider health is verified, but the original Capabilities have not completed successfully. Use these exact Tools now: ${acquiredButUnused.join(", ")}. Do not answer until their successful Tool receipts exist.]`, { expandPromptTemplates: false });
+						assertTaskRunAuthority();
 					}
 					if (pendingProviderRequirements.size) {
 						const unresolved = [...pendingProviderRequirements.entries()].map(([name, requirement]) => requirement.acquired
@@ -885,6 +1063,7 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 				if (missingTools.length && !turnAbortReason) {
 					planningCorrected = true;
 					await promptSession(`[BeeMax planning correction: objective=${objective?.id ?? "turn-local"}; complete these tools in order now using the active execution budget: ${missingTools.join(" -> ")}. This correction applies only to this Objective. Do not answer directly.]`, { expandPromptTemplates: false });
+					assertTaskRunAuthority();
 					const stillMissing = planning?.requiredTools.slice(requiredToolsUsed.length) ?? [];
 					if (stillMissing.length) {
 						await onEvent?.({ type: "planning_outcome", mode: planning!.mode, compliant: false, corrected: true });
@@ -896,7 +1075,7 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 					throw new AgentRunError(turnAbortReason, false, undefined);
 				}
 				if (planning) await onEvent?.({ type: "planning_outcome", mode: planning.mode, compliant: true, corrected: planningCorrected });
-				let failure = lastAssistantFailure(session.piSession.agent, turnMessageStart);
+				let failure = currentTurnAssistantFailure();
 				if (failure && promptImages?.length && input.images?.length && !observableProgress && !input.signal?.aborted) {
 					try {
 						const mediaStartedAt = Date.now();
@@ -906,7 +1085,8 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 							promptImages = undefined;
 							await onEvent?.({ type: "media_understood", route: "adapter", adapterIds: recoveredMedia.receipts.map((receipt) => receipt.adapterId), receiptCount: recoveredMedia.receipts.length, failureCount: recoveredMedia.failures.length, durationMs: Math.max(0, Date.now() - mediaStartedAt) });
 							await promptSession(promptText, { expandPromptTemplates: false, source: input.mode === "automation" ? "extension" : undefined });
-							failure = lastAssistantFailure(session.piSession.agent, turnMessageStart);
+							assertTaskRunAuthority();
+							failure = currentTurnAssistantFailure();
 						}
 					} catch (error) {
 						if (input.signal?.aborted) throw input.signal.reason ?? error;
@@ -921,15 +1101,17 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 					attempt++;
 					await onEvent?.({ type: "model_fallback", from: current?.id ?? "Unknown", to: fallback.id, attempt });
 					if (!await session.piSession.retryWithModel(fallback)) break;
-					failure = lastAssistantFailure(session.piSession.agent, turnMessageStart);
+					failure = currentTurnAssistantFailure();
 				}
+				assertTaskRunAuthority();
 				if (failure) throw new AgentRunError(errorMessage(failure), false, failure, isRecoverableModelFailure(failure));
 				if (objective && typeof this.taskLedger?.transition === "function" && !requiredToolsUsed.includes("task_plan_execute")) {
-					let candidate = lastAssistantText(session.piSession.agent, turnMessageStart) || "(no response)";
+					let candidate = currentTurnAssistantText() || "(no response)";
 					const maxCorrectiveAttempts = Math.max(0, Math.min(executionEnvelope.budget?.maxCorrectiveAttempts ?? 1, 2));
 					let correctiveAttempts = 0;
 					let correctionInFlight = false;
 					while (true) {
+						assertTaskRunAuthority();
 						this.taskLedger?.transition(objective.id, { status: "running", verificationStatus: "pending", candidateResult: candidate.slice(0, 50_000), correctiveAttempts });
 						if (!this.verifyObjectiveCandidate || !activeTaskRunId) {
 							objectiveVerificationOutcome = "unavailable";
@@ -942,17 +1124,21 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 						this.recordTrace({ type: "verification.started", executionEnvelope, at: Date.now() });
 						try {
 							const verification = await this.verifyObjectiveCandidate({ ...objective, status: "running", candidateResult: candidate, correctiveAttempts, ...(taskVerificationRequirements.length ? { verificationRequirements: taskVerificationRequirements } : {}) }, { output: candidate }, input.signal, { taskRunId: activeTaskRunId, successfulToolNames: [...successfulToolNames] });
+							assertTaskRunAuthority();
 							const criterionVerifications = sanitizeTaskCriterionVerifications(verification.criterionVerifications);
 							if (verification.accepted) {
 								objectiveVerificationOutcome = "accepted";
 								this.recordTrace({ type: "verification.settled", executionEnvelope, at: Date.now(), status: "accepted" });
-								if (!this.taskLedger?.transition(objective.id, { status: "running", candidateResult: candidate.slice(0, 50_000), evidence: verification.evidence?.slice(0, 5_000), verificationStatus: "accepted", criterionVerifications, correctiveAttempts })) {
-									throw new AgentRunError(`Objective ${objective.id} could not retain its accepted Candidate Outcome`, false, undefined);
-								}
 								const completionAcceptedAt = Date.now();
-								if (!this.taskLedger.enqueueObjectiveCompletion?.(objective.ownerKey, objective.id, completionAcceptedAt, interactive ? completionAcceptedAt + 30_000 : completionAcceptedAt)) {
-									throw new AgentRunError(`Objective ${objective.id} could not enter the durable Completion Outbox`, false, undefined);
+								assertTaskRunAuthority();
+								if (!activeTaskRunId || !this.taskLedger?.settleDirectObjectiveCompletion?.({
+									ownerKey: objective.ownerKey, objectiveId: objective.id, taskRunId: activeTaskRunId, candidateResult: candidate.slice(0, 50_000),
+									...(verification.evidence ? { evidence: verification.evidence.slice(0, 5_000) } : {}), criterionVerifications, correctiveAttempts,
+									notBefore: interactive ? completionAcceptedAt + 30_000 : completionAcceptedAt,
+								}, completionAcceptedAt)) {
+									throw new AgentRunError(`Objective ${objective.id} could not atomically settle its accepted Candidate Outcome and Completion`, false, undefined);
 								}
+								activeTaskRunSettled = true;
 								completionId = objectiveCompletionId(objective.id);
 								completionAnswer = candidate;
 								break;
@@ -971,8 +1157,9 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 							this.recordTrace({ type: "execution.settled", executionEnvelope, at: Date.now(), status: "succeeded" });
 							await onEvent?.({ type: "execution_settled", executionEnvelope, status: "succeeded" });
 							activeTaskRunId = crypto.randomUUID();
+							activeTaskRunSettled = false;
 							const correctionStartedAt = Date.now();
-							this.taskLedger?.recordRun({ id: activeTaskRunId, taskId: objective.id, executor: "agent", status: "running", startedAt: correctionStartedAt, ...(executionEnvelope.budget?.deadlineAt ? { leaseExpiresAt: executionEnvelope.budget.deadlineAt + 60_000 } : {}) });
+							this.taskLedger?.recordRun({ id: activeTaskRunId, taskId: objective.id, executor: "agent", status: "running", startedAt: correctionStartedAt, leaseExpiresAt: correctionStartedAt + this.taskRunLeaseMs });
 							executionEnvelope = createExecutionEnvelope({
 								executionId: `execution:${activeTaskRunId}`, trigger: { kind: "task_transition", id: objective.id }, objectiveId: objective.id, taskId: objective.id, taskRunId: activeTaskRunId,
 								...(accessScopeRef ? { accessScopeRef } : {}), ...(executionEnvelope.budget ? { budget: executionEnvelope.budget } : {}), mode: "correction",
@@ -983,12 +1170,14 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 							await onEvent?.({ type: "execution_started", executionEnvelope });
 							correctionInFlight = true;
 							await promptSession(`[BeeMax Verification correction: the Candidate Outcome did not satisfy the durable Objective. Feedback: ${feedback}. Correct the result within the existing Objective and Task Run. Do not repeat committed Effects; reconcile unknown Effects before any mutation.]`, { expandPromptTemplates: false });
-							const correctionFailure = lastAssistantFailure(session.piSession.agent, turnMessageStart);
+							assertTaskRunAuthority();
+							const correctionFailure = currentTurnAssistantFailure();
 							if (correctionFailure) throw correctionFailure;
 							if (turnAbortReason) throw new AgentRunError(turnAbortReason, false, undefined);
 							correctionInFlight = false;
-							candidate = lastAssistantText(session.piSession.agent, turnMessageStart) || "(no response)";
+							candidate = currentTurnAssistantText() || "(no response)";
 						} catch (error) {
+							if (taskRunLeaseLost) throw error;
 							if (correctionInFlight || input.signal?.aborted || turnAbortReason) throw error;
 							this.recordTrace({ type: "verification.settled", executionEnvelope, at: Date.now(), status: "unavailable" });
 							objectiveVerificationOutcome = "unavailable";
@@ -1000,20 +1189,24 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 						}
 					}
 				}
-				if (activeTaskRunId) {
+				if (activeTaskRunId && !activeTaskRunSettled) {
+					assertTaskRunAuthority();
 					const rejected = objectiveVerificationOutcome === "rejected";
-					this.taskLedger?.transitionRun(activeTaskRunId, !rejected
-						? { status: "succeeded", finishedAt: Date.now(), output: (lastAssistantText(session.piSession.agent, turnMessageStart) || "(no response)").slice(0, 50_000) }
+					const transitioned = this.taskLedger?.transitionRun(activeTaskRunId, !rejected
+						? { status: "succeeded", finishedAt: Date.now(), output: (currentTurnAssistantText() || "(no response)").slice(0, 50_000) }
 						: { status: "failed", finishedAt: Date.now(), error: completionAnswer?.slice(0, 5_000) ?? "Objective verification did not accept the Candidate Outcome" });
+					if (!rejected && transitioned === false) throw new AgentRunError("Durable Task Run execution authority was lost before success settlement", false, undefined);
 				}
 				settlementStatus = objectiveVerificationOutcome === "rejected" ? "failed" : "succeeded";
 			} catch (cause) {
 				if (input.signal?.aborted) settlementStatus = "cancelled";
 				if (objectiveBinding?.created && objective && !requiredToolsUsed.includes("task_plan_execute")) this.taskLedger?.transition(objective.id, { status: "failed", finishedAt: Date.now(), error: errorMessage(cause).slice(0, 5_000) });
-				if (activeTaskRunId) this.taskLedger?.transitionRun(activeTaskRunId, { status: settlementStatus === "cancelled" ? "cancelled" : "failed", finishedAt: Date.now(), error: redactCredentialMaterial(errorMessage(cause)).slice(0, 5_000) });
+					if (activeTaskRunId && !activeTaskRunSettled) this.taskLedger?.transitionRun(activeTaskRunId, { status: settlementStatus === "cancelled" ? "cancelled" : "failed", finishedAt: Date.now(), error: redactCredentialMaterial(errorMessage(cause)).slice(0, 5_000) });
 				if (cause instanceof AgentRunError) throw cause;
 				throw new AgentRunError(timedOut ? `Agent execution deadline exceeded after ${effectiveTimeoutMs} milliseconds` : errorMessage(cause), timedOut, cause, timedOut || isRecoverableModelFailure(cause));
 			} finally {
+				cleanupTurnResources();
+				unregisterObjectiveInterruption?.();
 				clearIdleSettle();
 				await eventDelivery;
 				const capabilityOutcomeStatus = settlementStatus === "cancelled" ? "cancelled"
@@ -1028,20 +1221,23 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 				releaseHistoricalToolSpecContext(session.piSession, turnMessageStart);
 				(session.piSession as typeof session.piSession & { beemaxResetTurnResources?: () => void }).beemaxResetTurnResources?.();
 				if (activeTools) session.piSession.setActiveToolsByName(activeTools);
-				if (planningLease) this.planningBudgets?.end(planningScope, planningLease);
 				if (timeout) clearTimeout(timeout);
 				input.signal?.removeEventListener("abort", abortFromCaller);
 				unsubscribe?.();
 				session.piSession.agent.beforeToolCall = previousToolBoundary;
 			}
-			const answer = completionAnswer ?? (lastAssistantText(session.piSession.agent, turnMessageStart) || "(no response)");
+			const answer = completionAnswer ?? (currentTurnAssistantText() || "(no response)");
 			try {
 				if (await reloadRuntimeResourcesIfNeeded(session.piSession)) console.info("[beemax] skills and resources hot-reloaded after agent evolution");
 			} catch (error) { console.error(`[beemax] resource reload failed: ${errorMessage(error)}`); }
 			if (input.mode !== "automation") this.context?.record(input.source, { user: input.text, assistant: answer }, { accessScopeRef });
-			return { answer, model: modelOf(session.piSession.agent), durationMs: Date.now() - startedAt, usage: usageOf(session.piSession.agent), ...(completionId ? { completionId } : {}) };
+			const executionUsage = turnUsageObserved
+				? { input_tokens: turnInputTokens, output_tokens: turnOutputTokens }
+				: usageOf(session.piSession.agent, turnMessageStart);
+			return { answer, model: modelOf(session.piSession.agent), durationMs: Date.now() - startedAt, usage: mergeResultUsage(executionUsage, workContractCognitionUsage), ...(completionId ? { completionId } : {}) };
 		}, executionEnvelope).catch((cause) => {
-			if (activeTaskRunId) this.taskLedger?.transitionRun(activeTaskRunId, {
+			turnResourceCleanup?.();
+			if (activeTaskRunId && !activeTaskRunSettled) this.taskLedger?.transitionRun(activeTaskRunId, {
 				status: input.signal?.aborted ? "cancelled" : "failed",
 				finishedAt: Date.now(),
 				error: redactCredentialMaterial(errorMessage(cause)).slice(0, 5_000),
@@ -1055,21 +1251,77 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 		});
 	}
 
+	private registerObjectiveInterruption(taskId: string, interrupt: () => Promise<void>): () => void {
+		const interruptions = this.objectiveInterruptions.get(taskId) ?? new Set<() => Promise<void>>();
+		interruptions.add(interrupt);
+		this.objectiveInterruptions.set(taskId, interruptions);
+		return () => {
+			interruptions.delete(interrupt);
+			if (!interruptions.size) this.objectiveInterruptions.delete(taskId);
+		};
+	}
+
+	private async interruptLocalObjective(taskIds: readonly string[], signal?: AbortSignal): Promise<{ attempted: number; failed: number }> {
+		const interruptions = [...new Set(taskIds)].flatMap((taskId) => [...(this.objectiveInterruptions.get(taskId) ?? [])]);
+		const outcomes = await Promise.allSettled(interruptions.map((interrupt) => this.boundedObjectiveInterruption(interrupt, signal)));
+		return { attempted: outcomes.length, failed: outcomes.filter((outcome) => outcome.status === "rejected").length };
+	}
+
+	private async retryPendingObjectiveInterruptions(source: Source, ownerKeys: string[], signal?: AbortSignal): Promise<void> {
+		if (!this.taskLedger?.pendingObjectiveInterruptions || !this.interruptObjectiveWork) return;
+		const now = Date.now();
+		const interruptions = this.taskLedger.claimObjectiveInterruptions
+			? this.taskLedger.claimObjectiveInterruptions(ownerKeys, this.objectiveInterruptionHolderId, now + this.objectiveInterruptionTimeoutMs * 2 + 1_000, now, 10)
+			: this.taskLedger.pendingObjectiveInterruptions(ownerKeys, 10);
+		for (const interruption of interruptions) {
+			const local = await this.interruptLocalObjective(interruption.taskIds, signal);
+			let external: ObjectiveRuntimeInterruptionResult | undefined;
+			let failure: unknown;
+			try { external = await this.boundedObjectiveInterruption((interruptionSignal) => this.interruptObjectiveWork!(source, interruption, interruptionSignal), signal); }
+			catch (error) { failure = error; }
+			const reasons = [
+				...(local.failed ? [`${local.failed} local execution interruption(s) failed`] : []),
+				...(external?.pendingExecutions ? [`${external.pendingExecutions} execution stop(s) await convergence`] : []),
+				...(failure ? [redactCredentialMaterial(errorMessage(failure)).slice(0, 500)] : []),
+			];
+			const holderId = this.taskLedger.claimObjectiveInterruptions ? this.objectiveInterruptionHolderId : undefined;
+			const claimToken = "claimToken" in interruption && typeof interruption.claimToken === "string" ? interruption.claimToken : undefined;
+			if (reasons.length) {
+				this.taskLedger.failObjectiveInterruption?.(interruption.ownerKey, interruption.objectiveId, reasons.join("; "), Date.now(), holderId, claimToken);
+			} else if (!this.taskLedger.settleObjectiveInterruption?.(interruption.ownerKey, interruption.objectiveId, Date.now(), holderId, claimToken)) {
+				this.taskLedger.failObjectiveInterruption?.(interruption.ownerKey, interruption.objectiveId, "durable execution holders have not converged", Date.now(), holderId, claimToken);
+			}
+		}
+	}
+
+	private boundedObjectiveInterruption<T>(operation: (signal: AbortSignal) => T | Promise<T>, signal?: AbortSignal): Promise<T> {
+		if (signal?.aborted) return Promise.reject(signal.reason ?? new Error("Objective interruption aborted"));
+		return new Promise<T>((resolve, reject) => {
+			const controller = new AbortController();
+			let settled = false;
+			const finish = (callback: () => void) => { if (settled) return; settled = true; clearTimeout(timer); signal?.removeEventListener("abort", onParentAbort); controller.signal.removeEventListener("abort", onBoundedAbort); callback(); };
+			const onParentAbort = () => controller.abort(signal?.reason ?? new Error("Objective interruption aborted"));
+			const onBoundedAbort = () => finish(() => reject(controller.signal.reason ?? new Error("Objective interruption aborted")));
+			const timer = setTimeout(() => controller.abort(new Error(`Objective interruption timed out after ${this.objectiveInterruptionTimeoutMs} milliseconds`)), this.objectiveInterruptionTimeoutMs);
+			signal?.addEventListener("abort", onParentAbort, { once: true });
+			controller.signal.addEventListener("abort", onBoundedAbort, { once: true });
+			Promise.resolve().then(() => operation(controller.signal)).then(
+				(value) => finish(() => resolve(value)),
+				(error) => finish(() => reject(error)),
+			);
+		});
+	}
+
 	private recordTrace(event: Parameters<ExecutionTraceSink["record"]>[0]): void {
 		try { this.executionTrace?.record(event); } catch { /* diagnostics must never interrupt Agent execution */ }
 	}
 
-	private createObjective(input: AgentRunInput<Source>, now: number, situation?: TaskRecord["situation"], accessScopeRef?: AccessScopeRef, acceptanceCriteria: string[] = [], workContract?: WorkContract): { task: TaskRecord; created: boolean } | undefined {
+	private createObjective(input: AgentRunInput<Source>, now: number, situation?: TaskRecord["situation"], accessScopeRef?: AccessScopeRef, acceptanceCriteria: string[] = [], workContract?: WorkContract, existingObjective?: TaskRecord): { task: TaskRecord; created: boolean } | undefined {
 		if (!this.taskLedger || input.source.delegatedTask) return undefined;
 		const description = input.text.trim();
 		if (!description) return undefined;
 		const ownerKey = responsibilityOwnerKey(input.source);
-		const ownerKeys = responsibilityOwnerKeys(input.source);
-		const continuation = input.objectiveTaskId || isObjectiveContinuation(description)
-			? this.taskLedger.queryTasks({ ownerKeys, id: input.objectiveTaskId, kinds: ["objective"], statuses: ["pending", "running"], limit: 1 })[0]
-				?? (!input.objectiveTaskId ? this.taskLedger.queryTasks({ ownerKeys, kinds: ["objective"], statuses: ["pending", "running"], limit: 1 })[0] : undefined)
-			: undefined;
-		if (continuation) return { task: continuation, created: false };
+		if (existingObjective) return { task: existingObjective, created: false };
 		const title = description.split(/\r?\n/, 1)[0]!.slice(0, 120);
 		const objective: TaskRecord = {
 			id: `objective:${crypto.randomUUID()}`, ownerKey, kind: "objective",
@@ -1203,13 +1455,23 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 }
 
 function shouldBindDurableObjective<Source extends BeeMaxRuntimeSource>(input: AgentRunInput<Source>, understanding: TurnUnderstanding | undefined, planning: AutonomousPlanningDecision | undefined): boolean {
-	if (input.objectiveTaskId || isObjectiveContinuation(input.text)) return true;
+	if (input.objectiveTaskId) return true;
 	if (!understanding || understanding.action === "cancel") return false;
 	if (understanding.action === "query") return Boolean(understanding.acceptanceCriteria.length || planning?.signals.requiresResearch || planning?.signals.requiresVerification || planning?.signals.substantialWork);
 	if (understanding.action === "continue" || understanding.action === "correct") return true;
 	if (planning?.mode && planning.mode !== "direct") return true;
 	if (understanding.acceptanceCriteria.length) return true;
 	return Boolean(planning?.signals.requiresResearch || planning?.signals.requiresVerification || planning?.signals.substantialWork);
+}
+
+function compileEffectiveObjectiveWorkContract(objective: TaskRecord): WorkContract {
+	const latestRevision = objective.objectiveRevisions?.at(-1)?.workContract;
+	if (!latestRevision) return structuredClone(objective.workContract ?? workContractFromLegacyObjective({ title: objective.title, description: objective.description }));
+	const { targetObjective: _revisionTarget, ...revision } = latestRevision;
+	// The newest revision is the current execution authority. The full immutable chain
+	// remains in the Task preservation envelope, while this projection is executable
+	// work instead of another lifecycle mutation against the same Objective.
+	return structuredClone({ ...revision, action: "create" });
 }
 
 function objectiveObservableAcceptanceCriteria(acceptanceCriteria: readonly string[]): string {
@@ -1638,6 +1900,7 @@ function compactWorkContractProjection(contract: WorkContract, safe: (value: str
 	const requiresTaskLedgerReread = Object.keys(omissions).length > 0;
 	return {
 		schemaVersion: contract.schemaVersion, action: contract.action, executionMode: contract.executionMode,
+		...(contract.targetObjective ? { targetObjective: { kind: "active_objective", id: safe(contract.targetObjective.id) ?? "[redacted-objective]" } } : {}),
 		rawRequest: compactProjectionText(contract.rawRequest, safe, 600), rawRequestSha256: opaqueIdentitySha256(safe(contract.rawRequest)!), objective: clause(contract.objective),
 		constraints: constraints.items, prohibitions: prohibitions.items, acceptanceCriteria: acceptanceCriteria.items,
 		capabilityRequirements: capabilityRequirements.items, uncertainties: uncertainties.items,
@@ -1663,12 +1926,13 @@ function safeWorkContract(contract: WorkContract, safe: (value: string | undefin
 	const clause = (value: WorkContract["objective"]): WorkContract["objective"] => ({
 		text: safe(value.text)!,
 		source: value.source.kind === "active_objective"
-			? { kind: "active_objective", ...(value.source.id ? { id: safe(value.source.id) } : {}) }
+			? { kind: "active_objective", id: safe(value.source.id) ?? "[redacted-objective]" }
 			: structuredClone(value.source),
 	});
 	return {
 		...contract,
 		rawRequest: safe(contract.rawRequest)!,
+		...(contract.targetObjective ? { targetObjective: { kind: "active_objective" as const, id: safe(contract.targetObjective.id) ?? "[redacted-objective]" } } : {}),
 		objective: clause(contract.objective),
 		constraints: contract.constraints.map(clause), prohibitions: contract.prohibitions.map(clause),
 		acceptanceCriteria: contract.acceptanceCriteria.map(clause), capabilityRequirements: contract.capabilityRequirements.map(clause),
@@ -1691,7 +1955,6 @@ function safeSituation(situation: NonNullable<TaskRecord["situation"]>, safe: (v
 	};
 }
 
-function isObjectiveContinuation(text: string): boolean { return /^(?:(?:继续|接着|补充|换成|改成|再加|先不要)(?:\s|处理|这个|该|中文|英文|一个|做|$)|(?:continue|go on|change|add)\b)/iu.test(text.trim()); }
 function explicitSkillRequest(text: string): string {
 	const match = text.match(/^\/skill:([a-z0-9]+(?:-[a-z0-9]+)*)(?:\s+([\s\S]*))?$/i); if (!match) return text;
 	return `[Explicit Skill request: ${match[1]}]\nUse capability_discover with this exact Skill name, then follow skill_activate, skill_route, skill_resource_read, and skill_complete. Do not expand or read SKILL.md directly.${match[2]?.trim() ? `\n\nUser request: ${match[2].trim()}` : ""}`;
@@ -1718,12 +1981,14 @@ export class AgentRunError extends Error {
 	readonly timedOut: boolean;
 	readonly recoverable: boolean;
 	readonly cause: unknown;
-	constructor(message: string, timedOut: boolean, cause: unknown, recoverable = false) {
+	readonly cognitionUsage?: WorkContractCognitionUsage;
+	constructor(message: string, timedOut: boolean, cause: unknown, recoverable = false, cognitionUsage?: WorkContractCognitionUsage) {
 		super(message);
 		this.name = "AgentRunError";
 		this.timedOut = timedOut;
 		this.recoverable = recoverable;
 		this.cause = cause;
+		this.cognitionUsage = cognitionUsage;
 	}
 }
 
@@ -1750,7 +2015,7 @@ function mediaModelOf(agent: Agent): { id: string; provider?: string; input?: re
 	return { id: model?.id ?? "Unknown", ...(model?.provider ? { provider: model.provider } : {}), ...(model?.input ? { input: model.input } : {}) };
 }
 function sameModel(left: Model<Api> | undefined, right: Model<Api>): boolean { return left?.provider === right.provider && left.id === right.id; }
-function lastAssistantFailure(agent: Agent, fromIndex = 0): unknown | undefined {
+function lastAssistantFailure(agent: Agent, fromIndex = 0): Error | undefined {
 	const last = lastAssistantMessage(agent, fromIndex);
 	if (!last || last.role !== "assistant" || last.stopReason !== "error") return undefined;
 	return new Error(last.errorMessage ?? "Model request failed");
@@ -1762,9 +2027,25 @@ function lastAssistantMessage(agent: Agent, fromIndex: number) {
 	}
 	return undefined;
 }
-function usageOf(agent: Agent): { input_tokens?: number; output_tokens?: number } {
-	const last = agent.state.messages[agent.state.messages.length - 1];
-	return last?.role === "assistant" ? { input_tokens: last.usage.input, output_tokens: last.usage.output } : {};
+function usageOf(agent: Agent, fromIndex = 0): { input_tokens?: number; output_tokens?: number } {
+	let inputTokens = 0;
+	let outputTokens = 0;
+	let observed = false;
+	for (const message of agent.state.messages.slice(Math.max(0, fromIndex))) {
+		if (message.role !== "assistant") continue;
+		observed = true;
+		inputTokens += message.usage.input;
+		outputTokens += message.usage.output;
+	}
+	return observed ? { input_tokens: inputTokens, output_tokens: outputTokens } : {};
+}
+function finiteTokenCount(value: number | undefined): number { return Number.isFinite(value) && value! > 0 ? value! : 0; }
+function cognitionResultUsage(usage: WorkContractCognitionUsage | undefined): { input_tokens?: number; output_tokens?: number } {
+	return usage ? { input_tokens: usage.inputTokens, output_tokens: usage.outputTokens } : {};
+}
+function mergeResultUsage(result: { input_tokens?: number; output_tokens?: number }, cognition: WorkContractCognitionUsage | undefined): { input_tokens?: number; output_tokens?: number } {
+	if (!cognition) return result;
+	return { input_tokens: (result.input_tokens ?? 0) + cognition.inputTokens, output_tokens: (result.output_tokens ?? 0) + cognition.outputTokens };
 }
 function historyEntry(message: { role?: string; content?: unknown }): AgentHistoryEntry | undefined {
 	if (message.role !== "user" && message.role !== "assistant" && message.role !== "tool" && message.role !== "system") return undefined;

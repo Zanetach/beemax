@@ -1,4 +1,4 @@
-import { builtinProviders, getBuiltinModel, getSupportedThinkingLevels, LexicalCapabilityRanker, MediaUnderstandingRuntime, PiSemanticCapabilityPort, PiVisionMediaUnderstandingAdapter, resolveRuntimeModel, SemanticCapabilityRanker, type Api, type CapabilityRanker, type MediaUnderstandingAdapter, type Model, type PiSemanticCapabilityPortOptions } from "@beemax/core";
+import { builtinProviders, getBuiltinModel, getSupportedThinkingLevels, LexicalCapabilityRanker, MediaUnderstandingRuntime, PiSemanticCapabilityPort, PiVisionMediaUnderstandingAdapter, resolveRuntimeModel, SemanticCapabilityRanker, type Api, type CapabilityRanker, type MediaUnderstandingAdapter, type Model, type PiSemanticCapabilityPortOptions, type PiWorkContractModelCandidate } from "@beemax/core";
 import type { BeeMaxConfig } from "./config.ts";
 
 export interface ModelProviderPreset {
@@ -115,6 +115,48 @@ export function configuredAuxiliaryTextModels(config: BeeMaxConfig): Array<{ mod
 			return apiKey ? [{ model, apiKey }] : [];
 		} catch { return []; }
 	});
+}
+
+/**
+ * Resolve the Profile's semantic-admission models without snapshotting OAuth
+ * credentials. The initial lookup makes composition fail fast; each candidate
+ * keeps a resolver so a long-running Gateway can refresh short-lived tokens.
+ */
+export async function resolveProfileCognitionModels(
+	config: BeeMaxConfig,
+	getCredential: (provider: string) => Promise<string | undefined>,
+): Promise<PiWorkContractModelCandidate[]> {
+	let mainModel: Model<Api>;
+	try {
+		const resolved = resolveRuntimeModel(config.model.provider, config.model.model, config.model.baseUrl, config.model.customProtocol, { contextWindow: config.model.contextWindow, maxTokens: config.model.maxTokens });
+		mainModel = config.model.baseUrl ? { ...resolved, baseUrl: config.model.baseUrl } : resolved;
+	} catch (error) {
+		throw new Error(`Profile ${config.profile} main model ${config.model.provider}/${config.model.model} is unavailable: ${error instanceof Error ? error.message : String(error)}`);
+	}
+	const mainConfiguredKey = config.model.apiKeys[config.model.provider] ?? config.model.apiKey;
+	const mainCredential = mainConfiguredKey || await getCredential(config.model.provider);
+	if (!mainCredential) throw new Error(`Profile ${config.profile} main model ${config.model.provider}/${config.model.model} has no credential; configure its API key or run BeeMax authentication before starting this Profile`);
+	if (!mainModel.input.includes("text")) throw new Error(`Profile ${config.profile} main model ${config.model.provider}/${config.model.model} does not accept text`);
+
+	const candidates: PiWorkContractModelCandidate[] = [];
+	for (const choice of config.models) {
+		let model: Model<Api>;
+		try {
+			const resolved = resolveRuntimeModel(choice.provider, choice.model, choice.baseUrl, choice.customProtocol, { contextWindow: choice.contextWindow, maxTokens: choice.maxTokens });
+			model = choice.baseUrl ? { ...resolved, baseUrl: choice.baseUrl } : resolved;
+		}
+		catch { continue; }
+		if (!model.input.includes("text")) continue;
+		const configuredKey = config.model.apiKeys[choice.provider] ?? (choice.provider === config.model.provider ? config.model.apiKey : undefined);
+		const initialCredential = configuredKey || await getCredential(choice.provider);
+		if (!initialCredential) continue;
+		candidates.push({
+			model,
+			...(configuredKey ? { apiKey: configuredKey } : { getApiKey: () => getCredential(choice.provider) }),
+		});
+	}
+	if (!candidates.length) throw new Error(`Profile ${config.profile} has no authenticated text model for semantic Work Contract cognition`);
+	return candidates;
 }
 
 /** Semantic selection is the configured production path; lexical ranking is used only when this Profile has no semantic model. */

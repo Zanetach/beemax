@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { configuredAuxiliaryTextModels, configuredCapabilityRanker, configuredMediaUnderstanding, ProfileModelCatalog, renderConfiguredModels } from "../dist/model-catalog.js";
+import { configuredAuxiliaryTextModels, configuredCapabilityRanker, configuredMediaUnderstanding, ProfileModelCatalog, renderConfiguredModels, resolveProfileCognitionModels } from "../dist/model-catalog.js";
 import { capabilityMetadataForTool } from "../dist/agent-factory.js";
 
 test("configured model list renders actual known capability metadata", () => {
@@ -48,6 +48,40 @@ test("custom Profile models remain available to tool-free auxiliary cognition", 
 	assert.equal(models[0].model.id, "private");
 	assert.equal(models[0].model.baseUrl, "https://models.example/v1");
 	assert.equal(models[0].apiKey, "secret");
+});
+
+test("Profile cognition models fail fast for a missing main credential even when a secondary model is authenticated", async () => {
+	const config = {
+		profile: "missing-main",
+		model: { provider: "anthropic", model: "claude-sonnet-4-5", apiKey: "", apiKeys: { openai: "secondary" } },
+		models: [{ provider: "anthropic", model: "claude-sonnet-4-5" }, { provider: "openai", model: "gpt-4.1" }],
+	};
+	await assert.rejects(resolveProfileCognitionModels(config, async () => undefined), /missing-main.*main model.*no credential/i);
+});
+
+test("Profile cognition models refresh OAuth credentials for every Provider attempt", async () => {
+	const config = {
+		profile: "oauth",
+		model: { provider: "anthropic", model: "claude-sonnet-4-5", apiKey: "", apiKeys: {} },
+		models: [{ provider: "anthropic", model: "claude-sonnet-4-5" }],
+	};
+	let generation = 0;
+	const candidates = await resolveProfileCognitionModels(config, async (provider) => `${provider}:token:${++generation}`);
+	assert.equal(candidates.length, 1);
+	assert.equal(candidates[0].apiKey, undefined);
+	assert.equal(await candidates[0].getApiKey(), "anthropic:token:3");
+	assert.equal(await candidates[0].getApiKey(), "anthropic:token:4");
+});
+
+test("Profile cognition preserves a builtin model's enterprise Base URL override", async () => {
+	const baseUrl = "https://enterprise-proxy.example/v1";
+	const config = {
+		profile: "enterprise-proxy",
+		model: { provider: "openai", model: "gpt-4.1", apiKey: "proxy-key", apiKeys: { openai: "proxy-key" }, baseUrl },
+		models: [{ provider: "openai", model: "gpt-4.1", baseUrl }],
+	};
+	const candidates = await resolveProfileCognitionModels(config, async () => undefined);
+	assert.equal(candidates[0].model.baseUrl, baseUrl);
 });
 
 test("Profile composition selects semantic Capability routing whenever a text model is configured", () => {
