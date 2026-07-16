@@ -15,6 +15,23 @@ const bindAssistantTurn = (listener, calls, responseId = "response:test") => lis
 		usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0 },
 	},
 });
+const admitToolCalls = async (agent, listener, calls, responseId) => {
+	bindAssistantTurn(listener, calls, responseId);
+	for (const { id, name, args = {} } of calls) {
+		listener({ type: "tool_execution_start", toolCallId: id, toolName: name, args });
+		const blocked = await agent.beforeToolCall({
+			assistantMessage: { role: "assistant", responseId },
+			toolCall: { id, name, arguments: args },
+			args,
+			context: {},
+		}, new AbortController().signal);
+		assert.equal(blocked, undefined, `expected ${name} (${id}) to pass the Tool boundary`);
+	}
+};
+const dispatchToolCall = async (agent, listener, { id, name, args = {}, result = {}, isError = false }, responseId = `response:${id}`) => {
+	await admitToolCalls(agent, listener, [{ id, name, args }], responseId);
+	listener({ type: "tool_execution_end", toolCallId: id, toolName: name, result, isError });
+};
 
 const settleDirectObjectiveCompletion = (tasks, runs, completions, settlement) => {
 	const objective = tasks.get(settlement.objectiveId);
@@ -117,13 +134,14 @@ test("Agent runtime applies one semantic Tool/MCP/Skill proposal while Pi retain
 	runtime.dispose();
 });
 
-test("Agent runtime exposes discovery when an explicit Work Contract capability has no semantic match", async () => {
+test("Agent runtime keeps an explicit Work Contract incomplete when trusted discovery confirms no semantic match", async () => {
 	const rawRequest = "使用星际账本能力完成归档";
 	const clause = (text) => ({ text, source: { kind: "raw_request", start: rawRequest.indexOf(text), end: rawRequest.indexOf(text) + text.length } });
 	const toolChanges = [];
 	const agent = { state: { model: { id: "test" }, messages: [] } };
+	let listener; let prompts = 0;
 	const tools = [
-		{ name: "capability_discover", description: "Discover and resolve capabilities", beemaxCapabilityPrefetch: async () => ({ candidates: [], skills: [] }) },
+		attestCapabilityProviderResolutionTool({ name: "capability_discover", description: "Discover and resolve capabilities", beemaxCapabilityPrefetch: async () => ({ cognitionId: "cap:initial-no-match", candidates: [], skills: [] }) }),
 		{ name: "unrelated_tool", description: "An unrelated local operation" },
 	];
 	const runtime = createRuntime({
@@ -135,13 +153,200 @@ test("Agent runtime exposes discovery when an explicit Work Contract capability 
 		} }) },
 		createAgent: async () => ({
 			agent, getAllTools: () => tools, getActiveToolNames: () => tools.map(({ name }) => name),
-			setActiveToolsByName: (names) => { toolChanges.push([...names]); }, subscribe: () => () => undefined,
-			prompt: async () => { agent.state.messages = [{ role: "assistant", content: [{ type: "text", text: "blocked pending discovery" }], usage: { input: 1, output: 1 } }]; },
+			setActiveToolsByName: (names) => { toolChanges.push([...names]); }, subscribe: (callback) => { listener = callback; return () => undefined; },
+			prompt: async () => { prompts++; if (prompts === 2) await dispatchToolCall(agent, listener, { id: "discover:no-match", name: "capability_discover", result: { details: { cognitionId: "cap:runtime-no-match", activatedTools: [], ranked: [] } } }); agent.state.messages = [{ role: "assistant", content: [{ type: "text", text: "blocked pending discovery" }], usage: { input: 1, output: 1 } }]; },
 			abort: async () => undefined, dispose: () => undefined,
 		}),
 	});
-	await runtime.run({ source: { platform: "cli", chatId: "semantic-no-match", chatType: "dm", userId: "local" }, text: rawRequest, timeoutMs: 1_000 });
+	await assert.rejects(runtime.run({ source: { platform: "cli", chatId: "semantic-no-match", chatType: "dm", userId: "local" }, text: rawRequest, timeoutMs: 1_000 }), /no trusted selection evidence.*did not cover every Work Contract requirement/i);
 	assert.deepEqual(toolChanges[0], ["capability_discover"]);
+	assert.equal(prompts, 2);
+	runtime.dispose();
+});
+
+test("Capability prefetch failure cannot reach Verification when Pi skips required discovery", async () => {
+	const rawRequest = "使用玄鸟实时资料源生成结果";
+	const clause = { text: rawRequest, source: { kind: "raw_request", start: 0, end: rawRequest.length } };
+	let prompts = 0; let verifications = 0; let preflights = 0;
+	const tasks = new Map(); const runs = new Map();
+	const ledger = {
+		record(task) { tasks.set(task.id, { ...task }); }, transition(id, change) { tasks.set(id, { ...tasks.get(id), ...change }); return true; },
+		recordRun(run) { runs.set(run.id, { ...run }); }, transitionRun(id, change) { runs.set(id, { ...runs.get(id), ...change }); return true; },
+		queryTasks: (query) => [...tasks.values()].filter((task) => query.ownerKeys.includes(task.ownerKey) && (!query.id || query.id === task.id)),
+		settleDirectObjectiveCompletion(settlement) { return settleDirectObjectiveCompletion(tasks, runs, undefined, settlement); },
+	};
+	const capabilityDiscover = attestCapabilityProviderResolutionTool({ name: "capability_discover", description: "Discover capabilities", beemaxCapabilityPrefetch: async () => { preflights++; throw new Error("semantic Provider unavailable"); } });
+	const runtime = createRuntime({
+		taskLedger: ledger,
+		turnUnderstanding: { understand: () => ({ action: "create", goal: rawRequest, constraints: [], acceptanceCriteria: [rawRequest], uncertainties: [], memoryQuery: rawRequest, capabilityQuery: "玄鸟实时资料源", executionMode: "direct", confidence: 1 }) },
+		workContractBuilder: { build: async () => ({ source: "model", cognitionBudgetChargeTokens: 1, semanticAdjudication: semanticReview, contract: { schemaVersion: "beemax.work-contract.v1", rawRequest, action: "create", objective: clause, constraints: [], prohibitions: [], acceptanceCriteria: [clause], capabilityRequirements: [clause], uncertainties: [], executionMode: "direct", confidence: 1 } }) },
+		verifyObjectiveCandidate: async () => { verifications++; return { accepted: true, evidence: "must never be consulted" }; },
+		createAgent: async () => ({ agent: { state: { model: { id: "test" }, messages: [] } }, getAllTools: () => [capabilityDiscover], getActiveToolNames: () => ["capability_discover"], setActiveToolsByName: () => undefined, subscribe: () => () => undefined,
+			prompt: async () => { prompts++; }, abort: async () => undefined, dispose: () => undefined }),
+	});
+	await assert.rejects(runtime.run({ source: { platform: "cli", chatId: "prefetch-fail-closed", chatType: "dm", userId: "local" }, text: rawRequest, timeoutMs: 1_000 }), /required Capability resolution produced no trusted selection evidence/i);
+	assert.equal(prompts, 2, "BeeMax gives Pi one bounded correction Turn to perform required discovery");
+	assert.equal(preflights, 2, "BeeMax retries the same Contract-bound preflight once after observable discovery recovery");
+	assert.equal(verifications, 0, "a prose candidate cannot bypass unresolved Capability admission");
+	assert.notEqual([...tasks.values()][0]?.status, "succeeded");
+	assert.notEqual([...runs.values()][0]?.status, "succeeded");
+	runtime.dispose();
+});
+
+test("a transient preflight outage recovers through one Contract-bound retry before execution and Verification", async () => {
+	const rawRequest = "使用恢复后的实时资料源生成结果";
+	const clause = { text: rawRequest, source: { kind: "raw_request", start: 0, end: rawRequest.length } };
+	let listener; let prompts = 0; let preflights = 0; let verifications = 0;
+	const tasks = new Map(); const runs = new Map();
+	const ledger = {
+		record(task) { tasks.set(task.id, { ...task }); }, transition(id, change) { tasks.set(id, { ...tasks.get(id), ...change }); return true; },
+		recordRun(run) { runs.set(run.id, { ...run }); }, transitionRun(id, change) { runs.set(id, { ...runs.get(id), ...change }); return true; },
+		queryTasks: (query) => [...tasks.values()].filter((task) => query.ownerKeys.includes(task.ownerKey) && (!query.id || query.id === task.id)),
+		isTaskRunExecutionActive: (_ownerKey, objectiveId, taskId, runId) => objectiveId === taskId && tasks.get(objectiveId)?.status === "running" && runs.get(runId)?.status === "running",
+		settleDirectObjectiveCompletion(settlement) { return settleDirectObjectiveCompletion(tasks, runs, undefined, settlement); },
+	};
+	const recoveredTool = { name: "recovered_source", description: "Fetch current recovered evidence", beemaxPolicy: { sideEffect: "none" } };
+	const capabilityDiscover = attestCapabilityProviderResolutionTool({
+		name: "capability_discover", description: "Discover capabilities", beemaxPolicy: { sideEffect: "none" },
+		beemaxCapabilityPrefetch: async (_query, _signal, options) => {
+			preflights++;
+			if (preflights === 1) throw new Error("temporary semantic Provider outage");
+			return { cognitionId: "cap:contract-recovery", candidates: [{ kind: "tool", name: recoveredTool.name, confidence: 0.99, requirementId: options.requirements[0].id, outcomeIndex: 0, necessity: "required" }], activatedTools: [recoveredTool.name], skills: [] };
+		},
+	});
+	const tools = [capabilityDiscover, recoveredTool];
+	const agent = { state: { model: { id: "test" }, messages: [] } };
+	const runtime = createRuntime({
+		taskLedger: ledger,
+		turnUnderstanding: { understand: () => ({ action: "create", goal: rawRequest, constraints: [], acceptanceCriteria: [rawRequest], uncertainties: [], memoryQuery: rawRequest, capabilityQuery: rawRequest, executionMode: "direct", confidence: 1 }) },
+		workContractBuilder: { build: async () => ({ source: "model", cognitionBudgetChargeTokens: 1, semanticAdjudication: semanticReview, contract: { schemaVersion: "beemax.work-contract.v1", rawRequest, action: "create", objective: clause, constraints: [], prohibitions: [], acceptanceCriteria: [clause], capabilityRequirements: [clause], uncertainties: [], executionMode: "direct", confidence: 1 } }) },
+		verifyObjectiveCandidate: async () => { verifications++; return { accepted: true, evidence: "recovered source receipt" }; },
+		createAgent: async () => ({
+			agent, getAllTools: () => tools, getActiveToolNames: () => tools.map(({ name }) => name), setActiveToolsByName: () => undefined,
+			subscribe: (callback) => { listener = callback; return () => undefined; },
+			prompt: async () => {
+				prompts++;
+				if (prompts === 2) await dispatchToolCall(agent, listener, { id: "discover:transient", name: capabilityDiscover.name, result: { details: { cognitionId: "cap:unbound-runtime-observation", activatedTools: [], ranked: [] } } });
+				if (prompts === 3) {
+					await dispatchToolCall(agent, listener, { id: "source:recovered", name: recoveredTool.name, result: { content: [{ type: "text", text: "current evidence" }] } });
+					listener({ type: "message_end", message: { role: "assistant", responseId: "response:recovered-result", content: [{ type: "text", text: "verified recovered result" }], usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0 } } });
+				}
+				agent.state.messages = [{ role: "assistant", content: [{ type: "text", text: prompts === 3 ? "verified recovered result" : "waiting" }], usage: { input: 1, output: 1 } }];
+			},
+			abort: async () => undefined, dispose: () => undefined,
+		}),
+	});
+	const result = await runtime.run({ source: { platform: "cli", chatId: "contract-recovery", chatType: "dm", userId: "local" }, text: rawRequest, timeoutMs: 1_000 });
+	assert.equal(result.answer, "verified recovered result");
+	assert.equal(preflights, 2);
+	assert.equal(prompts, 3);
+	assert.equal(verifications, 1);
+	runtime.dispose();
+});
+
+test("two distinct Work Contract Capability requirements cannot reach Verification after only one selected Tool executes", async () => {
+	const rawRequest = "查询实时来源，并把结果写入归档";
+	const quote = (text) => ({ text, source: { kind: "raw_request", start: rawRequest.indexOf(text), end: rawRequest.indexOf(text) + text.length } });
+	const tasks = new Map(); const runs = new Map();
+	let listener; let prompts = 0; let verifications = 0;
+	const ledger = {
+		record(task) { tasks.set(task.id, { ...task }); }, transition(id, change) { tasks.set(id, { ...tasks.get(id), ...change }); return true; },
+		recordRun(run) { runs.set(run.id, { ...run }); }, transitionRun(id, change) { runs.set(id, { ...runs.get(id), ...change }); return true; },
+		queryTasks: (query) => [...tasks.values()].filter((task) => query.ownerKeys.includes(task.ownerKey) && (!query.id || query.id === task.id)),
+		settleDirectObjectiveCompletion(settlement) { return settleDirectObjectiveCompletion(tasks, runs, undefined, settlement); },
+	};
+	const tools = [
+		attestCapabilityProviderResolutionTool({
+			name: "capability_discover", description: "Resolve required capabilities",
+			beemaxCapabilityPrefetch: async (_query, _signal, options) => ({
+				cognitionId: "cap:two-distinct-requirements",
+			candidates: [
+					{ kind: "tool", name: "source_lookup", confidence: 0.99, requirementId: options.requirements[0].id, outcomeIndex: 0, necessity: "required" },
+					{ kind: "tool", name: "archive_write", confidence: 0.98, requirementId: options.requirements[1].id, outcomeIndex: 0, necessity: "required" },
+				],
+				activatedTools: ["source_lookup", "archive_write"], skills: [],
+			}),
+		}),
+		{ name: "source_lookup", description: "Read current source evidence", beemaxPolicy: { sideEffect: "none" } },
+		{ name: "archive_write", description: "Write a result to the archive", beemaxPolicy: { sideEffect: "local" } },
+	];
+	const agent = { state: { model: { id: "test" }, messages: [] } };
+	const runtime = createRuntime({
+		taskLedger: ledger,
+		turnUnderstanding: { understand: () => ({ action: "create", goal: rawRequest, constraints: [], acceptanceCriteria: [rawRequest], uncertainties: [], memoryQuery: rawRequest, capabilityQuery: rawRequest, executionMode: "direct", confidence: 1 }) },
+		workContractBuilder: { build: async () => ({ source: "model", cognitionBudgetChargeTokens: 1, semanticAdjudication: semanticReview, contract: {
+			schemaVersion: "beemax.work-contract.v1", rawRequest, action: "create", objective: quote(rawRequest), constraints: [], prohibitions: [], acceptanceCriteria: [quote(rawRequest)],
+			capabilityRequirements: [quote("查询实时来源"), quote("把结果写入归档")], uncertainties: [], executionMode: "direct", confidence: 1,
+		} }) },
+		verifyObjectiveCandidate: async () => { verifications++; return { accepted: true, evidence: "must not verify a partial capability outcome" }; },
+		createAgent: async () => ({
+			agent, getAllTools: () => tools, getActiveToolNames: () => tools.map(({ name }) => name), setActiveToolsByName: () => undefined,
+			subscribe: (callback) => { listener = callback; return () => undefined; },
+			prompt: async () => {
+				prompts++;
+				if (prompts === 1) {
+					await admitToolCalls(agent, listener, [{ id: "lookup:only", name: "source_lookup" }], "response:partial-capability");
+					listener({ type: "tool_execution_end", toolCallId: "lookup:only", toolName: "source_lookup", isError: false, result: { content: [{ type: "text", text: "fresh evidence" }] } });
+				}
+				agent.state.messages = [{ role: "assistant", content: [{ type: "text", text: "partial result" }], usage: { input: 1, output: 1 } }];
+			},
+			abort: async () => undefined, dispose: () => undefined,
+		}),
+	});
+	await assert.rejects(
+		runtime.run({ source: { platform: "cli", chatId: "two-required-tools", chatType: "dm", userId: "local" }, text: rawRequest, timeoutMs: 1_000 }),
+		/selected required Capabilities did not execute successfully|required Capability/i,
+	);
+	assert.equal(verifications, 0, "partial Capability execution must not enter independent Verification");
+	assert.notEqual([...tasks.values()][0]?.verificationStatus, "accepted");
+	runtime.dispose();
+});
+
+test("an allowedCapabilities execution grant remains an authority ceiling while trusted preflight selects within it", async () => {
+	const rawRequest = "使用受限本地读取能力返回文件内容";
+	const requirement = "受限本地读取能力";
+	const quote = (text) => ({ text, source: { kind: "raw_request", start: rawRequest.indexOf(text), end: rawRequest.indexOf(text) + text.length } });
+	const tasks = new Map(); const runs = new Map();
+	let listener; let verifications = 0; let preflights = 0;
+	const ledger = {
+		record(task) { tasks.set(task.id, { ...task }); }, transition(id, change) { tasks.set(id, { ...tasks.get(id), ...change }); return true; },
+		recordRun(run) { runs.set(run.id, { ...run }); }, transitionRun(id, change) { runs.set(id, { ...runs.get(id), ...change }); return true; },
+		queryTasks: (query) => [...tasks.values()].filter((task) => query.ownerKeys.includes(task.ownerKey) && (!query.id || query.id === task.id)),
+		settleDirectObjectiveCompletion(settlement) { return settleDirectObjectiveCompletion(tasks, runs, undefined, settlement); },
+	};
+	const localRead = { name: "local_read", description: "Read one local file", beemaxPolicy: { sideEffect: "none" } };
+	const capabilityDiscover = attestCapabilityProviderResolutionTool({
+		name: "capability_discover", description: "Resolve required capabilities",
+		beemaxCapabilityPrefetch: async (_query, _signal, options) => { preflights++; return { cognitionId: "cap:allowlisted-read", candidates: [{ kind: "tool", name: localRead.name, confidence: 0.99, requirementId: options.requirements[0].id, outcomeIndex: 0, necessity: "required" }], activatedTools: [localRead.name], skills: [] }; },
+	});
+	const agent = { state: { model: { id: "test" }, messages: [] } };
+	const runtime = createRuntime({
+		taskLedger: ledger,
+		turnUnderstanding: { understand: () => ({ action: "create", goal: rawRequest, constraints: [], acceptanceCriteria: [rawRequest], uncertainties: [], memoryQuery: rawRequest, capabilityQuery: requirement, executionMode: "direct", confidence: 1 }) },
+		workContractBuilder: { build: async () => ({ source: "model", cognitionBudgetChargeTokens: 1, semanticAdjudication: semanticReview, contract: {
+			schemaVersion: "beemax.work-contract.v1", rawRequest, action: "create", objective: quote(rawRequest), constraints: [], prohibitions: [], acceptanceCriteria: [quote(rawRequest)], capabilityRequirements: [quote(requirement)], uncertainties: [], executionMode: "direct", confidence: 1,
+		} }) },
+		verifyObjectiveCandidate: async () => { verifications++; return { accepted: true, evidence: "allowlisted read receipt" }; },
+		createAgent: async () => ({
+			agent, getAllTools: () => [capabilityDiscover, localRead], getActiveToolNames: () => [capabilityDiscover.name, localRead.name], setActiveToolsByName: () => undefined,
+			subscribe: (callback) => { listener = callback; return () => undefined; },
+			prompt: async () => {
+				await admitToolCalls(agent, listener, [{ id: "allowlisted:read", name: localRead.name }], "response:allowlisted-read");
+				listener({ type: "tool_execution_end", toolCallId: "allowlisted:read", toolName: localRead.name, isError: false, result: { content: [{ type: "text", text: "file contents" }] } });
+				listener({ type: "message_end", message: { role: "assistant", responseId: "response:allowlisted-result", content: [{ type: "text", text: "file contents" }], usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0 } } });
+				agent.state.messages = [{ role: "assistant", content: [{ type: "text", text: "file contents" }], usage: { input: 1, output: 1 } }];
+			},
+			abort: async () => undefined, dispose: () => undefined,
+		}),
+	});
+	const result = await runtime.run({
+		source: { platform: "cli", chatId: "allowlisted-capability", chatType: "dm", userId: "local" },
+		text: rawRequest, timeoutMs: 1_000, allowedCapabilities: [localRead.name],
+	});
+	assert.equal(result.answer, "file contents");
+	assert.equal(preflights, 1, "the allowlist alone is not semantic selection evidence");
+	assert.equal(verifications, 1);
+	assert.equal([...tasks.values()][0]?.verificationStatus, "accepted");
 	runtime.dispose();
 });
 
@@ -228,8 +433,8 @@ test("Agent runtime deterministically preflights and enforces an installed match
 		prompt: async (text) => {
 			prompts.push(text);
 			if (prompts.length === 2) {
-				listener({ type: "tool_execution_end", toolCallId: "skill", toolName: "skill_read", isError: false, result: { details: { descriptor: { name: "research-brief" }, state: { skill: "research-brief" }, skillLifecycleReceipt: { id: "receipt:read", name: "research-brief", version, phase: "read", sourceTool: "skill_read" } } } });
-				listener({ type: "tool_execution_end", toolCallId: "skill-complete", toolName: "skill_complete", isError: false, result: { details: { skill: "research-brief", skillLifecycleReceipt: { id: "receipt:complete", name: "research-brief", version, phase: "completed", sourceTool: "skill_complete" }, capabilityReceipt: { id: "receipt:skill", kind: "skill", name: "research-brief", version, sourceTool: "skill_complete" } } } });
+				await dispatchToolCall(agent, listener, { id: "skill", name: "skill_read", result: { details: { descriptor: { name: "research-brief" }, state: { skill: "research-brief" }, skillLifecycleReceipt: { id: "receipt:read", name: "research-brief", version, phase: "read", sourceTool: "skill_read" } } } });
+				await dispatchToolCall(agent, listener, { id: "skill-complete", name: "skill_complete", result: { details: { skill: "research-brief", skillLifecycleReceipt: { id: "receipt:complete", name: "research-brief", version, phase: "completed", sourceTool: "skill_complete" }, capabilityReceipt: { id: "receipt:skill", kind: "skill", name: "research-brief", version, sourceTool: "skill_complete" } } } });
 			}
 			agent.state.messages = [{ role: "assistant", content: [{ type: "text", text: "done" }], usage: { input: 1, output: 1 } }];
 		},
@@ -265,8 +470,8 @@ test("Agent runtime refuses to complete a selected Skill from name-only results 
 		prompt: async () => {
 			prompts++;
 			if (prompts === 2) {
-				listener({ type: "tool_execution_end", toolCallId: "read", toolName: "skill_read", isError: false, result: { details: { skill: "receipt-review" } } });
-				listener({ type: "tool_execution_end", toolCallId: "complete", toolName: "skill_complete", isError: false, result: { details: { skill: "receipt-review" } } });
+				await dispatchToolCall(agent, listener, { id: "read", name: "skill_read", result: { details: { skill: "receipt-review" } } });
+				await dispatchToolCall(agent, listener, { id: "complete", name: "skill_complete", result: { details: { skill: "receipt-review" } } });
 			}
 			agent.state.messages = [{ role: "assistant", content: [{ type: "text", text: "done" }], usage: { input: 1, output: 1 } }];
 		}, abort: async () => undefined, dispose: () => undefined,
@@ -292,13 +497,13 @@ test("runtime-discovered Skills enter the same version-locked receipt lifecycle 
 		subscribe: (next) => { listener = next; return () => undefined; },
 		prompt: async () => {
 			prompts++;
-			if (prompts === 1) listener({ type: "tool_execution_end", toolCallId: "discover", toolName: "capability_discover", isError: false, result: { details: {
+			if (prompts === 1) await dispatchToolCall(agent, listener, { id: "discover", name: "capability_discover", result: { details: {
 				cognitionId: "cap:runtime-skill", activatedTools: ["skill_activate", "skill_read"], skills: [{ name: "runtime-review" }],
 				ranked: [{ kind: "skill", name: "runtime-review", version, score: 98, confidence: 0.98, reason: "semantic capability match" }],
 			} } });
 			if (prompts === 2) {
-				listener({ type: "tool_execution_end", toolCallId: "read", toolName: "skill_read", isError: false, result: { details: { skill: "runtime-review", activatedTools: ["skill_complete"], legacy: true, declaredTools: [], skillLifecycleReceipt: { id: "receipt:runtime-read", name: "runtime-review", version, phase: "read", sourceTool: "skill_read" } } } });
-				listener({ type: "tool_execution_end", toolCallId: "complete", toolName: "skill_complete", isError: false, result: { details: { skill: "runtime-review", skillLifecycleReceipt: { id: "receipt:runtime-complete", name: "runtime-review", version, phase: "completed", sourceTool: "skill_complete" }, capabilityReceipt: { id: "receipt:runtime-skill", kind: "skill", name: "runtime-review", version, sourceTool: "skill_complete" } } } });
+				await dispatchToolCall(agent, listener, { id: "read", name: "skill_read", result: { details: { skill: "runtime-review", activatedTools: ["skill_complete"], legacy: true, declaredTools: [], skillLifecycleReceipt: { id: "receipt:runtime-read", name: "runtime-review", version, phase: "read", sourceTool: "skill_read" } } } });
+				await dispatchToolCall(agent, listener, { id: "complete", name: "skill_complete", result: { details: { skill: "runtime-review", skillLifecycleReceipt: { id: "receipt:runtime-complete", name: "runtime-review", version, phase: "completed", sourceTool: "skill_complete" }, capabilityReceipt: { id: "receipt:runtime-skill", kind: "skill", name: "runtime-review", version, sourceTool: "skill_complete" } } } });
 			}
 			agent.state.messages = [{ role: "assistant", content: [{ type: "text", text: "done" }], usage: { input: 1, output: 1 } }];
 		}, abort: async () => undefined, dispose: () => undefined,
@@ -323,7 +528,7 @@ test("an incomplete selected Skill reports its concrete route or resource blocke
 		agent, getAllTools: () => tools, getActiveToolNames: () => tools.map(({ name }) => name), setActiveToolsByName: () => undefined,
 		subscribe: (next) => { listener = next; return () => undefined; }, prompt: async () => {
 			prompts++;
-			if (prompts === 1) listener({ type: "tool_execution_end", toolCallId: "read", toolName: "skill_read", isError: true, result: { content: [{ type: "text", text: "Skill referenced resource is unavailable: modules/missing-review.md" }] } });
+			if (prompts === 1) await dispatchToolCall(agent, listener, { id: "read", name: "skill_read", isError: true, result: { content: [{ type: "text", text: "Skill referenced resource is unavailable: modules/missing-review.md" }] } });
 			agent.state.messages = [{ role: "assistant", content: [{ type: "text", text: "blocked" }], usage: { input: 1, output: 1 } }];
 		}, abort: async () => undefined, dispose: () => undefined,
 	}) });
@@ -431,11 +636,13 @@ test("Agent runtime settles a model turn after bounded visible-output inactivity
 		turnIdleSettleMs: 20,
 		createAgent: async () => ({
 			agent,
+			getAllTools: () => [{ name: "read", description: "Read a file", beemaxPolicy: { sideEffect: "none" } }],
+			getActiveToolNames: () => ["read"],
+			setActiveToolsByName: () => undefined,
 			subscribe: (next) => { listener = next; return () => undefined; },
 			prompt: async () => {
 				agent.state.messages = [{ role: "assistant", content: [{ type: "text", text: "completed result" }], usage: { input: 1, output: 1 } }];
-				bindAssistantTurn(listener, [{ id: "orphaned-tool", name: "read" }]);
-				listener({ type: "tool_execution_start", toolCallId: "orphaned-tool", toolName: "read", args: {} });
+				await admitToolCalls(agent, listener, [{ id: "orphaned-tool", name: "read" }], "response:idle-tool");
 				listener({ type: "message_update", message: agent.state.messages[0], assistantMessageEvent: { type: "text_delta", delta: "completed result" } });
 				listener({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "completed result" }], usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0 } } });
 				await new Promise((resolve) => { finishPrompt = resolve; fallback = setTimeout(resolve, 200); });
@@ -445,7 +652,7 @@ test("Agent runtime settles a model turn after bounded visible-output inactivity
 		}),
 	});
 	const startedAt = Date.now();
-	const result = await runtime.run({ source, text: "hello", timeoutMs: 1_000 });
+	const result = await runtime.run({ source, text: "hello", timeoutMs: 1_000, allowedCapabilities: ["read"] });
 	assert.equal(result.answer, "completed result");
 	assert.equal(aborts, 1);
 	assert.ok(Date.now() - startedAt < 150);
@@ -468,7 +675,7 @@ test("Agent runtime continues once after capability discovery so activated tools
 		subscribe: (next) => { listener = next; return () => undefined; },
 		prompt: async (text) => {
 			prompts.push(text);
-			if (prompts.length === 1) listener({ type: "tool_execution_end", toolCallId: "discover", toolName: "capability_discover", result: { details: { activatedTools: ["web_search"], ranked: [{ kind: "tool", name: "web_search", score: 60, confidence: 0.6, reason: "matched trigger" }] } }, isError: false });
+			if (prompts.length === 1) await dispatchToolCall(agent, listener, { id: "discover", name: "capability_discover", result: { details: { activatedTools: ["web_search"], ranked: [{ kind: "tool", name: "web_search", score: 60, confidence: 0.6, reason: "matched trigger" }] } } });
 			agent.state.messages = [{ role: "assistant", content: [{ type: "text", text: "done" }], usage: { input: 1, output: 1 } }];
 		},
 		abort: async () => undefined, dispose: () => undefined,
@@ -501,10 +708,10 @@ test("Agent runtime promotes artifact_read only after a Tool produces a scoped A
 			prompts.push(text);
 			if (prompts.length === 1) {
 				assert.deepEqual(activeTools, ["capability_discover"]);
-				listener({ type: "tool_execution_end", toolCallId: "discover", toolName: "capability_discover", result: { details: { activatedTools: ["web_search"], ranked: [{ kind: "tool", name: "web_search", score: 60, confidence: 0.6, reason: "matched trigger" }] } }, isError: false });
+				await dispatchToolCall(agent, listener, { id: "discover", name: "capability_discover", result: { details: { activatedTools: ["web_search"], ranked: [{ kind: "tool", name: "web_search", score: 60, confidence: 0.6, reason: "matched trigger" }] } } });
 			} else {
 				assert.deepEqual(activeTools, ["web_search"]);
-				listener({ type: "tool_execution_end", toolCallId: "search", toolName: "web_search", result: { details: { toolArtifact: { ref: `beemax-artifact:sha256:${"a".repeat(64)}` } } }, isError: false });
+				await dispatchToolCall(agent, listener, { id: "search", name: "web_search", result: { details: { toolArtifact: { ref: `beemax-artifact:sha256:${"a".repeat(64)}` } } } });
 				assert.deepEqual(activeTools, ["web_search", "artifact_read"]);
 				transitionPublished = agent.state.messages.some((message) => message.customType === "beemax-tool-spec-transition" && /artifact_read/u.test(message.content));
 			}
@@ -526,6 +733,7 @@ test("Agent runtime reroutes one unresolved Tool failure through capability disc
 	const runtime = createRuntime({ executionTrace: { record: (event) => { traceEvents.push(event); } }, createAgent: async () => ({
 		agent, getActiveToolNames: () => ["capability_discover", "read", "primary_search", "alternate_search"], setActiveToolsByName: () => undefined,
 		getAllTools: () => [
+			{ name: "capability_discover", description: "Discover", beemaxPolicy: { sideEffect: "none" } },
 			{ name: "read", description: "Read context", beemaxPolicy: { sideEffect: "none" }, beemaxToolSpec: { configured: true, health: "ready", ranking: { inputModalities: ["text"], outputModalities: ["text"], freshness: "static", evidence: "source_receipt" } } },
 			{ name: "primary_search", description: "Primary search", beemaxPolicy: { sideEffect: "none" }, beemaxToolSpec: { configured: true, health: "ready", ranking: { inputModalities: ["text"], outputModalities: ["structured"], freshness: "realtime", evidence: "source_receipt" } } },
 			{ name: "alternate_search", description: "Alternate search", beemaxPolicy: { sideEffect: "none" }, beemaxToolSpec: { configured: true, health: "ready", ranking: { inputModalities: ["text"], outputModalities: ["structured"], freshness: "realtime", evidence: "source_receipt" } } },
@@ -534,16 +742,16 @@ test("Agent runtime reroutes one unresolved Tool failure through capability disc
 		prompt: async (text) => {
 			prompts.push(text);
 			if (prompts.length === 1) {
-				listener({ type: "tool_execution_end", toolCallId: "failed", toolName: "primary_search", result: {}, isError: true });
-				listener({ type: "tool_execution_end", toolCallId: "context", toolName: "read", result: {}, isError: false });
+				await dispatchToolCall(agent, listener, { id: "failed", name: "primary_search", isError: true });
+				await dispatchToolCall(agent, listener, { id: "context", name: "read" });
 			}
-			if (prompts.length === 2) listener({ type: "tool_execution_end", toolCallId: "discover", toolName: "capability_discover", result: { details: { cognitionId: "cap:reroute-1", activatedTools: ["alternate_search"], ranked: [{ kind: "tool", name: "alternate_search", score: 60, confidence: 0.6, reason: "matched trigger" }] } }, isError: false });
-			if (prompts.length === 3) listener({ type: "tool_execution_end", toolCallId: "alternate", toolName: "alternate_search", result: {}, isError: false });
+			if (prompts.length === 2) await dispatchToolCall(agent, listener, { id: "discover", name: "capability_discover", result: { details: { cognitionId: "cap:reroute-1", activatedTools: ["alternate_search"], ranked: [{ kind: "tool", name: "alternate_search", score: 60, confidence: 0.6, reason: "matched trigger" }] } } });
+			if (prompts.length === 3) await dispatchToolCall(agent, listener, { id: "alternate", name: "alternate_search" });
 			agent.state.messages = [{ role: "assistant", content: [{ type: "text", text: "done" }], usage: { input: 1, output: 1 } }];
 		},
 		abort: async () => undefined, dispose: () => undefined,
 	}) });
-	await runtime.run({ source, text: "find current evidence", timeoutMs: 1_000 });
+	await runtime.run({ source, text: "find current evidence", timeoutMs: 1_000, allowedCapabilities: ["capability_discover", "read", "primary_search", "alternate_search"] });
 	assert.equal(prompts.length, 3);
 	assert.match(prompts[1], /primary_search/);
 	assert.match(prompts[1], /capability_discover/);
@@ -566,12 +774,12 @@ test("Agent runtime does not reroute a read-only Tool failure that succeeds late
 		subscribe: (next) => { listener = next; return () => undefined; },
 		prompt: async () => {
 			prompts++;
-			listener({ type: "tool_execution_end", toolCallId: "failed", toolName: "primary_search", result: {}, isError: true });
-			listener({ type: "tool_execution_end", toolCallId: "recovered", toolName: "primary_search", result: {}, isError: false });
+			await dispatchToolCall(agent, listener, { id: "failed", name: "primary_search", isError: true });
+			await dispatchToolCall(agent, listener, { id: "recovered", name: "primary_search" });
 			agent.state.messages = [{ role: "assistant", content: [{ type: "text", text: "done" }], usage: { input: 1, output: 1 } }];
 		}, abort: async () => undefined, dispose: () => undefined,
 	}) });
-	await runtime.run({ source, text: "find current evidence", timeoutMs: 1_000 });
+	await runtime.run({ source, text: "find current evidence", timeoutMs: 1_000, allowedCapabilities: ["primary_search"] });
 	assert.equal(prompts, 1);
 	runtime.dispose();
 });
@@ -590,16 +798,16 @@ test("Agent runtime accepts an equivalent read reroute only after trusted Provid
 		subscribe: (next) => { listener = next; return () => undefined; },
 		prompt: async () => {
 			prompts++;
-			if (prompts === 1) listener({ type: "tool_execution_end", toolCallId: "failed", toolName: "primary_search", result: {}, isError: true });
-			if (prompts === 2) listener({ type: "tool_execution_end", toolCallId: "discover", toolName: "capability_discover", isError: false, result: { details: {
+			if (prompts === 1) await dispatchToolCall(agent, listener, { id: "failed", name: "primary_search", isError: true });
+			if (prompts === 2) await dispatchToolCall(agent, listener, { id: "discover", name: "capability_discover", result: { details: {
 				cognitionId: "cap:trusted-recovery", activatedTools: ["recovered_search"], ranked: [{ kind: "tool", name: "recovered_search", score: 95, confidence: 0.95, reason: "semantic match" }],
 				providerResolutions: [{ capability: "recovered_search", status: "ready", selected: { id: "recovered-provider", kind: "tool", installed: true, health: { status: "ready", evidenceRef: "health:recovered" } } }],
 			} } });
-			if (prompts === 3) listener({ type: "tool_execution_end", toolCallId: "recovered", toolName: "recovered_search", result: {}, isError: false });
+			if (prompts === 3) await dispatchToolCall(agent, listener, { id: "recovered", name: "recovered_search" });
 			agent.state.messages = [{ role: "assistant", content: [{ type: "text", text: "done" }], usage: { input: 1, output: 1 } }];
 		}, abort: async () => undefined, dispose: () => undefined,
 	}) });
-	await runtime.run({ source, text: "find verified realtime evidence", timeoutMs: 1_000 });
+	await runtime.run({ source, text: "find verified realtime evidence", timeoutMs: 1_000, allowedCapabilities: tools.map(({ name }) => name) });
 	assert.equal(prompts, 3);
 	runtime.dispose();
 });
@@ -619,17 +827,17 @@ test("Agent runtime acquires an installable equivalent read Provider and resumes
 		subscribe: (next) => { listener = next; return () => undefined; },
 		prompt: async () => {
 			prompts++;
-			if (prompts === 1) listener({ type: "tool_execution_end", toolCallId: "failed", toolName: "primary_search", result: {}, isError: true });
-			if (prompts === 2) listener({ type: "tool_execution_end", toolCallId: "discover", toolName: "capability_discover", isError: false, result: { details: {
+			if (prompts === 1) await dispatchToolCall(agent, listener, { id: "failed", name: "primary_search", isError: true });
+			if (prompts === 2) await dispatchToolCall(agent, listener, { id: "discover", name: "capability_discover", result: { details: {
 				cognitionId: "cap:installable-reroute", activatedTools: ["capability_acquire"], ranked: [{ kind: "tool", name: "installable_search", score: 96, confidence: 0.96, reason: "semantic match" }],
 				providerResolutions: [{ capability: "installable_search", status: "blocked", candidates: [{ id: "installable-provider", kind: "tool", installed: false, installable: true, health: { status: "unavailable", reason: "not installed" } }], blocker: { code: "provider_unavailable", reason: "installable-provider is not installed", requiredConfiguration: [] } }],
 			} } });
-			if (prompts === 3) listener({ type: "tool_execution_end", toolCallId: "acquire", toolName: "capability_acquire", isError: false, result: { details: { providerAcquisition: { capability: "installable_search", status: "ready", selected: { id: "installable-provider", kind: "tool", installed: true, health: { status: "ready", evidenceRef: "health:installed" } } } } } });
-			if (prompts === 4) listener({ type: "tool_execution_end", toolCallId: "installed", toolName: "installable_search", isError: false, result: {} });
+			if (prompts === 3) await dispatchToolCall(agent, listener, { id: "acquire", name: "capability_acquire", result: { details: { providerAcquisition: { capability: "installable_search", status: "ready", selected: { id: "installable-provider", kind: "tool", installed: true, health: { status: "ready", evidenceRef: "health:installed" } } } } } });
+			if (prompts === 4) await dispatchToolCall(agent, listener, { id: "installed", name: "installable_search" });
 			agent.state.messages = [{ role: "assistant", content: [{ type: "text", text: "done" }], usage: { input: 1, output: 1 } }];
 		}, abort: async () => undefined, dispose: () => undefined,
 	}) });
-	await runtime.run({ source, text: "find verified realtime evidence", timeoutMs: 1_000 });
+	await runtime.run({ source, text: "find verified realtime evidence", timeoutMs: 1_000, allowedCapabilities: tools.map(({ name }) => name) });
 	assert.equal(prompts, 4);
 	runtime.dispose();
 });
@@ -650,19 +858,20 @@ test("Agent runtime rejects read reroutes that cannot prove equivalent health, m
 		const runtime = createRuntime({ createAgent: async () => ({
 			agent, getActiveToolNames: () => ["capability_discover", "primary_search", "weak_alternate"], setActiveToolsByName: () => undefined,
 			getAllTools: () => [
+				{ name: "capability_discover", description: "Discover", beemaxPolicy: { sideEffect: "none" } },
 				{ name: "primary_search", description: "Realtime source search", beemaxPolicy: { sideEffect: "none" }, beemaxToolSpec: { configured: true, health: "ready", ranking: { inputModalities: ["text"], outputModalities: ["structured"], freshness: "realtime", evidence: "source_receipt" } } },
 				{ name: "weak_alternate", description: "Weaker alternate", beemaxPolicy: { sideEffect: "none" }, beemaxToolSpec: { configured: variant.configured, health: variant.health, ...(variant.input ? { ranking: { inputModalities: variant.input, outputModalities: variant.output, freshness: variant.freshness, evidence: variant.evidence } } : {}) } },
 			],
 			subscribe: (next) => { listener = next; return () => undefined; },
 			prompt: async () => {
 				prompts.push("prompt");
-				if (prompts.length === 1) listener({ type: "tool_execution_end", toolCallId: "failed", toolName: "primary_search", result: {}, isError: true });
-				if (prompts.length === 2) listener({ type: "tool_execution_end", toolCallId: "discover", toolName: "capability_discover", result: { details: { activatedTools: ["weak_alternate"], ranked: [{ kind: "tool", name: "weak_alternate", score: 90, confidence: 0.9, reason: "semantic alternate" }] } }, isError: false });
+				if (prompts.length === 1) await dispatchToolCall(agent, listener, { id: "failed", name: "primary_search", isError: true });
+				if (prompts.length === 2) await dispatchToolCall(agent, listener, { id: "discover", name: "capability_discover", result: { details: { activatedTools: ["weak_alternate"], ranked: [{ kind: "tool", name: "weak_alternate", score: 90, confidence: 0.9, reason: "semantic alternate" }] } } });
 				agent.state.messages = [{ role: "assistant", content: [{ type: "text", text: "weaker answer" }], usage: { input: 1, output: 1 } }];
 			},
 			abort: async () => undefined, dispose: () => undefined,
 		}) });
-		await assert.rejects(runtime.run({ source, text: "find realtime evidence with source receipts", timeoutMs: 1_000 }, (event) => { events.push(event); }), /equivalent healthy read-only capability/i, variant.name);
+		await assert.rejects(runtime.run({ source, text: "find realtime evidence with source receipts", timeoutMs: 1_000, allowedCapabilities: ["capability_discover", "primary_search", "weak_alternate"] }, (event) => { events.push(event); }), /equivalent healthy read-only capability/i, variant.name);
 		assert.equal(prompts.length, 2, variant.name);
 		assert.deepEqual(events.find((event) => event.type === "capability_ranked")?.activatedTools, [], variant.name);
 		runtime.dispose();
@@ -683,16 +892,14 @@ test("Agent runtime asks Pi to correct malformed arguments without treating them
 		subscribe: (next) => { listener = next; return () => undefined; },
 		prompt: async (text) => {
 			prompts.push(text);
-			listener({
-				type: "tool_execution_end", toolCallId: "invalid", toolName: "primary_search", isError: true,
-				result: { content: [{ type: "text", text: "query: required constraint was not satisfied" }], details: { dispatchError: { stage: "validation", code: "arguments_invalid", retryable: true } } },
-			});
+			await dispatchToolCall(agent, listener, { id: "invalid", name: "primary_search", isError: true,
+				result: { content: [{ type: "text", text: "query: required constraint was not satisfied" }], details: { dispatchError: { stage: "validation", code: "arguments_invalid", retryable: true } } } });
 			agent.state.messages = [{ role: "assistant", content: [{ type: "text", text: "will correct through Pi" }], usage: { input: 1, output: 1 } }];
 		},
 		abort: async () => undefined, dispose: () => undefined,
 	}) });
 
-	await runtime.run({ source, text: "find current evidence", timeoutMs: 1_000 });
+	await runtime.run({ source, text: "find current evidence", timeoutMs: 1_000, allowedCapabilities: ["primary_search"] });
 	assert.equal(prompts.length, 1);
 	assert.doesNotMatch(prompts.join("\n"), /capability reroute/i);
 	assert.deepEqual(traceEvents.find((event) => event.type === "tool.settled")?.dispatchReceipt, {
@@ -713,16 +920,15 @@ test("Agent runtime aborts an identical failed read-only Tool loop before anothe
 		setActiveToolsByName: () => undefined,
 		subscribe: (next) => { listener = next; return () => undefined; },
 		prompt: async () => {
-			bindAssistantTurn(listener, ["first", "second"].map((id) => ({ id, name: "read", args: { path: "missing.txt" } })));
+			await admitToolCalls(agent, listener, ["first", "second"].map((id) => ({ id, name: "read", args: { path: "missing.txt" } })), "response:duplicate-read");
 			for (const id of ["first", "second"]) {
-				listener({ type: "tool_execution_start", toolCallId: id, toolName: "read", args: { path: "missing.txt" } });
 				listener({ type: "tool_execution_end", toolCallId: id, toolName: "read", result: { error: "missing" }, isError: true });
 			}
 			agent.state.messages = [{ role: "assistant", content: [{ type: "text", text: "still trying" }], usage: { input: 1, output: 1 } }];
 		},
 		abort: async () => { aborts++; }, dispose: () => undefined,
 	}) });
-	await assert.rejects(runtime.run({ source, text: "读取 missing.txt", timeoutMs: 1_000 }), /repeated the same failed read-only Tool call/);
+	await assert.rejects(runtime.run({ source, text: "读取 missing.txt", timeoutMs: 1_000, allowedCapabilities: ["read"] }), /repeated the same failed read-only Tool call/);
 	assert.equal(aborts, 1);
 	runtime.dispose();
 });
@@ -734,25 +940,25 @@ test("Agent runtime never auto-reroutes an unresolved external mutation", async 
 		agent, getActiveToolNames: () => ["capability_discover", "external_write"], setActiveToolsByName: () => undefined,
 		getAllTools: () => [{ name: "external_write", description: "Write externally", beemaxPolicy: { sideEffect: "external" } }],
 		subscribe: (next) => { listener = next; return () => undefined; },
-		prompt: async (text) => { prompts.push(text); listener({ type: "tool_execution_end", toolCallId: "write", toolName: "external_write", result: {}, isError: true }); agent.state.messages = [{ role: "assistant", content: [{ type: "text", text: "failed" }], usage: { input: 1, output: 1 } }]; },
+		prompt: async (text) => { prompts.push(text); await dispatchToolCall(agent, listener, { id: "write", name: "external_write", isError: true }); agent.state.messages = [{ role: "assistant", content: [{ type: "text", text: "failed" }], usage: { input: 1, output: 1 } }]; },
 		abort: async () => undefined, dispose: () => undefined,
 	}) });
-	await runtime.run({ source, text: "perform write", timeoutMs: 1_000 });
+	await runtime.run({ source, text: "perform write", timeoutMs: 1_000, allowedCapabilities: ["external_write"] });
 	assert.equal(prompts.length, 1);
 	runtime.dispose();
 });
 
 test("Capability event validation rejects unregistered names and free-form ranking content", async () => {
 	const source = { platform: "cli", chatId: "capability-event-boundary", chatType: "dm", userId: "local" };
-	let listener; const events = []; const agent = { state: { model: { id: "test" }, messages: [] } };
+	let listener; let prompts = 0; const events = []; const agent = { state: { model: { id: "test" }, messages: [] } };
 	const runtime = createRuntime({ createAgent: async () => ({
 		agent, getActiveToolNames: () => ["capability_discover", "safe_search"], setActiveToolsByName: () => undefined,
-		getAllTools: () => [{ name: "safe_search", description: "Safe search", beemaxPolicy: { sideEffect: "none" } }],
+		getAllTools: () => [{ name: "capability_discover", description: "Discover", beemaxPolicy: { sideEffect: "none" }, beemaxCapabilityPrefetch: async () => { throw new Error("semantic Provider temporarily unavailable"); } }, { name: "safe_search", description: "Safe search", beemaxPolicy: { sideEffect: "none" } }],
 		subscribe: (next) => { listener = next; return () => undefined; },
-		prompt: async () => { listener({ type: "tool_execution_end", toolCallId: "discover", toolName: "capability_discover", isError: false, result: { details: { activatedTools: ["safe_search", "SECRET prompt and args", "safe_search"], ranked: [{ kind: "tool", name: "safe_search", score: 5, confidence: 2, reason: "SECRET prompt schema args" }, { kind: "tool", name: "SECRET body", score: 99, confidence: 1, reason: "SECRET" }] } } }); agent.state.messages = [{ role: "assistant", content: [{ type: "text", text: "done" }], usage: { input: 1, output: 1 } }]; },
+		prompt: async () => { prompts++; if (prompts === 1) await dispatchToolCall(agent, listener, { id: "discover", name: "capability_discover", result: { details: { cognitionId: "cap:sanitized-event", activatedTools: ["safe_search", "SECRET prompt and args", "safe_search"], ranked: [{ kind: "tool", name: "safe_search", score: 5, confidence: 2, reason: "SECRET prompt schema args" }, { kind: "tool", name: "SECRET body", score: 99, confidence: 1, reason: "SECRET" }] } } }); agent.state.messages = [{ role: "assistant", content: [{ type: "text", text: "done" }], usage: { input: 1, output: 1 } }]; },
 		abort: async () => undefined, dispose: () => undefined,
 	}) });
-	await runtime.run({ source, text: "search", timeoutMs: 1_000 }, async (event) => { await new Promise((resolve) => setTimeout(resolve, 1)); events.push(event); });
+	await runtime.run({ source, text: "Use a Tool to resolve the required capability", timeoutMs: 1_000 }, (event) => { events.push(event); });
 	const ranked = events.find((event) => event.type === "capability_ranked");
 	assert.deepEqual(ranked, { type: "capability_ranked", candidates: [{ kind: "tool", name: "safe_search", score: 5, confidence: 1, reason: "lexical" }], activatedTools: ["safe_search"] });
 	assert.doesNotMatch(JSON.stringify(ranked), /SECRET|schema|args/);
@@ -789,8 +995,8 @@ test("BeeMax explicit Skill commands enter the enforced runtime lifecycle instea
 		agent, getAllTools: () => tools, getActiveToolNames: () => tools.map(({ name }) => name), setActiveToolsByName: () => undefined, subscribe: (next) => { listener = next; return () => undefined; },
 		prompt: async (text) => {
 			received = text;
-			listener({ type: "tool_execution_end", toolCallId: "read", toolName: "skill_read", isError: false, result: { details: { skill: "contract-review", activatedTools: ["skill_complete"], legacy: true, declaredTools: [], skillLifecycleReceipt: { id: "receipt:explicit-read", name: "contract-review", version, phase: "read", sourceTool: "skill_read" } } } });
-			listener({ type: "tool_execution_end", toolCallId: "complete", toolName: "skill_complete", isError: false, result: { details: { skill: "contract-review", skillLifecycleReceipt: { id: "receipt:explicit-complete", name: "contract-review", version, phase: "completed", sourceTool: "skill_complete" }, capabilityReceipt: { id: "receipt:explicit-skill", kind: "skill", name: "contract-review", version, sourceTool: "skill_complete" } } } });
+			await dispatchToolCall(agent, listener, { id: "read", name: "skill_read", result: { details: { skill: "contract-review", activatedTools: ["skill_complete"], legacy: true, declaredTools: [], skillLifecycleReceipt: { id: "receipt:explicit-read", name: "contract-review", version, phase: "read", sourceTool: "skill_read" } } } });
+			await dispatchToolCall(agent, listener, { id: "complete", name: "skill_complete", result: { details: { skill: "contract-review", skillLifecycleReceipt: { id: "receipt:explicit-complete", name: "contract-review", version, phase: "completed", sourceTool: "skill_complete" }, capabilityReceipt: { id: "receipt:explicit-skill", kind: "skill", name: "contract-review", version, sourceTool: "skill_complete" } } } });
 			agent.state.messages = [{ role: "assistant", content: [{ type: "text", text: "done" }], usage: { input: 1, output: 1 } }];
 		}, abort: async () => undefined, dispose: () => undefined,
 	}) });
@@ -925,13 +1131,16 @@ test("Agent runtime injects a deterministic planning directive without changing 
 		context: { enrich: (_source, text) => text, record: (_source, exchange) => recorded.push(exchange) },
 		createAgent: async () => ({
 			agent,
+			getAllTools: () => [{ name: "task_plan_execute", beemaxPolicy: { sideEffect: "local" } }],
+			getActiveToolNames: () => ["task_plan_execute"],
+			setActiveToolsByName: () => undefined,
 			subscribe: (next) => { runtimeListener = next; return () => undefined; },
-			prompt: async (text) => { received = text; bindAssistantTurn(runtimeListener, [{ id: "plan", name: "task_plan_execute" }]); runtimeListener({ type: "tool_execution_start", toolCallId: "plan", toolName: "task_plan_execute", args: {} }); runtimeListener({ type: "tool_execution_end", toolCallId: "plan", toolName: "task_plan_execute", result: { details: { planId: "plan-1", accepted: true, status: "running" } }, isError: false }); runtimeListener({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "done" }], usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0 } } }); agent.state.messages = [{ role: "assistant", content: [{ type: "text", text: "done" }], usage: { input: 1, output: 1 } }]; },
+			prompt: async (text) => { received = text; await dispatchToolCall(agent, runtimeListener, { id: "plan", name: "task_plan_execute", result: { details: { planId: "plan-1", accepted: true, status: "running" } } }); runtimeListener({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "done" }], usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0 } } }); agent.state.messages = [{ role: "assistant", content: [{ type: "text", text: "done" }], usage: { input: 1, output: 1 } }]; },
 			abort: async () => undefined,
 			dispose: () => undefined,
 		}),
 	});
-	await runtime.run({ source, text: "Review frontend and backend independently, then combine the results", timeoutMs: 1_000 }, (event) => { runEvents.push(event); });
+	await runtime.run({ source, text: "Review frontend and backend independently, then combine the results", timeoutMs: 1_000, allowedCapabilities: ["task_plan_execute"] }, (event) => { runEvents.push(event); });
 	assert.match(received, /BeeMax execution policy/);
 	assert.match(received, /mode=(?:dag|delegate)/);
 	assert.deepEqual(recorded, [{ user: "Review frontend and backend independently, then combine the results", assistant: "done" }]);
@@ -943,9 +1152,14 @@ test("Agent runtime injects a deterministic planning directive without changing 
 test("interactive runs persist an Objective and keep background DAG Objectives running", async () => {
 	const source = { platform: "cli", chatId: "objective", chatType: "dm", userId: "local" };
 	const tasks = new Map();
+	const runs = new Map();
 	const ledger = {
 		record(task) { tasks.set(task.id, { ...task }); },
 		transition(id, change) { tasks.set(id, { ...tasks.get(id), ...change }); return true; },
+		recordRun(run) { runs.set(run.id, { ...run }); },
+		transitionRun(id, change) { runs.set(id, { ...runs.get(id), ...change }); return true; },
+		queryTasks: (query) => [...tasks.values()].filter((task) => query.ownerKeys.includes(task.ownerKey) && (!query.id || query.id === task.id)),
+		isTaskRunExecutionActive: (_ownerKey, objectiveId, taskId, runId) => objectiveId === taskId && tasks.get(objectiveId)?.status === "running" && runs.get(runId)?.status === "running",
 	};
 	let listener;
 	const agent = { state: { model: { id: "test" }, messages: [] } };
@@ -953,18 +1167,16 @@ test("interactive runs persist an Objective and keep background DAG Objectives r
 		taskLedger: ledger,
 		planningPolicy: new AutonomousPlanningPolicy(),
 		createAgent: async () => ({
-			agent, subscribe: (next) => { listener = next; return () => undefined; },
+			agent, getAllTools: () => [{ name: "task_plan_execute", beemaxPolicy: { sideEffect: "local" } }], getActiveToolNames: () => ["task_plan_execute"], setActiveToolsByName: () => undefined, subscribe: (next) => { listener = next; return () => undefined; },
 			prompt: async () => {
-				bindAssistantTurn(listener, [{ id: "plan", name: "task_plan_execute" }]);
-				listener({ type: "tool_execution_start", toolCallId: "plan", toolName: "task_plan_execute", args: {} });
-				listener({ type: "tool_execution_end", toolCallId: "plan", toolName: "task_plan_execute", result: { details: { planId: "plan", accepted: true, status: "running" } }, isError: false });
+				await dispatchToolCall(agent, listener, { id: "plan", name: "task_plan_execute", result: { details: { planId: "plan", accepted: true, status: "running" } } });
 				agent.state.messages = [{ role: "assistant", content: [{ type: "text", text: "Work accepted" }], usage: { input: 1, output: 1 } }];
 			},
 			abort: async () => undefined, dispose: () => undefined,
 		}),
 	});
 
-	await runtime.run({ source, text: "Review frontend and backend independently, then combine the results", timeoutMs: 1_000 });
+	await runtime.run({ source, text: "Review frontend and backend independently, then combine the results", timeoutMs: 1_000, allowedCapabilities: ["task_plan_execute"] });
 
 	const [objective] = [...tasks.values()];
 	assert.equal(objective.kind, "objective");
@@ -1051,6 +1263,7 @@ test("a responsible direct Turn completes one durable Objective through one veri
 		transitionRun(id, change) { runs.set(id, { ...runs.get(id), ...change }); return true; },
 		queryTasks: (query) => [...tasks.values()].filter((task) => query.ownerKeys.includes(task.ownerKey) && (!query.id || task.id === query.id)),
 		checkpointTask(ownerKey, id, checkpoint) { const task = tasks.get(id); if (!task || task.ownerKey !== ownerKey) return false; tasks.set(id, { ...task, checkpoint }); return true; },
+		isTaskRunExecutionActive: (_ownerKey, objectiveId, taskId, runId) => objectiveId === taskId && tasks.get(objectiveId)?.status === "running" && runs.get(runId)?.status === "running",
 		settleDirectObjectiveCompletion(settlement) { return settleDirectObjectiveCompletion(tasks, runs, completions, settlement); },
 	};
 	let envelope;
@@ -1068,9 +1281,8 @@ test("a responsible direct Turn completes one durable Objective through one veri
 		},
 		createAgent: async (_id, _source, receivedEnvelope) => {
 			envelope = receivedEnvelope;
-			return { agent, subscribe: (next) => { listener = next; return () => undefined; }, prompt: async () => {
-				bindAssistantTurn(listener, [{ id: "source-1", name: "read", args: { path: "source.md" } }]);
-				listener({ type: "tool_execution_start", toolCallId: "source-1", toolName: "read", args: { path: "source.md" } });
+			return { agent, getAllTools: () => [{ name: "read", beemaxPolicy: { sideEffect: "none" } }], getActiveToolNames: () => ["read"], setActiveToolsByName: () => undefined, subscribe: (next) => { listener = next; return () => undefined; }, prompt: async () => {
+				await admitToolCalls(agent, listener, [{ id: "source-1", name: "read", args: { path: "source.md" } }], "response:direct-source");
 				listener({ type: "tool_execution_end", toolCallId: "source-1", toolName: "read", result: { content: [{ type: "text", text: "source evidence" }] }, isError: false });
 				listener({ type: "turn_end", message: { role: "assistant", content: [] }, toolResults: [] });
 				listener({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "完成并附来源" }], usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0 } } });
@@ -1079,7 +1291,7 @@ test("a responsible direct Turn completes one durable Objective through one veri
 		},
 	});
 
-	const result = await runtime.run({ source, text: "生成一份有来源的简短报告", timeoutMs: 1_000 });
+	const result = await runtime.run({ source, text: "生成一份有来源的简短报告", timeoutMs: 1_000, allowedCapabilities: ["read"] });
 
 	assert.equal(tasks.size, 1);
 	assert.equal(runs.size, 1);
@@ -1126,16 +1338,16 @@ test("Work Contract capability selection persists generic realtime source requir
 		settleDirectObjectiveCompletion(settlement) { return settleDirectObjectiveCompletion(tasks, runs, undefined, settlement); },
 	};
 	const tools = [
-		{ name: "capability_discover", description: "Discover capabilities", beemaxCapabilityPrefetch: async () => ({ cognitionId: "cap:qx17", candidates: [{ kind: "tool", name: "temporal_evidence_feed", confidence: 0.97 }], activatedTools: ["temporal_evidence_feed"], skills: [] }) },
+		attestCapabilityProviderResolutionTool({ name: "capability_discover", description: "Discover capabilities", beemaxCapabilityPrefetch: async () => ({ cognitionId: "cap:qx17", candidates: [{ kind: "tool", name: "temporal_evidence_feed", confidence: 0.97 }], activatedTools: ["temporal_evidence_feed"], skills: [] }) }),
 		{ name: "temporal_evidence_feed", description: "Resolve arbitrary temporal evidence", beemaxPolicy: { sideEffect: "none" }, beemaxToolSpec: { kind: "tool", version: "fixture:1", configured: true, health: "ready", authorized: true, ranking: { inputModalities: ["text"], outputModalities: ["structured"], freshness: "realtime", evidence: "source_receipt" } } },
 	];
-	const agent = { state: { model: { id: "test" }, messages: [] } };
+	const agent = { state: { model: { id: "test" }, messages: [] } }; let listener;
 	const runtime = createRuntime({
 		taskLedger: ledger,
 		turnUnderstanding: { understand: () => ({ action: "create", goal: rawRequest, constraints: [], acceptanceCriteria: [rawRequest, "结果必须对应 qx-17 即时源快照"], uncertainties: [], memoryQuery: rawRequest, capabilityQuery: "qx-17 脉冲镜像", executionMode: "direct", confidence: 0.95 }) },
 		workContractBuilder: { build: async () => ({ source: "model", cognitionBudgetChargeTokens: 1, semanticAdjudication: semanticReview, contract: { schemaVersion: "beemax.work-contract.v1", rawRequest, action: "create", objective: clause(rawRequest), constraints: [], prohibitions: [], acceptanceCriteria: [clause(rawRequest), clause("结果必须对应 qx-17 即时源快照")], capabilityRequirements: [clause("qx-17 脉冲镜像")], uncertainties: [], executionMode: "direct", confidence: 0.95 } }) },
 		verifyObjectiveCandidate: async () => ({ accepted: true, evidence: "fixture verification" }),
-		createAgent: async () => ({ agent, getAllTools: () => tools, getActiveToolNames: () => tools.map(({ name }) => name), setActiveToolsByName: () => undefined, subscribe: () => () => undefined, prompt: async () => { agent.state.messages = [{ role: "assistant", content: [{ type: "text", text: "qx-17 result" }], usage: { input: 1, output: 1 } }]; }, abort: async () => undefined, dispose: () => undefined }),
+		createAgent: async () => ({ agent, getAllTools: () => tools, getActiveToolNames: () => tools.map(({ name }) => name), setActiveToolsByName: () => undefined, subscribe: (callback) => { listener = callback; return () => undefined; }, prompt: async () => { await dispatchToolCall(agent, listener, { id: "qx17", name: "temporal_evidence_feed", result: { content: [{ type: "text", text: "source snapshot" }] } }); agent.state.messages = [{ role: "assistant", content: [{ type: "text", text: "qx-17 result" }], usage: { input: 1, output: 1 } }]; }, abort: async () => undefined, dispose: () => undefined }),
 	});
 	await runtime.run({ source, text: rawRequest, timeoutMs: 1_000 });
 	const [objective] = [...tasks.values()];
@@ -1176,6 +1388,7 @@ test("an Automation Trigger enters the same durable Pi lifecycle as responsible 
 		transitionRun(id, change) { runs.set(id, { ...runs.get(id), ...change }); return true; },
 		queryTasks: () => [],
 		checkpointTask(ownerKey, id, checkpoint) { const task = tasks.get(id); if (!task || task.ownerKey !== ownerKey) return false; tasks.set(id, { ...task, checkpoint }); return true; },
+		isTaskRunExecutionActive: (_ownerKey, objectiveId, taskId, runId) => objectiveId === taskId && tasks.get(objectiveId)?.status === "running" && runs.get(runId)?.status === "running",
 		settleDirectObjectiveCompletion(settlement) { return settleDirectObjectiveCompletion(tasks, runs, completions, settlement); },
 	};
 	const contextCalls = [];
@@ -1197,16 +1410,17 @@ test("an Automation Trigger enters the same durable Pi lifecycle as responsible 
 		createAgent: async () => { throw new Error("interactive factory must not run"); },
 		createAutomationAgent: async (_id, _source, envelope) => {
 			receivedEnvelope = envelope;
-			return { agent, subscribe: (next) => { listener = next; return () => undefined; }, prompt: async (text) => {
+			return { agent, getAllTools: () => [{ name: "read", beemaxPolicy: { sideEffect: "none" } }], getActiveToolNames: () => ["read"], setActiveToolsByName: () => undefined, subscribe: (next) => { listener = next; return () => undefined; }, prompt: async (text) => {
 				receivedPrompt = text;
-				listener({ type: "tool_execution_end", toolCallId: "source", toolName: "read", result: {}, isError: false });
+				await dispatchToolCall(agent, listener, { id: "source", name: "read" });
 				listener({ type: "turn_end", message: { role: "assistant", content: [] }, toolResults: [] });
+				listener({ type: "message_end", message: { role: "assistant", responseId: "response:automation-result", content: [{ type: "text", text: "摘要完成" }], usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0 } } });
 				agent.state.messages = [{ role: "assistant", content: [{ type: "text", text: "摘要完成" }], usage: { input: 1, output: 1 } }];
 			}, abort: async () => undefined, dispose: () => undefined };
 		},
 	});
 
-	const result = await runtime.run({ source, text: "生成有来源的周期摘要", timeoutMs: 10_000, mode: "automation", executionEnvelope: triggerEnvelope });
+	const result = await runtime.run({ source, text: "生成有来源的周期摘要", timeoutMs: 10_000, mode: "automation", executionEnvelope: triggerEnvelope, allowedCapabilities: ["read"] });
 
 	assert.equal(tasks.size, 1);
 	assert.equal(runs.size, 1);
@@ -1249,6 +1463,7 @@ test("an admitted proactive Objective executes through the same Pi Task Run, che
 		transitionRun(id, change) { runs.set(id, { ...runs.get(id), ...change }); return true; },
 		queryTasks(query) { const task = tasks.get(query.id); return task && query.ownerKeys.includes(task.ownerKey) ? [task] : []; },
 		checkpointTask(ownerKey, id, checkpoint) { const task = tasks.get(id); if (!task || task.ownerKey !== ownerKey) return false; tasks.set(id, { ...task, checkpoint }); return true; },
+		isTaskRunExecutionActive: (_ownerKey, objectiveId, taskId, runId) => objectiveId === taskId && tasks.get(objectiveId)?.status === "running" && runs.get(runId)?.status === "running",
 		settleDirectObjectiveCompletion(settlement) { return settleDirectObjectiveCompletion(tasks, runs, completions, settlement); },
 	};
 	let listener;
@@ -1268,8 +1483,9 @@ test("an admitted proactive Objective executes through the same Pi Task Run, che
 			receivedEnvelope = envelope;
 			return { agent, getAllTools: () => [{ name: "read", beemaxPolicy: { sideEffect: "none" } }, { name: "write", beemaxPolicy: { sideEffect: "local" } }], getActiveToolNames: () => [...activeTools], setActiveToolsByName: (names) => { activeTools = [...names]; }, subscribe: (next) => { listener = next; return () => undefined; }, prompt: async () => {
 				assert.deepEqual(activeTools, ["read"], "the proactive Turn must expose only admitted capabilities");
-				listener({ type: "tool_execution_end", toolCallId: "source", toolName: "read", result: {}, isError: false });
+				await dispatchToolCall(agent, listener, { id: "source", name: "read" });
 				listener({ type: "turn_end", message: { role: "assistant", content: [] }, toolResults: [] });
+				listener({ type: "message_end", message: { role: "assistant", responseId: "response:proactive-result", content: [{ type: "text", text: "Verified finding" }], usage: { input: 10, output: 5, cacheRead: 0, cacheWrite: 0 } } });
 				agent.state.messages = [{ role: "assistant", content: [{ type: "text", text: "Verified finding" }], usage: { input: 10, output: 5 } }];
 			}, abort: async () => undefined, dispose: () => undefined };
 		},
@@ -1437,17 +1653,19 @@ test("Agent runtime aborts a turn that exceeds its planned tool-call budget", as
 		planningPolicy: new AutonomousPlanningPolicy({ maxToolCalls: 8 }),
 		createAgent: async () => ({
 			agent,
+			getAllTools: () => [{ name: "read", beemaxPolicy: { sideEffect: "none" } }],
+			getActiveToolNames: () => ["read"],
+			setActiveToolsByName: () => undefined,
 			subscribe: (next) => { listener = next; return () => undefined; },
 			prompt: async () => {
-				bindAssistantTurn(listener, Array.from({ length: 9 }, (_, index) => ({ id: `tool-${index}`, name: "read" })));
-				for (let index = 0; index < 9; index++) listener({ type: "tool_execution_start", toolCallId: `tool-${index}`, toolName: "read" });
+				await admitToolCalls(agent, listener, Array.from({ length: 9 }, (_, index) => ({ id: `tool-${index}`, name: "read" })), "response:planned-budget");
 				agent.state.messages = [{ role: "assistant", content: [{ type: "text", text: "should not succeed" }], usage: { input: 1, output: 1 } }];
 			},
 			abort: async () => { aborts++; },
 			dispose: () => undefined,
 		}),
 	});
-	await assert.rejects(runtime.run({ source, text: "Read this file", timeoutMs: 1_000 }), /tool-call budget exceeded.*8/i);
+	await assert.rejects(runtime.run({ source, text: "Read this file", timeoutMs: 1_000, allowedCapabilities: ["read"] }), /tool-call budget exceeded.*8/i);
 	assert.equal(aborts, 1);
 	runtime.dispose();
 });
@@ -1458,17 +1676,15 @@ test("Execution Envelope enforces tool-call budget without a planning policy", a
 	let aborts = 0;
 	const agent = { state: { model: { id: "test" }, messages: [] } };
 	const runtime = createRuntime({ createAgent: async () => ({
-		agent, subscribe: (next) => { listener = next; return () => undefined; },
+		agent, getAllTools: () => [{ name: "read", beemaxPolicy: { sideEffect: "none" } }], getActiveToolNames: () => ["read"], setActiveToolsByName: () => undefined, subscribe: (next) => { listener = next; return () => undefined; },
 		prompt: async () => {
-			bindAssistantTurn(listener, [{ id: "tool-1", name: "read" }, { id: "tool-2", name: "read" }]);
-			listener({ type: "tool_execution_start", toolCallId: "tool-1", toolName: "read" });
-			listener({ type: "tool_execution_start", toolCallId: "tool-2", toolName: "read" });
+			await admitToolCalls(agent, listener, [{ id: "tool-1", name: "read" }, { id: "tool-2", name: "read" }], "response:envelope-budget");
 			agent.state.messages = [{ role: "assistant", content: [{ type: "text", text: "over budget" }], usage: { input: 1, output: 1 } }];
 		},
 		abort: async () => { aborts++; }, dispose: () => undefined,
 	}) });
 	const executionEnvelope = createExecutionEnvelope({ executionId: "execution:bounded", trigger: { kind: "automation" }, budget: { maxToolCalls: 1 }, mode: "normal" });
-	await assert.rejects(runtime.run({ source, text: "run", timeoutMs: null, mode: "automation", executionEnvelope }), /tool-call budget exceeded.*1/i);
+	await assert.rejects(runtime.run({ source, text: "run", timeoutMs: null, mode: "automation", executionEnvelope, allowedCapabilities: ["read"] }), /tool-call budget exceeded.*1/i);
 	assert.equal(aborts, 1);
 	runtime.dispose();
 });
@@ -1533,14 +1749,14 @@ test("Agent runtime performs one content-free correction when a complex turn ski
 	const prompts = [];
 	const agent = { state: { model: { id: "test" }, messages: [] } };
 	const runtime = createRuntime({ planningPolicy: new AutonomousPlanningPolicy(), createAgent: async () => ({
-		agent, subscribe: (next) => { listener = next; return () => undefined; },
+		agent, getAllTools: () => [{ name: "task_plan_execute", beemaxPolicy: { sideEffect: "local" } }], getActiveToolNames: () => ["task_plan_execute"], setActiveToolsByName: () => undefined, subscribe: (next) => { listener = next; return () => undefined; },
 		prompt: async (text) => {
 			prompts.push(text);
-			if (prompts.length === 2) { bindAssistantTurn(listener, [{ id: "plan", name: "task_plan_execute" }]); listener({ type: "tool_execution_start", toolCallId: "plan", toolName: "task_plan_execute", args: {} }); listener({ type: "tool_execution_end", toolCallId: "plan", toolName: "task_plan_execute", result: { details: { planId: "plan-1", accepted: true, status: "running" } }, isError: false }); }
+			if (prompts.length === 2) await dispatchToolCall(agent, listener, { id: "plan", name: "task_plan_execute", result: { details: { planId: "plan-1", accepted: true, status: "running" } } });
 			agent.state.messages = [{ role: "assistant", content: [{ type: "text", text: "done" }], usage: { input: 1, output: 1 } }];
 		}, abort: async () => undefined, dispose: () => undefined,
 	}) });
-	await runtime.run({ source, text: "Review frontend and backend independently, then combine and verify the results", timeoutMs: 1_000 });
+	await runtime.run({ source, text: "Review frontend and backend independently, then combine and verify the results", timeoutMs: 1_000, allowedCapabilities: ["task_plan_execute"] });
 	assert.equal(prompts.length, 2);
 	assert.match(prompts[1], /task_plan_execute/);
 	assert.doesNotMatch(prompts[1], /frontend|backend/);
@@ -1560,9 +1776,8 @@ test("Agent runtime aborts repeated Task Plan rejection inside one live Pi turn 
 		setActiveToolsByName: (names) => { activeTools = [...names]; },
 		subscribe: (next) => { listener = next; return () => undefined; },
 		prompt: async () => {
-			bindAssistantTurn(listener, [1, 2].map((attempt) => ({ id: `plan-${attempt}`, name: "task_plan_execute" })));
+			await admitToolCalls(agent, listener, [1, 2].map((attempt) => ({ id: `plan-${attempt}`, name: "task_plan_execute" })), "response:rejected-plans");
 			for (let attempt = 1; attempt <= 2; attempt++) {
-				listener({ type: "tool_execution_start", toolCallId: `plan-${attempt}`, toolName: "task_plan_execute", args: {} });
 				listener({ type: "tool_execution_end", toolCallId: `plan-${attempt}`, toolName: "task_plan_execute", result: {}, isError: true });
 			}
 			agent.state.messages = [{ role: "assistant", content: [{ type: "text", text: "still trying" }], usage: { input: 1, output: 1 } }];
@@ -1581,14 +1796,14 @@ test("delegated execution cannot finish after spawn without waiting for its Sub-
 	let prompts = 0;
 	const agent = { state: { model: { id: "test" }, messages: [] } };
 	const runtime = createRuntime({ planningPolicy: new AutonomousPlanningPolicy(), createAgent: async () => ({
-		agent, subscribe: (next) => { listener = next; return () => undefined; },
+		agent, getAllTools: () => [{ name: "task_spawn", beemaxPolicy: { sideEffect: "local" } }, { name: "task_wait", beemaxPolicy: { sideEffect: "none" } }], getActiveToolNames: () => ["task_spawn", "task_wait"], setActiveToolsByName: () => undefined, subscribe: (next) => { listener = next; return () => undefined; },
 		prompt: async () => {
 			prompts++;
-			if (prompts === 1) { bindAssistantTurn(listener, [{ id: "spawn", name: "task_spawn" }]); listener({ type: "tool_execution_start", toolCallId: "spawn", toolName: "task_spawn", args: {} }); listener({ type: "tool_execution_end", toolCallId: "spawn", toolName: "task_spawn", result: { details: { id: "child-1", status: "queued" } }, isError: false }); }
+			if (prompts === 1) await dispatchToolCall(agent, listener, { id: "spawn", name: "task_spawn", result: { details: { id: "child-1", status: "queued" } } });
 			agent.state.messages = [{ role: "assistant", content: [{ type: "text", text: "premature" }], usage: { input: 1, output: 1 } }];
 		}, abort: async () => undefined, dispose: () => undefined,
 	}) });
-	await assert.rejects(runtime.run({ source, text: "Research the official documentation deeply and produce an evidence-backed comparison report", timeoutMs: 1_000 }), /required planning tools: task_wait/i);
+	await assert.rejects(runtime.run({ source, text: "Research the official documentation deeply and produce an evidence-backed comparison report", timeoutMs: 1_000, allowedCapabilities: ["task_spawn", "task_wait"] }), /required planning tools: task_wait/i);
 	assert.equal(prompts, 2);
 	runtime.dispose();
 });

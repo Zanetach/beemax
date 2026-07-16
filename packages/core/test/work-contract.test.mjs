@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { AutonomousPlanningPolicy, BeeMaxAgentRuntime, DeterministicWorkContractBuilder, ModelBackedWorkContractBuilder, TurnUnderstandingEngine, WorkContractCognitionError, createExecutionEnvelope } from "../dist/index.js";
+import { attestCapabilityProviderResolutionTool } from "../dist/capability-provider.js";
 
 const createRuntime = (options) => new BeeMaxAgentRuntime({ profileId: "profile:test", ...options });
 const semanticReview = Object.freeze({ schemaVersion: "beemax.work-contract-adjudication.v1", inventorySchemaVersion: "beemax.semantic-inventory.v1", primaryModelIdentity: "test/primary/test", reviewerModelIdentity: "test/reviewer/test", reviewMode: "different_models", independentSamples: true, cognitionUsage: { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, costUsd: 0, modelIdentities: ["test/primary/test", "test/reviewer/test"] }, cognitionBudgetChargeTokens: 1 });
@@ -24,6 +25,20 @@ test("runtime rejects a model Contract builder that bypasses independent semanti
 	});
 	try {
 		await assert.rejects(runtime.run({ source: { platform: "cli", chatId: "unreviewed", userId: "user" }, text: rawRequest, timeoutMs: 1_000 }), /missing independent semantic adjudication/i);
+		assert.equal(agents, 0);
+	} finally { runtime.dispose(); }
+});
+
+test("runtime rejects a deterministic Builder that issues unreviewed Capability obligations", async () => {
+	const rawRequest = "查询并归档";
+	const clause = { text: rawRequest, source: { kind: "raw_request", start: 0, end: rawRequest.length } };
+	let agents = 0;
+	const runtime = createRuntime({
+		workContractBuilder: { build: async () => ({ source: "deterministic", contract: { schemaVersion: "beemax.work-contract.v1", rawRequest, action: "create", objective: clause, constraints: [], prohibitions: [], acceptanceCriteria: [clause], capabilityRequirements: [clause], uncertainties: [], executionMode: "direct", confidence: 1 } }) },
+		createAgent: async () => { agents++; throw new Error("Pi must not start"); },
+	});
+	try {
+		await assert.rejects(runtime.run({ source: { platform: "cli", chatId: "unreviewed-capability", userId: "user" }, text: rawRequest, timeoutMs: 1_000 }), /missing independent semantic adjudication/i);
 		assert.equal(agents, 0);
 	} finally { runtime.dispose(); }
 });
@@ -212,7 +227,14 @@ test("BeeMax sends the validated Work Contract to Pi and binds its criteria to t
 	const clause = (text) => ({ text, source: { kind: "raw_request", start: rawRequest.indexOf(text), end: rawRequest.indexOf(text) + text.length } });
 	let prompt;
 	let objective;
+	let listener;
+	const tasks = new Map();
+	const runs = new Map();
 	const agent = { state: { model: { id: "test" }, messages: [] } };
+	const tools = [
+		attestCapabilityProviderResolutionTool({ name: "capability_discover", description: "Discover capabilities", beemaxCapabilityPrefetch: async () => ({ cognitionId: "cap:save-draft", candidates: [{ kind: "tool", name: "save_draft", confidence: 0.99 }], activatedTools: ["save_draft"], skills: [] }) }),
+		{ name: "save_draft", description: "Persist a draft", beemaxPolicy: { sideEffect: "local" } },
+	];
 	const runtime = createRuntime({
 		workContractBuilder: { build: async ({ rawRequest: received }) => {
 			assert.equal(received, rawRequest);
@@ -222,12 +244,40 @@ test("BeeMax sends the validated Work Contract to Pi and binds its criteria to t
 				capabilityRequirements: [clause("保存")], uncertainties: [], executionMode: "direct", confidence: 0.9,
 			} };
 		} },
-		taskLedger: { queryTasks: () => [], record: (task) => { objective = task; }, transition: () => true },
+		taskLedger: {
+			queryTasks: () => [],
+			record: (task) => { objective = task; tasks.set(task.id, { ...task }); },
+			transition: (id, change) => { const task = tasks.get(id); if (!task) return false; tasks.set(id, { ...task, ...change }); return true; },
+			recordRun: (run) => { runs.set(run.id, { ...run }); },
+			transitionRun: (id, change) => { const run = runs.get(id); if (!run) return false; runs.set(id, { ...run, ...change }); return true; },
+			isTaskRunExecutionActive: (ownerKey, objectiveId, taskId, taskRunId) => {
+				const task = tasks.get(taskId); const run = runs.get(taskRunId);
+				return task?.ownerKey === ownerKey && task?.id === objectiveId && taskId === objectiveId && task?.status === "running"
+					&& run?.taskId === taskId && run?.status === "running";
+			},
+			settleDirectObjectiveCompletion: (settlement) => {
+				const task = tasks.get(settlement.objectiveId); const run = runs.get(settlement.taskRunId);
+				if (!task || task.status !== "running" || !run || run.status !== "running") return false;
+				tasks.set(task.id, { ...task, verificationStatus: "accepted", candidateResult: settlement.candidateResult });
+				runs.set(run.id, { ...run, status: "succeeded" });
+				return true;
+			},
+		},
+		verifyObjectiveCandidate: async () => ({ accepted: true, evidence: "draft receipt" }),
 		planningPolicy: { decide: () => ({ mode: "direct", requiredTools: [], suggestedConcurrency: 1, budget: { maxSubagents: 0, maxToolCalls: null, maxTokens: null, maxCorrectiveAttempts: 0 }, signals: { substantialWork: true }, reason: "test", directive: () => "[policy]" }) },
 		createAgent: async () => ({
 			agent,
-			subscribe: () => () => undefined,
-			prompt: async (text) => { prompt = text; agent.state.messages = [{ role: "assistant", content: [{ type: "text", text: "done" }], usage: { input: 1, output: 1 } }]; },
+			getAllTools: () => tools, getActiveToolNames: () => tools.map((tool) => tool.name), setActiveToolsByName: () => undefined,
+			subscribe: (callback) => { listener = callback; return () => undefined; },
+			prompt: async (text) => {
+				prompt = text;
+				listener({ type: "message_end", message: { role: "assistant", responseId: "response:save", content: [{ type: "toolCall", id: "save", name: "save_draft", arguments: {} }], usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0 } } });
+				listener({ type: "tool_execution_start", toolCallId: "save", toolName: "save_draft", args: {} });
+				assert.equal(await agent.beforeToolCall({ toolCall: { id: "save", name: "save_draft", arguments: {} }, args: {}, context: {} }, new AbortController().signal), undefined);
+				listener({ type: "tool_execution_end", toolCallId: "save", toolName: "save_draft", isError: false, result: { content: [{ type: "text", text: "draft saved" }] } });
+				listener({ type: "message_end", message: { role: "assistant", responseId: "response:done", content: [{ type: "text", text: "done" }], usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0 } } });
+				agent.state.messages = [{ role: "assistant", content: [{ type: "text", text: "done" }], usage: { input: 1, output: 1 } }];
+			},
 			abort: async () => undefined,
 			dispose: () => undefined,
 		}),
@@ -385,7 +435,8 @@ test("BeeMax preserves source-bound uncertainty in a durable Objective Situation
 				prompt = text; toolsDuringPrompt = [...activeTools];
 				activeTools = ["read", "write"];
 				listener({ type: "message_end", message: { role: "assistant", responseId: "response:uncertain-write", content: [{ type: "toolCall", id: "write:uncertain", name: "write", arguments: {} }], usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0 } } });
-				writeBoundaryDecision = await agent.beforeToolCall({ toolCall: { id: "write:uncertain", name: "write", arguments: {} } }, new AbortController().signal);
+				listener({ type: "tool_execution_start", toolCallId: "write:uncertain", toolName: "write", args: {} });
+				writeBoundaryDecision = await agent.beforeToolCall({ toolCall: { id: "write:uncertain", name: "write", arguments: {} }, args: {}, context: {} }, new AbortController().signal);
 				agent.state.messages = [{ role: "assistant", content: [{ type: "text", text: "done" }], usage: { input: 1, output: 1 } }];
 			},
 			abort: async () => undefined, dispose: () => undefined }),

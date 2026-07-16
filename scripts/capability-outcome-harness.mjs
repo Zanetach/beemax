@@ -9,6 +9,18 @@ import {
 	createExecutionEnvelope,
 	evaluateCapabilityCalibration,
 } from "../packages/core/dist/index.js";
+import { attestCapabilityProviderResolutionTool } from "../packages/core/dist/capability-provider.js";
+
+const semanticReview = Object.freeze({
+	schemaVersion: "beemax.work-contract-adjudication.v1",
+	inventorySchemaVersion: "beemax.semantic-inventory.v1",
+	primaryModelIdentity: "eval/primary/capability-outcome",
+	reviewerModelIdentity: "eval/reviewer/capability-outcome",
+	reviewMode: "different_models",
+	independentSamples: true,
+	cognitionUsage: { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, costUsd: 0, modelIdentities: ["eval/primary/capability-outcome", "eval/reviewer/capability-outcome"] },
+	cognitionBudgetChargeTokens: 1,
+});
 import { capabilityInventory, capabilityRankingCases } from "../evals/capability-ranking-corpus.mjs";
 
 export async function executeOutcomeBoundCapabilityRun({ mode, threshold, observedRankings, cognitionAttempts = [] }) {
@@ -102,14 +114,15 @@ export async function executeOutcomeBoundCapabilityTask({ scenario, cognitionId,
 			for (const { name, capability, executionKey, callId, args } of calls) {
 				const tool = toolDefinitions.find((candidate) => candidate.name === name);
 				if (!tool) continue;
-				executed.add(executionKey); listener({ type: "tool_execution_start", toolCallId: callId, toolName: name, args });
-				const boundary = await agent.beforeToolCall?.({ toolCall: { id: callId, name, arguments: args } }, new AbortController().signal);
+				listener({ type: "tool_execution_start", toolCallId: callId, toolName: name, args });
+				const boundary = await agent.beforeToolCall?.({ toolCall: { id: callId, name, arguments: args }, args, context: {} }, new AbortController().signal);
 				if (boundary?.block) {
-					const result = { content: [{ type: "text", text: boundary.reason ?? `Tool ${name} was blocked` }], details: { blocked: true } };
+					const result = { content: [{ type: "text", text: boundary.reason ?? `Tool ${name} was blocked` }], details: { blocked: true, dispatchError: { stage: "authorization", code: "blocked", retryable: false } } };
 					listener({ type: "tool_execution_end", toolCallId: callId, toolName: name, result, isError: true });
 					const message = sandboxToolResultMessage(callId, name, result, true); toolResults.push(message); listener({ type: "message_start", message }); listener({ type: "message_end", message });
 					continue;
 				}
+				executed.add(executionKey);
 				try {
 					const result = await tool.execute(callId, args, new AbortController().signal); const receipt = result?.details?.capabilityReceipt;
 					if (receipt?.name) completedCapabilities.add(receipt.name);
@@ -132,7 +145,7 @@ export async function executeOutcomeBoundCapabilityTask({ scenario, cognitionId,
 	const runtime = new BeeMaxAgentRuntime({
 		profileId: "profile:capability-eval", taskLedger: ledger, executionTrace: traceStore,
 		turnUnderstanding: { understand: () => ({ action: "create", goal: rawRequest, constraints: [], acceptanceCriteria: [rawRequest], uncertainties: [], memoryQuery: rawRequest, capabilityQuery: rawRequest, executionMode: "direct", confidence: 1 }) },
-		workContractBuilder: { build: async () => ({ source: "deterministic", contract: { schemaVersion: "beemax.work-contract.v1", rawRequest, action: "create", objective: clause, constraints: [], prohibitions: [], acceptanceCriteria: [clause], capabilityRequirements: [clause], uncertainties: [], executionMode: "direct", confidence: 1 } }) },
+		workContractBuilder: { build: async () => ({ source: "model", cognitionBudgetChargeTokens: 1, semanticAdjudication: semanticReview, contract: { schemaVersion: "beemax.work-contract.v1", rawRequest, action: "create", objective: clause, constraints: [], prohibitions: [], acceptanceCriteria: [clause], capabilityRequirements: [clause], uncertainties: [], executionMode: "direct", confidence: 1 } }) },
 		planningPolicy: { decide: () => ({ mode: "direct", requiredTools: [], suggestedConcurrency: 1, budget: { maxSubagents: 0, maxToolCalls: 20, maxTokens: 2_000, maxCorrectiveAttempts: 0 }, signals: { substantialWork: true, requiresVerification: true }, reason: "outcome calibration", directive: () => "[calibration task]" }) },
 		verifyObjectiveCandidate: async (_task, _result, _signal, context) => {
 			const successful = new Set(context?.successfulToolNames ?? []);
@@ -194,6 +207,7 @@ function sandboxToolResultMessage(toolCallId, toolName, result, isError) {
 }
 
 function createEvaluationTools(inventory, candidates, cognitionId) {
+	let obligationCandidates = candidates;
 	const selectedSkills = candidates.filter((candidate) => candidate.kind === "skill").map((candidate) => candidate.name);
 	const readSkills = new Set();
 	const tools = inventory.filter((descriptor) => descriptor.kind !== "skill").flatMap((descriptor) => (descriptor.activeTools ?? [descriptor.name]).map((sourceTool) => ({
@@ -219,8 +233,11 @@ function createEvaluationTools(inventory, candidates, cognitionId) {
 			return { content: [{ type: "text", text: "skill complete" }], details: { skill: args.name, skillLifecycleReceipt: { id: `receipt:skill-complete:${args.name}:${id}`, name: args.name, version: descriptor.version, phase: "completed", sourceTool: "skill_complete" }, capabilityReceipt: { id: `receipt:skill:${args.name}:${descriptor.version}:${id}`, kind: "skill", name: args.name, version: descriptor.version, sourceTool: "skill_complete" } } };
 		} },
 	].map((tool) => ({ ...tool, beemaxPolicy: { sideEffect: "none" }, beemaxToolSpec: { kind: "skill", version: "eval:skill-lifecycle", configured: true, health: "ready", authorized: true } }));
-	const prefetch = async () => ({ cognitionId, candidates, activatedTools: candidates.filter((candidate) => candidate.kind !== "skill").flatMap((candidate) => inventory.find((item) => item.name === candidate.name)?.activeTools ?? [candidate.name]), skills: selectedSkills.map((name) => ({ name })) });
-	const discovery = { name: "capability_discover", description: "Discover evaluation capabilities", beemaxPolicy: { sideEffect: "none" }, beemaxToolSpec: { kind: "tool", version: "eval:discovery", configured: true, health: "ready", authorized: true }, beemaxCapabilityPrefetch: prefetch, execute: async () => ({ content: [{ type: "text", text: "discovered" }], details: { cognitionId, ranked: candidates, activatedTools: [] } }) };
+	const prefetch = async (_query, _signal, options) => {
+		obligationCandidates = candidates.map((candidate, index) => ({ ...candidate, ...(options?.requirements?.[0] ? { requirementId: options.requirements[0].id, outcomeIndex: index, necessity: "required" } : {}) }));
+		return { cognitionId, candidates: obligationCandidates, activatedTools: candidates.filter((candidate) => candidate.kind !== "skill").flatMap((candidate) => inventory.find((item) => item.name === candidate.name)?.activeTools ?? [candidate.name]), skills: selectedSkills.map((name) => ({ name })) };
+	};
+	const discovery = attestCapabilityProviderResolutionTool({ name: "capability_discover", description: "Discover evaluation capabilities", beemaxPolicy: { sideEffect: "none" }, beemaxToolSpec: { kind: "tool", version: "eval:discovery", configured: true, health: "ready", authorized: true }, beemaxCapabilityPrefetch: prefetch, execute: async () => ({ content: [{ type: "text", text: "discovered" }], details: { cognitionId, ranked: obligationCandidates, activatedTools: [] } }) });
 	return [discovery, ...tools, ...lifecycle];
 }
 

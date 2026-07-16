@@ -52,9 +52,27 @@ test("Provider resolution ignores a blocked semantic backup when a required heal
 			{ name: "backup_search", description: "Alternative search for fresh public evidence", providers: [{ id: "backup", kind: "tool", capabilities: ["backup_search"], installed: false, install: { source: "catalog", package: "backup", version: "1" }, health: async () => ({ status: "unavailable", reason: "not installed" }) }] },
 		], undefined, [], undefined, ranker).map((tool) => [tool.name, tool]));
 		const proposal = await tools.get("capability_discover").beemaxCapabilityPrefetch("Find fresh public evidence");
-		assert.deepEqual(proposal.candidates.map((candidate) => candidate.name), ["primary_search"]);
+		assert.deepEqual(proposal.candidates.map((candidate) => candidate.name), ["primary_search", "backup_search"]);
 		assert.deepEqual(proposal.activatedTools, ["primary_search"]);
 		assert.deepEqual(proposal.providerResolutions.map((resolution) => [resolution.capability, resolution.status]), [["primary_search", "ready"]]);
+	} finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("Provider resolution selects a healthy semantic alternative when the required primary is unavailable", async () => {
+	const root = mkdtempSync(join(tmpdir(), "beemax-provider-primary-unavailable-"));
+	try {
+		const ranker = new SemanticCapabilityRanker(new ModelBackedSemanticCapabilityPort(async ({ candidates }) => ({ matches: [
+			{ id: candidates.find((candidate) => candidate.name === "primary_search").id, name: "primary_search", similarity: 0.97, requirementId: "fresh-evidence", outcomeIndex: 0, necessity: "required" },
+			{ id: candidates.find((candidate) => candidate.name === "backup_search").id, name: "backup_search", similarity: 0.95, requirementId: "fresh-evidence", outcomeIndex: 0, necessity: "alternative" },
+		] })));
+		const tools = new Map(createSkillTools(root, () => undefined, [
+			{ name: "primary_search", description: "Search fresh public evidence", providers: [{ id: "primary", kind: "tool", capabilities: ["primary_search"], installed: true, health: async () => ({ status: "unavailable", reason: "primary outage" }) }] },
+			{ name: "backup_search", description: "Alternative search for fresh public evidence", providers: [{ id: "backup", kind: "tool", capabilities: ["backup_search"], installed: true, health: async () => ({ status: "ready", evidenceRef: "health:backup" }) }] },
+		], undefined, [], undefined, ranker).map((tool) => [tool.name, tool]));
+		const proposal = await tools.get("capability_discover").beemaxCapabilityPrefetch("Find fresh public evidence");
+		assert.deepEqual(proposal.candidates.map((candidate) => candidate.name), ["primary_search", "backup_search"]);
+		assert.deepEqual(proposal.activatedTools, ["backup_search"]);
+		assert.deepEqual(proposal.providerResolutions.map((resolution) => [resolution.capability, resolution.status]), [["backup_search", "ready"]]);
 	} finally { rmSync(root, { recursive: true, force: true }); }
 });
 
@@ -81,6 +99,39 @@ test("Skill lifecycle admission ignores an uncalibrated low-confidence fallback 
 		assert.deepEqual(explicit.skills.map((item) => item.name), ["weak-review"]);
 		assert.deepEqual(explicit.activatedTools, ["skill_activate", "skill_read"]);
 		assert.match((await tools.get("skill_activate").execute("explicit-activate", { name: "weak-review" })).content[0].text, /Review the supplied material/);
+	} finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("explicit Skill prefetch does not claim independent Contract requirements without semantic evidence", async () => {
+	const root = mkdtempSync(join(tmpdir(), "beemax-explicit-skill-contract-"));
+	try {
+		const project = join(root, "project-skills");
+		const skill = join(project, "research-review");
+		mkdirSync(skill, { recursive: true });
+		writeFileSync(join(skill, "SKILL.md"), `---\nname: research-review\ndescription: "Research and review supplied material"\n---\nResearch, then review the supplied material.`);
+		const contexts = [];
+		const ranker = { async rank(_query, inventory, _limit, _signal, context) {
+			contexts.push(context);
+			return [
+				{ descriptor: inventory.find((item) => item.name === "web_lookup"), score: 99, confidence: 0.99, explanation: { strategy: "semantic", summary: "network evidence", signals: ["network"] }, requirementId: context.requirements[0].id, outcomeIndex: 0, necessity: "required" },
+				{ descriptor: inventory.find((item) => item.name === "publish_draft"), score: 98, confidence: 0.98, explanation: { strategy: "semantic", summary: "draft publication", signals: ["publish"] }, requirementId: context.requirements[1].id, outcomeIndex: 0, necessity: "required" },
+			];
+		} };
+		const tools = new Map(createSkillTools(root, () => undefined, [
+			{ name: "web_lookup", description: "Fetch current network evidence" },
+			{ name: "publish_draft", description: "Save a publication draft" },
+		], undefined, [project], undefined, ranker).map((tool) => [tool.name, tool]));
+		const requirements = [{ id: "capreq:0:network", text: "fetch network evidence" }, { id: "capreq:1:publish", text: "save a publication draft" }];
+		const proposal = await tools.get("capability_discover").beemaxCapabilityPrefetch("research, fetch evidence, and save a draft", undefined, { explicitSkillName: "research-review", requirements, contractDigest: "sha256:contract" });
+		assert.deepEqual(proposal.candidates.map(({ name, requirementId, outcomeIndex, necessity }) => ({ name, requirementId, outcomeIndex, necessity })), [
+			{ name: "web_lookup", requirementId: "capreq:0:network", outcomeIndex: 0, necessity: "required" },
+			{ name: "publish_draft", requirementId: "capreq:1:publish", outcomeIndex: 0, necessity: "required" },
+			{ name: "research-review", requirementId: undefined, outcomeIndex: undefined, necessity: undefined },
+		]);
+		assert.deepEqual(contexts[0].requirements, requirements);
+		assert.equal(contexts[0].contractDigest, "sha256:contract");
+		assert.deepEqual(proposal.skills.map((item) => item.name), ["research-review"]);
+		assert.deepEqual(proposal.activatedTools, ["web_lookup", "publish_draft", "skill_activate", "skill_read"]);
 	} finally { rmSync(root, { recursive: true, force: true }); }
 });
 

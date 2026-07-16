@@ -35,12 +35,13 @@ export type SemanticCompletenessBlockCode =
 	| "TARGET_DISAGREEMENT"
 	| "LOW_PRIMARY_CONFIDENCE"
 	| "LOW_INVENTORY_CONFIDENCE"
+	| "CAPABILITY_REQUIREMENTS_NOT_ATOMIC"
 	| "ROLE_COVERAGE_INCOMPLETE";
 
 export interface MissingSemanticRole extends SemanticSourceSpan { text: string; role: Exclude<SemanticRole, "context">; }
 
 export type WorkContractAdjudication =
-	| { kind: "accepted" }
+	| { kind: "accepted"; normalizedCapabilityRequirements?: WorkContractClause[] }
 	| { kind: "blocked"; code: Exclude<SemanticCompletenessBlockCode, "ROLE_COVERAGE_INCOMPLETE"> }
 	| { kind: "blocked"; code: "ROLE_COVERAGE_INCOMPLETE"; missing: MissingSemanticRole[] };
 
@@ -103,7 +104,32 @@ export function adjudicateWorkContract(input: WorkContractAdjudicationInput): Wo
 		if (role === "context") continue;
 		if (!clausesForRole(contract, role).some((clause) => clauseCovers(clause, segment))) missing.push({ text: segment.text, role, start: segment.start, end: segment.end });
 	}
-	return missing.length ? { kind: "blocked", code: "ROLE_COVERAGE_INCOMPLETE", missing } : { kind: "accepted" };
+	if (missing.length) return { kind: "blocked", code: "ROLE_COVERAGE_INCOMPLETE", missing };
+	const capabilityOutcomes = inventory.segments.filter((segment) => segment.roles.includes("capability_requirement"));
+	// The downstream Capability selector may choose alternatives for one outcome,
+	// but it must not decide how many mandatory outcomes the Contract contains.
+	// Normalize a broader primary clause from the independent, exact-span inventory
+	// so "query and archive" becomes two Core-issued requirements without another
+	// model inventing text. A coarser reviewer cannot safely erase primary outcomes.
+	if (contract.capabilityRequirements.length > capabilityOutcomes.length
+		|| contract.capabilityRequirements.some((clause) => !capabilityOutcomes.some((segment) => clauseCovers(clause, segment)))) {
+		return { kind: "blocked", code: "CAPABILITY_REQUIREMENTS_NOT_ATOMIC" };
+	}
+	const normalizedCapabilityRequirements = capabilityOutcomes.map((segment): WorkContractClause => ({
+		text: segment.text,
+		source: { kind: "raw_request", start: segment.start, end: segment.end },
+	}));
+	return sameClauses(contract.capabilityRequirements, normalizedCapabilityRequirements)
+		? { kind: "accepted" }
+		: { kind: "accepted", normalizedCapabilityRequirements };
+}
+
+function sameClauses(left: readonly WorkContractClause[], right: readonly WorkContractClause[]): boolean {
+	return left.length === right.length && left.every((clause, index) => {
+		const candidate = right[index];
+		return candidate !== undefined && clause.text === candidate.text && clause.source.kind === "raw_request"
+			&& candidate.source.kind === "raw_request" && clause.source.start === candidate.source.start && clause.source.end === candidate.source.end;
+	});
 }
 
 function decodeSegment(value: unknown, rawRequest: string, index: number): SemanticInventorySegment {

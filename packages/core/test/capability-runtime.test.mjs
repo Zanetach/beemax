@@ -181,7 +181,7 @@ test("model-backed semantic selection receives generic operational signals and v
 	assert.deepEqual(request.candidates[0].signals, descriptor.signals);
 });
 
-test("semantic capability obligations keep distinct requirements but prune redundant alternatives", async () => {
+test("semantic capability obligations retain alternatives as evidence but activate only required primaries", async () => {
 	const primary = capabilityDescriptor({ kind: "tool", name: "primary_search", description: "Search current evidence", version: "1", activeTools: ["primary_search"] });
 	const backup = capabilityDescriptor({ kind: "tool", name: "backup_search", description: "Alternative search for current evidence", version: "1", activeTools: ["backup_search"] });
 	const analyze = capabilityDescriptor({ kind: "tool", name: "analyze_data", description: "Analyze the retrieved data", version: "1", activeTools: ["analyze_data"] });
@@ -191,8 +191,64 @@ test("semantic capability obligations keep distinct requirements but prune redun
 		{ id: candidates.find((candidate) => candidate.name === "analyze_data").id, name: "analyze_data", similarity: 0.93, requirementId: "data-analysis", necessity: "required" },
 	] }));
 	const selection = await new CapabilityRuntime({ ranker: new SemanticCapabilityRanker(port) }).discover({ query: "search current evidence and analyze the data", inventory: [primary, backup, analyze], limit: 5 });
-	assert.deepEqual(selection.candidates.map((candidate) => candidate.name), ["primary_search", "analyze_data"]);
+	assert.deepEqual(selection.candidates.map((candidate) => candidate.name), ["primary_search", "backup_search", "analyze_data"]);
 	assert.deepEqual(selection.activatedTools, ["primary_search", "analyze_data"]);
+});
+
+test("semantic capability cognition must cover every Core-issued Work Contract requirement id", async () => {
+	const search = capabilityDescriptor({ kind: "tool", name: "search", description: "Search evidence", version: "1", activeTools: ["search"] });
+	const archive = capabilityDescriptor({ kind: "tool", name: "archive", description: "Archive evidence", version: "1", activeTools: ["archive"] });
+	const requirements = [{ id: "capreq:0:aaaaaaaa", text: "search evidence" }, { id: "capreq:1:bbbbbbbb", text: "archive evidence" }];
+	const port = new ModelBackedSemanticCapabilityPort(async ({ candidates }) => ({ matches: [{
+		id: candidates.find((candidate) => candidate.name === "search").id, name: "search", similarity: 0.99,
+		requirementId: requirements[0].id, outcomeIndex: 0, necessity: "required",
+	}] }));
+	await assert.rejects(
+		() => new CapabilityRuntime({ ranker: new SemanticCapabilityRanker(port) }).discover({ query: "search and archive", requirements, inventory: [search, archive] }),
+		/omitted a Work Contract requirement/i,
+	);
+});
+
+test("one Capability may retain distinct mappings to multiple Core-issued obligation groups", async () => {
+	const requirements = [{ id: "capreq:0:aaaaaaaa", text: "read source" }, { id: "capreq:1:bbbbbbbb", text: "read metadata" }];
+	const candidate = { id: "tool:unified_reader:1", name: "unified_reader", text: "Read source content and metadata" };
+	const port = new ModelBackedSemanticCapabilityPort(async () => ({ matches: requirements.map((requirement) => ({
+		id: candidate.id, name: candidate.name, similarity: 0.99,
+		requirementId: requirement.id, outcomeIndex: 0, necessity: "required",
+	})) }));
+	const matches = await port.similarities({ query: "read source and metadata", candidates: [candidate], requirements, limit: 10 });
+	assert.deepEqual(matches.map(({ requirementId }) => requirementId), requirements.map(({ id }) => id));
+});
+
+test("Contract-bound selection preserves more than ten atomic obligations and their alternatives", async () => {
+	const requirements = Array.from({ length: 12 }, (_, index) => ({ id: `capreq:${index}:aaaaaaaa`, text: `outcome ${index}` }));
+	const descriptors = requirements.map((_requirement, index) => capabilityDescriptor({ kind: "tool", name: `tool_${index}`, version: "1", activeTools: [`tool_${index}`] }));
+	descriptors.push(capabilityDescriptor({ kind: "tool", name: "tool_0_backup", version: "1", activeTools: ["tool_0_backup"] }));
+	let payload;
+	const port = new PiSemanticCapabilityPort({ models: [{ model: { id: "all-obligations" } }], maxModelAttempts: 1,
+		complete: async (_model, context) => {
+			payload = JSON.parse(context.messages[0].content);
+			return { stopReason: "stop", content: [{ type: "text", text: JSON.stringify({ matches: [
+				...requirements.map((requirement, index) => ({ id: payload.candidates[index].id, name: `tool_${index}`, similarity: 0.99, requirementId: requirement.id, outcomeIndex: 0, necessity: "required" })),
+				{ id: payload.candidates.at(-1).id, name: "tool_0_backup", similarity: 0.98, requirementId: requirements[0].id, outcomeIndex: 0, necessity: "alternative" },
+			] }) }] };
+		},
+	});
+	const selection = await new CapabilityRuntime({ ranker: new SemanticCapabilityRanker(port) }).discover({
+		query: "complete all outcomes", inventory: descriptors, requirements, contractDigest: "a".repeat(64), limit: 10,
+	});
+	assert.equal(payload.requirements.length, 12);
+	assert.equal(payload.contractDigest, "a".repeat(64));
+	assert.equal(selection.candidates.length, 13);
+});
+
+test("a Contract-bound atomic requirement rejects selector-invented sub-outcomes", async () => {
+	const requirement = { id: "capreq:0:aaaaaaaa", text: "one atomic outcome" };
+	const port = new ModelBackedSemanticCapabilityPort(async ({ candidates }) => ({ matches: [{
+		id: candidates[0].id, name: candidates[0].name, similarity: 0.99,
+		requirementId: requirement.id, outcomeIndex: 1, necessity: "required",
+	}] }));
+	await assert.rejects(() => port.similarities({ query: requirement.text, candidates: [{ id: "tool:one:1", name: "one", text: "one" }], requirements: [requirement], limit: 10 }), /invalid atomic obligation/i);
 });
 
 test("semantic selection rejects ambiguous multi-match output without obligation metadata", async () => {

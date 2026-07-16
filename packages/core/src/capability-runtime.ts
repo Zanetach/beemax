@@ -45,6 +45,9 @@ export interface CapabilityCandidate {
 	score: number;
 	confidence: number;
 	explanation: CapabilityExplanation;
+	requirementId?: string;
+	outcomeIndex?: number;
+	necessity?: "required" | "alternative";
 }
 
 export interface CapabilitySelection {
@@ -60,6 +63,7 @@ interface RankedCapability {
 	confidence: number;
 	explanation: CapabilityExplanation;
 	requirementId?: string;
+	outcomeIndex?: number;
 	necessity?: "required" | "alternative";
 }
 
@@ -74,10 +78,12 @@ export interface CapabilityRanker {
 	rank(query: string, inventory: readonly CapabilityDescriptor[], limit: number, signal?: AbortSignal, context?: CapabilityRankingContext): Promise<RankedCapability[]>;
 }
 
-export interface CapabilityRankingContext { cognitionId: string; }
+export interface CapabilityRequirementInput { id: string; text: string; }
+export interface CapabilityBoundaryInput { kind: "constraint" | "prohibition"; text: string; }
+export interface CapabilityRankingContext { cognitionId: string; requirements?: readonly CapabilityRequirementInput[]; boundaries?: readonly CapabilityBoundaryInput[]; contractDigest?: string; }
 
 export interface SemanticCapabilityPort {
-	similarities(input: { query: string; candidates: Array<{ id: string; name: string; text: string; signals?: CapabilityOperationalSignals }>; limit: number; signal?: AbortSignal; cognitionId?: string }): Promise<Array<{ id?: string; name: string; similarity: number; signals?: string[]; requirementId?: string; necessity?: "required" | "alternative" }>>;
+	similarities(input: { query: string; candidates: Array<{ id: string; name: string; text: string; signals?: CapabilityOperationalSignals }>; requirements?: readonly CapabilityRequirementInput[]; boundaries?: readonly CapabilityBoundaryInput[]; contractDigest?: string; limit: number; signal?: AbortSignal; cognitionId?: string }): Promise<Array<{ id?: string; name: string; similarity: number; signals?: string[]; requirementId?: string; outcomeIndex?: number; necessity?: "required" | "alternative" }>>;
 }
 
 export interface PiActiveToolsPort { setActiveTools(names: string[]): void; }
@@ -116,16 +122,17 @@ export class SemanticCapabilityRanker implements CapabilityRanker {
 			const byIdentity = new Map(semanticInventory.map((descriptor) => [capabilityIdentity(descriptor), descriptor]));
 			const byName = new Map<string, CapabilityDescriptor[]>();
 			for (const descriptor of semanticInventory) byName.set(descriptor.name, [...(byName.get(descriptor.name) ?? []), descriptor]);
-			const ranked = await this.port.similarities({ query, candidates: semanticInventory.map((descriptor) => ({ id: capabilityIdentity(descriptor), name: descriptor.name, text: capabilitySemanticText(descriptor), ...(descriptor.signals ? { signals: descriptor.signals } : {}) })), limit, ...(signal ? { signal } : {}), ...(context ? { cognitionId: context.cognitionId } : {}) });
+			const selectionLimit = context?.requirements?.length ? 100 : limit;
+			const ranked = await this.port.similarities({ query, candidates: semanticInventory.map((descriptor) => ({ id: capabilityIdentity(descriptor), name: descriptor.name, text: capabilitySemanticText(descriptor), ...(descriptor.signals ? { signals: descriptor.signals } : {}) })), limit: selectionLimit, ...(signal ? { signal } : {}), ...(context ? { cognitionId: context.cognitionId, ...(context.requirements ? { requirements: context.requirements } : {}), ...(context.boundaries?.length ? { boundaries: context.boundaries } : {}), ...(context.contractDigest ? { contractDigest: context.contractDigest } : {}) } : {}) });
 			const selected = ranked.flatMap((match): RankedCapability[] => {
 				const descriptor = match.id ? byIdentity.get(match.id) : byName.get(match.name)?.length === 1 ? byName.get(match.name)![0] : undefined;
 				if (!descriptor || !Number.isFinite(match.similarity) || match.similarity < this.minimumSimilarity) return [];
 				const confidence = Math.max(0, Math.min(1, match.similarity));
 				const signals = cleanExplanationSignals(match.signals);
-				return [{ descriptor, score: confidence * 100, confidence, explanation: { strategy: "semantic", summary: signals[0] ?? "semantic capability match", signals }, ...(match.requirementId ? { requirementId: match.requirementId, necessity: match.necessity ?? "required" } : {}) }];
-			}).sort((left, right) => right.score - left.score || left.descriptor.name.localeCompare(right.descriptor.name)).slice(0, limit);
+				return [{ descriptor, score: confidence * 100, confidence, explanation: { strategy: "semantic", summary: signals[0] ?? "semantic capability match", signals }, ...(match.requirementId ? { requirementId: match.requirementId, outcomeIndex: match.outcomeIndex ?? 0, necessity: match.necessity ?? "required" } : {}) }];
+			}).sort((left, right) => right.score - left.score || left.descriptor.name.localeCompare(right.descriptor.name)).slice(0, selectionLimit);
 			throwIfAborted(signal);
-			return pruneSemanticAlternatives(selected);
+			return selected;
 		} catch (error) {
 			if (!this.fallback || !isProviderUnavailable(error)) throw error;
 			if (signal?.aborted) throw signal.reason ?? error;
@@ -139,13 +146,13 @@ export class SemanticCapabilityRanker implements CapabilityRanker {
 	}
 }
 
-export type SemanticCapabilityInference = (input: Readonly<{ query: string; candidates: Array<{ id: string; name: string; text: string; signals?: CapabilityOperationalSignals }>; limit: number; signal?: AbortSignal; cognitionId?: string }>) => Promise<unknown>;
+export type SemanticCapabilityInference = (input: Readonly<{ query: string; candidates: Array<{ id: string; name: string; text: string; signals?: CapabilityOperationalSignals }>; requirements?: readonly CapabilityRequirementInput[]; boundaries?: readonly CapabilityBoundaryInput[]; contractDigest?: string; limit: number; signal?: AbortSignal; cognitionId?: string }>) => Promise<unknown>;
 
 /** Validates untrusted semantic-model output against the exact candidate inventory. */
 export class ModelBackedSemanticCapabilityPort implements SemanticCapabilityPort {
 	private readonly infer: SemanticCapabilityInference;
 	constructor(infer: SemanticCapabilityInference) { this.infer = infer; }
-	async similarities(input: { query: string; candidates: Array<{ id: string; name: string; text: string; signals?: CapabilityOperationalSignals }>; limit: number; signal?: AbortSignal; cognitionId?: string }): Promise<Array<{ id?: string; name: string; similarity: number; signals?: string[]; requirementId?: string; necessity?: "required" | "alternative" }>> {
+	async similarities(input: { query: string; candidates: Array<{ id: string; name: string; text: string; signals?: CapabilityOperationalSignals }>; requirements?: readonly CapabilityRequirementInput[]; boundaries?: readonly CapabilityBoundaryInput[]; contractDigest?: string; limit: number; signal?: AbortSignal; cognitionId?: string }): Promise<Array<{ id?: string; name: string; similarity: number; signals?: string[]; requirementId?: string; outcomeIndex?: number; necessity?: "required" | "alternative" }>> {
 		const allowedIds = new Map(input.candidates.map((candidate) => [candidate.id, candidate]));
 		const nameCounts = new Map<string, number>();
 		for (const candidate of input.candidates) nameCounts.set(candidate.name, (nameCounts.get(candidate.name) ?? 0) + 1);
@@ -153,33 +160,64 @@ export class ModelBackedSemanticCapabilityPort implements SemanticCapabilityPort
 		if (!value || typeof value !== "object" || !Array.isArray((value as { matches?: unknown }).matches)) throw new Error("Semantic Capability model returned an invalid result envelope");
 		const rawMatches = (value as { matches: unknown[] }).matches;
 		let invalidMatches = 0;
-		const matches = rawMatches.flatMap((item, index): Array<{ id?: string; name: string; similarity: number; signals?: string[]; requirementId?: string; necessity?: "required" | "alternative" }> => {
+		let invalidAtomicGroups = 0;
+		const allowedRequirements = new Set(input.requirements?.map(({ id }) => id) ?? []);
+		const matches = rawMatches.flatMap((item, index): Array<{ id?: string; name: string; similarity: number; signals?: string[]; requirementId?: string; outcomeIndex?: number; necessity?: "required" | "alternative" }> => {
 			if (!item || typeof item !== "object" || Array.isArray(item)) { invalidMatches++; return []; }
-			const candidate = item as { id?: unknown; name?: unknown; similarity?: unknown; signals?: unknown; requirementId?: unknown; necessity?: unknown };
+			const candidate = item as { id?: unknown; name?: unknown; similarity?: unknown; signals?: unknown; requirementId?: unknown; outcomeIndex?: unknown; necessity?: unknown };
 			const byId = typeof candidate.id === "string" ? allowedIds.get(candidate.id) : undefined;
 			const byUniqueName = !byId && typeof candidate.name === "string" && nameCounts.get(candidate.name) === 1 ? input.candidates.find((entry) => entry.name === candidate.name) : undefined;
 			const selected = byId ?? byUniqueName;
 			if (!selected || typeof candidate.similarity !== "number" || !Number.isFinite(candidate.similarity) || candidate.similarity < 0 || candidate.similarity > 1) { invalidMatches++; return []; }
 			const signals = cleanExplanationSignals(candidate.signals);
 			const requirementId = typeof candidate.requirementId === "string" && /^[a-z0-9][a-z0-9._:-]{0,63}$/i.test(candidate.requirementId) ? candidate.requirementId : undefined;
+			const outcomeIndex = Number.isInteger(candidate.outcomeIndex) && Number(candidate.outcomeIndex) >= 0 && Number(candidate.outcomeIndex) <= 31 ? Number(candidate.outcomeIndex) : undefined;
 			const necessity = candidate.necessity === "required" || candidate.necessity === "alternative" ? candidate.necessity : undefined;
 			// A singleton has no backup ambiguity and can safely default to one
 			// required obligation. Multiple matches must carry complete grouping
 			// metadata; otherwise Top-K relevance cannot define execution duties.
-			if (rawMatches.length > 1 && (!requirementId || !necessity)) { invalidMatches++; return []; }
+			if (input.requirements?.length && (!requirementId || !allowedRequirements.has(requirementId) || outcomeIndex === undefined || !necessity)) { invalidMatches++; return []; }
+			if (input.requirements?.length && outcomeIndex !== 0) { invalidAtomicGroups++; return []; }
+			if (!input.requirements?.length && rawMatches.length > 1 && (!requirementId || !necessity)) { invalidMatches++; return []; }
 			if ((candidate.requirementId !== undefined || candidate.necessity !== undefined) && (!requirementId || !necessity)) { invalidMatches++; return []; }
-			return [{ id: selected.id, name: selected.name, similarity: candidate.similarity, ...(signals.length ? { signals } : {}), requirementId: requirementId ?? `requirement:${index}`, necessity: necessity ?? "required" }];
+			if (candidate.outcomeIndex !== undefined && outcomeIndex === undefined) { invalidMatches++; return []; }
+			return [{ id: selected.id, name: selected.name, similarity: candidate.similarity, ...(signals.length ? { signals } : {}), requirementId: requirementId ?? `requirement:${index}`, outcomeIndex: outcomeIndex ?? 0, necessity: necessity ?? "required" }];
 		}).sort((left, right) => right.similarity - left.similarity || left.name.localeCompare(right.name));
+		if (invalidAtomicGroups > 0) throw new Error("Semantic Capability model returned an invalid atomic obligation group");
 		if (rawMatches.length > 0 && (invalidMatches > 0 || matches.length === 0)) throw new Error("Semantic Capability model returned an invalid candidate or score");
+		if (input.requirements?.length && rawMatches.length > 0 && input.requirements.some(({ id }) => !matches.some((match) => match.requirementId === id))) throw new Error("Semantic Capability model omitted a Work Contract requirement");
+		if (input.requirements?.length) {
+			const groups = new Map<string, typeof matches>();
+			for (const match of matches) {
+				const groupId = `${match.requirementId}:${match.outcomeIndex ?? 0}`;
+				groups.set(groupId, [...(groups.get(groupId) ?? []), match]);
+			}
+			if ([...groups.values()].some((group) => group.filter((match) => match.necessity === "required").length !== 1)) throw new Error("Semantic Capability model returned an invalid obligation group");
+		}
 		const seen = new Set<string>();
-		return matches.filter((match) => { const identity = match.id ?? match.name; if (seen.has(identity)) return false; seen.add(identity); return true; }).slice(0, Math.max(1, Math.min(Math.trunc(input.limit), 100)));
+		const distinct = matches.filter((match) => {
+			const identity = `${match.id ?? match.name}\u0000${match.requirementId ?? ""}\u0000${match.outcomeIndex ?? 0}\u0000${match.necessity ?? ""}`;
+			if (seen.has(identity)) return false;
+			seen.add(identity);
+			return true;
+		});
+		if (input.requirements?.length) {
+			// Preserve the required member of every Core-issued obligation before
+			// spending the bounded result budget on backups. A high-scoring cluster
+			// of alternatives for one outcome must never truncate another outcome.
+			const required = distinct.filter((match) => match.necessity === "required");
+			const alternatives = distinct.filter((match) => match.necessity === "alternative");
+			return [...required, ...alternatives.slice(0, Math.max(0, 100 - required.length))];
+		}
+		return distinct.slice(0, Math.max(1, Math.min(Math.trunc(input.limit), 100)));
 	}
 }
 
 export const SEMANTIC_CAPABILITY_SYSTEM_PROMPT = `Select the smallest non-redundant capability set for one user request. This is bounded, Tool-free cognition, not an Agent loop.
-Return exactly {"matches":[{"id":"exact candidate id","name":"exact candidate name","similarity":0..1,"requirementId":"short stable id","necessity":"required|alternative","signals":["short reason"]}]}.
+Return exactly {"matches":[{"id":"exact candidate id","name":"exact candidate name","similarity":0..1,"requirementId":"exact supplied requirement id","outcomeIndex":0,"necessity":"required|alternative","signals":["short reason"]}]}.
 Rank only candidates that materially satisfy the requested outcome. Use [] when none match. Do not force a result from weak word overlap.
-Assign the same requirementId to capabilities that satisfy the same outcome. Mark the capability that should actually execute as required and redundant backups as alternative. Return multiple required capabilities only when each contributes a distinct mandatory outcome or their combination is necessary. Never mark a merely useful or lower-ranked backup as required.
+When requirements are supplied, they are already atomic Core-issued outcomes: cover every supplied requirement, copy its exact id, and always use outcomeIndex 0; never invent, translate, omit, merge, or further split an id. Assign the same requirementId and outcomeIndex to capabilities that satisfy the same outcome. Mark the capability that should actually execute as required and redundant backups as alternative. Return multiple required capabilities only when each contributes a distinct mandatory outcome or their combination is necessary. Never mark a merely useful or lower-ranked backup as required.
+When boundaries are supplied, they are mandatory source-bound constraints and prohibitions from the same Work Contract. Never select a capability whose declared behavior, modality, effect, or Provider conflicts with a boundary. Boundaries never grant permission or create an extra outcome; when compatibility cannot be established, return no match for the affected requirement.
 First decompose the request into atomic mandatory outcomes grounded in the user's explicit requested actions, constraints, and acceptance criteria. Candidate descriptions, internal implementation dependencies, broad relevance, and possible helpfulness do not create additional user outcomes. If one candidate fully satisfies an outcome, including its required evidence, exclude broader primitives or auxiliary capabilities that it might use internally. Select another required capability only when the user independently requires its distinct output or the first capability cannot satisfy the outcome without that externally visible result.
 Treat information described as already supplied, already present, or available in the current conversation as existing context, not as an implicit request to fetch, read, search, or reacquire a resource. Select an input-acquisition capability such as file or external-source access only when the request explicitly requires that access or trusted request metadata declares the corresponding input modality.
 Evaluate meaning and declared input/output modality, freshness, evidence, effect, health, relative cost, expected latency, and Profile preference. Meaning and mandatory requirements dominate preferences and optimization signals. Unhealthy, unavailable, wrong-modality, stale, or evidence-incompatible candidates should not be selected.
@@ -240,7 +278,7 @@ export class PiSemanticCapabilityPort implements SemanticCapabilityPort {
 			let lastFailureCode: CapabilityCognitionFailureCode = "provider_error";
 			let dominantClosedFailure: CapabilityCognitionFailureCode | undefined;
 			const deadlineAt = Date.now() + timeoutMs;
-			const serializedInput = JSON.stringify({ query: input.query, candidates: input.candidates, limit: input.limit });
+			const serializedInput = JSON.stringify({ query: input.query, candidates: input.candidates, limit: input.limit, ...(input.requirements ? { requirements: input.requirements } : {}), ...(input.boundaries?.length ? { boundaries: input.boundaries } : {}), ...(input.contractDigest ? { contractDigest: input.contractDigest } : {}) });
 			// One token per UTF-8 byte is deliberately conservative for CJK and unknown tokenizers.
 			const estimatedAttemptTokens = Buffer.byteLength(serializedInput, "utf8") + maxTokens;
 			let estimatedTokensUsed = 0;
@@ -321,7 +359,7 @@ export class CapabilityRuntime {
 		this.activeTools = options.activeTools;
 	}
 
-	async discover(input: { query: string; inventory: readonly CapabilityDescriptor[]; limit?: number; signal?: AbortSignal; cognitionId?: string }): Promise<CapabilitySelection> {
+	async discover(input: { query: string; inventory: readonly CapabilityDescriptor[]; requirements?: readonly CapabilityRequirementInput[]; boundaries?: readonly CapabilityBoundaryInput[]; contractDigest?: string; limit?: number; signal?: AbortSignal; cognitionId?: string }): Promise<CapabilitySelection> {
 		throwIfAborted(input.signal);
 		const cognitionId = input.cognitionId === undefined ? `cap:${randomUUID()}` : validCognitionId(input.cognitionId);
 		const query = required(input.query, "Capability query", 500);
@@ -338,20 +376,21 @@ export class CapabilityRuntime {
 		assertUniqueCapabilityIdentities(inventory);
 		const eligibleInventory = inventory.filter((descriptor) => capabilityOperationallyEligible(descriptor));
 		const allowed = new Map(eligibleInventory.map((descriptor) => [capabilityIdentity(descriptor), descriptor]));
-		const ranked = (await this.ranker.rank(query, eligibleInventory, limit, input.signal, { cognitionId }))
+		const selectionLimit = input.requirements?.length ? 100 : limit;
+		const ranked = (await this.ranker.rank(query, eligibleInventory, limit, input.signal, { cognitionId, ...(input.requirements ? { requirements: input.requirements } : {}), ...(input.boundaries?.length ? { boundaries: input.boundaries } : {}), ...(input.contractDigest ? { contractDigest: input.contractDigest } : {}) }))
 			.filter((match) => match.confidence >= MIN_DISCOVERY_CONFIDENCE && allowed.has(capabilityIdentity(match.descriptor)))
-			.slice(0, limit);
+			.slice(0, selectionLimit);
 		throwIfAborted(input.signal);
 		// Candidate relevance and Pi Tool activation are different orderings: expose
 		// ranked candidates as-is, but activate direct execution Tools before the
 		// Skill control Tools that can progressively expand the turn inventory.
-		const activationOrder = [...ranked].sort((left, right) => capabilityActivationPriority(left.descriptor.kind) - capabilityActivationPriority(right.descriptor.kind));
+		const activationOrder = [...pruneSemanticAlternatives(ranked)].sort((left, right) => capabilityActivationPriority(left.descriptor.kind) - capabilityActivationPriority(right.descriptor.kind));
 		const activatedTools = [...new Set(activationOrder.flatMap((match) => match.descriptor.activeTools))];
 		this.activeTools?.setActiveTools(activatedTools);
 		return {
 			cognitionId,
 			query,
-			candidates: ranked.map((match) => ({ kind: match.descriptor.kind, name: match.descriptor.name, version: match.descriptor.version, score: match.score, confidence: match.confidence, explanation: { ...match.explanation, signals: [...match.explanation.signals] } })),
+			candidates: ranked.map((match) => ({ kind: match.descriptor.kind, name: match.descriptor.name, version: match.descriptor.version, score: match.score, confidence: match.confidence, explanation: { ...match.explanation, signals: [...match.explanation.signals] }, ...(match.requirementId ? { requirementId: match.requirementId, outcomeIndex: match.outcomeIndex ?? 0, necessity: match.necessity ?? "required" } : {}) })),
 			activatedTools,
 		};
 	}
@@ -370,7 +409,10 @@ function pruneSemanticAlternatives(ranked: RankedCapability[]): RankedCapability
 	if (!ranked.some((item) => item.requirementId)) return ranked;
 	const ungrouped = ranked.filter((item) => !item.requirementId);
 	const groups = new Map<string, RankedCapability[]>();
-	for (const item of ranked) if (item.requirementId) groups.set(item.requirementId, [...(groups.get(item.requirementId) ?? []), item]);
+	for (const item of ranked) if (item.requirementId) {
+		const groupId = `${item.requirementId}:${item.outcomeIndex ?? 0}`;
+		groups.set(groupId, [...(groups.get(groupId) ?? []), item]);
+	}
 	const selected = [...ungrouped];
 	for (const group of groups.values()) {
 		const required = group.filter((item) => item.necessity === "required");

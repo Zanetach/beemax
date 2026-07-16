@@ -52,6 +52,48 @@ test("semantic adjudication requires every material role to use its matching Con
 	assert.deepEqual(result.missing.map(({ role }) => role).sort(), ["capability_requirement", "constraint"]);
 });
 
+test("semantic adjudication atomizes one compound Capability clause from independently inventoried outcomes", () => {
+	const rawRequest = "查询当前来源并归档结果";
+	const inventory = decode(rawRequest, {
+		action: "create", confidence: 0.99,
+		segments: [
+			{ text: "查询当前来源", occurrence: 0, roles: ["objective", "acceptance_criterion", "capability_requirement"] },
+			{ text: "并", occurrence: 0, roles: ["context"] },
+			{ text: "归档结果", occurrence: 0, roles: ["acceptance_criterion", "capability_requirement"] },
+		],
+	}, []);
+	const result = adjudicateWorkContract({ contract: contract(rawRequest, {
+		objectiveText: rawRequest,
+		acceptanceTexts: [rawRequest],
+		capabilityTexts: [rawRequest],
+	}), inventory });
+	assert.deepEqual(result, { kind: "accepted", normalizedCapabilityRequirements: [
+		{ text: "查询当前来源", source: { kind: "raw_request", start: 0, end: 6 } },
+		{ text: "归档结果", source: { kind: "raw_request", start: 7, end: 11 } },
+	] });
+});
+
+test("Pi Work Contract issues normalized atomic Capability requirements before routing", async () => {
+	const rawRequest = "查询当前来源并归档结果";
+	const complete = async (_candidate, context) => response(context.systemPrompt.includes("Independently inventory") ? {
+		schemaVersion: "beemax.semantic-inventory.v1", action: "create", confidence: 0.99,
+		segments: [
+			{ text: "查询当前来源", occurrence: 0, roles: ["objective", "acceptance_criterion", "capability_requirement"] },
+			{ text: "并", occurrence: 0, roles: ["context"] },
+			{ text: "归档结果", occurrence: 0, roles: ["acceptance_criterion", "capability_requirement"] },
+		],
+	} : {
+		action: "create", objective: { text: rawRequest }, constraints: [], prohibitions: [],
+		acceptanceCriteria: [{ text: rawRequest }], capabilityRequirements: [{ text: rawRequest }],
+		uncertainties: [], executionMode: "direct", confidence: 0.99,
+	});
+	const result = await new PiWorkContractBuilder({ models: [{ model: model("atomic") }], complete }).build({
+		rawRequest,
+		fallback: { action: "create", goal: rawRequest, constraints: [], acceptanceCriteria: [rawRequest], memoryQuery: rawRequest, capabilityQuery: rawRequest, executionMode: "direct", confidence: 0.9 },
+	});
+	assert.deepEqual(result.contract.capabilityRequirements.map(({ text }) => text), ["查询当前来源", "归档结果"]);
+});
+
 test("semantic adjudication blocks low primary or inventory confidence", () => {
 	const rawRequest = "生成报告";
 	const inventory = decode(rawRequest, { action: "create", confidence: 0.59, segments: [{ text: rawRequest, occurrence: 0, roles: ["objective", "acceptance_criterion"] }] }, []);

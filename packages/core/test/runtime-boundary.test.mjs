@@ -558,14 +558,17 @@ test("BeeMax Agent Runtime projects Pi lifecycle events through one Execution Tr
 	const executionEnvelope = createExecutionEnvelope({ executionId: "execution:trace-runtime", trigger: { kind: "automation" }, taskId: "task:trace", taskRunId: "run:trace", mode: "normal" });
 	let listener;
 	const agent = { state: { model: { id: "test" }, messages: [] } };
+	const tools = [{ name: "read", description: "Read test evidence", beemaxPolicy: { sideEffect: "none" } }];
 	const executionTrace = new FileExecutionTraceStore(join(root, "execution-trace.jsonl"));
 	const runtime = createRuntime({
 		executionTrace,
 		createAgent: async () => ({
-			agent, subscribe: (next) => { listener = next; return () => undefined; },
+			agent, getAllTools: () => tools, getActiveToolNames: () => ["read"], setActiveToolsByName: () => undefined,
+			subscribe: (next) => { listener = next; return () => undefined; },
 			prompt: async () => {
 				listener({ type: "message_end", message: { role: "assistant", responseId: "provider-response-trace", content: [{ type: "toolCall", id: "call:trace", name: "read", arguments: {} }], usage: { input: 30, output: 10, cacheRead: 5, cacheWrite: 0, totalTokens: 45, cost: { input: 0.01, output: 0.02, cacheRead: 0.001, cacheWrite: 0, total: 0.031 } } } });
 				listener({ type: "tool_execution_start", toolCallId: "call:trace", toolName: "read" });
+				assert.equal(await agent.beforeToolCall({ toolCall: { id: "call:trace", name: "read", arguments: {} }, args: {}, context: {} }, new AbortController().signal), undefined);
 				listener({ type: "tool_execution_end", toolCallId: "call:trace", toolName: "read", isError: false, result: {} });
 				agent.state.messages = [{ role: "assistant", content: [{ type: "text", text: "done" }], usage: { input: 30, output: 10 } }];
 			},
@@ -573,7 +576,7 @@ test("BeeMax Agent Runtime projects Pi lifecycle events through one Execution Tr
 		}),
 	});
 	try {
-		await runtime.run({ source, text: "trace", timeoutMs: 1_000, mode: "automation", executionEnvelope });
+		await runtime.run({ source, text: "trace", timeoutMs: 1_000, mode: "automation", executionEnvelope, allowedCapabilities: ["read"] });
 		const trace = executionTrace.trace({ executionId: executionEnvelope.executionId });
 		assert.equal(trace.status, "succeeded");
 		assert.equal(trace.modelTurns, 1);
@@ -590,6 +593,63 @@ test("BeeMax Agent Runtime projects Pi lifecycle events through one Execution Tr
 		assert.equal(modelTurn.providerResponseIdentitySha256, "sha256:f08939b808f7a026c8c7cb9318e124d429747de84fc6d884df0767acbc5bbcef");
 		assert.deepEqual(modelTurn.assistantToolCalls, [{ toolCallId: "call:trace", toolName: "read", argumentsSha256: "sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a" }]);
 		assert.deepEqual(toolEvents.map((event) => [event.assistantTurnId, event.providerResponseStatus, event.providerResponseIdentitySha256, event.argumentsSha256]), [[modelTurn.assistantTurnId, "reported", modelTurn.providerResponseIdentitySha256, modelTurn.assistantToolCalls[0].argumentsSha256], [modelTurn.assistantTurnId, "reported", modelTurn.providerResponseIdentitySha256, modelTurn.assistantToolCalls[0].argumentsSha256]]);
+	} finally { runtime.dispose(); rmSync(root, { recursive: true, force: true }); }
+});
+
+test("BeeMax admission follows the real Pi start-before-boundary Tool lifecycle", async () => {
+	const root = mkdtempSync(join(tmpdir(), "beemax-real-pi-admission-"));
+	const source = { platform: "cli", chatId: "real-pi-admission", chatType: "dm", userId: "owner" };
+	let executions = 0;
+	let modelTurns = 0;
+	const probe = withToolPolicy(defineTool({
+		name: "admission_probe", label: "Admission probe", description: "Read deterministic evidence",
+		parameters: {}, execute: async (_id, args) => {
+			executions++;
+			assert.equal(args.normalized, "trusted-boundary");
+			assert.equal(Object.isFrozen(args), true, "the admitted args object must be immutable during execution");
+			return { content: [{ type: "text", text: "probe receipt" }], details: {} };
+		},
+	}), READ_ONLY_TOOL_POLICY);
+	const factory = buildBeeMaxRuntimeFactory({
+		provider: "custom", model: "private-model", baseUrl: "https://models.example.test/v1",
+		modelLimits: { contextWindow: 32_000, maxTokens: 4_096 }, cwd: root, agentDir: join(root, "agent"),
+		getApiKey: () => "test", systemPrompt: "test", skillToolset: "safe", tools: [probe.name], createTools: () => [probe],
+	});
+	const runtime = createRuntime({
+		createAgent: async (sessionId, runtimeSource) => {
+			const session = await factory(sessionId, runtimeSource);
+			session.agent.beforeToolCall = async (context) => {
+				if (context.toolCall.id === "replacement-args-call") { context.args = { safe: true }; return; }
+				if (context.toolCall.id === "hidden-args-call") { Object.defineProperty(context.args, "hidden", { value: "secret", enumerable: false }); return; }
+				context.args.normalized = "trusted-boundary";
+			};
+			session.agent.streamFn = (model) => {
+				const turn = modelTurns++;
+				const stream = createAssistantMessageEventStream();
+				queueMicrotask(() => stream.push({ type: "done", reason: turn === 0 ? "toolUse" : "stop", message: {
+					role: "assistant",
+					content: turn === 0
+						? [
+							{ type: "toolCall", id: "real-pi-call", name: probe.name, arguments: { raw: "provider" } },
+							{ type: "toolCall", id: "replacement-args-call", name: probe.name, arguments: { raw: "provider" } },
+							{ type: "toolCall", id: "hidden-args-call", name: probe.name, arguments: { raw: "provider" } },
+						]
+						: [{ type: "text", text: "real Pi completed" }],
+					api: model.api, provider: model.provider, model: model.id,
+					responseId: `real-pi-response-${turn}`,
+					usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 2, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+					stopReason: turn === 0 ? "toolUse" : "stop", timestamp: Date.now(),
+				} }));
+				return stream;
+			};
+			return session;
+		},
+	});
+	try {
+		const result = await runtime.run({ source, text: "Use the admission probe", timeoutMs: 5_000, allowedCapabilities: [probe.name] });
+		assert.equal(result.answer, "real Pi completed");
+		assert.equal(executions, 1);
+		assert.equal(modelTurns, 2);
 	} finally { runtime.dispose(); rmSync(root, { recursive: true, force: true }); }
 });
 
@@ -1253,6 +1313,7 @@ test("delegated Execution Envelopes revalidate objective, task, and run identity
 				getActiveToolNames: () => [...active], setActiveToolsByName: (names) => { active.clear(); for (const name of names) active.add(name); },
 				prompt: async () => {
 					listener({ type: "message_end", message: { role: "assistant", responseId: "response:delegated", content: [{ type: "toolCall", id: "call:delegated", name: mutation.name, arguments: {} }], usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, cost: { total: 0 } } } });
+					listener({ type: "tool_execution_start", toolCallId: "call:delegated", toolName: mutation.name, args: {} });
 					boundary = await agent.beforeToolCall({ assistantMessage: {}, toolCall: { id: "call:delegated", name: mutation.name, arguments: {} }, args: {}, context: {} });
 					agent.state.messages.push({ role: "assistant", content: [{ type: "text", text: "fenced" }], usage: { input: 1, output: 1 } });
 				},
@@ -1282,6 +1343,7 @@ test("durable delegated mutations fail closed when no Task Ledger authority is c
 				getActiveToolNames: () => [mutation.name], setActiveToolsByName: () => undefined,
 				prompt: async () => {
 					listener({ type: "message_end", message: { role: "assistant", responseId: "response:no-authority", content: [{ type: "toolCall", id: "call:no-authority", name: mutation.name, arguments: {} }], usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, cost: { total: 0 } } } });
+					listener({ type: "tool_execution_start", toolCallId: "call:no-authority", toolName: mutation.name, args: {} });
 					boundary = await agent.beforeToolCall({ assistantMessage: {}, toolCall: { id: "call:no-authority", name: mutation.name, arguments: {} }, args: {}, context: {} });
 					agent.state.messages.push({ role: "assistant", content: [{ type: "text", text: "fenced" }], usage: { input: 1, output: 1 } });
 				},
@@ -1316,6 +1378,7 @@ async function inspectEffectfulRuntimeBoundary(executionEnvelope) {
 				getActiveToolNames: () => [...active], setActiveToolsByName: (names) => { active.clear(); for (const name of names) active.add(name); },
 				prompt: async () => {
 					listener({ type: "message_end", message: { role: "assistant", responseId: `response:${executionEnvelope.executionId}`, content: [{ type: "toolCall", id: "call:mutation", name: mutation.name, arguments: {} }], usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, cost: { total: 0 } } } });
+					listener({ type: "tool_execution_start", toolCallId: "call:mutation", toolName: mutation.name, args: {} });
 					boundary = await agent.beforeToolCall({ assistantMessage: {}, toolCall: { id: "call:mutation", name: mutation.name, arguments: {} }, args: {}, context: {} });
 					const completed = { role: "assistant", stopReason: "stop", content: [{ type: "text", text: "done" }], usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, cost: { total: 0 } } };
 					listener({ type: "message_end", message: completed });
@@ -1702,11 +1765,14 @@ test("BeeMax Agent Runtime refuses automatic model replay after observable outpu
 		fallbackModels: [{ provider: "test", id: "fallback", input: ["text"], reasoning: false }],
 		createAgent: async () => {
 			const agent = { state: { model: { provider: "test", id: "primary" }, messages: [] } };
+			const tools = [{ name: "write", description: "Observable test Tool", beemaxPolicy: { sideEffect: "none" } }];
 			return {
-				agent, subscribe: (next) => { listener = next; return () => undefined; },
+				agent, getAllTools: () => tools, getActiveToolNames: () => ["write"], setActiveToolsByName: () => undefined,
+				subscribe: (next) => { listener = next; return () => undefined; },
 				prompt: async () => {
 					listener({ type: "message_end", message: { role: "assistant", responseId: "response-write-1", content: [{ type: "toolCall", id: "write-1", name: "write", arguments: {} }], usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, cost: { total: 0 } } } });
 					listener({ type: "tool_execution_start", toolCallId: "write-1", toolName: "write" });
+					assert.equal(await agent.beforeToolCall({ toolCall: { id: "write-1", name: "write", arguments: {} }, args: {}, context: {} }, new AbortController().signal), undefined);
 					const failure = { role: "assistant", stopReason: "error", errorMessage: "503 overloaded", content: [], usage: { input: 1, output: 0, cacheRead: 0, cacheWrite: 0, cost: { total: 0 } } };
 					listener({ type: "message_end", message: failure });
 					agent.state.messages = [failure];
@@ -1715,7 +1781,7 @@ test("BeeMax Agent Runtime refuses automatic model replay after observable outpu
 			};
 		},
 	});
-	await assert.rejects(runtime.run({ source, text: "work", timeoutMs: 1_000 }), (error) => error instanceof AgentRunError && error.recoverable);
+	await assert.rejects(runtime.run({ source, text: "work", timeoutMs: 1_000, allowedCapabilities: ["write"] }), (error) => error instanceof AgentRunError && error.recoverable);
 	assert.equal(retries, 0);
 	runtime.dispose();
 });
