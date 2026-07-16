@@ -297,9 +297,9 @@ function contractForbidsDelegation(contract: WorkContract): boolean {
 
 function requiresParentAgentExecution(text: string): boolean {
 	const englishPassive = /\b(?:must|shall|should|has\s+to|needs?\s+to|is\s+required\s+to)\s+(?:(?:only|solely|exclusively|entirely|always)\s+)?(?:be\s+)?(?:executed|performed|handled|completed|done|run)\b(?:\s+(?:only|solely|exclusively|entirely))?\s+by\s+(?:the\s+)?(?:parent|main|primary|current)\s+agent\b/i;
-	const englishExclusiveSubject = /\b(?:only|solely|exclusively)\s+(?:the\s+)?(?:parent|main|primary|current)\s+agent\b.*\b(?:(?:may|can|must|shall|should|will)\s+)?(?:execute|perform|handle|complete|do|run)\b/i;
-	const chinesePassive = /(?:(?:所有|全部|本次|该|此)?(?:工作|任务|执行)?(?:必须|应当|应|需|需要|只能|仅能|只可|仅可)?由)(?:父|主|当前)(?:代理|智能体|\s*agent)(?:独立|单独|亲自|仅|只)?(?:执行|完成|处理|负责)/i;
-	const chineseExclusiveSubject = /(?:只能|仅能|只可|仅可|仅|只)(?:由)?(?:父|主|当前)(?:代理|智能体|\s*agent).*?(?:执行|完成|处理|负责)/i;
+	const englishExclusiveSubject = /\b(?:only|solely|exclusively)\s+(?:the\s+)?(?:parent|main|primary|current)\s+agent\b\s*,?\s*(?:(?:alone|itself)\s+)?(?:(?:may|can|must|shall|should|will)\s+|is\s+(?:allowed|required)\s+to\s+)?(?:execute|perform|handle|complete|do|run)\b/i;
+	const chinesePassive = /(?:(?:所有|全部|本次|该|此)?(?:工作|任务|执行)?(?:必须|应当|应|需|需要|只能|仅能|只可|仅可)?由)(?:父|主|当前)(?:代理|智能体|\s*agent)(?:独立|单独|亲自|仅|只)?(?:负责)?(?:执行|完成|处理)/i;
+	const chineseExclusiveSubject = /(?:只能|仅能|只可|仅可|仅|只)(?:由)?(?:父|主|当前)(?:代理|智能体|\s*agent)(?:独立|单独|亲自)?(?:可以|可|应当|应|需|需要|必须)?(?:负责)?(?:执行|完成|处理)/i;
 	return englishPassive.test(text) || englishExclusiveSubject.test(text) || chinesePassive.test(text) || chineseExclusiveSubject.test(text);
 }
 

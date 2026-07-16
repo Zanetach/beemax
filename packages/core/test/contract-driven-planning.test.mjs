@@ -135,7 +135,13 @@ test("parent-only execution constraints keep planned work in the parent Agent ac
 });
 
 test("a parent Agent reviewing Sub-Agent work does not prohibit delegation", () => {
-	for (const reviewConstraint of ["The parent agent must review work completed by subagents", "父代理必须审核子代理完成的工作"]) {
+	for (const reviewConstraint of [
+		"The parent agent must review work completed by subagents",
+		"父代理必须审核子代理完成的工作",
+		"Only the parent agent may review results; subagents can execute tasks",
+		"仅父代理负责审核，子代理执行任务",
+		"由父代理负责审核子代理完成的工作",
+	]) {
 		const request = `${rawRequest}，${reviewConstraint}`;
 		const sourceClause = (text) => {
 			const start = request.indexOf(text);
