@@ -105,7 +105,7 @@ export { multilingualLexicalTerms } from "./multilingual-lexical.ts";
 export { TaskPlanNoticeDeliveryService, renderTaskPlanCompletionNotice, type TaskPlanProgressEvent, type TaskPlanNoticeDeliveryOptions, type TaskPlanNoticeDeliveryResult, type TaskPlanNoticeOutbox } from "./task-plan-notice-delivery.ts";
 export { ObjectiveCompletionDeliveryService, interactionCompletionDeliveryKey, objectiveCompletionId, objectiveIdFromCompletionId, type ObjectiveCompletionDeliveryOptions, type ObjectiveCompletionDeliveryResult, type ObjectiveCompletionOutbox } from "./objective-completion-delivery.ts";
 export { ProfileTaskScheduler, type ProfileTaskSchedulerOptions, type ProfileTaskSchedulerSnapshot } from "./profile-task-scheduler.ts";
-export { AutonomousPlanningPolicy, PlanningBudgetRegistry, type AutonomousExecutionMode, type AutonomousPlanningDecision, type AutonomousPlanningPolicyOptions, type PlanningResourceBudget, type PlanningSignals } from "./autonomous-planning.ts";
+export { AutonomousPlanningPolicy, PlanningBudgetRegistry, type AutonomousExecutionMode, type AutonomousPlanningDecision, type AutonomousPlanningPolicyOptions, type ContractPlanningCoverage, type ContractPlanningInput, type PlanningBasis, type PlanningResourceBudget, type PlanningSignals, type PlanningVerificationDepth } from "./autonomous-planning.ts";
 export {
 	SessionCoordinator,
 	sessionIdForSource,

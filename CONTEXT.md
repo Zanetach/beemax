@@ -296,6 +296,10 @@ _Avoid_: Tool execution, Enterprise Policy, fixed business route
 A domain-neutral, immutable graph compiled from an admitted Work Contract that binds every atomic Acceptance Criterion exactly once to its Capability, Artifact, and Evidence requirements. It contains requirements and references only and cannot grant Tool, Provider, Credential, Access Scope, Effect, or Delivery authority.
 _Avoid_: Work Contract replacement, business ontology, Tool inventory, execution permission
 
+**Contract-Driven Planning**:
+The post-admission decision that derives direct, delegated, or DAG execution; bounded concurrency and resource budgets; correction allowance; and Verification depth from an admitted Work Contract or Open-World Contract. Only an explicit acyclic outcome dependency graph proves parallel work; action and delivery Effects remain inside the parent Agent authority boundary.
+_Avoid_: Raw-prompt keyword routing, model-selected authority, unproven parallelism, execution permission
+
 **Capability Selection**:
 A bounded, explainable ranking of versioned Capabilities for a query plus the Pi Tool names proposed for turn-scoped activation.
 _Avoid_: Tool call, action approval, Capability Router loop

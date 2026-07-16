@@ -1,4 +1,9 @@
+import type { OpenWorldContract } from "./open-world-contract.ts";
+import type { WorkContract } from "./work-contract.ts";
+
 export type AutonomousExecutionMode = "direct" | "delegate" | "dag";
+export type PlanningBasis = "raw_prompt" | "work_contract" | "open_world_contract";
+export type PlanningVerificationDepth = "none" | "criterion" | "artifact" | "independent";
 
 export interface PlanningResourceBudget {
 	maxSubagents: number;
@@ -18,6 +23,9 @@ export interface PlanningSignals {
 
 export interface AutonomousPlanningDecision {
 	mode: AutonomousExecutionMode;
+	basis: PlanningBasis;
+	verificationDepth: PlanningVerificationDepth;
+	contractCoverage?: ContractPlanningCoverage;
 	requiredTool?: "task_spawn" | "task_plan_execute";
 	requiredTools: readonly ("task_spawn" | "task_wait" | "task_plan_execute")[];
 	suggestedConcurrency: number;
@@ -27,6 +35,17 @@ export interface AutonomousPlanningDecision {
 	/** A content-free control hint safe to append to a model prompt or audit event. */
 	directive(objectiveId?: string): string;
 }
+
+export interface ContractPlanningCoverage {
+	contractId: string;
+	outcomeIds: readonly string[];
+	capabilityRequirementIds: readonly string[];
+	artifactRequirementIds: readonly string[];
+	evidenceRequirementIds: readonly string[];
+	parallelWidth: number;
+}
+
+export type ContractPlanningInput = WorkContract | OpenWorldContract;
 
 export interface AutonomousPlanningPolicyOptions {
 	maxConcurrent?: number;
@@ -42,7 +61,7 @@ export interface AutonomousPlanningPolicyOptions {
  * the same bounded execution mode and resource ceiling as strong models.
  */
 export class AutonomousPlanningPolicy {
-	private readonly capacity: PlanningResourceBudget & { maxConcurrent: number };
+	private readonly capacity: { maxConcurrent: number; maxSubagents: number; maxToolCalls: number; maxTokens: number; maxCorrectiveAttempts: number };
 
 	constructor(options: AutonomousPlanningPolicyOptions = {}) {
 		this.capacity = {
@@ -56,7 +75,9 @@ export class AutonomousPlanningPolicy {
 
 	createBudgetRegistry(): PlanningBudgetRegistry { return new PlanningBudgetRegistry(); }
 
-	decide(prompt: string): AutonomousPlanningDecision {
+	decide(input: string | ContractPlanningInput): AutonomousPlanningDecision {
+		if (typeof input !== "string") return this.decideContract(input);
+		const prompt = input;
 		const normalized = prompt.trim();
 		const signals = inspectPrompt(normalized);
 		const forbidsDelegation = has(normalized.toLowerCase(), /(?:不|不要|无需|禁止)(?:再)?(?:委派|子代理|子\s*agent)|(?:do not|don't|without)\s+(?:delegate|delegation|sub-?agents?)/i);
@@ -103,10 +124,99 @@ export class AutonomousPlanningPolicy {
 		};
 		const requiredTools = mode === "dag" ? ["task_plan_execute"] as const : mode === "delegate" ? ["task_spawn", "task_wait"] as const : [];
 		const requiredTool = requiredTools[0];
-		const decision = { mode, requiredTool, requiredTools, suggestedConcurrency, budget, signals, reason };
+		const verificationDepth: PlanningVerificationDepth = signals.requiresVerification ? "criterion" : "none";
+		const decision = { mode, basis: "raw_prompt" as const, verificationDepth, requiredTool, requiredTools, suggestedConcurrency, budget, signals, reason };
 		return {
 			...decision,
 			directive: (objectiveId) => `[BeeMax execution policy: objective=${objectiveId ?? "turn-local"}; mode=${mode}; requiredTools=${requiredTools.length ? requiredTools.join("->") : "none"}; concurrency=${suggestedConcurrency}; maxSubagents=${budget.maxSubagents}; maxToolCalls=${budget.maxToolCalls ?? "unbounded"}; maxTokens=${budget.maxTokens ?? "unbounded"}; correctiveAttempts=${budget.maxCorrectiveAttempts}. This is the sole current execution policy for this Objective; ignore earlier BeeMax planning correction or execution policy messages for other Objectives, including unscoped messages. Complete requiredTools in order before giving a final answer.]`,
+		};
+	}
+
+	private decideContract(contract: ContractPlanningInput): AutonomousPlanningDecision {
+		const openWorld = isOpenWorldContract(contract) ? contract : undefined;
+		const workContract = openWorld?.workContract ?? contract as WorkContract;
+		const outcomeIds = openWorld?.outcomes.map((outcome) => outcome.id) ?? workContract.acceptanceCriteria.map((_, index) => `criterion:${index}`);
+		const capabilityRequirementIds = openWorld?.capabilityRequirements.map((requirement) => requirement.id) ?? workContract.capabilityRequirements.map((_, index) => `capability:${index}`);
+		const artifactRequirementIds = openWorld?.artifactRequirements.map((requirement) => requirement.id) ?? [];
+		const evidenceRequirementIds = openWorld?.evidenceRequirements.map((requirement) => requirement.id) ?? [];
+		const parallelWidth = openWorld ? maximumOutcomeParallelWidth(openWorld) : Math.min(1, outcomeIds.length);
+		const coverage: ContractPlanningCoverage = Object.freeze({
+			contractId: openWorld?.id ?? "turn:work-contract",
+			outcomeIds: Object.freeze(outcomeIds),
+			capabilityRequirementIds: Object.freeze(capabilityRequirementIds),
+			artifactRequirementIds: Object.freeze(artifactRequirementIds),
+			evidenceRequirementIds: Object.freeze(evidenceRequirementIds),
+			parallelWidth,
+		});
+		const verificationDepth = contractVerificationDepth(openWorld, outcomeIds.length);
+		const requiresResearch = Boolean(openWorld?.capabilityRequirements.some((requirement) => requirement.operation === "observe")
+			&& openWorld.evidenceRequirements.some((requirement) => requirement.kinds.includes("observation") || requirement.kinds.includes("freshness")));
+		const substantialWork = outcomeIds.length > 1 || capabilityRequirementIds.length > 1 || artifactRequirementIds.length > 0 || evidenceRequirementIds.length > 1;
+		const complexity = Math.min(10,
+			outcomeIds.length
+			+ capabilityRequirementIds.length
+			+ artifactRequirementIds.length * 2
+			+ evidenceRequirementIds.length
+			+ workContract.uncertainties.length * 2,
+		);
+		const signals: PlanningSignals = {
+			complexity,
+			independentWorkItems: Math.max(1, parallelWidth),
+			requiresResearch,
+			requiresVerification: verificationDepth !== "none",
+			requestsParallelism: parallelWidth >= 2,
+			substantialWork,
+		};
+		const containsParentOnlyEffect = Boolean(openWorld?.capabilityRequirements.some((requirement) => requirement.operation === "act" || requirement.operation === "deliver"));
+		let mode: AutonomousExecutionMode = "direct";
+		let reason = "One admitted atomic outcome fits the parent Agent execution boundary";
+		if (!containsParentOnlyEffect && openWorld && parallelWidth >= 2 && outcomeIds.length >= 2) {
+			mode = "dag";
+			reason = "The admitted outcome dependency graph contains parallel independently verifiable work";
+		} else if (!containsParentOnlyEffect && substantialWork) {
+			mode = "delegate";
+			reason = "The admitted Contract contains substantial bounded work without a proven parallel outcome graph";
+		} else if (containsParentOnlyEffect) {
+			reason = "The admitted Contract includes an action or delivery Effect that remains in the parent Agent authority boundary";
+		}
+
+		const dagCapacity = Math.min(this.capacity.maxConcurrent, this.capacity.maxSubagents);
+		if (mode === "dag" && (dagCapacity < 2 || this.capacity.maxToolCalls < 10 || this.capacity.maxTokens < 12_000)) {
+			mode = this.capacity.maxSubagents > 0 ? "delegate" : "direct";
+			reason = "The admitted Contract proves parallel work, but configured capacity requires a bounded degradation";
+		}
+		if (mode === "delegate" && this.capacity.maxSubagents < 1) {
+			mode = "direct";
+			reason = "The admitted Contract is substantial, but Sub-Agent capacity is unavailable";
+		}
+
+		const suggestedConcurrency = mode === "dag" ? Math.min(parallelWidth, this.capacity.maxConcurrent, this.capacity.maxSubagents) : 1;
+		const maxSubagents = mode === "dag" ? Math.min(this.capacity.maxSubagents, outcomeIds.length) : mode === "delegate" ? 1 : 0;
+		const effort = Math.max(1, outcomeIds.length + capabilityRequirementIds.length + artifactRequirementIds.length * 2 + evidenceRequirementIds.length);
+		const toolTarget = mode === "direct" ? Math.max(4, effort * 2) : Math.max(12, effort * 3);
+		const tokenTarget = Math.max(8_000, 4_000 + effort * 4_000 + workContract.uncertainties.length * 2_000);
+		const maxCorrectiveAttempts = verificationDepth === "none" ? 0 : Math.min(this.capacity.maxCorrectiveAttempts, verificationDepth === "independent" ? 2 : 1);
+		const budget: PlanningResourceBudget = {
+			maxSubagents,
+			maxToolCalls: Math.min(this.capacity.maxToolCalls, toolTarget),
+			maxTokens: Math.min(this.capacity.maxTokens, tokenTarget),
+			maxCorrectiveAttempts,
+		};
+		const requiredTools = mode === "dag" ? ["task_plan_execute"] as const : mode === "delegate" ? ["task_spawn", "task_wait"] as const : [];
+		const requiredTool = requiredTools[0];
+		const basis = openWorld ? "open_world_contract" as const : "work_contract" as const;
+		return {
+			mode,
+			basis,
+			verificationDepth,
+			contractCoverage: coverage,
+			requiredTool,
+			requiredTools,
+			suggestedConcurrency,
+			budget,
+			signals,
+			reason,
+			directive: (objectiveId) => `[BeeMax contract execution policy: objective=${objectiveId ?? "turn-local"}; contract=${coverage.contractId}; basis=${basis}; outcomes=${coverage.outcomeIds.join(",") || "none"}; capabilities=${coverage.capabilityRequirementIds.join(",") || "none"}; artifacts=${coverage.artifactRequirementIds.join(",") || "none"}; evidence=${coverage.evidenceRequirementIds.join(",") || "none"}; verificationDepth=${verificationDepth}; mode=${mode}; requiredTools=${requiredTools.length ? requiredTools.join("->") : "none"}; concurrency=${suggestedConcurrency}; maxSubagents=${budget.maxSubagents}; maxToolCalls=${budget.maxToolCalls}; maxTokens=${budget.maxTokens}; correctiveAttempts=${budget.maxCorrectiveAttempts}. This policy was derived after semantic Work Contract admission. Preserve every listed requirement through execution and Verification; do not substitute raw-prompt planning heuristics.]`,
 		};
 	}
 }
@@ -156,6 +266,44 @@ function inspectPrompt(prompt: string): PlanningSignals {
 	if (synthesis) complexity++;
 	if (independentWorkItems >= 3) complexity += 2;
 	return { complexity, independentWorkItems, requiresResearch, requiresVerification, requestsParallelism, substantialWork };
+}
+
+function isOpenWorldContract(value: ContractPlanningInput): value is OpenWorldContract {
+	return value.schemaVersion === "beemax.open-world-contract.v1";
+}
+
+function contractVerificationDepth(contract: OpenWorldContract | undefined, outcomeCount: number): PlanningVerificationDepth {
+	if (outcomeCount === 0) return "none";
+	if (!contract) return "criterion";
+	const independentDimensions = new Set(["semantic", "render", "consistency", "freshness", "delivery", "execution"]);
+	if (contract.artifactRequirements.some((requirement) => requirement.verification.some((dimension) => independentDimensions.has(dimension)))
+		|| contract.evidenceRequirements.some((requirement) => requirement.kinds.some((kind) => independentDimensions.has(kind)))) return "independent";
+	if (contract.artifactRequirements.length > 0) return "artifact";
+	return "criterion";
+}
+
+function maximumOutcomeParallelWidth(contract: OpenWorldContract): number {
+	const indegree = new Map(contract.outcomes.map((outcome) => [outcome.id, outcome.dependsOnOutcomeIds.length]));
+	const dependents = new Map<string, string[]>();
+	for (const outcome of contract.outcomes) for (const dependency of outcome.dependsOnOutcomeIds) {
+		dependents.set(dependency, [...(dependents.get(dependency) ?? []), outcome.id]);
+	}
+	let wave = [...indegree].filter(([, degree]) => degree === 0).map(([id]) => id);
+	let maximum = wave.length;
+	let visited = 0;
+	while (wave.length) {
+		visited += wave.length;
+		const next: string[] = [];
+		for (const id of wave) for (const dependent of dependents.get(id) ?? []) {
+			const degree = (indegree.get(dependent) ?? 0) - 1;
+			indegree.set(dependent, degree);
+			if (degree === 0) next.push(dependent);
+		}
+		wave = next;
+		maximum = Math.max(maximum, wave.length);
+	}
+	if (visited !== contract.outcomes.length) throw new Error("Open-world outcome dependency graph is cyclic");
+	return Math.max(1, maximum);
 }
 
 function estimateIndependentItems(prompt: string): number {

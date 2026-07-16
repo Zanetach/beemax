@@ -86,7 +86,21 @@ export interface AgentModelStatus {
 }
 
 export interface ModelFallbackEvent { type: "model_fallback"; from: string; to: string; attempt: number; }
-export interface PlanningDecisionEvent { type: "planning_decision"; mode: "direct" | "delegate" | "dag"; concurrency: number; maxSubagents: number; requiredTools: string[]; }
+export interface PlanningDecisionEvent {
+	type: "planning_decision";
+	mode: "direct" | "delegate" | "dag";
+	concurrency: number;
+	maxSubagents: number;
+	requiredTools: string[];
+	/** Present for semantic Contract planning; omitted for legacy raw-prompt compatibility. */
+	basis?: AutonomousPlanningDecision["basis"];
+	verificationDepth?: AutonomousPlanningDecision["verificationDepth"];
+	contractId?: string;
+	outcomeCount?: number;
+	capabilityRequirementCount?: number;
+	artifactRequirementCount?: number;
+	evidenceRequirementCount?: number;
+}
 export interface PlanningOutcomeEvent { type: "planning_outcome"; mode: "direct" | "delegate" | "dag"; compliant: boolean; corrected: boolean; }
 export type CapabilityRankReason = "exact_name" | "name" | "trigger" | "alias" | "lexical";
 export interface CapabilityRankedCandidate { kind: "tool" | "mcp" | "skill"; name: string; version?: string; score: number; confidence: number; reason: CapabilityRankReason; requirementId?: string; outcomeIndex?: number; necessity?: "required" | "alternative"; }
@@ -306,12 +320,13 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 		}
 		const compatibilityObjective = activeObjective ?? (activeObjectiveCandidates.length === 1 ? activeObjectiveCandidates[0] : undefined);
 		const fallbackUnderstanding = cognitiveRun ? this.turnUnderstanding.understand(input.text, { activeObjective: compatibilityObjective?.title }) : undefined;
-		const planning = interactive ? this.planningPolicy?.decide(input.text) : undefined;
+		let planning: AutonomousPlanningDecision | undefined;
 		// Semantic admission is control-plane cognition, not Pi execution. A caller-
 		// supplied Execution Envelope remains the hard end-to-end ceiling, while the
 		// autonomous planning budget below governs only the subsequent Pi loop.
 		const cognitionTokenLimit = input.executionEnvelope?.budget?.maxTokens;
 		let workContract: WorkContract | undefined;
+		let contractPlanningAdmitted = false;
 		let workContractCognitionUsage: WorkContractCognitionUsage | undefined;
 		let workContractCognitionBudgetChargeTokens = 0;
 		if (fallbackUnderstanding && explicitAutomationObjective && activeObjective) {
@@ -327,6 +342,7 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 				workContractCognitionUsage = built.cognitionUsage ?? built.semanticAdjudication?.cognitionUsage;
 				workContractCognitionBudgetChargeTokens = built.source === "model" ? built.cognitionBudgetChargeTokens : 0;
 				workContract = validateWorkContract(built.contract, input.text, { trustedContext, requireAcceptanceCriterion: built.source === "model", enforceFallbackUnderstanding: built.source !== "model" });
+				contractPlanningAdmitted = built.source === "model";
 				if (built.source === "model" && workContract.confidence < this.minimumWorkContractConfidence) throw new Error(`Model Work Contract confidence ${workContract.confidence} is below the admission threshold ${this.minimumWorkContractConfidence}`);
 				const envelopeTokenLimit = input.executionEnvelope?.budget?.maxTokens;
 				if (envelopeTokenLimit !== undefined && workContractCognitionBudgetChargeTokens > envelopeTokenLimit) throw new Error(`Work Contract cognition exceeded the Execution Envelope token budget (${envelopeTokenLimit})`);
@@ -340,6 +356,7 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 				throw new AgentRunError(`Work Contract admission blocked: ${errorMessage(error)}`, true, error, false, workContractCognitionUsage);
 			}
 		}
+		planning = interactive ? this.planningPolicy?.decide(contractPlanningAdmitted && workContract ? workContract : input.text) : undefined;
 		const targetObjectiveId = workContract?.targetObjective?.id;
 		if (targetObjectiveId) {
 			activeObjective = activeObjectiveCandidates.find((candidate) => candidate.id === targetObjectiveId);
@@ -1185,7 +1202,18 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 				}
 				await onEvent?.({ type: "execution_started", executionEnvelope });
 				if (contextAssembly) await onEvent?.({ type: "context_built", included: contextAssembly.included.map(({ kind, source, costChars }) => ({ kind, source, costChars })), released: contextAssembly.released.map(({ kind, source, costChars }) => ({ kind, source, costChars })), contextChars: contextAssembly.contextChars });
-				if (planning) await onEvent?.({ type: "planning_decision", mode: planning.mode, concurrency: planning.suggestedConcurrency, maxSubagents: planning.budget.maxSubagents, requiredTools: [...planning.requiredTools] });
+				if (planning) await onEvent?.({
+					type: "planning_decision", mode: planning.mode, concurrency: planning.suggestedConcurrency, maxSubagents: planning.budget.maxSubagents, requiredTools: [...planning.requiredTools],
+					...(planning.basis === "raw_prompt" ? {} : {
+						basis: planning.basis,
+						verificationDepth: planning.verificationDepth,
+						contractId: planning.contractCoverage?.contractId,
+						outcomeCount: planning.contractCoverage?.outcomeIds.length ?? 0,
+						capabilityRequirementCount: planning.contractCoverage?.capabilityRequirementIds.length ?? 0,
+						artifactRequirementCount: planning.contractCoverage?.artifactRequirementIds.length ?? 0,
+						evidenceRequirementCount: planning.contractCoverage?.evidenceRequirementIds.length ?? 0,
+					}),
+				});
 				if (input.images?.length) {
 					const mediaStartedAt = Date.now();
 					const preparedMedia = await this.mediaUnderstanding.prepare({ text, images: input.images, primaryModel: mediaModelOf(session.piSession.agent), signal: input.signal });

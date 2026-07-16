@@ -11,6 +11,7 @@ export type OutcomeEvidenceKind = "observation" | "effect" | "artifact" | "integ
 export interface OpenWorldOutcomeRequirement {
 	id: string;
 	acceptanceCriterion: WorkContractClause;
+	dependsOnOutcomeIds: readonly string[];
 	capabilityRequirementIds: readonly string[];
 	artifactRequirementIds: readonly string[];
 	evidenceRequirementIds: readonly string[];
@@ -51,6 +52,7 @@ export interface OpenWorldContractInput {
 	outcomes: readonly {
 		id: string;
 		acceptanceCriterionIndex: number;
+		dependsOnOutcomeIds?: readonly string[];
 		capabilityRequirementIds: readonly string[];
 		artifactRequirementIds?: readonly string[];
 		evidenceRequirementIds: readonly string[];
@@ -88,7 +90,7 @@ export function createOpenWorldContract(input: OpenWorldContractInput): Readonly
 	const capabilityIds = uniqueIds(capabilitiesInput, "capability requirement");
 	const artifactIds = uniqueIds(artifactsInput, "artifact requirement");
 	const evidenceIds = uniqueIds(evidenceInput, "evidence requirement");
-	uniqueIds(outcomesInput, "outcome");
+	const outcomeIds = uniqueIds(outcomesInput, "outcome");
 
 	const capabilities = capabilitiesInput.map((item) => {
 		if (!CAPABILITY_OPERATIONS.has(item.operation)) throw new Error("Open-world capability operation is invalid");
@@ -114,11 +116,15 @@ export function createOpenWorldContract(input: OpenWorldContractInput): Readonly
 
 	const outcomes = outcomesInput.map((item) => {
 		const criterion = indexedClause(workContract.acceptanceCriteria, item.acceptanceCriterionIndex, "acceptance criterion");
+		const outcomeId = reference(item.id, "outcome id");
+		const dependsOnOutcomeIds = referenceList(item.dependsOnOutcomeIds ?? [], outcomeIds, "outcome dependency", 0, 99);
+		if (dependsOnOutcomeIds.includes(outcomeId)) throw new Error(`Open-world outcome dependency cycle: ${outcomeId}`);
 		const capabilityRequirementIds = referenceList(item.capabilityRequirementIds, capabilityIds, "outcome capability requirement", 0, 100);
 		const artifactRequirementIds = referenceList(item.artifactRequirementIds ?? [], artifactIds, "outcome artifact requirement", 0, 100);
 		const evidenceRequirementIds = referenceList(item.evidenceRequirementIds, evidenceIds, "outcome evidence requirement", 1, 200);
-		return Object.freeze({ id: reference(item.id, "outcome id"), acceptanceCriterion: freezeClause(criterion), capabilityRequirementIds: Object.freeze(capabilityRequirementIds), artifactRequirementIds: Object.freeze(artifactRequirementIds), evidenceRequirementIds: Object.freeze(evidenceRequirementIds) });
+		return Object.freeze({ id: outcomeId, acceptanceCriterion: freezeClause(criterion), dependsOnOutcomeIds: Object.freeze(dependsOnOutcomeIds), capabilityRequirementIds: Object.freeze(capabilityRequirementIds), artifactRequirementIds: Object.freeze(artifactRequirementIds), evidenceRequirementIds: Object.freeze(evidenceRequirementIds) });
 	});
+	assertAcyclicOutcomes(outcomes);
 	assertExactIndexCoverage(outcomesInput.map((item) => item.acceptanceCriterionIndex), workContract.acceptanceCriteria.length, "every Work Contract acceptance criterion");
 	assertExactlyOnceReferenced(outcomes.flatMap((item) => item.capabilityRequirementIds), capabilityIds, "capability requirement");
 	assertAllReferenced(outcomes.flatMap((item) => item.artifactRequirementIds), artifactIds, "artifact requirement");
@@ -205,6 +211,21 @@ function assertExactlyOnceReferenced(actual: readonly string[], expected: Readon
 	const counts = new Map<string, number>();
 	for (const id of actual) counts.set(id, (counts.get(id) ?? 0) + 1);
 	if (actual.length !== expected.size || [...expected].some((id) => counts.get(id) !== 1)) throw new Error(`Open-world contract must bind every ${label} exactly once`);
+}
+
+function assertAcyclicOutcomes(outcomes: readonly Pick<OpenWorldOutcomeRequirement, "id" | "dependsOnOutcomeIds">[]): void {
+	const dependencies = new Map(outcomes.map((outcome) => [outcome.id, outcome.dependsOnOutcomeIds]));
+	const visiting = new Set<string>();
+	const visited = new Set<string>();
+	const visit = (id: string): void => {
+		if (visited.has(id)) return;
+		if (visiting.has(id)) throw new Error(`Open-world outcome dependency cycle: ${id}`);
+		visiting.add(id);
+		for (const dependency of dependencies.get(id) ?? []) visit(dependency);
+		visiting.delete(id);
+		visited.add(id);
+	};
+	for (const outcome of outcomes) visit(outcome.id);
 }
 
 function mediaType(value: string): string {

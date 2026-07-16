@@ -125,6 +125,29 @@ test("one Capability requirement cannot be assigned to multiple atomic outcomes"
 	assert.throws(() => createOpenWorldContract(input), /capability requirement.*exactly once/i);
 });
 
+test("an open-world outcome dependency graph must be acyclic", () => {
+	assert.throws(() => createOpenWorldContract({
+		id: "contract:cyclic-outcomes",
+		admission: admittedWorkContract(),
+		outcomes: [
+			{ id: "outcome:research", acceptanceCriterionIndex: 0, dependsOnOutcomeIds: ["outcome:pdf"], capabilityRequirementIds: ["capability:research"], evidenceRequirementIds: ["evidence:sources"] },
+			{ id: "outcome:html", acceptanceCriterionIndex: 1, dependsOnOutcomeIds: ["outcome:research"], capabilityRequirementIds: ["capability:html"], evidenceRequirementIds: ["evidence:html"] },
+			{ id: "outcome:pdf", acceptanceCriterionIndex: 2, dependsOnOutcomeIds: ["outcome:html"], capabilityRequirementIds: ["capability:pdf"], evidenceRequirementIds: ["evidence:pdf"] },
+		],
+		capabilityRequirements: [
+			{ id: "capability:research", workContractClauseIndex: 0, operation: "observe", expectedOutputs: ["market-source-records"] },
+			{ id: "capability:html", workContractClauseIndex: 1, operation: "transform", expectedOutputs: ["text/html"] },
+			{ id: "capability:pdf", workContractClauseIndex: 2, operation: "transform", expectedOutputs: ["application/pdf"] },
+		],
+		artifactRequirements: [],
+		evidenceRequirements: [
+			{ id: "evidence:sources", kinds: ["observation"] },
+			{ id: "evidence:html", kinds: ["artifact"] },
+			{ id: "evidence:pdf", kinds: ["artifact"] },
+		],
+	}), /outcome dependency cycle/i);
+});
+
 test("a structurally valid but semantically unadmitted Work Contract cannot enter the open-world graph", () => {
 	const deterministic = { ...workContract(), capabilityRequirements: [] };
 	assert.throws(() => createOpenWorldContract({
