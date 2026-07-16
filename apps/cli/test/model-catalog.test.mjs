@@ -50,6 +50,15 @@ test("custom Profile models remain available to tool-free auxiliary cognition", 
 	assert.equal(models[0].apiKey, "secret");
 });
 
+test("custom Anthropic-compatible models explicitly disable default Provider reasoning", () => {
+	const models = configuredAuxiliaryTextModels({
+		model: { provider:"custom",model:"reasoning-by-default",apiKey:"secret",apiKeys:{ custom:"secret" },baseUrl:"https://models.example/v1",customProtocol:"anthropic-messages" },
+		models: [{ provider:"custom",model:"reasoning-by-default",baseUrl:"https://models.example/v1",customProtocol:"anthropic-messages" }],
+	});
+	assert.equal(models[0].model.api, "anthropic-messages");
+	assert.equal(models[0].model.reasoning, true);
+});
+
 test("Profile cognition models fail fast for a missing main credential even when a secondary model is authenticated", async () => {
 	const config = {
 		profile: "missing-main",

@@ -24,6 +24,10 @@ export const LIVE_PI_OUTCOME_BUDGET = Object.freeze({
 	maxModelTurnsPerCase: 4,
 });
 
+// Work Contract admission reserves prompt bytes conservatively before the
+// separately measured Provider-output budget is evaluated.
+const LIVE_PI_EXECUTION_TOKEN_BUDGET = 12_000;
+
 export async function executeLivePiCapabilityOutcomeRun({ models, model, apiKey, threshold, observedRankings, workContractBuilder, getCredentialResolutionEvents, getWorkContractProviderTurns }) {
 	const modelCandidates = livePiModelCandidates({ models, model, apiKey });
 	const rankingByCase = new Map(observedRankings.map((ranking) => [ranking.caseId, ranking]));
@@ -133,7 +137,7 @@ async function executeLivePiCapabilityTaskInRoot({ scenario, ranking, threshold,
 		executionTrace: trace,
 		turnUnderstanding: { understand: () => ({ action: "create", goal: scenario.query, constraints: [], acceptanceCriteria: [scenario.query], uncertainties: [], memoryQuery: scenario.query, capabilityQuery: scenario.query, executionMode: "direct", confidence: 1 }) },
 		workContractBuilder: observedWorkContractBuilder,
-		planningPolicy: { decide: () => ({ mode: "direct", requiredTools: [], suggestedConcurrency: 1, budget: { maxSubagents: 0, maxToolCalls: 12, maxTokens: 8_000, maxCorrectiveAttempts: 1 }, signals: { substantialWork: true, requiresVerification: true }, reason: "live Pi capability outcome", directive: () => "Use the current Tool Spec to complete the request; do not describe hypothetical calls." }) },
+		planningPolicy: { decide: () => ({ mode: "direct", requiredTools: [], suggestedConcurrency: 1, budget: { maxSubagents: 0, maxToolCalls: 12, maxTokens: LIVE_PI_EXECUTION_TOKEN_BUDGET, maxCorrectiveAttempts: 1 }, signals: { substantialWork: true, requiresVerification: true }, reason: "live Pi capability outcome", directive: () => "Use the current Tool Spec to complete the request; do not describe hypothetical calls." }) },
 		verifyObjectiveCandidate: async (_task, _answer, _signal, context) => {
 			const successful = new Set(context?.successfulToolNames ?? []);
 			const activated = candidates.filter((candidate) => candidate.kind === "skill" ? completed.has(candidate.name) : successful.has(sourceByCapability.get(candidate.name))).map((candidate) => candidate.name);
@@ -144,7 +148,7 @@ async function executeLivePiCapabilityTaskInRoot({ scenario, ranking, threshold,
 		createAgent: factory,
 	});
 	const accessScopeRef = createAccessScopeRef({ id: scopeId, authority: { kind: "enterprise_system", reference: "live-pi-evaluator" }, issuedAt: 1 });
-	const envelope = createExecutionEnvelope({ executionId, trigger: { kind: "interaction" }, accessScopeRef, budget: { maxToolCalls: 12, maxTokens: 8_000, maxCorrectiveAttempts: 1 }, mode: "normal" });
+	const envelope = createExecutionEnvelope({ executionId, trigger: { kind: "interaction" }, accessScopeRef, budget: { maxToolCalls: 12, maxTokens: LIVE_PI_EXECUTION_TOKEN_BUDGET, maxCorrectiveAttempts: 1 }, mode: "normal" });
 	let result;
 	try { result = await runtime.run({ source, text: scenario.query, timeoutMs: 90_000, accessScopeRef, executionEnvelope: envelope }); }
 	catch (error) { result = { answer: "", error: error instanceof Error ? error.message : String(error) }; }

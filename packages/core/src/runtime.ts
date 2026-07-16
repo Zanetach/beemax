@@ -435,7 +435,10 @@ export function resolveRuntimeModel(provider: string, modelId: string, baseUrl?:
 			api: customProtocol,
 			provider: customProtocol === "anthropic-messages" ? "anthropic" : "openai",
 			baseUrl,
-			reasoning: false,
+			// Anthropic-compatible endpoints may enable thinking by default. Mark the
+			// protocol capability so streamSimple can explicitly send `thinking: disabled`
+			// for bounded auxiliary cognition that did not request reasoning.
+			reasoning: customProtocol === "anthropic-messages",
 			input: ["text"],
 			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
 			contextWindow,

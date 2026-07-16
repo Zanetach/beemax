@@ -2,6 +2,16 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { PiWorkContractBuilder, SEMANTIC_INVENTORY_SYSTEM_PROMPT, WORK_CONTRACT_SYSTEM_PROMPT, WorkContractCognitionError, adjudicateWorkContract, decodeSemanticInventory, hasSemanticWorkContractAdjudication, resolveSemanticOccurrence } from "../dist/index.js";
 
+test("model cognition prompts make lifecycle and negative-role classification unambiguous", () => {
+	for (const prompt of [WORK_CONTRACT_SYSTEM_PROMPT, SEMANTIC_INVENTORY_SYSTEM_PROMPT]) {
+		assert.match(prompt, /affirmative material command/i);
+		assert.match(prompt, /negative preservation instructions.*prohibitions.*never constraints/i);
+		assert.match(prompt, /revise.*active Objective.*correct/i);
+		assert.match(prompt, /language.*format.*modifiers.*constraints/i);
+		assert.match(prompt, /only.*requested outcome.*not.*constraint/i);
+	}
+});
+
 const activeObjectives = [{ id: "market", title: "市场分析" }, { id: "report", title: "周报" }];
 
 test("semantic adjudication blocks an Objective that swallows a distinct prohibition", () => {
@@ -280,8 +290,11 @@ test("Pi Work Contract reserves the shared cognition budget before calling a Pro
 
 test("Pi Work Contract reserves both mandatory lanes before starting either Provider", async () => {
 	const calls = [];
+	const rawRequest = "生成报告";
+	const firstLaneBudget = Buffer.byteLength(WORK_CONTRACT_SYSTEM_PROMPT, "utf8")
+		+ Buffer.byteLength(JSON.stringify({ rawRequest }), "utf8") + 160 + 1_536;
 	const builder = new PiWorkContractBuilder({ models: [{ model: model("only") }], complete: async (candidate, context) => { calls.push(`${candidate.id}:${context.systemPrompt.includes("Independently inventory") ? "inventory" : "contract"}`); return response({ invalid: true }); } });
-	await assert.rejects(builder.build({ rawRequest: "生成报告", maxCognitionTokens: 4_000, fallback: { action: "create", goal: "生成报告", constraints: [], acceptanceCriteria: ["生成报告"], memoryQuery: "生成报告", capabilityQuery: "", executionMode: "direct", confidence: 0.9 } }), /Semantic Inventory cognition would exceed/i);
+	await assert.rejects(builder.build({ rawRequest, maxCognitionTokens: firstLaneBudget, fallback: { action: "create", goal: rawRequest, constraints: [], acceptanceCriteria: [rawRequest], memoryQuery: rawRequest, capabilityQuery: "", executionMode: "direct", confidence: 0.9 } }), /Semantic Inventory cognition would exceed/i);
 	assert.deepEqual(calls, []);
 });
 
