@@ -262,6 +262,7 @@ export class MemoryStore {
 		mkdirSync(dirname(dbPath), { recursive: true });
 		this.db = new Database(dbPath);
 		this.db.pragma("journal_mode = WAL");
+		this.db.pragma("busy_timeout = 5000");
 		this.db.pragma("foreign_keys = ON");
 		this.migrate();
 	}
@@ -878,7 +879,13 @@ export class MemoryStore {
 
 	private addColumnIfMissing(table: string, column: string, definition: string): void {
 		const columns = this.db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>;
-		if (!columns.some((item) => item.name === column)) this.db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
+		if (columns.some((item) => item.name === column)) return;
+		try { this.db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`); }
+		catch (error) {
+			const migrated = this.db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>;
+			if (migrated.some((item) => item.name === column)) return;
+			throw error;
+		}
 	}
 
 	private migrateCompensationExerciseIdentity(): void {
@@ -1783,7 +1790,6 @@ export class MemoryStore {
 
 	reviseObjective(ownerKey: string, taskId: string, revision: { workContract: NonNullable<RuntimeTaskRecord["workContract"]>; situation: NonNullable<RuntimeTaskRecord["situation"]>; contractAdmission?: Readonly<DurableContractAdmissionReceipt> | null }, now = Date.now()): ReturnType<TaskLedger["reviseObjective"]> {
 		const encodedCorrection = safeStoredWorkContract(revision.workContract);
-		const updatesContractAdmission = Object.prototype.hasOwnProperty.call(revision, "contractAdmission");
 		const encodedContractAdmission = revision.contractAdmission ? safeStoredContractAdmission(revision.contractAdmission) : null;
 		const objectiveSource = revision.workContract.objective.source;
 		const targetObjectiveId = revision.workContract.targetObjective?.id ?? (objectiveSource.kind === "active_objective" ? objectiveSource.id : undefined);
@@ -1805,7 +1811,7 @@ export class MemoryStore {
 			const existing = parsed ?? [];
 			const last = existing.at(-1);
 			if (last && safeStoredWorkContract(last.workContract) === encodedCorrection) {
-				if (updatesContractAdmission) this.db.prepare("UPDATE tasks SET contract_admission = ?, updated_at = ? WHERE id = ? AND owner_key = ?").run(encodedContractAdmission, now, taskId, ownerKey);
+				this.db.prepare("UPDATE tasks SET contract_admission = ?, updated_at = ? WHERE id = ? AND owner_key = ?").run(encodedContractAdmission, now, taskId, ownerKey);
 				return { originalWorkContract, revision: last, revisions: existing };
 			}
 			if (existing.length >= MAX_OBJECTIVE_REVISIONS) return undefined;
@@ -1813,11 +1819,8 @@ export class MemoryStore {
 			const next = [...existing, objectiveRevision];
 			const encoded = safeStoredObjectiveRevisions(next, taskId);
 			if (!encoded) return undefined;
-			const updated = updatesContractAdmission
-				? this.db.prepare("UPDATE tasks SET work_contract = ?, contract_admission = ?, objective_revisions = ?, situation = ?, updated_at = ? WHERE id = ? AND owner_key = ? AND kind = 'objective' AND status IN ('pending', 'running')")
-					.run(encodedOriginal, encodedContractAdmission, encoded, encodedSituation, now, taskId, ownerKey).changes === 1
-				: this.db.prepare("UPDATE tasks SET work_contract = ?, objective_revisions = ?, situation = ?, updated_at = ? WHERE id = ? AND owner_key = ? AND kind = 'objective' AND status IN ('pending', 'running')")
-					.run(encodedOriginal, encoded, encodedSituation, now, taskId, ownerKey).changes === 1;
+			const updated = this.db.prepare("UPDATE tasks SET work_contract = ?, contract_admission = ?, objective_revisions = ?, situation = ?, updated_at = ? WHERE id = ? AND owner_key = ? AND kind = 'objective' AND status IN ('pending', 'running')")
+				.run(encodedOriginal, encodedContractAdmission, encoded, encodedSituation, now, taskId, ownerKey).changes === 1;
 			return updated ? { originalWorkContract, revision: objectiveRevision, revisions: next } : undefined;
 		})();
 	}

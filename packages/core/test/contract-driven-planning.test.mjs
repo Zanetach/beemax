@@ -6,6 +6,7 @@ import {
 	OPEN_WORLD_CONTRACT_ADJUDICATION_SCHEMA_VERSION,
 	WORK_CONTRACT_ADJUDICATION_SCHEMA_VERSION,
 	WORK_CONTRACT_SCHEMA_VERSION,
+	createContractAdmissionReceiptIntegrity,
 	createExecutionEnvelope,
 	createOpenWorldContract,
 } from "../dist/index.js";
@@ -337,6 +338,7 @@ test("a restarted runtime revalidates the durable OpenWorld admission without re
 		executionMode: "direct",
 	});
 	const tasks = new Map();
+	const contractAdmissionIntegrity = createContractAdmissionReceiptIntegrity({ key: Buffer.alloc(32, 5), profileId: "profile:test" });
 	const ledger = {
 		record(task) { tasks.set(task.id, structuredClone(task)); },
 		transition(id, change) { const task = tasks.get(id); if (!task) return false; tasks.set(id, { ...task, ...structuredClone(change) }); return true; },
@@ -368,12 +370,13 @@ test("a restarted runtime revalidates the durable OpenWorld admission without re
 		turnUnderstanding: { understand: () => ({ action: "create", goal: rawRequest, constraints: [], acceptanceCriteria: ["过去一周黄金走势", "输出 HTML", "PDF"], uncertainties: [], memoryQuery: rawRequest, executionMode: "direct", confidence: 1 }) },
 		workContractBuilder: { build: async () => admission(contract) },
 		openWorldContractCompiler: { compile: async ({ admission: admitted }) => reviewedOpenWorldCompilation(admitted) },
+		contractAdmissionIntegrity,
 		createAgent: async () => agentFactory(),
 	});
 	await first.run({ source, text: rawRequest, timeoutMs: 1_000 });
 	first.dispose();
 	const objective = [...tasks.values()][0];
-	assert.equal(objective.contractAdmission.schemaVersion, "beemax.durable-contract-admission.v1");
+	assert.equal(objective.contractAdmission.schemaVersion, "beemax.durable-contract-admission.v2");
 	assert.equal(objective.contractAdmission.openWorld.snapshot.id, "contract:runtime-gold-report");
 
 	let cognitionCalls = 0;
@@ -386,6 +389,7 @@ test("a restarted runtime revalidates the durable OpenWorld admission without re
 		turnUnderstanding: { understand: () => ({ action: "continue", goal: rawRequest, constraints: [], acceptanceCriteria: [], uncertainties: [], memoryQuery: rawRequest, executionMode: "direct", confidence: 1 }) },
 		workContractBuilder: { build: async () => { cognitionCalls++; throw new Error("must not rebuild an admitted Objective"); } },
 		openWorldContractCompiler: { compile: async () => { cognitionCalls++; throw new Error("must not recompile an admitted Objective"); } },
+		contractAdmissionIntegrity,
 		createAgent: async () => { piCalls++; return agentFactory(); },
 	});
 	await restored.run({
@@ -408,6 +412,7 @@ test("a restarted runtime revalidates the durable OpenWorld admission without re
 		profileId: "profile:test",
 		taskLedger: ledger,
 		planningPolicy: new AutonomousPlanningPolicy(),
+		contractAdmissionIntegrity,
 		turnUnderstanding: { understand: () => ({ action: "continue", goal: rawRequest, constraints: [], acceptanceCriteria: [], uncertainties: [], memoryQuery: rawRequest, executionMode: "direct", confidence: 1 }) },
 		createAgent: async () => { expiredPiCalls++; return agentFactory(); },
 	});
@@ -418,9 +423,109 @@ test("a restarted runtime revalidates the durable OpenWorld admission without re
 		mode: "automation",
 		objectiveTaskId: objective.id,
 		executionEnvelope: createExecutionEnvelope({ executionId: "execution:expired-restore", trigger: { kind: "automation", id: "schedule:expired-restore" } }),
-	}), /admission receipt expired/i);
+	}), /admission authentication failed/i);
 	assert.equal(expiredPiCalls, 0);
 	expired.dispose();
+});
+
+test("a signed correction admission binds every earlier Objective revision before restarted Pi execution", async () => {
+	const tasks = new Map();
+	const integrity = createContractAdmissionReceiptIntegrity({ key: Buffer.alloc(32, 6), profileId: "profile:revision-chain" });
+	const ledger = {
+		record(task) { tasks.set(task.id, structuredClone(task)); },
+		transition(id, change) { const task = tasks.get(id); if (!task) return false; tasks.set(id, { ...task, ...structuredClone(change) }); return true; },
+		queryTasks(query) {
+			return [...tasks.values()].filter((task) => query.ownerKeys.includes(task.ownerKey)
+				&& (!query.id || task.id === query.id)
+				&& (!query.kinds || query.kinds.includes(task.kind))
+				&& (!query.statuses || query.statuses.includes(task.status)));
+		},
+		reviseObjective(ownerKey, id, revision, now) {
+			const task = tasks.get(id);
+			if (!task || task.ownerKey !== ownerKey) return undefined;
+			const revisions = [...(task.objectiveRevisions ?? []), { id: `${id}:revision:${(task.objectiveRevisions?.length ?? 0) + 1}`, workContract: structuredClone(revision.workContract), situation: structuredClone(revision.situation), createdAt: now }];
+			const updated = { ...task, objectiveRevisions: revisions, situation: structuredClone(revision.situation), ...(revision.contractAdmission ? { contractAdmission: structuredClone(revision.contractAdmission) } : { contractAdmission: undefined }) };
+			tasks.set(id, updated);
+			return { originalWorkContract: task.workContract, revision: revisions.at(-1), revisions };
+		},
+	};
+	const source = { platform: "cli", chatId: "revision-chain", chatType: "dm", userId: "local" };
+	const agentFactory = () => {
+		const agent = { state: { model: { id: "test/model" }, messages: [] } };
+		return {
+			agent,
+			getAllTools: () => [], getActiveToolNames: () => [], setActiveToolsByName: () => undefined,
+			subscribe: () => () => undefined,
+			prompt: async () => { agent.state.messages = [{ role: "assistant", content: [{ type: "text", text: "已执行" }], usage: { input: 1, output: 1 } }]; },
+			abort: async () => undefined, dispose: () => undefined,
+		};
+	};
+	const createRuntime = (contract, understood) => new BeeMaxAgentRuntime({
+		profileId: "profile:revision-chain",
+		taskLedger: ledger,
+		planningPolicy: new AutonomousPlanningPolicy(),
+		turnUnderstanding: { understand: () => understood },
+		workContractBuilder: { build: async () => admission(contract) },
+		contractAdmissionIntegrity: integrity,
+		createAgent: async () => agentFactory(),
+	});
+	const initialContract = workContract({ capabilityRequirements: [], executionMode: "direct" });
+	const initial = createRuntime(initialContract, { action: "create", goal: rawRequest, constraints: [], acceptanceCriteria: ["过去一周黄金走势"], uncertainties: [], memoryQuery: rawRequest, executionMode: "direct", confidence: 1 });
+	await initial.run({ source, text: rawRequest, timeoutMs: 1_000 });
+	initial.dispose();
+	const objectiveId = [...tasks.keys()][0];
+	const correction = (text) => ({
+		schemaVersion: WORK_CONTRACT_SCHEMA_VERSION,
+		rawRequest: text,
+		action: "correct",
+		targetObjective: { kind: "active_objective", id: objectiveId },
+		objective: { text: rawRequest, source: { kind: "active_objective", id: objectiveId } },
+		constraints: [], prohibitions: [],
+		acceptanceCriteria: [{ text, source: { kind: "raw_request", start: 0, end: text.length } }],
+		capabilityRequirements: [], uncertainties: [], executionMode: "direct", confidence: 0.98,
+	});
+	for (const text of ["第一版修订：输出中文", "第二版修订：增加来源日期"]) {
+		const runtime = createRuntime(correction(text), { action: "correct", goal: "继续原目标", constraints: [], acceptanceCriteria: [text], uncertainties: [], memoryQuery: text, executionMode: "direct", confidence: 1 });
+		await runtime.run({ source, text, timeoutMs: 1_000 });
+		runtime.dispose();
+	}
+	const corrected = tasks.get(objectiveId);
+	assert.equal(corrected.objectiveRevisions.length, 2);
+	assert.ok(corrected.contractAdmission);
+	corrected.objectiveRevisions[0].situation.summary = "被篡改的早期修订";
+
+	let piCalls = 0;
+	const restored = new BeeMaxAgentRuntime({
+		profileId: "profile:revision-chain",
+		taskLedger: ledger,
+		planningPolicy: new AutonomousPlanningPolicy(),
+		contractAdmissionIntegrity: integrity,
+		turnUnderstanding: { understand: () => ({ action: "continue", goal: rawRequest, constraints: [], acceptanceCriteria: [], uncertainties: [], memoryQuery: rawRequest, executionMode: "direct", confidence: 1 }) },
+		createAgent: async () => { piCalls++; return agentFactory(); },
+	});
+	await assert.rejects(restored.run({ source, text: rawRequest, timeoutMs: 1_000, mode: "automation", objectiveTaskId: objectiveId }), /revision chain digest mismatch/i);
+	assert.equal(piCalls, 0);
+	restored.dispose();
+});
+
+test("a production runtime without a Profile integrity key blocks durable model work before Pi", async () => {
+	let piCalls = 0;
+	const tasks = [];
+	const contract = workContract({ capabilityRequirements: [], executionMode: "direct" });
+	const runtime = new BeeMaxAgentRuntime({
+		profileId: "profile:missing-integrity",
+		taskLedger: { record: (task) => tasks.push(task), transition: () => true, queryTasks: () => [], reviseObjective: () => undefined },
+		planningPolicy: new AutonomousPlanningPolicy(),
+		turnUnderstanding: { understand: () => ({ action: "create", goal: rawRequest, constraints: [], acceptanceCriteria: ["过去一周黄金走势"], uncertainties: [], memoryQuery: rawRequest, executionMode: "direct", confidence: 1 }) },
+		workContractBuilder: { build: async () => admission(contract) },
+		requireContractAdmissionIntegrity: true,
+		createAgent: async () => { piCalls++; throw new Error("Pi must not start"); },
+	});
+
+	await assert.rejects(runtime.run({ source: { platform: "cli", chatId: "missing-integrity", chatType: "dm", userId: "local" }, text: rawRequest, timeoutMs: 1_000 }), /integrity authority is unavailable/i);
+	assert.equal(piCalls, 0);
+	assert.equal(tasks.length, 0);
+	runtime.dispose();
 });
 
 test("the contract-derived correction budget bounds the real Objective verification loop", async () => {

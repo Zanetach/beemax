@@ -7,9 +7,12 @@ import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { MemoryStore } from "../dist/index.js";
 import Database from "better-sqlite3";
-import { BeeMaxAgentRuntime, createAccessScopeRef, createAdmittedWorkContractPlanningInput, createDurableContractAdmissionReceipt, createSituation, createTaskCheckpoint, DeterministicWorkContractBuilder, interactionCompletionDeliveryKey, MUTATING_TOOL_POLICY, ObjectiveCompletionDeliveryService, ObjectiveRuntime, TaskGraph, TaskPlanNoticeDeliveryService, TaskPlanRuntime, TaskRecoveryRunner, TaskRecoveryService, WORK_CONTRACT_ADJUDICATION_SCHEMA_VERSION } from "@beemax/core";
+import { BeeMaxAgentRuntime, createAccessScopeRef, createContractAdmissionReceiptIntegrity, createSituation, createTaskCheckpoint, DeterministicWorkContractBuilder, interactionCompletionDeliveryKey, MUTATING_TOOL_POLICY, ObjectiveCompletionDeliveryService, ObjectiveRuntime, TaskGraph, TaskPlanNoticeDeliveryService, TaskPlanRuntime, TaskRecoveryRunner, TaskRecoveryService, WORK_CONTRACT_ADJUDICATION_SCHEMA_VERSION } from "@beemax/core";
+import { createAdmittedWorkContractPlanningInput } from "../../core/dist/contract-planning-admission.js";
+import { createDurableContractAdmissionReceipt } from "../../core/dist/contract-admission-receipt.js";
 
 const claimWorker = fileURLToPath(new URL("./fixtures/task-plan-claim-worker.mjs", import.meta.url));
+const memoryOpenWorker = fileURLToPath(new URL("./fixtures/memory-open-worker.mjs", import.meta.url));
 
 function runClaimWorker(request, expectedCode = 0) {
 	return new Promise((resolve, reject) => {
@@ -24,6 +27,44 @@ function runClaimWorker(request, expectedCode = 0) {
 		child.once("exit", (code, signal) => code === expectedCode && !signal
 			? resolve(stdout.trim())
 			: reject(new Error(`claim worker exited code=${code} signal=${signal}: ${stderr}`)));
+	});
+}
+
+function runMemoryOpenWorker(path) {
+	return new Promise((resolve, reject) => {
+		const child = spawn(process.execPath, [memoryOpenWorker, path], { stdio: ["ignore", "pipe", "pipe"] });
+		let stderr = "";
+		child.stderr.setEncoding("utf8");
+		child.stderr.on("data", (chunk) => { stderr += chunk; });
+		child.once("error", reject);
+		child.once("exit", (code, signal) => code === 0 && !signal ? resolve() : reject(new Error(`memory migration worker exited code=${code} signal=${signal}: ${stderr}`)));
+	});
+}
+
+function testDurableContractAdmission(workContract, objectiveId) {
+	const cognitionUsage = { inputTokens: 12, outputTokens: 8, cacheReadTokens: 0, cacheWriteTokens: 0, costUsd: 0.001, modelIdentities: ["primary/model", "reviewer/model"] };
+	const built = {
+		contract: workContract,
+		source: "model",
+		cognitionUsage,
+		cognitionBudgetChargeTokens: 20,
+		semanticAdjudication: {
+			schemaVersion: WORK_CONTRACT_ADJUDICATION_SCHEMA_VERSION,
+			inventorySchemaVersion: "beemax.semantic-inventory.v1",
+			primaryModelIdentity: "primary/model",
+			reviewerModelIdentity: "reviewer/model",
+			reviewMode: "different_models",
+			independentSamples: true,
+			cognitionUsage,
+			cognitionBudgetChargeTokens: 20,
+		},
+	};
+	return createDurableContractAdmissionReceipt({
+		admission: createAdmittedWorkContractPlanningInput(built),
+		objectiveBinding: { objectiveId, originalWorkContract: workContract, revisions: [] },
+		integrity: createContractAdmissionReceiptIntegrity({ key: Buffer.alloc(32, 9), profileId: "default" }),
+		admittedAt: 100,
+		ttlMs: 10_000,
 	});
 }
 
@@ -378,7 +419,13 @@ test("Task Ledger persists a strict durable Contract admission receipt across re
 			cognitionBudgetChargeTokens: 20,
 		},
 	};
-	const contractAdmission = createDurableContractAdmissionReceipt({ admission: createAdmittedWorkContractPlanningInput(built), admittedAt: 100, ttlMs: 10_000 });
+	const contractAdmission = createDurableContractAdmissionReceipt({
+		admission: createAdmittedWorkContractPlanningInput(built),
+		objectiveBinding: { objectiveId: "admitted-contract-task", originalWorkContract: workContract, revisions: [] },
+		integrity: createContractAdmissionReceiptIntegrity({ key: Buffer.alloc(32, 9), profileId: "default" }),
+		admittedAt: 100,
+		ttlMs: 10_000,
+	});
 	let store = new MemoryStore(path);
 	try {
 		store.record({ id: "admitted-contract-task", ownerKey: "owner", kind: "objective", title: "生成黄金报告", status: "running", createdAt: 100, workContract, contractAdmission });
@@ -394,6 +441,24 @@ test("Task Ledger persists a strict durable Contract admission receipt across re
 	} finally { try { store.close(); } catch {} rmSync(root, { recursive: true, force: true }); }
 });
 
+test("concurrent first-start processes converge an additive Contract admission migration", async () => {
+	const root = mkdtempSync(join(tmpdir(), "beemax-concurrent-contract-admission-migration-"));
+	const path = join(root, "memory.db");
+	try {
+		const store = new MemoryStore(path);
+		store.close();
+		const raw = new Database(path);
+		raw.exec("ALTER TABLE tasks DROP COLUMN contract_admission");
+		raw.close();
+
+		await Promise.all(Array.from({ length: 4 }, () => runMemoryOpenWorker(path)));
+		const verified = new Database(path, { readonly: true });
+		const columns = verified.prepare("PRAGMA table_info(tasks)").all().map((column) => column.name);
+		verified.close();
+		assert.ok(columns.includes("contract_admission"));
+	} finally { rmSync(root, { recursive: true, force: true }); }
+});
+
 test("Task Ledger atomically revises an owner-scoped Objective idempotently across restart", () => {
 	const root = mkdtempSync(join(tmpdir(), "beemax-task-work-contract-corrections-"));
 	const path = join(root, "memory.db");
@@ -407,13 +472,21 @@ test("Task Ledger atomically revises an owner-scoped Objective idempotently acro
 		acceptanceCriteria: [], capabilityRequirements: [], uncertainties: [], executionMode: "direct", confidence: 0.98,
 	};
 	const situation = { summary: "继续原目标并改用新参数", goals: ["完成原目标"], constraints: ["不要改目标"], uncertainties: [], observations: [], possibleActions: [], relevantMemoryIds: [], relevantTaskIds: [], confidence: 0.98 };
+	const originalRequest = "生成报告";
+	const originalWorkContract = {
+		schemaVersion: "beemax.work-contract.v1", rawRequest: originalRequest, action: "create",
+		objective: { text: originalRequest, source: { kind: "raw_request", start: 0, end: originalRequest.length } },
+		constraints: [], prohibitions: [], acceptanceCriteria: [], capabilityRequirements: [], uncertainties: [], executionMode: "direct", confidence: 0.99,
+	};
 	try {
 		let store = new MemoryStore(path);
-		store.record({ id: "corrected-contract-task", ownerKey: "owner", kind: "objective", title: "生成报告", status: "running", createdAt: 1 });
+		store.record({ id: "corrected-contract-task", ownerKey: "owner", kind: "objective", title: "生成报告", status: "running", createdAt: 1, workContract: originalWorkContract, contractAdmission: testDurableContractAdmission(originalWorkContract, "corrected-contract-task") });
+		assert.ok(store.queryTasks({ ownerKeys: ["owner"], id: "corrected-contract-task" })[0].contractAdmission);
 		assert.equal(store.reviseObjective("wrong-owner", "corrected-contract-task", { workContract: correction, situation }, 2), undefined);
 		assert.equal(store.reviseObjective("owner", "corrected-contract-task", { workContract: { ...correction, targetObjective: { kind: "active_objective", id: "other-task" } }, situation }, 2), undefined);
 		const firstRevision = store.reviseObjective("owner", "corrected-contract-task", { workContract: correction, situation }, 2);
 		assert.equal(firstRevision.revision.id, "corrected-contract-task:revision:1");
+		assert.equal(store.queryTasks({ ownerKeys: ["owner"], id: "corrected-contract-task" })[0].contractAdmission, undefined, "a correction without a replacement admission must clear stale authority");
 		assert.equal(store.reviseObjective("owner", "corrected-contract-task", { workContract: correction, situation }, 3).revision.id, firstRevision.revision.id);
 		assert.deepEqual(store.queryTasks({ ownerKeys: ["owner"], id: "corrected-contract-task" })[0].objectiveRevisions.map((revision) => revision.workContract), [correction]);
 		assert.deepEqual(store.queryTasks({ ownerKeys: ["owner"], id: "corrected-contract-task" })[0].situation, situation);

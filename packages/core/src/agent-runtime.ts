@@ -14,7 +14,7 @@ import { conversationKey, responsibilityOwnerKey, responsibilityOwnerKeys } from
 import type { ObjectiveCancellationResult, TaskKind, TaskLedger, TaskPlanRecord, TaskPlanStatus, TaskRecord, TaskRunRecord, TaskStatus } from "./task-ledger.ts";
 import type { AutonomousPlanningDecision, AutonomousPlanningPolicy, PlanningBudgetRegistry } from "./autonomous-planning.ts";
 import { createAdmittedWorkContractPlanningInput, type AdmittedWorkContractPlanningInput } from "./contract-planning-admission.ts";
-import { createDurableContractAdmissionReceipt, restoreDurableContractPlanningInput, type DurableContractAdmissionReceipt } from "./contract-admission-receipt.ts";
+import { contractAdmissionWorkContractSha256, createDurableContractAdmissionReceipt, restoreDurableContractPlanningInput, type ContractAdmissionObjectiveBinding, type ContractAdmissionReceiptIntegrity, type DurableContractAdmissionReceipt } from "./contract-admission-receipt.ts";
 import { OpenWorldContractCognitionError, hasSemanticOpenWorldContractAdjudication, type OpenWorldContractCompilationResult, type OpenWorldContractCompilerPort } from "./open-world-contract-compiler.ts";
 import type { OpenWorldContract } from "./open-world-contract.ts";
 import { TurnUnderstandingEngine, selectTurnTools, type TurnUnderstanding, type TurnUnderstandingPort } from "./turn-understanding.ts";
@@ -211,6 +211,10 @@ export interface BeeMaxAgentRuntimeOptions<Source extends BeeMaxRuntimeSource = 
 	workContractBuilder?: WorkContractBuilderPort;
 	/** Separately reviewed Tool-free compiler for Artifact/Evidence and outcome-graph planning. */
 	openWorldContractCompiler?: OpenWorldContractCompilerPort;
+	/** Profile-keyed authority for authenticating durable semantic admission across restart. */
+	contractAdmissionIntegrity?: Readonly<ContractAdmissionReceiptIntegrity>;
+	/** Production runtimes fail closed instead of persisting model Contracts without authentication. */
+	requireContractAdmissionIntegrity?: boolean;
 	/** Async semantic Situation path; defaults to the deterministic compatibility builder. */
 	situationBuilder?: SituationBuilderPort;
 	/** Configurable semantic admission floor; applies only to model-proposed Work Contracts. */
@@ -252,6 +256,8 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 	private readonly turnUnderstanding: TurnUnderstandingPort;
 	private readonly workContractBuilder: WorkContractBuilderPort;
 	private readonly openWorldContractCompiler?: OpenWorldContractCompilerPort;
+	private readonly contractAdmissionIntegrity?: Readonly<ContractAdmissionReceiptIntegrity>;
+	private readonly requireContractAdmissionIntegrity: boolean;
 	private readonly minimumWorkContractConfidence: number;
 	private readonly situationBuilder: SituationBuilderPort;
 	private readonly executionTrace?: ExecutionTraceSink;
@@ -284,6 +290,8 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 			build: async () => { throw new Error("MODEL_UNAVAILABLE: semantic Work Contract cognition is not configured for this runtime"); },
 		};
 		this.openWorldContractCompiler = options.openWorldContractCompiler;
+		this.contractAdmissionIntegrity = options.contractAdmissionIntegrity;
+		this.requireContractAdmissionIntegrity = options.requireContractAdmissionIntegrity === true;
 		this.minimumWorkContractConfidence = Math.max(0, Math.min(options.minimumWorkContractConfidence ?? 0.6, 1));
 		this.situationBuilder = options.situationBuilder ?? new DeterministicSituationBuilder();
 		this.executionTrace = options.executionTrace;
@@ -337,6 +345,7 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 		let planningContractAdmission: Readonly<AdmittedWorkContractPlanningInput> | undefined;
 		let planningContractInput: Readonly<AdmittedWorkContractPlanningInput> | Readonly<OpenWorldContract> | undefined;
 		let durableContractAdmission: Readonly<DurableContractAdmissionReceipt> | undefined;
+		let openWorldCompilation: Readonly<OpenWorldContractCompilationResult> | undefined;
 		let workContractCognitionUsage: WorkContractCognitionUsage | undefined;
 		let workContractCognitionBudgetChargeTokens = 0;
 		if (fallbackUnderstanding && explicitAutomationObjective && activeObjective) {
@@ -345,14 +354,20 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 			workContract = compileEffectiveObjectiveWorkContract(activeObjective);
 			if (activeObjective.contractAdmission) {
 				try {
-					planningContractInput = restoreDurableContractPlanningInput(activeObjective.contractAdmission, latestObjectiveSemanticWorkContract(activeObjective), startedAt);
+					if (!this.contractAdmissionIntegrity) throw new Error("Profile Contract admission integrity authority is unavailable");
+					planningContractInput = restoreDurableContractPlanningInput({
+						receipt: activeObjective.contractAdmission,
+						workContract: latestObjectiveSemanticWorkContract(activeObjective),
+						objectiveBinding: contractAdmissionObjectiveBinding(activeObjective),
+						integrity: this.contractAdmissionIntegrity,
+						now: startedAt,
+					});
 				} catch (error) {
 					throw new AgentRunError(`Durable Contract admission blocked: ${errorMessage(error)}`, true, error);
 				}
 			}
 		} else if (fallbackUnderstanding) {
 			try {
-				let openWorldCompilation: Readonly<OpenWorldContractCompilationResult> | undefined;
 				const activeObjectives = activeObjectiveCandidates.map((task) => ({ id: task.id, title: task.title }));
 				const trustedContext = { fallback: fallbackUnderstanding, activeObjectives, ...(compatibilityObjective ? { activeObjective: { id: compatibilityObjective.id, title: compatibilityObjective.title } } : {}) };
 				const built = await this.workContractBuilder.build({ rawRequest: input.text, ...trustedContext, ...(cognitionTokenLimit !== undefined ? { maxCognitionTokens: cognitionTokenLimit } : {}), ...(cognitionSignal ? { signal: cognitionSignal } : {}) });
@@ -381,7 +396,6 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 				}
 				const envelopeTokenLimit = input.executionEnvelope?.budget?.maxTokens;
 				if (envelopeTokenLimit !== undefined && workContractCognitionBudgetChargeTokens > envelopeTokenLimit) throw new Error(`Work Contract cognition exceeded the Execution Envelope token budget (${envelopeTokenLimit})`);
-				if (planningContractAdmission) durableContractAdmission = createDurableContractAdmissionReceipt({ admission: planningContractAdmission, ...(openWorldCompilation ? { openWorldCompilation } : {}), admittedAt: startedAt });
 			} catch (error) {
 				if (error instanceof WorkContractCognitionError) {
 					workContractCognitionUsage = error.cognitionUsage;
@@ -458,18 +472,37 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 			fallback: understanding,
 			...(activeObjective ? { activeObjective: { id: activeObjective.id, title: activeObjective.title, ...(activeObjective.situation ? { situation: activeObjective.situation } : {}) } } : {}),
 		})).situation : undefined;
+		const accessScopeRef = activeObjective && referencesActiveObjective ? activeObjective.accessScopeRef ?? trustedInputAccessScope : trustedInputAccessScope;
+		const reusesActiveObjective = Boolean(activeObjective && (explicitAutomationObjective || workContract?.action === "continue" || workContract?.action === "correct"));
+		const shouldPersistObjective = responsibleAutomation || (interactive && shouldBindDurableObjective(input, understanding, planning) && !(workContract?.action === "query" && referencesActiveObjective));
+		const pendingObjectiveId = shouldPersistObjective && !reusesActiveObjective && this.taskLedger && !input.source.delegatedTask
+			? `objective:${crypto.randomUUID()}`
+			: undefined;
+		const admissionObjectiveBinding = activeObjective && understanding?.action === "correct" && workContract && situation
+				? contractAdmissionObjectiveBinding(activeObjective, { workContract, situation, createdAt: startedAt })
+				: pendingObjectiveId
+					? { objectiveId: pendingObjectiveId, originalWorkContract: structuredClone(workContract!), revisions: [] }
+					: undefined;
+		if (planningContractAdmission && admissionObjectiveBinding) {
+			if (!this.contractAdmissionIntegrity && this.requireContractAdmissionIntegrity) throw new AgentRunError("Durable Contract admission blocked: Profile integrity authority is unavailable", true, undefined);
+			if (this.contractAdmissionIntegrity) durableContractAdmission = createDurableContractAdmissionReceipt({
+				admission: planningContractAdmission,
+				...(openWorldCompilation ? { openWorldCompilation } : {}),
+				objectiveBinding: admissionObjectiveBinding,
+				integrity: this.contractAdmissionIntegrity,
+				admittedAt: startedAt,
+			});
+		}
 		if (activeObjective && understanding?.action === "correct") {
 			if (!workContract || !situation || !this.taskLedger || typeof this.taskLedger.reviseObjective !== "function") throw new AgentRunError("Durable Objective revision is unavailable", false, undefined);
 			const revision = this.taskLedger.reviseObjective(activeObjective.ownerKey, activeObjective.id, { workContract, situation, contractAdmission: durableContractAdmission ?? null }, startedAt);
 			if (!revision) throw new AgentRunError(`Objective ${activeObjective.id} could not retain its correction`, false, undefined);
 			activeObjective = { ...activeObjective, workContract: revision.originalWorkContract, situation: revision.revision.situation, objectiveRevisions: revision.revisions, ...(durableContractAdmission ? { contractAdmission: durableContractAdmission } : { contractAdmission: undefined }) };
 		}
-		const accessScopeRef = activeObjective && referencesActiveObjective ? activeObjective.accessScopeRef ?? trustedInputAccessScope : trustedInputAccessScope;
-		const reusesActiveObjective = Boolean(activeObjective && (explicitAutomationObjective || workContract?.action === "continue" || workContract?.action === "correct"));
 		const objectiveBinding = explicitAutomationObjective && activeObjective
 			? { task: activeObjective, created: false }
-			: (responsibleAutomation || (interactive && shouldBindDurableObjective(input, understanding, planning) && !(workContract?.action === "query" && referencesActiveObjective)))
-				? this.createObjective(input, startedAt, situation, accessScopeRef, understanding?.acceptanceCriteria, workContract, durableContractAdmission, reusesActiveObjective ? activeObjective : undefined)
+			: shouldPersistObjective
+				? this.createObjective(input, startedAt, situation, accessScopeRef, understanding?.acceptanceCriteria, workContract, durableContractAdmission, reusesActiveObjective ? activeObjective : undefined, pendingObjectiveId)
 				: undefined;
 		const objective = objectiveBinding?.task;
 		const supportsTaskRuns = typeof this.taskLedger?.recordRun === "function" && typeof this.taskLedger?.transitionRun === "function";
@@ -1606,7 +1639,7 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 		try { this.executionTrace?.record(event); } catch { /* diagnostics must never interrupt Agent execution */ }
 	}
 
-	private createObjective(input: AgentRunInput<Source>, now: number, situation?: TaskRecord["situation"], accessScopeRef?: AccessScopeRef, acceptanceCriteria: string[] = [], workContract?: WorkContract, contractAdmission?: Readonly<DurableContractAdmissionReceipt>, existingObjective?: TaskRecord): { task: TaskRecord; created: boolean } | undefined {
+	private createObjective(input: AgentRunInput<Source>, now: number, situation?: TaskRecord["situation"], accessScopeRef?: AccessScopeRef, acceptanceCriteria: string[] = [], workContract?: WorkContract, contractAdmission?: Readonly<DurableContractAdmissionReceipt>, existingObjective?: TaskRecord, objectiveId?: string): { task: TaskRecord; created: boolean } | undefined {
 		if (!this.taskLedger || input.source.delegatedTask) return undefined;
 		const description = input.text.trim();
 		if (!description) return undefined;
@@ -1614,7 +1647,7 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 		if (existingObjective) return { task: existingObjective, created: false };
 		const title = description.split(/\r?\n/, 1)[0]!.slice(0, 120);
 		const objective: TaskRecord = {
-			id: `objective:${crypto.randomUUID()}`, ownerKey, kind: "objective",
+			id: objectiveId ?? `objective:${crypto.randomUUID()}`, ownerKey, kind: "objective",
 			title, description: description.slice(0, 50_000), status: "pending", createdAt: now,
 			acceptanceCriteria: objectiveObservableAcceptanceCriteria(acceptanceCriteria),
 			executionScope: { ...input.source },
@@ -1767,6 +1800,23 @@ function compileEffectiveObjectiveWorkContract(objective: TaskRecord): WorkContr
 
 function latestObjectiveSemanticWorkContract(objective: TaskRecord): WorkContract {
 	return structuredClone(objective.objectiveRevisions?.at(-1)?.workContract ?? objective.workContract ?? workContractFromLegacyObjective({ title: objective.title, description: objective.description }));
+}
+
+function contractAdmissionObjectiveBinding(
+	objective: TaskRecord,
+	correction?: { workContract: WorkContract; situation: NonNullable<TaskRecord["situation"]>; createdAt: number },
+): ContractAdmissionObjectiveBinding {
+	const originalWorkContract = structuredClone(objective.workContract ?? workContractFromLegacyObjective({ title: objective.title, description: objective.description }));
+	const revisions = structuredClone(objective.objectiveRevisions ?? []);
+	if (correction && contractAdmissionWorkContractSha256(revisions.at(-1)?.workContract ?? originalWorkContract) !== contractAdmissionWorkContractSha256(correction.workContract)) {
+		revisions.push({
+			id: `${objective.id}:revision:${revisions.length + 1}`,
+			workContract: structuredClone(correction.workContract),
+			situation: structuredClone(correction.situation),
+			createdAt: correction.createdAt,
+		});
+	}
+	return { objectiveId: objective.id, originalWorkContract, revisions };
 }
 
 function objectiveObservableAcceptanceCriteria(acceptanceCriteria: readonly string[]): string {
