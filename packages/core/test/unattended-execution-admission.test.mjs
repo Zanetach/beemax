@@ -63,7 +63,7 @@ test("standing authority cannot silently authorize a high-risk irreversible acti
 		toolPolicy: { ...MUTATING_TOOL_POLICY, reversible: false },
 		credentialRequirements: [],
 		standingAuthority: { ...standingAuthority, allowedCapabilities: ["payment_send"] },
-		emergencyStop: { status: "running", revision: 7, evidenceRef: "emergency-stop:revision-7", observedAt: 200 },
+		emergencyStop: { scopeId: "scope:finance-research", status: "running", revision: 7, evidenceRef: "emergency-stop:revision-7", observedAt: 200 },
 	});
 
 	assert.equal(decision.outcome, "blocked");
@@ -77,13 +77,17 @@ test("standing authority requires a current rollback exercise for a reversible m
 		toolPolicy: { ...MUTATING_TOOL_POLICY, sideEffect: "local", risk: "low", approval: "never", reversible: true },
 		credentialRequirements: [],
 		standingAuthority: { ...standingAuthority, allowedCapabilities: ["profile_update"] },
-		emergencyStop: { status: "running", revision: 7, evidenceRef: "emergency-stop:revision-7", observedAt: 200 },
+		emergencyStop: { scopeId: "scope:finance-research", status: "running", revision: 7, evidenceRef: "emergency-stop:revision-7", observedAt: 200 },
 	};
 
 	assert.equal(new UnattendedExecutionAdmission().decide(mutation).reasonCode, "scoped_execution_grant_required");
 	const admitted = new UnattendedExecutionAdmission().decide({
 		...mutation,
-		compensationProof: { id: "compensation:profile-update", capability: "profile_update_rollback", exercisedAt: 150, validUntil: 250, evidenceRefs: ["rollback-drill:profile-update"] },
+		reversibleCapability: {
+			name: "profile_update",
+			policy: mutation.toolPolicy,
+			compensation: { id: "compensation:profile-update", capability: "profile_update_rollback", exercisedAt: 150, validUntil: 250, evidenceRefs: ["rollback-drill:profile-update"] },
+		},
 	});
 	assert.equal(admitted.reasonCode, "standing_profile_authority");
 	assert.equal(admitted.evidenceRefs.includes("rollback-drill:profile-update"), true);
@@ -96,7 +100,7 @@ test("an exact, current scoped Execution Grant admits pre-authorized high-risk w
 		toolPolicy: { ...MUTATING_TOOL_POLICY, reversible: false },
 		credentialRequirements: [],
 		standingAuthority: undefined,
-		emergencyStop: { status: "running", revision: 7, evidenceRef: "emergency-stop:revision-7", observedAt: 200 },
+		emergencyStop: { scopeId: "scope:finance-research", status: "running", revision: 7, evidenceRef: "emergency-stop:revision-7", observedAt: 200 },
 		executionGrant: {
 			id: "grant:payment-42",
 			kind: "scoped_execution",
@@ -184,4 +188,54 @@ test("omitting the Enterprise Policy applicability decision fails closed", () =>
 		...base,
 		enterprisePolicy: undefined,
 	}), /Enterprise Policy applicability/i);
+});
+
+test("an Enterprise Policy decision for another Access Scope fails closed", () => {
+	assert.throws(() => new UnattendedExecutionAdmission().decide({
+		...base,
+		enterprisePolicy: {
+			status: "decision",
+			decision: {
+				id: "policy:other-scope", disposition: "allow", reason: "Allowed elsewhere", evidenceRefs: ["policy-evidence:other"],
+				publisher: { id: "publisher:policy", trust: "verified", authority: { kind: "enterprise_system", reference: "policy-system" }, issuedAt: 100 },
+				version: "v1", effectiveScope: { kind: "access_scope", id: "scope-rule:other", accessScopeId: "scope:other" },
+				effectiveFrom: 100, effectiveUntil: 300, evaluatedAt: 200,
+			},
+		},
+	}), /Enterprise Policy.*Access Scope/i);
+});
+
+test("an unrelated rollback exercise cannot prove this mutation reversible", () => {
+	const toolPolicy = { ...MUTATING_TOOL_POLICY, sideEffect: "local", risk: "low", approval: "never", reversible: true };
+	assert.throws(() => new UnattendedExecutionAdmission().decide({
+		...base,
+		toolName: "profile_update",
+		toolPolicy,
+		credentialRequirements: [],
+		standingAuthority: { ...standingAuthority, allowedCapabilities: ["profile_update"] },
+		emergencyStop: { scopeId: "scope:finance-research", status: "running", revision: 7, evidenceRef: "emergency-stop:revision-7", observedAt: 200 },
+		reversibleCapability: {
+			name: "another_update",
+			policy: toolPolicy,
+			compensation: { id: "compensation:other", capability: "another_update_rollback", exercisedAt: 150, validUntil: 250, evidenceRefs: ["rollback-drill:other"] },
+		},
+	}), /forward Capability.*match/i);
+});
+
+test("an Emergency Stop snapshot for another Access Scope fails closed", () => {
+	const decision = new UnattendedExecutionAdmission().decide({
+		...base,
+		toolName: "payment_send",
+		toolPolicy: { ...MUTATING_TOOL_POLICY, reversible: false },
+		credentialRequirements: [],
+		standingAuthority: undefined,
+		emergencyStop: { scopeId: "scope:other", status: "running", revision: 7, evidenceRef: "emergency-stop:other", observedAt: 200 },
+		executionGrant: {
+			id: "grant:payment-42", kind: "scoped_execution", status: "active", profileId: "profile:analyst",
+			allowedCapabilities: ["payment_send"], accessScopeIds: ["scope:finance-research"], evidenceRefs: ["approval:payment-42"],
+			statusRevision: 2, statusEvidenceRef: "authority-status:payment-42:2", statusCheckedAt: 200, issuedAt: 150, expiresAt: 250,
+		},
+	});
+
+	assert.equal(decision.reasonCode, "emergency_stop_scope_mismatch");
 });

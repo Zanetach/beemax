@@ -1,10 +1,10 @@
 import { createAccessScopeRef, type AccessScopeRef } from "./access-scope.ts";
 import type { MeasuredActionReliability } from "./action-governance.ts";
 import { containsCredentialMaterial } from "./credential-material.ts";
-import { resolveEnterprisePolicyDecision, type EnterprisePolicyDecision } from "./enterprise-policy.ts";
+import { createEnterprisePolicyPublisher, resolveEnterprisePolicyDecision, type EnterprisePolicyDecision } from "./enterprise-policy.ts";
 import type { ToolEffectStatus } from "./tool-effect.ts";
 import type { ToolPolicy } from "./tool-runtime.ts";
-import type { CompensationProof } from "./reversible-action-admission.ts";
+import type { CompensationProof, ReversibleActionCapability } from "./reversible-action-admission.ts";
 
 export type UnattendedAuthorityKind = "profile_standing" | "scoped_execution";
 export type UnattendedAuthorityStatus = "active" | "revoked";
@@ -37,6 +37,7 @@ export interface UnattendedAuthorityGrant {
 }
 
 export interface UnattendedEmergencyStopRef {
+	scopeId: string;
 	status: "running" | "stopped";
 	revision: number;
 	evidenceRef: string;
@@ -64,7 +65,7 @@ export interface UnattendedExecutionAdmissionInput {
 	executionGrant?: UnattendedAuthorityGrant;
 	enterprisePolicy: UnattendedEnterprisePolicy;
 	emergencyStop?: UnattendedEmergencyStopRef;
-	compensationProof?: CompensationProof;
+	reversibleCapability?: ReversibleActionCapability;
 	at: number;
 }
 
@@ -103,16 +104,16 @@ export class UnattendedExecutionAdmission {
 		if (input.intent === "materially_ambiguous") return blocked("material_intent_ambiguous", "Materially ambiguous intent cannot be resolved by an unattended execution");
 		if (input.legalAuthority === "missing") return blocked("legal_authority_required", "Required legal or organizational authority is unavailable");
 		if (input.legalAuthority === "verified") evidenceRefs.push(input.legalAuthorityEvidenceRef!);
+		if ((input.requiresAccessScope || input.toolPolicy.sideEffect !== "none") && !input.accessScopeRef) return blocked("trusted_access_scope_required", "A trusted Access Scope is required for this action");
+		if (input.accessScopeRef) evidenceRefs.push(input.accessScopeRef.evidenceRef ?? `access-scope:${input.accessScopeRef.id}`);
+		if (input.accessScopeRef && input.accessScopeRef.issuedAt > input.at) return blocked("access_scope_not_current", "Access Scope evidence is newer than the decision time");
 		if (input.toolPolicy.sideEffect !== "none") {
 			if (!input.emergencyStop) return blocked("emergency_stop_evidence_required", "A current Emergency Stop snapshot is required for unattended state-changing work");
 			evidenceRefs.push(input.emergencyStop.evidenceRef);
+			if (input.emergencyStop.scopeId !== input.accessScopeRef!.id) return blocked("emergency_stop_scope_mismatch", "Emergency Stop snapshot does not cover the action Access Scope");
 			if (input.emergencyStop.observedAt !== input.at) return blocked("emergency_stop_evidence_not_current", "Emergency Stop evidence is not current for this decision");
 			if (input.emergencyStop.status === "stopped") return blocked("emergency_stop_active", "Emergency Stop denies unattended state-changing actions");
 		}
-
-		if (input.requiresAccessScope && !input.accessScopeRef) return blocked("trusted_access_scope_required", "A trusted Access Scope is required for this action");
-		if (input.accessScopeRef) evidenceRefs.push(input.accessScopeRef.evidenceRef ?? `access-scope:${input.accessScopeRef.id}`);
-		if (input.accessScopeRef && input.accessScopeRef.issuedAt > input.at) return blocked("access_scope_not_current", "Access Scope evidence is newer than the decision time");
 
 		for (const credential of input.credentialRequirements) {
 			evidenceRefs.push(credential.evidenceRef);
@@ -140,7 +141,7 @@ export class UnattendedExecutionAdmission {
 		if (resolvedPolicy?.requiresApproval) return blocked("scoped_execution_grant_required", "Enterprise Policy requires a scoped Execution Grant");
 		if (requiresScopedGrant(input)) return blocked("scoped_execution_grant_required", "This action is not eligible for standing Profile authority");
 		if (!input.standingAuthority) return blocked("standing_profile_authority_required", "No standing Profile authority covers this unattended action");
-		if (input.toolPolicy.sideEffect !== "none" && input.compensationProof) evidenceRefs.push(...input.compensationProof.evidenceRefs);
+		if (input.toolPolicy.sideEffect !== "none" && input.reversibleCapability) evidenceRefs.push(...input.reversibleCapability.compensation.evidenceRefs);
 		evidenceRefs.push(...input.standingAuthority.evidenceRefs, input.standingAuthority.statusEvidenceRef);
 		const standingBlocker = grantBlocker(input.standingAuthority, input);
 		if (standingBlocker) return blocked(standingBlocker.reasonCode, standingBlocker.explanation);
@@ -158,20 +159,21 @@ function normalizeInput(input: UnattendedExecutionAdmissionInput): UnattendedExe
 	const standingAuthority = input.standingAuthority ? authorityGrant(input.standingAuthority, "profile_standing") : undefined;
 	const executionGrant = input.executionGrant ? authorityGrant(input.executionGrant, "scoped_execution") : undefined;
 	const emergencyStop = input.emergencyStop ? emergencyStopRef(input.emergencyStop) : undefined;
-	const enterprisePolicy = enterprisePolicyApplicability(input.enterprisePolicy, at);
-	const compensationProof = input.compensationProof ? compensation(input.compensationProof) : undefined;
 	if (input.accessScopeRef && input.accessScopeRef.trust !== "verified") throw new Error("Unattended admission requires a trusted Access Scope");
 	const accessScopeRef = input.accessScopeRef ? Object.freeze(createAccessScopeRef({ id: input.accessScopeRef.id, authority: input.accessScopeRef.authority, ...(input.accessScopeRef.evidenceRef ? { evidenceRef: input.accessScopeRef.evidenceRef } : {}), issuedAt: input.accessScopeRef.issuedAt })) : undefined;
+	const enterprisePolicy = enterprisePolicyApplicability(input.enterprisePolicy, at, accessScopeRef);
+	const toolName = reference(input.toolName, "Tool name");
+	const reversibleCapability = input.reversibleCapability ? registeredReversibleCapability(input.reversibleCapability, toolName, input.toolPolicy) : undefined;
 	return {
 		...input,
-		actionId: reference(input.actionId, "action id"), profileId: reference(input.profileId, "Profile id"), toolName: reference(input.toolName, "Tool name"), at,
+		actionId: reference(input.actionId, "action id"), profileId: reference(input.profileId, "Profile id"), toolName, at,
 		credentialRequirements: credentials,
 		...(accessScopeRef ? { accessScopeRef } : {}),
 		...(input.legalAuthorityEvidenceRef ? { legalAuthorityEvidenceRef: reference(input.legalAuthorityEvidenceRef, "legal authority evidence") } : {}),
 		...(standingAuthority ? { standingAuthority } : {}), ...(executionGrant ? { executionGrant } : {}),
 		...(emergencyStop ? { emergencyStop } : {}),
 		enterprisePolicy,
-		...(compensationProof ? { compensationProof } : {}),
+		...(reversibleCapability ? { reversibleCapability } : {}),
 	};
 }
 
@@ -188,7 +190,7 @@ function credentialAvailability(input: CredentialAvailabilityRef, at: number): C
 function emergencyStopRef(input: UnattendedEmergencyStopRef): UnattendedEmergencyStopRef {
 	if (input.status !== "running" && input.status !== "stopped") throw new Error("Unattended admission Emergency Stop status is invalid");
 	if (!Number.isSafeInteger(input.revision) || input.revision < 0) throw new Error("Unattended admission Emergency Stop revision is invalid");
-	return Object.freeze({ status: input.status, revision: input.revision, evidenceRef: reference(input.evidenceRef, "Emergency Stop evidence"), observedAt: timestamp(input.observedAt, "Emergency Stop observedAt") });
+	return Object.freeze({ scopeId: reference(input.scopeId, "Emergency Stop scope id"), status: input.status, revision: input.revision, evidenceRef: reference(input.evidenceRef, "Emergency Stop evidence"), observedAt: timestamp(input.observedAt, "Emergency Stop observedAt") });
 }
 
 function authorityGrant(input: UnattendedAuthorityGrant, expectedKind: UnattendedAuthorityKind): UnattendedAuthorityGrant {
@@ -223,12 +225,12 @@ function grantBlocker(grant: UnattendedAuthorityGrant, input: UnattendedExecutio
 function requiresScopedGrant(input: UnattendedExecutionAdmissionInput): boolean {
 	const { toolPolicy: policy, reliability } = input;
 	if (policy.approval === "always" || policy.risk !== "low") return true;
-	if (policy.sideEffect !== "none" && (policy.reversible !== true || !currentCompensationProof(input.compensationProof, policy, input.at))) return true;
+	if (policy.sideEffect !== "none" && (policy.reversible !== true || !currentReversibility(input.reversibleCapability, input.toolName, policy, input.at))) return true;
 	if (policy.sideEffect !== "none" && reliability !== "reliable") return true;
 	return false;
 }
 
-function enterprisePolicyApplicability(input: UnattendedEnterprisePolicy | undefined, at: number): UnattendedEnterprisePolicy {
+function enterprisePolicyApplicability(input: UnattendedEnterprisePolicy | undefined, at: number, accessScopeRef: AccessScopeRef | undefined): UnattendedEnterprisePolicy {
 	if (!input) throw new Error("Unattended admission requires an Enterprise Policy applicability decision");
 	if (input.status === "not_applicable") {
 		const evaluatedAt = timestamp(input.evaluatedAt, "Enterprise Policy applicability time");
@@ -236,8 +238,13 @@ function enterprisePolicyApplicability(input: UnattendedEnterprisePolicy | undef
 		return Object.freeze({ status: "not_applicable", evidenceRef: reference(input.evidenceRef, "Enterprise Policy applicability evidence"), evaluatedAt });
 	}
 	if (input.status !== "decision" || !input.decision) throw new Error("Unattended admission Enterprise Policy applicability is invalid");
-	if (input.decision.evaluatedAt !== at) throw new Error("Unattended admission Enterprise Policy decision is not current");
-	return Object.freeze({ status: "decision", decision: input.decision });
+	const decision = input.decision;
+	if (decision.evaluatedAt !== at || at < decision.effectiveFrom || decision.effectiveUntil !== undefined && at > decision.effectiveUntil) throw new Error("Unattended admission Enterprise Policy decision is not current");
+	if (decision.publisher.trust !== "verified") throw new Error("Unattended admission Enterprise Policy publisher is not trusted");
+	createEnterprisePolicyPublisher({ id: decision.publisher.id, authority: decision.publisher.authority, ...(decision.publisher.evidenceRef ? { evidenceRef: decision.publisher.evidenceRef } : {}), issuedAt: decision.publisher.issuedAt });
+	uniqueReferences(decision.evidenceRefs, "Enterprise Policy evidence", 1, 20);
+	if (decision.effectiveScope.kind === "access_scope" && (!accessScopeRef || decision.effectiveScope.accessScopeId !== accessScopeRef.id)) throw new Error("Unattended admission Enterprise Policy Access Scope does not match the action");
+	return Object.freeze({ status: "decision", decision });
 }
 
 function compensation(input: CompensationProof): CompensationProof {
@@ -247,9 +254,24 @@ function compensation(input: CompensationProof): CompensationProof {
 	return Object.freeze({ id: reference(input.id, "Compensation id"), capability: reference(input.capability, "Compensation capability"), ...(input.receiptProofProvider ? { receiptProofProvider: reference(input.receiptProofProvider, "Compensation receipt proof Provider") } : {}), exercisedAt, validUntil, evidenceRefs: Object.freeze(uniqueReferences(input.evidenceRefs, "Compensation evidence", 1, 100)) as unknown as string[] });
 }
 
-function currentCompensationProof(proof: CompensationProof | undefined, policy: ToolPolicy, at: number): boolean {
+function registeredReversibleCapability(input: ReversibleActionCapability, toolName: string, policy: ToolPolicy): ReversibleActionCapability {
+	const name = reference(input.name, "Reversible Action forward Capability");
+	if (name !== toolName) throw new Error("Unattended admission Reversible Action forward Capability must match the Tool");
+	if (!samePolicy(input.policy, policy)) throw new Error("Unattended admission Reversible Action policy must match the Tool policy");
+	return Object.freeze({ name, policy: Object.freeze({ ...policy }), compensation: compensation(input.compensation) });
+}
+
+function currentReversibility(capability: ReversibleActionCapability | undefined, toolName: string, policy: ToolPolicy, at: number): boolean {
+	if (!capability || capability.name !== toolName || !samePolicy(capability.policy, policy)) return false;
+	const proof = capability.compensation;
 	if (!proof || proof.exercisedAt > at || proof.validUntil < at || !proof.evidenceRefs.length) return false;
 	return policy.sideEffect !== "external" || Boolean(policy.effectProofProvider && proof.receiptProofProvider === policy.effectProofProvider);
+}
+
+function samePolicy(left: ToolPolicy, right: ToolPolicy): boolean {
+	return left.risk === right.risk && left.sideEffect === right.sideEffect && left.approval === right.approval && left.reversible === right.reversible
+		&& left.timeoutMs === right.timeoutMs && left.maxAttempts === right.maxAttempts && left.maxResultBytes === right.maxResultBytes
+		&& left.impact === right.impact && left.effectProofProvider === right.effectProofProvider;
 }
 
 function bounded<T>(value: readonly T[], label: string, minimum: number, maximum: number): readonly T[] {

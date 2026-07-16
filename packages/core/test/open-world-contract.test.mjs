@@ -126,9 +126,10 @@ test("one Capability requirement cannot be assigned to multiple atomic outcomes"
 });
 
 test("a structurally valid but semantically unadmitted Work Contract cannot enter the open-world graph", () => {
+	const deterministic = { ...workContract(), capabilityRequirements: [] };
 	assert.throws(() => createOpenWorldContract({
 		id: "contract:unadmitted",
-		admission: { contract: workContract(), source: "deterministic" },
+		admission: { contract: deterministic, source: "deterministic" },
 		outcomes: [], capabilityRequirements: [], artifactRequirements: [], evidenceRequirements: [],
 	}), /admitted Work Contract/i);
 });

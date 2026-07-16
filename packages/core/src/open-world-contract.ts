@@ -77,7 +77,7 @@ const OUTCOME_EVIDENCE_KINDS = new Set<OutcomeEvidenceKind>(["observation", "eff
  */
 export function createOpenWorldContract(input: OpenWorldContractInput): Readonly<OpenWorldContract> {
 	if (containsCredentialMaterial(JSON.stringify(input))) throw new Error("Open-world contract cannot contain credential material");
-	if (!input.admission || !hasSemanticWorkContractAdjudication(input.admission)) throw new Error("Open-world contract requires an admitted Work Contract with semantic adjudication");
+	if (!input.admission || input.admission.source !== "model" || !hasSemanticWorkContractAdjudication(input.admission)) throw new Error("Open-world contract requires an admitted Work Contract with independent semantic adjudication");
 	const workContract = validateWorkContract(input.admission.contract, input.admission.contract.rawRequest);
 	const id = reference(input.id, "contract id");
 	const outcomesInput = boundedList(input.outcomes, "outcomes", 1, 100);
