@@ -438,7 +438,7 @@ This ordering is the implementation plan, not a fixed business workflow. Core re
 
 - [x] Use a strict versioned schema and keep model inference separate from trusted Access Scope and Policy.
 - [x] Produce the Contract without a separate business-intent loop or fixed customer vocabulary.
-- [ ] Exercise Chinese, English, mixed-language, paraphrase, and unknown-enterprise inputs end to end.
+- [x] Exercise Chinese, English, mixed-language, paraphrase, and unknown-enterprise inputs end to end.
 
 ## Validate Work Contracts before execution
 

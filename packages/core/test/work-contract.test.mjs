@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { AutonomousPlanningPolicy, BeeMaxAgentRuntime, DeterministicWorkContractBuilder, ModelBackedWorkContractBuilder, TurnUnderstandingEngine, WorkContractCognitionError, createExecutionEnvelope } from "../dist/index.js";
+import { fauxAssistantMessage, registerFauxProvider } from "@earendil-works/pi-ai/compat";
+import { AutonomousPlanningPolicy, BeeMaxAgentRuntime, DeterministicWorkContractBuilder, ModelBackedWorkContractBuilder, PiWorkContractBuilder, TurnUnderstandingEngine, WorkContractCognitionError, createExecutionEnvelope } from "../dist/index.js";
 import { attestCapabilityProviderResolutionTool } from "../dist/capability-provider.js";
 
 const createRuntime = (options) => new BeeMaxAgentRuntime({ profileId: "profile:test", ...options });
@@ -292,6 +293,83 @@ test("BeeMax sends the validated Work Contract to Pi and binds its criteria to t
 		assert.match(objective.acceptanceCriteria, /只保存草稿/);
 		assert.doesNotMatch(objective.acceptanceCriteria, /不要发布/);
 	} finally { runtime.dispose(); }
+});
+
+test("BeeMax carries multilingual, paraphrased, and unknown-enterprise Work Contracts end to end", async (t) => {
+	const cases = [
+		{
+			name: "Chinese",
+			rawRequest: "整理星桥盘点，保留审计轨迹，输出来源摘要",
+			proposal: { objective: "整理星桥盘点", constraints: ["保留审计轨迹"], acceptanceCriteria: ["整理星桥盘点", "输出来源摘要"] },
+		},
+		{
+			name: "English",
+			rawRequest: "Compile the lattice reconciliation, keep the audit trail, and save the verified digest",
+			proposal: { objective: "Compile the lattice reconciliation", constraints: ["keep the audit trail"], acceptanceCriteria: ["Compile the lattice reconciliation", "save the verified digest"] },
+		},
+		{
+			name: "mixed language",
+			rawRequest: "请 reconcile prism:coil-9，必须 retain rollback point，输出 evidence bundle",
+			proposal: { objective: "reconcile prism:coil-9", constraints: ["必须 retain rollback point"], acceptanceCriteria: ["reconcile prism:coil-9", "输出 evidence bundle"] },
+		},
+		{
+			name: "paraphrase",
+			rawRequest: "Turn the aurora ledger into a brief; produce a source-backed digest and leave the original rows untouched",
+			proposal: { objective: "Turn the aurora ledger into a brief", prohibitions: ["leave the original rows untouched"], acceptanceCriteria: ["Turn the aurora ledger into a brief", "produce a source-backed digest"] },
+		},
+		{
+			name: "unknown enterprise vocabulary",
+			rawRequest: "Calibrate the zhyron veil, retain a rollback beacon, and emit a signed calibration receipt",
+			proposal: { objective: "Calibrate the zhyron veil", constraints: ["retain a rollback beacon"], acceptanceCriteria: ["Calibrate the zhyron veil", "emit a signed calibration receipt"], uncertainties: ["zhyron veil"] },
+		},
+	];
+	for (const fixture of cases) await t.test(fixture.name, async () => {
+		let prompt = "";
+		let recordedTask;
+		const agent = { state: { model: { id: "test" }, messages: [] } };
+		const registration = registerFauxProvider();
+		registration.setResponses([(context) => {
+			assert.match(context.systemPrompt, /structured Work Contract/);
+			assert.equal(JSON.parse(context.messages[0].content).rawRequest, fixture.rawRequest);
+			const clauses = (values = []) => values.map((text) => ({ text }));
+			return fauxAssistantMessage(JSON.stringify({
+				action: "create",
+				objective: { text: fixture.proposal.objective },
+				constraints: clauses(fixture.proposal.constraints),
+				prohibitions: clauses(fixture.proposal.prohibitions),
+				acceptanceCriteria: clauses(fixture.proposal.acceptanceCriteria),
+				capabilityRequirements: [],
+				uncertainties: clauses(fixture.proposal.uncertainties),
+				executionMode: "direct",
+				confidence: 0.88,
+			}));
+		}]);
+		const runtime = new BeeMaxAgentRuntime({
+			workContractBuilder: new PiWorkContractBuilder({ models: [{ model: registration.getModel() }] }),
+			taskLedger: { queryTasks: () => [], record: (task) => { recordedTask = task; }, transition: () => true },
+			planningPolicy: { decide: () => ({ mode: "direct", requiredTools: [], suggestedConcurrency: 1, budget: { maxSubagents: 0, maxToolCalls: null, maxTokens: null, maxCorrectiveAttempts: 0 }, signals: { substantialWork: true }, reason: "test", directive: () => "[policy]" }) },
+			createAgent: async () => ({ agent, subscribe: () => () => undefined,
+				prompt: async (text) => { prompt = text; agent.state.messages = [{ role: "assistant", content: [{ type: "text", text: "done" }], usage: { input: 1, output: 1 } }]; },
+				abort: async () => undefined, dispose: () => undefined }),
+		});
+		try {
+			await runtime.run({ source: { platform: "cli", chatId: fixture.name, chatType: "dm", userId: "owner" }, text: fixture.rawRequest, timeoutMs: 1_000, mode: "interactive" });
+			const serialized = prompt.match(/<beemax-work-contract>\n([^\n]+)\n<\/beemax-work-contract>/)?.[1];
+			assert.ok(serialized, "Pi receives one structured Work Contract");
+			const contract = JSON.parse(serialized);
+			assert.equal(contract.rawRequest, fixture.rawRequest);
+			assert.equal(contract.objective.text, fixture.proposal.objective);
+			assert.deepEqual(contract.constraints.map(({ text }) => text), fixture.proposal.constraints ?? []);
+			assert.deepEqual(contract.prohibitions.map(({ text }) => text), fixture.proposal.prohibitions ?? []);
+			assert.deepEqual(contract.acceptanceCriteria.map(({ text }) => text), fixture.proposal.acceptanceCriteria);
+			assert.deepEqual(contract.uncertainties.map(({ text }) => text), fixture.proposal.uncertainties ?? []);
+			assert.equal(recordedTask.description, fixture.rawRequest);
+			assert.equal(registration.state.callCount, 1);
+			for (const clause of [contract.objective, ...contract.constraints, ...contract.prohibitions, ...contract.acceptanceCriteria, ...contract.uncertainties]) {
+				assert.equal(fixture.rawRequest.slice(clause.source.start, clause.source.end), clause.text);
+			}
+		} finally { runtime.dispose(); registration.unregister(); }
+	});
 });
 
 test("a contradictory Work Contract cannot classify a prohibited action as an acceptance criterion", async () => {
