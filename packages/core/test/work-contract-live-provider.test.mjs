@@ -54,9 +54,9 @@ const cases = [
 
 test("real Provider preserves multilingual Work Contract lifecycle, target, and raw-request completeness", {
 	skip: skipReason || false,
-	timeout: 120_000,
+	timeout: 600_000,
 }, async () => {
-	const builder = new PiWorkContractBuilder({ models, timeoutMs: 30_000 });
+	const builder = new PiWorkContractBuilder({ models, timeoutMs: 60_000 });
 	const understanding = new TurnUnderstandingEngine();
 	for (const scenario of cases) {
 		await test(scenario.name, async () => {

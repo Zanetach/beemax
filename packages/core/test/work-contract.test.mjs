@@ -301,26 +301,31 @@ test("BeeMax carries multilingual, paraphrased, and unknown-enterprise Work Cont
 			name: "Chinese",
 			rawRequest: "整理星桥盘点，保留审计轨迹，输出来源摘要",
 			proposal: { objective: "整理星桥盘点", constraints: ["保留审计轨迹"], acceptanceCriteria: ["整理星桥盘点", "输出来源摘要"] },
+			segments: [{ text: "整理星桥盘点", roles: ["objective", "acceptance_criterion"] }, { text: "保留审计轨迹", roles: ["constraint"] }, { text: "输出来源摘要", roles: ["acceptance_criterion"] }],
 		},
 		{
 			name: "English",
 			rawRequest: "Compile the lattice reconciliation, keep the audit trail, and save the verified digest",
-			proposal: { objective: "Compile the lattice reconciliation", constraints: ["keep the audit trail"], acceptanceCriteria: ["Compile the lattice reconciliation", "save the verified digest"] },
+			proposal: { objective: "Compile the lattice reconciliation", constraints: ["keep the audit trail"], acceptanceCriteria: ["Compile the lattice reconciliation", "and save the verified digest"] },
+			segments: [{ text: "Compile the lattice reconciliation", roles: ["objective", "acceptance_criterion"] }, { text: "keep the audit trail", roles: ["constraint"] }, { text: "and", roles: ["context"] }, { text: "save the verified digest", roles: ["acceptance_criterion"] }],
 		},
 		{
 			name: "mixed language",
 			rawRequest: "请 reconcile prism:coil-9，必须 retain rollback point，输出 evidence bundle",
-			proposal: { objective: "reconcile prism:coil-9", constraints: ["必须 retain rollback point"], acceptanceCriteria: ["reconcile prism:coil-9", "输出 evidence bundle"] },
+			proposal: { objective: "请 reconcile prism:coil-9", constraints: ["必须 retain rollback point"], acceptanceCriteria: ["请 reconcile prism:coil-9", "输出 evidence bundle"] },
+			segments: [{ text: "请", roles: ["context"] }, { text: "reconcile prism:coil-9", roles: ["objective", "acceptance_criterion"] }, { text: "必须 retain rollback point", roles: ["constraint"] }, { text: "输出 evidence bundle", roles: ["acceptance_criterion"] }],
 		},
 		{
 			name: "paraphrase",
 			rawRequest: "Turn the aurora ledger into a brief; produce a source-backed digest and leave the original rows untouched",
-			proposal: { objective: "Turn the aurora ledger into a brief", prohibitions: ["leave the original rows untouched"], acceptanceCriteria: ["Turn the aurora ledger into a brief", "produce a source-backed digest"] },
+			proposal: { objective: "Turn the aurora ledger into a brief", prohibitions: ["and leave the original rows untouched"], acceptanceCriteria: ["Turn the aurora ledger into a brief", "produce a source-backed digest"] },
+			segments: [{ text: "Turn the aurora ledger into a brief", roles: ["objective", "acceptance_criterion"] }, { text: "produce a source-backed digest", roles: ["acceptance_criterion"] }, { text: "and", roles: ["context"] }, { text: "leave the original rows untouched", roles: ["prohibition"] }],
 		},
 		{
 			name: "unknown enterprise vocabulary",
 			rawRequest: "Calibrate the zhyron veil, retain a rollback beacon, and emit a signed calibration receipt",
-			proposal: { objective: "Calibrate the zhyron veil", constraints: ["retain a rollback beacon"], acceptanceCriteria: ["Calibrate the zhyron veil", "emit a signed calibration receipt"], uncertainties: ["zhyron veil"] },
+			proposal: { objective: "Calibrate the zhyron veil", constraints: ["retain a rollback beacon"], acceptanceCriteria: ["Calibrate the zhyron veil", "and emit a signed calibration receipt"], uncertainties: ["Calibrate the zhyron veil"] },
+			segments: [{ text: "Calibrate the zhyron veil", roles: ["objective", "acceptance_criterion", "uncertainty"] }, { text: "retain a rollback beacon", roles: ["constraint"] }, { text: "and", roles: ["context"] }, { text: "emit a signed calibration receipt", roles: ["acceptance_criterion"] }],
 		},
 	];
 	for (const fixture of cases) await t.test(fixture.name, async () => {
@@ -328,9 +333,13 @@ test("BeeMax carries multilingual, paraphrased, and unknown-enterprise Work Cont
 		let recordedTask;
 		const agent = { state: { model: { id: "test" }, messages: [] } };
 		const registration = registerFauxProvider();
-		registration.setResponses([(context) => {
-			assert.match(context.systemPrompt, /structured Work Contract/);
+		const respond = (context) => {
+			assert.match(context.systemPrompt, /Work Contract|inventory/);
 			assert.equal(JSON.parse(context.messages[0].content).rawRequest, fixture.rawRequest);
+			if (context.systemPrompt.includes("Independently inventory")) return fauxAssistantMessage(JSON.stringify({
+				schemaVersion: "beemax.semantic-inventory.v1", action: "create", confidence: 0.88,
+				segments: fixture.segments.map((segment) => ({ ...segment, occurrence: 0 })),
+			}));
 			const clauses = (values = []) => values.map((text) => ({ text }));
 			return fauxAssistantMessage(JSON.stringify({
 				action: "create",
@@ -343,8 +352,9 @@ test("BeeMax carries multilingual, paraphrased, and unknown-enterprise Work Cont
 				executionMode: "direct",
 				confidence: 0.88,
 			}));
-		}]);
-		const runtime = new BeeMaxAgentRuntime({
+		};
+		registration.setResponses([respond, respond]);
+		const runtime = createRuntime({
 			workContractBuilder: new PiWorkContractBuilder({ models: [{ model: registration.getModel() }] }),
 			taskLedger: { queryTasks: () => [], record: (task) => { recordedTask = task; }, transition: () => true },
 			planningPolicy: { decide: () => ({ mode: "direct", requiredTools: [], suggestedConcurrency: 1, budget: { maxSubagents: 0, maxToolCalls: null, maxTokens: null, maxCorrectiveAttempts: 0 }, signals: { substantialWork: true }, reason: "test", directive: () => "[policy]" }) },
@@ -364,7 +374,7 @@ test("BeeMax carries multilingual, paraphrased, and unknown-enterprise Work Cont
 			assert.deepEqual(contract.acceptanceCriteria.map(({ text }) => text), fixture.proposal.acceptanceCriteria);
 			assert.deepEqual(contract.uncertainties.map(({ text }) => text), fixture.proposal.uncertainties ?? []);
 			assert.equal(recordedTask.description, fixture.rawRequest);
-			assert.equal(registration.state.callCount, 1);
+			assert.equal(registration.state.callCount, 2);
 			for (const clause of [contract.objective, ...contract.constraints, ...contract.prohibitions, ...contract.acceptanceCriteria, ...contract.uncertainties]) {
 				assert.equal(fixture.rawRequest.slice(clause.source.start, clause.source.end), clause.text);
 			}

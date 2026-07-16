@@ -725,10 +725,12 @@ test("two Runtimes sharing SQLite block a post-cancellation mutation until the d
 			prompt: async () => {
 				const message = (id) => ({ type: "message_end", message: { role: "assistant", responseId: `response:${id}`, content: [{ type: "toolCall", id, name: mutation.name, arguments: {} }], usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, cost: { total: 0 } } } });
 				listener(message("mutation-1"));
+				listener({ type: "tool_execution_start", toolCallId: "mutation-1", toolName: mutation.name, args: {} });
 				assert.equal(await agent.beforeToolCall({ assistantMessage: {}, toolCall: { id: "mutation-1", name: mutation.name, arguments: {} }, args: {}, context: {} }), undefined);
 				firstBoundaryResolve();
 				await continueSecond;
 				listener(message("mutation-2"));
+				listener({ type: "tool_execution_start", toolCallId: "mutation-2", toolName: mutation.name, args: {} });
 				secondBoundary = await agent.beforeToolCall({ assistantMessage: {}, toolCall: { id: "mutation-2", name: mutation.name, arguments: {} }, args: {}, context: {} });
 				agent.state.messages.push({ role: "assistant", content: [{ type: "text", text: "stopped" }], usage: { input: 1, output: 1 } });
 			},
