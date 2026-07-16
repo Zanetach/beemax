@@ -14,6 +14,8 @@ import { conversationKey, responsibilityOwnerKey, responsibilityOwnerKeys } from
 import type { ObjectiveCancellationResult, TaskKind, TaskLedger, TaskPlanRecord, TaskPlanStatus, TaskRecord, TaskRunRecord, TaskStatus } from "./task-ledger.ts";
 import type { AutonomousPlanningDecision, AutonomousPlanningPolicy, PlanningBudgetRegistry } from "./autonomous-planning.ts";
 import { createAdmittedWorkContractPlanningInput, type AdmittedWorkContractPlanningInput } from "./contract-planning-admission.ts";
+import { OpenWorldContractCognitionError, hasSemanticOpenWorldContractAdjudication, type OpenWorldContractCompilerPort } from "./open-world-contract-compiler.ts";
+import type { OpenWorldContract } from "./open-world-contract.ts";
 import { TurnUnderstandingEngine, selectTurnTools, type TurnUnderstanding, type TurnUnderstandingPort } from "./turn-understanding.ts";
 import { WorkContractCognitionError, hasSemanticWorkContractAdjudication, renderWorkContract, validateWorkContract, workContractFromLegacyObjective, workContractUnderstanding, type WorkContract, type WorkContractBuilderPort, type WorkContractCognitionUsage } from "./work-contract.ts";
 import { redactCredentialMaterial } from "./credential-material.ts";
@@ -206,6 +208,8 @@ export interface BeeMaxAgentRuntimeOptions<Source extends BeeMaxRuntimeSource = 
 	turnUnderstanding?: TurnUnderstandingPort;
 	/** Tool-free cognition that proposes a source-bound Work Contract; invalid semantic output blocks before Pi. */
 	workContractBuilder?: WorkContractBuilderPort;
+	/** Separately reviewed Tool-free compiler for Artifact/Evidence and outcome-graph planning. */
+	openWorldContractCompiler?: OpenWorldContractCompilerPort;
 	/** Async semantic Situation path; defaults to the deterministic compatibility builder. */
 	situationBuilder?: SituationBuilderPort;
 	/** Configurable semantic admission floor; applies only to model-proposed Work Contracts. */
@@ -246,6 +250,7 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 	private readonly planningBudgets?: PlanningBudgetRegistry;
 	private readonly turnUnderstanding: TurnUnderstandingPort;
 	private readonly workContractBuilder: WorkContractBuilderPort;
+	private readonly openWorldContractCompiler?: OpenWorldContractCompilerPort;
 	private readonly minimumWorkContractConfidence: number;
 	private readonly situationBuilder: SituationBuilderPort;
 	private readonly executionTrace?: ExecutionTraceSink;
@@ -277,6 +282,7 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 		this.workContractBuilder = options.workContractBuilder ?? {
 			build: async () => { throw new Error("MODEL_UNAVAILABLE: semantic Work Contract cognition is not configured for this runtime"); },
 		};
+		this.openWorldContractCompiler = options.openWorldContractCompiler;
 		this.minimumWorkContractConfidence = Math.max(0, Math.min(options.minimumWorkContractConfidence ?? 0.6, 1));
 		this.situationBuilder = options.situationBuilder ?? new DeterministicSituationBuilder();
 		this.executionTrace = options.executionTrace;
@@ -328,6 +334,7 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 		const cognitionTokenLimit = input.executionEnvelope?.budget?.maxTokens;
 		let workContract: WorkContract | undefined;
 		let planningContractAdmission: Readonly<AdmittedWorkContractPlanningInput> | undefined;
+		let planningContractInput: Readonly<AdmittedWorkContractPlanningInput> | Readonly<OpenWorldContract> | undefined;
 		let workContractCognitionUsage: WorkContractCognitionUsage | undefined;
 		let workContractCognitionBudgetChargeTokens = 0;
 		if (fallbackUnderstanding && explicitAutomationObjective && activeObjective) {
@@ -343,22 +350,41 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 				workContractCognitionUsage = built.cognitionUsage ?? built.semanticAdjudication?.cognitionUsage;
 				workContractCognitionBudgetChargeTokens = built.source === "model" ? built.cognitionBudgetChargeTokens : 0;
 				workContract = validateWorkContract(built.contract, input.text, { trustedContext, requireAcceptanceCriterion: built.source === "model", enforceFallbackUnderstanding: built.source !== "model" });
-				if (built.source === "model") planningContractAdmission = createAdmittedWorkContractPlanningInput({ ...built, contract: workContract }, workContract);
+				if (built.source === "model") {
+					planningContractAdmission = createAdmittedWorkContractPlanningInput({ ...built, contract: workContract }, workContract);
+					planningContractInput = planningContractAdmission;
+				}
 				if (built.source === "model" && workContract.confidence < this.minimumWorkContractConfidence) throw new Error(`Model Work Contract confidence ${workContract.confidence} is below the admission threshold ${this.minimumWorkContractConfidence}`);
+				if (planningContractAdmission && this.openWorldContractCompiler && workContract.acceptanceCriteria.length) {
+					const remainingCognitionTokens = cognitionTokenLimit === undefined ? undefined : cognitionTokenLimit - workContractCognitionBudgetChargeTokens;
+					if (remainingCognitionTokens !== undefined && remainingCognitionTokens <= 0) throw new Error(`OpenWorld compilation would exceed the Execution Envelope token budget (${cognitionTokenLimit})`);
+					const compiled = await this.openWorldContractCompiler.compile({
+						admission: planningContractAdmission,
+						...(remainingCognitionTokens !== undefined ? { maxCognitionTokens: remainingCognitionTokens } : {}),
+						...(cognitionSignal ? { signal: cognitionSignal } : {}),
+					});
+					if (!hasSemanticOpenWorldContractAdjudication(compiled)) throw new Error("OpenWorld Contract is missing independent semantic adjudication evidence");
+					planningContractInput = compiled.contract;
+					workContractCognitionUsage = mergeCognitionUsage(workContractCognitionUsage, compiled.cognitionUsage);
+					workContractCognitionBudgetChargeTokens += compiled.cognitionBudgetChargeTokens;
+				}
 				const envelopeTokenLimit = input.executionEnvelope?.budget?.maxTokens;
 				if (envelopeTokenLimit !== undefined && workContractCognitionBudgetChargeTokens > envelopeTokenLimit) throw new Error(`Work Contract cognition exceeded the Execution Envelope token budget (${envelopeTokenLimit})`);
 			} catch (error) {
 				if (error instanceof WorkContractCognitionError) {
 					workContractCognitionUsage = error.cognitionUsage;
 					workContractCognitionBudgetChargeTokens = error.cognitionBudgetChargeTokens;
+				} else if (error instanceof OpenWorldContractCognitionError) {
+					workContractCognitionUsage = mergeCognitionUsage(workContractCognitionUsage, error.cognitionUsage);
+					workContractCognitionBudgetChargeTokens += error.cognitionBudgetChargeTokens;
 				}
 				if (input.signal?.aborted) throw new AgentRunError("Agent turn was cancelled", false, input.signal.reason, false, workContractCognitionUsage);
 				if (deadlineSignal?.aborted) throw new AgentRunError("Execution Envelope deadline expired during Work Contract cognition", true, error, false, workContractCognitionUsage);
 				throw new AgentRunError(`Work Contract admission blocked: ${errorMessage(error)}`, true, error, false, workContractCognitionUsage);
 			}
 		}
-		planning = planningContractAdmission
-			? this.planningPolicy?.decide(planningContractAdmission)
+		planning = planningContractInput
+			? this.planningPolicy?.decide(planningContractInput)
 			: interactive ? this.planningPolicy?.decide(input.text) : undefined;
 		const targetObjectiveId = workContract?.targetObjective?.id;
 		if (targetObjectiveId) {
@@ -2327,6 +2353,18 @@ function usageOf(agent: Agent, fromIndex = 0): { input_tokens?: number; output_t
 function finiteTokenCount(value: number | undefined): number { return Number.isFinite(value) && value! > 0 ? value! : 0; }
 function cognitionResultUsage(usage: WorkContractCognitionUsage | undefined): { input_tokens?: number; output_tokens?: number } {
 	return usage ? { input_tokens: usage.inputTokens, output_tokens: usage.outputTokens } : {};
+}
+function mergeCognitionUsage(left: WorkContractCognitionUsage | undefined, right: WorkContractCognitionUsage | undefined): WorkContractCognitionUsage | undefined {
+	if (!left) return right;
+	if (!right) return left;
+	return {
+		inputTokens: left.inputTokens + right.inputTokens,
+		outputTokens: left.outputTokens + right.outputTokens,
+		cacheReadTokens: left.cacheReadTokens + right.cacheReadTokens,
+		cacheWriteTokens: left.cacheWriteTokens + right.cacheWriteTokens,
+		costUsd: left.costUsd + right.costUsd,
+		modelIdentities: [...left.modelIdentities, ...right.modelIdentities],
+	};
 }
 function mergeResultUsage(result: { input_tokens?: number; output_tokens?: number }, cognition: WorkContractCognitionUsage | undefined): { input_tokens?: number; output_tokens?: number } {
 	if (!cognition) return result;

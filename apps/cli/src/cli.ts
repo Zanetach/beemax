@@ -44,7 +44,7 @@ import { fullScreenEnter, fullScreenExit, resolveChatPresentationMode, type Chat
 import { FullWorkbench, startFullWorkbenchInput, type FullWorkbenchInput } from "./full-workbench.ts";
 import { inspectGateway, readGatewayLogs, recordGatewayEvent } from "./gateway-observability.ts";
 import { createTaskAwareConversationContext, ensureBuiltinTasks, installedVersion } from "./runtime-facts.ts";
-import { AUTONOMY_LEVELS, AgentRunError, AuthStorage, AutonomyRolloutController, FileCredentialVault, FileCredentialVaultAuditJournal, ObjectiveCompletionDeliveryService, PiWorkContractBuilder, TaskPlanNoticeDeliveryService, ToolApprovalBroker, buildActiveTaskPreservationEnvelope, buildTaskPreservationEnvelope, compileLongTermMemorySnapshot, conversationKey, createSubagentTools, createTaskLedgerTools, createTaskOrchestrationTools, guardVerifiedObjectiveMemoryPublisher, interactionCommandHelp, objectiveIdFromCompletionId, parseInteractionCommand, redactCredentialMaterial, responsibilityOwnerKey, responsibilityOwnerKeys, type AutonomyLevel, type AutonomyRolloutAuthority, type DeliveryPort } from "@beemax/core";
+import { AUTONOMY_LEVELS, AgentRunError, AuthStorage, AutonomyRolloutController, FileCredentialVault, FileCredentialVaultAuditJournal, ObjectiveCompletionDeliveryService, PiOpenWorldContractCompiler, PiWorkContractBuilder, TaskPlanNoticeDeliveryService, ToolApprovalBroker, buildActiveTaskPreservationEnvelope, buildTaskPreservationEnvelope, compileLongTermMemorySnapshot, conversationKey, createSubagentTools, createTaskLedgerTools, createTaskOrchestrationTools, guardVerifiedObjectiveMemoryPublisher, interactionCommandHelp, objectiveIdFromCompletionId, parseInteractionCommand, redactCredentialMaterial, responsibilityOwnerKey, responsibilityOwnerKeys, type AutonomyLevel, type AutonomyRolloutAuthority, type DeliveryPort } from "@beemax/core";
 import type { SessionSource } from "@beemax/channel-runtime";
 import { PairingStore, assertProfileBindingConfiguration } from "@beemax/gateway";
 import { executeFeishuSmoke } from "./feishu-smoke.ts";
@@ -1387,6 +1387,7 @@ async function runChat(config: ReturnType<typeof loadConfig>, requestedMode: { f
 				return { interruptedEffects, pendingExecutions };
 			},
 			workContractBuilder: new PiWorkContractBuilder({ models: cognitionModels }),
+			openWorldContractCompiler: new PiOpenWorldContractCompiler({ models: cognitionModels }),
 			fallbackModels: configuredRuntimeModels(config),
 			turnIdleSettleMs: config.agent.turnIdleSettleMs,
 			mediaUnderstanding: configuredMediaUnderstanding(config, createLocalMediaUnderstandingAdapters(config.mediaUnderstanding.localOcr)),

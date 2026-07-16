@@ -3,6 +3,7 @@ import test from "node:test";
 import {
 	AutonomousPlanningPolicy,
 	BeeMaxAgentRuntime,
+	OPEN_WORLD_CONTRACT_ADJUDICATION_SCHEMA_VERSION,
 	WORK_CONTRACT_ADJUDICATION_SCHEMA_VERSION,
 	WORK_CONTRACT_SCHEMA_VERSION,
 	createExecutionEnvelope,
@@ -279,6 +280,56 @@ test("Agent runtime plans only after model Work Contract semantic admission", as
 	runtime.dispose();
 });
 
+test("Agent runtime compiles a reviewed OpenWorld graph after Work Contract admission and shares the cognition budget", async () => {
+	const contract = workContract({
+		acceptanceCriteria: [clause("过去一周黄金走势"), clause("输出 HTML"), clause("PDF")],
+		capabilityRequirements: [],
+		executionMode: "direct",
+	});
+	let compilerBudget;
+	let planningInput;
+	let promptText = "";
+	const policy = new AutonomousPlanningPolicy();
+	const agent = { state: { model: { id: "test/model" }, messages: [] } };
+	const runtime = new BeeMaxAgentRuntime({
+		profileId: "profile:test",
+		turnUnderstanding: { understand: () => ({ action: "create", goal: rawRequest, constraints: [], acceptanceCriteria: ["过去一周黄金走势", "输出 HTML", "PDF"], uncertainties: [], memoryQuery: rawRequest, executionMode: "direct", confidence: 1 }) },
+		workContractBuilder: { build: async () => admission(contract) },
+		openWorldContractCompiler: { compile: async ({ admission: admitted, maxCognitionTokens }) => {
+			compilerBudget = maxCognitionTokens;
+			return reviewedOpenWorldCompilation(admitted);
+		} },
+		planningPolicy: { decide: (input) => { planningInput = input; return policy.decide(input); } },
+		createAgent: async () => ({
+			agent,
+			getAllTools: () => [],
+			getActiveToolNames: () => [],
+			setActiveToolsByName: () => undefined,
+			subscribe: () => () => undefined,
+			prompt: async (text) => {
+				promptText = text;
+				agent.state.messages = [{ role: "assistant", content: [{ type: "text", text: "已完成" }], usage: { input: 1, output: 1 } }];
+			},
+			abort: async () => undefined,
+			dispose: () => undefined,
+		}),
+	});
+
+	const result = await runtime.run({
+		source: { platform: "cli", chatId: "open-world-plan", chatType: "dm", userId: "local" },
+		text: rawRequest,
+		timeoutMs: 1_000,
+		executionEnvelope: createExecutionEnvelope({ executionId: "execution:open-world-plan", trigger: { kind: "interaction" }, budget: { maxTokens: 1_000 } }),
+	});
+
+	assert.equal(compilerBudget, 900);
+	assert.equal(planningInput.schemaVersion, "beemax.open-world-contract.v1");
+	assert.match(promptText, /basis=open_world_contract/);
+	assert.match(promptText, /verificationDepth=independent/);
+	assert.deepEqual(result.usage, { input_tokens: 25, output_tokens: 13 });
+	runtime.dispose();
+});
+
 test("the contract-derived correction budget bounds the real Objective verification loop", async () => {
 	const contract = workContract({ capabilityRequirements: [], executionMode: "direct" });
 	const tasks = new Map();
@@ -348,3 +399,41 @@ test("an action or delivery outcome stays inside the parent authority boundary",
 	assert.deepEqual(decision.requiredTools, []);
 	assert.match(decision.reason, /parent Agent authority boundary/i);
 });
+
+function reviewedOpenWorldCompilation(admitted) {
+	const contract = createOpenWorldContract({
+		id: "contract:runtime-gold-report",
+		admission: admitted,
+		outcomes: [
+			{ id: "outcome:research", acceptanceCriterionIndex: 0, capabilityRequirementIds: [], evidenceRequirementIds: ["evidence:sources"] },
+			{ id: "outcome:html", acceptanceCriterionIndex: 1, dependsOnOutcomeIds: ["outcome:research"], capabilityRequirementIds: [], artifactRequirementIds: ["artifact:html"], evidenceRequirementIds: ["evidence:html"] },
+			{ id: "outcome:pdf", acceptanceCriterionIndex: 2, dependsOnOutcomeIds: ["outcome:research"], capabilityRequirementIds: [], artifactRequirementIds: ["artifact:pdf"], evidenceRequirementIds: ["evidence:pdf"] },
+		],
+		capabilityRequirements: [],
+		artifactRequirements: [
+			{ id: "artifact:html", mediaType: "text/html", role: "deliverable", verification: ["integrity", "semantic", "render"] },
+			{ id: "artifact:pdf", mediaType: "application/pdf", role: "deliverable", verification: ["integrity", "semantic", "render"] },
+		],
+		evidenceRequirements: [
+			{ id: "evidence:sources", kinds: ["observation", "freshness"] },
+			{ id: "evidence:html", kinds: ["artifact", "integrity", "semantic", "render"] },
+			{ id: "evidence:pdf", kinds: ["artifact", "integrity", "semantic", "render"] },
+		],
+	});
+	const cognitionUsage = { inputTokens: 4, outputTokens: 2, cacheReadTokens: 0, cacheWriteTokens: 0, costUsd: 0.001, modelIdentities: ["test/openworld-primary/test", "test/openworld-reviewer/test"] };
+	return {
+		contract,
+		source: "model",
+		cognitionUsage,
+		cognitionBudgetChargeTokens: 50,
+		semanticAdjudication: {
+			schemaVersion: OPEN_WORLD_CONTRACT_ADJUDICATION_SCHEMA_VERSION,
+			primaryModelIdentity: "test/openworld-primary/test",
+			reviewerModelIdentity: "test/openworld-reviewer/test",
+			reviewMode: "different_models",
+			independentSamples: true,
+			cognitionUsage,
+			cognitionBudgetChargeTokens: 50,
+		},
+	};
+}
