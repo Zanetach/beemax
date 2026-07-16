@@ -218,7 +218,7 @@ function grantBlocker(grant: UnattendedAuthorityGrant, input: UnattendedExecutio
 	if (input.at >= grant.expiresAt) return { reasonCode: "authority_expired", explanation: `Authority ${grant.id} is expired` };
 	if (grant.profileId !== input.profileId) return { reasonCode: "authority_profile_mismatch", explanation: `Authority ${grant.id} belongs to another Profile` };
 	if (!grant.allowedCapabilities.includes(input.toolName)) return { reasonCode: "authority_capability_not_granted", explanation: `Authority ${grant.id} does not cover ${input.toolName}` };
-	if (input.requiresAccessScope && (!input.accessScopeRef || !grant.accessScopeIds.includes(input.accessScopeRef.id))) return { reasonCode: "authority_scope_mismatch", explanation: `Authority ${grant.id} does not cover the required Access Scope` };
+	if (input.accessScopeRef && !grant.accessScopeIds.includes(input.accessScopeRef.id)) return { reasonCode: "authority_scope_mismatch", explanation: `Authority ${grant.id} does not cover the required Access Scope` };
 	return undefined;
 }
 

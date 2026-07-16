@@ -239,3 +239,22 @@ test("an Emergency Stop snapshot for another Access Scope fails closed", () => {
 
 	assert.equal(decision.reasonCode, "emergency_stop_scope_mismatch");
 });
+
+test("a mutation grant must cover its mandatory Access Scope even when the advisory flag is false", () => {
+	const decision = new UnattendedExecutionAdmission().decide({
+		...base,
+		requiresAccessScope: false,
+		toolName: "payment_send",
+		toolPolicy: { ...MUTATING_TOOL_POLICY, reversible: false },
+		credentialRequirements: [],
+		standingAuthority: undefined,
+		emergencyStop: { scopeId: "scope:finance-research", status: "running", revision: 7, evidenceRef: "emergency-stop:revision-7", observedAt: 200 },
+		executionGrant: {
+			id: "grant:payment-42", kind: "scoped_execution", status: "active", profileId: "profile:analyst",
+			allowedCapabilities: ["payment_send"], accessScopeIds: ["scope:other"], evidenceRefs: ["approval:payment-42"],
+			statusRevision: 2, statusEvidenceRef: "authority-status:payment-42:2", statusCheckedAt: 200, issuedAt: 150, expiresAt: 250,
+		},
+	});
+
+	assert.equal(decision.reasonCode, "authority_scope_mismatch");
+});
