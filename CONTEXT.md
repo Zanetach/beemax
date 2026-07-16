@@ -268,6 +268,14 @@ _Avoid_: Customer business stage, global intelligence mode, Enterprise Policy, a
 A bounded active-task authority allowing named capabilities after approval; it never overrides Enterprise deny, Core hard blocks, or unresolved Effect state.
 _Avoid_: Session-wide permission, Tool availability, Access Scope
 
+**Standing Profile Authority**:
+A time-bounded, evidence-backed Profile grant for named Capabilities and Access Scopes that may run unattended while current; it is limited to low-risk read-only or proven-reversible work and never authorizes high-risk or irreversible actions.
+_Avoid_: Global autonomy switch, permanent approval, inferred consent, Execution Grant
+
+**Unattended Execution Admission**:
+The pure preflight decision that combines resolved intent, credential availability references, legal authority, trusted Access Scope, Enterprise Policy, Effect state, reliability, Emergency Stop, and either Standing Profile Authority or an exact Execution Grant before zero-touch work may proceed. Tool invocation still rechecks normal Governance and Effect authority.
+_Avoid_: Tool execution, Approval bypass, Credential Secret, global full-autonomy mode
+
 **Compensation**:
 An authorized inverse action that uses a committed Effect's trusted receipt to restore an acceptable state and produces its own Effect and Verification evidence.
 _Avoid_: Deleting history, changing the original Effect to failed, assumed rollback
@@ -283,6 +291,10 @@ _Avoid_: Process kill, notification mute, automatic undo
 **Capability**:
 A versioned Tool, MCP operation, or Skill affordance that can be ranked and proposed to Pi for the current Situation; it is inventory metadata, not permission or execution authority.
 _Avoid_: Tool execution, Enterprise Policy, fixed business route
+
+**Open-World Contract**:
+A domain-neutral, immutable graph compiled from an admitted Work Contract that binds every atomic Acceptance Criterion exactly once to its Capability, Artifact, and Evidence requirements. It contains requirements and references only and cannot grant Tool, Provider, Credential, Access Scope, Effect, or Delivery authority.
+_Avoid_: Work Contract replacement, business ontology, Tool inventory, execution permission
 
 **Capability Selection**:
 A bounded, explainable ranking of versioned Capabilities for a query plus the Pi Tool names proposed for turn-scoped activation.
