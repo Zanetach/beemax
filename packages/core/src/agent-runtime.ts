@@ -14,7 +14,7 @@ import { conversationKey, responsibilityOwnerKey, responsibilityOwnerKeys } from
 import type { ObjectiveCancellationResult, TaskKind, TaskLedger, TaskPlanRecord, TaskPlanStatus, TaskRecord, TaskRunRecord, TaskStatus } from "./task-ledger.ts";
 import type { AutonomousPlanningDecision, AutonomousPlanningPolicy, PlanningBudgetRegistry } from "./autonomous-planning.ts";
 import { TurnUnderstandingEngine, selectTurnTools, type TurnUnderstanding, type TurnUnderstandingPort } from "./turn-understanding.ts";
-import { WorkContractCognitionError, hasSemanticWorkContractAdjudication, renderWorkContract, validateWorkContract, workContractFromLegacyObjective, workContractUnderstanding, type WorkContract, type WorkContractBuilderPort, type WorkContractCognitionUsage } from "./work-contract.ts";
+import { WorkContractCognitionError, hasSemanticWorkContractAdjudication, renderWorkContract, validateWorkContract, workContractFromLegacyObjective, workContractUnderstanding, type AdjudicatedModelWorkContractBuildResult, type WorkContract, type WorkContractBuilderPort, type WorkContractCognitionUsage } from "./work-contract.ts";
 import { redactCredentialMaterial } from "./credential-material.ts";
 import type { AccessScopeRef } from "./access-scope.ts";
 import { DeterministicSituationBuilder, type SituationBuilderPort } from "./situation-builder.ts";
@@ -95,7 +95,7 @@ export interface PlanningDecisionEvent {
 	/** Present for semantic Contract planning; omitted for legacy raw-prompt compatibility. */
 	basis?: AutonomousPlanningDecision["basis"];
 	verificationDepth?: AutonomousPlanningDecision["verificationDepth"];
-	contractId?: string;
+	contractIdSha256?: string;
 	outcomeCount?: number;
 	capabilityRequirementCount?: number;
 	artifactRequirementCount?: number;
@@ -326,7 +326,7 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 		// autonomous planning budget below governs only the subsequent Pi loop.
 		const cognitionTokenLimit = input.executionEnvelope?.budget?.maxTokens;
 		let workContract: WorkContract | undefined;
-		let contractPlanningAdmitted = false;
+		let planningContractAdmission: AdjudicatedModelWorkContractBuildResult | undefined;
 		let workContractCognitionUsage: WorkContractCognitionUsage | undefined;
 		let workContractCognitionBudgetChargeTokens = 0;
 		if (fallbackUnderstanding && explicitAutomationObjective && activeObjective) {
@@ -342,7 +342,7 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 				workContractCognitionUsage = built.cognitionUsage ?? built.semanticAdjudication?.cognitionUsage;
 				workContractCognitionBudgetChargeTokens = built.source === "model" ? built.cognitionBudgetChargeTokens : 0;
 				workContract = validateWorkContract(built.contract, input.text, { trustedContext, requireAcceptanceCriterion: built.source === "model", enforceFallbackUnderstanding: built.source !== "model" });
-				contractPlanningAdmitted = built.source === "model";
+				if (built.source === "model") planningContractAdmission = { ...built, contract: workContract };
 				if (built.source === "model" && workContract.confidence < this.minimumWorkContractConfidence) throw new Error(`Model Work Contract confidence ${workContract.confidence} is below the admission threshold ${this.minimumWorkContractConfidence}`);
 				const envelopeTokenLimit = input.executionEnvelope?.budget?.maxTokens;
 				if (envelopeTokenLimit !== undefined && workContractCognitionBudgetChargeTokens > envelopeTokenLimit) throw new Error(`Work Contract cognition exceeded the Execution Envelope token budget (${envelopeTokenLimit})`);
@@ -356,7 +356,9 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 				throw new AgentRunError(`Work Contract admission blocked: ${errorMessage(error)}`, true, error, false, workContractCognitionUsage);
 			}
 		}
-		planning = interactive ? this.planningPolicy?.decide(contractPlanningAdmitted && workContract ? workContract : input.text) : undefined;
+		planning = planningContractAdmission
+			? this.planningPolicy?.decide(planningContractAdmission)
+			: interactive ? this.planningPolicy?.decide(input.text) : undefined;
 		const targetObjectiveId = workContract?.targetObjective?.id;
 		if (targetObjectiveId) {
 			activeObjective = activeObjectiveCandidates.find((candidate) => candidate.id === targetObjectiveId);
@@ -433,13 +435,16 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 		const objective = objectiveBinding?.task;
 		const supportsTaskRuns = typeof this.taskLedger?.recordRun === "function" && typeof this.taskLedger?.transitionRun === "function";
 		const ownedTaskRunId = objective && supportsTaskRuns && !input.executionEnvelope?.taskRunId ? crypto.randomUUID() : undefined;
+		const objectiveCorrectiveAttemptBudget = objective
+			? minimumLimit(input.executionEnvelope?.budget?.maxCorrectiveAttempts, planning?.basis === "raw_prompt" ? undefined : planning?.budget.maxCorrectiveAttempts) ?? 1
+			: undefined;
 		let executionEnvelope = input.executionEnvelope && objective
 			? createExecutionEnvelope({
 				...input.executionEnvelope,
 				objectiveId: objective.id,
 				taskId: objective.id,
 				...(ownedTaskRunId ? { taskRunId: ownedTaskRunId } : {}),
-				budget: { ...input.executionEnvelope.budget, maxCorrectiveAttempts: input.executionEnvelope.budget?.maxCorrectiveAttempts ?? 1 },
+				budget: { ...input.executionEnvelope.budget, maxCorrectiveAttempts: objectiveCorrectiveAttemptBudget },
 			})
 			: input.executionEnvelope ?? createExecutionEnvelope({
 			executionId: `execution:${crypto.randomUUID()}`,
@@ -447,7 +452,7 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 			...(objective ? { objectiveId: objective.id, taskId: objective.id } : input.objectiveTaskId ? { objectiveId: input.objectiveTaskId } : {}),
 			...(ownedTaskRunId ? { taskRunId: ownedTaskRunId } : {}),
 			...(accessScopeRef ? { accessScopeRef } : {}),
-			...(input.timeoutMs === null && !objective ? {} : { budget: { ...(objective ? { maxCorrectiveAttempts: 1 } : {}), ...(input.timeoutMs === null ? {} : { deadlineAt: startedAt + input.timeoutMs }) } }),
+			...(input.timeoutMs === null && !objective ? {} : { budget: { ...(objective ? { maxCorrectiveAttempts: objectiveCorrectiveAttemptBudget } : {}), ...(input.timeoutMs === null ? {} : { deadlineAt: startedAt + input.timeoutMs }) } }),
 			mode: understanding?.action === "correct" ? "correction" : "normal",
 		});
 		let activeTaskRunId = executionEnvelope.taskRunId;
@@ -1207,7 +1212,7 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 					...(planning.basis === "raw_prompt" ? {} : {
 						basis: planning.basis,
 						verificationDepth: planning.verificationDepth,
-						contractId: planning.contractCoverage?.contractId,
+						contractIdSha256: planning.contractCoverage ? opaqueIdentitySha256(planning.contractCoverage.contractId) : undefined,
 						outcomeCount: planning.contractCoverage?.outcomeIds.length ?? 0,
 						capabilityRequirementCount: planning.contractCoverage?.capabilityRequirementIds.length ?? 0,
 						artifactRequirementCount: planning.contractCoverage?.artifactRequirementIds.length ?? 0,

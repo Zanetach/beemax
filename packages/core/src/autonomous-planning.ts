@@ -1,5 +1,5 @@
-import type { OpenWorldContract } from "./open-world-contract.ts";
-import type { WorkContract } from "./work-contract.ts";
+import { OPEN_WORLD_CONTRACT_SCHEMA_VERSION, type OpenWorldContract } from "./open-world-contract.ts";
+import { hasSemanticWorkContractAdjudication, validateWorkContract, type AdjudicatedModelWorkContractBuildResult, type WorkContract } from "./work-contract.ts";
 
 export type AutonomousExecutionMode = "direct" | "delegate" | "dag";
 export type PlanningBasis = "raw_prompt" | "work_contract" | "open_world_contract";
@@ -45,7 +45,7 @@ export interface ContractPlanningCoverage {
 	parallelWidth: number;
 }
 
-export type ContractPlanningInput = WorkContract | OpenWorldContract;
+export type ContractPlanningInput = AdjudicatedModelWorkContractBuildResult | OpenWorldContract;
 
 export interface AutonomousPlanningPolicyOptions {
 	maxConcurrent?: number;
@@ -76,7 +76,10 @@ export class AutonomousPlanningPolicy {
 	createBudgetRegistry(): PlanningBudgetRegistry { return new PlanningBudgetRegistry(); }
 
 	decide(input: string | ContractPlanningInput): AutonomousPlanningDecision {
-		if (typeof input !== "string") return this.decideContract(input);
+		if (typeof input !== "string") {
+			if (!isOpenWorldContract(input) && !isAdmittedWorkContractPlanningInput(input)) throw new Error("Contract-driven planning requires an admitted Work Contract with independent semantic adjudication");
+			return this.decideContract(input);
+		}
 		const prompt = input;
 		const normalized = prompt.trim();
 		const signals = inspectPrompt(normalized);
@@ -133,8 +136,14 @@ export class AutonomousPlanningPolicy {
 	}
 
 	private decideContract(contract: ContractPlanningInput): AutonomousPlanningDecision {
-		const openWorld = isOpenWorldContract(contract) ? contract : undefined;
-		const workContract = openWorld?.workContract ?? contract as WorkContract;
+		let openWorld: OpenWorldContract | undefined;
+		let workContract: WorkContract;
+		if (isOpenWorldContract(contract)) {
+			openWorld = contract;
+			workContract = contract.workContract;
+		} else {
+			workContract = validateWorkContract(contract.contract, contract.contract.rawRequest);
+		}
 		const outcomeIds = openWorld?.outcomes.map((outcome) => outcome.id) ?? workContract.acceptanceCriteria.map((_, index) => `criterion:${index}`);
 		const capabilityRequirementIds = openWorld?.capabilityRequirements.map((requirement) => requirement.id) ?? workContract.capabilityRequirements.map((_, index) => `capability:${index}`);
 		const artifactRequirementIds = openWorld?.artifactRequirements.map((requirement) => requirement.id) ?? [];
@@ -178,6 +187,13 @@ export class AutonomousPlanningPolicy {
 			reason = "The admitted Contract contains substantial bounded work without a proven parallel outcome graph";
 		} else if (containsParentOnlyEffect) {
 			reason = "The admitted Contract includes an action or delivery Effect that remains in the parent Agent authority boundary";
+		}
+		if (workContract.executionMode === "direct" && mode !== "direct") {
+			mode = "direct";
+			reason = "The admitted Work Contract retains a direct execution boundary";
+		} else if (workContract.executionMode === "delegate" && mode === "dag") {
+			mode = "delegate";
+			reason = "The admitted Work Contract permits delegation but not a multi-Task DAG";
 		}
 
 		const dagCapacity = Math.min(this.capacity.maxConcurrent, this.capacity.maxSubagents);
@@ -268,8 +284,16 @@ function inspectPrompt(prompt: string): PlanningSignals {
 	return { complexity, independentWorkItems, requiresResearch, requiresVerification, requestsParallelism, substantialWork };
 }
 
-function isOpenWorldContract(value: ContractPlanningInput): value is OpenWorldContract {
-	return value.schemaVersion === "beemax.open-world-contract.v1";
+function isOpenWorldContract(value: unknown): value is OpenWorldContract {
+	return Boolean(value && typeof value === "object" && "schemaVersion" in value
+		&& (value as { schemaVersion?: unknown }).schemaVersion === OPEN_WORLD_CONTRACT_SCHEMA_VERSION);
+}
+
+function isAdmittedWorkContractPlanningInput(value: unknown): value is AdjudicatedModelWorkContractBuildResult {
+	return Boolean(value && typeof value === "object" && "contract" in value
+		&& (value as { contract?: unknown }).contract && typeof (value as { contract?: unknown }).contract === "object"
+		&& "source" in value && (value as { source?: unknown }).source === "model"
+		&& hasSemanticWorkContractAdjudication(value as AdjudicatedModelWorkContractBuildResult));
 }
 
 function contractVerificationDepth(contract: OpenWorldContract | undefined, outcomeCount: number): PlanningVerificationDepth {

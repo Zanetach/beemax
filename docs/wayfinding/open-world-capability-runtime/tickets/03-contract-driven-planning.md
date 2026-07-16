@@ -8,14 +8,18 @@ How should BeeMax derive direct, delegated, and DAG execution; budgets; parallel
 
 ## Implemented
 
-`AutonomousPlanningPolicy` now accepts either a Work Contract or an Open-World Contract. A model-origin Work Contract reaches the real Agent Runtime planning boundary only after independent semantic adjudication and validation; deterministic compatibility paths retain the legacy prompt policy without being represented as semantic contract planning.
+`AutonomousPlanningPolicy` now accepts either an independently adjudicated model Work Contract build result or an Open-World Contract. A bare Work Contract is rejected at the public planning boundary. A model-origin Work Contract reaches the real Agent Runtime planning boundary only after independent semantic adjudication and validation; deterministic compatibility paths retain the legacy prompt policy without being represented as semantic contract planning. The same admission-to-planning handoff is active for interactive Turns and fresh Automation Triggers.
 
 For a Work Contract, planning derives outcome and Capability coverage, bounded effort, correction allowance, and criterion-level Verification from its admitted clauses. For an Open-World Contract, it additionally derives research demand, Artifact/Evidence-driven Verification depth, and maximum parallel width from an explicit acyclic outcome dependency graph. Raw words such as “parallel” cannot create a DAG when the admitted contract contains only one atomic outcome. `act` and `deliver` operations remain direct because Sub-Agents do not receive parent Effect authority.
 
-Planning events now expose the semantic basis, verification depth, contract identity, and requirement counts without copying business content into telemetry. Outcome dependencies are immutable, reference-validated, and cycle-checked in `beemax.open-world-contract.v1`.
+The admitted `executionMode` is an authority ceiling: `direct` cannot be escalated to delegation, and `delegate` cannot be escalated to a DAG. The derived correction allowance is copied into the Objective's Execution Envelope and therefore bounds the actual Verification correction loop.
+
+Planning events now expose the semantic basis, verification depth, a SHA-256 projection of contract identity, and requirement counts without copying business content into telemetry. Outcome dependencies are immutable, reference-validated, and cycle-checked in `beemax.open-world-contract.v1`.
 
 Implementation: `packages/core/src/autonomous-planning.ts`, `packages/core/src/agent-runtime.ts`, and `packages/core/src/open-world-contract.ts`. Public behavior: `packages/core/test/contract-driven-planning.test.mjs`.
 
 ## Remaining before resolution
 
 The default Agent Runtime still receives only the admitted Work Contract from `PiWorkContractBuilder`. A separately reviewed model compiler must produce the richer Open-World Contract during admission before Artifact/Evidence-derived verification depth and explicit outcome-graph DAG selection are active end to end. That compiler must share the cognition budget, preserve exact Work Contract bindings, and fail closed on invalid or incomplete graph output.
+
+An Automation Trigger that performs fresh model admission receives contract-driven planning. Resuming an already durable Objective does not yet persist and revalidate the original semantic-adjudication receipt, so it intentionally does not reconstruct semantic contract planning from the stored bare Work Contract. Durable admission receipt persistence and expiry/revalidation rules remain required before that path can be called end to end.

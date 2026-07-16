@@ -5,6 +5,7 @@ import {
 	BeeMaxAgentRuntime,
 	WORK_CONTRACT_ADJUDICATION_SCHEMA_VERSION,
 	WORK_CONTRACT_SCHEMA_VERSION,
+	createExecutionEnvelope,
 	createOpenWorldContract,
 } from "../dist/index.js";
 
@@ -53,7 +54,12 @@ function admission(contract) {
 }
 
 test("an admitted atomic Work Contract, not raw prompt keywords, determines execution shape", () => {
-	const decision = new AutonomousPlanningPolicy().decide(workContract());
+	const policy = new AutonomousPlanningPolicy();
+	const contract = workContract();
+	assert.throws(() => policy.decide(contract), /admitted Work Contract/i);
+	assert.throws(() => policy.decide(null), /admitted Work Contract/i);
+	assert.throws(() => policy.decide({ source: "model", contract: undefined }), /admitted Work Contract/i);
+	const decision = policy.decide(admission(contract));
 
 	assert.equal(decision.basis, "work_contract");
 	assert.equal(decision.mode, "direct");
@@ -62,6 +68,20 @@ test("an admitted atomic Work Contract, not raw prompt keywords, determines exec
 	assert.equal(decision.verificationDepth, "criterion");
 	assert.deepEqual(decision.contractCoverage?.outcomeIds, ["criterion:0"]);
 	assert.deepEqual(decision.contractCoverage?.capabilityRequirementIds, ["capability:0"]);
+});
+
+test("an admitted direct execution boundary cannot be escalated to delegation", () => {
+	const contract = workContract({
+		acceptanceCriteria: [clause("过去一周黄金走势"), clause("输出 HTML"), clause("PDF")],
+		capabilityRequirements: [clause("调研过去一周黄金走势"), clause("输出 HTML"), clause("PDF")],
+		executionMode: "direct",
+	});
+	const decision = new AutonomousPlanningPolicy().decide(admission(contract));
+
+	assert.equal(decision.mode, "direct");
+	assert.equal(decision.budget.maxSubagents, 0);
+	assert.deepEqual(decision.requiredTools, []);
+	assert.match(decision.reason, /direct execution boundary/i);
 });
 
 test("an explicit outcome dependency graph derives DAG parallelism and independent artifact verification", () => {
@@ -148,7 +168,8 @@ test("Agent runtime plans only after model Work Contract semantic admission", as
 
 	await runtime.run({ source: { platform: "cli", chatId: "contract-plan", chatType: "dm", userId: "local" }, text: request, timeoutMs: 1_000 }, (event) => { runEvents.push(event); });
 
-	assert.deepEqual(planningInput, contract);
+	assert.equal(planningInput.source, "model");
+	assert.deepEqual(planningInput.contract, contract);
 	assert.match(promptText, /basis=work_contract/);
 	assert.doesNotMatch(promptText, /basis=raw_prompt/);
 	assert.deepEqual(runEvents.filter((event) => event.type === "planning_decision"), [{
@@ -156,7 +177,7 @@ test("Agent runtime plans only after model Work Contract semantic admission", as
 		mode: "direct",
 		basis: "work_contract",
 		verificationDepth: "none",
-		contractId: "turn:work-contract",
+		contractIdSha256: "sha256:38043e0acec4ca928dd5c55a00b0ec8286da910a6331e19a192d7442a5574967",
 		outcomeCount: 0,
 		capabilityRequirementCount: 0,
 		artifactRequirementCount: 0,
@@ -165,6 +186,64 @@ test("Agent runtime plans only after model Work Contract semantic admission", as
 		maxSubagents: 0,
 		requiredTools: [],
 	}]);
+
+	const automationEvents = [];
+	await runtime.run({
+		source: { platform: "cli", chatId: "contract-plan-automation", chatType: "dm", userId: "local" },
+		text: request,
+		timeoutMs: 1_000,
+		mode: "automation",
+		executionEnvelope: createExecutionEnvelope({ executionId: "execution:contract-plan-automation", trigger: { kind: "automation", id: "schedule:contract-plan" } }),
+	}, (event) => { automationEvents.push(event); });
+	assert.deepEqual(automationEvents.filter((event) => event.type === "planning_decision").map((event) => event.basis), ["work_contract"]);
+	runtime.dispose();
+});
+
+test("the contract-derived correction budget bounds the real Objective verification loop", async () => {
+	const contract = workContract({ capabilityRequirements: [], executionMode: "direct" });
+	const tasks = new Map();
+	const runs = new Map();
+	const ledger = {
+		record(task) { tasks.set(task.id, { ...task }); },
+		transition(id, change) { tasks.set(id, { ...tasks.get(id), ...change }); return true; },
+		recordRun(run) { runs.set(run.id, { ...run }); },
+		transitionRun(id, change) { runs.set(id, { ...runs.get(id), ...change }); return true; },
+		queryTasks: () => [],
+	};
+	let prompts = 0;
+	let verifications = 0;
+	const executionEnvelopes = [];
+	const agent = { state: { model: { id: "test/model" }, messages: [] } };
+	const runtime = new BeeMaxAgentRuntime({
+		profileId: "profile:test",
+		taskLedger: ledger,
+		planningPolicy: new AutonomousPlanningPolicy({ maxCorrectiveAttempts: 0 }),
+		turnUnderstanding: { understand: () => ({ action: "create", goal: rawRequest, constraints: [], acceptanceCriteria: ["过去一周黄金走势"], uncertainties: [], memoryQuery: rawRequest, executionMode: "direct", confidence: 1 }) },
+		workContractBuilder: { build: async () => admission(contract) },
+		verifyObjectiveCandidate: async () => { verifications++; return { accepted: false, feedback: "缺少来源证据" }; },
+		createAgent: async () => ({
+			agent,
+			subscribe: () => () => undefined,
+			prompt: async () => {
+				prompts++;
+				agent.state.messages = [{ role: "assistant", content: [{ type: "text", text: "未验证草稿" }], usage: { input: 1, output: 1 } }];
+			},
+			abort: async () => undefined,
+			dispose: () => undefined,
+		}),
+	});
+
+	const result = await runtime.run({ source: { platform: "cli", chatId: "contract-correction-budget", chatType: "dm", userId: "local" }, text: rawRequest, timeoutMs: 1_000 }, (event) => {
+		if (event.type === "execution_started") executionEnvelopes.push(event.executionEnvelope);
+	});
+
+	assert.equal(prompts, 1, "a zero correction budget must not create a correction Turn");
+	assert.equal(verifications, 1);
+	assert.equal(executionEnvelopes[0]?.budget?.maxCorrectiveAttempts, 0);
+	assert.equal([...tasks.values()][0]?.correctiveAttempts, 0);
+	assert.equal([...tasks.values()][0]?.verificationStatus, "rejected");
+	assert.equal([...runs.values()][0]?.status, "failed");
+	assert.match(result.answer, /未通过独立 Verification/);
 	runtime.dispose();
 });
 
