@@ -1,6 +1,6 @@
 # Plan from the admitted Work Contract rather than raw prompt heuristics
 
-Label: `wayfinder:in-progress`
+Label: `wayfinder:resolved`
 
 ## Question
 
@@ -16,10 +16,16 @@ The admitted `executionMode` is an authority ceiling: `direct` cannot be escalat
 
 Planning events now expose the semantic basis, verification depth, a SHA-256 projection of contract identity, and requirement counts without copying business content into telemetry. Outcome dependencies are immutable, reference-validated, and cycle-checked in `beemax.open-world-contract.v1`.
 
-Implementation: `packages/core/src/autonomous-planning.ts`, `packages/core/src/agent-runtime.ts`, and `packages/core/src/open-world-contract.ts`. Public behavior: `packages/core/test/contract-driven-planning.test.mjs`.
+The default CLI and Gateway composition now install `PiOpenWorldContractCompiler`. It uses a primary model proposal and a separate reviewer, reserves both cognition lanes before Provider execution, shares the enclosing Execution Envelope token budget with Work Contract cognition, preserves criterion/Capability bindings by Core-issued index, and fails closed unless the reviewed graph passes the Open-World factory invariants.
 
-## Remaining before resolution
+Model admissions are projected into a bounded durable receipt containing the Work Contract digest, semantic adjudication evidence, cognition charge, signed validity window, complete Objective identity/revision-chain digest, and—when present—the reviewed Open-World graph snapshot and digest. The receipt is authenticated with a Profile-domain-separated HMAC key held outside Task storage; creation and restoration remain Core-internal, so public callers cannot mint a process-local planning brand. `MemoryStore` migrates and persists the receipt with the Objective, clears stale authority when an older correction writer omits a replacement receipt, and converges concurrent additive migrations.
 
-The default Agent Runtime still receives only the admitted Work Contract from `PiWorkContractBuilder`. A separately reviewed model compiler must produce the richer Open-World Contract during admission before Artifact/Evidence-derived verification depth and explicit outcome-graph DAG selection are active end to end. That compiler must share the cognition budget, preserve exact Work Contract bindings, and fail closed on invalid or incomplete graph output.
+A restarted Runtime verifies the HMAC before trusting digests or time fields, then revalidates the exact latest semantic Work Contract, the original Objective Contract and every ordered correction, TTL, strict bounded receipt shapes, adjudication evidence, graph references, and factory invariants before minting fresh process-local planning brands. Coordinated content rehashing, graph rehashing, expiry extension, cross-Profile replay, and earlier-revision rewriting all stop before Pi. Recognized pre-authentication v1 receipts are retired during migration rather than trusted or upgraded; their Objectives remain on the no-receipt compatibility path. Legacy Objectives without receipts are not represented as restored semantic planning, and a production Runtime without its Profile integrity authority fails closed before persisting model-admitted work.
 
-An Automation Trigger that performs fresh model admission receives contract-driven planning. Resuming an already durable Objective does not yet persist and revalidate the original semantic-adjudication receipt, so it intentionally does not reconstruct semantic contract planning from the stored bare Work Contract. Durable admission receipt persistence and expiry/revalidation rules remain required before that path can be called end to end.
+Implementation: `packages/core/src/autonomous-planning.ts`, `packages/core/src/agent-runtime.ts`, `packages/core/src/open-world-contract.ts`, `packages/core/src/open-world-contract-compiler.ts`, `packages/core/src/contract-admission-receipt.ts`, and `packages/memory/src/store.ts`.
+
+Public behavior: `packages/core/test/contract-driven-planning.test.mjs`, `packages/core/test/open-world-contract-compiler.test.mjs`, `packages/core/test/contract-admission-receipt.test.mjs`, and `packages/memory/test/store.test.mjs`.
+
+## Resolution boundary
+
+This resolves contract-derived planning and durable re-admission. It does not by itself prove that a particular business task can acquire every required Tool or produce and independently render-verify every requested Artifact. Those obligations remain in the progressive Tool/Skill, Capability Gap Resolver, Provider catalog, Artifact Verification, goal Verification, and real end-to-end evaluation tickets.

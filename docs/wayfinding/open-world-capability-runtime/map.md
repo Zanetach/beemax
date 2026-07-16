@@ -18,10 +18,10 @@ BeeMax can take an outcome-oriented request from any supported channel, compile 
 
 - [Open-world Capability and Outcome contracts](tickets/01-open-world-contracts.md): compile every source-bound Work Contract criterion into one immutable outcome node, reuse existing canonical Capability/Provider/Effect authorities, and require explicit Artifact and Evidence references without granting execution authority.
 - [Unattended authority, credential, and risk boundaries](tickets/02-unattended-authority.md): allow only current standing Profile authority for low-risk read-only or proven-reversible work, or an exact scoped Execution Grant for stronger actions; fail closed on ambiguity, credentials, scope, legal authority, policy, Effects, Emergency Stop, expiry, or revocation.
+- [Plan from the admitted Work Contract rather than raw prompt heuristics](tickets/03-contract-driven-planning.md): independently compile reviewed outcome graphs after Work Contract admission, derive execution shape and Verification from admitted contracts, persist Profile-authenticated admission receipts, and revalidate them before restored semantic planning.
 
 ## Frontier
 
-- [Plan from the admitted Work Contract rather than raw prompt heuristics](tickets/03-contract-driven-planning.md)
 - [Add progressive Tool search, describe, activate, and call](tickets/04-progressive-tool-disclosure.md)
 - [Add composable progressive Skill indexes, bundles, and lifecycles](tickets/05-progressive-skill-composition.md)
 - [Define typed artifact contracts and modality verifiers](tickets/09-artifact-verification.md)
