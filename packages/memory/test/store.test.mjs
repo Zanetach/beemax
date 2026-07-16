@@ -459,6 +459,25 @@ test("concurrent first-start processes converge an additive Contract admission m
 	} finally { rmSync(root, { recursive: true, force: true }); }
 });
 
+test("migration clears recognized unauthenticated v1 admissions without discarding their Objectives", () => {
+	const root = mkdtempSync(join(tmpdir(), "beemax-v1-contract-admission-migration-"));
+	const path = join(root, "memory.db");
+	try {
+		let store = new MemoryStore(path);
+		store.record({ id: "legacy-v1-admission", ownerKey: "owner", kind: "objective", title: "继续旧目标", status: "running", createdAt: 1 });
+		store.close();
+		const raw = new Database(path);
+		raw.prepare("UPDATE tasks SET contract_admission = ? WHERE id = ?").run(JSON.stringify({ schemaVersion: "beemax.durable-contract-admission.v1", workContractSha256: "sha256:untrusted" }), "legacy-v1-admission");
+		raw.close();
+
+		store = new MemoryStore(path);
+		const migrated = store.queryTasks({ ownerKeys: ["owner"], id: "legacy-v1-admission" })[0];
+		assert.equal(migrated.id, "legacy-v1-admission");
+		assert.equal(migrated.contractAdmission, undefined);
+		store.close();
+	} finally { rmSync(root, { recursive: true, force: true }); }
+});
+
 test("Task Ledger atomically revises an owner-scoped Objective idempotently across restart", () => {
 	const root = mkdtempSync(join(tmpdir(), "beemax-task-work-contract-corrections-"));
 	const path = join(root, "memory.db");

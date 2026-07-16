@@ -791,6 +791,11 @@ export class MemoryStore {
 		this.addColumnIfMissing("tasks", "access_scope_ref", "TEXT");
 		this.addColumnIfMissing("tasks", "work_contract", "TEXT");
 		this.addColumnIfMissing("tasks", "contract_admission", "TEXT");
+		// v1 receipts used co-stored, unkeyed digests and cannot be upgraded into
+		// authenticated authority. Remove only that recognized schema so the
+		// Objective resumes through the existing no-receipt compatibility path.
+		this.db.prepare("UPDATE tasks SET contract_admission = NULL WHERE contract_admission IS NOT NULL AND CASE WHEN json_valid(contract_admission) THEN json_extract(contract_admission, '$.schemaVersion') ELSE NULL END = ?")
+			.run("beemax.durable-contract-admission.v1");
 		this.addColumnIfMissing("tasks", "objective_revisions", "TEXT");
 		this.addColumnIfMissing("tasks", "business_context", "TEXT");
 		this.addColumnIfMissing("tasks", "artifacts", "TEXT");
