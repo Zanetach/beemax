@@ -13,8 +13,9 @@ import type { AgentControlHandler, AgentControlInput, AgentControlResult } from 
 import { conversationKey, responsibilityOwnerKey, responsibilityOwnerKeys } from "./agent-scope.ts";
 import type { ObjectiveCancellationResult, TaskKind, TaskLedger, TaskPlanRecord, TaskPlanStatus, TaskRecord, TaskRunRecord, TaskStatus } from "./task-ledger.ts";
 import type { AutonomousPlanningDecision, AutonomousPlanningPolicy, PlanningBudgetRegistry } from "./autonomous-planning.ts";
+import { createAdmittedWorkContractPlanningInput, type AdmittedWorkContractPlanningInput } from "./contract-planning-admission.ts";
 import { TurnUnderstandingEngine, selectTurnTools, type TurnUnderstanding, type TurnUnderstandingPort } from "./turn-understanding.ts";
-import { WorkContractCognitionError, hasSemanticWorkContractAdjudication, renderWorkContract, validateWorkContract, workContractFromLegacyObjective, workContractUnderstanding, type AdjudicatedModelWorkContractBuildResult, type WorkContract, type WorkContractBuilderPort, type WorkContractCognitionUsage } from "./work-contract.ts";
+import { WorkContractCognitionError, hasSemanticWorkContractAdjudication, renderWorkContract, validateWorkContract, workContractFromLegacyObjective, workContractUnderstanding, type WorkContract, type WorkContractBuilderPort, type WorkContractCognitionUsage } from "./work-contract.ts";
 import { redactCredentialMaterial } from "./credential-material.ts";
 import type { AccessScopeRef } from "./access-scope.ts";
 import { DeterministicSituationBuilder, type SituationBuilderPort } from "./situation-builder.ts";
@@ -326,7 +327,7 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 		// autonomous planning budget below governs only the subsequent Pi loop.
 		const cognitionTokenLimit = input.executionEnvelope?.budget?.maxTokens;
 		let workContract: WorkContract | undefined;
-		let planningContractAdmission: AdjudicatedModelWorkContractBuildResult | undefined;
+		let planningContractAdmission: Readonly<AdmittedWorkContractPlanningInput> | undefined;
 		let workContractCognitionUsage: WorkContractCognitionUsage | undefined;
 		let workContractCognitionBudgetChargeTokens = 0;
 		if (fallbackUnderstanding && explicitAutomationObjective && activeObjective) {
@@ -342,7 +343,7 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 				workContractCognitionUsage = built.cognitionUsage ?? built.semanticAdjudication?.cognitionUsage;
 				workContractCognitionBudgetChargeTokens = built.source === "model" ? built.cognitionBudgetChargeTokens : 0;
 				workContract = validateWorkContract(built.contract, input.text, { trustedContext, requireAcceptanceCriterion: built.source === "model", enforceFallbackUnderstanding: built.source !== "model" });
-				if (built.source === "model") planningContractAdmission = { ...built, contract: workContract };
+				if (built.source === "model") planningContractAdmission = createAdmittedWorkContractPlanningInput({ ...built, contract: workContract }, workContract);
 				if (built.source === "model" && workContract.confidence < this.minimumWorkContractConfidence) throw new Error(`Model Work Contract confidence ${workContract.confidence} is below the admission threshold ${this.minimumWorkContractConfidence}`);
 				const envelopeTokenLimit = input.executionEnvelope?.budget?.maxTokens;
 				if (envelopeTokenLimit !== undefined && workContractCognitionBudgetChargeTokens > envelopeTokenLimit) throw new Error(`Work Contract cognition exceeded the Execution Envelope token budget (${envelopeTokenLimit})`);

@@ -6,6 +6,7 @@ import {
 	WORK_CONTRACT_SCHEMA_VERSION,
 	createOpenWorldContract,
 } from "../dist/index.js";
+import { createAdmittedWorkContractPlanningInput } from "../dist/contract-planning-admission.js";
 
 const rawRequest = "研究过去一周黄金走势，输出 HTML 和 PDF";
 
@@ -32,7 +33,7 @@ function workContract() {
 
 function admittedWorkContract() {
 	const cognitionUsage = { inputTokens: 20, outputTokens: 10, cacheReadTokens: 0, cacheWriteTokens: 0, costUsd: 0.001, modelIdentities: ["primary/model", "reviewer/model"] };
-	return {
+	return createAdmittedWorkContractPlanningInput({
 		contract: workContract(), source: "model", cognitionUsage, cognitionBudgetChargeTokens: 100,
 		semanticAdjudication: {
 			schemaVersion: WORK_CONTRACT_ADJUDICATION_SCHEMA_VERSION,
@@ -40,7 +41,7 @@ function admittedWorkContract() {
 			primaryModelIdentity: "primary/model", reviewerModelIdentity: "reviewer/model", reviewMode: "different_models", independentSamples: true,
 			cognitionUsage, cognitionBudgetChargeTokens: 100,
 		},
-	};
+	});
 }
 
 test("an open-world contract binds every atomic outcome to capabilities, evidence, and requested artifacts", () => {
@@ -154,5 +155,5 @@ test("a structurally valid but semantically unadmitted Work Contract cannot ente
 		id: "contract:unadmitted",
 		admission: { contract: deterministic, source: "deterministic" },
 		outcomes: [], capabilityRequirements: [], artifactRequirements: [], evidenceRequirements: [],
-	}), /admitted Work Contract/i);
+	}), /runtime-admitted Work Contract/i);
 });

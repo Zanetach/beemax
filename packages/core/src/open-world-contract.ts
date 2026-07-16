@@ -1,5 +1,6 @@
 import { containsCredentialMaterial } from "./credential-material.ts";
-import { hasSemanticWorkContractAdjudication, validateWorkContract, type WorkContract, type WorkContractBuildResult, type WorkContractClause } from "./work-contract.ts";
+import { isAdmittedWorkContractPlanningInput, type AdmittedWorkContractPlanningInput } from "./contract-planning-admission.ts";
+import type { WorkContract, WorkContractClause } from "./work-contract.ts";
 
 export const OPEN_WORLD_CONTRACT_SCHEMA_VERSION = "beemax.open-world-contract.v1" as const;
 
@@ -48,7 +49,7 @@ export interface OpenWorldContract {
 
 export interface OpenWorldContractInput {
 	id: string;
-	admission: WorkContractBuildResult;
+	admission: AdmittedWorkContractPlanningInput;
 	outcomes: readonly {
 		id: string;
 		acceptanceCriterionIndex: number;
@@ -71,6 +72,7 @@ const CAPABILITY_OPERATIONS = new Set<CapabilityOperation>(["observe", "transfor
 const ARTIFACT_ROLES = new Set<ArtifactRole>(["intermediate", "deliverable", "state"]);
 const ARTIFACT_VERIFICATION_DIMENSIONS = new Set<ArtifactVerificationDimension>(["existence", "integrity", "semantic", "render", "consistency", "freshness", "delivery", "execution"]);
 const OUTCOME_EVIDENCE_KINDS = new Set<OutcomeEvidenceKind>(["observation", "effect", "artifact", "integrity", "semantic", "render", "consistency", "freshness", "delivery", "execution"]);
+const admittedOpenWorldContracts = new WeakSet<object>();
 
 /**
  * Compiles the semantic Work Contract into a domain-neutral outcome graph.
@@ -79,8 +81,8 @@ const OUTCOME_EVIDENCE_KINDS = new Set<OutcomeEvidenceKind>(["observation", "eff
  */
 export function createOpenWorldContract(input: OpenWorldContractInput): Readonly<OpenWorldContract> {
 	if (containsCredentialMaterial(JSON.stringify(input))) throw new Error("Open-world contract cannot contain credential material");
-	if (!input.admission || input.admission.source !== "model" || !hasSemanticWorkContractAdjudication(input.admission)) throw new Error("Open-world contract requires an admitted Work Contract with independent semantic adjudication");
-	const workContract = validateWorkContract(input.admission.contract, input.admission.contract.rawRequest);
+	if (!isAdmittedWorkContractPlanningInput(input.admission)) throw new Error("Open-world contract requires a runtime-admitted Work Contract planning handoff");
+	const workContract = input.admission.contract;
 	const id = reference(input.id, "contract id");
 	const outcomesInput = boundedList(input.outcomes, "outcomes", 1, 100);
 	const capabilitiesInput = boundedList(input.capabilityRequirements, "capability requirements", 0, 100);
@@ -130,7 +132,7 @@ export function createOpenWorldContract(input: OpenWorldContractInput): Readonly
 	assertAllReferenced(outcomes.flatMap((item) => item.artifactRequirementIds), artifactIds, "artifact requirement");
 	assertAllReferenced(outcomes.flatMap((item) => item.evidenceRequirementIds), evidenceIds, "evidence requirement");
 
-	return Object.freeze({
+	const contract = Object.freeze({
 		schemaVersion: OPEN_WORLD_CONTRACT_SCHEMA_VERSION,
 		id,
 		workContract: freezeWorkContract(workContract),
@@ -139,6 +141,13 @@ export function createOpenWorldContract(input: OpenWorldContractInput): Readonly
 		artifactRequirements: Object.freeze(artifacts),
 		evidenceRequirements: Object.freeze(evidence),
 	});
+	admittedOpenWorldContracts.add(contract);
+	return contract;
+}
+
+/** Package-internal provenance check; structural copies must be re-admitted by the factory. */
+export function isAdmittedOpenWorldContract(value: unknown): value is Readonly<OpenWorldContract> {
+	return Boolean(value && typeof value === "object" && admittedOpenWorldContracts.has(value));
 }
 
 function freezeWorkContract(contract: WorkContract): WorkContract {

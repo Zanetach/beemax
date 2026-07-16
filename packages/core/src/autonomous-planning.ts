@@ -1,5 +1,6 @@
-import { OPEN_WORLD_CONTRACT_SCHEMA_VERSION, type OpenWorldContract } from "./open-world-contract.ts";
-import { hasSemanticWorkContractAdjudication, validateWorkContract, type AdjudicatedModelWorkContractBuildResult, type WorkContract } from "./work-contract.ts";
+import { isAdmittedOpenWorldContract, type OpenWorldContract } from "./open-world-contract.ts";
+import { isAdmittedWorkContractPlanningInput, type AdmittedWorkContractPlanningInput } from "./contract-planning-admission.ts";
+import type { WorkContract } from "./work-contract.ts";
 
 export type AutonomousExecutionMode = "direct" | "delegate" | "dag";
 export type PlanningBasis = "raw_prompt" | "work_contract" | "open_world_contract";
@@ -45,7 +46,7 @@ export interface ContractPlanningCoverage {
 	parallelWidth: number;
 }
 
-export type ContractPlanningInput = AdjudicatedModelWorkContractBuildResult | OpenWorldContract;
+export type ContractPlanningInput = AdmittedWorkContractPlanningInput | OpenWorldContract;
 
 export interface AutonomousPlanningPolicyOptions {
 	maxConcurrent?: number;
@@ -77,7 +78,7 @@ export class AutonomousPlanningPolicy {
 
 	decide(input: string | ContractPlanningInput): AutonomousPlanningDecision {
 		if (typeof input !== "string") {
-			if (!isOpenWorldContract(input) && !isAdmittedWorkContractPlanningInput(input)) throw new Error("Contract-driven planning requires an admitted Work Contract with independent semantic adjudication");
+			if (!isAdmittedOpenWorldContract(input) && !isAdmittedWorkContractPlanningInput(input)) throw new Error("Contract-driven planning requires an admitted Work Contract handoff or factory-admitted Open-World Contract");
 			return this.decideContract(input);
 		}
 		const prompt = input;
@@ -138,11 +139,11 @@ export class AutonomousPlanningPolicy {
 	private decideContract(contract: ContractPlanningInput): AutonomousPlanningDecision {
 		let openWorld: OpenWorldContract | undefined;
 		let workContract: WorkContract;
-		if (isOpenWorldContract(contract)) {
+		if (isAdmittedOpenWorldContract(contract)) {
 			openWorld = contract;
 			workContract = contract.workContract;
 		} else {
-			workContract = validateWorkContract(contract.contract, contract.contract.rawRequest);
+			workContract = contract.contract;
 		}
 		const outcomeIds = openWorld?.outcomes.map((outcome) => outcome.id) ?? workContract.acceptanceCriteria.map((_, index) => `criterion:${index}`);
 		const capabilityRequirementIds = openWorld?.capabilityRequirements.map((requirement) => requirement.id) ?? workContract.capabilityRequirements.map((_, index) => `capability:${index}`);
@@ -187,6 +188,10 @@ export class AutonomousPlanningPolicy {
 			reason = "The admitted Contract contains substantial bounded work without a proven parallel outcome graph";
 		} else if (containsParentOnlyEffect) {
 			reason = "The admitted Contract includes an action or delivery Effect that remains in the parent Agent authority boundary";
+		}
+		if (contractForbidsDelegation(workContract) && mode !== "direct") {
+			mode = "direct";
+			reason = "The admitted Work Contract explicitly prohibits delegation";
 		}
 		if (workContract.executionMode === "direct" && mode !== "direct") {
 			mode = "direct";
@@ -284,16 +289,11 @@ function inspectPrompt(prompt: string): PlanningSignals {
 	return { complexity, independentWorkItems, requiresResearch, requiresVerification, requestsParallelism, substantialWork };
 }
 
-function isOpenWorldContract(value: unknown): value is OpenWorldContract {
-	return Boolean(value && typeof value === "object" && "schemaVersion" in value
-		&& (value as { schemaVersion?: unknown }).schemaVersion === OPEN_WORLD_CONTRACT_SCHEMA_VERSION);
-}
-
-function isAdmittedWorkContractPlanningInput(value: unknown): value is AdjudicatedModelWorkContractBuildResult {
-	return Boolean(value && typeof value === "object" && "contract" in value
-		&& (value as { contract?: unknown }).contract && typeof (value as { contract?: unknown }).contract === "object"
-		&& "source" in value && (value as { source?: unknown }).source === "model"
-		&& hasSemanticWorkContractAdjudication(value as AdjudicatedModelWorkContractBuildResult));
+function contractForbidsDelegation(contract: WorkContract): boolean {
+	const delegation = /\b(?:delegate|delegation|delegating|sub[\s-]?agents?|child\s+agents?|worker\s+agents?)\b|(?:委派|转派|分派给|子代理|子智能体|子\s*agent)/i;
+	const parentOnly = /\b(?:only\s+(?:the\s+)?(?:parent|main|primary|current)\s+agent|(?:parent|main|primary|current)\s+agent\s+only)\b|(?:仅|只)(?:允许|能|由|使用)?(?:父|主|当前)(?:代理|智能体|\s*agent)/i;
+	return contract.prohibitions.some((clause) => delegation.test(clause.text))
+		|| contract.constraints.some((clause) => parentOnly.test(clause.text));
 }
 
 function contractVerificationDepth(contract: OpenWorldContract | undefined, outcomeCount: number): PlanningVerificationDepth {

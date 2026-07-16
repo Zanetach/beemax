@@ -8,6 +8,7 @@ import {
 	createExecutionEnvelope,
 	createOpenWorldContract,
 } from "../dist/index.js";
+import { createAdmittedWorkContractPlanningInput } from "../dist/contract-planning-admission.js";
 
 const rawRequest = "并行深入调研过去一周黄金走势，输出 HTML 和 PDF";
 
@@ -53,13 +54,18 @@ function admission(contract) {
 	};
 }
 
+function planningAdmission(contract) {
+	return createAdmittedWorkContractPlanningInput(admission(contract));
+}
+
 test("an admitted atomic Work Contract, not raw prompt keywords, determines execution shape", () => {
 	const policy = new AutonomousPlanningPolicy();
 	const contract = workContract();
 	assert.throws(() => policy.decide(contract), /admitted Work Contract/i);
+	assert.throws(() => policy.decide(admission(contract)), /admitted Work Contract/i);
 	assert.throws(() => policy.decide(null), /admitted Work Contract/i);
 	assert.throws(() => policy.decide({ source: "model", contract: undefined }), /admitted Work Contract/i);
-	const decision = policy.decide(admission(contract));
+	const decision = policy.decide(planningAdmission(contract));
 
 	assert.equal(decision.basis, "work_contract");
 	assert.equal(decision.mode, "direct");
@@ -76,12 +82,33 @@ test("an admitted direct execution boundary cannot be escalated to delegation", 
 		capabilityRequirements: [clause("调研过去一周黄金走势"), clause("输出 HTML"), clause("PDF")],
 		executionMode: "direct",
 	});
-	const decision = new AutonomousPlanningPolicy().decide(admission(contract));
+	const decision = new AutonomousPlanningPolicy().decide(planningAdmission(contract));
 
 	assert.equal(decision.mode, "direct");
 	assert.equal(decision.budget.maxSubagents, 0);
 	assert.deepEqual(decision.requiredTools, []);
 	assert.match(decision.reason, /direct execution boundary/i);
+});
+
+test("an admitted prohibition against delegation keeps planned work in the parent Agent", () => {
+	const request = `${rawRequest}，不得使用子代理`;
+	const sourceClause = (text) => {
+		const start = request.indexOf(text);
+		return { text, source: { kind: "raw_request", start, end: start + text.length } };
+	};
+	const contract = workContract({
+		rawRequest: request,
+		objective: sourceClause(request),
+		prohibitions: [sourceClause("不得使用子代理")],
+		acceptanceCriteria: [sourceClause("过去一周黄金走势"), sourceClause("输出 HTML"), sourceClause("PDF")],
+		capabilityRequirements: [sourceClause("调研过去一周黄金走势"), sourceClause("输出 HTML"), sourceClause("PDF")],
+		executionMode: "plan",
+	});
+	const decision = new AutonomousPlanningPolicy().decide(planningAdmission(contract));
+
+	assert.equal(decision.mode, "direct");
+	assert.equal(decision.budget.maxSubagents, 0);
+	assert.match(decision.reason, /prohibits delegation/i);
 });
 
 test("an explicit outcome dependency graph derives DAG parallelism and independent artifact verification", () => {
@@ -91,7 +118,7 @@ test("an explicit outcome dependency graph derives DAG parallelism and independe
 	});
 	const openWorld = createOpenWorldContract({
 		id: "contract:gold-report",
-		admission: admission(contract),
+		admission: planningAdmission(contract),
 		outcomes: [
 			{ id: "outcome:research", acceptanceCriterionIndex: 0, capabilityRequirementIds: ["capability:research"], evidenceRequirementIds: ["evidence:sources"] },
 			{ id: "outcome:html", acceptanceCriterionIndex: 1, dependsOnOutcomeIds: ["outcome:research"], capabilityRequirementIds: ["capability:html"], artifactRequirementIds: ["artifact:html"], evidenceRequirementIds: ["evidence:html"] },
@@ -113,7 +140,9 @@ test("an explicit outcome dependency graph derives DAG parallelism and independe
 		],
 	});
 
-	const decision = new AutonomousPlanningPolicy({ maxConcurrent: 4, maxSubagents: 5 }).decide(openWorld);
+	const policy = new AutonomousPlanningPolicy({ maxConcurrent: 4, maxSubagents: 5 });
+	assert.throws(() => policy.decide(structuredClone(openWorld)), /factory-admitted Open-World Contract/i);
+	const decision = policy.decide(openWorld);
 
 	assert.equal(decision.basis, "open_world_contract");
 	assert.equal(decision.mode, "dag");
@@ -168,7 +197,7 @@ test("Agent runtime plans only after model Work Contract semantic admission", as
 
 	await runtime.run({ source: { platform: "cli", chatId: "contract-plan", chatType: "dm", userId: "local" }, text: request, timeoutMs: 1_000 }, (event) => { runEvents.push(event); });
 
-	assert.equal(planningInput.source, "model");
+	assert.equal(planningInput.admission.source, "model");
 	assert.deepEqual(planningInput.contract, contract);
 	assert.match(promptText, /basis=work_contract/);
 	assert.doesNotMatch(promptText, /basis=raw_prompt/);
@@ -254,7 +283,7 @@ test("an action or delivery outcome stays inside the parent authority boundary",
 	});
 	const openWorld = createOpenWorldContract({
 		id: "contract:publish-report",
-		admission: admission(contract),
+		admission: planningAdmission(contract),
 		outcomes: [{ id: "outcome:deliver", acceptanceCriterionIndex: 0, capabilityRequirementIds: ["capability:deliver"], artifactRequirementIds: ["artifact:html"], evidenceRequirementIds: ["evidence:delivery"] }],
 		capabilityRequirements: [{ id: "capability:deliver", workContractClauseIndex: 0, operation: "deliver", expectedOutputs: ["delivery-receipt"] }],
 		artifactRequirements: [{ id: "artifact:html", mediaType: "text/html", role: "deliverable", verification: ["integrity", "delivery"] }],
