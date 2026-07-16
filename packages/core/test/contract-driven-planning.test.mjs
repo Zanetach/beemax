@@ -13,10 +13,25 @@ import {
 import { createAdmittedWorkContractPlanningInput } from "../dist/contract-planning-admission.js";
 
 const rawRequest = "并行深入调研过去一周黄金走势，输出 HTML 和 PDF";
+const runtimeGoldRequest = "调研过去一周黄金走势；输出 HTML；PDF";
 
 function clause(text) {
 	const start = rawRequest.indexOf(text);
 	return { text, source: { kind: "raw_request", start, end: start + text.length } };
+}
+
+function runtimeGoldWorkContract() {
+	const localClause = (text) => {
+		const start = runtimeGoldRequest.indexOf(text);
+		return { text, source: { kind: "raw_request", start, end: start + text.length } };
+	};
+	return workContract({
+		rawRequest: runtimeGoldRequest,
+		objective: localClause("调研过去一周黄金走势"),
+		acceptanceCriteria: [localClause("调研过去一周黄金走势"), localClause("输出 HTML"), localClause("PDF")],
+		capabilityRequirements: [],
+		executionMode: "direct",
+	});
 }
 
 function workContract(overrides = {}) {
@@ -282,11 +297,7 @@ test("Agent runtime plans only after model Work Contract semantic admission", as
 });
 
 test("Agent runtime compiles a reviewed OpenWorld graph after Work Contract admission and shares the cognition budget", async () => {
-	const contract = workContract({
-		acceptanceCriteria: [clause("过去一周黄金走势"), clause("输出 HTML"), clause("PDF")],
-		capabilityRequirements: [],
-		executionMode: "direct",
-	});
+	const contract = runtimeGoldWorkContract();
 	let compilerBudget;
 	let planningInput;
 	let promptText = "";
@@ -294,7 +305,7 @@ test("Agent runtime compiles a reviewed OpenWorld graph after Work Contract admi
 	const agent = { state: { model: { id: "test/model" }, messages: [] } };
 	const runtime = new BeeMaxAgentRuntime({
 		profileId: "profile:test",
-		turnUnderstanding: { understand: () => ({ action: "create", goal: rawRequest, constraints: [], acceptanceCriteria: ["过去一周黄金走势", "输出 HTML", "PDF"], uncertainties: [], memoryQuery: rawRequest, executionMode: "direct", confidence: 1 }) },
+		turnUnderstanding: { understand: () => ({ action: "create", goal: runtimeGoldRequest, constraints: [], acceptanceCriteria: ["调研过去一周黄金走势", "输出 HTML", "PDF"], uncertainties: [], memoryQuery: runtimeGoldRequest, executionMode: "direct", confidence: 1 }) },
 		workContractBuilder: { build: async () => admission(contract) },
 		openWorldContractCompiler: { compile: async ({ admission: admitted, maxCognitionTokens }) => {
 			compilerBudget = maxCognitionTokens;
@@ -318,7 +329,7 @@ test("Agent runtime compiles a reviewed OpenWorld graph after Work Contract admi
 
 	const result = await runtime.run({
 		source: { platform: "cli", chatId: "open-world-plan", chatType: "dm", userId: "local" },
-		text: rawRequest,
+		text: runtimeGoldRequest,
 		timeoutMs: 1_000,
 		executionEnvelope: createExecutionEnvelope({ executionId: "execution:open-world-plan", trigger: { kind: "interaction" }, budget: { maxTokens: 1_000 } }),
 	});
@@ -332,11 +343,7 @@ test("Agent runtime compiles a reviewed OpenWorld graph after Work Contract admi
 });
 
 test("a restarted runtime revalidates the durable OpenWorld admission without rerunning cognition and rejects expiry before Pi", async () => {
-	const contract = workContract({
-		acceptanceCriteria: [clause("过去一周黄金走势"), clause("输出 HTML"), clause("PDF")],
-		capabilityRequirements: [],
-		executionMode: "direct",
-	});
+	const contract = runtimeGoldWorkContract();
 	const tasks = new Map();
 	const contractAdmissionIntegrity = createContractAdmissionReceiptIntegrity({ key: Buffer.alloc(32, 5), profileId: "profile:test" });
 	const ledger = {
@@ -367,13 +374,13 @@ test("a restarted runtime revalidates the durable OpenWorld admission without re
 		profileId: "profile:test",
 		taskLedger: ledger,
 		planningPolicy: new AutonomousPlanningPolicy(),
-		turnUnderstanding: { understand: () => ({ action: "create", goal: rawRequest, constraints: [], acceptanceCriteria: ["过去一周黄金走势", "输出 HTML", "PDF"], uncertainties: [], memoryQuery: rawRequest, executionMode: "direct", confidence: 1 }) },
+		turnUnderstanding: { understand: () => ({ action: "create", goal: runtimeGoldRequest, constraints: [], acceptanceCriteria: ["调研过去一周黄金走势", "输出 HTML", "PDF"], uncertainties: [], memoryQuery: runtimeGoldRequest, executionMode: "direct", confidence: 1 }) },
 		workContractBuilder: { build: async () => admission(contract) },
 		openWorldContractCompiler: { compile: async ({ admission: admitted }) => reviewedOpenWorldCompilation(admitted) },
 		contractAdmissionIntegrity,
 		createAgent: async () => agentFactory(),
 	});
-	await first.run({ source, text: rawRequest, timeoutMs: 1_000 });
+	await first.run({ source, text: runtimeGoldRequest, timeoutMs: 1_000 });
 	first.dispose();
 	const objective = [...tasks.values()][0];
 	assert.equal(objective.contractAdmission.schemaVersion, "beemax.durable-contract-admission.v2");
@@ -386,7 +393,7 @@ test("a restarted runtime revalidates the durable OpenWorld admission without re
 		profileId: "profile:test",
 		taskLedger: ledger,
 		planningPolicy: new AutonomousPlanningPolicy(),
-		turnUnderstanding: { understand: () => ({ action: "continue", goal: rawRequest, constraints: [], acceptanceCriteria: [], uncertainties: [], memoryQuery: rawRequest, executionMode: "direct", confidence: 1 }) },
+		turnUnderstanding: { understand: () => ({ action: "continue", goal: runtimeGoldRequest, constraints: [], acceptanceCriteria: [], uncertainties: [], memoryQuery: runtimeGoldRequest, executionMode: "direct", confidence: 1 }) },
 		workContractBuilder: { build: async () => { cognitionCalls++; throw new Error("must not rebuild an admitted Objective"); } },
 		openWorldContractCompiler: { compile: async () => { cognitionCalls++; throw new Error("must not recompile an admitted Objective"); } },
 		contractAdmissionIntegrity,
@@ -394,7 +401,7 @@ test("a restarted runtime revalidates the durable OpenWorld admission without re
 	});
 	await restored.run({
 		source,
-		text: rawRequest,
+		text: runtimeGoldRequest,
 		timeoutMs: 1_000,
 		mode: "automation",
 		objectiveTaskId: objective.id,
@@ -413,12 +420,12 @@ test("a restarted runtime revalidates the durable OpenWorld admission without re
 		taskLedger: ledger,
 		planningPolicy: new AutonomousPlanningPolicy(),
 		contractAdmissionIntegrity,
-		turnUnderstanding: { understand: () => ({ action: "continue", goal: rawRequest, constraints: [], acceptanceCriteria: [], uncertainties: [], memoryQuery: rawRequest, executionMode: "direct", confidence: 1 }) },
+		turnUnderstanding: { understand: () => ({ action: "continue", goal: runtimeGoldRequest, constraints: [], acceptanceCriteria: [], uncertainties: [], memoryQuery: runtimeGoldRequest, executionMode: "direct", confidence: 1 }) },
 		createAgent: async () => { expiredPiCalls++; return agentFactory(); },
 	});
 	await assert.rejects(expired.run({
 		source,
-		text: rawRequest,
+		text: runtimeGoldRequest,
 		timeoutMs: 1_000,
 		mode: "automation",
 		objectiveTaskId: objective.id,
@@ -469,8 +476,8 @@ test("a signed correction admission binds every earlier Objective revision befor
 		contractAdmissionIntegrity: integrity,
 		createAgent: async () => agentFactory(),
 	});
-	const initialContract = workContract({ capabilityRequirements: [], executionMode: "direct" });
-	const initial = createRuntime(initialContract, { action: "create", goal: rawRequest, constraints: [], acceptanceCriteria: ["过去一周黄金走势"], uncertainties: [], memoryQuery: rawRequest, executionMode: "direct", confidence: 1 });
+	const initialContract = workContract({ acceptanceCriteria: [clause(rawRequest)], capabilityRequirements: [], executionMode: "direct" });
+	const initial = createRuntime(initialContract, { action: "create", goal: rawRequest, constraints: [], acceptanceCriteria: [rawRequest], uncertainties: [], memoryQuery: rawRequest, executionMode: "direct", confidence: 1 });
 	await initial.run({ source, text: rawRequest, timeoutMs: 1_000 });
 	initial.dispose();
 	const objectiveId = [...tasks.keys()][0];
@@ -479,7 +486,7 @@ test("a signed correction admission binds every earlier Objective revision befor
 		rawRequest: text,
 		action: "correct",
 		targetObjective: { kind: "active_objective", id: objectiveId },
-		objective: { text: rawRequest, source: { kind: "active_objective", id: objectiveId } },
+		objective: { text, source: { kind: "raw_request", start: 0, end: text.length } },
 		constraints: [], prohibitions: [],
 		acceptanceCriteria: [{ text, source: { kind: "raw_request", start: 0, end: text.length } }],
 		capabilityRequirements: [], uncertainties: [], executionMode: "direct", confidence: 0.98,
@@ -511,12 +518,12 @@ test("a signed correction admission binds every earlier Objective revision befor
 test("a production runtime without a Profile integrity key blocks durable model work before Pi", async () => {
 	let piCalls = 0;
 	const tasks = [];
-	const contract = workContract({ capabilityRequirements: [], executionMode: "direct" });
+	const contract = workContract({ acceptanceCriteria: [clause(rawRequest)], capabilityRequirements: [], executionMode: "direct" });
 	const runtime = new BeeMaxAgentRuntime({
 		profileId: "profile:missing-integrity",
 		taskLedger: { record: (task) => tasks.push(task), transition: () => true, queryTasks: () => [], reviseObjective: () => undefined },
 		planningPolicy: new AutonomousPlanningPolicy(),
-		turnUnderstanding: { understand: () => ({ action: "create", goal: rawRequest, constraints: [], acceptanceCriteria: ["过去一周黄金走势"], uncertainties: [], memoryQuery: rawRequest, executionMode: "direct", confidence: 1 }) },
+		turnUnderstanding: { understand: () => ({ action: "create", goal: rawRequest, constraints: [], acceptanceCriteria: [rawRequest], uncertainties: [], memoryQuery: rawRequest, executionMode: "direct", confidence: 1 }) },
 		workContractBuilder: { build: async () => admission(contract) },
 		requireContractAdmissionIntegrity: true,
 		createAgent: async () => { piCalls++; throw new Error("Pi must not start"); },
@@ -529,7 +536,7 @@ test("a production runtime without a Profile integrity key blocks durable model 
 });
 
 test("the contract-derived correction budget bounds the real Objective verification loop", async () => {
-	const contract = workContract({ capabilityRequirements: [], executionMode: "direct" });
+	const contract = workContract({ acceptanceCriteria: [clause(rawRequest)], capabilityRequirements: [], executionMode: "direct" });
 	const tasks = new Map();
 	const runs = new Map();
 	const ledger = {
@@ -547,7 +554,7 @@ test("the contract-derived correction budget bounds the real Objective verificat
 		profileId: "profile:test",
 		taskLedger: ledger,
 		planningPolicy: new AutonomousPlanningPolicy({ maxCorrectiveAttempts: 0 }),
-		turnUnderstanding: { understand: () => ({ action: "create", goal: rawRequest, constraints: [], acceptanceCriteria: ["过去一周黄金走势"], uncertainties: [], memoryQuery: rawRequest, executionMode: "direct", confidence: 1 }) },
+		turnUnderstanding: { understand: () => ({ action: "create", goal: rawRequest, constraints: [], acceptanceCriteria: [rawRequest], uncertainties: [], memoryQuery: rawRequest, executionMode: "direct", confidence: 1 }) },
 		workContractBuilder: { build: async () => admission(contract) },
 		verifyObjectiveCandidate: async () => { verifications++; return { accepted: false, feedback: "缺少来源证据" }; },
 		createAgent: async () => ({
