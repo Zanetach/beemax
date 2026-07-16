@@ -291,9 +291,15 @@ function inspectPrompt(prompt: string): PlanningSignals {
 
 function contractForbidsDelegation(contract: WorkContract): boolean {
 	const delegation = /\b(?:delegate|delegation|delegating|sub[\s-]?agents?|child\s+agents?|worker\s+agents?)\b|(?:委派|转派|分派给|子代理|子智能体|子\s*agent)/i;
-	const parentOnly = /\b(?:only\s+(?:the\s+)?(?:parent|main|primary|current)\s+agent|(?:parent|main|primary|current)\s+agent\s+only)\b|(?:仅|只)(?:允许|能|由|使用)?(?:父|主|当前)(?:代理|智能体|\s*agent)/i;
 	return contract.prohibitions.some((clause) => delegation.test(clause.text))
-		|| contract.constraints.some((clause) => parentOnly.test(clause.text));
+		|| contract.constraints.some((clause) => requiresParentAgentExecution(clause.text));
+}
+
+function requiresParentAgentExecution(text: string): boolean {
+	const parentIdentity = /\b(?:the\s+)?(?:parent|main|primary|current)\s+agent\b|(?:父|主|当前)(?:代理|智能体|\s*agent)/i;
+	const exclusiveOrMandatory = /\b(?:only|exclusively|must|shall|required)\b|(?:只|仅|必须|所有|全部)/i;
+	const execution = /\b(?:execute|executed|execution|perform|performed|handle|handled|complete|completed|done|run|work|task|by)\b|(?:执行|完成|处理|工作|任务|由)/i;
+	return parentIdentity.test(text) && exclusiveOrMandatory.test(text) && execution.test(text);
 }
 
 function contractVerificationDepth(contract: OpenWorldContract | undefined, outcomeCount: number): PlanningVerificationDepth {

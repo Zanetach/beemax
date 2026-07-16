@@ -111,6 +111,29 @@ test("an admitted prohibition against delegation keeps planned work in the paren
 	assert.match(decision.reason, /prohibits delegation/i);
 });
 
+test("parent-only execution constraints keep planned work in the parent Agent across natural phrasings", () => {
+	for (const parentOnlyConstraint of ["所有工作必须由父代理执行", "只能由主代理执行", "must be executed by the parent agent"]) {
+		const request = `${rawRequest}，${parentOnlyConstraint}`;
+		const sourceClause = (text) => {
+			const start = request.indexOf(text);
+			return { text, source: { kind: "raw_request", start, end: start + text.length } };
+		};
+		const contract = workContract({
+			rawRequest: request,
+			objective: sourceClause(request),
+			constraints: [sourceClause(parentOnlyConstraint)],
+			acceptanceCriteria: [sourceClause("过去一周黄金走势"), sourceClause("输出 HTML"), sourceClause("PDF")],
+			capabilityRequirements: [sourceClause("调研过去一周黄金走势"), sourceClause("输出 HTML"), sourceClause("PDF")],
+			executionMode: "plan",
+		});
+		const decision = new AutonomousPlanningPolicy().decide(planningAdmission(contract));
+
+		assert.equal(decision.mode, "direct", parentOnlyConstraint);
+		assert.equal(decision.budget.maxSubagents, 0, parentOnlyConstraint);
+		assert.match(decision.reason, /prohibits delegation/i);
+	}
+});
+
 test("an explicit outcome dependency graph derives DAG parallelism and independent artifact verification", () => {
 	const contract = workContract({
 		acceptanceCriteria: [clause("调研过去一周黄金走势"), clause("输出 HTML"), clause("PDF")],
