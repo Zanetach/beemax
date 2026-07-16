@@ -14,7 +14,8 @@ import { conversationKey, responsibilityOwnerKey, responsibilityOwnerKeys } from
 import type { ObjectiveCancellationResult, TaskKind, TaskLedger, TaskPlanRecord, TaskPlanStatus, TaskRecord, TaskRunRecord, TaskStatus } from "./task-ledger.ts";
 import type { AutonomousPlanningDecision, AutonomousPlanningPolicy, PlanningBudgetRegistry } from "./autonomous-planning.ts";
 import { createAdmittedWorkContractPlanningInput, type AdmittedWorkContractPlanningInput } from "./contract-planning-admission.ts";
-import { OpenWorldContractCognitionError, hasSemanticOpenWorldContractAdjudication, type OpenWorldContractCompilerPort } from "./open-world-contract-compiler.ts";
+import { createDurableContractAdmissionReceipt, restoreDurableContractPlanningInput, type DurableContractAdmissionReceipt } from "./contract-admission-receipt.ts";
+import { OpenWorldContractCognitionError, hasSemanticOpenWorldContractAdjudication, type OpenWorldContractCompilationResult, type OpenWorldContractCompilerPort } from "./open-world-contract-compiler.ts";
 import type { OpenWorldContract } from "./open-world-contract.ts";
 import { TurnUnderstandingEngine, selectTurnTools, type TurnUnderstanding, type TurnUnderstandingPort } from "./turn-understanding.ts";
 import { WorkContractCognitionError, hasSemanticWorkContractAdjudication, renderWorkContract, validateWorkContract, workContractFromLegacyObjective, workContractUnderstanding, type WorkContract, type WorkContractBuilderPort, type WorkContractCognitionUsage } from "./work-contract.ts";
@@ -335,14 +336,23 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 		let workContract: WorkContract | undefined;
 		let planningContractAdmission: Readonly<AdmittedWorkContractPlanningInput> | undefined;
 		let planningContractInput: Readonly<AdmittedWorkContractPlanningInput> | Readonly<OpenWorldContract> | undefined;
+		let durableContractAdmission: Readonly<DurableContractAdmissionReceipt> | undefined;
 		let workContractCognitionUsage: WorkContractCognitionUsage | undefined;
 		let workContractCognitionBudgetChargeTokens = 0;
 		if (fallbackUnderstanding && explicitAutomationObjective && activeObjective) {
 			// Execute the already-admitted durable Contract. Reinterpreting its original
 			// description as a fresh lifecycle command can make an Objective self-cancel.
 			workContract = compileEffectiveObjectiveWorkContract(activeObjective);
+			if (activeObjective.contractAdmission) {
+				try {
+					planningContractInput = restoreDurableContractPlanningInput(activeObjective.contractAdmission, latestObjectiveSemanticWorkContract(activeObjective), startedAt);
+				} catch (error) {
+					throw new AgentRunError(`Durable Contract admission blocked: ${errorMessage(error)}`, true, error);
+				}
+			}
 		} else if (fallbackUnderstanding) {
 			try {
+				let openWorldCompilation: Readonly<OpenWorldContractCompilationResult> | undefined;
 				const activeObjectives = activeObjectiveCandidates.map((task) => ({ id: task.id, title: task.title }));
 				const trustedContext = { fallback: fallbackUnderstanding, activeObjectives, ...(compatibilityObjective ? { activeObjective: { id: compatibilityObjective.id, title: compatibilityObjective.title } } : {}) };
 				const built = await this.workContractBuilder.build({ rawRequest: input.text, ...trustedContext, ...(cognitionTokenLimit !== undefined ? { maxCognitionTokens: cognitionTokenLimit } : {}), ...(cognitionSignal ? { signal: cognitionSignal } : {}) });
@@ -364,12 +374,14 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 						...(cognitionSignal ? { signal: cognitionSignal } : {}),
 					});
 					if (!hasSemanticOpenWorldContractAdjudication(compiled)) throw new Error("OpenWorld Contract is missing independent semantic adjudication evidence");
+					openWorldCompilation = compiled;
 					planningContractInput = compiled.contract;
 					workContractCognitionUsage = mergeCognitionUsage(workContractCognitionUsage, compiled.cognitionUsage);
 					workContractCognitionBudgetChargeTokens += compiled.cognitionBudgetChargeTokens;
 				}
 				const envelopeTokenLimit = input.executionEnvelope?.budget?.maxTokens;
 				if (envelopeTokenLimit !== undefined && workContractCognitionBudgetChargeTokens > envelopeTokenLimit) throw new Error(`Work Contract cognition exceeded the Execution Envelope token budget (${envelopeTokenLimit})`);
+				if (planningContractAdmission) durableContractAdmission = createDurableContractAdmissionReceipt({ admission: planningContractAdmission, ...(openWorldCompilation ? { openWorldCompilation } : {}), admittedAt: startedAt });
 			} catch (error) {
 				if (error instanceof WorkContractCognitionError) {
 					workContractCognitionUsage = error.cognitionUsage;
@@ -448,16 +460,16 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 		})).situation : undefined;
 		if (activeObjective && understanding?.action === "correct") {
 			if (!workContract || !situation || !this.taskLedger || typeof this.taskLedger.reviseObjective !== "function") throw new AgentRunError("Durable Objective revision is unavailable", false, undefined);
-			const revision = this.taskLedger.reviseObjective(activeObjective.ownerKey, activeObjective.id, { workContract, situation }, startedAt);
+			const revision = this.taskLedger.reviseObjective(activeObjective.ownerKey, activeObjective.id, { workContract, situation, contractAdmission: durableContractAdmission ?? null }, startedAt);
 			if (!revision) throw new AgentRunError(`Objective ${activeObjective.id} could not retain its correction`, false, undefined);
-			activeObjective = { ...activeObjective, workContract: revision.originalWorkContract, situation: revision.revision.situation, objectiveRevisions: revision.revisions };
+			activeObjective = { ...activeObjective, workContract: revision.originalWorkContract, situation: revision.revision.situation, objectiveRevisions: revision.revisions, ...(durableContractAdmission ? { contractAdmission: durableContractAdmission } : { contractAdmission: undefined }) };
 		}
 		const accessScopeRef = activeObjective && referencesActiveObjective ? activeObjective.accessScopeRef ?? trustedInputAccessScope : trustedInputAccessScope;
 		const reusesActiveObjective = Boolean(activeObjective && (explicitAutomationObjective || workContract?.action === "continue" || workContract?.action === "correct"));
 		const objectiveBinding = explicitAutomationObjective && activeObjective
 			? { task: activeObjective, created: false }
 			: (responsibleAutomation || (interactive && shouldBindDurableObjective(input, understanding, planning) && !(workContract?.action === "query" && referencesActiveObjective)))
-				? this.createObjective(input, startedAt, situation, accessScopeRef, understanding?.acceptanceCriteria, workContract, reusesActiveObjective ? activeObjective : undefined)
+				? this.createObjective(input, startedAt, situation, accessScopeRef, understanding?.acceptanceCriteria, workContract, durableContractAdmission, reusesActiveObjective ? activeObjective : undefined)
 				: undefined;
 		const objective = objectiveBinding?.task;
 		const supportsTaskRuns = typeof this.taskLedger?.recordRun === "function" && typeof this.taskLedger?.transitionRun === "function";
@@ -1594,7 +1606,7 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 		try { this.executionTrace?.record(event); } catch { /* diagnostics must never interrupt Agent execution */ }
 	}
 
-	private createObjective(input: AgentRunInput<Source>, now: number, situation?: TaskRecord["situation"], accessScopeRef?: AccessScopeRef, acceptanceCriteria: string[] = [], workContract?: WorkContract, existingObjective?: TaskRecord): { task: TaskRecord; created: boolean } | undefined {
+	private createObjective(input: AgentRunInput<Source>, now: number, situation?: TaskRecord["situation"], accessScopeRef?: AccessScopeRef, acceptanceCriteria: string[] = [], workContract?: WorkContract, contractAdmission?: Readonly<DurableContractAdmissionReceipt>, existingObjective?: TaskRecord): { task: TaskRecord; created: boolean } | undefined {
 		if (!this.taskLedger || input.source.delegatedTask) return undefined;
 		const description = input.text.trim();
 		if (!description) return undefined;
@@ -1608,6 +1620,7 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 			executionScope: { ...input.source },
 			...(situation ? { situation: structuredClone(situation) } : {}),
 			...(workContract ? { workContract: structuredClone(workContract) } : {}),
+			...(contractAdmission ? { contractAdmission: structuredClone(contractAdmission) } : {}),
 			...(accessScopeRef ? { accessScopeRef: structuredClone(accessScopeRef) } : {}),
 		};
 		this.taskLedger.record(objective);
@@ -1750,6 +1763,10 @@ function compileEffectiveObjectiveWorkContract(objective: TaskRecord): WorkContr
 	// remains in the Task preservation envelope, while this projection is executable
 	// work instead of another lifecycle mutation against the same Objective.
 	return structuredClone({ ...revision, action: "create" });
+}
+
+function latestObjectiveSemanticWorkContract(objective: TaskRecord): WorkContract {
+	return structuredClone(objective.objectiveRevisions?.at(-1)?.workContract ?? objective.workContract ?? workContractFromLegacyObjective({ title: objective.title, description: objective.description }));
 }
 
 function objectiveObservableAcceptanceCriteria(acceptanceCriteria: readonly string[]): string {

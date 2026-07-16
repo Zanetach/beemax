@@ -7,7 +7,7 @@ import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { MemoryStore } from "../dist/index.js";
 import Database from "better-sqlite3";
-import { BeeMaxAgentRuntime, createAccessScopeRef, createSituation, createTaskCheckpoint, DeterministicWorkContractBuilder, interactionCompletionDeliveryKey, MUTATING_TOOL_POLICY, ObjectiveCompletionDeliveryService, ObjectiveRuntime, TaskGraph, TaskPlanNoticeDeliveryService, TaskPlanRuntime, TaskRecoveryRunner, TaskRecoveryService } from "@beemax/core";
+import { BeeMaxAgentRuntime, createAccessScopeRef, createAdmittedWorkContractPlanningInput, createDurableContractAdmissionReceipt, createSituation, createTaskCheckpoint, DeterministicWorkContractBuilder, interactionCompletionDeliveryKey, MUTATING_TOOL_POLICY, ObjectiveCompletionDeliveryService, ObjectiveRuntime, TaskGraph, TaskPlanNoticeDeliveryService, TaskPlanRuntime, TaskRecoveryRunner, TaskRecoveryService, WORK_CONTRACT_ADJUDICATION_SCHEMA_VERSION } from "@beemax/core";
 
 const claimWorker = fileURLToPath(new URL("./fixtures/task-plan-claim-worker.mjs", import.meta.url));
 
@@ -349,6 +349,49 @@ test("Task Ledger persists the validated Work Contract across restart", () => {
 		assert.deepEqual(store.queryTasks({ ownerKeys: ["owner"], id: "contract-task" })[0].workContract, workContract);
 		store.close();
 	} finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("Task Ledger persists a strict durable Contract admission receipt across restart and rejects corrupt storage", () => {
+	const root = mkdtempSync(join(tmpdir(), "beemax-task-contract-admission-"));
+	const path = join(root, "memory.db");
+	const rawRequest = "生成黄金报告";
+	const workContract = {
+		schemaVersion: "beemax.work-contract.v1", rawRequest, action: "create",
+		objective: { text: rawRequest, source: { kind: "raw_request", start: 0, end: rawRequest.length } },
+		constraints: [], prohibitions: [], acceptanceCriteria: [{ text: "黄金报告", source: { kind: "raw_request", start: 2, end: 6 } }],
+		capabilityRequirements: [], uncertainties: [], executionMode: "direct", confidence: 0.97,
+	};
+	const cognitionUsage = { inputTokens: 12, outputTokens: 8, cacheReadTokens: 0, cacheWriteTokens: 0, costUsd: 0.001, modelIdentities: ["primary/model", "reviewer/model"] };
+	const built = {
+		contract: workContract,
+		source: "model",
+		cognitionUsage,
+		cognitionBudgetChargeTokens: 20,
+		semanticAdjudication: {
+			schemaVersion: WORK_CONTRACT_ADJUDICATION_SCHEMA_VERSION,
+			inventorySchemaVersion: "beemax.semantic-inventory.v1",
+			primaryModelIdentity: "primary/model",
+			reviewerModelIdentity: "reviewer/model",
+			reviewMode: "different_models",
+			independentSamples: true,
+			cognitionUsage,
+			cognitionBudgetChargeTokens: 20,
+		},
+	};
+	const contractAdmission = createDurableContractAdmissionReceipt({ admission: createAdmittedWorkContractPlanningInput(built), admittedAt: 100, ttlMs: 10_000 });
+	let store = new MemoryStore(path);
+	try {
+		store.record({ id: "admitted-contract-task", ownerKey: "owner", kind: "objective", title: "生成黄金报告", status: "running", createdAt: 100, workContract, contractAdmission });
+		store.close();
+		store = new MemoryStore(path);
+		assert.deepEqual(store.queryTasks({ ownerKeys: ["owner"], id: "admitted-contract-task" })[0].contractAdmission, contractAdmission);
+		store.close();
+		const raw = new Database(path);
+		raw.prepare("UPDATE tasks SET contract_admission = ? WHERE id = ?").run('{"schemaVersion":"tampered"}', "admitted-contract-task");
+		raw.close();
+		store = new MemoryStore(path);
+		assert.throws(() => store.queryTasks({ ownerKeys: ["owner"], id: "admitted-contract-task" }), /Contract admission/i);
+	} finally { try { store.close(); } catch {} rmSync(root, { recursive: true, force: true }); }
 });
 
 test("Task Ledger atomically revises an owner-scoped Objective idempotently across restart", () => {

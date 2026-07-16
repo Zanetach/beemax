@@ -16,7 +16,7 @@ import type { Database as DatabaseType } from "better-sqlite3";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { createHash, randomUUID } from "node:crypto";
-import { AUTONOMY_LEVELS, MAX_OBJECTIVE_REVISIONS, containsCredentialMaterial, createAccessScopeRef, createEnterprisePolicyPublisher, createSituation, decodeStoredWorkContract, interactionCompletionDeliveryKey, multilingualLexicalTerms, objectiveCompletionId, parseTaskCheckpoint, redactCredentialMaterial, renderTaskCheckpoint, unavailableTaskCriterionVerifications, workContractFromLegacyObjective, type AutonomyLevel, type AutonomyRolloutEvidence, type AutonomyRolloutRecord, type AutonomyRolloutStateStore, type CompensationProof, type ConversationMemoryPort, type DeliveryReceipt, type DeliveryTarget, type DirectObjectiveCompletionSettlement, type DurableInitiativeTrigger, type DurableInitiativeTriggerInput, type EmergencyStopRecord, type EnterprisePolicyPublisher, type InitiativeObservation, type InitiativeObservationInput, type InitiativeObservationStore, type InitiativeScope, type InitiativeTriggerInbox, type ObjectiveCancellationResult, type ObjectiveCompletion, type ObjectiveCompletionOutbox, type ObjectiveInterruptionRecord, type OrganizationKnowledgeHit, type OrganizationKnowledgeRecall, type ReversibleActionControlPort, type Situation, type TaskCandidateVerificationResolution, type TaskCheckpoint, type TaskDependency, type TaskLedger, type TaskPlanCompletionNotice, type TaskPlanNoticeOutbox, type TaskPlanQuery, type TaskPlanRecord, type TaskPlanTransition, type TaskQuery, type TaskRecord as RuntimeTaskRecord, type TaskRecoveryResult, type TaskRunAndTaskSuccessSettlement, type TaskRunEffectStateReader, type TaskRunRecord, type TaskRunTransition, type TaskTransition } from "@beemax/core";
+import { AUTONOMY_LEVELS, MAX_OBJECTIVE_REVISIONS, containsCredentialMaterial, createAccessScopeRef, createEnterprisePolicyPublisher, createSituation, decodeDurableContractAdmissionReceipt, decodeStoredWorkContract, interactionCompletionDeliveryKey, multilingualLexicalTerms, objectiveCompletionId, parseTaskCheckpoint, redactCredentialMaterial, renderTaskCheckpoint, unavailableTaskCriterionVerifications, workContractFromLegacyObjective, type AutonomyLevel, type AutonomyRolloutEvidence, type AutonomyRolloutRecord, type AutonomyRolloutStateStore, type CompensationProof, type ConversationMemoryPort, type DeliveryReceipt, type DeliveryTarget, type DirectObjectiveCompletionSettlement, type DurableContractAdmissionReceipt, type DurableInitiativeTrigger, type DurableInitiativeTriggerInput, type EmergencyStopRecord, type EnterprisePolicyPublisher, type InitiativeObservation, type InitiativeObservationInput, type InitiativeObservationStore, type InitiativeScope, type InitiativeTriggerInbox, type ObjectiveCancellationResult, type ObjectiveCompletion, type ObjectiveCompletionOutbox, type ObjectiveInterruptionRecord, type OrganizationKnowledgeHit, type OrganizationKnowledgeRecall, type ReversibleActionControlPort, type Situation, type TaskCandidateVerificationResolution, type TaskCheckpoint, type TaskDependency, type TaskLedger, type TaskPlanCompletionNotice, type TaskPlanNoticeOutbox, type TaskPlanQuery, type TaskPlanRecord, type TaskPlanTransition, type TaskQuery, type TaskRecord as RuntimeTaskRecord, type TaskRecoveryResult, type TaskRunAndTaskSuccessSettlement, type TaskRunEffectStateReader, type TaskRunRecord, type TaskRunTransition, type TaskTransition } from "@beemax/core";
 
 export const MEMORY_CLAIM_KINDS = ["preference", "fact", "decision", "goal", "project", "relationship", "workflow", "exception"] as const;
 const EPISODE_STATUSES = new Set<OrganizationMemoryEpisodeStatus>(["candidate", "verified", "conflicted", "superseded"]);
@@ -403,6 +403,7 @@ export class MemoryStore {
 				situation TEXT,
 				access_scope_ref TEXT,
 				work_contract TEXT,
+				contract_admission TEXT,
 				objective_revisions TEXT,
 				business_context TEXT,
 				status TEXT NOT NULL CHECK (status IN ('pending', 'running', 'succeeded', 'failed', 'cancelled')),
@@ -788,6 +789,7 @@ export class MemoryStore {
 		this.addColumnIfMissing("tasks", "situation", "TEXT");
 		this.addColumnIfMissing("tasks", "access_scope_ref", "TEXT");
 		this.addColumnIfMissing("tasks", "work_contract", "TEXT");
+		this.addColumnIfMissing("tasks", "contract_admission", "TEXT");
 		this.addColumnIfMissing("tasks", "objective_revisions", "TEXT");
 		this.addColumnIfMissing("tasks", "business_context", "TEXT");
 		this.addColumnIfMissing("tasks", "artifacts", "TEXT");
@@ -1767,9 +1769,11 @@ export class MemoryStore {
 	hasTask(id: string): boolean { return Boolean(this.db.prepare("SELECT 1 FROM tasks WHERE id = ? LIMIT 1").get(id)); }
 
 	record(task: RuntimeTaskRecord): void {
-		this.db.prepare(`INSERT INTO tasks (id, owner_key, kind, title, description, acceptance_criteria, recovery_policy, idempotency_key, execution_scope, situation, access_scope_ref, work_contract, objective_revisions, status, parent_id, plan_id, evidence, artifacts, unresolved_issues, verification_outcome, verification_feedback, verification_requirements, criterion_verifications, corrective_attempts, created_at, started_at, finished_at, result, candidate_result, error, checkpoint, checkpoint_at, routes, route_index, updated_at)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-			.run(task.id, task.ownerKey, task.kind, task.title, safeTaskText(task.description), task.acceptanceCriteria ?? null, task.recoveryPolicy ?? "never", task.idempotencyKey ?? null, task.executionScope ? JSON.stringify(task.executionScope) : null, task.situation ? JSON.stringify(task.situation) : null, task.accessScopeRef ? JSON.stringify(task.accessScopeRef) : null, safeStoredWorkContract(task.workContract), safeStoredObjectiveRevisions(task.objectiveRevisions, task.id), task.status, task.parentId ?? null, task.planId ?? null, safeTaskText(task.evidence), safeTaskArtifacts(task.artifacts), safeUnresolvedIssues(task.unresolvedIssues), task.verificationStatus ?? null, safeTaskText(task.verificationFeedback), safeVerificationRequirements(task.verificationRequirements), safeCriterionVerifications(task.criterionVerifications), task.correctiveAttempts ?? 0, task.createdAt, task.startedAt ?? null, task.finishedAt ?? null, safeTaskText(task.result), safeTaskText(task.candidateResult), safeTaskText(task.error), task.checkpoint ? renderTaskCheckpoint(task.checkpoint) : null, task.checkpointAt ?? null, task.routes ? JSON.stringify(task.routes) : null, task.routeIndex ?? 0, task.createdAt);
+		const contractAdmission = safeStoredContractAdmission(task.contractAdmission);
+		if (task.contractAdmission && !contractAdmission) throw new Error("Task Contract admission is invalid");
+		this.db.prepare(`INSERT INTO tasks (id, owner_key, kind, title, description, acceptance_criteria, recovery_policy, idempotency_key, execution_scope, situation, access_scope_ref, work_contract, contract_admission, objective_revisions, status, parent_id, plan_id, evidence, artifacts, unresolved_issues, verification_outcome, verification_feedback, verification_requirements, criterion_verifications, corrective_attempts, created_at, started_at, finished_at, result, candidate_result, error, checkpoint, checkpoint_at, routes, route_index, updated_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+			.run(task.id, task.ownerKey, task.kind, task.title, safeTaskText(task.description), task.acceptanceCriteria ?? null, task.recoveryPolicy ?? "never", task.idempotencyKey ?? null, task.executionScope ? JSON.stringify(task.executionScope) : null, task.situation ? JSON.stringify(task.situation) : null, task.accessScopeRef ? JSON.stringify(task.accessScopeRef) : null, safeStoredWorkContract(task.workContract), contractAdmission, safeStoredObjectiveRevisions(task.objectiveRevisions, task.id), task.status, task.parentId ?? null, task.planId ?? null, safeTaskText(task.evidence), safeTaskArtifacts(task.artifacts), safeUnresolvedIssues(task.unresolvedIssues), task.verificationStatus ?? null, safeTaskText(task.verificationFeedback), safeVerificationRequirements(task.verificationRequirements), safeCriterionVerifications(task.criterionVerifications), task.correctiveAttempts ?? 0, task.createdAt, task.startedAt ?? null, task.finishedAt ?? null, safeTaskText(task.result), safeTaskText(task.candidateResult), safeTaskText(task.error), task.checkpoint ? renderTaskCheckpoint(task.checkpoint) : null, task.checkpointAt ?? null, task.routes ? JSON.stringify(task.routes) : null, task.routeIndex ?? 0, task.createdAt);
 	}
 
 	updateSituation(ownerKey: string, taskId: string, situation: NonNullable<RuntimeTaskRecord["situation"]>): boolean {
@@ -1777,11 +1781,13 @@ export class MemoryStore {
 			.run(JSON.stringify(situation), Date.now(), taskId, ownerKey).changes === 1;
 	}
 
-	reviseObjective(ownerKey: string, taskId: string, revision: { workContract: NonNullable<RuntimeTaskRecord["workContract"]>; situation: NonNullable<RuntimeTaskRecord["situation"]> }, now = Date.now()): ReturnType<TaskLedger["reviseObjective"]> {
+	reviseObjective(ownerKey: string, taskId: string, revision: { workContract: NonNullable<RuntimeTaskRecord["workContract"]>; situation: NonNullable<RuntimeTaskRecord["situation"]>; contractAdmission?: Readonly<DurableContractAdmissionReceipt> | null }, now = Date.now()): ReturnType<TaskLedger["reviseObjective"]> {
 		const encodedCorrection = safeStoredWorkContract(revision.workContract);
+		const updatesContractAdmission = Object.prototype.hasOwnProperty.call(revision, "contractAdmission");
+		const encodedContractAdmission = revision.contractAdmission ? safeStoredContractAdmission(revision.contractAdmission) : null;
 		const objectiveSource = revision.workContract.objective.source;
 		const targetObjectiveId = revision.workContract.targetObjective?.id ?? (objectiveSource.kind === "active_objective" ? objectiveSource.id : undefined);
-		if (!encodedCorrection || revision.workContract.action !== "correct" || targetObjectiveId !== taskId) return undefined;
+		if (!encodedCorrection || (revision.contractAdmission && !encodedContractAdmission) || revision.workContract.action !== "correct" || targetObjectiveId !== taskId) return undefined;
 		let encodedSituation: string;
 		try { encodedSituation = JSON.stringify(createSituation(revision.situation)); }
 		catch { return undefined; }
@@ -1798,14 +1804,20 @@ export class MemoryStore {
 			if (row.objective_revisions !== null && !parsed) return undefined;
 			const existing = parsed ?? [];
 			const last = existing.at(-1);
-			if (last && safeStoredWorkContract(last.workContract) === encodedCorrection) return { originalWorkContract, revision: last, revisions: existing };
+			if (last && safeStoredWorkContract(last.workContract) === encodedCorrection) {
+				if (updatesContractAdmission) this.db.prepare("UPDATE tasks SET contract_admission = ?, updated_at = ? WHERE id = ? AND owner_key = ?").run(encodedContractAdmission, now, taskId, ownerKey);
+				return { originalWorkContract, revision: last, revisions: existing };
+			}
 			if (existing.length >= MAX_OBJECTIVE_REVISIONS) return undefined;
 			const objectiveRevision: NonNullable<RuntimeTaskRecord["objectiveRevisions"]>[number] = { id: `${taskId}:revision:${existing.length + 1}`, workContract: revision.workContract, situation: createSituation(revision.situation), createdAt: now };
 			const next = [...existing, objectiveRevision];
 			const encoded = safeStoredObjectiveRevisions(next, taskId);
 			if (!encoded) return undefined;
-			const updated = this.db.prepare("UPDATE tasks SET work_contract = ?, objective_revisions = ?, situation = ?, updated_at = ? WHERE id = ? AND owner_key = ? AND kind = 'objective' AND status IN ('pending', 'running')")
-				.run(encodedOriginal, encoded, encodedSituation, now, taskId, ownerKey).changes === 1;
+			const updated = updatesContractAdmission
+				? this.db.prepare("UPDATE tasks SET work_contract = ?, contract_admission = ?, objective_revisions = ?, situation = ?, updated_at = ? WHERE id = ? AND owner_key = ? AND kind = 'objective' AND status IN ('pending', 'running')")
+					.run(encodedOriginal, encodedContractAdmission, encoded, encodedSituation, now, taskId, ownerKey).changes === 1
+				: this.db.prepare("UPDATE tasks SET work_contract = ?, objective_revisions = ?, situation = ?, updated_at = ? WHERE id = ? AND owner_key = ? AND kind = 'objective' AND status IN ('pending', 'running')")
+					.run(encodedOriginal, encoded, encodedSituation, now, taskId, ownerKey).changes === 1;
 			return updated ? { originalWorkContract, revision: objectiveRevision, revisions: next } : undefined;
 		})();
 	}
@@ -3258,7 +3270,7 @@ interface EventRow {
 }
 
 interface RuntimeTaskRow {
-	id: string; owner_key: string; kind: RuntimeTaskRecord["kind"]; title: string; description: string | null; acceptance_criteria: string | null; recovery_policy: RuntimeTaskRecord["recoveryPolicy"]; idempotency_key: string | null; execution_scope: string | null; situation: string | null; access_scope_ref: string | null; work_contract: string | null; objective_revisions: string | null; business_context: string | null; status: RuntimeTaskRecord["status"];
+	id: string; owner_key: string; kind: RuntimeTaskRecord["kind"]; title: string; description: string | null; acceptance_criteria: string | null; recovery_policy: RuntimeTaskRecord["recoveryPolicy"]; idempotency_key: string | null; execution_scope: string | null; situation: string | null; access_scope_ref: string | null; work_contract: string | null; contract_admission: string | null; objective_revisions: string | null; business_context: string | null; status: RuntimeTaskRecord["status"];
 	parent_id: string | null; plan_id: string | null; evidence: string | null; artifacts: string | null; unresolved_issues: string | null; verification_outcome: RuntimeTaskRecord["verificationStatus"] | null; verification_feedback: string | null; verification_requirements: string | null; criterion_verifications: string | null; verification_attempts: number; verification_retry_at: number | null; corrective_attempts: number; created_at: number; started_at: number | null; finished_at: number | null; result: string | null; candidate_result: string | null; error: string | null;
 	checkpoint: string | null; checkpoint_at: number | null; routes: string | null; route_index: number; effect_receipts: string | null;
 }
@@ -3410,6 +3422,7 @@ function mapRuntimeTask(row: RuntimeTaskRow): RuntimeTaskRecord {
 	const situation = parseSituation(row.situation);
 	const accessScopeRef = parseAccessScopeRef(row.access_scope_ref);
 	const workContract = parseStoredWorkContract(row.work_contract);
+	const contractAdmission = parseStoredContractAdmission(row.contract_admission);
 	const objectiveRevisions = parseStoredObjectiveRevisions(row.objective_revisions, row.id);
 	const businessContext = parseBusinessContext(row.business_context);
 	const artifacts = parseTaskArtifacts(row.artifacts);
@@ -3427,6 +3440,7 @@ function mapRuntimeTask(row: RuntimeTaskRow): RuntimeTaskRecord {
 		...(situation ? { situation } : {}),
 		...(accessScopeRef ? { accessScopeRef } : {}),
 		...(workContract ? { workContract } : {}),
+		...(contractAdmission ? { contractAdmission } : {}),
 		...(objectiveRevisions?.length ? { objectiveRevisions } : {}),
 		...(businessContext ? { businessContext } : {}),
 		...(row.parent_id === null ? {} : { parentId: row.parent_id }),
@@ -3653,6 +3667,20 @@ function safeStoredWorkContract(value: RuntimeTaskRecord["workContract"]): strin
 		const encoded = JSON.stringify(value);
 		return parseStoredWorkContract(encoded) ? encoded : null;
 	} catch { return null; }
+}
+
+function safeStoredContractAdmission(value: RuntimeTaskRecord["contractAdmission"]): string | null {
+	if (!value) return null;
+	try {
+		const decoded = decodeDurableContractAdmissionReceipt(value);
+		return JSON.stringify(decoded);
+	} catch { return null; }
+}
+
+function parseStoredContractAdmission(value: string | null): RuntimeTaskRecord["contractAdmission"] {
+	if (value === null) return undefined;
+	try { return decodeDurableContractAdmissionReceipt(JSON.parse(value)); }
+	catch (error) { throw new Error(`Stored Contract admission is invalid: ${error instanceof Error ? error.message : String(error)}`); }
 }
 
 function safeStoredObjectiveRevisions(value: RuntimeTaskRecord["objectiveRevisions"], taskId: string): string | null {

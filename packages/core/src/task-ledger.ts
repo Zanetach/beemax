@@ -4,6 +4,7 @@ import type { AccessScopeRef } from "./access-scope.ts";
 import type { Situation } from "./situation.ts";
 import type { TaskCheckpoint } from "./task-checkpoint.ts";
 import type { WorkContract } from "./work-contract.ts";
+import type { DurableContractAdmissionReceipt } from "./contract-admission-receipt.ts";
 
 export type TaskKind = "objective" | "delegated" | "automation";
 export const MAX_OBJECTIVE_REVISIONS = 20;
@@ -103,6 +104,8 @@ export interface TaskRecord {
 	situation?: Situation;
 	/** Validated immutable request contract retained across compaction and restart. */
 	workContract?: WorkContract;
+	/** Content-bound semantic admission proof; revalidated before restored Contract planning. */
+	contractAdmission?: Readonly<DurableContractAdmissionReceipt>;
 	/** Ordered, bounded amendments to the original Work Contract; history is retained instead of silently overwritten. */
 	objectiveRevisions?: ObjectiveRevision[];
 	/** Opaque authorization provenance established outside the model loop. */
@@ -182,7 +185,7 @@ export interface TaskLedger {
 	record(task: TaskRecord): void;
 	transition(id: string, change: TaskTransition): boolean;
 	updateSituation?(ownerKey: string, taskId: string, situation: Situation): boolean;
-	reviseObjective(ownerKey: string, taskId: string, revision: Pick<ObjectiveRevision, "workContract" | "situation">, now?: number): ObjectiveRevisionResult | undefined;
+	reviseObjective(ownerKey: string, taskId: string, revision: Pick<ObjectiveRevision, "workContract" | "situation"> & { contractAdmission?: Readonly<DurableContractAdmissionReceipt> | null }, now?: number): ObjectiveRevisionResult | undefined;
 	updateVerificationRequirements?(ownerKey: string, taskId: string, requirements: TaskVerificationRequirement[]): boolean;
 	retryObjective?(ownerKey: string, id: string, now?: number): boolean;
 	cancelObjective?(ownerKey: string, id: string, now?: number): ObjectiveCancellationResult | undefined;

@@ -330,6 +330,99 @@ test("Agent runtime compiles a reviewed OpenWorld graph after Work Contract admi
 	runtime.dispose();
 });
 
+test("a restarted runtime revalidates the durable OpenWorld admission without rerunning cognition and rejects expiry before Pi", async () => {
+	const contract = workContract({
+		acceptanceCriteria: [clause("过去一周黄金走势"), clause("输出 HTML"), clause("PDF")],
+		capabilityRequirements: [],
+		executionMode: "direct",
+	});
+	const tasks = new Map();
+	const ledger = {
+		record(task) { tasks.set(task.id, structuredClone(task)); },
+		transition(id, change) { const task = tasks.get(id); if (!task) return false; tasks.set(id, { ...task, ...structuredClone(change) }); return true; },
+		queryTasks(query) {
+			return [...tasks.values()].filter((task) => query.ownerKeys.includes(task.ownerKey)
+				&& (!query.id || task.id === query.id)
+				&& (!query.kinds || query.kinds.includes(task.kind))
+				&& (!query.statuses || query.statuses.includes(task.status)));
+		},
+	};
+	const source = { platform: "cli", chatId: "durable-open-world", chatType: "dm", userId: "local" };
+	const agentFactory = () => {
+		const agent = { state: { model: { id: "test/model" }, messages: [] } };
+		return {
+			agent,
+			getAllTools: () => [],
+			getActiveToolNames: () => [],
+			setActiveToolsByName: () => undefined,
+			subscribe: () => () => undefined,
+			prompt: async () => { agent.state.messages = [{ role: "assistant", content: [{ type: "text", text: "已执行" }], usage: { input: 1, output: 1 } }]; },
+			abort: async () => undefined,
+			dispose: () => undefined,
+		};
+	};
+	const first = new BeeMaxAgentRuntime({
+		profileId: "profile:test",
+		taskLedger: ledger,
+		planningPolicy: new AutonomousPlanningPolicy(),
+		turnUnderstanding: { understand: () => ({ action: "create", goal: rawRequest, constraints: [], acceptanceCriteria: ["过去一周黄金走势", "输出 HTML", "PDF"], uncertainties: [], memoryQuery: rawRequest, executionMode: "direct", confidence: 1 }) },
+		workContractBuilder: { build: async () => admission(contract) },
+		openWorldContractCompiler: { compile: async ({ admission: admitted }) => reviewedOpenWorldCompilation(admitted) },
+		createAgent: async () => agentFactory(),
+	});
+	await first.run({ source, text: rawRequest, timeoutMs: 1_000 });
+	first.dispose();
+	const objective = [...tasks.values()][0];
+	assert.equal(objective.contractAdmission.schemaVersion, "beemax.durable-contract-admission.v1");
+	assert.equal(objective.contractAdmission.openWorld.snapshot.id, "contract:runtime-gold-report");
+
+	let cognitionCalls = 0;
+	let piCalls = 0;
+	const restoredEvents = [];
+	const restored = new BeeMaxAgentRuntime({
+		profileId: "profile:test",
+		taskLedger: ledger,
+		planningPolicy: new AutonomousPlanningPolicy(),
+		turnUnderstanding: { understand: () => ({ action: "continue", goal: rawRequest, constraints: [], acceptanceCriteria: [], uncertainties: [], memoryQuery: rawRequest, executionMode: "direct", confidence: 1 }) },
+		workContractBuilder: { build: async () => { cognitionCalls++; throw new Error("must not rebuild an admitted Objective"); } },
+		openWorldContractCompiler: { compile: async () => { cognitionCalls++; throw new Error("must not recompile an admitted Objective"); } },
+		createAgent: async () => { piCalls++; return agentFactory(); },
+	});
+	await restored.run({
+		source,
+		text: rawRequest,
+		timeoutMs: 1_000,
+		mode: "automation",
+		objectiveTaskId: objective.id,
+		executionEnvelope: createExecutionEnvelope({ executionId: "execution:durable-restore", trigger: { kind: "automation", id: "schedule:durable-restore" } }),
+	}, (event) => { restoredEvents.push(event); });
+	assert.equal(cognitionCalls, 0);
+	assert.equal(piCalls, 1);
+	assert.deepEqual(restoredEvents.filter((event) => event.type === "planning_decision").map((event) => event.basis), ["open_world_contract"]);
+	restored.dispose();
+
+	const current = tasks.get(objective.id);
+	tasks.set(objective.id, { ...current, contractAdmission: { ...structuredClone(current.contractAdmission), admittedAt: 0, expiresAt: 1 } });
+	let expiredPiCalls = 0;
+	const expired = new BeeMaxAgentRuntime({
+		profileId: "profile:test",
+		taskLedger: ledger,
+		planningPolicy: new AutonomousPlanningPolicy(),
+		turnUnderstanding: { understand: () => ({ action: "continue", goal: rawRequest, constraints: [], acceptanceCriteria: [], uncertainties: [], memoryQuery: rawRequest, executionMode: "direct", confidence: 1 }) },
+		createAgent: async () => { expiredPiCalls++; return agentFactory(); },
+	});
+	await assert.rejects(expired.run({
+		source,
+		text: rawRequest,
+		timeoutMs: 1_000,
+		mode: "automation",
+		objectiveTaskId: objective.id,
+		executionEnvelope: createExecutionEnvelope({ executionId: "execution:expired-restore", trigger: { kind: "automation", id: "schedule:expired-restore" } }),
+	}), /admission receipt expired/i);
+	assert.equal(expiredPiCalls, 0);
+	expired.dispose();
+});
+
 test("the contract-derived correction budget bounds the real Objective verification loop", async () => {
 	const contract = workContract({ capabilityRequirements: [], executionMode: "direct" });
 	const tasks = new Map();
