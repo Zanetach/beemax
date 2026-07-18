@@ -4,13 +4,13 @@ Label: `wayfinder:map`
 
 ## Destination
 
-BeeMax can take an outcome-oriented request from any supported channel, compile it into a complete Work Contract, progressively discover and load only the Tools and Skills needed, recover from missing capabilities without weakening the goal, execute unattended within pre-authorized boundaries, and deliver independently verified artifacts. The destination is a versioned architecture specification, implementation sequence, and real end-to-end release gate—not a claim that every external system can be used without credentials or authority.
+BeeMax can take an outcome-oriented request from any supported channel, let the main model understand and adapt ordinary interactive work, progressively discover and load only the Tools and Skills needed, recover from missing capabilities without weakening the goal, and deliver guarded text or files. Durable/background responsibility is compiled into a complete Work Contract and independently verified. The destination is a versioned architecture specification, implementation sequence, and real end-to-end release gate—not a claim that every external system can be used without credentials or authority.
 
 ## Notes
 
 - This effort carries execution into the map: every unblocked AFK ticket may be implemented without waiting for user participation.
 - Use primary-source design evidence and current BeeMax code. Reference patterns from other systems, but never import their Agent runtime, product identity, prompts, or unrestricted installers.
-- Preserve BeeMax's sole Pi execution loop, source-bound Work Contract, Profile/Access Scope, Tool Spec authority, Effect journal, Task recovery, independent Verification, and release external-Agent boundary.
+- Preserve BeeMax's sole Pi execution loop, model-first interactive lane, source-bound durable Work Contract, Profile/Access Scope, Tool Spec authority, Effect journal, Task recovery, independent Verification, and release external-Agent boundary.
 - “No user operation” means the runtime proceeds autonomously for read-only and pre-authorized reversible work. Missing credentials, absent legal authority, irreversible high-risk actions, and materially ambiguous user intent remain honest blockers; the runtime must not manufacture consent or secrets.
 - Every implementation ticket requires focused tests and must keep deterministic, live-Provider, live-Pi, and real end-to-end evidence separate.
 
@@ -19,6 +19,7 @@ BeeMax can take an outcome-oriented request from any supported channel, compile 
 - [Open-world Capability and Outcome contracts](tickets/01-open-world-contracts.md): compile every source-bound Work Contract criterion into one immutable outcome node, reuse existing canonical Capability/Provider/Effect authorities, and require explicit Artifact and Evidence references without granting execution authority.
 - [Unattended authority, credential, and risk boundaries](tickets/02-unattended-authority.md): allow only current standing Profile authority for low-risk read-only or proven-reversible work, or an exact scoped Execution Grant for stronger actions; fail closed on ambiguity, credentials, scope, legal authority, policy, Effects, Emergency Stop, expiry, or revocation.
 - [Plan from the admitted Work Contract rather than raw prompt heuristics](tickets/03-contract-driven-planning.md): independently compile reviewed outcome graphs after Work Contract admission, derive execution shape and Verification from admitted contracts, persist Profile-authenticated admission receipts, and revalidate them before restored semantic planning.
+- [Make ordinary interactive execution model-first](tickets/13-model-first-interactive-loop.md): send ordinary natural-language work directly to the main Pi model, retain adaptive planning and progressive Tool/Skill loading, and reserve Work Contracts plus durable Objective persistence for Automation and explicit Objective lifecycle work.
 
 ## Frontier
 

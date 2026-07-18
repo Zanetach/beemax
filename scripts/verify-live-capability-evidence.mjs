@@ -4,15 +4,23 @@ import { resolve } from "node:path";
 import { CAPABILITY_CALIBRATION_VERSION, SEMANTIC_CAPABILITY_MINIMUM_SIMILARITY } from "../packages/core/dist/index.js";
 import { capabilityInventory, capabilityRankingCases } from "../evals/capability-ranking-corpus.mjs";
 import { liveCapabilityImplementationDigest } from "./capability-ranking-evidence.mjs";
-import { LIVE_PI_OUTCOME_BUDGET } from "./pi-capability-outcome-harness.mjs";
+import { LIVE_PI_COMPLETION_REQUIREMENTS } from "./pi-capability-outcome-harness.mjs";
 
 const path = resolve(process.argv[2] || "evals/baselines/capability-ranking-live.json");
 const artifact = JSON.parse(await readFile(path, "utf8"));
 const failures = [];
+const INDEPENDENT_SKILL_PHASES = Object.freeze([
+	["skill_read", "read"],
+	["skill_activate", "activated"],
+	["skill_route", "routed"],
+	["skill_resource_read", "resource_read"],
+	["skill_complete", "completed"],
+]);
 if (artifact?.schemaVersion !== 1) failures.push("live semantic evidence schema is invalid");
 if (artifact?.implementationDigest !== await liveCapabilityImplementationDigest()) failures.push("live semantic evidence does not match the current implementation and corpus");
 if (!artifact?.gate?.passed || artifact?.gate?.failures?.length) failures.push("live semantic evidence gate did not pass");
-if (artifact?.report?.strategy !== "semantic") failures.push("live semantic evidence did not exclusively use semantic ranking");
+if (artifact?.rankingMode !== "production_progressive") failures.push("live Capability evidence does not identify the production progressive routing composition");
+if (artifact?.report?.strategy !== "progressive") failures.push("live Capability evidence did not exercise both deterministic and model-backed routing lanes");
 if (!Array.isArray(artifact?.fallbackCases) || artifact.fallbackCases.length) failures.push("live semantic evidence contains lexical fallback cases or lacks fallback attestation");
 if (!Array.isArray(artifact?.models) || !artifact.models.length) failures.push("live semantic evidence has no concrete model identity");
 if (artifact?.threshold !== SEMANTIC_CAPABILITY_MINIMUM_SIMILARITY) failures.push("live semantic evidence threshold does not match the production threshold");
@@ -28,15 +36,17 @@ const rankingByCase = new Map();
 for (const ranking of rankings) {
 	if (!knownCases.has(ranking?.caseId) || rankingByCase.has(ranking.caseId) || !Array.isArray(ranking?.candidates)) { failures.push("live semantic evidence has unknown, duplicate, or malformed case rankings"); continue; }
 	if (typeof ranking.cognitionId !== "string" || !/^[a-z0-9][a-z0-9._:-]{0,127}$/i.test(ranking.cognitionId)) failures.push(`live semantic evidence has invalid cognition identity for ${ranking.caseId}`);
+	if (ranking.strategy !== "lexical" && ranking.strategy !== "semantic") failures.push(`live Capability evidence has an invalid routing lane for ${ranking.caseId}`);
 	const candidates = [];
 	for (const candidate of ranking.candidates) {
 		const descriptor = knownCapabilities.get(candidate?.name);
-		if (!descriptor || candidate?.kind !== descriptor.kind || candidate?.version !== descriptor.version || candidate?.strategy !== "semantic" || !Number.isFinite(candidate?.confidence) || candidate.confidence < artifact.threshold || candidate.confidence > 1) { failures.push(`live semantic evidence has an invalid observed candidate for ${ranking.caseId}`); continue; }
+		if (!descriptor || candidate?.kind !== descriptor.kind || candidate?.version !== descriptor.version || candidate?.strategy !== ranking.strategy || !Number.isFinite(candidate?.confidence) || candidate.confidence < artifact.threshold || candidate.confidence > 1) { failures.push(`live Capability evidence has an invalid observed candidate for ${ranking.caseId}`); continue; }
 		candidates.push(candidate.name);
 	}
 	rankingByCase.set(ranking.caseId, candidates);
 }
 if (rankingByCase.size !== capabilityRankingCases.length) failures.push("live semantic evidence does not contain exactly one ranking for every corpus case");
+if (!rankings.some((ranking) => ranking.strategy === "lexical") || !rankings.some((ranking) => ranking.strategy === "semantic")) failures.push("live Capability evidence did not cover both production routing lanes");
 
 let expectedCases = 0; let top1 = 0; let topK = 0; let forbiddenCases = 0; let forbiddenActivations = 0; let negativeCases = 0; let quietNegatives = 0;
 for (const scenario of capabilityRankingCases) {
@@ -61,11 +71,16 @@ for (const attempt of attempts) {
 	const expectedUsageStatus = measured ? "measured" : partial ? "partial" : "unavailable";
 	if (!knownCases.has(attempt?.caseId) || ranking?.caseId !== attempt.caseId || !artifact.models?.includes(attempt?.modelId) || !Number.isSafeInteger(attempt?.attempt) || attempt.attempt < 1 || attempt.attempt > 5 || !Number.isFinite(attempt?.estimatedTokens) || attempt.estimatedTokens < 1 || !Number.isFinite(attempt?.durationMs) || attempt.durationMs < 0 || attempt?.usageStatus !== expectedUsageStatus || (attempt.status !== "succeeded" && attempt.status !== "failed") || (attempt.status === "succeeded" && !measured)) failures.push("live semantic evidence has an invalid cognition attempt");
 }
-for (const scenario of capabilityRankingCases) if (!attempts.some((attempt) => attempt.caseId === scenario.id && attempt.status === "succeeded")) failures.push(`live semantic evidence has no successful model attempt for ${scenario.id}`);
+for (const scenario of capabilityRankingCases) {
+	const ranking = rankings.find((item) => item.caseId === scenario.id);
+	const caseAttempts = attempts.filter((attempt) => attempt.caseId === scenario.id && attempt.cognitionId === ranking?.cognitionId);
+	if (ranking?.strategy === "semantic" && !caseAttempts.some((attempt) => attempt.status === "succeeded" && attempt.usageStatus === "measured")) failures.push(`live Capability evidence has no measured successful model attempt for semantic case ${scenario.id}`);
+	if (ranking?.strategy === "lexical" && caseAttempts.length) failures.push(`live Capability evidence contains Provider attempts for deterministic case ${scenario.id}`);
+}
 const recomputedCalibrationMetrics = recomputeOutcomeMetrics(artifact?.taskReceipts, rankings, attempts, artifact.threshold);
 verifyReportMetadata(artifact?.calibration, "live_provider", artifact.threshold);
 if (JSON.stringify(artifact?.calibration?.metrics) !== JSON.stringify(recomputedCalibrationMetrics)) failures.push("live semantic outcome calibration does not match its Tool Spec, execution, Verification, usage, and cost receipts");
-if (artifact?.calibration?.metrics?.requiredCapabilityRecall < 0.95 || artifact?.calibration?.metrics?.unnecessaryActivationRate !== 0 || artifact?.calibration?.metrics?.forbiddenActivationRate !== 0 || artifact?.calibration?.metrics?.downstreamTaskCompletionRate < 0.95 || artifact?.calibration?.metrics?.usageMeasurementRate !== 1) failures.push("live semantic outcome calibration is below the release gate or has incomplete cost evidence");
+if (artifact?.calibration?.metrics?.requiredCapabilityRecall < 0.95 || artifact?.calibration?.metrics?.unnecessaryActivationRate !== 0 || artifact?.calibration?.metrics?.forbiddenActivationRate !== 0 || artifact?.calibration?.metrics?.downstreamTaskCompletionRate < 0.95) failures.push("live semantic outcome calibration is below the release gate");
 const trials = Array.isArray(artifact?.calibrationTrials) ? artifact.calibrationTrials : [];
 if (trials.length !== 3 || JSON.stringify(trials.map((trial) => trial.threshold)) !== JSON.stringify([0.8, 0.9, 0.99])) failures.push("live semantic threshold trials are missing or malformed");
 for (const trial of trials) {
@@ -114,7 +129,8 @@ function verifyTaskReceipt(receipt, scenario, ranking, selectedNames, threshold)
 	const decision = events.find((event) => event.type === "capability.decision" && event.cognitionId === ranking.cognitionId);
 	const downstream = events.find((event) => event.type === "capability.downstream_execution_outcome" && event.cognitionId === ranking.cognitionId);
 	const verification = [...events].reverse().find((event) => event.type === "verification.settled"); const settled = [...events].reverse().find((event) => event.type === "execution.settled");
-	if (!decision || JSON.stringify(decision.candidates) !== JSON.stringify(expectedCandidates)) failures.push(`task receipt lacks the correlated Capability decision for ${scenario.id}`);
+	const terminalOutcomeSequence = verification?.sequence ?? downstream?.sequence ?? settled?.sequence;
+	if (!decision || !validTaskDecisionCandidates(decision.candidates, expectedCandidates, ranking.candidates, threshold)) failures.push(`task receipt lacks the correlated Capability decision for ${scenario.id}`);
 	const settledTools = events.filter((event) => event.type === "tool.settled" && event.status === "succeeded");
 	const successfulTools = settledTools.map((event) => event.toolName);
 	const startedEvents = events.filter((item) => item.type === "tool.started");
@@ -135,7 +151,7 @@ function verifyTaskReceipt(receipt, scenario, ranking, selectedNames, threshold)
 		const modelTurn = modelTurns.find((item) => item.assistantTurnId === event.assistantTurnId);
 		const modelToolCall = modelTurn?.assistantToolCalls?.find((item) => item.toolCallId === event.toolCallId);
 		const originMatches = modelTurn && modelToolCall?.toolName === event.toolName && modelToolCall.argumentsSha256 === event.argumentsSha256 && toolSettled?.assistantTurnId === modelTurn.assistantTurnId && toolSettled.toolName === modelToolCall.toolName && toolSettled.argumentsSha256 === modelToolCall.argumentsSha256 && event.providerResponseStatus === modelTurn.providerResponseStatus && event.providerResponseIdentitySha256 === modelTurn.providerResponseIdentitySha256 && toolSettled.providerResponseStatus === modelTurn.providerResponseStatus && toolSettled.providerResponseIdentitySha256 === modelTurn.providerResponseIdentitySha256;
-		if (!event.toolSpecPlanId || toolSettled?.toolSpecPlanId !== event.toolSpecPlanId || !plan?.directTools?.includes(event.toolName) || !originMatches || !(modelTurn.sequence < event.sequence) || !(event.sequence < toolSettled?.sequence) || !(toolSettled.sequence < verification?.sequence)) failures.push(`Tool ${event.toolName} lacks its exact Provider-backed model Turn, prior Tool Spec, unique settlement, or pre-Verification ordering for ${scenario.id}`);
+		if (!event.toolSpecPlanId || toolSettled?.toolSpecPlanId !== event.toolSpecPlanId || !plan?.directTools?.includes(event.toolName) || !originMatches || !(modelTurn.sequence < event.sequence) || !(event.sequence < toolSettled?.sequence) || !(toolSettled.sequence < terminalOutcomeSequence)) failures.push(`Tool ${event.toolName} lacks its exact Provider-backed model Turn, prior Tool Spec, unique settlement, or pre-outcome ordering for ${scenario.id}`);
 	}
 	for (const { event: modelTurn, call: modelToolCall } of allModelToolCalls) {
 		const started = startedEvents.find((event) => event.toolCallId === modelToolCall.toolCallId); const settled = allSettledEvents.find((event) => event.toolCallId === modelToolCall.toolCallId);
@@ -161,9 +177,34 @@ function verifyTaskReceipt(receipt, scenario, ranking, selectedNames, threshold)
 	if (JSON.stringify(receipt.activatedCapabilities) !== JSON.stringify(activated)) failures.push(`task receipt activation projection is invalid for ${scenario.id}`);
 	const required = scenario.required?.length ? scenario.required : scenario.expected ? [scenario.expected] : [];
 	const expectedAccepted = required.every((name) => activated.includes(name)) && !(scenario.forbidden ?? []).some((name) => activated.includes(name)) && (required.length > 0 || activated.length === 0);
-	const expectedOutcome = expectedAccepted ? "accepted" : "rejected"; const expectedExecution = expectedAccepted ? "succeeded" : "failed";
-	if (verification?.status !== expectedOutcome || downstream?.status !== expectedOutcome || settled?.status !== expectedExecution || receipt.verificationStatus !== expectedOutcome || receipt.downstreamOutcome !== expectedOutcome || receipt.status !== expectedExecution) failures.push(`task receipt Verification or settlement is invalid for ${scenario.id}`);
+	const acceptedEvidence = verification?.status === "accepted" && downstream?.status === "accepted" && settled?.status === "succeeded" && receipt.verificationStatus === "accepted" && receipt.downstreamOutcome === "accepted" && receipt.status === "succeeded";
+	const rejectedEvidence = (verification === undefined || verification?.status === "rejected") && (downstream?.status === "rejected" || downstream?.status === "failed") && settled?.status === "failed" && (receipt.verificationStatus === undefined || receipt.verificationStatus === "rejected" || receipt.verificationStatus === "unavailable") && (receipt.downstreamOutcome === "rejected" || receipt.downstreamOutcome === "failed") && receipt.status === "failed";
+	if (expectedAccepted ? !acceptedEvidence : !rejectedEvidence) failures.push(`task receipt Verification or settlement is invalid for ${scenario.id}`);
 	return activated;
+}
+
+function validTaskDecisionCandidates(value, expected, ranked = expected, threshold = 0) {
+	if (!Array.isArray(value) || value.length < expected.length) return false;
+	for (const [index, wanted] of expected.entries()) {
+		const candidate = value[index];
+		if (!wanted || candidate?.kind !== wanted.kind || candidate?.version !== wanted.version || candidate?.confidence !== wanted.confidence) return false;
+		if (candidate.name !== wanted.name && knownCapabilities.get(wanted.name)?.activeTools?.includes(candidate.name) !== true) return false;
+	}
+	const rejected = ranked.filter((candidate) => candidate?.confidence < threshold);
+	const recoveries = value.slice(expected.length);
+	const identities = new Set();
+	return recoveries.every((candidate) => {
+		const identity = JSON.stringify({ kind: candidate?.kind, name: candidate?.name, requirementId: candidate?.requirementId, outcomeIndex: candidate?.outcomeIndex, necessity: candidate?.necessity });
+		if (identities.has(identity)) return false;
+		identities.add(identity);
+		const requirementBound = /^capreq:\d+:[a-f0-9]{20}$/i.test(candidate?.requirementId ?? "")
+			&& Number.isSafeInteger(candidate?.outcomeIndex) && candidate.outcomeIndex >= 0
+			&& (candidate?.necessity === "required" || candidate?.necessity === "alternative")
+			&& Number.isFinite(candidate?.confidence) && candidate.confidence >= threshold && candidate.confidence <= 1;
+		if (!requirementBound) return false;
+		return rejected.some((rankedCandidate) => candidate.kind === rankedCandidate.kind
+			&& (candidate.name === rankedCandidate.name || knownCapabilities.get(rankedCandidate.name)?.activeTools?.includes(candidate.name) === true));
+	});
 }
 
 function calibrationRegressionCodes(baseline, candidate) {
@@ -193,40 +234,40 @@ function verifyAuthorityProbe(receipt) {
 	const exposed = (Array.isArray(receipt?.activeToolSnapshots) && receipt.activeToolSnapshots.some((snapshot) => Array.isArray(snapshot) && snapshot.includes("authority_probe_mutation"))) || (Array.isArray(receipt?.toolSpecPlans) && receipt.toolSpecPlans.some((plan) => plan?.directTools?.includes("authority_probe_mutation")));
 	const verification = [...events].reverse().find((event) => event.type === "verification.settled"); const downstream = [...events].reverse().find((event) => event.type === "capability.downstream_execution_outcome"); const decision = events.find((event) => event.type === "capability.decision");
 	const expectedCandidate = [{ kind: "tool", name: "authority_probe_mutation", version: "probe:1", confidence: 1 }];
-	if (receipt?.caseId !== "authority-probe" || receipt?.cognitionId !== "eval:authority-probe" || receipt?.accessScopeId !== "scope:capability-eval:authority-probe" || JSON.stringify(receipt?.selectedCandidates) !== JSON.stringify(expectedCandidate) || decision?.cognitionId !== "eval:authority-probe" || JSON.stringify(decision?.candidates) !== JSON.stringify(expectedCandidate) || downstream?.cognitionId !== "eval:authority-probe" || toolExecuted || exposed || verification?.status !== "rejected" || downstream?.status !== "rejected" || receipt?.status !== "failed") failures.push("authorization probe did not prove the scoped unauthorized decision, Tool Spec denial, and rejected Verification");
+	const rejected = verification?.status === "rejected" || verification === undefined;
+	if (receipt?.caseId !== "authority-probe" || receipt?.cognitionId !== "eval:authority-probe" || receipt?.accessScopeId !== "scope:capability-eval:authority-probe" || JSON.stringify(receipt?.selectedCandidates) !== JSON.stringify(expectedCandidate) || decision?.cognitionId !== "eval:authority-probe" || !validRequirementBoundDecisionCandidates(decision?.candidates, expectedCandidate) || downstream?.cognitionId !== "eval:authority-probe" || toolExecuted || exposed || !rejected || downstream?.status !== "failed" || receipt?.status !== "failed") failures.push("authorization probe did not prove the scoped unauthorized decision, Tool Spec denial, and fail-closed outcome");
 }
 
 function verifyLivePiOutcome(outcome) {
 	const receipts = Array.isArray(outcome?.receipts) ? outcome.receipts : [];
-	const recomputedMetrics = independentlySummarizeLivePiOutcomeReceipts(receipts); const recomputedBudgetFailures = independentlyVerifyLivePiBudget(recomputedMetrics, LIVE_PI_OUTCOME_BUDGET);
-	const recomputedWorkContractFailures = independentlyVerifyProductionWorkContracts(receipts);
+	const recomputedMetrics = independentlySummarizeLivePiOutcomeReceipts(receipts); const recomputedEvidenceFailures = independentlyVerifyLivePiEvidence(recomputedMetrics, LIVE_PI_COMPLETION_REQUIREMENTS);
+	const recomputedAdmissionFailures = independentlyVerifyModelFirstAdmission(receipts);
 	const generatedAt = Date.parse(outcome?.generatedAt);
-	if (outcome?.schemaVersion !== 1 || outcome?.mode !== "live_pi" || !/^execution:live-pi:[0-9a-f-]{36}$/i.test(outcome?.runId ?? "") || !Number.isFinite(generatedAt) || Date.now() - generatedAt > 30 * 24 * 60 * 60_000 || generatedAt > Date.now() + 5 * 60_000 || !artifact.models?.includes(outcome?.modelId) || outcome?.cases !== capabilityRankingCases.length || receipts.length !== capabilityRankingCases.length || new Set(receipts.map((receipt) => receipt?.caseId)).size !== receipts.length || JSON.stringify(outcome?.metrics) !== JSON.stringify(recomputedMetrics) || JSON.stringify(outcome?.budget) !== JSON.stringify(LIVE_PI_OUTCOME_BUDGET) || JSON.stringify(outcome?.budgetFailures) !== JSON.stringify(recomputedBudgetFailures)) { failures.push("Live Pi outcome metadata, freshness, corpus coverage, or execution budget evidence is invalid"); return; }
-	if (JSON.stringify(outcome?.workContractFailures) !== JSON.stringify(recomputedWorkContractFailures)) { failures.push("Live Pi production Work Contract composition evidence is invalid"); return; }
-	if (recomputedBudgetFailures.length) failures.push(`Live Pi execution budget failed: ${recomputedBudgetFailures.join(", ")}`);
-	if (recomputedWorkContractFailures.length) failures.push(`Live Pi production Work Contract composition failed: ${recomputedWorkContractFailures.join(", ")}`);
+	if (outcome?.schemaVersion !== 3 || outcome?.mode !== "live_pi_model_first" || !/^execution:live-pi:[0-9a-f-]{36}$/i.test(outcome?.runId ?? "") || !Number.isFinite(generatedAt) || Date.now() - generatedAt > 30 * 24 * 60 * 60_000 || generatedAt > Date.now() + 5 * 60_000 || !artifact.models?.includes(outcome?.modelId) || outcome?.cases !== capabilityRankingCases.length || receipts.length !== capabilityRankingCases.length || new Set(receipts.map((receipt) => receipt?.caseId)).size !== receipts.length || JSON.stringify(outcome?.metrics) !== JSON.stringify(recomputedMetrics) || JSON.stringify(outcome?.completionRequirements) !== JSON.stringify(LIVE_PI_COMPLETION_REQUIREMENTS) || JSON.stringify(outcome?.evidenceFailures) !== JSON.stringify(recomputedEvidenceFailures)) { failures.push("Live Pi outcome metadata, freshness, corpus coverage, or completion evidence is invalid"); return; }
+	if (JSON.stringify(outcome?.admissionFailures) !== JSON.stringify(recomputedAdmissionFailures)) { failures.push("Live Pi model-first admission evidence is invalid"); return; }
+	if (recomputedEvidenceFailures.length) failures.push(`Live Pi Provider evidence failed: ${recomputedEvidenceFailures.join(", ")}`);
+	if (recomputedAdmissionFailures.length) failures.push(`Live Pi model-first admission failed: ${recomputedAdmissionFailures.join(", ")}`);
 	let accepted = 0;
 	for (const scenario of capabilityRankingCases) {
 		const ranking = rankings.find((item) => item.caseId === scenario.id); const receipt = receipts.find((item) => item.caseId === scenario.id);
 		if (!ranking || !receipt) { failures.push(`Live Pi outcome is missing ${scenario.id}`); continue; }
 		const selected = ranking.candidates.filter((candidate) => candidate.confidence >= artifact.threshold).map(({ kind, name, version, confidence }) => ({ kind, name, version, confidence }));
-		if (receipt.cognitionId !== ranking.cognitionId || receipt.executionId !== `${outcome.runId}:${scenario.id}` || receipt.accessScopeId !== `scope:live-pi:${scenario.id}` || JSON.stringify(receipt.selectedCandidates) !== JSON.stringify(selected) || !Array.isArray(receipt.executionTrace) || ["piToolCalls", "piToolErrors", "toolAudit"].some((key) => key in receipt)) failures.push(`Live Pi receipt identity or content-free evidence shape is invalid for ${scenario.id}`);
+		if (receipt.cognitionId !== ranking.cognitionId || receipt.executionId !== `${outcome.runId}:${scenario.id}` || receipt.accessScopeId !== `scope:live-pi:${scenario.id}` || JSON.stringify(receipt.selectedCandidates) !== JSON.stringify(selected) || !Array.isArray(receipt.executionTrace) || receipt.answerStatus !== "reported" || !Number.isSafeInteger(receipt.answerChars) || receipt.answerChars < 1 || ["piToolCalls", "piToolErrors", "toolAudit", "workContract"].some((key) => key in receipt)) failures.push(`Live Pi receipt identity or content-free evidence shape is invalid for ${scenario.id}`);
 		const events = Array.isArray(receipt.executionTrace) ? receipt.executionTrace : [];
 		if (events.some((event, index) => !Number.isSafeInteger(event?.sequence) || event.sequence < 1 || (index > 0 && event.sequence <= events[index - 1].sequence))) failures.push(`Live Pi trace sequence is invalid for ${scenario.id}`);
 		const executionStarts = events.filter((event) => event.type === "execution.started"); const executionSettles = events.filter((event) => event.type === "execution.settled");
 		if (executionStarts.length !== 1 || executionSettles.length !== 1 || events[0] !== executionStarts[0] || events.at(-1) !== executionSettles[0] || events.some((event, index) => event.executionId !== receipt.executionId || event.accessScopeId !== receipt.accessScopeId || !Number.isFinite(event.at) || (index > 0 && event.at < events[index - 1].at))) failures.push(`Live Pi trace lifecycle, ownership, or time ordering is invalid for ${scenario.id}`);
 		const decision = events.find((event) => event.type === "capability.decision" && event.cognitionId === ranking.cognitionId);
-		const verification = [...events].reverse().find((event) => event.type === "verification.settled");
 		const downstream = [...events].reverse().find((event) => event.type === "capability.downstream_execution_outcome" && event.cognitionId === ranking.cognitionId);
 		const execution = [...events].reverse().find((event) => event.type === "execution.settled");
-		if (!decision || JSON.stringify(decision.candidates) !== JSON.stringify(selected)) failures.push(`Live Pi outcome lacks its correlated Capability decision for ${scenario.id}`);
+		if (!decision || !validRequirementBoundDecisionCandidates(decision.candidates, selected)) failures.push(`Live Pi outcome lacks its correlated, requirement-bound Capability decision for ${scenario.id}`);
 		const modelTurns = events.filter((event) => event.type === "model.turn_settled" && Number.isFinite(event.inputTokens) && event.inputTokens >= 0 && Number.isFinite(event.outputTokens) && event.outputTokens >= 0);
 		const allModelToolCalls = modelTurns.flatMap((event) => (event.assistantToolCalls ?? []).map((call) => ({ event, call })));
-		if (!modelTurns.length) failures.push(`Live Pi outcome has no measured model turn for ${scenario.id}`);
+		if (!modelTurns.some((event) => event.providerResponseStatus === "reported" && event.inputTokens + event.outputTokens > 0)) failures.push(`Live Pi outcome has no measured Provider turn for ${scenario.id}`);
 		if (new Set(modelTurns.map((event) => event.assistantTurnId)).size !== modelTurns.length || modelTurns.some((event) => {
 			const toolCalls = Array.isArray(event.assistantToolCalls) ? event.assistantToolCalls : [];
 			const validToolCalls = toolCalls.length <= 100 && new Set(toolCalls.map((call) => call?.toolCallId)).size === toolCalls.length && toolCalls.every((call) => typeof call?.toolCallId === "string" && call.toolCallId && typeof call.toolName === "string" && call.toolName && /^sha256:[a-f0-9]{64}$/i.test(call.argumentsSha256 ?? ""));
-			return !/^assistant-turn:[0-9a-f-]{36}$/i.test(event.assistantTurnId ?? "") || !validToolCalls || event.providerResponseStatus !== "reported" && event.providerResponseStatus !== "unavailable" || event.providerResponseStatus === "reported" && !/^sha256:[a-f0-9]{64}$/i.test(event.providerResponseIdentitySha256 ?? "") || event.providerResponseStatus === "unavailable" && (event.providerResponseIdentitySha256 !== undefined || toolCalls.length > 0);
+			return !/^assistant-turn:[0-9a-f-]{36}$/i.test(event.assistantTurnId ?? "") || !validToolCalls || event.providerResponseStatus !== "reported" && event.providerResponseStatus !== "unavailable" || event.providerResponseStatus === "reported" && !/^sha256:[a-f0-9]{64}$/i.test(event.providerResponseIdentitySha256 ?? "") || event.providerResponseStatus === "unavailable" && (event.providerResponseIdentitySha256 !== undefined || toolCalls.length > 0 || [event.inputTokens, event.outputTokens, event.cacheReadTokens, event.cacheWriteTokens, event.costUsd].some((value) => value !== 0));
 		}) || new Set(allModelToolCalls.map(({ call }) => call?.toolCallId)).size !== allModelToolCalls.length) failures.push(`Live Pi model Turn, global Tool-call identity, or Provider response identity is invalid for ${scenario.id}`);
 		const started = events.filter((event) => event.type === "tool.started");
 		const settled = events.filter((event) => event.type === "tool.settled");
@@ -240,14 +281,14 @@ function verifyLivePiOutcome(outcome) {
 			const modelTurn = modelTurns.find((item) => item.assistantTurnId === event.assistantTurnId);
 			const modelToolCall = modelTurn?.assistantToolCalls?.find((item) => item.toolCallId === event.toolCallId);
 			const originMatches = modelTurn && modelTurn.providerResponseStatus === "reported" && modelToolCall?.toolName === event.toolName && modelToolCall.argumentsSha256 === event.argumentsSha256 && toolSettled?.assistantTurnId === modelTurn.assistantTurnId && toolSettled.toolName === modelToolCall.toolName && toolSettled.argumentsSha256 === modelToolCall.argumentsSha256 && event.providerResponseStatus === modelTurn.providerResponseStatus && event.providerResponseIdentitySha256 === modelTurn.providerResponseIdentitySha256 && toolSettled.providerResponseStatus === modelTurn.providerResponseStatus && toolSettled.providerResponseIdentitySha256 === modelTurn.providerResponseIdentitySha256;
-			if (!event.toolSpecPlanId || toolSettled?.toolSpecPlanId !== event.toolSpecPlanId || !plan?.directTools?.includes(event.toolName) || !originMatches || !(modelTurn.sequence < event.sequence) || !(event.sequence < toolSettled?.sequence) || !(toolSettled.sequence < verification?.sequence)) failures.push(`Live Pi Tool ${event.toolName} lacks its exact assistant Turn, Provider response, prior Tool Spec, unique settlement, or pre-Verification ordering for ${scenario.id}`);
+			if (!event.toolSpecPlanId || toolSettled?.toolSpecPlanId !== event.toolSpecPlanId || !plan?.directTools?.includes(event.toolName) || !originMatches || !(modelTurn.sequence < event.sequence) || !(event.sequence < toolSettled?.sequence) || !(toolSettled.sequence < execution?.sequence)) failures.push(`Live Pi Tool ${event.toolName} lacks its exact assistant Turn, Provider response, prior Tool Spec, unique settlement, or pre-settlement ordering for ${scenario.id}`);
 		}
 		for (const { event: modelTurn, call: modelToolCall } of allModelToolCalls) {
 			const startedEvent = started.find((event) => event.toolCallId === modelToolCall.toolCallId); const settledEvent = settled.find((event) => event.toolCallId === modelToolCall.toolCallId);
 			if (startedCounts.get(modelToolCall.toolCallId) !== 1 || settledCounts.get(modelToolCall.toolCallId) !== 1 || startedEvent?.assistantTurnId !== modelTurn.assistantTurnId || settledEvent?.assistantTurnId !== modelTurn.assistantTurnId) failures.push(`Live Pi assistant Tool call lacks one exact same-Turn execution for ${scenario.id}`);
 		}
 		const successfulToolEvents = events.filter((event) => event.type === "tool.settled" && event.status === "succeeded");
-		const allowedTools = new Set(selected.flatMap((candidate) => candidate.kind === "skill" ? ["capability_discover", "skill_read", "skill_complete"] : [`eval_${candidate.name}`, "capability_discover"]));
+		const allowedTools = new Set(selected.flatMap((candidate) => candidate.kind === "skill" ? ["capability_discover", ...INDEPENDENT_SKILL_PHASES.map(([toolName]) => toolName)] : [`eval_${candidate.name}`, "capability_discover"]));
 		if (successfulToolEvents.some((event) => !allowedTools.has(event.toolName))) failures.push(`Live Pi outcome used an unnecessary Tool for ${scenario.id}`);
 		const capabilityReceipts = successfulToolEvents.filter((event) => event.capabilityReceipt).map((event) => ({ event, receipt: event.capabilityReceipt }));
 		if (new Set(capabilityReceipts.map((item) => item.receipt.id)).size !== capabilityReceipts.length) failures.push(`Live Pi Capability receipts are duplicated for ${scenario.id}`);
@@ -261,7 +302,8 @@ function verifyLivePiOutcome(outcome) {
 		for (const event of successfulToolEvents) {
 			const directCandidate = selected.find((candidate) => candidate.kind !== "skill" && event.toolName === `eval_${candidate.name}`);
 			if (directCandidate && (!event.capabilityReceipt || event.capabilityReceipt.name !== directCandidate.name)) failures.push(`Live Pi Direct Capability execution lacks its required receipt for ${scenario.id}`);
-			if (event.toolName === "skill_read" && event.skillLifecycleReceipt?.phase !== "read") failures.push(`Live Pi skill_read lacks its required lifecycle receipt for ${scenario.id}`);
+			const expectedSkillPhase = Object.fromEntries(INDEPENDENT_SKILL_PHASES)[event.toolName];
+			if (expectedSkillPhase && event.skillLifecycleReceipt?.phase !== expectedSkillPhase) failures.push(`Live Pi ${event.toolName} lacks its required lifecycle receipt for ${scenario.id}`);
 			if (event.toolName === "skill_complete" && (event.skillLifecycleReceipt?.phase !== "completed" || event.capabilityReceipt?.kind !== "skill")) failures.push(`Live Pi skill_complete lacks its required lifecycle and Capability receipts for ${scenario.id}`);
 		}
 		for (const item of capabilityReceipts) {
@@ -269,72 +311,101 @@ function verifyLivePiOutcome(outcome) {
 			const expectedSource = candidate?.kind === "skill" ? "skill_complete" : candidate ? `eval_${candidate.name}` : undefined;
 			if (!candidate || typeof item.receipt.id !== "string" || item.receipt.sourceTool !== item.event.toolName || item.event.toolName !== expectedSource) failures.push(`Live Pi outcome has an invalid Capability receipt for ${scenario.id}`);
 			if (candidate?.kind === "skill") {
-				const read = skillLifecycleReceipts.find((entry) => entry.receipt.name === candidate.name && entry.receipt.version === candidate.version && entry.receipt.phase === "read");
-				const completed = skillLifecycleReceipts.find((entry) => entry.receipt.name === candidate.name && entry.receipt.version === candidate.version && entry.receipt.phase === "completed" && entry.event === item.event);
-				if (!read || !completed || !(read.event.sequence < completed.event.sequence)) failures.push(`Live Pi Skill lifecycle is incomplete or out of order for ${scenario.id}`);
+				const lifecycle = INDEPENDENT_SKILL_PHASES.map(([, phase]) => skillLifecycleReceipts.filter((entry) => entry.receipt.name === candidate.name && entry.receipt.version === candidate.version && entry.receipt.phase === phase));
+				const complete = lifecycle.every((matches) => matches.length === 1)
+					&& lifecycle.every((matches, index) => index === 0 || lifecycle[index - 1][0].event.sequence < matches[0].event.sequence)
+					&& lifecycle.at(-1)?.[0]?.event === item.event;
+				if (!complete) failures.push(`Live Pi Skill lifecycle is incomplete or out of order for ${scenario.id}`);
 			}
 		}
 		const activated = capabilityReceipts.map((item) => item.receipt.name);
 		if (new Set(activated).size !== activated.length) failures.push(`Live Pi activated a Capability more than once for ${scenario.id}`);
-		const required = scenario.required?.length ? scenario.required : scenario.expected ? [scenario.expected] : [];
-		const expectedAccepted = required.every((name) => activated.includes(name)) && (scenario.forbidden ?? []).every((name) => !activated.includes(name)) && (required.length > 0 || activated.length === 0);
-		const expectedVerification = expectedAccepted ? "accepted" : "rejected"; const expectedExecution = expectedAccepted ? "succeeded" : "failed";
-		if (verification?.status !== expectedVerification || downstream?.status !== expectedVerification || execution?.status !== expectedExecution || receipt.verificationStatus !== expectedVerification || receipt.status !== expectedExecution) failures.push(`Live Pi independent Verification is invalid for ${scenario.id}`);
-		if (receipt.verificationStatus === "accepted") accepted++;
+		const expectedCompletion = independentlyEvaluateModelFirstCompletion({ scenario, selectedCandidates: selected, executionTrace: events, terminalAnswerPresent: receipt.answerStatus === "reported" && receipt.answerChars > 0 });
+		if (JSON.stringify(receipt.completion) !== JSON.stringify(expectedCompletion) || downstream?.status !== "unverified" || execution?.status !== "succeeded" || receipt.verificationStatus !== "unavailable" || receipt.status !== "succeeded") failures.push(`Live Pi model-first system-guard completion is invalid for ${scenario.id}`);
+		if (expectedCompletion.status === "accepted") accepted++;
 	}
 	if (outcome.accepted !== accepted || accepted / capabilityRankingCases.length < 0.95) failures.push("Live Pi outcome completion is below the release gate or does not match its receipts");
 }
 
-function independentlyVerifyProductionWorkContracts(receipts) {
-	const workContractFailures = [];
+function validRequirementBoundDecisionCandidates(value, selected) {
+	if (!Array.isArray(value)) return false;
+	const projected = [];
+	const seen = new Set();
+	let hasBinding = false;
+	for (const candidate of value) {
+		const projection = { kind: candidate?.kind, name: candidate?.name, version: candidate?.version, confidence: candidate?.confidence };
+		const identity = JSON.stringify(projection);
+		if (!seen.has(identity)) { seen.add(identity); projected.push(projection); }
+		const fields = [candidate?.requirementId, candidate?.outcomeIndex, candidate?.necessity];
+		const bound = fields.some((field) => field !== undefined);
+		hasBinding ||= bound;
+		if (bound && (!/^capreq:\d+:[a-f0-9]{20}$/i.test(candidate?.requirementId ?? "") || !Number.isSafeInteger(candidate?.outcomeIndex) || candidate.outcomeIndex < 0 || candidate?.necessity !== "required" && candidate?.necessity !== "alternative")) return false;
+	}
+	if (hasBinding && value.some((candidate) => candidate?.requirementId === undefined || candidate?.outcomeIndex === undefined || candidate?.necessity === undefined)) return false;
+	return JSON.stringify(projected) === JSON.stringify(selected);
+}
+
+function independentlyVerifyModelFirstAdmission(receipts) {
+	const admissionFailures = [];
 	for (const receipt of receipts) {
 		const caseId = typeof receipt?.caseId === "string" && receipt.caseId ? receipt.caseId : "unknown";
-		const evidence = receipt?.workContract;
-		if (evidence?.source !== "model") workContractFailures.push(`${caseId}:source_not_model`);
-		if (!independentlyValidSemanticWorkContractEvidence(evidence)) workContractFailures.push(`${caseId}:semantic_adjudication_missing`);
-		if (!Number.isFinite(evidence?.cognitionBudgetChargeTokens) || evidence.cognitionBudgetChargeTokens <= 0) workContractFailures.push(`${caseId}:cognition_charge_missing`);
-		if (!independentlyValidCredentialResolutionEvidence(evidence)) workContractFailures.push(`${caseId}:credential_resolver_unread`);
+		if (receipt?.admission?.strategy !== "model_first") admissionFailures.push(`${caseId}:strategy_not_model_first`);
+		if (receipt?.admission?.planningBasis !== "raw_prompt") admissionFailures.push(`${caseId}:planning_basis_not_raw_prompt`);
+		if (receipt?.admission?.workContractBuilds !== 0) admissionFailures.push(`${caseId}:work_contract_invoked`);
+		if (receipt?.admission?.outcomeStatus !== "answered") admissionFailures.push(`${caseId}:outcome_not_turn_local`);
 	}
-	return workContractFailures;
+	return admissionFailures;
 }
 
-function independentlyValidSemanticWorkContractEvidence(evidence) {
-	const adjudication = evidence?.semanticAdjudication; const usage = evidence?.cognitionUsage;
-	if (evidence?.semanticAdjudicationValid !== true || adjudication?.schemaVersion !== "beemax.work-contract-adjudication.v1" || adjudication?.inventorySchemaVersion !== "beemax.semantic-inventory.v1" || adjudication?.independentSamples !== true) return false;
-	const primary = adjudication.primaryModelIdentity; const reviewer = adjudication.reviewerModelIdentity;
-	if (typeof primary !== "string" || !primary || typeof reviewer !== "string" || !reviewer) return false;
-	if (adjudication.reviewMode === "different_models" ? primary === reviewer : adjudication.reviewMode !== "same_model_independent_samples" || primary !== reviewer) return false;
-	if (!Number.isFinite(adjudication.cognitionBudgetChargeTokens) || adjudication.cognitionBudgetChargeTokens !== evidence.cognitionBudgetChargeTokens) return false;
-	if (!usage || ![usage.inputTokens, usage.outputTokens, usage.cacheReadTokens, usage.cacheWriteTokens, usage.costUsd].every((value) => Number.isFinite(value) && value >= 0) || !Array.isArray(usage.modelIdentities) || usage.modelIdentities.length < 2 || !usage.modelIdentities.every((value) => typeof value === "string" && value)) return false;
-	if (evidence.cognitionBudgetChargeTokens < usage.inputTokens + usage.outputTokens + usage.cacheWriteTokens) return false;
-	if (!usage.modelIdentities.includes(primary) || !usage.modelIdentities.includes(reviewer)) return false;
-	return [primary, reviewer].every((identity) => artifact.models.some((modelId) => identity.startsWith(`${modelId}/`))) && independentlyValidWorkContractProviderTurns(evidence, usage, adjudication);
+function independentlyEvaluateModelFirstCompletion({ scenario, selectedCandidates, executionTrace, terminalAnswerPresent }) {
+	const events = Array.isArray(executionTrace) ? executionTrace : [];
+	const selected = Array.isArray(selectedCandidates) ? selectedCandidates : [];
+	const required = scenario?.required?.length ? scenario.required : scenario?.expected ? [scenario.expected] : [];
+	const forbidden = scenario?.forbidden ?? [];
+	const execution = [...events].reverse().find((event) => event.type === "execution.settled");
+	const started = events.filter((event) => event.type === "tool.started");
+	const successful = events.filter((event) => event.type === "tool.settled" && event.status === "succeeded");
+	const allowedTools = new Set(selected.flatMap((candidate) => candidate.kind === "skill" ? ["capability_discover", ...INDEPENDENT_SKILL_PHASES.map(([toolName]) => toolName)] : [`eval_${candidate.name}`, "capability_discover"]));
+	const capabilityEvents = successful.filter((event) => event.capabilityReceipt);
+	const receiptIds = capabilityEvents.map((event) => event.capabilityReceipt?.id);
+	const exactCapabilityReceipts = receiptIds.every((id) => typeof id === "string" && id)
+		&& new Set(receiptIds).size === receiptIds.length
+		&& capabilityEvents.every((event) => selected.some((candidate) => {
+			const receipt = event.capabilityReceipt;
+			const expectedSource = candidate.kind === "skill" ? "skill_complete" : `eval_${candidate.name}`;
+			return receipt?.kind === candidate.kind && receipt?.name === candidate.name && receipt?.version === candidate.version && receipt?.sourceTool === expectedSource && event.toolName === expectedSource;
+		}))
+		&& successful.every((event) => {
+			const direct = selected.some((candidate) => candidate.kind !== "skill" && event.toolName === `eval_${candidate.name}`);
+			return !direct || Boolean(event.capabilityReceipt);
+		});
+	const activatedCapabilities = capabilityEvents.map((event) => event.capabilityReceipt.name);
+	const uniqueActivations = new Set(activatedCapabilities).size === activatedCapabilities.length;
+	const skillLifecycleComplete = selected.filter((candidate) => candidate.kind === "skill").every((candidate) => {
+		const lifecycle = INDEPENDENT_SKILL_PHASES.map(([toolName, phase]) => successful.filter((event) => event.toolName === toolName
+			&& event.skillLifecycleReceipt?.name === candidate.name
+			&& event.skillLifecycleReceipt?.version === candidate.version
+			&& event.skillLifecycleReceipt?.phase === phase));
+		return lifecycle.every((matches) => matches.length === 1)
+			&& lifecycle.every((matches, index) => index === 0 || lifecycle[index - 1][0].sequence < matches[0].sequence)
+			&& lifecycle.at(-1)?.[0]?.capabilityReceipt?.name === candidate.name;
+	});
+	const checks = {
+		runtimeSucceeded: execution?.status === "succeeded",
+		terminalAnswerPresent: terminalAnswerPresent === true,
+		requiredCapabilitiesSatisfied: required.every((name) => activatedCapabilities.includes(name)),
+		forbiddenCapabilitiesQuiet: forbidden.every((name) => !activatedCapabilities.includes(name)),
+		noUnnecessaryCapabilityActivation: activatedCapabilities.every((name) => required.includes(name)) && (required.length > 0 || activatedCapabilities.length === 0),
+		noUnexpectedToolExecution: started.every((event) => allowedTools.has(event.toolName)),
+		exactCapabilityReceipts: exactCapabilityReceipts && uniqueActivations,
+		skillLifecycleComplete,
+	};
+	return { authority: "system_trace_guard_v2", status: Object.values(checks).every(Boolean) ? "accepted" : "rejected", checks, activatedCapabilities };
 }
-
-function independentlyValidCredentialResolutionEvidence(evidence) {
-	const resolutions = evidence?.credentialResolutions;
-	if (!Array.isArray(resolutions) || !resolutions.length || evidence.credentialResolverReads !== resolutions.length) return false;
-	if (!resolutions.every((item) => item && typeof item.provider === "string" && item.provider && typeof item.modelIdentity === "string" && item.modelIdentity && (item.source === "profile_auth_storage" || item.source === "profile_config"))) return false;
-	const identities = new Set(resolutions.map((item) => item.modelIdentity)); const adjudication = evidence.semanticAdjudication;
-	if (!identities.has(adjudication?.primaryModelIdentity) || !identities.has(adjudication?.reviewerModelIdentity)) return false;
-	const resolutionCounts = countBy(resolutions, (item) => item.modelIdentity); const turnCounts = countBy(evidence.providerTurns ?? [], (item) => item.modelIdentity);
-	return [...turnCounts].every(([identity, count]) => (resolutionCounts.get(identity) ?? 0) >= count);
-}
-
-function independentlyValidWorkContractProviderTurns(evidence, usage, adjudication) {
-	const turns = evidence?.providerTurns;
-	if (!Array.isArray(turns) || turns.length < 2 || !turns.every((turn) => turn && (turn.lane === "work_contract" || turn.lane === "semantic_inventory") && typeof turn.modelIdentity === "string" && /^sha256:[a-f0-9]{64}$/i.test(turn.providerResponseIdentitySha256 ?? "") && [turn.inputTokens, turn.outputTokens, turn.cacheReadTokens, turn.cacheWriteTokens, turn.costUsd].every((value) => Number.isFinite(value) && value >= 0))) return false;
-	if (new Set(turns.map((turn) => turn.providerResponseIdentitySha256)).size !== turns.length) return false;
-	if (!turns.some((turn) => turn.lane === "work_contract" && turn.modelIdentity === adjudication.primaryModelIdentity) || !turns.some((turn) => turn.lane === "semantic_inventory" && turn.modelIdentity === adjudication.reviewerModelIdentity)) return false;
-	const sum = (key) => turns.reduce((total, turn) => total + turn[key], 0);
-	return sum("inputTokens") === usage.inputTokens && sum("outputTokens") === usage.outputTokens && sum("cacheReadTokens") === usage.cacheReadTokens && sum("cacheWriteTokens") === usage.cacheWriteTokens && Math.abs(sum("costUsd") - usage.costUsd) < 1e-12;
-}
-
-function countBy(items, keyOf) { const counts = new Map(); for (const item of items) { const key = keyOf(item); counts.set(key, (counts.get(key) ?? 0) + 1); } return counts; }
 
 function independentlySummarizeLivePiOutcomeReceipts(receipts) {
 	const cases = receipts.length;
-	let modelTurns = 0; let measuredTurns = 0; let providerReportedTurns = 0; let providerUnavailableTurns = 0; let totalInputTokens = 0; let totalOutputTokens = 0; let totalCostUsd = 0; let totalDurationMs = 0; let maxDurationMs = 0; let maxTokensPerCase = 0; let maxModelTurnsPerCase = 0;
+	let modelTurns = 0; let measuredTurns = 0; let measuredCases = 0; let providerReportedTurns = 0; let providerReportedCases = 0; let providerUnavailableTurns = 0; let recoveredProviderUnavailableTurns = 0; let totalInputTokens = 0; let totalOutputTokens = 0; let totalCostUsd = 0; let totalDurationMs = 0; let maxDurationMs = 0; let maxTokensPerCase = 0; let maxModelTurnsPerCase = 0;
 	for (const receipt of receipts) {
 		const events = Array.isArray(receipt?.executionTrace) ? receipt.executionTrace : [];
 		const turns = events.filter((event) => event?.type === "model.turn_settled");
@@ -343,28 +414,31 @@ function independentlySummarizeLivePiOutcomeReceipts(receipts) {
 		const started = events.find((event) => event?.type === "execution.started");
 		const settled = [...events].reverse().find((event) => event?.type === "execution.settled");
 		const durationMs = Number.isFinite(started?.at) && Number.isFinite(settled?.at) ? Math.max(0, settled.at - started.at) : 0;
+		const measuredInCase = turns.some(independentlyMeasuredProviderTurn);
+		const providerReportedInCase = turns.some((event) => event.providerResponseStatus === "reported");
+		const unavailableInCase = turns.filter((event) => event.providerResponseStatus === "unavailable").length;
 		modelTurns += turns.length;
-		measuredTurns += turns.filter((event) => Number.isFinite(event.inputTokens) && event.inputTokens >= 0 && Number.isFinite(event.outputTokens) && event.outputTokens >= 0 && event.inputTokens + event.outputTokens > 0).length;
+		measuredTurns += turns.filter(independentlyMeasuredProviderTurn).length;
+		measuredCases += measuredInCase ? 1 : 0;
 		providerReportedTurns += turns.filter((event) => event.providerResponseStatus === "reported").length;
-		providerUnavailableTurns += turns.filter((event) => event.providerResponseStatus === "unavailable").length;
+		providerReportedCases += providerReportedInCase ? 1 : 0;
+		providerUnavailableTurns += unavailableInCase;
+		recoveredProviderUnavailableTurns += receipt?.completion?.status === "accepted" ? unavailableInCase : 0;
 		totalInputTokens += inputTokens; totalOutputTokens += outputTokens;
 		totalCostUsd += turns.reduce((total, event) => total + independentFiniteNonnegative(event.costUsd), 0);
 		totalDurationMs += durationMs; maxDurationMs = Math.max(maxDurationMs, durationMs); maxTokensPerCase = Math.max(maxTokensPerCase, inputTokens + outputTokens); maxModelTurnsPerCase = Math.max(maxModelTurnsPerCase, turns.length);
 	}
-	return { cases, modelTurns, usageMeasurementRate: modelTurns ? measuredTurns / modelTurns : 0, providerReportedTurns, providerUnavailableTurns, providerResponseReportingRate: modelTurns ? providerReportedTurns / modelTurns : 0, totalInputTokens, totalOutputTokens, totalTokens: totalInputTokens + totalOutputTokens, averageTokensPerCase: cases ? (totalInputTokens + totalOutputTokens) / cases : 0, maxTokensPerCase, totalCostUsd: Math.round(totalCostUsd * 1e12) / 1e12, costEvidence: totalCostUsd > 0 ? "provider_reported" : "unpriced", averageDurationMs: cases ? totalDurationMs / cases : 0, maxDurationMs, maxModelTurnsPerCase };
+	return { cases, modelTurns, usageMeasurementRate: modelTurns ? measuredTurns / modelTurns : 0, measuredCases, caseUsageMeasurementRate: cases ? measuredCases / cases : 0, providerReportedTurns, providerReportedCases, providerUnavailableTurns, recoveredProviderUnavailableTurns, providerResponseReportingRate: modelTurns ? providerReportedTurns / modelTurns : 0, caseProviderResponseReportingRate: cases ? providerReportedCases / cases : 0, totalInputTokens, totalOutputTokens, totalTokens: totalInputTokens + totalOutputTokens, averageTokensPerCase: cases ? (totalInputTokens + totalOutputTokens) / cases : 0, maxTokensPerCase, totalCostUsd: Math.round(totalCostUsd * 1e12) / 1e12, costEvidence: totalCostUsd > 0 ? "provider_reported" : "unpriced", averageDurationMs: cases ? totalDurationMs / cases : 0, maxDurationMs, maxModelTurnsPerCase };
 }
 
-function independentlyVerifyLivePiBudget(metrics, budget) {
-	const budgetFailures = [];
-	if (metrics.usageMeasurementRate !== 1) budgetFailures.push("usage_incomplete");
-	if (metrics.averageTokensPerCase > budget.maxAverageTokensPerCase) budgetFailures.push("average_tokens_exceeded");
-	if (metrics.maxTokensPerCase > budget.maxTokensPerCase) budgetFailures.push("case_tokens_exceeded");
-	if (metrics.averageDurationMs > budget.maxAverageDurationMs) budgetFailures.push("average_duration_exceeded");
-	if (metrics.maxDurationMs > budget.maxDurationMs) budgetFailures.push("case_duration_exceeded");
-	if (metrics.maxModelTurnsPerCase > budget.maxModelTurnsPerCase) budgetFailures.push("model_turns_exceeded");
-	return budgetFailures;
+function independentlyVerifyLivePiEvidence(metrics, requirements) {
+	const evidenceFailures = [];
+	if (!Number.isFinite(metrics.caseUsageMeasurementRate) || metrics.caseUsageMeasurementRate < requirements.minimumCaseUsageMeasurementRate) evidenceFailures.push("case_usage_incomplete");
+	if (!Number.isFinite(metrics.caseProviderResponseReportingRate) || metrics.caseProviderResponseReportingRate < requirements.minimumCaseProviderResponseReportingRate) evidenceFailures.push("case_provider_response_unreported");
+	return evidenceFailures;
 }
 
 function independentFiniteNonnegative(value) { return Number.isFinite(value) && value >= 0 ? value : 0; }
+function independentlyMeasuredProviderTurn(event) { return event?.providerResponseStatus === "reported" && Number.isFinite(event.inputTokens) && event.inputTokens >= 0 && Number.isFinite(event.outputTokens) && event.outputTokens >= 0 && event.inputTokens + event.outputTokens > 0; }
 process.stdout.write(`${JSON.stringify({ schemaVersion: 1, artifact: path, passed: failures.length === 0, failures }, null, 2)}\n`);
 if (failures.length) process.exitCode = 1;

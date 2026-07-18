@@ -26,7 +26,7 @@ export function renderChatFooter(state: ChatFooterState): string {
 	return `\n── ${parts.join(" · ")} ──\n`;
 }
 
-/** OpenClaw-style visibility control: raw thinking is opt-in and stays separate from the answer. */
+/** Raw reasoning visibility is opt-in and stays separate from the answer. */
 export class LocalReasoningPresenter {
 	private visible = false;
 	private answerStarted = false;
@@ -63,7 +63,7 @@ export class LocalReasoningPresenter {
 
 export type ReasoningCommand = { kind: "status" } | { kind: "set"; display: ReasoningDisplay } | { kind: "invalid" };
 
-/** Parse the local equivalent of OpenClaw's /reasoning visibility command. */
+/** Parse the local /reasoning visibility command. */
 export function parseReasoningCommand(input: string): ReasoningCommand | undefined {
 	const match = input.trim().match(/^\/(?:reasoning|reason)(?:\s+(.+))?$/i);
 	if (!match) return undefined;

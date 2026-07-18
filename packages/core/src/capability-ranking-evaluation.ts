@@ -16,7 +16,7 @@ export interface CapabilityRankingEvaluationFailure {
 }
 
 export interface CapabilityRankingEvaluationReport {
-	strategy: CapabilityRankingStrategy | "unknown";
+	strategy: CapabilityRankingStrategy | "progressive" | "unknown";
 	cases: number;
 	metrics: { top1Accuracy: number; topKRecall: number; forbiddenActivationRate: number; noMatchPrecision: number };
 	failures: CapabilityRankingEvaluationFailure[];
@@ -64,7 +64,7 @@ export async function evaluateCapabilityRanking(input: {
 		}
 	}
 	return {
-		strategy: strategies.size === 1 ? [...strategies][0]! : "unknown",
+		strategy: strategies.size === 1 ? [...strategies][0]! : strategies.size === 2 && strategies.has("lexical") && strategies.has("semantic") ? "progressive" : "unknown",
 		cases: input.cases.length,
 		metrics: { top1Accuracy: expectedCases ? top1 / expectedCases : 1, topKRecall: expectedCases ? topK / expectedCases : 1, forbiddenActivationRate: forbiddenCases ? forbiddenActivations / forbiddenCases : 0, noMatchPrecision: negativeCases ? quietNegatives / negativeCases : 1 },
 		failures,

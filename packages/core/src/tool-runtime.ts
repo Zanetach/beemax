@@ -1,7 +1,7 @@
 import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
 import type { BeeMaxRuntimeSource } from "./runtime.ts";
 import type { CapabilityKind, CapabilityOperationalSignals } from "./capability-runtime.ts";
-import type { CapabilityProviderHealthStatus } from "./capability-provider.ts";
+import { attestCapabilityProviderAcquisitionTool, attestCapabilityProviderResolutionTool, isTrustedCapabilityProviderAcquisitionTool, isTrustedCapabilityProviderResolutionTool, type CapabilityProviderHealthStatus } from "./capability-provider.ts";
 
 export type ToolRisk = "low" | "medium" | "high";
 export type ToolSideEffect = "none" | "local" | "external";
@@ -40,6 +40,8 @@ export function normalizeToolResultBudget(budget: ToolResultBudget): ToolResultB
 export interface ToolSpecAvailabilityMetadata {
 	kind?: CapabilityKind;
 	version?: string;
+	/** Stable semantic identity when the executable Tool name is an adapter route. */
+	capabilityIdentity?: { kind: CapabilityKind; name: string; version?: string };
 	configured?: boolean;
 	health?: CapabilityProviderHealthStatus;
 	authorized?: boolean;
@@ -156,7 +158,7 @@ export function governToolDefinition<T extends ToolDefinition>(tool: T, policy: 
 	const normalized = normalizeToolPolicy(policy);
 	const maxEstimatedTokens = resultBudget ? normalizeToolResultBudget(resultBudget).maxEstimatedTokens : Number.POSITIVE_INFINITY;
 	const execute = tool.execute.bind(tool);
-	return Object.assign({ ...tool, executionMode: toolExecutionModeForPolicy(normalized, tool.executionMode), async execute(toolCallId: string, params: unknown, signal: AbortSignal | undefined, onUpdate: unknown, ctx: unknown) {
+	const governed = Object.assign({ ...tool, executionMode: toolExecutionModeForPolicy(normalized, tool.executionMode), async execute(toolCallId: string, params: unknown, signal: AbortSignal | undefined, onUpdate: unknown, ctx: unknown) {
 		const startedAt = Date.now();
 		for (let attempt = 1; attempt <= normalized.maxAttempts; attempt++) {
 			audit?.({ phase: "started", source, toolName: tool.name, policy: normalized, at: Date.now(), attempt });
@@ -164,12 +166,19 @@ export function governToolDefinition<T extends ToolDefinition>(tool: T, policy: 
 			const timer = setTimeout(() => timeoutController.abort(new Error(`Tool ${tool.name} timed out after ${normalized.timeoutMs}ms`)), normalized.timeoutMs);
 			const effectiveSignal = signal ? AbortSignal.any([signal, timeoutController.signal]) : timeoutController.signal;
 			try {
-				const result = await abortable(execute(toolCallId, params as never, effectiveSignal, onUpdate as never, ctx as never), effectiveSignal, tool.name);
+				if (effectiveSignal.aborted) throw effectiveSignal.reason instanceof Error ? effectiveSignal.reason : new Error(`Tool ${tool.name} was cancelled`);
+				const operation = execute(toolCallId, params as never, effectiveSignal, onUpdate as never, ctx as never);
+				const result = await abortable(operation, effectiveSignal, tool.name);
 				const bounded = options.deferResultProjection ? measureToolResult(result) : boundToolResult(result, normalized.maxResultBytes, maxEstimatedTokens);
 				if ((bounded.result as { isError?: boolean }).isError === true) {
 					const errorBlock = bounded.result.content.find((block) => block.type === "text" && "text" in block && typeof block.text === "string");
 					const message = errorBlock && "text" in errorBlock && typeof errorBlock.text === "string" ? errorBlock.text.slice(0, 500) : "Tool returned an error result";
-					throw new Error(`Tool ${tool.name} failed: ${message}`);
+					audit?.({ phase: "failed", source, toolName: tool.name, policy: normalized, at: Date.now(), attempt, durationMs: Date.now() - startedAt, reason: message });
+					const retry = normalized.sideEffect === "none" && attempt < normalized.maxAttempts && !signal?.aborted && !timeoutController.signal.aborted;
+					if (retry) continue;
+					// Preserve the native structured error on the final attempt. Pi still sees
+					// isError=true, while Effect settlement retains trusted adapter evidence.
+					return bounded.result;
 				}
 				audit?.({ phase: "completed", source, toolName: tool.name, policy: normalized, at: Date.now(), attempt, durationMs: Date.now() - startedAt, resultBytes: bounded.bytes, resultEstimatedTokens: bounded.estimatedTokens, resultTruncated: bounded.truncated });
 				return bounded.result;
@@ -186,6 +195,9 @@ export function governToolDefinition<T extends ToolDefinition>(tool: T, policy: 
 		}
 		throw new Error(`Tool ${tool.name} exhausted its retry policy`);
 	} }, { beemaxPolicy: normalized }) as T & GovernedToolDefinition;
+	if (isTrustedCapabilityProviderResolutionTool(tool)) attestCapabilityProviderResolutionTool(governed);
+	if (isTrustedCapabilityProviderAcquisitionTool(tool)) attestCapabilityProviderAcquisitionTool(governed);
+	return governed;
 }
 
 function measureToolResult<T extends { content: Array<{ type: string; text?: string; data?: string }>; details: unknown }>(result: T): { result: T; bytes: number; estimatedTokens: number; truncated: false } {
@@ -204,7 +216,12 @@ function estimatedBase64PayloadBytes(value: string): number {
 }
 
 function abortable<T>(operation: Promise<T>, signal: AbortSignal, toolName: string): Promise<T> {
-	if (signal.aborted) return Promise.reject(signal.reason instanceof Error ? signal.reason : new Error(`Tool ${toolName} was cancelled`));
+	if (signal.aborted) {
+		// The implementation Promise may already have been created by a caller.
+		// Observe its rejection so cancellation cannot leave orphaned async work.
+		void operation.catch(() => undefined);
+		return Promise.reject(signal.reason instanceof Error ? signal.reason : new Error(`Tool ${toolName} was cancelled`));
+	}
 	return new Promise<T>((resolve, reject) => {
 		const abort = () => reject(signal.reason instanceof Error ? signal.reason : new Error(`Tool ${toolName} was cancelled`));
 		signal.addEventListener("abort", abort, { once: true });

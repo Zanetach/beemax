@@ -10,7 +10,7 @@ import {
 	renderMediaUnderstandingEvidence,
 } from "../dist/index.js";
 
-const createRuntime = (options) => new BeeMaxAgentRuntime({ profileId: "profile:test", workContractBuilder: new DeterministicWorkContractBuilder(), ...options });
+const createRuntime = (options) => new BeeMaxAgentRuntime({ profileId: "profile:test", interactiveAdmission: "contract_first", workContractBuilder: new DeterministicWorkContractBuilder(), ...options });
 
 const image = { type: "image", mimeType: "image/png", data: Buffer.from("pixels").toString("base64") };
 const textModel = { provider: "test", id: "text", input: ["text"] };

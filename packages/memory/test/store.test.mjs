@@ -4,6 +4,7 @@ import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { spawn } from "node:child_process";
+import { createHash } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { MemoryStore } from "../dist/index.js";
 import Database from "better-sqlite3";
@@ -1423,12 +1424,23 @@ test("Direct Objective acceptance atomically settles its leased Run before anoth
 		first.record({ id: "atomic-objective", ownerKey, kind: "objective", title: "Atomic completion", status: "running", createdAt: 1, startedAt: 2, executionScope: { platform: "cli", chatId: "local", chatType: "dm", userId: "local" } });
 		first.recordRun({ id: "atomic-run", taskId: "atomic-objective", executor: "agent", status: "running", startedAt: 10, leaseExpiresAt: 200 });
 		assert.deepEqual(second.claimObjectiveCompletions("cli", 50), [], "an unverified running Run is not deliverable");
-		assert.equal(first.settleDirectObjectiveCompletion({ ownerKey, objectiveId: "atomic-objective", taskRunId: "atomic-run", candidateResult: "verified result", evidence: "receipt:verified" }, 100), true);
+		const sha256 = "c".repeat(64);
+		const manifest = { schemaVersion: "beemax.artifact-manifest.v1", id: `artifact:sha256:${sha256}`, locator: { kind: "workspace", uri: "workspace:atomic.pdf" }, mediaType: "application/pdf", byteLength: 2048, sha256, producer: { providerId: "test.pdf", providerVersion: "1", operation: "render" }, sourceRefs: ["workspace:atomic.html"], createdAt: 90 };
+		const unsignedReceipt = { schemaVersion: "beemax.artifact-verification.v1", artifactId: manifest.id, artifactSha256: sha256, expectationSha256: "d".repeat(64), verifiedAt: 95, verifiers: [{ id: "test.verifier", version: "1" }], checks: [{ dimension: "integrity", status: "accepted", evidenceRefs: [manifest.id] }] };
+		const verificationReceipt = { ...unsignedReceipt, id: `artifact-verification:sha256:${createHash("sha256").update(JSON.stringify(unsignedReceipt)).digest("hex")}` };
+		const unsignedSourceReceipt = { schemaVersion: "beemax.source-receipt.v1", capability: "market_series", subject: "XAU/USD 2026-07-13..2026-07-17", observedAt: 96, sourceRefs: ["https://example.test/xau"], payload: { close: 3997.4 } };
+		const sourceReceipt = { ...unsignedSourceReceipt, id: `source-receipt:sha256:${createHash("sha256").update(JSON.stringify(unsignedSourceReceipt)).digest("hex")}` };
+		const artifacts = [
+			{ type: "file", uri: "workspace:atomic.pdf", label: "application/pdf", manifest, verificationReceipt },
+			{ type: "reference", uri: sourceReceipt.id, label: "market_series", sourceReceipt },
+		];
+		assert.equal(first.settleDirectObjectiveCompletion({ ownerKey, objectiveId: "atomic-objective", taskRunId: "atomic-run", candidateResult: "verified result", evidence: "receipt:verified", artifacts }, 100), true);
 		const [completion] = second.claimObjectiveCompletions("cli", 100);
 		assert.equal(completion.taskRunId, "atomic-run");
 		assert.equal(completion.result, "verified result");
 		assert.deepEqual(first.taskRuns("atomic-objective").map(({ id, status, output }) => ({ id, status, output })), [{ id: "atomic-run", status: "succeeded", output: "verified result" }]);
-		assert.deepEqual({ verificationStatus: first.queryTasks({ ownerKeys: [ownerKey], id: "atomic-objective" })[0].verificationStatus, candidateResult: first.queryTasks({ ownerKeys: [ownerKey], id: "atomic-objective" })[0].candidateResult }, { verificationStatus: "accepted", candidateResult: "verified result" });
+		const restored = second.queryTasks({ ownerKeys: [ownerKey], id: "atomic-objective" })[0];
+		assert.deepEqual({ verificationStatus: restored.verificationStatus, candidateResult: restored.candidateResult, artifacts: restored.artifacts }, { verificationStatus: "accepted", candidateResult: "verified result", artifacts });
 	} finally { second.close(); first.close(); rmSync(root, { recursive: true, force: true }); }
 });
 

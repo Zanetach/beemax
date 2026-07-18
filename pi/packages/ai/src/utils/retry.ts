@@ -42,7 +42,7 @@ const RETRYABLE_PROVIDER_ERROR_PATTERN = buildProviderErrorPattern([
 	// "Provider returned error" responses (#2264).
 	"provider.?returned.?error",
 
-	// Network, proxy, and fetch transport failures. This includes OpenAI Codex
+	// Network, proxy, and fetch transport failures. This includes upstream
 	// raw-fetch failures such as "upstream connect", "connection refused", and
 	// "reset before headers" (#733), plus OpenRouter connection drops (#3317).
 	"network.?error",

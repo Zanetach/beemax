@@ -103,6 +103,13 @@ test("release archive includes Pi and excludes git metadata and dependencies", a
 	assert.match(packager, /--exclude='\*\/dist'/);
 	assert.match(packager, /--exclude='\*\.tsbuildinfo'/);
 	assert.match(packager, /--exclude='\.\/docs'/);
+	assert.match(packager, /--exclude='\.\/evals'/);
+	assert.match(packager, /--exclude='\.\/\.github'/);
+	assert.match(packager, /--exclude='\*\/test'/);
+	assert.match(packager, /--exclude='\.\/scripts'/);
+	assert.match(packager, /clean-build-output\.mjs/);
+	assert.match(packager, /install-media-dependencies\.sh/);
+	assert.doesNotMatch(packager, /capability-outcome-harness/);
 	assert.match(packager, /--exclude='\.\/data'/);
 	assert.match(packager, /RELEASE_VERSION/);
 	assert.match(packager, /verify-release-version\.mjs/);
@@ -126,6 +133,9 @@ test("tag releases pass build, test, and isolated archive installation gates bef
 	assert.match(verifier, /portable archive filename/);
 	assert.match(verifier, /RELEASE_VERSION/);
 	assert.match(verifier, /verify-release-version\.mjs/);
+	assert.match(verifier, /verify-release-agent-boundary\.mjs/);
+	assert.match(verifier, /--whole-tree/);
+	assert.doesNotMatch(verifier, /await import\s*\(/);
 	assert.match(verifier, /node_modules/);
 	assert.match(verifier, /BEEMAX_BIN_DIR/);
 	assert.match(verifier, /BEEMAX_INSTALL_MEDIA_DEPS=0/);

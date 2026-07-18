@@ -5,6 +5,8 @@ import {
 	LexicalCapabilityRanker,
 	ModelBackedSemanticCapabilityPort,
 	PiSemanticCapabilityPort,
+	ProgressiveCapabilityRanker,
+	SEMANTIC_CAPABILITY_SYSTEM_PROMPT,
 	SemanticCapabilityRanker,
 	capabilityDescriptor,
 	capabilityVersionOf,
@@ -51,17 +53,20 @@ test("Capability selection carries one content-free cognition identity through m
 
 test("semantic capability cognition defaults to a compact decision output budget", async () => {
 	let observedMaxTokens;
+	let observedReasoning;
 	const port = new PiSemanticCapabilityPort({
 		models: [{ model: { id: "compact-default" } }],
 		maxModelAttempts: 1,
 		complete: async (_model, context, options) => {
 			observedMaxTokens = options.maxTokens;
+			observedReasoning = options.reasoning;
 			const payload = JSON.parse(context.messages[0].content);
 			return { stopReason: "stop", content: [{ type: "text", text: JSON.stringify({ matches: [{ id: payload.candidates[0].id, name: payload.candidates[0].name, similarity: 0.9 }] }) }] };
 		},
 	});
 	await port.similarities({ query: "known", candidates: [{ id: "tool:known:1", name: "known", text: "Known capability" }], limit: 1 });
-	assert.equal(observedMaxTokens, 2_048);
+	assert.equal(observedMaxTokens, 512);
+	assert.equal(observedReasoning, undefined, "bounded routing should disable Provider thinking");
 });
 
 test("Capability discovery changes execution only through Pi active tools", async () => {
@@ -132,9 +137,10 @@ test("semantic ranking fails closed on authentication, request, and adapter prog
 	}
 });
 
-test("a closed semantic failure remains dominant over a later transient Provider failure", async () => {
+test("an invalid semantic result fails closed even when a later Provider is unavailable", async () => {
 	let calls = 0;
 	let fallbackCalled = false;
+	const fallbacks = [];
 	const port = new PiSemanticCapabilityPort({
 		models: [{ model: { id: "invalid" } }, { model: { id: "offline" } }],
 		complete: async () => {
@@ -143,20 +149,224 @@ test("a closed semantic failure remains dominant over a later transient Provider
 			throw Object.assign(new Error("offline"), { code: "ECONNRESET" });
 		},
 	});
-	const ranker = new SemanticCapabilityRanker(port, { fallback: { async rank() { fallbackCalled = true; return []; } } });
-	await assert.rejects(() => ranker.rank("known", [capabilityDescriptor({ kind: "tool", name: "known", version: "1", activeTools: ["known"] })], 1), /invalid_json/u);
+	const ranker = new SemanticCapabilityRanker(port, { fallback: { async rank() { fallbackCalled = true; return []; } }, onFallback(event) { fallbacks.push(event); } });
+	await assert.rejects(
+		() => ranker.rank("known", [capabilityDescriptor({ kind: "tool", name: "known", version: "1", activeTools: ["known"] })], 1),
+		/invalid_json/u,
+	);
 	assert.equal(fallbackCalled, false);
+	assert.deepEqual(fallbacks, []);
 });
 
-test("semantic ranking fails closed on invalid model output instead of misreporting Provider unavailability", async () => {
-	let fallbackCalled = false;
+test("semantic ranking never turns invalid model output into lexical authority", async () => {
+	const fallbacks = [];
 	const port = new PiSemanticCapabilityPort({
 		models: [{ model: { id: "invalid" } }],
 		complete: async () => ({ stopReason: "stop", content: [{ type: "text", text: JSON.stringify({ matches: [{ name: "invented", similarity: 0.99 }] }) }] }),
 	});
-	const ranker = new SemanticCapabilityRanker(port, { fallback: { async rank() { fallbackCalled = true; return []; } } });
-	await assert.rejects(() => ranker.rank("known", [capabilityDescriptor({ kind: "tool", name: "known", version: "1", activeTools: ["known"] })], 1), /invalid_response/u);
-	assert.equal(fallbackCalled, false);
+	const runtime = new CapabilityRuntime({ ranker: new SemanticCapabilityRanker(port, {
+		fallback: new LexicalCapabilityRanker(),
+		onFallback(event) { fallbacks.push(event); },
+	}) });
+	await assert.rejects(() => runtime.discover({
+		query: "known",
+		inventory: [capabilityDescriptor({ kind: "tool", name: "known", version: "1", activeTools: ["known"] })],
+		limit: 1,
+	}), /invalid_response/u);
+	assert.deepEqual(fallbacks, []);
+});
+
+test("Provider-unavailable repair binds exact Core requirement ids independently", async () => {
+	const requirements = [
+		{ id: "capreq:0:aaaaaaaa", text: "使用多个实时公开来源" },
+		{ id: "capreq:1:bbbbbbbb", text: "检查 HTML 内容与渲染" },
+	];
+	const liveSources = capabilityDescriptor({
+		kind: "tool", name: "live_sources", version: "1", activeTools: ["live_sources"],
+		triggers: ["实时公开来源"], description: "Retrieve current public evidence",
+	});
+	const inspectHtml = capabilityDescriptor({
+		kind: "tool", name: "inspect_html", version: "1", activeTools: ["inspect_html"],
+		triggers: ["检查 html"], description: "Inspect an existing HTML artifact",
+	});
+	const port = new PiSemanticCapabilityPort({
+		models: [{ model: { id: "offline" } }], maxModelAttempts: 1,
+		complete: async () => { throw Object.assign(new Error("offline"), { code: "ECONNREFUSED" }); },
+	});
+	const selection = await new CapabilityRuntime({
+		ranker: new SemanticCapabilityRanker(port, { fallback: new LexicalCapabilityRanker() }),
+	}).discover({ query: requirements.map(({ text }) => text).join("\n"), requirements, inventory: [liveSources, inspectHtml] });
+	assert.deepEqual(selection.candidates.map(({ name, requirementId, outcomeIndex, necessity }) => ({ name, requirementId, outcomeIndex, necessity })), [
+		{ name: "live_sources", requirementId: requirements[0].id, outcomeIndex: 0, necessity: "required" },
+		{ name: "inspect_html", requirementId: requirements[1].id, outcomeIndex: 0, necessity: "required" },
+	]);
+	assert.deepEqual(selection.activatedTools, ["inspect_html", "live_sources"]);
+});
+
+test("deterministic requirement repair fails closed on weak lexical overlap", async () => {
+	const requirement = { id: "capreq:0:aaaaaaaa", text: "所有关键事实附来源 URL" };
+	const selection = await new CapabilityRuntime({ ranker: new LexicalCapabilityRanker() }).discover({
+		query: requirement.text,
+		requirements: [requirement],
+		inventory: [capabilityDescriptor({ kind: "tool", name: "generic_sources", description: "Review sources", version: "1", activeTools: ["generic_sources"] })],
+	});
+	assert.deepEqual(selection.candidates, []);
+	assert.deepEqual(selection.activatedTools, []);
+});
+
+test("progressive capability ranking skips semantic cognition when exact metadata covers every Contract requirement", async () => {
+	let semanticCalls = 0;
+	const requirements = [
+		{ id: "capreq:0:aaaaaaaa", text: "retrieve current market series" },
+		{ id: "capreq:1:bbbbbbbb", text: "render the final PDF artifact" },
+	];
+	const ranker = new ProgressiveCapabilityRanker(
+		new LexicalCapabilityRanker(),
+		{ async rank() { semanticCalls++; return []; } },
+	);
+	const selection = await new CapabilityRuntime({ ranker }).discover({
+		query: requirements.map(({ text }) => text).join("\n"),
+		requirements,
+		inventory: [
+			capabilityDescriptor({ kind: "tool", name: "market_series", description: "Retrieve current market series", triggers: ["current market series"], version: "1", activeTools: ["market_series"] }),
+			capabilityDescriptor({ kind: "tool", name: "artifact_render", description: "Render the final PDF artifact", triggers: ["render the final pdf artifact"], version: "1", activeTools: ["artifact_render"] }),
+		],
+	});
+	assert.equal(semanticCalls, 0);
+	assert.deepEqual(selection.candidates.map(({ name, requirementId }) => ({ name, requirementId })), [
+		{ name: "market_series", requirementId: requirements[0].id },
+		{ name: "artifact_render", requirementId: requirements[1].id },
+	]);
+});
+
+test("progressive Contract routing retains one best task-level Skill after exact Tools cover every requirement", async () => {
+	const requirements = [{ id: "capreq:0:aaaaaaaa", text: "retrieve current market series" }];
+	let semanticCalls = 0;
+	const selection = await new CapabilityRuntime({
+		ranker: new ProgressiveCapabilityRanker(
+			new LexicalCapabilityRanker(),
+			{ async rank() { semanticCalls++; return []; } },
+		),
+	}).discover({
+		query: "Use existing research to prepare a business report from the current market series",
+		requirements,
+		inventory: [
+			capabilityDescriptor({ kind: "tool", name: "market_series", description: "Retrieve current market series", triggers: ["current market series"], version: "1", activeTools: ["market_series"] }),
+			capabilityDescriptor({ kind: "skill", name: "business-report", description: "Prepare a structured business report", triggers: ["business report"], version: "1", activeTools: ["skill_read"] }),
+			capabilityDescriptor({ kind: "skill", name: "research-and-brief", description: "Research and prepare a brief", triggers: ["research"], exclude: ["use existing research"], version: "1", activeTools: ["skill_read"] }),
+		],
+	});
+	assert.equal(semanticCalls, 0);
+	assert.deepEqual(selection.candidates.map(({ kind, name, requirementId }) => ({ kind, name, requirementId })), [
+		{ kind: "tool", name: "market_series", requirementId: requirements[0].id },
+		{ kind: "skill", name: "business-report", requirementId: undefined },
+	]);
+});
+
+test("progressive capability ranking sends only lexically unresolved Contract requirements to semantic cognition", async () => {
+	const requirements = [
+		{ id: "capreq:0:aaaaaaaa", text: "retrieve current market series" },
+		{ id: "capreq:1:bbbbbbbb", text: "reconcile disputed evidence" },
+	];
+	let receivedRequirements;
+	const semanticDescriptor = capabilityDescriptor({ kind: "skill", name: "evidence-reconciliation", description: "Resolve conflicting claims", version: "1", activeTools: ["skill_read"] });
+	const ranker = new ProgressiveCapabilityRanker(
+		new LexicalCapabilityRanker(),
+		{ async rank(_query, _inventory, _limit, _signal, context) {
+			receivedRequirements = context.requirements;
+			return [{
+				descriptor: semanticDescriptor,
+				score: 95,
+				confidence: 0.95,
+				explanation: { strategy: "semantic", summary: "semantic match", signals: ["semantic match"] },
+				requirementId: requirements[1].id,
+				outcomeIndex: 0,
+				necessity: "required",
+			}];
+		} },
+	);
+	const selection = await new CapabilityRuntime({ ranker }).discover({
+		query: requirements.map(({ text }) => text).join("\n"),
+		requirements,
+		inventory: [
+			capabilityDescriptor({ kind: "tool", name: "market_series", description: "Retrieve current market series", triggers: ["current market series"], version: "1", activeTools: ["market_series"] }),
+			semanticDescriptor,
+		],
+	});
+	assert.deepEqual(receivedRequirements, [requirements[1]]);
+	assert.deepEqual(selection.candidates.map(({ name, requirementId }) => ({ name, requirementId })), [
+		{ name: "market_series", requirementId: requirements[0].id },
+		{ name: "evidence-reconciliation", requirementId: requirements[1].id },
+	]);
+});
+
+test("progressive capability ranking skips semantic cognition for strong unbound metadata matches", async () => {
+	let semanticCalls = 0;
+	const selection = await new CapabilityRuntime({
+		ranker: new ProgressiveCapabilityRanker(
+			new LexicalCapabilityRanker(),
+			{ async rank() { semanticCalls++; return []; } },
+		),
+	}).discover({
+		query: "研究本周黄金走势并交叉验证公开来源",
+		inventory: [
+			capabilityDescriptor({ kind: "skill", name: "research-and-brief", description: "Produce a sourced brief", triggers: ["研究"], version: "1", activeTools: ["skill_read"] }),
+			capabilityDescriptor({ kind: "tool", name: "exa_web_search", description: "Search public evidence", triggers: ["交叉验证"], version: "1", activeTools: ["exa_web_search"] }),
+			capabilityDescriptor({ kind: "tool", name: "generic_report", description: "Write a generic report", version: "1", activeTools: ["generic_report"] }),
+		],
+	});
+	assert.equal(semanticCalls, 0);
+	assert.deepEqual(selection.candidates.map(({ name }) => name), ["exa_web_search", "research-and-brief"]);
+	assert.ok(selection.candidates.every(({ confidence }) => confidence >= 0.75));
+});
+
+test("progressive capability ranking keeps semantic cognition for weak unbound lexical overlap", async () => {
+	let semanticCalls = 0;
+	const semanticDescriptor = capabilityDescriptor({ kind: "tool", name: "trusted_route", description: "Resolve an ambiguous objective", version: "1", activeTools: ["trusted_route"] });
+	const ranked = await new ProgressiveCapabilityRanker(
+		new LexicalCapabilityRanker(),
+		{ async rank() {
+			semanticCalls++;
+			return [{ descriptor: semanticDescriptor, score: 90, confidence: 0.9, explanation: { strategy: "semantic", summary: "resolved ambiguity", signals: ["resolved ambiguity"] } }];
+		} },
+	).rank("prepare a generic objective", [
+		capabilityDescriptor({ kind: "tool", name: "weak_generic", description: "A generic workflow", version: "1", activeTools: ["weak_generic"] }),
+		semanticDescriptor,
+	], 5);
+	assert.equal(semanticCalls, 1);
+	assert.equal(ranked[0].descriptor.name, "trusted_route");
+});
+
+test("progressive capability ranking does not turn many description terms into exact metadata authority", async () => {
+	let semanticCalls = 0;
+	const semanticDescriptor = capabilityDescriptor({ kind: "skill", name: "verified_report_route", description: "Resolve the workflow semantically", version: "1", activeTools: ["skill_read"] });
+	const query = "prepare detailed ordinary quarterly report tables charts sources analysis metrics narrative evidence summary";
+	const ranked = await new ProgressiveCapabilityRanker(
+		new LexicalCapabilityRanker(),
+		{ async rank() {
+			semanticCalls++;
+			return [{ descriptor: semanticDescriptor, score: 91, confidence: 0.91, explanation: { strategy: "semantic", summary: "semantic route", signals: ["semantic route"] } }];
+		} },
+	).rank(query, [
+		capabilityDescriptor({ kind: "skill", name: "generic_overlap", description: query, version: "1", activeTools: ["skill_read"] }),
+		semanticDescriptor,
+	], 5);
+	assert.equal(semanticCalls, 1);
+	assert.equal(ranked[0].descriptor.name, "verified_report_route");
+});
+
+test("Provider-unavailable fallback admits only explicit local metadata, not description overlap", async () => {
+	const port = new PiSemanticCapabilityPort({
+		models: [{ model: { id: "offline" } }], maxModelAttempts: 1,
+		complete: async () => { throw Object.assign(new Error("offline"), { code: "ECONNREFUSED" }); },
+	});
+	const query = "prepare detailed ordinary quarterly report tables charts sources analysis metrics narrative evidence summary";
+	const selection = await new CapabilityRuntime({ ranker: new SemanticCapabilityRanker(port, { fallback: new LexicalCapabilityRanker() }) }).discover({
+		query,
+		inventory: [capabilityDescriptor({ kind: "skill", name: "generic_overlap", description: query, version: "1", activeTools: ["skill_read"] })],
+	});
+	assert.deepEqual(selection.candidates, []);
+	assert.deepEqual(selection.activatedTools, []);
 });
 
 test("model-backed semantic selection receives generic operational signals and validates model output", async () => {
@@ -207,6 +417,19 @@ test("semantic capability cognition must cover every Core-issued Work Contract r
 		() => new CapabilityRuntime({ ranker: new SemanticCapabilityRanker(port) }).discover({ query: "search and archive", requirements, inventory: [search, archive] }),
 		/omitted a Work Contract requirement/i,
 	);
+});
+
+test("semantic capability selection fails closed when thresholding drops one required outcome", async () => {
+	const search = capabilityDescriptor({ kind: "tool", name: "search", description: "Search current evidence", triggers: ["current evidence"], version: "1", activeTools: ["search"] });
+	const cite = capabilityDescriptor({ kind: "tool", name: "cite", description: "Retain source URLs", triggers: ["source URL"], version: "1", activeTools: ["cite"] });
+	const requirements = [{ id: "capreq:0:aaaaaaaa", text: "current evidence" }, { id: "capreq:1:bbbbbbbb", text: "source URL" }];
+	const port = new ModelBackedSemanticCapabilityPort(async ({ candidates }) => ({ matches: [
+		{ id: candidates.find((candidate) => candidate.name === "search").id, name: "search", similarity: 0.95, requirementId: requirements[0].id, outcomeIndex: 0, necessity: "required" },
+		{ id: candidates.find((candidate) => candidate.name === "cite").id, name: "cite", similarity: 0.7, requirementId: requirements[1].id, outcomeIndex: 0, necessity: "required" },
+	] }));
+	await assert.rejects(() => new CapabilityRuntime({ ranker: new SemanticCapabilityRanker(port, { fallback: new LexicalCapabilityRanker() }) }).discover({
+		query: "current evidence with source URL", requirements, inventory: [search, cite],
+	}), /invalid_response/u);
 });
 
 test("one Capability may retain distinct mappings to multiple Core-issued obligation groups", async () => {
@@ -293,9 +516,9 @@ test("cancelling semantic selection never activates the lexical fallback", async
 	assert.equal(fallbackCalled, false);
 });
 
-test("semantic model context is bounded while lexical recall preserves an explicit tail match", async () => {
+test("semantic model context stays within the interactive preflight window while lexical recall preserves an explicit tail match", async () => {
 	let candidateCount = 0;
-	const inventory = Array.from({ length: 300 }, (_, index) => capabilityDescriptor({ kind: "skill", name: `generic-${String(index).padStart(3, "0")}`, description: "A generic workflow", version: "1", activeTools: ["skill_activate"] }));
+	const inventory = Array.from({ length: 60 }, (_, index) => capabilityDescriptor({ kind: "skill", name: `generic-${String(index).padStart(3, "0")}`, description: "A generic workflow", version: "1", activeTools: ["skill_activate"] }));
 	inventory.push(capabilityDescriptor({ kind: "tool", name: "tail_match", description: "Retrieve exact lunar telemetry", aliases: ["lunar telemetry"], version: "1", activeTools: ["tail_match"] }));
 	const ranker = new SemanticCapabilityRanker({ async similarities({ candidates }) {
 		candidateCount = candidates.length;
@@ -303,8 +526,41 @@ test("semantic model context is bounded while lexical recall preserves an explic
 		return selected ? [{ id: selected.id, name: selected.name, similarity: 0.95 }] : [];
 	} });
 	const ranked = await ranker.rank("lunar telemetry", inventory, 5);
-	assert.equal(candidateCount, 128);
+	assert.equal(candidateCount, 12);
 	assert.equal(ranked[0].descriptor.name, "tail_match");
+});
+
+test("bounded semantic discovery preserves recall for every Core-issued Contract requirement", async () => {
+	const requirements = [
+		{ id: "capreq:0:aaaaaaaa", text: "核验精确外部来源回执" },
+		{ id: "capreq:1:bbbbbbbb", text: "生成可解析页面介质" },
+	];
+	const inventory = Array.from({ length: 60 }, (_, index) => capabilityDescriptor({
+		kind: "tool", name: `generic_${String(index).padStart(2, "0")}`, description: "Prepare an ordinary report", version: "1", activeTools: [`generic_${index}`],
+	}));
+	inventory.push(
+		capabilityDescriptor({ kind: "tool", name: "source_attestation", description: "Verify exact external source receipts", aliases: ["核验精确外部来源回执"], version: "1", activeTools: ["source_attestation"] }),
+		capabilityDescriptor({ kind: "tool", name: "page_rendition", description: "Produce a parseable page medium", aliases: ["生成可解析页面介质"], version: "1", activeTools: ["page_rendition"] }),
+	);
+	let providerCandidates = [];
+	const runtime = new CapabilityRuntime({ ranker: new SemanticCapabilityRanker({
+		async similarities({ candidates }) {
+			providerCandidates = candidates.map(({ name }) => name);
+			return requirements.map((requirement) => {
+				const name = requirement.id.includes(":0:") ? "source_attestation" : "page_rendition";
+				const candidate = candidates.find((item) => item.name === name);
+				return candidate ? { id: candidate.id, name, similarity: 0.99, requirementId: requirement.id, outcomeIndex: 0, necessity: "required" } : undefined;
+			}).filter(Boolean);
+		},
+	}) });
+	const selection = await runtime.discover({ query: "prepare report", inventory, requirements, limit: 10 });
+	assert.equal(providerCandidates.length, 12);
+	assert.equal(providerCandidates.includes("source_attestation"), true);
+	assert.equal(providerCandidates.includes("page_rendition"), true);
+	assert.deepEqual(selection.candidates.map(({ name, requirementId }) => ({ name, requirementId })).sort((left, right) => left.requirementId.localeCompare(right.requirementId)), [
+		{ name: "source_attestation", requirementId: requirements[0].id },
+		{ name: "page_rendition", requirementId: requirements[1].id },
+	]);
 });
 
 test("Pi semantic production port retries a parseable invalid response on the next bounded model", async () => {
@@ -349,6 +605,20 @@ test("Pi semantic production port extracts a strict JSON envelope from bounded m
 	const port = new PiSemanticCapabilityPort({
 		models: [{ model: { id: "prose" } }],
 		complete: async () => ({ stopReason: "stop", content: [{ type: "text", text: "I checked the candidates.\n```json\n{\"matches\":[{\"id\":\"tool:known:1\",\"name\":\"known\",\"similarity\":0.9}]}\n```\nDone." }] }),
+	});
+	const result = await port.similarities({ query: "known", candidates: [{ id: "tool:known:1", name: "known", text: "Known capability" }], limit: 1 });
+	assert.equal(result[0].name, "known");
+});
+
+test("Pi semantic production port ignores irrelevant grouping metadata on one unscoped match", async () => {
+	assert.match(SEMANTIC_CAPABILITY_SYSTEM_PROMPT, /requirements are not supplied.*one match.*omit requirementId.*outcomeIndex.*necessity/i);
+	assert.match(SEMANTIC_CAPABILITY_SYSTEM_PROMPT, /multiple matches.*short ASCII.*exactly one required/i);
+	const port = new PiSemanticCapabilityPort({
+		models: [{ model: { id: "singleton" } }], maxModelAttempts: 1,
+		complete: async () => ({ stopReason: "stop", content: [{ type: "text", text: JSON.stringify({ matches: [{
+			id: "tool:known:1", name: "known", similarity: 0.95,
+			requirementId: "联网检索最新公开证据", outcomeIndex: 0, necessity: "required",
+		}] }) }] }),
 	});
 	const result = await port.similarities({ query: "known", candidates: [{ id: "tool:known:1", name: "known", text: "Known capability" }], limit: 1 });
 	assert.equal(result[0].name, "known");
@@ -403,7 +673,7 @@ test("Pi semantic production port reserves total-deadline time for a second Prov
 	const result = await port.similarities({ query: "known", candidates: [{ id: "tool:known:1", name: "known", text: "Known capability" }], limit: 1 });
 	assert.equal(result[0].name, "known");
 	assert.deepEqual(calledModels, ["slow", "recovery"]);
-	assert.ok(slowAbortedAt - startedAt >= 600, "the first attempt must receive the weighted majority of the total deadline");
+	assert.ok(slowAbortedAt - startedAt >= 700, "the first attempt must receive at least three quarters of the total deadline");
 	assert.ok(Date.now() - startedAt < 1_500, "recovery must stay inside the original total deadline");
 });
 
@@ -436,9 +706,8 @@ test("Pi semantic production port enforces its deadline when a Provider ignores 
 		new Promise((resolve) => setTimeout(() => resolve("hung"), 500)),
 	]);
 	assert.equal(outcome, "settled");
-	assert.equal(usage.length, 2);
-	assert.equal(usage[0].failureCode, "provider_unavailable");
-	assert.equal(usage[1].failureCode, "total_deadline");
+	assert.equal(usage.length, 1, "one stalled model must not be retried under a different slice of the same deadline");
+	assert.equal(usage[0].failureCode, "total_deadline");
 });
 
 test("Pi semantic production port reports bounded estimated and actual cognition usage", async () => {
@@ -460,14 +729,15 @@ test("Pi semantic production port reports bounded estimated and actual cognition
 	assert.ok(usage[0].estimatedTokens >= usage[0].actualTokens);
 });
 
-test("Pi semantic production port enforces one cumulative auxiliary token budget", async () => {
+test("Pi semantic production port records large calls without a cumulative auxiliary token ceiling", async () => {
 	let called = false;
 	const port = new PiSemanticCapabilityPort({
-		models: [{ model: { id: "only" } }], maxTokens: 256, maxTotalEstimatedTokens: 512,
-		complete: async () => { called = true; return { stopReason: "stop", content: [{ type: "text", text: "{}" }] }; },
+		models: [{ model: { id: "only" } }], maxTokens: 256,
+		complete: async () => { called = true; return { stopReason: "stop", content: [{ type: "text", text: JSON.stringify({ matches: [{ id: "one", name: "one", similarity: 0.9 }] }) }], usage: { input: 2_100, output: 10, cacheRead: 0, cacheWrite: 0 } }; },
 	});
-	await assert.rejects(() => port.similarities({ query: "query", candidates: [{ id: "one", name: "one", text: "x".repeat(2_000) }], limit: 1 }), /budget_exceeded/u);
-	assert.equal(called, false);
+	const result = await port.similarities({ query: "query", candidates: [{ id: "one", name: "one", text: "x".repeat(2_000) }], limit: 1 });
+	assert.equal(called, true);
+	assert.equal(result[0].id, "one");
 });
 
 test("Capability discovery excludes unavailable health and explicit exclusions deterministically", async () => {

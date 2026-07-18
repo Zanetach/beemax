@@ -11,8 +11,8 @@ import { SessionCoordinator, type RuntimeSessionFactory, type RuntimeSessionSnap
 import { SessionCatalog, type SavedSessionChoice, type SessionPreferences } from "./session-catalog.ts";
 import type { AgentControlHandler, AgentControlInput, AgentControlResult } from "./agent-control.ts";
 import { conversationKey, responsibilityOwnerKey, responsibilityOwnerKeys } from "./agent-scope.ts";
-import type { ObjectiveCancellationResult, TaskKind, TaskLedger, TaskPlanRecord, TaskPlanStatus, TaskRecord, TaskRunRecord, TaskStatus } from "./task-ledger.ts";
-import type { AutonomousPlanningDecision, AutonomousPlanningPolicy, PlanningBudgetRegistry } from "./autonomous-planning.ts";
+import type { ObjectiveCancellationResult, TaskArtifact, TaskKind, TaskLedger, TaskPlanRecord, TaskPlanStatus, TaskRecord, TaskRunRecord, TaskStatus } from "./task-ledger.ts";
+import { inspectPlanningSignals, type AutonomousPlanningDecision, type AutonomousPlanningPolicy, type PlanningBudgetRegistry, type PlanningSignals } from "./autonomous-planning.ts";
 import { createAdmittedWorkContractPlanningInput, type AdmittedWorkContractPlanningInput } from "./contract-planning-admission.ts";
 import { contractAdmissionWorkContractSha256, createDurableContractAdmissionReceipt, restoreDurableContractPlanningInput, type ContractAdmissionObjectiveBinding, type ContractAdmissionReceiptIntegrity, type DurableContractAdmissionReceipt } from "./contract-admission-receipt.ts";
 import { OpenWorldContractCognitionError, hasSemanticOpenWorldContractAdjudication, type OpenWorldContractCompilationResult, type OpenWorldContractCompilerPort } from "./open-world-contract-compiler.ts";
@@ -35,6 +35,8 @@ import type { ToolEffectProjectionReader } from "./tool-effect.ts";
 import { deriveTaskVerificationRequirements, mergeTaskVerificationRequirements } from "./task-verification-requirements.ts";
 import { sanitizeTaskCriterionVerifications, unavailableTaskCriterionVerifications } from "./task-criteria.ts";
 import { objectiveCompletionId } from "./objective-completion-delivery.ts";
+import { VERIFICATION_SUBMIT_TOOL_NAME } from "./verification-tools.ts";
+import { validateArtifactManifest, validateArtifactVerificationReceipt, validateSourceReceipt, type ArtifactManifest, type ArtifactVerificationReceipt, type SourceReceipt } from "./artifact-runtime.ts";
 
 export interface AgentRunInput<Source extends BeeMaxRuntimeSource = BeeMaxRuntimeSource> {
 	source: Source;
@@ -60,8 +62,16 @@ export interface AgentRunResult {
 	model: string;
 	durationMs: number;
 	usage: { input_tokens?: number; output_tokens?: number };
+	/** Host-derived business state; a Provider final message alone can never set accepted. */
+	outcome: AgentRunOutcome;
 	/** Durable completion to acknowledge after the caller's interactive delivery succeeds. */
 	completionId?: string;
+}
+
+export interface AgentRunOutcome {
+	status: "answered" | "in_progress" | "accepted" | "rejected" | "verification_unavailable" | "cancelled";
+	objectiveId?: string;
+	taskRunId?: string;
 }
 
 export interface AgentHistoryEntry {
@@ -96,7 +106,7 @@ export interface PlanningDecisionEvent {
 	concurrency: number;
 	maxSubagents: number;
 	requiredTools: string[];
-	/** Present for semantic Contract planning; omitted for legacy raw-prompt compatibility. */
+	/** Emitted by the local Runtime; optional only for legacy remote adapters. */
 	basis?: AutonomousPlanningDecision["basis"];
 	verificationDepth?: AutonomousPlanningDecision["verificationDepth"];
 	contractIdSha256?: string;
@@ -120,7 +130,7 @@ export type BeeMaxAgentRunEventSink = (event: BeeMaxAgentRunEvent) => void | Pro
 const SKILL_LIFECYCLE_TOOLS = new Set(["skill_activate", "skill_read", "skill_route", "skill_resource_read", "skill_complete"]);
 const CAPABILITY_CONTROL_TOOLS = new Set(["capability_discover", "capability_acquire"]);
 interface AdmittedSkillIdentity { name: string; version: string; }
-interface CapabilitySelectionCandidate { kind: "tool" | "mcp" | "skill"; name: string; version?: string; requirementId?: string; outcomeIndex?: number; necessity?: "required" | "alternative"; }
+interface CapabilitySelectionCandidate { kind: "tool" | "mcp" | "skill"; name: string; version?: string; confidence: number; requirementId?: string; outcomeIndex?: number; necessity?: "required" | "alternative"; sourceToolName?: string; }
 interface AdmittedCapabilityCandidate extends CapabilitySelectionCandidate { selectedAtSequence: number; }
 interface CapabilityObligation {
 	id: string;
@@ -154,6 +164,139 @@ function compileCapabilityObligations(cognitionId: string, candidates: readonly 
 function stableCapabilityRequirementId(index: number, clause: WorkContract["capabilityRequirements"][number]): string {
 	const digest = createHash("sha256").update(JSON.stringify({ text: clause.text, source: clause.source })).digest("hex").slice(0, 20);
 	return `capreq:${index}:${digest}`;
+}
+
+const CAPABILITY_REFERENCE_SUFFIX = /^\s*(?:的\s*)?(?:回执|结果|输出|证据|记录|清单|元数据|manifest\b|receipt\b|result\b|output\b|evidence\b|record\b|metadata\b)/iu;
+const CAPABILITY_IDENTIFIER_CHAR = /[a-z0-9_:@.-]/iu;
+
+function explicitCapabilityExecutionToolNames(requirementText: string, tools: ReadonlyArray<{ name: string }>): string[] {
+	const text = requirementText.normalize("NFKC").toLocaleLowerCase();
+	const selected: string[] = [];
+	for (const tool of [...tools].sort((left, right) => right.name.length - left.name.length)) {
+		const name = tool.name.normalize("NFKC").toLocaleLowerCase();
+		if (!name) continue;
+		let offset = 0;
+		let requestsExecution = false;
+		while (offset <= text.length - name.length) {
+			const index = text.indexOf(name, offset);
+			if (index < 0) break;
+			const before = index > 0 ? text[index - 1]! : "";
+			const afterIndex = index + name.length;
+			const after = afterIndex < text.length ? text[afterIndex]! : "";
+			const exactIdentifier = (!before || !CAPABILITY_IDENTIFIER_CHAR.test(before)) && (!after || !CAPABILITY_IDENTIFIER_CHAR.test(after));
+			if (exactIdentifier && !CAPABILITY_REFERENCE_SUFFIX.test(text.slice(afterIndex))) {
+				requestsExecution = true;
+				break;
+			}
+			offset = index + name.length;
+		}
+		if (requestsExecution) selected.push(tool.name);
+	}
+	return selected;
+}
+
+function deterministicFileBoundaryToolNames(requirementText: string, tools: ReadonlyArray<{ name: string }>): string[] {
+	// Source-state modifiers describe the input to a later operation. They are not
+	// themselves commands to edit that source: "render the corrected HTML" must
+	// not be rewritten into a generic file-write obligation.
+	const text = requirementText.normalize("NFKC").toLocaleLowerCase()
+		.replace(/(?:修正|修复|修改|编辑|更新|改写|重写)(?:完成)?后的/gu, "");
+	const isFileBoundary = /\b(?:html?|xhtml|markdown|md|text|txt|json|xml|csv|file|document|report|source|code)\b|文件|文档|报告|源码|网页/iu.test(text);
+	if (!isFileBoundary) return [];
+	const available = new Set(tools.map((tool) => tool.name));
+	const requestsRead = /读取|读入|查看|打开|\b(?:read|open)\b/iu.test(text);
+	const requestsWrite = /修正|修复|修改|编辑|更新|改写|重写|写入|保存|另存|覆盖|\b(?:fix|repair|correct|edit|modify|update|rewrite|write|save|replace)\b/iu.test(text);
+	return [requestsRead && available.has("read") ? "read" : undefined, requestsWrite && available.has("write") ? "write" : undefined]
+		.filter((name): name is string => Boolean(name));
+}
+
+function deterministicArtifactBoundaryToolNames(requirementText: string, tools: ReadonlyArray<{ name: string }>): string[] {
+	const available = new Set(tools.map((tool) => tool.name));
+	const text = requirementText.normalize("NFKC").toLocaleLowerCase();
+	const html = String.raw`(?:\bhtml?\b|\.html?\b|网页)`;
+	const pdf = String.raw`(?:\bpdf\b|\.pdf\b)`;
+	const chineseSourceToPdf = new RegExp(String.raw`(?:把|将|由|从)?\s*[^。；;]{0,120}?${html}[^。；;]{0,80}?(?:渲染|转换|转成|导出)(?:为|成|到)?[^。；;]{0,80}?${pdf}`, "iu");
+	const englishSourceToPdf = new RegExp(String.raw`(?:render|convert|export)\b[^.;]{0,120}?${html}[^.;]{0,80}?\b(?:to|as|into)\b[^.;]{0,80}?${pdf}|${pdf}[^.;]{0,80}?\bfrom\b[^.;]{0,80}?${html}`, "iu");
+	const selected: string[] = [];
+	if (available.has("artifact_render") && (chineseSourceToPdf.test(text) || englishSourceToPdf.test(text))) selected.push("artifact_render");
+	const artifactSubject = new RegExp(String.raw`${html}|${pdf}|文件|文档|artifact|document|file`, "iu");
+	const inspection = /独立检查|检查|验证|核验|校验|审查|比较|对比|\b(?:inspect|verify|validate|check|audit|compare)\b/iu;
+	if (available.has("artifact_inspect") && artifactSubject.test(text) && inspection.test(text)) selected.push("artifact_inspect");
+	return selected;
+}
+
+function reconcileExplicitCapabilityExecutionCandidates(
+	candidates: readonly CapabilitySelectionCandidate[],
+	requirements: readonly { id: string; text: string }[],
+	tools: ReadonlyArray<ToolDefinition | ToolInfo>,
+	admittedInventory: ReadonlySet<string>,
+): CapabilitySelectionCandidate[] {
+	const explicitByRequirement = new Map(requirements.flatMap((requirement) => {
+		const names = [...new Set([
+			...explicitCapabilityExecutionToolNames(requirement.text, tools),
+			...deterministicArtifactBoundaryToolNames(requirement.text, tools),
+			...deterministicFileBoundaryToolNames(requirement.text, tools),
+		])];
+		return names.length ? [[requirement.id, names] as const] : [];
+	}));
+	if (!explicitByRequirement.size) return [...candidates];
+	const overriddenRequirementIds = new Set(explicitByRequirement.keys());
+	const retained = candidates.filter((candidate) => {
+		if (candidate.requirementId) return !overriddenRequirementIds.has(candidate.requirementId);
+		return requirements.length !== 1 || !overriddenRequirementIds.has(requirements[0]!.id);
+	});
+	for (const requirement of requirements) {
+		const names = explicitByRequirement.get(requirement.id);
+		if (!names) continue;
+		for (const [outcomeIndex, name] of names.entries()) {
+			if (!admittedInventory.has(name)) continue;
+			const providerMatches = candidates.filter((candidate) => {
+				const belongsToRequirement = candidate.requirementId === requirement.id
+					|| (!candidate.requirementId && requirements.length === 1);
+				return belongsToRequirement && (candidate.sourceToolName ?? candidate.name) === name;
+			});
+			if (providerMatches.length) {
+				retained.push(...providerMatches.map((candidate) => ({
+					...candidate,
+					requirementId: requirement.id,
+					outcomeIndex,
+					necessity: "required" as const,
+				})));
+				continue;
+			}
+			const tool = tools.find((candidate) => candidate.name === name);
+			if (!tool) continue;
+			const kind = (tool as typeof tool & { beemaxToolSpec?: { kind?: unknown } }).beemaxToolSpec?.kind === "mcp" ? "mcp" as const : "tool" as const;
+			retained.push({ kind, name, version: toolSpecInventoryItem(tool).version, confidence: 1, requirementId: requirement.id, outcomeIndex, necessity: "required", sourceToolName: name });
+		}
+	}
+	return retained;
+}
+
+function restoreUncoveredCapabilityCandidates(
+	candidates: readonly CapabilitySelectionCandidate[],
+	requirements: readonly { id: string; text: string }[],
+	tools: ReadonlyArray<ToolDefinition | ToolInfo>,
+	admittedInventory: ReadonlySet<string>,
+): CapabilitySelectionCandidate[] {
+	const restored = [...candidates];
+	const covered = new Set(restored.flatMap((candidate) => candidate.requirementId ? [candidate.requirementId] : []));
+	const eligible = tools.filter((tool) => admittedInventory.has(tool.name) && !CAPABILITY_CONTROL_TOOLS.has(tool.name) && !SKILL_LIFECYCLE_TOOLS.has(tool.name));
+	for (const requirement of requirements) {
+		if (covered.has(requirement.id)) continue;
+		const names = selectTurnTools(requirement.text, eligible, 3);
+		for (const [index, name] of names.entries()) {
+			const tool = eligible.find((candidate) => candidate.name === name);
+			if (!tool) continue;
+			const kind = (tool as typeof tool & { beemaxToolSpec?: { kind?: unknown } }).beemaxToolSpec?.kind === "mcp" ? "mcp" as const : "tool" as const;
+			restored.push({ kind, name, version: toolSpecInventoryItem(tool).version, confidence: SEMANTIC_CAPABILITY_MINIMUM_SIMILARITY, requirementId: requirement.id, outcomeIndex: 0, necessity: index === 0 ? "required" : "alternative", sourceToolName: name });
+		}
+	}
+	return restored;
+}
+
+function capabilityDecisionCandidates(candidates: readonly CapabilitySelectionCandidate[]): CapabilitySelectionCandidate[] {
+	return candidates.slice(0, 20).map(({ sourceToolName: _sourceToolName, ...candidate }) => candidate);
 }
 /** Gateway-facing runtime contract; implementations may be local or remote. */
 export interface AgentRuntimePort<Source extends BeeMaxRuntimeSource = BeeMaxRuntimeSource> {
@@ -215,6 +358,13 @@ export interface BeeMaxAgentRuntimeOptions<Source extends BeeMaxRuntimeSource = 
 	contractAdmissionIntegrity?: Readonly<ContractAdmissionReceiptIntegrity>;
 	/** Production runtimes fail closed instead of persisting model Contracts without authentication. */
 	requireContractAdmissionIntegrity?: boolean;
+	/**
+	 * Interactive admission strategy. Model-first is the product default: ordinary
+	 * turns go straight to Pi, while durable lifecycle/automation work still uses
+	 * semantic Contract admission. Contract-first is retained only as a migration
+	 * compatibility lane for callers that intentionally persist complex turns.
+	 */
+	interactiveAdmission?: "model_first" | "contract_first";
 	/** Async semantic Situation path; defaults to the deterministic compatibility builder. */
 	situationBuilder?: SituationBuilderPort;
 	/** Configurable semantic admission floor; applies only to model-proposed Work Contracts. */
@@ -227,8 +377,6 @@ export interface BeeMaxAgentRuntimeOptions<Source extends BeeMaxRuntimeSource = 
 	verifyObjectiveCandidate?: TaskGraphVerifier;
 	/** Shared perception seam used when the active Pi model cannot consume media natively. */
 	mediaUnderstanding?: MediaUnderstandingPort;
-	/** Settle a Pi turn that has produced visible progress but then stops emitting output. Null disables it. */
-	turnIdleSettleMs?: number | null;
 }
 
 /**
@@ -258,13 +406,13 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 	private readonly openWorldContractCompiler?: OpenWorldContractCompilerPort;
 	private readonly contractAdmissionIntegrity?: Readonly<ContractAdmissionReceiptIntegrity>;
 	private readonly requireContractAdmissionIntegrity: boolean;
+	private readonly interactiveAdmission: "model_first" | "contract_first";
 	private readonly minimumWorkContractConfidence: number;
 	private readonly situationBuilder: SituationBuilderPort;
 	private readonly executionTrace?: ExecutionTraceSink;
 	private readonly toolEffectProjectionReader?: ToolEffectProjectionReader;
 	private readonly verifyObjectiveCandidate?: TaskGraphVerifier;
 	private readonly mediaUnderstanding: MediaUnderstandingPort;
-	private readonly turnIdleSettleMs: number | null;
 	private readonly supplementalMediaControllers = new Map<string, Set<AbortController>>();
 	private readonly objectiveInterruptions = new Map<string, Set<() => Promise<void>>>();
 
@@ -292,13 +440,13 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 		this.openWorldContractCompiler = options.openWorldContractCompiler;
 		this.contractAdmissionIntegrity = options.contractAdmissionIntegrity;
 		this.requireContractAdmissionIntegrity = options.requireContractAdmissionIntegrity === true;
+		this.interactiveAdmission = options.interactiveAdmission ?? "model_first";
 		this.minimumWorkContractConfidence = Math.max(0, Math.min(options.minimumWorkContractConfidence ?? 0.6, 1));
 		this.situationBuilder = options.situationBuilder ?? new DeterministicSituationBuilder();
 		this.executionTrace = options.executionTrace;
 		this.toolEffectProjectionReader = options.toolEffectProjectionReader;
 		this.verifyObjectiveCandidate = options.verifyObjectiveCandidate;
 		this.mediaUnderstanding = options.mediaUnderstanding ?? new MediaUnderstandingRuntime([]);
-		this.turnIdleSettleMs = options.turnIdleSettleMs === null ? null : Math.max(10, Math.min(options.turnIdleSettleMs ?? 60_000, 300_000));
 	}
 
 	async run(input: AgentRunInput<Source>, onEvent?: BeeMaxAgentRunEventSink): Promise<AgentRunResult> {
@@ -334,13 +482,27 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 		if (explicitAutomationObjective && activeObjective?.objectiveRevisions?.length) {
 			activeObjective = { ...activeObjective, situation: activeObjective.objectiveRevisions.at(-1)!.situation };
 		}
-		const compatibilityObjective = activeObjective ?? (activeObjectiveCandidates.length === 1 ? activeObjectiveCandidates[0] : undefined);
+		const resumeObjective = input.objectiveTaskId ? undefined : exactActiveObjectiveForRequest(activeObjectiveCandidates, input.text);
+		const lifecycleObjective = activeObjective ?? resumeObjective ?? referencedActiveObjectiveForRequest(activeObjectiveCandidates, input.text);
+		const compatibilityObjective = lifecycleObjective ?? (this.interactiveAdmission === "contract_first" && activeObjectiveCandidates.length === 1 ? activeObjectiveCandidates[0] : undefined);
 		const fallbackUnderstanding = cognitiveRun ? this.turnUnderstanding.understand(input.text, { activeObjective: compatibilityObjective?.title }) : undefined;
+		const rawPlanningSignals = fallbackUnderstanding ? inspectPlanningSignals(input.text) : undefined;
+		const semanticContractRequired = fallbackUnderstanding ? requiresSemanticWorkContract({
+			rawRequest: input.text,
+			interactive,
+			interactiveAdmission: this.interactiveAdmission,
+			responsibleAutomation,
+			explicitAutomationObjective,
+			objectiveTaskId: input.objectiveTaskId,
+			activeObjectiveCount: activeObjectiveCandidates.length,
+			referencesActiveObjective: Boolean(lifecycleObjective),
+			exactObjectiveReplay: Boolean(resumeObjective),
+			understanding: fallbackUnderstanding,
+			planningSignals: rawPlanningSignals!,
+		}) : false;
 		let planning: AutonomousPlanningDecision | undefined;
-		// Semantic admission is control-plane cognition, not Pi execution. A caller-
-		// supplied Execution Envelope remains the hard end-to-end ceiling, while the
-		// autonomous planning budget below governs only the subsequent Pi loop.
-		const cognitionTokenLimit = input.executionEnvelope?.budget?.maxTokens;
+		// Semantic admission is control-plane cognition. Token usage is measured and
+		// reported, but a cumulative token estimate must never cancel the Objective.
 		let workContract: WorkContract | undefined;
 		let planningContractAdmission: Readonly<AdmittedWorkContractPlanningInput> | undefined;
 		let planningContractInput: Readonly<AdmittedWorkContractPlanningInput> | Readonly<OpenWorldContract> | undefined;
@@ -366,26 +528,24 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 					throw new AgentRunError(`Durable Contract admission blocked: ${errorMessage(error)}`, true, error);
 				}
 			}
-		} else if (fallbackUnderstanding) {
+		} else if (fallbackUnderstanding && semanticContractRequired) {
 			try {
 				const activeObjectives = activeObjectiveCandidates.map((task) => ({ id: task.id, title: task.title }));
-				const trustedContext = { fallback: fallbackUnderstanding, activeObjectives, ...(compatibilityObjective ? { activeObjective: { id: compatibilityObjective.id, title: compatibilityObjective.title } } : {}) };
-				const built = await this.workContractBuilder.build({ rawRequest: input.text, ...trustedContext, ...(cognitionTokenLimit !== undefined ? { maxCognitionTokens: cognitionTokenLimit } : {}), ...(cognitionSignal ? { signal: cognitionSignal } : {}) });
+				const resumeObjectiveIdentity = resumeObjective ? { id: resumeObjective.id, title: resumeObjective.title } : undefined;
+				const trustedContext = { fallback: fallbackUnderstanding, activeObjectives, ...(compatibilityObjective ? { activeObjective: { id: compatibilityObjective.id, title: compatibilityObjective.title } } : {}), ...(resumeObjectiveIdentity ? { resumeObjective: resumeObjectiveIdentity } : {}) };
+				const built = await this.workContractBuilder.build({ rawRequest: input.text, ...trustedContext, ...(cognitionSignal ? { signal: cognitionSignal } : {}) });
 				if (!hasSemanticWorkContractAdjudication(built)) throw new Error("Model Work Contract is missing independent semantic adjudication evidence");
 				workContractCognitionUsage = built.cognitionUsage ?? built.semanticAdjudication?.cognitionUsage;
 				workContractCognitionBudgetChargeTokens = built.source === "model" ? built.cognitionBudgetChargeTokens : 0;
-				workContract = validateWorkContract(built.contract, input.text, { trustedContext, requireAcceptanceCriterion: built.source === "model", enforceFallbackUnderstanding: built.source !== "model" });
+				workContract = validateWorkContract(built.contract, input.text, { trustedContext, requireAcceptanceCriterion: built.source === "model", enforceFallbackUnderstanding: built.source !== "model", independentSemanticInventory: built.source === "model" });
 				if (built.source === "model") {
 					planningContractAdmission = createAdmittedWorkContractPlanningInput({ ...built, contract: workContract }, workContract);
 					planningContractInput = planningContractAdmission;
 				}
 				if (built.source === "model" && workContract.confidence < this.minimumWorkContractConfidence) throw new Error(`Model Work Contract confidence ${workContract.confidence} is below the admission threshold ${this.minimumWorkContractConfidence}`);
 				if (planningContractAdmission && this.openWorldContractCompiler && workContract.acceptanceCriteria.length) {
-					const remainingCognitionTokens = cognitionTokenLimit === undefined ? undefined : cognitionTokenLimit - workContractCognitionBudgetChargeTokens;
-					if (remainingCognitionTokens !== undefined && remainingCognitionTokens <= 0) throw new Error(`OpenWorld compilation would exceed the Execution Envelope token budget (${cognitionTokenLimit})`);
 					const compiled = await this.openWorldContractCompiler.compile({
 						admission: planningContractAdmission,
-						...(remainingCognitionTokens !== undefined ? { maxCognitionTokens: remainingCognitionTokens } : {}),
 						...(cognitionSignal ? { signal: cognitionSignal } : {}),
 					});
 					if (!hasSemanticOpenWorldContractAdjudication(compiled)) throw new Error("OpenWorld Contract is missing independent semantic adjudication evidence");
@@ -394,8 +554,6 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 					workContractCognitionUsage = mergeCognitionUsage(workContractCognitionUsage, compiled.cognitionUsage);
 					workContractCognitionBudgetChargeTokens += compiled.cognitionBudgetChargeTokens;
 				}
-				const envelopeTokenLimit = input.executionEnvelope?.budget?.maxTokens;
-				if (envelopeTokenLimit !== undefined && workContractCognitionBudgetChargeTokens > envelopeTokenLimit) throw new Error(`Work Contract cognition exceeded the Execution Envelope token budget (${envelopeTokenLimit})`);
 			} catch (error) {
 				if (error instanceof WorkContractCognitionError) {
 					workContractCognitionUsage = error.cognitionUsage;
@@ -430,7 +588,7 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 			const claimed = this.taskLedger?.claimObjectiveInterruptions?.([cancelledObjective.ownerKey], this.objectiveInterruptionHolderId, Date.now() + this.objectiveInterruptionTimeoutMs * 2 + 1_000, Date.now(), 10)
 				.find((item) => item.objectiveId === cancelledObjective.id);
 			if (this.taskLedger?.claimObjectiveInterruptions && !claimed) {
-				return { answer: `Cancelled Objective ${activeObjective.title}; durable execution is fenced, but runtime interruption is being reconciled by another Runtime.`, model: "beemax/work-contract", durationMs: Date.now() - startedAt, usage: cognitionResultUsage(workContractCognitionUsage) };
+				return { answer: `Cancelled Objective ${activeObjective.title}; durable execution is fenced, but runtime interruption is being reconciled by another Runtime.`, model: "beemax/work-contract", durationMs: Date.now() - startedAt, usage: cognitionResultUsage(workContractCognitionUsage), outcome: { status: "cancelled", objectiveId: activeObjective.id } };
 			}
 			const interruptionResponsibility = claimed ?? cancellation;
 			const localInterruption = await this.interruptLocalObjective(cancellation.taskIds, cognitionSignal);
@@ -461,11 +619,7 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 				: interruption.interruptedEffects
 				? `Cancelled Objective ${activeObjective.title}; ${interruption.interruptedEffects} interrupted Effect(s) require reconciliation before their external outcome is known.`
 				: `Cancelled Objective ${activeObjective.title}.`;
-			return { answer, model: "beemax/work-contract", durationMs: Date.now() - startedAt, usage: cognitionResultUsage(workContractCognitionUsage) };
-		}
-		if (input.executionEnvelope?.budget?.maxTokens !== undefined
-			&& workContractCognitionBudgetChargeTokens >= input.executionEnvelope.budget.maxTokens) {
-			throw new AgentRunError(`Work Contract cognition exhausted the Execution Envelope token budget (${input.executionEnvelope.budget.maxTokens}) before Pi execution`, false, undefined, false, workContractCognitionUsage);
+			return { answer, model: "beemax/work-contract", durationMs: Date.now() - startedAt, usage: cognitionResultUsage(workContractCognitionUsage), outcome: { status: "cancelled", objectiveId: activeObjective.id } };
 		}
 		const situation = understanding ? (await this.situationBuilder.build({
 			text: input.text,
@@ -474,7 +628,11 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 		})).situation : undefined;
 		const accessScopeRef = activeObjective && referencesActiveObjective ? activeObjective.accessScopeRef ?? trustedInputAccessScope : trustedInputAccessScope;
 		const reusesActiveObjective = Boolean(activeObjective && (explicitAutomationObjective || workContract?.action === "continue" || workContract?.action === "correct"));
-		const shouldPersistObjective = responsibleAutomation || (interactive && shouldBindDurableObjective(input, understanding, planning) && !(workContract?.action === "query" && referencesActiveObjective));
+		// Turn-local model-first work is deliberately not promoted to a durable
+		// Objective merely because it is complex. Persistence is a separate control-
+		// plane decision, represented here by an admitted Work Contract or an
+		// Automation trigger.
+		const shouldPersistObjective = responsibleAutomation || (interactive && Boolean(workContract) && shouldBindDurableObjective(input, understanding, planning) && !(workContract?.action === "query" && referencesActiveObjective));
 		const pendingObjectiveId = shouldPersistObjective && !reusesActiveObjective && this.taskLedger && !input.source.delegatedTask
 			? `objective:${crypto.randomUUID()}`
 			: undefined;
@@ -527,7 +685,11 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 			...(input.timeoutMs === null && !objective ? {} : { budget: { ...(objective ? { maxCorrectiveAttempts: objectiveCorrectiveAttemptBudget } : {}), ...(input.timeoutMs === null ? {} : { deadlineAt: startedAt + input.timeoutMs }) } }),
 			mode: understanding?.action === "correct" ? "correction" : "normal",
 		});
+		// A planning token estimate may trigger early context compaction, but it is
+		// never an execution ceiling and never authorizes aborting a live Turn.
+		const piContextPreparationTarget = planning?.budget.maxTokens ?? undefined;
 		let activeTaskRunId = executionEnvelope.taskRunId;
+		const ownsActiveTaskRun = Boolean(ownedTaskRunId);
 		let activeTaskRunSettled = false;
 		let completionId: string | undefined;
 		let turnResourceCleanup: (() => void) | undefined;
@@ -539,6 +701,29 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 			await this.sessionCatalog?.touch(input.source);
 			const scopedSession = session.piSession as typeof session.piSession & { beemaxSkillHistorySanitized?: boolean };
 			if (!scopedSession.beemaxSkillHistorySanitized) { releaseHistoricalSkillContext(session.piSession); scopedSession.beemaxSkillHistorySanitized = true; }
+			if (shouldCompactForExecutionBudget(session.piSession, piContextPreparationTarget)) {
+				const taskEnvelope = objective
+					? buildTaskPreservationEnvelope([objective])
+					: this.taskLedger && typeof this.taskLedger.queryTasks === "function"
+						? buildActiveTaskPreservationEnvelope(this.taskLedger, input.source)
+					: undefined;
+				const instructions = [
+					"Preserve the current request's unresolved objective, constraints, verified evidence with provenance, created artifacts, and next safe steps. Treat prior assistant conclusions as historical context rather than current verification.",
+					taskEnvelope,
+				].filter(Boolean).join("\n\n");
+				try {
+					await session.piSession.compact(instructions);
+					// A syntactically successful summary can still retain nearly the whole
+					// transcript. Do not begin an autonomous Tool loop without enough room
+					// for correction and verification turns.
+					if (shouldCompactForExecutionBudget(session.piSession, piContextPreparationTarget)) await resetPiSessionContext(session.piSession, taskEnvelope);
+				}
+				catch (error) {
+					if (input.signal?.aborted) throw new AgentRunError("Agent turn was cancelled during execution-budget context compaction", false, input.signal.reason);
+					if (executionEnvelope.budget?.deadlineAt !== undefined && executionEnvelope.budget.deadlineAt <= Date.now()) throw new AgentRunError("Execution Envelope deadline expired during execution-budget context compaction", true, error);
+					await resetPiSessionContext(session.piSession, taskEnvelope);
+				}
+			}
 			const turnMessageStart = session.piSession.agent.state.messages.length;
 			if (input.signal?.aborted) {
 				await session.piSession.abort();
@@ -548,14 +733,17 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 				if (!this.taskLedger?.transition(activeObjective.id, { status: "running", startedAt })) throw new AgentRunError(`Proactive Objective ${activeObjective.id} could not start`, false, undefined);
 				activeObjective = { ...activeObjective, status: "running", startedAt };
 			}
-			if (ownedTaskRunId && objective) this.taskLedger?.recordRun({ id: ownedTaskRunId, taskId: objective.id, executor: "agent", status: "running", startedAt, leaseExpiresAt: startedAt + this.taskRunLeaseMs });
+			if (ownedTaskRunId && objective) {
+				const taskRunStartedAt = Date.now();
+				this.taskLedger?.recordRun({ id: ownedTaskRunId, taskId: objective.id, executor: "agent", status: "running", startedAt: taskRunStartedAt, leaseExpiresAt: taskRunStartedAt + this.taskRunLeaseMs });
+			}
 			const planningScope = conversationKey(input.source);
 			let planningLease: string | undefined;
 			let taskRunLeaseLost = false;
 			const assertTaskRunAuthority = () => {
 				if (taskRunLeaseLost) throw new AgentRunError("Durable Task Run execution authority was lost", false, undefined);
 			};
-			const taskRunLeaseHeartbeat = activeTaskRunId && this.taskLedger?.renewTaskRunLease ? setInterval(() => {
+			const taskRunLeaseHeartbeat = ownsActiveTaskRun && activeTaskRunId && this.taskLedger?.renewTaskRunLease ? setInterval(() => {
 				const runId = activeTaskRunId;
 				if (!runId || taskRunLeaseLost) return;
 				try {
@@ -607,7 +795,7 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 				/** Pre-semantic compatibility seam for injected test/legacy runtimes only. */
 				beemaxSkillPrefetch?: (query: string, signal?: AbortSignal) => Promise<Array<{ name: string; version: string }>>;
 			}) | undefined;
-			const prefetchQuery = understanding?.capabilityQuery ?? input.text;
+			const prefetchQuery = boundedCapabilityQuery(understanding?.capabilityQuery ?? input.text);
 			const lexicalPrefetchHints = selectTurnTools(prefetchQuery, allTools);
 			const shouldRunCapabilityPrefetch = Boolean(
 				workContract?.capabilityRequirements.length
@@ -625,8 +813,10 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 			let semanticPrefetchedTools: string[] = [];
 			let semanticRequestedTools: string[] = [];
 			let providerPrefetchAvailability: ProviderAvailabilityMetadata = { recoveries: [], restrictions: [] };
-			const capabilityDecisions = new Map<string, Array<{ kind: "tool" | "mcp" | "skill"; name: string; version?: string; confidence: number }>>();
+			const capabilityDecisions = new Map<string, CapabilitySelectionCandidate[]>();
 			const recordedCapabilityDecisions = new Set<string>();
+			const emittedCapabilityDecisions = new Set<string>();
+			let executionTraceStarted = false;
 			const contractRequiresCapabilityResolution = Boolean(workContract?.capabilityRequirements.length);
 			const capabilityRequirements = (workContract?.capabilityRequirements ?? []).map((clause, index) => ({ id: stableCapabilityRequirementId(index, clause), text: clause.text }));
 			const capabilityBoundaries = workContract ? [
@@ -654,11 +844,16 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 					const proposal = await capabilityPrefetch.beemaxCapabilityPrefetch(prefetchQuery, cognitionSignal, contractCapabilityPrefetchOptions);
 					const inventory = new Set(allTools.map((tool) => tool.name));
 					const admittedInventory = admittedTools ? new Set(admittedTools) : inventory;
-					const admissibleCandidates = proposal.candidates.filter((candidate) => candidate.kind === "skill"
-						? !admittedTools || (admittedInventory.has("skill_activate") && admittedInventory.has("skill_complete"))
-						: inventory.has(candidate.name) && admittedInventory.has(candidate.name));
-					semanticRequestedTools = [...new Set(admissibleCandidates.filter((candidate) => candidate.kind !== "skill" && candidate.necessity !== "alternative").map((candidate) => candidate.name))].slice(0, 10);
-					const proposedTools = proposal.activatedTools ?? proposal.candidates.filter((candidate) => candidate.kind !== "skill").map((candidate) => candidate.name);
+					const providerCandidates = proposal.candidates.flatMap((candidate): CapabilitySelectionCandidate[] => {
+						if (candidate.kind === "skill") return !admittedTools || (admittedInventory.has("skill_activate") && admittedInventory.has("skill_complete")) ? [candidate] : [];
+						const normalized = normalizeExecutableCapabilityCandidate(candidate, allTools);
+						return normalized && inventory.has(normalized.sourceToolName) && admittedInventory.has(normalized.sourceToolName) ? [normalized] : [];
+					});
+					const admissibleCandidates = restoreUncoveredCapabilityCandidates(reconcileExplicitCapabilityExecutionCandidates(providerCandidates, capabilityRequirements, allTools, admittedInventory), capabilityRequirements, allTools, admittedInventory);
+					semanticRequestedTools = [...new Set(admissibleCandidates.filter((candidate) => candidate.kind !== "skill" && candidate.necessity !== "alternative").map((candidate) => candidate.sourceToolName ?? candidate.name))].slice(0, 10);
+					const candidateToolNames = new Set(admissibleCandidates.filter((candidate) => candidate.kind !== "skill").map((candidate) => candidate.sourceToolName ?? candidate.name));
+					const proposedTools = [...semanticRequestedTools, ...(proposal.activatedTools ?? proposal.candidates.filter((candidate) => candidate.kind !== "skill").map((candidate) => candidate.name))]
+						.filter((name) => candidateToolNames.has(name) || CAPABILITY_CONTROL_TOOLS.has(name) || SKILL_LIFECYCLE_TOOLS.has(name));
 					semanticPrefetchedTools = [...new Set(proposedTools.filter((name) => inventory.has(name) && admittedInventory.has(name)))].slice(0, 10);
 					if (isTrustedCapabilityProviderResolutionTool(capabilityPrefetch)) providerPrefetchAvailability = providerAvailabilityMetadata(proposal.providerResolutions, admittedInventory);
 					if (proposal.skillBlocker?.code === "skill_not_installed" && proposal.skillBlocker.name === explicitlyRequestedSkill) skillAdmissionBlocker = `Explicit Skill ${proposal.skillBlocker.name} is not installed`;
@@ -671,7 +866,7 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 					prefetchedSkills = [...admittedSkills.keys()];
 					if (!prefetchedSkills.length) semanticPrefetchedTools = semanticPrefetchedTools.filter((name) => !SKILL_LIFECYCLE_TOOLS.has(name));
 					const cognitionId = validCapabilityCognitionId(proposal.cognitionId);
-					if (cognitionId) capabilityDecisions.set(cognitionId, proposal.candidates.slice(0, 20));
+					if (cognitionId) capabilityDecisions.set(cognitionId, capabilityDecisionCandidates(admissibleCandidates));
 					if (contractRequiresCapabilityResolution) {
 						if (!cognitionId || !isTrustedCapabilityProviderResolutionTool(capabilityPrefetch)) {
 							capabilityPrefetchFailed = true;
@@ -679,7 +874,10 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 						}
 						else {
 							if (admitCapabilityObligations(cognitionId, admissibleCandidates)) capabilityResolutionEvidenceRef = `cognition:${cognitionId}:contract:${capabilityContractDigest}`;
-							else capabilityPrefetchBlocker = "Capability preflight did not cover every Work Contract requirement";
+							else {
+								capabilityPrefetchFailed = true;
+								capabilityPrefetchBlocker = "Capability preflight did not cover every Work Contract requirement";
+							}
 						}
 					}
 					semanticCapabilityNoMatch = semanticPrefetchedTools.length === 0 && prefetchedSkills.length === 0;
@@ -710,16 +908,42 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 				semanticPrefetchedTools = semanticPrefetchedTools.filter((name) => !SKILL_LIFECYCLE_TOOLS.has(name));
 				skillAdmissionBlocker ??= `Explicit Skill ${explicitlyRequestedSkill} is not installed or unavailable`;
 			}
+			const executionCapabilityInventory = admittedTools ? new Set(admittedTools) : new Set(allTools.map((tool) => tool.name));
+			const deterministicContractCandidates = capabilityPrefetchFailed && capabilityRequirements.length
+				? reconcileExplicitCapabilityExecutionCandidates([], capabilityRequirements, allTools, executionCapabilityInventory)
+				: [];
+			let deterministicCapabilityResolutionSucceeded = false;
+			if (contractRequiresCapabilityResolution && deterministicContractCandidates.length) {
+				const cognitionId = `cap:core-contract:${createHash("sha256").update(JSON.stringify({ capabilityContractDigest, candidates: capabilityDecisionCandidates(deterministicContractCandidates) })).digest("hex")}`;
+				if (admitCapabilityObligations(cognitionId, deterministicContractCandidates)) {
+					deterministicCapabilityResolutionSucceeded = true;
+					capabilityResolutionEvidenceRef = `cognition:${cognitionId}:contract:${capabilityContractDigest}`;
+					capabilityDecisions.set(cognitionId, capabilityDecisionCandidates(deterministicContractCandidates));
+				}
+			}
 			// Delegated and recovery runs intentionally skip full cognitive context assembly,
 			// but they still need deterministic Tool prefetch from their bounded Task prompt.
 			// Selection only narrows the factory-provided inventory; it never enlarges the
 			// Sub-Agent allowlist or grants execution authority.
-			const prefetchedTools = capabilityPrefetch?.beemaxCapabilityPrefetch ? semanticPrefetchedTools : lexicalPrefetchHints;
-			const skillLifecycleTools = prefetchedSkills.length ? ["skill_read", "skill_activate", "skill_route", "skill_resource_read", "skill_complete"].filter((name) => allTools.some((tool) => tool.name === name)) : [];
+			const deterministicContractFallbackTools = capabilityPrefetchFailed && capabilityRequirements.length
+				? [...new Set(restoreUncoveredCapabilityCandidates(
+					deterministicContractCandidates,
+					capabilityRequirements,
+					allTools,
+					executionCapabilityInventory,
+				).filter((candidate) => candidate.kind !== "skill" && candidate.necessity !== "alternative").map((candidate) => candidate.sourceToolName ?? candidate.name))]
+				: [];
+			const prefetchedTools = capabilityPrefetch?.beemaxCapabilityPrefetch && !capabilityPrefetchFailed
+				? semanticPrefetchedTools
+				: [...new Set([...lexicalPrefetchHints, ...deterministicContractFallbackTools])];
+			// Only the entry controls are visible before a selected Skill advances.
+			// Route, resource, and completion controls remain in the immutable inventory
+			// and are promoted by version-locked lifecycle receipts from the prior phase.
+			const skillLifecycleTools = prefetchedSkills.length ? ["skill_read", "skill_activate"].filter((name) => allTools.some((tool) => tool.name === name)) : [];
 			const exposeCapabilityDiscovery = Boolean(
 				admittedTools?.includes("capability_discover")
 					|| semanticPrefetchedTools.includes("capability_acquire")
-					|| capabilityPrefetchFailed
+					|| (capabilityPrefetchFailed && !deterministicCapabilityResolutionSucceeded)
 					|| (shouldRunCapabilityPrefetch && semanticCapabilityNoMatch && Boolean(
 						workContract?.capabilityRequirements.length
 						|| planning?.requiredTools.length
@@ -731,9 +955,15 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 					|| (prefetchedTools.length === 0 && (
 						requestsExplicitCapabilityResolution(input.text)
 						|| planning?.signals.requiresResearch
-					)),
+				)),
 			);
-			const proposedProgressiveTools = admittedTools ?? [...new Set([...(exposeCapabilityDiscovery ? ["capability_discover"] : []), ...skillLifecycleTools, ...(planning?.requiredTools ?? []), ...semanticRequestedTools, ...prefetchedTools])];
+			const semanticallySelectedToolNames = new Set([...semanticRequestedTools, ...prefetchedTools, ...skillLifecycleTools]);
+			// Planning controls are admitted by the contract-derived planner, not by
+			// outcome Capability cognition. A semantic selector may correctly choose
+			// only the domain Tool (for example market_series); hiding task_spawn/wait
+			// here would make the runtime enforce Tool calls that Pi cannot perform.
+			const planningTools = planning?.requiredTools ?? [];
+			const proposedProgressiveTools = admittedTools ?? [...new Set([...(exposeCapabilityDiscovery ? ["capability_discover"] : []), ...skillLifecycleTools, ...planningTools, ...semanticRequestedTools, ...prefetchedTools])];
 			const recoveredProviderNames = new Set(providerPrefetchAvailability.recoveries.map((item) => item.toolName));
 			const restrictedProviderReasons = new Map(providerPrefetchAvailability.restrictions.map((item) => [item.toolName, item.reason]));
 			const toolSpecInventory = allTools.map((tool) => {
@@ -782,10 +1012,10 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 			if (prefetchedSkills.length) promptText = [`<beemax-skill-preflight>Installed matching Skill metadata: ${prefetchedSkills.join(", ")}. Use skill_read with the exact best-matching name before executing the request; do not skip it or infer its instructions.</beemax-skill-preflight>`, promptText].join("\n\n");
 			let observableProgress = false;
 			let toolCalls = 0;
-			let consumedTokens = 0;
 			let turnAssistantMessageObserved = false;
 			let lastTurnAssistantText = "";
 			let lastTurnAssistantFailure: Error | undefined;
+			let lastTurnAssistantStopReason: string | undefined;
 			let turnUsageObserved = false;
 			let turnInputTokens = 0;
 			let turnOutputTokens = 0;
@@ -796,10 +1026,6 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 				? lastTurnAssistantFailure
 				: lastAssistantFailure(session.piSession.agent, turnMessageStart);
 			const maxToolCalls = minimumLimit(executionEnvelope.budget?.maxToolCalls, planning?.budget.maxToolCalls ?? undefined);
-			const envelopeExecutionTokens = executionEnvelope.budget?.maxTokens === undefined
-				? undefined
-				: Math.max(0, executionEnvelope.budget.maxTokens - workContractCognitionBudgetChargeTokens);
-			const maxTokens = minimumLimit(envelopeExecutionTokens, planning?.budget.maxTokens ?? undefined);
 			let turnAbortReason: string | undefined;
 			const requiredToolsUsed: string[] = [];
 			const requiredToolCalls = new Map<string, { name: string; args?: unknown }>();
@@ -821,9 +1047,12 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 			const toolArgumentsByCall = new Map<string, string>();
 			const toolAttemptFingerprints = new Map<string, string>();
 			const failedReadFingerprints = new Map<string, number>();
+			const truncatedToolFailures = new Set<string>();
 			const settledToolProgress: string[] = [];
 			const successfulToolNames = new Set<string>();
 			const successfulToolSequences = new Map<string, number[]>();
+			const durableTaskArtifacts = new Map<string, TaskArtifact>();
+			for (const artifact of objective?.artifacts ?? []) durableTaskArtifacts.set(taskArtifactKey(artifact), artifact);
 			const completedSkillSequences = new Map<string, Array<{ version: string; sequence: number }>>();
 			const pendingProviderRequirements = new Map(providerPrefetchAvailability.restrictions
 				.filter((item) => item.installable)
@@ -831,25 +1060,10 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 			const unresolvedToolProgress: string[] = [];
 			let checkpointedToolProgress = 0;
 			let eventDelivery = Promise.resolve();
-			let promptInFlight = false;
-			let idleSettleTimer: ReturnType<typeof setTimeout> | undefined;
-			const clearIdleSettle = () => {
-				if (idleSettleTimer) clearTimeout(idleSettleTimer);
-				idleSettleTimer = undefined;
-			};
-			const scheduleIdleSettle = () => {
-				clearIdleSettle();
-				if (this.turnIdleSettleMs === null || !promptInFlight || !observableProgress || toolStartedAt.size > 0) return;
-				idleSettleTimer = setTimeout(() => {
-					idleSettleTimer = undefined;
-					if (promptInFlight && toolStartedAt.size === 0) void session.piSession.abort();
-				}, this.turnIdleSettleMs);
-			};
-			const promptSession = async (...args: Parameters<typeof session.piSession.prompt>): Promise<void> => {
-				promptInFlight = true;
-				try { await session.piSession.prompt(...args); }
-				finally { promptInFlight = false; clearIdleSettle(); }
-			};
+			// A Provider can legitimately remain silent while reasoning, buffering, or
+			// assembling large Tool arguments. Only the caller signal and the durable
+			// Execution Envelope deadline are allowed to end an active Turn.
+			const promptSession = async (...args: Parameters<typeof session.piSession.prompt>): Promise<void> => session.piSession.prompt(...args);
 			let toolSpecPublication = Promise.resolve();
 			let toolSpecPublicationFailure: unknown;
 			const publishToolSpecTransition = () => {
@@ -873,9 +1087,12 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 					const proposal = await capabilityPrefetch.beemaxCapabilityPrefetch(prefetchQuery, cognitionSignal, contractCapabilityPrefetchOptions);
 					const inventory = new Set(allTools.map((tool) => tool.name));
 					const admittedInventory = admittedTools ? new Set(admittedTools) : inventory;
-					const admissibleCandidates = proposal.candidates.filter((candidate) => candidate.kind === "skill"
-						? !admittedTools || (admittedInventory.has("skill_activate") && admittedInventory.has("skill_complete"))
-						: inventory.has(candidate.name) && admittedInventory.has(candidate.name));
+					const providerCandidates = proposal.candidates.flatMap((candidate): CapabilitySelectionCandidate[] => {
+						if (candidate.kind === "skill") return !admittedTools || (admittedInventory.has("skill_activate") && admittedInventory.has("skill_complete")) ? [candidate] : [];
+						const normalized = normalizeExecutableCapabilityCandidate(candidate, allTools);
+						return normalized && inventory.has(normalized.sourceToolName) && admittedInventory.has(normalized.sourceToolName) ? [normalized] : [];
+					});
+					const admissibleCandidates = restoreUncoveredCapabilityCandidates(reconcileExplicitCapabilityExecutionCandidates(providerCandidates, capabilityRequirements, allTools, admittedInventory), capabilityRequirements, allTools, admittedInventory);
 					const cognitionId = validCapabilityCognitionId(proposal.cognitionId);
 					if (!cognitionId || !admitCapabilityObligations(cognitionId, admissibleCandidates)) {
 						capabilityPrefetchBlocker = "Capability recovery did not cover every Work Contract requirement";
@@ -893,14 +1110,18 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 					if (availability.restrictions.length) toolSpecPlan = hideToolSpecPlan(toolSpecPlan, availability.restrictions.map(({ toolName, reason }) => ({ toolName, reason })));
 					for (const candidate of admissibleCandidates) if (candidate.kind === "skill" && validImmutableSkillVersion(candidate.version)) admittedSkills.set(candidate.name, { name: candidate.name, version: candidate.version });
 					prefetchedSkills = [...admittedSkills.keys()];
-					const requested = proposal.activatedTools ?? admissibleCandidates.filter((candidate) => candidate.kind !== "skill" && candidate.necessity !== "alternative").map((candidate) => candidate.name);
+					const selectedToolNames = new Set(admissibleCandidates.filter((candidate) => candidate.kind !== "skill").map((candidate) => candidate.sourceToolName ?? candidate.name));
+					const requested = [...admissibleCandidates.filter((candidate) => candidate.kind !== "skill" && candidate.necessity !== "alternative").map((candidate) => candidate.sourceToolName ?? candidate.name), ...(proposal.activatedTools ?? [])]
+						.filter((name) => selectedToolNames.has(name) || CAPABILITY_CONTROL_TOOLS.has(name) || SKILL_LIFECYCLE_TOOLS.has(name));
 					const lifecycle = prefetchedSkills.length ? ["skill_activate", "skill_read", "skill_route", "skill_resource_read", "skill_complete"] : [];
 					const activated = activatePlannedTools([...requested, ...lifecycle].filter((name) => admittedInventory.has(name)));
 					capabilityResolutionEvidenceRef = `cognition:${cognitionId}:contract:${capabilityContractDigest}`;
-					capabilityDecisions.set(cognitionId, proposal.candidates.slice(0, 20));
+					const traceCandidates = capabilityDecisionCandidates(admissibleCandidates);
+					capabilityDecisions.set(cognitionId, traceCandidates);
 					if (!recordedCapabilityDecisions.has(cognitionId)) {
 						recordedCapabilityDecisions.add(cognitionId);
-						this.recordTrace({ type: "capability.decision", executionEnvelope, at: Date.now(), cognitionId, candidates: proposal.candidates.slice(0, 20) });
+						this.recordTrace({ type: "capability.decision", executionEnvelope, at: Date.now(), cognitionId, candidates: traceCandidates });
+						if (executionTraceStarted) emittedCapabilityDecisions.add(cognitionId);
 					}
 					if (activated.length || availability.restrictions.length || availability.recoveries.length) publishToolSpecTransition();
 					return true;
@@ -931,7 +1152,6 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 					}
 					capabilityEventSequence++;
 					toolAdmissionSequenceByCall.set(event.toolCallId, capabilityEventSequence);
-					clearIdleSettle();
 					const at = Date.now();
 					const assistantExpected = toolOriginByCall.get(event.toolCallId);
 					const argumentsSha256 = toolArgumentsSha256(event.args ?? {});
@@ -963,6 +1183,8 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 					const toolFingerprint = toolAttemptFingerprints.get(event.toolCallId); toolAttemptFingerprints.delete(event.toolCallId);
 					const admittedDispatch = admittedToolDispatches.get(event.toolCallId); admittedToolDispatches.delete(event.toolCallId);
 					const dispatchReceipt = toolDispatchReceipt(event.isError, event.result);
+					if (event.isError && dispatchReceipt.code === "response_truncated") truncatedToolFailures.add(event.toolName);
+					else if (!event.isError) truncatedToolFailures.delete(event.toolName);
 					const completeProviderDispatch = toolStart !== undefined && expected && argumentsSha256 && toolSpecPlanId
 						&& expected.toolName === event.toolName
 						&& expected.argumentsSha256 === argumentsSha256
@@ -982,15 +1204,46 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 					if (!event.isError) {
 						successfulToolNames.add(event.toolName);
 						successfulToolSequences.set(event.toolName, [...(successfulToolSequences.get(event.toolName) ?? []), toolAdmissionSequence]);
+						const artifact = taskArtifactMetadata(event.result);
+						if (artifact && objective) {
+							durableTaskArtifacts.set(taskArtifactKey(artifact), artifact);
+							if (this.taskLedger?.transition(objective.id, { status: "running", artifacts: [...durableTaskArtifacts.values()] }) !== true && !turnAbortReason) {
+								turnAbortReason = `Artifact ${artifact.uri} could not be durably attached to Objective ${objective.id}`;
+								void session.piSession.abort();
+							}
+						}
 					}
 					if (event.toolName === "capability_discover" && !event.isError) {
 						const trustedDiscoveryTool = allTools.find((tool) => tool.name === "capability_discover");
 						const trustedDiscovery = isTrustedCapabilityProviderResolutionTool(trustedDiscoveryTool);
 						const discovery = capabilityDiscoveryMetadata(event.result, new Set(allTools.map((tool) => tool.name)), trustedDiscovery);
+						let runtimeContractSelectedTools: string[] = [];
+						let runtimeContractSelectedSkills = new Set<string>();
+						let runtimeContractResolved = false;
 						if (contractRequiresCapabilityResolution) {
 							runtimeCapabilityDiscoveryAttempted = true;
 							if (!trustedDiscovery || !discovery.cognitionId) {
 								if (!turnAbortReason) { turnAbortReason = "Required Capability discovery returned no trusted cognition receipt"; void session.piSession.abort(); }
+							} else {
+								const inventory = new Set(allTools.map((tool) => tool.name));
+								const admittedInventory = admittedTools ? new Set(admittedTools) : inventory;
+								const runtimeProviderCandidates = discovery.candidates.flatMap((candidate): CapabilitySelectionCandidate[] => {
+									if (candidate.kind === "skill") return !admittedTools || (admittedInventory.has("skill_activate") && admittedInventory.has("skill_complete")) ? [candidate] : [];
+									const sourceToolName = capabilityCandidateSourceTool(candidate, allTools);
+									return sourceToolName && inventory.has(sourceToolName) && admittedInventory.has(sourceToolName) ? [{ ...candidate, sourceToolName }] : [];
+								});
+								const runtimeCandidates = restoreUncoveredCapabilityCandidates(reconcileExplicitCapabilityExecutionCandidates(runtimeProviderCandidates, capabilityRequirements, allTools, admittedInventory), capabilityRequirements, allTools, admittedInventory);
+								if (admitCapabilityObligations(discovery.cognitionId, runtimeCandidates)) {
+									capabilityResolutionEvidenceRef = `cognition:${discovery.cognitionId}:contract:${capabilityContractDigest}`;
+									runtimeContractResolved = true;
+									runtimeContractSelectedTools = [...new Set(runtimeCandidates
+										.filter((candidate) => candidate.kind !== "skill" && candidate.necessity !== "alternative")
+										.map((candidate) => candidate.sourceToolName ?? candidate.name))];
+									runtimeContractSelectedSkills = new Set([...capabilityObligations.values()]
+										.flatMap((obligation) => obligation.candidates)
+										.filter((candidate) => candidate.kind === "skill")
+										.map((candidate) => candidate.name));
+								} else capabilityPrefetchBlocker = "Runtime Capability discovery did not cover every Work Contract requirement";
 							}
 						}
 						const pendingReadReroute = readReroute;
@@ -1010,8 +1263,12 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 							capabilityDecisions.set(discovery.cognitionId, candidates);
 							recordedCapabilityDecisions.add(discovery.cognitionId);
 							this.recordTrace({ type: "capability.decision", executionEnvelope, at, cognitionId: discovery.cognitionId, candidates });
+							if (executionTraceStarted) emittedCapabilityDecisions.add(discovery.cognitionId);
 						}
-						const discoveredSkillCandidates = discovery.candidates.filter((candidate) => candidate.kind === "skill" && candidate.confidence >= SEMANTIC_CAPABILITY_MINIMUM_SIMILARITY && (!explicitlyRequestedSkill || candidate.name === explicitlyRequestedSkill));
+						const discoveredSkillCandidates = discovery.candidates.filter((candidate) => candidate.kind === "skill"
+							&& candidate.confidence >= SEMANTIC_CAPABILITY_MINIMUM_SIMILARITY
+							&& (!explicitlyRequestedSkill || candidate.name === explicitlyRequestedSkill)
+							&& (!contractRequiresCapabilityResolution || Boolean(explicitlyRequestedSkill) || runtimeContractSelectedSkills.has(candidate.name)));
 						const discoveredSkillCandidate = discoveredSkillCandidates[0];
 						if (explicitlyRequestedSkill && discovery.candidates.some((candidate) => candidate.kind === "skill" && candidate.confidence >= SEMANTIC_CAPABILITY_MINIMUM_SIMILARITY && candidate.name !== explicitlyRequestedSkill) && !discoveredSkillCandidate && !turnAbortReason) {
 							turnAbortReason = `Explicit Skill ${explicitlyRequestedSkill} is not installed or unavailable`;
@@ -1031,14 +1288,14 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 							if (restriction.installable && (!pendingReadReroute || pendingReadReroute.contractAlternatives.has(restriction.toolName))) pendingProviderRequirements.set(restriction.toolName, { blocker: restriction.blocker, acquired: false });
 						}
 						if (discovery.restrictions.length) toolSpecPlan = hideToolSpecPlan(toolSpecPlan, discovery.restrictions.map(({ toolName, reason }) => ({ toolName, reason })));
-						const activatedTools = activatePlannedTools(discovery.activatedTools.filter((name) => {
+						const activatedTools = activatePlannedTools([...new Set([...discovery.activatedTools, ...runtimeContractSelectedTools])].filter((name) => {
 							if (pendingReadReroute) return pendingReadReroute.eligibleAlternatives.has(name) || (name === "capability_acquire" && discovery.restrictions.some((restriction) => restriction.installable && pendingReadReroute.contractAlternatives.has(restriction.toolName)));
 							return !SKILL_LIFECYCLE_TOOLS.has(name) || discoveredSkills.length > 0;
 						}));
 						const relevantRestrictions = pendingReadReroute ? discovery.restrictions.filter((item) => pendingReadReroute.contractAlternatives.has(item.toolName)) : discovery.restrictions;
 						const unresolvedProvider = relevantRestrictions.find((item) => !item.installable || !activatedTools.includes("capability_acquire"));
 						if (unresolvedProvider && !turnAbortReason) { turnAbortReason = unresolvedProvider.blocker; void session.piSession.abort(); }
-						if (activatedTools.length) {
+						if (activatedTools.length && (!contractRequiresCapabilityResolution || runtimeContractResolved)) {
 							toolSpecPlan = deferToolSpecPlan(toolSpecPlan, ["capability_discover"]);
 							session.piSession.setActiveToolsByName(toolSpecPlan.direct.map((entry) => entry.toolName));
 						}
@@ -1047,8 +1304,14 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 						if (discovery.candidates.length || activatedTools.length || discovery.restrictions.length) enqueueEvent({ type: "capability_ranked", candidates: discovery.candidates, activatedTools });
 					}
 					else if (event.toolName === "capability_acquire" && event.isError) {
-						const pending = [...pendingProviderRequirements.entries()].map(([name, requirement]) => `${name}: ${requirement.blocker}`).join("; ");
-						if (!turnAbortReason) { turnAbortReason = pending ? `Capability Provider acquisition failed; ${pending}` : "Capability Provider acquisition failed without a verified result"; void session.piSession.abort(); }
+						const acquisitionWasNotDiscovered = pendingProviderRequirements.size === 0;
+						if (acquisitionWasNotDiscovered) {
+							const activated = activatePlannedTools(["capability_discover"]);
+							if (activated.length) publishToolSpecTransition();
+						} else {
+							const pending = [...pendingProviderRequirements.entries()].map(([name, requirement]) => `${name}: ${requirement.blocker}`).join("; ");
+							if (!turnAbortReason) { turnAbortReason = pending ? `Capability Provider acquisition failed; ${pending}` : "Capability Provider acquisition failed without a verified result"; void session.piSession.abort(); }
+						}
 					}
 					else if (event.toolName === "capability_acquire") {
 						const trustedTool = allTools.find((tool) => tool.name === "capability_acquire");
@@ -1104,6 +1367,11 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 									if (skillLifecycleReceipt.phase === "completed") {
 										completedPrefetchedSkills.add(skillLifecycleReceipt.name);
 										completedSkillSequences.set(skillLifecycleReceipt.name, [...(completedSkillSequences.get(skillLifecycleReceipt.name) ?? []), { version: skillLifecycleReceipt.version, sequence: toolAdmissionSequence }]);
+										if ([...admittedSkills.keys()].every((name) => completedPrefetchedSkills.has(name))) {
+											toolSpecPlan = deferToolSpecPlan(toolSpecPlan, [...SKILL_LIFECYCLE_TOOLS]);
+											session.piSession.setActiveToolsByName(toolSpecPlan.direct.map((entry) => entry.toolName));
+											publishToolSpecTransition();
+										}
 									}
 								}
 							}
@@ -1119,7 +1387,8 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 						if (event.isError && SKILL_LIFECYCLE_TOOLS.has(event.toolName)) skillLifecycleBlocker = skillLifecycleFailureBlocker(event.result, event.toolName);
 						const sideEffect = toolSideEffects.get(event.toolName);
 						const reroute = sideEffect === undefined ? { allowed: false } : capabilityRuntime.canReroute({ sideEffect, effectStatus: sideEffect === "none" ? "none" : "unknown" });
-						if (event.isError && dispatchReceipt.stage === "execution" && dispatchReceipt.retryable && reroute.allowed) {
+						const sameReadCapabilityAlreadySucceeded = (successfulToolSequences.get(event.toolName)?.length ?? 0) > 0;
+						if (event.isError && dispatchReceipt.stage === "execution" && dispatchReceipt.retryable && reroute.allowed && !sameReadCapabilityAlreadySucceeded) {
 							readReroute = { failedTool: event.toolName, contractAlternatives: new Set(), eligibleAlternatives: new Set(), discoveryAttempted: false };
 							if (toolFingerprint) {
 								const repeatedFailures = (failedReadFingerprints.get(toolFingerprint) ?? 0) + 1;
@@ -1156,7 +1425,10 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 					}
 					settledToolProgress.push(`${event.toolName}:${event.toolCallId}`);
 					if (event.isError) unresolvedToolProgress.push(`${event.toolName} failed during this Pi Turn`);
-					scheduleIdleSettle();
+					// A Tool result starts a fresh Provider inference phase. Providers
+					// that do not stream can remain silent here for longer than the SDK
+					// settlement grace, so silence is not evidence of a completed Turn.
+					// Terminal assistant output below still arms the bounded hang guard.
 				} else if (event.type === "turn_end" && objective && activeTaskRunId && settledToolProgress.length > checkpointedToolProgress) {
 					const latest = this.taskLedger?.queryTasks({ ownerKeys: [objective.ownerKey], id: objective.id, limit: 1 })[0];
 					const checkpoint = createTaskCheckpoint({
@@ -1175,6 +1447,7 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 					lastTurnAssistantFailure = event.message.stopReason === "error"
 						? new Error(event.message.errorMessage ?? "Model request failed")
 						: undefined;
+					lastTurnAssistantStopReason = event.message.stopReason;
 					turnUsageObserved = true;
 					turnInputTokens += finiteTokenCount(usage.input);
 					turnOutputTokens += finiteTokenCount(usage.output);
@@ -1191,22 +1464,15 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 						if (providerResponseIdentitySha256) toolOriginByCall.set(block.toolCallId, { origin, toolName: block.toolName, argumentsSha256: block.argumentsSha256, toolSpecPlanId: toolSpecPlan.planId });
 					}
 					this.recordTrace({ type: "model.turn_settled", executionEnvelope, at: Date.now(), inputTokens: usage.input, outputTokens: usage.output, cacheReadTokens: usage.cacheRead, cacheWriteTokens: usage.cacheWrite, costUsd: usage.cost?.total ?? 0, assistantToolCalls, ...origin });
-					// cacheRead is already-paid, reused context. Charging it again makes a
-					// cache-efficient multi-turn execution exhaust its work budget sooner
-					// than the same uncached work. Trace it above, but budget only newly
-					// processed/generated tokens and cache writes.
-					consumedTokens += usage.input + usage.output + usage.cacheWrite;
-					if (maxTokens !== undefined && consumedTokens > maxTokens && !turnAbortReason) {
-						turnAbortReason = `Agent token budget exceeded (${maxTokens})`;
-						void session.piSession.abort();
-					}
-					scheduleIdleSettle();
-				} else if (event.type === "message_update" && event.assistantMessageEvent.type === "text_delta" && event.assistantMessageEvent.delta.length > 0) {
+					// Token counts remain trace/usage observability only. Completion is
+					// governed by the durable Contract, cancellation, deadline, and Tool
+					// convergence—not by an accumulated model-usage ceiling.
+				} else if (event.type === "message_update" && ["text_delta", "thinking_delta", "toolcall_delta"].includes(event.assistantMessageEvent.type)
+					&& "delta" in event.assistantMessageEvent && event.assistantMessageEvent.delta.length > 0) {
 					// Pi cannot emit the next assistant text while a prior Tool batch is still executing.
 					// Clear orphaned starts from provider/tool-routing failures that never emitted a matching end.
 					toolStartedAt.clear();
 					observableProgress = true;
-					scheduleIdleSettle();
 				}
 				enqueueEvent(event);
 			});
@@ -1272,18 +1538,20 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 				}
 				if (skillAdmissionBlocker) throw new AgentRunError(skillAdmissionBlocker, false, undefined);
 				this.recordTrace({ type: "execution.started", executionEnvelope, at: startedAt });
+				executionTraceStarted = true;
 				this.recordTrace({ type: "tool_spec.published", executionEnvelope, toolSpecPlanId: toolSpecPlan.planId, directTools: progressiveTools });
 				for (const [cognitionId, candidates] of capabilityDecisions) {
 					recordedCapabilityDecisions.add(cognitionId);
 					this.recordTrace({ type: "capability.decision", executionEnvelope, at: Date.now(), cognitionId, candidates });
+					emittedCapabilityDecisions.add(cognitionId);
 				}
 				await onEvent?.({ type: "execution_started", executionEnvelope });
 				if (contextAssembly) await onEvent?.({ type: "context_built", included: contextAssembly.included.map(({ kind, source, costChars }) => ({ kind, source, costChars })), released: contextAssembly.released.map(({ kind, source, costChars }) => ({ kind, source, costChars })), contextChars: contextAssembly.contextChars });
 				if (planning) await onEvent?.({
 					type: "planning_decision", mode: planning.mode, concurrency: planning.suggestedConcurrency, maxSubagents: planning.budget.maxSubagents, requiredTools: [...planning.requiredTools],
+					basis: planning.basis,
+					verificationDepth: planning.verificationDepth,
 					...(planning.basis === "raw_prompt" ? {} : {
-						basis: planning.basis,
-						verificationDepth: planning.verificationDepth,
 						contractIdSha256: planning.contractCoverage ? opaqueIdentitySha256(planning.contractCoverage.contractId) : undefined,
 						outcomeCount: planning.contractCoverage?.outcomeIds.length ?? 0,
 						capabilityRequirementCount: planning.contractCoverage?.capabilityRequirementIds.length ?? 0,
@@ -1325,6 +1593,19 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 						assertTaskRunAuthority();
 						if (!completedMatchingSkill()) throw new AgentRunError(`${skillLifecycleBlocker ? `${skillLifecycleBlocker}; ` : ""}Agent did not complete the installed matching Skill lifecycle: ${prefetchedSkills.join(", ")}`, false, undefined);
 				}
+				if (truncatedToolFailures.size && !turnAbortReason) {
+					const directTools = toolSpecPlan.direct.map((entry) => entry.toolName);
+					const recoveryTools = directTools.filter((name) => truncatedToolFailures.has(name));
+					if (!recoveryTools.length) throw new AgentRunError(`Provider output truncation left no active recovery Tool for: ${[...truncatedToolFailures].join(", ")}`, false, undefined);
+					if (activeTools) session.piSession.setActiveToolsByName(recoveryTools);
+					try {
+						await promptSession(`[BeeMax truncated Tool-call correction: the Provider reached its output limit and these Tool calls were rejected before execution: ${recoveryTools.join(", ")}. Retry only the rejected operation using the evidence already in this Session; do not repeat discovery. Keep every invocation complete and compact. For write, create large artifacts incrementally: first call mode=replace with at most 6000 characters, then use mode=append with at most 6000 characters and the exact expectedByteLength and expectedSha256 from the preceding receipt. Preserve all required facts, source URLs, and closing structure. Do not answer until the rejected Tool has completed successfully.]`, { expandPromptTemplates: false });
+						assertTaskRunAuthority();
+					} finally {
+						if (activeTools) session.piSession.setActiveToolsByName(directTools);
+					}
+					if (truncatedToolFailures.size) throw new AgentRunError(`Provider output truncation recovery did not complete successfully: ${[...truncatedToolFailures].join(", ")}`, false, undefined);
+				}
 				if (readReroute && !readReroute.discoveryAttempted && !turnAbortReason) {
 					const failedTool = readReroute.failedTool;
 					if (supportsProgressiveTools && allTools.some((tool) => tool.name === "capability_discover")) activatePlannedTools(["capability_discover"]);
@@ -1353,12 +1634,12 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 					}
 				const capabilityCandidateCompleted = (candidate: AdmittedCapabilityCandidate) => candidate.kind === "skill"
 					? (completedSkillSequences.get(candidate.name) ?? []).some((receipt) => receipt.sequence > candidate.selectedAtSequence && (!candidate.version || receipt.version === candidate.version))
-					: (successfulToolSequences.get(candidate.name) ?? []).some((sequence) => sequence > candidate.selectedAtSequence);
+					: (successfulToolSequences.get(candidate.sourceToolName ?? candidate.name) ?? []).some((sequence) => sequence > candidate.selectedAtSequence);
 				const requiredCapabilityCompleted = () => [...capabilityObligations.values()].every((obligation) => obligation.candidates.some(capabilityCandidateCompleted));
 				if (contractRequiresCapabilityResolution && !requiredCapabilityCompleted() && !turnAbortReason) {
 					const pending = [...capabilityObligations.values()].filter((obligation) => !obligation.candidates.some(capabilityCandidateCompleted));
 					const selected = pending.flatMap((obligation) => obligation.candidates.map((candidate) => candidate.kind === "skill" ? `skill:${candidate.name}@${candidate.version ?? "unknown"}` : candidate.name));
-					const activatedAlternatives = activatePlannedTools(pending.flatMap((obligation) => obligation.candidates.filter((candidate) => candidate.kind !== "skill").map((candidate) => candidate.name)));
+					const activatedAlternatives = activatePlannedTools(pending.flatMap((obligation) => obligation.candidates.filter((candidate) => candidate.kind !== "skill").map((candidate) => candidate.sourceToolName ?? candidate.name)));
 					if (activatedAlternatives.length) publishToolSpecTransition();
 					await requireToolSpecPublication();
 					await promptSession(`[BeeMax required Capability execution correction: trusted discovery selected ${selected.join(", ")}, but one or more required outcome groups still lack a successful execution or completed Skill receipt. Use an active selected primary or same-group alternative now and continue the unchanged Objective. Do not answer until every required receipt exists.]`, { expandPromptTemplates: false });
@@ -1428,6 +1709,23 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 				}
 				assertTaskRunAuthority();
 				if (failure) throw new AgentRunError(errorMessage(failure), false, failure, isRecoverableModelFailure(failure));
+				if (lastTurnAssistantStopReason === "length" && !turnAbortReason) {
+					const recoveryTools = toolSpecPlan.direct.map((entry) => entry.toolName);
+					const verificationRecovery = executionEnvelope.verificationProtocol === "task_candidate_v1";
+					const terminalRecoveryTools = verificationRecovery ? recoveryTools.filter((name) => name === VERIFICATION_SUBMIT_TOOL_NAME) : [];
+					if (activeTools) session.piSession.setActiveToolsByName(terminalRecoveryTools);
+					try {
+						await promptSession(verificationRecovery
+							? `[BeeMax verification submission correction: the prior Provider Turn reached its output limit after evidence collection but before the required structured verdict. Use only the successful evidence receipts already in this Session. Call ${VERIFICATION_SUBMIT_TOOL_NAME} exactly once now. Do not repeat evidence checks, perform discovery, or express the verdict only as prose.]`
+							: "[BeeMax terminal response correction: the prior Provider Turn reached its output limit before producing a complete terminal response. Treat its partial prose as incomplete. Use only the existing Tool results and evidence already in context. Do not perform more discovery or call Tools. Return one concise, complete final structured response now, preserving material source references and unresolved issues.]", { expandPromptTemplates: false });
+						assertTaskRunAuthority();
+					} finally {
+						if (activeTools) session.piSession.setActiveToolsByName(recoveryTools);
+					}
+					failure = currentTurnAssistantFailure();
+					if (failure) throw new AgentRunError(errorMessage(failure), false, failure, isRecoverableModelFailure(failure));
+					if (!currentTurnAssistantText().trim()) throw new AgentRunError("Agent reached the Provider output limit without a terminal response after one bounded recovery Turn", false, undefined);
+				}
 				if (objective && typeof this.taskLedger?.transition === "function" && !requiredToolsUsed.includes("task_plan_execute")) {
 					let candidate = currentTurnAssistantText() || "(no response)";
 					const maxCorrectiveAttempts = Math.max(0, Math.min(executionEnvelope.budget?.maxCorrectiveAttempts ?? 1, 2));
@@ -1457,6 +1755,7 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 								if (!activeTaskRunId || !this.taskLedger?.settleDirectObjectiveCompletion?.({
 									ownerKey: objective.ownerKey, objectiveId: objective.id, taskRunId: activeTaskRunId, candidateResult: candidate.slice(0, 50_000),
 									...(verification.evidence ? { evidence: verification.evidence.slice(0, 5_000) } : {}), criterionVerifications, correctiveAttempts,
+									...(durableTaskArtifacts.size ? { artifacts: [...durableTaskArtifacts.values()] } : {}),
 									notBefore: interactive ? completionAcceptedAt + 30_000 : completionAcceptedAt,
 								}, completionAcceptedAt)) {
 									throw new AgentRunError(`Objective ${objective.id} could not atomically settle its accepted Candidate Outcome and Completion`, false, undefined);
@@ -1512,7 +1811,7 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 						}
 					}
 				}
-				if (activeTaskRunId && !activeTaskRunSettled) {
+				if (ownsActiveTaskRun && activeTaskRunId && !activeTaskRunSettled) {
 					assertTaskRunAuthority();
 					const rejected = objectiveVerificationOutcome === "rejected";
 					const transitioned = this.taskLedger?.transitionRun(activeTaskRunId, !rejected
@@ -1524,19 +1823,27 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 			} catch (cause) {
 				if (input.signal?.aborted) settlementStatus = "cancelled";
 				if (objectiveBinding?.created && objective && !requiredToolsUsed.includes("task_plan_execute")) this.taskLedger?.transition(objective.id, { status: "failed", finishedAt: Date.now(), error: errorMessage(cause).slice(0, 5_000) });
-					if (activeTaskRunId && !activeTaskRunSettled) this.taskLedger?.transitionRun(activeTaskRunId, { status: settlementStatus === "cancelled" ? "cancelled" : "failed", finishedAt: Date.now(), error: redactCredentialMaterial(errorMessage(cause)).slice(0, 5_000) });
+					if (ownsActiveTaskRun && activeTaskRunId && !activeTaskRunSettled) this.taskLedger?.transitionRun(activeTaskRunId, { status: settlementStatus === "cancelled" ? "cancelled" : "failed", finishedAt: Date.now(), error: redactCredentialMaterial(errorMessage(cause)).slice(0, 5_000) });
 				if (cause instanceof AgentRunError) throw cause;
 				throw new AgentRunError(timedOut ? `Agent execution deadline exceeded after ${effectiveTimeoutMs} milliseconds` : errorMessage(cause), timedOut, cause, timedOut || isRecoverableModelFailure(cause));
 			} finally {
 				cleanupTurnResources();
 				unregisterObjectiveInterruption?.();
-				clearIdleSettle();
 				await eventDelivery;
 				const capabilityOutcomeStatus = settlementStatus === "cancelled" ? "cancelled"
 					: objectiveVerificationOutcome === "accepted" ? "accepted"
 						: objectiveVerificationOutcome === "rejected" ? "rejected"
 							: settlementStatus === "failed" ? "failed" : "unverified";
-				for (const cognitionId of recordedCapabilityDecisions) this.recordTrace({ type: "capability.downstream_execution_outcome", executionEnvelope, at: Date.now(), cognitionId, status: capabilityOutcomeStatus });
+				for (const cognitionId of recordedCapabilityDecisions) {
+					if (!emittedCapabilityDecisions.has(cognitionId)) {
+						const candidates = capabilityDecisions.get(cognitionId);
+						if (candidates) {
+							this.recordTrace({ type: "capability.decision", executionEnvelope, at: Date.now(), cognitionId, candidates });
+							emittedCapabilityDecisions.add(cognitionId);
+						}
+					}
+					this.recordTrace({ type: "capability.downstream_execution_outcome", executionEnvelope, at: Date.now(), cognitionId, status: capabilityOutcomeStatus });
+				}
 				this.recordTrace({ type: "execution.settled", executionEnvelope, at: Date.now(), status: settlementStatus });
 				await onEvent?.({ type: "execution_settled", executionEnvelope, status: settlementStatus });
 				releaseTurnInputContext(session.piSession, turnMessageStart, input.text);
@@ -1557,10 +1864,19 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 			const executionUsage = turnUsageObserved
 				? { input_tokens: turnInputTokens, output_tokens: turnOutputTokens }
 				: usageOf(session.piSession.agent, turnMessageStart);
-			return { answer, model: modelOf(session.piSession.agent), durationMs: Date.now() - startedAt, usage: mergeResultUsage(executionUsage, workContractCognitionUsage), ...(completionId ? { completionId } : {}) };
+			const outcome: AgentRunOutcome = objective
+				? {
+					status: objectiveVerificationOutcome === "accepted" ? "accepted"
+						: objectiveVerificationOutcome === "rejected" ? "rejected"
+							: objectiveVerificationOutcome === "unavailable" ? "verification_unavailable" : "in_progress",
+					objectiveId: objective.id,
+					...(activeTaskRunId ? { taskRunId: activeTaskRunId } : {}),
+				}
+				: { status: "answered" };
+			return { answer, model: modelOf(session.piSession.agent), durationMs: Date.now() - startedAt, usage: mergeResultUsage(executionUsage, workContractCognitionUsage), outcome, ...(completionId ? { completionId } : {}) };
 		}, executionEnvelope).catch((cause) => {
 			turnResourceCleanup?.();
-			if (activeTaskRunId && !activeTaskRunSettled) this.taskLedger?.transitionRun(activeTaskRunId, {
+			if (ownsActiveTaskRun && activeTaskRunId && !activeTaskRunSettled) this.taskLedger?.transitionRun(activeTaskRunId, {
 				status: input.signal?.aborted ? "cancelled" : "failed",
 				finishedAt: Date.now(),
 				error: redactCredentialMaterial(errorMessage(cause)).slice(0, 5_000),
@@ -1788,6 +2104,88 @@ function shouldBindDurableObjective<Source extends BeeMaxRuntimeSource>(input: A
 	return Boolean(planning?.signals.requiresResearch || planning?.signals.requiresVerification || planning?.signals.substantialWork);
 }
 
+/**
+ * Separates model cognition from durable control-plane admission.
+ *
+ * In the product's model-first lane, ordinary interactive work reaches Pi
+ * directly regardless of lexical complexity. Tool policy, approvals, sandbox
+ * boundaries, immutable Tool Specs, execution receipts, and artifact verifiers
+ * remain authoritative during the model/tool loop. Semantic Work Contracts are
+ * reserved for Automation and explicit Objective lifecycle operations.
+ *
+ * The contract-first branch is a temporary migration lane for callers that
+ * intentionally retain the pre-1.5 complex-turn persistence behavior.
+ */
+function requiresSemanticWorkContract(input: {
+	rawRequest: string;
+	interactive: boolean;
+	interactiveAdmission: "model_first" | "contract_first";
+	responsibleAutomation: boolean;
+	explicitAutomationObjective: boolean;
+	objectiveTaskId?: string;
+	activeObjectiveCount: number;
+	referencesActiveObjective: boolean;
+	exactObjectiveReplay: boolean;
+	understanding: TurnUnderstanding;
+	planningSignals: PlanningSignals;
+}): boolean {
+	if (!input.interactive || input.responsibleAutomation || input.explicitAutomationObjective || input.objectiveTaskId) return true;
+	if (input.interactiveAdmission === "model_first") {
+		if (input.exactObjectiveReplay) return true;
+		return input.referencesActiveObjective && ["continue", "correct", "cancel"].includes(input.understanding.action);
+	}
+	if (input.activeObjectiveCount > 0 && ["continue", "correct", "cancel"].includes(input.understanding.action)) return true;
+	if (input.activeObjectiveCount > 0) return true;
+	if (input.understanding.action !== "query" || input.understanding.executionMode !== "direct") return true;
+	if (input.understanding.constraints.length || input.understanding.acceptanceCriteria.length || (input.understanding.uncertainties?.length ?? 0) > 0) return true;
+	const signals = input.planningSignals;
+	if (signals.complexity > 0
+		|| signals.requiresResearch
+		|| signals.requiresVerification
+		|| signals.requestsParallelism
+		|| signals.substantialWork
+		|| signals.independentWorkItems > 1) return true;
+	return !isAffirmativelySimpleConversationalQuery(input.rawRequest);
+}
+
+/**
+ * A direct Turn needs positive evidence of a short, stable conversational
+ * request. Unknown query shapes fail closed into semantic Contract cognition.
+ */
+function isAffirmativelySimpleConversationalQuery(rawRequest: string): boolean {
+	if (/[\r\n;,；，]/.test(rawRequest)) return false;
+	const request = rawRequest.trim().replace(/\s+/g, " ");
+	if (!request || request.length > 120) return false;
+	const phrase = request.replace(/[!.?。！？]+$/u, "").trim();
+	if (!phrase || /[!.?。！？]/u.test(phrase)) return false;
+	if (/\b(?:and|or|then|also|plus|versus|vs\.?)\b|(?:并且|然后|同时|以及|或者|与|和|跟|对比|相比)/i.test(phrase)) return false;
+	if (/\b(?:my|our|your|his|her|their)\b|(?:我的|我们的|你的|你们的|您的|他的|她的|他们的|她们的)/i.test(phrase)) return false;
+	if (/\b(?:delete|remove|erase|purge|write|send|post|publish|install|run|execute|change|modify|edit|create|build|download|upload|open|close|save|move|copy|rename|email|message|call)\b|(?:删除|移除|清空|写入|发送|发布|安装|运行|执行|修改|编辑|创建|开发|下载|上传|打开|关闭|保存|移动|复制|重命名|发邮件|发消息)/i.test(phrase)) return false;
+	if (/^(?:hi|hello|hey|thanks|thank you|good (?:morning|afternoon|evening)|who are you|what can you do)$/i.test(phrase)) return true;
+	if (/^(?:你好|您好|嗨|谢谢|感谢|早上好|下午好|晚上好|你是谁|你能做什么)$/.test(phrase)) return true;
+	const englishTerm = phrase.match(/^(?:please\s+)?(?:explain|define)\s+(.+)$/i)?.[1]
+		?? phrase.match(/^what\s+does\s+(.+)\s+mean$/i)?.[1]
+		?? phrase.match(/^how\s+does\s+(.+)\s+work$/i)?.[1];
+	if (englishTerm && isSimpleEnglishConceptTerm(englishTerm)) return true;
+	const chineseTerm = phrase.match(/^(?:请(?:你)?|麻烦)?(?:解释|说明|定义|简要介绍|简单介绍|介绍一下)\s*(.+)$/)?.[1]
+		?? phrase.match(/^(.+)是什么意思$/)?.[1]
+		?? phrase.match(/^(.+)(?:如何|怎么)工作$/)?.[1];
+	return Boolean(chineseTerm && isSimpleChineseConceptTerm(chineseTerm));
+}
+
+function isSimpleEnglishConceptTerm(value: string): boolean {
+	const term = value.trim();
+	if (!/^[a-z][a-z-]*(?:\s+[a-z][a-z-]*){0,2}$/i.test(term)) return false;
+	const structuralWords = new Set(["who", "what", "when", "where", "whether", "which", "whose", "is", "are", "was", "were", "has", "have", "had", "can", "could", "should", "would", "will", "may", "might", "recent"]);
+	return term.toLowerCase().split(/\s+/).every((word) => !structuralWords.has(word));
+}
+
+function isSimpleChineseConceptTerm(value: string): boolean {
+	const term = value.trim();
+	return /^[\p{Script=Han}A-Za-z-]{1,24}$/u.test(term)
+		&& !/(?:是否|谁|哪(?:个|些|里|儿)?|何时|什么时候|当前|现在|今日|今天|昨天|明天|最新|最近|实时|交易|账户|订单|预订|物流)/.test(term);
+}
+
 function compileEffectiveObjectiveWorkContract(objective: TaskRecord): WorkContract {
 	const latestRevision = objective.objectiveRevisions?.at(-1)?.workContract;
 	if (!latestRevision) return structuredClone(objective.workContract ?? workContractFromLegacyObjective({ title: objective.title, description: objective.description }));
@@ -2001,6 +2399,36 @@ function toolArtifactMetadata(result: unknown): { ref: string } | undefined {
 	return typeof ref === "string" && /^beemax-artifact:sha256:[a-f0-9]{64}$/u.test(ref) ? { ref } : undefined;
 }
 
+function taskArtifactMetadata(result: unknown): TaskArtifact | undefined {
+	const details = result && typeof result === "object" ? (result as { details?: unknown }).details : undefined;
+	if (!details || typeof details !== "object") return undefined;
+	const value = details as { manifest?: unknown; receipt?: unknown; sourceReceipt?: unknown };
+	if (value.sourceReceipt && typeof value.sourceReceipt === "object") {
+		try {
+			const sourceReceipt = validateSourceReceipt(value.sourceReceipt as Readonly<SourceReceipt>);
+			return { type: "reference", uri: sourceReceipt.id, label: sourceReceipt.capability, sourceReceipt };
+		} catch { return undefined; }
+	}
+	if (!value.manifest || typeof value.manifest !== "object") return undefined;
+	try {
+		const manifest = validateArtifactManifest(value.manifest as Readonly<ArtifactManifest>);
+		const verificationReceipt = value.receipt && typeof value.receipt === "object"
+			? validateArtifactVerificationReceipt(value.receipt as Readonly<ArtifactVerificationReceipt>, manifest)
+			: undefined;
+		return {
+			type: manifest.locator.kind === "workspace" ? "file" : manifest.locator.kind,
+			uri: manifest.locator.uri,
+			label: manifest.mediaType,
+			manifest,
+			...(verificationReceipt ? { verificationReceipt } : {}),
+		};
+	} catch { return undefined; }
+}
+
+function taskArtifactKey(artifact: TaskArtifact): string {
+	return artifact.manifest?.id ?? artifact.sourceReceipt?.id ?? `${artifact.type}:${artifact.uri}`;
+}
+
 function capabilityDiscoveryMetadata(result: unknown, knownTools: ReadonlySet<string>, trustProviderRecoveries = false): { cognitionId?: string; hasMatches: boolean; candidates: CapabilityRankedCandidate[]; activatedTools: string[]; recoveries: ProviderRecovery[]; restrictions: ProviderRestriction[] } {
 	const details = result && typeof result === "object" ? (result as { details?: unknown }).details : undefined;
 	if (!details || typeof details !== "object") return { hasMatches: false, candidates: [], activatedTools: [], recoveries: [], restrictions: [] };
@@ -2090,6 +2518,45 @@ function validCapabilityCognitionId(value: unknown): string | undefined {
 
 function validImmutableSkillVersion(value: unknown): value is string {
 	return typeof value === "string" && /^sha256:[a-f0-9]{64}$/i.test(value);
+}
+
+function capabilityCandidateSourceTool(candidate: CapabilitySelectionCandidate, tools: ReadonlyArray<{ name: string }>): string | undefined {
+	if (tools.some((tool) => tool.name === candidate.name)) return candidate.name;
+	for (const tool of tools) {
+		const identity = (tool as typeof tool & { beemaxToolSpec?: { capabilityIdentity?: { kind?: unknown; name?: unknown; version?: unknown } } }).beemaxToolSpec?.capabilityIdentity;
+		if (identity?.kind !== candidate.kind || identity.name !== candidate.name) continue;
+		if (candidate.version !== undefined && identity.version !== candidate.version) continue;
+		return tool.name;
+	}
+	return undefined;
+}
+
+function validCapabilityVersion(value: unknown): value is string {
+	return typeof value === "string" && /^[a-z0-9][a-z0-9._:@-]{0,255}$/i.test(value);
+}
+
+function normalizeExecutableCapabilityCandidate(
+	candidate: CapabilitySelectionCandidate,
+	tools: ReadonlyArray<ToolDefinition | ToolInfo>,
+): (CapabilitySelectionCandidate & { sourceToolName: string; version: string }) | undefined {
+	const sourceToolName = capabilityCandidateSourceTool(candidate, tools);
+	if (!sourceToolName) return undefined;
+	const tool = tools.find((item) => item.name === sourceToolName);
+	if (!tool) return undefined;
+	const inventoryItem = toolSpecInventoryItem(tool);
+	const metadata = (tool as typeof tool & { beemaxToolSpec?: { version?: unknown; capabilityIdentity?: { kind?: unknown; name?: unknown; version?: unknown } } }).beemaxToolSpec;
+	const identity = metadata?.capabilityIdentity;
+	if (candidate.name === sourceToolName && inventoryItem.kind !== candidate.kind) return undefined;
+	const declaredIdentityVersion = identity?.kind === candidate.kind && identity.name === candidate.name && validCapabilityVersion(identity.version) ? identity.version : undefined;
+	const directToolVersion = candidate.name === sourceToolName && validCapabilityVersion(metadata?.version) ? metadata.version : undefined;
+	const version = validCapabilityVersion(candidate.version) ? candidate.version
+		: declaredIdentityVersion ?? directToolVersion ?? capabilityVersionOf({
+			kind: candidate.kind,
+			name: candidate.name,
+			sourceToolName,
+			sourceToolVersion: inventoryItem.version,
+		});
+	return { ...candidate, version, sourceToolName };
 }
 
 function capabilityReceiptMetadata(result: unknown, sourceTool: string): CapabilityReceiptRef | undefined {
@@ -2345,7 +2812,12 @@ function completedPlanningTool(toolName: string, result: unknown, args: unknown,
 	if (toolName === "task_spawn") return typeof record?.id === "string" ? { accepted: true, delegatedTaskId: record.id } : { accepted: false };
 	if (toolName === "task_wait") {
 		const requestedId = args && typeof args === "object" ? (args as { id?: unknown }).id : undefined;
-		return { accepted: Boolean(delegatedTaskId && requestedId === delegatedTaskId && record?.id === delegatedTaskId && record.status === "completed") };
+		const terminal = record?.status === "completed" || record?.status === "failed" || record?.status === "cancelled";
+		// task_wait satisfies the planning lifecycle once it returns the matching
+		// Task's terminal state. A failed/cancelled child contributes no outcome
+		// evidence, but the parent may still complete through a direct fallback;
+		// final Objective verification decides whether that fallback is sufficient.
+		return { accepted: Boolean(delegatedTaskId && requestedId === delegatedTaskId && record?.id === delegatedTaskId && terminal) };
 	}
 	if (toolName === "task_plan_execute") {
 		const backgroundAccepted = record?.accepted === true && record.status === "running" && typeof record.planId === "string";
@@ -2483,6 +2955,81 @@ function minimumLimit(left?: number, right?: number): number | undefined {
 	if (left === undefined) return right;
 	if (right === undefined) return left;
 	return Math.min(left, right);
+}
+function shouldCompactForExecutionBudget(session: AgentSession, maxTokens?: number): boolean {
+	if (maxTokens === undefined || maxTokens < 4) return false;
+	if (typeof session.getContextUsage !== "function" || typeof session.compact !== "function") return false;
+	const settings = session.compactionSettings;
+	if (!settings?.enabled) return false;
+	const reportedContextTokens = session.getContextUsage()?.tokens;
+	const contextTokens = reportedContextTokens ?? estimateRestoredContextTokens(session);
+	if (contextTokens === undefined || contextTokens === null || !Number.isFinite(contextTokens) || contextTokens <= 0) return false;
+	// A Tool-using task commonly needs at least four Provider turns. Compact old
+	// history before one restored prompt can consume more than one turn's share.
+	return contextTokens > Math.floor(maxTokens / 4);
+}
+
+function estimateRestoredContextTokens(session: AgentSession): number | undefined {
+	try {
+		const serialized = JSON.stringify(session.agent.state.messages);
+		return serialized ? Math.ceil(Buffer.byteLength(serialized, "utf8") / 4) : 0;
+	} catch { return undefined; }
+}
+
+function boundedCapabilityQuery(value: string, maxChars = 500): string {
+	const normalized = value.trim();
+	if (normalized.length <= maxChars) return normalized;
+	const separator = "\n[…]\n";
+	const available = maxChars - separator.length;
+	const headLength = Math.ceil(available * 0.65);
+	return `${normalized.slice(0, headLength)}${separator}${normalized.slice(-(available - headLength))}`;
+}
+
+function exactActiveObjectiveForRequest(candidates: readonly TaskRecord[], request: string): TaskRecord | undefined {
+	const normalizedRequest = request.normalize("NFKC").trim();
+	if (!normalizedRequest) return undefined;
+	return candidates
+		.filter((candidate) => [candidate.description, candidate.workContract?.rawRequest].some((value) => typeof value === "string" && value.normalize("NFKC").trim() === normalizedRequest))
+		.sort((left, right) => left.createdAt - right.createdAt || left.id.localeCompare(right.id))[0];
+}
+
+/**
+ * Natural-language lifecycle commands may bind a durable Objective without a
+ * caller-supplied id, but an unrelated turn-local edit must never inherit the
+ * only Objective in the conversation merely because it uses words such as
+ * "change" or "rewrite".
+ */
+function referencedActiveObjectiveForRequest(candidates: readonly TaskRecord[], request: string): TaskRecord | undefined {
+	const normalized = request.normalize("NFKC").trim().toLocaleLowerCase();
+	if (!normalized) return undefined;
+	const named = candidates.filter((candidate) => {
+		const id = candidate.id.normalize("NFKC").trim().toLocaleLowerCase();
+		const title = candidate.title.normalize("NFKC").trim().toLocaleLowerCase();
+		return Boolean(id && normalized.includes(id)) || Boolean(title.length >= 2 && normalized.includes(title));
+	});
+	if (named.length === 1) return named[0];
+	if (candidates.length !== 1) return undefined;
+	const candidate = candidates[0];
+	if (/(?:继续|接着|恢复|续做|carry\s+on|continue|resume)/iu.test(normalized)) return candidate;
+	const lifecycleReference = /(?:刚才|之前|先前|上一个|原来|原先|当前|活动中|后台|这个|该|那个)(?:的)?(?:任务|目标|工作|计划|报告)|(?:active|current|previous|prior|background|that|the)\s+(?:objective|task|job|plan|report)/iu;
+	const lifecycleAction = /(?:取消|停止|终止|修正|纠正|更正|修改|调整|cancel|stop|abort|correct|revise|modify|change)/iu;
+	if (lifecycleReference.test(normalized) && lifecycleAction.test(normalized)) return candidate;
+	const terseLifecycleCommand = /^(?:请(?:你)?|麻烦)?\s*(?:取消|停止|终止|修正|纠正|更正|修改|调整|cancel|stop|abort|correct|revise|modify)\s*(?:一下)?\s*(?:任务|目标|工作|计划|objective|task|job|plan)?[。.!！]?$/iu;
+	return terseLifecycleCommand.test(normalized) ? candidate : undefined;
+}
+
+async function resetPiSessionContext(session: AgentSession, taskEnvelope?: string): Promise<void> {
+	// The persisted transcript is append-only. Starting a new root preserves the
+	// audit history on disk while removing an unsummarizable stale branch from
+	// the next model context. Durable task authority is re-injected explicitly.
+	session.sessionManager.resetLeaf();
+	session.agent.reset();
+	session.clearQueue();
+	if (taskEnvelope) await session.sendCustomMessage({
+		customType: "beemax-task-preservation-recovery",
+		content: taskEnvelope,
+		display: false,
+	}, { triggerTurn: false, deliverAs: "context" });
 }
 function executionTimeoutMs(inputTimeoutMs: number | null, deadlineAt?: number): number | undefined {
 	const deadlineTimeoutMs = deadlineAt === undefined ? undefined : Math.max(1, deadlineAt - Date.now());

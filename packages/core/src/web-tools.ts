@@ -148,8 +148,8 @@ export function createWebTools(options: WebToolsOptions = {}): ToolDefinition[] 
 		},
 	}), {
 		beemaxToolSpec: { kind: "tool" as const, configured: configuredApiSearchProvider(env) || agentReachAvailable(), health: configuredApiSearchProvider(env) || agentReachAvailable() ? "unverified" as const : "configuration_required" as const, ranking: { inputModalities: ["text"], outputModalities: ["structured"], freshness: "realtime" as const, evidence: "source_receipt" as const } },
-		aliases: ["联网搜索", "网络搜索", "公开信息检索"],
-		triggers: ["web_search", "搜索公开网页", "检索公开信息"],
+		aliases: ["联网搜索", "网络搜索", "公开信息检索", "公开来源调研"],
+		triggers: ["web_search", "搜索公开网页", "检索公开信息", "自主调研", "过去一周", "实时来源", "多个独立来源", "来源 URL", "source URL", "current sources"],
 		priority: 20,
 		providers: [
 			configuredWebProvider("tavily", "TAVILY_API_KEY", Boolean(env.TAVILY_API_KEY?.trim()), "Configure the Tavily API credential reference for this Profile."),
@@ -212,7 +212,7 @@ export function createWebTools(options: WebToolsOptions = {}): ToolDefinition[] 
 	}), {
 		beemaxToolSpec: { kind: "tool" as const, configured: agentReachAvailable(), health: agentReachAvailable() ? "unverified" as const : "configuration_required" as const, ranking: { inputModalities: ["text"], outputModalities: ["text"], freshness: "current" as const, evidence: "source_receipt" as const } },
 		aliases: ["agent_reach_search", "agent-reach", "Exa", "联网检索", "网络检索", "实时网络搜索"],
-		triggers: ["exa", "exa-mcporter", "可验证的公开趋势", "真实可溯源来源", "检索公开趋势", "实时核验", "截至今天", "多个来源", "live web research", "current sources"],
+		triggers: ["exa", "exa-mcporter", "可验证的公开趋势", "真实可溯源来源", "检索公开趋势", "实时核验", "交叉验证", "相互独立", "截至今天", "自主调研", "过去一周", "实时来源", "多个来源", "多个独立来源", "来源 URL", "source URL", "live web research", "current sources"],
 		priority: 10,
 	});
 

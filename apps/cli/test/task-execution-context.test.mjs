@@ -6,7 +6,7 @@ import test from "node:test";
 import { MemoryStore } from "@beemax/memory";
 import { createAccessScopeRef, createExecutionEnvelope, createSituation, FileExecutionTraceStore, MUTATING_TOOL_POLICY } from "@beemax/core";
 import { buildMainAgentSystemPrompt, buildSubagentSystemPrompt, createTaskVerifier as createTaskVerifierRaw, createVerifiedObjectiveMemoryPublisher, executeObjectiveDelivery as executeObjectiveDeliveryRaw, executePlannedTask as executePlannedTaskRaw, executeSubagentTask as executeSubagentTaskRaw, verificationAgentTools, verificationAgentToolsForTask } from "../dist/gateway.js";
-import { attestAgentFactoryProfile, createExecutionRoleTools } from "../dist/agent-factory.js";
+import { attestAgentFactoryProfile, buildAgentFactory, createExecutionRoleTools } from "../dist/agent-factory.js";
 import { createSuccessfulVerificationReceipt, normalizeVerifierEvidenceRefs } from "../dist/verification-protocol.js";
 
 const scopedFactory = (factory) => attestAgentFactoryProfile(factory, "profile:test");
@@ -46,12 +46,38 @@ test("Sub-Agents must discover admitted capabilities and fail explicitly instead
 	assert.match(prompt, /capability_discover/);
 	assert.match(prompt, /Never replace the requested outcome, evidence standard, quality level, or mandatory constraint with a weaker substitute/);
 	assert.match(prompt, /exact blocker and attempted remedies/);
+	assert.match(prompt, /stop discovery as soon as the Acceptance Criteria are met/i);
+	assert.match(prompt, /reserve enough time and tokens for one final structured response/i);
+	assert.match(prompt, /at most 8 unique external URLs/i);
+});
+
+test("Sub-Agent execution receives exact Acceptance Criteria and a convergence boundary", async () => {
+	let prompt = "";
+	const agent = { state: { model: { id: "test" }, messages: [] } };
+	const factory = async () => ({
+		agent, subscribe: () => () => undefined,
+		prompt: async (text) => {
+			prompt = text;
+			agent.state.messages = [{ role: "assistant", content: [{ type: "text", text: "done" }], usage: { input: 1, output: 1 } }];
+		},
+		abort: async () => undefined, dispose: () => undefined,
+	});
+	await executeSubagentTask(factory, {
+		id: "task-converge", ownerKey: "cli:local:local", source: { platform: "cli", chatId: "local", chatType: "dm", userId: "local" },
+		name: "Research", goal: "Research the weekly market move", acceptanceCriteria: "Return exactly two independently accessible source URLs.",
+		capability: "research", status: "running", createdAt: 1, timeoutMs: 1_000,
+	}, new AbortController().signal, 1_000);
+	assert.match(prompt, /Acceptance Criteria:\nReturn exactly two independently accessible source URLs\./);
+	assert.match(prompt, /Stop discovery as soon as the Acceptance Criteria are met\./i);
+	assert.match(prompt, /Do not repeat equivalent searches or improve beyond the requested scope\./i);
 });
 
 test("main Agent preserves a minimal material citation set for independent verification", () => {
 	const prompt = buildMainAgentSystemPrompt("Profile prompt");
 	assert.match(prompt, /smallest sufficient set of material citations/i);
 	assert.match(prompt, /every cited external URL/i);
+	assert.match(prompt, /at most 8 unique external URLs/i);
+	assert.match(prompt, /all key facts need source URLs.*does not.*justify exceeding/i);
 });
 
 test("verification agents receive a minimal semantic Tool Spec instead of every read-only capability", () => {
@@ -108,11 +134,49 @@ test("Task-aware verification Tool routing re-admits the structurally required s
 	);
 });
 
+test("Task-aware verification progressively admits direct Artifact inspection", () => {
+	assert.deepEqual(
+		verificationAgentToolsForTask([], {
+			title: "核验黄金周报交付文件",
+			description: "真实检查 HTML 内容与渲染，并确认 PDF 可解析和页面渲染",
+			acceptanceCriteria: "gold-weekly-report.html 与 gold-weekly-report.pdf 均通过",
+			verificationRequirements: [],
+		}, []),
+		["verification_submit", "read", "artifact_inspect"],
+	);
+});
+
 test("the internal verdict Tool exists only in verification execution sessions", () => {
 	assert.deepEqual(createExecutionRoleTools().map((tool) => tool.name), []);
 	assert.deepEqual(createExecutionRoleTools({ mode: "normal" }).map((tool) => tool.name), []);
 	assert.deepEqual(createExecutionRoleTools({ mode: "verification", verificationProtocol: "skill_candidate_v1" }).map((tool) => tool.name), []);
 	assert.deepEqual(createExecutionRoleTools({ mode: "verification", verificationProtocol: "task_candidate_v1" }).map((tool) => tool.name), ["verification_submit"]);
+});
+
+test("the real Agent factory enables the internal verdict Tool only for its verification role", async () => {
+	const root = mkdtempSync(join(tmpdir(), "beemax-verification-role-tools-"));
+	const factory = buildAgentFactory({
+		profileId: "profile:test",
+		provider: "anthropic",
+		model: "claude-sonnet-4-5",
+		cwd: root,
+		agentDir: join(root, "agent"),
+		getApiKey: () => "test",
+		tools: ["read"],
+	});
+	const source = { platform: "cli", chatId: "local", chatType: "dm", userId: "local" };
+	const normal = await factory("normal-role", source, createExecutionEnvelope({ executionId: "execution:normal-role", trigger: { kind: "delegation", id: "normal-role" }, mode: "normal" }));
+	const verifier = await factory("verification-role", source, createExecutionEnvelope({ executionId: "execution:verification-role", trigger: { kind: "verification", id: "task" }, mode: "verification", verificationProtocol: "task_candidate_v1" }));
+	try {
+		assert.equal(normal.getAllTools().some((tool) => tool.name === "verification_submit"), false);
+		assert.equal(normal.thinkingLevel, "off", "normal execution should call evidence Tools promptly instead of spending minutes on hidden reasoning");
+		assert.equal(verifier.getAllTools().some((tool) => tool.name === "verification_submit"), true);
+		assert.equal(verifier.thinkingLevel, "off", "receipt-bound verification should not spend a second medium-reasoning pass on deterministic Tool evidence");
+	} finally {
+		normal.dispose();
+		verifier.dispose();
+		rmSync(root, { recursive: true, force: true });
+	}
 });
 
 test("verification evidence references resolve exact Tool names to concrete call receipts", () => {
@@ -211,7 +275,9 @@ for (const authorityLoss of ["objective cancellation", "Task Run lease loss"]) t
 			listener({ type: "tool_execution_start", toolCallId: `call:${authorityLoss}`, toolName: mutation.name, args: {} });
 			boundary = await agent.beforeToolCall({ assistantMessage: {}, toolCall: { id: `call:${authorityLoss}`, name: mutation.name, arguments: {} }, args: {}, context: {} });
 			listener({ type: "tool_execution_end", toolCallId: `call:${authorityLoss}`, toolName: mutation.name, args: {}, isError: true, result: { details: { dispatchError: { stage: "authorization", code: "blocked", retryable: false } } } });
-			agent.state.messages = [{ role: "assistant", content: [{ type: "text", text: '<beemax-task-result>{"output":"fenced","evidence":"","artifacts":[],"unresolvedIssues":[]}</beemax-task-result>' }], usage: { input: 1, output: 1 } }];
+			const terminal = { role: "assistant", responseId: `response:${authorityLoss}:terminal`, stopReason: "stop", content: [{ type: "text", text: '<beemax-task-result>{"output":"fenced","evidence":"","artifacts":[],"unresolvedIssues":[]}</beemax-task-result>' }], usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0 } };
+			listener({ type: "message_end", message: terminal });
+			agent.state.messages = [terminal];
 		},
 		abort: async () => undefined, dispose: () => undefined,
 	});
@@ -265,7 +331,9 @@ test("planned Pi execution checkpoints meaningful turn progress without a checkp
 			await startAdmittedToolCall(agent, listener, { id: "read-1", name: "read", args: {} }, "response:checkpoint-read");
 			listener({ type: "tool_execution_end", toolCallId: "read-1", toolName: "read", result: {}, isError: false });
 			listener({ type: "turn_end", message: { role: "assistant", content: [] }, toolResults: [] });
-			agent.state.messages = [{ role: "assistant", content: [{ type: "text", text: "done" }], usage: { input: 1, output: 1 } }];
+			const terminal = { role: "assistant", responseId: "response:checkpoint-terminal", stopReason: "stop", content: [{ type: "text", text: "done" }], usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0 } };
+			listener({ type: "message_end", message: terminal });
+			agent.state.messages = [terminal];
 		},
 		abort: async () => undefined, dispose: () => undefined,
 	});
@@ -390,9 +458,9 @@ test("independent verification receives the Task Situation", async () => {
 	assert.equal(envelope.taskRunId, "run-verify");
 	assert.equal(envelope.trigger.kind, "verification");
 	assert.equal(envelope.verificationProtocol, "task_candidate_v1");
-	assert.equal(envelope.budget.maxToolCalls, 6);
-	assert.equal(envelope.budget.maxTokens, 20_000);
-	assert.deepEqual(toolsDuringPrompt, ["verification_submit", "read", "web_search", "exa_web_search", "web_extract"]);
+	assert.equal(envelope.budget.maxToolCalls, undefined, "read-only verification must inherit the unbounded Contract instead of failing on a synthetic Tool-call ceiling");
+	assert.equal(envelope.budget.maxTokens, undefined, "independent verification must not be cancelled by a cumulative token ceiling");
+	assert.deepEqual(toolsDuringPrompt, ["verification_submit", "read"]);
 });
 
 test("independent verification rejects free-text verdicts instead of parsing model-authored envelopes", async () => {
@@ -543,6 +611,47 @@ test("independent verification gets one bounded evidence correction when its fir
 	assert.match(result.evidence, /:submit:tool-call:read-after-correction/);
 });
 
+test("a length-limited verifier recovery exposes only the structured verdict Tool", async () => {
+	let listener = () => undefined;
+	let activeTools = ["verification_submit", "read"];
+	let promptCount = 0;
+	const toolsDuringPrompt = [];
+	const agent = { state: { model: { id: "test" }, messages: [] } };
+	const factory = async () => ({
+		agent,
+		subscribe: (next) => { listener = next; return () => undefined; },
+		getActiveToolNames: () => [...activeTools],
+		getAllTools: () => activeTools.map(readOnlyTestTool),
+		setActiveToolsByName: (names) => { activeTools = [...names]; },
+		prompt: async () => {
+			promptCount++;
+			toolsDuringPrompt.push([...activeTools]);
+			if (promptCount === 1) {
+				bindAssistantTurn(listener, [{ id: "read-before-length", name: "read", args: { path: "draft.md" } }], "response:read-before-length");
+				await startAdmittedToolCall(agent, listener, { id: "read-before-length", name: "read", args: { path: "draft.md" } }, "response:read-before-length");
+				listener({ type: "tool_execution_end", toolCallId: "read-before-length", toolName: "read", args: { path: "draft.md" }, isError: false, result: { content: [{ type: "text", text: "draft" }], details: {} } });
+				listener({ type: "message_end", message: { role: "assistant", responseId: "response:length-verifier", stopReason: "length", content: [{ type: "thinking", thinking: "output allowance exhausted" }, { type: "text", text: "" }], usage: { input: 10, output: 8_192, cacheRead: 0, cacheWrite: 0 } } });
+				return;
+			}
+			const args = { status: "accepted", reason: "The draft was observed", assertions: [{ status: "accepted", criterionId: "C1", evidence: "draft.md contains the draft", evidenceRefs: ["tool:read"] }] };
+			bindAssistantTurn(listener, [{ id: "submit-after-length", name: "verification_submit", args }], "response:submit-after-length");
+			await startAdmittedToolCall(agent, listener, { id: "submit-after-length", name: "verification_submit", args }, "response:submit-after-length");
+			listener({ type: "tool_execution_end", toolCallId: "submit-after-length", toolName: "verification_submit", args, isError: false, result: { content: [{ type: "text", text: "Verdict recorded" }], details: { verdict: args } } });
+			listener({ type: "message_end", message: { role: "assistant", responseId: "response:submitted-after-length", stopReason: "stop", content: [{ type: "text", text: "Verification submitted." }], usage: { input: 11, output: 3, cacheRead: 0, cacheWrite: 0 } } });
+		},
+		abort: async () => undefined,
+		dispose: () => undefined,
+	});
+	const result = await createTaskVerifier(factory, 1_000, undefined, ["verification_submit", "read"])(
+		{ id: "task-length-verifier", ownerKey: "owner", kind: "delegated", title: "Verify draft", acceptanceCriteria: "draft exists", status: "running", createdAt: 1, executionScope: { platform: "cli", chatId: "local", chatType: "dm", userId: "local" } },
+		{ output: "draft.md" },
+		undefined,
+		{ taskRunId: "run-length-verifier" },
+	);
+	assert.equal(result.accepted, true);
+	assert.deepEqual(toolsDuringPrompt[1], ["verification_submit"]);
+});
+
 test("independent verification refuses to carry search-only receipts into a fresh correction Session", async () => {
 	let emit = () => undefined;
 	let activeTools = ["verification_submit", "web_search", "web_extract"];
@@ -619,6 +728,136 @@ test("independent verification cannot accept an external URL without fetching it
 	await assert.rejects(() => verify({ id: "task", ownerKey: "owner", kind: "delegated", title: "Verify URL", status: "running", createdAt: 1, executionScope: { platform: "cli", chatId: "local", chatType: "dm", userId: "local" } }, { output: "Source: https://example.com/fact" }), /not every cited external source URL was independently fetched/);
 });
 
+test("independent verification cannot accept an external URL discovered inside an Artifact without fetching it", async () => {
+	let emit = () => undefined;
+	let activeTools = ["verification_submit", "artifact_inspect", "web_extract"];
+	const agent = { state: { model: { id: "test" }, messages: [] } };
+	const factory = async () => ({
+		agent, subscribe: (listener) => { emit = listener; return () => undefined; },
+		getActiveToolNames: () => [...activeTools], getAllTools: () => activeTools.map(readOnlyTestTool), setActiveToolsByName: (names) => { activeTools = [...names]; },
+		prompt: async () => {
+			const inspectResult = {
+				content: [{ type: "text", text: "Inspected report.html" }],
+				details: { checks: [{ dimension: "semantic", status: "accepted", evidenceRefs: ["semantic:external-urls:1", "artifact:external-url:https://source.example/report"] }], externalUrls: ["https://source.example/report"] },
+			};
+			const args = { status: "accepted", reason: "artifact exists", assertions: [{ status: "accepted", criterionId: "C1", evidence: "artifact inspected", evidenceRefs: ["tool:artifact_inspect"] }] };
+			bindAssistantTurn(emit, [{ id: "inspect-report", name: "artifact_inspect", args: { path: "report.html" } }, { id: "verdict-1", name: "verification_submit", args }], "response:artifact-url-verdict");
+			await startAdmittedToolCall(agent, emit, { id: "inspect-report", name: "artifact_inspect", args: { path: "report.html" } }, "response:artifact-url-verdict");
+			emit({ type: "tool_execution_end", toolCallId: "inspect-report", toolName: "artifact_inspect", args: { path: "report.html" }, isError: false, result: inspectResult });
+			await startAdmittedToolCall(agent, emit, { id: "verdict-1", name: "verification_submit", args }, "response:artifact-url-verdict");
+			emit({ type: "tool_execution_end", toolCallId: "verdict-1", toolName: "verification_submit", args, isError: false, result: {} });
+			agent.state.messages = [{ role: "assistant", content: [{ type: "text", text: "submitted" }], usage: { input: 1, output: 1 } }];
+		}, abort: async () => undefined, dispose: () => undefined,
+	});
+	const verify = createTaskVerifier(factory, 1_000, undefined, activeTools);
+	await assert.rejects(() => verify(
+		{ id: "task", ownerKey: "owner", kind: "delegated", title: "Verify artifact", acceptanceCriteria: "report exists", status: "running", createdAt: 1, executionScope: { platform: "cli", chatId: "local", chatType: "dm", userId: "local" } },
+		{ output: "report.html" },
+	), /not every cited external source URL was independently fetched/);
+});
+
+test("independent verification cannot claim HTML/PDF consistency without a receipt for the consistency dimension", async () => {
+	let emit = () => undefined;
+	let activeTools = ["verification_submit", "artifact_inspect", "web_extract"];
+	const agent = { state: { model: { id: "test" }, messages: [] } };
+	const factory = async () => ({
+		agent, subscribe: (listener) => { emit = listener; return () => undefined; },
+		getActiveToolNames: () => [...activeTools], getAllTools: () => activeTools.map(readOnlyTestTool), setActiveToolsByName: (names) => { activeTools = [...names]; },
+		prompt: async () => {
+			const inspectArgs = { path: "report.pdf", mediaType: "application/pdf", requiredDimensions: ["existence", "integrity", "semantic", "render"], requiredText: ["4,111.40"] };
+			const inspectResult = { content: [{ type: "text", text: "PDF inspected" }], details: { checks: inspectArgs.requiredDimensions.map((dimension) => ({ dimension, status: "accepted", evidenceRefs: [`evidence:${dimension}`] })) } };
+			const verdictArgs = { status: "accepted", reason: "files look consistent", assertions: [{ status: "accepted", criterionId: "C1", evidence: "PDF inspected", evidenceRefs: ["tool:artifact_inspect"] }] };
+			bindAssistantTurn(emit, [{ id: "inspect-pdf", name: "artifact_inspect", args: inspectArgs }, { id: "verdict", name: "verification_submit", args: verdictArgs }], "response:missing-consistency");
+			await startAdmittedToolCall(agent, emit, { id: "inspect-pdf", name: "artifact_inspect", args: inspectArgs }, "response:missing-consistency");
+			emit({ type: "tool_execution_end", toolCallId: "inspect-pdf", toolName: "artifact_inspect", args: inspectArgs, isError: false, result: inspectResult });
+			await startAdmittedToolCall(agent, emit, { id: "verdict", name: "verification_submit", args: verdictArgs }, "response:missing-consistency");
+			emit({ type: "tool_execution_end", toolCallId: "verdict", toolName: "verification_submit", args: verdictArgs, isError: false, result: {} });
+			agent.state.messages = [{ role: "assistant", content: [{ type: "text", text: "submitted" }], usage: { input: 1, output: 1 } }];
+		}, abort: async () => undefined, dispose: () => undefined,
+	});
+	await assert.rejects(() => createTaskVerifier(factory, 1_000, undefined, activeTools)(
+		{ id: "task", ownerKey: "owner", kind: "delegated", title: "Verify report", acceptanceCriteria: "HTML 与 PDF 的关键数字和来源一致。", status: "running", createdAt: 1, executionScope: { platform: "cli", chatId: "local", chatType: "dm", userId: "local" } },
+		{ output: "report.html\nreport.pdf" },
+	), /consistency dimension/i);
+});
+
+test("independent verification cannot claim raw/formatted equivalence from unrelated source and visible substrings", async () => {
+	let emit = () => undefined;
+	let activeTools = ["verification_submit", "artifact_inspect", "web_extract"];
+	const agent = { state: { model: { id: "test" }, messages: [] } };
+	const factory = async () => ({
+		agent, subscribe: (listener) => { emit = listener; return () => undefined; },
+		getActiveToolNames: () => [...activeTools], getAllTools: () => activeTools.map(readOnlyTestTool), setActiveToolsByName: (names) => { activeTools = [...names]; },
+		prompt: async () => {
+			const inspectArgs = { path: "report.html", mediaType: "text/html", requiredDimensions: ["semantic"], requiredText: ["4,111.40"], requiredSourceText: ["4111.4"] };
+			const inspectResult = { content: [{ type: "text", text: "HTML inspected" }], details: { checks: [{ dimension: "semantic", status: "accepted", evidenceRefs: ["semantic:matched:1", "semantic:source-matched:1"] }] } };
+			const verdictArgs = { status: "accepted", reason: "raw and formatted values exist", assertions: [{ status: "accepted", criterionId: "C1", evidence: "HTML inspected", evidenceRefs: ["tool:artifact_inspect"] }] };
+			bindAssistantTurn(emit, [{ id: "inspect-html", name: "artifact_inspect", args: inspectArgs }, { id: "verdict", name: "verification_submit", args: verdictArgs }], "response:missing-bound-pair");
+			await startAdmittedToolCall(agent, emit, { id: "inspect-html", name: "artifact_inspect", args: inspectArgs }, "response:missing-bound-pair");
+			emit({ type: "tool_execution_end", toolCallId: "inspect-html", toolName: "artifact_inspect", args: inspectArgs, isError: false, result: inspectResult });
+			await startAdmittedToolCall(agent, emit, { id: "verdict", name: "verification_submit", args: verdictArgs }, "response:missing-bound-pair");
+			emit({ type: "tool_execution_end", toolCallId: "verdict", toolName: "verification_submit", args: verdictArgs, isError: false, result: {} });
+			agent.state.messages = [{ role: "assistant", content: [{ type: "text", text: "submitted" }], usage: { input: 1, output: 1 } }];
+		}, abort: async () => undefined, dispose: () => undefined,
+	});
+	await assert.rejects(() => createTaskVerifier(factory, 1_000, undefined, activeTools)(
+		{ id: "task", ownerKey: "owner", kind: "delegated", title: "Verify report", acceptanceCriteria: "HTML 源码中的原始数值必须与可见格式化数字一一对应且一致。", status: "running", createdAt: 1, executionScope: { platform: "cli", chatId: "local", chatType: "dm", userId: "local" } },
+		{ output: "report.html" },
+	), /source-visible pair/i);
+});
+
+test("artifact verification prompt makes visible/source assertions and HTML-to-PDF consistency direction unambiguous", async () => {
+	let prompt = "";
+	let activeTools = ["verification_submit", "artifact_inspect", "web_extract"];
+	const agent = { state: { model: { id: "test" }, messages: [] } };
+	const factory = async () => ({
+		agent, subscribe: () => () => undefined,
+		getActiveToolNames: () => [...activeTools], getAllTools: () => activeTools.map(readOnlyTestTool), setActiveToolsByName: (names) => { activeTools = [...names]; },
+		prompt: async (text) => { prompt = text; throw new Error("verification prompt probe"); },
+		abort: async () => undefined, dispose: () => undefined,
+	});
+	await assert.rejects(() => createTaskVerifier(factory, 1_000, undefined, activeTools)(
+		{
+			id: "task", ownerKey: "owner", kind: "delegated", title: "Verify report", status: "running", createdAt: 1,
+			acceptanceCriteria: "HTML 源码中的原始数值必须与可见格式化数字一一对应且一致；PDF 与 HTML 的关键数字和来源一致。",
+			executionScope: { platform: "cli", chatId: "local", chatType: "dm", userId: "local" },
+		},
+		{ output: "report.html\nreport.pdf" },
+	), /verification prompt probe/i);
+	assert.match(prompt, /requiredText is for visible text only/i);
+	assert.match(prompt, /source-only raw literals.*requiredSourceVisiblePairs/i);
+	assert.match(prompt, /inspect the PDF as the rendered output/i);
+	assert.match(prompt, /consistentWithMediaType.*text\/html/i);
+	assert.match(prompt, /never inspect the HTML with the PDF as its consistency source/i);
+});
+
+test("independent verification treats citation overflow as a correctable candidate rejection", async () => {
+	let factoryCalls = 0;
+	const factory = async () => { factoryCalls++; throw new Error("verification Agent must not start for an oversized Candidate"); };
+	const urls = Array.from({ length: 25 }, (_, index) => `https://source-${index + 1}.example/report`);
+	const result = await createTaskVerifier(factory, 1_000)(
+		{ id: "task", ownerKey: "owner", kind: "delegated", title: "Verify research", acceptanceCriteria: "cite material sources", status: "running", createdAt: 1, executionScope: { platform: "cli", chatId: "local", chatType: "dm", userId: "local" } },
+		{ output: urls.join("\n") },
+	);
+	assert.equal(result.accepted, false);
+	assert.match(result.feedback, /at most 24 unique external URLs/i);
+	assert.match(result.feedback, /smallest sufficient material source set/i);
+	assert.equal(factoryCalls, 0);
+});
+
+test("independent verification enforces a stricter citation bound declared by the Task", async () => {
+	let factoryCalls = 0;
+	const factory = async () => { factoryCalls++; throw new Error("verification Agent must not start for a contract-violating Candidate"); };
+	const urls = Array.from({ length: 9 }, (_, index) => `https://source-${index + 1}.example/report`);
+	const result = await createTaskVerifier(factory, 1_000)(
+		{ id: "task", ownerKey: "owner", kind: "delegated", title: "Verify research", acceptanceCriteria: "Return at most 8 unique external URLs.", status: "running", createdAt: 1, executionScope: { platform: "cli", chatId: "local", chatType: "dm", userId: "local" } },
+		{ output: urls.join("\n") },
+	);
+	assert.equal(result.accepted, false);
+	assert.match(result.feedback, /at most 8 unique external URLs/i);
+	assert.equal(factoryCalls, 0);
+});
+
 test("independent verification cannot accept an unknown-domain current claim from an unrelated receipt", async () => {
 	let emit = () => undefined;
 	const activeTools = ["verification_submit", "read", "temporal_evidence_feed"];
@@ -675,7 +914,7 @@ test("independent verification accepts an unknown-domain current claim from its 
 	assert.match(result.criterionVerifications[0].evidenceRefs[0], /^execution:verification:[^:]+:tool-call:alternate-source$/);
 });
 
-test("independent verification derives enough Tool budget to fetch every cited source", async () => {
+test("independent verification can fetch every cited source without a synthetic Tool-call ceiling", async () => {
 	let emit = () => undefined;
 	let envelope;
 	const urls = Array.from({ length: 7 }, (_, index) => `https://source-${index + 1}.example/report`);
@@ -706,12 +945,12 @@ test("independent verification derives enough Tool budget to fetch every cited s
 	};
 	const verify = createTaskVerifier(factory, 1_000, undefined, activeTools);
 	const result = await verify(
-		{ id: "task", ownerKey: "owner", kind: "delegated", title: "Verify current public research", acceptanceCriteria: "all cited sources are independently verified", status: "running", createdAt: 1, executionScope: { platform: "cli", chatId: "local", chatType: "dm", userId: "local" } },
+		{ id: "task", ownerKey: "owner", kind: "delegated", title: "Verify current public research", acceptanceCriteria: "all cited sources are independently verified", verificationRequirements: [{ capability: "web_search", freshness: "realtime", evidence: "source_receipt" }], status: "running", createdAt: 1, executionScope: { platform: "cli", chatId: "local", chatType: "dm", userId: "local" } },
 		{ output: `${"context ".repeat(3_000)}\n${urls.map((url) => `Source: ${url}`).join("\n")}` },
 	);
 	assert.equal(result.accepted, true);
-	assert.equal(envelope.budget.maxToolCalls, 11);
-	assert.equal(envelope.budget.maxTokens, 34_000);
+	assert.equal(envelope.budget.maxToolCalls, undefined);
+	assert.equal(envelope.budget.maxTokens, undefined);
 	assert.equal(toolsDuringPrompt.includes("web_search"), false);
 	assert.match(verificationPrompt, /required-exact-source-urls/);
 	assert.match(verificationPrompt, /source-7\.example/);

@@ -296,9 +296,29 @@ _Avoid_: Tool execution, Enterprise Policy, fixed business route
 A domain-neutral, immutable graph compiled from an admitted Work Contract that binds every atomic Acceptance Criterion exactly once to its Capability, Artifact, and Evidence requirements. It contains requirements and references only and cannot grant Tool, Provider, Credential, Access Scope, Effect, or Delivery authority.
 _Avoid_: Work Contract replacement, business ontology, Tool inventory, execution permission
 
+**Artifact**:
+A concrete, externally observable result of work whose content and media type can be identified independently of the Task Run that produced it.
+_Avoid_: Model claim, Tool text output, file path alone, delivery attempt
+
+**Artifact Manifest**:
+A bounded, content-addressed snapshot binding an Artifact's locator, media type, byte length, digest, producer identity, and source references at one point in time; it is evidence metadata, not proof that the Artifact satisfies its Acceptance Criteria.
+_Avoid_: Mutable file record, Task result, Verification receipt, delivery receipt
+
+**Artifact Verification Receipt**:
+An independent verifier's bounded observation of one exact Artifact Manifest across required dimensions such as existence, integrity, semantics, rendering, consistency, freshness, or delivery. A rejected or unavailable dimension cannot be represented as accepted.
+_Avoid_: Producer self-report, Artifact Manifest, model confidence, Tool success
+
 **Contract-Driven Planning**:
-The post-admission decision that derives direct, delegated, or DAG execution; bounded concurrency and resource budgets; correction allowance; and Verification depth from an admitted Work Contract or Open-World Contract. Only an explicit acyclic outcome dependency graph proves parallel work; action and delivery Effects remain inside the parent Agent authority boundary.
+The durable-lane post-admission decision that derives direct, delegated, or DAG execution; bounded concurrency and resource budgets; correction allowance; and Verification depth from an admitted Work Contract or Open-World Contract. It governs Automation and explicit Objective lifecycle work, not ordinary turn-local model cognition. Only an explicit acyclic outcome dependency graph proves durable parallel work; action and delivery Effects remain inside the parent Agent authority boundary.
 _Avoid_: Raw-prompt keyword routing, model-selected authority, unproven parallelism, execution permission
+
+**Adaptive Turn Admission**:
+The control-plane decision that sends ordinary interactive natural-language work to the Model-First Turn Lane and reserves semantic Work Contract admission for Automation, explicitly bound Objectives, and continuation/correction/cancellation of an active durable Objective. Complexity, unfamiliar vocabulary, research, artifact creation, or a request for multiple steps do not by themselves grant persistence or force a separate cognition pass.
+_Avoid_: Intent router, complexity-as-persistence, global fast mode, model-selected authority, semantic Contract replacement
+
+**Model-First Turn Lane**:
+The turn-local Pi path selected by Adaptive Turn Admission for ordinary interactive work. The main model receives the natural-language task, answers simple requests directly, adapts a plan for complex requests, progressively loads Capabilities, and continues the model–Tool loop after recoverable failures. It skips separate Work Contract cognition while retaining context assembly, Tool Spec policy, Sandbox/approval boundaries, Access Scope, Effect authority, execution tracing, Artifact verifiers, and Provider-result handling. Complexity alone cannot create durable responsibility.
+_Avoid_: Unverified business completion, unrestricted Tool mode, implicit durable Objective, pre-model semantic gate
 
 **Capability Selection**:
 A bounded, explainable ranking of versioned Capabilities for a query plus the Pi Tool names proposed for turn-scoped activation.

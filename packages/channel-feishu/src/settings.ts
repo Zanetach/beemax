@@ -1,8 +1,7 @@
 /**
  * Feishu Channel Runtime Adapter settings.
  *
- * Identity model follows Hermes' Feishu adapter (see Hermes'
- * gateway/platforms/feishu.py module docstring):
+ * Identity model follows BeeMax's Profile-owned Feishu adapter:
  *
  *   open_id  (ou_xxx)  - app-scoped. Always in event payloads. Used as the
  *                        de-facto unique user id in single-bot mode.
@@ -53,7 +52,7 @@ export interface FeishuSettings {
 	webhookEncryptKey?: string;
 	/**
 	 * Require @mention of the bot in group chats to respond. DMs always respond.
-	 * Matches Hermes default (FEISHU_REQUIRE_MENTION=true).
+	 * BeeMax defaults to FEISHU_REQUIRE_MENTION=true.
 	 */
 	requireMention: boolean;
 	/** Transport-neutral group activation; requireMention remains a legacy fallback when omitted. */
@@ -73,13 +72,13 @@ export interface FeishuSettings {
 	/** Bot's own open_id, hydrated at startup via /bot/v3/info. */
 	botOpenId?: string;
 	botName?: string;
-	/** Hermes-compatible quiet windows and burst bounds. */
+	/** Profile-owned quiet windows and burst bounds. */
 	textBatchDelayMs?: number;
 	textBatchSplitDelayMs?: number;
 	textBatchMaxMessages?: number;
 	textBatchMaxChars?: number;
 	mediaBatchDelayMs?: number;
-	/** Base for Hermes-compatible 1s/2s connection and send retry backoff. */
+	/** Base for 1s/2s connection and send retry backoff. */
 	retryBaseDelayMs?: number;
 }
 

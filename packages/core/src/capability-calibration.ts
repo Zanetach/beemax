@@ -13,6 +13,7 @@ export interface CapabilityCalibrationRank { name: string; confidence: number; k
 export interface CapabilityOutcomeObservation {
 	caseId: string;
 	cognitionId: string;
+	routingLane?: "lexical" | "semantic";
 	ranked: readonly CapabilityCalibrationRank[];
 	activatedCapabilities: readonly string[];
 	outcome: CapabilityOutcomeStatus;
@@ -124,10 +125,14 @@ export function evaluateCapabilityCalibration(input: {
 		cost += nonNegative(observation.costUsd, "costUsd");
 		if (mode === "live_provider" && !observation.usageMeasurement) throw new Error(`Live Capability calibration observation ${caseId} requires usage measurement evidence`);
 		const measurement = observation.usageMeasurement ?? { measuredAttempts: 0, totalAttempts: 0 };
-		const measured = nonNegativeInteger(measurement.measuredAttempts, "measured usage attempts");
-		const total = nonNegativeInteger(measurement.totalAttempts, "total usage attempts");
-		if (measured > total) throw new Error("Capability calibration measured usage attempts cannot exceed total attempts");
-		if (mode === "live_provider" && total === 0) throw new Error(`Live Capability calibration observation ${caseId} requires at least one Provider attempt`);
+			const measured = nonNegativeInteger(measurement.measuredAttempts, "measured usage attempts");
+			const total = nonNegativeInteger(measurement.totalAttempts, "total usage attempts");
+			if (measured > total) throw new Error("Capability calibration measured usage attempts cannot exceed total attempts");
+			if (mode === "live_provider") {
+				if (observation.routingLane !== "lexical" && observation.routingLane !== "semantic") throw new Error(`Live Capability calibration observation ${caseId} requires a valid routing lane`);
+				if (observation.routingLane === "semantic" && total === 0) throw new Error(`Live Capability calibration semantic observation ${caseId} requires at least one Provider attempt`);
+				if (observation.routingLane === "lexical" && total !== 0) throw new Error(`Live Capability calibration deterministic observation ${caseId} must not claim Provider attempts`);
+			}
 		measuredAttempts += measured; totalAttempts += total;
 	}
 	const count = cases.size;

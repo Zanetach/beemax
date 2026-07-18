@@ -372,7 +372,7 @@ function installSecurityHook<Source extends BeeMaxRuntimeSource>(session: AgentS
 			result: { content: result?.content ?? context.result.content, details: result?.details ?? context.result.details, terminate: result?.terminate ?? context.result.terminate },
 			budget: { maxBytes: policy.maxResultBytes, maxEstimatedTokens: toolResultBudget.maxEstimatedTokens },
 		});
-		return { ...result, content: projection.result.content, details: projection.result.details, terminate: projection.result.terminate };
+		return { ...result, content: projection.result.content, details: projection.result.details, terminate: projection.result.terminate, isError: result?.isError ?? context.isError };
 	};
 }
 
@@ -414,7 +414,7 @@ function hardBlockReason(toolName: string, args: unknown, cwd: string): string |
 		if (rel === ".." || rel.startsWith(`..${sep}`) || (isAbsolute(rel) && candidate !== cwd)) return `Tool path is outside the configured workspace: ${input.path}`;
 		const normalized = candidate.replaceAll("\\", "/").toLowerCase();
 		const name = basename(normalized);
-		if (name === "skill.md" || normalized.includes("/.agents/skills/") || normalized.includes("/.codex/skills/") || normalized.startsWith(`${resolve(cwd, "skills").replaceAll("\\", "/").toLowerCase()}/`)) return "Skill resources must be accessed through capability_discover and the Skill Runtime lifecycle";
+		if (name === "skill.md" || normalized.includes("/.agents/skills/") || normalized.startsWith(`${resolve(cwd, "skills").replaceAll("\\", "/").toLowerCase()}/`)) return "Skill resources must be accessed through capability_discover and the Skill Runtime lifecycle";
 		if (/^\.env(?:\.(?!example$|sample$).+)?$/.test(name) || normalized.includes("/.ssh/") || normalized.includes("/.aws/credentials") || normalized.includes("/.config/gcloud/") || name === "auth.json" || name === "credentials.json") return `Access to sensitive credential file is blocked: ${input.path}`;
 	}
 	if (toolName === "bash" && typeof input.command === "string") {
@@ -428,7 +428,10 @@ export function resolveRuntimeModel(provider: string, modelId: string, baseUrl?:
 	if (provider === "custom") {
 		if (!baseUrl) throw new Error("Custom OpenAI-compatible models require a Base URL");
 		const contextWindow = boundedModelLimit(limits?.contextWindow, 128_000, 8_000, 10_000_000);
-		const maxTokens = Math.min(contextWindow, boundedModelLimit(limits?.maxTokens, 8_192, 256, 1_000_000));
+		// A custom Provider's declared/configured limit remains authoritative. The
+		// runtime default must still leave enough room for complete artifact Tool
+		// arguments; 8K routinely truncates otherwise valid HTML/PDF workflows.
+		const maxTokens = Math.min(contextWindow, boundedModelLimit(limits?.maxTokens, 32_768, 256, 1_000_000));
 		return {
 			id: modelId,
 			name: modelId,

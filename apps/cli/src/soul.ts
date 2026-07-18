@@ -1,6 +1,6 @@
 /**
- * Profile identity follows OpenClaw's approachable template structure while
- * preserving Hermes-style Profile isolation, bounded loading, and a safe
+ * Profile identity uses an approachable template structure while preserving
+ * BeeMax Profile isolation, bounded loading, and a safe
  * fallback when an identity file is absent or contains obvious injection.
  */
 export const DEFAULT_SOUL = `# BeeMax

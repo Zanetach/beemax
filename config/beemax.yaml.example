@@ -43,12 +43,6 @@ knowledge:
   #   name: 公司公共知识
   #   knowledgeBaseId: kb-xxxxxxxx
 
-imageGeneration:
-  enabled: false
-  provider: openai-codex
-  quality: medium
-  outputDir: data/cache/images
-
 # Inbound image understanding. Installed Tesseract is discovered automatically;
 # any configured chat model declaring image input can serve as auxiliary vision.
 mediaUnderstanding:

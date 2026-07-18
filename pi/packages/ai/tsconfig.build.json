@@ -5,5 +5,15 @@
 		"rootDir": "./src"
 	},
 	"include": ["src/**/*.ts"],
-	"exclude": ["node_modules", "dist", "**/*.d.ts", "src/**/*.d.ts"]
+	"exclude": [
+		"node_modules",
+		"dist",
+		"**/*.d.ts",
+		"src/**/*.d.ts",
+		"src/api/openai-codex-responses.ts",
+		"src/api/openai-codex-responses.lazy.ts",
+		"src/providers/openai-codex.ts",
+		"src/providers/openai-codex.models.ts",
+		"src/utils/oauth/openai-codex.ts"
+	]
 }

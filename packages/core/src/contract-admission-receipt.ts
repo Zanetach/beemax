@@ -4,7 +4,7 @@ import { createAdmittedWorkContractPlanningInput, isAdmittedWorkContractPlanning
 import { createOpenWorldContract, type OpenWorldContract, type OpenWorldContractInput } from "./open-world-contract.ts";
 import { OPEN_WORLD_CONTRACT_ADJUDICATION_SCHEMA_VERSION, hasSemanticOpenWorldContractAdjudication, type OpenWorldContractCompilationResult, type OpenWorldContractSemanticAdjudication } from "./open-world-contract-compiler.ts";
 import type { Situation } from "./situation.ts";
-import { WORK_CONTRACT_ADJUDICATION_SCHEMA_VERSION, hasSemanticWorkContractAdjudication, type AdjudicatedModelWorkContractBuildResult, type WorkContract, type WorkContractCognitionUsage, type WorkContractSemanticAdjudication } from "./work-contract.ts";
+import { DETERMINISTIC_INVENTORY_COMPILER_IDENTITY, WORK_CONTRACT_ADJUDICATION_SCHEMA_VERSION, hasSemanticWorkContractAdjudication, type AdjudicatedModelWorkContractBuildResult, type WorkContract, type WorkContractCognitionUsage, type WorkContractSemanticAdjudication } from "./work-contract.ts";
 
 export const DURABLE_CONTRACT_ADMISSION_SCHEMA_VERSION = "beemax.durable-contract-admission.v2" as const;
 export const DEFAULT_CONTRACT_ADMISSION_TTL_MS = 30 * 24 * 60 * 60_000;
@@ -240,9 +240,15 @@ function decodeOpenWorldSnapshot(value: unknown): DurableOpenWorldContractSnapsh
 
 function decodeWorkAdjudication(value: unknown, charge: number): WorkContractSemanticAdjudication {
 	const receipt = exactObject(value, "Work Contract semantic adjudication", ["schemaVersion", "inventorySchemaVersion", "primaryModelIdentity", "reviewerModelIdentity", "reviewMode", "independentSamples", "cognitionUsage", "cognitionBudgetChargeTokens"]);
-	if (receipt.schemaVersion !== WORK_CONTRACT_ADJUDICATION_SCHEMA_VERSION || receipt.inventorySchemaVersion !== "beemax.semantic-inventory.v1" || receipt.independentSamples !== true || receipt.cognitionBudgetChargeTokens !== charge) throw new Error("Work Contract semantic adjudication is invalid");
+	if (receipt.schemaVersion !== WORK_CONTRACT_ADJUDICATION_SCHEMA_VERSION || receipt.inventorySchemaVersion !== "beemax.semantic-inventory.v1" || receipt.cognitionBudgetChargeTokens !== charge) throw new Error("Work Contract semantic adjudication is invalid");
 	const primary = modelIdentity(receipt.primaryModelIdentity);
 	const reviewer = modelIdentity(receipt.reviewerModelIdentity);
+	if (receipt.reviewMode === "inventory_with_deterministic_compiler") {
+		if (receipt.independentSamples !== false || reviewer !== DETERMINISTIC_INVENTORY_COMPILER_IDENTITY || primary === reviewer) throw new Error("Work Contract semantic adjudication is invalid");
+		const cognitionUsage = decodeUsage(receipt.cognitionUsage, primary, reviewer, true);
+		return { schemaVersion: WORK_CONTRACT_ADJUDICATION_SCHEMA_VERSION, inventorySchemaVersion: "beemax.semantic-inventory.v1", primaryModelIdentity: primary, reviewerModelIdentity: reviewer, reviewMode: "inventory_with_deterministic_compiler", independentSamples: false, cognitionUsage, cognitionBudgetChargeTokens: charge };
+	}
+	if (receipt.independentSamples !== true) throw new Error("Work Contract semantic adjudication is invalid");
 	const reviewMode = reviewModeOf(receipt.reviewMode, primary, reviewer);
 	const cognitionUsage = decodeUsage(receipt.cognitionUsage, primary, reviewer);
 	return { schemaVersion: WORK_CONTRACT_ADJUDICATION_SCHEMA_VERSION, inventorySchemaVersion: "beemax.semantic-inventory.v1", primaryModelIdentity: primary, reviewerModelIdentity: reviewer, reviewMode, independentSamples: true, cognitionUsage, cognitionBudgetChargeTokens: charge };
@@ -258,13 +264,15 @@ function decodeOpenWorldAdjudication(value: unknown, charge: number): OpenWorldC
 	return { schemaVersion: OPEN_WORLD_CONTRACT_ADJUDICATION_SCHEMA_VERSION, primaryModelIdentity: primary, reviewerModelIdentity: reviewer, reviewMode, independentSamples: true, cognitionUsage, cognitionBudgetChargeTokens: charge };
 }
 
-function decodeUsage(value: unknown, primary: string, reviewer: string): WorkContractCognitionUsage {
+function decodeUsage(value: unknown, primary: string, reviewer: string, deterministicCompiler = false): WorkContractCognitionUsage {
 	const usage = exactObject(value, "Contract cognition usage", ["inputTokens", "outputTokens", "cacheReadTokens", "cacheWriteTokens", "costUsd", "modelIdentities"]);
 	const tokens = [usage.inputTokens, usage.outputTokens, usage.cacheReadTokens, usage.cacheWriteTokens];
 	if (!tokens.every((item) => Number.isSafeInteger(item) && (item as number) >= 0) || typeof usage.costUsd !== "number" || !Number.isFinite(usage.costUsd) || usage.costUsd < 0 || !Array.isArray(usage.modelIdentities) || usage.modelIdentities.length > 100 || usage.modelIdentities.some((item) => { try { boundedText(item, "Contract cognition model identity", 512); return false; } catch { return true; } })) throw new Error("Contract cognition usage is invalid");
 	const identities = usage.modelIdentities as string[];
-	const valid = primary === reviewer ? identities.filter((item) => item === primary).length >= 2 : identities.includes(primary) && identities.includes(reviewer);
-	if (!valid) throw new Error("Contract cognition usage does not prove independent samples");
+	const valid = deterministicCompiler
+		? reviewer === DETERMINISTIC_INVENTORY_COMPILER_IDENTITY && identities.includes(primary)
+		: primary === reviewer ? identities.filter((item) => item === primary).length >= 2 : identities.includes(primary) && identities.includes(reviewer);
+	if (!valid) throw new Error(deterministicCompiler ? "Contract cognition usage does not prove the inventory model sample" : "Contract cognition usage does not prove independent samples");
 	return { inputTokens: usage.inputTokens as number, outputTokens: usage.outputTokens as number, cacheReadTokens: usage.cacheReadTokens as number, cacheWriteTokens: usage.cacheWriteTokens as number, costUsd: usage.costUsd as number, modelIdentities: [...identities] };
 }
 

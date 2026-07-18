@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { configuredAuxiliaryTextModels, configuredCapabilityRanker, configuredMediaUnderstanding, ProfileModelCatalog, renderConfiguredModels, resolveProfileCognitionModels } from "../dist/model-catalog.js";
+import { configuredAuxiliaryTextModels, configuredCapabilityRanker, configuredMediaUnderstanding, configuredSemanticCapabilityRanker, ProfileModelCatalog, renderConfiguredModels, resolveProfileCognitionModels } from "../dist/model-catalog.js";
 import { capabilityMetadataForTool } from "../dist/agent-factory.js";
 
 test("configured model list renders actual known capability metadata", () => {
@@ -93,10 +93,16 @@ test("Profile cognition preserves a builtin model's enterprise Base URL override
 	assert.equal(candidates[0].model.baseUrl, baseUrl);
 });
 
-test("Profile composition selects semantic Capability routing whenever a text model is configured", () => {
+test("Profile composition selects progressive lexical-then-semantic Capability routing whenever a text model is configured", () => {
 	const model = { id: "semantic-test", provider: "test", input: ["text"] };
-	assert.equal(configuredCapabilityRanker([{ model, apiKey: "secret" }]).constructor.name, "SemanticCapabilityRanker");
+	assert.equal(configuredCapabilityRanker([{ model, apiKey: "secret" }]).constructor.name, "ProgressiveCapabilityRanker");
 	assert.equal(configuredCapabilityRanker([]).constructor.name, "LexicalCapabilityRanker");
+});
+
+test("live evidence can exercise the real semantic lane without the progressive exact-match short circuit", () => {
+	const model = { id: "semantic-test", provider: "test", input: ["text"] };
+	assert.equal(configuredSemanticCapabilityRanker([{ model, apiKey: "secret" }]).constructor.name, "SemanticCapabilityRanker");
+	assert.equal(configuredSemanticCapabilityRanker([]).constructor.name, "LexicalCapabilityRanker");
 });
 
 test("Tool Spec kind is authoritative for non-prefixed MCP capabilities and Profile preference", () => {

@@ -8,9 +8,9 @@ import test from "node:test";
 const semanticReview = Object.freeze({ schemaVersion: "beemax.work-contract-adjudication.v1", inventorySchemaVersion: "beemax.semantic-inventory.v1", primaryModelIdentity: "test/primary/test", reviewerModelIdentity: "test/reviewer/test", reviewMode: "different_models", independentSamples: true, cognitionUsage: { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, costUsd: 0, modelIdentities: ["test/primary/test", "test/reviewer/test"] }, cognitionBudgetChargeTokens: 1 });
 import { MemoryStore } from "@beemax/memory";
 import { createAssistantMessageEventStream } from "@earendil-works/pi-ai";
-import { AgentRunError, AuthStorage, BeeMaxAgentRuntime, buildBeeMaxRuntimeFactory, buildTaskPreservationEnvelope, ConversationContext, createAccessScopeRef, createEnterprisePolicyProvider, createEnterprisePolicyPublisher, createExecutionEnvelope, createSituation, defineTool, DeterministicWorkContractBuilder, FileExecutionTraceStore, FileToolEffectJournal, getBuiltinModel, isRecoverableModelFailure, MUTATING_TOOL_POLICY, READ_ONLY_TOOL_POLICY, SessionCoordinator, sessionIdForSource, withToolPolicy } from "../dist/index.js";
+import { AgentRunError, AuthStorage, BeeMaxAgentRuntime, buildBeeMaxRuntimeFactory, buildTaskPreservationEnvelope, ConversationContext, createAccessScopeRef, createEnterprisePolicyProvider, createEnterprisePolicyPublisher, createExecutionEnvelope, createSituation, defineTool, DeterministicWorkContractBuilder, FileExecutionTraceStore, FileToolEffectJournal, getBuiltinModel, isRecoverableModelFailure, MUTATING_TOOL_POLICY, READ_ONLY_TOOL_POLICY, resolveRuntimeModel, SessionCoordinator, sessionIdForSource, withToolPolicy } from "../dist/index.js";
 
-const createRuntime = (options) => new BeeMaxAgentRuntime({ profileId: "profile:test", workContractBuilder: new DeterministicWorkContractBuilder(), ...options });
+const createRuntime = (options) => new BeeMaxAgentRuntime({ profileId: "profile:test", interactiveAdmission: "contract_first", workContractBuilder: new DeterministicWorkContractBuilder(), ...options });
 
 test("BeeMax Core owns the runtime primitive boundary", () => {
 	assert.equal(typeof AuthStorage.create, "function");
@@ -23,6 +23,11 @@ test("BeeMax Core owns the runtime primitive boundary", () => {
 	assert.equal(isRecoverableModelFailure(new Error("fetch failed")), true);
 	assert.equal(isRecoverableModelFailure({ status: 401 }), false);
 	assert.equal(isRecoverableModelFailure(new Error("invalid API key")), false);
+});
+
+test("custom runtime models do not inherit an artificial 8192-token output ceiling", () => {
+	const model = resolveRuntimeModel("custom", "private-model", "https://models.example.test/v1", "anthropic-messages");
+	assert.equal(model.maxTokens, 32_768);
 });
 
 test("runtime usage follows assistant events across in-turn state compaction without counting history twice", async () => {
@@ -115,6 +120,129 @@ test("an observed empty assistant success does not revive state-only text", asyn
 	} finally { runtime.dispose(); }
 });
 
+test("a length-limited partial assistant Turn gets one tool-free complete-response recovery", async () => {
+	const source = { platform: "cli", chatId: "length-terminal-recovery", chatType: "dm", userId: "user", delegatedTask: { id: "task:length-recovery", ownerKey: "owner:length-recovery" } };
+	const lengthLimited = { role: "assistant", responseId: "response:length-limited", stopReason: "length", content: [{ type: "thinking", thinking: "reasoning consumed the Provider output allowance" }, { type: "text", text: "partial result cut off mid-sentence" }], usage: { input: 100, output: 8_192, cacheRead: 0, cacheWrite: 0, cost: { total: 0 } } };
+	const recovered = { role: "assistant", responseId: "response:terminal-recovered", stopReason: "stop", content: [{ type: "text", text: "concise evidence-backed result" }], usage: { input: 110, output: 20, cacheRead: 0, cacheWrite: 0, cost: { total: 0 } } };
+	const agent = { state: { model: { id: "test" }, messages: [] } };
+	let listener;
+	let prompts = 0;
+	let activeTools = ["read", "web_search"];
+	const toolsDuringPrompt = [];
+	const promptTexts = [];
+	const runtime = createRuntime({
+		createAutomationAgent: async () => ({
+			agent,
+			subscribe: (next) => { listener = next; return () => undefined; },
+			getActiveToolNames: () => [...activeTools],
+			getAllTools: () => activeTools.map((name) => ({ name, description: name, parameters: {}, beemaxPolicy: READ_ONLY_TOOL_POLICY })),
+			setActiveToolsByName: (names) => { activeTools = [...names]; },
+			prompt: async (text) => {
+				prompts++;
+				promptTexts.push(text);
+				toolsDuringPrompt.push([...activeTools]);
+				const message = prompts === 1 ? lengthLimited : recovered;
+				listener({ type: "message_end", message });
+				agent.state.messages.push(message);
+			},
+			abort: async () => undefined,
+			dispose: () => undefined,
+		}),
+		createAgent: async () => assert.fail("delegated automation must use the automation factory"),
+	});
+	try {
+		const result = await runtime.run({ source, mode: "automation", text: "research and return the final result", timeoutMs: 1_000 });
+		assert.equal(result.answer, "concise evidence-backed result");
+		assert.equal(prompts, 2);
+		assert.deepEqual(toolsDuringPrompt[1], []);
+		assert.match(promptTexts[1], /output limit|terminal response|existing evidence/i);
+		assert.deepEqual(activeTools, ["read", "web_search"]);
+	} finally { runtime.dispose(); }
+});
+
+test("a length-truncated Tool call gets one Tool-scoped recovery instead of a prose fallback", async () => {
+	const source = { platform: "cli", chatId: "length-tool-recovery", chatType: "dm", userId: "user" };
+	const agent = { state: { model: { id: "test" }, messages: [] } };
+	const tools = [{ name: "write", description: "Write a workspace artifact", parameters: {}, beemaxPolicy: { sideEffect: "local" } }];
+	let listener;
+	let prompts = 0;
+	let activeTools = ["write"];
+	const toolsDuringPrompt = [];
+	const promptTexts = [];
+	const runtime = createRuntime({
+		createAgent: async () => ({
+			agent,
+			getAllTools: () => tools,
+			getActiveToolNames: () => [...activeTools],
+			setActiveToolsByName: (names) => { activeTools = [...names]; },
+			subscribe: (next) => { listener = next; return () => undefined; },
+			prompt: async (text) => {
+				prompts++;
+				promptTexts.push(text);
+				toolsDuringPrompt.push([...activeTools]);
+				if (prompts === 1) {
+					const args = { path: "report.html", content: "<html>partial" };
+					const message = { role: "assistant", responseId: "response:truncated-write", stopReason: "length", content: [{ type: "toolCall", id: "call:truncated-write", name: "write", arguments: args }], usage: { input: 10, output: 8_192, cacheRead: 0, cacheWrite: 0, cost: { total: 0 } } };
+					listener({ type: "message_end", message });
+					listener({ type: "tool_execution_start", toolCallId: "call:truncated-write", toolName: "write", args });
+					listener({ type: "tool_execution_end", toolCallId: "call:truncated-write", toolName: "write", isError: true, result: { content: [{ type: "text", text: "truncated" }], details: { dispatchError: { stage: "validation", code: "response_truncated", retryable: true } } } });
+					agent.state.messages.push(message);
+					return;
+				}
+				const args = { path: "report.html", content: "<html>complete</html>", mode: "replace" };
+				const toolMessage = { role: "assistant", responseId: "response:recovered-write", stopReason: "toolUse", content: [{ type: "toolCall", id: "call:recovered-write", name: "write", arguments: args }], usage: { input: 12, output: 30, cacheRead: 0, cacheWrite: 0, cost: { total: 0 } } };
+				listener({ type: "message_end", message: toolMessage });
+				listener({ type: "tool_execution_start", toolCallId: "call:recovered-write", toolName: "write", args });
+				assert.equal(await agent.beforeToolCall({ toolCall: { id: "call:recovered-write", name: "write", arguments: args }, args, context: {} }, new AbortController().signal), undefined);
+				listener({ type: "tool_execution_end", toolCallId: "call:recovered-write", toolName: "write", isError: false, result: { content: [{ type: "text", text: "wrote report" }], details: {} } });
+				const finalMessage = { role: "assistant", responseId: "response:recovered-final", stopReason: "stop", content: [{ type: "text", text: "artifact written completely" }], usage: { input: 13, output: 5, cacheRead: 0, cacheWrite: 0, cost: { total: 0 } } };
+				listener({ type: "message_end", message: finalMessage });
+				agent.state.messages.push(toolMessage, finalMessage);
+			},
+			abort: async () => undefined,
+			dispose: () => undefined,
+		}),
+	});
+	try {
+		const result = await runtime.run({ source, mode: "automation", text: "perform the requested operation", timeoutMs: 1_000, allowedCapabilities: ["write"] });
+		assert.equal(result.answer, "artifact written completely");
+		assert.equal(prompts, 2);
+		assert.deepEqual(toolsDuringPrompt[1], ["write"]);
+		assert.match(promptTexts[1], /truncated|incremental|chunk/i);
+		assert.deepEqual(activeTools, ["write"]);
+	} finally { runtime.dispose(); }
+});
+
+test("assistant silence never ends an active Turn before its Execution Envelope deadline", async () => {
+	const source = { platform: "cli", chatId: "stream-progress", chatType: "dm", userId: "user" };
+	const finalMessage = { role: "assistant", responseId: "response:stream-progress", stopReason: "stop", content: [{ type: "text", text: "complete" }], usage: { input: 2, output: 2, cacheRead: 0, cacheWrite: 0, cost: { total: 0 } } };
+	const agent = { state: { model: { id: "test" }, messages: [] } };
+	let listener;
+	let aborts = 0;
+	const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+	const runtime = createRuntime({
+		turnIdleSettleMs: 20,
+		createAutomationAgent: async () => ({
+			agent,
+			subscribe: (next) => { listener = next; return () => undefined; },
+			prompt: async () => {
+				listener({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "starting" } });
+				await wait(60);
+				listener({ type: "message_end", message: finalMessage });
+				agent.state.messages.push(finalMessage);
+			},
+			abort: async () => { aborts++; },
+			dispose: () => undefined,
+		}),
+		createAgent: async () => assert.fail("delegated automation must use the automation factory"),
+	});
+	try {
+		const result = await runtime.run({ source, mode: "automation", text: "perform task", timeoutMs: 1_000 });
+		assert.equal(result.answer, "complete");
+		assert.equal(aborts, 0);
+	} finally { runtime.dispose(); }
+});
+
 test("an observed assistant success does not revive a state-only error", async () => {
 	const source = { platform: "cli", chatId: "event-success-old-error", chatType: "dm", userId: "user", delegatedTask: { id: "task:event-success", ownerKey: "owner:event-success" } };
 	const historical = { role: "assistant", content: [{ type: "text", text: "historical" }], usage: { input: 1, output: 1 } };
@@ -156,6 +284,137 @@ test("BeeMax applies Profile compaction policy as an in-memory Pi session settin
 	} finally { rmSync(root, { recursive: true, force: true }); }
 });
 
+test("BeeMax compacts restored history before it consumes the Pi execution token budget", async () => {
+	const source = { platform: "cli", chatId: "budget-aware-compaction", chatType: "dm", userId: "user" };
+	const agent = { state: { model: { id: "test", contextWindow: 128_000 }, messages: [{ role: "assistant", content: [{ type: "text", text: "old session context" }] }] } };
+	let listener;
+	let contextTokens = 37_000;
+	const lifecycle = [];
+	const runtime = createRuntime({
+		planningPolicy: { decide: () => ({ mode: "direct", requiredTools: [], suggestedConcurrency: 1, budget: { maxSubagents: 0, maxToolCalls: null, maxTokens: 64_000, maxCorrectiveAttempts: 0 }, signals: { substantialWork: true }, reason: "test", directive: () => "[policy]" }) },
+		createAgent: async () => ({
+			agent,
+			get compactionSettings() { return { enabled: true, reserveTokens: 4_800, keepRecentTokens: 8_000 }; },
+			getContextUsage: () => ({ tokens: contextTokens, contextWindow: 128_000, percent: contextTokens / 1_280 }),
+			compact: async (instructions) => {
+				lifecycle.push("compact");
+				assert.match(instructions, /current request|当前请求|current objective|当前目标/i);
+				contextTokens = 10_000;
+				agent.state.messages = [{ role: "assistant", content: [{ type: "text", text: "compacted context" }] }];
+				return { summary: "compacted context", firstKeptEntryId: "entry:1", tokensBefore: 37_000, estimatedTokensAfter: contextTokens };
+			},
+			subscribe: (next) => { listener = next; return () => undefined; },
+			prompt: async () => {
+				lifecycle.push("prompt");
+				const message = { role: "assistant", content: [{ type: "text", text: "completed after compaction" }], usage: { input: 10_000, output: 100, cacheRead: 0, cacheWrite: 0, cost: { total: 0 } } };
+				listener({ type: "message_end", message });
+				agent.state.messages.push(message);
+			},
+			abort: async () => undefined,
+			dispose: () => undefined,
+		}),
+	});
+	try {
+		const result = await runtime.run({ source, text: "create and verify the current report", timeoutMs: 1_000 });
+		assert.equal(result.answer, "completed after compaction");
+		assert.deepEqual(lifecycle, ["compact", "prompt"]);
+	} finally { runtime.dispose(); }
+});
+
+test("BeeMax estimates restored message size when Pi reports post-compaction context usage as unknown", async () => {
+	const source = { platform: "cli", chatId: "unknown-post-compaction-usage", chatType: "dm", userId: "user" };
+	const agent = { state: { model: { id: "test", contextWindow: 128_000 }, messages: [{ role: "assistant", content: [{ type: "text", text: "x".repeat(80_000) }] }] } };
+	const lifecycle = [];
+	const runtime = createRuntime({
+		planningPolicy: { decide: () => ({ mode: "direct", requiredTools: [], suggestedConcurrency: 1, budget: { maxSubagents: 0, maxToolCalls: null, maxTokens: 48_000, maxCorrectiveAttempts: 0 }, signals: { substantialWork: true }, reason: "test", directive: () => "[policy]" }) },
+		createAgent: async () => ({
+			agent,
+			get compactionSettings() { return { enabled: true, reserveTokens: 4_800, keepRecentTokens: 8_000 }; },
+			getContextUsage: () => ({ tokens: null, contextWindow: 128_000, percent: null }),
+			compact: async () => {
+				lifecycle.push("compact");
+				agent.state.messages = [{ role: "assistant", content: [{ type: "text", text: "bounded summary" }] }];
+				return { summary: "bounded summary", firstKeptEntryId: "entry:1", tokensBefore: 20_000, estimatedTokensAfter: 10 };
+			},
+			subscribe: () => () => undefined,
+			prompt: async () => { lifecycle.push("prompt"); agent.state.messages.push({ role: "assistant", content: [{ type: "text", text: "done" }], usage: { input: 10, output: 1 } }); },
+			abort: async () => undefined,
+			dispose: () => undefined,
+		}),
+	});
+	try {
+		await runtime.run({ source, text: "continue the current report", timeoutMs: 1_000 });
+		assert.deepEqual(lifecycle, ["compact", "prompt"]);
+	} finally { runtime.dispose(); }
+});
+
+test("BeeMax starts a fresh context branch when successful compaction remains over execution budget", async () => {
+	const source = { platform: "cli", chatId: "oversized-compaction-summary", chatType: "dm", userId: "user" };
+	const lifecycle = [];
+	const agent = {
+		state: { model: { id: "test", contextWindow: 128_000 }, messages: [{ role: "assistant", content: [{ type: "text", text: "x".repeat(80_000) }] }] },
+		reset() { lifecycle.push("agent.reset"); this.state.messages = []; },
+	};
+	const runtime = createRuntime({
+		planningPolicy: { decide: () => ({ mode: "direct", requiredTools: [], suggestedConcurrency: 1, budget: { maxSubagents: 0, maxToolCalls: null, maxTokens: 48_000, maxCorrectiveAttempts: 0 }, signals: { substantialWork: true }, reason: "test", directive: () => "[policy]" }) },
+		createAgent: async () => ({
+			agent,
+			sessionManager: { resetLeaf: () => lifecycle.push("session.resetLeaf") },
+			clearQueue: () => { lifecycle.push("queue.clear"); return { steering: [], followUp: [] }; },
+			get compactionSettings() { return { enabled: true, reserveTokens: 4_800, keepRecentTokens: 8_000 }; },
+			getContextUsage: () => ({ tokens: null, contextWindow: 128_000, percent: null }),
+			compact: async () => {
+				lifecycle.push("compact");
+				agent.state.messages = [{ role: "assistant", content: [{ type: "text", text: "s".repeat(60_000) }] }];
+				return { summary: "oversized summary", firstKeptEntryId: "entry:1", tokensBefore: 20_000, estimatedTokensAfter: 15_000 };
+			},
+			subscribe: () => () => undefined,
+			prompt: async () => { lifecycle.push("prompt"); agent.state.messages.push({ role: "assistant", content: [{ type: "text", text: "done" }], usage: { input: 10, output: 1 } }); },
+			abort: async () => undefined,
+			dispose: () => undefined,
+		}),
+	});
+	try {
+		await runtime.run({ source, text: "continue the current report", timeoutMs: 1_000 });
+		assert.deepEqual(lifecycle, ["compact", "session.resetLeaf", "agent.reset", "queue.clear", "prompt"]);
+	} finally { runtime.dispose(); }
+});
+
+test("BeeMax starts a fresh persisted context branch when budget compaction times out", async () => {
+	const source = { platform: "cli", chatId: "budget-compaction-timeout", chatType: "dm", userId: "user" };
+	const lifecycle = [];
+	let listener;
+	const agent = {
+		state: { model: { id: "test", contextWindow: 128_000 }, messages: [{ role: "assistant", content: [{ type: "text", text: "stale context" }] }] },
+		reset() { lifecycle.push("agent.reset"); this.state.messages = []; },
+	};
+	const runtime = createRuntime({
+		planningPolicy: { decide: () => ({ mode: "direct", requiredTools: [], suggestedConcurrency: 1, budget: { maxSubagents: 0, maxToolCalls: null, maxTokens: 64_000, maxCorrectiveAttempts: 0 }, signals: { substantialWork: true }, reason: "test", directive: () => "[policy]" }) },
+		createAgent: async () => ({
+			agent,
+			sessionManager: { resetLeaf: () => lifecycle.push("session.resetLeaf") },
+			clearQueue: () => { lifecycle.push("queue.clear"); return { steering: [], followUp: [] }; },
+			get compactionSettings() { return { enabled: true, reserveTokens: 4_800, keepRecentTokens: 8_000 }; },
+			getContextUsage: () => ({ tokens: 37_000, contextWindow: 128_000, percent: 28.9 }),
+			compact: async () => { lifecycle.push("compact"); throw new Error("Turn prefix summarization timed out"); },
+			subscribe: (next) => { listener = next; return () => undefined; },
+			prompt: async () => {
+				lifecycle.push("prompt");
+				const message = { role: "assistant", content: [{ type: "text", text: "completed from fresh context" }], usage: { input: 2_000, output: 100, cacheRead: 0, cacheWrite: 0, cost: { total: 0 } } };
+				listener({ type: "message_end", message });
+				agent.state.messages.push(message);
+			},
+			abort: async () => undefined,
+			dispose: () => undefined,
+		}),
+	});
+	try {
+		const result = await runtime.run({ source, text: "complete the current objective", timeoutMs: 1_000 });
+		assert.equal(result.answer, "completed from fresh context");
+		assert.deepEqual(lifecycle, ["compact", "session.resetLeaf", "agent.reset", "queue.clear", "prompt"]);
+	} finally { runtime.dispose(); }
+});
+
 test("BeeMax runtime projects oversized Tool output once and exposes its scoped Artifact reader", async () => {
 	const root = mkdtempSync(join(tmpdir(), "beemax-runtime-tool-artifact-"));
 	const source = { platform: "cli", chatId: "artifact-runtime", chatType: "dm", userId: "user" };
@@ -183,6 +442,30 @@ test("BeeMax runtime projects oversized Tool output once and exposes its scoped 
 			assert.equal(projected.details.provider, "fixture");
 			const read = await reader.execute("call:read", { ref: projected.details.toolArtifact.ref, offset: 0, maxChars: 500 });
 			assert.match(read.content[0].text, /^runtime-evidence/u);
+		} finally { session.dispose(); }
+	} finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("BeeMax result projection preserves a Tool's structured error status and details", async () => {
+	const root = mkdtempSync(join(tmpdir(), "beemax-error-projection-"));
+	try {
+		const details = { artifactObservation: { sha256: "a".repeat(64) } };
+		const factory = buildBeeMaxRuntimeFactory({
+			provider: "anthropic", model: "claude-sonnet-4-5", cwd: root, agentDir: join(root, "agent"), getApiKey: () => "test",
+			systemPrompt: "test", skillToolset: "safe", tools: ["structured_failure"],
+			createTools: () => [withToolPolicy(defineTool({
+				name: "structured_failure", label: "Structured failure", description: "Return an evidence-bearing failure", parameters: {},
+				execute: async () => ({ content: [{ type: "text", text: "postcondition rejected" }], details, isError: true }),
+			}), READ_ONLY_TOOL_POLICY)],
+		});
+		const session = await factory("structured-error-projection", { platform: "cli", chatId: "terminal", chatType: "dm", userId: "user" });
+		try {
+			const raw = await session.getToolDefinition("structured_failure").execute("call:error", {});
+			const toolCall = { id: "call:error", name: "structured_failure", arguments: {} };
+			const projected = await session.agent.afterToolCall({ assistantMessage: {}, toolCall, args: {}, context: {}, result: raw, isError: raw.isError });
+			assert.equal(projected.isError, true);
+			assert.deepEqual(projected.details, details);
+			assert.match(projected.content[0].text, /postcondition rejected/);
 		} finally { session.dispose(); }
 	} finally { rmSync(root, { recursive: true, force: true }); }
 });
@@ -963,7 +1246,7 @@ test("BeeMax Agent Runtime executes a turn and records context without a Gateway
 			},
 		});
 		const result = await runtime.run({ source, text: "write a report", timeoutMs: 1_000, mode: "interactive" });
-		assert.deepEqual(result, { answer: "done", model: "test-model", durationMs: result.durationMs, usage: { input_tokens: 3, output_tokens: 1 } });
+		assert.deepEqual(result, { answer: "done", model: "test-model", durationMs: result.durationMs, usage: { input_tokens: 3, output_tokens: 1 }, outcome: { status: "answered" } });
 		assert.equal(memory.listCandidates({ platform: "cli", chatId: "terminal", userId: "user" }).length, 2);
 		runtime.dispose();
 	} finally {
@@ -1438,14 +1721,46 @@ test("an unbounded Agent turn still owns a finite renewable Task Run lease", asy
 	} finally { runtime.dispose(); }
 });
 
-test("a lost Task Run lease fails explicitly even when Pi abort resolves normally", async () => {
-	const source = { platform: "cli", chatId: "lease-loss", chatType: "dm", userId: "user", delegatedTask: { id: "task-lease-loss", ownerKey: "owner:lease-loss" } };
+test("Work Contract cognition time does not consume the subsequent Pi Task Run lease", async () => {
+	const source = { platform: "cli", chatId: "post-cognition-lease", chatType: "dm", userId: "user" };
+	const rawRequest = "生成并核验报告";
+	const tasks = [];
+	let cognitionFinishedAt = 0;
+	let recordedRun;
+	const runtime = createRuntime({
+		taskRunLeaseMs: 300,
+		workContractBuilder: { build: async () => {
+			await new Promise((resolve) => setTimeout(resolve, 330));
+			cognitionFinishedAt = Date.now();
+			const clause = { text: rawRequest, source: { kind: "raw_request", start: 0, end: rawRequest.length } };
+			return { source: "model", cognitionBudgetChargeTokens: 1, semanticAdjudication: semanticReview, contract: { schemaVersion: "beemax.work-contract.v1", rawRequest, action: "create", objective: clause, constraints: [], prohibitions: [], acceptanceCriteria: [clause], capabilityRequirements: [], uncertainties: [], executionMode: "direct", confidence: 0.99 } };
+		} },
+		taskLedger: {
+			queryTasks: ({ id, statuses }) => tasks.filter((task) => (!id || task.id === id) && (!statuses || statuses.includes(task.status))),
+			record: (task) => tasks.push({ ...task }),
+			transition: (id, change) => { const task = tasks.find((item) => item.id === id); if (!task) return false; Object.assign(task, change); return true; },
+			recordRun: (run) => { recordedRun = run; },
+			renewTaskRunLease: () => true,
+			transitionRun: () => true,
+		},
+		createAgent: async () => { const agent = { state: { model: { id: "test" }, messages: [] } }; return { agent, subscribe: () => () => undefined, prompt: async () => { agent.state.messages = [{ role: "assistant", content: [{ type: "text", text: "done" }], usage: { input: 1, output: 1 } }]; }, abort: async () => undefined, dispose: () => undefined }; },
+	});
+	try {
+		await runtime.run({ source, mode: "interactive", text: rawRequest, timeoutMs: 2_000 });
+		assert.ok(recordedRun.startedAt >= cognitionFinishedAt);
+		assert.equal(recordedRun.leaseExpiresAt - recordedRun.startedAt, 300);
+	} finally { runtime.dispose(); }
+});
+
+test("Agent runtime does not renew or settle a Task Run owned by its external TaskGraph caller", async () => {
+	const source = { platform: "cli", chatId: "external-task-run", chatType: "dm", userId: "user", delegatedTask: { id: "task-external", ownerKey: "owner:external" } };
 	const settlements = [];
+	let renewals = 0;
 	let aborts = 0;
 	const runtime = createRuntime({
 		taskRunLeaseMs: 300,
 		taskLedger: {
-			renewTaskRunLease: () => false,
+			renewTaskRunLease: () => { renewals++; return false; },
 			transitionRun: (_id, change) => { settlements.push(change.status); return true; },
 		},
 		createAgent: async () => {
@@ -1458,9 +1773,11 @@ test("a lost Task Run lease fails explicitly even when Pi abort resolves normall
 		},
 	});
 	try {
-		await assert.rejects(runtime.run({ source, mode: "automation", text: "finish the delegated task", timeoutMs: 1_000, executionEnvelope: createExecutionEnvelope({ executionId: "execution:lease-loss", trigger: { kind: "delegation", id: "task-lease-loss" }, objectiveId: "objective-lease-loss", taskId: "task-lease-loss", taskRunId: "run:lease-loss" }) }), /Task Run execution authority was lost/i);
-		assert.ok(aborts >= 1);
-		assert.equal(settlements.includes("succeeded"), false);
+		const result = await runtime.run({ source, mode: "automation", text: "finish the delegated task", timeoutMs: 1_000, executionEnvelope: createExecutionEnvelope({ executionId: "execution:external", trigger: { kind: "delegation", id: "task-external" }, objectiveId: "objective-external", taskId: "task-external", taskRunId: "run:external" }) });
+		assert.equal(result.answer, "done");
+		assert.equal(renewals, 0);
+		assert.deepEqual(settlements, []);
+		assert.equal(aborts, 0);
 	} finally { runtime.dispose(); }
 });
 

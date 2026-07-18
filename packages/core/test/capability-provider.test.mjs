@@ -1,6 +1,16 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { CapabilityProviderRuntime } from "../dist/index.js";
+import { CapabilityProviderRuntime, governToolDefinition, READ_ONLY_TOOL_POLICY } from "../dist/index.js";
+import { attestCapabilityProviderResolutionTool, isTrustedCapabilityProviderResolutionTool } from "../dist/capability-provider.js";
+
+test("Tool governance preserves Core's trusted Provider-resolution attestation", () => {
+	const tool = attestCapabilityProviderResolutionTool({
+		name: "capability_discover", label: "Discover", description: "Discover", parameters: {},
+		execute: async () => ({ content: [{ type: "text", text: "ready" }] }),
+	});
+	const governed = governToolDefinition(tool, READ_ONLY_TOOL_POLICY, { platform: "cli", chatId: "local", userId: "user" });
+	assert.equal(isTrustedCapabilityProviderResolutionTool(governed), true);
+});
 
 test("Provider resolution prefers one healthy installed Tool or MCP without requesting installation", async () => {
 	let installs = 0;

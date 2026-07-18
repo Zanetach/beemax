@@ -56,6 +56,10 @@ export function createProfileWorkRuntime(options: ProfileWorkRuntimeOptions) {
 	const maxConcurrent = resolveRuntimeTaskConcurrency(options.maxConcurrent);
 	const executionTrace = new FileExecutionTraceStore(join(options.agentDir, "logs", "execution-trace.jsonl"));
 	const toolEffects = new FileToolEffectJournal(join(options.agentDir, "tool-effects.jsonl"), 5_000, executionTrace);
+	// A one-shot runtime still has to close expired leases before the new
+	// objective can observe the Task ledger. Disabling background recovery only
+	// disables the recurring worker; it must not preserve stale active Tasks.
+	(options.recoveryQueue ?? options.ledger).reconcileExpiredTaskRuns(undefined, toolEffects);
 	const taskScheduler = new ProfileTaskScheduler({
 		maxConcurrent,
 		maxQueued: DEFAULT_RUNTIME_RESOURCE_LIMITS.taskQueueMax,

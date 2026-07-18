@@ -16,7 +16,6 @@ export * from "./api/bedrock-converse-stream.lazy.ts";
 export * from "./api/google-generative-ai.lazy.ts";
 export * from "./api/google-vertex.lazy.ts";
 export * from "./api/mistral-conversations.lazy.ts";
-export * from "./api/openai-codex-responses.lazy.ts";
 export * from "./api/openai-completions.lazy.ts";
 export * from "./api/openai-responses.lazy.ts";
 export * from "./env-api-keys.ts";
@@ -33,7 +32,6 @@ import { bedrockConverseStreamApi } from "./api/bedrock-converse-stream.lazy.ts"
 import { googleGenerativeAIApi } from "./api/google-generative-ai.lazy.ts";
 import { googleVertexApi } from "./api/google-vertex.lazy.ts";
 import { mistralConversationsApi } from "./api/mistral-conversations.lazy.ts";
-import { openAICodexResponsesApi } from "./api/openai-codex-responses.lazy.ts";
 import { openAICompletionsApi } from "./api/openai-completions.lazy.ts";
 import { openAIResponsesApi } from "./api/openai-responses.lazy.ts";
 import { getEnvApiKey } from "./env-api-keys.ts";
@@ -173,7 +171,6 @@ const BUILTIN_APIS: [Api, ProviderStreams][] = [
 	["anthropic-messages", anthropicMessagesApi()],
 	["openai-completions", openAICompletionsApi()],
 	["openai-responses", openAIResponsesApi()],
-	["openai-codex-responses", openAICodexResponsesApi()],
 	["azure-openai-responses", azureOpenAIResponsesApi()],
 	["google-generative-ai", googleGenerativeAIApi()],
 	["google-vertex", googleVertexApi()],

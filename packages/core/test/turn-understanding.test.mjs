@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { createExecutionTools, createWebTools, TurnUnderstandingEngine, selectTurnTools } from "../dist/index.js";
+import { ArtifactRuntime, CapabilityRuntime, LexicalCapabilityRanker, capabilityDescriptor, capabilityVersionOf, createArtifactTools, createExecutionTools, createWebTools, TurnUnderstandingEngine, selectTurnTools } from "../dist/index.js";
 
 test("Turn Understanding distinguishes create, continue, and correction paths across Chinese and English", () => {
 	const engine = new TurnUnderstandingEngine();
@@ -15,6 +15,16 @@ test("Turn Understanding distinguishes create, continue, and correction paths ac
 	assert.equal(engine.understand("用两句话解释 Agent 的 Capability Routing，并给出一个例子").action, "query");
 	assert.equal(engine.understand("Explain capability routing with one example").action, "query");
 	assert.equal(engine.understand("生成一份解释 Capability Routing 的报告").action, "create");
+});
+
+test("Turn Understanding does not treat a negated lifecycle clarification as a correction", () => {
+	const result = new TurnUnderstandingEngine().understand("这是新的修正验收，不是继续、恢复或修正任何活动 Objective；检查现有文件");
+	assert.equal(result.action, "create");
+});
+
+test("Turn Understanding does not confuse independent verification with parallel Sub-Agent work", () => {
+	const result = new TurnUnderstandingEngine().understand("新建一个独立验收目标，不启用子任务。读取现有报告并做独立验证，必要时修正文件");
+	assert.equal(result.executionMode, "direct");
 });
 
 test("Capability Router preselects high-confidence tools without forcing weak matches", () => {
@@ -45,10 +55,60 @@ test("Turn tool prefetch activates Exa for Chinese live-web research", () => {
 	assert.deepEqual(selectTurnTools("截至今天，研究公开发布的 AI Agent 工具调用趋势，至少实时核验两个不同注册域的来源", tools), ["exa_web_search"]);
 });
 
+test("Turn tool prefetch maps independent source cross-checking to Exa", () => {
+	const tools = createWebTools({ agentReachAvailable: true });
+	assert.equal(selectTurnTools("至少使用两个相互独立、公开可访问的真实来源交叉验证", tools, 3)[0], "exa_web_search");
+});
+
+test("bounded deterministic repair covers every gold-report capability obligation with exact metadata", async () => {
+	const digest = "a".repeat(64);
+	const artifactRuntime = new ArtifactRuntime({
+		providers: [{
+			descriptor: { id: "chrome", version: "1", operations: [{ operation: "render", inputMediaTypes: ["text/html"], outputMediaTypes: ["application/pdf"] }] },
+			async produce(request) { return { locator: request.output, mediaType: request.outputMediaType }; },
+		}],
+		verifiers: [{
+			descriptor: { id: "independent", version: "1", mediaTypes: ["text/html", "application/pdf"], dimensions: ["existence", "integrity", "semantic", "render", "consistency"] },
+			async verify(request) { return { observed: { locator: request.locator, mediaType: request.mediaType, byteLength: 100, sha256: digest }, checks: request.dimensions.map((dimension) => ({ dimension, status: "accepted", evidenceRefs: [] })) }; },
+		}],
+	});
+	const executionTools = createExecutionTools({ platform: "cli", chatId: "local", chatType: "dm", userId: "local" }, "/workspace", { execute: async () => ({ stdout: "", stderr: "", exitCode: 0 }), readFile: async () => "", writeFile: async () => undefined });
+	const tools = [...createWebTools({ agentReachAvailable: false }), ...executionTools, ...createArtifactTools({ platform: "cli", chatId: "local", chatType: "dm", userId: "local" }, "/workspace", artifactRuntime)]
+		.filter((tool) => ["web_search", "exa_web_search", "write", "artifact_render", "artifact_inspect"].includes(tool.name));
+	const inventory = tools.map((tool) => capabilityDescriptor({
+		kind: "tool", name: tool.name, description: tool.description, aliases: tool.aliases, triggers: tool.triggers, exclude: tool.exclude,
+		version: capabilityVersionOf({ name: tool.name, description: tool.description, parameters: tool.parameters }), activeTools: [tool.name],
+		signals: { ...(tool.beemaxToolSpec?.ranking ?? {}), health: tool.providers?.length ? "unknown" : tool.beemaxToolSpec?.health ?? "unverified" },
+	}));
+	const requirements = [
+		{ id: "req:research", text: "自主调研截至 2026-07-17 的过去一周 XAU/USD 现货黄金走势" },
+		{ id: "req:sources", text: "至少使用两个相互独立、公开可访问的实时来源，所有关键事实附来源 URL" },
+		{ id: "req:html", text: "在 Profile workspace 中交付 gold-weekly-report.html" },
+		{ id: "req:pdf", text: "交付 gold-weekly-report.pdf" },
+		{ id: "req:verify", text: "真实检查 HTML 内容与渲染、PDF 存在性完整性可解析性页面渲染，以及两份文件关键数字和来源一致" },
+		{ id: "req:consistency", text: "两份文件关键数字和来源一致性" },
+		{ id: "req:url-count", text: "实际提取 HTML 中的 href 去重并确认正好 6 个外部 URL" },
+	];
+	const selection = await new CapabilityRuntime({ ranker: new LexicalCapabilityRanker() }).discover({
+		query: requirements.map(({ text }) => text).join("\n"), inventory, requirements, cognitionId: "cap:gold-report-routing",
+	});
+	const selectedByRequirement = Object.fromEntries(selection.candidates.map((candidate) => [candidate.requirementId, candidate.name]));
+	assert.ok(["web_search", "exa_web_search"].includes(selectedByRequirement["req:research"]));
+	assert.ok(["web_search", "exa_web_search"].includes(selectedByRequirement["req:sources"]));
+	assert.equal(selectedByRequirement["req:html"], "write");
+	assert.equal(selectedByRequirement["req:pdf"], "artifact_render");
+	assert.equal(selectedByRequirement["req:verify"], "artifact_inspect");
+	assert.equal(selectedByRequirement["req:consistency"], "artifact_render");
+	assert.equal(selectedByRequirement["req:url-count"], "artifact_inspect");
+	assert.deepEqual(new Set(selection.activatedTools), new Set(Object.values(selectedByRequirement)));
+});
+
 test("Turn tool prefetch routes generic draft persistence and readback through file Tool metadata", () => {
 	const tools = createExecutionTools({ platform: "cli", chatId: "local", chatType: "dm", userId: "local" }, "/workspace", { execute: async () => ({ stdout: "", stderr: "", exitCode: 0 }), readFile: async () => "", writeFile: async () => undefined });
 	assert.deepEqual(selectTurnTools("Save the draft only as draft.md", tools), ["write"]);
 	assert.deepEqual(selectTurnTools("保存到本地文件，然后再次读取确认", tools), ["read", "write"]);
+	assert.deepEqual(selectTurnTools("读取该 HTML 并在必要时修正", tools).sort(), ["read", "write"]);
+	assert.deepEqual(selectTurnTools("read and edit the existing HTML file", tools).sort(), ["read", "write"]);
 });
 
 test("Turn Understanding preserves explicit constraints and acceptance criteria in one Work Context", () => {

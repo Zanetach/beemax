@@ -4,9 +4,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { BeeMaxAgentRuntime, CapabilityProviderRuntime, DeterministicWorkContractBuilder, activateToolSpecPlan, buildToolSpecPlan, createSkillTools, renderToolSpecPlan } from "../dist/index.js";
-import { attestCapabilityProviderResolutionTool } from "../dist/capability-provider.js";
+import { attestCapabilityProviderAcquisitionTool, attestCapabilityProviderResolutionTool } from "../dist/capability-provider.js";
 
-const createRuntime = (options) => new BeeMaxAgentRuntime({ profileId: "profile:test", workContractBuilder: new DeterministicWorkContractBuilder(), ...options });
+const createRuntime = (options) => new BeeMaxAgentRuntime({ profileId: "profile:test", interactiveAdmission: "contract_first", workContractBuilder: new DeterministicWorkContractBuilder(), ...options });
 
 const bindAssistantTurn = (listener, calls, responseId) => listener({
 	type: "message_end",
@@ -240,13 +240,17 @@ test("Skill route activation enters the Tool Spec Plan before the next Pi sample
 		{ name: "route_tool", description: "Execute declared route", parameters: {}, beemaxPolicy: { sideEffect: "none" } },
 	];
 	const runtime = createRuntime({ createAgent: async () => ({ agent, getAllTools: () => tools, getActiveToolNames: () => [...activeTools], setActiveToolsByName: (names) => { activeTools = [...names]; }, subscribe: (next) => { listener = next; return () => undefined; }, prompt: async () => {
+		assert.deepEqual(activeTools, ["skill_read", "skill_activate"], "route, resource, and completion controls stay deferred until the Skill advances");
 		await dispatchToolCall(agent, listener, { id: "activate:1", name: "skill_activate", result: { details: { skill: "route-skill", activatedTools: ["skill_route", "skill_complete"], skillLifecycleReceipt: { id: "receipt:activate", name: "route-skill", version, phase: "activated", sourceTool: "skill_activate" } } } });
+		assert.ok(activeTools.includes("skill_route"));
+		assert.ok(activeTools.includes("skill_complete"));
 		await dispatchToolCall(agent, listener, { id: "route:1", name: "skill_route", result: { details: { skill: "route-skill", tools: ["route_tool"], activatedTools: ["skill_resource_read", "skill_complete", "route_tool"], skillLifecycleReceipt: { id: "receipt:route", name: "route-skill", version, phase: "routed", sourceTool: "skill_route" } } } });
 		transitionContext = agent.state.messages.filter((message) => message.role === "custom" && message.customType === "beemax-tool-spec-transition").at(-1)?.content ?? "";
 		listener({ type: "message_end", message: { role: "assistant", responseId: "response:route-tool", content: [{ type: "toolCall", id: "route-tool:1", name: "route_tool", arguments: {} }], usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0 } } });
 		listener({ type: "tool_execution_start", toolCallId: "route-tool:1", toolName: "route_tool", args: {} });
 		routeBoundary = await agent.beforeToolCall({ toolCall: { id: "route-tool:1", name: "route_tool", arguments: {} }, args: {}, context: {} }, new AbortController().signal);
 		await dispatchToolCall(agent, listener, { id: "complete:1", name: "skill_complete", result: { details: { skill: "route-skill", skillLifecycleReceipt: { id: "receipt:complete", name: "route-skill", version, phase: "completed", sourceTool: "skill_complete" }, capabilityReceipt: { id: "receipt:skill", kind: "skill", name: "route-skill", version, sourceTool: "skill_complete" } } } });
+		assert.equal(activeTools.some((name) => name.startsWith("skill_")), false, "completed Skill controls must be deferred before the next model sample");
 		agent.state.messages = [{ role: "assistant", content: [{ type: "text", text: "done" }], usage: { input: 1, output: 1 } }];
 	}, abort: async () => undefined, dispose: () => undefined }) });
 	try {
@@ -521,6 +525,97 @@ test("a failed Provider acquisition aborts the Objective with its exact unresolv
 	try {
 		await assert.rejects(runtime.run({ source, text: "Use remote_tool for current evidence", timeoutMs: 1_000, allowedCapabilities: tools.map(({ name }) => name) }), /acquisition failed.*remote_tool.*not installed/i);
 		assert.equal(prompts, 2);
+	} finally { runtime.dispose(); }
+});
+
+test("an inactive Provider acquisition routing miss recovers through capability discovery", async () => {
+	const source = { platform: "cli", chatId: "provider-acquire-routing-recovery", chatType: "dm", userId: "owner" };
+	let listener;
+	let activeTools = ["capability_discover"];
+	let toolsAfterAcquisition = [];
+	const agent = { state: { model: { id: "test" }, messages: [] } };
+	const tools = [
+		attestCapabilityProviderResolutionTool({ name: "capability_discover", description: "Discover capabilities", parameters: {}, beemaxPolicy: { sideEffect: "none" } }),
+		attestCapabilityProviderAcquisitionTool({ name: "capability_acquire", description: "Acquire providers", parameters: {}, beemaxPolicy: { sideEffect: "local" } }),
+		{ name: "remote_tool", description: "Remote capability", parameters: {}, beemaxPolicy: { sideEffect: "none" } },
+	];
+	const runtime = createRuntime({ createAgent: async () => ({
+		agent,
+		getAllTools: () => tools,
+		getActiveToolNames: () => [...activeTools],
+		setActiveToolsByName: (names) => { activeTools = [...names]; },
+		subscribe: (next) => { listener = next; return () => undefined; },
+		prompt: async () => {
+			bindAssistantTurn(listener, [{ id: "premature-acquire", name: "capability_acquire", args: { capability: "remote_tool" } }], "response:premature-acquire");
+			listener({ type: "tool_execution_start", toolCallId: "premature-acquire", toolName: "capability_acquire", args: { capability: "remote_tool" } });
+			listener({
+				type: "tool_execution_end", toolCallId: "premature-acquire", toolName: "capability_acquire", isError: true,
+				result: { details: { dispatchError: { stage: "routing", code: "tool_not_found", retryable: true } } },
+			});
+			await dispatchToolCall(agent, listener, { id: "discover", name: "capability_discover", result: { details: {
+				cognitionId: "cap:provider-routing-recovery",
+				activatedTools: ["capability_acquire"],
+				ranked: [{ kind: "tool", name: "remote_tool", score: 95, confidence: 0.95, reason: "exact remote match" }],
+				providerResolutions: [{ capability: "remote_tool", status: "blocked", candidates: [{ id: "remote-mcp", kind: "mcp", installed: false, installable: true, health: { status: "unavailable", reason: "not installed" } }], blocker: { code: "provider_unavailable", reason: "remote-mcp: not installed", requiredConfiguration: [] } }],
+			} } });
+			await dispatchToolCall(agent, listener, { id: "acquire", name: "capability_acquire", args: { capability: "remote_tool" }, result: { details: { providerAcquisition: {
+				capability: "remote_tool", status: "ready", selected: { id: "remote-mcp", kind: "mcp", installed: true, health: { status: "ready", evidenceRef: "health:remote-mcp" } },
+				authorityEvidenceRef: "approval:remote-mcp", installationReceipt: { receiptId: "install:remote-mcp", installedAt: 42, evidenceRef: "catalog:remote-mcp" },
+			} } } });
+			toolsAfterAcquisition = [...activeTools];
+			await dispatchToolCall(agent, listener, { id: "remote", name: "remote_tool", result: { content: [{ type: "text", text: "verified remote result" }] } });
+			listener({ type: "message_end", message: { role: "assistant", responseId: "response:provider-routing-recovered", content: [{ type: "text", text: "objective complete" }], usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0 } } });
+			agent.state.messages = [{ role: "assistant", content: [{ type: "text", text: "objective complete" }], usage: { input: 1, output: 1 } }];
+		},
+		abort: async () => undefined,
+		dispose: () => undefined,
+	}) });
+	try {
+		const result = await runtime.run({ source, text: "Use a Provider tool to discover and acquire remote_tool for current evidence", timeoutMs: 1_000, allowedCapabilities: tools.map(({ name }) => name) });
+		assert.equal(result.answer, "objective complete");
+		assert.ok(toolsAfterAcquisition.includes("remote_tool"));
+	} finally { runtime.dispose(); }
+});
+
+test("an invented Provider acquisition result recovers through discovery instead of aborting the Objective", async () => {
+	const source = { platform: "cli", chatId: "provider-invented-recovery", chatType: "dm", userId: "owner" };
+	let listener;
+	let activeTools = ["capability_acquire"];
+	let toolsAfterFailure = [];
+	const agent = { state: { model: { id: "test" }, messages: [] } };
+	const tools = [
+		attestCapabilityProviderResolutionTool({ name: "capability_discover", description: "Discover capabilities", parameters: {}, beemaxPolicy: { sideEffect: "none" } }),
+		attestCapabilityProviderAcquisitionTool({ name: "capability_acquire", description: "Acquire providers", parameters: {}, beemaxPolicy: { sideEffect: "local" } }),
+		{ name: "write", description: "Write a workspace file", parameters: {}, beemaxPolicy: { sideEffect: "local" } },
+	];
+	const runtime = createRuntime({ createAgent: async () => ({
+		agent,
+		getAllTools: () => tools,
+		getActiveToolNames: () => [...activeTools],
+		setActiveToolsByName: (names) => { activeTools = [...names]; },
+		subscribe: (next) => { listener = next; return () => undefined; },
+		prompt: async () => {
+			await dispatchToolCall(agent, listener, {
+				id: "invented", name: "capability_acquire", args: { capability: "file.write" }, isError: true,
+				result: { content: [{ type: "text", text: "file.write unavailable" }], details: { providerAcquisition: { capability: "file.write", status: "blocked" } } },
+			});
+			toolsAfterFailure = [...activeTools];
+			await dispatchToolCall(agent, listener, { id: "discover-write", name: "capability_discover", result: { details: {
+				cognitionId: "cap:write-recovery",
+				activatedTools: ["write"],
+				ranked: [{ kind: "tool", name: "write", score: 99, confidence: 0.99, reason: "workspace HTML write" }],
+			} } });
+			await dispatchToolCall(agent, listener, { id: "write-report", name: "write", result: { content: [{ type: "text", text: "wrote report" }] } });
+			listener({ type: "message_end", message: { role: "assistant", responseId: "response:write-recovered", content: [{ type: "text", text: "objective complete" }], usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0 } } });
+			agent.state.messages = [{ role: "assistant", content: [{ type: "text", text: "objective complete" }], usage: { input: 1, output: 1 } }];
+		},
+		abort: async () => undefined,
+		dispose: () => undefined,
+	}) });
+	try {
+		const result = await runtime.run({ source, text: "Use capability_acquire for file.write, then create a workspace HTML report", timeoutMs: 1_000, allowedCapabilities: tools.map(({ name }) => name) });
+		assert.equal(result.answer, "objective complete");
+		assert.ok(toolsAfterFailure.includes("capability_discover"));
 	} finally { runtime.dispose(); }
 });
 

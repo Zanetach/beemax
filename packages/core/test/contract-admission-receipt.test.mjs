@@ -39,6 +39,19 @@ test("a serialized durable admission receipt rebrands the exact reviewed OpenWor
 	assert.notEqual(restored, compilation.contract, "resume must re-admit a fresh in-process branded object");
 });
 
+test("a durable admission receipt preserves the one-model inventory compiler topology honestly", () => {
+	const contract = workContract();
+	const admission = inventoryCompilerAdmission(contract);
+	const binding = objectiveBinding(contract);
+	const receipt = createDurableContractAdmissionReceipt({ admission, objectiveBinding: binding, integrity, admittedAt: 100, ttlMs: 1_000 });
+	const decoded = decodeDurableContractAdmissionReceipt(JSON.parse(JSON.stringify(receipt)));
+	const restored = restoreDurableContractPlanningInput({ receipt: decoded, workContract: contract, objectiveBinding: binding, integrity, now: 500 });
+
+	assert.equal(decoded.workContract.semanticAdjudication.reviewMode, "inventory_with_deterministic_compiler");
+	assert.equal(decoded.workContract.semanticAdjudication.independentSamples, false);
+	assert.equal(restored.contract.rawRequest, rawRequest);
+});
+
 test("durable admission restoration rejects Work Contract or graph snapshot tampering", () => {
 	const contract = workContract();
 	const admission = planningAdmission(contract);
@@ -170,6 +183,28 @@ function planningAdmission(contract) {
 			independentSamples: true,
 			cognitionUsage,
 			cognitionBudgetChargeTokens: 100,
+		},
+	});
+}
+
+function inventoryCompilerAdmission(contract) {
+	const primaryModelIdentity = "test/contract-inventory/test";
+	const reviewerModelIdentity = "beemax/deterministic-semantic-inventory-compiler/v1";
+	const cognitionUsage = { inputTokens: 10, outputTokens: 5, cacheReadTokens: 0, cacheWriteTokens: 0, costUsd: 0.001, modelIdentities: [primaryModelIdentity] };
+	return createAdmittedWorkContractPlanningInput({
+		contract,
+		source: "model",
+		cognitionUsage,
+		cognitionBudgetChargeTokens: 50,
+		semanticAdjudication: {
+			schemaVersion: WORK_CONTRACT_ADJUDICATION_SCHEMA_VERSION,
+			inventorySchemaVersion: "beemax.semantic-inventory.v1",
+			primaryModelIdentity,
+			reviewerModelIdentity,
+			reviewMode: "inventory_with_deterministic_compiler",
+			independentSamples: false,
+			cognitionUsage,
+			cognitionBudgetChargeTokens: 50,
 		},
 	});
 }

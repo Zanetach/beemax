@@ -76,6 +76,53 @@ test("Provider resolution selects a healthy semantic alternative when the requir
 	} finally { rmSync(root, { recursive: true, force: true }); }
 });
 
+test("Provider prefetch progressively reselects the same requirement after a non-installable configuration blocker", async () => {
+	const root = mkdtempSync(join(tmpdir(), "beemax-provider-progressive-reselection-"));
+	try {
+		const requirement = { id: "capreq:0:aaaaaaaa", text: "检索实时公开市场来源" };
+		const rankedInventories = [];
+		const ranker = new SemanticCapabilityRanker(new ModelBackedSemanticCapabilityPort(async ({ candidates }) => {
+			rankedInventories.push(candidates.map((candidate) => candidate.name));
+			const selected = candidates.find((candidate) => candidate.name === "web_search") ?? candidates.find((candidate) => candidate.name === "exa_web_search");
+			return { matches: [{ id: selected.id, name: selected.name, similarity: 0.99, requirementId: requirement.id, outcomeIndex: 0, necessity: "required" }] };
+		}));
+		const tools = new Map(createSkillTools(root, () => undefined, [
+			{ name: "web_search", description: "Search current public sources", providers: [{
+				id: "needs-configuration", kind: "tool", capabilities: ["web_search"], installed: true,
+				health: async () => ({ status: "configuration_required", reason: "SEARCH_API_KEY is not configured", missingConfiguration: ["SEARCH_API_KEY"] }),
+			}] },
+			{ name: "exa_web_search", description: "Search current public sources with source URLs", signals: { health: "ready", freshness: "realtime", evidence: "source_receipt" } },
+		], undefined, [], undefined, ranker).map((tool) => [tool.name, tool]));
+		const proposal = await tools.get("capability_discover").beemaxCapabilityPrefetch(requirement.text, undefined, { requirements: [requirement] });
+		assert.deepEqual(rankedInventories, [["web_search", "exa_web_search"], ["exa_web_search"]]);
+		assert.deepEqual(proposal.candidates.map((candidate) => candidate.name), ["exa_web_search"]);
+		assert.deepEqual(proposal.activatedTools, ["exa_web_search"]);
+		assert.deepEqual(proposal.providerResolutions, []);
+	} finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("Provider resolution acquires an installable required capability before using a ready semantic alternative", async () => {
+	const root = mkdtempSync(join(tmpdir(), "beemax-provider-required-installable-"));
+	try {
+		const ranker = new SemanticCapabilityRanker(new ModelBackedSemanticCapabilityPort(async ({ candidates }) => ({ matches: [
+			{ id: candidates.find((candidate) => candidate.name === "live_search").id, name: "live_search", similarity: 0.98, requirementId: "fresh-evidence", outcomeIndex: 0, necessity: "required" },
+			{ id: candidates.find((candidate) => candidate.name === "url_extract").id, name: "url_extract", similarity: 0.91, requirementId: "fresh-evidence", outcomeIndex: 0, necessity: "alternative" },
+		] })));
+		const tools = new Map(createSkillTools(root, () => undefined, [
+			{ name: "live_search", description: "Discover current public sources", providers: [{ id: "installable-search", kind: "tool", capabilities: ["live_search"], installed: false, install: { source: "catalog", package: "live-search", version: "1" }, health: async () => ({ status: "unavailable", installationState: "absent", evidenceRef: "health:search:absent", reason: "not installed" }) }] },
+			{ name: "url_extract", description: "Extract a supplied public URL" },
+		], undefined, [], undefined, ranker).map((tool) => [tool.name, tool]));
+		const proposal = await tools.get("capability_discover").beemaxCapabilityPrefetch("Find current public sources");
+		assert.deepEqual(proposal.activatedTools, ["capability_acquire"]);
+		assert.deepEqual(proposal.providerResolutions.map((resolution) => [resolution.capability, resolution.status]), [["live_search", "blocked"]]);
+
+		const discovered = await tools.get("capability_discover").execute("discover", { query: "Find current public sources" });
+		assert.match(discovered.content[0].text, /Activated for the next turn: capability_acquire/u);
+		assert.match(discovered.content[0].text, /live_search.*unavailable/u);
+		assert.doesNotMatch(discovered.content[0].text, /Matching ready capabilities are activated/u);
+	} finally { rmSync(root, { recursive: true, force: true }); }
+});
+
 test("Skill lifecycle admission ignores an uncalibrated low-confidence fallback match", async () => {
 	const root = mkdtempSync(join(tmpdir(), "beemax-skill-admission-floor-"));
 	try {
@@ -132,6 +179,29 @@ test("explicit Skill prefetch does not claim independent Contract requirements w
 		assert.equal(contexts[0].contractDigest, "sha256:contract");
 		assert.deepEqual(proposal.skills.map((item) => item.name), ["research-review"]);
 		assert.deepEqual(proposal.activatedTools, ["web_lookup", "publish_draft", "skill_activate", "skill_read"]);
+	} finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("contract capability prefetch progressively adds a strongly matched workflow Skill without binding it to an unrelated outcome", async () => {
+	const root = mkdtempSync(join(tmpdir(), "beemax-progressive-workflow-skill-"));
+	try {
+		const project = join(root, "project-skills");
+		const skill = join(project, "business-report");
+		mkdirSync(skill, { recursive: true });
+		writeFileSync(join(skill, "SKILL.md"), `---\nname: business-report\ndescription: "Produce structured market reports"\ntriggers: ["报告", "调研"]\n---\nUse verified evidence and a concise report structure.`);
+		const requirement = { id: "capreq:0:write", text: "写入 report.html" };
+		const ranker = { async rank(_query, inventory, _limit, _signal, context) {
+			const descriptor = inventory.find((item) => item.name === "write");
+			return [{ descriptor, score: 99, confidence: 0.99, explanation: { strategy: "semantic", summary: "HTML output", signals: ["output"] }, requirementId: context.requirements[0].id, outcomeIndex: 0, necessity: "required" }];
+		} };
+		const tools = new Map(createSkillTools(root, () => undefined, [{ name: "write", description: "Write a workspace file" }], undefined, [project], undefined, ranker).map((tool) => [tool.name, tool]));
+		const proposal = await tools.get("capability_discover").beemaxCapabilityPrefetch("调研黄金并生成中文报告", undefined, { requirements: [requirement] });
+		assert.deepEqual(proposal.candidates.map(({ name, requirementId }) => ({ name, requirementId })), [
+			{ name: "write", requirementId: requirement.id },
+			{ name: "business-report", requirementId: undefined },
+		]);
+		assert.deepEqual(proposal.skills.map((item) => item.name), ["business-report"]);
+		assert.deepEqual(proposal.activatedTools, ["write", "skill_activate", "skill_read"]);
 	} finally { rmSync(root, { recursive: true, force: true }); }
 });
 
@@ -305,6 +375,42 @@ test("Skill tools progressively activate a project Skill route and only its decl
 	} finally { rmSync(root, { recursive: true, force: true }); }
 });
 
+test("capability discovery for another Tool does not erase an active Skill lifecycle", async () => {
+	const root = mkdtempSync(join(tmpdir(), "beemax-skill-discovery-preservation-"));
+	try {
+		const project = join(root, "project-skills"); const skill = join(project, "report-review");
+		mkdirSync(join(skill, "modules"), { recursive: true });
+		writeFileSync(join(skill, "SKILL.md"), `---\nname: report-review\ndescription: "Review business reports"\n---\nUse the declared review route.`);
+		writeFileSync(join(skill, "manifest.json"), JSON.stringify({ version: 1, routes: { review: { module: "modules/review.md" } } }));
+		writeFileSync(join(skill, "modules", "review.md"), "Review material claims.");
+		const tools = new Map(createSkillTools(root, () => undefined, [{ name: "calendar_find", description: "Find calendar availability" }], undefined, [project]).map((tool) => [tool.name, tool]));
+		await tools.get("capability_discover").beemaxCapabilityPrefetch("report-review", undefined, { explicitSkillName: "report-review" });
+		await tools.get("skill_activate").execute("activate", { name: "report-review" });
+		const discoveredTool = await tools.get("capability_discover").execute("discover-tool", { query: "calendar availability" });
+		assert.deepEqual(discoveredTool.details.activatedTools, ["calendar_find"]);
+		const routed = await tools.get("skill_route").execute("route", { route: "review" });
+		assert.equal(routed.details.route, "review");
+	} finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("Skill activation exposes safe route names and useful rules without credential-like lines", async () => {
+	const root = mkdtempSync(join(tmpdir(), "beemax-safe-skill-activation-"));
+	try {
+		const project = join(root, "project-skills"); const skill = join(project, "safe-search");
+		mkdirSync(skill, { recursive: true });
+		writeFileSync(join(skill, "SKILL.md"), `---\nname: safe-search\ndescription: "Search public evidence"\n---\nBRAVE_API_KEY="your-api-key-here"\nUse verified public search results.`);
+		const tools = new Map(createSkillTools(root, () => undefined, [], undefined, [project]).map((tool) => [tool.name, tool]));
+		await tools.get("capability_discover").beemaxCapabilityPrefetch("safe-search", undefined, { explicitSkillName: "safe-search" });
+		const activated = await tools.get("skill_activate").execute("activate", { name: "safe-search" });
+		assert.match(activated.content[0].text, /Available Skill routes: legacy/i);
+		assert.match(activated.content[0].text, /Use verified public search results/);
+		assert.match(activated.content[0].text, /credential-bearing Skill line redacted/i);
+		assert.doesNotMatch(activated.content[0].text, /BRAVE_API_KEY|your-api-key-here/i);
+		const routed = await tools.get("skill_route").execute("route", { route: "legacy" });
+		assert.equal(routed.details.route, "legacy");
+	} finally { rmSync(root, { recursive: true, force: true }); }
+});
+
 test("Skill routes resolve a unique legacy Tool alias to its current canonical Tool", async () => {
 	const root = mkdtempSync(join(tmpdir(), "beemax-skill-tool-alias-"));
 	try {
@@ -442,6 +548,23 @@ test("legacy skill_read preserves one-call activation for self-contained Skills"
 		assert.deepEqual(activations, []);
 		assert.deepEqual(read.details.activatedTools, ["skill_complete"]);
 		assert.deepEqual([read.details.skillLifecycleReceipt.phase, read.details.skillLifecycleReceipt.sourceTool], ["read", "skill_read"]);
+		const repeatedActivation = await tools.get("skill_activate").execute("activate-after-read", { name: "legacy-review" });
+		assert.equal(repeatedActivation.details.state.state, "module_loaded");
+		assert.deepEqual(repeatedActivation.details.activatedTools, ["skill_complete"]);
+		assert.match(repeatedActivation.content[0].text, /already loaded.*skill_complete/is);
+		await tools.get("skill_complete").execute("complete", {});
+	} finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("capability acquisition rejects an undiscovered invented capability as a structured Tool error", async () => {
+	const root = mkdtempSync(join(tmpdir(), "beemax-capability-acquire-invented-"));
+	try {
+		const tool = toolsAt(root).get("capability_acquire");
+		const result = await tool.execute("acquire-invented", { capability: "file.write" });
+		assert.equal(result.isError, true);
+		assert.equal(result.details.providerAcquisition.status, "blocked");
+		assert.deepEqual(result.details.activatedTools, []);
+		assert.match(result.content[0].text, /file\.write.*unavailable/i);
 	} finally { rmSync(root, { recursive: true, force: true }); }
 });
 

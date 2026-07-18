@@ -1,6 +1,6 @@
 /**
  * Feishu stream text normalization + markdown block splitting.
- * Faithful TS port of the hermes-feishu-streaming-card rendering logic.
+ * BeeMax Feishu streaming-card rendering logic.
  */
 
 const THINK_TAG_RE = /<\/?think>|<\/?thinking>/gi;

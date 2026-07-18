@@ -4,12 +4,12 @@ import { fauxAssistantMessage, registerFauxProvider } from "@earendil-works/pi-a
 import { AutonomousPlanningPolicy, BeeMaxAgentRuntime, DeterministicWorkContractBuilder, ModelBackedWorkContractBuilder, PiWorkContractBuilder, TurnUnderstandingEngine, WorkContractCognitionError, createExecutionEnvelope } from "../dist/index.js";
 import { attestCapabilityProviderResolutionTool } from "../dist/capability-provider.js";
 
-const createRuntime = (options) => new BeeMaxAgentRuntime({ profileId: "profile:test", ...options });
+const createRuntime = (options) => new BeeMaxAgentRuntime({ profileId: "profile:test", interactiveAdmission: "contract_first", ...options });
 const semanticReview = Object.freeze({ schemaVersion: "beemax.work-contract-adjudication.v1", inventorySchemaVersion: "beemax.semantic-inventory.v1", primaryModelIdentity: "test/primary/test", reviewerModelIdentity: "test/reviewer/test", reviewMode: "different_models", independentSamples: true, cognitionUsage: { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, costUsd: 0, modelIdentities: ["test/primary/test", "test/reviewer/test"] }, cognitionBudgetChargeTokens: 1 });
 
 test("runtime without semantic Work Contract cognition blocks instead of silently using regex", async () => {
 	let agents = 0;
-	const runtime = new BeeMaxAgentRuntime({ profileId: "profile:test", createAgent: async () => { agents++; throw new Error("Pi must not start"); } });
+	const runtime = new BeeMaxAgentRuntime({ profileId: "profile:test", interactiveAdmission: "contract_first", createAgent: async () => { agents++; throw new Error("Pi must not start"); } });
 	try {
 		await assert.rejects(runtime.run({ source: { platform: "cli", chatId: "no-cognition", userId: "user" }, text: "不要取消，继续做", timeoutMs: 1_000 }), /MODEL_UNAVAILABLE/i);
 		assert.equal(agents, 0);
@@ -114,6 +114,21 @@ test("a model-backed Work Contract accepts unambiguous exact quotes without mode
 	assert.equal(result.source, "model");
 	assert.equal(result.contract.objective.source.kind, "raw_request");
 	assert.equal(result.contract.constraints[0].source.start, rawRequest.indexOf("保留证据"));
+});
+
+test("an exact Objective replay repairs only a malformed model objective from trusted resume state", async () => {
+	const rawRequest = "生成星图";
+	const resumeObjective = { id: "objective-a", title: rawRequest };
+	const builder = new ModelBackedWorkContractBuilder(async () => ({
+		action: "continue", targetObjectiveId: resumeObjective.id,
+		objective: [], constraints: [], prohibitions: [], acceptanceCriteria: [{ text: rawRequest }],
+		capabilityRequirements: [], uncertainties: [], executionMode: "direct", confidence: 0.9,
+	}));
+	const result = await builder.build({
+		rawRequest, fallback: new TurnUnderstandingEngine().understand(rawRequest),
+		activeObjective: resumeObjective, activeObjectives: [resumeObjective], resumeObjective,
+	});
+	assert.deepEqual(result.contract.objective, { text: rawRequest, source: { kind: "raw_request", start: 0, end: rawRequest.length } });
 });
 
 test("a validated semantic Work Contract owns lifecycle when compatibility classification disagrees", async () => {
@@ -437,32 +452,41 @@ test("BeeMax blocks a low-confidence semantic Contract before Pi or Task mutatio
 	} finally { runtime.dispose(); }
 });
 
-test("BeeMax charges auxiliary Work Contract cognition to the Execution Envelope before Pi", async () => {
+test("BeeMax records auxiliary Work Contract cognition without blocking Pi on a token ceiling", async () => {
 	const rawRequest = "生成报告";
 	const clause = { text: rawRequest, source: { kind: "raw_request", start: 0, end: rawRequest.length } };
 	let agents = 0;
+	const cognitionUsage = { inputTokens: 4, outputTokens: 3, cacheReadTokens: 10, cacheWriteTokens: 1, costUsd: 0.01, modelIdentities: ["test/primary/test", "test/reviewer/test"] };
+	const agent = { state: { model: { id: "test" }, messages: [] } };
 	const runtime = createRuntime({
-		workContractBuilder: { build: async () => { const cognitionUsage = { inputTokens: 4, outputTokens: 3, cacheReadTokens: 10, cacheWriteTokens: 1, costUsd: 0.01, modelIdentities: ["test/primary/test", "test/reviewer/test"] }; return { source: "model", cognitionBudgetChargeTokens: 8, semanticAdjudication: { ...semanticReview, cognitionUsage, cognitionBudgetChargeTokens: 8 }, contract: { schemaVersion: "beemax.work-contract.v1", rawRequest, action: "create", objective: clause, constraints: [], prohibitions: [], acceptanceCriteria: [clause], capabilityRequirements: [], uncertainties: [], executionMode: "direct", confidence: 0.9 }, cognitionUsage }; } },
-		createAgent: async () => { agents++; throw new Error("Pi must not start"); },
+		workContractBuilder: { build: async ({ maxCognitionTokens }) => { assert.equal(maxCognitionTokens, undefined); return { source: "model", cognitionBudgetChargeTokens: 8, semanticAdjudication: { ...semanticReview, cognitionUsage, cognitionBudgetChargeTokens: 8 }, contract: { schemaVersion: "beemax.work-contract.v1", rawRequest, action: "create", objective: clause, constraints: [], prohibitions: [], acceptanceCriteria: [clause], capabilityRequirements: [], uncertainties: [], executionMode: "direct", confidence: 0.9 }, cognitionUsage }; } },
+		createAgent: async () => { agents++; return { agent, subscribe: () => () => undefined, prompt: async () => { agent.state.messages = [{ role: "assistant", content: [{ type: "text", text: "done" }], usage: { input: 2, output: 1 } }]; }, abort: async () => undefined, dispose: () => undefined }; },
 	});
 	try {
-		await assert.rejects(runtime.run({ source: { platform: "cli", chatId: "cognition-budget", userId: "user" }, text: rawRequest, timeoutMs: 1_000, executionEnvelope: createExecutionEnvelope({ executionId: "cognition-budget", trigger: { kind: "interaction" }, budget: { maxTokens: 7 } }) }), /cognition exceeded.*token budget/i);
-		assert.equal(agents, 0);
+		const result = await runtime.run({ source: { platform: "cli", chatId: "cognition-budget", userId: "user" }, text: rawRequest, timeoutMs: 1_000, executionEnvelope: createExecutionEnvelope({ executionId: "cognition-budget", trigger: { kind: "interaction" }, budget: { maxTokens: 7 } }) });
+		assert.equal(result.answer, "done");
+		assert.equal(result.usage.input_tokens, 6);
+		assert.equal(result.usage.output_tokens, 4);
+		assert.equal(agents, 1);
 	} finally { runtime.dispose(); }
 });
 
-test("BeeMax does not start Pi when Work Contract cognition exactly exhausts the Execution Envelope", async () => {
+test("BeeMax continues Pi when observed Work Contract cognition exceeds a legacy envelope token value", async () => {
 	const rawRequest = "生成报告";
 	const clause = { text: rawRequest, source: { kind: "raw_request", start: 0, end: rawRequest.length } };
 	const cognitionUsage = { inputTokens: 5, outputTokens: 5, cacheReadTokens: 0, cacheWriteTokens: 0, costUsd: 0.01, modelIdentities: ["test/primary/test", "test/reviewer/test"] };
 	let agents = 0;
+	const agent = { state: { model: { id: "test" }, messages: [] } };
 	const runtime = createRuntime({
 		workContractBuilder: { build: async () => ({ source: "model", cognitionUsage, cognitionBudgetChargeTokens: 10, semanticAdjudication: { ...semanticReview, cognitionUsage, cognitionBudgetChargeTokens: 10 }, contract: { schemaVersion: "beemax.work-contract.v1", rawRequest, action: "create", objective: clause, constraints: [], prohibitions: [], acceptanceCriteria: [clause], capabilityRequirements: [], uncertainties: [], executionMode: "direct", confidence: 0.99 } }) },
-		createAgent: async () => { agents++; throw new Error("Pi must not start"); },
+		createAgent: async () => { agents++; return { agent, subscribe: () => () => undefined, prompt: async () => { agent.state.messages = [{ role: "assistant", content: [{ type: "text", text: "done" }], usage: { input: 1, output: 1 } }]; }, abort: async () => undefined, dispose: () => undefined }; },
 	});
 	try {
-		await assert.rejects(runtime.run({ source: { platform: "cli", chatId: "cognition-exhausted", userId: "user" }, text: rawRequest, timeoutMs: 1_000, executionEnvelope: createExecutionEnvelope({ executionId: "cognition-exhausted", trigger: { kind: "interaction" }, budget: { maxTokens: 10 } }) }), /exhausted.*token budget/i);
-		assert.equal(agents, 0);
+		const result = await runtime.run({ source: { platform: "cli", chatId: "cognition-exhausted", userId: "user" }, text: rawRequest, timeoutMs: 1_000, executionEnvelope: createExecutionEnvelope({ executionId: "cognition-exhausted", trigger: { kind: "interaction" }, budget: { maxTokens: 10 } }) });
+		assert.equal(result.answer, "done");
+		assert.equal(result.usage.input_tokens, 6);
+		assert.equal(result.usage.output_tokens, 6);
+		assert.equal(agents, 1);
 	} finally { runtime.dispose(); }
 });
 

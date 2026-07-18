@@ -144,7 +144,8 @@ export class FileToolEffectJournal implements ToolEffectAuthorityPort {
 		const metadata = effectMetadata(input.details);
 		const trustedProof = metadata.proof && input.policy.effectProofProvider === metadata.proof.provider ? metadata.proof : undefined;
 		const trustedMetadata = { ...metadata, proof: trustedProof };
-		const status = input.isError || active.sideEffect === "external" && !trustedProof ? "unknown" : "committed";
+		const attestedLocalCommit = input.isError && active.sideEffect === "local" && Boolean(trustedProof);
+		const status = input.isError && !attestedLocalCommit || active.sideEffect === "external" && !trustedProof ? "unknown" : "committed";
 		const completed: ToolEffectRecord = {
 			...active,
 			status,

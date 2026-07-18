@@ -23,19 +23,59 @@ test("execution tools constrain file requests to their configured workspace", as
 	const tools = createExecutionTools(source, "/workspace", execution);
 	const read = tools.find((tool) => tool.name === "read");
 	const write = tools.find((tool) => tool.name === "write");
+	assert.match(write.description, /ordinary reports.*18,000 characters.*one complete replace call/i);
 	await read.execute("read", { path: "notes/today.md" });
-	const writeResult = await write.execute("write", { path: "notes/today.md", content: "hello", idempotencyKey: "daily-notes-v1" });
+	const writeResult = await write.execute("write", { path: "notes/today.md", content: "hello", mediaType: "text/html", idempotencyKey: "daily-notes-v1" });
 	assert.equal(calls[0][1].path, "/workspace/notes/today.md");
 	assert.equal(calls[1][1].path, "/workspace/notes/today.md");
 	assert.deepEqual(writeResult.details, {
 		path: "/workspace/notes/today.md",
+		byteLength: 5,
+		sha256: "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824",
 		beemaxEffect: {
 			operation: "write workspace file",
 			externalRef: "workspace:notes/today.md",
 			idempotencyKey: "daily-notes-v1",
 		},
+		artifactManifest: {
+			schemaVersion: "beemax.artifact-manifest.v1",
+			id: "artifact:sha256:2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824",
+			locator: { kind: "workspace", uri: "workspace:notes/today.md" },
+			mediaType: "text/html",
+			byteLength: 5,
+			sha256: "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824",
+			producer: { providerId: "beemax.workspace-write", providerVersion: "1", operation: "write" },
+			sourceRefs: [],
+			createdAt: writeResult.details.artifactManifest.createdAt,
+		},
 	});
+	assert.ok(Number.isSafeInteger(writeResult.details.artifactManifest.createdAt));
 	await assert.rejects(read.execute("read", { path: "../secret" }), /outside the configured workspace/);
+});
+
+test("workspace writes support checksum-guarded chunks without duplicate appends", async () => {
+	let current = "";
+	const execution = {
+		execute: async () => ({ exitCode: 0, stdout: "", stderr: "" }),
+		readFile: async () => current,
+		writeFile: async (_request, content) => { current = content; },
+	};
+	const write = createExecutionTools(source, "/workspace", execution).find((tool) => tool.name === "write");
+	const first = await write.execute("chunk-1", { path: "report.html", content: "<html>", mode: "replace" });
+	assert.equal(current, "<html>");
+	const second = await write.execute("chunk-2", {
+		path: "report.html", content: "报告</html>", mode: "append",
+		expectedByteLength: first.details.byteLength,
+		expectedSha256: first.details.sha256,
+	});
+	assert.equal(current, "<html>报告</html>");
+	assert.equal(second.details.byteLength, Buffer.byteLength(current));
+	await assert.rejects(write.execute("duplicate-chunk-2", {
+		path: "report.html", content: "报告</html>", mode: "append",
+		expectedByteLength: first.details.byteLength,
+		expectedSha256: first.details.sha256,
+	}), /does not match expected append base/u);
+	assert.equal(current, "<html>报告</html>");
 });
 
 test("Host Execution Adapter stops an active command when its Tool execution is cancelled", async () => {

@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
-import { readdirSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { tmpdir } from "node:os";
 import test from "node:test";
+import { FORBIDDEN_EXTERNAL_AGENT_PATTERN, verifyReleaseAgentBoundary } from "../../../scripts/verify-release-agent-boundary.mjs";
 
 const root = process.cwd();
 
@@ -33,18 +35,52 @@ test("architecture boundary: Gateway contains no Agent capability composition", 
 	}
 });
 
-test("architecture boundary: capability media delivery uses a Core-owned neutral port", () => {
-	const capability = readFileSync(join(root, "packages/codex-image-capability/src/image-generation.ts"), "utf8");
-	const coreIndex = readFileSync(join(root, "packages/core/src/index.ts"), "utf8");
-	assert.match(capability, /MediaOutboxPort.*from ["']@beemax\/core["']/);
-	assert.match(coreIndex, /MediaOutboxPort/);
-});
-
 test("architecture boundary: BeeMax capabilities and Gateway consume Pi primitives only through Core", () => {
-	for (const directory of ["packages/gateway/src", "packages/memory/src", "packages/mcp-capability/src", "packages/feishu-capability/src", "packages/codex-image-capability/src"]) {
+	for (const directory of ["packages/gateway/src", "packages/memory/src", "packages/mcp-capability/src", "packages/feishu-capability/src"]) {
 		for (const file of sourceText(join(root, directory))) {
 			assert.doesNotMatch(file.text, /from ["']@earendil-works\/pi-(?:ai|agent-core|coding-agent)[^"']*["']/, file.path);
 		}
+	}
+});
+
+test("release boundary: production BeeMax contains no external agent runtime", () => {
+	const productionDirectories = [
+		"apps/cli/src",
+		"packages/automation/src",
+		"packages/channel-feishu/src",
+		"packages/channel-runtime/src",
+		"packages/channel-telegram/src",
+		"packages/core/src",
+		"packages/feishu-capability/src",
+		"packages/gateway/src",
+		"packages/knowledge/src",
+		"packages/mcp-capability/src",
+		"packages/memory/src",
+	];
+	for (const directory of productionDirectories) {
+		for (const file of sourceText(join(root, directory))) assert.doesNotMatch(file.text, FORBIDDEN_EXTERNAL_AGENT_PATTERN, file.path);
+	}
+	for (const path of ["config/beemax.yaml.example", "config/profiles/personal.yaml.example", "apps/cli/package.json", "package.json"]) {
+		assert.doesNotMatch(readFileSync(join(root, path), "utf8"), FORBIDDEN_EXTERNAL_AGENT_PATTERN, path);
+	}
+	assert.equal(existsSync(join(root, "packages", "codex-image-capability", "package.json")), false, "external-agent image package must not ship");
+});
+
+test("release boundary scanner fails closed on missing or prohibited artifacts", () => {
+	const fixture = mkdtempSync(join(tmpdir(), "beemax-release-boundary-"));
+	try {
+		assert.deepEqual(verifyReleaseAgentBoundary(fixture, { releaseRoots: ["dist"], manifests: ["package.json"] }), ["dist (missing)", "package.json (missing)"]);
+		mkdirSync(join(fixture, "dist"));
+		writeFileSync(join(fixture, "package.json"), "{}\n");
+		writeFileSync(join(fixture, "dist", "runtime.js"), "export const runtime = 'beemax';\n");
+		assert.deepEqual(verifyReleaseAgentBoundary(fixture, { releaseRoots: ["dist"], manifests: ["package.json"] }), []);
+		writeFileSync(join(fixture, "dist", "runtime.js"), "export const runtime = 'Codex';\n");
+		assert.deepEqual(verifyReleaseAgentBoundary(fixture, { releaseRoots: ["dist"], manifests: ["package.json"] }), ["dist/runtime.js"]);
+		writeFileSync(join(fixture, "dist", "runtime.js"), "export const runtime = 'beemax';\n");
+		writeFileSync(join(fixture, "dist", "codex-adapter.js"), "export const runtime = 'beemax';\n");
+		assert.deepEqual(verifyReleaseAgentBoundary(fixture, { releaseRoots: ["dist"], manifests: ["package.json"] }), ["dist/codex-adapter.js"]);
+	} finally {
+		rmSync(fixture, { recursive: true, force: true });
 	}
 });
 

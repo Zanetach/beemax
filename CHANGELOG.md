@@ -2,6 +2,32 @@
 
 ## Unreleased
 
+## 1.5.0
+
+- Changed interactive execution to a model-first Pi flow: ordinary natural-language requests—including research, multi-step work, file creation, and unfamiliar phrasing—now reach the main model directly, complex turns retain adaptive planning plus progressive Tool/Skill activation, and complexity alone no longer creates a durable Objective or invokes separate Work Contract cognition. Automation and explicit Objective continuation/correction/cancellation remain Contract-governed, while Sandbox, approvals, Tool policy, Effect receipts, Artifact verification, and release guards remain authoritative throughout execution.
+- Rebased the real-model Capability release gate on the production model-first lane: all 16 frozen multilingual, multi-Tool, Skill, unknown-Capability, and negative cases now require raw-prompt admission, zero Work Contract calls, measured Provider responses, exact Tool/Skill receipts, a terminal answer, and an independently recomputed system-guard verdict. The 2026-07-18 run passed 16/16; the durable Automation Contract lane remains covered separately.
+
+## 1.4.0
+
+- Added contract-driven objective continuation with progressive Tool/Skill discovery, requirement-bound execution receipts, autonomous correction, and independent structured verification.
+- Added Profile-workspace HTML/PDF composition, browser PDF rendering, content-addressed Artifact manifests, and independent existence, integrity, semantic, render, and consistency checks.
+- Removed the cumulative model-token execution ceiling while retaining usage accounting, caller cancellation, durable deadlines, Task Run leases, and Tool-call governance.
+- Added Host-derived `answered`/`in_progress`/`accepted`/`rejected`/`verification_unavailable`/`cancelled` outcomes, withheld durable Candidate text until Verification settles, and made CLI/Feishu distinguish completed, incomplete, rejected, and cancelled work.
+- Version-locked Tool, MCP, and Skill Capability selections through execution receipts so dynamically selected providers cannot lose immutable identity between ranking and use.
+- Fixed explicit Tool routing so a referenced historical receipt cannot be mistaken for a new mutating action, and corrected pre-aborted Tool handling plus workspace locator normalization.
+- Hardened semantic admission so complete Artifact manifest JSON remains data while arbitrary JSON cannot hide material operations or freshness requirements.
+- Removed test/evaluation harnesses from release archives and added whole-archive path/content scanning before isolated installation verification.
+- Passed a real-model XAU/USD weekly-report acceptance run with two independently inspected workspace artifacts, current public-source evidence, and every Contract criterion accepted by the durable verifier.
+- Corrected Chrome PDF header/footer suppression with a real rendered-PDF regression check, and made live market reports distinguish a still-changing observation from a final close or settlement value.
+
+## 1.3.0 - 2026-07-16
+
+- Removed external Agent authentication, provider registration, model exposure, image tooling, Skill roots, and bundled upstream Skills from the BeeMax production runtime.
+- Added a mandatory release boundary gate that scans the built CLI, runtime packages, bundled Skills, configuration, and package manifests before release verification continues.
+- Hardened semantic Capability ranking so unscoped single matches ignore irrelevant grouping metadata and real-model routing remains stable across repeated trials.
+- Added independently adjudicated, exact-source Work Contracts with bounded Provider failover, atomic Capability requirements, requirement-bound execution evidence, and fail-closed negative-operation handling.
+- Added a real-model Pi release gate covering multilingual, paraphrased, multi-Capability, unknown-enterprise, and negative cases, with independent artifact verification for Tool Spec, Tool/Skill receipts, Verification, usage, budgets, and authorization denial.
+
 ## 1.2.0
 
 > Release notes are prepared before tagging; the `v1.2.0` GitHub Tag and Release are the authoritative publication record.
@@ -86,7 +112,7 @@
 
 ## 0.1.0-preview.10
 
-- Added Hermes-style Profile-owned Gateway configuration, isolated default
+- Added Profile-owned Gateway configuration, isolated default
   workspaces, Profile-first provider credentials, and a shared local/Gateway
   runtime policy.
 - Added Profile-level multi-provider model switching and dynamic new-session
@@ -105,8 +131,8 @@
 
 ## 0.1.0-preview.7
 
-- Added a generated hybrid SOUL template: OpenClaw-style default identity and
-  workspace context, with Hermes-style Profile isolation, bounded loading, and
+- Added a generated hybrid SOUL template with default identity and workspace
+  context, Profile isolation, bounded loading, and
   safe fallback for missing or obvious prompt-injected SOUL content.
 - Updated setup so it preserves the generated identity unless the user supplies
   a custom SOUL explicitly.
@@ -140,7 +166,7 @@
 
 ## 0.1.0-preview.2
 
-- Added a Hermes-style one-command bootstrap installer with version selection, source-install compatibility, and Profile-preserving uninstall support.
+- Added a one-command bootstrap installer with version selection, source-install compatibility, and Profile-preserving uninstall support.
 
 ## 0.1.0-preview.1
 
@@ -150,7 +176,7 @@
 - Added deny-by-default access, mutating-tool approval, workspace/credential boundaries, and non-root service defaults.
 - Added isolated Profile Homes under `~/.beemax/profiles`, `SOUL.md` identity, active Profile selection, and non-destructive migration from legacy repository-local Profiles.
 - Added unified `beemax setup` and `beemax gateway setup` flows with Feishu permissions guidance, live credential/bot probing, and readiness diagnostics.
-- Added Hermes-style Gateway lifecycle subcommands and per-Feishu-App Profile locks to prevent duplicate consumers.
+- Added Gateway lifecycle subcommands and per-Feishu-App Profile locks to prevent duplicate consumers.
 - Added hardened Feishu webhook handling, safe/standard toolsets, bundled progressive Skills, curated profile memory, candidate review commands, MCP resources/prompts, and MCP diagnostics.
 - Fixed model-secret handling so API keys are accepted only from the environment or masked interactive prompt, never CLI arguments.
 - Fixed memory recall so only curated memories enter the model context; pending conversation candidates require explicit promotion.

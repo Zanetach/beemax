@@ -28,6 +28,32 @@ test("effect journal records a content-free mutation lifecycle and committed rec
 	} finally { rmSync(root, { recursive: true, force: true }); }
 });
 
+test("an attested local mutation can commit even when its independent postcondition rejects", () => {
+	const root = mkdtempSync(join(tmpdir(), "beemax-effects-postcondition-"));
+	try {
+		const effects = new FileToolEffectJournal(join(root, "tool-effects.jsonl"));
+		const policy = { ...MUTATING_TOOL_POLICY, sideEffect: "local", effectProofProvider: "beemax-artifact-runtime" };
+		const id = effects.begin({ source, taskId: "turn:artifact", toolCallId: "call:artifact", toolName: "artifact_render", policy });
+		effects.finish({
+			source, toolCallId: "call:artifact", toolName: "artifact_render", policy, isError: true,
+			details: { beemaxEffect: { operation: "render workspace Artifact", externalRef: "workspace:report.pdf", proof: { provider: "beemax-artifact-runtime", resourceType: "workspace-artifact", resourceId: "report.pdf" } } },
+		});
+		assert.equal(effects.effect(id).status, "committed");
+		assert.equal(effects.effect(id).receipt.externalRef, "workspace:report.pdf");
+	} finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("a local mutation error without matching attested proof remains unknown", () => {
+	const root = mkdtempSync(join(tmpdir(), "beemax-effects-unproven-postcondition-"));
+	try {
+		const effects = new FileToolEffectJournal(join(root, "tool-effects.jsonl"));
+		const policy = { ...MUTATING_TOOL_POLICY, sideEffect: "local", effectProofProvider: "beemax-artifact-runtime" };
+		const id = effects.begin({ source, taskId: "turn:artifact", toolCallId: "call:artifact", toolName: "artifact_render", policy });
+		effects.finish({ source, toolCallId: "call:artifact", toolName: "artifact_render", policy, isError: true, details: { beemaxEffect: { proof: { provider: "untrusted", resourceType: "workspace-artifact", resourceId: "report.pdf" } } } });
+		assert.equal(effects.effect(id).status, "unknown");
+	} finally { rmSync(root, { recursive: true, force: true }); }
+});
+
 test("Effect authority projects its lifecycle into the bound Execution Trace", () => {
 	const root = mkdtempSync(join(tmpdir(), "beemax-effects-trace-"));
 	try {

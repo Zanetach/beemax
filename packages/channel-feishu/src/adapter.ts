@@ -1,7 +1,7 @@
 /**
  * Feishu (飞书) Channel Runtime Adapter.
  *
- * Modeled on Hermes' gateway/platforms/feishu.py, but in TypeScript on top of
+ * BeeMax Feishu adapter implemented in TypeScript on top of
  * the official `@larksuiteoapi/node-sdk`.
  *
  * Connection: WebSocket long-connection by default, with an optional local
@@ -12,7 +12,7 @@
  * is used only to match @-mentions in groups.
  *
  * Session keying prefers union_id (userIdAlt, stable across apps) over
- * open_id (userId), matching Hermes.
+ * open_id (userId), matching the channel identity contract.
  */
 
 import { createReadStream, createWriteStream } from "node:fs";

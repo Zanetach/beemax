@@ -99,8 +99,15 @@ export class SkillRuntime {
 		this.discovered = new Map(matches.map((item) => [item.name, item])); this.state = "discovered"; return matches;
 	}
 	async admitDiscovered(names: readonly string[]): Promise<SkillMatch[]> {
-		this.reset(); const selected = new Set(names); const descriptors = (await this.registry.list()).filter((item) => selected.has(item.name));
-		this.discovered = new Map(descriptors.map((item) => [item.name, { ...item, score: 0, confidence: 0, reason: "selected by Capability Runtime" }])); this.state = "discovered"; return [...this.discovered.values()];
+		const selected = new Set(names); const descriptors = (await this.registry.list()).filter((item) => selected.has(item.name));
+		const admitted = descriptors.map((item): SkillMatch => ({ ...item, score: 0, confidence: 0, reason: "selected by Capability Runtime" }));
+		// Tool discovery is allowed while one Skill is executing. It may add future
+		// Skill candidates, but must not erase the active route/version fence.
+		if (["activated", "routed", "module_loaded", "executing"].includes(this.state)) {
+			for (const descriptor of admitted) this.discovered.set(descriptor.name, descriptor);
+			return admitted;
+		}
+		this.reset(); this.discovered = new Map(admitted.map((item) => [item.name, item])); this.state = "discovered"; return admitted;
 	}
 	isDiscovered(name: string): boolean { return this.state === "discovered" && this.discovered.has(name); }
 	retainDiscovered(names: readonly string[]): void {
@@ -109,6 +116,10 @@ export class SkillRuntime {
 	}
 
 	async activate(name: string): Promise<{ descriptor: SkillDescriptor; instructions: string; routes: Array<{ name: string; description?: string }> }> {
+		if (this.active?.name === name && (this.state === "module_loaded" || this.state === "executing") && this.manifest) {
+			const content = await this.readLocked(this.active.location, this.active.sha256);
+			return { descriptor: this.active, instructions: stripFrontmatter(content), routes: Object.entries(this.manifest.routes).map(([routeName, route]) => ({ name: routeName, description: route.description })) };
+		}
 		const descriptor = this.discovered.get(name);
 		if (!descriptor) throw new Error(`Skill ${name} must be discovered before activation`);
 		const content = await this.readLocked(descriptor.location, descriptor.sha256);

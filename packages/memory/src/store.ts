@@ -1,7 +1,7 @@
 /**
  * Long-term memory store backed by SQLite + FTS5.
  *
- * This is the BeeMax analogue of Hermes' memory_manager + FTS5 session search.
+ * BeeMax memory management and FTS5 session search.
  * Two tables:
  *   - memories: curated facts/preferences the agent chose to remember.
  *   - exchanges: full user<->assistant turns, FTS5-indexed for cross-session
@@ -16,7 +16,7 @@ import type { Database as DatabaseType } from "better-sqlite3";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { createHash, randomUUID } from "node:crypto";
-import { AUTONOMY_LEVELS, MAX_OBJECTIVE_REVISIONS, containsCredentialMaterial, createAccessScopeRef, createEnterprisePolicyPublisher, createSituation, decodeDurableContractAdmissionReceipt, decodeStoredWorkContract, interactionCompletionDeliveryKey, multilingualLexicalTerms, objectiveCompletionId, parseTaskCheckpoint, redactCredentialMaterial, renderTaskCheckpoint, unavailableTaskCriterionVerifications, workContractFromLegacyObjective, type AutonomyLevel, type AutonomyRolloutEvidence, type AutonomyRolloutRecord, type AutonomyRolloutStateStore, type CompensationProof, type ConversationMemoryPort, type DeliveryReceipt, type DeliveryTarget, type DirectObjectiveCompletionSettlement, type DurableContractAdmissionReceipt, type DurableInitiativeTrigger, type DurableInitiativeTriggerInput, type EmergencyStopRecord, type EnterprisePolicyPublisher, type InitiativeObservation, type InitiativeObservationInput, type InitiativeObservationStore, type InitiativeScope, type InitiativeTriggerInbox, type ObjectiveCancellationResult, type ObjectiveCompletion, type ObjectiveCompletionOutbox, type ObjectiveInterruptionRecord, type OrganizationKnowledgeHit, type OrganizationKnowledgeRecall, type ReversibleActionControlPort, type Situation, type TaskCandidateVerificationResolution, type TaskCheckpoint, type TaskDependency, type TaskLedger, type TaskPlanCompletionNotice, type TaskPlanNoticeOutbox, type TaskPlanQuery, type TaskPlanRecord, type TaskPlanTransition, type TaskQuery, type TaskRecord as RuntimeTaskRecord, type TaskRecoveryResult, type TaskRunAndTaskSuccessSettlement, type TaskRunEffectStateReader, type TaskRunRecord, type TaskRunTransition, type TaskTransition } from "@beemax/core";
+import { AUTONOMY_LEVELS, MAX_OBJECTIVE_REVISIONS, containsCredentialMaterial, createAccessScopeRef, createEnterprisePolicyPublisher, createSituation, decodeDurableContractAdmissionReceipt, decodeStoredWorkContract, interactionCompletionDeliveryKey, multilingualLexicalTerms, objectiveCompletionId, parseTaskCheckpoint, redactCredentialMaterial, renderTaskCheckpoint, unavailableTaskCriterionVerifications, validateArtifactManifest, validateArtifactVerificationReceipt, validateSourceReceipt, workContractFromLegacyObjective, type AutonomyLevel, type AutonomyRolloutEvidence, type AutonomyRolloutRecord, type AutonomyRolloutStateStore, type CompensationProof, type ConversationMemoryPort, type DeliveryReceipt, type DeliveryTarget, type DirectObjectiveCompletionSettlement, type DurableContractAdmissionReceipt, type DurableInitiativeTrigger, type DurableInitiativeTriggerInput, type EmergencyStopRecord, type EnterprisePolicyPublisher, type InitiativeObservation, type InitiativeObservationInput, type InitiativeObservationStore, type InitiativeScope, type InitiativeTriggerInbox, type ObjectiveCancellationResult, type ObjectiveCompletion, type ObjectiveCompletionOutbox, type ObjectiveInterruptionRecord, type OrganizationKnowledgeHit, type OrganizationKnowledgeRecall, type ReversibleActionControlPort, type Situation, type TaskCandidateVerificationResolution, type TaskCheckpoint, type TaskDependency, type TaskLedger, type TaskPlanCompletionNotice, type TaskPlanNoticeOutbox, type TaskPlanQuery, type TaskPlanRecord, type TaskPlanTransition, type TaskQuery, type TaskRecord as RuntimeTaskRecord, type TaskRecoveryResult, type TaskRunAndTaskSuccessSettlement, type TaskRunEffectStateReader, type TaskRunRecord, type TaskRunTransition, type TaskTransition } from "@beemax/core";
 
 export const MEMORY_CLAIM_KINDS = ["preference", "fact", "decision", "goal", "project", "relationship", "workflow", "exception"] as const;
 const EPISODE_STATUSES = new Set<OrganizationMemoryEpisodeStatus>(["candidate", "verified", "conflicted", "superseded"]);
@@ -2364,6 +2364,7 @@ export class MemoryStore {
 		const candidateResult = safeTaskText(settlement.candidateResult)?.slice(0, 50_000);
 		const evidence = safeTaskText(settlement.evidence);
 		const criterionVerifications = safeCriterionVerifications(settlement.criterionVerifications);
+		const artifacts = safeTaskArtifacts(settlement.artifacts);
 		if (!settlement.ownerKey.trim() || !settlement.objectiveId.trim() || !settlement.taskRunId.trim() || !candidateResult?.trim() || !Number.isFinite(now)) return false;
 		const rollback = Symbol("direct Objective completion settlement rejected");
 		try {
@@ -2377,11 +2378,11 @@ export class MemoryStore {
 					WHERE id = ? AND task_id = ? AND status = 'running' AND cancellation_requested_at IS NULL
 					AND lease_expires_at IS NOT NULL AND lease_expires_at > ?`).run(now, candidateResult, settlement.taskRunId, settlement.objectiveId, now).changes;
 				if (runChanged !== 1) return false;
-				const objectiveChanged = this.db.prepare(`UPDATE tasks SET status = 'running', candidate_result = ?, evidence = COALESCE(?, evidence),
+				const objectiveChanged = this.db.prepare(`UPDATE tasks SET status = 'running', candidate_result = ?, evidence = COALESCE(?, evidence), artifacts = COALESCE(?, artifacts),
 					verification_outcome = 'accepted', verification_feedback = NULL, criterion_verifications = ?, corrective_attempts = COALESCE(?, corrective_attempts),
 					verification_retry_at = NULL, error = NULL, finished_at = NULL, updated_at = ?
 					WHERE id = ? AND owner_key = ? AND kind = 'objective' AND status = 'running'`)
-					.run(candidateResult, evidence, criterionVerifications, settlement.correctiveAttempts ?? null, now, settlement.objectiveId, settlement.ownerKey).changes;
+					.run(candidateResult, evidence, artifacts, criterionVerifications, settlement.correctiveAttempts ?? null, now, settlement.objectiveId, settlement.ownerKey).changes;
 				if (objectiveChanged !== 1) throw rollback;
 				if (!this.enqueueObjectiveCompletion(settlement.ownerKey, settlement.objectiveId, now, settlement.notBefore ?? now, settlement.taskRunId)) throw rollback;
 				return true;
@@ -3582,9 +3583,18 @@ function parseTaskArtifacts(value: string | null): RuntimeTaskRecord["artifacts"
 		if (!Array.isArray(parsed)) return undefined;
 		const artifacts = parsed.flatMap((item) => {
 			if (!item || typeof item !== "object") return [];
-			const artifact = item as { type?: unknown; uri?: unknown; label?: unknown };
+			const artifact = item as { type?: unknown; uri?: unknown; label?: unknown; manifest?: unknown; verificationReceipt?: unknown; sourceReceipt?: unknown };
 			if ((artifact.type !== "file" && artifact.type !== "url" && artifact.type !== "reference") || typeof artifact.uri !== "string" || !artifact.uri.trim()) return [];
-			const normalized: NonNullable<RuntimeTaskRecord["artifacts"]>[number] = { type: artifact.type, uri: artifact.uri.trim().slice(0, 2_000), ...(typeof artifact.label === "string" && artifact.label.trim() ? { label: artifact.label.trim().slice(0, 500) } : {}) };
+			let manifest; let verificationReceipt; let sourceReceipt;
+			try {
+				manifest = artifact.manifest && typeof artifact.manifest === "object" ? validateArtifactManifest(artifact.manifest as Parameters<typeof validateArtifactManifest>[0]) : undefined;
+				verificationReceipt = artifact.verificationReceipt && typeof artifact.verificationReceipt === "object" ? validateArtifactVerificationReceipt(artifact.verificationReceipt as Parameters<typeof validateArtifactVerificationReceipt>[0], manifest) : undefined;
+				sourceReceipt = artifact.sourceReceipt && typeof artifact.sourceReceipt === "object" ? validateSourceReceipt(artifact.sourceReceipt as Parameters<typeof validateSourceReceipt>[0]) : undefined;
+			} catch { return []; }
+			const uri = artifact.uri.trim().slice(0, 2_000);
+			if (manifest && (manifest.locator.uri !== uri || (manifest.locator.kind === "workspace" ? "file" : manifest.locator.kind) !== artifact.type)) return [];
+			if (sourceReceipt && (artifact.type !== "reference" || sourceReceipt.id !== uri)) return [];
+			const normalized: NonNullable<RuntimeTaskRecord["artifacts"]>[number] = { type: artifact.type, uri, ...(typeof artifact.label === "string" && artifact.label.trim() ? { label: artifact.label.trim().slice(0, 500) } : {}), ...(manifest ? { manifest } : {}), ...(verificationReceipt ? { verificationReceipt } : {}), ...(sourceReceipt ? { sourceReceipt } : {}) };
 			return containsCredentialMaterial(JSON.stringify(normalized)) ? [] : [normalized];
 		}).slice(0, 20);
 		return artifacts.length ? artifacts : undefined;

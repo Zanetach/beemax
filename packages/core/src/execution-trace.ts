@@ -4,7 +4,7 @@ import type { ExecutionEnvelope, ExecutionMode, ExecutionTriggerKind } from "./e
 
 type ExecutionOutcome = "succeeded" | "failed" | "cancelled";
 export type CapabilityOutcomeStatus = "accepted" | "rejected" | "unverified" | "failed" | "cancelled";
-export interface CapabilityTraceCandidate { kind: "tool" | "mcp" | "skill"; name: string; version?: string; confidence: number; }
+export interface CapabilityTraceCandidate { kind: "tool" | "mcp" | "skill"; name: string; version?: string; confidence: number; requirementId?: string; outcomeIndex?: number; necessity?: "required" | "alternative"; }
 export interface CapabilityReceiptRef { id: string; kind: "tool" | "mcp" | "skill"; name: string; version: string; sourceTool: string; }
 export interface SkillLifecycleReceiptRef { id: string; name: string; version: string; phase: "activated" | "routed" | "resource_read" | "read" | "completed"; sourceTool: "skill_activate" | "skill_route" | "skill_resource_read" | "skill_read" | "skill_complete"; }
 export type ToolDispatchStage = "routing" | "validation" | "authorization" | "execution" | "finalization";
@@ -327,10 +327,14 @@ function safeCapabilityCandidates(values: readonly CapabilityTraceCandidate[]): 
 	return values.map((candidate) => {
 		if (!candidate || !["tool", "mcp", "skill"].includes(candidate.kind)) throw new Error("Execution Trace Capability kind is invalid");
 		const name = safeText(candidate.name, "Capability name", 128);
-		if (seen.has(`${candidate.kind}:${name}`)) throw new Error("Execution Trace Capability candidates contain duplicates");
-		seen.add(`${candidate.kind}:${name}`);
+		const bound = candidate.requirementId !== undefined || candidate.outcomeIndex !== undefined || candidate.necessity !== undefined;
+		const requirementId = bound ? safeText(candidate.requirementId, "Capability requirementId", 64) : undefined;
+		if (bound && (!Number.isSafeInteger(candidate.outcomeIndex) || (candidate.outcomeIndex ?? -1) < 0 || candidate.necessity !== "required" && candidate.necessity !== "alternative")) throw new Error("Execution Trace Capability requirement binding is invalid");
+		const identity = `${candidate.kind}:${name}:${requirementId ?? ""}:${candidate.outcomeIndex ?? ""}:${candidate.necessity ?? ""}`;
+		if (seen.has(identity)) throw new Error("Execution Trace Capability candidates contain duplicates");
+		seen.add(identity);
 		if (!Number.isFinite(candidate.confidence) || candidate.confidence < 0 || candidate.confidence > 1) throw new Error("Execution Trace Capability confidence is invalid");
-		return { kind: candidate.kind, name, ...(candidate.version ? { version: safeIdentifier(candidate.version, "Capability version", 256) } : {}), confidence: candidate.confidence };
+		return { kind: candidate.kind, name, ...(candidate.version ? { version: safeIdentifier(candidate.version, "Capability version", 256) } : {}), confidence: candidate.confidence, ...(bound ? { requirementId, outcomeIndex: candidate.outcomeIndex!, necessity: candidate.necessity! } : {}) };
 	});
 }
 function isCapabilityOutcomeStatus(value: unknown): value is CapabilityOutcomeStatus { return value === "accepted" || value === "rejected" || value === "unverified" || value === "failed" || value === "cancelled"; }

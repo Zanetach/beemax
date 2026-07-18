@@ -1951,7 +1951,7 @@ export class AgentSession {
 
 		// Skip overflow check if the message came from a different model.
 		// This handles the case where user switched from a smaller-context model (e.g. opus)
-		// to a larger-context model (e.g. codex) - the overflow error from the old model
+		// to a larger-context model - the overflow error from the old model
 		// shouldn't trigger compaction for the new model.
 		const sameModel =
 			this.model && assistantMessage.provider === this.model.provider && assistantMessage.model === this.model.id;

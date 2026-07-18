@@ -5,6 +5,7 @@ import type { Situation } from "./situation.ts";
 import type { TaskCheckpoint } from "./task-checkpoint.ts";
 import type { WorkContract } from "./work-contract.ts";
 import type { DurableContractAdmissionReceipt } from "./contract-admission-receipt.ts";
+import type { ArtifactManifest, ArtifactVerificationReceipt, SourceReceipt } from "./artifact-runtime.ts";
 
 export type TaskKind = "objective" | "delegated" | "automation";
 export const MAX_OBJECTIVE_REVISIONS = 20;
@@ -30,6 +31,12 @@ export interface TaskArtifact {
 	type: "file" | "url" | "reference";
 	uri: string;
 	label?: string;
+	/** Content-addressed Artifact identity retained independently from conversational output. */
+	manifest?: Readonly<ArtifactManifest>;
+	/** Independent verification evidence bound to the exact Manifest bytes. */
+	verificationReceipt?: Readonly<ArtifactVerificationReceipt>;
+	/** Content-addressed current-source evidence retained across restart. */
+	sourceReceipt?: Readonly<SourceReceipt>;
 }
 
 export interface TaskPlanRecord {
@@ -83,6 +90,7 @@ export interface DirectObjectiveCompletionSettlement {
 	candidateResult: string;
 	evidence?: string;
 	criterionVerifications?: TaskCriterionVerification[];
+	artifacts?: TaskArtifact[];
 	correctiveAttempts?: number;
 	notBefore?: number;
 }

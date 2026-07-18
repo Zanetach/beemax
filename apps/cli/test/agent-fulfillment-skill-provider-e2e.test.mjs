@@ -75,7 +75,7 @@ test("a cold Profile installs a Skill, acquires its missing Provider, resumes th
 		const verificationStart = rawRequest.indexOf(verificationText);
 		const verificationClause = { text: verificationText, source: { kind: "raw_request", start: verificationStart, end: verificationStart + verificationText.length } };
 		runtime = new BeeMaxAgentRuntime({
-			profileId: "profile:cold", taskLedger: ledger,
+			profileId: "profile:cold", interactiveAdmission: "contract_first", taskLedger: ledger,
 			turnUnderstanding: { understand: () => ({ action: "create", goal: rawRequest, constraints: ["without using remembered facts"], acceptanceCriteria: [outcomeText], uncertainties: [], memoryQuery: rawRequest, capabilityQuery: "hermetic current-source research brief", executionMode: "direct", confidence: 1 }) },
 			workContractBuilder: { build: async () => ({ source: "model", cognitionBudgetChargeTokens: 2, semanticAdjudication, contract: { schemaVersion: "beemax.work-contract.v1", rawRequest, action: "create", objective: outcomeClause, constraints: [], prohibitions: [constraintClause], acceptanceCriteria: [outcomeClause], capabilityRequirements: [researchClause, verificationClause], uncertainties: [], executionMode: "direct", confidence: 1 } }) },
 			planningPolicy: { decide: () => ({ mode: "direct", requiredTools: [], suggestedConcurrency: 1, budget: { maxSubagents: 0, maxToolCalls: 12, maxTokens: 8_000, maxCorrectiveAttempts: 0 }, signals: { substantialWork: true, requiresVerification: true }, reason: "hermetic fulfillment", directive: () => "Complete the unchanged Objective through the selected Skill and its declared Provider." }) },

@@ -4,9 +4,15 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { MemoryStore } from "@beemax/memory";
-import { consumeChannelCredential, loadConfig, profileTaskGrantCapabilities } from "../dist/config.js";
+import { consumeChannelCredential, loadConfig, profileTaskGrantCapabilities, profileTurnTimeoutMs } from "../dist/config.js";
 
 const readCredential = (config, channel) => consumeChannelCredential(config, channel, (credential) => ({ ...credential }));
+
+test("parent Turns do not abandon Objectives because elapsed time exceeded a configured estimate", () => {
+	assert.equal(profileTurnTimeoutMs({ subagents: { enabled: true, timeoutMs: 15 * 60_000 }, execution: { timeoutMs: 3 * 60_000 } }), null);
+	assert.equal(profileTurnTimeoutMs({ subagents: { enabled: false, timeoutMs: 15 * 60_000 }, execution: { timeoutMs: 3 * 60_000 } }), null);
+	assert.equal(profileTurnTimeoutMs({ subagents: { enabled: true, timeoutMs: 45 * 60_000 }, execution: { timeoutMs: 10 * 60_000 } }), null);
+});
 import { activeProfile } from "../dist/profile-home.js";
 import { curatedMemoryPrompt } from "@beemax/core";
 import {
@@ -81,9 +87,9 @@ test("profile creation and Feishu channel configuration keep secrets in a protec
 	assert.equal(config.agent.reasoningDisplay, "summary");
 	assert.equal(config.agent.maxSessions, 100);
 	assert.equal(config.agent.sessionIdleMs, 30 * 60_000);
-	assert.equal(config.agent.turnIdleSettleMs, 60_000);
+	assert.equal("turnIdleSettleMs" in config.agent, false);
 	assert.deepEqual(config.agent.capabilityPreferences, {});
-	assert.deepEqual(config.agent.capabilityCognition, { maxModelAttempts: 2, maxTokens: 2_048, timeoutMs: 60_000, maxTotalEstimatedTokens: 300_000 });
+	assert.deepEqual(config.agent.capabilityCognition, { maxModelAttempts: 3, maxTokens: 2_048, timeoutMs: 12_000 });
 	assert.deepEqual(config.capabilityProviders.installation, { enabled: false, allowedProviders: [] });
 	assert.deepEqual(config.context, {
 		maxTurnChars: 12_000,
@@ -128,12 +134,12 @@ test("Profile config bounds Capability cognition recovery without changing the O
 	const root = await mkdtemp(join(tmpdir(), "beemax-cognition-root-"));
 	const home = await mkdtemp(join(tmpdir(), "beemax-cognition-home-"));
 	const paths = await createProfile("capability-cognition", { root, home });
-	await writeFile(paths.configPath, `agent:\n  capabilityCognition:\n    maxModelAttempts: 5\n    maxTokens: 6000\n    timeoutMs: 45000\n    maxTotalEstimatedTokens: 200000\n`);
-	assert.deepEqual(loadConfig(paths.configPath, "capability-cognition", { root, home }).agent.capabilityCognition, { maxModelAttempts: 5, maxTokens: 6_000, timeoutMs: 45_000, maxTotalEstimatedTokens: 200_000 });
+	await writeFile(paths.configPath, `agent:\n  capabilityCognition:\n    maxModelAttempts: 5\n    maxTokens: 6000\n    timeoutMs: 45000\n`);
+	assert.deepEqual(loadConfig(paths.configPath, "capability-cognition", { root, home }).agent.capabilityCognition, { maxModelAttempts: 5, maxTokens: 6_000, timeoutMs: 45_000 });
 	await writeFile(paths.configPath, `agent:\n  capabilityCognition:\n    maxModelAttempts: 6\n`);
 	assert.throws(() => loadConfig(paths.configPath, "capability-cognition", { root, home }), /maxModelAttempts/);
-	await writeFile(paths.configPath, `agent:\n  capabilityCognition:\n    maxTokens: 8192\n    maxTotalEstimatedTokens: 512\n`);
-	assert.throws(() => loadConfig(paths.configPath, "capability-cognition", { root, home }), /must exceed maxTokens/u);
+	await writeFile(paths.configPath, `agent:\n  capabilityCognition:\n    maxTokens: 8192\n`);
+	assert.equal(loadConfig(paths.configPath, "capability-cognition", { root, home }).agent.capabilityCognition.maxTokens, 8192);
 });
 
 test("Profile capability preferences are bounded ranking inputs rather than authorization", async () => {

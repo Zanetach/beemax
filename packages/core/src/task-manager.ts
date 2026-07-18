@@ -30,6 +30,7 @@ export interface SubagentTask extends SubagentTaskSnapshot {
 	source: BeeMaxRuntimeSource;
 	context?: string;
 	parentId?: string;
+	acceptanceCriteria?: string;
 }
 
 export type SubagentExecutor = (task: SubagentTask, signal: AbortSignal) => Promise<string>;
@@ -112,25 +113,27 @@ export class SubagentManager {
 		}
 		this.prune(ownerKey);
 		const id = crypto.randomUUID();
+		const goal = input.goal.trim();
+		if (!goal) throw new Error("Sub-Agent goal is required");
+		const acceptanceCriteria = (input.acceptanceCriteria?.trim() || `The delegated result satisfies the requested goal: ${goal}`).slice(0, 5_000);
 		const task: ManagedTask = {
 			id,
 			ownerKey,
 			source: { ...source },
 			name: input.name?.trim() || `task-${id.slice(0, 8)}`,
-			goal: input.goal.trim(),
+			goal,
 			context: input.context?.trim() || undefined,
 			parentId: input.parentId?.trim() || undefined,
+			acceptanceCriteria,
 			capability: input.capability ?? "analysis",
 			status: "queued",
 			createdAt: Date.now(),
 			timeoutMs: this.defaultTimeoutMs,
 			waiters: new Set(),
 		};
-		if (!task.goal) throw new Error("Sub-Agent goal is required");
 		if (this.taskLedger) {
 			const planId = `delegation:${id}`;
 			const description = [task.goal, task.context].filter(Boolean).join("\n\n").slice(0, 50_000);
-			const acceptanceCriteria = (input.acceptanceCriteria?.trim() || `The delegated result satisfies the requested goal: ${task.goal}`).slice(0, 5_000);
 			if (typeof this.taskLedger.recordPlan === "function") {
 				this.taskLedger.recordPlan([{
 					id, ownerKey, kind: "delegated", title: task.name, description, acceptanceCriteria, verificationStatus: "pending", correctiveAttempts: 0, status: "pending", createdAt: task.createdAt,

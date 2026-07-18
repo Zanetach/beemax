@@ -36,13 +36,20 @@ export async function executeOutcomeBoundCapabilityRun({ mode, threshold, observ
 		const ranking = rankingByCase.get(scenario.id);
 		if (!ranking) throw new Error(`Capability outcome harness is missing ranking ${scenario.id}`);
 		const candidates = ranking.candidates.filter((candidate) => candidate.confidence >= threshold);
-		const receipt = await executeOutcomeBoundCapabilityTask({ scenario, cognitionId: ranking.cognitionId, candidates, inventory: capabilityInventory, threshold });
+		let receipt;
+		try { receipt = await executeOutcomeBoundCapabilityTask({ scenario, cognitionId: ranking.cognitionId, candidates, inventory: capabilityInventory, threshold }); }
+		catch (error) { throw new Error(`Capability outcome harness failed for case ${scenario.id}: ${error instanceof Error ? error.message : String(error)}`, { cause: error }); }
 		receipts.push(receipt);
 		const attempts = attemptsByCognition.get(ranking.cognitionId) ?? [];
-		if (mode === "live_provider" && (!attempts.length || attempts.filter((attempt) => attempt.status === "succeeded").some((attempt) => attempt.usageStatus !== "measured") || !attempts.some((attempt) => attempt.status === "succeeded" && attempt.usageStatus === "measured"))) throw new Error(`Live Capability outcome ${scenario.id} lacks measured successful usage or cost`);
+		if (mode === "live_provider") {
+			if (ranking.strategy === "semantic" && (!attempts.length || attempts.filter((attempt) => attempt.status === "succeeded").some((attempt) => attempt.usageStatus !== "measured") || !attempts.some((attempt) => attempt.status === "succeeded" && attempt.usageStatus === "measured"))) throw new Error(`Live Capability outcome ${scenario.id} lacks measured successful semantic usage or cost`);
+			if (ranking.strategy === "lexical" && attempts.length) throw new Error(`Live Capability outcome ${scenario.id} claims a deterministic routing lane with Provider attempts`);
+			if (ranking.strategy !== "semantic" && ranking.strategy !== "lexical") throw new Error(`Live Capability outcome ${scenario.id} lacks a valid production routing lane`);
+		}
 		const measuredAttempts = attempts.filter((attempt) => attempt.usageStatus === "measured");
 		observations.push({
 			caseId: scenario.id, cognitionId: ranking.cognitionId,
+			routingLane: ranking.strategy,
 			ranked: ranking.candidates.map(({ name, version, confidence, kind }) => ({ name, version, confidence, kind })),
 			activatedCapabilities: receipt.activatedCapabilities,
 			outcome: receipt.downstreamOutcome,
@@ -141,11 +148,13 @@ export async function executeOutcomeBoundCapabilityTask({ scenario, cognitionId,
 		abort: async () => undefined,
 		dispose: () => undefined,
 	};
-	const rawRequest = scenario.query; const clause = { text: rawRequest, source: { kind: "raw_request", start: 0, end: rawRequest.length } };
+	const rawRequest = scenario.query;
+	const contractClauses = evaluationContractClauses(rawRequest);
+	const clause = contractClauses.acceptance[0];
 	const runtime = new BeeMaxAgentRuntime({
-		profileId: "profile:capability-eval", taskLedger: ledger, executionTrace: traceStore,
-		turnUnderstanding: { understand: () => ({ action: "create", goal: rawRequest, constraints: [], acceptanceCriteria: [rawRequest], uncertainties: [], memoryQuery: rawRequest, capabilityQuery: rawRequest, executionMode: "direct", confidence: 1 }) },
-		workContractBuilder: { build: async () => ({ source: "model", cognitionBudgetChargeTokens: 1, semanticAdjudication: semanticReview, contract: { schemaVersion: "beemax.work-contract.v1", rawRequest, action: "create", objective: clause, constraints: [], prohibitions: [], acceptanceCriteria: [clause], capabilityRequirements: [clause], uncertainties: [], executionMode: "direct", confidence: 1 } }) },
+		profileId: "profile:capability-eval", interactiveAdmission: "contract_first", taskLedger: ledger, executionTrace: traceStore,
+		turnUnderstanding: { understand: () => ({ action: "create", goal: clause.text, constraints: contractClauses.prohibitions.map(({ text }) => text), acceptanceCriteria: contractClauses.acceptance.map(({ text }) => text), uncertainties: [], memoryQuery: rawRequest, capabilityQuery: rawRequest, executionMode: "direct", confidence: 1 }) },
+		workContractBuilder: { build: async () => ({ source: "model", cognitionBudgetChargeTokens: 1, semanticAdjudication: semanticReview, contract: { schemaVersion: "beemax.work-contract.v1", rawRequest, action: "create", objective: clause, constraints: [], prohibitions: contractClauses.prohibitions, acceptanceCriteria: contractClauses.acceptance, capabilityRequirements: required.length ? contractClauses.acceptance.slice(0, required.length) : [], uncertainties: [], executionMode: "direct", confidence: 1 } }) },
 		planningPolicy: { decide: () => ({ mode: "direct", requiredTools: [], suggestedConcurrency: 1, budget: { maxSubagents: 0, maxToolCalls: 20, maxTokens: 2_000, maxCorrectiveAttempts: 0 }, signals: { substantialWork: true, requiresVerification: true }, reason: "outcome calibration", directive: () => "[calibration task]" }) },
 		verifyObjectiveCandidate: async (_task, _result, _signal, context) => {
 			const successful = new Set(context?.successfulToolNames ?? []);
@@ -157,10 +166,12 @@ export async function executeOutcomeBoundCapabilityTask({ scenario, cognitionId,
 	});
 	const accessScopeRef = createAccessScopeRef({ id: scopeId, authority: { kind: "enterprise_system", reference: "capability-eval-authority" }, issuedAt: 1 });
 	const executionEnvelope = createExecutionEnvelope({ executionId, trigger: { kind: "interaction" }, accessScopeRef, budget: { maxToolCalls: 20, maxTokens: 2_000, maxCorrectiveAttempts: 0 }, mode: "normal" });
+	let runtimeError;
 	try { await runtime.run({ source: { platform: "cli", chatId: scenario.id, chatType: "dm", userId: "evaluator" }, text: rawRequest, timeoutMs: 5_000, accessScopeRef, executionEnvelope }); }
+	catch (error) { runtimeError = error instanceof Error ? error.message : String(error); }
 	finally { runtime.dispose(); }
 	const trace = traceStore.trace({ executionId, accessScopeId: scopeId });
-	if (!trace) { rmSync(root, { recursive: true, force: true }); throw new Error(`Capability outcome task ${scenario.id} produced no Execution Trace`); }
+	if (!trace) { rmSync(root, { recursive: true, force: true }); throw new Error(`Capability outcome task ${scenario.id} produced no Execution Trace${runtimeError ? `: ${runtimeError}` : ""}`); }
 	const activatedCapabilities = activatedCapabilitiesFromTrace(candidates, trace.events);
 	const receipt = {
 		caseId: scenario.id, cognitionId, executionId, accessScopeId: scopeId, threshold,
@@ -169,10 +180,28 @@ export async function executeOutcomeBoundCapabilityTask({ scenario, cognitionId,
 		status: trace.status, verificationStatus: trace.verificationStatus,
 		downstreamOutcome: trace.capabilityDownstreamOutcomeStatus ?? "unverified",
 		durationMs: trace.durationMs ?? 0,
+		...(runtimeError ? { runtimeError } : {}),
 		executionTrace: trace.events,
 	};
 	rmSync(root, { recursive: true, force: true });
 	return receipt;
+}
+
+function evaluationContractClauses(rawRequest) {
+	const acceptance = [];
+	const prohibitions = [];
+	for (const match of rawRequest.matchAll(/[^，,。；;\n]+/gu)) {
+		const rawSegment = match[0];
+		const leading = rawSegment.length - rawSegment.trimStart().length;
+		const text = rawSegment.trim();
+		if (!text) continue;
+		const start = (match.index ?? 0) + leading;
+		const clause = { text, source: { kind: "raw_request", start, end: start + text.length } };
+		if (/^(?:不要|不得|禁止|不可|(?:do not|must not|without)\b)/iu.test(text)) prohibitions.push(clause);
+		else acceptance.push(clause);
+	}
+	if (!acceptance.length) throw new Error("Capability outcome scenario requires a positive source-bound outcome in addition to prohibitions");
+	return { acceptance, prohibitions };
 }
 
 export function activatedCapabilitiesFromTrace(candidates, events) {
@@ -213,7 +242,7 @@ function createEvaluationTools(inventory, candidates, cognitionId) {
 	const tools = inventory.filter((descriptor) => descriptor.kind !== "skill").flatMap((descriptor) => (descriptor.activeTools ?? [descriptor.name]).map((sourceTool) => ({
 		name: sourceTool, description: descriptor.description,
 		beemaxPolicy: { sideEffect: descriptor.signals?.effect === "external" ? "external" : descriptor.signals?.effect === "local" ? "local" : "none" },
-		beemaxToolSpec: { kind: descriptor.kind, version: descriptor.version, configured: true, health: descriptor.signals?.health ?? "ready", authorized: descriptor.authorized !== false },
+		beemaxToolSpec: { kind: descriptor.kind, version: descriptor.version, capabilityIdentity: { kind: descriptor.kind, name: descriptor.name, version: descriptor.version }, configured: true, health: descriptor.signals?.health ?? "ready", authorized: descriptor.authorized !== false },
 		execute: async () => ({ content: [{ type: "text", text: `sandbox receipt ${descriptor.name}` }], details: { capabilityReceipt: { id: `receipt:${descriptor.kind}:${descriptor.name}:${descriptor.version}:${sourceTool}`, kind: descriptor.kind, name: descriptor.name, version: descriptor.version, sourceTool } } }),
 	})));
 	const lifecycle = [
@@ -234,7 +263,10 @@ function createEvaluationTools(inventory, candidates, cognitionId) {
 		} },
 	].map((tool) => ({ ...tool, beemaxPolicy: { sideEffect: "none" }, beemaxToolSpec: { kind: "skill", version: "eval:skill-lifecycle", configured: true, health: "ready", authorized: true } }));
 	const prefetch = async (_query, _signal, options) => {
-		obligationCandidates = candidates.map((candidate, index) => ({ ...candidate, ...(options?.requirements?.[0] ? { requirementId: options.requirements[0].id, outcomeIndex: index, necessity: "required" } : {}) }));
+		obligationCandidates = candidates.map((candidate, index) => {
+			const requirement = options?.requirements?.[index] ?? options?.requirements?.[0];
+			return { ...candidate, ...(requirement ? { requirementId: requirement.id, outcomeIndex: 0, necessity: "required" } : {}) };
+		});
 		return { cognitionId, candidates: obligationCandidates, activatedTools: candidates.filter((candidate) => candidate.kind !== "skill").flatMap((candidate) => inventory.find((item) => item.name === candidate.name)?.activeTools ?? [candidate.name]), skills: selectedSkills.map((name) => ({ name })) };
 	};
 	const discovery = attestCapabilityProviderResolutionTool({ name: "capability_discover", description: "Discover evaluation capabilities", beemaxPolicy: { sideEffect: "none" }, beemaxToolSpec: { kind: "tool", version: "eval:discovery", configured: true, health: "ready", authorized: true }, beemaxCapabilityPrefetch: prefetch, execute: async () => ({ content: [{ type: "text", text: "discovered" }], details: { cognitionId, ranked: obligationCandidates, activatedTools: [] } }) });
@@ -245,6 +277,12 @@ function evaluationLedger(tasks, runs) {
 	return {
 		record(task) { tasks.set(task.id, { ...task }); }, transition(id, change) { const task = tasks.get(id); if (!task) return false; tasks.set(id, { ...task, ...change }); return true; },
 		recordRun(run) { runs.set(run.id, { ...run }); }, transitionRun(id, change) { const run = runs.get(id); if (!run) return false; runs.set(id, { ...run, ...change }); return true; },
+		isTaskRunExecutionActive(ownerKey, objectiveId, taskId, taskRunId) {
+			const objective = tasks.get(objectiveId); const task = tasks.get(taskId); const run = runs.get(taskRunId);
+			return objective?.ownerKey === ownerKey && objective.status === "running"
+				&& task?.ownerKey === ownerKey && task.status === "running"
+				&& run?.taskId === taskId && run.status === "running";
+		},
 		queryTasks(query) { return [...tasks.values()].filter((task) => query.ownerKeys.includes(task.ownerKey) && (!query.id || task.id === query.id) && (!query.kinds || query.kinds.includes(task.kind)) && (!query.statuses || query.statuses.includes(task.status))).slice(0, query.limit ?? 100); },
 		taskRuns(taskId) { return [...runs.values()].filter((run) => run.taskId === taskId); },
 		checkpointTask() { return true; }, deferCandidateVerification() {},

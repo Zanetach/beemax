@@ -55,7 +55,7 @@
   "targets": [
     {
       "id": "beemax",
-      "version": "1.2.0",
+      "version": "1.4.0",
       "nativeModel": "glm-5.2",
       "source": "workspace-package",
       "capture": {

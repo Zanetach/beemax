@@ -1,4 +1,4 @@
-import { builtinProviders, getBuiltinModel, getSupportedThinkingLevels, LexicalCapabilityRanker, MediaUnderstandingRuntime, PiSemanticCapabilityPort, PiVisionMediaUnderstandingAdapter, resolveRuntimeModel, SemanticCapabilityRanker, type Api, type CapabilityRanker, type MediaUnderstandingAdapter, type Model, type PiSemanticCapabilityPortOptions, type PiWorkContractModelCandidate } from "@beemax/core";
+import { builtinProviders, getBuiltinModel, getSupportedThinkingLevels, LexicalCapabilityRanker, MediaUnderstandingRuntime, PiSemanticCapabilityPort, PiVisionMediaUnderstandingAdapter, ProgressiveCapabilityRanker, resolveRuntimeModel, SemanticCapabilityRanker, type Api, type CapabilityCognitionFailureCode, type CapabilityRanker, type MediaUnderstandingAdapter, type Model, type PiSemanticCapabilityPortOptions, type PiWorkContractModelCandidate } from "@beemax/core";
 import type { BeeMaxConfig } from "./config.ts";
 
 export interface ModelProviderPreset {
@@ -23,6 +23,9 @@ export interface ProfileModelCapability {
 }
 
 type ProfileModelConfig = Pick<BeeMaxConfig, "model" | "models">;
+type ConfiguredCapabilityRankerOptions = Pick<PiSemanticCapabilityPortOptions, "maxModelAttempts" | "maxTokens" | "timeoutMs"> & {
+	onFallback?: (event: { query: string; code: CapabilityCognitionFailureCode; cognitionId?: string }) => void;
+};
 
 /** Profile-owned model facts derived once from configuration and Pi's registry. */
 export class ProfileModelCatalog {
@@ -159,14 +162,34 @@ export async function resolveProfileCognitionModels(
 	return candidates;
 }
 
-/** Semantic selection is the configured production path; lexical ranking is used only when this Profile has no semantic model. */
+/** Exact Contract metadata is the fast path; semantic cognition resolves only uncovered requirements. */
 export function configuredCapabilityRanker(
 	models: Array<{ model: Model<Api>; apiKey?: string }>,
 	onUsage?: NonNullable<PiSemanticCapabilityPortOptions["onUsage"]>,
-	options: Pick<PiSemanticCapabilityPortOptions, "maxModelAttempts" | "maxTokens" | "timeoutMs" | "maxTotalEstimatedTokens"> = {},
+	options: ConfiguredCapabilityRankerOptions = {},
 ): CapabilityRanker {
 	const lexical = new LexicalCapabilityRanker();
-	return models.length ? new SemanticCapabilityRanker(new PiSemanticCapabilityPort({ models, ...options, ...(onUsage ? { onUsage } : {}) })) : lexical;
+	const semantic = models.length ? configuredSemanticCapabilityRanker(models, onUsage, options) : undefined;
+	return semantic ? new ProgressiveCapabilityRanker(lexical, semantic) : lexical;
+}
+
+/**
+ * Model-backed semantic lane used by live evidence and other explicit semantic
+ * probes. Production request routing should normally use configuredCapabilityRanker
+ * so exact Contract metadata can take the progressive deterministic fast path.
+ */
+export function configuredSemanticCapabilityRanker(
+	models: Array<{ model: Model<Api>; apiKey?: string }>,
+	onUsage?: NonNullable<PiSemanticCapabilityPortOptions["onUsage"]>,
+	options: ConfiguredCapabilityRankerOptions = {},
+): CapabilityRanker {
+	const lexical = new LexicalCapabilityRanker();
+	if (!models.length) return lexical;
+	const { onFallback, ...portOptions } = options;
+	return new SemanticCapabilityRanker(
+		new PiSemanticCapabilityPort({ models, ...portOptions, ...(onUsage ? { onUsage } : {}) }),
+		{ fallback: lexical, ...(onFallback ? { onFallback } : {}) },
+	);
 }
 
 /** Configured image-capable Pi models automatically become auxiliary perception adapters. */

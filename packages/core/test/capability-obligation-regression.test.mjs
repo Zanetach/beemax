@@ -322,6 +322,7 @@ function createObjectiveRuntime({ rawRequest, capabilityRequirements, tools, ver
 	const agent = { state: { model: { id: "test" }, messages: [] } };
 	const runtime = new BeeMaxAgentRuntime({
 		profileId: "profile:capability-obligation-regression",
+		interactiveAdmission: "contract_first",
 		taskLedger: ledger,
 		turnUnderstanding: { understand: () => ({ action: "create", goal: rawRequest, constraints: [], acceptanceCriteria: [rawRequest], uncertainties: [], memoryQuery: rawRequest, capabilityQuery: rawRequest, executionMode: "direct", confidence: 1 }) },
 		workContractBuilder: { build: async () => ({ source: "model", cognitionBudgetChargeTokens: 1, semanticAdjudication: semanticReview, contract: {

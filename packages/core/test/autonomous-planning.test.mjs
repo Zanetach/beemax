@@ -1,11 +1,12 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import test from "node:test";
 
 const semanticReview = Object.freeze({ schemaVersion: "beemax.work-contract-adjudication.v1", inventorySchemaVersion: "beemax.semantic-inventory.v1", primaryModelIdentity: "test/primary/test", reviewerModelIdentity: "test/reviewer/test", reviewMode: "different_models", independentSamples: true, cognitionUsage: { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, costUsd: 0, modelIdentities: ["test/primary/test", "test/reviewer/test"] }, cognitionBudgetChargeTokens: 1 });
 import { AutonomousPlanningPolicy, BeeMaxAgentRuntime, conversationKey, createAccessScopeRef, createExecutionEnvelope, createWebTools, DeterministicWorkContractBuilder, PlanningBudgetRegistry } from "../dist/index.js";
 import { attestCapabilityProviderAcquisitionTool, attestCapabilityProviderResolutionTool } from "../dist/capability-provider.js";
 
-const createRuntime = (options) => new BeeMaxAgentRuntime({ profileId: "profile:test", workContractBuilder: new DeterministicWorkContractBuilder(), ...options });
+const createRuntime = (options) => new BeeMaxAgentRuntime({ profileId: "profile:test", interactiveAdmission: "contract_first", workContractBuilder: new DeterministicWorkContractBuilder(), ...options });
 const bindAssistantTurn = (listener, calls, responseId = "response:test") => listener({
 	type: "message_end",
 	message: {
@@ -58,8 +59,8 @@ test("planning policy keeps simple conversational requests direct", () => {
 	assert.deepEqual(decision.requiredTools, []);
 	assert.equal(decision.suggestedConcurrency, 1);
 	assert.equal(decision.budget.maxSubagents, 0);
-	assert.equal(decision.budget.maxToolCalls, 8);
-	assert.equal(decision.budget.maxTokens, 12_000);
+	assert.equal(decision.budget.maxToolCalls, null);
+	assert.equal(decision.budget.maxTokens, null);
 	assert.match(decision.reason, /simple|single/i);
 });
 
@@ -90,7 +91,7 @@ test("Agent runtime hides capability discovery and Tools for a direct answer wit
 	const agent = { state: { model: { id: "test" }, messages: [] } };
 	let prefetchCalls = 0;
 	const tools = [{ name: "capability_discover", description: "Discover capabilities", beemaxCapabilityPrefetch: async () => { prefetchCalls++; return { candidates: [], skills: [] }; } }, { name: "memory_recall", description: "Recall prior context" }, { name: "write", description: "Write a file" }];
-	const runtime = createRuntime({ planningPolicy: new AutonomousPlanningPolicy(), createAgent: async () => ({
+	const runtime = createRuntime({ interactiveAdmission: "model_first", planningPolicy: new AutonomousPlanningPolicy(), createAgent: async () => ({
 		agent,
 		getAllTools: () => tools,
 		getActiveToolNames: () => tools.map(({ name }) => name),
@@ -113,7 +114,7 @@ test("Agent runtime applies one semantic Tool/MCP/Skill proposal while Pi retain
 	const agent = { state: { model: { id: "test" }, messages: [] } };
 	const tools = [
 		{ name: "capability_discover", description: "Discover capabilities", beemaxCapabilityPrefetch: async () => { prefetchCalls++; return { cognitionId: "cap:semantic-mcp", candidates: [{ kind: "mcp", name: "calendar_lookup", confidence: 0.96 }], skills: [] }; } },
-		{ name: "calendar_lookup", description: "Temporal availability coordination", beemaxToolSpec: { kind: "mcp" } },
+		{ name: "calendar_lookup", description: "Temporal availability coordination", beemaxToolSpec: { kind: "mcp", version: "mcp:calendar-lookup:1" } },
 	];
 	const runtime = createRuntime({ executionTrace: { record(event) { traceEvents.push(event); } }, createAgent: async () => ({
 		agent,
@@ -128,9 +129,176 @@ test("Agent runtime applies one semantic Tool/MCP/Skill proposal while Pi retain
 	assert.equal(prefetchCalls, 1);
 	assert.deepEqual(toolChanges[0], ["calendar_lookup"]);
 	assert.deepEqual(traceEvents.filter((event) => event.type.startsWith("capability.")), [
-		{ type: "capability.decision", executionEnvelope: traceEvents[0].executionEnvelope, at: traceEvents.find((event) => event.type === "capability.decision").at, cognitionId: "cap:semantic-mcp", candidates: [{ kind: "mcp", name: "calendar_lookup", confidence: 0.96 }] },
+		{ type: "capability.decision", executionEnvelope: traceEvents[0].executionEnvelope, at: traceEvents.find((event) => event.type === "capability.decision").at, cognitionId: "cap:semantic-mcp", candidates: [{ kind: "mcp", name: "calendar_lookup", version: "mcp:calendar-lookup:1", confidence: 0.96 }] },
 		{ type: "capability.downstream_execution_outcome", executionEnvelope: traceEvents[0].executionEnvelope, at: traceEvents.find((event) => event.type === "capability.downstream_execution_outcome").at, cognitionId: "cap:semantic-mcp", status: "unverified" },
 	]);
+	runtime.dispose();
+});
+
+test("contract planning tools stay active when semantic capability selection chooses only an outcome Tool", async () => {
+	const rawRequest = "调研实时市场并形成多来源完整报告";
+	const quote = (text) => ({ text, source: { kind: "raw_request", start: rawRequest.indexOf(text), end: rawRequest.indexOf(text) + text.length } });
+	const toolChanges = [];
+	let listener;
+	let activeTools = [];
+	const agent = { state: { model: { id: "test" }, messages: [] } };
+	const capabilityDiscover = attestCapabilityProviderResolutionTool({
+		name: "capability_discover", description: "Resolve capabilities",
+		beemaxCapabilityPrefetch: async (_query, _signal, options) => ({
+			cognitionId: "cap:delegate-market",
+			candidates: [{ kind: "tool", name: "market_series", confidence: 1, requirementId: options.requirements[0].id, outcomeIndex: 0, necessity: "required" }],
+			activatedTools: ["market_series"], skills: [],
+		}),
+	});
+	const tools = [
+		capabilityDiscover,
+		{ name: "market_series", description: "Fetch current structured market data", beemaxPolicy: { sideEffect: "none" } },
+		{ name: "task_spawn", description: "Delegate one bounded Task", beemaxPolicy: { sideEffect: "local" } },
+		{ name: "task_wait", description: "Wait for one delegated Task", beemaxPolicy: { sideEffect: "none" } },
+	];
+	activeTools = tools.map(({ name }) => name);
+	const runtime = createRuntime({
+		planningPolicy: new AutonomousPlanningPolicy(),
+		turnUnderstanding: { understand: () => ({ action: "create", goal: rawRequest, constraints: [], acceptanceCriteria: [rawRequest, "多来源完整报告"], uncertainties: [], memoryQuery: rawRequest, capabilityQuery: "实时市场", executionMode: "delegate", confidence: 1 }) },
+		workContractBuilder: { build: async () => ({ source: "model", cognitionBudgetChargeTokens: 1, semanticAdjudication: semanticReview, contract: {
+			schemaVersion: "beemax.work-contract.v1", rawRequest, action: "create", objective: quote(rawRequest), constraints: [], prohibitions: [],
+			acceptanceCriteria: [quote(rawRequest), quote("多来源完整报告")], capabilityRequirements: [quote("实时市场")], uncertainties: [], executionMode: "delegate", confidence: 1,
+		} }) },
+		createAgent: async () => ({
+			agent, getAllTools: () => tools, getActiveToolNames: () => [...activeTools], setActiveToolsByName: (names) => { activeTools = [...names]; toolChanges.push([...names]); },
+			subscribe: (callback) => { listener = callback; return () => undefined; },
+			prompt: async () => {
+				assert.ok(activeTools.includes("task_spawn"), `the enforced planner must be callable in the same Turn: ${activeTools.join(",")}`);
+				assert.ok(activeTools.includes("task_wait"), `the enforced planner wait must be callable in the same Turn: ${activeTools.join(",")}`);
+				assert.ok(activeTools.includes("market_series"));
+				await dispatchToolCall(agent, listener, { id: "spawn:market", name: "task_spawn", result: { details: { id: "task:market", status: "queued" } } });
+				await dispatchToolCall(agent, listener, { id: "wait:market", name: "task_wait", args: { id: "task:market" }, result: { details: { id: "task:market", status: "completed" } } });
+				await dispatchToolCall(agent, listener, { id: "series:market", name: "market_series", result: { content: [{ type: "text", text: "structured market data" }] } });
+				listener({ type: "message_end", message: { role: "assistant", responseId: "response:delegate-market", content: [{ type: "text", text: "done" }], usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0 } } });
+				agent.state.messages = [{ role: "assistant", content: [{ type: "text", text: "done" }], usage: { input: 1, output: 1 } }];
+			},
+			abort: async () => undefined, dispose: () => undefined,
+		}),
+	});
+	const result = await runtime.run({ source: { platform: "cli", chatId: "delegate-market", chatType: "dm", userId: "local" }, text: rawRequest, timeoutMs: 1_000 });
+	assert.equal(result.answer, "done");
+	assert.ok(toolChanges[0].includes("task_spawn") && toolChanges[0].includes("task_wait"));
+	runtime.dispose();
+});
+
+test("trusted preflight restores a deterministic Tool candidate for an omitted Work Contract requirement", async () => {
+	const rawRequest = "获取实时行情并独立核对两个来源";
+	const quote = (text) => ({ text, source: { kind: "raw_request", start: rawRequest.indexOf(text), end: rawRequest.indexOf(text) + text.length } });
+	let listener; let prompts = 0; let activeTools = []; const traceEvents = [];
+	const agent = { state: { model: { id: "test" }, messages: [] } };
+	const capabilityDiscover = attestCapabilityProviderResolutionTool({
+		name: "capability_discover", description: "Resolve capabilities",
+		beemaxCapabilityPrefetch: async (_query, _signal, options) => ({
+			cognitionId: "cap:partial-contract",
+			candidates: [{ kind: "tool", name: "market_series", confidence: 1, requirementId: options.requirements[0].id, outcomeIndex: 0, necessity: "required" }],
+			activatedTools: ["market_series"], skills: [],
+		}),
+	});
+	const tools = [
+		capabilityDiscover,
+		{ name: "market_series", description: "Fetch real-time structured market prices", triggers: ["实时行情"], beemaxPolicy: { sideEffect: "none" } },
+		{ name: "source_crosscheck", description: "Independently cross-check two public sources", triggers: ["独立核对两个来源"], beemaxPolicy: { sideEffect: "none" }, beemaxToolSpec: { version: "tool:source-crosscheck:1" } },
+	];
+	activeTools = tools.map(({ name }) => name);
+	const runtime = createRuntime({
+		executionTrace: { record(event) { traceEvents.push(event); } },
+		turnUnderstanding: { understand: () => ({ action: "create", goal: rawRequest, constraints: [], acceptanceCriteria: [rawRequest], uncertainties: [], memoryQuery: rawRequest, capabilityQuery: rawRequest, executionMode: "direct", confidence: 1 }) },
+		workContractBuilder: { build: async () => ({ source: "model", cognitionBudgetChargeTokens: 1, semanticAdjudication: semanticReview, contract: {
+			schemaVersion: "beemax.work-contract.v1", rawRequest, action: "create", objective: quote(rawRequest), constraints: [], prohibitions: [],
+			acceptanceCriteria: [quote(rawRequest)], capabilityRequirements: [quote("获取实时行情"), quote("独立核对两个来源")], uncertainties: [], executionMode: "direct", confidence: 1,
+		} }) },
+		createAgent: async () => ({
+			agent, getAllTools: () => tools, getActiveToolNames: () => [...activeTools], setActiveToolsByName: (names) => { activeTools = [...names]; },
+			subscribe: (callback) => { listener = callback; return () => undefined; },
+			prompt: async () => {
+				prompts++;
+				assert.ok(activeTools.includes("market_series"));
+				assert.ok(activeTools.includes("source_crosscheck"));
+				await dispatchToolCall(agent, listener, { id: "series:partial", name: "market_series", result: { content: [{ type: "text", text: "prices" }] } });
+				await dispatchToolCall(agent, listener, { id: "crosscheck:partial", name: "source_crosscheck", result: { content: [{ type: "text", text: "two sources agree" }] } });
+				listener({ type: "message_end", message: { role: "assistant", responseId: "response:partial-contract", content: [{ type: "text", text: "done" }], usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0 } } });
+				agent.state.messages = [{ role: "assistant", content: [{ type: "text", text: "done" }], usage: { input: 1, output: 1 } }];
+			},
+			abort: async () => undefined, dispose: () => undefined,
+		}),
+	});
+	const result = await runtime.run({ source: { platform: "cli", chatId: "partial-contract", chatType: "dm", userId: "local" }, text: rawRequest, timeoutMs: 1_000 });
+	assert.equal(result.answer, "done");
+	assert.equal(prompts, 1, "the deterministic compiler should avoid a redundant Capability correction Turn");
+	const restoredCandidate = traceEvents.find((event) => event.type === "capability.decision")?.candidates.find((candidate) => candidate.name === "source_crosscheck");
+	assert.equal(restoredCandidate?.version, "tool:source-crosscheck:1");
+	runtime.dispose();
+});
+
+test("a read-and-repair file requirement deterministically activates both file Tools when semantic routing omits the writer", async () => {
+	const rawRequest = "读取该 HTML，修正后另存为 report.html。";
+	const clause = { text: rawRequest, source: { kind: "raw_request", start: 0, end: rawRequest.length } };
+	let listener; let activeTools = [];
+	const agent = { state: { model: { id: "test" }, messages: [] } };
+	const capabilityDiscover = attestCapabilityProviderResolutionTool({
+		name: "capability_discover", description: "Resolve capabilities",
+		beemaxCapabilityPrefetch: async (_query, _signal, options) => ({
+			cognitionId: "cap:file-read-repair",
+			candidates: [{ kind: "tool", name: "artifact_inspect", confidence: 0.99, requirementId: options.requirements[0].id, outcomeIndex: 0, necessity: "required" }],
+			activatedTools: ["artifact_inspect"], skills: [],
+		}),
+	});
+	const tools = [
+		capabilityDiscover,
+		{ name: "read", description: "Read a workspace file", beemaxPolicy: { sideEffect: "none" } },
+		{ name: "write", description: "Write a workspace file", beemaxPolicy: { sideEffect: "local" } },
+		{ name: "artifact_inspect", description: "Inspect an existing Artifact", beemaxPolicy: { sideEffect: "none" } },
+	];
+	activeTools = tools.map(({ name }) => name);
+	const runtime = createRuntime({
+		turnUnderstanding: { understand: () => ({ action: "create", goal: rawRequest, constraints: [], acceptanceCriteria: [rawRequest], uncertainties: [], memoryQuery: rawRequest, capabilityQuery: rawRequest, executionMode: "direct", confidence: 1 }) },
+		workContractBuilder: { build: async () => ({ source: "model", cognitionBudgetChargeTokens: 1, semanticAdjudication: semanticReview, contract: {
+			schemaVersion: "beemax.work-contract.v1", rawRequest, action: "create", objective: clause, constraints: [], prohibitions: [], acceptanceCriteria: [clause], capabilityRequirements: [clause], uncertainties: [], executionMode: "direct", confidence: 1,
+		} }) },
+		createAgent: async () => ({
+			agent, getAllTools: () => tools, getActiveToolNames: () => [...activeTools], setActiveToolsByName: (names) => { activeTools = [...names]; },
+			subscribe: (callback) => { listener = callback; return () => undefined; },
+			prompt: async () => {
+				assert.deepEqual(activeTools.sort(), ["read", "write"]);
+				await dispatchToolCall(agent, listener, { id: "read:existing-html", name: "read", result: { content: [{ type: "text", text: "existing HTML" }] } });
+				await dispatchToolCall(agent, listener, { id: "write:corrected-html", name: "write", result: { content: [{ type: "text", text: "corrected HTML" }] } });
+				listener({ type: "message_end", message: { role: "assistant", responseId: "response:file-read-repair", content: [{ type: "text", text: "done" }], usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0 } } });
+				agent.state.messages = [{ role: "assistant", content: [{ type: "text", text: "done" }], usage: { input: 1, output: 1 } }];
+			},
+			abort: async () => undefined, dispose: () => undefined,
+		}),
+	});
+	const result = await runtime.run({ source: { platform: "cli", chatId: "file-read-repair", chatType: "dm", userId: "local" }, text: rawRequest, timeoutMs: 1_000 });
+	assert.equal(result.answer, "done");
+	runtime.dispose();
+});
+
+test("Agent runtime bounds an oversized semantic capability query while preserving its head and tail", async () => {
+	const source = { platform: "cli", chatId: "bounded-capability-query", chatType: "dm", userId: "local", delegatedTask: { id: "task:bounded-query", ownerKey: "cli:bounded-capability-query:local" } };
+	const oversizedQuery = `HEAD web research ${"middle ".repeat(100)}TAIL pdf verification`;
+	let observedQuery = "";
+	const agent = { state: { model: { id: "test" }, messages: [] } };
+	const tools = [{
+		name: "capability_discover", description: "Discover capabilities",
+		beemaxCapabilityPrefetch: async (query) => { observedQuery = query; return { cognitionId: "cap:bounded-query", candidates: [], skills: [] }; },
+	}, { name: "web_search", description: "Research current public web evidence" }];
+	const runtime = createRuntime({
+		createAgent: async () => ({
+			agent, getAllTools: () => tools, getActiveToolNames: () => tools.map(({ name }) => name), setActiveToolsByName: () => undefined,
+			subscribe: () => () => undefined,
+			prompt: async () => { agent.state.messages = [{ role: "assistant", content: [{ type: "text", text: "done" }], usage: { input: 1, output: 1 } }]; },
+			abort: async () => undefined, dispose: () => undefined,
+		}),
+	});
+	await runtime.run({ source, mode: "automation", text: oversizedQuery, timeoutMs: 1_000, executionEnvelope: createExecutionEnvelope({ executionId: "execution:bounded-query", trigger: { kind: "delegation", id: "task:bounded-query" }, taskId: "task:bounded-query", taskRunId: "run:bounded-query" }) });
+	assert.equal(observedQuery.length, 500);
+	assert.match(observedQuery, /^HEAD web research/u);
+	assert.match(observedQuery, /TAIL pdf verification$/u);
 	runtime.dispose();
 });
 
@@ -164,6 +332,48 @@ test("Agent runtime keeps an explicit Work Contract incomplete when trusted disc
 	runtime.dispose();
 });
 
+test("trusted runtime discovery closes a single Work Contract capability obligation after preflight fails", async () => {
+	const rawRequest = "使用实时资料源生成结果";
+	const clause = (text) => ({ text, source: { kind: "raw_request", start: rawRequest.indexOf(text), end: rawRequest.indexOf(text) + text.length } });
+	let listener; let prompts = 0; let preflights = 0; let activeTools = ["capability_discover", "web_extract"];
+	const agent = { state: { model: { id: "test" }, messages: [] } };
+	const capabilityDiscover = attestCapabilityProviderResolutionTool({
+		name: "capability_discover", description: "Discover and resolve capabilities",
+		beemaxCapabilityPrefetch: async () => { preflights++; throw new Error("semantic preflight invalid_json"); },
+	});
+	const tools = [capabilityDiscover, { name: "web_extract", description: "Extract current public sources", beemaxPolicy: { sideEffect: "none" } }];
+	const runtime = createRuntime({
+		turnUnderstanding: { understand: () => ({ action: "create", goal: rawRequest, constraints: [], acceptanceCriteria: [rawRequest], uncertainties: [], memoryQuery: rawRequest, capabilityQuery: "实时资料源", executionMode: "direct", confidence: 0.9 }) },
+		workContractBuilder: { build: async () => ({ source: "model", cognitionBudgetChargeTokens: 1, semanticAdjudication: semanticReview, contract: {
+			schemaVersion: "beemax.work-contract.v1", rawRequest, action: "create", objective: clause(rawRequest),
+			constraints: [], prohibitions: [], acceptanceCriteria: [clause(rawRequest)], capabilityRequirements: [clause("实时资料源")],
+			uncertainties: [], executionMode: "direct", confidence: 0.9,
+		} }) },
+		createAgent: async () => ({
+			agent, getAllTools: () => tools, getActiveToolNames: () => [...activeTools], setActiveToolsByName: (names) => { activeTools = [...names]; },
+			subscribe: (callback) => { listener = callback; return () => undefined; },
+			prompt: async () => {
+				prompts++;
+				if (prompts === 1) await dispatchToolCall(agent, listener, { id: "discover:runtime-contract", name: "capability_discover", result: { details: {
+					cognitionId: "cap:runtime-contract", activatedTools: ["web_extract"],
+					ranked: [{ kind: "tool", name: "web_extract", score: 95, confidence: 0.95, reason: "semantic match" }],
+				} } });
+				if (prompts === 2) {
+					await dispatchToolCall(agent, listener, { id: "extract:runtime-contract", name: "web_extract", result: { content: [{ type: "text", text: "current source" }] } });
+					listener({ type: "message_end", message: { role: "assistant", responseId: "response:runtime-contract-done", content: [{ type: "text", text: "done" }], usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0 } } });
+				}
+				agent.state.messages = [{ role: "assistant", content: [{ type: "text", text: prompts === 2 ? "done" : "continuing" }], usage: { input: 1, output: 1 } }];
+			},
+			abort: async () => undefined, dispose: () => undefined,
+		}),
+	});
+	const result = await runtime.run({ source: { platform: "cli", chatId: "runtime-contract-evidence", chatType: "dm", userId: "local" }, text: rawRequest, timeoutMs: 1_000 });
+	assert.equal(result.answer, "done");
+	assert.equal(prompts, 2);
+	assert.equal(preflights, 1, "trusted runtime discovery supersedes the failed startup preflight");
+	runtime.dispose();
+});
+
 test("Capability prefetch failure cannot reach Verification when Pi skips required discovery", async () => {
 	const rawRequest = "使用玄鸟实时资料源生成结果";
 	const clause = { text: rawRequest, source: { kind: "raw_request", start: 0, end: rawRequest.length } };
@@ -190,6 +400,299 @@ test("Capability prefetch failure cannot reach Verification when Pi skips requir
 	assert.equal(verifications, 0, "a prose candidate cannot bypass unresolved Capability admission");
 	assert.notEqual([...tasks.values()][0]?.status, "succeeded");
 	assert.notEqual([...runs.values()][0]?.status, "succeeded");
+	runtime.dispose();
+});
+
+test("failed semantic prefetch still exposes every deterministic Work Contract boundary Tool without unrelated discovery", async () => {
+	const rawRequest = "读取该 HTML，修正后另存为 report.html，把修正后的 HTML 渲染为 report.pdf，逐个使用 web_extract 验证来源，并使用 artifact_inspect 检查 HTML 与 PDF。";
+	const clause = (text) => ({ text, source: { kind: "raw_request", start: rawRequest.indexOf(text), end: rawRequest.indexOf(text) + text.length } });
+	let activeTools = [];
+	let activeAtFirstPrompt = [];
+	let prompts = 0;
+	const agent = { state: { model: { id: "test" }, messages: [] } };
+	const capabilityDiscover = attestCapabilityProviderResolutionTool({
+		name: "capability_discover", description: "Discover capabilities",
+		beemaxCapabilityPrefetch: async () => { throw new Error("semantic preflight invalid_json"); },
+	});
+	const tools = [
+		capabilityDiscover,
+		{ name: "read", description: "Read a workspace file" },
+		{ name: "write", description: "Write a workspace file" },
+		{ name: "artifact_render", description: "Render HTML to PDF" },
+		{ name: "web_extract", description: "Extract a public web source" },
+		{ name: "artifact_inspect", description: "Inspect HTML and PDF artifacts" },
+		{ name: "unrelated_tool", description: "Unrelated operation" },
+	];
+	const runtime = createRuntime({
+		turnUnderstanding: { understand: () => ({ action: "create", goal: rawRequest, constraints: [], acceptanceCriteria: [rawRequest], uncertainties: [], memoryQuery: rawRequest, capabilityQuery: rawRequest, executionMode: "direct", confidence: 1 }) },
+		workContractBuilder: { build: async () => ({ source: "model", cognitionBudgetChargeTokens: 1, semanticAdjudication: semanticReview, contract: {
+			schemaVersion: "beemax.work-contract.v1", rawRequest, action: "create", objective: clause(rawRequest), constraints: [], prohibitions: [], acceptanceCriteria: [clause(rawRequest)],
+			capabilityRequirements: ["读取该 HTML", "修正后另存为 report.html", "把修正后的 HTML 渲染为 report.pdf", "逐个使用 web_extract 验证来源", "使用 artifact_inspect 检查 HTML 与 PDF"].map(clause),
+			uncertainties: [], executionMode: "direct", confidence: 1,
+		} }) },
+		createAgent: async () => ({
+			agent, getAllTools: () => tools, getActiveToolNames: () => tools.map(({ name }) => name), setActiveToolsByName: (names) => { activeTools = [...names]; }, subscribe: () => () => undefined,
+			prompt: async () => { prompts++; if (prompts === 1) activeAtFirstPrompt = [...activeTools]; agent.state.messages = [{ role: "assistant", content: [{ type: "text", text: "waiting for capability evidence" }], usage: { input: 1, output: 1 } }]; },
+			abort: async () => undefined, dispose: () => undefined,
+		}),
+	});
+	await assert.rejects(runtime.run({ source: { platform: "cli", chatId: "contract-boundary-fallback", chatType: "dm", userId: "local" }, text: rawRequest, timeoutMs: 1_000 }), /selected required Capabilities did not execute successfully/i);
+	for (const name of ["read", "write", "artifact_render", "web_extract", "artifact_inspect"]) assert.ok(activeAtFirstPrompt.includes(name), `${name} must be visible on the first execution Turn`);
+	assert.equal(activeAtFirstPrompt.includes("capability_discover"), false);
+	assert.equal(activeAtFirstPrompt.includes("unrelated_tool"), false);
+	runtime.dispose();
+});
+
+test("exact source-bound Contract operations remain executable without a late discovery Turn when semantic prefetch fails", async () => {
+	const rawRequest = "读取 report.html，修正后另存为 fixed.html，逐个使用 web_extract 验证来源，把修正后的 HTML 渲染为 fixed.pdf，独立检查 HTML 的存在性与渲染，检查 PDF 的完整性与渲染，并以 HTML 为 source 验证两份文件一致。";
+	const clause = (text) => ({ text, source: { kind: "raw_request", start: rawRequest.indexOf(text), end: rawRequest.indexOf(text) + text.length } });
+	const capabilityTexts = ["读取 report.html", "修正后另存为 fixed.html", "逐个使用 web_extract 验证来源", "把修正后的 HTML 渲染为 fixed.pdf", "独立检查 HTML 的存在性与渲染", "检查 PDF 的完整性与渲染", "以 HTML 为 source 验证两份文件一致"];
+	let listener;
+	let prompts = 0;
+	let preflights = 0;
+	let activeTools = [];
+	const agent = { state: { model: { id: "test" }, messages: [] } };
+	const capabilityDiscover = attestCapabilityProviderResolutionTool({
+		name: "capability_discover", description: "Discover capabilities",
+		beemaxCapabilityPrefetch: async () => { preflights++; throw new Error("semantic preflight invalid_json"); },
+	});
+	const outcomeTools = ["read", "write", "web_extract", "artifact_render", "artifact_inspect"].map((name) => ({ name, description: name, beemaxPolicy: { sideEffect: "none" } }));
+	const tools = [capabilityDiscover, ...outcomeTools];
+	const runtime = createRuntime({
+		turnUnderstanding: { understand: () => ({ action: "create", goal: rawRequest, constraints: [], acceptanceCriteria: [rawRequest], uncertainties: [], memoryQuery: rawRequest, capabilityQuery: rawRequest, executionMode: "direct", confidence: 1 }) },
+		workContractBuilder: { build: async () => ({ source: "model", cognitionBudgetChargeTokens: 1, semanticAdjudication: semanticReview, contract: {
+			schemaVersion: "beemax.work-contract.v1", rawRequest, action: "create", objective: clause(rawRequest), constraints: [], prohibitions: [], acceptanceCriteria: [clause(rawRequest)], capabilityRequirements: capabilityTexts.map(clause),
+			uncertainties: [], executionMode: "direct", confidence: 1,
+		} }) },
+		createAgent: async () => ({
+			agent, getAllTools: () => tools, getActiveToolNames: () => tools.map(({ name }) => name), setActiveToolsByName: (names) => { activeTools = [...names]; },
+			subscribe: (callback) => { listener = callback; return () => undefined; },
+			prompt: async () => {
+				prompts++;
+				assert.equal(activeTools.includes("capability_discover"), false, "complete deterministic resolution must not force a late discovery round-trip");
+				for (const [index, tool] of outcomeTools.entries()) await dispatchToolCall(agent, listener, { id: `deterministic:${index}`, name: tool.name, result: { content: [{ type: "text", text: `${tool.name} complete` }] } });
+				const message = { role: "assistant", responseId: "response:deterministic-contract", content: [{ type: "text", text: "done" }], usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0 } };
+				listener({ type: "message_end", message });
+				agent.state.messages = [message];
+			},
+			abort: async () => undefined, dispose: () => undefined,
+		}),
+	});
+	const result = await runtime.run({ source: { platform: "cli", chatId: "deterministic-contract-resolution", chatType: "dm", userId: "local" }, text: rawRequest, timeoutMs: 1_000 });
+	assert.equal(result.answer, "done");
+	assert.equal(prompts, 1);
+	assert.equal(preflights, 1);
+	runtime.dispose();
+});
+
+test("trusted runtime discovery activates the complete Contract-selected Tool set instead of only the provider's current hint", async () => {
+	const rawRequest = "完成甲界面、乙界面和丙界面";
+	const clause = (text) => ({ text, source: { kind: "raw_request", start: rawRequest.indexOf(text), end: rawRequest.indexOf(text) + text.length } });
+	const requirements = ["甲界面", "乙界面", "丙界面"].map(clause);
+	const requirementId = (index) => `capreq:${index}:${createHash("sha256").update(JSON.stringify({ text: requirements[index].text, source: requirements[index].source })).digest("hex").slice(0, 20)}`;
+	let listener;
+	let prompts = 0;
+	let activeTools = [];
+	const agent = { state: { model: { id: "test" }, messages: [] } };
+	const capabilityDiscover = attestCapabilityProviderResolutionTool({
+		name: "capability_discover", description: "Discover capabilities",
+		beemaxCapabilityPrefetch: async () => { throw new Error("semantic preflight invalid_json"); },
+	});
+	const outcomeTools = ["alpha_tool", "beta_tool", "gamma_tool"].map((name) => ({ name, description: `Opaque provider operation ${name.at(0)}` }));
+	const lifecycleTools = ["skill_activate", "skill_read", "skill_complete"].map((name) => ({ name, description: name }));
+	const tools = [capabilityDiscover, ...outcomeTools, ...lifecycleTools];
+	const runtime = createRuntime({
+		turnUnderstanding: { understand: () => ({ action: "create", goal: rawRequest, constraints: [], acceptanceCriteria: [rawRequest], uncertainties: [], memoryQuery: rawRequest, capabilityQuery: rawRequest, executionMode: "direct", confidence: 1 }) },
+		workContractBuilder: { build: async () => ({ source: "model", cognitionBudgetChargeTokens: 1, semanticAdjudication: semanticReview, contract: {
+			schemaVersion: "beemax.work-contract.v1", rawRequest, action: "create", objective: clause(rawRequest), constraints: [], prohibitions: [], acceptanceCriteria: [clause(rawRequest)], capabilityRequirements: requirements,
+			uncertainties: [], executionMode: "direct", confidence: 1,
+		} }) },
+		createAgent: async () => ({
+			agent, getAllTools: () => tools, getActiveToolNames: () => tools.map(({ name }) => name), setActiveToolsByName: (names) => { activeTools = [...names]; },
+			subscribe: (callback) => { listener = callback; return () => undefined; },
+			prompt: async () => {
+				prompts++;
+				if (prompts === 1) {
+					assert.deepEqual(activeTools, ["capability_discover"]);
+					await dispatchToolCall(agent, listener, { id: "discover:complete-contract", name: "capability_discover", result: { details: {
+						cognitionId: "cap:complete-contract", activatedTools: ["alpha_tool", "skill_activate", "skill_read"],
+						ranked: [
+							...outcomeTools.map((tool, index) => ({ kind: "tool", name: tool.name, score: 99 - index, confidence: 0.99, reason: "semantic match", requirementId: requirementId(index), outcomeIndex: 0, necessity: "required" })),
+							{ kind: "skill", name: "write", version: `sha256:${"a".repeat(64)}`, score: 99, confidence: 0.99, reason: "exact name" },
+						],
+					} } });
+					agent.state.messages = [{ role: "assistant", content: [{ type: "text", text: "capabilities selected" }], usage: { input: 1, output: 1 } }];
+					return;
+				}
+				assert.deepEqual(activeTools, ["alpha_tool", "beta_tool", "gamma_tool"]);
+				for (const [index, tool] of outcomeTools.entries()) await dispatchToolCall(agent, listener, { id: `execute:${index}`, name: tool.name, result: { content: [{ type: "text", text: `${tool.name} complete` }] } });
+				const message = { role: "assistant", responseId: "response:complete-contract", content: [{ type: "text", text: "done" }], usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0 } };
+				listener({ type: "message_end", message });
+				agent.state.messages = [message];
+			},
+			abort: async () => undefined, dispose: () => undefined,
+		}),
+	});
+	const result = await runtime.run({ source: { platform: "cli", chatId: "complete-contract-activation", chatType: "dm", userId: "local" }, text: rawRequest, timeoutMs: 1_000 });
+	assert.equal(result.answer, "done");
+	assert.equal(prompts, 2);
+	runtime.dispose();
+});
+
+test("semantic capability failure falls back to exact static Artifact triggers", async () => {
+	const source = { platform: "cli", chatId: "artifact-lexical-fallback", chatType: "dm", userId: "local" };
+	let activeAtPrompt = []; let activeTools = [];
+	const agent = { state: { model: { id: "test" }, messages: [] } };
+	const tools = [
+		{ name: "capability_discover", description: "Discover capabilities", beemaxCapabilityPrefetch: async () => { throw new Error("semantic cognition invalid_json"); } },
+		{ name: "artifact_render", description: "Render HTML to PDF", triggers: ["pdf", "html to pdf"], beemaxPolicy: { sideEffect: "local" } },
+		{ name: "artifact_verify", description: "Verify PDF render and integrity", triggers: ["pdf 可解析", "页面渲染"], beemaxPolicy: { sideEffect: "none" } },
+		{ name: "unrelated_tool", description: "Unrelated operation", beemaxPolicy: { sideEffect: "none" } },
+	];
+	const runtime = createRuntime({ createAgent: async () => ({
+		agent, getAllTools: () => tools, getActiveToolNames: () => activeTools.length ? [...activeTools] : tools.map(({ name }) => name), setActiveToolsByName: (names) => { activeTools = [...names]; },
+		subscribe: () => () => undefined,
+		prompt: async () => { activeAtPrompt = [...activeTools]; agent.state.messages = [{ role: "assistant", content: [{ type: "text", text: "continue with active artifact tools" }], usage: { input: 1, output: 1 } }]; },
+		abort: async () => undefined, dispose: () => undefined,
+	}) });
+	await runtime.run({ source, text: "把 report.html 生成 PDF，并检查 PDF 可解析和页面渲染", timeoutMs: 1_000 });
+	assert.ok(activeAtPrompt.includes("artifact_render"));
+	assert.ok(activeAtPrompt.includes("artifact_verify"));
+	assert.equal(activeAtPrompt.includes("unrelated_tool"), false);
+	runtime.dispose();
+});
+
+test("a corrected HTML source modifier cannot override an explicit PDF render requirement with write", async () => {
+	const rawRequest = "把修正后的 HTML 渲染为 gold-weekly-report.pdf。";
+	const clause = { text: rawRequest, source: { kind: "raw_request", start: 0, end: rawRequest.length } };
+	let activeAtPrompt = []; let activeTools = [];
+	const agent = { state: { model: { id: "test" }, messages: [] } };
+	const capabilityDiscover = attestCapabilityProviderResolutionTool({
+		name: "capability_discover", description: "Resolve required capabilities", beemaxPolicy: { sideEffect: "none" },
+		beemaxCapabilityPrefetch: async (_query, _signal, options) => ({
+			cognitionId: "cap:corrected-html-render",
+			candidates: [{ kind: "tool", name: "artifact_render", confidence: 0.99, requirementId: options.requirements[0].id, outcomeIndex: 0, necessity: "required" }],
+			activatedTools: ["artifact_render"], skills: [],
+		}),
+	});
+	const tools = [
+		capabilityDiscover,
+		{ name: "artifact_render", description: "Render HTML into a PDF", triggers: ["html to pdf", "渲染为 pdf"], beemaxPolicy: { sideEffect: "local" } },
+		{ name: "write", description: "Write or edit a workspace file", triggers: ["修正", "写入"], beemaxPolicy: { sideEffect: "local" } },
+	];
+	activeTools = [...tools];
+	const runtime = createRuntime({
+		turnUnderstanding: { understand: () => ({ action: "create", goal: rawRequest, constraints: [], acceptanceCriteria: [rawRequest], uncertainties: [], memoryQuery: rawRequest, capabilityQuery: rawRequest, executionMode: "direct", confidence: 1 }) },
+		workContractBuilder: { build: async () => ({ source: "model", cognitionBudgetChargeTokens: 1, semanticAdjudication: semanticReview, contract: {
+			schemaVersion: "beemax.work-contract.v1", rawRequest, action: "create", objective: clause, constraints: [], prohibitions: [], acceptanceCriteria: [clause], capabilityRequirements: [clause], uncertainties: [], executionMode: "direct", confidence: 1,
+		} }) },
+		createAgent: async () => ({
+			agent, getAllTools: () => tools, getActiveToolNames: () => activeTools.map((tool) => tool.name), setActiveToolsByName: (names) => { activeTools = tools.filter((tool) => names.includes(tool.name)); },
+			subscribe: () => () => undefined,
+			prompt: async () => {
+				activeAtPrompt = activeTools.map((tool) => tool.name);
+				agent.state.messages = [{ role: "assistant", content: [{ type: "text", text: "ready" }], usage: { input: 1, output: 1 } }];
+			},
+			abort: async () => undefined, dispose: () => undefined,
+		}),
+	});
+	await assert.rejects(
+		runtime.run({ source: { platform: "cli", chatId: "corrected-html-render", chatType: "dm", userId: "local" }, text: rawRequest, timeoutMs: 1_000 }),
+		/selected required Capabilities did not execute successfully: artifact_render/,
+	);
+	assert.deepEqual(activeAtPrompt, ["artifact_render"]);
+	runtime.dispose();
+});
+
+test("an explicit execution Tool in a Work Contract overrides a semantic proposal that confuses a referenced receipt with an action", async () => {
+	const rawRequest = "只使用历史 artifact_render 回执重试 artifact_verify";
+	const clause = { text: rawRequest, source: { kind: "raw_request", start: 0, end: rawRequest.length } };
+	let listener; let activeAtPrompt = []; let activeTools = [];
+	const agent = { state: { model: { id: "test" }, messages: [] } };
+	const capabilityDiscover = attestCapabilityProviderResolutionTool({
+		name: "capability_discover", description: "Resolve required capabilities", beemaxPolicy: { sideEffect: "none" },
+		beemaxCapabilityPrefetch: async (_query, _signal, options) => ({
+			cognitionId: "cap:wrong-render-proposal",
+			candidates: [{ kind: "tool", name: "artifact_render", confidence: 0.99, requirementId: options.requirements[0].id, outcomeIndex: 0, necessity: "required" }],
+			activatedTools: ["artifact_render"], skills: [],
+		}),
+	});
+	const tools = [
+		capabilityDiscover,
+		{ name: "artifact_render", description: "Render HTML into a PDF", beemaxPolicy: { sideEffect: "local" } },
+		{ name: "artifact_verify", description: "Verify an existing Artifact manifest without rewriting it", beemaxPolicy: { sideEffect: "none" } },
+	];
+	activeTools = [...tools];
+	const runtime = createRuntime({
+		turnUnderstanding: { understand: () => ({ action: "create", goal: rawRequest, constraints: [rawRequest], acceptanceCriteria: [rawRequest], uncertainties: [], memoryQuery: rawRequest, capabilityQuery: rawRequest, executionMode: "direct", confidence: 1 }) },
+		workContractBuilder: { build: async () => ({ source: "model", cognitionBudgetChargeTokens: 1, semanticAdjudication: semanticReview, contract: {
+			schemaVersion: "beemax.work-contract.v1", rawRequest, action: "create", objective: clause, constraints: [], prohibitions: [], acceptanceCriteria: [clause], capabilityRequirements: [clause], uncertainties: [], executionMode: "direct", confidence: 1,
+		} }) },
+		createAgent: async () => ({
+			agent, getAllTools: () => tools, getActiveToolNames: () => activeTools.map((tool) => tool.name), setActiveToolsByName: (names) => { activeTools = tools.filter((tool) => names.includes(tool.name)); },
+			subscribe: (callback) => { listener = callback; return () => undefined; },
+			prompt: async () => {
+				activeAtPrompt = activeTools.map((tool) => tool.name);
+				await dispatchToolCall(agent, listener, { id: "verify:existing-artifact", name: "artifact_verify", result: { content: [{ type: "text", text: "verified" }] } });
+				listener({ type: "message_end", message: { role: "assistant", responseId: "response:verified-artifact", content: [{ type: "text", text: "verified" }], usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0 } } });
+				agent.state.messages = [{ role: "assistant", content: [{ type: "text", text: "verified" }], usage: { input: 1, output: 1 } }];
+			},
+			abort: async () => undefined, dispose: () => undefined,
+		}),
+	});
+	const result = await runtime.run({ source: { platform: "cli", chatId: "explicit-execution-tool", chatType: "dm", userId: "local" }, text: rawRequest, timeoutMs: 1_000 });
+	assert.equal(result.answer, "verified");
+	assert.deepEqual(activeAtPrompt, ["artifact_verify"]);
+	runtime.dispose();
+});
+
+test("a successful Artifact Tool durably attaches its Manifest and verification receipt to the Objective", async () => {
+	const rawRequest = "执行 artifact_verify 并交付已验证的 PDF";
+	const clause = { text: rawRequest, source: { kind: "raw_request", start: 0, end: rawRequest.length } };
+	const sha256 = "a".repeat(64);
+	const manifest = {
+		schemaVersion: "beemax.artifact-manifest.v1", id: `artifact:sha256:${sha256}`,
+		locator: { kind: "workspace", uri: "workspace:report.pdf" }, mediaType: "application/pdf", byteLength: 4096, sha256,
+		producer: { providerId: "test.pdf", providerVersion: "1", operation: "render" }, sourceRefs: ["workspace:report.html"], createdAt: 10,
+	};
+	const unsignedReceipt = {
+		schemaVersion: "beemax.artifact-verification.v1", artifactId: manifest.id, artifactSha256: sha256,
+		expectationSha256: "b".repeat(64), verifiedAt: 11, verifiers: [{ id: "test.verifier", version: "1" }],
+		checks: [{ dimension: "integrity", status: "accepted", evidenceRefs: [`artifact:sha256:${sha256}`] }],
+	};
+	const receipt = { ...unsignedReceipt, id: `artifact-verification:sha256:${createHash("sha256").update(JSON.stringify(unsignedReceipt)).digest("hex")}` };
+	const tasks = new Map(); const runs = new Map();
+	const ledger = {
+		record(task) { tasks.set(task.id, { ...task }); }, transition(id, change) { tasks.set(id, { ...tasks.get(id), ...change }); return true; },
+		recordRun(run) { runs.set(run.id, { ...run }); }, transitionRun(id, change) { runs.set(id, { ...runs.get(id), ...change }); return true; },
+		queryTasks: (query) => [...tasks.values()].filter((task) => query.ownerKeys.includes(task.ownerKey) && (!query.id || query.id === task.id)),
+		settleDirectObjectiveCompletion(settlement) { return settleDirectObjectiveCompletion(tasks, runs, undefined, settlement); },
+	};
+	let listener; const agent = { state: { model: { id: "test" }, messages: [] } };
+	const artifactVerify = { name: "artifact_verify", description: "Verify an exact Artifact Manifest", beemaxPolicy: { sideEffect: "none" } };
+	const capabilityDiscover = attestCapabilityProviderResolutionTool({
+		name: "capability_discover", description: "Resolve capabilities", beemaxPolicy: { sideEffect: "none" },
+		beemaxCapabilityPrefetch: async (_query, _signal, options) => ({ cognitionId: "cap:artifact-ledger", candidates: [{ kind: "tool", name: "artifact_verify", confidence: 1, requirementId: options.requirements[0].id, outcomeIndex: 0, necessity: "required" }], activatedTools: ["artifact_verify"], skills: [] }),
+	});
+	const tools = [capabilityDiscover, artifactVerify];
+	const runtime = createRuntime({
+		taskLedger: ledger,
+		turnUnderstanding: { understand: () => ({ action: "create", goal: rawRequest, constraints: [], acceptanceCriteria: [rawRequest], uncertainties: [], memoryQuery: rawRequest, capabilityQuery: rawRequest, executionMode: "direct", confidence: 1 }) },
+		workContractBuilder: { build: async () => ({ source: "model", cognitionBudgetChargeTokens: 1, semanticAdjudication: semanticReview, contract: { schemaVersion: "beemax.work-contract.v1", rawRequest, action: "create", objective: clause, constraints: [], prohibitions: [], acceptanceCriteria: [clause], capabilityRequirements: [clause], uncertainties: [], executionMode: "direct", confidence: 1 } }) },
+		verifyObjectiveCandidate: async () => ({ accepted: true, evidence: "artifact receipt independently checked" }),
+		createAgent: async () => ({
+			agent, getAllTools: () => tools, getActiveToolNames: () => tools.map((tool) => tool.name), setActiveToolsByName: () => undefined,
+			subscribe: (callback) => { listener = callback; return () => undefined; },
+			prompt: async () => {
+				await dispatchToolCall(agent, listener, { id: "verify:durable-artifact", name: "artifact_verify", result: { content: [{ type: "text", text: "verified" }], details: { manifest, receipt } } });
+				listener({ type: "message_end", message: { role: "assistant", responseId: "response:durable-artifact", content: [{ type: "text", text: "report.pdf 已验证" }], usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0 } } });
+				agent.state.messages = [{ role: "assistant", content: [{ type: "text", text: "report.pdf 已验证" }], usage: { input: 1, output: 1 } }];
+			}, abort: async () => undefined, dispose: () => undefined,
+		}),
+	});
+	await runtime.run({ source: { platform: "cli", chatId: "artifact-ledger", chatType: "dm", userId: "local" }, text: rawRequest, timeoutMs: 1_000 });
+	const objective = [...tasks.values()][0];
+	assert.deepEqual(objective.artifacts, [{ type: "file", uri: "workspace:report.pdf", label: "application/pdf", manifest, verificationReceipt: receipt }]);
 	runtime.dispose();
 });
 
@@ -397,7 +900,7 @@ test("Agent runtime directly prefetches a high-confidence current research Provi
 	const tools = [{ name: "capability_discover", description: "Discover capabilities" }, ...createWebTools({ agentReachAvailable: true })];
 	const toolChanges = [];
 	const agent = { state: { model: { id: "test" }, messages: [] } };
-	const runtime = createRuntime({ planningPolicy: new AutonomousPlanningPolicy(), createAgent: async () => ({
+	const runtime = createRuntime({ interactiveAdmission: "model_first", planningPolicy: new AutonomousPlanningPolicy(), createAgent: async () => ({
 		agent,
 		getAllTools: () => tools,
 		getActiveToolNames: () => tools.map(({ name }) => name),
@@ -433,7 +936,7 @@ test("Agent runtime deterministically preflights and enforces an installed match
 		prompt: async (text) => {
 			prompts.push(text);
 			if (prompts.length === 2) {
-				await dispatchToolCall(agent, listener, { id: "skill", name: "skill_read", result: { details: { descriptor: { name: "research-brief" }, state: { skill: "research-brief" }, skillLifecycleReceipt: { id: "receipt:read", name: "research-brief", version, phase: "read", sourceTool: "skill_read" } } } });
+				await dispatchToolCall(agent, listener, { id: "skill", name: "skill_read", result: { details: { descriptor: { name: "research-brief" }, state: { skill: "research-brief" }, legacy: true, declaredTools: [], activatedTools: ["skill_complete"], skillLifecycleReceipt: { id: "receipt:read", name: "research-brief", version, phase: "read", sourceTool: "skill_read" } } } });
 				await dispatchToolCall(agent, listener, { id: "skill-complete", name: "skill_complete", result: { details: { skill: "research-brief", skillLifecycleReceipt: { id: "receipt:complete", name: "research-brief", version, phase: "completed", sourceTool: "skill_complete" }, capabilityReceipt: { id: "receipt:skill", kind: "skill", name: "research-brief", version, sourceTool: "skill_complete" } } } });
 			}
 			agent.state.messages = [{ role: "assistant", content: [{ type: "text", text: "done" }], usage: { input: 1, output: 1 } }];
@@ -442,13 +945,14 @@ test("Agent runtime deterministically preflights and enforces an installed match
 		dispose: () => undefined,
 	};
 	const runtime = createRuntime({
+		interactiveAdmission: "model_first",
 		planningPolicy: { decide: () => ({ mode: "direct", requiredTools: [], suggestedConcurrency: 1, budget: { maxSubagents: 0, maxToolCalls: 4, maxTokens: 2_000, maxCorrectiveAttempts: 0 }, signals: { substantialWork: true, requiresVerification: true }, reason: "verify the outcome", directive: () => "Complete and verify the request." }) },
 		createAgent: async () => piSession,
 	});
 	await runtime.run({ source, text: "核验一份研究简报并保留真实来源证据", timeoutMs: 1_000 });
 	assert.match(prompts[0], /Installed matching Skill metadata: research-brief/);
 	assert.match(prompts[1], /Skill correction/);
-	assert.deepEqual(toolChanges[0], ["skill_read", "skill_activate", "skill_complete"]);
+	assert.deepEqual(toolChanges[0], ["skill_read", "skill_activate"]);
 	assert.equal(prefetchSignal instanceof AbortSignal, true);
 	runtime.dispose();
 });
@@ -476,7 +980,7 @@ test("Agent runtime refuses to complete a selected Skill from name-only results 
 			agent.state.messages = [{ role: "assistant", content: [{ type: "text", text: "done" }], usage: { input: 1, output: 1 } }];
 		}, abort: async () => undefined, dispose: () => undefined,
 	}) });
-	await assert.rejects(runtime.run({ source, text: "Use the receipt review Skill", timeoutMs: 1_000 }), /lifecycle receipt|did not complete/i);
+	await assert.rejects(runtime.run({ source, text: "Use the receipt review Skill", timeoutMs: 1_000 }), /lifecycle receipt|did not complete|not direct/i);
 	runtime.dispose();
 });
 
@@ -625,15 +1129,40 @@ test("delegated Chinese research starts with Exa web search active instead of de
 	runtime.dispose();
 });
 
-test("Agent runtime settles a model turn after bounded visible-output inactivity", async () => {
+test("Agent runtime never settles a model turn from visible-output inactivity", async () => {
 	const source = { platform: "cli", chatId: "idle-settle", chatType: "dm", userId: "local" };
 	let listener;
-	let finishPrompt;
-	let fallback;
 	let aborts = 0;
 	const agent = { state: { model: { id: "test" }, messages: [] } };
 	const runtime = createRuntime({
-		turnIdleSettleMs: 20,
+		createAgent: async () => ({
+			agent,
+			subscribe: (next) => { listener = next; return () => undefined; },
+			prompt: async () => {
+				listener({ type: "message_update", message: agent.state.messages[0], assistantMessageEvent: { type: "text_delta", delta: "completed result" } });
+				await new Promise((resolve) => setTimeout(resolve, 60));
+				const message = { role: "assistant", responseId: "response:idle-complete", stopReason: "stop", content: [{ type: "text", text: "completed result" }], usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0 } };
+				listener({ type: "message_end", message });
+				agent.state.messages = [message];
+			},
+			abort: async () => { aborts++; },
+			dispose: () => undefined,
+		}),
+	});
+	const startedAt = Date.now();
+	const result = await runtime.run({ source, text: "hello", timeoutMs: 1_000 });
+	assert.equal(result.answer, "completed result");
+	assert.equal(aborts, 0);
+	assert.ok(Date.now() - startedAt >= 50);
+	runtime.dispose();
+});
+
+test("Agent runtime does not treat silent Provider inference after a Tool result as an idle completed turn", async () => {
+	const source = { platform: "cli", chatId: "slow-provider-after-tool", chatType: "dm", userId: "local" };
+	let listener;
+	let aborts = 0;
+	const agent = { state: { model: { id: "test" }, messages: [] } };
+	const runtime = createRuntime({
 		createAgent: async () => ({
 			agent,
 			getAllTools: () => [{ name: "read", description: "Read a file", beemaxPolicy: { sideEffect: "none" } }],
@@ -641,21 +1170,21 @@ test("Agent runtime settles a model turn after bounded visible-output inactivity
 			setActiveToolsByName: () => undefined,
 			subscribe: (next) => { listener = next; return () => undefined; },
 			prompt: async () => {
-				agent.state.messages = [{ role: "assistant", content: [{ type: "text", text: "completed result" }], usage: { input: 1, output: 1 } }];
-				await admitToolCalls(agent, listener, [{ id: "orphaned-tool", name: "read" }], "response:idle-tool");
-				listener({ type: "message_update", message: agent.state.messages[0], assistantMessageEvent: { type: "text_delta", delta: "completed result" } });
-				listener({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "completed result" }], usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0 } } });
-				await new Promise((resolve) => { finishPrompt = resolve; fallback = setTimeout(resolve, 200); });
+				await dispatchToolCall(agent, listener, { id: "slow-read", name: "read", result: { content: [{ type: "text", text: "evidence" }] } });
+				// A non-streaming Provider can legitimately spend longer than the
+				// SDK settlement grace thinking after it receives a Tool result.
+				await new Promise((resolve) => setTimeout(resolve, 50));
+				const message = { role: "assistant", responseId: "response:slow-final", content: [{ type: "text", text: "completed after inference" }], usage: { input: 2, output: 2, cacheRead: 0, cacheWrite: 0 } };
+				listener({ type: "message_end", message });
+				agent.state.messages = [message];
 			},
-			abort: async () => { aborts++; clearTimeout(fallback); finishPrompt?.(); },
+			abort: async () => { aborts++; },
 			dispose: () => undefined,
 		}),
 	});
-	const startedAt = Date.now();
 	const result = await runtime.run({ source, text: "hello", timeoutMs: 1_000, allowedCapabilities: ["read"] });
-	assert.equal(result.answer, "completed result");
-	assert.equal(aborts, 1);
-	assert.ok(Date.now() - startedAt < 150);
+	assert.equal(result.answer, "completed after inference");
+	assert.equal(aborts, 0);
 	runtime.dispose();
 });
 
@@ -781,6 +1310,29 @@ test("Agent runtime does not reroute a read-only Tool failure that succeeds late
 	}) });
 	await runtime.run({ source, text: "find current evidence", timeoutMs: 1_000, allowedCapabilities: ["primary_search"] });
 	assert.equal(prompts, 1);
+	runtime.dispose();
+});
+
+test("Agent runtime keeps successful batch evidence when a later read-only item fails", async () => {
+	const source = { platform: "cli", chatId: "read-partial-batch", chatType: "dm", userId: "local" };
+	let listener; let prompts = 0; const agent = { state: { model: { id: "test" }, messages: [] } };
+	const tools = [{ name: "web_extract", description: "Extract independent public URLs", beemaxPolicy: { sideEffect: "none" }, beemaxToolSpec: { configured: true, health: "ready", ranking: { inputModalities: ["text"], outputModalities: ["structured"], freshness: "realtime", evidence: "source_receipt" } } }];
+	const runtime = createRuntime({ createAgent: async () => ({
+		agent, getActiveToolNames: () => ["web_extract"], setActiveToolsByName: () => undefined, getAllTools: () => tools,
+		subscribe: (next) => { listener = next; return () => undefined; },
+		prompt: async () => {
+			prompts++;
+			if (prompts === 1) {
+				await dispatchToolCall(agent, listener, { id: "source:ready", name: "web_extract", args: { url: "https://source.example/ready" } });
+				await dispatchToolCall(agent, listener, { id: "source:blocked", name: "web_extract", args: { url: "https://source.example/blocked" }, isError: true });
+				listener({ type: "message_end", message: { role: "assistant", responseId: "response:partial-batch-done", content: [{ type: "text", text: "done with the successful source and disclosed the failed URL" }], usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0 } } });
+			}
+			agent.state.messages = [{ role: "assistant", content: [{ type: "text", text: "done with the successful source and disclosed the failed URL" }], usage: { input: 1, output: 1 } }];
+		}, abort: async () => undefined, dispose: () => undefined,
+	}) });
+	const result = await runtime.run({ source, text: "extract several independent current sources", timeoutMs: 1_000, allowedCapabilities: ["web_extract"] });
+	assert.equal(prompts, 1);
+	assert.match(result.answer, /done with the successful source/i);
 	runtime.dispose();
 });
 
@@ -1020,12 +1572,12 @@ test("planning policy keeps a single bounded Tool query direct even with evaluat
 	assert.deepEqual(decision.requiredTools, []);
 });
 
-test("planning policy gives multi-source direct research enough token budget without changing simple Turns", () => {
+test("planning policy never applies a cumulative token completion ceiling", () => {
 	const policy = new AutonomousPlanningPolicy();
 	const decision = policy.decide("截至今天，研究公开发布的 Agent 工具调用趋势，至少实时核验两个不同来源");
 	assert.equal(decision.mode, "direct");
-	assert.equal(decision.budget.maxTokens, 20_000);
-	assert.equal(policy.decide("What model are you using?").budget.maxTokens, 12_000);
+	assert.equal(decision.budget.maxTokens, null);
+	assert.equal(policy.decide("What model are you using?").budget.maxTokens, null);
 });
 
 test("planning policy consistently escalates substantial bilingual work", () => {
@@ -1043,8 +1595,8 @@ test("planning policy delegates one substantial isolated work item", () => {
 	assert.deepEqual(decision.requiredTools, ["task_spawn", "task_wait"]);
 	assert.equal(decision.suggestedConcurrency, 1);
 	assert.equal(decision.budget.maxSubagents, 1);
-	assert.equal(decision.budget.maxToolCalls, 12);
-	assert.equal(decision.budget.maxTokens, 20_000);
+	assert.equal(decision.budget.maxToolCalls, null);
+	assert.equal(decision.budget.maxTokens, null);
 });
 
 test("planning policy keeps one bounded writing and file-verification workflow in the parent Agent", () => {
@@ -1072,10 +1624,15 @@ test("planning policy does not mistake an independent verification capability na
 });
 
 test("planning policy honors an explicit request not to delegate", () => {
-	const decision = new AutonomousPlanningPolicy().decide("全面整理这份营销材料并写入文件，不要委派，不使用子代理。");
-	assert.equal(decision.mode, "direct");
-	assert.match(decision.reason, /explicitly requires/i);
-	assert.deepEqual(decision.requiredTools, []);
+	for (const prompt of [
+		"全面整理这份营销材料并写入文件，不要委派，不使用子代理。",
+		"该研究、成文、渲染和一致性验证由主代理直接完成，不启用子任务。",
+	]) {
+		const decision = new AutonomousPlanningPolicy().decide(prompt);
+		assert.equal(decision.mode, "direct", prompt);
+		assert.match(decision.reason, /explicitly requires/i);
+		assert.deepEqual(decision.requiredTools, []);
+	}
 });
 
 test("planning policy selects a DAG and derives bounded parallel resources for independent deliverables", () => {
@@ -1088,7 +1645,7 @@ test("planning policy selects a DAG and derives bounded parallel resources for i
 	assert.ok(decision.suggestedConcurrency <= 6);
 	assert.ok(decision.budget.maxSubagents >= decision.suggestedConcurrency);
 	assert.ok(decision.budget.maxToolCalls <= 60);
-	assert.ok(decision.budget.maxTokens <= 120_000);
+	assert.equal(decision.budget.maxTokens, null);
 	assert.ok(decision.signals.independentWorkItems >= 2);
 });
 
@@ -1145,7 +1702,7 @@ test("Agent runtime injects a deterministic planning directive without changing 
 	assert.match(received, /mode=(?:dag|delegate)/);
 	assert.deepEqual(recorded, [{ user: "Review frontend and backend independently, then combine the results", assistant: "done" }]);
 	assert.equal(budgets.current("cli:local:local"), undefined);
-	assert.deepEqual(runEvents.filter((event) => event.type === "planning_decision"), [{ type: "planning_decision", mode: "dag", concurrency: 2, maxSubagents: 2, requiredTools: ["task_plan_execute"] }]);
+	assert.deepEqual(runEvents.filter((event) => event.type === "planning_decision"), [{ type: "planning_decision", mode: "dag", basis: "raw_prompt", verificationDepth: "none", concurrency: 2, maxSubagents: 2, requiredTools: ["task_plan_execute"] }]);
 	runtime.dispose();
 });
 
@@ -1228,6 +1785,7 @@ test("new durable Objectives preserve Situation and trusted Access Scope provena
 	assert.equal(objective.result, undefined);
 	assert.match(result.answer, /任务尚未完成.*Verification/);
 	assert.notEqual(result.answer, "accepted");
+	assert.deepEqual(result.outcome, { status: "verification_unavailable", objectiveId: objective.id });
 	runtime.dispose();
 });
 
@@ -1245,9 +1803,10 @@ test("a direct conversational answer does not create durable Objective work", as
 		abort: async () => undefined, dispose: () => undefined,
 	}) });
 
-	await runtime.run({ source, text: "当前目标是完成一份 Capability Routing 报告。不要取消，继续完成报告；不要改目标。", timeoutMs: 1_000 });
+	const result = await runtime.run({ source, text: "当前目标是完成一份 Capability Routing 报告。不要取消，继续完成报告；不要改目标。", timeoutMs: 1_000 });
 
 	assert.equal(tasks.size, 0);
+	assert.deepEqual(result.outcome, { status: "answered" });
 	runtime.dispose();
 });
 
@@ -1303,6 +1862,7 @@ test("a responsible direct Turn completes one durable Objective through one veri
 	assert.equal(objective.result, undefined);
 	assert.deepEqual(completions, [{ ownerKey: objective.ownerKey, id: objective.id }]);
 	assert.equal(result.completionId, `objective-completion:${objective.id}`);
+	assert.deepEqual(result.outcome, { status: "accepted", objectiveId: objective.id, taskRunId: run.id });
 	assert.deepEqual(objective.criterionVerifications, [{ criterionId: "C1", criterion: "报告包含来源", status: "accepted", evidence: "source.md was read", evidenceRefs: ["execution:verification:direct:tool-call:source-1"] }]);
 	assert.match(objective.description, /生成一份有来源的简短报告/);
 	assert.equal(objective.workContract.rawRequest, "生成一份有来源的简短报告");
@@ -1373,6 +1933,7 @@ test("a rejected Objective returns a blocker and fails its Task Run instead of r
 	const [objective] = [...tasks.values()]; const [run] = [...runs.values()];
 	assert.equal(objective.status, "failed"); assert.equal(objective.verificationStatus, "rejected");
 	assert.equal(run.status, "failed"); assert.match(result.answer, /未通过独立 Verification/); assert.notEqual(result.answer, "没有来源的草稿");
+	assert.deepEqual(result.outcome, { status: "rejected", objectiveId: objective.id, taskRunId: run.id });
 	runtime.dispose();
 });
 
@@ -1700,7 +2261,7 @@ test("Execution Envelope rejects an expired execution before Pi is prompted", as
 	runtime.dispose();
 });
 
-test("Agent runtime aborts a turn when cumulative model usage exceeds its token budget", async () => {
+test("Agent runtime records cumulative model usage without aborting task completion", async () => {
 	const source = { platform: "cli", chatId: "tokens", chatType: "dm", userId: "local" };
 	let listener;
 	let aborts = 0;
@@ -1710,14 +2271,18 @@ test("Agent runtime aborts a turn when cumulative model usage exceeds its token 
 		createAgent: async () => ({
 			agent, subscribe: (next) => { listener = next; return () => undefined; },
 			prompt: async () => {
-				listener({ type: "message_end", message: { role: "assistant", content: [], usage: { input: 12_001, output: 0, cacheRead: 0, cacheWrite: 0 } } });
-				agent.state.messages = [{ role: "assistant", content: [{ type: "text", text: "over budget" }], usage: { input: 12_001, output: 0 } }];
+				const message = { role: "assistant", content: [{ type: "text", text: "completed after high cumulative usage" }], usage: { input: 12_001, output: 5, cacheRead: 0, cacheWrite: 0 } };
+				listener({ type: "message_end", message });
+				agent.state.messages = [message];
 			},
 			abort: async () => { aborts++; }, dispose: () => undefined,
 		}),
 	});
-	await assert.rejects(runtime.run({ source, text: "Read this file", timeoutMs: 1_000 }), /token budget exceeded.*12000/i);
-	assert.equal(aborts, 1);
+	const result = await runtime.run({ source, text: "Read this file", timeoutMs: 1_000 });
+	assert.equal(result.answer, "completed after high cumulative usage");
+	assert.equal(result.usage.input_tokens, 12_001);
+	assert.equal(result.usage.output_tokens, 5);
+	assert.equal(aborts, 0);
 	runtime.dispose();
 });
 
@@ -1739,6 +2304,29 @@ test("Agent runtime token budget does not charge cached input a second time", as
 	});
 	const result = await runtime.run({ source, text: "Read this file", timeoutMs: 1_000 });
 	assert.equal(result.answer, "completed with cached context");
+	assert.equal(aborts, 0);
+	runtime.dispose();
+});
+
+test("Agent runtime token budget charges repeated uncached context only when its high-water mark grows", async () => {
+	const source = { platform: "cli", chatId: "repeated-context-tokens", chatType: "dm", userId: "local" };
+	let listener;
+	let aborts = 0;
+	const agent = { state: { model: { id: "test" }, messages: [] } };
+	const runtime = createRuntime({
+		planningPolicy: new AutonomousPlanningPolicy({ maxTokens: 12_000 }),
+		createAgent: async () => ({
+			agent, subscribe: (next) => { listener = next; return () => undefined; },
+			prompt: async () => {
+				listener({ type: "message_end", message: { role: "assistant", content: [], usage: { input: 7_000, output: 500, cacheRead: 0, cacheWrite: 0 } } });
+				listener({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "completed after an uncached tool loop" }], usage: { input: 7_600, output: 500, cacheRead: 0, cacheWrite: 0 } } });
+				agent.state.messages = [{ role: "assistant", content: [{ type: "text", text: "completed after an uncached tool loop" }], usage: { input: 7_600, output: 500 } }];
+			},
+			abort: async () => { aborts++; }, dispose: () => undefined,
+		}),
+	});
+	const result = await runtime.run({ source, text: "Read this file", timeoutMs: 1_000 });
+	assert.equal(result.answer, "completed after an uncached tool loop");
 	assert.equal(aborts, 0);
 	runtime.dispose();
 });
@@ -1805,5 +2393,26 @@ test("delegated execution cannot finish after spawn without waiting for its Sub-
 	}) });
 	await assert.rejects(runtime.run({ source, text: "Research the official documentation deeply and produce an evidence-backed comparison report", timeoutMs: 1_000, allowedCapabilities: ["task_spawn", "task_wait"] }), /required planning tools: task_wait/i);
 	assert.equal(prompts, 2);
+	runtime.dispose();
+});
+
+test("a terminal failed Sub-Agent wait completes the planning lifecycle so the parent can use its direct fallback", async () => {
+	const source = { platform: "cli", chatId: "delegate-fallback", chatType: "dm", userId: "local" };
+	let listener;
+	let prompts = 0;
+	const agent = { state: { model: { id: "test" }, messages: [] } };
+	const runtime = createRuntime({ planningPolicy: new AutonomousPlanningPolicy(), createAgent: async () => ({
+		agent, getAllTools: () => [{ name: "task_spawn", beemaxPolicy: { sideEffect: "local" } }, { name: "task_wait", beemaxPolicy: { sideEffect: "none" } }], getActiveToolNames: () => ["task_spawn", "task_wait"], setActiveToolsByName: () => undefined, subscribe: (next) => { listener = next; return () => undefined; },
+		prompt: async () => {
+			prompts++;
+			await dispatchToolCall(agent, listener, { id: "spawn", name: "task_spawn", result: { details: { id: "child-1", status: "queued" } } });
+			await dispatchToolCall(agent, listener, { id: "wait", name: "task_wait", args: { id: "child-1" }, result: { details: { id: "child-1", status: "failed", error: "Skill admission failed" } } });
+			listener({ type: "message_end", message: { role: "assistant", responseId: "response:fallback", content: [{ type: "text", text: "direct fallback completed" }], usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0 } } });
+			agent.state.messages = [{ role: "assistant", content: [{ type: "text", text: "direct fallback completed" }], usage: { input: 1, output: 1 } }];
+		}, abort: async () => undefined, dispose: () => undefined,
+	}) });
+	const result = await runtime.run({ source, text: "Research the official documentation deeply and produce an evidence-backed comparison report", timeoutMs: 1_000, allowedCapabilities: ["task_spawn", "task_wait"] });
+	assert.equal(result.answer, "direct fallback completed");
+	assert.equal(prompts, 1);
 	runtime.dispose();
 });

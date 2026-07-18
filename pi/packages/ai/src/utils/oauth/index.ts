@@ -18,16 +18,6 @@ export {
 	normalizeDomain,
 	refreshGitHubCopilotToken,
 } from "./github-copilot.ts";
-// OpenAI Codex (ChatGPT OAuth)
-export {
-	loginOpenAICodex,
-	loginOpenAICodexDeviceCode,
-	OPENAI_CODEX_BROWSER_LOGIN_METHOD,
-	OPENAI_CODEX_DEVICE_CODE_LOGIN_METHOD,
-	openaiCodexOAuthProvider,
-	refreshOpenAICodexToken,
-} from "./openai-codex.ts";
-
 export * from "./types.ts";
 
 // ============================================================================
@@ -36,13 +26,11 @@ export * from "./types.ts";
 
 import { anthropicOAuthProvider } from "./anthropic.ts";
 import { githubCopilotOAuthProvider } from "./github-copilot.ts";
-import { openaiCodexOAuthProvider } from "./openai-codex.ts";
 import type { OAuthCredentials, OAuthProviderId, OAuthProviderInfo, OAuthProviderInterface } from "./types.ts";
 
 const BUILT_IN_OAUTH_PROVIDERS: OAuthProviderInterface[] = [
 	anthropicOAuthProvider,
 	githubCopilotOAuthProvider,
-	openaiCodexOAuthProvider,
 ];
 
 const oauthProviderRegistry = new Map<string, OAuthProviderInterface>(

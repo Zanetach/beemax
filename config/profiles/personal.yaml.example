@@ -39,12 +39,6 @@ knowledge:
   #   name: 公司公共知识
   #   knowledgeBaseId: kb-xxxxxxxx
 
-imageGeneration:
-  enabled: true
-  provider: openai-codex
-  quality: medium
-  outputDir: data/profiles/personal/cache/images
-
 mediaUnderstanding:
   auxiliaryVisionEnabled: true
   localOcr:

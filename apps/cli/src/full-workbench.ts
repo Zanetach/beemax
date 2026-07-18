@@ -1,4 +1,4 @@
-import type { InteractionEvent } from "@beemax/core";
+import { interactionPhaseForOutcome, type InteractionEvent } from "@beemax/core";
 import { Editor, ProcessTerminal, SelectList, TUI, matchesKey, type Component, type OverlayHandle } from "@earendil-works/pi-tui";
 import type { ToolApprovalChoice, ToolApprovalDetails } from "@beemax/core";
 import type { SubagentTaskSnapshot } from "@beemax/core";
@@ -40,7 +40,8 @@ export class FullWorkbench {
 	}
 
 	event(event: InteractionEvent, activityDetails: string): void {
-		this.footer = { ...this.footer, phase: event.type === "turn.started" ? "running" : event.type === "approval.requested" ? "awaiting approval" : event.type === "turn.queued" ? "queued" : event.type === "turn.finished" ? "completed" : event.type === "turn.cancelled" ? "cancelled" : event.type === "turn.failed" ? "failed" : this.footer.phase };
+		const finishedPhase = event.type === "turn.finished" ? interactionPhaseForOutcome(event.result.outcome) : undefined;
+		this.footer = { ...this.footer, phase: event.type === "turn.started" ? "running" : event.type === "approval.requested" ? "awaiting approval" : event.type === "turn.queued" ? "queued" : finishedPhase ?? (event.type === "turn.cancelled" ? "cancelled" : event.type === "turn.failed" ? "failed" : this.footer.phase) };
 		if (event.type === "answer.delta") this.answer(event.text);
 		if (event.type === "turn.failed") this.pushTranscript(`Error  ${event.error}`);
 		if (event.type === "turn.cancelled") this.pushTranscript("System  Turn cancelled.");

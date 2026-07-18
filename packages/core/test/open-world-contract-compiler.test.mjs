@@ -26,8 +26,23 @@ test("Pi OpenWorld compilation independently reviews and factory-admits the comp
 
 	assert.equal(result.contract.outcomes.length, 3);
 	assert.equal(result.contract.capabilityRequirements.length, 3);
+	assert.deepEqual(result.contract.capabilityRequirements.map((requirement) => requirement.expectedOutputs), [
+		["observation receipt"], ["transformation result"], ["transformation result"],
+	]);
 	assert.deepEqual(result.contract.outcomes.map((outcome) => outcome.dependsOnOutcomeIds), [[], ["outcome:0"], ["outcome:0"]]);
+	assert.deepEqual(result.contract.outcomes.map((outcome) => outcome.artifactRequirementIds), [
+		["artifact:0", "artifact:1"], ["artifact:0", "artifact:1"], ["artifact:0", "artifact:1"],
+	]);
 	assert.deepEqual(result.contract.artifactRequirements.map((artifact) => artifact.mediaType), ["text/html", "application/pdf"]);
+	assert.deepEqual(result.contract.artifactRequirements.map((artifact) => artifact.verification), [
+		["existence", "integrity", "semantic", "render", "consistency"],
+		["existence", "integrity", "semantic", "render", "consistency"],
+	]);
+	assert.deepEqual(result.contract.evidenceRequirements.map((evidence) => evidence.kinds), [
+		["observation", "artifact", "integrity", "semantic", "render", "consistency", "freshness"],
+		["artifact", "integrity", "semantic", "render", "consistency"],
+		["artifact", "integrity", "semantic", "render", "consistency"],
+	]);
 	assert.equal(isAdmittedOpenWorldContract(result.contract), true);
 	assert.equal(hasSemanticOpenWorldContractAdjudication(result), true);
 	assert.equal(result.semanticAdjudication.schemaVersion, OPEN_WORLD_CONTRACT_ADJUDICATION_SCHEMA_VERSION);
@@ -50,6 +65,29 @@ test("OpenWorld compilation fails closed when independent review does not accept
 	);
 });
 
+test("OpenWorld compilation performs one bounded graph repair and requires a fresh independent acceptance", async () => {
+	const calls = [];
+	let repaired = false;
+	const rejected = acceptedReview();
+	rejected.accepted = false;
+	rejected.issues = [`Remove an invented intermediate artifact and bind semantic evidence to the report outcome: ${"detail ".repeat(45)}`];
+	const compiler = new PiOpenWorldContractCompiler({
+		models: [{ model: { ...model("only"), maxTokens: 8_192 } }],
+		complete: async (_candidate, context) => {
+			const review = context.systemPrompt.includes("Independently review");
+			const repair = context.systemPrompt.includes("Independent OpenWorld review rejected");
+			calls.push(review ? "review" : repair ? "repair" : "compilation");
+			if (repair) { repaired = true; return response(goldProposal()); }
+			return response(review ? (repaired ? acceptedReview() : rejected) : goldProposal());
+		},
+	});
+
+	const result = await compiler.compile({ admission: planningAdmission(goldWorkContract()) });
+
+	assert.equal(hasSemanticOpenWorldContractAdjudication(result), true);
+	assert.deepEqual(calls, ["compilation", "review", "repair", "review"]);
+});
+
 test("OpenWorld compilation reserves both cognition lanes before calling a Provider", async () => {
 	let calls = 0;
 	const compiler = new PiOpenWorldContractCompiler({
@@ -62,6 +100,53 @@ test("OpenWorld compilation reserves both cognition lanes before calling a Provi
 		/shared token budget/i,
 	);
 	assert.equal(calls, 0);
+});
+
+test("single-model OpenWorld cognition retries EOF-truncated compilation and review samples with bounded larger allowances", async () => {
+	const calls = [];
+	let compilationAttempts = 0;
+	let reviewAttempts = 0;
+	const compiler = new PiOpenWorldContractCompiler({
+		models: [{ model: { ...model("only"), maxTokens: 8_192 } }],
+		complete: async (_candidate, context, options) => {
+			const review = context.systemPrompt.includes("Independently review");
+			calls.push({ lane: review ? "review" : "compilation", maxTokens: options.maxTokens });
+			if (!review && compilationAttempts++ === 0) return rawResponse('{"outcomes":[{"acceptanceCriterionIndex":0', "stop");
+			if (review && reviewAttempts++ === 0) return rawResponse('{"accepted":true,"confidence":0.99,"issues":[]', "stop");
+			return response(review ? acceptedReview() : goldProposal());
+		},
+	});
+
+	const result = await compiler.compile({ admission: planningAdmission(goldWorkContract()) });
+
+	assert.equal(hasSemanticOpenWorldContractAdjudication(result), true);
+	assert.deepEqual(calls, [
+		{ lane: "compilation", maxTokens: 1_024 },
+		{ lane: "compilation", maxTokens: 8_192 },
+		{ lane: "review", maxTokens: 768 },
+		{ lane: "review", maxTokens: 8_192 },
+	]);
+});
+
+test("multi-model OpenWorld cognition keeps the recovery allowance after an intervening invalid candidate", async () => {
+	const compilationMaxTokens = [];
+	let compilationAttempts = 0;
+	const compiler = new PiOpenWorldContractCompiler({
+		models: [{ model: { ...model("primary"), maxTokens: 8_192 } }, { model: { ...model("alternate"), maxTokens: 8_192 } }],
+		complete: async (_candidate, context, options) => {
+			if (context.systemPrompt.includes("Independently review")) return response(acceptedReview());
+			compilationMaxTokens.push(options.maxTokens);
+			compilationAttempts++;
+			if (compilationAttempts === 1) return rawResponse('{"outcomes":[{"acceptanceCriterionIndex":0', "length");
+			if (compilationAttempts === 2) return response({ invalid: true });
+			return response(goldProposal());
+		},
+	});
+
+	const result = await compiler.compile({ admission: planningAdmission(goldWorkContract()) });
+
+	assert.equal(hasSemanticOpenWorldContractAdjudication(result), true);
+	assert.deepEqual(compilationMaxTokens, [1_024, 8_192, 8_192]);
 });
 
 function goldWorkContract() {
@@ -103,23 +188,18 @@ function planningAdmission(contract) {
 function goldProposal() {
 	return {
 		outcomes: [
-			{ acceptanceCriterionIndex: 0, dependsOnAcceptanceCriterionIndexes: [], capabilityRequirementIndexes: [0], artifactRequirementIndexes: [], evidenceRequirementIndexes: [0] },
-			{ acceptanceCriterionIndex: 1, dependsOnAcceptanceCriterionIndexes: [0], capabilityRequirementIndexes: [1], artifactRequirementIndexes: [0], evidenceRequirementIndexes: [1] },
-			{ acceptanceCriterionIndex: 2, dependsOnAcceptanceCriterionIndexes: [0], capabilityRequirementIndexes: [2], artifactRequirementIndexes: [1], evidenceRequirementIndexes: [2] },
+			{ acceptanceCriterionIndex: 0, dependsOnAcceptanceCriterionIndexes: [], capabilityRequirementIndexes: [0], artifactRequirementIndexes: [] },
+			{ acceptanceCriterionIndex: 1, dependsOnAcceptanceCriterionIndexes: [0], capabilityRequirementIndexes: [1], artifactRequirementIndexes: [0] },
+			{ acceptanceCriterionIndex: 2, dependsOnAcceptanceCriterionIndexes: [0], capabilityRequirementIndexes: [2], artifactRequirementIndexes: [1] },
 		],
 		capabilityRequirements: [
-			{ workContractClauseIndex: 0, operation: "observe", expectedOutputs: ["source observations"] },
-			{ workContractClauseIndex: 1, operation: "transform", expectedOutputs: ["HTML artifact"] },
-			{ workContractClauseIndex: 2, operation: "transform", expectedOutputs: ["PDF artifact"] },
+			{ workContractClauseIndex: 0, operation: "observe" },
+			{ workContractClauseIndex: 1, operation: "transform" },
+			{ workContractClauseIndex: 2, operation: "transform" },
 		],
 		artifactRequirements: [
-			{ mediaType: "text/html", role: "deliverable", verification: ["existence", "integrity", "semantic", "render"] },
-			{ mediaType: "application/pdf", role: "deliverable", verification: ["existence", "integrity", "semantic", "render"] },
-		],
-		evidenceRequirements: [
-			{ kinds: ["observation", "freshness"] },
-			{ kinds: ["artifact", "integrity", "semantic", "render"] },
-			{ kinds: ["artifact", "integrity", "semantic", "render"] },
+			{ mediaType: "text/html", role: "deliverable" },
+			{ mediaType: "application/pdf", role: "deliverable" },
 		],
 	};
 }
@@ -144,4 +224,7 @@ function clause(text) {
 function model(id) { return { id, provider: "test", api: "test", name: id, contextWindow: 16_000, maxTokens: 2_000 }; }
 function response(value) {
 	return { role: "assistant", content: [{ type: "text", text: JSON.stringify(value) }], stopReason: "stop", usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 2, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } }, timestamp: Date.now() };
+}
+function rawResponse(text, stopReason = "length") {
+	return { role: "assistant", content: [{ type: "text", text }], stopReason, usage: { input: 1, output: 1_024, cacheRead: 0, cacheWrite: 0, totalTokens: 1_025, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } }, timestamp: Date.now() };
 }

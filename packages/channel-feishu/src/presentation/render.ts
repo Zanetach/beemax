@@ -98,6 +98,8 @@ function renderApprovalActions(approvalId: string): Record<string, unknown> {
 
 function renderStatus(session: CardSession): { subtitle: string; template: string; summary?: string } {
 	if (session.status === "completed") return { subtitle: "已完成", template: "green" };
+	if (session.status === "incomplete") return { subtitle: "尚未完成", template: "yellow" };
+	if (session.status === "rejected") return { subtitle: "验证未通过", template: "red" };
 	if (session.status === "failed") return { subtitle: "处理失败", template: "red" };
 	if (session.status === "cancelled") return { subtitle: "已取消", template: "grey" };
 	if (normalizeStreamText(session.answerText).trim()) return { subtitle: "", summary: "处理中", template: "blue" };

@@ -17,7 +17,7 @@ export interface ToolState {
 	detail: string;
 }
 
-export type CardStatus = "thinking" | "completed" | "failed" | "cancelled";
+export type CardStatus = "thinking" | "completed" | "incomplete" | "rejected" | "failed" | "cancelled";
 
 export interface CardEventData {
 	/** answer (message.completed) | text (thinking/answer delta) | error (failed) */
@@ -48,7 +48,7 @@ export class CardSession {
 	}
 
 	apply(event: string, data: CardEventData): boolean {
-		if (this.status === "completed" || this.status === "failed" || this.status === "cancelled") return false;
+		if (this.status !== "thinking") return false;
 
 		switch (event) {
 			case "thinking.delta": {
@@ -78,18 +78,15 @@ export class CardSession {
 				break;
 			}
 			case "message.completed": {
-				const completed = normalizeStreamText(String(data.answer ?? ""));
-				if (completed.trim()) this.answerText = boundedAnswer("", completed);
-				this.timeline.complete();
-				this.status = "completed";
-				const tokens = data.tokens;
-				if (tokens && typeof tokens === "object") this.tokens = { ...(tokens as Record<string, number>) };
-				const model = data.model;
-				if (typeof model === "string" && model.trim()) this.model = model;
-				const ctx = data.context;
-				if (ctx && typeof ctx === "object") this.context = { ...(ctx as Record<string, number>) };
-				const dur = Number(data.duration);
-				if (Number.isFinite(dur)) this.duration = dur;
+				this.applyTerminalMessage(data, "completed", true);
+				break;
+			}
+			case "message.incomplete": {
+				this.applyTerminalMessage(data, "incomplete");
+				break;
+			}
+			case "message.rejected": {
+				this.applyTerminalMessage(data, "rejected");
 				break;
 			}
 			case "message.failed": {
@@ -117,6 +114,23 @@ export class CardSession {
 			}
 		}
 		return true;
+	}
+
+	private applyTerminalMessage(data: CardEventData, status: "completed" | "incomplete" | "rejected", includeContext = false): void {
+		const answer = normalizeStreamText(String(data.answer ?? ""));
+		if (answer.trim()) this.answerText = boundedAnswer("", answer);
+		this.timeline.complete();
+		this.status = status;
+		const tokens = data.tokens;
+		if (tokens && typeof tokens === "object") this.tokens = { ...(tokens as Record<string, number>) };
+		const model = data.model;
+		if (typeof model === "string" && model.trim()) this.model = model;
+		if (includeContext) {
+			const context = data.context;
+			if (context && typeof context === "object") this.context = { ...(context as Record<string, number>) };
+		}
+		const duration = Number(data.duration);
+		if (Number.isFinite(duration)) this.duration = duration;
 	}
 }
 

@@ -87,10 +87,9 @@ export interface BeeMaxConfig {
 		toolset: "safe" | "standard";
 		maxSessions: number;
 		sessionIdleMs: number;
-		turnIdleSettleMs: number;
 		/** Optional generic preference weights keyed by name or kind:name; never grants authority. */
 		capabilityPreferences: Record<string, number>;
-		capabilityCognition: { maxModelAttempts: number; maxTokens: number; timeoutMs: number; maxTotalEstimatedTokens: number };
+		capabilityCognition: { maxModelAttempts: number; maxTokens: number; timeoutMs: number };
 	};
 	capabilityProviders: {
 		installation: { enabled: boolean; allowedProviders: string[] };
@@ -122,12 +121,6 @@ export interface BeeMaxConfig {
 		baseUrl: string;
 		apiKey?: string;
 		spaces: KnowledgeSpaceConfig[];
-	};
-	imageGeneration: {
-		enabled: boolean;
-		provider: "openai-codex";
-		quality: "low" | "medium" | "high";
-		outputDir: string;
 	};
 	mediaUnderstanding: {
 		localOcr: {
@@ -189,6 +182,11 @@ export function profileTaskGrantCapabilities(config: Pick<BeeMaxConfig, "executi
 		...(config.execution.workspaceWritePolicy === "allow-within-workspace" ? ["write"] : []),
 		...config.execution.taskGrantCapabilities,
 	])];
+}
+
+/** Objectives terminate only through completion, explicit cancellation, or a visible unrecoverable failure. */
+export function profileTurnTimeoutMs(_config: Pick<BeeMaxConfig, "subagents" | "execution">): null {
+	return null;
 }
 
 export function loadConfig(configPath?: string, profile = "default"): BeeMaxConfig {
@@ -311,12 +309,13 @@ export function loadConfig(configPath?: string, profile = "default"): BeeMaxConf
 	const heartbeatInstances = channels.filter((channel) => channel.enabled && channel.adapter === heartbeatPlatform);
 	const heartbeatChannelInstanceId = optional(env.BEEMAX_HEARTBEAT_CHANNEL_INSTANCE_ID ?? cfg.automation?.heartbeat?.channelInstanceId) ?? (heartbeatInstances.length === 1 ? heartbeatInstances[0]!.id : undefined);
 	const capabilityCognition = {
-		maxModelAttempts: boundedConfiguredInteger(env.BEEMAX_CAPABILITY_COGNITION_MAX_ATTEMPTS ?? cfg.agent?.capabilityCognition?.maxModelAttempts, 2, 1, 5, "agent.capabilityCognition.maxModelAttempts"),
+		maxModelAttempts: boundedConfiguredInteger(env.BEEMAX_CAPABILITY_COGNITION_MAX_ATTEMPTS ?? cfg.agent?.capabilityCognition?.maxModelAttempts, 3, 1, 5, "agent.capabilityCognition.maxModelAttempts"),
 		maxTokens: boundedConfiguredInteger(env.BEEMAX_CAPABILITY_COGNITION_MAX_TOKENS ?? cfg.agent?.capabilityCognition?.maxTokens, 2_048, 256, 8_192, "agent.capabilityCognition.maxTokens"),
-		timeoutMs: boundedConfiguredInteger(env.BEEMAX_CAPABILITY_COGNITION_TIMEOUT_MS ?? cfg.agent?.capabilityCognition?.timeoutMs, 60_000, 1_000, 60_000, "agent.capabilityCognition.timeoutMs"),
-		maxTotalEstimatedTokens: boundedConfiguredInteger(env.BEEMAX_CAPABILITY_COGNITION_MAX_ESTIMATED_TOKENS ?? cfg.agent?.capabilityCognition?.maxTotalEstimatedTokens, 300_000, 512, 1_000_000, "agent.capabilityCognition.maxTotalEstimatedTokens"),
+		// Capability cognition is an optional preflight lane, never the Objective
+		// deadline. Fail it over quickly so Provider stalls cannot consume the
+		// interactive report SLO; deterministic discovery continues the same Task.
+		timeoutMs: boundedConfiguredInteger(env.BEEMAX_CAPABILITY_COGNITION_TIMEOUT_MS ?? cfg.agent?.capabilityCognition?.timeoutMs, 12_000, 1_000, 60_000, "agent.capabilityCognition.timeoutMs"),
 	};
-	if (capabilityCognition.maxTotalEstimatedTokens < capabilityCognition.maxTokens + 512) throw new Error("agent.capabilityCognition.maxTotalEstimatedTokens must exceed maxTokens by at least 512 estimated input tokens");
 	return {
 		profile,
 		agent: {
@@ -325,7 +324,6 @@ export function loadConfig(configPath?: string, profile = "default"): BeeMaxConf
 			toolset: (env.BEEMAX_TOOLSET ?? cfg.agent?.toolset) === "safe" ? "safe" : "standard",
 			maxSessions: parseNumber(env.BEEMAX_MAX_SESSIONS ?? cfg.agent?.maxSessions, 100),
 			sessionIdleMs: parseNumber(env.BEEMAX_SESSION_IDLE_MS ?? cfg.agent?.sessionIdleMs, 30 * 60_000),
-			turnIdleSettleMs: boundedNumber(env.BEEMAX_TURN_IDLE_SETTLE_MS ?? cfg.agent?.turnIdleSettleMs, 60_000, 5_000, 5 * 60_000),
 			capabilityPreferences: parseCapabilityPreferences(cfg.agent?.capabilityPreferences),
 			capabilityCognition,
 		},
@@ -365,12 +363,6 @@ export function loadConfig(configPath?: string, profile = "default"): BeeMaxConf
 			baseUrl: str(env.BEEMAX_WEKNORA_BASE_URL ?? cfg.knowledge?.baseUrl ?? "http://127.0.0.1:8080"),
 			apiKey: optional(env.BEEMAX_WEKNORA_API_KEY),
 			spaces: parseKnowledgeSpaces(cfg.knowledge?.spaces),
-		},
-		imageGeneration: {
-			enabled: parseBool(env.BEEMAX_IMAGE_ENABLED ?? cfg.imageGeneration?.enabled ?? false),
-			provider: "openai-codex",
-			quality: parseImageQuality(env.BEEMAX_IMAGE_QUALITY ?? cfg.imageGeneration?.quality),
-			outputDir: resolveFrom(location.basePath, str(env.BEEMAX_IMAGE_OUTPUT_DIR ?? cfg.imageGeneration?.outputDir ?? join(profileDataRoot, "cache/images"))),
 		},
 		mediaUnderstanding: {
 			localOcr: {
@@ -494,9 +486,6 @@ function parseKnowledgeSpaces(value: unknown): KnowledgeSpaceConfig[] {
 function optional(value: unknown): string | undefined {
 	const valueString = str(value);
 	return valueString || undefined;
-}
-function parseImageQuality(value: unknown): "low" | "medium" | "high" {
-	return value === "low" || value === "high" ? value : "medium";
 }
 function reasoningDisplay(value: unknown): "off" | "summary" | "raw" {
 	return value === "off" || value === "raw" ? value : "summary";

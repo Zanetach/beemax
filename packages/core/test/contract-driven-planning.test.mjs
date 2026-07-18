@@ -93,6 +93,23 @@ test("an admitted atomic Work Contract, not raw prompt keywords, determines exec
 	assert.deepEqual(decision.contractCoverage?.capabilityRequirementIds, ["capability:0"]);
 });
 
+test("an admitted compatibility Work Contract preserves temporal research routing without raw-prompt planning", () => {
+	const request = "查一下今天的天气";
+	const contract = workContract({
+		rawRequest: request,
+		action: "query",
+		objective: { text: request, source: { kind: "raw_request", start: 0, end: request.length } },
+		acceptanceCriteria: [],
+		capabilityRequirements: [],
+		executionMode: "direct",
+	});
+	const decision = new AutonomousPlanningPolicy().decide(planningAdmission(contract));
+
+	assert.equal(decision.basis, "work_contract");
+	assert.equal(decision.signals.requiresResearch, true);
+	assert.equal(decision.mode, "direct");
+});
+
 test("an admitted direct execution boundary cannot be escalated to delegation", () => {
 	const contract = workContract({
 		acceptanceCriteria: [clause("过去一周黄金走势"), clause("输出 HTML"), clause("PDF")],
@@ -129,7 +146,7 @@ test("an admitted prohibition against delegation keeps planned work in the paren
 });
 
 test("parent-only execution constraints keep planned work in the parent Agent across natural phrasings", () => {
-	for (const parentOnlyConstraint of ["所有工作必须由父代理执行", "只能由主代理执行", "must be executed by the parent agent", "This task should be handled solely by the parent agent", "任务应由父代理独立完成"]) {
+	for (const parentOnlyConstraint of ["所有工作必须由父代理执行", "只能由主代理执行", "must be executed by the parent agent", "This task should be handled solely by the parent agent", "任务应由父代理独立完成", "由主代理直接完成，不启用子任务"]) {
 		const request = `${rawRequest}，${parentOnlyConstraint}`;
 		const sourceClause = (text) => {
 			const start = request.indexOf(text);
@@ -149,6 +166,29 @@ test("parent-only execution constraints keep planned work in the parent Agent ac
 		assert.equal(decision.budget.maxSubagents, 0, parentOnlyConstraint);
 		assert.match(decision.reason, /prohibits delegation/i);
 	}
+});
+
+test("an explicit no-Sub-Task clause remains binding when fused into a broader constraint", () => {
+	const constraint = "新建一个独立验收目标，不启用子任务。使用现有文件";
+	const request = `${rawRequest}，${constraint}`;
+	const sourceClause = (text) => {
+		const start = request.indexOf(text);
+		return { text, source: { kind: "raw_request", start, end: start + text.length } };
+	};
+	const contract = workContract({
+		rawRequest: request,
+		objective: sourceClause(request),
+		constraints: [sourceClause(constraint)],
+		acceptanceCriteria: [sourceClause("过去一周黄金走势"), sourceClause("输出 HTML"), sourceClause("PDF")],
+		capabilityRequirements: [sourceClause("调研过去一周黄金走势"), sourceClause("输出 HTML"), sourceClause("PDF")],
+		executionMode: "plan",
+	});
+
+	const decision = new AutonomousPlanningPolicy().decide(planningAdmission(contract));
+	assert.equal(decision.mode, "direct");
+	assert.equal(decision.budget.maxSubagents, 0);
+	assert.deepEqual(decision.requiredTools, []);
+	assert.match(decision.reason, /prohibits delegation/i);
 });
 
 test("a parent Agent reviewing Sub-Agent work does not prohibit delegation", () => {
@@ -222,8 +262,93 @@ test("an explicit outcome dependency graph derives DAG parallelism and independe
 	assert.match(decision.directive("objective:gold"), /contract:gold-report/);
 });
 
-test("Agent runtime plans only after model Work Contract semantic admission", async () => {
+test("a simple conversational query uses the direct lane without semantic Work Contract cognition", async () => {
 	const request = "解释合同驱动";
+	let contractCognitionCalls = 0;
+	let promptText = "";
+	const runEvents = [];
+	const agent = { state: { model: { id: "test/model" }, messages: [] } };
+	const runtime = new BeeMaxAgentRuntime({
+		profileId: "profile:test",
+		turnUnderstanding: { understand: () => ({ action: "query", goal: request, constraints: [], acceptanceCriteria: [], uncertainties: [], memoryQuery: request, capabilityQuery: request, executionMode: "direct", confidence: 1 }) },
+		workContractBuilder: { build: async () => { contractCognitionCalls++; throw new Error("simple direct queries must not invoke semantic Contract cognition"); } },
+		planningPolicy: new AutonomousPlanningPolicy(),
+		createAgent: async () => ({
+			agent,
+			getAllTools: () => [],
+			getActiveToolNames: () => [],
+			setActiveToolsByName: () => undefined,
+			subscribe: () => () => undefined,
+			prompt: async (text) => {
+				promptText = text;
+				agent.state.messages = [{ role: "assistant", content: [{ type: "text", text: "合同驱动解释" }], usage: { input: 1, output: 1 } }];
+			},
+			abort: async () => undefined,
+			dispose: () => undefined,
+		}),
+	});
+
+	try {
+		const result = await runtime.run({ source: { platform: "cli", chatId: "adaptive-direct", chatType: "dm", userId: "local" }, text: request, timeoutMs: 1_000 }, (event) => { runEvents.push(event); });
+
+		assert.equal(result.answer, "合同驱动解释");
+		assert.equal(contractCognitionCalls, 0);
+		assert.match(promptText, /basis=raw_prompt/);
+		assert.deepEqual(runEvents.filter((event) => event.type === "planning_decision").map((event) => ({ basis: event.basis, mode: event.mode })), [{ basis: "raw_prompt", mode: "direct" }]);
+	} finally { runtime.dispose(); }
+});
+
+test("ordinary interactive queries remain model-first across dynamic and composite language", async () => {
+	const requests = [
+		"What happened in the stock market yesterday?",
+		"Find sources about post-quantum migration",
+		"Which studies support this claim?",
+		"How did revenue change last quarter?",
+		"Explain idempotency and delete all files",
+		"What is Apple's stock price?",
+		"Explain whether flight BA123 is delayed",
+		"Explain idempotency plus purge the database",
+		"Explain my recent transactions",
+		"解释我的最近交易",
+		"Explain idempotency versus deduplication",
+		"解释幂等性与去重",
+	];
+	let contractCognitionCalls = 0;
+	const planningBases = [];
+	const agent = { state: { model: { id: "test/model" }, messages: [] } };
+	const runtime = new BeeMaxAgentRuntime({
+		profileId: "profile:test",
+		turnUnderstanding: { understand: (request) => ({ action: "query", goal: request, constraints: [], acceptanceCriteria: [], uncertainties: [], memoryQuery: request, capabilityQuery: request, executionMode: "direct", confidence: 1 }) },
+		workContractBuilder: { build: async () => { contractCognitionCalls++; assert.fail("ordinary interactive work must reach the main model directly"); } },
+		planningPolicy: new AutonomousPlanningPolicy(),
+		createAgent: async () => ({
+			agent,
+			getAllTools: () => [],
+			getActiveToolNames: () => [],
+			setActiveToolsByName: () => undefined,
+			subscribe: () => () => undefined,
+			prompt: async () => {
+				agent.state.messages = [{ role: "assistant", content: [{ type: "text", text: "model-first result" }], usage: { input: 1, output: 1 } }];
+			},
+			abort: async () => undefined,
+			dispose: () => undefined,
+		}),
+	});
+
+	try {
+		for (const [index, request] of requests.entries()) {
+			await runtime.run({ source: { platform: "cli", chatId: `adaptive-fail-closed-${index}`, chatType: "dm", userId: "local" }, text: request, timeoutMs: 1_000 }, (event) => {
+				if (event.type === "planning_decision") planningBases.push(event.basis);
+			});
+		}
+
+		assert.equal(contractCognitionCalls, 0);
+		assert.deepEqual(planningBases, requests.map(() => "raw_prompt"));
+	} finally { runtime.dispose(); }
+});
+
+test("a research query is model-first interactively while Automation remains Contract-governed", async () => {
+	const request = "查一下今天的天气";
 	const requestClause = { text: request, source: { kind: "raw_request", start: 0, end: request.length } };
 	const contract = workContract({
 		rawRequest: request,
@@ -244,7 +369,6 @@ test("Agent runtime plans only after model Work Contract semantic admission", as
 		turnUnderstanding: { understand: () => ({ action: "query", goal: request, constraints: [], acceptanceCriteria: [], uncertainties: [], memoryQuery: request, executionMode: "direct", confidence: 1 }) },
 		workContractBuilder: { build: async () => { semanticallyAdmitted = true; return admission(contract); } },
 		planningPolicy: { decide: (input) => {
-			assert.equal(semanticallyAdmitted, true);
 			planningInput = input;
 			return policy.decide(input);
 		} },
@@ -256,7 +380,7 @@ test("Agent runtime plans only after model Work Contract semantic admission", as
 			subscribe: () => () => undefined,
 			prompt: async (text) => {
 				promptText = text;
-				agent.state.messages = [{ role: "assistant", content: [{ type: "text", text: "合同驱动解释" }], usage: { input: 1, output: 1 } }];
+				agent.state.messages = [{ role: "assistant", content: [{ type: "text", text: "天气查询结果" }], usage: { input: 1, output: 1 } }];
 			},
 			abort: async () => undefined,
 			dispose: () => undefined,
@@ -265,20 +389,15 @@ test("Agent runtime plans only after model Work Contract semantic admission", as
 
 	await runtime.run({ source: { platform: "cli", chatId: "contract-plan", chatType: "dm", userId: "local" }, text: request, timeoutMs: 1_000 }, (event) => { runEvents.push(event); });
 
-	assert.equal(planningInput.admission.source, "model");
-	assert.deepEqual(planningInput.contract, contract);
-	assert.match(promptText, /basis=work_contract/);
-	assert.doesNotMatch(promptText, /basis=raw_prompt/);
+	assert.equal(semanticallyAdmitted, false);
+	assert.equal(planningInput, request);
+	assert.match(promptText, /basis=raw_prompt/);
+	assert.doesNotMatch(promptText, /basis=work_contract/);
 	assert.deepEqual(runEvents.filter((event) => event.type === "planning_decision"), [{
 		type: "planning_decision",
 		mode: "direct",
-		basis: "work_contract",
+		basis: "raw_prompt",
 		verificationDepth: "none",
-		contractIdSha256: "sha256:38043e0acec4ca928dd5c55a00b0ec8286da910a6331e19a192d7442a5574967",
-		outcomeCount: 0,
-		capabilityRequirementCount: 0,
-		artifactRequirementCount: 0,
-		evidenceRequirementCount: 0,
 		concurrency: 1,
 		maxSubagents: 0,
 		requiredTools: [],
@@ -292,11 +411,12 @@ test("Agent runtime plans only after model Work Contract semantic admission", as
 		mode: "automation",
 		executionEnvelope: createExecutionEnvelope({ executionId: "execution:contract-plan-automation", trigger: { kind: "automation", id: "schedule:contract-plan" } }),
 	}, (event) => { automationEvents.push(event); });
+	assert.equal(semanticallyAdmitted, true);
 	assert.deepEqual(automationEvents.filter((event) => event.type === "planning_decision").map((event) => event.basis), ["work_contract"]);
 	runtime.dispose();
 });
 
-test("Agent runtime compiles a reviewed OpenWorld graph after Work Contract admission and shares the cognition budget", async () => {
+test("Agent runtime compiles a reviewed OpenWorld graph without imposing an execution token ceiling on cognition", async () => {
 	const contract = runtimeGoldWorkContract();
 	let compilerBudget;
 	let planningInput;
@@ -305,6 +425,7 @@ test("Agent runtime compiles a reviewed OpenWorld graph after Work Contract admi
 	const agent = { state: { model: { id: "test/model" }, messages: [] } };
 	const runtime = new BeeMaxAgentRuntime({
 		profileId: "profile:test",
+		interactiveAdmission: "contract_first",
 		turnUnderstanding: { understand: () => ({ action: "create", goal: runtimeGoldRequest, constraints: [], acceptanceCriteria: ["调研过去一周黄金走势", "输出 HTML", "PDF"], uncertainties: [], memoryQuery: runtimeGoldRequest, executionMode: "direct", confidence: 1 }) },
 		workContractBuilder: { build: async () => admission(contract) },
 		openWorldContractCompiler: { compile: async ({ admission: admitted, maxCognitionTokens }) => {
@@ -334,7 +455,7 @@ test("Agent runtime compiles a reviewed OpenWorld graph after Work Contract admi
 		executionEnvelope: createExecutionEnvelope({ executionId: "execution:open-world-plan", trigger: { kind: "interaction" }, budget: { maxTokens: 1_000 } }),
 	});
 
-	assert.equal(compilerBudget, 900);
+	assert.equal(compilerBudget, undefined);
 	assert.equal(planningInput.schemaVersion, "beemax.open-world-contract.v1");
 	assert.match(promptText, /basis=open_world_contract/);
 	assert.match(promptText, /verificationDepth=independent/);
@@ -372,6 +493,7 @@ test("a restarted runtime revalidates the durable OpenWorld admission without re
 	};
 	const first = new BeeMaxAgentRuntime({
 		profileId: "profile:test",
+		interactiveAdmission: "contract_first",
 		taskLedger: ledger,
 		planningPolicy: new AutonomousPlanningPolicy(),
 		turnUnderstanding: { understand: () => ({ action: "create", goal: runtimeGoldRequest, constraints: [], acceptanceCriteria: ["调研过去一周黄金走势", "输出 HTML", "PDF"], uncertainties: [], memoryQuery: runtimeGoldRequest, executionMode: "direct", confidence: 1 }) },
@@ -469,6 +591,7 @@ test("a signed correction admission binds every earlier Objective revision befor
 	};
 	const createRuntime = (contract, understood) => new BeeMaxAgentRuntime({
 		profileId: "profile:revision-chain",
+		interactiveAdmission: "contract_first",
 		taskLedger: ledger,
 		planningPolicy: new AutonomousPlanningPolicy(),
 		turnUnderstanding: { understand: () => understood },
@@ -521,6 +644,7 @@ test("a production runtime without a Profile integrity key blocks durable model 
 	const contract = workContract({ acceptanceCriteria: [clause(rawRequest)], capabilityRequirements: [], executionMode: "direct" });
 	const runtime = new BeeMaxAgentRuntime({
 		profileId: "profile:missing-integrity",
+		interactiveAdmission: "contract_first",
 		taskLedger: { record: (task) => tasks.push(task), transition: () => true, queryTasks: () => [], reviseObjective: () => undefined },
 		planningPolicy: new AutonomousPlanningPolicy(),
 		turnUnderstanding: { understand: () => ({ action: "create", goal: rawRequest, constraints: [], acceptanceCriteria: [rawRequest], uncertainties: [], memoryQuery: rawRequest, executionMode: "direct", confidence: 1 }) },
@@ -552,6 +676,7 @@ test("the contract-derived correction budget bounds the real Objective verificat
 	const agent = { state: { model: { id: "test/model" }, messages: [] } };
 	const runtime = new BeeMaxAgentRuntime({
 		profileId: "profile:test",
+		interactiveAdmission: "contract_first",
 		taskLedger: ledger,
 		planningPolicy: new AutonomousPlanningPolicy({ maxCorrectiveAttempts: 0 }),
 		turnUnderstanding: { understand: () => ({ action: "create", goal: rawRequest, constraints: [], acceptanceCriteria: [rawRequest], uncertainties: [], memoryQuery: rawRequest, executionMode: "direct", confidence: 1 }) },

@@ -48,3 +48,21 @@ test("Capability ranking evaluation requires every declared Capability for a mul
 	assert.equal(report.metrics.topKRecall, 0);
 	assert.deepEqual(report.failures.map((failure) => failure.code), ["topk_miss"]);
 });
+
+test("Capability ranking evaluation identifies a lexical-and-semantic production run as progressive", async () => {
+	const ranker = {
+		async rank(query, candidates) {
+			const descriptor = candidates.find(({ name }) => name === "web_search");
+			const strategy = query === "exact metadata" ? "lexical" : "semantic";
+			return [{ descriptor, score: 90, confidence: 0.9, explanation: { strategy, summary: strategy, signals: [strategy] } }];
+		},
+	};
+	const report = await evaluateCapabilityRanking({
+		ranker, inventory,
+		cases: [
+			{ id: "exact", query: "exact metadata", expected: "web_search" },
+			{ id: "paraphrase", query: "semantic paraphrase", expected: "web_search" },
+		],
+	});
+	assert.equal(report.strategy, "progressive");
+});

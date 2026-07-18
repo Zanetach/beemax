@@ -64,7 +64,7 @@ test("Profile Work Runtime cannot exceed the production task concurrency boundar
 	}
 });
 
-test("one-shot Profile Work Runtime does not start unrelated background recovery", async () => {
+test("one-shot Profile Work Runtime reconciles expired leases once without starting background recovery", async () => {
 	const root = await mkdtemp(join(tmpdir(), "beemax-profile-work-runtime-once-"));
 	const memory = new MemoryStore(join(root, "memory.db"), "personal");
 	let reconciliations = 0;
@@ -85,7 +85,7 @@ test("one-shot Profile Work Runtime does not start unrelated background recovery
 	});
 	try {
 		await new Promise((resolve) => setTimeout(resolve, 30));
-		assert.equal(reconciliations, 0);
+		assert.equal(reconciliations, 1);
 		assert.equal(work.recoveryStatus().phase, "disabled");
 	} finally {
 		for (const resource of [...work.resources].reverse()) await resource.dispose();

@@ -1,4 +1,4 @@
-import { AdaptiveTextBuffer, TurnStatusPulse, interactionCompletionDeliveryKey, type DeliveryOptions, type DeliveryReceipt, type InteractionEvent } from "@beemax/core";
+import { AdaptiveTextBuffer, TurnStatusPulse, interactionCompletionDeliveryKey, interactionPhaseForOutcome, type DeliveryOptions, type DeliveryReceipt, type InteractionEvent } from "@beemax/core";
 import { formatApprovalRequest, formatWorkProgress, type InteractionPresentationOpen, type InteractionPresenter, type SendOptions, type SendResult, type TurnPresentation, type WorkProgressPresentation } from "@beemax/channel-runtime";
 import { FlushController } from "./flush.ts";
 import { renderCard, type CardRenderOptions } from "./render.ts";
@@ -98,9 +98,15 @@ class FeishuTurnPresentation implements TurnPresentation {
 			case "turn.cancelled":
 				await this.stopPulse(); await this.answerBuffer.flush(); this.card.apply("message.cancelled", { message: "运行已取消" });
 				await this.flush.schedule(() => this.renderUpdate(), true); break;
-			case "turn.finished":
-				await this.stopPulse(); await this.answerBuffer.flush(); this.card.apply("message.completed", { answer: this.card.answerText || event.result.answer, model: event.result.model, duration: event.result.durationMs / 1000, tokens: event.result.usage });
+			case "turn.finished": {
+				await this.stopPulse(); await this.answerBuffer.flush();
+				const outcomePhase = interactionPhaseForOutcome(event.result.outcome);
+				const presentationEvent = outcomePhase === "completed" ? "message.completed"
+					: outcomePhase === "cancelled" ? "message.cancelled"
+						: outcomePhase === "rejected" ? "message.rejected" : "message.incomplete";
+				this.card.apply(presentationEvent, { answer: event.result.answer, message: event.result.answer, model: event.result.model, duration: event.result.durationMs / 1000, tokens: event.result.usage });
 				await this.flush.schedule(() => this.renderUpdate(), true); break;
+			}
 			case "approval.requested": {
 				const message = formatApprovalRequest(event);
 				this.card.apply("approval.updated", { id: `approval:${event.turnId}`, status: "pending", message });
