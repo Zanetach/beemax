@@ -63,7 +63,7 @@ cd beemax
 ./scripts/install.sh
 ```
 
-On Ubuntu and macOS, installation also discovers or installs Tesseract OCR. Set `BEEMAX_INSTALL_MEDIA_DEPS=0` only when the host image manages OCR dependencies separately.
+On Ubuntu and macOS, installation also discovers or installs Tesseract OCR. Ubuntu installation additionally provisions Noto CJK fonts so Chinese HTML/PDF reports retain visible, extractable text. Set `BEEMAX_INSTALL_MEDIA_DEPS=0` only when the host image manages these dependencies separately.
 
 ### 2. Create a Profile
 

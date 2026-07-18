@@ -41,6 +41,7 @@ jobs:
         with:
           node-version: 22.19.0
           cache: npm
+      - run: bash scripts/install-media-dependencies.sh
       - run: npm ci
       - run: npm run verify:release
       - run: mkdir -p artifacts && npm run eval:deployment -- --require-ubuntu --write artifacts/agent-deployment-ubuntu.json

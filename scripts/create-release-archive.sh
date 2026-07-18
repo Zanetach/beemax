@@ -57,6 +57,10 @@ tar -C "${ROOT}" \
 	--exclude='./.beemax' \
 	-cf - . | tar -C "${STAGING}/beemax" -xf -
 
+# Chromium or native crashes can leave root-level core dumps in a checkout.
+# Remove only those staging-root files; packages/core is production source.
+rm -f "${STAGING}/beemax/core" "${STAGING}/beemax"/core.*
+
 mkdir -p "${STAGING}/beemax/scripts"
 for RELEASE_SCRIPT in clean-build-output.mjs install-media-dependencies.sh install.sh verify-release-version.mjs; do
 	cp "${ROOT}/scripts/${RELEASE_SCRIPT}" "${STAGING}/beemax/scripts/${RELEASE_SCRIPT}"

@@ -21,14 +21,16 @@ test("source installer keeps native dependency scripts and pins CLI commands to 
 	assert.match(installer, /apps\/cli\/dist\/cli\.js/);
 });
 
-test("media dependency installer auto-installs Tesseract on Ubuntu and macOS", async () => {
+test("media dependency installer auto-installs OCR and CJK report dependencies", async () => {
 	const installer = await readFile("scripts/install-media-dependencies.sh", "utf8");
 	assert.match(installer, /BEEMAX_INSTALL_MEDIA_DEPS/);
 	assert.match(installer, /BEEMAX_TESSERACT:-tesseract/);
+	assert.match(installer, /BEEMAX_FC_LIST:-fc-list/);
 	assert.match(installer, /command -v "\$\{TESSERACT_BIN\}"/);
 	assert.match(installer, /tesseract-ocr/);
 	assert.match(installer, /tesseract-ocr-eng/);
 	assert.match(installer, /tesseract-ocr-chi-sim/);
+	assert.match(installer, /fonts-noto-cjk/);
 	assert.match(installer, /apt-get/);
 	assert.match(installer, /sudo/);
 	assert.match(installer, /tesseract-lang/);
@@ -40,12 +42,66 @@ test("media dependency installer executes the Ubuntu package plan and verifies T
 	try {
 		const aptGet = join(fixture, "apt-get");
 		const tesseract = join(fixture, "tesseract");
+		const fcList = join(fixture, "fc-list");
+		const fontReady = join(fixture, "font-ready");
 		const calls = join(fixture, "calls.log");
 		await writeFile(aptGet, `#!/usr/bin/env bash
 printf '%s\\n' "$*" >> "$BEEMAX_TEST_CALLS"
 if [[ "$1" == "install" ]]; then
   printf '#!/usr/bin/env bash\\nprintf "tesseract 5.5.0\\n"\\n' > "$BEEMAX_TEST_TESSERACT"
   chmod 0755 "$BEEMAX_TEST_TESSERACT"
+  touch "$BEEMAX_TEST_FONT_READY"
+fi
+`);
+		await chmod(aptGet, 0o755);
+		await writeFile(fcList, `#!/usr/bin/env bash
+[[ -f "$BEEMAX_TEST_FONT_READY" ]] && printf 'Noto Sans CJK SC\\n'
+`);
+		await chmod(fcList, 0o755);
+		const result = spawnSync("bash", ["scripts/install-media-dependencies.sh"], {
+			cwd: process.cwd(),
+			encoding: "utf8",
+			env: {
+				...process.env,
+				BEEMAX_APT_GET: aptGet,
+				BEEMAX_INSTALL_EUID: "0",
+				BEEMAX_INSTALL_OS: "ubuntu",
+				BEEMAX_TESSERACT: tesseract,
+				BEEMAX_FC_LIST: fcList,
+				BEEMAX_TEST_TESSERACT: tesseract,
+				BEEMAX_TEST_FONT_READY: fontReady,
+				BEEMAX_TEST_CALLS: calls,
+				PATH: `${fixture}:${process.env.PATH}`,
+			},
+		});
+		assert.equal(result.status, 0, result.stderr);
+		const packageCalls = await readFile(calls, "utf8");
+		assert.match(packageCalls, /^update$/m);
+		assert.match(packageCalls, /install -y --no-install-recommends tesseract-ocr tesseract-ocr-eng tesseract-ocr-chi-sim fonts-noto-cjk/);
+		assert.match(result.stdout, /media dependency installed: tesseract 5\.5\.0/);
+	} finally {
+		await rm(fixture, { recursive: true, force: true });
+	}
+});
+
+test("media dependency installer provisions a CJK font when Tesseract is already present", async () => {
+	const fixture = await mkdtemp(join(tmpdir(), "beemax-media-font-install-"));
+	try {
+		const aptGet = join(fixture, "apt-get");
+		const tesseract = join(fixture, "tesseract");
+		const fcList = join(fixture, "fc-list");
+		const fontReady = join(fixture, "font-ready");
+		const calls = join(fixture, "calls.log");
+		await writeFile(tesseract, "#!/usr/bin/env bash\nprintf 'tesseract 5.5.0\\n'\n");
+		await chmod(tesseract, 0o755);
+		await writeFile(fcList, `#!/usr/bin/env bash
+[[ -f "$BEEMAX_TEST_FONT_READY" ]] && printf 'Noto Sans CJK SC\\n'
+`);
+		await chmod(fcList, 0o755);
+		await writeFile(aptGet, `#!/usr/bin/env bash
+printf '%s\\n' "$*" >> "$BEEMAX_TEST_CALLS"
+if [[ "$1" == "install" ]]; then
+  touch "$BEEMAX_TEST_FONT_READY"
 fi
 `);
 		await chmod(aptGet, 0o755);
@@ -58,7 +114,8 @@ fi
 				BEEMAX_INSTALL_EUID: "0",
 				BEEMAX_INSTALL_OS: "ubuntu",
 				BEEMAX_TESSERACT: tesseract,
-				BEEMAX_TEST_TESSERACT: tesseract,
+				BEEMAX_FC_LIST: fcList,
+				BEEMAX_TEST_FONT_READY: fontReady,
 				BEEMAX_TEST_CALLS: calls,
 				PATH: `${fixture}:${process.env.PATH}`,
 			},
@@ -66,8 +123,7 @@ fi
 		assert.equal(result.status, 0, result.stderr);
 		const packageCalls = await readFile(calls, "utf8");
 		assert.match(packageCalls, /^update$/m);
-		assert.match(packageCalls, /install -y --no-install-recommends tesseract-ocr tesseract-ocr-eng tesseract-ocr-chi-sim/);
-		assert.match(result.stdout, /media dependency installed: tesseract 5\.5\.0/);
+		assert.match(packageCalls, /install -y --no-install-recommends .*fonts-noto-cjk/);
 	} finally {
 		await rm(fixture, { recursive: true, force: true });
 	}
@@ -105,6 +161,9 @@ test("release archive includes Pi and excludes git metadata and dependencies", a
 	assert.match(packager, /--exclude='\.\/docs'/);
 	assert.match(packager, /--exclude='\.\/evals'/);
 	assert.match(packager, /--exclude='\.\/\.github'/);
+	assert.match(packager, /--exclude='\.\/\.scratch'/);
+	assert.match(packager, /--exclude='\.\/tmp'/);
+	assert.match(packager, /rm -f "\$\{STAGING\}\/beemax\/core" "\$\{STAGING\}\/beemax"\/core\.\*/);
 	assert.match(packager, /--exclude='\*\/test'/);
 	assert.match(packager, /--exclude='\.\/scripts'/);
 	assert.match(packager, /clean-build-output\.mjs/);
@@ -127,6 +186,8 @@ test("tag releases pass build, test, and isolated archive installation gates bef
 	assert.match(workflow, /node-version: 22\.19\.0/);
 	for (const command of ["npm ci", "npm audit --omit=dev --audit-level=high", "npm run verify:release", "create-release-archive\.sh", "verify-release-archive\.sh"]) assert.match(workflow, new RegExp(command));
 	assert.match(ci, /npm run verify:release/);
+	assert.match(workflow, /install-media-dependencies\.sh/);
+	assert.match(ci, /install-media-dependencies\.sh/);
 	for (const command of ["npm run build", "npm run typecheck", "npm run eval:runtime", "npm run eval:performance:release", "npm run eval:memory", "npm run eval:reliability", "npm run eval:acceptance", "npm test"]) assert.match(pkg.scripts["verify:release"], new RegExp(command));
 	assert.ok(workflow.indexOf("verify-release-archive.sh") < workflow.indexOf("gh release create"));
 	assert.match(verifier, /sha256/);
