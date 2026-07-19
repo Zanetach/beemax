@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## 1.5.1
+
+- Fixed release-archive construction on GNU tar so nested vendored `.github` workflow metadata is excluded consistently with macOS bsdtar, keeping prohibited external Agent tooling outside the published BeeMax archive.
+
 ## 1.5.0
 
 - Changed interactive execution to a model-first Pi flow: ordinary natural-language requests—including research, multi-step work, file creation, and unfamiliar phrasing—now reach the main model directly, complex turns retain adaptive planning plus progressive Tool/Skill activation, and complexity alone no longer creates a durable Objective or invokes separate Work Contract cognition. Automation and explicit Objective continuation/correction/cancellation remain Contract-governed, while Sandbox, approvals, Tool policy, Effect receipts, Artifact verification, and release guards remain authoritative throughout execution.
