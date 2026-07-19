@@ -161,6 +161,7 @@ test("release archive includes Pi and excludes git metadata and dependencies", a
 	assert.match(packager, /--exclude='\.\/docs'/);
 	assert.match(packager, /--exclude='\.\/evals'/);
 	assert.match(packager, /--exclude='\.\/\.github'/);
+	assert.match(packager, /--exclude='\*\/\.github'/);
 	assert.match(packager, /--exclude='\.\/\.scratch'/);
 	assert.match(packager, /--exclude='\.\/tmp'/);
 	assert.match(packager, /rm -f "\$\{STAGING\}\/beemax\/core" "\$\{STAGING\}\/beemax"\/core\.\*/);
