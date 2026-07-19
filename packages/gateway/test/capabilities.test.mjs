@@ -4,7 +4,6 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
-import { createCodexImageTool } from "@beemax/codex-image-capability";
 import { createFeishuMeetingTools } from "@beemax/feishu-capability";
 import { McpManager } from "@beemax/mcp-capability";
 import { filterEligibleSkills, reloadRuntimeResourcesIfNeeded } from "@beemax/core";
@@ -52,6 +51,7 @@ test("Pi keeps Skill metadata out of the base prompt and hot-reloads the registr
 		"---\nname: existing\ndescription: Existing verified workflow\n---\n\n# Existing\n\nFollow the verified workflow.\n");
 	const memoryStore = { remember: () => "id", recall: () => [], list: () => [], forget: () => true };
 	const factory = buildAgentFactory({
+		profileId: "profile:test",
 		provider: "anthropic", model: "claude-sonnet-4-5", cwd, agentDir,
 		getApiKey: () => "test", memoryStore, authorizeTool: async () => ({ allowed: true }),
 	});
@@ -77,35 +77,6 @@ test("Pi keeps Skill metadata out of the base prompt and hot-reloads the registr
 	}
 });
 
-test("Codex image generation saves and delivers a PNG without exposing OAuth", async () => {
-	const root = mkdtempSync(join(tmpdir(), "beemax-image-test-"));
-	const originalFetch = globalThis.fetch;
-	const payload = Buffer.from(JSON.stringify({ "https://api.openai.com/auth": { chatgpt_account_id: "acct-test" } })).toString("base64url");
-	const token = `x.${payload}.y`;
-	let delivered;
-	globalThis.fetch = async (_url, request) => {
-		assert.equal(request.headers.Authorization, `Bearer ${token}`);
-		assert.equal(request.headers["chatgpt-account-id"], "acct-test");
-		const event = { type: "response.output_item.done", item: { type: "image_generation_call", result: Buffer.from("fake-png").toString("base64") } };
-		return new Response(`data: ${JSON.stringify(event)}\n\ndata: [DONE]\n\n`, { status: 200 });
-	};
-	try {
-		const tool = createCodexImageTool({ platform:"feishu",chatId:"chat",chatType:"dm" }, {
-			outputDir: root, quality: "medium", getAccessToken: async () => token,
-			mediaOutbox: { enqueueMedia: async (_source, media) => { delivered = media.path; } },
-		});
-		assert.equal(tool.beemaxPolicy.approval, "always");
-		assert.equal(tool.beemaxPolicy.maxAttempts, 1);
-		const result = await tool.execute("image", { prompt:"a bee", aspectRatio:"square" }, new AbortController().signal);
-		assert.match(result.content[0].text, /queued for delivery/);
-		assert.equal(delivered, result.details.path);
-		assert.doesNotMatch(JSON.stringify(result), /acct-test|Bearer/);
-	} finally {
-		globalThis.fetch = originalFetch;
-		rmSync(root, { recursive:true, force:true });
-	}
-});
-
 test("MCP tools are discovered, callable, and mutating tools require approval", async () => {
 	const manager = new McpManager();
 	try {
@@ -117,6 +88,7 @@ test("MCP tools are discovered, callable, and mutating tools require approval", 
 		assert.equal(status[0].resources, 1);
 		assert.equal(status[0].prompts, 1);
 		const tools = new Map(manager.getTools().map((tool) => [tool.name, tool]));
+		assert.deepEqual(tools.get("mcp_smoke_echo").beemaxToolSpec, { kind: "mcp", configured: true, health: "ready" });
 		assert.equal(tools.get("mcp_smoke_echo").beemaxPolicy.approval, "never");
 		assert.deepEqual(tools.get("mcp_smoke_echo").aliases, ["echo", "smoke echo", "smoke/echo"]);
 		assert.equal(tools.get("mcp_smoke_mutate").beemaxPolicy.approval, "always");

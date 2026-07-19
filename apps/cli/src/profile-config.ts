@@ -430,13 +430,12 @@ export async function migrateProfile(profile: string, options: ProfileStorageOpt
 	config.agent = agent;
 	config.memory = { ...asRecord(config.memory), dbPath: "memory.db" };
 	config.mcp = { ...asRecord(config.mcp), configPath: "mcp.json" };
-	config.imageGeneration = { ...asRecord(config.imageGeneration), outputDir: "cache/images" };
+	delete config.imageGeneration;
 	const pathsConfig = asRecord(config.paths);
 	const workspace = absoluteFrom(root, legacyEnv.BEEMAX_CWD || (typeof pathsConfig.cwd === "string" ? pathsConfig.cwd : "."));
 	config.paths = { ...pathsConfig, agentDir: ".", cwd: workspace };
 	const oldMemory = absoluteFrom(root, legacyEnv.BEEMAX_DB_PATH || stringAt(originalConfig, ["memory", "dbPath"]) || join(legacy.dataPath, "beemax.db"));
 	const oldMcp = absoluteFrom(root, legacyEnv.BEEMAX_MCP_CONFIG || stringAt(originalConfig, ["mcp", "configPath"]) || legacy.configPath.replace(/\.ya?ml$/i, ".mcp.json"));
-	const oldImages = absoluteFrom(root, legacyEnv.BEEMAX_IMAGE_OUTPUT_DIR || stringAt(originalConfig, ["imageGeneration", "outputDir"]) || join(legacy.dataPath, "cache", "images"));
 	const oldAgent = absoluteFrom(root, legacyEnv.BEEMAX_AGENT_DIR || stringAt(originalConfig, ["paths", "agentDir"]) || join(legacy.dataPath, "agent"));
 	const migratedEnv = { ...legacyEnv };
 	for (const [envKey, configKey] of [["FEISHU_APP_ID", "appId"], ["FEISHU_APP_SECRET", "appSecret"], ["FEISHU_WEBHOOK_VERIFICATION_TOKEN", "webhookVerificationToken"], ["FEISHU_WEBHOOK_ENCRYPT_KEY", "webhookEncryptKey"]] as const) {
@@ -454,7 +453,6 @@ export async function migrateProfile(profile: string, options: ProfileStorageOpt
 		await writeEnvFile(join(temp, ".env"), migratedEnv);
 		if (await exists(oldMemory)) await backupSqliteDatabase(oldMemory, join(temp, "memory.db"));
 		if (await exists(oldMcp)) await copyFile(oldMcp, join(temp, "mcp.json"), constants.COPYFILE_EXCL);
-		if (await exists(oldImages)) await cp(oldImages, join(temp, "cache", "images"), { recursive: true, errorOnExist: true, force: false });
 		if (await exists(oldAgent)) {
 			for (const entry of await readdir(oldAgent)) {
 				await cp(join(oldAgent, entry), join(temp, entry), { recursive: true, errorOnExist: true, force: false });
@@ -467,7 +465,6 @@ export async function migrateProfile(profile: string, options: ProfileStorageOpt
 		await verifyMigratedProfile(temp, {
 			identity,
 			oldAgent,
-			oldImages,
 			oldMcp,
 			sourceHadMemory: await exists(oldMemory),
 			sourceHadMcp: await exists(oldMcp),
@@ -482,13 +479,13 @@ export async function migrateProfile(profile: string, options: ProfileStorageOpt
 
 function defaultProfileYaml(): string {
 	return stringifyYaml({
-		agent: { toolset: "standard", maxSessions: 100, sessionIdleMs: 1800000, turnIdleSettleMs: 60000 },
+		agent: { toolset: "standard", maxSessions: 100, sessionIdleMs: 1800000 },
 		model: { provider: "anthropic", model: "claude-sonnet-4-5" },
 		gateway: { feishu: { domain: "feishu", requireMention: true, allowedUsers: [], allowedChats: [], allowAllUsers: false }, channels: [] },
 		memory: { dbPath: "memory.db", memberships: [] },
 		mcp: { configPath: "mcp.json" },
+		capabilityProviders: { installation: { enabled: false, allowedProviders: [] } },
 		knowledge: { enabled: false, provider: "weknora", baseUrl: "http://127.0.0.1:8080", spaces: [] },
-		imageGeneration: { enabled: false, provider: "openai-codex", quality: "medium", outputDir: "cache/images" },
 		mediaUnderstanding: { localOcr: { enabled: true, timeoutMs: 30000 }, auxiliaryVisionEnabled: true },
 		context: { maxTurnChars: 12000, maxToolResultTokens: 12000, compaction: { enabled: true } },
 		execution: { backend: "local", mode: "off", workspaceAccess: "none", workspaceWritePolicy: "approval-required", taskGrantCapabilities: [], image: DEFAULT_DOCKER_SANDBOX_IMAGE, timeoutMs: 180000 },
@@ -536,7 +533,7 @@ function stringAt(config: Record<string, unknown>, path: [string, string]): stri
 
 async function verifyMigratedProfile(
 	home: string,
-	expected: { identity: string; oldAgent: string; oldImages: string; oldMcp: string; sourceHadMemory: boolean; sourceHadMcp: boolean },
+	expected: { identity: string; oldAgent: string; oldMcp: string; sourceHadMemory: boolean; sourceHadMcp: boolean },
 ): Promise<void> {
 	const config = configFromYaml(await readFile(join(home, "config.yaml"), "utf8"));
 	if (stringAt(config, ["memory", "dbPath"]) !== "memory.db"
@@ -554,7 +551,6 @@ async function verifyMigratedProfile(
 		throw new Error("Migrated Profile MCP copy failed validation");
 	}
 	if (await exists(expected.oldAgent)) await verifyTreeCopied(expected.oldAgent, home);
-	if (await exists(expected.oldImages)) await verifyTreeCopied(expected.oldImages, join(home, "cache", "images"));
 }
 
 async function verifyTreeCopied(source: string, destination: string): Promise<void> {
@@ -591,7 +587,6 @@ const PROFILE_ROUTING_ENV = [
 	"BEEMAX_PROFILE",
 	"BEEMAX_DB_PATH",
 	"BEEMAX_MCP_CONFIG",
-	"BEEMAX_IMAGE_OUTPUT_DIR",
 	"BEEMAX_AGENT_DIR",
 	"BEEMAX_CWD",
 	"BEEMAX_SYSTEM_PROMPT",

@@ -9,11 +9,12 @@ export function createVerificationSubmitTool() {
 	return withToolPolicy(defineTool({
 		name: VERIFICATION_SUBMIT_TOOL_NAME,
 		label: "Submit Verification Verdict",
-		description: "Submit exactly one structured independent Verification verdict for the current Task. Accepted assertions cite successful evidence Tools as tool:<exact_name>; BeeMax binds them to concrete call receipts.",
+		description: "Submit exactly one structured independent Verification verdict for the current Task. Every criterion has an accepted, rejected, or unavailable assertion; evaluated assertions cite successful evidence Tools as tool:<exact_name>, which BeeMax binds to concrete call receipts.",
 		parameters: Type.Object({
 			status: Type.Union([Type.Literal("accepted"), Type.Literal("rejected"), Type.Literal("unavailable")]),
 			reason: Type.String({ minLength: 1, maxLength: 5_000 }),
 			assertions: Type.Array(Type.Object({
+				status: Type.Union([Type.Literal("accepted"), Type.Literal("rejected"), Type.Literal("unavailable")]),
 				criterionId: Type.String({ pattern: "^C[1-9][0-9]*$", maxLength: 16 }),
 				evidence: Type.String({ minLength: 1, maxLength: 5_000 }),
 				evidenceRefs: Type.Array(Type.String({ minLength: 1, maxLength: 256, pattern: "^(tool:[a-zA-Z0-9_-]{1,128}|tool-call:[^\\s]{1,220})$", description: "Use tool:<exact successful Tool name>, or an exact tool-call:<id> when known." }), { minItems: 1, maxItems: 100 }),

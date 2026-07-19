@@ -3,7 +3,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { MUTATING_TOOL_POLICY, TaskGraph, responsibilityOwnerKey, responsibilityOwnerKeys } from "@beemax/core";
+import { DeterministicWorkContractBuilder, MUTATING_TOOL_POLICY, TaskGraph, responsibilityOwnerKey, responsibilityOwnerKeys } from "@beemax/core";
 import { MemoryStore } from "@beemax/memory";
 import { attestAgentFactorySecurity } from "../dist/agent-factory.js";
 import { createProfileRuntime } from "../dist/runtime-composition.js";
@@ -25,7 +25,7 @@ test("one channel-neutral contract preserves Task, Effect, Verification, cancell
 		resources: [{ name: "memory", dispose: () => memory.close() }],
 		compose: (work) => ({
 			profileId: "personal", agentDir: root, policy: {},
-			runtime: { createAgent: attestAgentFactorySecurity(async () => ({ agent: { state: { model: { id: "test" }, messages: [] } }, subscribe: () => () => undefined, prompt: async () => undefined, abort: async () => undefined, dispose: () => undefined }), work.toolEffects) },
+			runtime: { workContractBuilder: new DeterministicWorkContractBuilder(), createAgent: attestAgentFactorySecurity(async () => ({ agent: { state: { model: { id: "test" }, messages: [] } }, subscribe: () => () => undefined, prompt: async () => undefined, abort: async () => undefined, dispose: () => undefined }), work.toolEffects) },
 		}),
 	});
 	try {

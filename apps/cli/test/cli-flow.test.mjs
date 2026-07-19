@@ -49,7 +49,7 @@ test("CLI supports init, model setup, Feishu channel setup, listing, and safe de
 	assert.match(run(["model", "set", "openrouter", "openai/gpt-5.2", "--profile", "personal", "--non-interactive"], {
 		BEEMAX_API_KEY: "model-key",
 	}), /Configured openrouter\/openai\/gpt-5.2/);
-	assert.match(run(["model", "set", "36", "private-model", "--profile", "personal", "--non-interactive"], {
+	assert.match(run(["model", "set", "custom", "private-model", "--profile", "personal", "--non-interactive"], {
 		BEEMAX_API_KEY: "custom-key",
 	}), /Configured custom\/private-model/);
 	const backupCredentialOutput = run(["credentials", "add", "--profile", "personal", "--label", "Backup account", "--purpose", "backup login", "--non-interactive"], { BEEMAX_CREDENTIAL_SECRET: "backup-private-value" });

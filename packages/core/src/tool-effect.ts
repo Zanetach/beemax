@@ -70,6 +70,7 @@ export interface TaskEffectProjection {
 export interface ToolEffectProjectionReader {
 	taskProjection(query: { ownerKey: string; taskId: string }): TaskEffectProjection[];
 	taskRunReplayState?(query: { ownerKey: string; taskId: string; taskRunId: string }): "clear" | "blocked";
+	unresolvedTaskEffects?(query: { ownerKey: string; taskIds: string[] }): number;
 }
 
 export interface ToolEffectAuthorityPort extends ToolEffectSink, ToolEffectProjectionReader {}
@@ -143,7 +144,8 @@ export class FileToolEffectJournal implements ToolEffectAuthorityPort {
 		const metadata = effectMetadata(input.details);
 		const trustedProof = metadata.proof && input.policy.effectProofProvider === metadata.proof.provider ? metadata.proof : undefined;
 		const trustedMetadata = { ...metadata, proof: trustedProof };
-		const status = input.isError || active.sideEffect === "external" && !trustedProof ? "unknown" : "committed";
+		const attestedLocalCommit = input.isError && active.sideEffect === "local" && Boolean(trustedProof);
+		const status = input.isError && !attestedLocalCommit || active.sideEffect === "external" && !trustedProof ? "unknown" : "committed";
 		const completed: ToolEffectRecord = {
 			...active,
 			status,
@@ -207,6 +209,9 @@ export class FileToolEffectJournal implements ToolEffectAuthorityPort {
 	}
 	taskRunReplayState(query: { ownerKey: string; taskId: string; taskRunId: string }): "clear" | "blocked" {
 		return this.authority.effectsForTask(query).some((record) => record.taskRunId === query.taskRunId && record.status !== "failed") ? "blocked" : "clear";
+	}
+	unresolvedTaskEffects(query: { ownerKey: string; taskIds: string[] }): number {
+		return this.authority.unresolvedTaskEffects(query);
 	}
 	close(): void {
 		for (const [key, record] of this.active) {
@@ -320,6 +325,12 @@ class ToolEffectAuthority {
 	}
 	effectsForTask(query: { ownerKey: string; taskId: string }): ToolEffectRecord[] {
 		return (this.db.prepare("SELECT record_json FROM tool_effects WHERE owner_key = ? AND task_id = ? ORDER BY updated_at").all(query.ownerKey, query.taskId) as StoredEffectRow[]).map((row) => parseEffect(row.record_json));
+	}
+	unresolvedTaskEffects(query: { ownerKey: string; taskIds: string[] }): number {
+		const taskIds = [...new Set(query.taskIds.filter((id) => id.trim()))];
+		if (!taskIds.length) return 0;
+		return (this.db.prepare(`SELECT COUNT(*) AS count FROM tool_effects WHERE owner_key = ? AND status IN ('planned','executing','unknown')
+			AND task_id IN (${taskIds.map(() => "?").join(",")})`).get(query.ownerKey, ...taskIds) as { count: number }).count;
 	}
 	events(): ToolEffectRecord[] { return (this.db.prepare("SELECT record_json FROM tool_effect_events ORDER BY seq").all() as StoredEffectRow[]).map((row) => parseEffect(row.record_json)); }
 	close(): void { this.db.pragma("wal_checkpoint(TRUNCATE)"); this.db.close(); }

@@ -401,12 +401,31 @@ test("configuration digests resolve multiple paths without leaking Array.map cal
 });
 
 test("subprocess timeout escalates to the process group and preserves partial output", async () => {
+	const root = await mkdtemp(join(tmpdir(), "beemax-stubborn-subprocess-"));
+	const readyPath = join(root, "ready");
 	const controller = new AbortController();
 	const startedAt = performance.now();
-	const running = runSubprocess(process.execPath, [new URL("./fixtures/stubborn-subprocess.mjs", import.meta.url).pathname], { signal: controller.signal });
-	setTimeout(() => controller.abort(new Error("test timeout")), 50);
-	const result = await running;
-	assert.ok(performance.now() - startedAt < 4_000);
-	assert.equal(result.signal, "SIGKILL");
-	assert.match(result.stdout, /partial-evidence/);
+	let running;
+	try {
+		running = runSubprocess(process.execPath, [new URL("./fixtures/stubborn-subprocess.mjs", import.meta.url).pathname, readyPath], { signal: controller.signal });
+		await waitForFile(readyPath);
+		controller.abort(new Error("test timeout"));
+		const result = await running;
+		assert.ok(performance.now() - startedAt < 4_000);
+		assert.equal(result.signal, "SIGKILL");
+		assert.match(result.stdout, /partial-evidence/);
+	} finally {
+		if (!controller.signal.aborted) controller.abort(new Error("subprocess readiness failed"));
+		await running?.catch(() => undefined);
+		await rm(root, { recursive: true, force: true });
+	}
 });
+
+async function waitForFile(path, timeoutMs = 2_000) {
+	const deadline = performance.now() + timeoutMs;
+	while (performance.now() < deadline) {
+		try { await readFile(path); return; } catch (error) { if (error?.code !== "ENOENT") throw error; }
+		await new Promise((resolve) => setTimeout(resolve, 5));
+	}
+	throw new Error(`Timed out waiting for ${path}`);
+}

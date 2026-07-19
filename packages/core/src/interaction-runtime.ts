@@ -8,7 +8,7 @@ import { conversationIdentity, type ConversationIdentity } from "./agent-scope.t
 import type { InteractionInputQueueStore, InteractionQueuedInput } from "./interaction-input-queue.ts";
 
 export type InteractionSurface = "chat" | "gateway" | "web";
-export type InteractionPhase = "idle" | "running" | "queued" | "awaiting_approval" | "completed" | "failed" | "cancelled";
+export type InteractionPhase = "idle" | "running" | "queued" | "awaiting_approval" | "completed" | "incomplete" | "rejected" | "failed" | "cancelled";
 
 /** Stable visibility and authorization boundary for an interaction session. */
 export interface InteractionScope extends ConversationIdentity {
@@ -223,9 +223,15 @@ export class InteractionEventAdapter<Source extends BeeMaxRuntimeSource = BeeMax
 		try {
 			this.turnModels.set(interactionEventMeta(action.source, "", 0, this.profileId).sessionId, (await this.runtime.modelStatus?.(action.source))?.model ?? "unresolved");
 			await this.publish(action.source, turnId, { type: "turn.started" }, sink);
+			let durableObjectiveBound = false;
 			const result = await this.runtime.run({ ...action.input, source: action.source, text: action.text }, (event) => {
+				if (event.type === "execution_started" && event.executionEnvelope.objectiveId) durableObjectiveBound = true;
 				const mapped = mapAgentSessionEvent(event);
 				const work = mapAgentWorkEvent(event);
+				// A streamed assistant message is only a Candidate Outcome while a
+				// durable Objective is active. Keep it inside the Agent/Verifier loop;
+				// presenters receive only the Host-derived canonical result at turn.finished.
+				if (durableObjectiveBound && mapped?.type === "answer.delta") return work ? this.enqueue(action.source, turnId, work, sink) : undefined;
 				if (mapped && work) return Promise.all([this.enqueue(action.source, turnId, mapped, sink), this.enqueue(action.source, turnId, work, sink)]).then(() => undefined);
 				return mapped ? this.enqueue(action.source, turnId, mapped, sink) : work ? this.enqueue(action.source, turnId, work, sink) : undefined;
 			});
@@ -562,13 +568,21 @@ function interactionEventMeta(source: BeeMaxRuntimeSource, turnId: string, seque
 
 export function reduceInteractionEvent(snapshot: InteractionSnapshot, event: InteractionEvent): InteractionSnapshot {
 	if (event.type === "turn.started") return { ...snapshot, phase: "running", turnId: event.turnId, updatedAt: event.at };
-	if (event.type === "turn.finished") return { ...snapshot, phase: "completed", turnId: event.turnId, model: event.result.model, updatedAt: event.at };
+	if (event.type === "turn.finished") return { ...snapshot, phase: interactionPhaseForOutcome(event.result.outcome), turnId: event.turnId, model: event.result.model, updatedAt: event.at };
 	if (event.type === "turn.failed") return { ...snapshot, phase: "failed", turnId: event.turnId, updatedAt: event.at };
 	if (event.type === "turn.cancelled") return { ...snapshot, phase: "cancelled", turnId: event.turnId, updatedAt: event.at };
 	if (event.type === "approval.requested") return { ...snapshot, phase: "awaiting_approval", turnId: event.turnId, updatedAt: event.at };
 	if (event.type === "approval.resolved") return { ...snapshot, phase: "running", turnId: event.turnId, updatedAt: event.at };
 	if (event.type === "turn.queued") return { ...snapshot, phase: snapshot.phase === "awaiting_approval" ? "awaiting_approval" : event.mode === "steer" ? "running" : "queued", turnId: event.turnId, updatedAt: event.at };
 	return { ...snapshot, updatedAt: event.at };
+}
+
+/** Missing Host state is never evidence of Business Completion. */
+export function interactionPhaseForOutcome(outcome: AgentRunResult["outcome"] | undefined): Extract<InteractionPhase, "completed" | "incomplete" | "rejected" | "cancelled"> {
+	if (outcome?.status === "answered" || outcome?.status === "accepted") return "completed";
+	if (outcome?.status === "rejected") return "rejected";
+	if (outcome?.status === "cancelled") return "cancelled";
+	return "incomplete";
 }
 
 export function mapAgentSessionEvent(event: BeeMaxAgentRunEvent): InteractionEventPayload | undefined {

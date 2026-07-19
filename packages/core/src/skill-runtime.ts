@@ -99,15 +99,30 @@ export class SkillRuntime {
 		this.discovered = new Map(matches.map((item) => [item.name, item])); this.state = "discovered"; return matches;
 	}
 	async admitDiscovered(names: readonly string[]): Promise<SkillMatch[]> {
-		this.reset(); const selected = new Set(names); const descriptors = (await this.registry.list()).filter((item) => selected.has(item.name));
-		this.discovered = new Map(descriptors.map((item) => [item.name, { ...item, score: 0, confidence: 0, reason: "selected by Capability Runtime" }])); this.state = "discovered"; return [...this.discovered.values()];
+		const selected = new Set(names); const descriptors = (await this.registry.list()).filter((item) => selected.has(item.name));
+		return this.admitExact(descriptors);
 	}
+	admitExact(descriptors: readonly SkillDescriptor[]): SkillMatch[] {
+		const admitted = descriptors.map((item): SkillMatch => ({ ...item, score: 0, confidence: 0, reason: "selected by Capability Runtime" }));
+		// Tool discovery is allowed while one Skill is executing. It may add future
+		// Skill candidates, but must not erase the active route/version fence.
+		if (["activated", "routed", "module_loaded", "executing"].includes(this.state)) {
+			for (const descriptor of admitted) this.discovered.set(descriptor.name, descriptor);
+			return admitted;
+		}
+		this.reset(); this.discovered = new Map(admitted.map((item) => [item.name, item])); this.state = "discovered"; return admitted;
+	}
+	isDiscovered(name: string): boolean { return this.state === "discovered" && this.discovered.has(name); }
 	retainDiscovered(names: readonly string[]): void {
 		if (this.state !== "discovered") throw new Error("Skills can only be narrowed immediately after discovery");
 		const selected = new Set(names); this.discovered = new Map([...this.discovered].filter(([name]) => selected.has(name)));
 	}
 
 	async activate(name: string): Promise<{ descriptor: SkillDescriptor; instructions: string; routes: Array<{ name: string; description?: string }> }> {
+		if (this.active?.name === name && (this.state === "module_loaded" || this.state === "executing") && this.manifest) {
+			const content = await this.readLocked(this.active.location, this.active.sha256);
+			return { descriptor: this.active, instructions: stripFrontmatter(content), routes: Object.entries(this.manifest.routes).map(([routeName, route]) => ({ name: routeName, description: route.description })) };
+		}
 		const descriptor = this.discovered.get(name);
 		if (!descriptor) throw new Error(`Skill ${name} must be discovered before activation`);
 		const content = await this.readLocked(descriptor.location, descriptor.sha256);
@@ -149,7 +164,10 @@ export class SkillRuntime {
 		if (!this.active || (this.state !== "module_loaded" && this.state !== "executing")) throw new Error("Skill execution cannot complete before its route module is loaded");
 		const missingReferences = (this.route?.value.references ?? []).filter((path) => !this.resourceCache.has(path));
 		if (missingReferences.length) throw new Error(`Skill execution cannot complete before every declared reference is loaded: ${missingReferences.join(", ")}`);
-		this.state = "completed"; const snapshot = this.snapshot(); this.reset(); return snapshot;
+		const remaining = [...this.discovered].filter(([name]) => name !== this.active?.name);
+		this.state = "completed"; const snapshot = this.snapshot(); this.reset();
+		if (remaining.length) { this.discovered = new Map(remaining); this.state = "discovered"; }
+		return snapshot;
 	}
 	snapshot(): SkillExecutionSnapshot { return { state: this.state, skill: this.active?.name, sha256: this.active?.sha256, manifestSha256: this.manifestSha256, route: this.route?.name, loadedResources: [...this.loaded] }; }
 	reset(): void { this.state = "idle"; this.discovered.clear(); this.active = undefined; this.manifest = undefined; this.manifestSha256 = undefined; this.manifestLocation = undefined; this.route = undefined; this.loaded = []; this.resourceCache.clear(); this.resourceHashes.clear(); this.loadedBytes = 0; }

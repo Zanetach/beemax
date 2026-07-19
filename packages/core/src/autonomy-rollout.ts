@@ -4,6 +4,7 @@ import type { VerifiedObjectiveMemoryPublisher } from "./objective-runtime.ts";
 export const AUTONOMY_LEVELS = [
 	"situation_context",
 	"episode_publication",
+	"adaptive_learning",
 	"initiative_observation",
 	"read_only_investigation",
 	"reversible_action",
@@ -17,6 +18,13 @@ export interface AutonomyRolloutEvidence {
 	correctionRetention: number;
 	unauthorizedRetrievals: number;
 	verifiedCompletionRate: number;
+	memoryPromotionPrecision: number;
+	scopedRecallAt5: number;
+	memoryAttributionAccuracy: number;
+	memoryDowngradePrecision: number;
+	memoryFalseDowngradeRate: number;
+	memoryNegativeTransferRate: number;
+	memoryProvenanceCoverage: number;
 	initiativePrecision: number;
 	initiativeAverageExpectedValue: number;
 	duplicateInitiatives: number;
@@ -74,6 +82,7 @@ export interface AutonomyAllowance {
 const dependencies: Record<AutonomyLevel, readonly AutonomyLevel[]> = {
 	situation_context: [],
 	episode_publication: ["situation_context"],
+	adaptive_learning: ["situation_context", "episode_publication"],
 	initiative_observation: ["situation_context", "episode_publication"],
 	read_only_investigation: ["initiative_observation"],
 	reversible_action: ["read_only_investigation"],
@@ -82,6 +91,7 @@ const dependencies: Record<AutonomyLevel, readonly AutonomyLevel[]> = {
 const levelSet = new Set<string>(AUTONOMY_LEVELS);
 const evidenceKeys: readonly (keyof AutonomyRolloutEvidence)[] = [
 	"situationPrecision", "correctionRetention", "unauthorizedRetrievals", "verifiedCompletionRate",
+	"memoryPromotionPrecision", "scopedRecallAt5", "memoryAttributionAccuracy", "memoryDowngradePrecision", "memoryFalseDowngradeRate", "memoryNegativeTransferRate", "memoryProvenanceCoverage",
 	"initiativePrecision", "initiativeAverageExpectedValue", "duplicateInitiatives", "initiativeInterruptionRate",
 	"readOnlyPrecision", "readOnlyAdoptionRate", "readOnlyInterruptionRate", "duplicateReadOnlyObjectives",
 	"proactivePolicyScopeCoverage", "emergencyStopBlockRate", "compensationSuccessRate", "duplicateCompensations",
@@ -109,6 +119,13 @@ function validateEvidence(evidence: AutonomyRolloutEvidence): string[] {
 		["situation precision", evidence.situationPrecision],
 		["correction retention", evidence.correctionRetention],
 		["verified completion rate", evidence.verifiedCompletionRate],
+		["Memory promotion precision", evidence.memoryPromotionPrecision],
+		["scoped Recall@5", evidence.scopedRecallAt5],
+		["Memory attribution accuracy", evidence.memoryAttributionAccuracy],
+		["Memory downgrade precision", evidence.memoryDowngradePrecision],
+		["Memory false downgrade rate", evidence.memoryFalseDowngradeRate],
+		["Memory negative transfer rate", evidence.memoryNegativeTransferRate],
+		["Memory provenance coverage", evidence.memoryProvenanceCoverage],
 		["initiative precision", evidence.initiativePrecision],
 		["initiative average expected value", evidence.initiativeAverageExpectedValue],
 		["initiative interruption rate", evidence.initiativeInterruptionRate],
@@ -148,6 +165,15 @@ function gateReasons(level: AutonomyLevel, evidence: AutonomyRolloutEvidence): s
 	} else if (level === "episode_publication") {
 		requireAtLeast("verified completion rate", evidence.verifiedCompletionRate, 1);
 		requireAtLeast("correction retention", evidence.correctionRetention, 0.98);
+		requireAtMost("unauthorized retrievals", evidence.unauthorizedRetrievals, 0);
+	} else if (level === "adaptive_learning") {
+		requireAtLeast("Memory promotion precision", evidence.memoryPromotionPrecision, 0.98);
+		requireAtLeast("scoped Recall@5", evidence.scopedRecallAt5, 0.9);
+		requireAtLeast("Memory attribution accuracy", evidence.memoryAttributionAccuracy, 0.9);
+		requireAtLeast("Memory downgrade precision", evidence.memoryDowngradePrecision, 0.95);
+		requireAtLeast("Memory provenance coverage", evidence.memoryProvenanceCoverage, 1);
+		requireAtMost("Memory false downgrade rate", evidence.memoryFalseDowngradeRate, 0.02);
+		requireAtMost("Memory negative transfer rate", evidence.memoryNegativeTransferRate, 0.02);
 		requireAtMost("unauthorized retrievals", evidence.unauthorizedRetrievals, 0);
 	} else if (level === "initiative_observation") {
 		requireAtLeast("initiative precision", evidence.initiativePrecision, 0.6);

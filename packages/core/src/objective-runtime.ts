@@ -1,5 +1,5 @@
 import { redactCredentialMaterial } from "./credential-material.ts";
-import type { TaskLedger, TaskRecord } from "./task-ledger.ts";
+import type { ObjectiveCompletion, TaskLedger, TaskRecord } from "./task-ledger.ts";
 
 export interface ObjectiveDeliveryInput {
 	objective: TaskRecord;
@@ -11,14 +11,22 @@ export interface ObjectiveDeliveryResult { result: string; evidence?: string; }
 export type ObjectiveDeliverer = (input: ObjectiveDeliveryInput, signal?: AbortSignal) => Promise<ObjectiveDeliveryResult>;
 export interface VerifiedObjectiveOutcome {
 	objectiveId: string;
+	/** Immutable semantic revision of the Objective result being published. */
+	objectiveRevision?: number;
 	title: string;
 	result: string;
 	evidence?: string;
+	taskRunId?: string;
+	verificationRevision?: number;
+	criterionVerifications?: TaskRecord["criterionVerifications"];
+	artifacts?: TaskRecord["artifacts"];
+	deliveryReceipt?: NonNullable<ObjectiveCompletion["receipt"]>;
 	situation?: TaskRecord["situation"];
 	accessScopeRef?: TaskRecord["accessScopeRef"];
 	executionScope?: TaskRecord["executionScope"];
 }
 export type VerifiedObjectiveMemoryPublisher = (outcome: VerifiedObjectiveOutcome) => void | Promise<void>;
+export interface ObjectiveRuntimeOptions { taskRunLeaseMs?: number; }
 
 export interface ObjectiveDeliveryOutcome {
 	objectiveId: string;
@@ -30,11 +38,17 @@ export interface ObjectiveDeliveryOutcome {
 
 /** Owns the seam between a Task Plan Outcome and delivery of its parent Objective. */
 export class ObjectiveRuntime {
-	private readonly ledger: Pick<TaskLedger, "queryTasks" | "transition"> & Partial<Pick<TaskLedger, "retryObjective" | "cancelObjectives" | "activeObjectivePlanIds">>;
+	private readonly ledger: Pick<TaskLedger, "queryTasks" | "transition"> & Partial<Pick<TaskLedger, "retryObjective" | "cancelObjectives" | "activeObjectivePlanIds" | "enqueueObjectiveCompletion" | "recordRun" | "transitionRun" | "renewTaskRunLease" | "settleDirectObjectiveCompletion">>;
 	private readonly deliver: ObjectiveDeliverer;
 	private readonly publishVerifiedOutcome?: VerifiedObjectiveMemoryPublisher;
+	private readonly taskRunLeaseMs: number;
 	private readonly active = new Map<string, { controller: AbortController; work: Promise<ObjectiveDeliveryOutcome> }>();
-	constructor(ledger: Pick<TaskLedger, "queryTasks" | "transition"> & Partial<Pick<TaskLedger, "retryObjective" | "cancelObjectives" | "activeObjectivePlanIds">>, deliver: ObjectiveDeliverer, publishVerifiedOutcome?: VerifiedObjectiveMemoryPublisher) { this.ledger = ledger; this.deliver = deliver; this.publishVerifiedOutcome = publishVerifiedOutcome; }
+	constructor(ledger: Pick<TaskLedger, "queryTasks" | "transition"> & Partial<Pick<TaskLedger, "retryObjective" | "cancelObjectives" | "activeObjectivePlanIds" | "enqueueObjectiveCompletion" | "recordRun" | "transitionRun" | "renewTaskRunLease" | "settleDirectObjectiveCompletion">>, deliver: ObjectiveDeliverer, publishVerifiedOutcome?: VerifiedObjectiveMemoryPublisher, options: ObjectiveRuntimeOptions = {}) {
+		this.ledger = ledger;
+		this.deliver = deliver;
+		this.publishVerifiedOutcome = publishVerifiedOutcome;
+		this.taskRunLeaseMs = Math.max(300, Math.min(options.taskRunLeaseMs ?? 30_000, 300_000));
+	}
 
 	async deliverPlan(ownerKey: string, planId: string, signal?: AbortSignal): Promise<ObjectiveDeliveryOutcome> {
 		const key = `${ownerKey}\0${planId}`;
@@ -54,24 +68,70 @@ export class ObjectiveRuntime {
 		if (objective.status === "succeeded" || objective.status === "failed" || objective.status === "cancelled") {
 			return { objectiveId: objective.id, status: objective.status, finishedAt: objective.finishedAt ?? Date.now(), result: objective.result, error: objective.error };
 		}
+		if (objective.status === "running" && objective.verificationStatus === "accepted" && objective.candidateResult?.trim()) {
+			if (!this.ledger.enqueueObjectiveCompletion?.(ownerKey, objective.id)) throw new Error(`Objective ${objective.id} could not remain in the durable Completion Outbox`);
+			return { objectiveId: objective.id, status: "succeeded", result: objective.candidateResult };
+		}
 		if (tasks.length === 0 || tasks.some((task) => task.status !== "succeeded" || task.verificationStatus !== "accepted")) {
 			return { objectiveId: objective.id, status: "awaiting_verification" };
 		}
-		const finishedAt = Date.now();
+		const startedAt = Date.now();
+		const taskRunId = `objective-delivery:${objective.id}:${crypto.randomUUID()}`;
+		const leaseController = new AbortController();
+		const deliverySignal = signal ? AbortSignal.any([signal, leaseController.signal]) : leaseController.signal;
+		let heartbeat: ReturnType<typeof setInterval> | undefined;
+		let leaseLost = false;
 		try {
-			if (signal?.aborted) throw signal.reason ?? new Error("Objective delivery cancelled");
-			const delivered = await this.deliver({ objective, tasks, planId }, signal);
+			if (deliverySignal.aborted) throw deliverySignal.reason ?? new Error("Objective delivery cancelled");
+			if (!this.ledger.recordRun || !this.ledger.renewTaskRunLease || !this.ledger.settleDirectObjectiveCompletion) throw new Error("Renewable atomic Objective completion settlement is unavailable");
+			this.ledger.recordRun({ id: taskRunId, taskId: objective.id, executor: "agent", status: "running", startedAt, leaseExpiresAt: startedAt + this.taskRunLeaseMs });
+			heartbeat = setInterval(() => {
+				if (leaseLost) return;
+				const now = Date.now();
+				try {
+					if (!this.ledger.renewTaskRunLease?.(taskRunId, now + this.taskRunLeaseMs, now)) {
+						leaseLost = true;
+						leaseController.abort(new Error("Planned Objective synthesis lost its durable Task Run lease"));
+					}
+				} catch (error) {
+					leaseLost = true;
+					leaseController.abort(error);
+				}
+			}, Math.max(100, Math.trunc(this.taskRunLeaseMs / 3)));
+			const delivered = await this.deliver({ objective, tasks, planId }, deliverySignal);
+			if (deliverySignal.aborted || leaseLost) throw deliverySignal.reason ?? new Error("Planned Objective synthesis lost its durable Task Run lease");
 			const result = delivered.result.trim();
 			if (!result) throw new Error("Objective delivery returned no result");
-			await this.publishVerifiedOutcome?.({ objectiveId: objective.id, title: objective.title, result: result.slice(0, 50_000), ...(delivered.evidence ? { evidence: delivered.evidence.slice(0, 5_000) } : {}), ...(objective.situation ? { situation: structuredClone(objective.situation) } : {}), ...(objective.accessScopeRef ? { accessScopeRef: structuredClone(objective.accessScopeRef) } : {}), ...(objective.executionScope ? { executionScope: structuredClone(objective.executionScope) } : {}) });
-			if (!this.ledger.transition(objective.id, { status: "succeeded", finishedAt, result: result.slice(0, 50_000), evidence: delivered.evidence?.slice(0, 5_000), verificationStatus: "accepted" })) throw new Error(`Objective ${objective.id} could not reach a Terminal Outcome`);
+			const finishedAt = Date.now();
+			if (!this.ledger.settleDirectObjectiveCompletion({ ownerKey, objectiveId: objective.id, taskRunId, candidateResult: result.slice(0, 50_000), evidence: delivered.evidence?.slice(0, 5_000) }, finishedAt)) throw new Error(`Objective ${objective.id} could not atomically retain its accepted Candidate and Completion`);
 			return { objectiveId: objective.id, status: "succeeded", finishedAt, result };
 		} catch (error) {
+			this.ledger.transitionRun?.(taskRunId, { status: signal?.aborted ? "cancelled" : "failed", finishedAt: Date.now(), error: redactCredentialMaterial(error instanceof Error ? error.message : String(error)).slice(0, 5_000) });
 			const message = redactCredentialMaterial(error instanceof Error ? error.message : String(error)).slice(0, 5_000);
 			// Delivery is retried by the durable notice outbox; the Objective remains active until delivery succeeds.
-			return { objectiveId: objective.id, status: "failed", finishedAt, error: message };
-		}
+			return { objectiveId: objective.id, status: "failed", finishedAt: Date.now(), error: message };
+		} finally { if (heartbeat) clearInterval(heartbeat); }
 	}
+
+	/** Publishes idempotently after the channel returned a Receipt and before terminal acknowledgement. */
+	async publishDelivered(completion: ObjectiveCompletion): Promise<void> {
+		if (!completion.receipt || completion.status !== "delivered") throw new Error(`Objective ${completion.objectiveId} has no durable Delivery Receipt`);
+		await this.publishAcceptedObjective(completion.ownerKey, completion.objectiveId, { taskRunId: completion.taskRunId, deliveryReceipt: completion.receipt });
+	}
+
+	async publishAcceptedObjective(ownerKey: string, objectiveId: string, delivery?: { taskRunId: string; deliveryReceipt: NonNullable<ObjectiveCompletion["receipt"]> }): Promise<void> {
+		const objective = this.ledger.queryTasks({ ownerKeys: [ownerKey], id: objectiveId, kinds: ["objective"], statuses: ["running", "succeeded"], limit: 1 })[0];
+		const result = objective?.status === "succeeded" ? objective.result : objective?.candidateResult;
+		if (!objective || objective.verificationStatus !== "accepted" || !result?.trim()) throw new Error(`Delivered Objective ${objectiveId} has no accepted Outcome`);
+		await this.publishVerifiedOutcome?.({ objectiveId: objective.id, objectiveRevision: 1 + (objective.objectiveRevisions?.length ?? 0), title: objective.title, result,
+			...(objective.verificationAttempts === undefined ? {} : { verificationRevision: Math.max(1, objective.verificationAttempts) }),
+			...(objective.evidence ? { evidence: objective.evidence } : {}), ...(objective.criterionVerifications ? { criterionVerifications: structuredClone(objective.criterionVerifications) } : {}),
+			...(objective.artifacts ? { artifacts: structuredClone(objective.artifacts) } : {}), ...(delivery ? { taskRunId: delivery.taskRunId, deliveryReceipt: structuredClone(delivery.deliveryReceipt) } : {}),
+			...(objective.situation ? { situation: structuredClone(objective.situation) } : {}), ...(objective.accessScopeRef ? { accessScopeRef: structuredClone(objective.accessScopeRef) } : {}), ...(objective.executionScope ? { executionScope: structuredClone(objective.executionScope) } : {}) });
+	}
+
+	/** Compatibility alias for callers that already hold a delivered Objective identity. */
+	publishDeliveredObjective(ownerKey: string, objectiveId: string): Promise<void> { return this.publishAcceptedObjective(ownerKey, objectiveId); }
 
 	async settlePlan(ownerKey: string, planId: string, status: "succeeded" | "failed" | "cancelled", signal?: AbortSignal): Promise<ObjectiveDeliveryOutcome> {
 		if (status === "succeeded") return this.deliverPlan(ownerKey, planId, signal);

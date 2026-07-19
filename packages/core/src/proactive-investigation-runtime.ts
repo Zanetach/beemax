@@ -14,6 +14,11 @@ export interface ProactiveCapability {
 	reliability: MeasuredActionReliability;
 }
 
+/** Read-only investigation input; Learning uses the same governed Objective path without masquerading as a channel Initiative. */
+export interface ProactiveInvestigationObservation extends Omit<InitiativeObservation, "triggerKind"> {
+	triggerKind: InitiativeObservation["triggerKind"] | "learning_signal";
+}
+
 export interface ProactiveInvestigationPolicy {
 	enabled: boolean;
 	minExpectedValue: number;
@@ -29,7 +34,7 @@ export interface ProactiveInvestigationExecution {
 	allowedCapabilities: string[];
 	budget: ExecutionBudgetRef;
 	executionScope: AgentScope;
-	observation: InitiativeObservation;
+	observation: ProactiveInvestigationObservation;
 }
 
 export interface ProactiveInvestigationExecutionResult {
@@ -65,7 +70,7 @@ export interface ProactiveInvestigationRuntimeOptions {
 }
 
 export interface ProactiveInvestigationCandidate {
-	observation: InitiativeObservation;
+	observation: ProactiveInvestigationObservation;
 	executionScope: AgentScope;
 	capabilities: ProactiveCapability[];
 }
@@ -73,6 +78,7 @@ export interface ProactiveInvestigationCandidate {
 export type ProactiveInvestigationResult =
 	| { kind: "admitted"; objective: TaskRecord; notify: boolean; materialResult: boolean }
 	| { kind: "active_updated"; objective: TaskRecord; notify: false }
+	| { kind: "existing_terminal"; objective: TaskRecord; notify: false }
 	| { kind: "rejected"; reason: string; notify: false };
 
 const DEFAULT_POLICY: Readonly<ProactiveInvestigationPolicy> = Object.freeze({
@@ -124,7 +130,7 @@ export class ProactiveInvestigationRuntime {
 		const terminal = objective ? undefined : this.options.ledger.queryTasks({ ownerKeys, id: objectiveId, kinds: ["objective"], statuses: ["succeeded", "failed", "cancelled"], limit: 1 })[0];
 		if (terminal) {
 			this.recordMetric(observation, at, "duplicate_terminal", false, terminal.id, "The Initiative Objective has already reached a terminal state");
-			return { kind: "rejected", reason: "The Initiative Objective has already reached a terminal state", notify: false };
+			return { kind: "existing_terminal", objective: terminal, notify: false };
 		}
 
 		if (!objective) {
@@ -190,7 +196,7 @@ export class ProactiveInvestigationRuntime {
 		return undefined;
 	}
 
-	private recordMetric(observation: InitiativeObservation, at: number, outcome: ProactiveInvestigationMetric["outcome"], notify: boolean, objectiveId?: string, reason?: string): void {
+	private recordMetric(observation: ProactiveInvestigationObservation, at: number, outcome: ProactiveInvestigationMetric["outcome"], notify: boolean, objectiveId?: string, reason?: string): void {
 		this.options.metrics?.record({
 			observationId: observation.id,
 			...(objectiveId ? { objectiveId } : {}),
@@ -206,7 +212,7 @@ export class ProactiveInvestigationRuntime {
 	}
 }
 
-function createObjective(id: string, ownerKey: string, observation: InitiativeObservation, executionScope: AgentScope, at: number): TaskRecord {
+function createObjective(id: string, ownerKey: string, observation: ProactiveInvestigationObservation, executionScope: AgentScope, at: number): TaskRecord {
 	return {
 		id,
 		ownerKey,
@@ -224,7 +230,7 @@ function createObjective(id: string, ownerKey: string, observation: InitiativeOb
 	};
 }
 
-function investigationPrompt(observation: InitiativeObservation): string {
+function investigationPrompt(observation: ProactiveInvestigationObservation): string {
 	return [observation.action, `Why this may matter: ${observation.rationale}`, `Verify: ${observation.intendedVerification}`, "Use only the admitted read-only capabilities. Report only source-backed findings; if nothing material is found, finish quietly."].join("\n\n");
 }
 

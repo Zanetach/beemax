@@ -371,6 +371,21 @@ Bring BeeMax to Hermes Agent feature parity and Codex-level Tool routing, then e
 
 Work the **frontier**: any ticket whose blockers are all done. Do not bypass blocking edges, silently degrade the user's Objective, introduce a second Agent Loop beside Pi, or encode customer business vocabulary in Core.
 
+## Current execution frontier
+
+The active chain is intentionally narrow. Finish one evidence-backed vertical slice before opening the next:
+
+1. Close production semantic Capability routing and its live evidence gate.
+2. Enforce the same Skill lifecycle for prefetched and runtime-discovered Skills.
+3. Acquire a missing Tool or MCP Provider and resume the unchanged Objective.
+4. Dispatch every model Tool Call through one strict Router.
+5. Execute independent reads in parallel without replaying mutations.
+6. Verify every Contract acceptance criterion from durable receipts.
+7. Carry the same guarantees through realtime research, recovery, delivery, context compression, Memory, schedules, Gateway channels, auxiliary vision, and bounded delegation.
+8. Prove Ubuntu stability, fault/resource bounds, Hermes parity, and Codex Tool-routing parity before release.
+
+This ordering is the implementation plan, not a fixed business workflow. Core reasons over versioned Contracts, Capability descriptors, evidence, Effects, scopes, and Policy; enterprise-specific nouns and rules remain supplied by Skills, Providers, configuration, and organizational Memory.
+
 ## Establish the differential Agent benchmark
 
 **What to build:** A reproducible harness runs the same short, long, realtime, Skill, Tool, MCP, file, image, Gateway, failure, and recovery tasks against BeeMax and pinned Codex/Hermes baselines.
@@ -423,7 +438,7 @@ Work the **frontier**: any ticket whose blockers are all done. Do not bypass blo
 
 - [x] Use a strict versioned schema and keep model inference separate from trusted Access Scope and Policy.
 - [x] Produce the Contract without a separate business-intent loop or fixed customer vocabulary.
-- [ ] Exercise Chinese, English, mixed-language, paraphrase, and unknown-enterprise inputs end to end.
+- [x] Exercise Chinese, English, mixed-language, paraphrase, and unknown-enterprise inputs end to end.
 
 ## Validate Work Contracts before execution
 
@@ -442,7 +457,7 @@ Work the **frontier**: any ticket whose blockers are all done. Do not bypass blo
 **Blocked by:** Validate Work Contracts before execution.
 
 - [ ] Cover negation, double negation, reversals, pronouns, omitted subjects, and cross-language corrections.
-- [ ] Preserve the original Objective and revision chain without duplicate or misbound work.
+- [x] Preserve the original Objective and revision chain without duplicate or misbound work.
 - [ ] Contract the legacy regex understanding path after all callers migrate and regression tests are red-capable.
 
 ## Build a dynamic Tool Spec Plan for each Pi Turn
@@ -451,9 +466,9 @@ Work the **frontier**: any ticket whose blockers are all done. Do not bypass blo
 
 **Blocked by:** Validate Work Contracts before execution.
 
-- [ ] Keep large catalogs out of the initial context and expose only valid immutable Tool identifiers and schemas.
-- [ ] Make newly activated Tools visible on the next Pi sampling request without restarting the Agent Loop.
-- [ ] Prevent hidden, unhealthy, unconfigured, or unauthorized Tools from becoming executable.
+- [x] Keep large catalogs out of the initial context and expose only valid immutable Tool identifiers and schemas.
+- [x] Make newly activated Tools visible on the next Pi sampling request without restarting the Agent Loop.
+- [x] Prevent hidden, unhealthy, unconfigured, or unauthorized Tools from becoming executable.
 
 ## Route Capability requirements semantically
 
@@ -461,29 +476,50 @@ Work the **frontier**: any ticket whose blockers are all done. Do not bypass blo
 
 **Blocked by:** Build a dynamic Tool Spec Plan for each Pi Turn.
 
-- [ ] Make semantic ranking the production path and lexical ranking a bounded recall or offline fallback.
-- [ ] Rank by meaning, input/output modality, freshness, evidence, effect, health, cost, latency, and Profile preference.
-- [ ] Calibrate thresholds with the differential corpus so weak overlap never forces an unrelated Skill.
+- [x] Use configured Profile models for production semantic ranking across Tool, MCP, and Skill candidates; preserve a valid semantic no-match and use bounded lexical recall only when semantic Providers are unavailable.
+- [x] Rank immutable, versioned candidates by meaning, input/output modality, freshness, evidence, effect, health, cost, latency, and Profile preference without allowing preference or model output to grant authority.
+- [x] Fail closed on invented identities, malformed scores, duplicate candidates, excluded or unhealthy capabilities, cancellation, timeout, oversized inventories, and Provider errors without leaking credentials or resetting the total deadline.
+- [x] Commit a source-bound live-model evidence artifact that proves every calibration case used the semantic path; fail release verification on fallback, stale source digests, weak collisions, cross-language errors, or negative-case false positives.
+
+## Calibrate Capability ranking against real task outcomes
+
+**What to build:** BeeMax continuously tunes Capability selection from reproducible task outcomes rather than hand-authored business phrases, while preserving deterministic safety and authority boundaries.
+
+**Blocked by:** Route Capability requirements semantically.
+
+- [x] Measure Top-1, Top-K, required-capability recall, unnecessary activation, no-match precision, latency, token cost, and downstream task completion on frozen multilingual and unknown-enterprise corpora.
+- [x] Separate offline lexical, frozen semantic, and real-Provider results so one path cannot hide regressions in another.
+- [ ] Version thresholds and ranking changes with before/after evidence, and reject a calibration that improves aggregate ranking while worsening authorization, false-positive, or completion gates.
+- [ ] Preserve the prior ranking implementation's calibration artifact, not only alternate thresholds on one implementation, before promoting a new ranking version.
+- [x] Bind every Skill completion to one immutable Skill identity so multi-Skill outcomes cannot be projected from a shared lifecycle Tool receipt.
+- [x] Make live evidence reject duplicate or unknown receipts and bind Tool execution to the Tool Spec plan and event order that exposed it.
+- [x] Mark Provider cost evidence incomplete when a failed attempt has no measured usage; do not promote cost claims from a lower-bound total.
+- [x] Strengthen the authority probe and report verifier with explicit schema, mode, corpus, threshold, scope, cognition, and unauthorized-candidate identity checks.
+- [x] Add a separate live-Pi outcome lane where the configured model reads the Tool Spec, chooses Tools, and satisfies independent Acceptance Criteria; keep the deterministic routing harness as infrastructure evidence rather than treating it as model task-completion proof.
+- [x] Bind each Pi-originated Tool call to its exact assistant Turn and Provider response identity in the durable Execution Trace; do not infer model causality from event order alone.
+- [ ] Sign live evaluation artifacts in trusted CI and verify run provenance, freshness, model identity, trace digest, and Provider request evidence before release; repository JSON self-consistency is not cryptographic attestation.
+- [ ] Require authoritative model pricing or Provider cost attestation before enabling a release cost-regression gate; keep unknown pricing explicitly `unpriced` and never reinterpret it as zero-cost execution.
+- [ ] Replace positional Capability ranker factory arguments with one named configuration object shared by CLI, Gateway, and evaluation entrypoints.
 
 ## Enforce one Skill lifecycle for prefetched and discovered Skills
 
 **What to build:** Explicitly selected, prefetched, and runtime-discovered Skills use the same version-locked discover, admit, activate, route, resource-read, execute, and complete lifecycle.
 
-**Blocked by:** Route Capability requirements semantically.
+**Blocked by:** Calibrate Capability ranking against real task outcomes.
 
-- [ ] Require the lifecycle only for explicit or calibrated high-confidence selection.
-- [ ] Merge runtime discovery receipts into the lifecycle gate and enable only declared route Tools.
-- [ ] Report missing modules, invalid resources, failed routes, and incomplete execution without silently substituting another Skill.
+- [x] Require the lifecycle only for explicit or calibrated high-confidence selection.
+- [x] Merge runtime discovery receipts into the lifecycle gate and enable only declared route Tools.
+- [x] Report missing modules, invalid resources, failed routes, and incomplete execution without silently substituting another Skill.
 
 ## Acquire missing Tool and MCP Providers without degrading the Objective
 
 **What to build:** When an installed capability cannot satisfy the Contract, BeeMax searches configured and installable Providers, obtains authority, installs safely, verifies health, and resumes the original Objective.
 
-**Blocked by:** Route Capability requirements semantically.
+**Blocked by:** Calibrate Capability ranking against real task outcomes.
 
-- [ ] Resolve installed, configured, healthy candidates before considering installation.
-- [ ] Require evidence-backed installation authority and return exact missing configuration or health blockers.
-- [ ] Never replace realtime, publication, real-data, or full-scope requirements with a weaker result without user authorization.
+- [x] Resolve installed, configured, healthy candidates before considering installation.
+- [x] Require evidence-backed installation authority and return exact missing configuration or health blockers.
+- [x] Never replace realtime, publication, real-data, or full-scope requirements with a weaker result without user authorization.
 
 ## Dispatch model Tool Calls through one strict Router
 
@@ -491,9 +527,9 @@ Work the **frontier**: any ticket whose blockers are all done. Do not bypass blo
 
 **Blocked by:** Build a dynamic Tool Spec Plan for each Pi Turn; Acquire missing Tool and MCP Providers without degrading the Objective.
 
-- [ ] Reject invented identifiers and repair or return actionable errors for malformed names and arguments without bypassing schema checks.
-- [ ] Persist oversized or binary output as bounded Artifacts and preserve only safe summaries and references in model context.
-- [ ] Produce a traceable Route and Tool Receipt for every attempted dispatch.
+- [x] Reject invented identifiers and repair or return actionable errors for malformed names and arguments without bypassing schema checks.
+- [x] Persist oversized or binary output as bounded Artifacts and preserve only safe summaries and references in model context.
+- [x] Produce a traceable Route and Tool Receipt for every attempted dispatch.
 
 ## Execute independent Tools in parallel and reroute safely
 
@@ -501,9 +537,9 @@ Work the **frontier**: any ticket whose blockers are all done. Do not bypass blo
 
 **Blocked by:** Dispatch model Tool Calls through one strict Router.
 
-- [ ] Derive concurrency from declared dependencies and Effect metadata rather than prompt keywords.
-- [ ] Reroute failed read-only work to equivalent healthy Providers without changing the Contract.
-- [ ] Prevent blind replay of external writes and prove zero duplicate mutation under timeout and crash injection.
+- [x] Derive concurrency from declared dependencies and Effect metadata rather than prompt keywords.
+- [x] Reroute failed read-only work to equivalent healthy Providers without changing the Contract.
+- [x] Prevent blind replay of external writes and prove zero duplicate mutation under timeout and crash injection.
 
 ## Verify every acceptance criterion against durable receipts
 
@@ -511,9 +547,9 @@ Work the **frontier**: any ticket whose blockers are all done. Do not bypass blo
 
 **Blocked by:** Validate Work Contracts before execution; Dispatch model Tool Calls through one strict Router.
 
-- [ ] Bind every verifier assertion to a criterion identifier and an existing successful evidence reference.
-- [ ] Reject model-authored prose, bare URLs, and unrelated receipts as completion evidence.
-- [ ] Keep rejected and unavailable criteria durable for corrective execution or Verification Retry.
+- [x] Bind every verifier assertion to a criterion identifier and an existing successful evidence reference.
+- [x] Reject model-authored prose, bare URLs, and unrelated receipts as completion evidence.
+- [x] Keep rejected and unavailable criteria durable for corrective execution or Verification Retry.
 
 ## Complete realtime research without silent fallback
 
@@ -521,9 +557,9 @@ Work the **frontier**: any ticket whose blockers are all done. Do not bypass blo
 
 **Blocked by:** Acquire missing Tool and MCP Providers without degrading the Objective; Verify every acceptance criterion against durable receipts.
 
-- [ ] Derive freshness and source requirements from the Work Contract rather than a hardcoded weather, price, or news vocabulary.
-- [ ] Prove no current external claim can pass without a successful source receipt.
-- [ ] Exercise configured, unconfigured, offline, timeout, and alternate-provider paths without evergreen substitution.
+- [x] Derive freshness and source requirements from the Work Contract rather than a hardcoded weather, price, or news vocabulary.
+- [x] Prove no current external claim can pass without a successful source receipt.
+- [x] Exercise configured, unconfigured, offline, timeout, and alternate-provider paths without evergreen substitution.
 
 ## Recover and verify both Direct and Plan Objectives
 
@@ -531,9 +567,9 @@ Work the **frontier**: any ticket whose blockers are all done. Do not bypass blo
 
 **Blocked by:** Verify every acceptance criterion against durable receipts.
 
-- [ ] Keep direct candidates visible when Plan IDs are excluded by treating null Plan identity correctly.
-- [ ] Preserve leases, checkpoints, Effects, candidate outcomes, and bounded corrective attempts across restart.
-- [ ] Prove multi-instance claims cannot execute or verify the same responsibility concurrently.
+- [x] Keep direct candidates visible when Plan IDs are excluded by treating null Plan identity correctly.
+- [x] Preserve leases, checkpoints, Effects, candidate outcomes, and bounded corrective attempts across restart.
+- [x] Prove multi-instance claims cannot execute or verify the same responsibility concurrently.
 
 ## Deliver every verified Objective through one Completion Outbox
 
@@ -541,9 +577,9 @@ Work the **frontier**: any ticket whose blockers are all done. Do not bypass blo
 
 **Blocked by:** Recover and verify both Direct and Plan Objectives.
 
-- [ ] Enqueue completion exactly once for every accepted Objective regardless of execution mode.
-- [ ] Retry transient channel failure without replaying Pi or external Effects and retain a Delivery Receipt.
-- [ ] Keep the Objective nonterminal when required delivery remains unverified or permanently blocked.
+- [x] Enqueue completion exactly once for every accepted Objective regardless of execution mode.
+- [x] Retry transient channel failure without replaying Pi or external Effects and retain a Delivery Receipt.
+- [x] Keep the Objective nonterminal when required delivery remains unverified or permanently blocked.
 
 ## Preserve Contracts and responsibility through context compression
 
@@ -551,8 +587,8 @@ Work the **frontier**: any ticket whose blockers are all done. Do not bypass blo
 
 **Blocked by:** Validate Work Contracts before execution; Verify every acceptance criterion against durable receipts.
 
-- [ ] Store large Tool results outside prompt history and support bounded on-demand rereading.
-- [ ] Prove multilingual constraints, corrections, and prohibitions survive repeated compaction.
+- [x] Store large Tool results outside prompt history and support bounded on-demand rereading.
+- [x] Prove multilingual constraints, corrections, and prohibitions survive repeated compaction.
 - [ ] Enforce model-specific budgets and demonstrate bounded process memory during long runs.
 
 ## Recall and publish only scope-correct verified Memory

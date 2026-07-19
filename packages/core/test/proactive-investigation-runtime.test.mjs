@@ -93,6 +93,18 @@ test("an orphaned pending Initiative Objective resumes without creating another 
 	assert.equal(executions, 1);
 });
 
+test("a terminal idempotent Objective is returned as existing and never replayed", async () => {
+	const existing = { id: "objective:initiative:abc123", ownerKey: "feishu:chat:user", kind: "objective", title: "Existing", status: "succeeded", idempotencyKey: "initiative:abc123", result: "Verified evidence", verificationStatus: "accepted", createdAt: 1, finishedAt: 2 };
+	const store = ledger([existing]);
+	let executions = 0;
+	const runtime = new ProactiveInvestigationRuntime({ ledger: store, governance: new ActionGovernance(), execute: async () => { executions++; return { status: "succeeded", materialResult: true }; } });
+	const result = await runtime.consider({ observation, executionScope, capabilities: [{ name: "read", policy: READ_ONLY_TOOL_POLICY, reliability: "reliable" }] }, 2_000);
+	assert.equal(result.kind, "existing_terminal");
+	assert.equal(result.objective.id, existing.id);
+	assert.equal(executions, 0);
+	assert.equal(store.tasks.size, 1);
+});
+
 test("low-confidence or mutating Initiative candidates cannot create proactive work", async () => {
 	for (const candidate of [
 		{ observation: { ...observation, confidence: 0.4 }, capabilities: [{ name: "read", policy: READ_ONLY_TOOL_POLICY, reliability: "reliable" }] },

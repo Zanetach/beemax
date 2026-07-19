@@ -64,8 +64,8 @@ export class TaskRecoveryRunner {
 			const direct = candidates.filter((task) => !task.planId);
 			for (const task of direct) attemptedDirectTaskIds.add(task.id);
 			for (let offset = 0; offset < direct.length && !signal?.aborted; offset += concurrency) {
-				const results = await Promise.all(direct.slice(offset, offset + concurrency).map((task) => this.verifyCandidates([task.ownerKey], [task], signal ?? new AbortController().signal, now)));
-				for (const result of results) summary = mergeVerificationResults(summary, result);
+				const results = await Promise.all(direct.slice(offset, offset + concurrency).map((task) => this.runtime.runClaimedTaskVerification(this.ledger, task.ownerKey, task.id, signal, (claimSignal) => this.verifyCandidates([task.ownerKey], [task], claimSignal, now))));
+				for (const result of results) if (result) summary = mergeVerificationResults(summary, result);
 			}
 			const plans = new Map<string, { ownerKey: string; planId: string; tasks: TaskRecord[] }>();
 			for (const task of candidates) {
@@ -133,12 +133,12 @@ export class TaskRecoveryRunner {
 				const verification = await this.verify(task, { output: task.candidateResult }, signal);
 				if (signal.aborted) break;
 				const resolution = verification.accepted
-					? { accepted: true as const, evidence: verification.evidence?.slice(0, 5_000) }
-					: { accepted: false as const, feedback: verification.feedback?.trim().slice(0, 5_000) || "Acceptance Criteria were not satisfied" };
-				if (!task.planId && task.kind === "objective" && this.notifyDirectObjective) await this.notifyDirectObjective(task, resolution, signal);
-				if (!this.ledger.resolveCandidateVerification(ownerKeys, task.id, resolution)) {
+					? { accepted: true as const, evidence: verification.evidence?.slice(0, 5_000), ...(verification.criterionVerifications ? { criterionVerifications: verification.criterionVerifications } : {}) }
+					: { accepted: false as const, feedback: verification.feedback?.trim().slice(0, 5_000) || "Acceptance Criteria were not satisfied", ...(verification.criterionVerifications ? { criterionVerifications: verification.criterionVerifications } : {}) };
+				if (!this.ledger.resolveCandidateVerification(ownerKeys, task.id, resolution, attemptedAt ?? Date.now())) {
 					summary.unavailable++; this.ledger.deferCandidateVerification?.(ownerKeys, task.id, attemptedAt); continue;
 				}
+				if (!task.planId && task.kind === "objective" && resolution.accepted && this.notifyDirectObjective) await this.notifyDirectObjective(task, resolution, signal);
 				if (resolution.accepted) summary.accepted++; else summary.rejected++;
 			} catch {
 				summary.unavailable++;

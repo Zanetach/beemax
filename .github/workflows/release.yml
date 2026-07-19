@@ -16,6 +16,7 @@ jobs:
         with:
           node-version: 22.19.0
           cache: npm
+      - run: bash scripts/install-media-dependencies.sh
       - run: npm ci
       - run: npm audit --omit=dev --audit-level=high
       - run: npm run verify:release

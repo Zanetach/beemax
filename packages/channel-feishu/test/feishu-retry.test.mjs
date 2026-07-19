@@ -67,6 +67,40 @@ test("Feishu text delivery keeps a stable UUID across outbox retries", async () 
 	assert.equal(uuids[0], uuids[1]);
 });
 
+test("Feishu transient progress card and durable Completion use separate provider UUIDs", async () => {
+	const adapter = new FeishuAdapter({ ...settings });
+	const uuids = [];
+	adapter.client = { im: { v1: { message: { create: async (payload) => { uuids.push(payload.data.uuid); return { code: 0, data: { message_id: "sent" } }; } } } } };
+	await adapter.sendCard("chat", { schema: "2.0" }, undefined, false, "completion-1:progress");
+	await adapter.send("chat", "final", { idempotencyKey: "completion-1" });
+	assert.notEqual(uuids[0], uuids[1]);
+});
+
+test("Feishu long Completion replay reuses every chunk UUID", async () => {
+	const adapter = new FeishuAdapter({ ...settings });
+	const uuids = [];
+	adapter.client = { im: { v1: { message: { create: async (payload) => { uuids.push(payload.data.uuid); return { code: 0, data: { message_id: `sent-${uuids.length}` } }; } } } } };
+	const result = "verified ".repeat(2_000);
+	await adapter.send("chat", result, { idempotencyKey: "completion-long" });
+	const firstAttempt = [...uuids];
+	await adapter.send("chat", result, { idempotencyKey: "completion-long" });
+	assert.ok(firstAttempt.length > 1);
+	assert.deepEqual(uuids.slice(firstAttempt.length), firstAttempt);
+});
+
+test("Feishu text completion replies to the retained message anchor inside the original thread", async () => {
+	const adapter = new FeishuAdapter({ ...settings });
+	let payload;
+	adapter.client = { im: { v1: { message: {
+		reply: async (input) => { payload = input; return { code: 0, data: { message_id: "thread-reply" } }; },
+		create: async () => { assert.fail("thread delivery must not fall back to the conversation root"); },
+	} } } };
+	assert.deepEqual(await adapter.send("chat", "done", { replyTo: "origin-message", replyInThread: true, idempotencyKey: "completion-1" }), { success: true, messageId: "thread-reply" });
+	assert.equal(payload.path.message_id, "origin-message");
+	assert.equal(payload.data.reply_in_thread, true);
+	assert.equal(payload.data.msg_type, "text");
+});
+
 test("Feishu card reply falls back only when a non-thread target was withdrawn", async () => {
 	const adapter = new FeishuAdapter({ ...settings });
 	const calls = [];

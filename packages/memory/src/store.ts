@@ -1,7 +1,7 @@
 /**
  * Long-term memory store backed by SQLite + FTS5.
  *
- * This is the BeeMax analogue of Hermes' memory_manager + FTS5 session search.
+ * BeeMax memory management and FTS5 session search.
  * Two tables:
  *   - memories: curated facts/preferences the agent chose to remember.
  *   - exchanges: full user<->assistant turns, FTS5-indexed for cross-session
@@ -13,10 +13,12 @@
 
 import Database from "better-sqlite3";
 import type { Database as DatabaseType } from "better-sqlite3";
-import { mkdirSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, rmSync } from "node:fs";
 import { dirname } from "node:path";
-import { createHash } from "node:crypto";
-import { AUTONOMY_LEVELS, containsCredentialMaterial, createAccessScopeRef, createEnterprisePolicyPublisher, createSituation, multilingualLexicalTerms, parseTaskCheckpoint, redactCredentialMaterial, renderTaskCheckpoint, type AutonomyLevel, type AutonomyRolloutEvidence, type AutonomyRolloutRecord, type AutonomyRolloutStateStore, type CompensationProof, type ConversationMemoryPort, type DeliveryTarget, type DurableInitiativeTrigger, type DurableInitiativeTriggerInput, type EmergencyStopRecord, type EnterprisePolicyPublisher, type InitiativeObservation, type InitiativeObservationInput, type InitiativeObservationStore, type InitiativeScope, type InitiativeTriggerInbox, type OrganizationKnowledgeHit, type OrganizationKnowledgeRecall, type ReversibleActionControlPort, type Situation, type TaskCandidateVerificationResolution, type TaskCheckpoint, type TaskDependency, type TaskLedger, type TaskPlanCompletionNotice, type TaskPlanNoticeOutbox, type TaskPlanQuery, type TaskPlanRecord, type TaskPlanTransition, type TaskQuery, type TaskRecord as RuntimeTaskRecord, type TaskRecoveryResult, type TaskRunEffectStateReader, type TaskRunRecord, type TaskRunTransition, type TaskTransition } from "@beemax/core";
+import { createHash, randomUUID } from "node:crypto";
+import { AUTONOMY_LEVELS, MAX_OBJECTIVE_REVISIONS, containsCredentialMaterial, createAccessScopeRef, createEnterprisePolicyPublisher, createExecutionEnvelope, createSituation, decodeDurableContractAdmissionReceipt, decodeStoredWorkContract, interactionCompletionDeliveryKey, multilingualLexicalTerms, objectiveCompletionId, parseTaskCheckpoint, redactCredentialMaterial, renderTaskCheckpoint, unavailableTaskCriterionVerifications, validateArtifactManifest, validateArtifactVerificationReceipt, validateSourceReceipt, workContractFromLegacyObjective, type AutonomyLevel, type AutonomyRolloutEvidence, type AutonomyRolloutRecord, type AutonomyRolloutStateStore, type CompensationProof, type ConversationMemoryPort, type CriterionOutcome, type DeliveryReceipt, type DeliveryTarget, type DirectObjectiveCompletionSettlement, type DurableContractAdmissionReceipt, type DurableInitiativeTrigger, type DurableInitiativeTriggerInput, type EmergencyStopRecord, type EnterprisePolicyPublisher, type InitiativeObservation, type InitiativeObservationInput, type InitiativeObservationStore, type InitiativeScope, type InitiativeTriggerInbox, type ObjectiveCancellationResult, type ObjectiveCompletion, type ObjectiveCompletionOutbox, type ObjectiveInterruptionRecord, type OrganizationKnowledgeHit, type OrganizationKnowledgeRecall, type ReversibleActionControlPort, type Situation, type TaskCandidateVerificationResolution, type TaskCheckpoint, type TaskDependency, type TaskLedger, type TaskPlanCompletionNotice, type TaskPlanNoticeOutbox, type TaskPlanQuery, type TaskPlanRecord, type TaskPlanTransition, type TaskQuery, type TaskRecord as RuntimeTaskRecord, type TaskRecoveryResult, type TaskRunAndTaskSuccessSettlement, type TaskRunEffectStateReader, type TaskRunRecord, type TaskRunTransition, type TaskTransition } from "@beemax/core";
+import type { ManagedSkillLearningPort, MemoryLearningAuthorityPort } from "@beemax/core";
+import { MEMORY_LEARNING_SCHEMA_VERSION, SqliteMemoryLearningAuthority } from "./memory-learning-authority.ts";
 
 export const MEMORY_CLAIM_KINDS = ["preference", "fact", "decision", "goal", "project", "relationship", "workflow", "exception"] as const;
 const EPISODE_STATUSES = new Set<OrganizationMemoryEpisodeStatus>(["candidate", "verified", "conflicted", "superseded"]);
@@ -137,9 +139,14 @@ export interface OrganizationMemoryEpisode {
 	profileId: string;
 	platform: string;
 	chatId: string;
+	chatType?: "dm" | "group" | "channel" | "thread";
 	userId?: string;
 	threadId?: string;
+	projectId?: string;
+	organizationId?: string;
+	visibility: "private" | "conversation" | "project" | "organization";
 	objectiveId: string;
+	sourceRevision: number;
 	situation: Situation;
 	action: string;
 	outcome: string;
@@ -152,14 +159,35 @@ export interface OrganizationMemoryEpisodeInput {
 	profileId?: string;
 	platform: string;
 	chatId: string;
+	chatType?: "dm" | "group" | "channel" | "thread";
 	userId?: string;
 	threadId?: string;
+	projectId?: string;
+	organizationId?: string;
+	visibility?: "private" | "conversation" | "project" | "organization";
 	objectiveId: string;
+	/** Monotonic semantic revision; unversioned legacy callers publish revision 1. */
+	sourceRevision?: number;
 	situation: Situation;
 	action: string;
 	outcome: string;
 	evidence?: string;
 	status?: OrganizationMemoryEpisodeStatus;
+}
+export interface VerifiedOrganizationMemoryEpisodeInput extends OrganizationMemoryEpisodeInput {
+	/** Monotonic semantic revision of the verified Objective result. */
+	sourceRevision: number;
+	occurredAt?: number;
+	policyVersion?: string;
+	learningSettlement?: {
+		executionId: string;
+		taskRunId?: string;
+		verificationRevision: number;
+		verificationDigest: string;
+		criteria: readonly CriterionOutcome[];
+		deliveryReceiptRefs: readonly string[];
+		artifactReceiptRefs: readonly string[];
+	};
 }
 
 export type ConventionCandidateStatus = "candidate" | "confirmed" | "rejected" | "superseded" | "rolled_back";
@@ -256,14 +284,74 @@ export interface TaskFactRecord {
 export class MemoryStore {
 	private readonly db: DatabaseType;
 	private readonly profileId: string;
+	readonly memoryLearningAuthority: MemoryLearningAuthorityPort & ManagedSkillLearningPort;
 
 	constructor(dbPath: string, profileId = "default") {
 		this.profileId = profileId;
 		mkdirSync(dirname(dbPath), { recursive: true });
 		this.db = new Database(dbPath);
 		this.db.pragma("journal_mode = WAL");
+		this.db.pragma("busy_timeout = 5000");
 		this.db.pragma("foreign_keys = ON");
+		this.backupBeforePendingL4Migration(dbPath);
 		this.migrate();
+		this.memoryLearningAuthority = new SqliteMemoryLearningAuthority({
+			db: this.db,
+			profileId: this.profileId,
+			recall: (query, options) => this.recallRanked(query, options),
+				applyClaimCorrection: (input) => {
+				const corrected = this.correctClaim(input.targetId, {
+					statement: input.statement,
+					evidence: { kind: "correction", excerpt: input.statement, sourceRef: `memory-observation:${input.observationId}` },
+				}, input.scope);
+					return corrected ? { kind: "claim", id: corrected.id, version: `updated:${corrected.updatedAt}`, digest: createHash("sha256").update(corrected.statement).digest("hex") } : undefined;
+				},
+				applyExtractedClaim: (input) => {
+					const claim = this.upsertClaim({
+						profileId: this.profileId,
+						platform: input.scope.platform,
+						chatId: input.scope.chatId,
+						...(input.scope.userId ? { userId: input.scope.userId } : {}),
+						...(input.scope.threadId ? { threadId: input.scope.threadId } : {}),
+						...(input.scope.projectId ? { projectId: input.scope.projectId } : {}),
+						...(input.scope.organizationId ? { organizationId: input.scope.organizationId } : {}),
+						kind: input.kind === "preference" ? "preference" : "fact",
+						statement: input.statement,
+						confidence: input.confidence,
+						stability: "medium",
+						visibility: "private",
+						source: { type: "message", ref: input.observationId },
+						evidence: { kind: "conversation", sourceRef: input.observationId, excerpt: input.evidenceExcerpt },
+					});
+					return { kind: "claim", id: claim.id, version: `updated:${claim.updatedAt}`, digest: createHash("sha256").update(claim.statement).digest("hex") };
+				},
+			});
+	}
+
+	private backupBeforePendingL4Migration(dbPath: string): void {
+		if (dbPath === ":memory:") return;
+		const userTables = (this.db.prepare("SELECT COUNT(*) AS count FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'").get() as { count: number }).count;
+		if (!userTables) return;
+		const hasMigrationTable = Boolean(this.db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'memory_schema_migrations'").get());
+		const fromVersion = hasMigrationTable
+			? (this.db.prepare("SELECT COALESCE(MAX(version), 0) AS version FROM memory_schema_migrations").get() as { version: number }).version
+			: 0;
+		if (fromVersion >= MEMORY_LEARNING_SCHEMA_VERSION) return;
+		const sourceIntegrity = this.db.pragma("integrity_check", { simple: true });
+		if (sourceIntegrity !== "ok") throw new Error(`SQLite integrity check failed before L4 migration: ${String(sourceIntegrity)}`);
+		const destination = `${dbPath}.pre-l4-v${MEMORY_LEARNING_SCHEMA_VERSION}-from-v${fromVersion}.sqlite`;
+		if (existsSync(destination)) {
+			verifySqliteDatabase(destination);
+			return;
+		}
+		try {
+			this.db.prepare("VACUUM INTO ?").run(destination);
+			chmodSync(destination, 0o600);
+			verifySqliteDatabase(destination);
+		} catch (error) {
+			rmSync(destination, { force: true });
+			throw error;
+		}
 	}
 
 	private migrate(): void {
@@ -377,6 +465,19 @@ export class MemoryStore {
 				attempts INTEGER NOT NULL DEFAULT 0, next_attempt_at INTEGER NOT NULL, created_at INTEGER NOT NULL, abandoned_at INTEGER, last_error TEXT
 			);
 			CREATE INDEX IF NOT EXISTS idx_task_plan_completion_notices_due ON task_plan_completion_notices(status, next_attempt_at);
+			CREATE TABLE IF NOT EXISTS objective_completion_outbox (
+				id TEXT PRIMARY KEY, objective_id TEXT NOT NULL UNIQUE REFERENCES tasks(id) ON DELETE CASCADE,
+				task_run_id TEXT NOT NULL REFERENCES task_runs(id),
+				owner_key TEXT NOT NULL, plan_id TEXT,
+				platform TEXT NOT NULL, channel_instance_id TEXT, chat_id TEXT NOT NULL, chat_type TEXT, user_id TEXT, thread_id TEXT, reply_to_message_id TEXT,
+				title TEXT NOT NULL, result TEXT NOT NULL, evidence TEXT,
+				delivery_idempotency_key TEXT NOT NULL,
+				status TEXT NOT NULL CHECK (status IN ('queued', 'delivering', 'delivered', 'blocked')),
+				claim_token TEXT, attempts INTEGER NOT NULL DEFAULT 0, next_attempt_at INTEGER NOT NULL,
+				receipt_idempotency_key TEXT, receipt_delivered_at INTEGER, receipt_provider_message_id TEXT,
+				created_at INTEGER NOT NULL, blocked_at INTEGER, last_error TEXT
+			);
+			CREATE INDEX IF NOT EXISTS idx_objective_completion_outbox_due ON objective_completion_outbox(platform, status, next_attempt_at);
 			CREATE TABLE IF NOT EXISTS tasks (
 				id TEXT PRIMARY KEY,
 				owner_key TEXT NOT NULL,
@@ -389,6 +490,9 @@ export class MemoryStore {
 				execution_scope TEXT,
 				situation TEXT,
 				access_scope_ref TEXT,
+				work_contract TEXT,
+				contract_admission TEXT,
+				objective_revisions TEXT,
 				business_context TEXT,
 				status TEXT NOT NULL CHECK (status IN ('pending', 'running', 'succeeded', 'failed', 'cancelled')),
 				parent_id TEXT,
@@ -399,6 +503,8 @@ export class MemoryStore {
 				verification_status TEXT CHECK (verification_status IN ('pending', 'accepted', 'rejected')),
 				verification_outcome TEXT CHECK (verification_outcome IN ('pending', 'accepted', 'rejected', 'unavailable')),
 				verification_feedback TEXT,
+				verification_requirements TEXT,
+				criterion_verifications TEXT,
 				verification_attempts INTEGER NOT NULL DEFAULT 0,
 				verification_retry_at INTEGER,
 				corrective_attempts INTEGER NOT NULL DEFAULT 0,
@@ -423,6 +529,7 @@ export class MemoryStore {
 				status TEXT NOT NULL CHECK (status IN ('running', 'succeeded', 'failed', 'cancelled')),
 				started_at INTEGER NOT NULL,
 				lease_expires_at INTEGER,
+				cancellation_requested_at INTEGER,
 				finished_at INTEGER,
 				output TEXT,
 				error TEXT
@@ -434,6 +541,13 @@ export class MemoryStore {
 				PRIMARY KEY (task_id, depends_on)
 			);
 			CREATE INDEX IF NOT EXISTS idx_task_dependencies_upstream ON task_dependencies(depends_on);
+			CREATE TABLE IF NOT EXISTS task_verification_claims (
+				task_id TEXT PRIMARY KEY REFERENCES tasks(id) ON DELETE CASCADE,
+				owner_key TEXT NOT NULL,
+				holder_id TEXT NOT NULL,
+				lease_expires_at INTEGER NOT NULL
+			);
+			CREATE INDEX IF NOT EXISTS idx_task_verification_claims_expiry ON task_verification_claims(lease_expires_at);
 
 			CREATE TABLE IF NOT EXISTS memory_events (
 				id TEXT PRIMARY KEY,
@@ -501,9 +615,14 @@ export class MemoryStore {
 				profile_id TEXT NOT NULL,
 				platform TEXT NOT NULL,
 				chat_id TEXT NOT NULL,
+				chat_type TEXT,
 				user_id TEXT,
 				thread_id TEXT,
+				project_id TEXT,
+				organization_id TEXT,
+				visibility TEXT NOT NULL DEFAULT 'private',
 				objective_id TEXT NOT NULL,
+				source_revision INTEGER NOT NULL DEFAULT 1,
 				situation TEXT NOT NULL,
 				situation_summary TEXT NOT NULL,
 				action TEXT NOT NULL,
@@ -730,7 +849,7 @@ export class MemoryStore {
 
 			CREATE TABLE IF NOT EXISTS autonomy_rollout_states (
 				profile_id TEXT NOT NULL,
-				level TEXT NOT NULL CHECK (level IN ('situation_context', 'episode_publication', 'initiative_observation', 'read_only_investigation', 'reversible_action')),
+				level TEXT NOT NULL CHECK (level IN ('situation_context', 'episode_publication', 'adaptive_learning', 'initiative_observation', 'read_only_investigation', 'reversible_action')),
 				status TEXT NOT NULL CHECK (status IN ('disabled', 'enabled', 'stopped')),
 				revision INTEGER NOT NULL CHECK (revision > 0),
 				updated_at INTEGER NOT NULL CHECK (updated_at >= 0),
@@ -744,6 +863,7 @@ export class MemoryStore {
 			);
 		`);
 		this.migrateCompensationExerciseIdentity();
+		this.migrateAutonomyRolloutLevels();
 		this.addColumnIfMissing("tasks", "evidence", "TEXT");
 		this.addColumnIfMissing("memory_evidence", "source_ref", "TEXT");
 		this.addColumnIfMissing("tasks", "description", "TEXT");
@@ -751,6 +871,15 @@ export class MemoryStore {
 		this.addColumnIfMissing("tasks", "recovery_policy", "TEXT NOT NULL DEFAULT 'never'");
 		this.addColumnIfMissing("tasks", "idempotency_key", "TEXT");
 		this.addColumnIfMissing("tasks", "execution_scope", "TEXT");
+		this.addColumnIfMissing("memory_episodes", "chat_type", "TEXT");
+		this.addColumnIfMissing("memory_episodes", "project_id", "TEXT");
+		this.addColumnIfMissing("memory_episodes", "organization_id", "TEXT");
+		this.addColumnIfMissing("memory_episodes", "visibility", "TEXT NOT NULL DEFAULT 'private'");
+		this.addColumnIfMissing("memory_episodes", "source_revision", "INTEGER NOT NULL DEFAULT 1");
+		this.addColumnIfMissing("objective_completion_outbox", "reply_to_message_id", "TEXT");
+		this.addColumnIfMissing("objective_completion_outbox", "delivery_idempotency_key", "TEXT");
+		this.addColumnIfMissing("objective_completion_outbox", "task_run_id", "TEXT REFERENCES task_runs(id)");
+		this.db.prepare("UPDATE objective_completion_outbox SET delivery_idempotency_key = id WHERE delivery_idempotency_key IS NULL OR delivery_idempotency_key = ''").run();
 		this.addColumnIfMissing("initiative_triggers", "execution_scope", "TEXT");
 		this.addColumnIfMissing("initiative_triggers", "channel_instance_id", "TEXT");
 		this.addColumnIfMissing("initiative_observations", "channel_instance_id", "TEXT");
@@ -758,6 +887,14 @@ export class MemoryStore {
 		this.addColumnIfMissing("autonomy_rollout_states", "publisher", "TEXT");
 		this.addColumnIfMissing("tasks", "situation", "TEXT");
 		this.addColumnIfMissing("tasks", "access_scope_ref", "TEXT");
+		this.addColumnIfMissing("tasks", "work_contract", "TEXT");
+		this.addColumnIfMissing("tasks", "contract_admission", "TEXT");
+		// v1 receipts used co-stored, unkeyed digests and cannot be upgraded into
+		// authenticated authority. Remove only that recognized schema so the
+		// Objective resumes through the existing no-receipt compatibility path.
+		this.db.prepare("UPDATE tasks SET contract_admission = NULL WHERE contract_admission IS NOT NULL AND CASE WHEN json_valid(contract_admission) THEN json_extract(contract_admission, '$.schemaVersion') ELSE NULL END = ?")
+			.run("beemax.durable-contract-admission.v1");
+		this.addColumnIfMissing("tasks", "objective_revisions", "TEXT");
 		this.addColumnIfMissing("tasks", "business_context", "TEXT");
 		this.addColumnIfMissing("tasks", "artifacts", "TEXT");
 		this.addColumnIfMissing("tasks", "unresolved_issues", "TEXT");
@@ -765,11 +902,16 @@ export class MemoryStore {
 		this.addColumnIfMissing("tasks", "verification_status", "TEXT");
 		this.addColumnIfMissing("tasks", "verification_outcome", "TEXT");
 		this.addColumnIfMissing("tasks", "verification_feedback", "TEXT");
+		this.addColumnIfMissing("tasks", "verification_requirements", "TEXT");
+		this.addColumnIfMissing("tasks", "criterion_verifications", "TEXT");
 		this.addColumnIfMissing("tasks", "verification_attempts", "INTEGER NOT NULL DEFAULT 0");
 		this.addColumnIfMissing("tasks", "verification_retry_at", "INTEGER");
 		this.addColumnIfMissing("tasks", "candidate_result", "TEXT");
 		this.addColumnIfMissing("tasks", "corrective_attempts", "INTEGER NOT NULL DEFAULT 0");
 		this.addColumnIfMissing("tasks", "updated_at", "INTEGER NOT NULL DEFAULT 0");
+		this.addColumnIfMissing("tasks", "interruption_holder_id", "TEXT");
+		this.addColumnIfMissing("tasks", "interruption_lease_expires_at", "INTEGER");
+		this.addColumnIfMissing("tasks", "interruption_claim_token", "TEXT");
 		this.addColumnIfMissing("tasks", "checkpoint", "TEXT");
 		this.addColumnIfMissing("tasks", "checkpoint_at", "INTEGER");
 		this.addColumnIfMissing("tasks", "effect_receipts", "TEXT");
@@ -777,6 +919,10 @@ export class MemoryStore {
 		this.addColumnIfMissing("tasks", "route_index", "INTEGER NOT NULL DEFAULT 0");
 		this.addColumnIfMissing("task_plans", "paused_at", "INTEGER");
 		this.addColumnIfMissing("task_runs", "lease_expires_at", "INTEGER");
+		this.addColumnIfMissing("task_runs", "cancellation_requested_at", "INTEGER");
+		// Legacy unbounded holders become finite from their original start time. A live
+		// executor will renew them; an abandoned row becomes eligible for reconciliation.
+		this.db.prepare("UPDATE task_runs SET lease_expires_at = started_at + 30000 WHERE status = 'running' AND lease_expires_at IS NULL").run();
 		this.addColumnIfMissing("task_plan_completion_notices", "claim_token", "TEXT");
 		this.addColumnIfMissing("task_plan_completion_notices", "channel_instance_id", "TEXT");
 		this.addColumnIfMissing("task_plan_completion_notices", "chat_type", "TEXT");
@@ -836,7 +982,13 @@ export class MemoryStore {
 
 	private addColumnIfMissing(table: string, column: string, definition: string): void {
 		const columns = this.db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>;
-		if (!columns.some((item) => item.name === column)) this.db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
+		if (columns.some((item) => item.name === column)) return;
+		try { this.db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`); }
+		catch (error) {
+			const migrated = this.db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>;
+			if (migrated.some((item) => item.name === column)) return;
+			throw error;
+		}
 	}
 
 	private migrateCompensationExerciseIdentity(): void {
@@ -867,13 +1019,38 @@ export class MemoryStore {
 		`))();
 	}
 
+	private migrateAutonomyRolloutLevels(): void {
+		const schema = this.db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'autonomy_rollout_states'").get() as { sql: string } | undefined;
+		if (!schema || schema.sql.includes("'adaptive_learning'")) return;
+		this.db.transaction(() => this.db.exec(`
+			ALTER TABLE autonomy_rollout_states RENAME TO autonomy_rollout_states_legacy_levels;
+			CREATE TABLE autonomy_rollout_states (
+				profile_id TEXT NOT NULL,
+				level TEXT NOT NULL CHECK (level IN ('situation_context', 'episode_publication', 'adaptive_learning', 'initiative_observation', 'read_only_investigation', 'reversible_action')),
+				status TEXT NOT NULL CHECK (status IN ('disabled', 'enabled', 'stopped')),
+				revision INTEGER NOT NULL CHECK (revision > 0),
+				updated_at INTEGER NOT NULL CHECK (updated_at >= 0),
+				actor TEXT NOT NULL CHECK (actor IN ('operator', 'enterprise')),
+				publisher TEXT,
+				evidence_ref TEXT NOT NULL,
+				enterprise_disposition TEXT CHECK (enterprise_disposition IN ('allow', 'deny')),
+				reasons TEXT NOT NULL,
+				evidence TEXT,
+				PRIMARY KEY (profile_id, level)
+			);
+			INSERT INTO autonomy_rollout_states SELECT * FROM autonomy_rollout_states_legacy_levels;
+			DROP TABLE autonomy_rollout_states_legacy_levels;
+		`))();
+	}
+
 	/** Persist a source record as immutable evidence while retained; unreferenced raw events use a bounded per-conversation retention window. */
 	recordEvent(record: { platform: string; chatId: string; userId?: string; threadId?: string; kind: "user" | "assistant" | "import" | "feedback"; content: string; occurredAt?: number }): string {
 		const id = cryptoRandom();
 		const now = Date.now();
 		this.db.prepare("INSERT INTO memory_events (id, platform, chat_id, user_id, thread_id, kind, content, occurred_at, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")
 			.run(id, record.platform, record.chatId, record.userId ?? null, record.threadId ?? null, record.kind, record.content, record.occurredAt ?? now, now);
-		this.db.prepare(`DELETE FROM memory_events WHERE platform = ? AND chat_id = ? AND user_id IS ? AND id NOT IN (SELECT event_id FROM memory_evidence WHERE event_id IS NOT NULL) AND id NOT IN
+		this.db.prepare(`DELETE FROM memory_events WHERE platform = ? AND chat_id = ? AND user_id IS ? AND id NOT IN (SELECT event_id FROM memory_evidence WHERE event_id IS NOT NULL)
+			AND id NOT IN (SELECT substr(source_ref, length('memory-event:') + 1) FROM memory_learning_observations WHERE source_ref LIKE 'memory-event:%') AND id NOT IN
 			(SELECT id FROM memory_events WHERE platform = ? AND chat_id = ? AND user_id IS ? ORDER BY occurred_at DESC LIMIT 5000)`)
 			.run(record.platform, record.chatId, record.userId ?? null, record.platform, record.chatId, record.userId ?? null);
 		return id;
@@ -933,27 +1110,89 @@ export class MemoryStore {
 		const profileId = input.profileId ?? this.profileId;
 		if (profileId !== this.profileId) throw new Error("Organization Memory Episode is outside this Profile store");
 		const objectiveId = boundedEpisodeText(input.objectiveId, "objectiveId", 512);
+		const sourceRevision = input.sourceRevision ?? 1;
+		if (!Number.isSafeInteger(sourceRevision) || sourceRevision < 1) throw new Error("Organization Memory Episode source revision is invalid");
 		const action = boundedEpisodeText(input.action, "action", 5_000);
 		const outcome = boundedEpisodeText(input.outcome, "outcome", 50_000);
 		const evidence = input.evidence === undefined ? undefined : boundedEpisodeText(input.evidence, "evidence", 5_000);
 		const situation = createSituation(structuredClone(input.situation));
 		const status = input.status ?? "verified";
 		if (!EPISODE_STATUSES.has(status)) throw new Error("Organization Memory Episode status is invalid");
+		const visibility = input.visibility ?? "private";
+		if (!new Set(["private", "conversation", "project", "organization"]).has(visibility) || visibility === "project" && !input.projectId || visibility === "organization" && !input.organizationId) throw new Error("Organization Memory Episode visibility is invalid");
 		const sensitive = JSON.stringify({ objectiveId, situation, action, outcome, evidence });
 		if (containsCredentialMaterial(sensitive)) throw new Error("Organization Memory Episode cannot contain credential material");
 		const now = Date.now();
 		const id = `episode:${cryptoRandom()}`;
-		this.db.prepare(`INSERT INTO memory_episodes (id, profile_id, platform, chat_id, user_id, thread_id, objective_id, situation, situation_summary, action, outcome, evidence, status, created_at, updated_at)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		const changed = this.db.prepare(`INSERT INTO memory_episodes (id, profile_id, platform, chat_id, chat_type, user_id, thread_id, project_id, organization_id, visibility, objective_id, source_revision, situation, situation_summary, action, outcome, evidence, status, created_at, updated_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 			ON CONFLICT(profile_id, objective_id) DO UPDATE SET
+				platform = excluded.platform, chat_id = excluded.chat_id, chat_type = excluded.chat_type, user_id = excluded.user_id, thread_id = excluded.thread_id,
+				project_id = excluded.project_id, organization_id = excluded.organization_id, visibility = excluded.visibility, source_revision = excluded.source_revision,
 				situation = excluded.situation, situation_summary = excluded.situation_summary, action = excluded.action,
 				outcome = excluded.outcome, evidence = excluded.evidence,
 				status = CASE WHEN memory_episodes.status = 'verified' AND excluded.status = 'candidate' THEN memory_episodes.status ELSE excluded.status END,
-				updated_at = excluded.updated_at`)
-			.run(id, profileId, input.platform, input.chatId, input.userId ?? null, input.threadId ?? null, objectiveId, JSON.stringify(situation), situation.summary, action, outcome, evidence ?? null, status, now, now);
+				updated_at = excluded.updated_at
+			WHERE memory_episodes.source_revision <= excluded.source_revision`)
+			.run(id, profileId, input.platform, input.chatId, input.chatType ?? null, input.userId ?? null, input.threadId ?? null, input.projectId ?? null, input.organizationId ?? null, visibility, objectiveId, sourceRevision, JSON.stringify(situation), situation.summary, action, outcome, evidence ?? null, status, now, now).changes;
+		if (changed !== 1) throw new Error(`Organization Memory Episode ${objectiveId} rejected a stale source revision`);
 		const persisted = this.episodeForObjective(objectiveId, { profileId });
 		if (!persisted) throw new Error("Organization Memory Episode could not be persisted");
 		return persisted;
+	}
+
+	/** Atomically publish a verified Episode and its exactly-once learning signal. */
+	upsertVerifiedEpisodeAndSignal(input: VerifiedOrganizationMemoryEpisodeInput): OrganizationMemoryEpisode {
+		if (!Number.isSafeInteger(input.sourceRevision) || input.sourceRevision < 1) throw new Error("Verified Objective source revision is invalid");
+		const occurredAt = input.occurredAt ?? Date.now();
+		if (!Number.isSafeInteger(occurredAt) || occurredAt < 0) throw new Error("Verified Objective occurrence time is invalid");
+		return this.db.transaction(() => {
+			const episode = this.upsertEpisode(input);
+			const sourceDigest = createHash("sha256").update(JSON.stringify({
+				profileId: episode.profileId,
+				platform: episode.platform,
+				chatId: episode.chatId,
+				chatType: episode.chatType ?? null,
+				userId: episode.userId ?? null,
+				threadId: episode.threadId ?? null,
+				projectId: episode.projectId ?? null,
+				organizationId: episode.organizationId ?? null,
+				visibility: episode.visibility,
+				objectiveId: episode.objectiveId,
+				situation: episode.situation,
+				action: episode.action,
+				outcome: episode.outcome,
+				evidence: episode.evidence ?? null,
+				status: episode.status,
+			})).digest("hex");
+			this.memoryLearningAuthority.appendLearningSignal({
+				profileId: episode.profileId,
+				sourceKind: "objective",
+				sourceId: episode.objectiveId,
+				sourceRevision: input.sourceRevision,
+				sourceDigest,
+				signalType: "terminal_outcome",
+				priority: 90,
+				occurredAt,
+				policyVersion: input.policyVersion ?? "l4.v1",
+			});
+			if (input.learningSettlement) {
+				const learning = input.learningSettlement;
+				const envelope = createExecutionEnvelope({ executionId: learning.executionId, trigger: { kind: "task_transition", id: episode.objectiveId }, objectiveId: episode.objectiveId,
+					...(learning.taskRunId ? { taskRunId: learning.taskRunId } : {}) });
+				const settlement = this.memoryLearningAuthority.settleLearning({
+					envelope,
+					scope: { profileId: episode.profileId, platform: episode.platform, chatId: episode.chatId, ...(episode.chatType ? { chatType: episode.chatType } : {}),
+						...(episode.userId ? { userId: episode.userId } : {}), ...(episode.threadId ? { threadId: episode.threadId } : {}),
+						...(episode.projectId ? { projectId: episode.projectId } : {}), ...(episode.organizationId ? { organizationId: episode.organizationId } : {}) },
+					subject: { kind: "objective", id: episode.objectiveId, revision: input.sourceRevision }, verificationRevision: learning.verificationRevision,
+					verificationDigest: learning.verificationDigest, criteria: learning.criteria, deliveryReceiptRefs: learning.deliveryReceiptRefs,
+					artifactReceiptRefs: learning.artifactReceiptRefs, policyVersion: input.policyVersion ?? "l4.v1",
+				});
+				if (settlement.status !== "settled" && settlement.status !== "duplicate") throw new Error(`Verified Objective Learning Settlement was ${settlement.status}`);
+			}
+			return episode;
+		})();
 	}
 
 	episodeForObjective(objectiveId: string, opts: Omit<RecallOptions, "limit"> = {}): OrganizationMemoryEpisode | undefined {
@@ -1727,14 +1966,60 @@ export class MemoryStore {
 	hasTask(id: string): boolean { return Boolean(this.db.prepare("SELECT 1 FROM tasks WHERE id = ? LIMIT 1").get(id)); }
 
 	record(task: RuntimeTaskRecord): void {
-		this.db.prepare(`INSERT INTO tasks (id, owner_key, kind, title, description, acceptance_criteria, recovery_policy, idempotency_key, execution_scope, situation, access_scope_ref, status, parent_id, plan_id, evidence, artifacts, unresolved_issues, verification_outcome, verification_feedback, corrective_attempts, created_at, started_at, finished_at, result, candidate_result, error, checkpoint, checkpoint_at, routes, route_index, updated_at)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-			.run(task.id, task.ownerKey, task.kind, task.title, safeTaskText(task.description), task.acceptanceCriteria ?? null, task.recoveryPolicy ?? "never", task.idempotencyKey ?? null, task.executionScope ? JSON.stringify(task.executionScope) : null, task.situation ? JSON.stringify(task.situation) : null, task.accessScopeRef ? JSON.stringify(task.accessScopeRef) : null, task.status, task.parentId ?? null, task.planId ?? null, safeTaskText(task.evidence), safeTaskArtifacts(task.artifacts), safeUnresolvedIssues(task.unresolvedIssues), task.verificationStatus ?? null, safeTaskText(task.verificationFeedback), task.correctiveAttempts ?? 0, task.createdAt, task.startedAt ?? null, task.finishedAt ?? null, safeTaskText(task.result), safeTaskText(task.candidateResult), safeTaskText(task.error), task.checkpoint ? renderTaskCheckpoint(task.checkpoint) : null, task.checkpointAt ?? null, task.routes ? JSON.stringify(task.routes) : null, task.routeIndex ?? 0, task.createdAt);
+		const contractAdmission = safeStoredContractAdmission(task.contractAdmission);
+		if (task.contractAdmission && !contractAdmission) throw new Error("Task Contract admission is invalid");
+		this.db.prepare(`INSERT INTO tasks (id, owner_key, kind, title, description, acceptance_criteria, recovery_policy, idempotency_key, execution_scope, situation, access_scope_ref, work_contract, contract_admission, objective_revisions, status, parent_id, plan_id, evidence, artifacts, unresolved_issues, verification_outcome, verification_feedback, verification_requirements, criterion_verifications, corrective_attempts, created_at, started_at, finished_at, result, candidate_result, error, checkpoint, checkpoint_at, routes, route_index, updated_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+			.run(task.id, task.ownerKey, task.kind, task.title, safeTaskText(task.description), task.acceptanceCriteria ?? null, task.recoveryPolicy ?? "never", task.idempotencyKey ?? null, task.executionScope ? JSON.stringify(task.executionScope) : null, task.situation ? JSON.stringify(task.situation) : null, task.accessScopeRef ? JSON.stringify(task.accessScopeRef) : null, safeStoredWorkContract(task.workContract), contractAdmission, safeStoredObjectiveRevisions(task.objectiveRevisions, task.id), task.status, task.parentId ?? null, task.planId ?? null, safeTaskText(task.evidence), safeTaskArtifacts(task.artifacts), safeUnresolvedIssues(task.unresolvedIssues), task.verificationStatus ?? null, safeTaskText(task.verificationFeedback), safeVerificationRequirements(task.verificationRequirements), safeCriterionVerifications(task.criterionVerifications), task.correctiveAttempts ?? 0, task.createdAt, task.startedAt ?? null, task.finishedAt ?? null, safeTaskText(task.result), safeTaskText(task.candidateResult), safeTaskText(task.error), task.checkpoint ? renderTaskCheckpoint(task.checkpoint) : null, task.checkpointAt ?? null, task.routes ? JSON.stringify(task.routes) : null, task.routeIndex ?? 0, task.createdAt);
 	}
 
 	updateSituation(ownerKey: string, taskId: string, situation: NonNullable<RuntimeTaskRecord["situation"]>): boolean {
 		return this.db.prepare("UPDATE tasks SET situation = ?, updated_at = ? WHERE id = ? AND owner_key = ? AND kind = 'objective' AND status IN ('pending', 'running')")
 			.run(JSON.stringify(situation), Date.now(), taskId, ownerKey).changes === 1;
+	}
+
+	reviseObjective(ownerKey: string, taskId: string, revision: { workContract: NonNullable<RuntimeTaskRecord["workContract"]>; situation: NonNullable<RuntimeTaskRecord["situation"]>; contractAdmission?: Readonly<DurableContractAdmissionReceipt> | null }, now = Date.now()): ReturnType<TaskLedger["reviseObjective"]> {
+		const encodedCorrection = safeStoredWorkContract(revision.workContract);
+		const encodedContractAdmission = revision.contractAdmission ? safeStoredContractAdmission(revision.contractAdmission) : null;
+		const objectiveSource = revision.workContract.objective.source;
+		const targetObjectiveId = revision.workContract.targetObjective?.id ?? (objectiveSource.kind === "active_objective" ? objectiveSource.id : undefined);
+		if (!encodedCorrection || (revision.contractAdmission && !encodedContractAdmission) || revision.workContract.action !== "correct" || targetObjectiveId !== taskId) return undefined;
+		let encodedSituation: string;
+		try { encodedSituation = JSON.stringify(createSituation(revision.situation)); }
+		catch { return undefined; }
+		return this.db.transaction(() => {
+			const row = this.db.prepare("SELECT title, description, work_contract, objective_revisions FROM tasks WHERE id = ? AND owner_key = ? AND kind = 'objective' AND status IN ('pending', 'running')")
+				.get(taskId, ownerKey) as { title: string; description: string | null; work_contract: string | null; objective_revisions: string | null } | undefined;
+			if (!row) return undefined;
+			const storedOriginal = parseStoredWorkContract(row.work_contract);
+			if (row.work_contract !== null && !storedOriginal) return undefined;
+			const originalWorkContract = storedOriginal ?? workContractFromLegacyObjective({ title: row.title, ...(row.description ? { description: row.description } : {}) });
+			const encodedOriginal = safeStoredWorkContract(originalWorkContract);
+			if (!encodedOriginal) return undefined;
+			const parsed = parseStoredObjectiveRevisions(row.objective_revisions, taskId);
+			if (row.objective_revisions !== null && !parsed) return undefined;
+			const existing = parsed ?? [];
+			const last = existing.at(-1);
+			if (last && safeStoredWorkContract(last.workContract) === encodedCorrection) {
+				this.db.prepare("UPDATE tasks SET contract_admission = ?, updated_at = ? WHERE id = ? AND owner_key = ?").run(encodedContractAdmission, now, taskId, ownerKey);
+				return { originalWorkContract, revision: last, revisions: existing };
+			}
+			if (existing.length >= MAX_OBJECTIVE_REVISIONS) return undefined;
+			const objectiveRevision: NonNullable<RuntimeTaskRecord["objectiveRevisions"]>[number] = { id: `${taskId}:revision:${existing.length + 1}`, workContract: revision.workContract, situation: createSituation(revision.situation), createdAt: now };
+			const next = [...existing, objectiveRevision];
+			const encoded = safeStoredObjectiveRevisions(next, taskId);
+			if (!encoded) return undefined;
+			const updated = this.db.prepare("UPDATE tasks SET work_contract = ?, contract_admission = ?, objective_revisions = ?, situation = ?, updated_at = ? WHERE id = ? AND owner_key = ? AND kind = 'objective' AND status IN ('pending', 'running')")
+				.run(encodedOriginal, encodedContractAdmission, encoded, encodedSituation, now, taskId, ownerKey).changes === 1;
+			return updated ? { originalWorkContract, revision: objectiveRevision, revisions: next } : undefined;
+		})();
+	}
+
+	updateVerificationRequirements(ownerKey: string, taskId: string, requirements: NonNullable<RuntimeTaskRecord["verificationRequirements"]>): boolean {
+		const encoded = safeVerificationRequirements(requirements);
+		if (!encoded) return false;
+		return this.db.prepare("UPDATE tasks SET verification_requirements = ?, updated_at = ? WHERE id = ? AND owner_key = ? AND status IN ('pending', 'running')")
+			.run(encoded, Date.now(), taskId, ownerKey).changes === 1;
 	}
 
 	transition(id: string, change: TaskTransition): boolean {
@@ -1745,22 +2030,24 @@ export class MemoryStore {
 		const artifacts = safeTaskArtifacts(change.artifacts);
 		const unresolvedIssues = safeUnresolvedIssues(change.unresolvedIssues);
 		const verificationFeedback = safeTaskText(change.verificationFeedback);
+		const criterionVerifications = safeCriterionVerifications(change.criterionVerifications);
 		const result = this.db.prepare(`UPDATE tasks SET status = ?,
 			started_at = CASE WHEN ? = 'pending' THEN NULL ELSE COALESCE(?, started_at) END,
 			finished_at = CASE WHEN ? IN ('pending', 'running') THEN NULL ELSE COALESCE(?, finished_at) END,
 			result = CASE WHEN ? IN ('pending', 'running') THEN NULL ELSE COALESCE(?, result) END,
-			candidate_result = CASE WHEN ? IN ('pending', 'succeeded') THEN NULL WHEN ? IS NOT NULL THEN ? ELSE candidate_result END,
+			candidate_result = CASE WHEN ? = 'succeeded' THEN NULL WHEN ? IS NOT NULL THEN ? WHEN ? = 'pending' THEN NULL ELSE candidate_result END,
 			error = CASE WHEN ? = 'succeeded' THEN NULL WHEN ? IS NOT NULL THEN ? WHEN ? = 'running' THEN NULL ELSE error END,
 			evidence = COALESCE(?, evidence),
 			artifacts = COALESCE(?, artifacts), unresolved_issues = COALESCE(?, unresolved_issues),
 			verification_outcome = COALESCE(?, verification_outcome),
 			verification_feedback = CASE WHEN ? = 'succeeded' THEN NULL ELSE COALESCE(?, verification_feedback) END,
+			criterion_verifications = CASE WHEN ? = 'succeeded' THEN ? WHEN ? IS NOT NULL THEN ? ELSE criterion_verifications END,
 			corrective_attempts = COALESCE(?, corrective_attempts),
 			updated_at = ? WHERE id = ? AND ((? = 'pending' AND status = 'running') OR (? = 'running' AND status IN ('pending', 'running')) OR (? IN ('succeeded', 'failed', 'cancelled') AND status IN ('pending', 'running')))`)
 			.run(change.status, change.status, change.startedAt ?? null, change.status, change.finishedAt ?? null, change.status, resultText,
-				change.status, candidateResult, candidateResult,
+				change.status, candidateResult, candidateResult, change.status,
 				change.status, error, error, change.status,
-				evidence, artifacts, unresolvedIssues, change.verificationStatus ?? null, change.status, verificationFeedback, change.correctiveAttempts ?? null, Date.now(), id, change.status, change.status, change.status);
+				evidence, artifacts, unresolvedIssues, change.verificationStatus ?? null, change.status, verificationFeedback, change.status, criterionVerifications, criterionVerifications, criterionVerifications, change.correctiveAttempts ?? null, Date.now(), id, change.status, change.status, change.status);
 		return result.changes === 1;
 	}
 
@@ -1769,8 +2056,144 @@ export class MemoryStore {
 			WHERE id = ? AND owner_key = ? AND kind = 'objective' AND status = 'failed'`).run(now, now, id, ownerKey).changes === 1;
 	}
 
+	cancelObjective(ownerKey: string, id: string, now = Date.now()): ObjectiveCancellationResult | undefined {
+		return this.db.transaction(() => this.cancelObjectiveInTransaction(ownerKey, id, now))();
+	}
+
 	cancelObjectives(ownerKey: string, now = Date.now()): number {
-		return this.db.prepare("UPDATE tasks SET status = 'cancelled', finished_at = ?, error = 'Cancelled by user', updated_at = ? WHERE owner_key = ? AND kind = 'objective' AND status IN ('pending', 'running')").run(now, now, ownerKey).changes;
+		return this.db.transaction(() => {
+			const ids = this.db.prepare("SELECT id FROM tasks WHERE owner_key = ? AND kind = 'objective' AND status IN ('pending', 'running')").all(ownerKey).map((row) => (row as { id: string }).id);
+			return ids.reduce((count, id) => count + Number(this.cancelObjectiveInTransaction(ownerKey, id, now) !== undefined), 0);
+		})();
+	}
+
+	private cancelObjectiveInTransaction(ownerKey: string, id: string, now: number): ObjectiveCancellationResult | undefined {
+		const objective = this.db.prepare("SELECT id FROM tasks WHERE id = ? AND owner_key = ? AND kind = 'objective' AND status IN ('pending', 'running')").get(id, ownerKey);
+		if (!objective) return undefined;
+		const descendants = this.db.prepare(`WITH RECURSIVE objective_tree(id, plan_id, status) AS (
+			SELECT id, plan_id, status FROM tasks WHERE parent_id = ? AND owner_key = ?
+			UNION
+			SELECT child.id, child.plan_id, child.status FROM tasks child JOIN objective_tree parent ON child.parent_id = parent.id WHERE child.owner_key = ?
+		) SELECT id, plan_id, status FROM objective_tree`).all(id, ownerKey, ownerKey) as Array<{ id: string; plan_id: string | null; status: RuntimeTaskRecord["status"] }>;
+		const activeDescendants = descendants.filter((task) => task.status === "pending" || task.status === "running");
+		const taskIds = [...new Set([id, ...descendants.map((child) => child.id)])];
+		const linkedPlanIds = [...new Set(activeDescendants.flatMap((child) => child.plan_id ? [child.plan_id] : []))]
+			.filter((planId) => Boolean(this.db.prepare("SELECT 1 FROM task_plans WHERE id = ? AND owner_key = ?").get(planId, ownerKey)));
+		const planIds = linkedPlanIds.filter((planId) => !this.db.prepare(`WITH RECURSIVE objective_tree(id) AS (
+			SELECT id FROM tasks WHERE id = ? AND owner_key = ? AND kind = 'objective'
+			UNION
+			SELECT child.id FROM tasks child JOIN objective_tree parent ON child.parent_id = parent.id WHERE child.owner_key = ?
+		) SELECT 1 FROM tasks WHERE plan_id = ? AND owner_key = ? AND status IN ('pending', 'running')
+			AND id NOT IN (SELECT id FROM objective_tree) LIMIT 1`).get(id, ownerKey, ownerKey, planId, ownerKey));
+		this.db.prepare(`WITH RECURSIVE objective_tree(id) AS (
+			SELECT id FROM tasks WHERE id = ? AND owner_key = ? AND kind = 'objective'
+			UNION
+			SELECT child.id FROM tasks child JOIN objective_tree parent ON child.parent_id = parent.id WHERE child.owner_key = ?
+		) UPDATE task_runs SET cancellation_requested_at = ?, error = 'Objective cancellation requested'
+			WHERE task_id IN (SELECT id FROM objective_tree) AND status = 'running'`).run(id, ownerKey, ownerKey, now);
+		this.db.prepare(`WITH RECURSIVE objective_tree(id) AS (
+			SELECT id FROM tasks WHERE id = ? AND owner_key = ? AND kind = 'objective'
+			UNION
+			SELECT child.id FROM tasks child JOIN objective_tree parent ON child.parent_id = parent.id WHERE child.owner_key = ?
+		) UPDATE tasks SET status = 'cancelled', finished_at = ?, error = 'Objective cancelled by user', updated_at = ?
+			WHERE id IN (SELECT id FROM objective_tree) AND owner_key = ? AND status IN ('pending', 'running')`).run(id, ownerKey, ownerKey, now, now, ownerKey);
+		this.db.prepare("UPDATE tasks SET error = 'Cancelled by user; runtime interruption pending', interruption_holder_id = NULL, interruption_lease_expires_at = NULL, interruption_claim_token = NULL, updated_at = ? WHERE id = ? AND owner_key = ? AND kind = 'objective' AND status = 'cancelled'").run(now, id, ownerKey);
+		this.db.prepare(`UPDATE objective_completion_outbox SET status = 'blocked', claim_token = NULL, blocked_at = ?, last_error = 'Objective cancelled by user'
+			WHERE objective_id = ? AND owner_key = ? AND status IN ('queued', 'delivering')`).run(now, id, ownerKey);
+		this.db.prepare(`WITH RECURSIVE objective_tree(id) AS (
+			SELECT id FROM tasks WHERE id = ? AND owner_key = ? AND kind = 'objective'
+			UNION
+			SELECT child.id FROM tasks child JOIN objective_tree parent ON child.parent_id = parent.id WHERE child.owner_key = ?
+		) DELETE FROM task_verification_claims WHERE owner_key = ? AND task_id IN (SELECT id FROM objective_tree)`).run(id, ownerKey, ownerKey, ownerKey);
+		for (const planId of planIds) this.db.prepare("DELETE FROM task_plan_execution_claims WHERE plan_id = ? AND owner_key = ?").run(planId, ownerKey);
+		for (const planId of linkedPlanIds) this.syncTaskPlanFromTasks(planId, now);
+		return { ownerKey, objectiveId: id, taskIds, planIds };
+	}
+
+	pendingObjectiveInterruptions(ownerKeys: string[], limit = 10): ObjectiveInterruptionRecord[] {
+		if (!ownerKeys.length) return [];
+		const objectives = this.db.prepare(`SELECT id, owner_key FROM tasks WHERE owner_key IN (${ownerKeys.map(() => "?").join(", ")})
+			AND kind = 'objective' AND status = 'cancelled' AND error LIKE 'Cancelled by user; runtime interruption pending%' ORDER BY updated_at LIMIT ?`)
+			.all(...ownerKeys, limitOf(limit, 10)) as Array<{ id: string; owner_key: string }>;
+		return objectives.map(({ id, owner_key: ownerKey }) => {
+			const descendants = this.db.prepare(`WITH RECURSIVE objective_tree(id, plan_id) AS (
+				SELECT id, plan_id FROM tasks WHERE parent_id = ? AND owner_key = ?
+				UNION
+				SELECT child.id, child.plan_id FROM tasks child JOIN objective_tree parent ON child.parent_id = parent.id WHERE child.owner_key = ?
+			) SELECT id, plan_id FROM objective_tree`).all(id, ownerKey, ownerKey) as Array<{ id: string; plan_id: string | null }>;
+			const taskIds = [...new Set([id, ...descendants.map((task) => task.id)])];
+			const linkedPlanIds = [...new Set(descendants.flatMap((task) => task.plan_id ? [task.plan_id] : []))];
+			const planIds = linkedPlanIds.filter((planId) => !this.db.prepare(`WITH RECURSIVE objective_tree(id) AS (
+				SELECT id FROM tasks WHERE id = ? AND owner_key = ? AND kind = 'objective'
+				UNION
+				SELECT child.id FROM tasks child JOIN objective_tree parent ON child.parent_id = parent.id WHERE child.owner_key = ?
+			) SELECT 1 FROM tasks WHERE plan_id = ? AND owner_key = ? AND status IN ('pending', 'running') AND id NOT IN (SELECT id FROM objective_tree) LIMIT 1`).get(id, ownerKey, ownerKey, planId, ownerKey));
+			return { ownerKey, objectiveId: id, taskIds, planIds, retry: true };
+		});
+	}
+
+	claimObjectiveInterruptions(ownerKeys: string[], holderId: string, leaseExpiresAt: number, now = Date.now(), limit = 10): Array<ObjectiveInterruptionRecord & { claimToken: string; claimLeaseExpiresAt: number }> {
+		if (!ownerKeys.length || !holderId.trim() || !Number.isFinite(leaseExpiresAt) || leaseExpiresAt <= now) return [];
+		return this.db.transaction(() => {
+			const ids = this.db.prepare(`SELECT id, owner_key FROM tasks WHERE owner_key IN (${ownerKeys.map(() => "?").join(",")})
+				AND kind = 'objective' AND status = 'cancelled' AND error LIKE 'Cancelled by user; runtime interruption pending%'
+				AND (interruption_holder_id IS NULL OR interruption_holder_id = ? OR interruption_lease_expires_at <= ?)
+				ORDER BY updated_at LIMIT ?`).all(...ownerKeys, holderId, now, limitOf(limit, 10)) as Array<{ id: string; owner_key: string }>;
+			const claimed: Array<ObjectiveInterruptionRecord & { claimToken: string; claimLeaseExpiresAt: number }> = [];
+			for (const candidate of ids) {
+				const claimToken = randomUUID();
+				const changed = this.db.prepare(`UPDATE tasks SET interruption_holder_id = ?, interruption_lease_expires_at = ?, interruption_claim_token = ?
+					WHERE id = ? AND owner_key = ? AND kind = 'objective' AND status = 'cancelled'
+					AND error LIKE 'Cancelled by user; runtime interruption pending%'
+					AND (interruption_holder_id IS NULL OR interruption_holder_id = ? OR interruption_lease_expires_at <= ?)`).run(holderId, leaseExpiresAt, claimToken, candidate.id, candidate.owner_key, holderId, now).changes;
+				if (changed !== 1) continue;
+				const record = this.pendingObjectiveInterruptions([candidate.owner_key], 100).find((item) => item.objectiveId === candidate.id);
+				if (record) claimed.push({ ...record, claimToken, claimLeaseExpiresAt: leaseExpiresAt });
+			}
+			return claimed;
+		}).immediate();
+	}
+
+	objectiveInterruptionConvergence(ownerKey: string, objectiveId: string, now = Date.now()): { pendingExecutions: number } {
+		const row = this.db.prepare(`WITH RECURSIVE objective_tree(id) AS (
+			SELECT id FROM tasks WHERE id = ? AND owner_key = ? AND kind = 'objective' AND status = 'cancelled'
+			UNION
+			SELECT child.id FROM tasks child JOIN objective_tree parent ON child.parent_id = parent.id WHERE child.owner_key = ?
+		) SELECT COUNT(*) AS count FROM task_runs WHERE task_id IN (SELECT id FROM objective_tree) AND status = 'running'`).get(objectiveId, ownerKey, ownerKey) as { count: number };
+		return { pendingExecutions: row.count };
+	}
+
+	isObjectiveExecutionActive(ownerKey: string, objectiveId: string, taskRunId: string, now = Date.now()): boolean {
+		return this.isTaskRunExecutionActive(ownerKey, objectiveId, objectiveId, taskRunId, now);
+	}
+
+	isTaskRunExecutionActive(ownerKey: string, objectiveId: string, taskId: string, taskRunId: string, now = Date.now()): boolean {
+		return Boolean(this.db.prepare(`WITH RECURSIVE objective_tree(id) AS (
+			SELECT id FROM tasks WHERE id = ? AND owner_key = ? AND kind = 'objective' AND status IN ('pending','running')
+			UNION SELECT child.id FROM tasks child JOIN objective_tree parent ON child.parent_id = parent.id WHERE child.owner_key = ?
+		) SELECT 1 FROM task_runs run JOIN tasks task ON task.id = run.task_id
+			WHERE run.id = ? AND run.task_id = ? AND task.owner_key = ? AND task.status IN ('pending','running')
+			AND task.id IN (SELECT id FROM objective_tree) AND run.status = 'running' AND run.cancellation_requested_at IS NULL
+			AND run.lease_expires_at IS NOT NULL AND run.lease_expires_at > ?`).get(objectiveId, ownerKey, ownerKey, taskRunId, taskId, ownerKey, now));
+	}
+
+	settleObjectiveInterruption(ownerKey: string, objectiveId: string, now = Date.now(), holderId?: string, claimToken?: string): boolean {
+		return this.db.prepare(`UPDATE tasks SET error = 'Cancelled by user', interruption_holder_id = NULL, interruption_lease_expires_at = NULL, interruption_claim_token = NULL, updated_at = ? WHERE id = ? AND owner_key = ? AND kind = 'objective'
+			AND status = 'cancelled' AND error LIKE 'Cancelled by user; runtime interruption pending%'
+			AND ((interruption_holder_id IS NULL AND interruption_claim_token IS NULL AND ? IS NULL AND ? IS NULL)
+				OR (interruption_holder_id = ? AND interruption_claim_token = ? AND interruption_lease_expires_at > ?))
+			AND NOT EXISTS (WITH RECURSIVE objective_tree(id) AS (
+				SELECT id FROM tasks WHERE id = ? AND owner_key = ? AND kind = 'objective'
+				UNION SELECT child.id FROM tasks child JOIN objective_tree parent ON child.parent_id = parent.id WHERE child.owner_key = ?
+			) SELECT 1 FROM task_runs WHERE task_id IN (SELECT id FROM objective_tree) AND status = 'running')`).run(now, objectiveId, ownerKey, holderId ?? null, claimToken ?? null, holderId ?? null, claimToken ?? null, now, objectiveId, ownerKey, ownerKey).changes === 1;
+	}
+
+	failObjectiveInterruption(ownerKey: string, objectiveId: string, error: string, now = Date.now(), holderId?: string, claimToken?: string): boolean {
+		const message = redactCredentialMaterial(error).slice(0, 4_900);
+		return this.db.prepare(`UPDATE tasks SET error = ?, interruption_holder_id = NULL, interruption_lease_expires_at = NULL, interruption_claim_token = NULL, updated_at = ? WHERE id = ? AND owner_key = ? AND kind = 'objective'
+			AND status = 'cancelled' AND error LIKE 'Cancelled by user; runtime interruption pending%'
+			AND ((interruption_holder_id IS NULL AND interruption_claim_token IS NULL AND ? IS NULL AND ? IS NULL)
+				OR (interruption_holder_id = ? AND interruption_claim_token = ? AND interruption_lease_expires_at > ?))`).run(`Cancelled by user; runtime interruption pending: ${message}`, now, objectiveId, ownerKey, holderId ?? null, claimToken ?? null, holderId ?? null, claimToken ?? null, now).changes === 1;
 	}
 
 	activeObjectivePlanIds(ownerKey: string): string[] {
@@ -1779,18 +2202,71 @@ export class MemoryStore {
 	}
 
 	recordRun(run: TaskRunRecord): void {
-		this.db.prepare("INSERT INTO task_runs (id, task_id, executor, status, started_at, lease_expires_at, finished_at, output, error) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")
-			.run(run.id, run.taskId, run.executor, run.status, run.startedAt, run.leaseExpiresAt ?? null, run.finishedAt ?? null, safeTaskText(run.output), safeTaskText(run.error));
+		this.db.transaction(() => {
+			const lineage = this.db.prepare(`WITH RECURSIVE lineage(id, owner_key, kind, status, parent_id) AS (
+				SELECT id, owner_key, kind, status, parent_id FROM tasks WHERE id = ?
+				UNION SELECT parent.id, parent.owner_key, parent.kind, parent.status, parent.parent_id FROM tasks parent JOIN lineage child ON parent.id = child.parent_id
+			) SELECT * FROM lineage`).all(run.taskId) as Array<{ id: string; owner_key: string; kind: string; status: string; parent_id: string | null }>;
+			if (!lineage.length) throw new Error(`Task Run ${run.id} owning Task ${run.taskId} is unavailable`);
+			const ownerKey = lineage[0]!.owner_key;
+			if (lineage.at(-1)?.parent_id) throw new Error(`Task Run ${run.id} has an unresolved Objective ancestry`);
+			if (lineage.some((item) => item.owner_key !== ownerKey || !["pending", "running"].includes(item.status))) throw new Error(`Task Run ${run.id} owning Task or Objective ancestor is terminal or outside its owner scope`);
+			const leaseExpiresAt = run.status === "running" ? run.leaseExpiresAt ?? run.startedAt + 30_000 : run.leaseExpiresAt;
+			if (run.status === "running" && leaseExpiresAt! <= run.startedAt) throw new Error(`Task Run ${run.id} requires a finite future Execution Lease`);
+			this.db.prepare("INSERT INTO task_runs (id, task_id, executor, status, started_at, lease_expires_at, cancellation_requested_at, finished_at, output, error) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+				.run(run.id, run.taskId, run.executor, run.status, run.startedAt, leaseExpiresAt ?? null, run.cancellationRequestedAt ?? null, run.finishedAt ?? null, safeTaskText(run.output), safeTaskText(run.error));
+		}).immediate();
 	}
 
 	transitionRun(id: string, change: TaskRunTransition): boolean {
-		const result = this.db.prepare("UPDATE task_runs SET status = ?, finished_at = COALESCE(?, finished_at), output = COALESCE(?, output), error = COALESCE(?, error) WHERE id = ? AND status = 'running'")
-			.run(change.status, change.finishedAt ?? null, safeTaskText(change.output), safeTaskText(change.error), id);
+		const now = Date.now();
+		const successFence = change.status === "succeeded" ? `AND cancellation_requested_at IS NULL AND lease_expires_at IS NOT NULL AND lease_expires_at > ?
+			AND EXISTS (SELECT 1 FROM tasks task WHERE task.id = task_runs.task_id AND task.status IN ('running','succeeded'))
+			AND NOT EXISTS (WITH RECURSIVE lineage(id, kind, status, parent_id) AS (
+				SELECT id, kind, status, parent_id FROM tasks WHERE id = task_runs.task_id
+				UNION SELECT parent.id, parent.kind, parent.status, parent.parent_id FROM tasks parent JOIN lineage child ON parent.id = child.parent_id
+			) SELECT 1 FROM lineage WHERE kind = 'objective' AND status NOT IN ('pending','running'))` : "";
+		const result = this.db.prepare(`UPDATE task_runs SET status = ?, finished_at = COALESCE(?, finished_at), output = COALESCE(?, output), error = COALESCE(?, error) WHERE id = ? AND status = 'running' ${successFence}`)
+			.run(change.status, change.finishedAt ?? null, safeTaskText(change.output), safeTaskText(change.error), id, ...(change.status === "succeeded" ? [now] : []));
 		return result.changes === 1;
 	}
 
-	renewTaskRunLease(id: string, leaseExpiresAt: number): boolean {
-		return this.db.prepare("UPDATE task_runs SET lease_expires_at = ? WHERE id = ? AND status = 'running'").run(leaseExpiresAt, id).changes === 1;
+	settleTaskRunAndTask(settlement: TaskRunAndTaskSuccessSettlement, now = Date.now()): boolean {
+		if (settlement.task.status !== "succeeded" || settlement.run.status !== "succeeded" || !Number.isFinite(now)) return false;
+		if (safeTaskText(settlement.task.result) !== safeTaskText(settlement.run.output)) return false;
+		const rollback = Symbol("atomic Task Run settlement rejected");
+		try {
+			return this.db.transaction(() => {
+				const runChanged = this.db.prepare(`UPDATE task_runs SET status = 'succeeded', finished_at = COALESCE(?, finished_at), output = COALESCE(?, output), error = NULL
+					WHERE id = ? AND task_id = ? AND status = 'running' AND cancellation_requested_at IS NULL
+					AND lease_expires_at IS NOT NULL AND lease_expires_at > ?
+					AND EXISTS (SELECT 1 FROM tasks task WHERE task.id = ? AND task.owner_key = ? AND task.status = 'running')
+					AND NOT EXISTS (WITH RECURSIVE lineage(id, kind, status, parent_id) AS (
+						SELECT id, kind, status, parent_id FROM tasks WHERE id = ?
+						UNION SELECT parent.id, parent.kind, parent.status, parent.parent_id FROM tasks parent JOIN lineage child ON parent.id = child.parent_id
+					) SELECT 1 FROM lineage WHERE kind = 'objective' AND status NOT IN ('pending','running'))`)
+					.run(settlement.run.finishedAt ?? null, safeTaskText(settlement.run.output), settlement.taskRunId, settlement.taskId, now, settlement.taskId, settlement.ownerKey, settlement.taskId).changes;
+				if (runChanged !== 1) return false;
+				if (!this.transition(settlement.taskId, settlement.task)) throw rollback;
+				const sourceDigest = createHash("sha256").update(JSON.stringify({ taskId: settlement.taskId, taskRunId: settlement.taskRunId, task: settlement.task, run: settlement.run })).digest("hex");
+				this.memoryLearningAuthority.appendLearningSignal({ profileId: this.profileId, sourceKind: "task_run", sourceId: settlement.taskRunId, sourceRevision: 1, sourceDigest, signalType: "terminal_outcome", priority: 80, occurredAt: Math.trunc(now), policyVersion: "l4.v1" });
+				return true;
+			}).immediate();
+		} catch (error) {
+			if (error === rollback) return false;
+			throw error;
+		}
+	}
+
+	renewTaskRunLease(id: string, leaseExpiresAt: number, now = Date.now()): boolean {
+		if (!Number.isFinite(leaseExpiresAt) || leaseExpiresAt <= now) return false;
+		return this.db.prepare(`UPDATE task_runs SET lease_expires_at = ? WHERE id = ? AND status = 'running' AND cancellation_requested_at IS NULL
+			AND lease_expires_at IS NOT NULL AND lease_expires_at > ? AND lease_expires_at < ?
+			AND EXISTS (SELECT 1 FROM tasks task WHERE task.id = task_runs.task_id AND task.status IN ('pending','running'))
+			AND NOT EXISTS (WITH RECURSIVE lineage(id, kind, status, parent_id) AS (
+				SELECT id, kind, status, parent_id FROM tasks WHERE id = task_runs.task_id
+				UNION SELECT parent.id, parent.kind, parent.status, parent.parent_id FROM tasks parent JOIN lineage child ON parent.id = child.parent_id
+			) SELECT 1 FROM lineage WHERE kind = 'objective' AND status NOT IN ('pending','running'))`).run(leaseExpiresAt, id, now, leaseExpiresAt).changes === 1;
 	}
 
 	taskRuns(taskId: string): TaskRunRecord[] {
@@ -1813,12 +2289,32 @@ export class MemoryStore {
 
 	recordPlan(tasks: RuntimeTaskRecord[], dependencies: TaskDependency[], plan?: TaskPlanRecord): void {
 		this.db.transaction(() => {
+			if (plan) {
+				if (tasks.some((task) => task.planId !== plan.id || task.ownerKey !== plan.ownerKey)) throw new Error(`Task Plan ${plan.id} contains a Task outside its owner or Plan identity`);
+				const byId = new Map(tasks.map((task) => [task.id, task]));
+				const roots = new Set<string>();
+				for (const task of tasks) {
+					let parentId = task.parentId;
+					const visited = new Set([task.id]);
+					while (parentId && byId.has(parentId)) {
+						if (visited.has(parentId)) throw new Error(`Task Plan ${plan.id} contains a parent cycle`);
+						visited.add(parentId); parentId = byId.get(parentId)!.parentId;
+					}
+					roots.add(parentId ? `objective:${parentId}` : "rootless");
+				}
+				if (roots.size > 1) throw new Error(`Task Plan ${plan.id} cannot span multiple Objective roots or mix Objective-rooted and rootless Tasks`);
+				const root = [...roots][0];
+				if (root?.startsWith("objective:")) {
+					const objectiveId = root.slice("objective:".length);
+					if (!this.db.prepare("SELECT 1 FROM tasks WHERE id = ? AND owner_key = ? AND kind = 'objective' AND status IN ('pending', 'running')").get(objectiveId, plan.ownerKey)) throw new Error(`Task Plan ${plan.id} Objective root is unavailable or terminal in its owner scope`);
+				}
+			}
 			if (plan) this.db.prepare(`INSERT INTO task_plans (id, owner_key, title, status, task_count, succeeded, failed, cancelled, verified, corrective_attempts, created_at, started_at, finished_at)
 				VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(plan.id, plan.ownerKey, plan.title, plan.status, plan.taskCount, plan.succeeded, plan.failed, plan.cancelled, plan.verified, plan.correctiveAttempts, plan.createdAt, plan.startedAt ?? null, plan.finishedAt ?? null);
 			for (const task of tasks) this.record(task);
 			const insert = this.db.prepare("INSERT INTO task_dependencies (task_id, depends_on) VALUES (?, ?)");
 			for (const edge of dependencies) insert.run(edge.taskId, edge.dependsOn);
-		})();
+		}).immediate();
 	}
 
 	transitionPlan(id: string, change: TaskPlanTransition): boolean {
@@ -1854,6 +2350,29 @@ export class MemoryStore {
 	releaseTaskPlanExecution(ownerKey: string, planId: string, holderId: string): boolean {
 		return this.db.prepare("DELETE FROM task_plan_execution_claims WHERE plan_id = ? AND owner_key = ? AND holder_id = ?")
 			.run(planId, ownerKey, holderId).changes === 1;
+	}
+
+	claimTaskVerification(ownerKey: string, taskId: string, holderId: string, leaseExpiresAt: number, now = Date.now()): boolean {
+		if (!ownerKey.trim() || !taskId.trim() || !holderId.trim() || leaseExpiresAt <= now) return false;
+		return this.db.prepare(`INSERT INTO task_verification_claims (task_id, owner_key, holder_id, lease_expires_at)
+			SELECT id, owner_key, ?, ? FROM tasks WHERE id = ? AND owner_key = ? AND status IN ('running', 'failed')
+				AND verification_outcome = 'unavailable' AND candidate_result IS NOT NULL
+			ON CONFLICT(task_id) DO UPDATE SET owner_key = excluded.owner_key, holder_id = excluded.holder_id, lease_expires_at = excluded.lease_expires_at
+			WHERE task_verification_claims.owner_key = excluded.owner_key
+				AND (task_verification_claims.holder_id = excluded.holder_id OR task_verification_claims.lease_expires_at <= ?)`)
+			.run(holderId, leaseExpiresAt, taskId, ownerKey, now).changes === 1;
+	}
+
+	renewTaskVerification(ownerKey: string, taskId: string, holderId: string, leaseExpiresAt: number, now = Date.now()): boolean {
+		if (leaseExpiresAt <= now) return false;
+		return this.db.prepare(`UPDATE task_verification_claims SET lease_expires_at = ?
+			WHERE task_id = ? AND owner_key = ? AND holder_id = ? AND lease_expires_at > ?`)
+			.run(leaseExpiresAt, taskId, ownerKey, holderId, now).changes === 1;
+	}
+
+	releaseTaskVerification(ownerKey: string, taskId: string, holderId: string): boolean {
+		return this.db.prepare("DELETE FROM task_verification_claims WHERE task_id = ? AND owner_key = ? AND holder_id = ?")
+			.run(taskId, ownerKey, holderId).changes === 1;
 	}
 
 	private backfillTaskPlans(id?: string): void {
@@ -1892,7 +2411,7 @@ export class MemoryStore {
 	advanceTaskRoute(ownerKey: string, taskId: string, error: string, now = Date.now()): boolean {
 		return this.db.prepare(`UPDATE tasks SET status = 'pending', started_at = NULL, finished_at = NULL, error = ?, route_index = route_index + 1,
 			verification_outcome = CASE WHEN acceptance_criteria IS NULL THEN NULL ELSE 'pending' END, verification_feedback = NULL,
-			candidate_result = NULL, corrective_attempts = 0, updated_at = ?
+			criterion_verifications = NULL, candidate_result = NULL, corrective_attempts = 0, updated_at = ?
 			WHERE id = ? AND owner_key = ? AND status = 'running' AND routes IS NOT NULL AND route_index + 1 < json_array_length(routes)`)
 			.run(redactCredentialMaterial(`Route failed; switching strategy: ${error}`.slice(0, 5_000)), now, taskId, ownerKey).changes === 1;
 	}
@@ -1911,9 +2430,10 @@ export class MemoryStore {
 
 	reconcileExpiredTaskRuns(now = Date.now(), effects?: TaskRunEffectStateReader): TaskRecoveryResult {
 		return this.db.transaction(() => {
-			const rows = this.db.prepare(`SELECT r.id AS run_id, r.task_id, t.owner_key, t.plan_id, t.recovery_policy, t.idempotency_key, t.effect_receipts
+			const rows = this.db.prepare(`SELECT r.id AS run_id, r.task_id, t.owner_key, t.plan_id, t.recovery_policy, t.idempotency_key, t.effect_receipts,
+				t.verification_outcome, t.candidate_result, t.acceptance_criteria
 				FROM task_runs r JOIN tasks t ON t.id = r.task_id
-				WHERE r.status = 'running' AND r.lease_expires_at IS NOT NULL AND r.lease_expires_at <= ?`).all(now) as Array<{ run_id: string; task_id: string; owner_key: string; plan_id: string | null; recovery_policy: string; idempotency_key: string | null; effect_receipts: string | null }>;
+				WHERE r.status = 'running' AND r.lease_expires_at IS NOT NULL AND r.lease_expires_at <= ?`).all(now) as Array<{ run_id: string; task_id: string; owner_key: string; plan_id: string | null; recovery_policy: string; idempotency_key: string | null; effect_receipts: string | null; verification_outcome: RuntimeTaskRecord["verificationStatus"] | null; candidate_result: string | null; acceptance_criteria: string | null }>;
 			let retried = 0; let failed = 0;
 			const affectedPlans = new Map<string, { ownerKey: string; planId: string }>();
 			const reason = "Task Run interrupted after its Execution Lease expired";
@@ -1927,7 +2447,14 @@ export class MemoryStore {
 					: !legacyEffectState!.readable ? `${reason}; automatic replay blocked because durable Effect Receipts are unreadable`
 						: replayBlocked ? `${reason}; automatic replay blocked by durable Effect Receipt` : reason;
 				this.db.prepare("UPDATE task_runs SET status = 'failed', finished_at = ?, error = ? WHERE id = ? AND status = 'running'").run(now, taskReason, row.run_id);
-				if (row.recovery_policy === "safe_retry" && row.idempotency_key && !replayBlocked) {
+				const interruptedVerification = row.candidate_result !== null && row.acceptance_criteria !== null && (row.verification_outcome === "pending" || row.verification_outcome === "unavailable");
+				if (interruptedVerification) {
+					const criterionVerifications = safeCriterionVerifications(unavailableTaskCriterionVerifications(row.acceptance_criteria ?? undefined, taskReason));
+					const changed = this.db.prepare(`UPDATE tasks SET status = 'running', finished_at = NULL, verification_outcome = 'unavailable',
+						criterion_verifications = ?, verification_retry_at = ?, error = ?, updated_at = ? WHERE id = ? AND status = 'running'`)
+						.run(criterionVerifications, now, taskReason, now, row.task_id).changes;
+					retried += changed;
+				} else if (row.recovery_policy === "safe_retry" && row.idempotency_key && !replayBlocked) {
 					const changed = this.db.prepare("UPDATE tasks SET status = 'pending', started_at = NULL, finished_at = NULL, result = NULL, candidate_result = NULL, error = ?, updated_at = ? WHERE id = ? AND status = 'running'").run(taskReason, now, row.task_id).changes;
 					retried += changed;
 				} else {
@@ -1976,19 +2503,29 @@ export class MemoryStore {
 	resolveCandidateVerification(ownerKeys: string[], taskId: string, resolution: TaskCandidateVerificationResolution, now = Date.now()): boolean {
 		if (!ownerKeys.length || !taskId.trim()) return false;
 		return this.db.transaction(() => {
-			const row = this.db.prepare(`SELECT plan_id FROM tasks WHERE id = ? AND owner_key IN (${ownerKeys.map(() => "?").join(", ")})
-				AND status IN ('running', 'failed') AND verification_outcome = 'unavailable' AND candidate_result IS NOT NULL`).get(taskId, ...ownerKeys) as { plan_id: string | null } | undefined;
+			const row = this.db.prepare(`SELECT owner_key, kind, plan_id, candidate_result FROM tasks WHERE id = ? AND owner_key IN (${ownerKeys.map(() => "?").join(", ")})
+				AND status IN ('running', 'failed') AND verification_outcome = 'unavailable' AND candidate_result IS NOT NULL`).get(taskId, ...ownerKeys) as { owner_key: string; kind: RuntimeTaskRecord["kind"]; plan_id: string | null; candidate_result: string } | undefined;
 			if (!row) return false;
-			const changed = resolution.accepted
-				? this.db.prepare(`UPDATE tasks SET status = 'succeeded', result = candidate_result, candidate_result = NULL, evidence = COALESCE(?, evidence),
-					verification_outcome = 'accepted', verification_feedback = NULL, verification_retry_at = NULL, error = NULL, finished_at = ?, updated_at = ?
-					WHERE id = ? AND status IN ('running', 'failed') AND verification_outcome = 'unavailable' AND candidate_result IS NOT NULL`).run(resolution.evidence ?? null, now, now, taskId).changes
-				: this.db.prepare(`UPDATE tasks SET status = 'failed', finished_at = ?, verification_outcome = 'rejected', verification_feedback = ?, verification_retry_at = NULL, error = ?, updated_at = ?
+			const criterionVerifications = safeCriterionVerifications(resolution.criterionVerifications);
+			const directObjectiveAccepted = resolution.accepted && row.kind === "objective" && row.plan_id === null;
+			const latestSucceededRun = directObjectiveAccepted ? this.latestSucceededObjectiveRun(taskId) : undefined;
+			if (directObjectiveAccepted && latestSucceededRun?.output !== row.candidate_result) return false;
+			const changed = directObjectiveAccepted
+				? this.db.prepare(`UPDATE tasks SET status = 'running', evidence = COALESCE(?, evidence), verification_outcome = 'accepted',
+					verification_feedback = NULL, criterion_verifications = ?, verification_retry_at = NULL, error = NULL, finished_at = NULL, updated_at = ?
 					WHERE id = ? AND status IN ('running', 'failed') AND verification_outcome = 'unavailable' AND candidate_result IS NOT NULL`)
-					.run(now, resolution.feedback.slice(0, 5_000), `Task verification rejected: ${resolution.feedback}`.slice(0, 5_000), now, taskId).changes;
+					.run(safeTaskText(resolution.evidence), criterionVerifications, now, taskId).changes
+				: resolution.accepted
+				? this.db.prepare(`UPDATE tasks SET status = 'succeeded', result = candidate_result, candidate_result = NULL, evidence = COALESCE(?, evidence),
+					verification_outcome = 'accepted', verification_feedback = NULL, criterion_verifications = ?, verification_retry_at = NULL, error = NULL, finished_at = ?, updated_at = ?
+					WHERE id = ? AND status IN ('running', 'failed') AND verification_outcome = 'unavailable' AND candidate_result IS NOT NULL`).run(safeTaskText(resolution.evidence), criterionVerifications, now, now, taskId).changes
+				: this.db.prepare(`UPDATE tasks SET status = 'failed', finished_at = ?, verification_outcome = 'rejected', verification_feedback = ?, criterion_verifications = ?, verification_retry_at = NULL, error = ?, updated_at = ?
+					WHERE id = ? AND status IN ('running', 'failed') AND verification_outcome = 'unavailable' AND candidate_result IS NOT NULL`)
+					.run(now, safeTaskText(resolution.feedback.slice(0, 5_000)), criterionVerifications, safeTaskText(`Task verification rejected: ${resolution.feedback}`.slice(0, 5_000)), now, taskId).changes;
 			if (changed && row.plan_id) this.syncTaskPlanAfterCandidateVerification(row.plan_id, now);
+			if (changed && directObjectiveAccepted && !this.enqueueObjectiveCompletion(row.owner_key, taskId, now)) throw new Error(`Objective ${taskId} could not enter the durable Completion Outbox`);
 			return changed === 1;
-		})();
+		}).immediate();
 	}
 
 	prepareTaskCorrections(maxCorrectiveAttempts: number, now = Date.now()): number {
@@ -2008,6 +2545,231 @@ export class MemoryStore {
 			for (const planId of planIds) this.syncTaskPlan(planId, "pending", now, true);
 			return changed;
 		})();
+	}
+
+	settleDirectObjectiveCompletion(settlement: DirectObjectiveCompletionSettlement, now = Date.now()): boolean {
+		const candidateResult = safeTaskText(settlement.candidateResult)?.slice(0, 50_000);
+		const evidence = safeTaskText(settlement.evidence);
+		const criterionVerifications = safeCriterionVerifications(settlement.criterionVerifications);
+		const artifacts = safeTaskArtifacts(settlement.artifacts);
+		if (!settlement.ownerKey.trim() || !settlement.objectiveId.trim() || !settlement.taskRunId.trim() || !candidateResult?.trim() || !Number.isFinite(now)) return false;
+		const rollback = Symbol("direct Objective completion settlement rejected");
+		try {
+			return this.db.transaction(() => {
+				const objective = this.db.prepare(`SELECT id, owner_key, plan_id, title, execution_scope FROM tasks
+					WHERE id = ? AND owner_key = ? AND kind = 'objective' AND status = 'running'`).get(settlement.objectiveId, settlement.ownerKey) as {
+					id: string; owner_key: string; plan_id: string | null; title: string; execution_scope: string | null;
+				} | undefined;
+				if (!objective || !parseExecutionScope(objective.execution_scope)) return false;
+				const runChanged = this.db.prepare(`UPDATE task_runs SET status = 'succeeded', finished_at = ?, output = ?, error = NULL
+					WHERE id = ? AND task_id = ? AND status = 'running' AND cancellation_requested_at IS NULL
+					AND lease_expires_at IS NOT NULL AND lease_expires_at > ?`).run(now, candidateResult, settlement.taskRunId, settlement.objectiveId, now).changes;
+				if (runChanged !== 1) return false;
+				const objectiveChanged = this.db.prepare(`UPDATE tasks SET status = 'running', candidate_result = ?, evidence = COALESCE(?, evidence), artifacts = COALESCE(?, artifacts),
+					verification_outcome = 'accepted', verification_feedback = NULL, criterion_verifications = ?, corrective_attempts = COALESCE(?, corrective_attempts),
+					verification_retry_at = NULL, error = NULL, finished_at = NULL, updated_at = ?
+					WHERE id = ? AND owner_key = ? AND kind = 'objective' AND status = 'running'`)
+					.run(candidateResult, evidence, artifacts, criterionVerifications, settlement.correctiveAttempts ?? null, now, settlement.objectiveId, settlement.ownerKey).changes;
+				if (objectiveChanged !== 1) throw rollback;
+				if (!this.enqueueObjectiveCompletion(settlement.ownerKey, settlement.objectiveId, now, settlement.notBefore ?? now, settlement.taskRunId)) throw rollback;
+				return true;
+			}).immediate();
+		} catch (error) {
+			if (error === rollback) return false;
+			throw error;
+		}
+	}
+
+	enqueueObjectiveCompletion(ownerKey: string, objectiveId: string, now = Date.now(), notBefore = now, boundTaskRunId?: string): boolean {
+		if (!ownerKey.trim() || !objectiveId.trim()) return false;
+		const task = this.db.prepare(`SELECT id, owner_key, plan_id, title, candidate_result, evidence, execution_scope FROM tasks
+			WHERE id = ? AND owner_key = ? AND kind = 'objective' AND status = 'running'
+			AND verification_outcome = 'accepted' AND candidate_result IS NOT NULL`).get(objectiveId, ownerKey) as {
+			id: string; owner_key: string; plan_id: string | null; title: string; candidate_result: string; evidence: string | null; execution_scope: string | null;
+		} | undefined;
+		if (!task) return false;
+		const authoritativeRun = boundTaskRunId
+			? this.db.prepare("SELECT id, output FROM task_runs WHERE id = ? AND task_id = ? AND status = 'succeeded' AND output = ?").get(boundTaskRunId, task.id, task.candidate_result) as { id: string; output: string | null } | undefined
+			: this.latestSucceededObjectiveRun(task.id);
+		if (!authoritativeRun || authoritativeRun.output !== task.candidate_result) return false;
+		const target = parseExecutionScope(task.execution_scope);
+		if (!target?.platform || !target.chatId || !task.candidate_result.trim()) return false;
+		const id = objectiveCompletionId(task.id);
+		const deliveryIdempotencyKey = target.originMessageId
+			? interactionCompletionDeliveryKey(this.profileId, target, target.originMessageId)
+			: id;
+		const inserted = this.db.prepare(`INSERT OR IGNORE INTO objective_completion_outbox
+			(id, objective_id, task_run_id, owner_key, plan_id, platform, channel_instance_id, chat_id, chat_type, user_id, thread_id, reply_to_message_id, title, result, evidence, delivery_idempotency_key, status, attempts, next_attempt_at, created_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', 0, ?, ?)`).run(
+			id, task.id, authoritativeRun.id, task.owner_key, task.plan_id, target.platform, target.channelInstanceId ?? null, target.chatId, target.chatType ?? null,
+			target.userId ?? null, target.threadId ?? null, target.replyToMessageId ?? null, task.title, task.candidate_result.slice(0, 50_000), task.evidence, deliveryIdempotencyKey, Math.max(now, notBefore), now,
+		).changes === 1;
+		if (inserted) return true;
+		const existing = this.db.prepare("SELECT objective_id, task_run_id, owner_key, result, platform, channel_instance_id, chat_id, thread_id, reply_to_message_id, delivery_idempotency_key FROM objective_completion_outbox WHERE id = ?").get(id) as {
+			objective_id: string; task_run_id: string | null; owner_key: string; result: string; platform: string; channel_instance_id: string | null; chat_id: string; thread_id: string | null; reply_to_message_id: string | null; delivery_idempotency_key: string;
+		} | undefined;
+		const samePayload = existing?.objective_id === task.id && existing.owner_key === task.owner_key && existing.result === task.candidate_result.slice(0, 50_000)
+			&& existing.platform === target.platform && existing.channel_instance_id === (target.channelInstanceId ?? null) && existing.chat_id === target.chatId && existing.thread_id === (target.threadId ?? null)
+			&& existing.reply_to_message_id === (target.replyToMessageId ?? null) && existing.delivery_idempotency_key === deliveryIdempotencyKey;
+		if (!samePayload) return false;
+		if (existing!.task_run_id === authoritativeRun.id) return true;
+		if (existing!.task_run_id !== null) return false;
+		return this.db.prepare("UPDATE objective_completion_outbox SET task_run_id = ? WHERE id = ? AND task_run_id IS NULL AND result = ?")
+			.run(authoritativeRun.id, id, task.candidate_result.slice(0, 50_000)).changes === 1;
+	}
+
+	private latestSucceededObjectiveRun(objectiveId: string): { id: string; output: string | null } | undefined {
+		return this.db.prepare(`SELECT id, output FROM task_runs WHERE task_id = ? AND status = 'succeeded'
+			ORDER BY COALESCE(finished_at, started_at) DESC, started_at DESC, id DESC LIMIT 1`).get(objectiveId) as { id: string; output: string | null } | undefined;
+	}
+
+	private objectiveCompletionLineageIsCurrent(id: string): boolean {
+		return Boolean(this.db.prepare(`SELECT 1 FROM objective_completion_outbox outbox
+			JOIN tasks objective ON objective.id = outbox.objective_id AND objective.owner_key = outbox.owner_key
+			JOIN task_runs run ON run.id = outbox.task_run_id AND run.task_id = objective.id
+			WHERE outbox.id = ? AND objective.status = 'running' AND objective.verification_outcome = 'accepted'
+			AND objective.candidate_result = outbox.result AND run.status = 'succeeded' AND run.output = outbox.result`).get(id));
+	}
+
+	getObjectiveCompletion(id: string): ObjectiveCompletion | undefined {
+		if (!id.trim()) return undefined;
+		const row = this.db.prepare("SELECT * FROM objective_completion_outbox WHERE id = ?").get(id) as ObjectiveCompletionRow | undefined;
+		return row?.task_run_id ? mapObjectiveCompletion(row) : undefined;
+	}
+
+	claimObjectiveCompletions(platform: string, now = Date.now(), limit = 10, leaseMs = 5 * 60_000): ObjectiveCompletion[] {
+		if (!platform.trim()) return [];
+		return this.db.transaction(() => {
+			for (const row of this.db.prepare(`SELECT owner_key, id FROM tasks WHERE kind = 'objective' AND status = 'running'
+				AND verification_outcome = 'accepted' AND candidate_result IS NOT NULL AND execution_scope IS NOT NULL`).all() as Array<{ owner_key: string; id: string }>) {
+				this.enqueueObjectiveCompletion(row.owner_key, row.id, now);
+			}
+			const rows = this.db.prepare(`SELECT outbox.id FROM objective_completion_outbox outbox
+				JOIN tasks objective ON objective.id = outbox.objective_id AND objective.owner_key = outbox.owner_key
+				JOIN task_runs run ON run.id = outbox.task_run_id AND run.task_id = objective.id AND run.status = 'succeeded'
+				WHERE outbox.platform = ? AND outbox.status IN ('queued', 'delivering') AND outbox.next_attempt_at <= ? AND objective.status = 'running'
+				AND objective.verification_outcome = 'accepted' AND objective.candidate_result = outbox.result AND run.output = outbox.result
+				ORDER BY outbox.next_attempt_at, outbox.created_at LIMIT ?`).all(platform, now, limitOf(limit, 10)) as Array<{ id: string }>;
+			return rows.flatMap((row) => {
+				const claimToken = crypto.randomUUID();
+				const claimed = this.db.prepare(`UPDATE objective_completion_outbox
+					SET status = 'delivering', claim_token = ?, attempts = attempts + 1, next_attempt_at = ?
+					WHERE id = ? AND status IN ('queued', 'delivering') AND next_attempt_at <= ?
+					AND EXISTS (SELECT 1 FROM tasks objective JOIN task_runs run ON run.id = objective_completion_outbox.task_run_id
+						WHERE objective.id = objective_completion_outbox.objective_id AND objective.owner_key = objective_completion_outbox.owner_key
+						AND objective.status = 'running' AND objective.verification_outcome = 'accepted' AND objective.candidate_result = objective_completion_outbox.result
+						AND run.task_id = objective.id AND run.status = 'succeeded' AND run.output = objective_completion_outbox.result)
+					RETURNING *`).get(claimToken, now + Math.max(1, leaseMs), row.id, now) as ObjectiveCompletionRow | undefined;
+				return claimed ? [mapObjectiveCompletion(claimed)] : [];
+			});
+		})();
+	}
+
+	completeObjectiveCompletion(id: string, claimToken: string, receipt: DeliveryReceipt, now = Date.now()): boolean {
+		return this.settleObjectiveCompletion(id, receipt, now, claimToken);
+	}
+
+	recordObjectiveCompletionReceipt(id: string, receipt: DeliveryReceipt, _now = Date.now()): boolean {
+		if (!id.trim() || !receipt.idempotencyKey.trim() || !Number.isFinite(receipt.deliveredAt) || receipt.deliveredAt < 0) return false;
+		return this.db.transaction(() => {
+			const row = this.db.prepare("SELECT objective_id, status, delivery_idempotency_key, receipt_idempotency_key, receipt_delivered_at, receipt_provider_message_id FROM objective_completion_outbox WHERE id = ?").get(id) as {
+				objective_id: string; status: ObjectiveCompletion["status"]; delivery_idempotency_key: string; receipt_idempotency_key: string | null; receipt_delivered_at: number | null; receipt_provider_message_id: string | null;
+			} | undefined;
+			if (!row || row.delivery_idempotency_key !== receipt.idempotencyKey) return false;
+			if (row.receipt_idempotency_key) return row.receipt_idempotency_key === receipt.idempotencyKey
+				&& row.receipt_delivered_at === Math.trunc(receipt.deliveredAt) && row.receipt_provider_message_id === (receipt.providerMessageId ?? null);
+			if (row.status === "blocked") {
+				if (!this.objectiveCompletionLineageIsCurrent(id)) {
+					const objective = this.db.prepare("SELECT status FROM tasks WHERE id = ?").get(row.objective_id) as { status: RuntimeTaskRecord["status"] } | undefined;
+					if (objective?.status !== "cancelled") return false;
+				}
+			} else if (!this.objectiveCompletionLineageIsCurrent(id)) return false;
+			return this.db.prepare(`UPDATE objective_completion_outbox SET receipt_idempotency_key = ?, receipt_delivered_at = ?, receipt_provider_message_id = ?
+				WHERE id = ? AND receipt_idempotency_key IS NULL`).run(receipt.idempotencyKey, Math.trunc(receipt.deliveredAt), receipt.providerMessageId ?? null, id).changes === 1;
+		}).immediate();
+	}
+
+	isObjectiveCompletionCancelledAfterDelivery(id: string, receipt: DeliveryReceipt): boolean {
+		if (!id.trim() || !receipt.idempotencyKey.trim() || !Number.isFinite(receipt.deliveredAt) || receipt.deliveredAt < 0) return false;
+		return Boolean(this.db.prepare(`SELECT 1 FROM objective_completion_outbox outbox
+			JOIN tasks objective ON objective.id = outbox.objective_id AND objective.owner_key = outbox.owner_key
+			WHERE outbox.id = ? AND outbox.status = 'blocked' AND objective.status = 'cancelled'
+			AND outbox.delivery_idempotency_key = ? AND outbox.receipt_idempotency_key = ?
+			AND outbox.receipt_delivered_at = ? AND outbox.receipt_provider_message_id IS ?`).get(
+			id, receipt.idempotencyKey, receipt.idempotencyKey, Math.trunc(receipt.deliveredAt), receipt.providerMessageId ?? null,
+		));
+	}
+
+	acknowledgeObjectiveCompletion(id: string, receipt: DeliveryReceipt, now = Date.now()): boolean {
+		return this.settleObjectiveCompletion(id, receipt, now);
+	}
+
+	private settleObjectiveCompletion(id: string, receipt: DeliveryReceipt, now: number, claimToken?: string): boolean {
+		if (!id.trim() || !receipt.idempotencyKey.trim() || !Number.isFinite(receipt.deliveredAt) || receipt.deliveredAt < 0) return false;
+		return this.db.transaction(() => {
+			const row = this.db.prepare("SELECT objective_id, result, status, claim_token, delivery_idempotency_key, receipt_idempotency_key FROM objective_completion_outbox WHERE id = ?").get(id) as {
+				objective_id: string; result: string; status: ObjectiveCompletion["status"]; claim_token: string | null; delivery_idempotency_key: string; receipt_idempotency_key: string | null;
+			} | undefined;
+			if (!row) return false;
+			if (receipt.idempotencyKey !== row.delivery_idempotency_key) return false;
+			if (row.status === "delivered") return row.receipt_idempotency_key === receipt.idempotencyKey;
+			if (row.status === "blocked") {
+				const objective = this.db.prepare("SELECT status FROM tasks WHERE id = ?").get(row.objective_id) as { status: RuntimeTaskRecord["status"] } | undefined;
+				if (objective?.status !== "cancelled") return false;
+				return this.recordObjectiveCompletionReceipt(id, receipt, now);
+			}
+			if (claimToken !== undefined && (row.status !== "delivering" || row.claim_token !== claimToken)) return false;
+			if (!this.objectiveCompletionLineageIsCurrent(id)) return false;
+			const outboxChanged = this.db.prepare(`UPDATE objective_completion_outbox SET status = 'delivered', claim_token = NULL,
+				receipt_idempotency_key = ?, receipt_delivered_at = ?, receipt_provider_message_id = ?, last_error = NULL
+				WHERE id = ? AND status IN ('queued', 'delivering')`).run(receipt.idempotencyKey, Math.trunc(receipt.deliveredAt), receipt.providerMessageId ?? null, id).changes;
+			if (outboxChanged !== 1) return false;
+			const taskChanged = this.db.prepare(`UPDATE tasks SET status = 'succeeded', result = ?, candidate_result = NULL, finished_at = ?, error = NULL, updated_at = ?
+				WHERE id = ? AND kind = 'objective' AND status = 'running' AND verification_outcome = 'accepted'`).run(row.result, now, now, row.objective_id).changes;
+			if (taskChanged === 1) return true;
+			const terminal = this.db.prepare("SELECT status, result FROM tasks WHERE id = ?").get(row.objective_id) as { status: string; result: string | null } | undefined;
+			if (terminal?.status === "succeeded" && terminal.result === row.result) return true;
+			throw new Error(`Objective ${row.objective_id} could not reach a Terminal Outcome after delivery acknowledgement`);
+		}).immediate();
+	}
+
+	renewObjectiveCompletion(id: string, claimToken: string, leaseExpiresAt: number, now = Date.now()): boolean {
+		if (!Number.isFinite(leaseExpiresAt) || !Number.isFinite(now) || leaseExpiresAt <= now) return false;
+		return this.db.transaction(() => this.db.prepare(`UPDATE objective_completion_outbox SET next_attempt_at = ?
+			WHERE id = ? AND status = 'delivering' AND claim_token = ? AND next_attempt_at > ? AND next_attempt_at < ?
+			AND EXISTS (SELECT 1 FROM tasks objective JOIN task_runs run ON run.id = objective_completion_outbox.task_run_id
+				WHERE objective.id = objective_completion_outbox.objective_id AND objective.owner_key = objective_completion_outbox.owner_key
+				AND objective.status = 'running' AND objective.verification_outcome = 'accepted' AND objective.candidate_result = objective_completion_outbox.result
+				AND run.task_id = objective.id AND run.status = 'succeeded' AND run.output = objective_completion_outbox.result)`)
+			.run(leaseExpiresAt, id, claimToken, now, leaseExpiresAt).changes === 1).immediate();
+	}
+
+	failObjectiveCompletion(id: string, claimToken: string, now = Date.now()): boolean {
+		return this.db.transaction(() => {
+			if (!this.objectiveCompletionLineageIsCurrent(id)) return false;
+			const row = this.db.prepare("SELECT attempts FROM objective_completion_outbox WHERE id = ? AND status = 'delivering' AND claim_token = ?").get(id, claimToken) as { attempts: number } | undefined;
+			if (!row) return false;
+			const delay = Math.min(60 * 60_000, 30_000 * (2 ** Math.min(Math.max(0, row.attempts - 1), 7)));
+			return this.db.prepare("UPDATE objective_completion_outbox SET status = 'queued', claim_token = NULL, next_attempt_at = ? WHERE id = ? AND status = 'delivering' AND claim_token = ?")
+				.run(now + delay, id, claimToken).changes === 1;
+		}).immediate();
+	}
+
+	deferObjectiveCompletion(id: string, claimToken: string, retryAt: number, now = Date.now()): boolean {
+		const boundedRetryAt = Math.max(now + 1_000, Math.min(retryAt, now + 7 * 24 * 60 * 60_000));
+		return this.db.transaction(() => {
+			if (!this.objectiveCompletionLineageIsCurrent(id)) return false;
+			return this.db.prepare("UPDATE objective_completion_outbox SET status = 'queued', attempts = MAX(0, attempts - 1), claim_token = NULL, next_attempt_at = ?, last_error = NULL WHERE id = ? AND status = 'delivering' AND claim_token = ?")
+				.run(boundedRetryAt, id, claimToken).changes === 1;
+		}).immediate();
+	}
+
+	blockObjectiveCompletion(id: string, claimToken: string, error: string, now = Date.now()): boolean {
+		return this.db.transaction(() => {
+			if (!this.objectiveCompletionLineageIsCurrent(id)) return false;
+			return this.db.prepare("UPDATE objective_completion_outbox SET status = 'blocked', claim_token = NULL, blocked_at = ?, last_error = ? WHERE id = ? AND status = 'delivering' AND claim_token = ?")
+				.run(now, redactCredentialMaterial(error).slice(0, 5_000), id, claimToken).changes === 1;
+		}).immediate();
 	}
 
 	enqueueTaskPlanCompletionNotice(ownerKey: string, planId: string, now = Date.now()): boolean {
@@ -2288,6 +3050,13 @@ export class MemoryStore {
 		})();
 	}
 
+	renewInitiativeTrigger(id: string, claimToken: string, leaseExpiresAt: number): boolean {
+		if (!Number.isFinite(leaseExpiresAt) || leaseExpiresAt <= Date.now()) return false;
+		return this.db.prepare(`UPDATE initiative_triggers SET claim_expires_at = ?, updated_at = ?
+			WHERE id = ? AND profile_id = ? AND status = 'processing' AND claim_token = ?`)
+			.run(Math.trunc(leaseExpiresAt), Date.now(), id, this.profileId, claimToken).changes === 1;
+	}
+
 	completeInitiativeTrigger(id: string, claimToken: string, outcome: { decision: "observed" | "ignored"; observationId?: string; notificationRequired: boolean }): boolean {
 		const row = this.db.prepare("SELECT notification_required, delivery_target FROM initiative_triggers WHERE id = ? AND profile_id = ? AND status = 'processing' AND claim_token = ?")
 			.get(id, this.profileId, claimToken) as { notification_required: number; delivery_target: string | null } | undefined;
@@ -2447,7 +3216,7 @@ export class MemoryStore {
 
 }
 
-export type OrganizationMemoryPort = Pick<MemoryStore, "upsertEpisode" | "episodeForObjective" | "listEpisodes" | "recallEpisodes" | "recallOrganizationKnowledge" | "upsertConventionCandidate" | "getConventionCandidate" | "listConventionCandidates" | "confirmConventionCandidate" | "rejectConventionCandidate" | "supersedeConventionCandidate" | "rollbackConventionCandidate" | "explainConventionCandidate" | "upsertWorkflowCandidate" | "getWorkflowCandidate" | "listWorkflowCandidates" | "editWorkflowCandidate" | "rejectWorkflowCandidate" | "supersedeWorkflowCandidate" | "archiveWorkflowCandidate" | "explainWorkflowCandidate" | "stageWorkflowSkillCandidate" | "authorizeWorkflowSkillPromotion" | "upsertClaim" | "recordException" | "markClaimsConflicted" | "correctClaim" | "revokeClaim" | "forgetClaim" | "listClaims" | "recallBrief" | "explainClaim">;
+export type OrganizationMemoryPort = Pick<MemoryStore, "upsertEpisode" | "upsertVerifiedEpisodeAndSignal" | "episodeForObjective" | "listEpisodes" | "recallEpisodes" | "recallOrganizationKnowledge" | "upsertConventionCandidate" | "getConventionCandidate" | "listConventionCandidates" | "confirmConventionCandidate" | "rejectConventionCandidate" | "supersedeConventionCandidate" | "rollbackConventionCandidate" | "explainConventionCandidate" | "upsertWorkflowCandidate" | "getWorkflowCandidate" | "listWorkflowCandidates" | "editWorkflowCandidate" | "rejectWorkflowCandidate" | "supersedeWorkflowCandidate" | "archiveWorkflowCandidate" | "explainWorkflowCandidate" | "stageWorkflowSkillCandidate" | "authorizeWorkflowSkillPromotion" | "upsertClaim" | "recordException" | "markClaimsConflicted" | "correctClaim" | "revokeClaim" | "forgetClaim" | "listClaims" | "recallBrief" | "explainClaim">;
 export type InitiativeObservationPort = InitiativeObservationStore & Pick<MemoryStore, "listInitiativeObservations" | "reviewInitiativeObservation" | "initiativeEvaluation">;
 export type InitiativeTriggerInboxPort = InitiativeTriggerInbox & Pick<MemoryStore, "getInitiativeTrigger" | "attachInitiativeTriggerRoute">;
 export type ReversibleActionControls = ReversibleActionControlPort;
@@ -2455,7 +3224,7 @@ export type AutonomyRolloutStore = AutonomyRolloutStateStore;
 export type ConversationMemoryStore = ConversationMemoryPort;
 export type DurableTaskLedger = TaskLedger;
 export type TaskRecoveryQueue = Pick<TaskLedger, "reconcileExpiredTaskRuns" | "recoveryCandidates" | "verificationCandidates" | "deferCandidateVerification" | "resolveCandidateVerification" | "prepareTaskCorrections" | "prepareTaskPlanRetry">;
-export type CompletionOutbox = TaskPlanNoticeOutbox;
+export type CompletionOutbox = TaskPlanNoticeOutbox & ObjectiveCompletionOutbox & Required<Pick<TaskLedger, "getObjectiveCompletion" | "acknowledgeObjectiveCompletion">>;
 export interface MemoryPersistencePorts {
 	organizationMemory: OrganizationMemoryPort;
 	conversationMemory: ConversationMemoryStore;
@@ -2466,11 +3235,13 @@ export interface MemoryPersistencePorts {
 	initiativeTriggerInbox: InitiativeTriggerInboxPort;
 	reversibleActionControls: ReversibleActionControls;
 	autonomyRollout: AutonomyRolloutStore;
+	memoryLearningAuthority: MemoryLearningAuthorityPort;
+	managedSkillLearning: ManagedSkillLearningPort;
 }
 
 /** Typed capability views over one SQLite authority; no wrapper owns state. */
 export function memoryPersistencePorts(store: MemoryStore): MemoryPersistencePorts {
-	return { organizationMemory: store, conversationMemory: store, taskLedger: store, recoveryQueue: store, completionOutbox: store, initiativeObservations: store, initiativeTriggerInbox: store, reversibleActionControls: store, autonomyRollout: store };
+	return { organizationMemory: store, conversationMemory: store, taskLedger: store, recoveryQueue: store, completionOutbox: store, initiativeObservations: store, initiativeTriggerInbox: store, reversibleActionControls: store, autonomyRollout: store, memoryLearningAuthority: store.memoryLearningAuthority, managedSkillLearning: store.memoryLearningAuthority };
 }
 
 export async function backupSqliteDatabase(sourcePath: string, destinationPath: string): Promise<void> {
@@ -2535,6 +3306,7 @@ function parseEnterprisePublisher(encoded: string | null): EnterprisePolicyPubli
 
 const autonomyEvidenceKeys: readonly (keyof AutonomyRolloutEvidence)[] = [
 	"situationPrecision", "correctionRetention", "unauthorizedRetrievals", "verifiedCompletionRate",
+	"memoryPromotionPrecision", "scopedRecallAt5", "memoryAttributionAccuracy", "memoryDowngradePrecision", "memoryFalseDowngradeRate", "memoryNegativeTransferRate", "memoryProvenanceCoverage",
 	"initiativePrecision", "initiativeAverageExpectedValue", "duplicateInitiatives", "initiativeInterruptionRate",
 	"readOnlyPrecision", "readOnlyAdoptionRate", "readOnlyInterruptionRate", "duplicateReadOnlyObjectives",
 	"proactivePolicyScopeCoverage", "emergencyStopBlockRate", "compensationSuccessRate", "duplicateCompensations",
@@ -2622,8 +3394,8 @@ interface ClaimRow {
 }
 
 interface EpisodeRow {
-	id: string; profile_id: string; platform: string; chat_id: string; user_id: string | null; thread_id: string | null;
-	objective_id: string; situation: string; situation_summary: string; action: string; outcome: string; evidence: string | null;
+	id: string; profile_id: string; platform: string; chat_id: string; chat_type: string | null; user_id: string | null; thread_id: string | null; project_id: string | null; organization_id: string | null; visibility: OrganizationMemoryEpisode["visibility"];
+	objective_id: string; source_revision: number; situation: string; situation_summary: string; action: string; outcome: string; evidence: string | null;
 	status: OrganizationMemoryEpisodeStatus; created_at: number; updated_at: number;
 }
 
@@ -2697,14 +3469,14 @@ interface EventRow {
 }
 
 interface RuntimeTaskRow {
-	id: string; owner_key: string; kind: RuntimeTaskRecord["kind"]; title: string; description: string | null; acceptance_criteria: string | null; recovery_policy: RuntimeTaskRecord["recoveryPolicy"]; idempotency_key: string | null; execution_scope: string | null; situation: string | null; access_scope_ref: string | null; business_context: string | null; status: RuntimeTaskRecord["status"];
-	parent_id: string | null; plan_id: string | null; evidence: string | null; artifacts: string | null; unresolved_issues: string | null; verification_outcome: RuntimeTaskRecord["verificationStatus"] | null; verification_feedback: string | null; verification_attempts: number; verification_retry_at: number | null; corrective_attempts: number; created_at: number; started_at: number | null; finished_at: number | null; result: string | null; candidate_result: string | null; error: string | null;
+	id: string; owner_key: string; kind: RuntimeTaskRecord["kind"]; title: string; description: string | null; acceptance_criteria: string | null; recovery_policy: RuntimeTaskRecord["recoveryPolicy"]; idempotency_key: string | null; execution_scope: string | null; situation: string | null; access_scope_ref: string | null; work_contract: string | null; contract_admission: string | null; objective_revisions: string | null; business_context: string | null; status: RuntimeTaskRecord["status"];
+	parent_id: string | null; plan_id: string | null; evidence: string | null; artifacts: string | null; unresolved_issues: string | null; verification_outcome: RuntimeTaskRecord["verificationStatus"] | null; verification_feedback: string | null; verification_requirements: string | null; criterion_verifications: string | null; verification_attempts: number; verification_retry_at: number | null; corrective_attempts: number; created_at: number; started_at: number | null; finished_at: number | null; result: string | null; candidate_result: string | null; error: string | null;
 	checkpoint: string | null; checkpoint_at: number | null; routes: string | null; route_index: number; effect_receipts: string | null;
 }
 
 interface TaskRunRow {
 	id: string; task_id: string; executor: TaskRunRecord["executor"]; status: TaskRunRecord["status"];
-	started_at: number; lease_expires_at: number | null; finished_at: number | null; output: string | null; error: string | null;
+	started_at: number; lease_expires_at: number | null; cancellation_requested_at: number | null; finished_at: number | null; output: string | null; error: string | null;
 }
 
 interface TaskPlanRow {
@@ -2718,6 +3490,15 @@ interface TaskPlanCompletionNoticeRow {
 	id: string; plan_id: string; owner_key: string; platform: string; channel_instance_id: string | null; chat_id: string; chat_type: string | null; user_id: string | null; thread_id: string | null;
 	plan_status: TaskPlanCompletionNotice["planStatus"]; title: string; task_count: number; succeeded: number; failed: number; cancelled: number;
 	status: Exclude<TaskPlanCompletionNotice["status"], "abandoned">; claim_token: string | null; attempts: number; next_attempt_at: number; created_at: number; abandoned_at: number | null; last_error: string | null;
+}
+
+interface ObjectiveCompletionRow {
+	id: string; objective_id: string; task_run_id: string | null; owner_key: string; plan_id: string | null;
+	platform: string; channel_instance_id: string | null; chat_id: string; chat_type: string | null; user_id: string | null; thread_id: string | null; reply_to_message_id: string | null;
+	delivery_idempotency_key: string;
+	title: string; result: string; evidence: string | null; status: ObjectiveCompletion["status"]; claim_token: string | null;
+	attempts: number; next_attempt_at: number; receipt_idempotency_key: string | null; receipt_delivered_at: number | null;
+	receipt_provider_message_id: string | null; created_at: number; blocked_at: number | null; last_error: string | null;
 }
 
 function validChatType(value: string | null): DeliveryTarget["chatType"] {
@@ -2762,8 +3543,10 @@ function mapEpisode(row: EpisodeRow): OrganizationMemoryEpisode {
 	if (!situation) throw new Error(`Organization Memory Episode ${row.id} has an invalid Situation`);
 	return {
 		id: row.id, profileId: row.profile_id, platform: row.platform, chatId: row.chat_id,
+		...(validChatType(row.chat_type) ? { chatType: validChatType(row.chat_type) } : {}),
 		...(row.user_id ? { userId: row.user_id } : {}), ...(row.thread_id ? { threadId: row.thread_id } : {}),
-		objectiveId: row.objective_id, situation, action: row.action, outcome: row.outcome,
+		...(row.project_id ? { projectId: row.project_id } : {}), ...(row.organization_id ? { organizationId: row.organization_id } : {}), visibility: row.visibility,
+		objectiveId: row.objective_id, sourceRevision: row.source_revision, situation, action: row.action, outcome: row.outcome,
 		...(row.evidence ? { evidence: row.evidence } : {}), status: row.status, createdAt: row.created_at, updatedAt: row.updated_at,
 	};
 }
@@ -2839,9 +3622,14 @@ function mapRuntimeTask(row: RuntimeTaskRow): RuntimeTaskRecord {
 	const executionScope = parseExecutionScope(row.execution_scope);
 	const situation = parseSituation(row.situation);
 	const accessScopeRef = parseAccessScopeRef(row.access_scope_ref);
+	const workContract = parseStoredWorkContract(row.work_contract);
+	const contractAdmission = parseStoredContractAdmission(row.contract_admission);
+	const objectiveRevisions = parseStoredObjectiveRevisions(row.objective_revisions, row.id);
 	const businessContext = parseBusinessContext(row.business_context);
 	const artifacts = parseTaskArtifacts(row.artifacts);
 	const unresolvedIssues = parseUnresolvedIssues(row.unresolved_issues);
+	const verificationRequirements = parseVerificationRequirements(row.verification_requirements);
+	const criterionVerifications = parseCriterionVerifications(row.criterion_verifications);
 	return {
 		id: row.id, ownerKey: row.owner_key, kind: row.kind, title: row.title, status: row.status,
 		createdAt: row.created_at,
@@ -2852,6 +3640,9 @@ function mapRuntimeTask(row: RuntimeTaskRow): RuntimeTaskRecord {
 		...(executionScope ? { executionScope } : {}),
 		...(situation ? { situation } : {}),
 		...(accessScopeRef ? { accessScopeRef } : {}),
+		...(workContract ? { workContract } : {}),
+		...(contractAdmission ? { contractAdmission } : {}),
+		...(objectiveRevisions?.length ? { objectiveRevisions } : {}),
 		...(businessContext ? { businessContext } : {}),
 		...(row.parent_id === null ? {} : { parentId: row.parent_id }),
 		...(row.plan_id === null ? {} : { planId: row.plan_id }),
@@ -2860,6 +3651,8 @@ function mapRuntimeTask(row: RuntimeTaskRow): RuntimeTaskRecord {
 		...(unresolvedIssues ? { unresolvedIssues } : {}),
 		...(row.verification_outcome === null ? {} : { verificationStatus: row.verification_outcome }),
 		...(row.verification_feedback === null ? {} : { verificationFeedback: row.verification_feedback }),
+		...(verificationRequirements ? { verificationRequirements } : {}),
+		...(criterionVerifications ? { criterionVerifications } : {}),
 		...(row.verification_attempts ? { verificationAttempts: row.verification_attempts } : {}),
 		...(row.verification_retry_at === null ? {} : { verificationRetryAt: row.verification_retry_at }),
 		...(row.corrective_attempts ? { correctiveAttempts: row.corrective_attempts } : {}),
@@ -2884,6 +3677,20 @@ function mapTaskPlanCompletionNotice(row: TaskPlanCompletionNoticeRow): TaskPlan
 	};
 }
 
+function mapObjectiveCompletion(row: ObjectiveCompletionRow): ObjectiveCompletion {
+	const receipt = row.receipt_idempotency_key && row.receipt_delivered_at !== null
+		? { idempotencyKey: row.receipt_idempotency_key, deliveredAt: row.receipt_delivered_at, ...(row.receipt_provider_message_id ? { providerMessageId: row.receipt_provider_message_id } : {}) }
+		: undefined;
+	return {
+		id: row.id, objectiveId: row.objective_id, taskRunId: row.task_run_id!, ownerKey: row.owner_key, ...(row.plan_id ? { planId: row.plan_id } : {}),
+		target: { platform: row.platform, ...(row.channel_instance_id ? { channelInstanceId: row.channel_instance_id } : {}), chatId: row.chat_id, ...(validChatType(row.chat_type) ? { chatType: validChatType(row.chat_type) } : {}), ...(row.user_id ? { userId: row.user_id } : {}), ...(row.thread_id ? { threadId: row.thread_id } : {}), ...(row.reply_to_message_id ? { replyToMessageId: row.reply_to_message_id } : {}) },
+		deliveryIdempotencyKey: row.delivery_idempotency_key,
+		title: row.title, result: row.result, ...(row.evidence ? { evidence: row.evidence } : {}), status: row.status,
+		...(row.claim_token ? { claimToken: row.claim_token } : {}), attempts: row.attempts, nextAttemptAt: row.next_attempt_at, createdAt: row.created_at,
+		...(receipt ? { receipt } : {}), ...(row.blocked_at === null ? {} : { blockedAt: row.blocked_at }), ...(row.last_error ? { error: row.last_error } : {}),
+	};
+}
+
 function parseExecutionScope(value: string | null): RuntimeTaskRecord["executionScope"] {
 	if (!value) return undefined;
 	try {
@@ -2905,6 +3712,39 @@ function parseAccessScopeRef(value: string | null): RuntimeTaskRecord["accessSco
 		if (!ref || ref.trust !== "verified") return undefined;
 		return createAccessScopeRef(ref);
 	} catch { return undefined; }
+}
+
+function parseStoredWorkContract(value: string | null): RuntimeTaskRecord["workContract"] {
+	if (!value || value.length > 250_000 || containsCredentialMaterial(value)) return undefined;
+	try { return decodeStoredWorkContract(JSON.parse(value)); }
+	catch { return undefined; }
+}
+
+function parseStoredObjectiveRevisions(value: string | null, taskId: string): RuntimeTaskRecord["objectiveRevisions"] {
+	if (!value || value.length > 1_000_000 || containsCredentialMaterial(value)) return undefined;
+	try {
+		const parsed = JSON.parse(value) as unknown;
+		if (!Array.isArray(parsed) || parsed.length > MAX_OBJECTIVE_REVISIONS) return undefined;
+		const revisions = parsed.map((entry) => parseStoredObjectiveRevision(entry, taskId));
+		if (revisions.some((entry) => !entry)) return undefined;
+		return revisions as NonNullable<RuntimeTaskRecord["objectiveRevisions"]>;
+	} catch { return undefined; }
+}
+
+function parseStoredObjectiveRevision(value: unknown, taskId: string): NonNullable<RuntimeTaskRecord["objectiveRevisions"]>[number] | undefined {
+	if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+	const candidate = value as Record<string, unknown>;
+	const rawWorkContract = candidate.workContract && typeof candidate.workContract === "object" && !Array.isArray(candidate.workContract)
+		&& (candidate.workContract as Record<string, unknown>).action === "correct" && (candidate.workContract as Record<string, unknown>).targetObjective === undefined
+		? { ...(candidate.workContract as Record<string, unknown>), targetObjective: { kind: "active_objective", id: taskId } }
+		: candidate.workContract;
+	const workContract = parseStoredWorkContract(JSON.stringify(rawWorkContract));
+	const situation = parseSituation(typeof candidate.situation === "object" ? JSON.stringify(candidate.situation) : null);
+	const objectiveSource = workContract?.objective.source;
+	const targetObjectiveId = workContract?.targetObjective?.id ?? (objectiveSource?.kind === "active_objective" ? objectiveSource.id : undefined);
+	if (typeof candidate.id !== "string" || !candidate.id.startsWith(`${taskId}:revision:`) || candidate.id.length > 1_000 || !workContract || workContract.action !== "correct" || targetObjectiveId !== undefined && targetObjectiveId !== taskId || !situation || !Number.isSafeInteger(candidate.createdAt) || (candidate.createdAt as number) < 0) return undefined;
+	const boundWorkContract = targetObjectiveId ? workContract : { ...workContract, targetObjective: { kind: "active_objective" as const, id: taskId } };
+	return { id: candidate.id, workContract: boundWorkContract, situation, createdAt: candidate.createdAt as number };
 }
 
 function parseBusinessContext(value: string | null): RuntimeTaskRecord["businessContext"] {
@@ -2935,9 +3775,18 @@ function parseTaskArtifacts(value: string | null): RuntimeTaskRecord["artifacts"
 		if (!Array.isArray(parsed)) return undefined;
 		const artifacts = parsed.flatMap((item) => {
 			if (!item || typeof item !== "object") return [];
-			const artifact = item as { type?: unknown; uri?: unknown; label?: unknown };
+			const artifact = item as { type?: unknown; uri?: unknown; label?: unknown; manifest?: unknown; verificationReceipt?: unknown; sourceReceipt?: unknown };
 			if ((artifact.type !== "file" && artifact.type !== "url" && artifact.type !== "reference") || typeof artifact.uri !== "string" || !artifact.uri.trim()) return [];
-			const normalized: NonNullable<RuntimeTaskRecord["artifacts"]>[number] = { type: artifact.type, uri: artifact.uri.trim().slice(0, 2_000), ...(typeof artifact.label === "string" && artifact.label.trim() ? { label: artifact.label.trim().slice(0, 500) } : {}) };
+			let manifest; let verificationReceipt; let sourceReceipt;
+			try {
+				manifest = artifact.manifest && typeof artifact.manifest === "object" ? validateArtifactManifest(artifact.manifest as Parameters<typeof validateArtifactManifest>[0]) : undefined;
+				verificationReceipt = artifact.verificationReceipt && typeof artifact.verificationReceipt === "object" ? validateArtifactVerificationReceipt(artifact.verificationReceipt as Parameters<typeof validateArtifactVerificationReceipt>[0], manifest) : undefined;
+				sourceReceipt = artifact.sourceReceipt && typeof artifact.sourceReceipt === "object" ? validateSourceReceipt(artifact.sourceReceipt as Parameters<typeof validateSourceReceipt>[0]) : undefined;
+			} catch { return []; }
+			const uri = artifact.uri.trim().slice(0, 2_000);
+			if (manifest && (manifest.locator.uri !== uri || (manifest.locator.kind === "workspace" ? "file" : manifest.locator.kind) !== artifact.type)) return [];
+			if (sourceReceipt && (artifact.type !== "reference" || sourceReceipt.id !== uri)) return [];
+			const normalized: NonNullable<RuntimeTaskRecord["artifacts"]>[number] = { type: artifact.type, uri, ...(typeof artifact.label === "string" && artifact.label.trim() ? { label: artifact.label.trim().slice(0, 500) } : {}), ...(manifest ? { manifest } : {}), ...(verificationReceipt ? { verificationReceipt } : {}), ...(sourceReceipt ? { sourceReceipt } : {}) };
 			return containsCredentialMaterial(JSON.stringify(normalized)) ? [] : [normalized];
 		}).slice(0, 20);
 		return artifacts.length ? artifacts : undefined;
@@ -2954,10 +3803,55 @@ function parseUnresolvedIssues(value: string | null): string[] | undefined {
 	} catch { return undefined; }
 }
 
+function parseVerificationRequirements(value: string | null): RuntimeTaskRecord["verificationRequirements"] {
+	if (!value) return undefined;
+	try {
+		const parsed = JSON.parse(value) as unknown;
+		if (!Array.isArray(parsed)) return undefined;
+		const capabilities = new Set<string>();
+		const requirements = parsed.slice(0, 50).flatMap((item) => {
+			if (!item || typeof item !== "object") return [];
+			const entry = item as { capability?: unknown; freshness?: unknown; evidence?: unknown };
+			if (typeof entry.capability !== "string") return [];
+			const capability = entry.capability.trim();
+			if (!/^[a-z0-9][a-z0-9._:-]{0,127}$/iu.test(capability) || capabilities.has(capability) || containsCredentialMaterial(capability)) return [];
+			const freshness = ["static", "periodic", "current", "realtime"].includes(String(entry.freshness)) ? entry.freshness as "static" | "periodic" | "current" | "realtime" : undefined;
+			const evidence = ["none", "self_reported", "source_receipt", "verified"].includes(String(entry.evidence)) ? entry.evidence as "none" | "self_reported" | "source_receipt" | "verified" : undefined;
+			if (!freshness && !evidence) return [];
+			capabilities.add(capability);
+			return [{ capability, ...(freshness ? { freshness } : {}), ...(evidence ? { evidence } : {}) }];
+		});
+		return requirements.length ? requirements : undefined;
+	} catch { return undefined; }
+}
+
+function parseCriterionVerifications(value: string | null): RuntimeTaskRecord["criterionVerifications"] {
+	if (!value) return undefined;
+	try {
+		const parsed = JSON.parse(value) as unknown;
+		if (!Array.isArray(parsed)) return undefined;
+		const ids = new Set<string>();
+		const verifications = parsed.slice(0, 100).flatMap((item) => {
+			if (!item || typeof item !== "object") return [];
+			const entry = item as { criterionId?: unknown; criterion?: unknown; status?: unknown; evidence?: unknown; evidenceRefs?: unknown };
+			if (typeof entry.criterionId !== "string" || typeof entry.criterion !== "string" || !["accepted", "rejected", "unavailable"].includes(String(entry.status)) || !Array.isArray(entry.evidenceRefs)) return [];
+			const criterionId = entry.criterionId.trim().slice(0, 128);
+			const criterion = entry.criterion.trim().slice(0, 2_000);
+			if (!criterionId || !criterion || ids.has(criterionId) || containsCredentialMaterial(`${criterionId}\n${criterion}`)) return [];
+			const evidence = typeof entry.evidence === "string" && entry.evidence.trim() ? redactCredentialMaterial(entry.evidence.trim()).slice(0, 5_000) : undefined;
+			const evidenceRefs = [...new Set(entry.evidenceRefs.slice(0, 50).filter((ref): ref is string => typeof ref === "string").map((ref) => ref.trim().slice(0, 1_000)).filter((ref) => ref && !containsCredentialMaterial(ref)))];
+			ids.add(criterionId);
+			return [{ criterionId, criterion, status: entry.status as "accepted" | "rejected" | "unavailable", ...(evidence ? { evidence } : {}), evidenceRefs }];
+		});
+		return verifications.length ? verifications : undefined;
+	} catch { return undefined; }
+}
+
 function mapTaskRun(row: TaskRunRow): TaskRunRecord {
 	return {
 		id: row.id, taskId: row.task_id, executor: row.executor, status: row.status, startedAt: row.started_at,
 		...(row.lease_expires_at === null ? {} : { leaseExpiresAt: row.lease_expires_at }),
+		...(row.cancellation_requested_at === null ? {} : { cancellationRequestedAt: row.cancellation_requested_at }),
 		...(row.finished_at === null ? {} : { finishedAt: row.finished_at }),
 		...(row.output === null ? {} : { output: row.output }),
 		...(row.error === null ? {} : { error: row.error }),
@@ -2975,6 +3869,37 @@ function mapTaskPlan(row: TaskPlanRow): TaskPlanRecord {
 
 function safeTaskText(value: string | undefined): string | null {
 	return value === undefined ? null : redactCredentialMaterial(value);
+}
+
+function safeStoredWorkContract(value: RuntimeTaskRecord["workContract"]): string | null {
+	if (!value) return null;
+	try {
+		const encoded = JSON.stringify(value);
+		return parseStoredWorkContract(encoded) ? encoded : null;
+	} catch { return null; }
+}
+
+function safeStoredContractAdmission(value: RuntimeTaskRecord["contractAdmission"]): string | null {
+	if (!value) return null;
+	try {
+		const decoded = decodeDurableContractAdmissionReceipt(value);
+		return JSON.stringify(decoded);
+	} catch { return null; }
+}
+
+function parseStoredContractAdmission(value: string | null): RuntimeTaskRecord["contractAdmission"] {
+	if (value === null) return undefined;
+	try { return decodeDurableContractAdmissionReceipt(JSON.parse(value)); }
+	catch (error) { throw new Error(`Stored Contract admission is invalid: ${error instanceof Error ? error.message : String(error)}`); }
+}
+
+function safeStoredObjectiveRevisions(value: RuntimeTaskRecord["objectiveRevisions"], taskId: string): string | null {
+	if (!value) return null;
+	if (value.length > MAX_OBJECTIVE_REVISIONS) return null;
+	const normalized = value.map((revision) => parseStoredObjectiveRevision(revision, taskId));
+	if (normalized.some((revision) => !revision)) return null;
+	try { return JSON.stringify(normalized); }
+	catch { return null; }
 }
 
 function reversibleControlText(value: unknown, field: string, maxLength: number): string {
@@ -3007,6 +3932,16 @@ function safeUnresolvedIssues(value: RuntimeTaskRecord["unresolvedIssues"]): str
 	return issues?.length ? JSON.stringify(issues) : null;
 }
 
+function safeCriterionVerifications(value: RuntimeTaskRecord["criterionVerifications"]): string | null {
+	const verifications = parseCriterionVerifications(value === undefined ? null : JSON.stringify(value));
+	return verifications ? JSON.stringify(verifications) : null;
+}
+
+function safeVerificationRequirements(value: RuntimeTaskRecord["verificationRequirements"]): string | null {
+	const requirements = parseVerificationRequirements(value === undefined ? null : JSON.stringify(value));
+	return requirements ? JSON.stringify(requirements) : null;
+}
+
 function scopeWhere(opts: Omit<RecallOptions, "limit">, alias: string): { where: string; params: unknown[] } {
 	const conditions: string[] = [];
 	const params: unknown[] = [];
@@ -3023,6 +3958,9 @@ function episodeScopeWhere(opts: Omit<RecallOptions, "limit">, alias: string): {
 	if (opts.platform) { conditions.push(`${alias}.platform = ?`); params.push(opts.platform); }
 	if (opts.chatId) { conditions.push(`${alias}.chat_id = ?`, `${alias}.thread_id IS ?`); params.push(opts.chatId, opts.threadId ?? null); }
 	if (opts.userId) { conditions.push(`${alias}.user_id = ?`); params.push(opts.userId); }
+	if (opts.chatType) { conditions.push(`${alias}.chat_type IS ?`); params.push(opts.chatType); }
+	if (opts.projectId) { conditions.push(`${alias}.project_id = ?`); params.push(opts.projectId); }
+	if (opts.organizationId) { conditions.push(`${alias}.organization_id = ?`); params.push(opts.organizationId); }
 	return { where: `AND ${conditions.join(" AND ")}`, params };
 }
 

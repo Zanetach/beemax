@@ -8,8 +8,6 @@ import { googleVertexApi } from "./api/google-vertex.lazy.ts";
 import type { GoogleVertexOptions } from "./api/google-vertex.ts";
 import { mistralConversationsApi } from "./api/mistral-conversations.lazy.ts";
 import type { MistralOptions } from "./api/mistral-conversations.ts";
-import { openAICodexResponsesApi } from "./api/openai-codex-responses.lazy.ts";
-import type { OpenAICodexResponsesOptions } from "./api/openai-codex-responses.ts";
 import { openAICompletionsApi } from "./api/openai-completions.lazy.ts";
 import type { OpenAICompletionsOptions } from "./api/openai-completions.ts";
 import { openAIResponsesApi } from "./api/openai-responses.lazy.ts";
@@ -21,7 +19,6 @@ const azureOpenAIResponsesStreams = azureOpenAIResponsesApi();
 const googleGenerativeAIStreams = googleGenerativeAIApi();
 const googleVertexStreams = googleVertexApi();
 const mistralConversationsStreams = mistralConversationsApi();
-const openAICodexResponsesStreams = openAICodexResponsesApi();
 const openAICompletionsStreams = openAICompletionsApi();
 const openAIResponsesStreams = openAIResponsesApi();
 
@@ -71,17 +68,6 @@ export const streamMistral = mistralConversationsStreams.stream as StreamFunctio
 /** @deprecated Use `streamSimple` from `@earendil-works/pi-ai/api/mistral-conversations` or `mistralConversationsApi().streamSimple`. */
 export const streamSimpleMistral = mistralConversationsStreams.streamSimple as StreamFunction<
 	"mistral-conversations",
-	SimpleStreamOptions
->;
-
-/** @deprecated Use `stream` from `@earendil-works/pi-ai/api/openai-codex-responses` or `openAICodexResponsesApi().stream`. */
-export const streamOpenAICodexResponses = openAICodexResponsesStreams.stream as StreamFunction<
-	"openai-codex-responses",
-	OpenAICodexResponsesOptions
->;
-/** @deprecated Use `streamSimple` from `@earendil-works/pi-ai/api/openai-codex-responses` or `openAICodexResponsesApi().streamSimple`. */
-export const streamSimpleOpenAICodexResponses = openAICodexResponsesStreams.streamSimple as StreamFunction<
-	"openai-codex-responses",
 	SimpleStreamOptions
 >;
 

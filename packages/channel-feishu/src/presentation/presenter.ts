@@ -1,4 +1,4 @@
-import { AdaptiveTextBuffer, TurnStatusPulse, type InteractionEvent } from "@beemax/core";
+import { AdaptiveTextBuffer, TurnStatusPulse, interactionCompletionDeliveryKey, interactionPhaseForOutcome, type DeliveryOptions, type DeliveryReceipt, type InteractionEvent } from "@beemax/core";
 import { formatApprovalRequest, formatWorkProgress, type InteractionPresentationOpen, type InteractionPresenter, type SendOptions, type SendResult, type TurnPresentation, type WorkProgressPresentation } from "@beemax/channel-runtime";
 import { FlushController } from "./flush.ts";
 import { renderCard, type CardRenderOptions } from "./render.ts";
@@ -47,10 +47,14 @@ class FeishuTurnPresentation implements TurnPresentation {
 	private cardUpdate?: Promise<boolean>;
 	private pendingCardRender?: Record<string, unknown>;
 	private degraded = false;
+	private readonly interactionIdempotencyKey: string;
 
 	constructor(transport: FeishuPresentationTransport, input: InteractionPresentationOpen) {
 		this.transport = transport;
 		this.input = input;
+		this.interactionIdempotencyKey = input.source.messageId
+			? `${interactionCompletionDeliveryKey(input.profileId, input.source, input.source.messageId)}:progress`
+			: `${input.profileId}:turn`;
 		this.flush = new FlushController(input.preferences?.updateIntervalMs ?? 350);
 		this.renderOptions = { title: input.preferences?.title, reasoningDisplay: input.preferences?.reasoningDisplay };
 		this.answerBuffer = new AdaptiveTextBuffer(async (chunk) => {
@@ -94,9 +98,15 @@ class FeishuTurnPresentation implements TurnPresentation {
 			case "turn.cancelled":
 				await this.stopPulse(); await this.answerBuffer.flush(); this.card.apply("message.cancelled", { message: "运行已取消" });
 				await this.flush.schedule(() => this.renderUpdate(), true); break;
-			case "turn.finished":
-				await this.stopPulse(); await this.answerBuffer.flush(); this.card.apply("message.completed", { answer: this.card.answerText || event.result.answer, model: event.result.model, duration: event.result.durationMs / 1000, tokens: event.result.usage });
+			case "turn.finished": {
+				await this.stopPulse(); await this.answerBuffer.flush();
+				const outcomePhase = interactionPhaseForOutcome(event.result.outcome);
+				const presentationEvent = outcomePhase === "completed" ? "message.completed"
+					: outcomePhase === "cancelled" ? "message.cancelled"
+						: outcomePhase === "rejected" ? "message.rejected" : "message.incomplete";
+				this.card.apply(presentationEvent, { answer: event.result.answer, message: event.result.answer, model: event.result.model, duration: event.result.durationMs / 1000, tokens: event.result.usage });
 				await this.flush.schedule(() => this.renderUpdate(), true); break;
+			}
 			case "approval.requested": {
 				const message = formatApprovalRequest(event);
 				this.card.apply("approval.updated", { id: `approval:${event.turnId}`, status: "pending", message });
@@ -112,12 +122,24 @@ class FeishuTurnPresentation implements TurnPresentation {
 		}
 	}
 
-	async finish(answer: string): Promise<void> {
+	async finish(answer: string, options?: DeliveryOptions): Promise<DeliveryReceipt> {
 		await this.answerBuffer.flush();
 		if (!this.card.answerText && answer) this.card.apply("answer.delta", { text: answer });
 		await this.flush.schedule(() => this.renderUpdate(), true);
-		await this.flush.drain(5_000);
-		if (!this.cardMessageId || this.degraded) await this.sendFallback(this.card.answerText || answer);
+		const drained = await this.flush.drain(5_000);
+		if (options?.idempotencyKey) {
+			// The rich card is transient progress. A canonical text delivery uses the
+			// durable Completion key so Outbox recovery can replay the exact same
+			// provider operations, including every chunk of a long result.
+			const result = await this.sendFallback(answer, options.idempotencyKey);
+			return { idempotencyKey: options.idempotencyKey, deliveredAt: Date.now(), ...(result.messageId ? { providerMessageId: result.messageId } : {}) };
+		}
+		if (this.cardMessageId && drained && !this.degraded) {
+			return { idempotencyKey: this.interactionIdempotencyKey, deliveredAt: Date.now(), providerMessageId: this.cardMessageId };
+		}
+		const fallbackKey = `${this.interactionIdempotencyKey}:fallback`;
+		const result = await this.sendFallback(this.card.answerText || answer, fallbackKey);
+		return { idempotencyKey: fallbackKey, deliveredAt: Date.now(), ...(result.messageId ? { providerMessageId: result.messageId } : {}) };
 	}
 
 	async fail(error: string): Promise<void> {
@@ -138,7 +160,7 @@ class FeishuTurnPresentation implements TurnPresentation {
 		const rendered = renderCard(this.card, this.renderOptions);
 		if (!this.cardMessageId) {
 			if (!this.cardCreation) {
-				this.cardCreation = this.transport.sendCard(this.input.source.chatId, rendered, this.input.source.messageId, Boolean(this.input.source.threadId), `${this.input.profileId}:${this.input.source.messageId ?? "turn"}`).then((result) => {
+				this.cardCreation = this.transport.sendCard(this.input.source.chatId, rendered, this.input.source.replyToMessageId ?? this.input.source.messageId, Boolean(this.input.source.threadId), this.interactionIdempotencyKey).then((result) => {
 					if (result.success && result.messageId) { this.cardMessageId = result.messageId; this.input.onBinding?.(result.messageId, this.card.pendingApprovalId); }
 					return result;
 				});
@@ -167,7 +189,14 @@ class FeishuTurnPresentation implements TurnPresentation {
 
 	private ioTimeout(): number { return this.input.preferences?.ioTimeoutMs ?? 2_000; }
 	private async stopPulse(): Promise<void> { await this.statusPulse.stop().catch((error) => console.error(`[beemax] Feishu status presenter failed: ${safeError(error)}`)); }
-	private async sendFallback(text: string): Promise<void> { const result = await this.transport.send(this.input.source.chatId, text); if (!result.success) throw new Error(result.error ?? "Feishu text fallback failed"); }
+	private async sendFallback(text: string, idempotencyKey?: string): Promise<SendResult> {
+		const result = await this.transport.send(this.input.source.chatId, text, {
+			...(idempotencyKey ? { idempotencyKey } : {}),
+			...(this.input.source.replyToMessageId ? { replyTo: this.input.source.replyToMessageId, replyInThread: Boolean(this.input.source.threadId) } : {}),
+		});
+		if (!result.success) throw new Error(result.error ?? "Feishu text fallback failed");
+		return result;
+	}
 }
 
 async function settleWithin<T>(operation: Promise<T>, timeoutMs: number): Promise<T | undefined> {

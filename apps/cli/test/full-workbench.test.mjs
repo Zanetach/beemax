@@ -23,3 +23,13 @@ test("full workbench renders persistent state, activity, and a structured approv
 	workbench.event({ type: "approval.resolved", turnId: "t", toolName: "write", allowed: false, at: 3, sessionId: "s", scope: { profileId: "personal", platform: "cli", chatId: "local" }, sequence: 3 }, "工具 write · running");
 	assert.equal(workbench.pendingApprovalRequest(), undefined);
 });
+
+test("full workbench distinguishes an incomplete Objective from a completed Turn", () => {
+	const workbench = new FullWorkbench({ profile: "personal", model: "test/model", session: "local-1", details: "collapsed" });
+	workbench.event({
+		type: "turn.finished", turnId: "t", at: 1, sessionId: "s", scope: { profileId: "personal", platform: "cli", chatId: "local" }, sequence: 1,
+		result: { answer: "任务尚未完成", model: "test/model", durationMs: 1, usage: {}, outcome: { status: "verification_unavailable", objectiveId: "objective:1" } },
+	}, "");
+	assert.match(workbench.render(80, 20), /incomplete/);
+	assert.doesNotMatch(workbench.render(80, 20), / · completed/);
+});

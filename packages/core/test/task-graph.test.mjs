@@ -15,11 +15,13 @@ function memoryLedger() {
 		record(task) { tasks.set(task.id, { ...task }); },
 		transition(id, change) { tasks.set(id, { ...tasks.get(id), ...change }); return true; },
 		recordRun(run) { runs.set(run.id, { ...run }); }, transitionRun(id, change) { runs.set(id, { ...runs.get(id), ...change }); return true; },
+		settleTaskRunAndTask(settlement) { const task = tasks.get(settlement.taskId); const run = runs.get(settlement.taskRunId); if (!task || task.ownerKey !== settlement.ownerKey || task.status !== "running" || !run || run.taskId !== settlement.taskId || run.status !== "running") return false; tasks.set(task.id, { ...task, ...settlement.task }); runs.set(run.id, { ...run, ...settlement.run }); return true; },
 		renewTaskRunLease(id, leaseExpiresAt) { const run = runs.get(id); if (!run || run.status !== "running") return false; run.leaseExpiresAt = leaseExpiresAt; return true; },
 		recordPlan(records, edges, plan) { for (const task of records) this.record(task); dependencies.push(...edges); if (plan) plans.set(plan.id, { ...plan }); },
 		transitionPlan(id, change) { plans.set(id, { ...plans.get(id), ...change }); return true; },
 		queryTaskPlans(query) { return [...plans.values()].filter((plan) => query.ownerKeys.includes(plan.ownerKey) && (!query.id || plan.id === query.id) && (!query.statuses || query.statuses.includes(plan.status))); },
 		queryTasks(query) { return [...tasks.values()].filter((task) => query.ownerKeys.includes(task.ownerKey) && (!query.id || task.id === query.id) && (!query.statuses || query.statuses.includes(task.status)) && (!query.planIds || query.planIds.includes(task.planId))); },
+		updateVerificationRequirements(ownerKey, taskId, requirements) { const task = tasks.get(taskId); if (!task || task.ownerKey !== ownerKey) return false; tasks.set(taskId, { ...task, verificationRequirements: structuredClone(requirements) }); return true; },
 		taskRuns() { return []; },
 		taskDependencies(ids) { return dependencies.filter((edge) => ids.includes(edge.taskId)); },
 		checkpointTask(ownerKey, taskId, checkpoint, now = Date.now()) { const task = tasks.get(taskId); if (!task || task.ownerKey !== ownerKey || task.status !== "running") return false; tasks.set(taskId, { ...task, checkpoint, checkpointAt: now }); return true; },
@@ -211,6 +213,18 @@ test("TaskGraph fails execution when its Task Run lease can no longer be renewed
 	assert.match(ledger.tasks.get("task").error, /Lease could not be renewed/);
 });
 
+for (const atomicPort of ["rejects", "is unavailable"]) test(`TaskGraph fails closed when atomic success settlement ${atomicPort}`, async () => {
+	const ledger = memoryLedger();
+	if (atomicPort === "rejects") ledger.settleTaskRunAndTask = () => false;
+	else delete ledger.settleTaskRunAndTask;
+	const graph = new TaskGraph(ledger);
+	graph.createPlan({ id: `atomic-${atomicPort}`, ownerKey: "cli:local:local", tasks: [{ id: "task", title: "Task" }] });
+	const result = await graph.run(["cli:local:local"], `atomic-${atomicPort}`, async () => ({ output: "candidate" }));
+	assert.deepEqual(result, { succeeded: 0, failed: 1, cancelled: 0, blocked: [] });
+	assert.equal(ledger.tasks.get("task").status, "failed");
+	assert.equal([...ledger.runs.values()].some((run) => run.status === "succeeded"), false);
+});
+
 test("TaskGraph only succeeds when an independent verifier accepts the result", async () => {
 	const ledger = memoryLedger();
 	const graph = new TaskGraph(ledger);
@@ -274,6 +288,21 @@ test("TaskGraph persists accepted verification evidence with the successful Task
 	});
 	assert.deepEqual(result, { succeeded: 1, failed: 0, cancelled: 0, blocked: [] });
 	assert.equal(ledger.tasks.get("task").evidence, "ACCEPT\nPrimary record checked");
+});
+
+test("TaskGraph verifies against capability requirements discovered during execution", async () => {
+	const ledger = memoryLedger();
+	const graph = new TaskGraph(ledger);
+	graph.createPlan({ id: "dynamic-requirement-plan", ownerKey: "owner", tasks: [{ id: "task", title: "qx-17 zorb flux", acceptanceCriteria: "zorb receipt attached" }] });
+	let verificationTask;
+	const result = await graph.run(["owner"], "dynamic-requirement-plan", async (task) => {
+		assert.equal(ledger.updateVerificationRequirements(task.ownerKey, task.id, [{ capability: "temporal_evidence_feed", freshness: "realtime", evidence: "source_receipt" }]), true);
+		return { output: "naru vek tal" };
+	}, {
+		verify: async (task) => { verificationTask = task; return { accepted: true, evidence: "receipt checked" }; },
+	});
+	assert.deepEqual(result, { succeeded: 1, failed: 0, cancelled: 0, blocked: [] });
+	assert.deepEqual(verificationTask.verificationRequirements, [{ capability: "temporal_evidence_feed", freshness: "realtime", evidence: "source_receipt" }]);
 });
 
 test("TaskGraph gives a dependent Task the verified results of its direct dependencies", async () => {

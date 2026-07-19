@@ -396,6 +396,7 @@ async function failToolCallsFromTruncatedMessage(
 			toolCall,
 			result: createErrorToolResult(
 				`Tool call "${toolCall.name}" was not executed: the response hit the output token limit, so its arguments may be truncated. Re-issue the tool call with complete arguments.`,
+				{ stage: "validation", code: "response_truncated", retryable: true },
 			),
 			isError: true,
 		};
@@ -581,6 +582,19 @@ type FinalizedToolCallOutcome = {
 
 type FinalizedToolCallEntry = FinalizedToolCallOutcome | (() => Promise<FinalizedToolCallOutcome>);
 
+type ToolDispatchError = {
+	stage: "routing" | "validation" | "authorization" | "execution" | "finalization";
+	code:
+		| "tool_not_found"
+		| "arguments_invalid"
+		| "blocked"
+		| "cancelled"
+		| "response_truncated"
+		| "execution_failed"
+		| "finalization_failed";
+	retryable: boolean;
+};
+
 function shouldTerminateToolBatch(finalizedCalls: FinalizedToolCallOutcome[]): boolean {
 	return finalizedCalls.length > 0 && finalizedCalls.every((finalized) => finalized.result.terminate === true);
 }
@@ -610,14 +624,31 @@ async function prepareToolCall(
 	if (!tool) {
 		return {
 			kind: "immediate",
-			result: createErrorToolResult(`Tool ${toolCall.name} not found`),
+			result: createErrorToolResult("Requested Tool identifier was not found. Use an exact Tool name from the active Tool Spec.", {
+				stage: "routing", code: "tool_not_found", retryable: true,
+			}),
+			isError: true,
+		};
+	}
+
+	let validatedArgs: unknown;
+	try {
+		const preparedToolCall = prepareToolCallArguments(tool, toolCall);
+		validatedArgs = validateToolArguments(tool, preparedToolCall);
+	} catch (error) {
+		return {
+			kind: "immediate",
+			result: createErrorToolResult(
+				error instanceof Error && error.name === "ToolArgumentsValidationError"
+					? error.message
+					: `Validation failed for tool "${toolCall.name}": arguments could not be prepared safely`,
+				{ stage: "validation", code: "arguments_invalid", retryable: true },
+			),
 			isError: true,
 		};
 	}
 
 	try {
-		const preparedToolCall = prepareToolCallArguments(tool, toolCall);
-		const validatedArgs = validateToolArguments(tool, preparedToolCall);
 		if (config.beforeToolCall) {
 			const beforeResult = await config.beforeToolCall(
 				{
@@ -631,14 +662,18 @@ async function prepareToolCall(
 			if (signal?.aborted) {
 				return {
 					kind: "immediate",
-					result: createErrorToolResult("Operation aborted"),
+					result: createErrorToolResult("Operation aborted", {
+						stage: "authorization", code: "cancelled", retryable: false,
+					}),
 					isError: true,
 				};
 			}
 			if (beforeResult?.block) {
 				return {
 					kind: "immediate",
-					result: createErrorToolResult(beforeResult.reason || "Tool execution was blocked"),
+					result: createErrorToolResult(beforeResult.reason || "Tool execution was blocked", {
+						stage: "authorization", code: "blocked", retryable: false,
+					}),
 					isError: true,
 				};
 			}
@@ -646,7 +681,9 @@ async function prepareToolCall(
 		if (signal?.aborted) {
 			return {
 				kind: "immediate",
-				result: createErrorToolResult("Operation aborted"),
+				result: createErrorToolResult("Operation aborted", {
+					stage: "authorization", code: "cancelled", retryable: false,
+				}),
 				isError: true,
 			};
 		}
@@ -656,10 +693,12 @@ async function prepareToolCall(
 			tool,
 			args: validatedArgs,
 		};
-	} catch (error) {
+	} catch {
 		return {
 			kind: "immediate",
-			result: createErrorToolResult(error instanceof Error ? error.message : String(error)),
+			result: createErrorToolResult("Tool authorization boundary failed", {
+				stage: "authorization", code: "blocked", retryable: false,
+			}),
 			isError: true,
 		};
 	}
@@ -700,7 +739,9 @@ async function executePreparedToolCall(
 		acceptingUpdates = false;
 		await Promise.all(updateEvents);
 		return {
-			result: createErrorToolResult(error instanceof Error ? error.message : String(error)),
+			result: createErrorToolResult(error instanceof Error ? error.message : String(error), {
+				stage: "execution", code: "execution_failed", retryable: true,
+			}),
 			isError: true,
 		};
 	} finally {
@@ -721,6 +762,7 @@ async function finalizeExecutedToolCall(
 
 	if (config.afterToolCall) {
 		try {
+			const internalDispatchError = dispatchErrorFromResult(result);
 			const afterResult = await config.afterToolCall(
 				{
 					assistantMessage,
@@ -733,15 +775,23 @@ async function finalizeExecutedToolCall(
 				signal,
 			);
 			if (afterResult) {
+				const nextIsError = afterResult.isError ?? isError;
+				const nextDispatchError = nextIsError
+					? internalDispatchError ?? (!isError && afterResult.isError === true
+						? { stage: "finalization", code: "finalization_failed", retryable: false } satisfies ToolDispatchError
+						: undefined)
+					: undefined;
 				result = {
 					content: afterResult.content ?? result.content,
-					details: afterResult.details ?? result.details,
+					details: replaceDispatchError(afterResult.details ?? result.details, nextDispatchError),
 					terminate: afterResult.terminate ?? result.terminate,
 				};
-				isError = afterResult.isError ?? isError;
+				isError = nextIsError;
 			}
 		} catch (error) {
-			result = createErrorToolResult(error instanceof Error ? error.message : String(error));
+			result = createErrorToolResult("Tool result finalization failed", {
+				stage: "finalization", code: "finalization_failed", retryable: false,
+			});
 			isError = true;
 		}
 	}
@@ -753,11 +803,48 @@ async function finalizeExecutedToolCall(
 	};
 }
 
-function createErrorToolResult(message: string): AgentToolResult<any> {
+function createErrorToolResult(message: string, dispatchError?: ToolDispatchError): AgentToolResult<any> {
 	return {
-		content: [{ type: "text", text: message }],
-		details: {},
+		content: [{ type: "text", text: safeToolErrorMessage(message) }],
+		details: dispatchError ? { dispatchError } : {},
 	};
+}
+
+function dispatchErrorFromResult(result: AgentToolResult<any>): ToolDispatchError | undefined {
+	const details = result.details;
+	if (!details || typeof details !== "object" || Array.isArray(details)) return undefined;
+	const candidate = (details as { dispatchError?: unknown }).dispatchError;
+	if (!candidate || typeof candidate !== "object") return undefined;
+	const value = candidate as Partial<ToolDispatchError>;
+	if (typeof value.stage !== "string" || typeof value.code !== "string" || typeof value.retryable !== "boolean") return undefined;
+	const expected = value.code === "tool_not_found" ? { stage: "routing", retryable: true }
+		: value.code === "arguments_invalid" || value.code === "response_truncated" ? { stage: "validation", retryable: true }
+			: value.code === "blocked" || value.code === "cancelled" ? { stage: "authorization", retryable: false }
+				: value.code === "execution_failed" ? { stage: "execution", retryable: true }
+					: value.code === "finalization_failed" ? { stage: "finalization", retryable: false }
+						: undefined;
+	return expected && value.stage === expected.stage && value.retryable === expected.retryable ? value as ToolDispatchError : undefined;
+}
+
+function replaceDispatchError(details: unknown, dispatchError?: ToolDispatchError): unknown {
+	if (!details || typeof details !== "object" || Array.isArray(details)) return dispatchError ? { dispatchError } : details;
+	const { dispatchError: _discarded, ...rest } = details as Record<string, unknown>;
+	return dispatchError ? { ...rest, dispatchError } : rest;
+}
+
+function safeToolErrorMessage(value: string): string {
+	const message = value.trim();
+	if (!message) return "Tool execution failed without diagnostic details.";
+	const credentialPatterns = [
+		/-----BEGIN [A-Z ]*PRIVATE KEY-----/i,
+		/\bBearer\s+[A-Za-z0-9._~+/=-]{12,}\b/i,
+		/["']?(?:[A-Z0-9_]*(?:password|passcode|secret|api[_-]?key|access[_-]?token|refresh[_-]?token|session[_-]?token|cookie))["']?\s*[:=]\s*["']?\S+/i,
+		/(?:密码|口令|密钥|令牌|访问令牌|刷新令牌)\s*[:：=]\s*\S+/i,
+		/\b(?:sk-[A-Za-z0-9_-]{16,}|ghp_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,})\b/i,
+		/https?:\/\/[^\s/:@]+:[^\s/@]+@/i,
+	];
+	if (credentialPatterns.some((pattern) => pattern.test(message))) return "Tool execution failed; credential-like diagnostic details were redacted.";
+	return message.slice(0, 4_000);
 }
 
 async function emitToolExecutionEnd(finalized: FinalizedToolCallOutcome, emit: AgentEventSink): Promise<void> {

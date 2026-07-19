@@ -1,4 +1,4 @@
-import type { DeliveryOptions, DeliveryPort, DeliveryTarget, MediaArtifact } from "@beemax/core";
+import type { DeliveryOptions, DeliveryPort, DeliveryReceipt, DeliveryTarget, MediaArtifact } from "@beemax/core";
 import { extname } from "node:path";
 import type { ChannelAdapterResolver, PlatformAdapter } from "@beemax/channel-runtime";
 
@@ -16,13 +16,17 @@ export class GatewayDeliveryPort implements DeliveryPort {
 			} };
 	}
 
-	async sendText(target: DeliveryTarget, text: string, options?: DeliveryOptions): Promise<void> {
+	async sendText(target: DeliveryTarget, text: string, options?: DeliveryOptions): Promise<DeliveryReceipt> {
 		const platform = this.resolver.resolveAdapter(target.platform, target.channelInstanceId);
-		const result = await platform.send(target.chatId, text, { idempotencyKey: options?.idempotencyKey });
+		const result = await platform.send(target.chatId, text, {
+			...(options?.idempotencyKey ? { idempotencyKey: options.idempotencyKey } : {}),
+			...(target.replyToMessageId ? { replyTo: target.replyToMessageId, replyInThread: Boolean(target.threadId) } : {}),
+		});
 		if (!result.success) throw new Error(result.error ?? "Channel text delivery failed");
+		return { idempotencyKey: options?.idempotencyKey ?? `channel:${crypto.randomUUID()}`, deliveredAt: Date.now(), ...(result.messageId ? { providerMessageId: result.messageId } : {}) };
 	}
 
-	async sendMedia(target: DeliveryTarget, media: MediaArtifact, _options?: DeliveryOptions): Promise<void> {
+	async sendMedia(target: DeliveryTarget, media: MediaArtifact, options?: DeliveryOptions): Promise<DeliveryReceipt> {
 		const platform = this.resolver.resolveAdapter(target.platform, target.channelInstanceId);
 		const declared = platform.capabilities.mediaDelivery;
 		const result = declared === "files" && platform.sendMedia
@@ -32,6 +36,7 @@ export class GatewayDeliveryPort implements DeliveryPort {
 				: undefined;
 		if (!result) throw new Error(`${platform.name} does not support media delivery`);
 		if (!result.success) throw new Error(result.error ?? "Channel media delivery failed");
+		return { idempotencyKey: options?.idempotencyKey ?? `channel:${crypto.randomUUID()}`, deliveredAt: Date.now(), ...(result.messageId ? { providerMessageId: result.messageId } : {}) };
 	}
 }
 

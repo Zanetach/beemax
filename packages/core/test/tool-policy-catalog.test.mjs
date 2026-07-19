@@ -1,5 +1,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { mkdtempSync, rmSync } from "node:fs";
+import { writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { createAutomationTools, createExecutionTools, createSkillTools, createSubagentTools, createWebTools, SubagentManager, ToolPolicyRegistry } from "../dist/index.js";
 
 const source = { platform: "cli", chatId: "local", chatType: "dm", userId: "local" };
@@ -28,7 +32,7 @@ test("automation, Skill, and Sub-Agent capabilities publish first-class executio
 
 test("public web research capabilities publish first-class read-only policies", () => {
 	const tools = createWebTools();
-	for (const name of ["web_search", "agent_reach_search", "web_extract"]) {
+	for (const name of ["web_search", "exa_web_search", "web_extract"]) {
 		assert.deepEqual(policy(tools, name), {
 			risk: "low",
 			sideEffect: "none",
@@ -45,24 +49,26 @@ test("public web research capabilities publish first-class read-only policies", 
 test("public web research Tools expose unified Provider configuration and health metadata", async () => {
 	const tools = new Map(createWebTools({ env: {}, agentReachAvailable: false }).map((tool) => [tool.name, tool]));
 	const webProviders = tools.get("web_search").providers;
-	assert.deepEqual(webProviders.map((provider) => provider.id), ["tavily", "brave", "searxng", "agent-reach"]);
-	for (const provider of webProviders) {
+	assert.deepEqual(webProviders.map((provider) => provider.id), ["tavily", "brave", "searxng", "exa-mcporter"]);
+	assert.deepEqual(webProviders.find((provider) => provider.id === "exa-mcporter").install, { source: "beemax-provider-lock", package: "mcporter", version: "mcporter:0.9.0:lock:7c8ca25b89c4a23618c4385a373660cbf23512d7f461e82f2197c19027a183ec" });
+	for (const provider of webProviders.filter((candidate) => candidate.id !== "exa-mcporter")) {
 		const health = await provider.health(new AbortController().signal);
 		assert.equal(health.status, "configuration_required");
 		assert.deepEqual(health.missingConfiguration, provider.configuration.required);
 	}
+	assert.equal((await webProviders.find((provider) => provider.id === "exa-mcporter").health(new AbortController().signal)).status, "unavailable");
 	const configured = new Map(createWebTools({ env: { BRAVE_SEARCH_API_KEY: "configured-in-process" } }).map((tool) => [tool.name, tool]));
 	const brave = configured.get("web_search").providers.find((provider) => provider.id === "brave");
 	const braveHealth = await brave.health(new AbortController().signal);
 	assert.equal(braveHealth.status, "unverified");
 	assert.match(braveHealth.reason, /execution receipt/);
-	const unhealthyAgentReach = new Map(createWebTools({ env: {}, agentReachAvailable: true, agentReachHealth: async () => false }).map((tool) => [tool.name, tool])).get("web_search").providers.find((provider) => provider.id === "agent-reach");
+	const unhealthyAgentReach = new Map(createWebTools({ env: {}, agentReachAvailable: true, agentReachHealth: async () => false }).map((tool) => [tool.name, tool])).get("web_search").providers.find((provider) => provider.id === "exa-mcporter");
 	assert.equal((await unhealthyAgentReach.health(new AbortController().signal)).status, "unhealthy");
-	const healthyAgentReach = new Map(createWebTools({ env: {}, agentReachAvailable: true, agentReachHealth: async () => true }).map((tool) => [tool.name, tool])).get("web_search").providers.find((provider) => provider.id === "agent-reach");
+	const healthyAgentReach = new Map(createWebTools({ env: {}, agentReachAvailable: true, agentReachHealth: async () => true }).map((tool) => [tool.name, tool])).get("web_search").providers.find((provider) => provider.id === "exa-mcporter");
 	assert.equal((await healthyAgentReach.health(new AbortController().signal)).status, "ready");
 });
 
-test("web_search uses an available Agent-Reach Provider when API-key Providers are absent", async () => {
+test("web_search uses an available exa-mcporter Provider when API-key Providers are absent", async () => {
 	const verboseHighlights = "Detailed evidence ".repeat(2_000);
 	const tools = new Map(createWebTools({
 		env: {},
@@ -71,12 +77,37 @@ test("web_search uses an available Agent-Reach Provider when API-key Providers a
 	}).map((tool) => [tool.name, tool]));
 	const result = await tools.get("web_search").execute("search", { query: "current evidence", maxResults: 2 }, new AbortController().signal);
 	assert.equal(result.isError, false);
-	assert.equal(result.details.provider, "agent-reach-exa");
+	assert.equal(result.details.provider, "exa-mcporter");
 	assert.match(result.content[0].text, /https:\/\/example\.com\/current/);
 	assert.ok(result.content[0].text.length < 2_000);
 });
 
-test("web_search reroutes a failed configured read-only Provider to healthy Agent-Reach", async () => {
+test("exa-mcporter subprocess receives only its isolated runtime environment", async () => {
+	const root = mkdtempSync(join(tmpdir(), "beemax-agent-reach-env-"));
+	const binary = join(root, "mcporter.js");
+	const config = join(root, "mcporter.json");
+	try {
+		await writeFile(binary, `if (process.env.MODEL_API_KEY || process.env.FEISHU_APP_SECRET || process.env.TAVILY_API_KEY) { console.error("credential leak"); process.exit(9); }\nconsole.log("Title: Isolated source\\nURL: https://example.com/isolated\\nHighlights:\\nverified");\n`);
+		await writeFile(config, "{}");
+		const tools = new Map(createWebTools({
+			env: {
+				BEEMAX_AGENT_REACH_MCPORTER: binary,
+				BEEMAX_AGENT_REACH_CONFIG: config,
+				BEEMAX_AGENT_REACH_HOME: root,
+				BEEMAX_AGENT_REACH_PATH: process.env.PATH,
+				MODEL_API_KEY: "must-not-leak",
+				FEISHU_APP_SECRET: "must-not-leak",
+				TAVILY_API_KEY: "must-not-leak",
+			},
+			agentReachAvailable: true,
+		}).map((tool) => [tool.name, tool]));
+		const result = await tools.get("exa_web_search").execute("search", { query: "isolation evidence", maxResults: 1 }, new AbortController().signal);
+		assert.equal(result.isError, false);
+		assert.match(result.content[0].text, /example\.com\/isolated/);
+	} finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("web_search reroutes a failed configured read-only Provider to healthy exa-mcporter", async () => {
 	const tools = new Map(createWebTools({
 		env: { TAVILY_API_KEY: "configured" },
 		agentReachAvailable: true,
@@ -85,15 +116,50 @@ test("web_search reroutes a failed configured read-only Provider to healthy Agen
 	}).map((tool) => [tool.name, tool]));
 	const result = await tools.get("web_search").execute("search", { query: "current evidence", maxResults: 1 }, new AbortController().signal);
 	assert.equal(result.isError, false);
-	assert.equal(result.details.provider, "agent-reach-exa");
+	assert.equal(result.details.provider, "exa-mcporter");
 	assert.match(result.content[0].text, /alternate/);
 	assert.deepEqual(result.details.attempts.map(({ provider, status, reasonCode }) => ({ provider, status, reasonCode })), [
 		{ provider: "tavily", status: "failed", reasonCode: "timeout" },
-		{ provider: "agent-reach", status: "succeeded", reasonCode: undefined },
+		{ provider: "exa-mcporter", status: "succeeded", reasonCode: undefined },
 	]);
 });
 
-test("web_search traverses configured API Providers before Agent-Reach", async () => {
+test("web_search returns an exact configuration blocker instead of evergreen content when no Provider exists", async () => {
+	const tools = new Map(createWebTools({ env: {}, agentReachAvailable: false }).map((tool) => [tool.name, tool]));
+	const result = await tools.get("web_search").execute("search", { query: "qx-17 zorb flux" }, new AbortController().signal);
+	assert.equal(result.isError, true);
+	assert.match(result.content[0].text, /No search Provider is configured/);
+	assert.deepEqual(result.details.attempts, []);
+	assert.doesNotMatch(result.content[0].text, /evergreen|general background|best effort/i);
+});
+
+test("web_search preserves timeout and offline attempts when every configured route fails", async () => {
+	const tools = new Map(createWebTools({
+		env: { TAVILY_API_KEY: "configured" },
+		agentReachAvailable: true,
+		apiSearch: async () => { throw new Error("request timed out after 30s"); },
+		agentReachSearch: async () => { throw new Error("network offline"); },
+	}).map((tool) => [tool.name, tool]));
+	const result = await tools.get("web_search").execute("search", { query: "qx-17 zorb flux" }, new AbortController().signal);
+	assert.equal(result.isError, true);
+	assert.deepEqual(result.details.attempts.map(({ provider, status, reasonCode }) => ({ provider, status, reasonCode })), [
+		{ provider: "tavily", status: "failed", reasonCode: "timeout" },
+		{ provider: "exa-mcporter", status: "failed", reasonCode: "provider_unavailable" },
+	]);
+	assert.match(result.content[0].text, /tavily.*timed out.*Exa\/mcporter fallback failed.*network offline/i);
+	assert.doesNotMatch(result.content[0].text, /evergreen|general background|best effort/i);
+});
+
+test("web Tool Spec availability reflects configured Providers without exposing credentials", () => {
+	const unavailable = new Map(createWebTools({ env: {}, agentReachAvailable: false }).map((tool) => [tool.name, tool]));
+	assert.deepEqual(unavailable.get("web_search").beemaxToolSpec, { kind: "tool", configured: false, health: "configuration_required", ranking: { inputModalities: ["text"], outputModalities: ["structured"], freshness: "realtime", evidence: "source_receipt" } });
+	assert.deepEqual(unavailable.get("exa_web_search").beemaxToolSpec, { kind: "tool", configured: false, health: "configuration_required", ranking: { inputModalities: ["text"], outputModalities: ["text"], freshness: "current", evidence: "source_receipt" } });
+	const configured = new Map(createWebTools({ env: { TAVILY_API_KEY: "credential-must-not-appear" }, agentReachAvailable: false }).map((tool) => [tool.name, tool]));
+	assert.deepEqual(configured.get("web_search").beemaxToolSpec, { kind: "tool", configured: true, health: "unverified", ranking: { inputModalities: ["text"], outputModalities: ["structured"], freshness: "realtime", evidence: "source_receipt" } });
+	assert.doesNotMatch(JSON.stringify(configured.get("web_search").beemaxToolSpec), /credential-must-not-appear/);
+});
+
+test("web_search traverses configured API Providers before exa-mcporter", async () => {
 	const attempts = [];
 	const tools = new Map(createWebTools({
 		env: { TAVILY_API_KEY: "configured", BRAVE_SEARCH_API_KEY: "configured" },
@@ -143,13 +209,13 @@ test("web_search redacts Provider credentials from final blockers", async () => 
 	assert.doesNotMatch(result.content[0].text, /secret-provider-token/);
 });
 
-test("direct Agent-Reach and web extraction failures redact credentials and omit raw URLs from details", async () => {
+test("direct exa-mcporter and web extraction failures redact credentials and omit raw URLs from details", async () => {
 	const tools = new Map(createWebTools({
 		env: {},
 		agentReachAvailable: true,
 		agentReachSearch: async () => { throw new Error("Bearer secret-provider-token-123456789"); },
 	}).map((tool) => [tool.name, tool]));
-	const reach = await tools.get("agent_reach_search").execute("reach", { query: "current evidence" }, new AbortController().signal);
+	const reach = await tools.get("exa_web_search").execute("reach", { query: "current evidence" }, new AbortController().signal);
 	assert.equal(reach.isError, true);
 	assert.doesNotMatch(reach.content[0].text, /secret-provider-token/);
 	const extract = await tools.get("web_extract").execute("extract", { url: "https://user:secret-password@example.com/report?token=private-value" }, new AbortController().signal);

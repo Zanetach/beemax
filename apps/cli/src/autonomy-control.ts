@@ -43,6 +43,15 @@ export function loadInstalledAutonomyRolloutEvidence(): { evidence: AutonomyRoll
 			correctionRetention: q.correctionRetentionRate,
 			unauthorizedRetrievals: r.forbiddenScopeRetrievals,
 			verifiedCompletionRate: r.verifiedCompletionRate,
+			// The installed v1 baseline predates L4 certification. Zero values keep
+			// lower rollout evidence usable while making adaptive promotion fail closed.
+			memoryPromotionPrecision: 0,
+			scopedRecallAt5: 0,
+			memoryAttributionAccuracy: 0,
+			memoryDowngradePrecision: 0,
+			memoryFalseDowngradeRate: 0,
+			memoryNegativeTransferRate: 0,
+			memoryProvenanceCoverage: 0,
 			initiativePrecision: q.initiativeProposalPrecision,
 			initiativeAverageExpectedValue: q.initiativeAverageExpectedValue,
 			duplicateInitiatives: r.duplicateInitiativeObservations,

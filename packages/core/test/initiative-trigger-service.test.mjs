@@ -21,12 +21,19 @@ function inbox() {
 			records.set(key, trigger);
 			return { trigger, created: true };
 		},
-		claimInitiativeTriggers(_profileId, _holderId, now, limit) {
-			return [...records.values()].filter((item) => item.status === "queued" && item.nextAttemptAt <= now).slice(0, limit).map((item) => {
-				const claimed = { ...item, status: "processing", claimToken: `claim:${item.id}`, claimExpiresAt: now + 1_000, attempts: item.attempts + 1 };
+		claimInitiativeTriggers(_profileId, holderId, now, limit, leaseMs = 1_000) {
+			return [...records.values()].filter((item) => (item.status === "queued" && item.nextAttemptAt <= now) || (item.status === "processing" && item.claimExpiresAt <= now)).slice(0, limit).map((item) => {
+				const claimed = { ...item, status: "processing", claimToken: `claim:${holderId}:${item.id}:${item.attempts + 1}`, claimExpiresAt: now + leaseMs, attempts: item.attempts + 1 };
 				records.set(`${item.profileId}\0${item.kind}\0${item.triggerId}`, claimed);
 				return claimed;
 			});
+		},
+		renewInitiativeTrigger(id, claimToken, claimExpiresAt) {
+			const entry = [...records.entries()].find(([, item]) => item.id === id && item.claimToken === claimToken && item.status === "processing");
+			if (!entry) return false;
+			const [key, item] = entry;
+			records.set(key, { ...item, claimExpiresAt });
+			return true;
 		},
 		completeInitiativeTrigger(id, claimToken, outcome) {
 			const entry = [...records.entries()].find(([, item]) => item.id === id && item.claimToken === claimToken);
@@ -146,4 +153,43 @@ test("Initiative Trigger polling is single-flight and exposes bounded shutdown w
 	release();
 	assert.deepEqual(await Promise.all([first, second]), [{ claimed: 1, completed: 1, failed: 0 }, { claimed: 1, completed: 1, failed: 0 }]);
 	assert.deepEqual(await service.waitForIdle(), { claimed: 0, completed: 0, failed: 0 });
+});
+
+test("long Initiative observation renews its durable claim before admission", async () => {
+	const store = inbox();
+	new EnterpriseEventInitiativeAdapter(store, "profile").receive({ id: "event:heartbeat", occurredAt: 1_000, scope, executionScope, summary: "State changed", evidenceRef: "event:heartbeat", notificationRequired: false });
+	let renewals = 0;
+	const renew = store.renewInitiativeTrigger.bind(store);
+	store.renewInitiativeTrigger = (...args) => { renewals++; return renew(...args); };
+	const service = new InitiativeTriggerService({
+		profileId: "profile", inbox: store, holderId: "worker", leaseMs: 100, leaseHeartbeatMs: 10,
+		initiative: { observe: async () => { await new Promise((resolve) => setTimeout(resolve, 35)); return { kind: "observed", created: true, observation: { id: "observation-heartbeat" } }; } },
+		admit: async () => undefined,
+	});
+	assert.deepEqual(await service.runOnce(1_000), { claimed: 1, completed: 1, failed: 0 });
+	assert.ok(renewals >= 2);
+});
+
+test("Initiative service does not pre-claim later work whose lease can expire in a local batch", async () => {
+	const store = inbox();
+	new EnterpriseEventInitiativeAdapter(store, "profile").receive({ id: "event:first", occurredAt: 1_000, scope, summary: "First state changed", evidenceRef: "event:first", notificationRequired: false });
+	new EnterpriseEventInitiativeAdapter(store, "profile").receive({ id: "event:second", occurredAt: 1_001, scope, summary: "Second state changed", evidenceRef: "event:second", notificationRequired: false });
+	const decisions = new Map();
+	let releaseFirst;
+	const observe = async (trigger) => {
+		decisions.set(trigger.id, (decisions.get(trigger.id) ?? 0) + 1);
+		if (trigger.id === "event:first") await new Promise((resolve) => { releaseFirst = resolve; });
+		return { kind: "ignored" };
+	};
+	const startedAt = Date.now();
+	const first = new InitiativeTriggerService({ profileId: "profile", inbox: store, initiative: { observe }, holderId: "worker-a", batchSize: 2, leaseMs: 100, leaseHeartbeatMs: 10 });
+	const second = new InitiativeTriggerService({ profileId: "profile", inbox: store, initiative: { observe }, holderId: "worker-b", batchSize: 2, leaseMs: 100, leaseHeartbeatMs: 10 });
+	const firstRun = first.runOnce(startedAt);
+	for (let attempt = 0; !releaseFirst && attempt < 100; attempt++) await new Promise((resolve) => setTimeout(resolve, 2));
+	await new Promise((resolve) => setTimeout(resolve, 120));
+	const secondRun = second.runOnce(Date.now());
+	await secondRun;
+	releaseFirst();
+	await firstRun;
+	assert.deepEqual(Object.fromEntries(decisions), { "event:first": 1, "event:second": 1 });
 });

@@ -20,7 +20,7 @@ export interface FeishuRegistrationOptions {
 	log?: (message: string) => void;
 }
 
-/** Feishu/Lark's device-code scan-to-create protocol used by Hermes onboarding. */
+/** Feishu/Lark device-code scan-to-create onboarding protocol. */
 export async function registerFeishuBot(options: FeishuRegistrationOptions = {}): Promise<FeishuRegistrationResult | undefined> {
 	const request = options.fetch ?? fetch;
 	const now = options.now ?? Date.now;

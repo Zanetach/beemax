@@ -8,12 +8,21 @@ export interface DeliveryTarget {
 	chatType?: "dm" | "group" | "channel" | "thread";
 	userId?: string;
 	threadId?: string;
+	/** Provider message anchor required to post back into the exact originating thread. */
+	replyToMessageId?: string;
 }
 
 export interface DeliveryOptions {
 	idempotencyKey?: string;
 	deliveryClass?: "interactive" | "proactive" | "control";
 	deliveryAttempt?: number;
+}
+
+/** Durable, content-free proof that a channel accepted one idempotent delivery. */
+export interface DeliveryReceipt {
+	idempotencyKey: string;
+	deliveredAt: number;
+	providerMessageId?: string;
 }
 
 export class DeliveryDeferredError extends Error {
@@ -35,6 +44,6 @@ export interface MediaArtifact {
 
 /** Gateway-owned adapter for all outbound artifacts requested by Core. */
 export interface DeliveryPort {
-	sendText(target: DeliveryTarget, text: string, options?: DeliveryOptions): Promise<void>;
-	sendMedia(target: DeliveryTarget, media: MediaArtifact, options?: DeliveryOptions): Promise<void>;
+	sendText(target: DeliveryTarget, text: string, options?: DeliveryOptions): Promise<DeliveryReceipt>;
+	sendMedia(target: DeliveryTarget, media: MediaArtifact, options?: DeliveryOptions): Promise<DeliveryReceipt>;
 }

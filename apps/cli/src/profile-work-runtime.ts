@@ -2,6 +2,7 @@ import {
 	AutonomousPlanningPolicy,
 	FileExecutionTraceStore,
 	FileToolEffectJournal,
+	MemoryLearningMaintenanceService,
 	ObjectiveRuntime,
 	ProfileTaskScheduler,
 	SubagentManager,
@@ -18,6 +19,8 @@ import {
 	type TaskGraphExecutionResult,
 	type TaskRecord,
 	type ExecutionTraceSink,
+	type MemoryLearningKernel,
+	type MemoryLearningMaintenanceServiceOptions,
 	type TaskRecoveryCycleResult,
 	type DirectObjectiveVerificationNotifier,
 	type VerifiedObjectiveMemoryPublisher,
@@ -36,6 +39,7 @@ export interface ProfileWorkRuntimeOptions {
 	taskTimeoutMs: number;
 	subagentsEnabled: boolean;
 	backgroundRecoveryEnabled?: boolean;
+	memoryLearning?: Omit<MemoryLearningMaintenanceServiceOptions, "admit"> & { kernel: Pick<MemoryLearningKernel, "maintain"> };
 	executeTask: (task: TaskRecord, signal: AbortSignal | undefined, context: Parameters<TaskGraphExecutor>[2], executionTrace: ExecutionTraceSink, effectAuthority: FileToolEffectJournal) => ReturnType<TaskGraphExecutor>;
 	verifyTaskCandidate: (task: TaskRecord, result: TaskGraphExecutionResult, signal: AbortSignal | undefined, context: TaskGraphVerificationContext | undefined, executionTrace: ExecutionTraceSink) => ReturnType<TaskGraphVerifier>;
 	deliverObjective: (input: Parameters<ObjectiveDeliverer>[0], signal: AbortSignal | undefined, executionTrace: ExecutionTraceSink) => ReturnType<ObjectiveDeliverer>;
@@ -56,11 +60,22 @@ export function createProfileWorkRuntime(options: ProfileWorkRuntimeOptions) {
 	const maxConcurrent = resolveRuntimeTaskConcurrency(options.maxConcurrent);
 	const executionTrace = new FileExecutionTraceStore(join(options.agentDir, "logs", "execution-trace.jsonl"));
 	const toolEffects = new FileToolEffectJournal(join(options.agentDir, "tool-effects.jsonl"), 5_000, executionTrace);
+	// A one-shot runtime still has to close expired leases before the new
+	// objective can observe the Task ledger. Disabling background recovery only
+	// disables the recurring worker; it must not preserve stale active Tasks.
+	(options.recoveryQueue ?? options.ledger).reconcileExpiredTaskRuns(undefined, toolEffects);
 	const taskScheduler = new ProfileTaskScheduler({
 		maxConcurrent,
 		maxQueued: DEFAULT_RUNTIME_RESOURCE_LIMITS.taskQueueMax,
 		maxQueuedPerOwner: DEFAULT_RUNTIME_RESOURCE_LIMITS.taskQueueMaxPerOwner,
 	});
+	const memoryLearning = options.memoryLearning ? new MemoryLearningMaintenanceService(
+		options.memoryLearning.kernel,
+		{
+			...options.memoryLearning,
+			admit: (ownerKey, maintenance) => taskScheduler.run(ownerKey, maintenance),
+		},
+	) : undefined;
 	const planningPolicy = new AutonomousPlanningPolicy({ maxConcurrent, maxSubagents: options.maxSubagents });
 	const planningBudgets = planningPolicy.createBudgetRegistry();
 	const taskPlanRuntime = new TaskPlanRuntime((event) => options.onTaskPlanError?.(event));
@@ -96,7 +111,14 @@ export function createProfileWorkRuntime(options: ProfileWorkRuntimeOptions) {
 		},
 	});
 	if (backgroundRecoveryEnabled) recoveryService.start();
-	const objectiveRuntime = new ObjectiveRuntime(options.ledger, (input, signal) => options.deliverObjective(input, signal, executionTrace), options.publishVerifiedOutcome);
+	const objectiveRuntime = new ObjectiveRuntime(
+		options.ledger,
+		(input, signal) => options.deliverObjective(input, signal, executionTrace),
+		options.publishVerifiedOutcome ? async (outcome) => {
+			await options.publishVerifiedOutcome?.(outcome);
+			memoryLearning?.wake();
+		} : undefined,
+	);
 	const subagents = options.subagentsEnabled ? new SubagentManager({
 		maxConcurrent,
 		maxChildrenPerOwner: options.maxSubagents,
@@ -115,6 +137,7 @@ export function createProfileWorkRuntime(options: ProfileWorkRuntimeOptions) {
 		{ name: "effects", dispose: () => toolEffects.close() },
 		{ name: "task-plan", dispose: () => taskPlanRuntime.shutdown(new Error("Profile Runtime shutting down")) },
 		{ name: "recovery", dispose: () => recoveryService.stop(new Error("Profile Runtime shutting down")) },
+		...(memoryLearning ? [{ name: "memory-learning", start: () => memoryLearning.start(), dispose: () => memoryLearning.stop() }] : []),
 		...(subagents ? [{ name: "subagents", dispose: () => subagents.dispose() }] : []),
 	];
 	return {
@@ -125,6 +148,7 @@ export function createProfileWorkRuntime(options: ProfileWorkRuntimeOptions) {
 		verifyTask,
 		taskRecovery,
 		recoveryService,
+		memoryLearning,
 		objectiveRuntime,
 		subagents,
 		toolEffects,

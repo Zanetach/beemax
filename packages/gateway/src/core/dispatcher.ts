@@ -9,6 +9,7 @@ import {
 	type ToolApprovalBroker,
 	type AgentRuntimePort,
 	type DeliveryTarget,
+	type TaskLedger,
 	type TaskPlanProgressEvent,
 } from "@beemax/core";
 import type { InboundMessage, InteractionPresentationPreferences, PlatformAdapter, PlatformCardAction } from "@beemax/channel-runtime";
@@ -33,8 +34,8 @@ export interface DispatcherDeps {
 	flushIntervalMs?: number;
 	/** Bound initial/final presentation I/O so a stuck channel cannot block the Turn. */
 	presentationTimeoutMs?: number;
-	/** Abort an individual interactive turn that exceeds this duration. */
-	turnTimeoutMs?: number;
+	/** Optional Turn deadline. Null means the Objective continues until settlement or explicit cancellation. */
+	turnTimeoutMs?: number | null;
 	approvalBroker?: ToolApprovalBroker;
 	cancelTasks?: (source: InboundMessage["source"]) => number;
 	/** Isolated deployment/profile identity used for ingress idempotency. */
@@ -50,6 +51,9 @@ export interface DispatcherDeps {
 	/** Shared Profile-level ingress budget; one controller may cover every Channel Instance. */
 	ingress?: GatewayInteractionAdmission;
 	messageDeduplicator?: MessageDeduplicator;
+	/** Commits an interactive Delivery Receipt into the shared Completion Outbox. */
+	completionAcknowledger?: Required<Pick<TaskLedger, "getObjectiveCompletion" | "acknowledgeObjectiveCompletion">>;
+	beforeCompletionAcknowledged?: (completionId: string, source: InboundMessage["source"]) => void | Promise<void>;
 }
 
 export class Dispatcher {
@@ -57,7 +61,7 @@ export class Dispatcher {
 	private readonly interaction: InteractionEventAdapter<InboundMessage["source"]>;
 	private readonly deps: DispatcherDeps;
 	private readonly platform: PlatformAdapter;
-	private readonly turnTimeoutMs: number;
+	private readonly turnTimeoutMs: number | null;
 	private readonly profileId: string;
 	private readonly deduplicator: MessageDeduplicator;
 	private readonly ingress: GatewayInteractionAdmission;
@@ -76,7 +80,7 @@ export class Dispatcher {
 			approvalBroker: deps.approvalBroker,
 			cancelSubagents: deps.cancelTasks,
 		});
-		this.turnTimeoutMs = Math.max(30_000, Math.min(60 * 60_000, deps.turnTimeoutMs ?? 10 * 60_000));
+		this.turnTimeoutMs = deps.turnTimeoutMs === null ? null : Math.max(30_000, Math.min(60 * 60_000, deps.turnTimeoutMs ?? 10 * 60_000));
 		this.profileId = deps.profileId ?? "default";
 		this.deduplicator = deps.messageDeduplicator ?? new MessageDeduplicator();
 		this.ingress = deps.ingress ?? new GatewayIngressController();
@@ -169,7 +173,7 @@ export class Dispatcher {
 				admit();
 				return;
 			}
-			const primary = effective.mediaPaths.length ? undefined : this.interaction.reservePrimaryInput(effective.source, effective.text, this.turnTimeoutMs + 60_000);
+			const primary = effective.mediaPaths.length ? undefined : this.interaction.reservePrimaryInput(effective.source, effective.text, this.claimLeaseMs());
 			if (!effective.mediaPaths.length && !primary) {
 				await this.platform.send(msg.source.chatId, "当前会话队列已满（100 条），请稍后重试。");
 				admit();
@@ -209,8 +213,13 @@ export class Dispatcher {
 
 	private async runTurn(msg: InboundMessage, onReserved?: () => void): Promise<boolean> {
 		const presenter = this.platform.presentation ?? new TextInteractionPresenter(this.platform);
+		const exactSource = msg.source.messageId ? {
+			...msg.source,
+			originMessageId: msg.source.messageId,
+			replyToMessageId: msg.replyToMessageId ?? msg.source.messageId,
+		} : msg.source;
 		const presentation = presenter.open({
-			source: msg.source,
+			source: exactSource,
 			profileId: this.profileId,
 			preferences: {
 				...this.deps.presentationOptions,
@@ -225,7 +234,7 @@ export class Dispatcher {
 			let result;
 			try {
 				const media = await prepareAgentMediaInput(msg);
-				const turn = this.interaction.dispatch({ type: "message.send", source: msg.source, text: media.text, input: { timeoutMs: this.turnTimeoutMs, mode: "interactive", images: media.images } }, (event) => presentation.onEvent(event));
+				const turn = this.interaction.dispatch({ type: "message.send", source: exactSource, text: media.text, input: { timeoutMs: this.turnTimeoutMs, mode: "interactive", images: media.images } }, (event) => presentation.onEvent(event));
 				onReserved?.();
 				result = await turn;
 				if (!("answer" in result)) throw new Error("Message dispatch did not produce an Agent result");
@@ -235,7 +244,31 @@ export class Dispatcher {
 				await presentation.fail(errorText);
 				return false;
 			}
-			await presentation.finish(result.answer);
+			const completion = result.completionId ? this.deps.completionAcknowledger?.getObjectiveCompletion(result.completionId) : undefined;
+			if (result.completionId) {
+				if (!completion) {
+					console.error(`[beemax] Interactive Objective delivery deferred because its Completion is unavailable: ${result.completionId}`);
+					return true;
+				}
+				let receipt;
+				try {
+					receipt = await presentation.finish(completion.result, { idempotencyKey: completion.deliveryIdempotencyKey, deliveryClass: "interactive" });
+				} catch (error) {
+					console.error(`[beemax] Interactive Objective delivery deferred to Completion Outbox: ${result.completionId} (${error instanceof Error ? error.message : String(error)})`);
+					return true;
+				}
+				if (receipt.idempotencyKey !== completion.deliveryIdempotencyKey) {
+					console.error(`[beemax] Interactive Objective returned an invalid Delivery Receipt; Completion remains queued: ${result.completionId}`);
+					return true;
+				}
+				try { await this.deps.beforeCompletionAcknowledged?.(result.completionId, msg.source); }
+				catch { console.error(`[beemax] Interactive Objective publication deferred to Completion Outbox: ${result.completionId}`); return true; }
+				if (!this.deps.completionAcknowledger!.acknowledgeObjectiveCompletion(result.completionId, receipt)) {
+					console.error(`[beemax] Interactive Objective acknowledgement deferred to Completion Outbox: ${result.completionId}`);
+				}
+			} else {
+				await presentation.finish(result.answer);
+			}
 			return true;
 		} catch (error) {
 			failed = true;
@@ -252,7 +285,7 @@ export class Dispatcher {
 		const failed: RecoveredInput[] = [];
 		let firstFailed: RecoveredInput | undefined;
 		while (true) {
-			const input = this.interaction.claimRecoveredInputs(this.platform.name, 1, this.turnTimeoutMs + 60_000)[0];
+			const input = this.interaction.claimRecoveredInputs(this.platform.name, 1, this.claimLeaseMs())[0];
 			if (!input) break;
 			const message: InboundMessage = {
 				text: input.text,
@@ -279,7 +312,7 @@ export class Dispatcher {
 	private async drainQueuedInputs(source: InboundMessage["source"]): Promise<number> {
 		let drained = 0;
 		while (true) {
-			const input = this.interaction.claimQueuedInput(source, this.turnTimeoutMs + 60_000);
+			const input = this.interaction.claimQueuedInput(source, this.claimLeaseMs());
 			if (!input) return drained;
 			const release = await this.acquireTurnAdmission(sessionOwnerKey(source));
 			try {
@@ -295,6 +328,9 @@ export class Dispatcher {
 			} finally { release(); }
 		}
 	}
+
+	/** Recovery leases detect a crashed dispatcher; unlike a Turn deadline they never abort live work. */
+	private claimLeaseMs(): number { return this.turnTimeoutMs === null ? 60 * 60_000 : this.turnTimeoutMs + 60_000; }
 
 	isBusy(): boolean {
 		return this.runtime.isBusy();

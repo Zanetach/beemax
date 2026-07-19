@@ -13,7 +13,7 @@ test("interaction runtime translates a turn into presenter-safe semantic events"
 			await sink({ type: "model_fallback", from: "primary", to: "fallback", attempt: 1 });
 			await sink({ type: "tool_execution_start", toolCallId: "call-1", toolName: "read" });
 			await sink({ type: "message_update", message: { role: "assistant" }, assistantMessageEvent: { type: "text_delta", delta: "hello" } });
-			return { answer: "hello", model: "test/model", durationMs: 1, usage: {} };
+			return { answer: "hello", model: "test/model", durationMs: 1, usage: {}, outcome: { status: "answered" } };
 		},
 		async cancel() { return true; },
 		async modelStatus() { return { model: "test/model", thinkingLevel: "off", supportedThinkingLevels: ["off"] }; },
@@ -28,6 +28,49 @@ test("interaction runtime translates a turn into presenter-safe semantic events"
 	assert.deepEqual(events.map((event) => event.sequence), [1, 2, 3, 4, 5]);
 	assert.deepEqual(interaction.events(source, 2).map((event) => event.type), ["tool.changed", "answer.delta", "turn.finished"]);
 	assert.equal((await interaction.snapshot(source)).phase, "completed");
+});
+
+test("interaction runtime withholds a durable Candidate Outcome until Host Verification settles", async () => {
+	const runtime = {
+		async run(_input, sink) {
+			await sink({ type: "execution_started", executionEnvelope: { schemaVersion: "beemax.execution-envelope.v1", executionId: "execution:1", trigger: { kind: "interaction" }, objectiveId: "objective:1", taskId: "objective:1", mode: "normal" } });
+			await sink({ type: "message_update", message: { role: "assistant" }, assistantMessageEvent: { type: "text_delta", delta: "UNVERIFIED CANDIDATE" } });
+			return { answer: "任务尚未完成：独立 Verification 当前不可用。", model: "test/model", durationMs: 1, usage: {}, outcome: { status: "verification_unavailable", objectiveId: "objective:1" } };
+		},
+		async cancel() { return false; },
+		async modelStatus() { return undefined; },
+		async usage() { return undefined; },
+	};
+	const interaction = new InteractionEventAdapter(runtime);
+	const events = [];
+	const result = await interaction.dispatch({ type: "message.send", source, text: "produce report", input: { timeoutMs: null } }, (event) => { events.push(event); });
+
+	assert.equal(events.some((event) => event.type === "answer.delta"), false);
+	assert.deepEqual(events.map((event) => event.type), ["turn.started", "turn.finished"]);
+	assert.equal(result.answer, "任务尚未完成：独立 Verification 当前不可用。");
+	assert.equal(events.at(-1).result.outcome.status, "verification_unavailable");
+	assert.equal((await interaction.snapshot(source)).phase, "incomplete");
+});
+
+test("interaction snapshots preserve Host business outcome instead of treating every settled Turn as completed", () => {
+	const base = { phase: "running", turnId: "turn:1", updatedAt: 0 };
+	const expected = new Map([
+		[undefined, "incomplete"],
+		["answered", "completed"],
+		["accepted", "completed"],
+		["in_progress", "incomplete"],
+		["verification_unavailable", "incomplete"],
+		["rejected", "rejected"],
+		["cancelled", "cancelled"],
+	]);
+	for (const [status, phase] of expected) {
+		const event = {
+			type: "turn.finished", turnId: "turn:1", at: 1, sessionId: "session:1", sequence: 1,
+			scope: { profileId: "profile:test", platform: "cli", chatId: "local" },
+			result: { answer: "canonical", model: "test/model", durationMs: 1, usage: {}, ...(status ? { outcome: { status } } : {}) },
+		};
+		assert.equal(reduceInteractionEvent(base, event).phase, phase, status);
+	}
 });
 
 test("interaction runtime settles a rejected Agent turn instead of remaining running", async () => {
@@ -50,7 +93,7 @@ test("interaction runtime bounds execution grants to one turn", async () => {
 		subscribe() { return () => undefined; },
 	};
 	const runtime = {
-		async run() { return { answer: "ok", model: "test/model", durationMs: 1, usage: {} }; },
+		async run() { return { answer: "ok", model: "test/model", durationMs: 1, usage: {}, outcome: { status: "answered" } }; },
 		async cancel() { return false; }, async modelStatus() { return undefined; }, async usage() { return undefined; },
 	};
 	const interaction = new InteractionEventAdapter(runtime, { approvalBroker });
@@ -64,7 +107,7 @@ test("interaction runtime bounds execution grants to one turn", async () => {
 
 test("interaction runtime supports a reconnecting presenter subscription", async () => {
 	const runtime = {
-		async run(_input, sink) { await sink({ type: "message_update", message: { role: "assistant" }, assistantMessageEvent: { type: "text_delta", delta: "hello" } }); return { answer: "hello", model: "test/model", durationMs: 1, usage: {} }; },
+		async run(_input, sink) { await sink({ type: "message_update", message: { role: "assistant" }, assistantMessageEvent: { type: "text_delta", delta: "hello" } }); return { answer: "hello", model: "test/model", durationMs: 1, usage: {}, outcome: { status: "answered" } }; },
 		async cancel() { return false; }, async modelStatus() { return undefined; }, async usage() { return undefined; },
 	};
 	const interaction = new InteractionEventAdapter(runtime);
@@ -77,7 +120,7 @@ test("interaction runtime supports a reconnecting presenter subscription", async
 
 test("interaction runtime evicts inactive conversation state at a global bound", async () => {
 	const runtime = {
-		async run() { return { answer: "ok", model: "test/model", durationMs: 1, usage: {} }; },
+		async run() { return { answer: "ok", model: "test/model", durationMs: 1, usage: {}, outcome: { status: "answered" } }; },
 		async cancel() { return false; }, async modelStatus() { return undefined; }, async usage() { return undefined; },
 	};
 	const interaction = new InteractionEventAdapter(runtime, { maxTrackedInteractions: 2, eventHistoryLimit: 20 });
@@ -95,7 +138,7 @@ test("interaction runtime emits channel-neutral progress for Sub-Agents and asyn
 			await sink({ type: "tool_execution_end", toolCallId: "sub-1", toolName: "task_spawn", isError: false, result: { details: { id: "task-1" } } });
 			await sink({ type: "tool_execution_start", toolCallId: "plan-1", toolName: "task_plan_execute" });
 			await sink({ type: "tool_execution_end", toolCallId: "plan-1", toolName: "task_plan_execute", isError: false, result: { details: { planId: "plan-42", status: "running" } } });
-			return { answer: "accepted", model: "test/model", durationMs: 1, usage: {} };
+			return { answer: "accepted", model: "test/model", durationMs: 1, usage: {}, outcome: { status: "answered" } };
 		},
 		async cancel() { return false; }, async modelStatus() { return undefined; }, async usage() { return undefined; },
 	};
@@ -111,7 +154,7 @@ test("interaction runtime emits channel-neutral progress for Sub-Agents and asyn
 test("action IDs make retried controls and concurrent requests idempotent per session", async () => {
 	let runs = 0;
 	const runtime = {
-		async run() { runs++; return { answer: "ok", model: "test/model", durationMs: 1, usage: {} }; },
+		async run() { runs++; return { answer: "ok", model: "test/model", durationMs: 1, usage: {}, outcome: { status: "answered" } }; },
 		async cancel() { return false; }, async modelStatus() { return undefined; }, async usage() { return undefined; },
 	};
 	const interaction = new InteractionEventAdapter(runtime);
@@ -126,7 +169,7 @@ test("action IDs make retried controls and concurrent requests idempotent per se
 test("session opening is a Core interaction action for every presenter", async () => {
 	let opens = 0;
 	const runtime = {
-		async run() { return { answer: "ok", model: "test/model", durationMs: 1, usage: {} }; },
+		async run() { return { answer: "ok", model: "test/model", durationMs: 1, usage: {}, outcome: { status: "answered" } }; },
 		async open() { opens++; return true; }, async listSavedSessions() { return []; }, async cancel() { return false; }, async modelStatus() { return undefined; }, async usage() { return undefined; },
 	};
 	const interaction = new InteractionEventAdapter(runtime);
@@ -138,7 +181,7 @@ test("session opening is a Core interaction action for every presenter", async (
 test("session reset is likewise a Core action and remains retry-safe", async () => {
 	let resets = 0;
 	const runtime = {
-		async run() { return { answer: "ok", model: "test/model", durationMs: 1, usage: {} }; },
+		async run() { return { answer: "ok", model: "test/model", durationMs: 1, usage: {}, outcome: { status: "answered" } }; },
 		reset() { resets++; return true; }, async open() { return true; }, async cancel() { return false; }, async modelStatus() { return undefined; }, async usage() { return undefined; },
 	};
 	const interaction = new InteractionEventAdapter(runtime);
@@ -150,7 +193,7 @@ test("session reset is likewise a Core action and remains retry-safe", async () 
 test("session compaction is a Core action for all presenters", async () => {
 	let compactions = 0;
 	const runtime = {
-		async run() { return { answer: "ok", model: "test/model", durationMs: 1, usage: {} }; },
+		async run() { return { answer: "ok", model: "test/model", durationMs: 1, usage: {}, outcome: { status: "answered" } }; },
 		async compact() { compactions++; return true; }, async open() { return true; }, reset() { return false; }, async cancel() { return false; }, async modelStatus() { return undefined; }, async usage() { return undefined; },
 	};
 	const interaction = new InteractionEventAdapter(runtime);
@@ -161,7 +204,7 @@ test("session compaction is a Core action for all presenters", async () => {
 test("interaction telemetry is operational-only and does not contain model content", async () => {
 	const telemetry = [];
 	const runtime = {
-		async run(_input, sink) { await sink({ type: "model_fallback", from: "primary", to: "fallback", attempt: 1 }); await sink({ type: "message_update", message: { role: "assistant" }, assistantMessageEvent: { type: "text_delta", delta: "private answer" } }); return { answer: "private answer", model: "test/model", durationMs: 1, usage: {} }; },
+		async run(_input, sink) { await sink({ type: "model_fallback", from: "primary", to: "fallback", attempt: 1 }); await sink({ type: "message_update", message: { role: "assistant" }, assistantMessageEvent: { type: "text_delta", delta: "private answer" } }); return { answer: "private answer", model: "test/model", durationMs: 1, usage: {}, outcome: { status: "answered" } }; },
 		async cancel() { return false; }, async modelStatus() { return { model: "test/model", thinkingLevel: "off", supportedThinkingLevels: ["off"] }; }, async usage() { return undefined; },
 	};
 	const interaction = new InteractionEventAdapter(runtime, { telemetry: (event) => telemetry.push(event) });
@@ -182,7 +225,7 @@ test("planning telemetry records only operational routing fields", async () => {
 		async run(_input, sink) {
 			await sink({ type: "planning_decision", mode: "dag", concurrency: 3, maxSubagents: 4, requiredTools: ["task_plan_execute"] });
 			await sink({ type: "planning_outcome", mode: "dag", compliant: true, corrected: true });
-			return { answer: "private answer", model: "test/model", durationMs: 1, usage: {} };
+			return { answer: "private answer", model: "test/model", durationMs: 1, usage: {}, outcome: { status: "answered" } };
 		},
 		async cancel() { return false; }, async modelStatus() { return undefined; }, async usage() { return undefined; },
 	};
@@ -196,7 +239,7 @@ test("planning telemetry records only operational routing fields", async () => {
 test("capability ranking crosses the Interaction boundary as content-free metadata", async () => {
 	const telemetry = [];
 	const runtime = {
-		async run(_input, sink) { await sink({ type: "capability_ranked", candidates: [{ kind: "mcp", name: "mcp_calendar_find", score: 60, confidence: 0.6, reason: "trigger" }], activatedTools: ["mcp_calendar_find"] }); return { answer: "done", model: "test/model", durationMs: 1, usage: {} }; },
+		async run(_input, sink) { await sink({ type: "capability_ranked", candidates: [{ kind: "mcp", name: "mcp_calendar_find", score: 60, confidence: 0.6, reason: "trigger" }], activatedTools: ["mcp_calendar_find"] }); return { answer: "done", model: "test/model", durationMs: 1, usage: {}, outcome: { status: "answered" } }; },
 		async cancel() { return false; }, async modelStatus() { return undefined; }, async usage() { return undefined; },
 	};
 	const adapter = new InteractionEventAdapter(runtime, { telemetry: (event) => telemetry.push(event) });
@@ -209,7 +252,7 @@ test("capability ranking crosses the Interaction boundary as content-free metada
 test("media understanding crosses the Interaction seam without image bytes or extracted content", async () => {
 	const telemetry = [];
 	const runtime = {
-		async run(_input, sink) { await sink({ type: "media_understood", route: "adapter", adapterIds: ["local-ocr:tesseract"], receiptCount: 1, failureCount: 0, durationMs: 12 }); return { answer: "done", model: "test/model", durationMs: 13, usage: {} }; },
+		async run(_input, sink) { await sink({ type: "media_understood", route: "adapter", adapterIds: ["local-ocr:tesseract"], receiptCount: 1, failureCount: 0, durationMs: 12 }); return { answer: "done", model: "test/model", durationMs: 13, usage: {}, outcome: { status: "answered" } }; },
 		async cancel() { return false; }, async modelStatus() { return undefined; }, async usage() { return undefined; },
 	};
 	const adapter = new InteractionEventAdapter(runtime, { telemetry: (event) => telemetry.push(event) });
@@ -523,7 +566,7 @@ test("asynchronous presentation events stay ordered and surface a renderer failu
 		async run(_input, sink) {
 			void sink({ type: "message_update", message: { role: "assistant" }, assistantMessageEvent: { type: "text_delta", delta: "first" } });
 			void sink({ type: "message_update", message: { role: "assistant" }, assistantMessageEvent: { type: "text_delta", delta: "second" } });
-			return { answer: "firstsecond", model: "test/model", durationMs: 1, usage: {} };
+			return { answer: "firstsecond", model: "test/model", durationMs: 1, usage: {}, outcome: { status: "answered" } };
 		},
 		async cancel() { return false; },
 		async modelStatus() { return undefined; },

@@ -409,11 +409,13 @@ test("parent sessions expose orchestration tools while child sessions stay read-
 	const memoryStore = { remember: () => "id", recall: () => [], list: () => [], forget: () => true };
 	const manager = new SubagentManager({ execute: async () => "done" });
 	const parentFactory = buildAgentFactory({
+		profileId: "profile:test",
 		provider: "anthropic", model: "claude-sonnet-4-5", cwd, agentDir,
 		getApiKey: () => "test", memoryStore,
 		sessionTools: (sessionSource) => createSubagentTools(manager, sessionSource),
 	});
 	const childFactory = buildAgentFactory({
+		profileId: "profile:test",
 		provider: "anthropic", model: "claude-sonnet-4-5", cwd, agentDir,
 		getApiKey: () => "test", memoryStore,
 		tools: ["read", "grep", "find", "ls", "web_search", "web_extract", "memory_recall", "memory_list"],
@@ -504,6 +506,101 @@ test("Dispatcher delegates turns to an injected Agent Runtime", async () => {
 	assert.equal(runs[0].text, "hello");
 	dispatcher.dispose();
 	assert.equal(disposed, 0);
+});
+
+test("Dispatcher acknowledges a durable Objective only after interactive channel delivery succeeds", async () => {
+	let inbound;
+	const order = [];
+	const completionId = "objective-completion:objective-1";
+	const deliveryIdempotencyKey = "objective-interaction:delivery-1";
+	const unboundedAnswer = "x".repeat(50_001);
+	const canonicalResult = unboundedAnswer.slice(0, 50_000);
+	const platform = {
+		name: "feishu", isConnected: true,
+		onMessage: (handler) => { inbound = handler; }, connect: async () => true, disconnect: async () => undefined,
+		send: async (_chatId, text, options) => { order.push({ kind: "send", text, options }); return { success: true, messageId: "om-1" }; },
+		editMessage: async () => ({ success: true }), sendTyping: async () => undefined, stopTyping: async () => undefined,
+	};
+	const acknowledgements = [];
+	let runtimeSource;
+	const dispatcher = new Dispatcher({
+		runtime: { run: async (input) => { runtimeSource = input.source; return { answer: unboundedAnswer, model: "test", durationMs: 1, usage: {}, completionId }; }, cancel: async () => false, handleControl: async () => undefined, isBusy: () => false, dispose: () => undefined },
+		completionAcknowledger: {
+			getObjectiveCompletion: () => ({ id: completionId, objectiveId: "objective-1", ownerKey: "owner", target: { platform: "feishu", chatId: "chat-1" }, deliveryIdempotencyKey, title: "work", result: canonicalResult, status: "queued", attempts: 0, nextAttemptAt: 0, createdAt: 0 }),
+			acknowledgeObjectiveCompletion: (id, receipt) => { order.push({ kind: "ack" }); acknowledgements.push({ id, receipt }); return true; },
+		},
+		beforeCompletionAcknowledged: () => { order.push({ kind: "publish" }); },
+	}, platform);
+	await inbound({ text: "do work", messageType: "text", source: { ...source, messageId: "completion-turn" }, replyToMessageId: "thread-root", mediaPaths: [], mediaTypes: [], raw: {}, timestamp: Date.now() });
+	for (let attempt = 0; acknowledgements.length === 0 && attempt < 100; attempt++) await new Promise((resolve) => setTimeout(resolve, 2));
+	assert.deepEqual(order.map(({ kind }) => kind), ["send", "publish", "ack"]);
+	assert.equal(order[0].text, canonicalResult, "interactive and Outbox delivery must use the same canonical payload");
+	assert.equal(order[0].options.idempotencyKey, deliveryIdempotencyKey);
+	assert.equal(order[0].options.replyTo, "thread-root");
+	assert.equal(order[0].options.replyInThread, false);
+	assert.equal(acknowledgements[0].id, completionId);
+	assert.equal(acknowledgements[0].receipt.idempotencyKey, deliveryIdempotencyKey);
+	assert.equal(acknowledgements[0].receipt.providerMessageId, "om-1");
+	assert.equal(runtimeSource.originMessageId, "completion-turn");
+	assert.equal(runtimeSource.replyToMessageId, "thread-root");
+	await dispatcher.dispose();
+});
+
+test("Dispatcher leaves a delivered Completion queued when Memory publication fails without replaying Pi", async () => {
+	let inbound, runs = 0, sends = 0, acknowledgements = 0;
+	const completionId = "objective-completion:publication-retry";
+	const dispatcher = new Dispatcher({
+		runtime: { run: async () => { runs++; return { answer: "verified result", model: "test", durationMs: 1, usage: {}, completionId }; }, cancel: async () => false, handleControl: async () => undefined, isBusy: () => false, dispose: () => undefined },
+		completionAcknowledger: {
+			getObjectiveCompletion: () => ({ id: completionId, objectiveId: "publication-retry", ownerKey: "owner", target: { platform: "feishu", chatId: "chat-1" }, deliveryIdempotencyKey: "delivery:publication-retry", title: "work", result: "verified result", status: "queued", attempts: 0, nextAttemptAt: 0, createdAt: 0 }),
+			acknowledgeObjectiveCompletion: () => { acknowledgements++; return true; },
+		},
+		beforeCompletionAcknowledged: async () => { throw new Error("memory unavailable"); },
+	}, {
+		name: "feishu", isConnected: true,
+		onMessage: (handler) => { inbound = handler; }, connect: async () => true, disconnect: async () => undefined,
+		send: async () => { sends++; return { success: true, messageId: "om-1" }; },
+		editMessage: async () => ({ success: true }), sendTyping: async () => undefined, stopTyping: async () => undefined,
+	});
+	await inbound({ text: "do work", messageType: "text", source: { ...source, messageId: "publication-turn" }, mediaPaths: [], mediaTypes: [], raw: {}, timestamp: Date.now() });
+	for (let attempt = 0; sends === 0 && attempt < 100; attempt++) await new Promise((resolve) => setTimeout(resolve, 2));
+	assert.deepEqual({ runs, sends, acknowledgements }, { runs: 1, sends: 1, acknowledgements: 0 });
+	await dispatcher.dispose();
+});
+
+test("Dispatcher defers Completion delivery failure without marking the accepted turn failed or replaying Pi", async () => {
+	let inbound, runs = 0, acknowledgements = 0;
+	const closed = [];
+	const completionId = "objective-completion:delivery-retry";
+	const message = { text: "do work", messageType: "text", source: { ...source, messageId: "delivery-retry-turn" }, mediaPaths: [], mediaTypes: [], raw: {}, timestamp: Date.now() };
+	const platform = {
+		name: "feishu", isConnected: true,
+		onMessage: (handler) => { inbound = handler; }, connect: async () => true, disconnect: async () => undefined,
+		send: async () => ({ success: true }), editMessage: async () => ({ success: true }),
+		sendTyping: async () => undefined, stopTyping: async () => undefined,
+		presentation: {
+			open: () => ({
+				start: async () => undefined,
+				onEvent: async () => undefined,
+				finish: async () => { throw new Error("provider unavailable"); },
+				fail: async () => undefined,
+				close: async (failed) => { closed.push(failed); },
+			}),
+		},
+	};
+	const dispatcher = new Dispatcher({
+		runtime: { run: async () => { runs++; return { answer: "verified result", model: "test", durationMs: 1, usage: {}, completionId }; }, cancel: async () => false, handleControl: async () => undefined, isBusy: () => false, dispose: () => undefined },
+		completionAcknowledger: {
+			getObjectiveCompletion: () => ({ id: completionId, objectiveId: "delivery-retry", ownerKey: "owner", target: { platform: "feishu", chatId: "chat-1" }, deliveryIdempotencyKey: "delivery:retry", title: "work", result: "verified result", status: "queued", attempts: 0, nextAttemptAt: 0, createdAt: 0 }),
+			acknowledgeObjectiveCompletion: () => { acknowledgements++; return true; },
+		},
+	}, platform);
+	await inbound(message);
+	for (let attempt = 0; closed.length === 0 && attempt < 100; attempt++) await new Promise((resolve) => setTimeout(resolve, 2));
+	await inbound(message);
+	await new Promise((resolve) => setTimeout(resolve, 10));
+	assert.deepEqual({ runs, acknowledgements, closed }, { runs: 1, acknowledgements: 0, closed: [false] });
+	await dispatcher.dispose();
 });
 
 test("Dispatcher forwards authorized card approval actions through the Core semantic boundary", async () => {

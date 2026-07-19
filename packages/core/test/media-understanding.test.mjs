@@ -3,11 +3,14 @@ import test from "node:test";
 import { fauxAssistantMessage, registerFauxProvider } from "@earendil-works/pi-ai/compat";
 import {
 	BeeMaxAgentRuntime,
+	DeterministicWorkContractBuilder,
 	MediaUnderstandingRuntime,
 	MediaUnderstandingUnavailableError,
 	PiVisionMediaUnderstandingAdapter,
 	renderMediaUnderstandingEvidence,
 } from "../dist/index.js";
+
+const createRuntime = (options) => new BeeMaxAgentRuntime({ profileId: "profile:test", interactiveAdmission: "contract_first", workContractBuilder: new DeterministicWorkContractBuilder(), ...options });
 
 const image = { type: "image", mimeType: "image/png", data: Buffer.from("pixels").toString("base64") };
 const textModel = { provider: "test", id: "text", input: ["text"] };
@@ -133,7 +136,7 @@ test("BeeMax Agent Runtime digests images before prompting a text-only Pi model"
 	const agent = { state: { model: textModel, messages: [] } };
 	let prompted;
 	const events = [];
-	const runtime = new BeeMaxAgentRuntime({
+	const runtime = createRuntime({
 		mediaUnderstanding: new MediaUnderstandingRuntime([adapter("ocr", 90, { text: "Invoice total 88.00", confidence: 0.95 })]),
 		createAgent: async () => ({
 			agent,
@@ -150,6 +153,7 @@ test("BeeMax Agent Runtime digests images before prompting a text-only Pi model"
 		const result = await runtime.run({ source: { platform: "cli", chatId: "media", chatType: "dm", userId: "user" }, text: "what is the total?", images: [image], timeoutMs: 1_000, mode: "automation" }, (event) => events.push(event));
 		assert.equal(result.answer, "88.00");
 		assert.match(prompted.text, /Invoice total 88\.00/);
+		assert.match(prompted.text, /<beemax-tool-spec-plan>/);
 		assert.equal(prompted.options.images, undefined);
 		assert.deepEqual(events.filter((event) => event.type === "media_understood").map((event) => ({ route: event.route, adapterIds: event.adapterIds })), [{ route: "adapter", adapterIds: ["ocr"] }]);
 	} finally { runtime.dispose(); }
@@ -172,7 +176,7 @@ test("native vision failure is recovered through media evidence before text-mode
 	const prompts = [];
 	const agent = { state: { model: visionModel, messages: [] } };
 	const textFallback = { ...textModel, api: "test", name: "Text", reasoning: false, contextWindow: 1000, maxTokens: 100, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } };
-	const runtime = new BeeMaxAgentRuntime({
+	const runtime = createRuntime({
 		mediaUnderstanding: new MediaUnderstandingRuntime([adapter("ocr", 90, { text: "Recovered label", confidence: 0.95 })]),
 		fallbackModels: [textFallback],
 		createAgent: async () => ({

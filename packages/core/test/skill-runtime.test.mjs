@@ -45,6 +45,23 @@ test("Skill Runtime enforces discover, activate, route and declared-resource ord
 	} finally { rmSync(f.root, { recursive: true, force: true }); }
 });
 
+test("Skill Runtime preserves other admitted Skills for sequential completion", async () => {
+	const f = fixture();
+	const second = join(f.skills, "final-review"); mkdirSync(second);
+	writeFileSync(join(second, "SKILL.md"), "---\nname: final-review\ndescription: Final review after contract analysis\n---\nPerform the final review.");
+	try {
+		const runtime = new SkillRuntime(new SkillRegistry([f.skills]));
+		await runtime.admitDiscovered(["contract-review", "final-review"]);
+		await runtime.activate("contract-review"); await runtime.routeTo("commercial");
+		await runtime.readResource("modules/commercial.md"); await runtime.readResource("references/risk.md"); runtime.complete();
+		assert.equal(runtime.isDiscovered("final-review"), true);
+		const activation = await runtime.activate("final-review"); assert.match(activation.instructions, /final review/i);
+		await runtime.routeTo("legacy"); runtime.useActivatedInstructionsAsModule();
+		assert.equal(runtime.complete().skill, "final-review");
+		assert.equal(runtime.snapshot().state, "idle");
+	} finally { rmSync(f.root, { recursive: true, force: true }); }
+});
+
 test("Skill Runtime fences a changed Skill and blocks path escape and resource budget overflow", async () => {
 	const f = fixture();
 	try {

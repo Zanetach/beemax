@@ -4,6 +4,7 @@ export interface CapabilityRankingEvaluationCase {
 	id: string;
 	query: string;
 	expected?: string;
+	required?: readonly string[];
 	forbidden?: readonly string[];
 }
 
@@ -15,7 +16,7 @@ export interface CapabilityRankingEvaluationFailure {
 }
 
 export interface CapabilityRankingEvaluationReport {
-	strategy: CapabilityRankingStrategy | "unknown";
+	strategy: CapabilityRankingStrategy | "progressive" | "unknown";
 	cases: number;
 	metrics: { top1Accuracy: number; topKRecall: number; forbiddenActivationRate: number; noMatchPrecision: number };
 	failures: CapabilityRankingEvaluationFailure[];
@@ -36,6 +37,7 @@ export async function evaluateCapabilityRanking(input: {
 	const names = new Set(inventory.map((descriptor) => descriptor.name));
 	for (const scenario of input.cases) {
 		if (scenario.expected && !names.has(scenario.expected)) throw new Error(`Evaluation case ${scenario.id} expects unknown Capability ${scenario.expected}`);
+		for (const requiredName of scenario.required ?? []) if (!names.has(requiredName)) throw new Error(`Evaluation case ${scenario.id} requires unknown Capability ${requiredName}`);
 		for (const forbidden of scenario.forbidden ?? []) if (!names.has(forbidden)) throw new Error(`Evaluation case ${scenario.id} forbids unknown Capability ${forbidden}`);
 	}
 	const limit = Math.max(1, Math.min(Math.trunc(input.limit ?? 5), 100));
@@ -44,13 +46,14 @@ export async function evaluateCapabilityRanking(input: {
 	const failures: CapabilityRankingEvaluationFailure[] = [];
 	const strategies = new Set<CapabilityRankingStrategy>();
 	for (const scenario of input.cases) {
-		const ranked = await input.ranker.rank(required(scenario.query, "Evaluation query", 2_000), inventory, limit);
+		const ranked = await input.ranker.rank(required(scenario.query, "Evaluation query", 2_000), inventory, limit, undefined, { cognitionId: `eval:${Buffer.from(scenario.id).toString("base64url").slice(0, 120)}` });
 		for (const item of ranked) strategies.add(item.explanation.strategy);
 		const observed = ranked.filter((item) => item.confidence >= threshold).map((item) => item.descriptor.name);
+		const requiredCapabilities = [...new Set(scenario.required?.length ? scenario.required : scenario.expected ? [scenario.expected] : [])];
 		if (scenario.expected) {
 			expectedCases++;
 			if (observed[0] === scenario.expected) top1++; else failures.push({ caseId: scenario.id, code: "top1_miss", expected: scenario.expected, observed });
-			if (observed.includes(scenario.expected)) topK++; else failures.push({ caseId: scenario.id, code: "topk_miss", expected: scenario.expected, observed });
+			if (requiredCapabilities.every((name) => observed.includes(name))) topK++; else failures.push({ caseId: scenario.id, code: "topk_miss", expected: scenario.expected, observed });
 		} else {
 			negativeCases++;
 			if (!observed.length) quietNegatives++; else failures.push({ caseId: scenario.id, code: "unexpected_activation", observed });
@@ -61,7 +64,7 @@ export async function evaluateCapabilityRanking(input: {
 		}
 	}
 	return {
-		strategy: strategies.size === 1 ? [...strategies][0]! : "unknown",
+		strategy: strategies.size === 1 ? [...strategies][0]! : strategies.size === 2 && strategies.has("lexical") && strategies.has("semantic") ? "progressive" : "unknown",
 		cases: input.cases.length,
 		metrics: { top1Accuracy: expectedCases ? top1 / expectedCases : 1, topKRecall: expectedCases ? topK / expectedCases : 1, forbiddenActivationRate: forbiddenCases ? forbiddenActivations / forbiddenCases : 0, noMatchPrecision: negativeCases ? quietNegatives / negativeCases : 1 },
 		failures,

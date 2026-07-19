@@ -112,6 +112,75 @@ test("semantic loss after compaction restores the authoritative Task contract ev
 	assert.equal(recovered.recoveryContext, preservation);
 });
 
+test("Task preservation retains the durable Work Contract, unresolved criteria, Artifact references, and bounded scope state", () => {
+	const rawRequest = "生成报告；不要发布；只保存草稿";
+	const preservation = buildTaskPreservationEnvelope([{
+		id: "objective-contract",
+		ownerKey: "owner",
+		kind: "objective",
+		title: "生成报告",
+		status: "running",
+		createdAt: 1,
+		workContract: {
+			schemaVersion: "beemax.work-contract.v1", rawRequest, action: "create",
+			objective: { text: "生成报告", source: { kind: "raw_request", start: 0, end: 4 } },
+			constraints: [],
+			prohibitions: [{ text: "不要发布", source: { kind: "raw_request", start: 5, end: 9 } }],
+			acceptanceCriteria: [{ text: "只保存草稿", source: { kind: "raw_request", start: 10, end: 15 } }],
+			capabilityRequirements: [], uncertainties: [], executionMode: "direct", confidence: 0.95,
+		},
+		criterionVerifications: [{ criterionId: "C1", criterion: "只保存草稿", status: "unavailable", evidenceRefs: [] }],
+		unresolvedIssues: ["尚未确认草稿存在"],
+		artifacts: [{ type: "reference", uri: "beemax-artifact:sha256:fixture", label: "draft evidence" }],
+		accessScopeRef: { id: "scope:private", trust: "verified", authority: { kind: "enterprise_system", reference: "iam:private" }, issuedAt: 1 },
+	}]);
+	assert.match(preservation, /生成报告；不要发布；只保存草稿/u);
+	assert.match(preservation, /不要发布/u);
+	assert.match(preservation, /criterionId\\?"?:\\?"?C1/u);
+	assert.match(preservation, /尚未确认草稿存在/u);
+	assert.match(preservation, /beemax-artifact:sha256:fixture/u);
+	assert.match(preservation, /accessScopeBound/u);
+	assert.doesNotMatch(preservation, /scope:private|iam:private/u);
+});
+
+test("near-budget preservation keeps the original request fingerprint and latest revision instead of collapsing to Task identity", () => {
+	const taskId = "objective-budget-pressure";
+	const originalRawRequest = `原始请求${"x".repeat(10_000)}`;
+	const original = { schemaVersion: "beemax.work-contract.v1", rawRequest: originalRawRequest, action: "create", objective: { text: "原始请求", source: { kind: "raw_request", start: 0, end: 4 } }, constraints: [], prohibitions: [], acceptanceCriteria: [], capabilityRequirements: [], uncertainties: [], executionMode: "direct", confidence: 1 };
+	const objectiveRevisions = Array.from({ length: 20 }, (_value, index) => {
+		const prohibitionTexts = [`禁止发布-${index}`, `不得外发-${index}`, `不要删除-${index}`, `never overwrite-${index}`];
+		const rawRequest = `修正-${index}；${prohibitionTexts.join("；")}`;
+		return {
+			id: `${taskId}:revision:${index + 1}`, createdAt: index + 2,
+			workContract: { schemaVersion: "beemax.work-contract.v1", rawRequest, action: "correct", objective: { text: "原始请求", source: { kind: "active_objective", id: taskId } }, constraints: [], prohibitions: prohibitionTexts.map((text) => ({ text, source: { kind: "raw_request", start: rawRequest.indexOf(text), end: rawRequest.indexOf(text) + text.length } })), acceptanceCriteria: [], capabilityRequirements: [], uncertainties: [], executionMode: "direct", confidence: 1 },
+			situation: { summary: `采用第 ${index} 次修正`, goals: ["完成原目标"], constraints: prohibitionTexts, uncertainties: [], relevantMemoryIds: [], relevantTaskIds: [], observations: [], possibleActions: [], confidence: 1 },
+		};
+	});
+	const preservation = buildTaskPreservationEnvelope([{
+		id: taskId, ownerKey: "owner", kind: "objective", title: "原始请求", status: "running", createdAt: 1, workContract: original, objectiveRevisions,
+		criterionVerifications: Array.from({ length: 5 }, (_value, index) => ({ criterionId: `C${index + 1}`, criterion: `保留待验证约束-${index + 1}`, status: "unavailable", evidenceRefs: [] })),
+		artifacts: Array.from({ length: 5 }, (_value, index) => ({ type: "reference", uri: `beemax-artifact:sha256:budget-${index + 1}`, label: `evidence-${index + 1}` })),
+		accessScopeRef: { id: "scope:budget-secret", trust: "verified", authority: { kind: "enterprise_system", reference: "iam:budget-secret" }, issuedAt: 1 },
+	}], 6_000);
+	assert.ok(Buffer.byteLength(preservation) <= 6_000);
+	assert.match(preservation, /objective-budget-pressure/u);
+	assert.match(preservation, /rawRequestSha256/u);
+	assert.match(preservation, /原始请求/u);
+	assert.match(preservation, /修正-19/u);
+	assert.match(preservation, /禁止发布-19/u);
+	assert.match(preservation, /不得外发-19/u);
+	assert.match(preservation, /不要删除-19/u);
+	assert.match(preservation, /never overwrite-19/u);
+	assert.match(preservation, /"total":20,"omitted":19/u);
+	assert.match(preservation, /"unresolvedCriteria":\{"total":5,"retained":3,"omitted":2/u);
+	assert.match(preservation, /"artifactRefs":\{"total":5,"retained":3,"omitted":2/u);
+	assert.match(preservation, /requiresTaskLedgerReread/u);
+	assert.match(preservation, /reread this Objective from Task Ledger/u);
+	assert.match(preservation, /保留待验证约束-1/u);
+	assert.match(preservation, /beemax-artifact:sha256:budget-1/u);
+	assert.doesNotMatch(preservation, /scope:budget-secret|iam:budget-secret/u);
+});
+
 test("Profile compaction overrides are explicit and fail closed when they cannot fit", () => {
 	assert.deepEqual(planContextCompaction({ contextWindow: 128_000, enabled: false, reserveTokens: 20_000, keepRecentTokens: 24_000 }), {
 		enabled: false,

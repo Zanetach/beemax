@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
-# Install the local OCR runtime used by BeeMax when no vision model is available.
+# Install local OCR and the Linux CJK font coverage used by report rendering.
 set -euo pipefail
 
 MEDIA_DEPS_ENABLED="${BEEMAX_INSTALL_MEDIA_DEPS:-1}"
 TESSERACT_BIN="${BEEMAX_TESSERACT:-tesseract}"
+FC_LIST_BIN="${BEEMAX_FC_LIST:-fc-list}"
 
 case "${MEDIA_DEPS_ENABLED}" in
 	0|false|FALSE|no|NO|off|OFF)
@@ -11,11 +12,6 @@ case "${MEDIA_DEPS_ENABLED}" in
 		exit 0
 		;;
 esac
-
-if command -v "${TESSERACT_BIN}" >/dev/null 2>&1; then
-	echo "BeeMax media dependency ready: $("${TESSERACT_BIN}" --version 2>&1 | head -n 1)"
-	exit 0
-fi
 
 detect_platform() {
 	if [[ -n "${BEEMAX_INSTALL_OS:-}" ]]; then
@@ -41,23 +37,38 @@ detect_platform() {
 	esac
 }
 
+tesseract_ready() {
+	command -v "${TESSERACT_BIN}" >/dev/null 2>&1
+}
+
+ubuntu_cjk_font_ready() {
+	command -v "${FC_LIST_BIN}" >/dev/null 2>&1 || return 1
+	local families
+	families="$("${FC_LIST_BIN}" :lang=zh-cn family 2>/dev/null || true)"
+	[[ -n "${families//[[:space:]]/}" ]]
+}
+
+print_ready() {
+	echo "BeeMax media dependencies ready: $("${TESSERACT_BIN}" --version 2>&1 | head -n 1)"
+}
+
 install_ubuntu() {
 	local apt_get="${BEEMAX_APT_GET:-apt-get}"
 	local effective_uid="${BEEMAX_INSTALL_EUID:-$(id -u)}"
-	local -a packages=(tesseract-ocr tesseract-ocr-eng tesseract-ocr-chi-sim)
+	local -a packages=(tesseract-ocr tesseract-ocr-eng tesseract-ocr-chi-sim fonts-noto-cjk)
 
 	command -v "${apt_get}" >/dev/null 2>&1 || {
-		echo "BeeMax could not install Tesseract: apt-get is unavailable." >&2
+		echo "BeeMax could not install OCR and CJK report dependencies: apt-get is unavailable." >&2
 		exit 1
 	}
 
-	echo "BeeMax is installing local OCR (English and Simplified Chinese) with apt-get..."
+	echo "BeeMax is installing local OCR and CJK report fonts with apt-get..."
 	if [[ "${effective_uid}" == "0" ]]; then
 		env DEBIAN_FRONTEND=noninteractive "${apt_get}" update
 		env DEBIAN_FRONTEND=noninteractive "${apt_get}" install -y --no-install-recommends "${packages[@]}"
 	else
 		command -v sudo >/dev/null 2>&1 || {
-			echo "BeeMax needs sudo to install Tesseract. Re-run the installer with sudo access, or preinstall Tesseract." >&2
+			echo "BeeMax needs sudo to install OCR and CJK report dependencies. Re-run the installer with sudo access, or preinstall them." >&2
 			exit 1
 		}
 		sudo env DEBIAN_FRONTEND=noninteractive "${apt_get}" update
@@ -76,17 +87,39 @@ install_macos() {
 	"${brew}" install tesseract tesseract-lang
 }
 
-case "$(detect_platform)" in
-	ubuntu|debian) install_ubuntu ;;
-	macos) install_macos ;;
+PLATFORM="$(detect_platform)"
+case "${PLATFORM}" in
+	ubuntu|debian)
+		if tesseract_ready && ubuntu_cjk_font_ready; then
+			print_ready
+			exit 0
+		fi
+		install_ubuntu
+		;;
+	macos)
+		if tesseract_ready; then
+			print_ready
+			exit 0
+		fi
+		install_macos
+		;;
 	*)
+		if tesseract_ready; then
+			print_ready
+			exit 0
+		fi
 		echo "BeeMax cannot automatically install Tesseract on this operating system. Preinstall it or set BEEMAX_INSTALL_MEDIA_DEPS=0." >&2
 		exit 1
 		;;
 esac
 
-if ! command -v "${TESSERACT_BIN}" >/dev/null 2>&1; then
+if ! tesseract_ready; then
 	echo "BeeMax installed the OCR packages, but tesseract is not available on PATH." >&2
+	exit 1
+fi
+
+if [[ "${PLATFORM}" == "ubuntu" || "${PLATFORM}" == "debian" ]] && ! ubuntu_cjk_font_ready; then
+	echo "BeeMax installed the media packages, but no Simplified Chinese font is visible through fontconfig." >&2
 	exit 1
 fi
 

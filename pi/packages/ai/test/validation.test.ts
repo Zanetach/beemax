@@ -1,7 +1,7 @@
 import { Type } from "typebox";
 import { describe, expect, it } from "vitest";
 import type { Tool, ToolCall } from "../src/types.ts";
-import { validateToolArguments } from "../src/utils/validation.ts";
+import { ToolArgumentsValidationError, validateToolArguments } from "../src/utils/validation.ts";
 
 function createToolCallWithPlainSchema(
 	schema: Tool["parameters"],
@@ -111,6 +111,37 @@ describe("validateToolArguments", () => {
 		for (const testCase of failingCases) {
 			const { tool, toolCall } = createToolCallWithPlainSchema(testCase.schema, testCase.input);
 			expect(() => validateToolArguments(tool, toolCall)).toThrow("Validation failed");
+		}
+	});
+
+	it("reports actionable validation paths without echoing argument values", () => {
+		const secret = "sk-test-never-echo-this-value";
+		const tool: Tool = {
+			name: "publish",
+			description: "Publish a document",
+			parameters: Type.Object({
+				title: Type.String(),
+				options: Type.Object({ retries: Type.Integer() }),
+			}),
+		};
+		const toolCall: ToolCall = {
+			type: "toolCall",
+			id: "tool-secret",
+			name: "publish",
+			arguments: { title: secret, options: { retries: "not-an-integer" } },
+		};
+
+		try {
+			validateToolArguments(tool, toolCall);
+			expect.unreachable("validation should reject malformed arguments");
+		} catch (error) {
+			expect(error).toBeInstanceOf(ToolArgumentsValidationError);
+			const validationError = error as ToolArgumentsValidationError;
+			expect(validationError.issues).toEqual(
+				expect.arrayContaining([expect.objectContaining({ path: "options.retries" })]),
+			);
+			expect(validationError.message).not.toContain(secret);
+			expect(validationError.message).not.toContain("Received arguments");
 		}
 	});
 });

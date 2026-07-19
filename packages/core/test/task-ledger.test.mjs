@@ -50,6 +50,16 @@ test("delegated work retains its parent Objective", async () => {
 	await manager.dispose();
 });
 
+test("delegated work carries exact Acceptance Criteria into isolated execution", async () => {
+	let executorTask;
+	const manager = new SubagentManager({ execute: async (task) => { executorTask = task; return "done"; } });
+	const acceptanceCriteria = "Return exactly two independently accessible source URLs.";
+	const delegated = manager.spawn(source, { goal: "Research the weekly market move", acceptanceCriteria });
+	await manager.wait(source, delegated.id, 1_000);
+	assert.equal(executorTask.acceptanceCriteria, acceptanceCriteria);
+	await manager.dispose();
+});
+
 test("single Delegation persists as a recoverable one-Task Plan only with explicit safe-retry authority", async () => {
 	const records = new Map(); const plans = new Map();
 	const ledger = {

@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "routes": {
+    "research": {
+      "description": "Gather one current fixture source and produce a verified brief",
+      "module": "workflow.md",
+      "references": ["references/source-policy.md"],
+      "tools": ["web_search"]
+    }
+  }
+}

@@ -1,0 +1,240 @@
+{
+  "schemaVersion": 1,
+  "generatedAt": "2026-07-19T05:04:59.180Z",
+  "profile": "personal",
+  "models": [
+    "anthropic/glm-5.2/anthropic-messages",
+    "anthropic/glm-latest/anthropic-messages"
+  ],
+  "implementationDigest": "sha256:5f9a7f4f824317b107c9d1f58e693b27c842c9250bc537280dec8f1d38680b1c",
+  "cases": [
+    {
+      "id": "model-first-explain-zh",
+      "request": "解释合同驱动",
+      "mode": "interactive",
+      "expectedBasis": "raw_prompt",
+      "expectedPlanningMode": "direct",
+      "observedAdmissionLane": "raw_prompt",
+      "planningBasis": "raw_prompt",
+      "planningMode": "direct",
+      "workContractCalls": 0,
+      "workContractAdmitted": false,
+      "workContractProviderTurns": 0,
+      "workContractTokens": 0,
+      "workContractProviderEvidence": [],
+      "model": "glm-5.2",
+      "mainPiProviderEvidence": [
+        {
+          "modelIdentity": "anthropic/glm-5.2/anthropic-messages",
+          "providerResponseStatus": "reported",
+          "providerResponseIdentitySha256": "sha256:3d21d3200f021f14f3313b955a612090fe661047686d614ec8ef826867f22391",
+          "inputTokens": 696,
+          "outputTokens": 1385,
+          "traceCorrelated": true
+        }
+      ],
+      "answerChars": 774,
+      "outcomeStatus": "answered",
+      "inputTokens": 696,
+      "outputTokens": 1385,
+      "totalTokens": 2081,
+      "durationMs": 27390
+    },
+    {
+      "id": "model-first-unknown-en",
+      "request": "Why is idempotency useful?",
+      "mode": "interactive",
+      "expectedBasis": "raw_prompt",
+      "expectedPlanningMode": "direct",
+      "observedAdmissionLane": "raw_prompt",
+      "planningBasis": "raw_prompt",
+      "planningMode": "direct",
+      "workContractCalls": 0,
+      "workContractAdmitted": false,
+      "workContractProviderTurns": 0,
+      "workContractTokens": 0,
+      "workContractProviderEvidence": [],
+      "model": "glm-5.2",
+      "mainPiProviderEvidence": [
+        {
+          "modelIdentity": "anthropic/glm-5.2/anthropic-messages",
+          "providerResponseStatus": "reported",
+          "providerResponseIdentitySha256": "sha256:0fb366d66f13a1daf9fc154cdd8223114d2e0c62733fb63b33fed9b08e974329",
+          "inputTokens": 703,
+          "outputTokens": 411,
+          "traceCorrelated": true
+        }
+      ],
+      "answerChars": 990,
+      "outcomeStatus": "answered",
+      "inputTokens": 703,
+      "outputTokens": 411,
+      "totalTokens": 1114,
+      "durationMs": 8492
+    },
+    {
+      "id": "model-first-comparison",
+      "request": "Compare idempotency with deduplication conceptually without external sources.",
+      "mode": "interactive",
+      "expectedBasis": "raw_prompt",
+      "expectedPlanningMode": "direct",
+      "observedAdmissionLane": "raw_prompt",
+      "planningBasis": "raw_prompt",
+      "planningMode": "direct",
+      "workContractCalls": 0,
+      "workContractAdmitted": false,
+      "workContractProviderTurns": 0,
+      "workContractTokens": 0,
+      "workContractProviderEvidence": [],
+      "model": "glm-5.2",
+      "mainPiProviderEvidence": [
+        {
+          "modelIdentity": "anthropic/glm-5.2/anthropic-messages",
+          "providerResponseStatus": "reported",
+          "providerResponseIdentitySha256": "sha256:2ae91c7b0d3b0f14e07a24fa6f9446b1e0b33486466cef930e657041c75a3153",
+          "inputTokens": 705,
+          "outputTokens": 1301,
+          "traceCorrelated": true
+        }
+      ],
+      "answerChars": 2359,
+      "outcomeStatus": "answered",
+      "inputTokens": 705,
+      "outputTokens": 1301,
+      "totalTokens": 2006,
+      "durationMs": 27444
+    },
+    {
+      "id": "model-first-current-query",
+      "request": "What happened in the gold market yesterday? State clearly if current evidence is unavailable.",
+      "mode": "interactive",
+      "expectedBasis": "raw_prompt",
+      "expectedPlanningMode": "direct",
+      "observedAdmissionLane": "raw_prompt",
+      "planningBasis": "raw_prompt",
+      "planningMode": "direct",
+      "workContractCalls": 0,
+      "workContractAdmitted": false,
+      "workContractProviderTurns": 0,
+      "workContractTokens": 0,
+      "workContractProviderEvidence": [],
+      "model": "glm-5.2",
+      "mainPiProviderEvidence": [
+        {
+          "modelIdentity": "anthropic/glm-5.2/anthropic-messages",
+          "providerResponseStatus": "reported",
+          "providerResponseIdentitySha256": "sha256:e5fab7891129217e74cc0daa2e10cb667d044e1f9a325fcb2a4d47bc67c05d99",
+          "inputTokens": 704,
+          "outputTokens": 249,
+          "traceCorrelated": true
+        }
+      ],
+      "answerChars": 447,
+      "outcomeStatus": "answered",
+      "inputTokens": 704,
+      "outputTokens": 249,
+      "totalTokens": 953,
+      "durationMs": 5425
+    },
+    {
+      "id": "model-first-artifact-intent",
+      "request": "调研过去一周黄金走势，说明应如何输出 HTML 和 PDF 文件；没有工具时明确说明限制。",
+      "mode": "interactive",
+      "expectedBasis": "raw_prompt",
+      "expectedPlanningMode": "direct",
+      "observedAdmissionLane": "raw_prompt",
+      "planningBasis": "raw_prompt",
+      "planningMode": "direct",
+      "workContractCalls": 0,
+      "workContractAdmitted": false,
+      "workContractProviderTurns": 0,
+      "workContractTokens": 0,
+      "workContractProviderEvidence": [],
+      "model": "glm-5.2",
+      "mainPiProviderEvidence": [
+        {
+          "modelIdentity": "anthropic/glm-5.2/anthropic-messages",
+          "providerResponseStatus": "reported",
+          "providerResponseIdentitySha256": "sha256:34e859140ee1e4fdcb12056fc5d596d4c424d37b630983474dab7e10876abdb5",
+          "inputTokens": 717,
+          "outputTokens": 1031,
+          "traceCorrelated": true
+        }
+      ],
+      "answerChars": 1488,
+      "outcomeStatus": "answered",
+      "inputTokens": 717,
+      "outputTokens": 1031,
+      "totalTokens": 1748,
+      "durationMs": 19873
+    },
+    {
+      "id": "durable-automation",
+      "request": "解释幂等性的含义",
+      "mode": "automation",
+      "expectedBasis": "work_contract",
+      "expectedPlanningMode": "direct",
+      "observedAdmissionLane": "work_contract",
+      "planningBasis": "work_contract",
+      "planningMode": "direct",
+      "workContractCalls": 1,
+      "workContractAdmitted": true,
+      "workContractProviderTurns": 2,
+      "workContractTokens": 324,
+      "workContractProviderEvidence": [
+        {
+          "model": "anthropic/glm-5.2/anthropic-messages",
+          "durationMs": 2149,
+          "inputTokens": 65,
+          "outputTokens": 106,
+          "providerResponseStatus": "reported",
+          "providerResponseIdentitySha256": "sha256:e96e8894bb274fdc5877ac2320921159838dea7d0267ec37c4d5c1df192703bd",
+          "contentSha256": "sha256:0e3caed2b14fd8c05859923145e0b30fbc97d98a5f0190f16c6720d172467d35"
+        },
+        {
+          "model": "anthropic/glm-latest/anthropic-messages",
+          "durationMs": 2359,
+          "inputTokens": 64,
+          "outputTokens": 89,
+          "providerResponseStatus": "reported",
+          "providerResponseIdentitySha256": "sha256:b46280bbb00ff41e465f1b83ba474f9c0798fc291da1a13ef443b7c856516020",
+          "contentSha256": "sha256:4d4a096faeb6f96bac21ce8e2459fdf06d3807a6084914758b99ac5f145465c2"
+        }
+      ],
+      "model": "glm-5.2",
+      "mainPiProviderEvidence": [
+        {
+          "modelIdentity": "anthropic/glm-5.2/anthropic-messages",
+          "providerResponseStatus": "reported",
+          "providerResponseIdentitySha256": "sha256:336baa30cd8dfd4cb793ace56081568812edb364028217b4780af5ae65f3cc0a",
+          "inputTokens": 831,
+          "outputTokens": 720,
+          "traceCorrelated": true
+        }
+      ],
+      "answerChars": 1094,
+      "outcomeStatus": "answered",
+      "inputTokens": 960,
+      "outputTokens": 915,
+      "totalTokens": 1875,
+      "durationMs": 16476
+    }
+  ],
+  "metrics": {
+    "cases": 6,
+    "correct": 6,
+    "accuracy": 1,
+    "directCases": 5,
+    "contractCases": 1,
+    "averageDirectDurationMs": 17724.8,
+    "averageContractDurationMs": 16476,
+    "totalRunTokens": 9777,
+    "totalMainPiProviderTokens": 9453,
+    "totalWorkContractTokens": 324,
+    "totalWorkContractProviderTurns": 2
+  },
+  "gate": {
+    "passed": true,
+    "failures": []
+  }
+}

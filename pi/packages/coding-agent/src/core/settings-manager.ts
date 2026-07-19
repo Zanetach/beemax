@@ -277,6 +277,7 @@ export class SettingsManager {
 	private projectSettings: Settings;
 	private settings: Settings;
 	private runtimeCompactionSettings?: Required<CompactionSettings>;
+	private runtimeProviderRetrySettings?: Required<ProviderRetrySettings>;
 	private projectTrusted: boolean;
 	private modifiedFields = new Set<keyof Settings>(); // Track global fields modified during session
 	private modifiedNestedFields = new Map<keyof Settings, Set<string>>(); // Track global nested field modifications
@@ -839,10 +840,15 @@ export class SettingsManager {
 
 	getProviderRetrySettings(): { timeoutMs?: number; maxRetries?: number; maxRetryDelayMs: number } {
 		return {
-			timeoutMs: this.settings.retry?.provider?.timeoutMs,
-			maxRetries: this.settings.retry?.provider?.maxRetries,
-			maxRetryDelayMs: this.settings.retry?.provider?.maxRetryDelayMs ?? 60000,
+			timeoutMs: this.runtimeProviderRetrySettings?.timeoutMs ?? this.settings.retry?.provider?.timeoutMs,
+			maxRetries: this.runtimeProviderRetrySettings?.maxRetries ?? this.settings.retry?.provider?.maxRetries,
+			maxRetryDelayMs: this.runtimeProviderRetrySettings?.maxRetryDelayMs ?? this.settings.retry?.provider?.maxRetryDelayMs ?? 60000,
 		};
+	}
+
+	/** Apply host-runtime Provider retry policy without mutating user or project settings. */
+	setRuntimeProviderRetrySettings(settings: Required<ProviderRetrySettings>): void {
+		this.runtimeProviderRetrySettings = { ...settings };
 	}
 
 	getWebSocketConnectTimeoutMs(): number | undefined {

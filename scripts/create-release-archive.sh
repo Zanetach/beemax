@@ -21,12 +21,32 @@ mkdir -p "${OUTPUT_DIR}" "${STAGING}/beemax"
 tar -C "${ROOT}" \
 	--exclude='./.git' \
 	--exclude='./pi/.git' \
+	--exclude='./.github' \
+	--exclude='./.scratch' \
+	--exclude='./tmp' \
+	--exclude='./evals' \
+	--exclude='./scripts' \
+	--exclude='./tickets.md' \
 	--exclude='node_modules' \
 	--exclude='*/node_modules' \
+	--exclude='*/test' \
+	--exclude='*/test/*' \
+	--exclude='*/docs' \
+	--exclude='*/docs/*' \
+	--exclude='*/examples' \
+	--exclude='*/examples/*' \
 	--exclude='dist' \
 	--exclude='*/dist' \
 	--exclude='*.tsbuildinfo' \
 	--exclude='./docs' \
+	--exclude='./pi/scripts' \
+	--exclude='./pi/packages/*/README.md' \
+	--exclude='./pi/packages/*/CHANGELOG.md' \
+	--exclude='./pi/packages/ai/scripts' \
+	--exclude='./pi/packages/ai/src/api/openai-codex-responses.ts' \
+	--exclude='./pi/packages/ai/src/api/openai-codex-responses.lazy.ts' \
+	--exclude='./pi/packages/ai/src/providers/openai-codex.ts' \
+	--exclude='./pi/packages/ai/src/utils/oauth/openai-codex.ts' \
 	--exclude='./output' \
 	--exclude='./dist' \
 	--exclude='./data' \
@@ -36,6 +56,22 @@ tar -C "${ROOT}" \
 	--exclude='./.DS_Store' \
 	--exclude='./.beemax' \
 	-cf - . | tar -C "${STAGING}/beemax" -xf -
+
+# Chromium or native crashes can leave root-level core dumps in a checkout.
+# Remove only those staging-root files; packages/core is production source.
+rm -f "${STAGING}/beemax/core" "${STAGING}/beemax"/core.*
+
+mkdir -p "${STAGING}/beemax/scripts"
+for RELEASE_SCRIPT in clean-build-output.mjs install-media-dependencies.sh install.sh verify-release-version.mjs; do
+	cp "${ROOT}/scripts/${RELEASE_SCRIPT}" "${STAGING}/beemax/scripts/${RELEASE_SCRIPT}"
+done
+node --input-type=module -e '
+	import { readFileSync, writeFileSync } from "node:fs";
+	const path = process.argv[1];
+	const config = JSON.parse(readFileSync(path, "utf8"));
+	config.exclude = (config.exclude ?? []).filter((entry) => !/codex/iu.test(entry));
+	writeFileSync(path, `${JSON.stringify(config, null, "\t")}\n`);
+' "${STAGING}/beemax/pi/packages/ai/tsconfig.build.json"
 
 # Release archives omit Git metadata, so retain the exact release identity for runtime status checks.
 printf '%s\n' "${VERSION}" > "${STAGING}/beemax/RELEASE_VERSION"

@@ -1,4 +1,11 @@
+import { isAdmittedOpenWorldContract, type OpenWorldContract } from "./open-world-contract.ts";
+import { isAdmittedWorkContractPlanningInput, type AdmittedWorkContractPlanningInput } from "./contract-planning-admission.ts";
+import type { WorkContract } from "./work-contract.ts";
+import { explicitlyForbidsDelegation } from "./delegation-boundary.ts";
+
 export type AutonomousExecutionMode = "direct" | "delegate" | "dag";
+export type PlanningBasis = "raw_prompt" | "work_contract" | "open_world_contract";
+export type PlanningVerificationDepth = "none" | "criterion" | "artifact" | "independent";
 
 export interface PlanningResourceBudget {
 	maxSubagents: number;
@@ -18,6 +25,9 @@ export interface PlanningSignals {
 
 export interface AutonomousPlanningDecision {
 	mode: AutonomousExecutionMode;
+	basis: PlanningBasis;
+	verificationDepth: PlanningVerificationDepth;
+	contractCoverage?: ContractPlanningCoverage;
 	requiredTool?: "task_spawn" | "task_plan_execute";
 	requiredTools: readonly ("task_spawn" | "task_wait" | "task_plan_execute")[];
 	suggestedConcurrency: number;
@@ -28,38 +38,54 @@ export interface AutonomousPlanningDecision {
 	directive(objectiveId?: string): string;
 }
 
+export interface ContractPlanningCoverage {
+	contractId: string;
+	outcomeIds: readonly string[];
+	capabilityRequirementIds: readonly string[];
+	artifactRequirementIds: readonly string[];
+	evidenceRequirementIds: readonly string[];
+	parallelWidth: number;
+}
+
+export type ContractPlanningInput = AdmittedWorkContractPlanningInput | OpenWorldContract;
+
 export interface AutonomousPlanningPolicyOptions {
 	maxConcurrent?: number;
 	maxSubagents?: number;
-	maxToolCalls?: number;
-	maxTokens?: number;
+	/** Optional caller-owned safety boundary. Omitted means no cumulative Tool-call ceiling. */
+	maxToolCalls?: number | null;
 	maxCorrectiveAttempts?: number;
 }
 
 /**
  * Deterministic admission policy for autonomous work.
  * It does not ask a model to classify its own prompt, so weak models receive
- * the same bounded execution mode and resource ceiling as strong models.
+ * the same execution mode and safety boundaries as strong models. Token usage
+ * is observable, but never a cumulative Objective-completion ceiling.
  */
 export class AutonomousPlanningPolicy {
-	private readonly capacity: PlanningResourceBudget & { maxConcurrent: number };
+	private readonly capacity: { maxConcurrent: number; maxSubagents: number; maxToolCalls: number | null; maxCorrectiveAttempts: number };
 
 	constructor(options: AutonomousPlanningPolicyOptions = {}) {
 		this.capacity = {
 			maxConcurrent: boundedInt(options.maxConcurrent, 3, 1, 20),
 			maxSubagents: boundedInt(options.maxSubagents, 5, 0, 20),
-			maxToolCalls: boundedInt(options.maxToolCalls, 32, 1, 1_000),
-			maxTokens: boundedInt(options.maxTokens, 64_000, 1_000, 10_000_000),
+			maxToolCalls: options.maxToolCalls === undefined || options.maxToolCalls === null ? null : boundedInt(options.maxToolCalls, options.maxToolCalls, 1, 1_000),
 			maxCorrectiveAttempts: boundedInt(options.maxCorrectiveAttempts, 1, 0, 5),
 		};
 	}
 
 	createBudgetRegistry(): PlanningBudgetRegistry { return new PlanningBudgetRegistry(); }
 
-	decide(prompt: string): AutonomousPlanningDecision {
+	decide(input: string | ContractPlanningInput): AutonomousPlanningDecision {
+		if (typeof input !== "string") {
+			if (!isAdmittedOpenWorldContract(input) && !isAdmittedWorkContractPlanningInput(input)) throw new Error("Contract-driven planning requires an admitted Work Contract handoff or factory-admitted Open-World Contract");
+			return this.decideContract(input);
+		}
+		const prompt = input;
 		const normalized = prompt.trim();
-		const signals = inspectPrompt(normalized);
-		const forbidsDelegation = has(normalized.toLowerCase(), /(?:不|不要|无需|禁止)(?:再)?(?:委派|子代理|子\s*agent)|(?:do not|don't|without)\s+(?:delegate|delegation|sub-?agents?)/i);
+		const signals = inspectPlanningSignals(normalized);
+		const forbidsDelegation = explicitlyForbidsDelegation(normalized);
 		let mode: AutonomousExecutionMode = "direct";
 		let reason = "Simple or single-step request; keep execution in the parent Agent";
 
@@ -77,7 +103,7 @@ export class AutonomousPlanningPolicy {
 		}
 
 		const dagCapacity = Math.min(this.capacity.maxConcurrent, this.capacity.maxSubagents);
-		if (mode === "dag" && (dagCapacity < 2 || (this.capacity.maxToolCalls !== null && this.capacity.maxToolCalls < 10) || (this.capacity.maxTokens !== null && this.capacity.maxTokens < 12_000))) {
+		if (mode === "dag" && (dagCapacity < 2 || (this.capacity.maxToolCalls !== null && this.capacity.maxToolCalls < 10))) {
 			mode = this.capacity.maxSubagents > 0 ? "delegate" : "direct";
 			reason = "DAG demand exceeds the configured resource budget or parallel capacity; degrade safely";
 		}
@@ -94,19 +120,126 @@ export class AutonomousPlanningPolicy {
 			? Math.min(this.capacity.maxSubagents, Math.max(suggestedConcurrency, signals.independentWorkItems))
 			: mode === "delegate" ? Math.min(1, this.capacity.maxSubagents) : 0;
 		const scale = mode === "dag" ? Math.max(2, maxSubagents) : mode === "delegate" ? 1 : 0;
-		const directTokenTarget = signals.requiresResearch || signals.requiresVerification ? 20_000 : 12_000;
 		const budget: PlanningResourceBudget = {
 			maxSubagents,
 			maxToolCalls: this.capacity.maxToolCalls === null ? null : Math.min(this.capacity.maxToolCalls, mode === "direct" ? 8 : Math.max(12, scale * 8)),
-			maxTokens: this.capacity.maxTokens === null ? null : Math.min(this.capacity.maxTokens, mode === "direct" ? directTokenTarget : Math.max(20_000, scale * 16_000)),
+			maxTokens: null,
 			maxCorrectiveAttempts: mode === "direct" ? 0 : this.capacity.maxCorrectiveAttempts,
 		};
 		const requiredTools = mode === "dag" ? ["task_plan_execute"] as const : mode === "delegate" ? ["task_spawn", "task_wait"] as const : [];
 		const requiredTool = requiredTools[0];
-		const decision = { mode, requiredTool, requiredTools, suggestedConcurrency, budget, signals, reason };
+		const verificationDepth: PlanningVerificationDepth = signals.requiresVerification ? "criterion" : "none";
+		const decision = { mode, basis: "raw_prompt" as const, verificationDepth, requiredTool, requiredTools, suggestedConcurrency, budget, signals, reason };
 		return {
 			...decision,
-			directive: (objectiveId) => `[BeeMax execution policy: objective=${objectiveId ?? "turn-local"}; mode=${mode}; requiredTools=${requiredTools.length ? requiredTools.join("->") : "none"}; concurrency=${suggestedConcurrency}; maxSubagents=${budget.maxSubagents}; maxToolCalls=${budget.maxToolCalls ?? "unbounded"}; maxTokens=${budget.maxTokens ?? "unbounded"}; correctiveAttempts=${budget.maxCorrectiveAttempts}. This is the sole current execution policy for this Objective; ignore earlier BeeMax planning correction or execution policy messages for other Objectives, including unscoped messages. Complete requiredTools in order before giving a final answer.]`,
+			directive: (objectiveId) => `[BeeMax execution policy: objective=${objectiveId ?? "turn-local"}; basis=raw_prompt; mode=${mode}; requiredTools=${requiredTools.length ? requiredTools.join("->") : "none"}; concurrency=${suggestedConcurrency}; maxSubagents=${budget.maxSubagents}; maxToolCalls=${budget.maxToolCalls ?? "unbounded"}; cumulativeTokenCeiling=none; correctiveAttempts=${budget.maxCorrectiveAttempts}. This is the sole current execution policy for this Objective; ignore earlier BeeMax planning correction or execution policy messages for other Objectives, including unscoped messages. Complete requiredTools in order before giving a final answer.]`,
+		};
+	}
+
+	private decideContract(contract: ContractPlanningInput): AutonomousPlanningDecision {
+		let openWorld: OpenWorldContract | undefined;
+		let workContract: WorkContract;
+		if (isAdmittedOpenWorldContract(contract)) {
+			openWorld = contract;
+			workContract = contract.workContract;
+		} else {
+			workContract = contract.contract;
+		}
+		const outcomeIds = openWorld?.outcomes.map((outcome) => outcome.id) ?? workContract.acceptanceCriteria.map((_, index) => `criterion:${index}`);
+		const capabilityRequirementIds = openWorld?.capabilityRequirements.map((requirement) => requirement.id) ?? workContract.capabilityRequirements.map((_, index) => `capability:${index}`);
+		const artifactRequirementIds = openWorld?.artifactRequirements.map((requirement) => requirement.id) ?? [];
+		const evidenceRequirementIds = openWorld?.evidenceRequirements.map((requirement) => requirement.id) ?? [];
+		const parallelWidth = openWorld ? maximumOutcomeParallelWidth(openWorld) : Math.min(1, outcomeIds.length);
+		const coverage: ContractPlanningCoverage = Object.freeze({
+			contractId: openWorld?.id ?? "turn:work-contract",
+			outcomeIds: Object.freeze(outcomeIds),
+			capabilityRequirementIds: Object.freeze(capabilityRequirementIds),
+			artifactRequirementIds: Object.freeze(artifactRequirementIds),
+			evidenceRequirementIds: Object.freeze(evidenceRequirementIds),
+			parallelWidth,
+		});
+		const verificationDepth = contractVerificationDepth(openWorld, outcomeIds.length);
+		const requiresResearch = Boolean(
+			(openWorld?.capabilityRequirements.some((requirement) => requirement.operation === "observe")
+				&& openWorld.evidenceRequirements.some((requirement) => requirement.kinds.includes("observation") || requirement.kinds.includes("freshness")))
+			|| admittedContractResearchSignals(workContract).requiresResearch,
+		);
+		const substantialWork = outcomeIds.length > 1 || capabilityRequirementIds.length > 1 || artifactRequirementIds.length > 0 || evidenceRequirementIds.length > 1;
+		const complexity = Math.min(10,
+			outcomeIds.length
+			+ capabilityRequirementIds.length
+			+ artifactRequirementIds.length * 2
+			+ evidenceRequirementIds.length
+			+ workContract.uncertainties.length * 2,
+		);
+		const signals: PlanningSignals = {
+			complexity,
+			independentWorkItems: Math.max(1, parallelWidth),
+			requiresResearch,
+			requiresVerification: verificationDepth !== "none",
+			requestsParallelism: parallelWidth >= 2,
+			substantialWork,
+		};
+		const containsParentOnlyEffect = Boolean(openWorld?.capabilityRequirements.some((requirement) => requirement.operation === "act" || requirement.operation === "deliver"));
+		let mode: AutonomousExecutionMode = "direct";
+		let reason = "One admitted atomic outcome fits the parent Agent execution boundary";
+		if (!containsParentOnlyEffect && openWorld && parallelWidth >= 2 && outcomeIds.length >= 2) {
+			mode = "dag";
+			reason = "The admitted outcome dependency graph contains parallel independently verifiable work";
+		} else if (!containsParentOnlyEffect && substantialWork) {
+			mode = "delegate";
+			reason = "The admitted Contract contains substantial bounded work without a proven parallel outcome graph";
+		} else if (containsParentOnlyEffect) {
+			reason = "The admitted Contract includes an action or delivery Effect that remains in the parent Agent authority boundary";
+		}
+		if (contractForbidsDelegation(workContract) && mode !== "direct") {
+			mode = "direct";
+			reason = "The admitted Work Contract explicitly prohibits delegation";
+		}
+		if (workContract.executionMode === "direct" && mode !== "direct") {
+			mode = "direct";
+			reason = "The admitted Work Contract retains a direct execution boundary";
+		} else if (workContract.executionMode === "delegate" && mode === "dag") {
+			mode = "delegate";
+			reason = "The admitted Work Contract permits delegation but not a multi-Task DAG";
+		}
+
+		const dagCapacity = Math.min(this.capacity.maxConcurrent, this.capacity.maxSubagents);
+		if (mode === "dag" && (dagCapacity < 2 || (this.capacity.maxToolCalls !== null && this.capacity.maxToolCalls < 10))) {
+			mode = this.capacity.maxSubagents > 0 ? "delegate" : "direct";
+			reason = "The admitted Contract proves parallel work, but configured capacity requires a bounded degradation";
+		}
+		if (mode === "delegate" && this.capacity.maxSubagents < 1) {
+			mode = "direct";
+			reason = "The admitted Contract is substantial, but Sub-Agent capacity is unavailable";
+		}
+
+		const suggestedConcurrency = mode === "dag" ? Math.min(parallelWidth, this.capacity.maxConcurrent, this.capacity.maxSubagents) : 1;
+		const maxSubagents = mode === "dag" ? Math.min(this.capacity.maxSubagents, outcomeIds.length) : mode === "delegate" ? 1 : 0;
+		const effort = Math.max(1, outcomeIds.length + capabilityRequirementIds.length + artifactRequirementIds.length * 2 + evidenceRequirementIds.length);
+		const toolTarget = mode === "direct" ? Math.max(4, effort * 2) : Math.max(12, effort * 3);
+		const maxCorrectiveAttempts = verificationDepth === "none" ? 0 : Math.min(this.capacity.maxCorrectiveAttempts, verificationDepth === "independent" ? 2 : 1);
+		const budget: PlanningResourceBudget = {
+			maxSubagents,
+			maxToolCalls: this.capacity.maxToolCalls === null ? null : Math.min(this.capacity.maxToolCalls, toolTarget),
+			maxTokens: null,
+			maxCorrectiveAttempts,
+		};
+		const requiredTools = mode === "dag" ? ["task_plan_execute"] as const : mode === "delegate" ? ["task_spawn", "task_wait"] as const : [];
+		const requiredTool = requiredTools[0];
+		const basis = openWorld ? "open_world_contract" as const : "work_contract" as const;
+		return {
+			mode,
+			basis,
+			verificationDepth,
+			contractCoverage: coverage,
+			requiredTool,
+			requiredTools,
+			suggestedConcurrency,
+			budget,
+			signals,
+			reason,
+			directive: (objectiveId) => `[BeeMax contract execution policy: objective=${objectiveId ?? "turn-local"}; contract=${coverage.contractId}; basis=${basis}; outcomes=${coverage.outcomeIds.join(",") || "none"}; capabilities=${coverage.capabilityRequirementIds.join(",") || "none"}; artifacts=${coverage.artifactRequirementIds.join(",") || "none"}; evidence=${coverage.evidenceRequirementIds.join(",") || "none"}; verificationDepth=${verificationDepth}; mode=${mode}; requiredTools=${requiredTools.length ? requiredTools.join("->") : "none"}; concurrency=${suggestedConcurrency}; maxSubagents=${budget.maxSubagents}; maxToolCalls=${budget.maxToolCalls ?? "unbounded"}; cumulativeTokenCeiling=none; correctiveAttempts=${budget.maxCorrectiveAttempts}. This policy was derived after semantic Work Contract admission. Preserve every listed requirement through execution and Verification; do not substitute raw-prompt planning heuristics.]`,
 		};
 	}
 }
@@ -133,9 +266,13 @@ export class PlanningBudgetRegistry {
 	}
 }
 
-function inspectPrompt(prompt: string): PlanningSignals {
+/**
+ * Content-free raw Turn signals used by both adaptive admission and fallback
+ * planning. They never grant Tool, Effect, or persistence authority.
+ */
+export function inspectPlanningSignals(prompt: string): PlanningSignals {
 	const lower = prompt.toLowerCase();
-	const requiresResearch = has(lower, /\b(research|investigate|audit|review|compare|benchmark|search|look up|latest|today|real[- ]?time|up[- ]to[- ]date)\b|\bcurrent\s+(?!(?:best|most\s+suitable|goal|task|objective|context|directory|workspace)\b)|研究|调研|审查|审核|对标|比较|查(?:一下|找)|查询|搜索|检索|今天|今日|当前(?!最(?:合适|佳|好)|目标|任务|上下文|目录|工作区)|最新|实时/);
+	const requiresResearch = has(lower, /\b(research|investigate|audit|review|compare|benchmark|search|look up|latest|recent|today|yesterday|sources?|citations?|papers?|stud(?:y|ies)|historical|price|quote|weather|temperature|score|schedule|availability|balance|earnings|revenue|status|flight|delay(?:ed)?|ceo|president|version|release|news|election|law|policy|deadline|transactions?|accounts?|orders?|bookings?|shipments?|real[- ]?time|up[- ]to[- ]date)\b|\bexchange\s+rate\b|\blast\s+(?:week|month|quarter|year)\b|\bpast\s+(?:day|week|month|quarter|year)\b|\bcurrent\s+(?!(?:best|most\s+suitable|goal|task|objective|context|directory|workspace)\b)|研究|调研|审查|审核|对标|比较|对比|相比|查(?:一下|找)|查询|搜索|检索|来源|引用|引文|论文|价格|报价|汇率|天气|温度|比分|赛程|库存|余额|营收|航班|延误|状态|总裁|总统|版本|新闻|选举|法律|政策|截止时间|交易|账户|订单|预订|物流|昨天|昨日|上周|上月|上季度|去年|过去(?:一天|一周|一个月|一季度|一年)|今天|今日|当前(?!最(?:合适|佳|好)|目标|任务|上下文|目录|工作区)|最新|最近|实时/);
 	const requiresVerification = has(lower, /\b(verify|validate|test|evidence|acceptance|quality)\b|验证|测试|证据|验收|质量/);
 	const requestsParallelism = has(lower, /\b(parallel|concurrent|independently)\b|并行|并发|独立地/);
 	const synthesis = has(lower, /\b(synthesi[sz]e|combine|report|release|implement|build|refactor)\b|汇总|综合|报告|发布|实现|开发|重构/);
@@ -156,6 +293,66 @@ function inspectPrompt(prompt: string): PlanningSignals {
 	if (synthesis) complexity++;
 	if (independentWorkItems >= 3) complexity += 2;
 	return { complexity, independentWorkItems, requiresResearch, requiresVerification, requestsParallelism, substantialWork };
+}
+
+function contractForbidsDelegation(contract: WorkContract): boolean {
+	const delegation = /\b(?:delegate|delegation|delegating|sub[\s-]?agents?|subtasks?|child\s+agents?|worker\s+agents?)\b|(?:委派|转派|分派给|子代理|子智能体|子任务|子\s*agent)/i;
+	return contract.prohibitions.some((clause) => delegation.test(clause.text) || explicitlyForbidsDelegation(clause.text))
+		|| contract.constraints.some((clause) => explicitlyForbidsDelegation(clause.text) || requiresParentAgentExecution(clause.text));
+}
+
+function requiresParentAgentExecution(text: string): boolean {
+	const englishPassive = /\b(?:must|shall|should|has\s+to|needs?\s+to|is\s+required\s+to)\s+(?:(?:only|solely|exclusively|entirely|always)\s+)?(?:be\s+)?(?:executed|performed|handled|completed|done|run)\b(?:\s+(?:only|solely|exclusively|entirely))?\s+by\s+(?:the\s+)?(?:parent|main|primary|current)\s+agent\b/i;
+	const englishExclusiveSubject = /\b(?:only|solely|exclusively)\s+(?:the\s+)?(?:parent|main|primary|current)\s+agent\b\s*,?\s*(?:(?:alone|itself)\s+)?(?:(?:may|can|must|shall|should|will)\s+|is\s+(?:allowed|required)\s+to\s+)?(?:execute|perform|handle|complete|do|run)\b/i;
+	const chinesePassive = /(?:(?:所有|全部|本次|该|此)?(?:工作|任务|执行)?(?:必须|应当|应|需|需要|只能|仅能|只可|仅可)?由)(?:父|主|当前)(?:代理|智能体|\s*agent)(?:直接|独立|单独|亲自|仅|只)?(?:负责)?(?:执行|完成|处理)/i;
+	const chineseExclusiveSubject = /(?:只能|仅能|只可|仅可|仅|只)(?:由)?(?:父|主|当前)(?:代理|智能体|\s*agent)(?:直接|独立|单独|亲自)?(?:可以|可|应当|应|需|需要|必须)?(?:负责)?(?:执行|完成|处理)/i;
+	return englishPassive.test(text) || englishExclusiveSubject.test(text) || chinesePassive.test(text) || chineseExclusiveSubject.test(text);
+}
+
+function contractVerificationDepth(contract: OpenWorldContract | undefined, outcomeCount: number): PlanningVerificationDepth {
+	if (outcomeCount === 0) return "none";
+	if (!contract) return "criterion";
+	const independentDimensions = new Set(["semantic", "render", "consistency", "freshness", "delivery", "execution"]);
+	if (contract.artifactRequirements.some((requirement) => requirement.verification.some((dimension) => independentDimensions.has(dimension)))
+		|| contract.evidenceRequirements.some((requirement) => requirement.kinds.some((kind) => independentDimensions.has(kind)))) return "independent";
+	if (contract.artifactRequirements.length > 0) return "artifact";
+	return "criterion";
+}
+
+function admittedContractResearchSignals(contract: WorkContract): PlanningSignals {
+	// Compatibility Contracts may intentionally omit capability requirements when
+	// semantic capability adjudication is unavailable. Preserve temporal/research
+	// routing from admitted semantic clauses only; rawRequest is not a planning input.
+	return inspectPlanningSignals([
+		contract.objective.text,
+		...contract.capabilityRequirements.map((clause) => clause.text),
+		...contract.acceptanceCriteria.map((clause) => clause.text),
+		...contract.uncertainties.map((clause) => clause.text),
+	].join("\n"));
+}
+
+function maximumOutcomeParallelWidth(contract: OpenWorldContract): number {
+	const indegree = new Map(contract.outcomes.map((outcome) => [outcome.id, outcome.dependsOnOutcomeIds.length]));
+	const dependents = new Map<string, string[]>();
+	for (const outcome of contract.outcomes) for (const dependency of outcome.dependsOnOutcomeIds) {
+		dependents.set(dependency, [...(dependents.get(dependency) ?? []), outcome.id]);
+	}
+	let wave = [...indegree].filter(([, degree]) => degree === 0).map(([id]) => id);
+	let maximum = wave.length;
+	let visited = 0;
+	while (wave.length) {
+		visited += wave.length;
+		const next: string[] = [];
+		for (const id of wave) for (const dependent of dependents.get(id) ?? []) {
+			const degree = (indegree.get(dependent) ?? 0) - 1;
+			indegree.set(dependent, degree);
+			if (degree === 0) next.push(dependent);
+		}
+		wave = next;
+		maximum = Math.max(maximum, wave.length);
+	}
+	if (visited !== contract.outcomes.length) throw new Error("Open-world outcome dependency graph is cyclic");
+	return Math.max(1, maximum);
 }
 
 function estimateIndependentItems(prompt: string): number {

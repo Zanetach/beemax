@@ -17,11 +17,12 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { existsSync } from "node:fs";
+import { existsSync, lstatSync } from "node:fs";
 import { defineTool, type ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { READ_ONLY_TOOL_POLICY, withToolPolicy } from "./tool-runtime.ts";
 import { redactCredentialMaterial } from "./credential-material.ts";
+import { verifyProviderArtifact } from "./provider-artifact-integrity.ts";
 
 const SEARCH_TIMEOUT_MS = 30_000;
 const EXTRACT_TIMEOUT_MS = 20_000;
@@ -29,6 +30,11 @@ const MAX_RESPONSE_BYTES = 2 * 1024 * 1024;
 const MAX_REDIRECTS = 5;
 const USER_AGENT = "BeeMax-Agent/0.1 (+https://pi.dev)";
 const execFileAsync = promisify(execFile);
+const EXA_MCPORTER_VERSION = "0.9.0";
+const EXA_MCPORTER_LOCK_SHA256 = "7c8ca25b89c4a23618c4385a373660cbf23512d7f461e82f2197c19027a183ec";
+const EXA_MCPORTER_PROVIDER_VERSION = `mcporter:${EXA_MCPORTER_VERSION}:lock:${EXA_MCPORTER_LOCK_SHA256}`;
+interface ArtifactVerificationWaiter { signal?: AbortSignal; resolve: () => void; reject: (reason: unknown) => void; aborted?: () => void; }
+const providerArtifactVerificationSlots = new Map<string, { locked: boolean; waiters: ArtifactVerificationWaiter[] }>();
 
 export interface WebToolsOptions {
 	env?: NodeJS.ProcessEnv;
@@ -61,7 +67,7 @@ export type WebApiProvider = "tavily" | "brave" | "searxng";
 
 export function createWebTools(options: WebToolsOptions = {}): ToolDefinition[] {
 	const env = options.env ?? process.env;
-	const agentReachAvailable = options.agentReachAvailable ?? agentReachInstallationAvailable(env);
+	const agentReachAvailable = () => options.agentReachAvailable ?? agentReachInstallationAvailable(env);
 	const executeApiSearch = options.apiSearch ?? searchWebProvider;
 	const executeAgentReachSearch = options.agentReachSearch ?? ((query: string, maxResults: number, signal?: AbortSignal) => agentReachSearchText(query, maxResults, env, signal));
 
@@ -83,14 +89,14 @@ export function createWebTools(options: WebToolsOptions = {}): ToolDefinition[] 
 			const providerAttempts: WebSearchProviderAttempt[] = [];
 			try {
 				const requestSignal = signal ?? new AbortController().signal;
-				if (!configuredApiSearchProvider(env) && agentReachAvailable) {
+				if (!configuredApiSearchProvider(env) && agentReachAvailable()) {
 					const startedAt = Date.now();
 					try {
 						const result = await executeAgentReachSearch(query, maxResults, requestSignal);
-						providerAttempts.push(providerAttempt("agent-reach", publicUrls(compactAgentReachOutput(result, maxResults)).length ? "succeeded" : "empty", startedAt));
+						providerAttempts.push(providerAttempt("exa-mcporter", publicUrls(compactAgentReachOutput(result, maxResults)).length ? "succeeded" : "empty", startedAt));
 						return agentReachSearchResult(result, maxResults, providerAttempts);
 					} catch (error) {
-						providerAttempts.push(providerAttempt("agent-reach", "failed", startedAt, error));
+						providerAttempts.push(providerAttempt("exa-mcporter", "failed", startedAt, error));
 						throw error;
 					}
 				}
@@ -114,18 +120,18 @@ export function createWebTools(options: WebToolsOptions = {}): ToolDefinition[] 
 					}
 				}
 				if (!searched) {
-					if (!agentReachAvailable) {
+					if (!agentReachAvailable()) {
 						if (lastEmptyProvider) return textResult(`No web results found for: ${query}`, { provider: lastEmptyProvider, resultCount: 0, attempts: providerAttempts });
 						throw new Error(attempts.length ? `Configured web Providers failed: ${attempts.join("; ")}` : "No search Provider is configured");
 					}
 					const startedAt = Date.now();
 					try {
 						const result = await executeAgentReachSearch(query, maxResults, requestSignal);
-						providerAttempts.push(providerAttempt("agent-reach", publicUrls(compactAgentReachOutput(result, maxResults)).length ? "succeeded" : "empty", startedAt));
+						providerAttempts.push(providerAttempt("exa-mcporter", publicUrls(compactAgentReachOutput(result, maxResults)).length ? "succeeded" : "empty", startedAt));
 						return agentReachSearchResult(result, maxResults, providerAttempts);
 					} catch (fallbackError) {
-						providerAttempts.push(providerAttempt("agent-reach", "failed", startedAt, fallbackError));
-						throw new Error(`${attempts.length ? `Configured web Providers failed: ${attempts.join("; ")}; ` : ""}Agent-Reach fallback failed: ${safeProviderError(fallbackError)}`);
+						providerAttempts.push(providerAttempt("exa-mcporter", "failed", startedAt, fallbackError));
+						throw new Error(`${attempts.length ? `Configured web Providers failed: ${attempts.join("; ")}; ` : ""}Exa/mcporter fallback failed: ${safeProviderError(fallbackError)}`);
 					}
 				}
 				const { provider, results } = searched;
@@ -141,8 +147,9 @@ export function createWebTools(options: WebToolsOptions = {}): ToolDefinition[] 
 			}
 		},
 	}), {
-		aliases: ["联网搜索", "网络搜索", "公开信息检索"],
-		triggers: ["web_search", "搜索公开网页", "检索公开信息"],
+		beemaxToolSpec: { kind: "tool" as const, configured: configuredApiSearchProvider(env) || agentReachAvailable(), health: configuredApiSearchProvider(env) || agentReachAvailable() ? "unverified" as const : "configuration_required" as const, ranking: { inputModalities: ["text"], outputModalities: ["structured"], freshness: "realtime" as const, evidence: "source_receipt" as const } },
+		aliases: ["联网搜索", "网络搜索", "公开信息检索", "公开来源调研"],
+		triggers: ["web_search", "搜索公开网页", "检索公开信息", "自主调研", "过去一周", "实时来源", "多个独立来源", "来源 URL", "source URL", "current sources"],
 		priority: 20,
 		providers: [
 			configuredWebProvider("tavily", "TAVILY_API_KEY", Boolean(env.TAVILY_API_KEY?.trim()), "Configure the Tavily API credential reference for this Profile."),
@@ -187,24 +194,25 @@ export function createWebTools(options: WebToolsOptions = {}): ToolDefinition[] 
 		priority: 30,
 	});
 	const agentReachSearch = Object.assign(defineTool({
-		name: "agent_reach_search",
-		label: "Agent Reach Search",
-		description: "Search the live web through Agent-Reach's configured Exa channel for semantic/current research, independent public sources, citations, and trend verification. 通过实时公开网络研究当前趋势，核验多个独立来源并保留引用。",
+		name: "exa_web_search",
+		label: "Exa Web Search",
+		description: "Search the live web through BeeMax's Profile-scoped Exa/mcporter adapter for semantic/current research, independent public sources, citations, and trend verification. 通过实时公开网络研究当前趋势，核验多个独立来源并保留引用。",
 		parameters: Type.Object({ query: Type.String({ description: "Semantic web search query" }), maxResults: Type.Optional(Type.Integer({ minimum: 1, maximum: 10 })) }),
 		execute: async (_id, params, signal) => {
 			const query = params.query.trim();
-			if (!query) return textResult("Search query cannot be empty", { provider: "agent-reach" }, true);
+			if (!query) return textResult("Search query cannot be empty", { provider: "exa-mcporter" }, true);
 			try {
 				const maxResults = clamp(params.maxResults ?? 5, 1, 10);
 				const output = compactAgentReachOutput(await executeAgentReachSearch(query, maxResults, signal), maxResults);
-				return textResult(output, { provider: "agent-reach-exa" });
+				return textResult(output, { provider: "exa-mcporter" });
 			} catch (error) {
-				return textResult(`Agent-Reach search unavailable: ${safeProviderError(error)}. Run 'agent-reach doctor' and configure the Exa channel.`, { provider: "agent-reach-exa" }, true);
+				return textResult(`Exa/mcporter search unavailable: ${safeProviderError(error)}. Reconcile or reacquire the Profile-scoped exa-mcporter Provider.`, { provider: "exa-mcporter" }, true);
 			}
 		},
 	}), {
-		aliases: ["Agent-Reach", "联网检索", "网络检索", "实时网络搜索"],
-		triggers: ["agent-reach", "可验证的公开趋势", "真实可溯源来源", "检索公开趋势", "live web research"],
+		beemaxToolSpec: { kind: "tool" as const, configured: agentReachAvailable(), health: agentReachAvailable() ? "unverified" as const : "configuration_required" as const, ranking: { inputModalities: ["text"], outputModalities: ["text"], freshness: "current" as const, evidence: "source_receipt" as const } },
+		aliases: ["agent_reach_search", "agent-reach", "Exa", "联网检索", "网络检索", "实时网络搜索"],
+		triggers: ["exa", "exa-mcporter", "可验证的公开趋势", "真实可溯源来源", "检索公开趋势", "实时核验", "交叉验证", "相互独立", "截至今天", "自主调研", "过去一周", "实时来源", "多个来源", "多个独立来源", "来源 URL", "source URL", "live web research", "current sources"],
 		priority: 10,
 	});
 
@@ -218,8 +226,8 @@ export function createWebTools(options: WebToolsOptions = {}): ToolDefinition[] 
 function agentReachSearchResult(value: string, maxResults: number, attempts: readonly WebSearchProviderAttempt[] = []) {
 	const output = compactAgentReachOutput(value, maxResults);
 	const urls = publicUrls(output);
-	return textResult(output || "No Agent-Reach results found.", {
-		provider: "agent-reach-exa",
+	return textResult(output || "No Exa/mcporter results found.", {
+		provider: "exa-mcporter",
 		resultCount: urls.length,
 		results: urls.map((url) => ({ url })),
 		attempts,
@@ -257,20 +265,21 @@ function configuredWebProvider(id: string, key: string, configured: boolean, ins
 	});
 }
 
-function agentReachWebProvider(available: boolean, env: NodeJS.ProcessEnv, healthProbe?: (signal: AbortSignal) => Promise<boolean>) {
+function agentReachWebProvider(available: () => boolean, env: NodeJS.ProcessEnv, healthProbe?: (signal: AbortSignal) => Promise<boolean>) {
 	return Object.freeze({
-		id: "agent-reach",
+		id: "exa-mcporter",
 		kind: "tool" as const,
 		capabilities: Object.freeze(["web_search"]),
 		installed: available,
-		configuration: Object.freeze({ required: Object.freeze(["AGENT_REACH_INSTALLATION"]), instructions: "Install and configure Agent-Reach's Exa channel for this runtime user." }),
+		install: Object.freeze({ source: "beemax-provider-lock", package: "mcporter", version: EXA_MCPORTER_PROVIDER_VERSION }),
+		configuration: Object.freeze({ required: Object.freeze([]), instructions: "Enable the Profile-scoped exa-mcporter Provider installation policy, then acquire this pinned Provider." }),
 		health: async (signal: AbortSignal) => {
-			if (!available) return { status: "configuration_required" as const, reason: "Agent-Reach Exa is not installed or configured", missingConfiguration: Object.freeze(["AGENT_REACH_INSTALLATION"]) };
+			if (!available()) return { status: "unavailable" as const, installationState: "absent" as const, evidenceRef: "health:exa-mcporter:installation-absent", reason: "The Profile-scoped exa-mcporter Provider installation is observably absent" };
 			try {
 				const ready = await (healthProbe ?? ((probeSignal) => agentReachHealth(env, probeSignal)))(signal);
-				return ready ? { status: "ready" as const, evidenceRef: "health:agent-reach-exa" } : { status: "unhealthy" as const, reason: "Agent-Reach is installed but the Exa MCP server or search Tool is not healthy" };
+				return ready ? { status: "ready" as const, installationState: "present" as const, evidenceRef: "health:exa-mcporter" } : { status: "unhealthy" as const, installationState: "present" as const, reason: "The exa-mcporter Provider is installed but its Exa search Tool is not healthy" };
 			} catch (error) {
-				return { status: "unhealthy" as const, reason: `Agent-Reach health probe failed: ${safeProviderError(error)}` };
+				return { status: "unhealthy" as const, reason: `exa-mcporter health probe failed: ${safeProviderError(error)}` };
 			}
 		},
 	});
@@ -287,13 +296,17 @@ function configuredApiSearchProviders(env: NodeJS.ProcessEnv): WebApiProvider[] 
 function agentReachInstallationAvailable(env: NodeJS.ProcessEnv): boolean {
 	const binary = env.BEEMAX_AGENT_REACH_MCPORTER?.trim() || join(homedir(), ".agent-reach", "mcporter", "node_modules", ".bin", "mcporter");
 	const config = env.BEEMAX_AGENT_REACH_CONFIG?.trim() || join(homedir(), ".agent-reach", "mcporter.json");
-	return existsSync(binary) && existsSync(config);
+	const manifest = env.BEEMAX_AGENT_REACH_MANIFEST?.trim();
+	const root = env.BEEMAX_AGENT_REACH_ROOT?.trim();
+	return regularFile(binary) && regularFile(config) && Boolean(manifest && root);
 }
 
 async function agentReachHealth(env: NodeJS.ProcessEnv, signal: AbortSignal): Promise<boolean> {
 	const binary = env.BEEMAX_AGENT_REACH_MCPORTER?.trim() || join(homedir(), ".agent-reach", "mcporter", "node_modules", ".bin", "mcporter");
 	const config = env.BEEMAX_AGENT_REACH_CONFIG?.trim() || join(homedir(), ".agent-reach", "mcporter.json");
-	const { stdout } = await execFileAsync(binary, ["--config", config, "list", "exa", "--json"], { signal: combinedSignal(signal, 10_000), timeout: 10_000, maxBuffer: 256 * 1024 });
+	await requireAgentReachArtifactIntegrity(env, binary, config, signal);
+	const invocation = agentReachInvocation(binary, ["--config", config, "list", "exa", "--json"]);
+	const { stdout } = await execFileAsync(invocation.command, invocation.args, { env: agentReachSubprocessEnvironment(env), signal: combinedSignal(signal, 10_000), timeout: 10_000, maxBuffer: 256 * 1024 });
 	const result = JSON.parse(stdout) as { status?: unknown; tools?: Array<{ name?: unknown }> };
 	return result.status === "ok" && Boolean(result.tools?.some((tool) => tool.name === "web_search_exa"));
 }
@@ -313,18 +326,91 @@ function compactAgentReachOutput(value: string, maxResults: number): string {
 		return [`[${index + 1}] ${title}`, url ? `URL: ${url}` : undefined, published && published !== "N/A" ? `Published: ${published}` : undefined, highlights ? `Snippet: ${highlights}${highlights.length === 700 ? "…" : ""}` : undefined].filter(Boolean).join("\n");
 	}).filter((block) => publicUrls(block).length > 0);
 	if (compact.length) return compact.join("\n\n");
-	return String(value).trim().slice(0, 6_000) || "No Agent-Reach results found.";
+	return String(value).trim().slice(0, 6_000) || "No Exa/mcporter results found.";
 }
 
 async function agentReachSearchText(query: string, maxResults: number, env: NodeJS.ProcessEnv, signal?: AbortSignal): Promise<string> {
 	const binary = env.BEEMAX_AGENT_REACH_MCPORTER?.trim() || join(homedir(), ".agent-reach", "mcporter", "node_modules", ".bin", "mcporter");
 	const config = env.BEEMAX_AGENT_REACH_CONFIG?.trim() || join(homedir(), ".agent-reach", "mcporter.json");
+	await requireAgentReachArtifactIntegrity(env, binary, config, signal);
 	const controller = new AbortController();
 	const timeout = setTimeout(() => controller.abort(), SEARCH_TIMEOUT_MS);
 	try {
-		const { stdout } = await execFileAsync(binary, ["--config", config, "call", "exa.web_search_exa", `query=${query}`, `numResults=${maxResults}`], { signal: signal ?? controller.signal, timeout: SEARCH_TIMEOUT_MS, maxBuffer: MAX_RESPONSE_BYTES });
-		return stdout.trim() || "No Agent-Reach results found.";
+		const invocation = agentReachInvocation(binary, ["--config", config, "call", "exa.web_search_exa", `query=${query}`, `numResults=${maxResults}`]);
+		const { stdout } = await execFileAsync(invocation.command, invocation.args, { env: agentReachSubprocessEnvironment(env), signal: signal ?? controller.signal, timeout: SEARCH_TIMEOUT_MS, maxBuffer: MAX_RESPONSE_BYTES });
+		return stdout.trim() || "No Exa/mcporter results found.";
 	} finally { clearTimeout(timeout); }
+}
+
+function agentReachInvocation(binary: string, args: readonly string[]): { command: string; args: string[] } {
+	return binary.endsWith(".js") ? { command: process.execPath, args: [binary, ...args] } : { command: binary, args: [...args] };
+}
+
+function agentReachSubprocessEnvironment(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+	return {
+		HOME: env.BEEMAX_AGENT_REACH_HOME?.trim() || homedir(),
+		PATH: env.BEEMAX_AGENT_REACH_PATH?.trim() || env.PATH || process.env.PATH || "",
+		...(env.LANG ? { LANG: env.LANG } : {}),
+		...(env.LC_ALL ? { LC_ALL: env.LC_ALL } : {}),
+	};
+}
+
+function regularFile(path: string): boolean {
+	if (!existsSync(path)) return false;
+	try { const stat = lstatSync(path); return stat.isFile() && !stat.isSymbolicLink(); }
+	catch { return false; }
+}
+
+async function requireAgentReachArtifactIntegrity(env: NodeJS.ProcessEnv, entrypointPath: string, configurationPath: string, signal?: AbortSignal): Promise<void> {
+	const root = env.BEEMAX_AGENT_REACH_ROOT?.trim();
+	const manifestPath = env.BEEMAX_AGENT_REACH_MANIFEST?.trim();
+	if (!root && !manifestPath) return; // Explicit test/legacy injection; production composition always supplies both.
+	if (!root || !manifestPath || !await verifiedAgentReachArtifact(root, manifestPath, entrypointPath, configurationPath, signal)) throw new Error("Exa mcporter Provider artifact integrity verification failed");
+}
+
+async function verifiedAgentReachArtifact(root: string, manifestPath: string, entrypointPath: string, configurationPath: string, signal?: AbortSignal): Promise<boolean> {
+	const key = [root, manifestPath, entrypointPath, configurationPath].join("\0");
+	await acquireArtifactVerificationSlot(key, signal);
+	try {
+		return Boolean(await verifyProviderArtifact({
+			root, manifestPath, entrypointPath, configurationPath,
+			expected: { providerId: "exa-mcporter", version: EXA_MCPORTER_PROVIDER_VERSION, lockSha256: EXA_MCPORTER_LOCK_SHA256 },
+		}, signal));
+	} finally { releaseArtifactVerificationSlot(key); }
+}
+
+async function acquireArtifactVerificationSlot(key: string, signal?: AbortSignal): Promise<void> {
+	if (signal?.aborted) throw signal.reason ?? new Error("Provider artifact verification aborted");
+	const slot = providerArtifactVerificationSlots.get(key) ?? { locked: false, waiters: [] };
+	providerArtifactVerificationSlots.set(key, slot);
+	if (!slot.locked) { slot.locked = true; return; }
+	await new Promise<void>((resolvePromise, rejectPromise) => {
+		const waiter: ArtifactVerificationWaiter = { signal, resolve: resolvePromise, reject: rejectPromise };
+		if (signal) {
+			waiter.aborted = () => {
+				const index = slot.waiters.indexOf(waiter);
+				if (index >= 0) slot.waiters.splice(index, 1);
+				rejectPromise(signal.reason ?? new Error("Provider artifact verification aborted"));
+			};
+			signal.addEventListener("abort", waiter.aborted, { once: true });
+		}
+		slot.waiters.push(waiter);
+		if (signal?.aborted) waiter.aborted?.();
+	});
+}
+
+function releaseArtifactVerificationSlot(key: string): void {
+	const slot = providerArtifactVerificationSlots.get(key);
+	if (!slot) return;
+	while (slot.waiters.length) {
+		const waiter = slot.waiters.shift()!;
+		if (waiter.aborted) waiter.signal?.removeEventListener("abort", waiter.aborted);
+		if (waiter.signal?.aborted) { waiter.reject(waiter.signal.reason ?? new Error("Provider artifact verification aborted")); continue; }
+		waiter.resolve();
+		return;
+	}
+	slot.locked = false;
+	providerArtifactVerificationSlots.delete(key);
 }
 
 async function searchWebProvider(

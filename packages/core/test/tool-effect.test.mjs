@@ -28,6 +28,32 @@ test("effect journal records a content-free mutation lifecycle and committed rec
 	} finally { rmSync(root, { recursive: true, force: true }); }
 });
 
+test("an attested local mutation can commit even when its independent postcondition rejects", () => {
+	const root = mkdtempSync(join(tmpdir(), "beemax-effects-postcondition-"));
+	try {
+		const effects = new FileToolEffectJournal(join(root, "tool-effects.jsonl"));
+		const policy = { ...MUTATING_TOOL_POLICY, sideEffect: "local", effectProofProvider: "beemax-artifact-runtime" };
+		const id = effects.begin({ source, taskId: "turn:artifact", toolCallId: "call:artifact", toolName: "artifact_render", policy });
+		effects.finish({
+			source, toolCallId: "call:artifact", toolName: "artifact_render", policy, isError: true,
+			details: { beemaxEffect: { operation: "render workspace Artifact", externalRef: "workspace:report.pdf", proof: { provider: "beemax-artifact-runtime", resourceType: "workspace-artifact", resourceId: "report.pdf" } } },
+		});
+		assert.equal(effects.effect(id).status, "committed");
+		assert.equal(effects.effect(id).receipt.externalRef, "workspace:report.pdf");
+	} finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("a local mutation error without matching attested proof remains unknown", () => {
+	const root = mkdtempSync(join(tmpdir(), "beemax-effects-unproven-postcondition-"));
+	try {
+		const effects = new FileToolEffectJournal(join(root, "tool-effects.jsonl"));
+		const policy = { ...MUTATING_TOOL_POLICY, sideEffect: "local", effectProofProvider: "beemax-artifact-runtime" };
+		const id = effects.begin({ source, taskId: "turn:artifact", toolCallId: "call:artifact", toolName: "artifact_render", policy });
+		effects.finish({ source, toolCallId: "call:artifact", toolName: "artifact_render", policy, isError: true, details: { beemaxEffect: { proof: { provider: "untrusted", resourceType: "workspace-artifact", resourceId: "report.pdf" } } } });
+		assert.equal(effects.effect(id).status, "unknown");
+	} finally { rmSync(root, { recursive: true, force: true }); }
+});
+
 test("Effect authority projects its lifecycle into the bound Execution Trace", () => {
 	const root = mkdtempSync(join(tmpdir(), "beemax-effects-trace-"));
 	try {
@@ -37,7 +63,11 @@ test("Effect authority projects its lifecycle into the bound Execution Trace", (
 		const effectId = effects.begin({ source, executionEnvelope, taskId: "task:effect", toolCallId: "call:effect", toolName: "write", policy: { ...MUTATING_TOOL_POLICY, sideEffect: "local" } });
 		effects.finish({ source, executionEnvelope, toolCallId: "call:effect", toolName: "write", policy: { ...MUTATING_TOOL_POLICY, sideEffect: "local" }, isError: false });
 		const interruptedId = effects.begin({ source, executionEnvelope, taskId: "task:effect", toolCallId: "call:interrupted", toolName: "external_write", policy: MUTATING_TOOL_POLICY });
+		assert.equal(effects.unresolvedTaskEffects({ ownerKey: "cli:local:local", taskIds: ["task:effect"] }), 1);
 		assert.equal(effects.interruptTask("task:effect"), 1);
+		assert.equal(effects.unresolvedTaskEffects({ ownerKey: "cli:local:local", taskIds: ["task:effect"] }), 1, "an unknown interrupted Effect remains unresolved");
+		assert.equal(effects.reconcile(interruptedId, { status: "failed", operation: "cancelled before commit" }), true);
+		assert.equal(effects.unresolvedTaskEffects({ ownerKey: "cli:local:local", taskIds: ["task:effect"] }), 0);
 		const execution = trace.trace({ executionId: "execution:effect" });
 		assert.equal(execution.effects, 2);
 		assert.equal(execution.unknownEffects, 1);
@@ -46,6 +76,7 @@ test("Effect authority projects its lifecycle into the bound Execution Trace", (
 			{ type: "effect.settled", effectId, status: "committed" },
 			{ type: "effect.started", effectId: interruptedId, status: "executing" },
 			{ type: "effect.settled", effectId: interruptedId, status: "unknown" },
+			{ type: "effect.settled", effectId: interruptedId, status: "failed" },
 		]);
 	} finally { rmSync(root, { recursive: true, force: true }); }
 });

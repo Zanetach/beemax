@@ -4,9 +4,25 @@ import { createAccessScopeRef, createSituation, ObjectiveRuntime } from "../dist
 
 function ledgerFixture(records) {
 	const tasks = new Map(records.map((task) => [task.id, { ...task }]));
+	const runs = new Map();
+	const completions = new Set();
 	return {
 		tasks,
+		runs,
+		completions,
 		record(task) { tasks.set(task.id, { ...task }); },
+		recordRun(run) { runs.set(run.id, { ...run }); },
+		transitionRun(id, change) { const run = runs.get(id); if (!run || run.status !== "running") return false; runs.set(id, { ...run, ...change }); return true; },
+		renewTaskRunLease(id, leaseExpiresAt, now = Date.now()) { const run = runs.get(id); if (!run || run.status !== "running" || run.leaseExpiresAt <= now || leaseExpiresAt <= run.leaseExpiresAt) return false; runs.set(id, { ...run, leaseExpiresAt }); return true; },
+		settleDirectObjectiveCompletion(settlement) {
+			const objective = tasks.get(settlement.objectiveId);
+			const run = runs.get(settlement.taskRunId);
+			if (!objective || objective.ownerKey !== settlement.ownerKey || objective.status !== "running" || !run || run.taskId !== objective.id || run.status !== "running" || run.leaseExpiresAt <= Date.now()) return false;
+			tasks.set(objective.id, { ...objective, candidateResult: settlement.candidateResult, evidence: settlement.evidence, verificationStatus: "accepted" });
+			runs.set(run.id, { ...run, status: "succeeded", output: settlement.candidateResult });
+			completions.add(objective.id);
+			return true;
+		},
 		transition(id, change) {
 			const current = tasks.get(id);
 			if (!current || !["pending", "running"].includes(current.status)) return false;
@@ -14,6 +30,7 @@ function ledgerFixture(records) {
 			return true;
 		},
 		retryObjective(ownerKey, id) { const current = tasks.get(id); if (!current || current.ownerKey !== ownerKey || current.status !== "failed") return false; tasks.set(id, { ...current, status: "running", finishedAt: undefined, error: undefined }); return true; },
+		enqueueObjectiveCompletion(ownerKey, id) { const current = tasks.get(id); if (!current || current.ownerKey !== ownerKey || current.status !== "running" || current.verificationStatus !== "accepted" || !current.candidateResult) return false; completions.add(id); return true; },
 		queryTasks(query) {
 			return [...tasks.values()].filter((task) => query.ownerKeys.includes(task.ownerKey)
 				&& (!query.id || task.id === query.id)
@@ -42,9 +59,10 @@ test("a successful Task Plan is delivered before its Objective succeeds", async 
 	assert.equal(observedStatus, "running");
 	assert.equal(result.status, "succeeded");
 	assert.deepEqual(ledger.tasks.get("objective"), {
-		id: "objective", ownerKey: "owner", kind: "objective", title: "Compare products", description: "Compare A and B", status: "succeeded", createdAt: 1,
-		result: "Final comparison", evidence: "A evidence; B evidence", verificationStatus: "accepted", finishedAt: result.finishedAt,
+		id: "objective", ownerKey: "owner", kind: "objective", title: "Compare products", description: "Compare A and B", status: "running", createdAt: 1,
+		candidateResult: "Final comparison", evidence: "A evidence; B evidence", verificationStatus: "accepted",
 	});
+	assert.deepEqual([...ledger.completions], ["objective"]);
 });
 
 test("legacy business context remains on the Objective but is absent from verified publication", async () => {
@@ -55,7 +73,10 @@ test("legacy business context remains on the Objective but is absent from verifi
 	const published = [];
 	const runtime = new ObjectiveRuntime(ledger, async () => ({ result: "Delivery is Friday", evidence: "All tasks verified" }), (outcome) => published.push(outcome));
 	await runtime.deliverPlan("owner", "plan");
-	assert.deepEqual(published, [{ objectiveId: "objective", title: "Order delivery", result: "Delivery is Friday", evidence: "All tasks verified" }]);
+	assert.deepEqual(published, []);
+	ledger.tasks.set("objective", { ...ledger.tasks.get("objective"), status: "succeeded", result: "Delivery is Friday", candidateResult: undefined });
+	await runtime.publishDeliveredObjective("owner", "objective");
+	assert.deepEqual(published, [{ objectiveId: "objective", objectiveRevision: 1, title: "Order delivery", result: "Delivery is Friday", evidence: "All tasks verified" }]);
 	assert.deepEqual(ledger.tasks.get("objective").businessContext, { subject: { type: "customer", id: "A" }, object: { type: "order", id: "PO-1" } });
 });
 
@@ -67,27 +88,33 @@ test("verified Objective publication preserves Situation and Access Scope proven
 		{ id: "child", ownerKey: "owner", kind: "delegated", title: "校验", parentId: "objective", planId: "plan", status: "succeeded", result: "stable", verificationStatus: "accepted", createdAt: 2 },
 	]);
 	const published = [];
-	await new ObjectiveRuntime(ledger, async () => ({ result: "同步完成" }), (outcome) => published.push(outcome)).deliverPlan("owner", "plan");
+	const runtime = new ObjectiveRuntime(ledger, async () => ({ result: "同步完成" }), (outcome) => published.push(outcome));
+	await runtime.deliverPlan("owner", "plan");
+	ledger.tasks.set("objective", { ...ledger.tasks.get("objective"), status: "succeeded", result: "同步完成", candidateResult: undefined });
+	await runtime.publishDeliveredObjective("owner", "objective");
 	assert.deepEqual(published[0].situation, situation);
 	assert.deepEqual(published[0].accessScopeRef, accessScopeRef);
 	assert.equal(published[0].businessContext, undefined);
 });
 
-test("Memory publication failure keeps a verified Objective retryable until publication succeeds", async () => {
+test("Memory publication retries after Delivery Receipt without replaying Objective synthesis", async () => {
 	const ledger = ledgerFixture([
 		{ id: "objective", ownerKey: "owner", kind: "objective", title: "Order delivery", status: "running", createdAt: 1, businessContext: { object: { type: "order", id: "PO-1" } } },
 		{ id: "child", ownerKey: "owner", kind: "delegated", title: "Research", parentId: "objective", planId: "plan", status: "succeeded", result: "Friday", verificationStatus: "accepted", createdAt: 2 },
 	]);
 	let publicationAttempts = 0;
-	const runtime = new ObjectiveRuntime(ledger, async () => ({ result: "Delivery is Friday" }), () => {
+	let synthesisAttempts = 0;
+	const runtime = new ObjectiveRuntime(ledger, async () => { synthesisAttempts++; return { result: "Delivery is Friday" }; }, () => {
 		publicationAttempts++;
 		if (publicationAttempts === 1) throw new Error("memory unavailable");
 	});
 
-	assert.equal((await runtime.deliverPlan("owner", "plan")).status, "failed");
-	assert.equal(ledger.tasks.get("objective").status, "running");
 	assert.equal((await runtime.deliverPlan("owner", "plan")).status, "succeeded");
-	assert.equal(ledger.tasks.get("objective").status, "succeeded");
+	assert.equal(ledger.tasks.get("objective").status, "running");
+	ledger.tasks.set("objective", { ...ledger.tasks.get("objective"), status: "succeeded", result: "Delivery is Friday", candidateResult: undefined });
+	await assert.rejects(runtime.publishDeliveredObjective("owner", "objective"), /memory unavailable/);
+	await runtime.publishDeliveredObjective("owner", "objective");
+	assert.equal(synthesisAttempts, 1);
 	assert.equal(publicationAttempts, 2);
 });
 
@@ -186,5 +213,42 @@ test("a retried successful Plan reopens and delivers its failed parent Objective
 	]);
 	const runtime = new ObjectiveRuntime(ledger, async () => ({ result: "final" }));
 	assert.equal((await runtime.deliverPlan("owner", "plan")).status, "succeeded");
-	assert.equal(ledger.tasks.get("objective").status, "succeeded");
+	assert.equal(ledger.tasks.get("objective").status, "running");
+	assert.equal(ledger.tasks.get("objective").candidateResult, "final");
+});
+
+test("planned Objective synthesis renews its finite Task Run lease until atomic completion", async () => {
+	const ledger = ledgerFixture([
+		{ id: "objective", ownerKey: "owner", kind: "objective", title: "Long synthesis", status: "running", createdAt: 1 },
+		{ id: "child", ownerKey: "owner", kind: "delegated", title: "Research", parentId: "objective", planId: "plan", status: "succeeded", result: "verified", verificationStatus: "accepted", createdAt: 2 },
+	]);
+	let renewals = 0;
+	const renew = ledger.renewTaskRunLease.bind(ledger);
+	ledger.renewTaskRunLease = (...args) => { renewals++; return renew(...args); };
+	const runtime = new ObjectiveRuntime(ledger, async () => {
+		await new Promise((resolve) => setTimeout(resolve, 450));
+		return { result: "long synthesis completed" };
+	}, undefined, { taskRunLeaseMs: 300 });
+	assert.equal((await runtime.deliverPlan("owner", "plan")).status, "succeeded");
+	assert.ok(renewals >= 2);
+	assert.equal([...ledger.runs.values()][0].status, "succeeded");
+});
+
+test("planned Objective synthesis fails closed when its Task Run lease is lost", async () => {
+	const ledger = ledgerFixture([
+		{ id: "objective", ownerKey: "owner", kind: "objective", title: "Lost lease", status: "running", createdAt: 1 },
+		{ id: "child", ownerKey: "owner", kind: "delegated", title: "Research", parentId: "objective", planId: "plan", status: "succeeded", result: "verified", verificationStatus: "accepted", createdAt: 2 },
+	]);
+	ledger.renewTaskRunLease = () => false;
+	const runtime = new ObjectiveRuntime(ledger, async (_input, signal) => {
+		await new Promise((resolve, reject) => {
+			const timeout = setTimeout(resolve, 1_000);
+			signal.addEventListener("abort", () => { clearTimeout(timeout); reject(signal.reason); }, { once: true });
+		});
+		return { result: "must not settle" };
+	}, undefined, { taskRunLeaseMs: 300 });
+	const outcome = await runtime.deliverPlan("owner", "plan");
+	assert.equal(outcome.status, "failed");
+	assert.match(outcome.error, /lost its durable Task Run lease/);
+	assert.equal(ledger.tasks.get("objective").candidateResult, undefined);
 });

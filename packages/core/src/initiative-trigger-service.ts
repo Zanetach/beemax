@@ -29,6 +29,7 @@ export interface DurableInitiativeTrigger extends DurableInitiativeTriggerInput 
 export interface InitiativeTriggerInbox {
 	enqueueInitiativeTrigger(input: DurableInitiativeTriggerInput): { trigger: DurableInitiativeTrigger; created: boolean };
 	claimInitiativeTriggers(profileId: string, holderId: string, now: number, limit: number, leaseMs: number): DurableInitiativeTrigger[];
+	renewInitiativeTrigger(id: string, claimToken: string, leaseExpiresAt: number): boolean;
 	completeInitiativeTrigger(id: string, claimToken: string, outcome: { decision: "observed" | "ignored"; observationId?: string; notificationRequired: boolean }): boolean;
 	failInitiativeTrigger(id: string, claimToken: string, now: number, error: string): boolean;
 }
@@ -70,6 +71,7 @@ export interface InitiativeTriggerServiceOptions {
 	holderId: string;
 	batchSize?: number;
 	leaseMs?: number;
+	leaseHeartbeatMs?: number;
 	admit?: (observation: InitiativeObservation | { id: string }, trigger: DurableInitiativeTrigger) => Promise<void>;
 }
 
@@ -90,15 +92,29 @@ export class InitiativeTriggerService {
 		return this.active ?? Promise.resolve({ claimed: 0, completed: 0, failed: 0 });
 	}
 	private async executeOnce(now: number): Promise<{ claimed: number; completed: number; failed: number }> {
-		const claimed = this.options.inbox.claimInitiativeTriggers(this.options.profileId, this.options.holderId, now, this.options.batchSize ?? 10, this.options.leaseMs ?? 60_000);
-		let completed = 0, failed = 0;
-		for (const item of claimed) {
+		const leaseMs = Math.max(100, this.options.leaseMs ?? 60_000);
+		const heartbeatMs = Math.max(10, Math.min(this.options.leaseHeartbeatMs ?? Math.trunc(leaseMs / 3), Math.trunc(leaseMs / 2)));
+		const limit = Math.max(1, this.options.batchSize ?? 10);
+		let claimed = 0, completed = 0, failed = 0;
+		while (claimed < limit) {
+			// Claim only the item that can begin immediately. Pre-claiming a batch
+			// lets later leases expire while an earlier observation is still running.
+			const item = this.options.inbox.claimInitiativeTriggers(this.options.profileId, this.options.holderId, claimed === 0 ? now : Date.now(), 1, leaseMs)[0];
+			if (!item) break;
+			claimed++;
+			let claimLost = false;
+			const heartbeat = item.claimToken ? setInterval(() => {
+				if (!this.options.inbox.renewInitiativeTrigger(item.id, item.claimToken!, Date.now() + leaseMs)) claimLost = true;
+			}, heartbeatMs) : undefined;
+			heartbeat?.unref();
 			try {
 				const result = await this.options.initiative.observe({
 					kind: item.kind, id: item.triggerId, occurredAt: item.occurredAt, scope: item.scope, prompt: item.prompt,
 					evidence: [{ id: item.evidenceRef, statement: item.prompt, source: { kind: item.kind === "task_transition" ? "task_ledger" : "enterprise_system", reference: item.evidenceRef }, trust: "observed", confidence: 1 }],
 				});
+				if (claimLost) throw new Error(`Initiative Trigger ${item.id} lost its claim during observation`);
 				if (result.kind === "observed" && item.executionScope && this.options.admit) await this.options.admit(result.observation, item);
+				if (claimLost) throw new Error(`Initiative Trigger ${item.id} lost its claim during admission`);
 				if (!item.claimToken || !this.options.inbox.completeInitiativeTrigger(item.id, item.claimToken, {
 					decision: result.kind === "observed" ? "observed" : "ignored",
 					...(result.kind === "observed" ? { observationId: result.observation.id } : {}),
@@ -106,10 +122,10 @@ export class InitiativeTriggerService {
 				})) throw new Error(`Initiative Trigger ${item.id} lost its claim`);
 				completed++;
 			} catch (error) {
-				if (item.claimToken) this.options.inbox.failInitiativeTrigger(item.id, item.claimToken, now, error instanceof Error ? error.message : String(error));
+				if (item.claimToken) this.options.inbox.failInitiativeTrigger(item.id, item.claimToken, Date.now(), error instanceof Error ? error.message : String(error));
 				failed++;
-			}
+			} finally { if (heartbeat) clearInterval(heartbeat); }
 		}
-		return { claimed: claimed.length, completed, failed };
+		return { claimed, completed, failed };
 	}
 }

@@ -87,7 +87,12 @@ export interface BeeMaxConfig {
 		toolset: "safe" | "standard";
 		maxSessions: number;
 		sessionIdleMs: number;
-		turnIdleSettleMs: number;
+		/** Optional generic preference weights keyed by name or kind:name; never grants authority. */
+		capabilityPreferences: Record<string, number>;
+		capabilityCognition: { maxModelAttempts: number; maxTokens: number; timeoutMs: number };
+	};
+	capabilityProviders: {
+		installation: { enabled: boolean; allowedProviders: string[] };
 	};
 	model: {
 		provider: string;
@@ -116,12 +121,6 @@ export interface BeeMaxConfig {
 		baseUrl: string;
 		apiKey?: string;
 		spaces: KnowledgeSpaceConfig[];
-	};
-	imageGeneration: {
-		enabled: boolean;
-		provider: "openai-codex";
-		quality: "low" | "medium" | "high";
-		outputDir: string;
 	};
 	mediaUnderstanding: {
 		localOcr: {
@@ -183,6 +182,11 @@ export function profileTaskGrantCapabilities(config: Pick<BeeMaxConfig, "executi
 		...(config.execution.workspaceWritePolicy === "allow-within-workspace" ? ["write"] : []),
 		...config.execution.taskGrantCapabilities,
 	])];
+}
+
+/** Objectives terminate only through completion, explicit cancellation, or a visible unrecoverable failure. */
+export function profileTurnTimeoutMs(_config: Pick<BeeMaxConfig, "subagents" | "execution">): null {
+	return null;
 }
 
 export function loadConfig(configPath?: string, profile = "default"): BeeMaxConfig {
@@ -304,6 +308,14 @@ export function loadConfig(configPath?: string, profile = "default"): BeeMaxConf
 	const heartbeatPlatform = str(env.BEEMAX_HEARTBEAT_PLATFORM ?? cfg.automation?.heartbeat?.platform ?? channels.find((channel) => channel.enabled)?.adapter ?? "feishu");
 	const heartbeatInstances = channels.filter((channel) => channel.enabled && channel.adapter === heartbeatPlatform);
 	const heartbeatChannelInstanceId = optional(env.BEEMAX_HEARTBEAT_CHANNEL_INSTANCE_ID ?? cfg.automation?.heartbeat?.channelInstanceId) ?? (heartbeatInstances.length === 1 ? heartbeatInstances[0]!.id : undefined);
+	const capabilityCognition = {
+		maxModelAttempts: boundedConfiguredInteger(env.BEEMAX_CAPABILITY_COGNITION_MAX_ATTEMPTS ?? cfg.agent?.capabilityCognition?.maxModelAttempts, 3, 1, 5, "agent.capabilityCognition.maxModelAttempts"),
+		maxTokens: boundedConfiguredInteger(env.BEEMAX_CAPABILITY_COGNITION_MAX_TOKENS ?? cfg.agent?.capabilityCognition?.maxTokens, 2_048, 256, 8_192, "agent.capabilityCognition.maxTokens"),
+		// Capability cognition is an optional preflight lane, never the Objective
+		// deadline. Fail it over quickly so Provider stalls cannot consume the
+		// interactive report SLO; deterministic discovery continues the same Task.
+		timeoutMs: boundedConfiguredInteger(env.BEEMAX_CAPABILITY_COGNITION_TIMEOUT_MS ?? cfg.agent?.capabilityCognition?.timeoutMs, 12_000, 1_000, 60_000, "agent.capabilityCognition.timeoutMs"),
+	};
 	return {
 		profile,
 		agent: {
@@ -312,7 +324,14 @@ export function loadConfig(configPath?: string, profile = "default"): BeeMaxConf
 			toolset: (env.BEEMAX_TOOLSET ?? cfg.agent?.toolset) === "safe" ? "safe" : "standard",
 			maxSessions: parseNumber(env.BEEMAX_MAX_SESSIONS ?? cfg.agent?.maxSessions, 100),
 			sessionIdleMs: parseNumber(env.BEEMAX_SESSION_IDLE_MS ?? cfg.agent?.sessionIdleMs, 30 * 60_000),
-			turnIdleSettleMs: boundedNumber(env.BEEMAX_TURN_IDLE_SETTLE_MS ?? cfg.agent?.turnIdleSettleMs, 60_000, 5_000, 5 * 60_000),
+			capabilityPreferences: parseCapabilityPreferences(cfg.agent?.capabilityPreferences),
+			capabilityCognition,
+		},
+		capabilityProviders: {
+			installation: {
+				enabled: parseBool(env.BEEMAX_PROVIDER_INSTALLATION_ENABLED ?? cfg.capabilityProviders?.installation?.enabled ?? false),
+				allowedProviders: parseProviderIds(env.BEEMAX_PROVIDER_INSTALLATION_ALLOW ?? cfg.capabilityProviders?.installation?.allowedProviders),
+			},
 		},
 		model: {
 			provider,
@@ -344,12 +363,6 @@ export function loadConfig(configPath?: string, profile = "default"): BeeMaxConf
 			baseUrl: str(env.BEEMAX_WEKNORA_BASE_URL ?? cfg.knowledge?.baseUrl ?? "http://127.0.0.1:8080"),
 			apiKey: optional(env.BEEMAX_WEKNORA_API_KEY),
 			spaces: parseKnowledgeSpaces(cfg.knowledge?.spaces),
-		},
-		imageGeneration: {
-			enabled: parseBool(env.BEEMAX_IMAGE_ENABLED ?? cfg.imageGeneration?.enabled ?? false),
-			provider: "openai-codex",
-			quality: parseImageQuality(env.BEEMAX_IMAGE_QUALITY ?? cfg.imageGeneration?.quality),
-			outputDir: resolveFrom(location.basePath, str(env.BEEMAX_IMAGE_OUTPUT_DIR ?? cfg.imageGeneration?.outputDir ?? join(profileDataRoot, "cache/images"))),
 		},
 		mediaUnderstanding: {
 			localOcr: {
@@ -418,6 +431,12 @@ function boundedNumber(value: unknown, fallback: number, min: number, max: numbe
 	const parsed = typeof value === "number" ? value : Number(value);
 	return Number.isFinite(parsed) ? Math.max(min, Math.min(max, Math.trunc(parsed))) : fallback;
 }
+function boundedConfiguredInteger(value: unknown, fallback: number, min: number, max: number, label: string): number {
+	if (value === undefined || value === null || value === "") return fallback;
+	const parsed = typeof value === "number" ? value : Number(value);
+	if (!Number.isSafeInteger(parsed) || parsed < min || parsed > max) throw new Error(`${label} must be an integer between ${min} and ${max}`);
+	return parsed;
+}
 function boundedScore(value: unknown, fallback: number): number {
 	if (value === undefined || value === null || value === "") return fallback;
 	const parsed = typeof value === "number" ? value : Number(value);
@@ -468,9 +487,6 @@ function optional(value: unknown): string | undefined {
 	const valueString = str(value);
 	return valueString || undefined;
 }
-function parseImageQuality(value: unknown): "low" | "medium" | "high" {
-	return value === "low" || value === "high" ? value : "medium";
-}
 function reasoningDisplay(value: unknown): "off" | "summary" | "raw" {
 	return value === "off" || value === "raw" ? value : "summary";
 }
@@ -507,6 +523,19 @@ function taskGrantCapabilities(value: unknown): string[] {
 	}
 	return [...new Set(capabilities)];
 }
+
+function parseCapabilityPreferences(value: unknown): Record<string, number> {
+	if (value === undefined || value === null) return {};
+	if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("agent.capabilityPreferences must be an object");
+	const entries = Object.entries(value as Record<string, unknown>);
+	if (entries.length > 500) throw new Error("agent.capabilityPreferences exceeds 500 entries");
+	return Object.fromEntries(entries.map(([rawName, rawWeight]) => {
+		const name = rawName.trim();
+		if (!name || name.length > 256) throw new Error("agent.capabilityPreferences contains an invalid Capability name");
+		if (typeof rawWeight !== "number" || !Number.isFinite(rawWeight) || rawWeight < -1 || rawWeight > 1) throw new Error(`agent.capabilityPreferences.${name} must be between -1 and 1`);
+		return [name, rawWeight];
+	}));
+}
 function parseNumber(value: unknown, fallback: number): number {
 	const number = Number(value);
 	return Number.isFinite(number) && number >= 0 ? number : fallback;
@@ -518,6 +547,13 @@ function parseList(value: unknown): string[] {
 		.split(",")
 		.map((item) => item.trim())
 		.filter(Boolean);
+}
+
+function parseProviderIds(value: unknown): string[] {
+	const providers = [...new Set(parseList(value))];
+	if (providers.length > 100) throw new Error("capabilityProviders.installation.allowedProviders exceeds 100 entries");
+	for (const [index, provider] of providers.entries()) if (!/^[a-z0-9][a-z0-9._:@-]{0,127}$/i.test(provider)) throw new Error(`Invalid capabilityProviders.installation.allowedProviders[${index}]: ${provider}`);
+	return providers;
 }
 
 function parseGatewayChannels(value: unknown): GatewayChannelConfig[] {

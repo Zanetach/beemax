@@ -15,27 +15,31 @@ Every surface operates under Profile-scoped policy.
 
 It does not encode customer-specific objects such as orders, tickets, or contracts. Unknown business vocabulary enters through Work Context, evidence, configured capabilities, and enterprise policy instead of a fixed business ontology.
 
-## The execution contract
+## The execution flow
 
 ```text
-User intent or durable Trigger
+Natural-language Turn
         ↓
-Situation / Work Context
+One Pi model understands the requested outcome
+        ├─ simple → answer directly
+        └─ complex → adapt the plan while executing
+                         ↓
+              progressively load Tools / Skills
+                         ↓
+              model ↔ Tool loop with recovery
+                         ↓
+              model completion + system guards
+                         ↓
+                    text and files
+
+Durable Trigger or explicit Objective lifecycle
         ↓
-Scoped Memory recall + active responsibility
+admitted Work Contract → Objective / Task Ledger
         ↓
-Objective and durable Task Ledger
-        ↓
-One Pi Agent Runtime
-        ↓
-Governed Tool Effect → provider receipt
-        ↓
-Checkpoint → independent Verification
-        ↓
-Delivery + evidence-backed Memory update
+the same Pi loop → checkpoint → independent Verification → delivery
 ```
 
-Pi owns model interaction, tools, session events, and live compaction. BeeMax Core adds product semantics around Pi: scope, durable responsibility, action governance, Effect authority, recovery, verification, and delivery.
+Pi owns task understanding, adaptive execution, model interaction, tools, session events, and live compaction. BeeMax Core adds product semantics around Pi: progressive capability disclosure, scope, sandbox and approval policy, durable responsibility where requested, Effect authority, recovery, verification, and delivery. Work Contracts govern durable/background responsibility; they are not a mandatory pre-model classification pass for ordinary interactive work.
 
 ## Quick start
 
@@ -59,7 +63,7 @@ cd beemax
 ./scripts/install.sh
 ```
 
-On Ubuntu and macOS, installation also discovers or installs Tesseract OCR. Set `BEEMAX_INSTALL_MEDIA_DEPS=0` only when the host image manages OCR dependencies separately.
+On Ubuntu and macOS, installation also discovers or installs Tesseract OCR. Ubuntu installation additionally provisions Noto CJK fonts so Chinese HTML/PDF reports retain visible, extractable text. Set `BEEMAX_INSTALL_MEDIA_DEPS=0` only when the host image manages these dependencies separately.
 
 ### 2. Create a Profile
 
@@ -94,11 +98,11 @@ beemax channel test telegram --profile personal
 beemax channel list --profile personal
 ```
 
-## What ships in 1.2
+## What ships in 1.5
 
 | Area | Implemented surface |
 | --- | --- |
-| Agent runtime | One Core-owned Pi runtime for CLI, Gateway, durable Tasks, recovery, automation, and proactive execution |
+| Agent runtime | One Core-owned model-first Pi runtime for CLI and Gateway, with adaptive planning for complex turns and a Contract-governed lane for durable Tasks, recovery, automation, and proactive execution |
 | Work Context | Situation model for facts, goals, constraints, uncertainty, conflicts, possible actions, and provenance |
 | Memory | SQLite/FTS5 recall, scope isolation, evidence lineage, correction, conflict, candidates, conventions, and verified Episodes |
 | Durable work | Objectives, DAG Task Plans, Task Runs, leases, Checkpoints, Candidate Results, Verification, correction, cancellation, and recovery |
@@ -189,11 +193,42 @@ Profiles use the `standard` Toolset by default. Set `agent.toolset: safe` for a 
 
 The safe Toolset keeps read/search, Memory inspection, task status, schedules, Skill inspection, and read-only MCP tools. It excludes shell, file writes, Memory mutation, image generation, scheduling mutation, and mutating MCP tools.
 
+Capability selection is progressive. An admitted exact Tool/MCP/Skill name, alias, or trigger phrase uses a deterministic metadata fast path; description-word overlap is recall only and never grants execution authority. Configured Profile text models resolve the remaining requirements with bounded semantic cognition. BeeMax may fail over between configured semantic models. Only Provider unavailability or the auxiliary preflight deadline may repair through the same exact local metadata; malformed, empty, incomplete, or below-threshold semantic output fails closed and is never replaced by weaker lexical routing. When no Profile text model is configured, lexical recall remains available but still passes Policy and Tool-Spec admission. A valid semantic “no match” remains empty and never forces an unrelated Skill. Optional Profile preferences optimize equivalent candidates but do not grant execution authority:
+
+```yaml
+agent:
+  capabilityPreferences:
+    web_search: 0.4
+    skill:source-review: 0.8
+  capabilityCognition:
+    maxModelAttempts: 3
+    maxTokens: 2048
+    timeoutMs: 12000
+```
+
+Preference values range from `-1` to `1`. Capability cognition retries distinct Provider models without a cumulative token or cost ceiling; a timed-out model is not retried inside a smaller slice of the same deadline, while a fast structural response may receive one bounded repair. `maxModelAttempts` accepts `1`–`5`. The compact `maxTokens` value is only the output size requested for one bounded JSON decision, not an Agent Turn or Objective budget. `timeoutMs` bounds only this optional preflight lane; it never times out or abandons the Objective. Individual stalled network requests still fail visibly so another Provider or exact deterministic discovery route can continue the unchanged Objective. Neither setting authorizes description-overlap fallback or lexical degradation after malformed or empty semantic responses. Policy, Profile scope, Provider health, Effects, and the turn-scoped Tool Spec still decide whether a selected capability can execute.
+
+Missing Provider acquisition is disabled by default. Operators may pre-authorize exact Provider adapters per Profile; the mutating `capability_acquire` Tool still requires runtime approval, installation uses a pinned adapter in the Profile's private directory, and BeeMax resumes the unchanged Objective only after a health probe returns evidence:
+
+```yaml
+capabilityProviders:
+  installation:
+    enabled: true
+    allowedProviders: [exa-mcporter]
+```
+
+The equivalent environment settings are `BEEMAX_PROVIDER_INSTALLATION_ENABLED=true` and `BEEMAX_PROVIDER_INSTALLATION_ALLOW=exa-mcporter`. BeeMax currently ships a pinned Exa/mcporter adapter for restoring `web_search`; arbitrary package names or model-authored shell commands are never accepted. The adapter installs a fixed mcporter dependency closure from BeeMax's SHA-256-verified `package-lock`, disables package lifecycle scripts, runs with a minimal Profile-scoped environment, and publishes through an atomic cross-process lock plus rename. Its manifest content-addresses the executable, configuration, and complete dependency tree; integrity is rechecked before health probes and searches. Interrupted or ambiguous installs leave a durable quarantine; the next acquisition first reconciles the isolated staging state, then retries without overlapping the previous installer. Missing configuration, denied authority, unhealthy installation, and unknown outcomes fail closed instead of producing an evergreen substitute.
+
+Every Capability decision receives a content-free cognition ID that correlates model usage, fallback telemetry, the execution trace, and the eventual verified, rejected, failed, cancelled, or unverified task outcome. Calibration reports keep lexical, frozen-semantic, and live-Provider results separate and measure Top-1, Top-K, required-capability recall, unnecessary activation, no-match precision, completion, latency, tokens, and cost. Versioned threshold trials cannot be promoted when authorization, false-positive, recall, or completion metrics regress.
+
+Before a release, refresh the credentialed semantic-routing and outcome evidence with `npm run eval:capability-ranking:live -- --profile <profile> --write evals/baselines/capability-ranking-live.json`. This includes a separate live-Pi lane: the configured model receives the turn-scoped Tool Spec, chooses Tools itself, and must satisfy independent Acceptance Criteria. Every Pi-originated Tool call is bound to the exact internal assistant Turn, Provider response, Tool name, and canonical argument identity that produced it. Provider response IDs and Tool arguments never enter the durable Trace as raw content: only SHA-256 identity projections are retained. A Tool-bearing Turn without a reported Provider response identity is blocked before execution; a Tool-free Turn may honestly record the identity as `unavailable`. The deterministic routing harness remains infrastructure evidence, not proof that a model completed the task. Live-Pi token, latency, and model-Turn budgets fail closed; Provider cost remains explicitly `unpriced` when the configured catalog supplies no price rather than being presented as free. The release verifier independently recomputes rankings, correlated task outcomes, model-driven Tool receipts, usage, costs, and threshold promotion decisions; it rejects missing, failed, expired, fallback-backed, implementation-mismatched, incorrectly ordered, causally detached, or over-budget evidence.
+
 ## Memory and durable work
 
 BeeMax separates chat history from durable organizational evidence.
 
 - Conversation candidates stay pending until reviewed or promoted.
+- Explicit, low-risk personal preferences may additionally be admitted by the governed L4 extractor when `adaptive_learning` is enabled; broader organizational knowledge still requires type-specific authority.
 - Claims retain source evidence, validity, visibility, scope, correction, and conflict lineage.
 - Verified Objective outcomes may publish idempotent Situation-backed Episodes.
 - Recall is constrained by Profile, owner, conversation, thread, access scope, and business-object evidence when available.
@@ -317,20 +352,6 @@ mediaUnderstanding:
 ```
 
 Media output enters Pi as untrusted evidence with digest, provenance, confidence, warnings, and timing. Raw image bytes are not copied into receipts, telemetry, Task Ledger, or Memory.
-
-Optional GPT Image generation is configured separately and can be used even when the primary chat model is not an OpenAI model.
-
-```bash
-beemax auth codex --profile personal
-```
-
-```yaml
-imageGeneration:
-  enabled: true
-  provider: openai-codex
-  quality: medium
-  outputDir: cache/images
-```
 
 ## Skills, MCP, Web, and knowledge
 
@@ -562,7 +583,6 @@ packages/automation/              Schedule persistence and time calculation
 packages/knowledge/               WeKnora capability adapter
 packages/mcp-capability/          MCP client capability
 packages/feishu-capability/       Feishu meeting capability
-packages/codex-image-capability/  Optional GPT Image generation
 pi/                               Vendored Pi source and workspace packages
 config/                           Configuration examples
 evals/                            Runtime and performance evaluation corpus
@@ -583,12 +603,12 @@ docs/                             Architecture, ADRs, operations, PRD, and resea
 
 ## Current boundaries
 
-BeeMax 1.2 intentionally does not include a fixed customer business ontology, a second Agent Loop, high-risk fully autonomous execution, large multi-Agent organizations, or automatic production Skill mutation.
+The current BeeMax release candidate intentionally does not include a fixed customer business ontology, a second Agent Loop, high-risk fully autonomous execution, large multi-Agent organizations, or arbitrary model-authored production Skill mutation. It does include an `adaptive_learning`-gated managed-Skill lane: only immutable, integrity-sealed versions with accepted trial identities and promotion authority can enter a bounded canary, and verified operational evidence may promote or roll that pointer back without rewriting historical versions.
 
 Planned extension points include additional registry adapters such as Slack, Discord, DingTalk, and WeCom; Feishu User OAuth for private resources; externally backed work queues for larger horizontal deployments; and deeper enterprise policy integrations.
 
 ---
 
-**中文简介：** BeeMax 1.2 是一个基于 Pi 的持久化智能体运行时。它通过同一个 Profile Gateway 接入飞书/Lark、Telegram 与未来渠道，通过 Situation/Work Context 理解未知业务语义，以作用域 Memory 保存证据。
+**中文简介：** 当前 BeeMax 候选版本是一个基于 Pi 的持久化智能体运行时。它通过同一个 Profile Gateway 接入飞书/Lark、Telegram 与未来渠道，通过 Situation/Work Context 理解未知业务语义，以作用域 Memory 保存证据。
 
 Task Ledger、Effect、Checkpoint 和 Verification 共同承担可恢复责任，企业策略与审批负责约束执行边界。

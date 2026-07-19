@@ -11,6 +11,10 @@ export interface AgentScope {
 	userIdAlt?: string;
 	userName?: string;
 	threadId?: string;
+	/** Trusted ingress message anchor retained for idempotent interactive completion and thread replies. */
+	originMessageId?: string;
+	/** Adapter-selected provider message anchor for an exact thread reply. */
+	replyToMessageId?: string;
 	isBot?: boolean;
 	/** Internal execution binding for a delegated Task; never accepted from a transport payload. */
 	delegatedTask?: { id: string; ownerKey: string };

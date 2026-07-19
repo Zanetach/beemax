@@ -1,7 +1,7 @@
 /**
  * Normalized platform-agnostic Channel Runtime message types.
  *
- * Mirrors Hermes' MessageEvent / SessionSource / SendResult design but in
+ * Defines BeeMax MessageEvent / SessionSource / SendResult contracts in
  * TypeScript for the BeeMax gateway. All platform adapters convert their
  * native events into these shapes so the dispatcher stays
  * platform-agnostic.
@@ -125,5 +125,6 @@ export type ObservationHandler = (observation: InboundObservation) => void | Pro
 
 export interface SendOptions {
 	replyTo?: string;
+	replyInThread?: boolean;
 	idempotencyKey?: string;
 }

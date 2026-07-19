@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { configuredAuxiliaryTextModels, configuredMediaUnderstanding, ProfileModelCatalog, renderConfiguredModels } from "../dist/model-catalog.js";
+import { configuredAuxiliaryTextModels, configuredCapabilityRanker, configuredMediaUnderstanding, configuredSemanticCapabilityRanker, ProfileModelCatalog, renderConfiguredModels, resolveProfileCognitionModels } from "../dist/model-catalog.js";
+import { capabilityMetadataForTool } from "../dist/agent-factory.js";
 
 test("configured model list renders actual known capability metadata", () => {
 	const output = renderConfiguredModels({ models: [{ provider: "anthropic", model: "claude-sonnet-4-5" }] });
@@ -47,4 +48,65 @@ test("custom Profile models remain available to tool-free auxiliary cognition", 
 	assert.equal(models[0].model.id, "private");
 	assert.equal(models[0].model.baseUrl, "https://models.example/v1");
 	assert.equal(models[0].apiKey, "secret");
+});
+
+test("custom Anthropic-compatible models explicitly disable default Provider reasoning", () => {
+	const models = configuredAuxiliaryTextModels({
+		model: { provider:"custom",model:"reasoning-by-default",apiKey:"secret",apiKeys:{ custom:"secret" },baseUrl:"https://models.example/v1",customProtocol:"anthropic-messages" },
+		models: [{ provider:"custom",model:"reasoning-by-default",baseUrl:"https://models.example/v1",customProtocol:"anthropic-messages" }],
+	});
+	assert.equal(models[0].model.api, "anthropic-messages");
+	assert.equal(models[0].model.reasoning, true);
+});
+
+test("Profile cognition models fail fast for a missing main credential even when a secondary model is authenticated", async () => {
+	const config = {
+		profile: "missing-main",
+		model: { provider: "anthropic", model: "claude-sonnet-4-5", apiKey: "", apiKeys: { openai: "secondary" } },
+		models: [{ provider: "anthropic", model: "claude-sonnet-4-5" }, { provider: "openai", model: "gpt-4.1" }],
+	};
+	await assert.rejects(resolveProfileCognitionModels(config, async () => undefined), /missing-main.*main model.*no credential/i);
+});
+
+test("Profile cognition models refresh OAuth credentials for every Provider attempt", async () => {
+	const config = {
+		profile: "oauth",
+		model: { provider: "anthropic", model: "claude-sonnet-4-5", apiKey: "", apiKeys: {} },
+		models: [{ provider: "anthropic", model: "claude-sonnet-4-5" }],
+	};
+	let generation = 0;
+	const candidates = await resolveProfileCognitionModels(config, async (provider) => `${provider}:token:${++generation}`);
+	assert.equal(candidates.length, 1);
+	assert.equal(candidates[0].apiKey, undefined);
+	assert.equal(await candidates[0].getApiKey(), "anthropic:token:3");
+	assert.equal(await candidates[0].getApiKey(), "anthropic:token:4");
+});
+
+test("Profile cognition preserves a builtin model's enterprise Base URL override", async () => {
+	const baseUrl = "https://enterprise-proxy.example/v1";
+	const config = {
+		profile: "enterprise-proxy",
+		model: { provider: "openai", model: "gpt-4.1", apiKey: "proxy-key", apiKeys: { openai: "proxy-key" }, baseUrl },
+		models: [{ provider: "openai", model: "gpt-4.1", baseUrl }],
+	};
+	const candidates = await resolveProfileCognitionModels(config, async () => undefined);
+	assert.equal(candidates[0].model.baseUrl, baseUrl);
+});
+
+test("Profile composition selects progressive lexical-then-semantic Capability routing whenever a text model is configured", () => {
+	const model = { id: "semantic-test", provider: "test", input: ["text"] };
+	assert.equal(configuredCapabilityRanker([{ model, apiKey: "secret" }]).constructor.name, "ProgressiveCapabilityRanker");
+	assert.equal(configuredCapabilityRanker([]).constructor.name, "LexicalCapabilityRanker");
+});
+
+test("live evidence can exercise the real semantic lane without the progressive exact-match short circuit", () => {
+	const model = { id: "semantic-test", provider: "test", input: ["text"] };
+	assert.equal(configuredSemanticCapabilityRanker([{ model, apiKey: "secret" }]).constructor.name, "SemanticCapabilityRanker");
+	assert.equal(configuredSemanticCapabilityRanker([]).constructor.name, "LexicalCapabilityRanker");
+});
+
+test("Tool Spec kind is authoritative for non-prefixed MCP capabilities and Profile preference", () => {
+	const metadata = capabilityMetadataForTool({ name: "calendar_lookup", beemaxToolSpec: { kind: "mcp", health: "ready" } }, { "mcp:calendar_lookup": 0.8, "tool:calendar_lookup": -0.8 });
+	assert.equal(metadata.kind, "mcp");
+	assert.equal(metadata.signals.profilePreference, 0.8);
 });

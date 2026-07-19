@@ -15,13 +15,14 @@ import {
 	SessionManager,
 	SettingsManager,
 } from "@earendil-works/pi-coding-agent";
-import { boundToolResultContent, governToolDefinition, normalizeToolResultBudget, ToolPolicyRegistry, type ToolPolicy, type ToolResultBudget, type ToolRuntimeAuditSink } from "./tool-runtime.ts";
-import type { AgentScope } from "./agent-scope.ts";
-import { ToolEffectConflictError, type ToolEffectSink } from "./tool-effect.ts";
+import { governToolDefinition, normalizeToolResultBudget, toolExecutionModeForPolicy, ToolPolicyRegistry, type ToolPolicy, type ToolResultBudget, type ToolRuntimeAuditSink } from "./tool-runtime.ts";
+import { conversationKey, responsibilityOwnerKey, type AgentScope } from "./agent-scope.ts";
+import { ToolEffectConflictError, type ToolEffectAuthorityPort, type ToolEffectSink } from "./tool-effect.ts";
 import type { ExecutionEnvelope } from "./execution-envelope.ts";
 import { EnterprisePolicyRuntime, type EnterprisePolicyDecision, type EnterprisePolicyProvider } from "./enterprise-policy.ts";
 import { ActionGovernance, type ActionGovernanceDecision, type MeasuredActionReliability } from "./action-governance.ts";
 import { evaluateCompactionQuality, planContextCompaction, recoverCompactionPreservation, taskIdsFromCompactionPreservation } from "./context-compaction.ts";
+import { createToolArtifactReadTool, FileToolArtifactStore } from "./tool-artifact-store.ts";
 
 export type BeeMaxRuntimeSource = AgentScope;
 
@@ -64,6 +65,8 @@ export interface BeeMaxRuntimeFactoryOptions<Source extends BeeMaxRuntimeSource 
 	cwd: string;
 	agentDir: string;
 	getApiKey: (provider: string) => Promise<string | undefined> | string | undefined;
+	/** Providers used by configured runtime fallbacks; their Profile credentials are loaded into Pi before a retry. */
+	additionalModelProviders?: readonly string[];
 	systemPrompt: string | (() => string);
 	skillToolset: "safe" | "standard";
 	tools?: string[];
@@ -76,12 +79,14 @@ export interface BeeMaxRuntimeFactoryOptions<Source extends BeeMaxRuntimeSource 
 	toolAudit?: ToolRuntimeAuditSink;
 	/** One Profile-wide context budget applied after every custom Tool/MCP result. */
 	toolResultBudget?: ToolResultBudget;
-	toolEffects?: ToolEffectSink;
+	toolEffects?: ToolEffectAuthorityPort;
 	currentTaskId?: (source: Source) => string | undefined;
 	/** Durable preservation instructions injected into Pi manual and automatic compaction. */
 	compactionInstructions?: (source: Source) => string | undefined;
 	/** Optional Profile overrides; omitted values scale from the selected model context window. */
 	compaction?: { enabled?: boolean; reserveTokens?: number; keepRecentTokens?: number };
+	/** Host-owned transient Provider retry policy; the Execution Envelope still owns the total deadline. */
+	providerRetry?: { timeoutMs?: number; maxRetries?: number; maxRetryDelayMs?: number };
 	/** Content-free compaction lifecycle and durable-preservation quality observations. */
 	compactionAudit?: (event: ContextCompactionAuditEvent<Source>) => void;
 }
@@ -104,18 +109,23 @@ export function buildBeeMaxRuntimeFactory<Source extends BeeMaxRuntimeSource = B
 	const cwd = resolve(opts.cwd);
 	const agentDir = resolve(opts.agentDir);
 	const sessionDir = join(agentDir, "sessions", "feishu");
+	const toolArtifacts = new FileToolArtifactStore(join(agentDir, "artifacts", "tool-results"));
 	mkdirSync(sessionDir, { recursive: true });
 	const authStorage = AuthStorage.create(join(agentDir, "auth.json"));
 	const modelRegistry = ModelRegistry.create(authStorage, join(agentDir, "models.json"));
 	const resolvedModel = resolveRuntimeModel(opts.provider, opts.model, opts.baseUrl, opts.customProtocol, opts.modelLimits);
 	const model = opts.baseUrl ? { ...resolvedModel, baseUrl: opts.baseUrl } : resolvedModel;
 	return async (sessionId: string, source: Source, executionEnvelope?: Readonly<ExecutionEnvelope>, legacySessionIds: string[] = []): Promise<AgentSession> => {
-		const apiKey = await opts.getApiKey(opts.provider);
-		if (apiKey) authStorage.setRuntimeApiKey(model.provider, apiKey);
+		const credentialProviders = [...new Set([opts.provider, ...(opts.additionalModelProviders ?? [])])].sort();
+		for (const provider of credentialProviders) {
+			const apiKey = await opts.getApiKey(provider);
+			if (apiKey) authStorage.setRuntimeApiKey(provider === opts.provider ? model.provider : provider, apiKey);
+		}
 		const settingsManager = SettingsManager.create(cwd, agentDir);
 		const compaction = planContextCompaction({ contextWindow: model.contextWindow || 128_000, ...opts.compaction });
-		const toolResultBudget = opts.toolResultBudget ? normalizeToolResultBudget(opts.toolResultBudget) : undefined;
+		const toolResultBudget = normalizeToolResultBudget(opts.toolResultBudget ?? { maxEstimatedTokens: 12_000 });
 		settingsManager.setRuntimeCompactionSettings({ enabled: compaction.enabled, reserveTokens: compaction.reserveTokens, keepRecentTokens: compaction.keepRecentTokens });
+		settingsManager.setRuntimeProviderRetrySettings(normalizeProviderRetry(opts.providerRetry));
 		const configuredPrompt = typeof opts.systemPrompt === "function" ? opts.systemPrompt() : opts.systemPrompt;
 		const channelPrompt = [configuredPrompt, curatedMemoryPrompt(agentDir, source), channelContextFor(source)].filter(Boolean).join("\n\n");
 		let pendingCompaction: { preservation?: string; taskIds: string[]; tokensBefore?: number } | undefined;
@@ -127,11 +137,7 @@ export function buildBeeMaxRuntimeFactory<Source extends BeeMaxRuntimeSource = B
 			// Discovery is owned by capability_discover. Keep Skills registered for
 			// explicit /skill:name compatibility without injecting the full catalog.
 			skillsOverride: (base) => ({ ...base, skills: filterEligibleSkills(base.skills, opts.skillToolset).map((skill) => ({ ...skill, disableModelInvocation: true })) }),
-			extensionFactories: opts.compactionInstructions || opts.compactionAudit || toolResultBudget ? [{ name: "beemax-context-governance", factory: (pi) => {
-				if (toolResultBudget) pi.on("tool_result", (event) => {
-					const bounded = boundToolResultContent(event.content, { maxBytes: 10 * 1024 * 1024, maxEstimatedTokens: toolResultBudget.maxEstimatedTokens });
-					return bounded.truncated ? { content: bounded.content as typeof event.content } : undefined;
-				});
+			extensionFactories: opts.compactionInstructions || opts.compactionAudit ? [{ name: "beemax-context-governance", factory: (pi) => {
 				if (opts.compactionInstructions || opts.compactionAudit) {
 				pi.on("session_before_compact", (event) => {
 					let preservation: string | undefined;
@@ -168,24 +174,26 @@ export function buildBeeMaxRuntimeFactory<Source extends BeeMaxRuntimeSource = B
 		await resourceLoader.reload();
 		const sessionManager = await restoreOrCreateSession(cwd, sessionDir, sessionId, legacySessionIds);
 		let sessionRef: AgentSession | undefined;
-		const customTools = opts.createTools(
+		const customTools = [...opts.createTools(
 			source,
 			() => markRuntimeResourcesChanged(sessionRef),
 			(provider) => authStorage.getApiKey(provider, { includeFallback: false }),
 			(names) => sessionRef?.setActiveToolsByName([...new Set([...sessionRef.getActiveToolNames(), "capability_discover", ...names])]),
-		);
+		), createToolArtifactReadTool(toolArtifacts, conversationKey(source))];
+		if (new Set(customTools.map((tool) => tool.name)).size !== customTools.length) throw new Error("Runtime custom Tool inventory contains duplicate names");
 		const turnResetters = customTools.flatMap((tool) => typeof (tool as ToolDefinition & { beemaxTurnReset?: () => void }).beemaxTurnReset === "function" ? [(tool as ToolDefinition & { beemaxTurnReset: () => void }).beemaxTurnReset] : []);
 		const policies = new ToolPolicyRegistry(customTools);
-		policies.enable(opts.tools ?? [
+		policies.enable([...new Set([...(opts.tools ?? [
 			"read", "bash", "edit", "write", "grep", "find", "ls", "web_search", "web_extract",
 			...customTools.map((tool) => tool.name),
-		]);
-		const governedTools = customTools.map((tool) => governToolDefinition(tool, policies.get(tool.name), source, opts.toolAudit, toolResultBudget));
+		]), "artifact_read"])]);
+		const governedTools = customTools.map((tool) => governToolDefinition(tool, policies.get(tool.name), source, opts.toolAudit, toolResultBudget, { deferResultProjection: true }));
 		const { session, modelFallbackMessage } = await createAgentSession({
 			cwd, agentDir, model,
 			tools: policies.enabledNames(),
 			customTools: governedTools, authStorage, modelRegistry, settingsManager, resourceLoader, sessionManager,
 		});
+		installToolExecutionModes(session, policies);
 		if (opts.compactionAudit) session.subscribe((event) => {
 			if (event.type !== "compaction_end" || event.result || !pendingCompaction) return;
 			opts.compactionAudit?.({
@@ -210,9 +218,24 @@ export function buildBeeMaxRuntimeFactory<Source extends BeeMaxRuntimeSource = B
 			if (taskId) opts.toolEffects?.interruptTask?.(taskId);
 		};
 		if (modelFallbackMessage) console.warn(`[beemax] ${modelFallbackMessage}`);
-		installSecurityHook(session, cwd, source, opts.authorizeTool, policies, opts.enterprisePolicy, opts.actionReliability, opts.executionGrant, opts.proactiveMutationAuthority, opts.toolAudit, opts.toolEffects, opts.currentTaskId);
+		installSecurityHook(session, cwd, source, opts.authorizeTool, policies, opts.enterprisePolicy, opts.actionReliability, opts.executionGrant, opts.proactiveMutationAuthority, opts.toolAudit, opts.toolEffects, opts.currentTaskId, toolArtifacts, toolResultBudget);
 		return session;
 	};
+}
+
+/** Keep Pi's active Tool registry synchronized with Core-owned Effect policy across dynamic Tool Spec changes and reloads. */
+function installToolExecutionModes(session: AgentSession, policies: ToolPolicyRegistry): void {
+	const apply = () => {
+		for (const tool of session.agent.state.tools) {
+			const definition = session.getToolDefinition(tool.name);
+			const mode = toolExecutionModeForPolicy(policies.get(tool.name), definition?.executionMode);
+			tool.executionMode = mode;
+			if (definition) definition.executionMode = mode;
+		}
+	};
+	const setActiveToolsByName = session.setActiveToolsByName.bind(session);
+	session.setActiveToolsByName = (names) => { setActiveToolsByName(names); apply(); };
+	apply();
 }
 
 export function filterEligibleSkills(skills: Skill[], toolset: "safe" | "standard"): Skill[] {
@@ -239,7 +262,7 @@ async function restoreOrCreateSession(cwd: string, sessionDir: string, sessionId
 	return matchingFiles[0] ? SessionManager.open(join(sessionDir, matchingFiles[0]), sessionDir, cwd) : SessionManager.create(cwd, sessionDir, { id: sessionId });
 }
 
-function installSecurityHook<Source extends BeeMaxRuntimeSource>(session: AgentSession, cwd: string, source: Source, authorizeTool: BeeMaxRuntimeAuthorization<Source> | undefined, policies: ToolPolicyRegistry, enterprisePolicy: EnterprisePolicyProvider | undefined, actionReliability: ((toolName: string) => MeasuredActionReliability) | undefined, executionGrant: ((source: Source) => { taskId: string; allowedCapabilities: string[]; status: "active" } | undefined) | undefined, proactiveMutationAuthority: ProactiveMutationAuthority<Source> | undefined, audit?: ToolRuntimeAuditSink, effects?: ToolEffectSink, currentTaskId?: (source: Source) => string | undefined): void {
+function installSecurityHook<Source extends BeeMaxRuntimeSource>(session: AgentSession, cwd: string, source: Source, authorizeTool: BeeMaxRuntimeAuthorization<Source> | undefined, policies: ToolPolicyRegistry, enterprisePolicy: EnterprisePolicyProvider | undefined, actionReliability: ((toolName: string) => MeasuredActionReliability) | undefined, executionGrant: ((source: Source) => { taskId: string; allowedCapabilities: string[]; status: "active" } | undefined) | undefined, proactiveMutationAuthority: ProactiveMutationAuthority<Source> | undefined, audit: ToolRuntimeAuditSink | undefined, effects: ToolEffectAuthorityPort | undefined, currentTaskId: ((source: Source) => string | undefined) | undefined, toolArtifacts: FileToolArtifactStore, toolResultBudget: ToolResultBudget): void {
 	const enterprisePolicies = new EnterprisePolicyRuntime(enterprisePolicy);
 	const governance = new ActionGovernance();
 	let budgetExecutionId: string | undefined;
@@ -300,7 +323,15 @@ function installSecurityHook<Source extends BeeMaxRuntimeSource>(session: AgentS
 			}
 		}
 		const grant = executionGrant?.(source);
-		const governanceInput = { actionId: context.toolCall.id, toolName: context.toolCall.name, toolPolicy: policy, effectStatus: "none" as const, reliability: actionReliability?.(context.toolCall.name) ?? "unknown" as const, ...(enterpriseDecision ? { enterprisePolicy: enterpriseDecision } : {}), ...(grant ? { executionGrant: { id: `task:${grant.taskId}`, ...grant } } : {}) };
+		let effectStatus: "none" | "unknown" = "none";
+		try {
+			effectStatus = unresolvedTaskEffectStatus(effects, source, executionEnvelope?.taskId ?? currentTaskId?.(source) ?? source.delegatedTask?.id, policy);
+		} catch (error) {
+			const reason = `Effect reconciliation authority failed: ${error instanceof Error ? error.message : String(error)}`;
+			audit?.({ phase: "blocked", source, toolName: context.toolCall.name, policy, at: Date.now(), reason, ...(enterprisePolicyAudit ? { enterprisePolicy: enterprisePolicyAudit } : {}) });
+			return { block: true, reason };
+		}
+		const governanceInput = { actionId: context.toolCall.id, toolName: context.toolCall.name, toolPolicy: policy, effectStatus, reliability: actionReliability?.(context.toolCall.name) ?? "unknown" as const, ...(enterpriseDecision ? { enterprisePolicy: enterpriseDecision } : {}), ...(grant ? { executionGrant: { id: `task:${grant.taskId}`, ...grant } } : {}) };
 		let governanceDecision = governance.decide({ ...governanceInput, at: Date.now() });
 		let governanceAudit = governanceAuditMetadata(governanceDecision);
 		if (governanceDecision.outcome === "deny" || governanceDecision.outcome === "missing_evidence") {
@@ -327,14 +358,21 @@ function installSecurityHook<Source extends BeeMaxRuntimeSource>(session: AgentS
 	const previousAfter = session.agent.afterToolCall;
 	session.agent.afterToolCall = async (context, signal) => {
 		const policy = policies.get(context.toolCall.name);
+		let result: Awaited<ReturnType<NonNullable<typeof previousAfter>>> | undefined;
 		try {
-			const result = await previousAfter?.(context, signal);
+			result = await previousAfter?.(context, signal);
 			effects?.finish({ source, executionEnvelope: currentExecutionEnvelope(session), toolCallId: context.toolCall.id, toolName: context.toolCall.name, policy, isError: result?.isError ?? context.isError, details: result?.details ?? context.result.details });
-			return result;
 		} catch (error) {
 			effects?.finish({ source, executionEnvelope: currentExecutionEnvelope(session), toolCallId: context.toolCall.id, toolName: context.toolCall.name, policy, isError: true });
 			throw error;
 		}
+		const projection = await toolArtifacts.project({
+			scopeId: conversationKey(source), executionId: currentExecutionEnvelope(session)?.executionId,
+			toolCallId: context.toolCall.id, toolName: context.toolCall.name,
+			result: { content: result?.content ?? context.result.content, details: result?.details ?? context.result.details, terminate: result?.terminate ?? context.result.terminate },
+			budget: { maxBytes: policy.maxResultBytes, maxEstimatedTokens: toolResultBudget.maxEstimatedTokens },
+		});
+		return { ...result, content: projection.result.content, details: projection.result.details, terminate: projection.result.terminate, isError: result?.isError ?? context.isError };
 	};
 }
 
@@ -360,6 +398,14 @@ function beginToolEffect(effects: ToolEffectSink | undefined, input: Parameters<
 	catch (error) { if (error instanceof ToolEffectConflictError) return error.message; throw error; }
 }
 
+function unresolvedTaskEffectStatus<Source extends BeeMaxRuntimeSource>(effects: ToolEffectAuthorityPort | undefined, source: Source, taskId: string | undefined, policy: ToolPolicy): "none" | "unknown" {
+	if (policy.sideEffect === "none" || !effects || !taskId) return "none";
+	const taskProjection = effects.taskProjection;
+	if (typeof taskProjection !== "function") return "none";
+	const ownerKey = source.delegatedTask?.ownerKey ?? responsibilityOwnerKey(source);
+	return taskProjection.call(effects, { ownerKey, taskId }).some((effect) => effect.status === "unknown") ? "unknown" : "none";
+}
+
 function hardBlockReason(toolName: string, args: unknown, cwd: string): string | undefined {
 	const input = asRecord(args);
 	if (new Set(["read", "edit", "write", "grep", "find", "ls"]).has(toolName) && typeof input.path === "string") {
@@ -368,7 +414,7 @@ function hardBlockReason(toolName: string, args: unknown, cwd: string): string |
 		if (rel === ".." || rel.startsWith(`..${sep}`) || (isAbsolute(rel) && candidate !== cwd)) return `Tool path is outside the configured workspace: ${input.path}`;
 		const normalized = candidate.replaceAll("\\", "/").toLowerCase();
 		const name = basename(normalized);
-		if (name === "skill.md" || normalized.includes("/.agents/skills/") || normalized.includes("/.codex/skills/") || normalized.startsWith(`${resolve(cwd, "skills").replaceAll("\\", "/").toLowerCase()}/`)) return "Skill resources must be accessed through capability_discover and the Skill Runtime lifecycle";
+		if (name === "skill.md" || normalized.includes("/.agents/skills/") || normalized.startsWith(`${resolve(cwd, "skills").replaceAll("\\", "/").toLowerCase()}/`)) return "Skill resources must be accessed through capability_discover and the Skill Runtime lifecycle";
 		if (/^\.env(?:\.(?!example$|sample$).+)?$/.test(name) || normalized.includes("/.ssh/") || normalized.includes("/.aws/credentials") || normalized.includes("/.config/gcloud/") || name === "auth.json" || name === "credentials.json") return `Access to sensitive credential file is blocked: ${input.path}`;
 	}
 	if (toolName === "bash" && typeof input.command === "string") {
@@ -382,14 +428,20 @@ export function resolveRuntimeModel(provider: string, modelId: string, baseUrl?:
 	if (provider === "custom") {
 		if (!baseUrl) throw new Error("Custom OpenAI-compatible models require a Base URL");
 		const contextWindow = boundedModelLimit(limits?.contextWindow, 128_000, 8_000, 10_000_000);
-		const maxTokens = Math.min(contextWindow, boundedModelLimit(limits?.maxTokens, 8_192, 256, 1_000_000));
+		// A custom Provider's declared/configured limit remains authoritative. The
+		// runtime default must still leave enough room for complete artifact Tool
+		// arguments; 8K routinely truncates otherwise valid HTML/PDF workflows.
+		const maxTokens = Math.min(contextWindow, boundedModelLimit(limits?.maxTokens, 32_768, 256, 1_000_000));
 		return {
 			id: modelId,
 			name: modelId,
 			api: customProtocol,
 			provider: customProtocol === "anthropic-messages" ? "anthropic" : "openai",
 			baseUrl,
-			reasoning: false,
+			// Anthropic-compatible endpoints may enable thinking by default. Mark the
+			// protocol capability so streamSimple can explicitly send `thinking: disabled`
+			// for bounded auxiliary cognition that did not request reasoning.
+			reasoning: customProtocol === "anthropic-messages",
 			input: ["text"],
 			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
 			contextWindow,
@@ -406,6 +458,20 @@ function boundedModelLimit(value: number | undefined, fallback: number, min: num
 	if (value === undefined) return fallback;
 	if (!Number.isFinite(value)) throw new Error("Custom model limits must be finite numbers");
 	return Math.max(min, Math.min(Math.trunc(value), max));
+}
+
+function normalizeProviderRetry(value: BeeMaxRuntimeFactoryOptions["providerRetry"]): { timeoutMs: number; maxRetries: number; maxRetryDelayMs: number } {
+	return {
+		timeoutMs: boundedRuntimeInteger(value?.timeoutMs, 60_000, 1_000, 300_000, "Provider timeout"),
+		maxRetries: boundedRuntimeInteger(value?.maxRetries, 2, 0, 5, "Provider retry count"),
+		maxRetryDelayMs: boundedRuntimeInteger(value?.maxRetryDelayMs, 5_000, 0, 60_000, "Provider retry delay"),
+	};
+}
+
+function boundedRuntimeInteger(value: number | undefined, fallback: number, min: number, max: number, label: string): number {
+	const resolved = value ?? fallback;
+	if (!Number.isSafeInteger(resolved) || resolved < min || resolved > max) throw new Error(`${label} must be an integer between ${min} and ${max}`);
+	return resolved;
 }
 
 function channelContextFor(source: BeeMaxRuntimeSource): string {

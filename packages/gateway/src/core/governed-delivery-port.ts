@@ -1,4 +1,4 @@
-import { DeliveryDeferredError, conversationKey, type DeliveryOptions, type DeliveryPort, type DeliveryTarget, type MediaArtifact } from "@beemax/core";
+import { DeliveryDeferredError, conversationKey, type DeliveryOptions, type DeliveryPort, type DeliveryReceipt, type DeliveryTarget, type MediaArtifact } from "@beemax/core";
 import type { GroupResponseGovernor } from "@beemax/channel-runtime";
 
 export interface GroupDeliveryGovernorResolver {
@@ -17,37 +17,37 @@ export class GovernedDeliveryPort implements DeliveryPort {
 	private readonly governors: GroupDeliveryGovernorResolver;
 	constructor(inner: DeliveryPort, governors: GroupDeliveryGovernorResolver) { this.inner = inner; this.governors = governors; }
 
-	async sendText(target: DeliveryTarget, text: string, options?: DeliveryOptions): Promise<void> {
-		await this.deliver(target, options, () => this.inner.sendText(target, text, options));
+	async sendText(target: DeliveryTarget, text: string, options?: DeliveryOptions): Promise<DeliveryReceipt> {
+		return this.deliver(target, options, () => this.inner.sendText(target, text, options));
 	}
 
-	async sendMedia(target: DeliveryTarget, media: MediaArtifact, options?: DeliveryOptions): Promise<void> {
-		await this.deliver(target, options, () => this.inner.sendMedia(target, media, options));
+	async sendMedia(target: DeliveryTarget, media: MediaArtifact, options?: DeliveryOptions): Promise<DeliveryReceipt> {
+		return this.deliver(target, options, () => this.inner.sendMedia(target, media, options));
 	}
 
-	private async deliver(target: DeliveryTarget, options: DeliveryOptions | undefined, send: () => Promise<void>): Promise<void> {
+	private async deliver(target: DeliveryTarget, options: DeliveryOptions | undefined, send: () => Promise<DeliveryReceipt>): Promise<DeliveryReceipt> {
 		const startedAt = Date.now();
-		if (options?.deliveryClass !== "proactive") { await send(); return; }
+		if (options?.deliveryClass !== "proactive") return send();
 		if (!target.chatType) {
 			const error = new DeliveryDeferredError("unknown_conversation_type", Date.now() + 24 * 60 * 60_000);
 			this.observe(target, options, startedAt, "deferred", error.reason);
 			throw error;
 		}
-		if (target.chatType === "dm") { await this.sendObserved(target, options, startedAt, send); return; }
+		if (target.chatType === "dm") return this.sendObserved(target, options, startedAt, send);
 		const governor = this.governors.resolve(target);
-		if (!governor) { await this.sendObserved(target, options, startedAt, send); return; }
+		if (!governor) return this.sendObserved(target, options, startedAt, send);
 		const laneKey = conversationKey({ ...target, chatType: target.chatType });
 		const reservation = governor.reserve(laneKey, "ambient");
 		if (!reservation.allowed) {
 			this.observe(target, options, startedAt, "deferred", reservation.reason);
 			throw new DeliveryDeferredError(reservation.reason, reservation.retryAt);
 		}
-		try { await send(); this.observe(target, options, startedAt, "delivered"); }
+		try { const receipt = await send(); this.observe(target, options, startedAt, "delivered"); return receipt; }
 		catch (error) { reservation.rollback?.(); this.observe(target, options, startedAt, "failed"); throw error; }
 	}
 
-	private async sendObserved(target: DeliveryTarget, options: DeliveryOptions, startedAt: number, send: () => Promise<void>): Promise<void> {
-		try { await send(); this.observe(target, options, startedAt, "delivered"); }
+	private async sendObserved(target: DeliveryTarget, options: DeliveryOptions, startedAt: number, send: () => Promise<DeliveryReceipt>): Promise<DeliveryReceipt> {
+		try { const receipt = await send(); this.observe(target, options, startedAt, "delivered"); return receipt; }
 		catch (error) { this.observe(target, options, startedAt, "failed"); throw error; }
 	}
 

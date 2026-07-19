@@ -1,0 +1,3 @@
+# Separate semantic truth from operational utility
+
+BeeMax keeps Claim validity, confidence, provenance, correction, and conflict independent from outcome-derived operational utility. Correlated outcomes update contextual assessment events and the `eligible / cautious / suppressed` selection state, never semantic truth directly; execution responsibility remains a third authority owned by Objective, Task, Effect, and Verification state machines. We rejected a single confidence score because a broken Tool could discredit correct knowledge and a lucky execution could turn weak evidence into truth; the cost is explicit cross-plane events and explanation.

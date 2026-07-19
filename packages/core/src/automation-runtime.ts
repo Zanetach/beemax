@@ -12,8 +12,8 @@ import type { TaskRecord } from "./task-ledger.ts";
 export type AutomationExecutor = (job: AutomationClaim, signal?: AbortSignal) => Promise<{ output?: string; delivery?: AutomationDeliveryInput; objectiveId?: string; taskRunId?: string }>;
 
 /** Delivery is material only after the durable Objective accepted its Candidate Outcome. */
-export function isVerifiedAutomationOutcome(task: TaskRecord | undefined): task is TaskRecord & { status:"succeeded";verificationStatus:"accepted";result:string } {
-	return task?.status === "succeeded" && task.verificationStatus === "accepted" && Boolean(task.result?.trim());
+export function isVerifiedAutomationOutcome(task: TaskRecord | undefined): task is TaskRecord & { status:"running" | "succeeded";verificationStatus:"accepted" } {
+	return Boolean(task && task.verificationStatus === "accepted" && ((task.status === "running" && task.candidateResult?.trim()) || (task.status === "succeeded" && task.result?.trim())));
 }
 
 /** Retries durable Schedule result delivery without replaying the settled Pi execution. */

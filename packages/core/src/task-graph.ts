@@ -1,8 +1,9 @@
-import type { TaskArtifact, TaskDependency, TaskLedger, TaskPlanRecord, TaskRecord } from "./task-ledger.ts";
+import type { TaskArtifact, TaskCriterionVerification, TaskDependency, TaskLedger, TaskPlanRecord, TaskRecord } from "./task-ledger.ts";
 import { containsCredentialMaterial, redactCredentialMaterial } from "./credential-material.ts";
 import { createExecutionEnvelope, type ExecutionEnvelope } from "./execution-envelope.ts";
 import type { ExecutionTraceInput, ExecutionTraceSink } from "./execution-trace.ts";
 import { createTaskCheckpoint, mergeTaskCheckpoints, renderTaskCheckpoint, type TaskCheckpoint } from "./task-checkpoint.ts";
+import { sanitizeTaskCriterionVerifications, unavailableTaskCriterionVerifications } from "./task-criteria.ts";
 
 const DEFAULT_EXECUTION_LEASE_MS = 61 * 60_000;
 
@@ -14,7 +15,7 @@ export interface TaskPlanInput {
 	dependencies?: TaskDependency[];
 }
 export interface TaskGraphExecutionResult { output?: string; evidence?: string; artifacts?: TaskArtifact[]; unresolvedIssues?: string[]; }
-export interface TaskGraphVerificationResult { accepted: boolean; feedback?: string; evidence?: string; }
+export interface TaskGraphVerificationResult { accepted: boolean; feedback?: string; evidence?: string; criterionVerifications?: TaskCriterionVerification[]; }
 export interface TaskGraphVerificationContext { taskRunId: string; successfulToolNames?: readonly string[]; }
 export interface TaskGraphDependencyResult { id: string; title: string; result?: string; evidence?: string; artifacts?: TaskArtifact[]; unresolvedIssues?: string[]; }
 export interface TaskGraphExecutionContext { executionEnvelope: Readonly<ExecutionEnvelope>; taskRunId: string; attempt: number; executionMode: "normal" | "recovery"; maxCorrectiveAttempts: number; verificationFeedback?: string; previousResult?: string; dependencies: TaskGraphDependencyResult[]; checkpoint?: TaskCheckpoint | string; route?: string; saveCheckpoint(value: TaskCheckpoint | string): boolean; }
@@ -166,9 +167,10 @@ export class TaskGraph {
 			if (attempt > firstAttempt && !this.ledger.transition(task.id, { status: "running", startedAt, verificationStatus: "pending", correctiveAttempts: attempt - 1 })) return this.persistedOutcome(task, "failed");
 			const runId = crypto.randomUUID();
 			const executionMode = options.executionMode ?? "normal";
+			const objectiveId = this.objectiveRootId(task);
 			const executionEnvelope = createExecutionEnvelope({
 				executionId: `execution:${runId}`, trigger: { kind: executionMode === "recovery" ? "recovery" : "task_transition", id: task.id },
-				...(task.parentId ? { objectiveId: task.parentId } : {}), taskId: task.id, taskRunId: runId,
+				...(objectiveId ? { objectiveId } : {}), taskId: task.id, taskRunId: runId,
 				...(task.accessScopeRef ? { accessScopeRef: task.accessScopeRef } : {}), budget: { maxCorrectiveAttempts },
 				mode: attempt > 1 ? "correction" : executionMode,
 			});
@@ -185,6 +187,7 @@ export class TaskGraph {
 			leaseController.signal.addEventListener("abort", () => { if (heartbeat) clearInterval(heartbeat); }, { once: true });
 			let verificationUnavailable = false;
 			let candidateOutput: string | undefined;
+			let criterionVerifications: TaskCriterionVerification[] | undefined;
 			try {
 				if (executionSignal.aborted) throw executionSignal.reason ?? new Error("Task Plan cancelled");
 				const current = this.ledger.queryTasks({ ownerKeys: [task.ownerKey], id: task.id, limit: 1 })[0] ?? task;
@@ -210,10 +213,12 @@ export class TaskGraph {
 					if (this.ledger.checkpointTask(task.ownerKey, task.id, mergedCheckpoint)) this.recordTrace({ type: "checkpoint.saved", executionEnvelope, at: candidateCheckpoint.at, sizeChars: renderTaskCheckpoint(mergedCheckpoint).length });
 				let verificationEvidence: string | undefined;
 				if (task.acceptanceCriteria) {
+					if (!this.ledger.transition(task.id, { status: "running", candidateResult: candidateOutput, verificationStatus: "pending", correctiveAttempts: attempt - 1 })) return this.persistedOutcome(task, "failed");
 					this.recordTrace({ type: "verification.started", executionEnvelope, at: Date.now() });
 					if (!options.verify) { verificationUnavailable = true; this.recordTrace({ type: "verification.settled", executionEnvelope, at: Date.now(), status: "unavailable" }); throw new Error("Task verification unavailable for defined Acceptance Criteria"); }
 					let verification: TaskGraphVerificationResult;
-					try { verification = await options.verify({ ...task, status: "running", startedAt: taskStartedAt }, result, executionSignal, { taskRunId: runId }); }
+					const verificationTask = this.ledger.queryTasks({ ownerKeys: [task.ownerKey], id: task.id, limit: 1 })[0] ?? task;
+					try { verification = await options.verify({ ...verificationTask, status: "running", startedAt: taskStartedAt }, result, executionSignal, { taskRunId: runId }); }
 					catch (error) { verificationUnavailable = !executionSignal.aborted; this.recordTrace({ type: "verification.settled", executionEnvelope, at: Date.now(), status: "unavailable" }); throw error; }
 					if (executionSignal.aborted) throw executionSignal.reason ?? new Error("Task verification interrupted");
 					if (!verification.accepted) {
@@ -222,25 +227,27 @@ export class TaskGraph {
 						previousResult = result.output?.slice(0, 50_000);
 						const finishedAt = Date.now();
 						if (!this.ledger.transitionRun(runId, { status: "failed", finishedAt, error: `Task verification rejected: ${verificationFeedback}` })) return this.persistedOutcome(task, "failed");
+						criterionVerifications = sanitizeTaskCriterionVerifications(verification.criterionVerifications);
 						if (attempt <= maxCorrectiveAttempts) {
-							if (!this.ledger.transition(task.id, { status: "pending", error: `Task verification rejected: ${verificationFeedback}`, verificationStatus: "rejected", verificationFeedback, correctiveAttempts: attempt - 1 })) return this.persistedOutcome(task, "failed");
+							if (!this.ledger.transition(task.id, { status: "pending", candidateResult: previousResult, error: `Task verification rejected: ${verificationFeedback}`, verificationStatus: "rejected", verificationFeedback, criterionVerifications, correctiveAttempts: attempt - 1 })) return this.persistedOutcome(task, "failed");
 							continue;
 						}
 						if (this.ledger.advanceTaskRoute(task.ownerKey, task.id, `Verification rejected: ${verificationFeedback}`, finishedAt)) return "routed";
-						return this.ledger.transition(task.id, { status: "failed", finishedAt, error: `Task verification rejected: ${verificationFeedback}`, verificationStatus: "rejected", verificationFeedback, correctiveAttempts: attempt - 1 }) ? "failed" : this.persistedOutcome(task, "failed");
+						return this.ledger.transition(task.id, { status: "failed", finishedAt, candidateResult: previousResult, error: `Task verification rejected: ${verificationFeedback}`, verificationStatus: "rejected", verificationFeedback, criterionVerifications, correctiveAttempts: attempt - 1 }) ? "failed" : this.persistedOutcome(task, "failed");
 					}
 					this.recordTrace({ type: "verification.settled", executionEnvelope, at: Date.now(), status: "accepted" });
 					verificationEvidence = verification.evidence?.slice(0, 5_000);
+					criterionVerifications = sanitizeTaskCriterionVerifications(verification.criterionVerifications);
 				}
 				const finishedAt = Date.now();
 				const output = candidateOutput;
 				const evidence = mergeTaskEvidence(executionEvidence, verificationEvidence);
-				if (!this.ledger.transition(task.id, { status: "succeeded", finishedAt, result: output, evidence, artifacts, unresolvedIssues, ...(task.acceptanceCriteria ? { verificationStatus: "accepted" as const, verificationFeedback: undefined, correctiveAttempts: attempt - 1 } : {}) })) {
-					const outcome = this.persistedOutcome(task, "failed");
-					this.ledger.transitionRun(runId, { status: outcome, finishedAt, error: outcome === "succeeded" ? undefined : `Task already reached Terminal Outcome: ${outcome}` });
-					return outcome;
-				}
-				this.ledger.transitionRun(runId, { status: "succeeded", finishedAt, output });
+				if (!this.ledger.settleTaskRunAndTask) throw new Error("Atomic Task Run and Task success settlement is unavailable");
+				if (!this.ledger.settleTaskRunAndTask({
+					ownerKey: task.ownerKey, taskId: task.id, taskRunId: runId,
+					task: { status: "succeeded", finishedAt, result: output, evidence, artifacts, unresolvedIssues, ...(task.acceptanceCriteria ? { verificationStatus: "accepted" as const, verificationFeedback: undefined, criterionVerifications, correctiveAttempts: attempt - 1 } : {}) },
+					run: { status: "succeeded", finishedAt, output },
+				})) throw new Error("Atomic Task Run and Task success settlement was rejected");
 				return "succeeded";
 			} catch (error) {
 				const finishedAt = Date.now();
@@ -252,7 +259,7 @@ export class TaskGraph {
 				const status = options.signal?.aborted ? "cancelled" : "failed";
 				const unavailable = verificationUnavailable && status === "failed";
 				const transitioned = this.ledger.transition(task.id, unavailable
-					? { status: "running", error: message, correctiveAttempts: attempt - 1, verificationStatus: "unavailable", candidateResult: candidateOutput }
+					? { status: "running", error: message, correctiveAttempts: attempt - 1, verificationStatus: "unavailable", criterionVerifications: unavailableTaskCriterionVerifications(task.acceptanceCriteria, message), candidateResult: candidateOutput }
 					: { status, finishedAt, error: message, ...(task.acceptanceCriteria ? { correctiveAttempts: attempt - 1 } : {}) });
 				if (transitioned && unavailable) this.ledger.deferCandidateVerification?.([task.ownerKey], task.id, finishedAt);
 				this.ledger.transitionRun(runId, unavailable ? { status: "succeeded", finishedAt, output: candidateOutput } : { status, finishedAt, error: message });
@@ -264,6 +271,18 @@ export class TaskGraph {
 
 	private recordTrace(event: ExecutionTraceInput): void {
 		try { this.executionTrace?.record(event); } catch { /* Trace is diagnostic and cannot change Task authority. */ }
+	}
+
+	private objectiveRootId(task: TaskRecord): string | undefined {
+		let current: TaskRecord | undefined = task;
+		const visited = new Set<string>();
+		while (current && !visited.has(current.id)) {
+			visited.add(current.id);
+			if (current.kind === "objective") return current.id;
+			if (!current.parentId) return undefined;
+			current = this.ledger.queryTasks({ ownerKeys: [task.ownerKey], id: current.parentId, limit: 1 })[0];
+		}
+		return undefined;
 	}
 
 	private persistedOutcome(task: TaskRecord, fallback: "succeeded" | "failed" | "cancelled"): "succeeded" | "failed" | "cancelled" {

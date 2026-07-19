@@ -51,10 +51,34 @@ export class TaskPlanRuntime {
 		finally { ledger.releaseTaskPlanExecution?.(ownerKey, planId, holderId); }
 	}
 
+	/** Run Direct Objective Verification under its own durable cross-process responsibility claim. */
+	async runClaimedTaskVerification<T>(ledger: TaskLedger, ownerKey: string, taskId: string, parentSignal: AbortSignal | undefined, execute: (signal: AbortSignal) => Promise<T>): Promise<T | undefined> {
+		if (this.shuttingDown) throw new Error("Task Plan Runtime is shutting down");
+		const holderId = crypto.randomUUID();
+		const claimed = ledger.claimTaskVerification?.(ownerKey, taskId, holderId, Date.now() + EXECUTION_CLAIM_MS) ?? true;
+		if (!claimed) return undefined;
+		try {
+			return await this.runResponsibility(taskVerificationKey(ownerKey, taskId), `Task Verification is already running: ${taskId}`, parentSignal, async (signal) => {
+				const leaseLost = new AbortController();
+				const executionSignal = AbortSignal.any([signal, leaseLost.signal]);
+				const heartbeat = ledger.renewTaskVerification ? setInterval(() => {
+					try { if (!ledger.renewTaskVerification?.(ownerKey, taskId, holderId, Date.now() + EXECUTION_CLAIM_MS)) leaseLost.abort(new Error(`Task Verification Claim lost: ${taskId}`)); }
+					catch (error) { leaseLost.abort(error); }
+				}, EXECUTION_CLAIM_HEARTBEAT_MS) : undefined;
+				heartbeat?.unref();
+				try { return await execute(executionSignal); }
+				finally { if (heartbeat) clearInterval(heartbeat); }
+			});
+		} finally { ledger.releaseTaskVerification?.(ownerKey, taskId, holderId); }
+	}
+
 	run<T>(ownerKey: string, planId: string, parentSignal: AbortSignal | undefined, execute: (signal: AbortSignal) => Promise<T>): Promise<T> {
+		return this.runResponsibility(taskPlanKey(ownerKey, planId), `Task Plan is already running: ${planId}`, parentSignal, execute);
+	}
+
+	private runResponsibility<T>(key: string, duplicateError: string, parentSignal: AbortSignal | undefined, execute: (signal: AbortSignal) => Promise<T>): Promise<T> {
 		if (this.shuttingDown) return Promise.reject(new Error("Task Plan Runtime is shutting down"));
-		const key = taskPlanKey(ownerKey, planId);
-		if (this.active.has(key)) return Promise.reject(new Error(`Task Plan is already running: ${planId}`));
+		if (this.active.has(key)) return Promise.reject(new Error(duplicateError));
 		const controller = new AbortController();
 		const signal = parentSignal ? AbortSignal.any([parentSignal, controller.signal]) : controller.signal;
 		this.active.set(key, controller);
@@ -81,7 +105,7 @@ export class TaskPlanRuntime {
 	activePlanIds(ownerKeys: string[]): string[] {
 		const ids: string[] = [];
 		for (const ownerKey of ownerKeys) for (const key of this.active.keys()) {
-			const prefix = `${ownerKey}\0`;
+			const prefix = `${ownerKey}\0plan\0`;
 			if (key.startsWith(prefix)) ids.push(key.slice(prefix.length));
 		}
 		return [...new Set(ids)];
@@ -120,5 +144,10 @@ async function settleWithin(work: Promise<unknown>[], graceMs: number): Promise<
 
 function taskPlanKey(ownerKey: string, planId: string): string {
 	if (!ownerKey.trim() || !planId.trim()) throw new Error("Task Plan owner and id are required");
-	return `${ownerKey}\0${planId}`;
+	return `${ownerKey}\0plan\0${planId}`;
+}
+
+function taskVerificationKey(ownerKey: string, taskId: string): string {
+	if (!ownerKey.trim() || !taskId.trim()) throw new Error("Task Verification owner and id are required");
+	return `${ownerKey}\0verification\0${taskId}`;
 }

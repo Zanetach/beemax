@@ -95,7 +95,9 @@ export class TaskPlanNoticeDeliveryService {
 					if (controller.signal.aborted) throw controller.signal.reason;
 					if (objective && notice.planStatus === "succeeded") {
 						if (objective.status === "succeeded" && objective.result?.trim()) {
-							await this.delivery.sendText(notice.target, objective.result, { idempotencyKey: notice.id, deliveryClass: "proactive", deliveryAttempt: notice.attempts });
+							// ObjectiveRuntime has durably materialized the accepted payload in the shared
+							// Completion Outbox. This Plan notice is preparation/progress, never a second
+							// result-delivery path.
 							if (!notice.claimToken || !this.outbox.completeTaskPlanCompletionNotice(notice.id, notice.claimToken)) throw new Error(`Task Plan Completion Notice acknowledgement failed: ${notice.id}`);
 							return "delivered";
 						}

@@ -7,7 +7,7 @@ import { AutomationStore, parseDuration } from "@beemax/automation";
 import { validateFeishuWebhookSettings } from "@beemax/channel-feishu";
 import { loadMcpConfig, McpManager } from "@beemax/mcp-capability";
 import { MemoryStore } from "@beemax/memory";
-import { AuthStorage, FileCredentialVault } from "@beemax/core";
+import { FileCredentialVault } from "@beemax/core";
 import { consumeChannelCredential, type BeeMaxConfig } from "./config.ts";
 import { providerApiKeyEnv } from "./provider-resolver.ts";
 import { inspectOperationalMetrics, operationalMetricsPath } from "./operational-metrics.ts";
@@ -107,17 +107,6 @@ export async function inspectDoctor(config: BeeMaxConfig, options: DoctorOptions
 		checks.push({ name: "Credential Vault", status: "PASS", detail: `${vault.list(`profile:${config.profile}`).length} credential(s); encrypted storage; ${keyFile ? "protected Profile key" : "external key"}` });
 	} catch (error) {
 		checks.push({ name: "Credential Vault", status: "FAIL", detail: error instanceof Error ? error.message : String(error) });
-	}
-
-	if (config.imageGeneration.enabled) {
-		const auth = AuthStorage.create(join(config.paths.agentDir, "auth.json"));
-		checks.push({
-			name: "Image generation",
-			status: auth.hasAuth("openai-codex") ? "PASS" : "FAIL",
-			detail: auth.hasAuth("openai-codex")
-				? `Codex OAuth; quality=${config.imageGeneration.quality}`
-				: `missing profile Codex OAuth; run beemax auth codex --profile ${config.profile}`,
-		});
 	}
 
 	checks.push({

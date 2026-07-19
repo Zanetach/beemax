@@ -87,6 +87,20 @@ test("governed mutating tools never retry after a failure", async () => {
 	assert.equal(calls, 1);
 });
 
+test("governed mutating tools preserve a final structured error result for Effect settlement", async () => {
+	let calls = 0;
+	const details = { beemaxEffect: { operation: "render", proof: { provider: "beemax-artifact-runtime", resourceType: "workspace-artifact", resourceId: "report.pdf" } } };
+	const tool = defineTool({ name: "structured_mutation", label: "Structured mutation", description: "Mutate with evidence", parameters: Type.Object({}), execute: async () => {
+		calls++;
+		return { content: [{ type: "text", text: "output was written but verification failed" }], details, isError: true };
+	} });
+	const governed = governToolDefinition(tool, { ...MUTATING_TOOL_POLICY, sideEffect: "local", maxAttempts: 5 }, source);
+	const result = await governed.execute("call", {}, undefined, undefined, {});
+	assert.equal(calls, 1);
+	assert.equal(result.isError, true);
+	assert.equal(result.details, details);
+});
+
 test("governed read-only tools treat structured isError results as retryable failures", async () => {
 	let attempts = 0;
 	const tool = defineTool({ name: "remote_read", label: "Remote read", description: "Read remote data", parameters: Type.Object({}), execute: async () => {
@@ -106,6 +120,19 @@ test("governed tools enforce their timeout even when a legacy implementation ign
 	const governed = governToolDefinition(tool, { ...READ_ONLY_TOOL_POLICY, timeoutMs: 100, maxAttempts: 2 }, source);
 	await assert.rejects(governed.execute("call", {}, undefined, undefined, {}), /timed out|timeout|aborted/i);
 	assert.equal(calls, 1, "an uncooperative timed-out operation must not be duplicated");
+});
+
+test("a pre-aborted governed Tool never starts its underlying implementation", async () => {
+	let calls = 0;
+	const controller = new AbortController();
+	controller.abort(new Error("Objective execution already stopped"));
+	const tool = defineTool({
+		name: "cancelled_read", label: "Cancelled read", description: "Must not start", parameters: Type.Object({}),
+		execute: async () => { calls++; throw new Error("orphaned implementation executed"); },
+	});
+	const governed = governToolDefinition(tool, { ...READ_ONLY_TOOL_POLICY, maxAttempts: 2 }, source);
+	await assert.rejects(governed.execute("call", {}, controller.signal, undefined, {}), /already stopped/i);
+	assert.equal(calls, 0);
 });
 
 test("approval cards derive risk and reversibility from Tool policy rather than tool names", () => {

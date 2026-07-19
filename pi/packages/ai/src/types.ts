@@ -4,7 +4,6 @@ import type { BedrockOptions } from "./api/bedrock-converse-stream.ts";
 import type { GoogleOptions } from "./api/google-generative-ai.ts";
 import type { GoogleVertexOptions } from "./api/google-vertex.ts";
 import type { MistralOptions } from "./api/mistral-conversations.ts";
-import type { OpenAICodexResponsesOptions } from "./api/openai-codex-responses.ts";
 import type { OpenAICompletionsOptions } from "./api/openai-completions.ts";
 import type { OpenAIResponsesOptions } from "./api/openai-responses.ts";
 import type { AssistantMessageDiagnostic } from "./utils/diagnostics.ts";
@@ -17,7 +16,6 @@ export type KnownApi =
 	| "mistral-conversations"
 	| "openai-responses"
 	| "azure-openai-responses"
-	| "openai-codex-responses"
 	| "anthropic-messages"
 	| "bedrock-converse-stream"
 	| "google-generative-ai"
@@ -37,7 +35,6 @@ export type KnownProvider =
 	| "google-vertex"
 	| "openai"
 	| "azure-openai-responses"
-	| "openai-codex"
 	| "nvidia"
 	| "deepseek"
 	| "github-copilot"
@@ -195,7 +192,6 @@ export interface ApiOptionsMap {
 	"anthropic-messages": AnthropicOptions;
 	"openai-completions": OpenAICompletionsOptions;
 	"openai-responses": OpenAIResponsesOptions;
-	"openai-codex-responses": OpenAICodexResponsesOptions;
 	"azure-openai-responses": AzureOpenAIResponsesOptions;
 	"google-generative-ai": GoogleOptions;
 	"google-vertex": GoogleVertexOptions;

@@ -1,4 +1,4 @@
-import type { DeliveryTarget, InteractionEvent, TaskPlanProgressEvent } from "@beemax/core";
+import type { DeliveryOptions, DeliveryReceipt, DeliveryTarget, InteractionEvent, TaskPlanProgressEvent } from "@beemax/core";
 import type { SessionSource } from "./types.ts";
 
 export interface InteractionPresentationPreferences {
@@ -18,7 +18,7 @@ export interface InteractionPresentationOpen {
 export interface TurnPresentation {
 	start(): Promise<void>;
 	onEvent(event: InteractionEvent): Promise<void>;
-	finish(answer: string): Promise<void>;
+	finish(answer: string, options?: DeliveryOptions): Promise<DeliveryReceipt>;
 	fail(error: string): Promise<void>;
 	close(failed: boolean): Promise<void>;
 }

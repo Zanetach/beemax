@@ -46,7 +46,7 @@ try {
 	store = new MemoryStore(path, "deployment-eval");
 	store.reconcileExpiredTaskRuns(3, { taskRunReplayState: () => "clear" });
 	const cycle = await new TaskRecoveryRunner(store, async (_task, _signal, context) => ({ output: context.checkpoint?.completed.includes("context-recalled") ? "recovered" : "missing checkpoint" })).run();
-	const task = store.queryTasks({ ids: ["crash-task"], limit: 1 })[0];
+	const task = store.queryTasks({ ownerKeys: ["eval"], id: "crash-task", limit: 1 })[0];
 	checks.push({ id: "process-crash", passed: cycle.succeeded === 1 && task?.status === "succeeded" && task.result === "recovered", observed: { cycle, taskStatus: task?.status } });
 	if (!checks.at(-1).passed) failures.push("Process crash recovery did not resume from its durable checkpoint");
 	store.close();

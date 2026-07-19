@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { BeeMaxAgentRuntime, DeterministicSituationBuilder, ModelBackedSituationBuilder, TurnUnderstandingEngine, createAccessScopeRef, createSituation } from "../dist/index.js";
+import { BeeMaxAgentRuntime, DeterministicSituationBuilder, DeterministicWorkContractBuilder, ModelBackedSituationBuilder, TurnUnderstandingEngine, createAccessScopeRef, createSituation } from "../dist/index.js";
+
+const createRuntime = (options) => new BeeMaxAgentRuntime({ profileId: "profile:test", interactiveAdmission: "contract_first", workContractBuilder: new DeterministicWorkContractBuilder(), ...options });
 
 const fallback = (text) => new TurnUnderstandingEngine().understand(text);
 
@@ -55,7 +57,7 @@ test("Agent Runtime persists async Situation cognition while authority stays on 
 	const scope = createAccessScopeRef({ id: "scope:trusted", authority: { kind: "membership_registry", reference: "membership:7" }, issuedAt: 7 });
 	let objective;
 	const ledger = { record: (task) => { objective = task; }, transition: () => true, queryTasks: () => [] };
-	const runtime = new BeeMaxAgentRuntime({
+	const runtime = createRuntime({
 		taskLedger: ledger,
 		planningPolicy: { decide: () => ({ mode: "direct", requiredTools: [], suggestedConcurrency: 1, budget: { maxSubagents: 0, maxToolCalls: null, maxTokens: null, maxCorrectiveAttempts: 0 }, signals: { substantialWork: true }, reason: "test", directive: () => "[BeeMax execution policy: substantial work]" }) },
 		situationBuilder: { build: async () => {

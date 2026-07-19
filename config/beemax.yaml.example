@@ -26,6 +26,13 @@ memory:
 mcp:
   configPath: config/mcp.json
 
+# Disabled by default. Each Provider must be explicitly allowlisted and still
+# passes runtime Tool approval plus post-install health verification.
+capabilityProviders:
+  installation:
+    enabled: false
+    allowedProviders: [] # e.g. [exa-mcporter]
+
 # WeKnora-backed enterprise knowledge. Keep BEEMAX_WEKNORA_API_KEY in .env.
 knowledge:
   enabled: false
@@ -35,12 +42,6 @@ knowledge:
   # - id: company
   #   name: 公司公共知识
   #   knowledgeBaseId: kb-xxxxxxxx
-
-imageGeneration:
-  enabled: false
-  provider: openai-codex
-  quality: medium
-  outputDir: data/cache/images
 
 # Inbound image understanding. Installed Tesseract is discovered automatically;
 # any configured chat model declaring image input can serve as auxiliary vision.
