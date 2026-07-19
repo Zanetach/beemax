@@ -42,6 +42,7 @@ import {
 	type ContextCompactionAuditEvent,
 	type ToolResultBudget,
 	type ArtifactRuntime,
+	type ManagedSkillLearningPort,
 } from "@beemax/core";
 import type { SessionSource } from "@beemax/channel-runtime";
 import { join } from "node:path";
@@ -91,6 +92,8 @@ export interface AgentFactoryOptions {
 	capabilityRanker?: CapabilityRanker;
 	/** Profile-owned ranking preferences keyed by Capability name or kind:name. */
 	capabilityPreferences?: Readonly<Record<string, number>>;
+	/** Profile-owned SQLite authority for immutable managed Skill stable/canary selection. */
+	managedSkillLearning?: ManagedSkillLearningPort;
 	/** Trusted Profile-scoped Provider resolver/installer and installation-authority boundary. */
 	capabilityProviderRuntime?: CapabilityProviderRuntime;
 	/** Profile-scoped environment used by Provider-backed built-in Tools. */
@@ -171,7 +174,7 @@ export function buildAgentFactory(opts: AgentFactoryOptions) {
 				});
 			});
 		const skillRoots = [join(opts.cwd, ".agents", "skills"), join(opts.cwd, "skills"), join(homedir(), ".agents", "skills")];
-		const skillTools = createSkillTools(opts.agentDir, onResourcesChanged, inventory, opts.verifySkillCandidate ? (input, signal) => opts.verifySkillCandidate!(source, input, signal) : undefined, skillRoots, activateTools, opts.capabilityRanker, opts.authorizeSkillCandidatePromotion ? (input) => opts.authorizeSkillCandidatePromotion!(source, input) : undefined, opts.capabilityPreferences, opts.capabilityProviderRuntime);
+		const skillTools = createSkillTools(opts.agentDir, onResourcesChanged, inventory, opts.verifySkillCandidate ? (input, signal) => opts.verifySkillCandidate!(source, input, signal) : undefined, skillRoots, activateTools, opts.capabilityRanker, opts.authorizeSkillCandidatePromotion ? (input) => opts.authorizeSkillCandidatePromotion!(source, input) : undefined, opts.capabilityPreferences, opts.capabilityProviderRuntime, opts.managedSkillLearning ? { profileId: opts.profileId, authority: opts.managedSkillLearning, policyVersion: "l4.v1" } : undefined);
 		return [...executionTools, ...artifactTools, ...baseCustomTools, ...executionRoleTools, ...browserTools, ...memoryTools, ...automationTools, ...skillTools, ...scopedTools];
 		},
 		})(sessionId, source, executionEnvelope, legacySessionIds);

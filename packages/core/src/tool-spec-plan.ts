@@ -9,7 +9,7 @@ const MAX_DIRECT_TOOLS = 20;
 const MAX_SCHEMA_BYTES = 64 * 1024;
 const MAX_TOTAL_SCHEMA_BYTES = 512 * 1024;
 
-export type ToolSpecHiddenReason = "policy_or_scope_denied" | "configuration_required" | "provider_unhealthy" | "provider_unavailable" | "unresolved_uncertainty" | "effect_reconciliation_required";
+export type ToolSpecHiddenReason = "policy_or_scope_denied" | "configuration_required" | "provider_unhealthy" | "provider_unavailable" | "operationally_suppressed" | "unresolved_uncertainty" | "effect_reconciliation_required";
 
 export interface ToolSpecInventoryItem {
 	kind: CapabilityKind;
@@ -21,6 +21,7 @@ export interface ToolSpecInventoryItem {
 	configured: boolean;
 	health: CapabilityProviderHealthStatus;
 	authorized: boolean;
+	operationalApplicability?: "eligible" | "cautious" | "suppressed";
 	effectStatus?: CapabilityEffectStatus;
 }
 
@@ -197,6 +198,7 @@ function normalizeInventoryItem(input: ToolSpecInventoryItem, retainSchema: bool
 	if (input.sideEffect !== "none" && input.sideEffect !== "local" && input.sideEffect !== "external") throw new Error("Tool Spec side effect is invalid");
 	if (!HEALTH_STATUSES.has(input.health)) throw new Error("Tool Spec Provider health is invalid");
 	if (typeof input.configured !== "boolean" || typeof input.authorized !== "boolean") throw new Error("Tool Spec availability facts are invalid");
+	if (input.operationalApplicability !== undefined && input.operationalApplicability !== "eligible" && input.operationalApplicability !== "cautious" && input.operationalApplicability !== "suppressed") throw new Error("Tool Spec operational applicability is invalid");
 	const normalizedSchema = jsonValue(input.inputSchema, "Tool Spec input schema", retainSchema ? budget.remaining : 0);
 	if (normalizedSchema.inputSchema !== undefined) budget.remaining -= normalizedSchema.bytes;
 	return Object.freeze({
@@ -210,12 +212,14 @@ function normalizeInventoryItem(input: ToolSpecInventoryItem, retainSchema: bool
 		configured: input.configured,
 		health: input.health,
 		authorized: input.authorized,
+		...(input.operationalApplicability ? { operationalApplicability: input.operationalApplicability } : {}),
 		...(input.effectStatus ? { effectStatus: input.effectStatus } : {}),
 	});
 }
 
 function hiddenReason(tool: NormalizedInventoryItem, unresolvedUncertainty: boolean): ToolSpecHiddenReason | undefined {
 	if (!tool.authorized) return "policy_or_scope_denied";
+	if (tool.operationalApplicability === "suppressed") return "operationally_suppressed";
 	if (!tool.configured || tool.health === "configuration_required") return "configuration_required";
 	if (tool.health === "unhealthy") return "provider_unhealthy";
 	if (tool.health === "unavailable") return "provider_unavailable";

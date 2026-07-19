@@ -3,8 +3,9 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { MemoryStore } from "@beemax/memory";
-import { createAccessScopeRef, createExecutionEnvelope, createSituation, FileExecutionTraceStore, MUTATING_TOOL_POLICY } from "@beemax/core";
+import Database from "better-sqlite3";
+import { MemoryStore, memoryPersistencePorts } from "@beemax/memory";
+import { createAccessScopeRef, createExecutionEnvelope, createSituation, DefaultMemoryLearningKernel, FileExecutionTraceStore, MUTATING_TOOL_POLICY } from "@beemax/core";
 import { buildMainAgentSystemPrompt, buildSubagentSystemPrompt, createTaskVerifier as createTaskVerifierRaw, createVerifiedObjectiveMemoryPublisher, executeObjectiveDelivery as executeObjectiveDeliveryRaw, executePlannedTask as executePlannedTaskRaw, executeSubagentTask as executeSubagentTaskRaw, verificationAgentTools, verificationAgentToolsForTask } from "../dist/gateway.js";
 import { attestAgentFactoryProfile, buildAgentFactory, createExecutionRoleTools } from "../dist/agent-factory.js";
 import { createSuccessfulVerificationReceipt, normalizeVerifierEvidenceRefs } from "../dist/verification-protocol.js";
@@ -349,24 +350,38 @@ test("planned Pi execution checkpoints meaningful turn progress without a checkp
 	assert.deepEqual(saved[0].completed, ["read:read-1"]);
 });
 
-test("verified Objective outcomes become generic idempotent Situation-backed Memory Episodes", () => {
+test("verified Objective outcomes atomically publish an idempotent Episode and learning signal", async () => {
 	const root = mkdtempSync(join(tmpdir(), "beemax-verified-outcome-memory-"));
-	const memory = new MemoryStore(join(root, "memory.db"));
+	const database = join(root, "memory.db");
+	const memory = new MemoryStore(database);
 	try {
 		const publish = createVerifiedObjectiveMemoryPublisher(memory);
 		publish({
 			objectiveId: "objective-1", title: "Order delivery", result: "Delivery is Friday", evidence: "ERP checked",
+			taskRunId: "run:objective-1", verificationRevision: 1,
+			criterionVerifications: [{ criterionId: "C1", criterion: "Delivery date is verified", status: "accepted", evidenceRefs: ["verification:erp"] }],
+			deliveryReceipt: { idempotencyKey: "delivery:objective-1", deliveredAt: 100, providerMessageId: "message-1" },
 			executionScope: { platform: "feishu", chatId: "sales", chatType: "group", userId: "seller" },
 			situation: createSituation({ summary: "浮光引擎交付已完成", goals: ["确认交付"], confidence: 1 }),
 		});
 		publish({
 			objectiveId: "objective-1", title: "Order delivery", result: "Delivery is Friday", evidence: "ERP checked",
+			taskRunId: "run:objective-1", verificationRevision: 1,
+			criterionVerifications: [{ criterionId: "C1", criterion: "Delivery date is verified", status: "accepted", evidenceRefs: ["verification:erp"] }],
+			deliveryReceipt: { idempotencyKey: "delivery:objective-1", deliveredAt: 100, providerMessageId: "message-1" },
 			executionScope: { platform: "feishu", chatId: "sales", chatType: "group", userId: "seller" },
 			situation: createSituation({ summary: "浮光引擎交付已完成", goals: ["确认交付"], confidence: 1 }),
 		});
 		const scope = { platform: "feishu", chatId: "sales", userId: "seller" };
 		assert.match(memory.recallEpisodes("Friday", scope)[0].outcome, /Delivery is Friday/);
 		assert.equal(memory.listEpisodes(scope).length, 1);
+		const raw = new Database(database, { readonly: true });
+		assert.equal(raw.prepare("SELECT COUNT(*) AS count FROM memory_learning_settlements WHERE subject_kind = 'objective' AND subject_id = 'objective-1'").get().count, 1);
+		assert.equal(raw.prepare("SELECT COUNT(*) AS count FROM memory_settlement_evidence_refs WHERE ref_kind = 'delivery'").get().count, 1);
+		raw.close();
+		const maintenance = await new DefaultMemoryLearningKernel({ authority: memoryPersistencePorts(memory).memoryLearningAuthority })
+			.maintain({ profileId: "default", trigger: "signal", maxItems: 10, maxModelCalls: 0, leaseMs: 30_000, now: Date.now() + 1 });
+		assert.equal(maintenance.claimed, 1);
 	} finally { memory.close(); rmSync(root, { recursive: true, force: true }); }
 });
 
@@ -376,7 +391,7 @@ test("verified Objective outcomes containing credentials are never published fro
 		{ title: "safe", result: "safe", evidence: "Authorization: Bearer evidence-secret" },
 	]) {
 		let writes = 0;
-		createVerifiedObjectiveMemoryPublisher({ upsertEpisode: () => { writes++; return {}; } })({
+		createVerifiedObjectiveMemoryPublisher({ upsertVerifiedEpisodeAndSignal: () => { writes++; return {}; } })({
 			objectiveId: "objective-secret", ...unsafe,
 			executionScope: { platform: "feishu", chatId: "sales", chatType: "group", userId: "seller" },
 			situation: createSituation({ summary: "安全发布验证", confidence: 1 }),

@@ -8,6 +8,8 @@ import { MemoryStore, memoryPersistencePorts } from "../dist/index.js";
 
 const evidence = {
 	situationPrecision: 1, correctionRetention: 1, unauthorizedRetrievals: 0, verifiedCompletionRate: 1,
+	memoryPromotionPrecision: 1, scopedRecallAt5: 0.95, memoryAttributionAccuracy: 0.95, memoryDowngradePrecision: 0.96,
+	memoryFalseDowngradeRate: 0.01, memoryNegativeTransferRate: 0.01, memoryProvenanceCoverage: 1,
 	initiativePrecision: 0.8, initiativeAverageExpectedValue: 0.8, duplicateInitiatives: 0, initiativeInterruptionRate: 0.02,
 	readOnlyPrecision: 0.8, readOnlyAdoptionRate: 0.7, readOnlyInterruptionRate: 0.03, duplicateReadOnlyObjectives: 0,
 	proactivePolicyScopeCoverage: 1, emergencyStopBlockRate: 1, compensationSuccessRate: 1, duplicateCompensations: 0,
@@ -42,6 +44,24 @@ test("autonomy rollout state survives restart and rejects stale writers", () => 
 		});
 	} finally {
 		reopened.close();
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("adaptive learning rollout state persists through the Profile Memory authority", () => {
+	const root = mkdtempSync(join(tmpdir(), "beemax-adaptive-learning-rollout-"));
+	const path = join(root, "memory.db");
+	try {
+		const first = new MemoryStore(path, "profile-a");
+		const rollout = new AutonomyRolloutController({ store: memoryPersistencePorts(first).autonomyRollout, evidence: () => evidence });
+		assert.equal(rollout.promote("situation_context", { actor: "operator", evidenceRef: "evaluation:l4" }, 100).outcome, "promoted");
+		assert.equal(rollout.promote("episode_publication", { actor: "operator", evidenceRef: "evaluation:l4" }, 101).outcome, "promoted");
+		assert.equal(rollout.promote("adaptive_learning", { actor: "operator", evidenceRef: "evaluation:l4" }, 102).outcome, "promoted");
+		first.close();
+		const reopened = new MemoryStore(path, "profile-a");
+		assert.equal(memoryPersistencePorts(reopened).autonomyRollout.read("adaptive_learning")?.status, "enabled");
+		reopened.close();
+	} finally {
 		rmSync(root, { recursive: true, force: true });
 	}
 });

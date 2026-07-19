@@ -228,6 +228,7 @@ Before a release, refresh the credentialed semantic-routing and outcome evidence
 BeeMax separates chat history from durable organizational evidence.
 
 - Conversation candidates stay pending until reviewed or promoted.
+- Explicit, low-risk personal preferences may additionally be admitted by the governed L4 extractor when `adaptive_learning` is enabled; broader organizational knowledge still requires type-specific authority.
 - Claims retain source evidence, validity, visibility, scope, correction, and conflict lineage.
 - Verified Objective outcomes may publish idempotent Situation-backed Episodes.
 - Recall is constrained by Profile, owner, conversation, thread, access scope, and business-object evidence when available.
@@ -602,7 +603,7 @@ docs/                             Architecture, ADRs, operations, PRD, and resea
 
 ## Current boundaries
 
-The current BeeMax release candidate intentionally does not include a fixed customer business ontology, a second Agent Loop, high-risk fully autonomous execution, large multi-Agent organizations, or automatic production Skill mutation.
+The current BeeMax release candidate intentionally does not include a fixed customer business ontology, a second Agent Loop, high-risk fully autonomous execution, large multi-Agent organizations, or arbitrary model-authored production Skill mutation. It does include an `adaptive_learning`-gated managed-Skill lane: only immutable, integrity-sealed versions with accepted trial identities and promotion authority can enter a bounded canary, and verified operational evidence may promote or roll that pointer back without rewriting historical versions.
 
 Planned extension points include additional registry adapters such as Slack, Discord, DingTalk, and WeCom; Feishu User OAuth for private resources; externally backed work queues for larger horizontal deployments; and deeper enterprise policy integrations.
 

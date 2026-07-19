@@ -13,10 +13,12 @@
 
 import Database from "better-sqlite3";
 import type { Database as DatabaseType } from "better-sqlite3";
-import { mkdirSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, rmSync } from "node:fs";
 import { dirname } from "node:path";
 import { createHash, randomUUID } from "node:crypto";
-import { AUTONOMY_LEVELS, MAX_OBJECTIVE_REVISIONS, containsCredentialMaterial, createAccessScopeRef, createEnterprisePolicyPublisher, createSituation, decodeDurableContractAdmissionReceipt, decodeStoredWorkContract, interactionCompletionDeliveryKey, multilingualLexicalTerms, objectiveCompletionId, parseTaskCheckpoint, redactCredentialMaterial, renderTaskCheckpoint, unavailableTaskCriterionVerifications, validateArtifactManifest, validateArtifactVerificationReceipt, validateSourceReceipt, workContractFromLegacyObjective, type AutonomyLevel, type AutonomyRolloutEvidence, type AutonomyRolloutRecord, type AutonomyRolloutStateStore, type CompensationProof, type ConversationMemoryPort, type DeliveryReceipt, type DeliveryTarget, type DirectObjectiveCompletionSettlement, type DurableContractAdmissionReceipt, type DurableInitiativeTrigger, type DurableInitiativeTriggerInput, type EmergencyStopRecord, type EnterprisePolicyPublisher, type InitiativeObservation, type InitiativeObservationInput, type InitiativeObservationStore, type InitiativeScope, type InitiativeTriggerInbox, type ObjectiveCancellationResult, type ObjectiveCompletion, type ObjectiveCompletionOutbox, type ObjectiveInterruptionRecord, type OrganizationKnowledgeHit, type OrganizationKnowledgeRecall, type ReversibleActionControlPort, type Situation, type TaskCandidateVerificationResolution, type TaskCheckpoint, type TaskDependency, type TaskLedger, type TaskPlanCompletionNotice, type TaskPlanNoticeOutbox, type TaskPlanQuery, type TaskPlanRecord, type TaskPlanTransition, type TaskQuery, type TaskRecord as RuntimeTaskRecord, type TaskRecoveryResult, type TaskRunAndTaskSuccessSettlement, type TaskRunEffectStateReader, type TaskRunRecord, type TaskRunTransition, type TaskTransition } from "@beemax/core";
+import { AUTONOMY_LEVELS, MAX_OBJECTIVE_REVISIONS, containsCredentialMaterial, createAccessScopeRef, createEnterprisePolicyPublisher, createExecutionEnvelope, createSituation, decodeDurableContractAdmissionReceipt, decodeStoredWorkContract, interactionCompletionDeliveryKey, multilingualLexicalTerms, objectiveCompletionId, parseTaskCheckpoint, redactCredentialMaterial, renderTaskCheckpoint, unavailableTaskCriterionVerifications, validateArtifactManifest, validateArtifactVerificationReceipt, validateSourceReceipt, workContractFromLegacyObjective, type AutonomyLevel, type AutonomyRolloutEvidence, type AutonomyRolloutRecord, type AutonomyRolloutStateStore, type CompensationProof, type ConversationMemoryPort, type CriterionOutcome, type DeliveryReceipt, type DeliveryTarget, type DirectObjectiveCompletionSettlement, type DurableContractAdmissionReceipt, type DurableInitiativeTrigger, type DurableInitiativeTriggerInput, type EmergencyStopRecord, type EnterprisePolicyPublisher, type InitiativeObservation, type InitiativeObservationInput, type InitiativeObservationStore, type InitiativeScope, type InitiativeTriggerInbox, type ObjectiveCancellationResult, type ObjectiveCompletion, type ObjectiveCompletionOutbox, type ObjectiveInterruptionRecord, type OrganizationKnowledgeHit, type OrganizationKnowledgeRecall, type ReversibleActionControlPort, type Situation, type TaskCandidateVerificationResolution, type TaskCheckpoint, type TaskDependency, type TaskLedger, type TaskPlanCompletionNotice, type TaskPlanNoticeOutbox, type TaskPlanQuery, type TaskPlanRecord, type TaskPlanTransition, type TaskQuery, type TaskRecord as RuntimeTaskRecord, type TaskRecoveryResult, type TaskRunAndTaskSuccessSettlement, type TaskRunEffectStateReader, type TaskRunRecord, type TaskRunTransition, type TaskTransition } from "@beemax/core";
+import type { ManagedSkillLearningPort, MemoryLearningAuthorityPort } from "@beemax/core";
+import { MEMORY_LEARNING_SCHEMA_VERSION, SqliteMemoryLearningAuthority } from "./memory-learning-authority.ts";
 
 export const MEMORY_CLAIM_KINDS = ["preference", "fact", "decision", "goal", "project", "relationship", "workflow", "exception"] as const;
 const EPISODE_STATUSES = new Set<OrganizationMemoryEpisodeStatus>(["candidate", "verified", "conflicted", "superseded"]);
@@ -137,9 +139,14 @@ export interface OrganizationMemoryEpisode {
 	profileId: string;
 	platform: string;
 	chatId: string;
+	chatType?: "dm" | "group" | "channel" | "thread";
 	userId?: string;
 	threadId?: string;
+	projectId?: string;
+	organizationId?: string;
+	visibility: "private" | "conversation" | "project" | "organization";
 	objectiveId: string;
+	sourceRevision: number;
 	situation: Situation;
 	action: string;
 	outcome: string;
@@ -152,14 +159,35 @@ export interface OrganizationMemoryEpisodeInput {
 	profileId?: string;
 	platform: string;
 	chatId: string;
+	chatType?: "dm" | "group" | "channel" | "thread";
 	userId?: string;
 	threadId?: string;
+	projectId?: string;
+	organizationId?: string;
+	visibility?: "private" | "conversation" | "project" | "organization";
 	objectiveId: string;
+	/** Monotonic semantic revision; unversioned legacy callers publish revision 1. */
+	sourceRevision?: number;
 	situation: Situation;
 	action: string;
 	outcome: string;
 	evidence?: string;
 	status?: OrganizationMemoryEpisodeStatus;
+}
+export interface VerifiedOrganizationMemoryEpisodeInput extends OrganizationMemoryEpisodeInput {
+	/** Monotonic semantic revision of the verified Objective result. */
+	sourceRevision: number;
+	occurredAt?: number;
+	policyVersion?: string;
+	learningSettlement?: {
+		executionId: string;
+		taskRunId?: string;
+		verificationRevision: number;
+		verificationDigest: string;
+		criteria: readonly CriterionOutcome[];
+		deliveryReceiptRefs: readonly string[];
+		artifactReceiptRefs: readonly string[];
+	};
 }
 
 export type ConventionCandidateStatus = "candidate" | "confirmed" | "rejected" | "superseded" | "rolled_back";
@@ -256,6 +284,7 @@ export interface TaskFactRecord {
 export class MemoryStore {
 	private readonly db: DatabaseType;
 	private readonly profileId: string;
+	readonly memoryLearningAuthority: MemoryLearningAuthorityPort & ManagedSkillLearningPort;
 
 	constructor(dbPath: string, profileId = "default") {
 		this.profileId = profileId;
@@ -264,7 +293,65 @@ export class MemoryStore {
 		this.db.pragma("journal_mode = WAL");
 		this.db.pragma("busy_timeout = 5000");
 		this.db.pragma("foreign_keys = ON");
+		this.backupBeforePendingL4Migration(dbPath);
 		this.migrate();
+		this.memoryLearningAuthority = new SqliteMemoryLearningAuthority({
+			db: this.db,
+			profileId: this.profileId,
+			recall: (query, options) => this.recallRanked(query, options),
+				applyClaimCorrection: (input) => {
+				const corrected = this.correctClaim(input.targetId, {
+					statement: input.statement,
+					evidence: { kind: "correction", excerpt: input.statement, sourceRef: `memory-observation:${input.observationId}` },
+				}, input.scope);
+					return corrected ? { kind: "claim", id: corrected.id, version: `updated:${corrected.updatedAt}`, digest: createHash("sha256").update(corrected.statement).digest("hex") } : undefined;
+				},
+				applyExtractedClaim: (input) => {
+					const claim = this.upsertClaim({
+						profileId: this.profileId,
+						platform: input.scope.platform,
+						chatId: input.scope.chatId,
+						...(input.scope.userId ? { userId: input.scope.userId } : {}),
+						...(input.scope.threadId ? { threadId: input.scope.threadId } : {}),
+						...(input.scope.projectId ? { projectId: input.scope.projectId } : {}),
+						...(input.scope.organizationId ? { organizationId: input.scope.organizationId } : {}),
+						kind: input.kind === "preference" ? "preference" : "fact",
+						statement: input.statement,
+						confidence: input.confidence,
+						stability: "medium",
+						visibility: "private",
+						source: { type: "message", ref: input.observationId },
+						evidence: { kind: "conversation", sourceRef: input.observationId, excerpt: input.evidenceExcerpt },
+					});
+					return { kind: "claim", id: claim.id, version: `updated:${claim.updatedAt}`, digest: createHash("sha256").update(claim.statement).digest("hex") };
+				},
+			});
+	}
+
+	private backupBeforePendingL4Migration(dbPath: string): void {
+		if (dbPath === ":memory:") return;
+		const userTables = (this.db.prepare("SELECT COUNT(*) AS count FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'").get() as { count: number }).count;
+		if (!userTables) return;
+		const hasMigrationTable = Boolean(this.db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'memory_schema_migrations'").get());
+		const fromVersion = hasMigrationTable
+			? (this.db.prepare("SELECT COALESCE(MAX(version), 0) AS version FROM memory_schema_migrations").get() as { version: number }).version
+			: 0;
+		if (fromVersion >= MEMORY_LEARNING_SCHEMA_VERSION) return;
+		const sourceIntegrity = this.db.pragma("integrity_check", { simple: true });
+		if (sourceIntegrity !== "ok") throw new Error(`SQLite integrity check failed before L4 migration: ${String(sourceIntegrity)}`);
+		const destination = `${dbPath}.pre-l4-v${MEMORY_LEARNING_SCHEMA_VERSION}-from-v${fromVersion}.sqlite`;
+		if (existsSync(destination)) {
+			verifySqliteDatabase(destination);
+			return;
+		}
+		try {
+			this.db.prepare("VACUUM INTO ?").run(destination);
+			chmodSync(destination, 0o600);
+			verifySqliteDatabase(destination);
+		} catch (error) {
+			rmSync(destination, { force: true });
+			throw error;
+		}
 	}
 
 	private migrate(): void {
@@ -528,9 +615,14 @@ export class MemoryStore {
 				profile_id TEXT NOT NULL,
 				platform TEXT NOT NULL,
 				chat_id TEXT NOT NULL,
+				chat_type TEXT,
 				user_id TEXT,
 				thread_id TEXT,
+				project_id TEXT,
+				organization_id TEXT,
+				visibility TEXT NOT NULL DEFAULT 'private',
 				objective_id TEXT NOT NULL,
+				source_revision INTEGER NOT NULL DEFAULT 1,
 				situation TEXT NOT NULL,
 				situation_summary TEXT NOT NULL,
 				action TEXT NOT NULL,
@@ -757,7 +849,7 @@ export class MemoryStore {
 
 			CREATE TABLE IF NOT EXISTS autonomy_rollout_states (
 				profile_id TEXT NOT NULL,
-				level TEXT NOT NULL CHECK (level IN ('situation_context', 'episode_publication', 'initiative_observation', 'read_only_investigation', 'reversible_action')),
+				level TEXT NOT NULL CHECK (level IN ('situation_context', 'episode_publication', 'adaptive_learning', 'initiative_observation', 'read_only_investigation', 'reversible_action')),
 				status TEXT NOT NULL CHECK (status IN ('disabled', 'enabled', 'stopped')),
 				revision INTEGER NOT NULL CHECK (revision > 0),
 				updated_at INTEGER NOT NULL CHECK (updated_at >= 0),
@@ -771,6 +863,7 @@ export class MemoryStore {
 			);
 		`);
 		this.migrateCompensationExerciseIdentity();
+		this.migrateAutonomyRolloutLevels();
 		this.addColumnIfMissing("tasks", "evidence", "TEXT");
 		this.addColumnIfMissing("memory_evidence", "source_ref", "TEXT");
 		this.addColumnIfMissing("tasks", "description", "TEXT");
@@ -778,6 +871,11 @@ export class MemoryStore {
 		this.addColumnIfMissing("tasks", "recovery_policy", "TEXT NOT NULL DEFAULT 'never'");
 		this.addColumnIfMissing("tasks", "idempotency_key", "TEXT");
 		this.addColumnIfMissing("tasks", "execution_scope", "TEXT");
+		this.addColumnIfMissing("memory_episodes", "chat_type", "TEXT");
+		this.addColumnIfMissing("memory_episodes", "project_id", "TEXT");
+		this.addColumnIfMissing("memory_episodes", "organization_id", "TEXT");
+		this.addColumnIfMissing("memory_episodes", "visibility", "TEXT NOT NULL DEFAULT 'private'");
+		this.addColumnIfMissing("memory_episodes", "source_revision", "INTEGER NOT NULL DEFAULT 1");
 		this.addColumnIfMissing("objective_completion_outbox", "reply_to_message_id", "TEXT");
 		this.addColumnIfMissing("objective_completion_outbox", "delivery_idempotency_key", "TEXT");
 		this.addColumnIfMissing("objective_completion_outbox", "task_run_id", "TEXT REFERENCES task_runs(id)");
@@ -921,13 +1019,38 @@ export class MemoryStore {
 		`))();
 	}
 
+	private migrateAutonomyRolloutLevels(): void {
+		const schema = this.db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'autonomy_rollout_states'").get() as { sql: string } | undefined;
+		if (!schema || schema.sql.includes("'adaptive_learning'")) return;
+		this.db.transaction(() => this.db.exec(`
+			ALTER TABLE autonomy_rollout_states RENAME TO autonomy_rollout_states_legacy_levels;
+			CREATE TABLE autonomy_rollout_states (
+				profile_id TEXT NOT NULL,
+				level TEXT NOT NULL CHECK (level IN ('situation_context', 'episode_publication', 'adaptive_learning', 'initiative_observation', 'read_only_investigation', 'reversible_action')),
+				status TEXT NOT NULL CHECK (status IN ('disabled', 'enabled', 'stopped')),
+				revision INTEGER NOT NULL CHECK (revision > 0),
+				updated_at INTEGER NOT NULL CHECK (updated_at >= 0),
+				actor TEXT NOT NULL CHECK (actor IN ('operator', 'enterprise')),
+				publisher TEXT,
+				evidence_ref TEXT NOT NULL,
+				enterprise_disposition TEXT CHECK (enterprise_disposition IN ('allow', 'deny')),
+				reasons TEXT NOT NULL,
+				evidence TEXT,
+				PRIMARY KEY (profile_id, level)
+			);
+			INSERT INTO autonomy_rollout_states SELECT * FROM autonomy_rollout_states_legacy_levels;
+			DROP TABLE autonomy_rollout_states_legacy_levels;
+		`))();
+	}
+
 	/** Persist a source record as immutable evidence while retained; unreferenced raw events use a bounded per-conversation retention window. */
 	recordEvent(record: { platform: string; chatId: string; userId?: string; threadId?: string; kind: "user" | "assistant" | "import" | "feedback"; content: string; occurredAt?: number }): string {
 		const id = cryptoRandom();
 		const now = Date.now();
 		this.db.prepare("INSERT INTO memory_events (id, platform, chat_id, user_id, thread_id, kind, content, occurred_at, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")
 			.run(id, record.platform, record.chatId, record.userId ?? null, record.threadId ?? null, record.kind, record.content, record.occurredAt ?? now, now);
-		this.db.prepare(`DELETE FROM memory_events WHERE platform = ? AND chat_id = ? AND user_id IS ? AND id NOT IN (SELECT event_id FROM memory_evidence WHERE event_id IS NOT NULL) AND id NOT IN
+		this.db.prepare(`DELETE FROM memory_events WHERE platform = ? AND chat_id = ? AND user_id IS ? AND id NOT IN (SELECT event_id FROM memory_evidence WHERE event_id IS NOT NULL)
+			AND id NOT IN (SELECT substr(source_ref, length('memory-event:') + 1) FROM memory_learning_observations WHERE source_ref LIKE 'memory-event:%') AND id NOT IN
 			(SELECT id FROM memory_events WHERE platform = ? AND chat_id = ? AND user_id IS ? ORDER BY occurred_at DESC LIMIT 5000)`)
 			.run(record.platform, record.chatId, record.userId ?? null, record.platform, record.chatId, record.userId ?? null);
 		return id;
@@ -987,27 +1110,89 @@ export class MemoryStore {
 		const profileId = input.profileId ?? this.profileId;
 		if (profileId !== this.profileId) throw new Error("Organization Memory Episode is outside this Profile store");
 		const objectiveId = boundedEpisodeText(input.objectiveId, "objectiveId", 512);
+		const sourceRevision = input.sourceRevision ?? 1;
+		if (!Number.isSafeInteger(sourceRevision) || sourceRevision < 1) throw new Error("Organization Memory Episode source revision is invalid");
 		const action = boundedEpisodeText(input.action, "action", 5_000);
 		const outcome = boundedEpisodeText(input.outcome, "outcome", 50_000);
 		const evidence = input.evidence === undefined ? undefined : boundedEpisodeText(input.evidence, "evidence", 5_000);
 		const situation = createSituation(structuredClone(input.situation));
 		const status = input.status ?? "verified";
 		if (!EPISODE_STATUSES.has(status)) throw new Error("Organization Memory Episode status is invalid");
+		const visibility = input.visibility ?? "private";
+		if (!new Set(["private", "conversation", "project", "organization"]).has(visibility) || visibility === "project" && !input.projectId || visibility === "organization" && !input.organizationId) throw new Error("Organization Memory Episode visibility is invalid");
 		const sensitive = JSON.stringify({ objectiveId, situation, action, outcome, evidence });
 		if (containsCredentialMaterial(sensitive)) throw new Error("Organization Memory Episode cannot contain credential material");
 		const now = Date.now();
 		const id = `episode:${cryptoRandom()}`;
-		this.db.prepare(`INSERT INTO memory_episodes (id, profile_id, platform, chat_id, user_id, thread_id, objective_id, situation, situation_summary, action, outcome, evidence, status, created_at, updated_at)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		const changed = this.db.prepare(`INSERT INTO memory_episodes (id, profile_id, platform, chat_id, chat_type, user_id, thread_id, project_id, organization_id, visibility, objective_id, source_revision, situation, situation_summary, action, outcome, evidence, status, created_at, updated_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 			ON CONFLICT(profile_id, objective_id) DO UPDATE SET
+				platform = excluded.platform, chat_id = excluded.chat_id, chat_type = excluded.chat_type, user_id = excluded.user_id, thread_id = excluded.thread_id,
+				project_id = excluded.project_id, organization_id = excluded.organization_id, visibility = excluded.visibility, source_revision = excluded.source_revision,
 				situation = excluded.situation, situation_summary = excluded.situation_summary, action = excluded.action,
 				outcome = excluded.outcome, evidence = excluded.evidence,
 				status = CASE WHEN memory_episodes.status = 'verified' AND excluded.status = 'candidate' THEN memory_episodes.status ELSE excluded.status END,
-				updated_at = excluded.updated_at`)
-			.run(id, profileId, input.platform, input.chatId, input.userId ?? null, input.threadId ?? null, objectiveId, JSON.stringify(situation), situation.summary, action, outcome, evidence ?? null, status, now, now);
+				updated_at = excluded.updated_at
+			WHERE memory_episodes.source_revision <= excluded.source_revision`)
+			.run(id, profileId, input.platform, input.chatId, input.chatType ?? null, input.userId ?? null, input.threadId ?? null, input.projectId ?? null, input.organizationId ?? null, visibility, objectiveId, sourceRevision, JSON.stringify(situation), situation.summary, action, outcome, evidence ?? null, status, now, now).changes;
+		if (changed !== 1) throw new Error(`Organization Memory Episode ${objectiveId} rejected a stale source revision`);
 		const persisted = this.episodeForObjective(objectiveId, { profileId });
 		if (!persisted) throw new Error("Organization Memory Episode could not be persisted");
 		return persisted;
+	}
+
+	/** Atomically publish a verified Episode and its exactly-once learning signal. */
+	upsertVerifiedEpisodeAndSignal(input: VerifiedOrganizationMemoryEpisodeInput): OrganizationMemoryEpisode {
+		if (!Number.isSafeInteger(input.sourceRevision) || input.sourceRevision < 1) throw new Error("Verified Objective source revision is invalid");
+		const occurredAt = input.occurredAt ?? Date.now();
+		if (!Number.isSafeInteger(occurredAt) || occurredAt < 0) throw new Error("Verified Objective occurrence time is invalid");
+		return this.db.transaction(() => {
+			const episode = this.upsertEpisode(input);
+			const sourceDigest = createHash("sha256").update(JSON.stringify({
+				profileId: episode.profileId,
+				platform: episode.platform,
+				chatId: episode.chatId,
+				chatType: episode.chatType ?? null,
+				userId: episode.userId ?? null,
+				threadId: episode.threadId ?? null,
+				projectId: episode.projectId ?? null,
+				organizationId: episode.organizationId ?? null,
+				visibility: episode.visibility,
+				objectiveId: episode.objectiveId,
+				situation: episode.situation,
+				action: episode.action,
+				outcome: episode.outcome,
+				evidence: episode.evidence ?? null,
+				status: episode.status,
+			})).digest("hex");
+			this.memoryLearningAuthority.appendLearningSignal({
+				profileId: episode.profileId,
+				sourceKind: "objective",
+				sourceId: episode.objectiveId,
+				sourceRevision: input.sourceRevision,
+				sourceDigest,
+				signalType: "terminal_outcome",
+				priority: 90,
+				occurredAt,
+				policyVersion: input.policyVersion ?? "l4.v1",
+			});
+			if (input.learningSettlement) {
+				const learning = input.learningSettlement;
+				const envelope = createExecutionEnvelope({ executionId: learning.executionId, trigger: { kind: "task_transition", id: episode.objectiveId }, objectiveId: episode.objectiveId,
+					...(learning.taskRunId ? { taskRunId: learning.taskRunId } : {}) });
+				const settlement = this.memoryLearningAuthority.settleLearning({
+					envelope,
+					scope: { profileId: episode.profileId, platform: episode.platform, chatId: episode.chatId, ...(episode.chatType ? { chatType: episode.chatType } : {}),
+						...(episode.userId ? { userId: episode.userId } : {}), ...(episode.threadId ? { threadId: episode.threadId } : {}),
+						...(episode.projectId ? { projectId: episode.projectId } : {}), ...(episode.organizationId ? { organizationId: episode.organizationId } : {}) },
+					subject: { kind: "objective", id: episode.objectiveId, revision: input.sourceRevision }, verificationRevision: learning.verificationRevision,
+					verificationDigest: learning.verificationDigest, criteria: learning.criteria, deliveryReceiptRefs: learning.deliveryReceiptRefs,
+					artifactReceiptRefs: learning.artifactReceiptRefs, policyVersion: input.policyVersion ?? "l4.v1",
+				});
+				if (settlement.status !== "settled" && settlement.status !== "duplicate") throw new Error(`Verified Objective Learning Settlement was ${settlement.status}`);
+			}
+			return episode;
+		})();
 	}
 
 	episodeForObjective(objectiveId: string, opts: Omit<RecallOptions, "limit"> = {}): OrganizationMemoryEpisode | undefined {
@@ -2063,6 +2248,8 @@ export class MemoryStore {
 					.run(settlement.run.finishedAt ?? null, safeTaskText(settlement.run.output), settlement.taskRunId, settlement.taskId, now, settlement.taskId, settlement.ownerKey, settlement.taskId).changes;
 				if (runChanged !== 1) return false;
 				if (!this.transition(settlement.taskId, settlement.task)) throw rollback;
+				const sourceDigest = createHash("sha256").update(JSON.stringify({ taskId: settlement.taskId, taskRunId: settlement.taskRunId, task: settlement.task, run: settlement.run })).digest("hex");
+				this.memoryLearningAuthority.appendLearningSignal({ profileId: this.profileId, sourceKind: "task_run", sourceId: settlement.taskRunId, sourceRevision: 1, sourceDigest, signalType: "terminal_outcome", priority: 80, occurredAt: Math.trunc(now), policyVersion: "l4.v1" });
 				return true;
 			}).immediate();
 		} catch (error) {
@@ -3029,7 +3216,7 @@ export class MemoryStore {
 
 }
 
-export type OrganizationMemoryPort = Pick<MemoryStore, "upsertEpisode" | "episodeForObjective" | "listEpisodes" | "recallEpisodes" | "recallOrganizationKnowledge" | "upsertConventionCandidate" | "getConventionCandidate" | "listConventionCandidates" | "confirmConventionCandidate" | "rejectConventionCandidate" | "supersedeConventionCandidate" | "rollbackConventionCandidate" | "explainConventionCandidate" | "upsertWorkflowCandidate" | "getWorkflowCandidate" | "listWorkflowCandidates" | "editWorkflowCandidate" | "rejectWorkflowCandidate" | "supersedeWorkflowCandidate" | "archiveWorkflowCandidate" | "explainWorkflowCandidate" | "stageWorkflowSkillCandidate" | "authorizeWorkflowSkillPromotion" | "upsertClaim" | "recordException" | "markClaimsConflicted" | "correctClaim" | "revokeClaim" | "forgetClaim" | "listClaims" | "recallBrief" | "explainClaim">;
+export type OrganizationMemoryPort = Pick<MemoryStore, "upsertEpisode" | "upsertVerifiedEpisodeAndSignal" | "episodeForObjective" | "listEpisodes" | "recallEpisodes" | "recallOrganizationKnowledge" | "upsertConventionCandidate" | "getConventionCandidate" | "listConventionCandidates" | "confirmConventionCandidate" | "rejectConventionCandidate" | "supersedeConventionCandidate" | "rollbackConventionCandidate" | "explainConventionCandidate" | "upsertWorkflowCandidate" | "getWorkflowCandidate" | "listWorkflowCandidates" | "editWorkflowCandidate" | "rejectWorkflowCandidate" | "supersedeWorkflowCandidate" | "archiveWorkflowCandidate" | "explainWorkflowCandidate" | "stageWorkflowSkillCandidate" | "authorizeWorkflowSkillPromotion" | "upsertClaim" | "recordException" | "markClaimsConflicted" | "correctClaim" | "revokeClaim" | "forgetClaim" | "listClaims" | "recallBrief" | "explainClaim">;
 export type InitiativeObservationPort = InitiativeObservationStore & Pick<MemoryStore, "listInitiativeObservations" | "reviewInitiativeObservation" | "initiativeEvaluation">;
 export type InitiativeTriggerInboxPort = InitiativeTriggerInbox & Pick<MemoryStore, "getInitiativeTrigger" | "attachInitiativeTriggerRoute">;
 export type ReversibleActionControls = ReversibleActionControlPort;
@@ -3048,11 +3235,13 @@ export interface MemoryPersistencePorts {
 	initiativeTriggerInbox: InitiativeTriggerInboxPort;
 	reversibleActionControls: ReversibleActionControls;
 	autonomyRollout: AutonomyRolloutStore;
+	memoryLearningAuthority: MemoryLearningAuthorityPort;
+	managedSkillLearning: ManagedSkillLearningPort;
 }
 
 /** Typed capability views over one SQLite authority; no wrapper owns state. */
 export function memoryPersistencePorts(store: MemoryStore): MemoryPersistencePorts {
-	return { organizationMemory: store, conversationMemory: store, taskLedger: store, recoveryQueue: store, completionOutbox: store, initiativeObservations: store, initiativeTriggerInbox: store, reversibleActionControls: store, autonomyRollout: store };
+	return { organizationMemory: store, conversationMemory: store, taskLedger: store, recoveryQueue: store, completionOutbox: store, initiativeObservations: store, initiativeTriggerInbox: store, reversibleActionControls: store, autonomyRollout: store, memoryLearningAuthority: store.memoryLearningAuthority, managedSkillLearning: store.memoryLearningAuthority };
 }
 
 export async function backupSqliteDatabase(sourcePath: string, destinationPath: string): Promise<void> {
@@ -3117,6 +3306,7 @@ function parseEnterprisePublisher(encoded: string | null): EnterprisePolicyPubli
 
 const autonomyEvidenceKeys: readonly (keyof AutonomyRolloutEvidence)[] = [
 	"situationPrecision", "correctionRetention", "unauthorizedRetrievals", "verifiedCompletionRate",
+	"memoryPromotionPrecision", "scopedRecallAt5", "memoryAttributionAccuracy", "memoryDowngradePrecision", "memoryFalseDowngradeRate", "memoryNegativeTransferRate", "memoryProvenanceCoverage",
 	"initiativePrecision", "initiativeAverageExpectedValue", "duplicateInitiatives", "initiativeInterruptionRate",
 	"readOnlyPrecision", "readOnlyAdoptionRate", "readOnlyInterruptionRate", "duplicateReadOnlyObjectives",
 	"proactivePolicyScopeCoverage", "emergencyStopBlockRate", "compensationSuccessRate", "duplicateCompensations",
@@ -3204,8 +3394,8 @@ interface ClaimRow {
 }
 
 interface EpisodeRow {
-	id: string; profile_id: string; platform: string; chat_id: string; user_id: string | null; thread_id: string | null;
-	objective_id: string; situation: string; situation_summary: string; action: string; outcome: string; evidence: string | null;
+	id: string; profile_id: string; platform: string; chat_id: string; chat_type: string | null; user_id: string | null; thread_id: string | null; project_id: string | null; organization_id: string | null; visibility: OrganizationMemoryEpisode["visibility"];
+	objective_id: string; source_revision: number; situation: string; situation_summary: string; action: string; outcome: string; evidence: string | null;
 	status: OrganizationMemoryEpisodeStatus; created_at: number; updated_at: number;
 }
 
@@ -3353,8 +3543,10 @@ function mapEpisode(row: EpisodeRow): OrganizationMemoryEpisode {
 	if (!situation) throw new Error(`Organization Memory Episode ${row.id} has an invalid Situation`);
 	return {
 		id: row.id, profileId: row.profile_id, platform: row.platform, chatId: row.chat_id,
+		...(validChatType(row.chat_type) ? { chatType: validChatType(row.chat_type) } : {}),
 		...(row.user_id ? { userId: row.user_id } : {}), ...(row.thread_id ? { threadId: row.thread_id } : {}),
-		objectiveId: row.objective_id, situation, action: row.action, outcome: row.outcome,
+		...(row.project_id ? { projectId: row.project_id } : {}), ...(row.organization_id ? { organizationId: row.organization_id } : {}), visibility: row.visibility,
+		objectiveId: row.objective_id, sourceRevision: row.source_revision, situation, action: row.action, outcome: row.outcome,
 		...(row.evidence ? { evidence: row.evidence } : {}), status: row.status, createdAt: row.created_at, updatedAt: row.updated_at,
 	};
 }
@@ -3766,6 +3958,9 @@ function episodeScopeWhere(opts: Omit<RecallOptions, "limit">, alias: string): {
 	if (opts.platform) { conditions.push(`${alias}.platform = ?`); params.push(opts.platform); }
 	if (opts.chatId) { conditions.push(`${alias}.chat_id = ?`, `${alias}.thread_id IS ?`); params.push(opts.chatId, opts.threadId ?? null); }
 	if (opts.userId) { conditions.push(`${alias}.user_id = ?`); params.push(opts.userId); }
+	if (opts.chatType) { conditions.push(`${alias}.chat_type IS ?`); params.push(opts.chatType); }
+	if (opts.projectId) { conditions.push(`${alias}.project_id = ?`); params.push(opts.projectId); }
+	if (opts.organizationId) { conditions.push(`${alias}.organization_id = ?`); params.push(opts.organizationId); }
 	return { where: `AND ${conditions.join(" AND ")}`, params };
 }
 

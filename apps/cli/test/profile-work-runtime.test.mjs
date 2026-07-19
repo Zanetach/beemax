@@ -93,3 +93,44 @@ test("one-shot Profile Work Runtime reconciles expired leases once without start
 		await rm(root, { recursive: true, force: true });
 	}
 });
+
+test("Profile Work Runtime drives Memory Learning maintenance through its shared scheduler", async () => {
+	const root = await mkdtemp(join(tmpdir(), "beemax-profile-memory-learning-"));
+	const memory = new MemoryStore(join(root, "memory.db"), "personal");
+	const cycles = [];
+	const work = createProfileWorkRuntime({
+		agentDir: root,
+		ledger: memory,
+		maxConcurrent: 1,
+		maxSubagents: 1,
+		taskTimeoutMs: 0,
+		subagentsEnabled: false,
+		memoryLearning: {
+			profileId: "personal",
+			kernel: { maintain: async (input) => {
+				cycles.push(input);
+				return { claimed: 0, completed: 0, deferred: 0, failed: 0, transitions: [], createdObjectiveIds: [], nextWatermarks: {} };
+			} },
+			intervalMs: 60_000,
+		},
+		executeTask: async () => ({ output: "done" }),
+		verifyTaskCandidate: async () => ({ accepted: true }),
+		deliverObjective: async () => ({ result: "delivered" }),
+		executeSubagent: async () => "done",
+	});
+	try {
+		assert.ok(work.resources.some((resource) => resource.name === "memory-learning"));
+		for (const resource of work.resources) await resource.start?.();
+		await work.memoryLearning.waitForIdle();
+		assert.equal(cycles.length, 1);
+		assert.equal(cycles[0].trigger, "recovery");
+		work.memoryLearning.wake();
+		await work.memoryLearning.waitForIdle();
+		assert.equal(cycles.length, 2);
+		assert.equal(cycles[1].trigger, "signal");
+	} finally {
+		for (const resource of [...work.resources].reverse()) await resource.dispose();
+		memory.close();
+		await rm(root, { recursive: true, force: true });
+	}
+});

@@ -110,6 +110,22 @@ test("model-first system guard accepts only exact required Capability receipts",
 	assert.equal(evaluateLivePiModelFirstCompletion({ scenario, selectedCandidates, executionTrace: tampered, terminalAnswerPresent: true }).status, "rejected");
 });
 
+test("model-first system guard treats repeated calls as one Capability activation with distinct invocation receipts", () => {
+	const scenario = { id: "repeated-memory", query: "recall both records", expected: "memory_recall" };
+	const selectedCandidates = [{ kind: "tool", name: "memory_recall", version: "eval:1", confidence: 0.99 }];
+	const executionTrace = [
+		{ sequence: 1, type: "execution.started" },
+		{ sequence: 2, type: "tool.started", toolName: "eval_memory_recall", toolCallId: "call:first" },
+		{ sequence: 3, type: "tool.settled", toolName: "eval_memory_recall", toolCallId: "call:first", status: "succeeded", capabilityReceipt: { id: "receipt:memory:first", kind: "tool", name: "memory_recall", version: "eval:1", sourceTool: "eval_memory_recall" } },
+		{ sequence: 4, type: "tool.started", toolName: "eval_memory_recall", toolCallId: "call:second" },
+		{ sequence: 5, type: "tool.settled", toolName: "eval_memory_recall", toolCallId: "call:second", status: "succeeded", capabilityReceipt: { id: "receipt:memory:second", kind: "tool", name: "memory_recall", version: "eval:1", sourceTool: "eval_memory_recall" } },
+		{ sequence: 6, type: "execution.settled", status: "succeeded" },
+	];
+	const result = evaluateLivePiModelFirstCompletion({ scenario, selectedCandidates, executionTrace, terminalAnswerPresent: true });
+	assert.equal(result.status, "accepted");
+	assert.deepEqual(result.activatedCapabilities, ["memory_recall"]);
+});
+
 test("model-first system guard requires the complete progressive Skill lifecycle", () => {
 	const scenario = { id: "skill-guard", query: "follow the procedure", expected: "procedure-conformance-check" };
 	const candidate = { kind: "skill", name: "procedure-conformance-check", version: "sha256:0558f341417a17600924c6796b16a8899f795b20509774696ba80a44503d3197", confidence: 0.99 };
@@ -156,6 +172,23 @@ test("live Pi evaluation lifecycle receipts identify the exact Tool call", async
 	assert.equal(first.details.skillLifecycleReceipt.id, replay.details.skillLifecycleReceipt.id);
 	assert.notEqual(first.details.skillLifecycleReceipt.id, second.details.skillLifecycleReceipt.id);
 	assert.match(first.details.skillLifecycleReceipt.id, /:[a-f0-9]{64}$/u);
+});
+
+test("live Pi direct Capability receipts identify the exact Tool call", async () => {
+	const candidate = { kind: "tool", name: "memory_recall", version: "eval:1", confidence: 0.99 };
+	const tools = createLivePiEvaluationTools({
+		candidates: [candidate],
+		descriptors: new Map([[candidate.name, candidate]]),
+		sourceByCapability: new Map([[candidate.name, "eval_memory_recall"]]),
+		readSkills: new Set(), completed: new Set(), cognitionId: "eval:direct-receipt-identity",
+	});
+	const direct = tools.find((tool) => tool.name === "eval_memory_recall");
+	const first = await direct.execute("memory-call-one", {});
+	const replay = await direct.execute("memory-call-one", {});
+	const second = await direct.execute("memory-call-two", {});
+	assert.equal(first.details.capabilityReceipt.id, replay.details.capabilityReceipt.id);
+	assert.notEqual(first.details.capabilityReceipt.id, second.details.capabilityReceipt.id);
+	assert.match(first.details.capabilityReceipt.id, /:[a-f0-9]{64}$/u);
 });
 
 test("live Pi evaluation exposes and enforces read, activate, route, resource, and complete Skill phases", async () => {

@@ -7,6 +7,13 @@ const passingEvidence = {
 	correctionRetention: 1,
 	unauthorizedRetrievals: 0,
 	verifiedCompletionRate: 1,
+	memoryPromotionPrecision: 1,
+	scopedRecallAt5: 0.95,
+	memoryAttributionAccuracy: 0.95,
+	memoryDowngradePrecision: 0.96,
+	memoryFalseDowngradeRate: 0.01,
+	memoryNegativeTransferRate: 0.01,
+	memoryProvenanceCoverage: 1,
 	initiativePrecision: 0.8,
 	initiativeAverageExpectedValue: 0.8,
 	duplicateInitiatives: 0,
@@ -76,7 +83,7 @@ test("enterprise deny overrides promotion but enterprise allow cannot bypass fai
 });
 
 test("high-risk and irreversible autonomy are not rollout levels", () => {
-	assert.deepEqual(AUTONOMY_LEVELS, ["situation_context", "episode_publication", "initiative_observation", "read_only_investigation", "reversible_action"]);
+	assert.deepEqual(AUTONOMY_LEVELS, ["situation_context", "episode_publication", "adaptive_learning", "initiative_observation", "read_only_investigation", "reversible_action"]);
 	const rollout = new AutonomyRolloutController({ store: stateStore(), evidence: () => passingEvidence });
 	assert.throws(() => rollout.promote("high_risk_action", { actor: "operator", evidenceRef: "invalid" }), /unknown autonomy level/i);
 	assert.throws(() => rollout.promote("irreversible_action", { actor: "operator", evidenceRef: "invalid" }), /unknown autonomy level/i);

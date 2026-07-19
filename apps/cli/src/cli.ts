@@ -9,7 +9,7 @@
  *   beemax model      Show / set the configured model
  */
 
-import { buildMainAgentSystemPrompt, buildSubagentSystemPrompt, createSkillCandidateVerifier, createTaskVerifier, createVerifiedObjectiveMemoryPublisher, executeObjectiveDelivery, executePlannedTask, executeSubagentTask, mainAgentTools, runGateway, subagentExecutionTools, verificationAgentToolsForTask } from "./gateway.ts";
+import { buildMainAgentSystemPrompt, buildSubagentSystemPrompt, createSkillCandidateVerifier, createTaskVerifier, createVerifiedObjectiveMemoryPublisher, executeObjectiveDelivery, executePlannedTask, executeSubagentTask, mainAgentTools, readOnlyAgentTools, runGateway, runProfileAutomation, subagentExecutionTools, verificationAgentToolsForTask } from "./gateway.ts";
 import { beemaxHome, beemaxRoot, consumeChannelCredential, loadConfig, profileTaskGrantCapabilities, profileTurnTimeoutMs } from "./config.ts";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { backupSqliteDatabase, MemoryStore, memoryPersistencePorts, verifySqliteDatabase } from "@beemax/memory";
@@ -44,7 +44,7 @@ import { fullScreenEnter, fullScreenExit, resolveChatPresentationMode, type Chat
 import { FullWorkbench, startFullWorkbenchInput, type FullWorkbenchInput } from "./full-workbench.ts";
 import { inspectGateway, readGatewayLogs, recordGatewayEvent } from "./gateway-observability.ts";
 import { createTaskAwareConversationContext, ensureBuiltinTasks, installedVersion } from "./runtime-facts.ts";
-import { AUTONOMY_LEVELS, AgentRunError, AuthStorage, AutonomyRolloutController, FileCredentialVault, FileCredentialVaultAuditJournal, ObjectiveCompletionDeliveryService, TaskPlanNoticeDeliveryService, ToolApprovalBroker, buildActiveTaskPreservationEnvelope, buildTaskPreservationEnvelope, compileLongTermMemorySnapshot, conversationKey, createContractAdmissionReceiptIntegrity, createSubagentTools, createTaskLedgerTools, createTaskOrchestrationTools, guardVerifiedObjectiveMemoryPublisher, interactionCommandHelp, objectiveIdFromCompletionId, parseInteractionCommand, redactCredentialMaterial, responsibilityOwnerKey, responsibilityOwnerKeys, type AutonomyLevel, type AutonomyRolloutAuthority, type DeliveryPort } from "@beemax/core";
+import { AUTONOMY_LEVELS, ActionGovernance, AgentRunError, AuthStorage, AutonomyRolloutController, DefaultMemoryLearningKernel, DeterministicLearningExtractor, FileCredentialVault, FileCredentialVaultAuditJournal, ObjectiveCompletionDeliveryService, PiLearningExtractor, ProactiveInvestigationRuntime, ProgressiveLearningExtractor, TaskPlanNoticeDeliveryService, ToolApprovalBroker, ToolPolicyRegistry, buildActiveTaskPreservationEnvelope, buildTaskPreservationEnvelope, compileLongTermMemorySnapshot, conversationKey, createContractAdmissionReceiptIntegrity, createExecutionEnvelope, createSubagentTools, createTaskLedgerTools, createTaskOrchestrationTools, guardVerifiedObjectiveMemoryPublisher, interactionCommandHelp, isVerifiedAutomationOutcome, objectiveIdFromCompletionId, parseInteractionCommand, redactCredentialMaterial, responsibilityOwnerKey, responsibilityOwnerKeys, type AutonomyLevel, type AutonomyRolloutAuthority, type DeliveryPort, type LearningObjectiveAdmissionPort } from "@beemax/core";
 import type { SessionSource } from "@beemax/channel-runtime";
 import { PairingStore, assertProfileBindingConfiguration } from "@beemax/gateway";
 import { executeFeishuSmoke } from "./feishu-smoke.ts";
@@ -67,6 +67,7 @@ import { applyProfileSessionOwnershipMigration, planProfileSessionOwnershipMigra
 import { createProfileCapabilityProviderBundle } from "./capability-provider-composition.ts";
 import { createLocalArtifactRuntime } from "./artifact-composition.ts";
 import { createInteractiveContractCognition } from "./interactive-contract-cognition.ts";
+import { admitLearningObjective as admitLearningObjectiveThroughRuntime } from "./learning-objective-composition.ts";
 
 const PI_SKILLS_BROWSER_TOOLS_COMMIT = "90bb51cae36515a648515b633a81c0c6efc8c74d";
 
@@ -1222,6 +1223,19 @@ async function runChat(config: ReturnType<typeof loadConfig>, requestedMode: { f
 	const memory = new MemoryStore(config.memory.dbPath, config.profile);
 	const persistence = memoryPersistencePorts(memory);
 	const autonomyRollout = new AutonomyRolloutController({ store: persistence.autonomyRollout });
+	const auxiliaryTextModels = configuredAuxiliaryTextModels(config);
+	const memoryLearningExtractor = new ProgressiveLearningExtractor(
+		new DeterministicLearningExtractor(),
+		auxiliaryTextModels.length ? new PiLearningExtractor({ models: auxiliaryTextModels }) : undefined,
+	);
+	let admitLearningObjectiveCandidate: LearningObjectiveAdmissionPort["admit"] = async () => ({ status: "deferred", reasonCode: "objective_runtime_starting" });
+	let wakeMemoryLearning: () => void = () => undefined;
+	const memoryLearningKernel = new DefaultMemoryLearningKernel({
+		authority: persistence.memoryLearningAuthority,
+		extractor: memoryLearningExtractor,
+		learningObjectiveAdmission: { admit: (candidate) => admitLearningObjectiveCandidate(candidate) },
+		onSignal: () => wakeMemoryLearning(),
+	});
 	const knowledgeProvider = config.knowledge.enabled && config.knowledge.apiKey && config.knowledge.spaces.length
 		? new WeKnoraKnowledgeProvider({ baseUrl: config.knowledge.baseUrl, apiKey: config.knowledge.apiKey })
 		: undefined;
@@ -1240,7 +1254,10 @@ async function runChat(config: ReturnType<typeof loadConfig>, requestedMode: { f
 		...(requestedMode.thread ? { threadId: requestedMode.thread } : {}),
 	};
 	const readOnlyMcpTools = mcp.getTools().filter((tool) => tool.beemaxPolicy?.sideEffect === "none");
-	const auxiliaryTextModels = configuredAuxiliaryTextModels(config);
+	const proactivePolicies = new ToolPolicyRegistry(readOnlyMcpTools);
+	const proactiveCapabilities = executionSafeTools(config, readOnlyAgentTools(readOnlyMcpTools.map((tool) => tool.name)))
+		.map((name) => ({ name, policy: proactivePolicies.get(name), reliability: "unknown" as const }))
+		.filter((capability) => capability.policy.sideEffect === "none");
 	const capabilityRanker = configuredCapabilityRanker(
 		auxiliaryTextModels,
 		(usage) => recordGatewayEvent(config.paths.agentDir, "capability_cognition", { profile: config.profile, ...usage }),
@@ -1250,6 +1267,7 @@ async function runChat(config: ReturnType<typeof loadConfig>, requestedMode: { f
 		profileId: config.profile,
 		capabilityRanker,
 		capabilityPreferences: config.agent.capabilityPreferences,
+		managedSkillLearning: persistence.managedSkillLearning,
 		capabilityProviderRuntime: capabilityProviders.runtime,
 		capabilityProviderEnvironment: capabilityProviders.environment,
 		provider: () => config.model.provider,
@@ -1278,6 +1296,11 @@ async function runChat(config: ReturnType<typeof loadConfig>, requestedMode: { f
 		agentDir: config.paths.agentDir, ledger: persistence.taskLedger, recoveryQueue: persistence.recoveryQueue, maxConcurrent: config.subagents.maxConcurrent,
 		maxSubagents: config.subagents.maxChildrenPerOwner, taskTimeoutMs: 0, subagentsEnabled: config.subagents.enabled,
 		backgroundRecoveryEnabled: requestedMode.once === undefined,
+		memoryLearning: {
+			profileId: config.profile,
+			kernel: memoryLearningKernel,
+			onError: (error) => process.stderr.write(`Memory Learning maintenance failed: ${error instanceof Error ? error.message : String(error)}\n`),
+		},
 		executeTask: (task, signal, context, executionTrace, effectAuthority) => executePlannedTask(createSubagentAgent, task, task.executionScope as SessionSource, signal, null, context, executionTrace, effectAuthority, persistence.taskLedger),
 		verifyTaskCandidate: (task, result, signal, context, executionTrace) => createTaskVerifier(createSubagentAgent, null, executionTrace, verificationAgentToolsForTask(readOnlyMcpTools, task, context?.successfulToolNames))(task, result, signal, context),
 		deliverObjective: (input, signal, executionTrace) => executeObjectiveDelivery(createSubagentAgent, input, signal, null, executionTrace),
@@ -1308,6 +1331,7 @@ async function runChat(config: ReturnType<typeof loadConfig>, requestedMode: { f
 		profileId: config.profile,
 		capabilityRanker,
 		capabilityPreferences: config.agent.capabilityPreferences,
+		managedSkillLearning: persistence.managedSkillLearning,
 		capabilityProviderRuntime: capabilityProviders.runtime,
 		capabilityProviderEnvironment: capabilityProviders.environment,
 		provider: () => config.model.provider,
@@ -1375,7 +1399,7 @@ async function runChat(config: ReturnType<typeof loadConfig>, requestedMode: { f
 			requireContractAdmissionIntegrity: true,
 			fallbackModels: configuredRuntimeModels(config),
 			mediaUnderstanding: configuredMediaUnderstanding(config, createLocalMediaUnderstandingAdapters(config.mediaUnderstanding.localOcr)),
-			context: createTaskAwareConversationContext(memory, { memoryScope: { profileId: config.profile }, organizationSituationAllowed: () => autonomyRollout.allows("situation_context").allowed, runtimeSnapshot: () => ({ profile: config.profile }), maxContextChars: config.context.maxTurnChars }),
+			context: createTaskAwareConversationContext(memory, { memoryScope: { profileId: config.profile }, organizationSituationAllowed: () => autonomyRollout.allows("situation_context").allowed, memoryLearningKernel, memoryLearningAllowed: () => autonomyRollout.allows("adaptive_learning").allowed, runtimeSnapshot: () => ({ profile: config.profile }), maxContextChars: config.context.maxTurnChars }),
 		},
 		approvalBroker: localApproval,
 		cancelSubagents: (sessionSource) => subagents?.cancelOwner(sessionSource) ?? 0,
@@ -1395,9 +1419,42 @@ async function runChat(config: ReturnType<typeof loadConfig>, requestedMode: { f
 			};
 		},
 	});
+	wakeMemoryLearning = () => profileRuntime.work.memoryLearning?.wake();
 	const { work } = profileRuntime;
 	const { taskScheduler, planningBudgets, taskPlanRuntime, verifyTask, taskRecovery, objectiveRuntime, subagents } = work;
 	const { runtime, interaction: interactionAdapter } = profileRuntime;
+	const proactiveInvestigation = new ProactiveInvestigationRuntime({
+		ledger: persistence.taskLedger,
+		governance: new ActionGovernance(),
+		metrics: { record: (event) => recordGatewayEvent(config.paths.agentDir, "proactive_investigation", { profile: config.profile, source: "memory_learning", ...event }) },
+		execute: async (input) => {
+			const timeoutMs = Math.max(1_000, (input.budget.deadlineAt ?? Date.now() + 60_000) - Date.now());
+			const executionEnvelope = createExecutionEnvelope({
+				executionId: `learning:${input.observation.id}:${input.objective.id}`,
+				trigger: { kind: "automation", id: input.observation.triggerId },
+				objectiveId: input.objective.id,
+				taskId: input.objective.id,
+				budget: input.budget,
+				mode: "normal",
+			});
+			const result = await runProfileAutomation(runtime, input.executionScope as SessionSource, input.prompt, {
+				key: `learning:${input.observation.dedupeKey}`,
+				timeoutMs,
+				objectiveTaskId: input.objective.id,
+				allowedCapabilities: input.allowedCapabilities,
+				executionEnvelope,
+			});
+			const settled = memory.queryTasks({ ownerKeys: [input.objective.ownerKey], id: input.objective.id, kinds: ["objective"], limit: 1 })[0];
+			const materialResult = Boolean(result.completionId && isVerifiedAutomationOutcome(settled));
+			return { status: settled?.status === "cancelled" ? "cancelled" : materialResult ? "succeeded" : "failed", materialResult };
+		},
+	});
+	admitLearningObjectiveCandidate = (candidate) => admitLearningObjectiveThroughRuntime(candidate, {
+		allowsReadOnlyInvestigation: () => autonomyRollout.allows("read_only_investigation").allowed,
+		runtime: proactiveInvestigation,
+		capabilities: proactiveCapabilities,
+	});
+	wakeMemoryLearning();
 	let fullScreenActive = false;
 	let fullInput: FullWorkbenchInput | undefined;
 	let subagentRefresh: ReturnType<typeof setInterval> | undefined;

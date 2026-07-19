@@ -185,8 +185,7 @@ export function evaluateLivePiModelFirstCompletion({ scenario, selectedCandidate
 			const direct = selected.some((candidate) => candidate.kind !== "skill" && event.toolName === `eval_${candidate.name}`);
 			return !direct || Boolean(event.capabilityReceipt);
 		});
-	const activatedCapabilities = capabilityEvents.map((event) => event.capabilityReceipt.name);
-	const uniqueActivations = new Set(activatedCapabilities).size === activatedCapabilities.length;
+	const activatedCapabilities = [...new Set(capabilityEvents.map((event) => event.capabilityReceipt.name))];
 	const skillLifecycleComplete = selected.filter((candidate) => candidate.kind === "skill").every((candidate) => {
 		const lifecycle = LIVE_PI_SKILL_PHASES.map(([toolName, phase]) => successful.filter((event) => event.toolName === toolName
 			&& event.skillLifecycleReceipt?.name === candidate.name
@@ -203,7 +202,7 @@ export function evaluateLivePiModelFirstCompletion({ scenario, selectedCandidate
 		forbiddenCapabilitiesQuiet: forbidden.every((name) => !activatedCapabilities.includes(name)),
 		noUnnecessaryCapabilityActivation: activatedCapabilities.every((name) => required.includes(name)) && (required.length > 0 || activatedCapabilities.length === 0),
 		noUnexpectedToolExecution: started.every((event) => allowedTools.has(event.toolName)),
-		exactCapabilityReceipts: exactCapabilityReceipts && uniqueActivations,
+		exactCapabilityReceipts,
 		skillLifecycleComplete,
 	};
 	return { authority: "system_trace_guard_v2", status: Object.values(checks).every(Boolean) ? "accepted" : "rejected", checks, activatedCapabilities };
@@ -277,7 +276,7 @@ function safeEvaluationFailureMessage(error) {
 export function createLivePiEvaluationTools({ candidates, descriptors, sourceByCapability, readSkills, completed, cognitionId, requiredCapabilities = [] }) {
 	const direct = candidates.filter((candidate) => candidate.kind !== "skill").map((candidate) => {
 		const sourceTool = sourceByCapability.get(candidate.name);
-		return Object.assign(withToolPolicy(defineTool({ name: sourceTool, label: candidate.name, description: descriptors.get(candidate.name)?.description ?? candidate.name, parameters: Type.Object({}, { additionalProperties: true }), execute: async () => ({ content: [{ type: "text", text: `verified capability result: ${candidate.name}` }], details: { capabilityReceipt: { id: `receipt:live-pi:${candidate.kind}:${candidate.name}:${candidate.version}`, kind: candidate.kind, name: candidate.name, version: candidate.version, sourceTool } } }) }), READ_ONLY_TOOL_POLICY), { beemaxToolSpec: { kind: candidate.kind, version: candidate.version, capabilityIdentity: { kind: candidate.kind, name: candidate.name, version: candidate.version }, configured: true, health: "ready", authorized: true } });
+		return Object.assign(withToolPolicy(defineTool({ name: sourceTool, label: candidate.name, description: descriptors.get(candidate.name)?.description ?? candidate.name, parameters: Type.Object({}, { additionalProperties: true }), execute: async (toolCallId) => ({ content: [{ type: "text", text: `verified capability result: ${candidate.name}` }], details: { capabilityReceipt: { id: livePiCapabilityReceiptId(candidate, toolCallId), kind: candidate.kind, name: candidate.name, version: candidate.version, sourceTool } } }) }), READ_ONLY_TOOL_POLICY), { beemaxToolSpec: { kind: candidate.kind, version: candidate.version, capabilityIdentity: { kind: candidate.kind, name: candidate.name, version: candidate.version }, configured: true, health: "ready", authorized: true } });
 	});
 	const skills = candidates.filter((candidate) => candidate.kind === "skill");
 	const activatedSkills = new Set();
@@ -326,7 +325,7 @@ export function createLivePiEvaluationTools({ candidates, descriptors, sourceByC
 		parameters: Type.Object({ name: Type.String() }),
 		execute: async (toolCallId, args) => {
 			const candidate = selectedSkill(args.name); if (!resourceReadSkills.has(candidate.name)) throw new Error("Selected Skill resource must be read before completion"); completed.add(candidate.name);
-			return { content: [{ type: "text", text: `completed ${candidate.name}` }], details: { skill: candidate.name, skillLifecycleReceipt: { id: livePiReceiptId("skill-complete", candidate, toolCallId), name: candidate.name, version: candidate.version, phase: "completed", sourceTool: "skill_complete" }, capabilityReceipt: { id: `receipt:live-pi:skill:${candidate.name}:${candidate.version}`, kind: "skill", name: candidate.name, version: candidate.version, sourceTool: "skill_complete" } } };
+			return { content: [{ type: "text", text: `completed ${candidate.name}` }], details: { skill: candidate.name, skillLifecycleReceipt: { id: livePiReceiptId("skill-complete", candidate, toolCallId), name: candidate.name, version: candidate.version, phase: "completed", sourceTool: "skill_complete" }, capabilityReceipt: { id: livePiCapabilityReceiptId(candidate, toolCallId), kind: "skill", name: candidate.name, version: candidate.version, sourceTool: "skill_complete" } } };
 		},
 	});
 	let boundCandidates = candidates;
@@ -346,3 +345,4 @@ export function createLivePiEvaluationTools({ candidates, descriptors, sourceByC
 }
 
 function livePiReceiptId(phase, candidate, toolCallId) { return `receipt:live-pi:${phase}:${candidate.name}:${candidate.version}:${createHash("sha256").update(toolCallId).digest("hex")}`; }
+function livePiCapabilityReceiptId(candidate, toolCallId) { return `receipt:live-pi:capability:${candidate.kind}:${candidate.name}:${candidate.version}:${createHash("sha256").update(toolCallId).digest("hex")}`; }

@@ -76,7 +76,7 @@ test("legacy business context remains on the Objective but is absent from verifi
 	assert.deepEqual(published, []);
 	ledger.tasks.set("objective", { ...ledger.tasks.get("objective"), status: "succeeded", result: "Delivery is Friday", candidateResult: undefined });
 	await runtime.publishDeliveredObjective("owner", "objective");
-	assert.deepEqual(published, [{ objectiveId: "objective", title: "Order delivery", result: "Delivery is Friday", evidence: "All tasks verified" }]);
+	assert.deepEqual(published, [{ objectiveId: "objective", objectiveRevision: 1, title: "Order delivery", result: "Delivery is Friday", evidence: "All tasks verified" }]);
 	assert.deepEqual(ledger.tasks.get("objective").businessContext, { subject: { type: "customer", id: "A" }, object: { type: "order", id: "PO-1" } });
 });
 

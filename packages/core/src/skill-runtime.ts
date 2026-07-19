@@ -100,6 +100,9 @@ export class SkillRuntime {
 	}
 	async admitDiscovered(names: readonly string[]): Promise<SkillMatch[]> {
 		const selected = new Set(names); const descriptors = (await this.registry.list()).filter((item) => selected.has(item.name));
+		return this.admitExact(descriptors);
+	}
+	admitExact(descriptors: readonly SkillDescriptor[]): SkillMatch[] {
 		const admitted = descriptors.map((item): SkillMatch => ({ ...item, score: 0, confidence: 0, reason: "selected by Capability Runtime" }));
 		// Tool discovery is allowed while one Skill is executing. It may add future
 		// Skill candidates, but must not erase the active route/version fence.

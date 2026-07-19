@@ -8,7 +8,7 @@ import test from "node:test";
 const semanticReview = Object.freeze({ schemaVersion: "beemax.work-contract-adjudication.v1", inventorySchemaVersion: "beemax.semantic-inventory.v1", primaryModelIdentity: "test/primary/test", reviewerModelIdentity: "test/reviewer/test", reviewMode: "different_models", independentSamples: true, cognitionUsage: { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, costUsd: 0, modelIdentities: ["test/primary/test", "test/reviewer/test"] }, cognitionBudgetChargeTokens: 1 });
 import { MemoryStore } from "@beemax/memory";
 import { createAssistantMessageEventStream } from "@earendil-works/pi-ai";
-import { AgentRunError, AuthStorage, BeeMaxAgentRuntime, buildBeeMaxRuntimeFactory, buildTaskPreservationEnvelope, ConversationContext, createAccessScopeRef, createEnterprisePolicyProvider, createEnterprisePolicyPublisher, createExecutionEnvelope, createSituation, defineTool, DeterministicWorkContractBuilder, FileExecutionTraceStore, FileToolEffectJournal, getBuiltinModel, isRecoverableModelFailure, MUTATING_TOOL_POLICY, READ_ONLY_TOOL_POLICY, resolveRuntimeModel, SessionCoordinator, sessionIdForSource, withToolPolicy } from "../dist/index.js";
+import { AgentRunError, AuthStorage, BeeMaxAgentRuntime, buildBeeMaxRuntimeFactory, buildTaskPreservationEnvelope, ConversationContext, createAccessScopeRef, createEnterprisePolicyProvider, createEnterprisePolicyPublisher, createExecutionEnvelope, createSituation, DefaultMemoryLearningKernel, defineTool, DeterministicWorkContractBuilder, FileExecutionTraceStore, FileToolEffectJournal, getBuiltinModel, isRecoverableModelFailure, MUTATING_TOOL_POLICY, READ_ONLY_TOOL_POLICY, resolveRuntimeModel, SessionCoordinator, sessionIdForSource, withToolPolicy } from "../dist/index.js";
 
 const createRuntime = (options) => new BeeMaxAgentRuntime({ profileId: "profile:test", interactiveAdmission: "contract_first", workContractBuilder: new DeterministicWorkContractBuilder(), ...options });
 
@@ -1253,6 +1253,77 @@ test("BeeMax Agent Runtime executes a turn and records context without a Gateway
 		memory.close();
 		rmSync(root, { recursive: true, force: true });
 	}
+});
+
+test("BeeMax Agent Runtime awaits the execution-aware L4 Context Pack before prompting Pi", async () => {
+	const source = { platform: "cli", chatId: "l4-runtime", chatType: "dm", userId: "user" };
+	let received = "";
+	const observations = [];
+	const authority = {
+		recallCandidates: () => [{ component: { kind: "claim", id: "claim:delivery", version: "v1", digest: "d".repeat(64) }, content: "Deliver the report as HTML and PDF", relevance: 1, semanticConfidence: 0.9, evidenceQuality: 0.8, freshness: 1, contextualUtility: 0.5, recency: 1, applicability: "eligible", evidenceRefs: ["evidence:delivery"] }],
+		commitContextPack: (record) => ({ status: "committed", persisted: record }),
+		readContextPack: () => undefined,
+		appendObservation: (observation) => { observations.push(observation); return { observationId: `observation:${observations.length}`, accepted: true, reasonCode: "recorded", recordedAt: 1 }; },
+		settleLearning: () => assert.fail("not used"),
+		maintainMemory: () => assert.fail("not used"),
+	};
+	const context = new ConversationContext({ recall: () => [], recordCandidate: () => "candidate" }, {
+		memoryScope: { profileId: "profile:test" },
+		memoryLearningKernel: new DefaultMemoryLearningKernel({ authority }),
+		memoryLearningAllowed: () => true,
+	});
+	const runtime = createRuntime({
+		context,
+		createAgent: async () => {
+			const agent = { state: { model: { id: "test-model" }, messages: [] } };
+			return { agent, subscribe: () => () => undefined, prompt: async (text) => { received = text; agent.state.messages = [{ role: "assistant", content: [{ type: "text", text: "done" }], usage: { input: 1, output: 1 } }]; }, abort: async () => undefined, dispose: () => undefined };
+		},
+	});
+	try {
+		await runtime.run({ source, text: "Research the current gold trend and create a report", timeoutMs: 1_000, mode: "interactive" });
+		assert.match(received, /beemax-context-pack/);
+		assert.match(received, /Deliver the report as HTML and PDF/);
+		assert.ok(observations.some((observation) => observation.type === "execution" && observation.eventType === "execution.started"));
+		assert.ok(observations.some((observation) => observation.type === "execution" && observation.eventType === "execution.settled" && observation.status === "succeeded"));
+		assert.ok(observations.every((observation) => observation.scope.profileId === "profile:test" && observation.scope.chatId === "l4-runtime"));
+	} finally { runtime.dispose(); }
+});
+
+test("durably receipted operational suppression removes an exact Tool version from the turn Tool plan", async () => {
+	const source = { platform: "cli", chatId: "l4-routing", chatType: "dm", userId: "user" };
+	const tools = [
+		{ name: "market_series", description: "Fetch a current market price series", parameters: {}, beemaxPolicy: READ_ONLY_TOOL_POLICY, beemaxToolSpec: { version: "1" } },
+		{ name: "web_research", description: "Research public sources", parameters: {}, beemaxPolicy: READ_ONLY_TOOL_POLICY, beemaxToolSpec: { version: "1" } },
+	];
+	const authority = {
+		recallCandidates: () => [],
+		recallRoutingDirectives: () => [{ component: { kind: "tool", id: "market_series", version: "1", digest: "a".repeat(64) }, applicability: "suppressed", utility: 0.2, assessmentRevision: 3, evidenceRefs: ["assessment:event:3"] }],
+		commitContextPack: (record) => ({ status: "committed", persisted: record }), readContextPack: () => undefined,
+		appendObservation: () => ({ observationId: "observation:routing", accepted: true, reasonCode: "recorded", recordedAt: 1 }),
+		settleLearning: () => assert.fail("not used"), maintainMemory: () => assert.fail("not used"),
+	};
+	const context = new ConversationContext({ recall: () => [], recordCandidate: () => "candidate" }, {
+		memoryScope: { profileId: "profile:test" }, memoryLearningKernel: new DefaultMemoryLearningKernel({ authority }), memoryLearningAllowed: () => true,
+	});
+	let toolsAtPrompt = [];
+	const runtime = createRuntime({
+		context,
+		createAgent: async () => {
+			const agent = { state: { model: { id: "test-model" }, messages: [] } };
+			let active = tools.map((tool) => tool.name);
+			return {
+				agent, subscribe: () => () => undefined, getAllTools: () => tools, getToolDefinition: (name) => tools.find((tool) => tool.name === name),
+				getActiveToolNames: () => [...active], setActiveToolsByName: (names) => { active = [...names]; },
+				prompt: async () => { toolsAtPrompt = [...active]; agent.state.messages = [{ role: "assistant", content: [{ type: "text", text: "done" }], usage: { input: 1, output: 1 } }]; },
+				abort: async () => undefined, dispose: () => undefined,
+			};
+		},
+	});
+	try {
+		await runtime.run({ source, text: "Research the current market price series", timeoutMs: 1_000, mode: "interactive", allowedCapabilities: ["market_series", "web_research"] });
+		assert.equal(toolsAtPrompt.includes("market_series"), false);
+		assert.equal(toolsAtPrompt.includes("web_research"), true);
+	} finally { runtime.dispose(); }
 });
 
 test("BeeMax Agent Runtime injects one structured Work Contract into the model turn", async () => {

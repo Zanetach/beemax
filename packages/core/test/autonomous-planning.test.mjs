@@ -139,16 +139,20 @@ test("contract planning tools stay active when semantic capability selection cho
 	const rawRequest = "调研实时市场并形成多来源完整报告";
 	const quote = (text) => ({ text, source: { kind: "raw_request", start: rawRequest.indexOf(text), end: rawRequest.indexOf(text) + text.length } });
 	const toolChanges = [];
+	let managedSelectionExecutionId;
 	let listener;
 	let activeTools = [];
 	const agent = { state: { model: { id: "test" }, messages: [] } };
 	const capabilityDiscover = attestCapabilityProviderResolutionTool({
 		name: "capability_discover", description: "Resolve capabilities",
-		beemaxCapabilityPrefetch: async (_query, _signal, options) => ({
+		beemaxCapabilityPrefetch: async (_query, _signal, options) => {
+			managedSelectionExecutionId = options.executionId;
+			return ({
 			cognitionId: "cap:delegate-market",
 			candidates: [{ kind: "tool", name: "market_series", confidence: 1, requirementId: options.requirements[0].id, outcomeIndex: 0, necessity: "required" }],
 			activatedTools: ["market_series"], skills: [],
-		}),
+			});
+		},
 	});
 	const tools = [
 		capabilityDiscover,
@@ -182,6 +186,8 @@ test("contract planning tools stay active when semantic capability selection cho
 	});
 	const result = await runtime.run({ source: { platform: "cli", chatId: "delegate-market", chatType: "dm", userId: "local" }, text: rawRequest, timeoutMs: 1_000 });
 	assert.equal(result.answer, "done");
+	assert.equal(typeof managedSelectionExecutionId, "string");
+	assert.ok(managedSelectionExecutionId.length > 0);
 	assert.ok(toolChanges[0].includes("task_spawn") && toolChanges[0].includes("task_wait"));
 	runtime.dispose();
 });

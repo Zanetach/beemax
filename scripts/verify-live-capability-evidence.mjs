@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { CAPABILITY_CALIBRATION_VERSION, SEMANTIC_CAPABILITY_MINIMUM_SIMILARITY } from "../packages/core/dist/index.js";
@@ -309,7 +310,8 @@ function verifyLivePiOutcome(outcome) {
 		for (const item of capabilityReceipts) {
 			const candidate = selected.find((entry) => entry.kind === item.receipt.kind && entry.name === item.receipt.name && entry.version === item.receipt.version);
 			const expectedSource = candidate?.kind === "skill" ? "skill_complete" : candidate ? `eval_${candidate.name}` : undefined;
-			if (!candidate || typeof item.receipt.id !== "string" || item.receipt.sourceTool !== item.event.toolName || item.event.toolName !== expectedSource) failures.push(`Live Pi outcome has an invalid Capability receipt for ${scenario.id}`);
+			const expectedReceiptId = candidate && typeof item.event.toolCallId === "string" ? independentCapabilityReceiptId(candidate, item.event.toolCallId) : undefined;
+			if (!candidate || item.receipt.id !== expectedReceiptId || item.receipt.sourceTool !== item.event.toolName || item.event.toolName !== expectedSource) failures.push(`Live Pi outcome has an invalid Capability receipt for ${scenario.id}`);
 			if (candidate?.kind === "skill") {
 				const lifecycle = INDEPENDENT_SKILL_PHASES.map(([, phase]) => skillLifecycleReceipts.filter((entry) => entry.receipt.name === candidate.name && entry.receipt.version === candidate.version && entry.receipt.phase === phase));
 				const complete = lifecycle.every((matches) => matches.length === 1)
@@ -318,8 +320,6 @@ function verifyLivePiOutcome(outcome) {
 				if (!complete) failures.push(`Live Pi Skill lifecycle is incomplete or out of order for ${scenario.id}`);
 			}
 		}
-		const activated = capabilityReceipts.map((item) => item.receipt.name);
-		if (new Set(activated).size !== activated.length) failures.push(`Live Pi activated a Capability more than once for ${scenario.id}`);
 		const expectedCompletion = independentlyEvaluateModelFirstCompletion({ scenario, selectedCandidates: selected, executionTrace: events, terminalAnswerPresent: receipt.answerStatus === "reported" && receipt.answerChars > 0 });
 		if (JSON.stringify(receipt.completion) !== JSON.stringify(expectedCompletion) || downstream?.status !== "unverified" || execution?.status !== "succeeded" || receipt.verificationStatus !== "unavailable" || receipt.status !== "succeeded") failures.push(`Live Pi model-first system-guard completion is invalid for ${scenario.id}`);
 		if (expectedCompletion.status === "accepted") accepted++;
@@ -379,8 +379,7 @@ function independentlyEvaluateModelFirstCompletion({ scenario, selectedCandidate
 			const direct = selected.some((candidate) => candidate.kind !== "skill" && event.toolName === `eval_${candidate.name}`);
 			return !direct || Boolean(event.capabilityReceipt);
 		});
-	const activatedCapabilities = capabilityEvents.map((event) => event.capabilityReceipt.name);
-	const uniqueActivations = new Set(activatedCapabilities).size === activatedCapabilities.length;
+	const activatedCapabilities = [...new Set(capabilityEvents.map((event) => event.capabilityReceipt.name))];
 	const skillLifecycleComplete = selected.filter((candidate) => candidate.kind === "skill").every((candidate) => {
 		const lifecycle = INDEPENDENT_SKILL_PHASES.map(([toolName, phase]) => successful.filter((event) => event.toolName === toolName
 			&& event.skillLifecycleReceipt?.name === candidate.name
@@ -397,11 +396,13 @@ function independentlyEvaluateModelFirstCompletion({ scenario, selectedCandidate
 		forbiddenCapabilitiesQuiet: forbidden.every((name) => !activatedCapabilities.includes(name)),
 		noUnnecessaryCapabilityActivation: activatedCapabilities.every((name) => required.includes(name)) && (required.length > 0 || activatedCapabilities.length === 0),
 		noUnexpectedToolExecution: started.every((event) => allowedTools.has(event.toolName)),
-		exactCapabilityReceipts: exactCapabilityReceipts && uniqueActivations,
+		exactCapabilityReceipts,
 		skillLifecycleComplete,
 	};
 	return { authority: "system_trace_guard_v2", status: Object.values(checks).every(Boolean) ? "accepted" : "rejected", checks, activatedCapabilities };
 }
+
+function independentCapabilityReceiptId(candidate, toolCallId) { return `receipt:live-pi:capability:${candidate.kind}:${candidate.name}:${candidate.version}:${createHash("sha256").update(toolCallId).digest("hex")}`; }
 
 function independentlySummarizeLivePiOutcomeReceipts(receipts) {
 	const cases = receipts.length;

@@ -37,6 +37,7 @@ import { sanitizeTaskCriterionVerifications, unavailableTaskCriterionVerificatio
 import { objectiveCompletionId } from "./objective-completion-delivery.ts";
 import { VERIFICATION_SUBMIT_TOOL_NAME } from "./verification-tools.ts";
 import { validateArtifactManifest, validateArtifactVerificationReceipt, validateSourceReceipt, type ArtifactManifest, type ArtifactVerificationReceipt, type SourceReceipt } from "./artifact-runtime.ts";
+import type { OperationalRoutingReceipt } from "./memory-learning-kernel.ts";
 
 export interface AgentRunInput<Source extends BeeMaxRuntimeSource = BeeMaxRuntimeSource> {
 	source: Source;
@@ -761,8 +762,13 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 			const requestedText = explicitSkillRequest(input.text);
 			const explicitlyRequestedSkill = explicitSkillName(input.text);
 			const taskPreservation = activeObjective && referencesActiveObjective ? buildTaskPreservationEnvelope([activeObjective], 6_000) : undefined;
-			const contextAssembly = cognitiveRun && this.context && typeof this.context.assemble === "function"
-				? this.context.assemble(contextSource, requestedText, { model: modelOf(session.piSession.agent), memoryQuery: understanding?.memoryQuery, situation, accessScopeRef }, taskPreservation ? [{ kind: "task_preservation", source: "task_ledger", priority: 110, compressible: false, text: taskPreservation }] : []) : undefined;
+			const contextRuntime = { model: modelOf(session.piSession.agent), memoryQuery: understanding?.memoryQuery, situation, accessScopeRef, ...(workContract ? { workContractDigest: createHash("sha256").update(JSON.stringify(workContract)).digest("hex") } : {}) };
+			const contextAdditionalItems = taskPreservation ? [{ kind: "task_preservation" as const, source: "task_ledger", priority: 110, compressible: false, text: taskPreservation }] : [];
+			const contextAssembly = cognitiveRun && this.context
+				? typeof this.context.assembleForExecution === "function"
+					? await this.context.assembleForExecution(contextSource, requestedText, contextRuntime, executionEnvelope, contextAdditionalItems)
+					: typeof this.context.assemble === "function" ? this.context.assemble(contextSource, requestedText, contextRuntime, contextAdditionalItems) : undefined
+				: undefined;
 			const recalledText = contextAssembly?.text ?? (cognitiveRun
 				? this.context?.enrich(contextSource, requestedText, { model: modelOf(session.piSession.agent), memoryQuery: understanding?.memoryQuery, situation, accessScopeRef }) ?? requestedText
 				: requestedText);
@@ -783,6 +789,18 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 				const unknown = admittedTools.filter((name) => !inventory.has(name));
 				if (!admittedTools.length || unknown.length) throw new AgentRunError(unknown.length ? `Execution capability allowlist contains unavailable Tools: ${unknown.join(", ")}` : "Execution capability allowlist is empty", false, undefined);
 			}
+			const operationalRoutingReceipts = contextAssembly?.routingDirectives ?? [];
+			const applyOperationalRouting = <T extends CapabilitySelectionCandidate>(candidate: T): T | undefined => {
+				const decision = operationalRoutingDecision(candidate.kind, candidate.name, candidate.version, operationalRoutingReceipts);
+				if (decision.applicability === "suppressed") return undefined;
+				if (decision.applicability !== "cautious") return candidate;
+				return { ...candidate, confidence: Number((candidate.confidence * 0.65).toFixed(6)) };
+			};
+			const operationallySuppressedToolNames = new Set(allTools.flatMap((tool) => {
+				if (learningProtectedTool(tool.name)) return [];
+				const item = toolSpecInventoryItem(tool, admittedTools);
+				return operationalRoutingDecision(item.kind, item.name, item.version, operationalRoutingReceipts).applicability === "suppressed" ? [item.name] : [];
+			}));
 			const toolSideEffects = new Map(allTools.map((tool) => [tool.name, toolSideEffect(tool)]));
 			const unresolvedTaskEffect = executionEnvelope.taskId
 				? (this.toolEffectProjectionReader?.taskProjection({ ownerKey: input.source.delegatedTask?.ownerKey ?? responsibilityOwnerKey(input.source), taskId: executionEnvelope.taskId }) ?? []).some((effect) => effect.status === "unknown")
@@ -791,7 +809,7 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 			const previousToolBoundary = session.piSession.agent.beforeToolCall;
 			const capabilityRuntime = new CapabilityRuntime();
 			const capabilityPrefetch = allTools.find((tool) => tool.name === "capability_discover") as (typeof allTools[number] & {
-				beemaxCapabilityPrefetch?: (query: string, signal?: AbortSignal, options?: { explicitSkillName?: string; requirements?: Array<{ id: string; text: string }>; boundaries?: Array<{ kind: "constraint" | "prohibition"; text: string }>; contractDigest?: string }) => Promise<{ cognitionId?: string; candidates: Array<{ kind: "tool" | "mcp" | "skill"; name: string; version?: string; confidence: number; requirementId?: string; outcomeIndex?: number; necessity?: "required" | "alternative" }>; activatedTools?: string[]; skills: Array<{ name: string }>; skillBlocker?: { code: "skill_not_installed"; name: string }; providerResolutions?: unknown }>;
+				beemaxCapabilityPrefetch?: (query: string, signal?: AbortSignal, options?: { executionId?: string; explicitSkillName?: string; requirements?: Array<{ id: string; text: string }>; boundaries?: Array<{ kind: "constraint" | "prohibition"; text: string }>; contractDigest?: string }) => Promise<{ cognitionId?: string; candidates: Array<{ kind: "tool" | "mcp" | "skill"; name: string; version?: string; confidence: number; requirementId?: string; outcomeIndex?: number; necessity?: "required" | "alternative" }>; activatedTools?: string[]; skills: Array<{ name: string }>; skillBlocker?: { code: "skill_not_installed"; name: string }; providerResolutions?: unknown; managedSelectionReceipts?: unknown }>;
 				/** Pre-semantic compatibility seam for injected test/legacy runtimes only. */
 				beemaxSkillPrefetch?: (query: string, signal?: AbortSignal) => Promise<Array<{ name: string; version: string }>>;
 			}) | undefined;
@@ -824,7 +842,7 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 				...workContract.prohibitions.map((clause) => ({ kind: "prohibition" as const, text: clause.text })),
 			] : [];
 			const capabilityContractDigest = workContract ? `sha256:${createHash("sha256").update(JSON.stringify({ contract: workContract, requirements: capabilityRequirements })).digest("hex")}` : undefined;
-			const contractCapabilityPrefetchOptions = { ...(explicitlyRequestedSkill ? { explicitSkillName: explicitlyRequestedSkill } : {}), ...(capabilityRequirements.length ? { requirements: capabilityRequirements } : {}), ...(capabilityBoundaries.length ? { boundaries: capabilityBoundaries } : {}), ...(capabilityContractDigest ? { contractDigest: capabilityContractDigest } : {}) };
+			const contractCapabilityPrefetchOptions = { executionId: executionEnvelope.executionId, ...(explicitlyRequestedSkill ? { explicitSkillName: explicitlyRequestedSkill } : {}), ...(capabilityRequirements.length ? { requirements: capabilityRequirements } : {}), ...(capabilityBoundaries.length ? { boundaries: capabilityBoundaries } : {}), ...(capabilityContractDigest ? { contractDigest: capabilityContractDigest } : {}) };
 			let capabilityResolutionEvidenceRef: string | undefined;
 			let runtimeCapabilityDiscoveryAttempted = false;
 			const capabilityObligations = new Map<string, CapabilityObligation>();
@@ -844,17 +862,22 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 					const proposal = await capabilityPrefetch.beemaxCapabilityPrefetch(prefetchQuery, cognitionSignal, contractCapabilityPrefetchOptions);
 					const inventory = new Set(allTools.map((tool) => tool.name));
 					const admittedInventory = admittedTools ? new Set(admittedTools) : inventory;
+					const operationalInventory = new Set([...admittedInventory].filter((name) => !operationallySuppressedToolNames.has(name)));
 					const providerCandidates = proposal.candidates.flatMap((candidate): CapabilitySelectionCandidate[] => {
-						if (candidate.kind === "skill") return !admittedTools || (admittedInventory.has("skill_activate") && admittedInventory.has("skill_complete")) ? [candidate] : [];
+						if (candidate.kind === "skill") {
+							const routed = applyOperationalRouting(candidate);
+							return routed && (!admittedTools || (admittedInventory.has("skill_activate") && admittedInventory.has("skill_complete"))) ? [routed] : [];
+						}
 						const normalized = normalizeExecutableCapabilityCandidate(candidate, allTools);
-						return normalized && inventory.has(normalized.sourceToolName) && admittedInventory.has(normalized.sourceToolName) ? [normalized] : [];
+						const routed = normalized ? applyOperationalRouting(normalized) : undefined;
+						return routed && inventory.has(routed.sourceToolName!) && operationalInventory.has(routed.sourceToolName!) ? [routed] : [];
 					});
-					const admissibleCandidates = restoreUncoveredCapabilityCandidates(reconcileExplicitCapabilityExecutionCandidates(providerCandidates, capabilityRequirements, allTools, admittedInventory), capabilityRequirements, allTools, admittedInventory);
+					const admissibleCandidates = restoreUncoveredCapabilityCandidates(reconcileExplicitCapabilityExecutionCandidates(providerCandidates, capabilityRequirements, allTools, operationalInventory), capabilityRequirements, allTools, operationalInventory);
 					semanticRequestedTools = [...new Set(admissibleCandidates.filter((candidate) => candidate.kind !== "skill" && candidate.necessity !== "alternative").map((candidate) => candidate.sourceToolName ?? candidate.name))].slice(0, 10);
 					const candidateToolNames = new Set(admissibleCandidates.filter((candidate) => candidate.kind !== "skill").map((candidate) => candidate.sourceToolName ?? candidate.name));
 					const proposedTools = [...semanticRequestedTools, ...(proposal.activatedTools ?? proposal.candidates.filter((candidate) => candidate.kind !== "skill").map((candidate) => candidate.name))]
 						.filter((name) => candidateToolNames.has(name) || CAPABILITY_CONTROL_TOOLS.has(name) || SKILL_LIFECYCLE_TOOLS.has(name));
-					semanticPrefetchedTools = [...new Set(proposedTools.filter((name) => inventory.has(name) && admittedInventory.has(name)))].slice(0, 10);
+					semanticPrefetchedTools = [...new Set(proposedTools.filter((name) => inventory.has(name) && operationalInventory.has(name)))].slice(0, 10);
 					if (isTrustedCapabilityProviderResolutionTool(capabilityPrefetch)) providerPrefetchAvailability = providerAvailabilityMetadata(proposal.providerResolutions, admittedInventory);
 					if (proposal.skillBlocker?.code === "skill_not_installed" && proposal.skillBlocker.name === explicitlyRequestedSkill) skillAdmissionBlocker = `Explicit Skill ${proposal.skillBlocker.name} is not installed`;
 					const proposedSkillNames = [...new Set(proposal.skills.map((skill) => skill.name).filter((name) => admissibleCandidates.some((candidate) => candidate.kind === "skill" && candidate.name === name)))].slice(0, 10);
@@ -891,7 +914,8 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 				}
 			} else if (explicitlyRequestedSkill && capabilityPrefetch?.beemaxSkillPrefetch) {
 				try {
-					const selected = (await capabilityPrefetch.beemaxSkillPrefetch(prefetchQuery, cognitionSignal)).find((candidate) => candidate.name === explicitlyRequestedSkill);
+					const candidate = (await capabilityPrefetch.beemaxSkillPrefetch(prefetchQuery, cognitionSignal)).find((item) => item.name === explicitlyRequestedSkill);
+					const selected = candidate ? applyOperationalRouting({ kind: "skill", name: candidate.name, version: candidate.version, confidence: 1 }) : undefined;
 					if (selected && validImmutableSkillVersion(selected.version)) { admittedSkills.set(selected.name, { name: selected.name, version: selected.version }); prefetchedSkills = [selected.name]; }
 					else if (selected) skillAdmissionBlocker = `Selected Skill ${selected.name} lacks immutable version evidence`;
 				}
@@ -908,7 +932,7 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 				semanticPrefetchedTools = semanticPrefetchedTools.filter((name) => !SKILL_LIFECYCLE_TOOLS.has(name));
 				skillAdmissionBlocker ??= `Explicit Skill ${explicitlyRequestedSkill} is not installed or unavailable`;
 			}
-			const executionCapabilityInventory = admittedTools ? new Set(admittedTools) : new Set(allTools.map((tool) => tool.name));
+			const executionCapabilityInventory = new Set((admittedTools ?? allTools.map((tool) => tool.name)).filter((name) => !operationallySuppressedToolNames.has(name)));
 			const deterministicContractCandidates = capabilityPrefetchFailed && capabilityRequirements.length
 				? reconcileExplicitCapabilityExecutionCandidates([], capabilityRequirements, allTools, executionCapabilityInventory)
 				: [];
@@ -968,9 +992,10 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 			const restrictedProviderReasons = new Map(providerPrefetchAvailability.restrictions.map((item) => [item.toolName, item.reason]));
 			const toolSpecInventory = allTools.map((tool) => {
 				const item = toolSpecInventoryItem(tool, admittedTools, unresolvedTaskEffect);
-				if (recoveredProviderNames.has(item.name)) return { ...item, configured: true, health: "ready" as const };
+				const operationalApplicability = learningProtectedTool(item.name) ? "eligible" as const : operationalRoutingDecision(item.kind, item.name, item.version, operationalRoutingReceipts).applicability;
+				if (recoveredProviderNames.has(item.name)) return { ...item, operationalApplicability, configured: true, health: "ready" as const };
 				const restriction = restrictedProviderReasons.get(item.name);
-				return restriction ? { ...item, configured: restriction !== "configuration_required", health: restriction === "configuration_required" ? "configuration_required" as const : restriction === "provider_unhealthy" ? "unhealthy" as const : "unavailable" as const } : item;
+				return restriction ? { ...item, operationalApplicability, configured: restriction !== "configuration_required", health: restriction === "configuration_required" ? "configuration_required" as const : restriction === "provider_unhealthy" ? "unhealthy" as const : "unavailable" as const } : { ...item, operationalApplicability };
 			});
 			let toolSpecPlan = buildToolSpecPlan({
 				profileId: this.profileId,
@@ -1217,6 +1242,10 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 						const trustedDiscoveryTool = allTools.find((tool) => tool.name === "capability_discover");
 						const trustedDiscovery = isTrustedCapabilityProviderResolutionTool(trustedDiscoveryTool);
 						const discovery = capabilityDiscoveryMetadata(event.result, new Set(allTools.map((tool) => tool.name)), trustedDiscovery);
+						const routedDiscoveryCandidates = discovery.candidates.flatMap((candidate): CapabilitySelectionCandidate[] => {
+							const routed = applyOperationalRouting(candidate);
+							return routed ? [routed] : [];
+						});
 						let runtimeContractSelectedTools: string[] = [];
 						let runtimeContractSelectedSkills = new Set<string>();
 						let runtimeContractResolved = false;
@@ -1226,8 +1255,8 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 								if (!turnAbortReason) { turnAbortReason = "Required Capability discovery returned no trusted cognition receipt"; void session.piSession.abort(); }
 							} else {
 								const inventory = new Set(allTools.map((tool) => tool.name));
-								const admittedInventory = admittedTools ? new Set(admittedTools) : inventory;
-								const runtimeProviderCandidates = discovery.candidates.flatMap((candidate): CapabilitySelectionCandidate[] => {
+								const admittedInventory = new Set((admittedTools ?? [...inventory]).filter((name) => !operationallySuppressedToolNames.has(name)));
+								const runtimeProviderCandidates = routedDiscoveryCandidates.flatMap((candidate): CapabilitySelectionCandidate[] => {
 									if (candidate.kind === "skill") return !admittedTools || (admittedInventory.has("skill_activate") && admittedInventory.has("skill_complete")) ? [candidate] : [];
 									const sourceToolName = capabilityCandidateSourceTool(candidate, allTools);
 									return sourceToolName && inventory.has(sourceToolName) && admittedInventory.has(sourceToolName) ? [{ ...candidate, sourceToolName }] : [];
@@ -1249,7 +1278,7 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 						const pendingReadReroute = readReroute;
 						const readyRecoveries = new Set(discovery.recoveries.map((recovery) => recovery.toolName));
 						const selectedReadAlternatives = pendingReadReroute && discovery.cognitionId
-							? new Set(discovery.candidates.filter((candidate) => candidate.kind !== "skill").map((candidate) => candidate.name))
+							? new Set(routedDiscoveryCandidates.filter((candidate) => candidate.kind !== "skill").map((candidate) => candidate.name))
 							: undefined;
 						if (pendingReadReroute) {
 							pendingReadReroute.discoveryAttempted = true;
@@ -1259,18 +1288,18 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 								&& isHealthyReadAlternative(allTools, name, readyRecoveries)));
 						}
 						if (discovery.cognitionId && !capabilityDecisions.has(discovery.cognitionId)) {
-							const candidates = discovery.candidates.map(({ kind, name, version, confidence }) => ({ kind, name, ...(version ? { version } : {}), confidence }));
+							const candidates = routedDiscoveryCandidates.map(({ kind, name, version, confidence }) => ({ kind, name, ...(version ? { version } : {}), confidence }));
 							capabilityDecisions.set(discovery.cognitionId, candidates);
 							recordedCapabilityDecisions.add(discovery.cognitionId);
 							this.recordTrace({ type: "capability.decision", executionEnvelope, at, cognitionId: discovery.cognitionId, candidates });
 							if (executionTraceStarted) emittedCapabilityDecisions.add(discovery.cognitionId);
 						}
-						const discoveredSkillCandidates = discovery.candidates.filter((candidate) => candidate.kind === "skill"
+						const discoveredSkillCandidates = routedDiscoveryCandidates.filter((candidate) => candidate.kind === "skill"
 							&& candidate.confidence >= SEMANTIC_CAPABILITY_MINIMUM_SIMILARITY
 							&& (!explicitlyRequestedSkill || candidate.name === explicitlyRequestedSkill)
 							&& (!contractRequiresCapabilityResolution || Boolean(explicitlyRequestedSkill) || runtimeContractSelectedSkills.has(candidate.name)));
 						const discoveredSkillCandidate = discoveredSkillCandidates[0];
-						if (explicitlyRequestedSkill && discovery.candidates.some((candidate) => candidate.kind === "skill" && candidate.confidence >= SEMANTIC_CAPABILITY_MINIMUM_SIMILARITY && candidate.name !== explicitlyRequestedSkill) && !discoveredSkillCandidate && !turnAbortReason) {
+						if (explicitlyRequestedSkill && routedDiscoveryCandidates.some((candidate) => candidate.kind === "skill" && candidate.confidence >= SEMANTIC_CAPABILITY_MINIMUM_SIMILARITY && candidate.name !== explicitlyRequestedSkill) && !discoveredSkillCandidate && !turnAbortReason) {
 							turnAbortReason = `Explicit Skill ${explicitlyRequestedSkill} is not installed or unavailable`;
 							void session.piSession.abort();
 						}
@@ -1289,6 +1318,7 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 						}
 						if (discovery.restrictions.length) toolSpecPlan = hideToolSpecPlan(toolSpecPlan, discovery.restrictions.map(({ toolName, reason }) => ({ toolName, reason })));
 						const activatedTools = activatePlannedTools([...new Set([...discovery.activatedTools, ...runtimeContractSelectedTools])].filter((name) => {
+							if (operationallySuppressedToolNames.has(name)) return false;
 							if (pendingReadReroute) return pendingReadReroute.eligibleAlternatives.has(name) || (name === "capability_acquire" && discovery.restrictions.some((restriction) => restriction.installable && pendingReadReroute.contractAlternatives.has(restriction.toolName)));
 							return !SKILL_LIFECYCLE_TOOLS.has(name) || discoveredSkills.length > 0;
 						}));
@@ -1953,6 +1983,7 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 
 	private recordTrace(event: Parameters<ExecutionTraceSink["record"]>[0]): void {
 		try { this.executionTrace?.record(event); } catch { /* diagnostics must never interrupt Agent execution */ }
+		try { this.context?.observeExecutionTrace(event); } catch { /* learning observation must never interrupt Agent execution */ }
 	}
 
 	private createObjective(input: AgentRunInput<Source>, now: number, situation?: TaskRecord["situation"], accessScopeRef?: AccessScopeRef, acceptanceCriteria: string[] = [], workContract?: WorkContract, contractAdmission?: Readonly<DurableContractAdmissionReceipt>, existingObjective?: TaskRecord, objectiveId?: string): { task: TaskRecord; created: boolean } | undefined {
@@ -2639,6 +2670,23 @@ function meetsOrderedSignal(required: string | undefined, offered: string | unde
 	const requiredIndex = required === undefined || required === "unknown" ? -1 : levels.indexOf(required);
 	const offeredIndex = offered === undefined || offered === "unknown" ? -1 : levels.indexOf(offered);
 	return requiredIndex >= 0 && offeredIndex >= requiredIndex;
+}
+
+function operationalRoutingDecision(kind: "tool" | "mcp" | "skill", name: string, version: string | undefined, receipts: readonly OperationalRoutingReceipt[]): { applicability: "eligible" | "cautious" | "suppressed"; utility: number; receiptIds: string[] } {
+	if (!version) return { applicability: "eligible", utility: 0.5, receiptIds: [] };
+	const matching = receipts.filter((receipt) => receipt.component.id === name && receipt.component.version === version && (
+		kind === "skill" ? receipt.component.kind === "skill" : receipt.component.kind === "tool" || receipt.component.kind === "capability"
+	));
+	if (!matching.length) return { applicability: "eligible", utility: 0.5, receiptIds: [] };
+	return {
+		applicability: matching.some((receipt) => receipt.applicability === "suppressed") ? "suppressed" : "cautious",
+		utility: Math.min(...matching.map((receipt) => receipt.utility)),
+		receiptIds: matching.map((receipt) => receipt.receiptId),
+	};
+}
+
+function learningProtectedTool(name: string): boolean {
+	return CAPABILITY_CONTROL_TOOLS.has(name) || SKILL_LIFECYCLE_TOOLS.has(name) || name === VERIFICATION_SUBMIT_TOOL_NAME;
 }
 
 function toolSpecInventoryItem(tool: ToolDefinition | ToolInfo, admittedTools?: readonly string[], unresolvedTaskEffect = false): ToolSpecInventoryItem {

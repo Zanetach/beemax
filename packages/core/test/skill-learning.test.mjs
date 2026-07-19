@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -518,6 +519,77 @@ test("Skill promotions retain immutable versions and support observable durable 
 		const after = await tools.get("skill_versions").execute("versions-after", { name: "versioned-flow" });
 		assert.equal(after.details.currentSha256, firstSha);
 		assert.equal(after.details.events.at(-1).kind, "rollback");
+	} finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("managed Skill canary selection loads the exact immutable artifact without replacing stable", async () => {
+	const root = mkdtempSync(join(tmpdir(), "beemax-managed-skill-execution-"));
+	let trial = 0;
+	try {
+		let pointer;
+		let rollbackCalls = 0;
+		const versions = new Map();
+		const digest = (value) => createHash("sha256").update(value).digest("hex");
+		const managed = {
+			registerVersion(input) {
+				versions.set(input.versionSha256, input);
+				pointer = pointer
+					? { ...pointer, canaryVersionSha256: input.versionSha256, canaryArtifactSha256: input.artifactSha256, canaryPercentage: 10, status: "canary", revision: pointer.revision + 1, updatedAt: input.registeredAt }
+					: { name: input.name, stableVersionSha256: input.versionSha256, stableArtifactSha256: input.artifactSha256, canaryPercentage: 10, status: "stable", revision: 1, updatedAt: input.registeredAt };
+				return pointer;
+			},
+			selectVersion(input) {
+				const versionSha256 = pointer.canaryVersionSha256 ?? pointer.stableVersionSha256;
+				const artifactSha256 = versions.get(versionSha256).artifactSha256;
+				return { receiptId: `selection:${input.executionId}`, receiptDigest: digest(`selection:${input.executionId}`), name: input.name, executionId: input.executionId, channel: pointer.canaryVersionSha256 ? "canary" : "stable", versionSha256, artifactSha256, bucket: 1, canaryPercentage: pointer.canaryPercentage, pointerRevision: pointer.revision, policyVersion: input.policyVersion, selectedAt: input.selectedAt };
+			},
+			listManagedSkillNames() { return pointer ? [pointer.name] : []; },
+			getPointer() { return pointer; },
+			rollbackVersion(input) {
+				rollbackCalls++;
+				const target = versions.get(input.targetVersionSha256);
+				pointer = { ...pointer, stableVersionSha256: input.targetVersionSha256, stableArtifactSha256: target.artifactSha256, canaryVersionSha256: undefined, canaryArtifactSha256: undefined, canaryPercentage: 0, status: "rolled_back", revision: pointer.revision + 1, updatedAt: input.rolledBackAt };
+				return pointer;
+			},
+		};
+		const verifier = async (input) => ({ trialId: `trial:${++trial}`, accepted: true, evidence: `Independent execution verified ${input.scenario} with observable output.`, assertions: [{ claim: "Outcome verified", evidence: "The expected output was observed independently." }], toolCalls: [] });
+		const tools = new Map(createSkillTools(root, () => undefined, [], verifier, [], undefined, undefined, undefined, undefined, undefined, { profileId: "profile-a", authority: managed, policyVersion: "l4.v1" }).map((tool) => [tool.name, tool]));
+		for (const [version, instructions] of [["v1", "Use the stable first workflow and preserve its verified evidence."], ["v2", "Use the canary second workflow and preserve its stronger verified evidence."]]) {
+			await tools.get("skill_candidate_install").execute(`install-${version}`, { name: "managed-flow", description: "Managed versioned evidence workflow", source: `reviewed:${version}`, instructions });
+			for (let scenario = 1; scenario <= 3; scenario++) await tools.get("skill_candidate_verify").execute(`verify-${version}-${scenario}`, { name: "managed-flow", scenario: `${version} independent scenario ${scenario}`, acceptanceCriteria: "The expected workflow output is independently observable." });
+			await tools.get("skill_candidate_promote").execute(`promote-${version}`, { name: "managed-flow" });
+		}
+		const activePath = join(root, "skills", "managed-flow", "SKILL.md");
+		assert.match(readFileSync(activePath, "utf8"), /stable first workflow/u);
+		assert.doesNotMatch(readFileSync(activePath, "utf8"), /canary second workflow/u);
+		writeFileSync(activePath, "x".repeat(64_001));
+		const proposal = await tools.get("capability_discover").beemaxCapabilityPrefetch("managed-flow", undefined, { explicitSkillName: "managed-flow", executionId: "execution:canary" });
+		assert.match(readFileSync(activePath, "utf8"), /stable first workflow/u);
+		assert.equal(proposal.managedSelectionReceipts[0].channel, "canary");
+		assert.equal(proposal.candidates[0].version, `sha256:${proposal.managedSelectionReceipts[0].artifactSha256}`);
+		const activated = await tools.get("skill_activate").execute("activate-canary", { name: "managed-flow" });
+		assert.match(activated.content[0].text, /canary second workflow/u);
+		assert.doesNotMatch(activated.content[0].text, /stable first workflow/u);
+		tools.get("skill_complete").beemaxTurnReset();
+		const selectedCanaryVersion = proposal.managedSelectionReceipts[0].versionSha256;
+		writeFileSync(join(root, "skill-versions", "managed-flow", selectedCanaryVersion, "SKILL.md"), "tampered canary artifact\n");
+		const fallback = await tools.get("capability_discover").beemaxCapabilityPrefetch("managed-flow", undefined, { explicitSkillName: "managed-flow", executionId: "execution:fallback" });
+		assert.equal(rollbackCalls, 1);
+		assert.equal(fallback.managedSelectionReceipts[0].channel, "stable");
+		assert.equal(fallback.managedSelectionReceipts[0].fallbackReasonCode, "canary_artifact_integrity_failed");
+		assert.match(fallback.managedSelectionReceipts[0].fallbackFromReceiptId, /^selection:execution:fallback$/u);
+		assert.equal(fallback.candidates[0].version, `sha256:${pointer.stableArtifactSha256}`);
+		const stable = await tools.get("skill_activate").execute("activate-stable-fallback", { name: "managed-flow" });
+		assert.match(stable.content[0].text, /stable first workflow/u);
+		assert.doesNotMatch(stable.content[0].text, /canary second workflow/u);
+		tools.get("skill_complete").beemaxTurnReset();
+		writeFileSync(join(root, "skill-versions", "managed-flow", pointer.stableVersionSha256, "SKILL.md"), "tampered stable artifact\n");
+		await assert.rejects(
+			() => tools.get("capability_discover").beemaxCapabilityPrefetch("managed-flow", undefined, { explicitSkillName: "managed-flow", executionId: "execution:stable-corrupt" }),
+			/immutable digest fence/u,
+		);
+		await assert.rejects(() => tools.get("skill_read").execute("read-after-corruption", { name: "managed-flow" }), /must be discovered/u);
+		assert.equal(rollbackCalls, 1);
 	} finally { rmSync(root, { recursive: true, force: true }); }
 });
 

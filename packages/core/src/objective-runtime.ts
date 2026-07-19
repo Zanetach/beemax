@@ -11,9 +11,16 @@ export interface ObjectiveDeliveryResult { result: string; evidence?: string; }
 export type ObjectiveDeliverer = (input: ObjectiveDeliveryInput, signal?: AbortSignal) => Promise<ObjectiveDeliveryResult>;
 export interface VerifiedObjectiveOutcome {
 	objectiveId: string;
+	/** Immutable semantic revision of the Objective result being published. */
+	objectiveRevision?: number;
 	title: string;
 	result: string;
 	evidence?: string;
+	taskRunId?: string;
+	verificationRevision?: number;
+	criterionVerifications?: TaskRecord["criterionVerifications"];
+	artifacts?: TaskRecord["artifacts"];
+	deliveryReceipt?: NonNullable<ObjectiveCompletion["receipt"]>;
 	situation?: TaskRecord["situation"];
 	accessScopeRef?: TaskRecord["accessScopeRef"];
 	executionScope?: TaskRecord["executionScope"];
@@ -109,14 +116,18 @@ export class ObjectiveRuntime {
 	/** Publishes idempotently after the channel returned a Receipt and before terminal acknowledgement. */
 	async publishDelivered(completion: ObjectiveCompletion): Promise<void> {
 		if (!completion.receipt || completion.status !== "delivered") throw new Error(`Objective ${completion.objectiveId} has no durable Delivery Receipt`);
-		await this.publishAcceptedObjective(completion.ownerKey, completion.objectiveId);
+		await this.publishAcceptedObjective(completion.ownerKey, completion.objectiveId, { taskRunId: completion.taskRunId, deliveryReceipt: completion.receipt });
 	}
 
-	async publishAcceptedObjective(ownerKey: string, objectiveId: string): Promise<void> {
+	async publishAcceptedObjective(ownerKey: string, objectiveId: string, delivery?: { taskRunId: string; deliveryReceipt: NonNullable<ObjectiveCompletion["receipt"]> }): Promise<void> {
 		const objective = this.ledger.queryTasks({ ownerKeys: [ownerKey], id: objectiveId, kinds: ["objective"], statuses: ["running", "succeeded"], limit: 1 })[0];
 		const result = objective?.status === "succeeded" ? objective.result : objective?.candidateResult;
 		if (!objective || objective.verificationStatus !== "accepted" || !result?.trim()) throw new Error(`Delivered Objective ${objectiveId} has no accepted Outcome`);
-		await this.publishVerifiedOutcome?.({ objectiveId: objective.id, title: objective.title, result, ...(objective.evidence ? { evidence: objective.evidence } : {}), ...(objective.situation ? { situation: structuredClone(objective.situation) } : {}), ...(objective.accessScopeRef ? { accessScopeRef: structuredClone(objective.accessScopeRef) } : {}), ...(objective.executionScope ? { executionScope: structuredClone(objective.executionScope) } : {}) });
+		await this.publishVerifiedOutcome?.({ objectiveId: objective.id, objectiveRevision: 1 + (objective.objectiveRevisions?.length ?? 0), title: objective.title, result,
+			...(objective.verificationAttempts === undefined ? {} : { verificationRevision: Math.max(1, objective.verificationAttempts) }),
+			...(objective.evidence ? { evidence: objective.evidence } : {}), ...(objective.criterionVerifications ? { criterionVerifications: structuredClone(objective.criterionVerifications) } : {}),
+			...(objective.artifacts ? { artifacts: structuredClone(objective.artifacts) } : {}), ...(delivery ? { taskRunId: delivery.taskRunId, deliveryReceipt: structuredClone(delivery.deliveryReceipt) } : {}),
+			...(objective.situation ? { situation: structuredClone(objective.situation) } : {}), ...(objective.accessScopeRef ? { accessScopeRef: structuredClone(objective.accessScopeRef) } : {}), ...(objective.executionScope ? { executionScope: structuredClone(objective.executionScope) } : {}) });
 	}
 
 	/** Compatibility alias for callers that already hold a delivered Objective identity. */

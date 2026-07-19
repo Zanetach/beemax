@@ -1,16 +1,17 @@
 /** Managed instruction-only Skill evolution is Core runtime policy. */
 import { constants } from "node:fs";
-import { mkdir, open, readFile, readdir, rename, stat, unlink, writeFile } from "node:fs/promises";
+import { mkdir, open, readFile, readdir, realpath, rename, stat, unlink, writeFile } from "node:fs/promises";
 import { createHash, createHmac, randomBytes } from "node:crypto";
 import { resolve, sep } from "node:path";
 import { defineTool, type ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { MUTATING_TOOL_POLICY, READ_ONLY_TOOL_POLICY, withToolPolicy, type ToolPolicy } from "./tool-runtime.ts";
 import { assertNoCredentialMaterial, containsCredentialMaterial, redactCredentialMaterial } from "./credential-material.ts";
-import { SkillRegistry, SkillRuntime } from "./skill-runtime.ts";
+import { SkillRegistry, SkillRuntime, type SkillDescriptor } from "./skill-runtime.ts";
 import { rankCapabilityIndex } from "./capability-ranking.ts";
 import { CapabilityRuntime, SEMANTIC_CAPABILITY_MINIMUM_SIMILARITY, capabilityDescriptor, capabilityVersionOf, type CapabilityOperationalSignals, type CapabilityRanker } from "./capability-runtime.ts";
 import { CapabilityProviderRuntime, attestCapabilityProviderAcquisitionTool, attestCapabilityProviderResolutionTool, type CapabilityProviderAcquisition, type CapabilityProviderDescriptor, type CapabilityProviderResolution } from "./capability-provider.ts";
+import type { ManagedSkillLearningPort, ManagedSkillPointerSnapshot, ManagedSkillSelectionReceipt } from "./managed-skill-learning.ts";
 
 const SKILL_NAME = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 
@@ -25,13 +26,20 @@ export interface SkillCandidatePromotionAuthorityInput { name: string; source: s
 export type SkillCandidatePromotionAuthority = (input: SkillCandidatePromotionAuthorityInput) => Promise<{ allowed: boolean; evidenceRef?: string; reason?: string }>;
 
 interface SkillVersionRecord { version: 1; name: string; description: string; instructions: string; source: string; sha256: string; promotedAt: number; authorityEvidenceRef?: string; signature: string; }
-interface SkillVersionEvent { id: string; kind: "promoted" | "rollback"; name: string; fromSha256?: string; toSha256: string; evidenceRef?: string; at: number; signature: string; }
+interface SkillVersionEvent { id: string; kind: "promoted" | "canary_staged" | "rollback"; name: string; fromSha256?: string; toSha256: string; evidenceRef?: string; at: number; signature: string; }
+interface PersistedSkillArtifact { artifactSha256: string; signedReceiptRef: string; location: string; }
 
 export interface CapabilityMetadata extends Pick<ToolDefinition, "name" | "description"> { parameters?: ToolDefinition["parameters"]; kind?: "tool" | "mcp"; aliases?: readonly string[]; triggers?: readonly string[]; exclude?: readonly string[]; version?: string; providers?: readonly CapabilityProviderDescriptor[]; signals?: CapabilityOperationalSignals; }
 
-type CapabilitySelectionOptions = { requirements?: Array<{ id: string; text: string }>; boundaries?: Array<{ kind: "constraint" | "prohibition"; text: string }>; contractDigest?: string };
+type CapabilitySelectionOptions = { executionId?: string; requirements?: Array<{ id: string; text: string }>; boundaries?: Array<{ kind: "constraint" | "prohibition"; text: string }>; contractDigest?: string };
 
-export function createSkillTools(agentDir: string, markReloadNeeded: () => void, availableTools: readonly CapabilityMetadata[] = [], verifyCandidate?: SkillCandidateVerifier, additionalSkillRoots: readonly string[] = [], _activateTools?: (names: string[]) => void, capabilityRanker?: CapabilityRanker, promotionAuthority?: SkillCandidatePromotionAuthority, capabilityPreferences?: Readonly<Record<string, number>>, providerRuntime = new CapabilityProviderRuntime()): ToolDefinition[] {
+export interface ManagedSkillLearningOptions {
+	profileId: string;
+	authority: ManagedSkillLearningPort;
+	policyVersion?: string;
+}
+
+export function createSkillTools(agentDir: string, markReloadNeeded: () => void, availableTools: readonly CapabilityMetadata[] = [], verifyCandidate?: SkillCandidateVerifier, additionalSkillRoots: readonly string[] = [], _activateTools?: (names: string[]) => void, capabilityRanker?: CapabilityRanker, promotionAuthority?: SkillCandidatePromotionAuthority, capabilityPreferences?: Readonly<Record<string, number>>, providerRuntime = new CapabilityProviderRuntime(), managedSkillLearning?: ManagedSkillLearningOptions): ToolDefinition[] {
 	const root = resolve(agentDir, "skills");
 	const candidateRoot = resolve(agentDir, "skill-candidates");
 	const versionRoot = resolve(agentDir, "skill-versions");
@@ -42,10 +50,72 @@ export function createSkillTools(agentDir: string, markReloadNeeded: () => void,
 	// Selection returns proposed activation metadata; BeeMaxAgentRuntime is the
 	// sole authority that compiles it into the next Pi Tool Spec Plan.
 	const capabilities = new CapabilityRuntime({ ...(capabilityRanker ? { ranker: capabilityRanker } : {}) });
-	const markSkillsChanged = () => { registry.invalidate(); runtime.reset(); markReloadNeeded(); };
+	let signingKeyPromise: Promise<Buffer> | undefined;
+	const signingKey = () => signingKeyPromise ??= skillLearningKey(agentDir);
+	let managedTurnSelections = new Map<string, { descriptor: SkillDescriptor; receipt: ManagedSkillSelectionReceipt }>();
+	const resetTurnSkills = () => { runtime.reset(); managedTurnSelections.clear(); };
+	const markSkillsChanged = () => { registry.invalidate(); resetTurnSkills(); markReloadNeeded(); };
+	const selectedManagedReceipts = (names: readonly string[]) => names.flatMap((name) => {
+		const selected = managedTurnSelections.get(name);
+		return selected ? [selected.receipt] : [];
+	});
+	const skillInventoryFor = async (executionId?: string): Promise<SkillDescriptor[]> => {
+		const installed = await registry.list();
+		if (!managedSkillLearning) return installed;
+		const managedNames = managedSkillLearning.authority.listManagedSkillNames(managedSkillLearning.profileId);
+		const managedNameSet = new Set(managedNames);
+		const unmanagedInstalled = installed.filter((skill) => !managedNameSet.has(skill.name));
+		if (executionId) {
+			managedTurnSelections.clear();
+			const selected = new Map<string, { descriptor: SkillDescriptor; receipt: ManagedSkillSelectionReceipt }>();
+			for (const name of managedNames) {
+				const receipt = managedSkillLearning.authority.selectVersion({
+					profileId: managedSkillLearning.profileId,
+					name,
+					executionId,
+					policyVersion: managedSkillLearning.policyVersion ?? "l4.v1",
+					selectedAt: Date.now(),
+				});
+				if (!receipt) continue;
+				const key = await signingKey();
+				let effectiveReceipt = receipt;
+				let descriptor: SkillDescriptor;
+				try {
+					descriptor = await managedSkillDescriptor(versionRoot, receipt, key);
+				} catch (error) {
+					const pointer = managedSkillLearning.authority.getPointer?.(managedSkillLearning.profileId, name);
+					if (receipt.channel !== "canary" || !pointer || pointer.canaryVersionSha256 !== receipt.versionSha256 || pointer.canaryArtifactSha256 !== receipt.artifactSha256) throw error;
+					const stableReceipt = managedStableSelectionReceipt(receipt, pointer);
+					descriptor = await managedSkillDescriptor(versionRoot, stableReceipt, key);
+					const rolledBack = managedSkillLearning.authority.rollbackVersion({
+						profileId: managedSkillLearning.profileId,
+						name,
+						targetVersionSha256: pointer.stableVersionSha256,
+						evidenceRef: `managed-skill-integrity:${receipt.receiptDigest}`,
+						policyVersion: managedSkillLearning.policyVersion ?? "l4.v1",
+						rolledBackAt: Date.now(),
+						mode: "automatic_integrity",
+					});
+					if (rolledBack.stableVersionSha256 !== pointer.stableVersionSha256 || rolledBack.stableArtifactSha256 !== pointer.stableArtifactSha256 || rolledBack.canaryVersionSha256) throw new Error("Managed Skill automatic rollback did not converge on the verified stable version");
+					effectiveReceipt = managedFallbackSelectionReceipt(receipt, rolledBack);
+				}
+				const pointer = managedSkillLearning.authority.getPointer?.(managedSkillLearning.profileId, name);
+				if (effectiveReceipt.channel === "stable") {
+					if (await reconcileManagedActiveSkill(root, descriptor)) { registry.invalidate(); markReloadNeeded(); }
+				} else if (pointer) {
+					const stableDescriptor = await managedSkillDescriptor(versionRoot, managedStableSelectionReceipt(receipt, pointer), key);
+					if (await reconcileManagedActiveSkill(root, stableDescriptor)) { registry.invalidate(); markReloadNeeded(); }
+				}
+				selected.set(name, { receipt: effectiveReceipt, descriptor });
+			}
+			managedTurnSelections = selected;
+		}
+		if (!managedTurnSelections.size) return unmanagedInstalled;
+		return [...unmanagedInstalled, ...[...managedTurnSelections.values()].map(({ descriptor }) => descriptor)];
+	};
 	const selectAvailableCapabilities = async (query: string, limit: number, signal?: AbortSignal, options?: CapabilitySelectionOptions, excludedToolNames: ReadonlySet<string> = new Set()) => {
 		const eligibleTools = availableTools.filter((tool) => tool.name !== "bash" && !excludedToolNames.has(tool.name));
-		const skillInventory = await registry.list();
+		const skillInventory = await skillInventoryFor(options?.executionId);
 		const inventory = [
 			...eligibleTools.map((tool) => capabilityDescriptor({ kind: tool.kind ?? "tool", name: tool.name, description: tool.description, aliases: tool.aliases, triggers: tool.triggers, exclude: tool.exclude, version: tool.version ?? stableCapabilityMetadataVersion(tool), activeTools: [tool.name], ...(tool.signals ? { signals: tool.providers?.length ? { ...tool.signals, health: "unknown" } : tool.signals } : {}) })),
 			...skillInventory.map((skill) => {
@@ -60,10 +130,10 @@ export function createSkillTools(agentDir: string, markReloadNeeded: () => void,
 		// an unrelated business outcome) but are available before execution starts.
 		if (options?.requirements?.length && skillInventory.length) {
 			const selectedNames = new Set(selection.candidates.map((candidate) => candidate.name));
-			const workflowSkills = (await registry.search(query, 3))
-				.filter((match) => match.confidence >= SEMANTIC_CAPABILITY_MINIMUM_SIMILARITY && !selectedNames.has(match.name))
+			const workflowSkills = rankCapabilityIndex(query, skillInventory.map((skill) => ({ ...skill, priority: skill.sourcePriority })), 3)
+				.filter((match) => match.confidence >= SEMANTIC_CAPABILITY_MINIMUM_SIMILARITY && !selectedNames.has(match.item.name))
 				.flatMap((match) => {
-					const descriptor = inventory.find((candidate) => candidate.kind === "skill" && candidate.name === match.name);
+					const descriptor = inventory.find((candidate) => candidate.kind === "skill" && candidate.name === match.item.name);
 					return descriptor ? [{ descriptor, match }] : [];
 				});
 			if (workflowSkills.length) selection = {
@@ -75,12 +145,13 @@ export function createSkillTools(agentDir: string, markReloadNeeded: () => void,
 				}))],
 			};
 		}
-		return { eligibleTools, selection };
+		return { eligibleTools, skillInventory, selection };
 	};
-	const prefetchCapabilities = async (query: string, signal?: AbortSignal, options?: { explicitSkillName?: string; requirements?: Array<{ id: string; text: string }>; boundaries?: Array<{ kind: "constraint" | "prohibition"; text: string }>; contractDigest?: string }) => {
+	const prefetchCapabilities = async (query: string, signal?: AbortSignal, options?: CapabilitySelectionOptions & { explicitSkillName?: string }) => {
 		if (options?.explicitSkillName) {
-			const explicitSkill = (await registry.list()).find((skill) => skill.name === options.explicitSkillName);
-			const selectedSkills = await runtime.admitDiscovered(explicitSkill ? [explicitSkill.name] : []);
+			const turnInventory = await skillInventoryFor(options.executionId);
+			const explicitSkill = turnInventory.find((skill) => skill.name === options.explicitSkillName);
+			const selectedSkills = runtime.admitExact(explicitSkill ? [explicitSkill] : []);
 			const explicitCognitionId = `cap:explicit:${createHash("sha256").update(options.explicitSkillName).digest("hex").slice(0, 32)}`;
 			if (!explicitSkill) return { cognitionId: explicitCognitionId, candidates: [], activatedTools: [], skills: [], skillBlocker: { code: "skill_not_installed" as const, name: options.explicitSkillName } };
 			const identity = { kind: "skill" as const, name: explicitSkill.name, version: `sha256:${explicitSkill.sha256}`, confidence: 1 };
@@ -97,6 +168,7 @@ export function createSkillTools(agentDir: string, markReloadNeeded: () => void,
 					candidates: proposalCandidates,
 					activatedTools: [...new Set([...selectedToolNames.filter((name) => !blockedTools.has(name)), ...(canAcquire ? ["capability_acquire"] : []), "skill_activate", "skill_read"])],
 					skills: selectedSkills.map(publicSkill),
+					managedSelectionReceipts: selectedManagedReceipts(selectedSkills.map((skill) => skill.name)),
 					providerResolutions: publicProviderResolutions(providerResolutions),
 				};
 			}
@@ -105,11 +177,12 @@ export function createSkillTools(agentDir: string, markReloadNeeded: () => void,
 				candidates: [identity],
 				activatedTools: ["skill_activate", "skill_read"],
 				skills: selectedSkills.map(publicSkill),
+				managedSelectionReceipts: selectedManagedReceipts(selectedSkills.map((skill) => skill.name)),
 			};
 		}
-		const { selection, selectedToolNames, providerResolutions } = await selectCapabilitiesWithProviderFallback(query, 10, signal, options);
+		const { selection, selectedToolNames, providerResolutions, skillInventory } = await selectCapabilitiesWithProviderFallback(query, 10, signal, options);
 		const selectedSkillNames = selection.candidates.filter((item) => item.kind === "skill" && item.confidence >= SEMANTIC_CAPABILITY_MINIMUM_SIMILARITY).map((item) => item.name);
-		const selectedSkills = await runtime.admitDiscovered(selectedSkillNames);
+		const selectedSkills = runtime.admitExact(skillInventory.filter((skill) => selectedSkillNames.includes(skill.name)));
 		const blockedTools = new Set(providerResolutions.filter((resolution) => resolution.status === "blocked").map((resolution) => resolution.capability));
 		const canAcquire = providerResolutions.some((resolution) => resolution.status === "blocked" && resolution.candidates.some((candidate) => !candidate.installed && candidate.installable));
 		const candidateToolNames = new Set(selection.candidates.filter((candidate) => candidate.kind !== "skill").map((candidate) => candidate.name));
@@ -119,6 +192,7 @@ export function createSkillTools(agentDir: string, markReloadNeeded: () => void,
 			candidates: selection.candidates.map(({ kind, name, version, confidence, requirementId, outcomeIndex, necessity }) => ({ kind, name, version, confidence, ...(requirementId ? { requirementId, outcomeIndex, necessity } : {}) })),
 			activatedTools,
 			skills: selectedSkills.map(publicSkill),
+			managedSelectionReceipts: selectedManagedReceipts(selectedSkillNames),
 			providerResolutions: publicProviderResolutions(providerResolutions),
 		};
 	};
@@ -172,16 +246,14 @@ export function createSkillTools(agentDir: string, markReloadNeeded: () => void,
 		return { ...selected, ...providers };
 	};
 	const publicProviderResolutions = (resolutions: Awaited<ReturnType<typeof resolveToolProviders>>) => resolutions.map(publicProviderResolution);
-	let signingKeyPromise: Promise<Buffer> | undefined;
-	const signingKey = () => signingKeyPromise ??= skillLearningKey(agentDir);
 	const tools = [
 		attestCapabilityProviderResolutionTool(Object.assign(defineTool({ name: "capability_discover", label: "Discover Capabilities", description: "Search the tools, active Skills, and isolated Skill candidates actually available in this Profile before concluding a capability is missing.", parameters: Type.Object({ query: Type.String({ minLength: 1, maxLength: 500 }) }), execute: async (_id, params, signal) => {
 			const existingKey = await readSkillLearningKey(agentDir);
 			const candidates = existingKey ? await listCandidates(candidateRoot, existingKey) : [];
 			const matches = <T extends CapabilityMetadata>(items: T[]) => rankCapabilities(params.query, items, 20);
-			const { eligibleTools, selection, selectedToolNames, providerResolutions } = await selectCapabilitiesWithProviderFallback(params.query, 10, signal);
+			const { eligibleTools, skillInventory, selection, selectedToolNames, providerResolutions } = await selectCapabilitiesWithProviderFallback(params.query, 10, signal);
 			const selectedSkillNames = selection.candidates.filter((item) => item.kind === "skill" && item.confidence >= SEMANTIC_CAPABILITY_MINIMUM_SIMILARITY).map((item) => item.name);
-			const selectedSkills = await runtime.admitDiscovered(selectedSkillNames);
+			const selectedSkills = runtime.admitExact(skillInventory.filter((skill) => selectedSkillNames.includes(skill.name)));
 			const candidateToolNames = new Set(selection.candidates.filter((item) => item.kind !== "skill").map((item) => item.name));
 			const matchedTools = eligibleTools.filter((tool) => candidateToolNames.has(tool.name)).sort((left, right) => selection.candidates.findIndex((item) => item.name === left.name) - selection.candidates.findIndex((item) => item.name === right.name));
 			const publicTools = matchedTools.map(({ name, description }) => ({ name, description }));
@@ -208,6 +280,7 @@ export function createSkillTools(agentDir: string, markReloadNeeded: () => void,
 				cognitionId: selection.cognitionId,
 				tools: publicTools,
 				skills: publicSkills,
+				managedSelectionReceipts: selectedManagedReceipts(selectedSkillNames),
 				ranked: selection.candidates.map((item) => ({ ...item, reason: item.explanation.summary })),
 				candidates: matches(candidates.map((item) => ({ name: item.name, description: item.description, attempts: item.attempts.length }))),
 				providers: publicProviders,
@@ -225,7 +298,7 @@ export function createSkillTools(agentDir: string, markReloadNeeded: () => void,
 			return result(text, { providerAcquisition: visible, activatedTools: acquisition.status === "ready" ? [acquisition.capability] : [] }, acquisition.status !== "ready");
 		} })),
 		defineTool({ name: "skill_list", label: "List Skills", description: "List metadata for Profile, project, and global Skills without loading their instruction bodies.", parameters: Type.Object({}), execute: async () => {
-			const skills = await registry.list(); return result(skills.length ? skills.map((item) => `- ${item.name}: ${item.description}`).join("\n") : "No Skills available.", { skills: skills.map(publicSkill) });
+			const skills = await skillInventoryFor(); return result(skills.length ? skills.map((item) => `- ${item.name}: ${item.description}`).join("\n") : "No Skills available.", { skills: skills.map(publicSkill) });
 		} }),
 		defineTool({ name: "skill_activate", label: "Activate Skill", description: "Load one discovered Skill's global rules and route table, locking its SHA256 for this execution.", parameters: Type.Object({ name: Type.String({ pattern: "^[a-z0-9]+(?:-[a-z0-9]+)*$" }) }), execute: async (toolCallId, params) => {
 			const activated = await runtime.activate(params.name); const state = runtime.snapshot(); const routeSummary = activated.routes.map((route) => `${route.name}${route.description ? ` — ${route.description}` : ""}`).join(", ");
@@ -246,12 +319,15 @@ export function createSkillTools(agentDir: string, markReloadNeeded: () => void,
 			return result(`Completed Skill ${summary.skill}${summary.route ? ` via ${summary.route}` : ""}.`, { ...summary, skillLifecycleReceipt: skillLifecycleReceipt(summary.skill, summary.sha256, "completed", "skill_complete", toolCallId), capabilityReceipt: { id: `receipt:skill:${summary.skill}:${summary.sha256}`, kind: "skill", name: summary.skill, version: `sha256:${summary.sha256}`, sourceTool: "skill_complete" } });
 		} }),
 		attestCapabilityProviderResolutionTool(defineTool({ name: "skill_read", label: "Read Skill (Compatibility)", description: "Compatibility alias that discovers and activates a Profile, project, or global Skill by name.", parameters: Type.Object({ name: Type.String({ pattern: "^[a-z0-9]+(?:-[a-z0-9]+)*$" }) }), execute: async (toolCallId, params) => {
-			if (!runtime.isDiscovered(params.name)) await runtime.discover(params.name, 10);
+			const before = runtime.snapshot();
+			if (!runtime.isDiscovered(params.name)) runtime.admitExact((await skillInventoryFor()).filter((skill) => skill.name === params.name));
 			const activated = await runtime.activate(params.name); const legacy = activated.routes.length === 1 && activated.routes[0]?.name === "legacy";
 			let activatedTools: string[];
 			let providerResolutions: Awaited<ReturnType<typeof resolveToolProviders>> = [];
 			let sourceDeclaredTools: string[] = [];
-			if (legacy) { const routed = await runtime.routeTo("legacy"); runtime.useActivatedInstructionsAsModule(); sourceDeclaredTools = routed.tools; const routedTools = resolveDeclaredTools(routed.tools); activatedTools = ["skill_complete", ...routedTools]; providerResolutions = await resolveToolProviders(routedTools); }
+			const replayingLoadedLegacy = legacy && before.skill === params.name && (before.state === "module_loaded" || before.state === "executing");
+			if (legacy && !replayingLoadedLegacy) { const routed = await runtime.routeTo("legacy"); runtime.useActivatedInstructionsAsModule(); sourceDeclaredTools = routed.tools; const routedTools = resolveDeclaredTools(routed.tools); activatedTools = ["skill_complete", ...routedTools]; providerResolutions = await resolveToolProviders(routedTools); }
+			else if (legacy) activatedTools = ["skill_complete"];
 			else activatedTools = ["skill_route", "skill_complete"];
 			const declaredTools = legacy ? activatedTools.filter((name) => name !== "skill_complete") : [];
 			return ephemeralResult(modelSafeSkillText(activated.instructions), { descriptor: publicSkill(activated.descriptor), routes: activated.routes, state: runtime.snapshot(), legacy, declaredTools, ...(sourceDeclaredTools.length ? { sourceDeclaredTools } : {}), activatedTools, providerResolutions: publicProviderResolutions(providerResolutions), skillLifecycleReceipt: skillLifecycleReceipt(activated.descriptor.name, activated.descriptor.sha256, "read", "skill_read", toolCallId) });
@@ -304,11 +380,13 @@ export function createSkillTools(agentDir: string, markReloadNeeded: () => void,
 				return result(`Independent verifier recorded ${outcome} for ${params.name}.`, candidateSummary(candidate));
 			});
 		} }),
-		defineTool({ name: "skill_candidate_promote", label: "Promote Skill Candidate", description: "Promote a quarantined instruction-only candidate after at least two independent consecutive successful trials. Requires approval.", parameters: Type.Object({ name: Type.String({ pattern: "^[a-z0-9]+(?:-[a-z0-9]+)*$", maxLength: 64 }) }), execute: async (_id, params) => withCandidateLock(candidateRoot, params.name, async () => {
+		defineTool({ name: "skill_candidate_promote", label: "Promote Skill Candidate", description: "Register a quarantined instruction-only candidate after the required independent consecutive successful trials. Requires approval; managed versions enter a durable stable/canary rollout.", parameters: Type.Object({ name: Type.String({ pattern: "^[a-z0-9]+(?:-[a-z0-9]+)*$", maxLength: 64 }) }), execute: async (_id, params) => withCandidateLock(candidateRoot, params.name, async () => {
 			const candidateFile = candidatePath(candidateRoot, params.name);
 			const candidate = await readCandidate(candidateFile, await signingKey());
 			const consecutive = consecutiveAccepted(candidate.attempts);
-			if (consecutive < 2) throw new Error(`Skill candidate ${params.name} needs two consecutive accepted trials after its most recent rejection; current=${consecutive}`);
+			const requiredTrials = managedSkillLearning ? 3 : 2;
+			const requiredTrialLabel = requiredTrials === 2 ? "two" : "three";
+			if (consecutive < requiredTrials) throw new Error(`Skill candidate ${params.name} needs ${requiredTrialLabel} consecutive accepted trials after its most recent rejection; current=${consecutive}`);
 			const acceptedTrialIds = candidate.attempts.slice(-consecutive).map((attempt) => attempt.trialId!).filter(Boolean);
 			let authorityEvidenceRef: string | undefined;
 			if (candidate.source.startsWith("workflow-candidate:")) {
@@ -322,14 +400,38 @@ export function createSkillTools(agentDir: string, markReloadNeeded: () => void,
 			const path = skillPath(root, params.name);
 			await mkdir(resolve(path, ".."), { recursive: true });
 			const previous = await activeSkillVersion(path, params.name);
+			if (managedSkillLearning && previous && !managedSkillLearning.authority.listManagedSkillNames(managedSkillLearning.profileId).includes(params.name)) {
+				throw new Error(`Skill ${params.name} has an active legacy version but no managed stable pointer; verify and register the baseline before staging a canary`);
+			}
 			if (previous) await persistSkillVersion(versionRoot, previous, await signingKey());
 			const promoted = skillVersionOf(candidate, authorityEvidenceRef);
-			await persistSkillVersion(versionRoot, promoted, await signingKey());
-			await writeTextAtomic(path, renderSkill(candidate));
-			await recordSkillVersionEvent(versionRoot, { id: crypto.randomUUID(), kind: "promoted", name: params.name, ...(previous ? { fromSha256: previous.sha256 } : {}), toSha256: promoted.sha256, ...(authorityEvidenceRef ? { evidenceRef: authorityEvidenceRef } : {}), at: Date.now(), signature: "" }, await signingKey());
+			const registeredAt = Date.now();
+			const artifact = await persistSkillVersion(versionRoot, promoted, await signingKey());
+			let rolloutChannel: "stable" | "canary" = "stable";
+			if (managedSkillLearning) {
+				const pointer = managedSkillLearning.authority.registerVersion({
+					profileId: managedSkillLearning.profileId,
+					name: promoted.name,
+					versionSha256: promoted.sha256,
+					artifactSha256: artifact.artifactSha256,
+					signedReceiptRef: artifact.signedReceiptRef,
+					acceptedTrialIds,
+					riskTier: "low",
+					policyVersion: managedSkillLearning.policyVersion ?? "l4.v1",
+					registeredAt,
+				});
+				rolloutChannel = pointer.canaryVersionSha256 === promoted.sha256 ? "canary" : "stable";
+				if (rolloutChannel === "stable") await writeTextAtomic(path, renderSkill(candidate));
+			} else {
+				await writeTextAtomic(path, renderSkill(candidate));
+			}
+			await recordSkillVersionEvent(versionRoot, { id: crypto.randomUUID(), kind: rolloutChannel === "canary" ? "canary_staged" : "promoted", name: params.name, ...(previous ? { fromSha256: previous.sha256 } : {}), toSha256: promoted.sha256, evidenceRef: authorityEvidenceRef ?? artifact.signedReceiptRef, at: registeredAt, signature: "" }, await signingKey());
 			await unlink(candidateFile).catch(() => undefined);
 			markSkillsChanged();
-			return result(`Promoted and queued verified skill ${params.name} for Profile-scoped gray rollout after this turn.`, { name: params.name, path, verifiedTrials: consecutive, sha256: promoted.sha256, ...(authorityEvidenceRef ? { authorityEvidenceRef } : {}) });
+			const status = rolloutChannel === "canary"
+				? `Registered verified Skill ${params.name} as a managed canary; the stable active file remains unchanged.`
+				: `Registered verified Skill ${params.name} as the managed stable version.`;
+			return result(status, { name: params.name, path, verifiedTrials: consecutive, sha256: promoted.sha256, artifactSha256: artifact.artifactSha256, rolloutChannel, ...(authorityEvidenceRef ? { authorityEvidenceRef } : {}) });
 		}) }),
 		defineTool({ name: "skill_versions", label: "List Skill Versions", description: "List immutable managed Skill versions and rollout events without loading their instruction bodies.", parameters: Type.Object({ name: Type.String({ pattern: "^[a-z0-9]+(?:-[a-z0-9]+)*$", maxLength: 64 }) }), execute: async (_id, params) => {
 			const key = await readSkillLearningKey(agentDir);
@@ -338,17 +440,19 @@ export function createSkillTools(agentDir: string, markReloadNeeded: () => void,
 			const active = await activeSkillVersion(skillPath(root, params.name), params.name);
 			return result(`Found ${versions.length} immutable versions for ${params.name}.`, { name: params.name, currentSha256: active?.sha256, versions: versions.map(({ instructions: _instructions, signature: _signature, ...version }) => version), events: events.map(({ signature: _signature, ...event }) => event) });
 		} }),
-		defineTool({ name: "skill_rollback", label: "Rollback Skill", description: "Restore one immutable verified managed Skill version. Requires approval and retains a durable rollback event.", parameters: Type.Object({ name: Type.String({ pattern: "^[a-z0-9]+(?:-[a-z0-9]+)*$", maxLength: 64 }), sha256: Type.String({ pattern: "^[a-f0-9]{64}$" }) }), execute: async (_id, params) => withCandidateLock(candidateRoot, params.name, async () => {
+		defineTool({ name: "skill_rollback", label: "Rollback Skill", description: "Restore one immutable verified managed Skill version. Requires approval and retains a durable rollback event.", parameters: Type.Object({ name: Type.String({ pattern: "^[a-z0-9]+(?:-[a-z0-9]+)*$", maxLength: 64 }), sha256: Type.String({ pattern: "^[a-f0-9]{64}$" }) }), execute: async (toolCallId, params) => withCandidateLock(candidateRoot, params.name, async () => {
 			const key = await signingKey();
 			const target = await readSkillVersion(versionRoot, params.name, params.sha256, key);
 			const path = skillPath(root, params.name);
 			const current = await activeSkillVersion(path, params.name);
 			if (!current) throw new Error(`Skill ${params.name} is not active`);
 			await persistSkillVersion(versionRoot, current, key);
+			const evidenceRef = `approved:skill-rollback:${createHash("sha256").update(toolCallId).digest("hex")}`;
+			const managedPointer = managedSkillLearning?.authority.rollbackVersion({ profileId: managedSkillLearning.profileId, name: params.name, targetVersionSha256: target.sha256, evidenceRef, policyVersion: managedSkillLearning.policyVersion ?? "l4.v1", rolledBackAt: Date.now() });
 			await writeTextAtomic(path, renderSkill(target));
-			await recordSkillVersionEvent(versionRoot, { id: crypto.randomUUID(), kind: "rollback", name: params.name, fromSha256: current.sha256, toSha256: target.sha256, at: Date.now(), signature: "" }, key);
+			await recordSkillVersionEvent(versionRoot, { id: crypto.randomUUID(), kind: "rollback", name: params.name, fromSha256: current.sha256, toSha256: target.sha256, evidenceRef, at: Date.now(), signature: "" }, key);
 			markSkillsChanged();
-			return result(`Rolled back ${params.name} to ${target.sha256}.`, { name: params.name, fromSha256: current.sha256, currentSha256: target.sha256 });
+			return result(`Rolled back ${params.name} to ${target.sha256}.`, { name: params.name, fromSha256: current.sha256, currentSha256: target.sha256, ...(managedPointer ? { managedPointer } : {}) });
 		}) }),
 	];
 	const evolveSkill: ToolPolicy = { ...MUTATING_TOOL_POLICY, sideEffect: "local", risk: "high", reversible: "unknown", impact: "Changes durable instructions that influence future Agent behavior" };
@@ -371,7 +475,7 @@ export function createSkillTools(agentDir: string, markReloadNeeded: () => void,
 	};
 	return tools.map((tool) => Object.assign(withToolPolicy(tool, policies[tool.name]!),
 		["skill_activate", "skill_read", "skill_resource_read"].includes(tool.name) ? { persistResultAsSummary: true } : {},
-		tool.name === "skill_complete" ? { beemaxTurnReset: () => runtime.reset() } : {}));
+		tool.name === "skill_complete" ? { beemaxTurnReset: resetTurnSkills } : {}));
 }
 
 function canonicalToolNameResolver(tools: readonly CapabilityMetadata[]): Map<string, string> {
@@ -433,6 +537,23 @@ async function readCandidate(path: string, key: Buffer, maxBytes = 256 * 1024): 
 async function boundedCandidateRead(path: string, maxBytes: number): Promise<string> { if (maxBytes <= 0) throw new Error("Skill candidate byte budget exceeded"); const handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW); try { const info = await handle.stat(); if (!info.isFile() || info.size > maxBytes) throw new Error("Skill candidate byte budget exceeded"); const buffer = Buffer.alloc(info.size + 1); const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0); if (bytesRead > maxBytes) throw new Error("Skill candidate byte budget exceeded"); return buffer.subarray(0, bytesRead).toString("utf8"); } finally { await handle.close(); } }
 async function writeJsonAtomic(path: string, value: SkillCandidate, exclusive = false): Promise<void> { const serialized = `${JSON.stringify(value, null, 2)}\n`; const temporary = `${path}.${crypto.randomUUID()}.tmp`; await writeFile(temporary, serialized, { encoding: "utf8", flag: "wx", mode: 0o600 }); try { if (exclusive) await writeFile(path, serialized, { encoding: "utf8", flag: "wx", mode: 0o600 }); else await rename(temporary, path); } finally { await unlink(temporary).catch(() => undefined); } }
 async function writeTextAtomic(path: string, value: string): Promise<void> { const temporary = `${path}.${crypto.randomUUID()}.tmp`; await writeFile(temporary, value, { encoding: "utf8", flag: "wx", mode: 0o600 }); try { await rename(temporary, path); } finally { await unlink(temporary).catch(() => undefined); } }
+async function writeImmutableText(path: string, value: string): Promise<void> {
+	let handle: Awaited<ReturnType<typeof open>> | undefined;
+	try {
+		handle = await open(path, "wx", 0o600);
+		await handle.writeFile(value, "utf8");
+		await handle.sync();
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code !== "EEXIST") {
+			if (handle) await unlink(path).catch(() => undefined);
+			throw error;
+		}
+		const existing = await boundedCandidateRead(path, Math.max(256 * 1024, Buffer.byteLength(value) + 1));
+		if (existing !== value) throw new Error("Immutable Skill artifact conflicts with different content");
+	} finally {
+		await handle?.close();
+	}
+}
 
 function skillVersionOf(input: { name: string; description: string; instructions: string; source: string; sha256: string }, authorityEvidenceRef?: string): SkillVersionRecord {
 	return { version: 1, name: input.name, description: input.description, instructions: input.instructions, source: input.source, sha256: input.sha256, promotedAt: Date.now(), ...(authorityEvidenceRef ? { authorityEvidenceRef } : {}), signature: "" };
@@ -446,10 +567,20 @@ async function activeSkillVersion(path: string, name: string): Promise<SkillVers
 	} catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined; throw error; }
 }
 function versionDirectory(root: string, name: string): string { if (!SKILL_NAME.test(name)) throw new Error(`Invalid skill name: ${name}`); const path = resolve(root, name); if (!path.startsWith(`${root}${sep}`)) throw new Error("Skill version path escaped managed directory"); return path; }
-async function persistSkillVersion(root: string, record: SkillVersionRecord, key: Buffer): Promise<void> {
+function managedSkillArtifactPath(root: string, name: string, versionSha256: string): string {
+	if (!/^[a-f0-9]{64}$/.test(versionSha256)) throw new Error("Invalid managed Skill version identity");
+	return resolve(versionDirectory(root, name), versionSha256, "SKILL.md");
+}
+async function persistSkillVersion(root: string, record: SkillVersionRecord, key: Buffer): Promise<PersistedSkillArtifact> {
 	const directory = versionDirectory(root, record.name); await mkdir(directory, { recursive: true });
 	const sealed = sealSkillVersion(record, key); const path = resolve(directory, `${record.sha256}.json`);
 	try { await writeFile(path, `${JSON.stringify(sealed, null, 2)}\n`, { encoding: "utf8", flag: "wx", mode: 0o600 }); } catch (error) { if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error; await readSkillVersion(root, record.name, record.sha256, key); }
+	const location = managedSkillArtifactPath(root, record.name, record.sha256);
+	await mkdir(resolve(location, ".."), { recursive: true });
+	const artifact = renderSkill(record);
+	await writeImmutableText(location, artifact);
+	const artifactSha256 = createHash("sha256").update(artifact).digest("hex");
+	return { artifactSha256, signedReceiptRef: `skill-version:${record.name}:${record.sha256}:${artifactSha256}`, location };
 }
 function sealSkillVersion(record: SkillVersionRecord, key: Buffer): SkillVersionRecord { const unsigned = { ...record, signature: "" }; return { ...unsigned, signature: createHmac("sha256", key).update(JSON.stringify(unsigned)).digest("hex") }; }
 async function readSkillVersion(root: string, name: string, sha256: string, key: Buffer): Promise<SkillVersionRecord> {
@@ -458,6 +589,59 @@ async function readSkillVersion(root: string, name: string, sha256: string, key:
 	const sealed = sealSkillVersion(record, key);
 	if (record.version !== 1 || record.name !== name || record.sha256 !== sha256 || record.signature !== sealed.signature || createHash("sha256").update(record.instructions).digest("hex") !== sha256) throw new Error("Invalid or tampered Skill version record");
 	return record;
+}
+async function managedSkillDescriptor(root: string, receipt: ManagedSkillSelectionReceipt, key: Buffer): Promise<SkillDescriptor> {
+	if (!SKILL_NAME.test(receipt.name) || !/^[a-f0-9]{64}$/.test(receipt.versionSha256) || !/^[a-f0-9]{64}$/.test(receipt.artifactSha256)) throw new Error("Managed Skill selection receipt identity is invalid");
+	const record = await readSkillVersion(root, receipt.name, receipt.versionSha256, key);
+	const location = managedSkillArtifactPath(root, receipt.name, receipt.versionSha256);
+	const content = await boundedCandidateRead(location, 64_000);
+	if (createHash("sha256").update(content).digest("hex") !== receipt.artifactSha256) throw new Error("Managed Skill selected artifact failed its immutable digest fence");
+	return { name: record.name, description: record.description, location, root: resolve(location, ".."), sha256: receipt.artifactSha256, triggers: [], exclude: [], sourcePriority: -1 };
+}
+function managedStableSelectionReceipt(receipt: ManagedSkillSelectionReceipt, pointer: ManagedSkillPointerSnapshot): ManagedSkillSelectionReceipt {
+	return {
+		...receipt,
+		channel: "stable",
+		versionSha256: pointer.stableVersionSha256,
+		artifactSha256: pointer.stableArtifactSha256,
+		pointerRevision: pointer.revision,
+	};
+}
+function managedFallbackSelectionReceipt(selected: ManagedSkillSelectionReceipt, pointer: ManagedSkillPointerSnapshot): ManagedSkillSelectionReceipt {
+	const unsigned = {
+		name: selected.name,
+		executionId: selected.executionId,
+		channel: "stable" as const,
+		versionSha256: pointer.stableVersionSha256,
+		artifactSha256: pointer.stableArtifactSha256,
+		bucket: selected.bucket,
+		canaryPercentage: 0,
+		pointerRevision: pointer.revision,
+		policyVersion: selected.policyVersion,
+		selectedAt: selected.selectedAt,
+		fallbackFromReceiptId: selected.receiptId,
+		fallbackReasonCode: "canary_artifact_integrity_failed" as const,
+	};
+	const receiptDigest = createHash("sha256").update(JSON.stringify(unsigned)).digest("hex");
+	return { receiptId: `managed_skill_fallback:${receiptDigest}`, receiptDigest, ...unsigned };
+}
+async function reconcileManagedActiveSkill(root: string, descriptor: SkillDescriptor): Promise<boolean> {
+	const content = await boundedCandidateRead(descriptor.location, 64_000);
+	if (createHash("sha256").update(content).digest("hex") !== descriptor.sha256) throw new Error("Managed Skill stable artifact failed its immutable digest fence");
+	const active = skillPath(root, descriptor.name);
+	try {
+		if (createHash("sha256").update(await boundedCandidateRead(active, 64_000)).digest("hex") === descriptor.sha256) return false;
+	} catch { /* Active Skill is a rebuildable projection; immutable source integrity was already verified above. */ }
+	await ensureManagedActiveDirectory(root, descriptor.name);
+	await writeTextAtomic(active, content);
+	return true;
+}
+async function ensureManagedActiveDirectory(root: string, name: string): Promise<void> {
+	await mkdir(root, { recursive: true });
+	const directory = resolve(root, name);
+	await mkdir(directory, { recursive: true });
+	const [realRoot, realDirectory] = await Promise.all([realpath(root), realpath(directory)]);
+	if (realDirectory !== resolve(realRoot, name)) throw new Error("Managed Skill active directory escaped its Profile root");
 }
 async function listSkillVersions(root: string, name: string, key: Buffer): Promise<SkillVersionRecord[]> {
 	const directory = versionDirectory(root, name); let entries: string[];

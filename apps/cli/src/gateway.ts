@@ -8,7 +8,8 @@
  */
 
 import { AutomationStore } from "@beemax/automation";
-import { ActionGovernance, AuthStorage, AutonomyRolloutController, AutomationDeliveryWorker, AutomationScheduler, BeeMaxAgentRuntime, DeliveryDeferredError, DeterministicSituationBuilder, FileCredentialVault, FileCredentialVaultAuditJournal, GroupObservationRecorder, HeartbeatRunner, InitiativeRuntime, InitiativeTriggerService, ObjectiveCompletionDeliveryService, PiAmbientObservationEvaluator, ProactiveInvestigationRuntime, TaskPlanNoticeDeliveryService, TaskTransitionInitiativeAdapter, ToolApprovalBroker, ToolPolicyRegistry, VERIFICATION_SUBMIT_TOOL_NAME, buildActiveTaskPreservationEnvelope, buildTaskPreservationEnvelope, canonicalUserId, containsCredentialMaterial, conversationKey, responsibilityOwnerKey, responsibilityOwnerKeys, createContractAdmissionReceiptIntegrity, createExecutionEnvelope, createSubagentTools, createTaskCheckpoint, createTaskLedgerTools, createTaskOrchestrationTools, decideInitiativeFromSituation, guardVerifiedObjectiveMemoryPublisher, isVerifiedAutomationOutcome, objectiveIdFromCompletionId, redactCredentialMaterial, renderTaskCheckpoint, selectTurnTools, taskCriterionDefinitions, taskRequiresCurrentSourceEvidence, type AgentRuntimePort, type AmbientObservationEvaluator, type BeeMaxAgentRunEvent, type BeeMaxAgentRunEventSink, type ContextCompactionAuditEvent, type DeliveryPort, type ExecutionEnvelope, type ExecutionTraceSink, type InitiativeObservation, type ObjectiveDeliveryInput, type SkillCandidateTrialInput, type SkillTrialAssertion, type SkillTrialToolCall, type SubagentTask, type TaskGraphExecutionContext, type TaskGraphExecutionResult, type TaskGraphVerifier, type TaskLedger, type TaskRecord, type ToolEffectProjectionReader, type VerifiedObjectiveMemoryPublisher } from "@beemax/core";
+import { createHash } from "node:crypto";
+import { ActionGovernance, AuthStorage, AutonomyRolloutController, AutomationDeliveryWorker, AutomationScheduler, BeeMaxAgentRuntime, DefaultMemoryLearningKernel, DeliveryDeferredError, DeterministicLearningExtractor, DeterministicSituationBuilder, FileCredentialVault, FileCredentialVaultAuditJournal, GroupObservationRecorder, HeartbeatRunner, InitiativeRuntime, InitiativeTriggerService, ObjectiveCompletionDeliveryService, PiAmbientObservationEvaluator, PiLearningExtractor, ProactiveInvestigationRuntime, ProgressiveLearningExtractor, TaskPlanNoticeDeliveryService, TaskTransitionInitiativeAdapter, ToolApprovalBroker, ToolPolicyRegistry, VERIFICATION_SUBMIT_TOOL_NAME, buildActiveTaskPreservationEnvelope, buildTaskPreservationEnvelope, canonicalUserId, containsCredentialMaterial, conversationKey, responsibilityOwnerKey, responsibilityOwnerKeys, createContractAdmissionReceiptIntegrity, createExecutionEnvelope, createSubagentTools, createTaskCheckpoint, createTaskLedgerTools, createTaskOrchestrationTools, decideInitiativeFromSituation, guardVerifiedObjectiveMemoryPublisher, isVerifiedAutomationOutcome, objectiveIdFromCompletionId, redactCredentialMaterial, renderTaskCheckpoint, selectTurnTools, taskCriterionDefinitions, taskRequiresCurrentSourceEvidence, type AgentRuntimePort, type AmbientObservationEvaluator, type BeeMaxAgentRunEvent, type BeeMaxAgentRunEventSink, type ContextCompactionAuditEvent, type DeliveryPort, type ExecutionEnvelope, type ExecutionTraceSink, type InitiativeObservation, type LearningObjectiveAdmissionPort, type ObjectiveDeliveryInput, type SkillCandidateTrialInput, type SkillTrialAssertion, type SkillTrialToolCall, type SubagentTask, type TaskGraphExecutionContext, type TaskGraphExecutionResult, type TaskGraphVerifier, type TaskLedger, type TaskRecord, type ToolEffectProjectionReader, type VerifiedObjectiveMemoryPublisher, type VerifiedObjectiveOutcome } from "@beemax/core";
 import {
 	AdapterRegistry,
 	ChannelHost,
@@ -48,8 +49,9 @@ import { createSuccessfulVerificationReceipt, normalizeVerifierEvidenceRefs, par
 import { createProfileCapabilityProviderBundle } from "./capability-provider-composition.ts";
 import { createLocalArtifactRuntime } from "./artifact-composition.ts";
 import { createInteractiveContractCognition } from "./interactive-contract-cognition.ts";
+import { admitLearningObjective as admitLearningObjectiveThroughRuntime } from "./learning-objective-composition.ts";
 
-async function runProfileAutomation(
+export async function runProfileAutomation(
 	runtime: AgentRuntimePort<SessionSource>,
 	source: SessionSource,
 	prompt: string,
@@ -206,6 +208,19 @@ export async function runGateway(config: BeeMaxConfig): Promise<void> {
 	const memory = new MemoryStore(config.memory.dbPath, config.profile);
 	const persistence = memoryPersistencePorts(memory);
 	const autonomyRollout = new AutonomyRolloutController({ store: persistence.autonomyRollout });
+	const auxiliaryTextModels = configuredAuxiliaryTextModels(config);
+	const memoryLearningExtractor = new ProgressiveLearningExtractor(
+		new DeterministicLearningExtractor(),
+		auxiliaryTextModels.length ? new PiLearningExtractor({ models: auxiliaryTextModels }) : undefined,
+	);
+	let admitLearningObjectiveCandidate: LearningObjectiveAdmissionPort["admit"] = async () => ({ status: "deferred", reasonCode: "objective_runtime_starting" });
+	let wakeMemoryLearning: () => void = () => undefined;
+	const memoryLearningKernel = new DefaultMemoryLearningKernel({
+		authority: persistence.memoryLearningAuthority,
+		extractor: memoryLearningExtractor,
+		learningObjectiveAdmission: { admit: (candidate) => admitLearningObjectiveCandidate(candidate) },
+		onSignal: () => wakeMemoryLearning(),
+	});
 	const taskTransitionInitiative = new TaskTransitionInitiativeAdapter(persistence.initiativeTriggerInbox, config.profile);
 	profileStartupCleanup.push(() => memory.close());
 	const automation = new AutomationStore(config.memory.dbPath);
@@ -265,6 +280,7 @@ export async function runGateway(config: BeeMaxConfig): Promise<void> {
 		additionalModelProviders: () => configuredRuntimeModels(config).map((model) => model.provider),
 		skillToolset: config.agent.toolset,
 		capabilityPreferences: config.agent.capabilityPreferences,
+		managedSkillLearning: persistence.managedSkillLearning,
 		capabilityProviderRuntime: capabilityProviders.runtime,
 		capabilityProviderEnvironment: capabilityProviders.environment,
 		compaction: config.context.compaction,
@@ -293,7 +309,6 @@ export async function runGateway(config: BeeMaxConfig): Promise<void> {
 		executionPortForSource: executionPortFor(config),
 		artifactRuntime,
 	};
-	const auxiliaryTextModels = configuredAuxiliaryTextModels(config);
 	const capabilityRanker = configuredCapabilityRanker(
 		auxiliaryTextModels,
 		(usage) => recordGatewayEvent(config.paths.agentDir, "capability_cognition", { profile: config.profile, ...usage }),
@@ -311,13 +326,22 @@ export async function runGateway(config: BeeMaxConfig): Promise<void> {
 	profileStartupCleanup.length = 0;
 	const publishVerifiedOutcome = guardVerifiedObjectiveMemoryPublisher(
 		autonomyRollout,
-		createVerifiedObjectiveMemoryPublisher(persistence.organizationMemory),
+		createVerifiedObjectiveMemoryPublisher(persistence.organizationMemory, resolveMemoryScope),
 		(objectiveId) => recordGatewayEvent(config.paths.agentDir, "autonomy_blocked", { profile: config.profile, level: "episode_publication", objectiveId }),
 	);
 	const profileRuntime = await createProfileRuntime<SessionSource>({
 		work: {
 		agentDir: config.paths.agentDir, ledger: persistence.taskLedger, recoveryQueue: persistence.recoveryQueue, maxConcurrent: config.subagents.maxConcurrent,
 		maxSubagents: config.subagents.maxChildrenPerOwner, taskTimeoutMs: 0, subagentsEnabled: config.subagents.enabled,
+		memoryLearning: {
+			profileId: config.profile,
+			kernel: memoryLearningKernel,
+			onCycle: (result, trigger) => {
+				if (!result.claimed && !result.completed && !result.deferred && !result.failed) return;
+				recordGatewayEvent(config.paths.agentDir, "memory_learning_maintenance", { profile: config.profile, trigger, claimed: result.claimed, completed: result.completed, deferred: result.deferred, failed: result.failed, transitions: result.transitions.length });
+			},
+			onError: (error) => console.error(`[beemax] Memory Learning maintenance failed: ${error instanceof Error ? error.message : String(error)}`),
+		},
 		executeTask: (task, signal, context, executionTrace, effectAuthority) => executePlannedTask(createSubagentAgent, task, task.executionScope as SessionSource, signal, null, context, executionTrace, effectAuthority, persistence.taskLedger),
 		verifyTaskCandidate: (task, result, signal, context, executionTrace) => createTaskVerifier(createSubagentAgent, null, executionTrace, verificationAgentToolsForTask(readOnlyMcpTools, task, context?.successfulToolNames))(task, result, signal, context),
 		deliverObjective: (input, signal, executionTrace) => executeObjectiveDelivery(createSubagentAgent, input, signal, null, executionTrace),
@@ -429,7 +453,7 @@ export async function runGateway(config: BeeMaxConfig): Promise<void> {
 			requireContractAdmissionIntegrity: true,
 			fallbackModels: configuredRuntimeModels(config),
 			mediaUnderstanding: configuredMediaUnderstanding(config, createLocalMediaUnderstandingAdapters(config.mediaUnderstanding.localOcr)),
-			context: createTaskAwareConversationContext(memory, { memoryScope: { profileId: config.profile }, resolveMemoryScope, organizationSituationAllowed: () => autonomyRollout.allows("situation_context").allowed, recordDirectRoute: (_route, source) => automation.setLastRoute({ platform: source.platform, ...(source.channelInstanceId ? { channelInstanceId: source.channelInstanceId } : {}), chatId: source.chatId, chatType: source.chatType, userId: source.userIdAlt ?? source.userId }), runtimeSnapshot: () => ({ profile: config.profile }), maxContextChars: config.context.maxTurnChars }),
+			context: createTaskAwareConversationContext(memory, { memoryScope: { profileId: config.profile }, resolveMemoryScope, organizationSituationAllowed: () => autonomyRollout.allows("situation_context").allowed, memoryLearningKernel, memoryLearningAllowed: () => autonomyRollout.allows("adaptive_learning").allowed, recordDirectRoute: (_route, source) => automation.setLastRoute({ platform: source.platform, ...(source.channelInstanceId ? { channelInstanceId: source.channelInstanceId } : {}), chatId: source.chatId, chatType: source.chatType, userId: source.userIdAlt ?? source.userId }), runtimeSnapshot: () => ({ profile: config.profile }), maxContextChars: config.context.maxTurnChars }),
 		},
 		approvalBroker,
 		cancelSubagents: (source) => subagents?.cancelOwner(source) ?? 0,
@@ -449,6 +473,7 @@ export async function runGateway(config: BeeMaxConfig): Promise<void> {
 			};
 		},
 	});
+	wakeMemoryLearning = () => profileRuntime.work.memoryLearning?.wake();
 	const { work } = profileRuntime;
 	const { taskScheduler, taskRecovery, objectiveRuntime, subagents } = work;
 	const { runtime, interaction } = profileRuntime;
@@ -615,6 +640,12 @@ export async function runGateway(config: BeeMaxConfig): Promise<void> {
 			return { status: settled?.status === "cancelled" ? "cancelled" : materialResult ? "succeeded" : "failed", materialResult };
 		},
 	});
+	admitLearningObjectiveCandidate = (candidate) => admitLearningObjectiveThroughRuntime(candidate, {
+		allowsReadOnlyInvestigation: () => autonomyRollout.allows("read_only_investigation").allowed,
+		runtime: proactiveInvestigation,
+		capabilities: proactiveCapabilities,
+	});
+	wakeMemoryLearning();
 	const initiativeTriggers = new InitiativeTriggerService({
 		profileId: config.profile,
 		inbox: persistence.initiativeTriggerInbox,
@@ -936,16 +967,42 @@ export async function executeObjectiveDelivery(
 	}
 }
 
-export function createVerifiedObjectiveMemoryPublisher(memory: Pick<OrganizationMemoryPort, "upsertEpisode">): VerifiedObjectiveMemoryPublisher {
+export function createVerifiedObjectiveMemoryPublisher(
+	memory: Pick<OrganizationMemoryPort, "upsertVerifiedEpisodeAndSignal">,
+	resolveScope?: (source: NonNullable<VerifiedObjectiveOutcome["executionScope"]>) => { projectId?: string; organizationId?: string },
+): VerifiedObjectiveMemoryPublisher {
 	return (outcome) => {
 		const persistedText = [outcome.title, outcome.result, outcome.evidence].filter((value): value is string => Boolean(value));
 		if (!outcome.situation || !outcome.executionScope || persistedText.some(containsCredentialMaterial)) return;
-		memory.upsertEpisode({
-			platform: outcome.executionScope.platform, chatId: outcome.executionScope.chatId, userId: outcome.executionScope.userId, threadId: outcome.executionScope.threadId,
-			objectiveId: outcome.objectiveId, situation: outcome.situation, action: outcome.title,
+		const learnedScope = resolveScope?.(outcome.executionScope) ?? {};
+		const sourceRevision = outcome.objectiveRevision ?? 1;
+		const artifactReceiptRefs = verifiedObjectiveArtifactReceiptRefs(outcome);
+		const deliveryReceiptRefs = outcome.deliveryReceipt ? [verifiedObjectiveDeliveryReceiptRef(outcome.deliveryReceipt)] : [];
+		const criteria = outcome.criterionVerifications?.length
+			? outcome.criterionVerifications.map((criterion) => ({ criterionId: criterion.criterionId, status: criterion.status, evidenceRefs: [...criterion.evidenceRefs] }))
+			: [{ criterionId: "objective_outcome", status: "accepted" as const, evidenceRefs: [...artifactReceiptRefs, ...deliveryReceiptRefs] }];
+		const verificationDigest = createHash("sha256").update(JSON.stringify({ criteria, artifactReceiptRefs, deliveryReceiptRefs })).digest("hex");
+		const executionId = `execution:objective-publication:${createHash("sha256").update(JSON.stringify([outcome.objectiveId, sourceRevision, outcome.taskRunId ?? null])).digest("hex")}`;
+		memory.upsertVerifiedEpisodeAndSignal({
+			platform: outcome.executionScope.platform, chatId: outcome.executionScope.chatId, chatType: outcome.executionScope.chatType, userId: outcome.executionScope.userId, threadId: outcome.executionScope.threadId,
+			...learnedScope, visibility: outcome.executionScope.chatType === "dm" ? "private" : "conversation",
+			objectiveId: outcome.objectiveId, sourceRevision, situation: outcome.situation, action: outcome.title,
 			outcome: outcome.result, ...(outcome.evidence ? { evidence: outcome.evidence } : {}), status: "verified",
+			learningSettlement: { executionId, ...(outcome.taskRunId ? { taskRunId: outcome.taskRunId } : {}), verificationRevision: Math.max(1, outcome.verificationRevision ?? 1), verificationDigest,
+				criteria, deliveryReceiptRefs, artifactReceiptRefs },
 		});
 	};
+}
+
+function verifiedObjectiveArtifactReceiptRefs(outcome: VerifiedObjectiveOutcome): string[] {
+	const refs = (outcome.artifacts ?? []).flatMap((artifact) => [artifact.manifest?.id, artifact.verificationReceipt?.id])
+		.filter((ref): ref is NonNullable<typeof ref> => typeof ref === "string" && /^(?:artifact|artifact-verification):sha256:[a-f0-9]{64}$/i.test(ref));
+	return [...new Set<string>(refs)].sort().slice(0, 100);
+}
+
+function verifiedObjectiveDeliveryReceiptRef(receipt: NonNullable<VerifiedObjectiveOutcome["deliveryReceipt"]>): string {
+	const normalized = { idempotencyKey: receipt.idempotencyKey, deliveredAt: Math.trunc(receipt.deliveredAt), providerMessageId: receipt.providerMessageId ?? null };
+	return `delivery-receipt:sha256:${createHash("sha256").update(JSON.stringify(normalized)).digest("hex")}`;
 }
 
 const TASK_VERIFICATION_CAPABILITIES = Object.freeze([VERIFICATION_SUBMIT_TOOL_NAME, "read", "artifact_verify", "artifact_inspect", "market_series", "web_search", "exa_web_search", "web_extract"]);

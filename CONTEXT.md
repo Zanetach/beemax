@@ -261,7 +261,7 @@ The explainable per-action result that combines Tool risk, side effect, reversib
 _Avoid_: Global autonomy level, Enterprise Policy publication, model confidence
 
 **Autonomy Rollout Level**:
-A Profile-scoped, evidence-gated release boundary for one generic organizational-intelligence capability: Situation context, Episode publication, Initiative observation, read-only investigation, or reversible action. It controls whether an already governed capability may run; it does not describe a customer's workflow or replace per-action Governance.
+A Profile-scoped, evidence-gated release boundary for one generic organizational-intelligence capability: Situation context, Episode publication, adaptive learning, Initiative observation, read-only investigation, or reversible action. Adaptive learning governs deterministic low-risk admission, operational assessment, and managed-Skill canary behavior; it does not grant execution authority. A rollout level controls whether an already governed capability may run; it does not describe a customer's workflow or replace per-action Governance.
 _Avoid_: Customer business stage, global intelligence mode, Enterprise Policy, action risk score
 
 **Execution Grant**:
