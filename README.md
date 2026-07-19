@@ -9,7 +9,7 @@
 
 **Current release:** [v1.5.1](https://github.com/Zanetach/beemax/releases/tag/v1.5.1), distributed as a checksum-verified source archive for Ubuntu and macOS.
 
-[中文简介](#中文简介)
+[简体中文](README.zh-CN.md)
 
 ![BeeMax Agent turns scoped context and durable memory into governed, verified execution](docs/assets/beemax-agent-runtime.png)
 
@@ -675,42 +675,3 @@ docs/                             Architecture, ADRs, operations, PRD, and resea
 BeeMax v1.5.1 intentionally does not include a fixed customer business ontology, a second Agent Loop, high-risk fully autonomous execution, large multi-Agent organizations, or arbitrary model-authored production Skill mutation. It does include an `adaptive_learning`-gated managed-Skill lane: only immutable, integrity-sealed versions with accepted trial identities and promotion authority can enter a bounded canary, and verified operational evidence may promote or roll that pointer back without rewriting historical versions.
 
 Planned extension points include additional registry adapters such as Slack, Discord, DingTalk, and WeCom; Feishu User OAuth for private resources; externally backed work queues for larger horizontal deployments; and deeper enterprise policy integrations.
-
----
-
-## 中文简介
-
-BeeMax v1.5.1 是一个基于 Pi 的持久化个人与组织智能体运行时。自然语言请求会先进入主模型：简单问题直接回答，复杂任务由模型动态规划，并在执行过程中渐进加载 Tool 与 Skill。只有自动化触发、显式 Objective 以及需要跨重启承担责任的工作才进入 Work Contract 和持久任务通道；普通交互不会先被固定分类器拦截。
-
-### 当前架构
-
-CLI、飞书/Lark、Telegram 和自动化触发最终汇入每个 Profile 唯一的 `createProfileRuntime`。其中：
-
-- `BeeMaxAgentRuntime` 是唯一 Agent Runtime，Pi 只作为 Core 内部的模型、Tool、Skill、Session 和压缩执行底座。
-- Gateway 只负责渠道认证、路由、连接、呈现和投递，不负责选模型、组装 Prompt、召回 Memory 或决定 Tool 权限。
-- `ProfileWorkRuntime` 负责 Objective、Task Plan、租约、Checkpoint、独立 Verification、恢复和受限 Sub-Agent。
-- 能力适配器提供 Web、MCP、WeKnora、飞书会议、文件、执行和图像能力，但仍受 Profile 作用域、Sandbox、审批与 Effect 治理。
-- `@beemax/memory` 的 Profile SQLite 是唯一语义记忆权威；Task、Verification、Automation、Effect 和 Trace 各自保留明确的执行权威边界。
-
-### 记忆与自主学习
-
-启用受 Profile 管控的 `adaptive_learning` 后，生产对话和已验证结果可以形成隔离的学习候选、Learning Objective、贡献回执、评估和项目/组织投影。程序性经验必须经过独立试验，才能进入不可变的 managed-Skill canary/stable 指针；回滚只切换指针，不改写历史。
-
-原始模型输出、重复行为、未验证结果和权限拒绝都不会直接变成可执行知识。作用域在排序前过滤，Verification 不可用或因果归因不清时记为 `unknown`。v1.5.1 提供的是受治理的 L4 实现基础，并不代表已经通过完整 L4 认证。
-
-### 真实验证结果
-
-- 自适应入场：6/6 正确，包含 5 个直接 model-first case 和 1 个持久 Contract case，共计 8,422 个 Provider Token。
-- 渐进能力选择：16/16 通过，Top-1、Top-K 和 no-match precision 均为 100%，禁止能力激活率为 0%。
-- 真实 Pi model-first outcome：16/16 accepted，32/32 个 Provider 回合有回执，共计 36,051 个实测 Token。
-- 上述数字证明冻结测试语料中的真实模型入场、能力选择、Tool/Skill 回执和完成守卫链路，不表示所有开放业务任务都能达到 100% 成功率。
-
-### 快速安装
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/Zanetach/beemax/main/scripts/bootstrap-install.sh | bash
-beemax setup --profile personal
-beemax chat --profile personal
-```
-
-详细设计参见 [L4 Memory Learning 架构](docs/architecture/l4-memory-learning-architecture.md)，发布条件参见 [L4 Memory Learning 上线与认证](docs/operations/l4-memory-learning-rollout-and-certification.md)。
