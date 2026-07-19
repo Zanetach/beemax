@@ -7,6 +7,10 @@
 ![Node.js](https://img.shields.io/badge/Node.js-%3E%3D22.19-339933?logo=node.js&logoColor=white)
 ![Platform](https://img.shields.io/badge/platform-Ubuntu%20%7C%20macOS-4c566a)
 
+**Current release:** [v1.5.1](https://github.com/Zanetach/beemax/releases/tag/v1.5.1), distributed as a checksum-verified source archive for Ubuntu and macOS.
+
+[简体中文](README.zh-CN.md)
+
 ![BeeMax Agent turns scoped context and durable memory into governed, verified execution](docs/assets/beemax-agent-runtime.png)
 
 BeeMax is one Agent product with one Core-owned Pi execution loop. It can chat locally, connect to Feishu/Lark and Telegram through one Profile Gateway, preserve long-running responsibility across restarts, and understand images through native vision or OCR.
@@ -37,6 +41,12 @@ Durable Trigger or explicit Objective lifecycle
 admitted Work Contract → Objective / Task Ledger
         ↓
 the same Pi loop → checkpoint → independent Verification → delivery
+
+Verified outcome while `adaptive_learning` is enabled
+        ↓
+fenced proposal → low-risk Learning Objective → independent Verification
+        ↓
+atomic settlement → scoped projection / immutable managed-Skill trial
 ```
 
 Pi owns task understanding, adaptive execution, model interaction, tools, session events, and live compaction. BeeMax Core adds product semantics around Pi: progressive capability disclosure, scope, sandbox and approval policy, durable responsibility where requested, Effect authority, recovery, verification, and delivery. Work Contracts govern durable/background responsibility; they are not a mandatory pre-model classification pass for ordinary interactive work.
@@ -98,46 +108,75 @@ beemax channel test telegram --profile personal
 beemax channel list --profile personal
 ```
 
-## What ships in 1.5
+## What ships in v1.5.1
 
 | Area | Implemented surface |
 | --- | --- |
 | Agent runtime | One Core-owned model-first Pi runtime for CLI and Gateway, with adaptive planning for complex turns and a Contract-governed lane for durable Tasks, recovery, automation, and proactive execution |
 | Work Context | Situation model for facts, goals, constraints, uncertainty, conflicts, possible actions, and provenance |
-| Memory | SQLite/FTS5 recall, scope isolation, evidence lineage, correction, conflict, candidates, conventions, and verified Episodes |
+| Memory | One Profile-bound SQLite/FTS5 authority for scoped recall, Claims, verified Episodes, candidates, evidence lineage, correction, conflict, contribution receipts, assessments, and immutable projections |
 | Durable work | Objectives, DAG Task Plans, Task Runs, leases, Checkpoints, Candidate Results, Verification, correction, cancellation, and recovery |
 | Effects | One authority for mutating Tool Effects, idempotency, provider receipts, unknown outcomes, reconciliation, and compensation |
 | Initiative | Evidence-gated observation and read-only investigation with duplicate and interruption controls |
 | Context | Model-aware budgets, bounded Tool results, Pi compaction, Task Preservation Envelopes, and restart-safe recovery context |
 | Channels | Independent Channel Runtime and Adapter packages, deterministic multi-instance Bindings, shared group Conversations, bounded contextual activation, Feishu/Lark streaming cards, Telegram text/media, governed delivery, and Profile lifecycle isolation |
 | Images | Native model vision, auxiliary configured vision models, local Tesseract OCR, and optional GPT Image generation |
-| Capabilities | Progressive Skills, Web research, MCP, WeKnora retrieval, Feishu meetings, files, schedules, reminders, and bounded Sub-Agents |
+| Capabilities | Progressive Skills, Web research, MCP, WeKnora retrieval, Feishu meetings, files, schedules, reminders, bounded Sub-Agents, and an `adaptive_learning`-gated managed-Skill stable/canary lane |
 | Operations | Doctor, Profile backup, explicit Channel/Session ownership migration, hardened Docker execution, Ubuntu resource gates, Linux systemd, macOS LaunchAgent, logs, traces, Effect inspection, and verified updates |
 
 ## Architecture
 
-```text
-┌───────────────────────────────────────────────────────────┐
-│ Product / Profile                                         │
-│ identity · model · policy · Skills · capability grants    │
-├───────────────────────────────────────────────────────────┤
-│ BeeMax Core                                               │
-│ Pi runs · context · Memory · Tasks · Effects · governance │
-│ Checkpoints · Verification · recovery · Initiative        │
-├───────────────────────────────────────────────────────────┤
-│ Capability adapters                                      │
-│ Web · MCP · WeKnora · Feishu VC · images · files          │
-├───────────────────────────────────────────────────────────┤
-│ Gateway / ChannelHost                                    │
-│ registry · connection · auth · routing · presentation    │
-│ Feishu/Lark · Telegram · future channel adapters         │
-├───────────────────────────────────────────────────────────┤
-│ Operations                                                │
-│ install · Profiles · services · backup · doctor · logs    │
-└───────────────────────────────────────────────────────────┘
+```mermaid
+flowchart TB
+    CLI["CLI"]
+    Channels["飞书/Lark · Telegram · 未来渠道"]
+    Triggers["Schedules · durable Triggers"]
+
+    subgraph Profile["apps/cli · createProfileRuntime · 每个 Profile 唯一装配根"]
+        IA["InteractionEventAdapter"]
+        CH["AdapterRegistry + ChannelHost"]
+        Dispatcher["Gateway Dispatcher"]
+        Scheduler["AutomationScheduler / Initiative Runtime"]
+
+        Core["@beemax/core<br/>BeeMaxAgentRuntime<br/>唯一 Agent Runtime"]
+        Pi["Core-private Pi execution substrate<br/>model turns · Tool loop · Skills · compaction"]
+        Cap["Capability adapters<br/>Web · MCP · WeKnora · meetings<br/>files · execution · images"]
+        Work["ProfileWorkRuntime<br/>Objective · Task Plan · leases<br/>Checkpoint · Verification · recovery · Sub-Agent"]
+        Delivery["DeliveryPort + durable outboxes<br/>text · media · cards · receipts · retry"]
+        Learning["MemoryLearningKernel<br/>adaptive_learning rollout gate"]
+
+        Memory["@beemax/memory · Profile SQLite<br/>Claims · Episodes · Task Ledger · Verification<br/>learning lineage · assessments · projections"]
+        Automation["@beemax/automation<br/>Schedule · Occurrence · leases · delivery state"]
+        Journals["Core durable journals<br/>Effects · execution Trace · reconciliation"]
+
+        IA --> Core
+        CH --> Dispatcher --> Core
+        Scheduler --> Core
+        Core --> Pi
+        Core <-->|"progressive Tool / Skill calls"| Cap
+        Core --> Work
+        Core --> Delivery
+        Work <--> Memory
+        Scheduler <--> Automation
+        Core --> Journals
+        Work --> Journals
+        Memory -->|"scoped recall"| Core
+        Core -->|"observations"| Learning
+        Work -->|"independently verified outcomes"| Learning
+        Learning <-->|"receipts · assessments · projections"| Memory
+        Learning -->|"Context Packs / immutable Skill pointer"| Core
+    end
+
+    CLI --> IA
+    Channels --> CH
+    Triggers --> Scheduler
+    Delivery --> CLI
+    Delivery --> CH
 ```
 
-`@beemax/core` is the only Agent Runtime boundary. Gateway owns channel transport and enterprise control-plane concerns, but does not select models, assemble prompts, recall Memory, or decide Agent work.
+[`apps/cli/src/runtime-composition.ts`](apps/cli/src/runtime-composition.ts) is the application composition seam, not a second Agent runtime. It creates one shared Profile Runtime for CLI or Gateway use. [`apps/cli/src/profile-work-runtime.ts`](apps/cli/src/profile-work-runtime.ts) binds the same Task Ledger, Effect authority, execution Trace, recovery service, Verification, approvals, and Memory Learning Kernel.
+
+`@beemax/core` is the only Agent Runtime boundary, and Pi is its private execution substrate. Gateway owns authenticated channel transport, routing, lifecycle, presentation, and delivery, but does not select models, assemble prompts, recall Memory, authorize Tools, or decide Agent work. Capability packages enter through Core-owned Tool contracts and cannot bypass current Profile scope, Sandbox, approval, or Effect governance.
 
 Capability packages consume Pi primitives through Core. The CLI presentation layer may use `pi-tui`, but it does not own Agent execution. See the [Core/Gateway ownership contract](docs/architecture/core-gateway-boundaries.md).
 
@@ -221,18 +260,33 @@ The equivalent environment settings are `BEEMAX_PROVIDER_INSTALLATION_ENABLED=tr
 
 Every Capability decision receives a content-free cognition ID that correlates model usage, fallback telemetry, the execution trace, and the eventual verified, rejected, failed, cancelled, or unverified task outcome. Calibration reports keep lexical, frozen-semantic, and live-Provider results separate and measure Top-1, Top-K, required-capability recall, unnecessary activation, no-match precision, completion, latency, tokens, and cost. Versioned threshold trials cannot be promoted when authorization, false-positive, recall, or completion metrics regress.
 
-Before a release, refresh the credentialed semantic-routing and outcome evidence with `npm run eval:capability-ranking:live -- --profile <profile> --write evals/baselines/capability-ranking-live.json`. This includes a separate live-Pi lane: the configured model receives the turn-scoped Tool Spec, chooses Tools itself, and must satisfy independent Acceptance Criteria. Every Pi-originated Tool call is bound to the exact internal assistant Turn, Provider response, Tool name, and canonical argument identity that produced it. Provider response IDs and Tool arguments never enter the durable Trace as raw content: only SHA-256 identity projections are retained. A Tool-bearing Turn without a reported Provider response identity is blocked before execution; a Tool-free Turn may honestly record the identity as `unavailable`. The deterministic routing harness remains infrastructure evidence, not proof that a model completed the task. Live-Pi token, latency, and model-Turn budgets fail closed; Provider cost remains explicitly `unpriced` when the configured catalog supplies no price rather than being presented as free. The release verifier independently recomputes rankings, correlated task outcomes, model-driven Tool receipts, usage, costs, and threshold promotion decisions; it rejects missing, failed, expired, fallback-backed, implementation-mismatched, incorrectly ordered, causally detached, or over-budget evidence.
+Before a release, refresh the credentialed semantic-routing and outcome evidence with `npm run eval:capability-ranking:live -- --profile <profile> --write evals/baselines/capability-ranking-live.json`. This includes a separate live-Pi lane: the configured model receives the turn-scoped Tool Spec, chooses Tools itself, and must satisfy independent Acceptance Criteria. Every Pi-originated Tool call is bound to the exact internal assistant Turn, Provider response, Tool name, and canonical argument identity that produced it. Provider response IDs and Tool arguments never enter the durable Trace as raw content: only SHA-256 identity projections are retained. A Tool-bearing Turn without a reported Provider response identity is blocked before execution; a Tool-free Turn may honestly record the identity as `unavailable`. The deterministic routing harness remains infrastructure evidence, not proof that a model completed the task. Live-Pi token, latency, and model-Turn usage are measured and reported; missing required Provider or usage evidence fails closed, but these diagnostics do not impose a cumulative Agent Turn or Objective termination ceiling. Provider cost remains explicitly `unpriced` when the configured catalog supplies no price rather than being presented as free. The release verifier independently recomputes rankings, correlated task outcomes, model-driven Tool receipts, usage, costs, and threshold promotion decisions; it rejects missing, failed, expired, fallback-backed, implementation-mismatched, incorrectly ordered, causally detached, or gate-violating evidence.
 
 ## Memory and durable work
 
 BeeMax separates chat history from durable organizational evidence.
 
+- One Profile-bound SQLite database is the semantic Memory authority; Task, Effect, Verification, approval, and delivery ledgers remain separate execution authorities.
 - Conversation candidates stay pending until reviewed or promoted.
 - Explicit, low-risk personal preferences may additionally be admitted by the governed L4 extractor when `adaptive_learning` is enabled; broader organizational knowledge still requires type-specific authority.
 - Claims retain source evidence, validity, visibility, scope, correction, and conflict lineage.
 - Verified Objective outcomes may publish idempotent Situation-backed Episodes.
 - Recall is constrained by Profile, owner, conversation, thread, access scope, and business-object evidence when available.
 - Unknown customer vocabulary remains open semantics; it is not mapped into a fixed order, ticket, or contract schema.
+
+### Governed L4 Memory Learning foundation
+
+v1.5.1 ships the governed implementation foundation behind Profile rollout authority. Production conversation evidence may become a fenced extraction proposal and a low-risk Learning Objective. Only a correlated, independently verified outcome can settle contribution receipts and assessments or publish a project/organization projection. A procedural candidate remains quarantined until independent trials authorize an immutable canary or stable pointer; rollback changes the pointer without rewriting history.
+
+The safety model is intentionally strict:
+
+- Raw model output, repeated behavior, and unverified candidates are evidence, not authority or active policy.
+- Trusted access scope and visibility are filtered before ranking, so relevance cannot widen access.
+- Verification unavailable, cancellation, authorization denial, and ambiguous attribution settle as `unknown`, not as invented success or failure.
+- Corrections and forgetting invalidate dependent receipts and projections instead of silently rewriting provenance.
+- Managed Skills remain subject to current Tool, Sandbox, approval, and Effect governance; learning cannot create new execution authority.
+
+This is not an L4 certification claim. That label requires the production-path, multi-provider, paired Memory-On/Memory-Off, fault, privacy, migration, and soak evidence defined by the [L4 rollout and certification gate](docs/operations/l4-memory-learning-rollout-and-certification.md).
 
 Useful Memory commands:
 
@@ -569,6 +623,19 @@ bash scripts/verify-release-archive.sh "$VERSION"
 
 Tag, root package, every BeeMax workspace, internal dependency, and Changelog release section must match. The archive verifier checks checksum portability, source layout, isolated installation, rebuild, Profile reload, and packaged Skills.
 
+### v1.5.1 release evidence
+
+The committed live baselines were generated on 2026-07-19 with configured Provider models and independently rechecked by the release verifier:
+
+| Gate | Result | Measured evidence |
+| --- | --- | --- |
+| Adaptive turn admission | 6/6 correct (100%) | Five direct model-first cases, one durable Contract case, 8,422 total Provider tokens |
+| Progressive Capability ranking | 16/16 cases passed | Top-1 accuracy 100%, Top-K recall 100%, no-match precision 100%, forbidden activation 0% |
+| Live Pi model-first outcome | 16/16 accepted | 32/32 Provider turns reported, 36,051 measured tokens, exact Tool/Skill receipts and terminal answers |
+| Published release | [v1.5.1](https://github.com/Zanetach/beemax/releases/tag/v1.5.1) | [Release workflow](https://github.com/Zanetach/beemax/actions/runs/29677218897) passed; archive SHA-256 `ba62e6514dcced45c45f1e4dc7021247119c440bee235cc083c171d28ae1d6cf` |
+
+The source evidence is committed in [adaptive turn admission](evals/baselines/adaptive-turn-admission-live.json) and [Capability ranking / live Pi outcome](evals/baselines/capability-ranking-live.json). These are real-model Runtime gates over a frozen evaluation corpus and isolated evaluation Tool implementations. They prove the tested admission, selection, execution-receipt, and completion-guard paths; they are not a claim that every open-ended business task has a 100% end-to-end success rate.
+
 ## Repository layout
 
 ```text
@@ -595,6 +662,8 @@ docs/                             Architecture, ADRs, operations, PRD, and resea
 - [Unified Agent Runtime PRD](docs/prd/beemax-pi-unified-agent-runtime.md)
 - [Core and Gateway boundaries](docs/architecture/core-gateway-boundaries.md)
 - [Channel-neutral runtime contract](docs/architecture/channel-runtime-contract.md)
+- [L4 Memory Learning architecture](docs/architecture/l4-memory-learning-architecture.md)
+- [L4 Memory Learning rollout and certification](docs/operations/l4-memory-learning-rollout-and-certification.md)
 - [Fault recovery runbook](docs/operations/fault-recovery.md)
 - [Autonomy rollout](docs/operations/autonomy-rollout.md)
 - [Performance and cost](docs/operations/performance-and-cost.md)
@@ -603,12 +672,6 @@ docs/                             Architecture, ADRs, operations, PRD, and resea
 
 ## Current boundaries
 
-The current BeeMax release candidate intentionally does not include a fixed customer business ontology, a second Agent Loop, high-risk fully autonomous execution, large multi-Agent organizations, or arbitrary model-authored production Skill mutation. It does include an `adaptive_learning`-gated managed-Skill lane: only immutable, integrity-sealed versions with accepted trial identities and promotion authority can enter a bounded canary, and verified operational evidence may promote or roll that pointer back without rewriting historical versions.
+BeeMax v1.5.1 intentionally does not include a fixed customer business ontology, a second Agent Loop, high-risk fully autonomous execution, large multi-Agent organizations, or arbitrary model-authored production Skill mutation. It does include an `adaptive_learning`-gated managed-Skill lane: only immutable, integrity-sealed versions with accepted trial identities and promotion authority can enter a bounded canary, and verified operational evidence may promote or roll that pointer back without rewriting historical versions.
 
 Planned extension points include additional registry adapters such as Slack, Discord, DingTalk, and WeCom; Feishu User OAuth for private resources; externally backed work queues for larger horizontal deployments; and deeper enterprise policy integrations.
-
----
-
-**中文简介：** 当前 BeeMax 候选版本是一个基于 Pi 的持久化智能体运行时。它通过同一个 Profile Gateway 接入飞书/Lark、Telegram 与未来渠道，通过 Situation/Work Context 理解未知业务语义，以作用域 Memory 保存证据。
-
-Task Ledger、Effect、Checkpoint 和 Verification 共同承担可恢复责任，企业策略与审批负责约束执行边界。
