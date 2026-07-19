@@ -22,6 +22,7 @@ tar -C "${ROOT}" \
 	--exclude='./.git' \
 	--exclude='./pi/.git' \
 	--exclude='./.github' \
+	--exclude='*/.github' \
 	--exclude='./.scratch' \
 	--exclude='./tmp' \
 	--exclude='./evals' \
