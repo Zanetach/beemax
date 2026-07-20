@@ -169,6 +169,8 @@ function stableCapabilityRequirementId(index: number, clause: WorkContract["capa
 
 const CAPABILITY_REFERENCE_SUFFIX = /^\s*(?:的\s*)?(?:回执|结果|输出|证据|记录|清单|元数据|manifest\b|receipt\b|result\b|output\b|evidence\b|record\b|metadata\b)/iu;
 const CAPABILITY_IDENTIFIER_CHAR = /[a-z0-9_:@.-]/iu;
+const HTML_ARTIFACT_PATTERN = String.raw`(?:\bhtml?\b|\.html?\b|网页)`;
+const PDF_ARTIFACT_PATTERN = String.raw`(?:\bpdf\b|\.pdf\b)`;
 
 function explicitCapabilityExecutionToolNames(requirementText: string, tools: ReadonlyArray<{ name: string }>): string[] {
 	const text = requirementText.normalize("NFKC").toLocaleLowerCase();
@@ -214,16 +216,83 @@ function deterministicFileBoundaryToolNames(requirementText: string, tools: Read
 function deterministicArtifactBoundaryToolNames(requirementText: string, tools: ReadonlyArray<{ name: string }>): string[] {
 	const available = new Set(tools.map((tool) => tool.name));
 	const text = requirementText.normalize("NFKC").toLocaleLowerCase();
-	const html = String.raw`(?:\bhtml?\b|\.html?\b|网页)`;
-	const pdf = String.raw`(?:\bpdf\b|\.pdf\b)`;
-	const chineseSourceToPdf = new RegExp(String.raw`(?:把|将|由|从)?\s*[^。；;]{0,120}?${html}[^。；;]{0,80}?(?:渲染|转换|转成|导出)(?:为|成|到)?[^。；;]{0,80}?${pdf}`, "iu");
-	const englishSourceToPdf = new RegExp(String.raw`(?:render|convert|export)\b[^.;]{0,120}?${html}[^.;]{0,80}?\b(?:to|as|into)\b[^.;]{0,80}?${pdf}|${pdf}[^.;]{0,80}?\bfrom\b[^.;]{0,80}?${html}`, "iu");
+	const chineseSourceToPdf = new RegExp(String.raw`(?:把|将|由|从)?\s*[^。；;]{0,120}?${HTML_ARTIFACT_PATTERN}[^。；;]{0,80}?(?:渲染|转换|转成|导出)(?:为|成|到)?[^。；;]{0,80}?${PDF_ARTIFACT_PATTERN}`, "iu");
+	const englishSourceToPdf = new RegExp(String.raw`(?:render|convert|export)\b[^.;]{0,120}?${HTML_ARTIFACT_PATTERN}[^.;]{0,80}?\b(?:to|as|into)\b[^.;]{0,80}?${PDF_ARTIFACT_PATTERN}|${PDF_ARTIFACT_PATTERN}[^.;]{0,80}?\bfrom\b[^.;]{0,80}?${HTML_ARTIFACT_PATTERN}`, "iu");
 	const selected: string[] = [];
 	if (available.has("artifact_render") && (chineseSourceToPdf.test(text) || englishSourceToPdf.test(text))) selected.push("artifact_render");
-	const artifactSubject = new RegExp(String.raw`${html}|${pdf}|文件|文档|artifact|document|file`, "iu");
+	const artifactSubject = new RegExp(String.raw`${HTML_ARTIFACT_PATTERN}|${PDF_ARTIFACT_PATTERN}|文件|文档|artifact|document|file`, "iu");
 	const inspection = /独立检查|检查|验证|核验|校验|审查|比较|对比|\b(?:inspect|verify|validate|check|audit|compare)\b/iu;
 	if (available.has("artifact_inspect") && artifactSubject.test(text) && inspection.test(text)) selected.push("artifact_inspect");
 	return selected;
+}
+
+interface TurnArtifactPipelineSelection {
+	candidates: CapabilitySelectionCandidate[];
+	missingResearchProvider: boolean;
+	searchToolName?: "web_search" | "exa_web_search";
+}
+
+function deterministicTurnArtifactPipelineSelection(
+	requestText: string,
+	planningSignals: PlanningSignals | undefined,
+	tools: ReadonlyArray<ToolDefinition | ToolInfo>,
+	admittedInventory: ReadonlySet<string>,
+	providerAvailability: ProviderAvailabilityMetadata = { recoveries: [], restrictions: [] },
+): TurnArtifactPipelineSelection {
+	const text = requestText.normalize("NFKC").toLocaleLowerCase();
+	const separator = String.raw`(?:[,，、+&/]|和|与|及|以及|并且|\b(?:and|plus)\b)`;
+	const pairedFormats = new RegExp(String.raw`(?:${HTML_ARTIFACT_PATTERN}\s*${separator}\s*[^。；;\n]{0,24}?${PDF_ARTIFACT_PATTERN}|${PDF_ARTIFACT_PATTERN}\s*${separator}\s*[^。；;\n]{0,24}?${HTML_ARTIFACT_PATTERN})`, "iu");
+	const pairedFormatMatch = pairedFormats.exec(text);
+	if (!pairedFormatMatch) return { candidates: [], missingResearchProvider: false };
+	const beforePairedFormats = text.slice(Math.max(0, pairedFormatMatch.index - 80), pairedFormatMatch.index);
+	const explicitArtifactOutput = /(?:输出|交付|导出|保存|\b(?:output|deliver|export|save)\b)[^。；;.\n]{0,50}$/iu.test(beforePairedFormats);
+	const creationIntent = /做一份|制作|生成|创建|编写|\b(?:produce|create|generate|make|build|write)\b/iu.test(text);
+	const artifactDeliverable = /文件|文档|报告|格式|版本|成品|\b(?:files?|documents?|reports?|artifacts?|formats?|versions?|deliverables?|outputs?)\b/iu.test(text);
+	const discussesFormats = /(?:关于|比较|对比|区别|差异|\b(?:about|regarding|concerning|compare|comparison|comparing|versus|vs\.?|on)\b)[^。；;.\n]{0,50}$/iu.test(beforePairedFormats);
+	const requestsDelivery = explicitArtifactOutput || (creationIntent && artifactDeliverable && !discussesFormats);
+	if (!requestsDelivery) return { candidates: [], missingResearchProvider: false };
+
+	const availableTools = tools.filter((tool) => admittedInventory.has(tool.name));
+	const selected: string[] = [];
+	let missingResearchProvider = false;
+	let searchToolName: TurnArtifactPipelineSelection["searchToolName"];
+	if (planningSignals?.requiresResearch) {
+		const recoveredProviders = new Set(providerAvailability.recoveries.map((item) => item.toolName));
+		const restrictedProviders = new Set(providerAvailability.restrictions.map((item) => item.toolName));
+		const searchTools = ["web_search", "exa_web_search"]
+			.flatMap((name) => availableTools.filter((tool) => tool.name === name));
+		const operationalSearch = searchTools.find((tool) => {
+			const item = toolSpecInventoryItem(tool);
+			return recoveredProviders.has(tool.name) || (!restrictedProviders.has(tool.name) && item.configured && item.health !== "configuration_required" && item.health !== "unhealthy" && item.health !== "unavailable");
+		});
+		if (operationalSearch) {
+			searchToolName = operationalSearch.name as TurnArtifactPipelineSelection["searchToolName"];
+			selected.push(operationalSearch.name);
+		}
+		else missingResearchProvider = true;
+	}
+	if (availableTools.some((tool) => tool.name === "write")) selected.push("write");
+	if (availableTools.some((tool) => tool.name === "artifact_render")) selected.push("artifact_render");
+
+	const candidates = [...new Set(selected)].map((name) => {
+		const tool = availableTools.find((candidate) => candidate.name === name)!;
+		const item = toolSpecInventoryItem(tool);
+		return { kind: item.kind === "mcp" ? "mcp" as const : "tool" as const, name, version: item.version, confidence: 1, necessity: "required" as const, sourceToolName: name };
+	});
+	return { candidates, missingResearchProvider, ...(searchToolName ? { searchToolName } : {}) };
+}
+
+function mergeCapabilitySelectionCandidates(
+	selected: readonly CapabilitySelectionCandidate[],
+	requiredDependencies: readonly CapabilitySelectionCandidate[],
+): CapabilitySelectionCandidate[] {
+	const dependencyNames = new Set(requiredDependencies.map((candidate) => candidate.sourceToolName ?? candidate.name));
+	const prioritizedDependencies = requiredDependencies.map((dependency) => {
+		const name = dependency.sourceToolName ?? dependency.name;
+		const providerCandidate = selected.find((candidate) => candidate.kind !== "skill" && (candidate.sourceToolName ?? candidate.name) === name);
+		return providerCandidate ? { ...providerCandidate, necessity: "required" as const } : dependency;
+	});
+	return [...prioritizedDependencies, ...selected.filter((candidate) => candidate.kind === "skill" || !dependencyNames.has(candidate.sourceToolName ?? candidate.name))];
 }
 
 function reconcileExplicitCapabilityExecutionCandidates(
@@ -837,6 +906,10 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 			let executionTraceStarted = false;
 			const contractRequiresCapabilityResolution = Boolean(workContract?.capabilityRequirements.length);
 			const capabilityRequirements = (workContract?.capabilityRequirements ?? []).map((clause, index) => ({ id: stableCapabilityRequirementId(index, clause), text: clause.text }));
+			const executionCapabilityInventory = new Set((admittedTools ?? allTools.map((tool) => tool.name)).filter((name) => !operationallySuppressedToolNames.has(name)));
+			let turnLocalArtifactPipeline = workContract
+				? { candidates: [], missingResearchProvider: false }
+				: deterministicTurnArtifactPipelineSelection(input.text, planning?.signals, allTools, executionCapabilityInventory);
 			const capabilityBoundaries = workContract ? [
 				...workContract.constraints.map((clause) => ({ kind: "constraint" as const, text: clause.text })),
 				...workContract.prohibitions.map((clause) => ({ kind: "prohibition" as const, text: clause.text })),
@@ -872,13 +945,23 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 						const routed = normalized ? applyOperationalRouting(normalized) : undefined;
 						return routed && inventory.has(routed.sourceToolName!) && operationalInventory.has(routed.sourceToolName!) ? [routed] : [];
 					});
-					const admissibleCandidates = restoreUncoveredCapabilityCandidates(reconcileExplicitCapabilityExecutionCandidates(providerCandidates, capabilityRequirements, allTools, operationalInventory), capabilityRequirements, allTools, operationalInventory);
+					if (isTrustedCapabilityProviderResolutionTool(capabilityPrefetch)) {
+						providerPrefetchAvailability = providerAvailabilityMetadata(proposal.providerResolutions, admittedInventory);
+						if (!workContract) turnLocalArtifactPipeline = deterministicTurnArtifactPipelineSelection(input.text, planning?.signals, allTools, executionCapabilityInventory, providerPrefetchAvailability);
+					}
+					const providerAdmissibleCandidates = restoreUncoveredCapabilityCandidates(reconcileExplicitCapabilityExecutionCandidates(providerCandidates, capabilityRequirements, allTools, operationalInventory), capabilityRequirements, allTools, operationalInventory);
+					const activationProviderCandidates = turnLocalArtifactPipeline.searchToolName
+						? providerAdmissibleCandidates.filter((candidate) => {
+							const name = candidate.sourceToolName ?? candidate.name;
+							return (name !== "web_search" && name !== "exa_web_search") || name === turnLocalArtifactPipeline.searchToolName;
+						})
+						: providerAdmissibleCandidates;
+					const admissibleCandidates = mergeCapabilitySelectionCandidates(activationProviderCandidates, turnLocalArtifactPipeline.candidates);
 					semanticRequestedTools = [...new Set(admissibleCandidates.filter((candidate) => candidate.kind !== "skill" && candidate.necessity !== "alternative").map((candidate) => candidate.sourceToolName ?? candidate.name))].slice(0, 10);
 					const candidateToolNames = new Set(admissibleCandidates.filter((candidate) => candidate.kind !== "skill").map((candidate) => candidate.sourceToolName ?? candidate.name));
 					const proposedTools = [...semanticRequestedTools, ...(proposal.activatedTools ?? proposal.candidates.filter((candidate) => candidate.kind !== "skill").map((candidate) => candidate.name))]
 						.filter((name) => candidateToolNames.has(name) || CAPABILITY_CONTROL_TOOLS.has(name) || SKILL_LIFECYCLE_TOOLS.has(name));
 					semanticPrefetchedTools = [...new Set(proposedTools.filter((name) => inventory.has(name) && operationalInventory.has(name)))].slice(0, 10);
-					if (isTrustedCapabilityProviderResolutionTool(capabilityPrefetch)) providerPrefetchAvailability = providerAvailabilityMetadata(proposal.providerResolutions, admittedInventory);
 					if (proposal.skillBlocker?.code === "skill_not_installed" && proposal.skillBlocker.name === explicitlyRequestedSkill) skillAdmissionBlocker = `Explicit Skill ${proposal.skillBlocker.name} is not installed`;
 					const proposedSkillNames = [...new Set(proposal.skills.map((skill) => skill.name).filter((name) => admissibleCandidates.some((candidate) => candidate.kind === "skill" && candidate.name === name)))].slice(0, 10);
 					for (const name of proposedSkillNames) {
@@ -889,7 +972,7 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 					prefetchedSkills = [...admittedSkills.keys()];
 					if (!prefetchedSkills.length) semanticPrefetchedTools = semanticPrefetchedTools.filter((name) => !SKILL_LIFECYCLE_TOOLS.has(name));
 					const cognitionId = validCapabilityCognitionId(proposal.cognitionId);
-					if (cognitionId) capabilityDecisions.set(cognitionId, capabilityDecisionCandidates(admissibleCandidates));
+					if (cognitionId) capabilityDecisions.set(cognitionId, capabilityDecisionCandidates(providerAdmissibleCandidates));
 					if (contractRequiresCapabilityResolution) {
 						if (!cognitionId || !isTrustedCapabilityProviderResolutionTool(capabilityPrefetch)) {
 							capabilityPrefetchFailed = true;
@@ -926,13 +1009,16 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 					capabilityPrefetchBlocker = redactCredentialMaterial(errorMessage(error)).slice(0, 500);
 				}
 			}
+			if (turnLocalArtifactPipeline.candidates.length) {
+				const cognitionId = `cap:core-turn-artifact-pipeline:${createHash("sha256").update(JSON.stringify({ text: input.text, candidates: capabilityDecisionCandidates(turnLocalArtifactPipeline.candidates) })).digest("hex")}`;
+				capabilityDecisions.set(cognitionId, capabilityDecisionCandidates(turnLocalArtifactPipeline.candidates));
+			}
 			if (explicitlyRequestedSkill && !admittedSkills.has(explicitlyRequestedSkill)) {
 				admittedSkills.clear();
 				prefetchedSkills = [];
 				semanticPrefetchedTools = semanticPrefetchedTools.filter((name) => !SKILL_LIFECYCLE_TOOLS.has(name));
 				skillAdmissionBlocker ??= `Explicit Skill ${explicitlyRequestedSkill} is not installed or unavailable`;
 			}
-			const executionCapabilityInventory = new Set((admittedTools ?? allTools.map((tool) => tool.name)).filter((name) => !operationallySuppressedToolNames.has(name)));
 			const deterministicContractCandidates = capabilityPrefetchFailed && capabilityRequirements.length
 				? reconcileExplicitCapabilityExecutionCandidates([], capabilityRequirements, allTools, executionCapabilityInventory)
 				: [];
@@ -959,7 +1045,11 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 				: [];
 			const prefetchedTools = capabilityPrefetch?.beemaxCapabilityPrefetch && !capabilityPrefetchFailed
 				? semanticPrefetchedTools
-				: [...new Set([...lexicalPrefetchHints, ...deterministicContractFallbackTools])];
+				: [...new Set([
+					...lexicalPrefetchHints,
+					...turnLocalArtifactPipeline.candidates.map((candidate) => candidate.sourceToolName ?? candidate.name),
+					...deterministicContractFallbackTools,
+				])];
 			// Only the entry controls are visible before a selected Skill advances.
 			// Route, resource, and completion controls remain in the immutable inventory
 			// and are promoted by version-locked lifecycle receipts from the prior phase.
@@ -967,6 +1057,7 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 			const exposeCapabilityDiscovery = Boolean(
 				admittedTools?.includes("capability_discover")
 					|| semanticPrefetchedTools.includes("capability_acquire")
+					|| turnLocalArtifactPipeline.missingResearchProvider
 					|| (capabilityPrefetchFailed && !deterministicCapabilityResolutionSucceeded)
 					|| (shouldRunCapabilityPrefetch && semanticCapabilityNoMatch && Boolean(
 						workContract?.capabilityRequirements.length
@@ -1021,7 +1112,7 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 				if (taskId) this.taskLedger?.updateVerificationRequirements?.(input.source.delegatedTask?.ownerKey ?? responsibilityOwnerKey(input.source), taskId, taskVerificationRequirements);
 			};
 			persistTaskVerificationRequirements(proposedProgressiveTools);
-			const prefetchedProviderBlocker = providerPrefetchAvailability.restrictions.find((item) => !item.installable);
+			const prefetchedProviderBlocker = providerPrefetchAvailability.restrictions.find((item) => semanticallySelectedToolNames.has(item.toolName) && !item.installable);
 			if (prefetchedProviderBlocker) throw new AgentRunError(prefetchedProviderBlocker.blocker, false, undefined);
 			const activatePlannedTools = (names: readonly string[]): string[] => {
 				const eligible = names.filter((name) => toolSpecPlan.direct.some((entry) => entry.toolName === name) || toolSpecPlan.deferred.some((entry) => entry.toolName === name));
