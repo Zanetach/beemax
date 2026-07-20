@@ -1,6 +1,6 @@
 # Caddy Artifact Site
 
-BeeMax can publish verified document outputs through a Profile-owned Caddy
+BeeMax can publish Artifact Manifest integrity-checked document outputs through a Profile-owned Caddy
 process. The final channel reply contains stable links in addition to the
 existing native file delivery.
 
@@ -25,6 +25,11 @@ Each enabled Profile owns a separate Caddy child process, generated Caddyfile,
 PID file, publication store, and stable default loopback port. If ports are
 overridden manually, every concurrently running Profile must use a distinct
 `listen` address and matching `publicBaseUrl`.
+
+Automatic addresses are persisted in
+`<BEEMAX_HOME>/state/artifact-site-addresses.json`. Allocation is serialized
+across Profile Gateway processes and resolves a hash collision to the next free
+port. An explicit port already reserved by another Profile fails closed.
 
 The loopback default opens from a browser on the Gateway machine. To make links
 reachable from other devices, put an authenticated HTTPS reverse proxy or

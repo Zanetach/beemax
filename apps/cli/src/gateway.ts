@@ -50,7 +50,8 @@ import { createProfileCapabilityProviderBundle } from "./capability-provider-com
 import { createLocalArtifactRuntime } from "./artifact-composition.ts";
 import { createInteractiveContractCognition } from "./interactive-contract-cognition.ts";
 import { admitLearningObjective as admitLearningObjectiveThroughRuntime } from "./learning-objective-composition.ts";
-import { CaddyArtifactSite } from "./artifact-site.ts";
+import { artifactSiteLocalBaseUrl, CaddyArtifactSite } from "./artifact-site.ts";
+import { reserveProfileArtifactSiteListen } from "./artifact-site-address-registry.ts";
 
 export async function runProfileAutomation(
 	runtime: AgentRuntimePort<SessionSource>,
@@ -207,17 +208,26 @@ export async function runGateway(config: BeeMaxConfig): Promise<void> {
 	try {
 	profileHost.beginStart();
 	if (config.gateway.artifactSite.enabled) {
+		const listen = await reserveProfileArtifactSiteListen({
+			home: beemaxHome(),
+			profile: config.profile,
+			preferredListen: config.gateway.artifactSite.listen,
+			automatic: config.gateway.artifactSite.automaticListen,
+		});
+		const publicBaseUrl = config.gateway.artifactSite.automaticPublicBaseUrl
+			? artifactSiteLocalBaseUrl(listen)
+			: config.gateway.artifactSite.publicBaseUrl;
 		artifactSite = new CaddyArtifactSite({
 			workspace: config.paths.cwd,
 			storageRoot: join(config.paths.agentDir, "artifact-site", "public"),
 			runtimeRoot: join(config.paths.agentDir, "artifact-site", "runtime"),
-			publicBaseUrl: config.gateway.artifactSite.publicBaseUrl,
+			publicBaseUrl,
 			command: config.gateway.artifactSite.command,
-			listen: config.gateway.artifactSite.listen,
+			listen,
 		});
 		await artifactSite.start();
 		startupCleanup.push(() => artifactSite?.stop());
-		console.info(`[beemax:${config.profile}] Artifact Site ready: ${config.gateway.artifactSite.publicBaseUrl}`);
+		console.info(`[beemax:${config.profile}] Artifact Site ready: ${publicBaseUrl}`);
 	}
 
 	const memory = new MemoryStore(config.memory.dbPath, config.profile);

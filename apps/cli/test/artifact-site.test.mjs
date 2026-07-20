@@ -23,7 +23,7 @@ function fileArtifact(name, mediaType, bytes) {
 	return { artifact: { type: "file", uri: manifest.locator.uri, label: name, manifest }, manifest };
 }
 
-test("Caddy Artifact Site publishes immutable verified HTML, PDF, and Word outputs", async () => {
+test("Caddy Artifact Site publishes immutable integrity-checked HTML, PDF, and Word outputs", async () => {
 	const root = await mkdtemp(join(tmpdir(), "beemax-artifact-site-"));
 	const workspace = join(root, "workspace");
 	const storageRoot = join(root, "public");
@@ -176,6 +176,58 @@ test("Caddy Artifact Site rejects pre-existing symlinks in the publication store
 			listen: "127.0.0.1:8788",
 		});
 		await assert.rejects(site.publish(artifact, { path: join(workspace, "report.pdf"), mimeType: "application/pdf", name: "report.pdf" }), /regular file|symbolic link/i);
+	} finally {
+		await rm(root, { recursive: true, force: true });
+	}
+});
+
+test("Caddy Artifact Site rejects a symlinked digest directory", async () => {
+	const root = await mkdtemp(join(tmpdir(), "beemax-artifact-site-directory-symlink-"));
+	const workspace = join(root, "workspace");
+	const storageRoot = join(root, "public");
+	const bytes = Buffer.from("%PDF-directory-symlink");
+	try {
+		await mkdir(workspace, { recursive: true });
+		await writeFile(join(workspace, "report.pdf"), bytes);
+		const { artifact, manifest } = fileArtifact("report.pdf", "application/pdf", bytes);
+		await mkdir(storageRoot, { recursive: true });
+		const outside = join(root, "outside");
+		await mkdir(outside);
+		await symlink(outside, join(storageRoot, manifest.sha256));
+		const site = new CaddyArtifactSite({
+			workspace,
+			storageRoot,
+			runtimeRoot: join(root, "runtime"),
+			publicBaseUrl: "http://127.0.0.1:8788/artifacts",
+			command: "caddy",
+			listen: "127.0.0.1:8788",
+		});
+		await assert.rejects(site.publish(artifact, { path: join(workspace, "report.pdf"), mimeType: "application/pdf", name: "report.pdf" }), /publication directory|symbolic link/i);
+	} finally {
+		await rm(root, { recursive: true, force: true });
+	}
+});
+
+test("a managed Artifact Site refuses links after its Caddy child exits", async () => {
+	const root = await mkdtemp(join(tmpdir(), "beemax-artifact-site-exit-"));
+	const child = new FakeChildProcess();
+	try {
+		const site = new CaddyArtifactSite({
+			workspace: join(root, "workspace"),
+			storageRoot: join(root, "public"),
+			runtimeRoot: join(root, "runtime"),
+			publicBaseUrl: "http://127.0.0.1:8788/artifacts",
+			command: "caddy",
+			listen: "127.0.0.1:8788",
+		}, {
+			spawn: () => child,
+			fetch: async () => ({ ok: true, status: 200 }),
+			delay: async () => {},
+		});
+		await site.start();
+		child.exitCode = 1;
+		child.emit("exit", 1, null);
+		await assert.rejects(site.publish({}, {}), /not running/i);
 	} finally {
 		await rm(root, { recursive: true, force: true });
 	}

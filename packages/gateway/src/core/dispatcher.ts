@@ -78,7 +78,7 @@ export interface DispatcherDeps {
 	messageDeduplicator?: MessageDeduplicator;
 	/** Trusted Profile workspace used to resolve content-addressed workspace: artifacts. */
 	artifactWorkspace?: string;
-	/** Optional immutable document publisher; receives only workspace files that passed Manifest verification. */
+	/** Optional immutable document publisher; receives only workspace files that passed Artifact Manifest integrity checks. */
 	artifactPublisher?: ArtifactPublicationPort;
 	/** Commits an interactive Delivery Receipt into the shared Completion Outbox. */
 	completionAcknowledger?: Required<Pick<TaskLedger, "getObjectiveCompletion" | "acknowledgeObjectiveCompletion">>;

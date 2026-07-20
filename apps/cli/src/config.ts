@@ -75,6 +75,10 @@ export interface ArtifactSiteConfig {
 	command: string;
 	listen: string;
 	publicBaseUrl: string;
+	/** Internal provenance used to reserve a collision-free stable Profile address at Gateway startup. */
+	automaticListen: boolean;
+	/** True when publicBaseUrl should track an automatically reserved loopback listen address. */
+	automaticPublicBaseUrl: boolean;
 }
 export type GatewayChannelCredential =
 	| { adapter: "feishu"; appId: string; appSecret: string; webhookVerificationToken?: string; webhookEncryptKey?: string }
@@ -322,14 +326,18 @@ export function loadConfig(configPath?: string, profile = "default"): BeeMaxConf
 		deliveryWindowMs: boundedNumber(env.BEEMAX_PROACTIVE_DELIVERY_WINDOW_MS ?? cfg.gateway?.proactiveDelivery?.deliveryWindowMs ?? feishu.activation.replyWindowMs, 60_000, 1_000, 24 * 60 * 60_000),
 		maxTrackedLanes: boundedNumber(env.BEEMAX_PROACTIVE_MAX_TRACKED_LANES ?? cfg.gateway?.proactiveDelivery?.maxTrackedLanes ?? feishu.activation.maxTrackedResponseLanes, 10_000, 1, 100_000),
 	};
-	const artifactSiteListen = validateArtifactSiteListen(str(env.BEEMAX_ARTIFACT_SITE_LISTEN ?? cfg.gateway?.artifactSite?.listen ?? defaultArtifactSiteListen(profile)));
+	const configuredArtifactSiteListen = env.BEEMAX_ARTIFACT_SITE_LISTEN ?? cfg.gateway?.artifactSite?.listen;
+	const artifactSiteListen = validateArtifactSiteListen(str(configuredArtifactSiteListen ?? defaultArtifactSiteListen(profile)));
 	const artifactSiteCommand = str(env.BEEMAX_ARTIFACT_SITE_COMMAND ?? cfg.gateway?.artifactSite?.command ?? defaultCaddyCommand());
 	if (!artifactSiteCommand || /[\u0000-\u001f\u007f]/u.test(artifactSiteCommand)) throw new Error("Invalid gateway.artifactSite.command");
+	const configuredArtifactSitePublicBaseUrl = env.BEEMAX_ARTIFACT_SITE_PUBLIC_BASE_URL ?? cfg.gateway?.artifactSite?.publicBaseUrl;
 	const artifactSite: ArtifactSiteConfig = {
 		enabled: parseBool(env.BEEMAX_ARTIFACT_SITE_ENABLED ?? cfg.gateway?.artifactSite?.enabled ?? false),
 		command: artifactSiteCommand,
 		listen: artifactSiteListen,
-		publicBaseUrl: validateArtifactSitePublicBaseUrl(str(env.BEEMAX_ARTIFACT_SITE_PUBLIC_BASE_URL ?? cfg.gateway?.artifactSite?.publicBaseUrl ?? artifactSiteLocalBaseUrl(artifactSiteListen))),
+		publicBaseUrl: validateArtifactSitePublicBaseUrl(str(configuredArtifactSitePublicBaseUrl ?? artifactSiteLocalBaseUrl(artifactSiteListen))),
+		automaticListen: configuredArtifactSiteListen === undefined,
+		automaticPublicBaseUrl: configuredArtifactSitePublicBaseUrl === undefined,
 	};
 	const heartbeatPlatform = str(env.BEEMAX_HEARTBEAT_PLATFORM ?? cfg.automation?.heartbeat?.platform ?? channels.find((channel) => channel.enabled)?.adapter ?? "feishu");
 	const heartbeatInstances = channels.filter((channel) => channel.enabled && channel.adapter === heartbeatPlatform);

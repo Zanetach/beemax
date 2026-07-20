@@ -148,6 +148,8 @@ test("Profile config isolates and validates the Caddy Artifact Site", async () =
 	const paths = await createProfile("artifact-site", { root, home });
 	const defaults = loadConfig(paths.configPath, "artifact-site").gateway.artifactSite;
 	assert.equal(defaults.enabled, false);
+	assert.equal(defaults.automaticListen, true);
+	assert.equal(defaults.automaticPublicBaseUrl, true);
 	assert.match(defaults.command, /caddy$/u);
 	assert.match(defaults.listen, /^127\.0\.0\.1:\d+$/u);
 	assert.equal(defaults.publicBaseUrl, `http://${defaults.listen}/artifacts`);
@@ -168,6 +170,8 @@ test("Profile config isolates and validates the Caddy Artifact Site", async () =
 		command: "/custom/bin/caddy",
 		listen: "0.0.0.0:9443",
 		publicBaseUrl: "https://reports.example.test/files",
+		automaticListen: false,
+		automaticPublicBaseUrl: false,
 	});
 
 	await writeFile(paths.configPath, "gateway:\n  artifactSite:\n    listen: bad-address\n");

@@ -21,6 +21,12 @@ export interface PublishedDocument {
 	disposition: "inline" | "attachment";
 }
 
+interface DocumentTypePolicy {
+	mediaType: string;
+	disposition: PublishedDocument["disposition"];
+	contentSecurityPolicy?: string;
+}
+
 interface CaddyProcess {
 	exitCode: number | null;
 	signalCode: NodeJS.Signals | null;
@@ -39,9 +45,10 @@ interface CaddyArtifactSiteDependencies {
 	delay: (milliseconds: number) => Promise<void>;
 }
 
-const DOCUMENT_TYPES = new Map<string, { mediaType: string; disposition: PublishedDocument["disposition"] }>([
-	[".html", { mediaType: "text/html", disposition: "inline" }],
-	[".htm", { mediaType: "text/html", disposition: "inline" }],
+const HTML_CONTENT_SECURITY_POLICY = "default-src 'self' data: blob:; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'";
+const DOCUMENT_TYPES = new Map<string, DocumentTypePolicy>([
+	[".html", { mediaType: "text/html", disposition: "inline", contentSecurityPolicy: HTML_CONTENT_SECURITY_POLICY }],
+	[".htm", { mediaType: "text/html", disposition: "inline", contentSecurityPolicy: HTML_CONTENT_SECURITY_POLICY }],
 	[".pdf", { mediaType: "application/pdf", disposition: "inline" }],
 	[".doc", { mediaType: "application/msword", disposition: "attachment" }],
 	[".docx", { mediaType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document", disposition: "attachment" }],
@@ -60,6 +67,7 @@ export class CaddyArtifactSite {
 	private readonly dependencies: CaddyArtifactSiteDependencies;
 	private child?: CaddyProcess;
 	private ready = false;
+	private lifecycleManaged = false;
 
 	constructor(options: CaddyArtifactSiteOptions, dependencies: Partial<CaddyArtifactSiteDependencies> = {}) {
 		this.options = options;
@@ -70,7 +78,7 @@ export class CaddyArtifactSite {
 			throw new Error("Caddy Artifact Site paths must be absolute");
 		}
 		if (!options.command.trim() || /[\u0000-\u001f\u007f]/u.test(options.command)) throw new Error("Caddy Artifact Site command is invalid");
-		const listen = parseListenAddress(options.listen);
+		const listen = parseArtifactSiteListen(options.listen);
 		this.publicBaseUrl = publicBaseUrl;
 		this.routePrefix = routePrefix;
 		this.healthUrl = `http://${healthAuthority(listen.host, listen.port)}/healthz`;
@@ -86,10 +94,15 @@ export class CaddyArtifactSite {
 	}
 
 	async start(): Promise<void> {
+		this.lifecycleManaged = true;
 		if (this.isRunning) return;
 		if (this.child && processIsLive(this.child)) throw new Error("Caddy Artifact Site is already starting");
 		await mkdir(this.options.storageRoot, { recursive: true, mode: 0o700 });
 		await mkdir(this.options.runtimeRoot, { recursive: true, mode: 0o700 });
+		await Promise.all([
+			assertPrivateDirectory(this.options.storageRoot, "publication root"),
+			assertPrivateDirectory(this.options.runtimeRoot, "runtime root"),
+		]);
 		const dataRoot = join(this.options.runtimeRoot, "data");
 		const configRoot = join(this.options.runtimeRoot, "config");
 		await Promise.all([
@@ -179,6 +192,7 @@ export class CaddyArtifactSite {
 	}
 
 	async publish(artifact: TaskArtifact, media: MediaArtifact): Promise<PublishedDocument> {
+		if (this.lifecycleManaged && !this.isRunning) throw new Error("Caddy Artifact Site is not running; refusing to publish an online link");
 		const manifest = artifact.manifest;
 		if (artifact.type !== "file" || !manifest || manifest.locator.kind !== "workspace") {
 			throw new Error("Caddy Artifact Site requires a file Artifact with a workspace Manifest");
@@ -186,7 +200,7 @@ export class CaddyArtifactSite {
 		if (!/^[a-f0-9]{64}$/u.test(manifest.sha256)) throw new Error("Caddy Artifact Site requires a valid Artifact SHA-256");
 		const name = media.name ?? basename(media.path);
 		if (!name || name !== basename(name) || /[\u0000-\u001f\u007f]/u.test(name)) throw new Error("Caddy Artifact Site received an invalid document name");
-		if (name !== basename(media.path)) throw new Error("Caddy Artifact Site document name must match the verified source name");
+		if (name !== basename(media.path)) throw new Error("Caddy Artifact Site document name must match the integrity-checked source name");
 		const documentType = DOCUMENT_TYPES.get(extname(name).toLowerCase());
 		if (!documentType) throw new Error(`Caddy Artifact Site unsupported document type: ${name}`);
 		if (manifest.mediaType !== documentType.mediaType || media.mimeType !== documentType.mediaType) {
@@ -203,9 +217,12 @@ export class CaddyArtifactSite {
 		if (!sourceInfo.isFile() || sourceInfo.size !== manifest.byteLength) throw new Error("Caddy Artifact Site source failed Artifact integrity checks");
 		if (await sha256File(source) !== manifest.sha256) throw new Error("Caddy Artifact Site source failed Artifact integrity checks");
 
+		await mkdir(this.options.storageRoot, { recursive: true, mode: 0o700 });
+		await assertPrivateDirectory(this.options.storageRoot, "publication root");
 		const directory = join(this.options.storageRoot, manifest.sha256);
 		const destination = join(directory, name);
 		await mkdir(directory, { recursive: true, mode: 0o700 });
+		await assertPrivateDirectory(directory, "publication directory");
 		try {
 			await copyFile(source, destination, fsConstants.COPYFILE_EXCL);
 			await chmod(destination, 0o444);
@@ -241,16 +258,16 @@ export function validateArtifactSitePublicBaseUrl(value: string): string {
 	if (!routePrefix || routePrefix === "/" || !/^\/[A-Za-z0-9._~-]+(?:\/[A-Za-z0-9._~-]+)*$/u.test(routePrefix)) {
 		throw new Error("Caddy Artifact Site publicBaseUrl must contain a safe non-root path");
 	}
-	return value.replace(/\/+$/u, "");
+	return `${url.origin}${routePrefix}`;
 }
 
 export function validateArtifactSiteListen(value: string): string {
-	parseListenAddress(value);
+	parseArtifactSiteListen(value);
 	return value;
 }
 
 export function artifactSiteLocalBaseUrl(listen: string): string {
-	const parsed = parseListenAddress(listen);
+	const parsed = parseArtifactSiteListen(listen);
 	return `http://${healthAuthority(parsed.host, parsed.port)}/artifacts`;
 }
 
@@ -273,47 +290,7 @@ http://${listen} {
 			Cache-Control "public, max-age=31536000, immutable"
 		}
 
-		@html path *.html *.htm
-		header @html {
-			Content-Type text/html
-			Content-Disposition inline
-			Content-Security-Policy "default-src 'self' data: blob:; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'"
-		}
-		@pdf path *.pdf
-		header @pdf {
-			Content-Type application/pdf
-			Content-Disposition inline
-		}
-		@word path *.doc *.dot
-		header @word {
-			Content-Type application/msword
-			Content-Disposition attachment
-		}
-		@docx path *.docx
-		header @docx {
-			Content-Type application/vnd.openxmlformats-officedocument.wordprocessingml.document
-			Content-Disposition attachment
-		}
-		@docm path *.docm
-		header @docm {
-			Content-Type application/vnd.ms-word.document.macroEnabled.12
-			Content-Disposition attachment
-		}
-		@dotx path *.dotx
-		header @dotx {
-			Content-Type application/vnd.openxmlformats-officedocument.wordprocessingml.template
-			Content-Disposition attachment
-		}
-		@odt path *.odt
-		header @odt {
-			Content-Type application/vnd.oasis.opendocument.text
-			Content-Disposition attachment
-		}
-		@rtf path *.rtf
-		header @rtf {
-			Content-Type application/rtf
-			Content-Disposition attachment
-		}
+		${renderDocumentHeaderRules()}
 
 		file_server
 	}
@@ -323,7 +300,31 @@ http://${listen} {
 `;
 }
 
-function parseListenAddress(value: string): { host: string; port: number } {
+function renderDocumentHeaderRules(): string {
+	const groups = new Map<string, { extensions: string[]; policy: DocumentTypePolicy }>();
+	for (const [extension, policy] of DOCUMENT_TYPES) {
+		const key = `${policy.mediaType}\u0000${policy.disposition}\u0000${policy.contentSecurityPolicy ?? ""}`;
+		const group = groups.get(key) ?? { extensions: [], policy };
+		group.extensions.push(extension);
+		groups.set(key, group);
+	}
+	return [...groups.values()].map(({ extensions, policy }, index) => [
+		`@document_${index} path ${extensions.map((extension) => `*${extension}`).join(" ")}`,
+		`header @document_${index} {`,
+		`\tContent-Type ${policy.mediaType}`,
+		`\tContent-Disposition ${policy.disposition}`,
+		...(policy.contentSecurityPolicy ? [`\tContent-Security-Policy ${JSON.stringify(policy.contentSecurityPolicy)}`] : []),
+		"}",
+	].join("\n\t\t")).join("\n\t\t");
+}
+
+async function assertPrivateDirectory(path: string, label: string): Promise<void> {
+	const info = await lstat(path);
+	if (!info.isDirectory()) throw new Error(`Caddy Artifact Site ${label} must be a real directory, not a symbolic link`);
+	await chmod(path, 0o700);
+}
+
+export function parseArtifactSiteListen(value: string): { host: string; port: number } {
 	const match = /^(\[[0-9A-Fa-f:]+\]|[A-Za-z0-9.-]+):(\d{1,5})$/u.exec(value);
 	const port = Number(match?.[2]);
 	if (!match || !Number.isInteger(port) || port < 1 || port > 65_535) {
