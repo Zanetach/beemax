@@ -1,7 +1,9 @@
 export interface AdaptiveTextBufferOptions {
 	minChunkChars?: number;
+	initialPreferredChunkChars?: number;
 	preferredChunkChars?: number;
 	maxChunkChars?: number;
+	initialMaxWaitMs?: number;
 	maxWaitMs?: number;
 	flushSmallOnMaxWait?: boolean;
 }
@@ -13,9 +15,12 @@ export class AdaptiveTextBuffer {
 	private tail = Promise.resolve();
 	private closed = false;
 	private codeFenceOpen = false;
+	private committedChunks = 0;
 	private readonly minChunkChars: number;
+	private readonly initialPreferredChunkChars: number;
 	private readonly preferredChunkChars: number;
 	private readonly maxChunkChars: number;
+	private readonly initialMaxWaitMs: number;
 	private readonly maxWaitMs: number;
 	private readonly flushSmallOnMaxWait: boolean;
 	private readonly onChunk: (chunk: string) => void | Promise<void>;
@@ -24,15 +29,18 @@ export class AdaptiveTextBuffer {
 		this.onChunk = onChunk;
 		this.minChunkChars = options.minChunkChars ?? 12;
 		this.preferredChunkChars = Math.max(this.minChunkChars, options.preferredChunkChars ?? 36);
-		this.maxChunkChars = Math.max(this.preferredChunkChars, options.maxChunkChars ?? 96);
+		this.initialPreferredChunkChars = Math.max(this.minChunkChars, options.initialPreferredChunkChars ?? this.preferredChunkChars);
+		this.maxChunkChars = Math.max(this.initialPreferredChunkChars, this.preferredChunkChars, options.maxChunkChars ?? 96);
 		this.maxWaitMs = Math.max(50, options.maxWaitMs ?? 1_200);
+		this.initialMaxWaitMs = Math.max(50, options.initialMaxWaitMs ?? this.maxWaitMs);
 		this.flushSmallOnMaxWait = options.flushSmallOnMaxWait ?? false;
 	}
 
 	push(delta: string): void {
 		if (this.closed || !delta) return;
 		this.pending += delta;
-		const cut = readableCut(this.pending, this.minChunkChars, this.preferredChunkChars, this.maxChunkChars, this.codeFenceOpen);
+		const preferredChunkChars = this.committedChunks === 0 ? this.initialPreferredChunkChars : this.preferredChunkChars;
+		const cut = readableCut(this.pending, this.minChunkChars, preferredChunkChars, this.maxChunkChars, this.codeFenceOpen);
 		if (cut > 0) this.commit(cut);
 		if (this.pending) this.scheduleMaxWait();
 	}
@@ -54,16 +62,18 @@ export class AdaptiveTextBuffer {
 		this.pending = this.pending.slice(length);
 		if (!chunk) return;
 		if ((chunk.match(/```/g)?.length ?? 0) % 2 === 1) this.codeFenceOpen = !this.codeFenceOpen;
+		this.committedChunks++;
 		this.clearTimer();
 		this.tail = this.tail.then(() => this.onChunk(chunk));
 	}
 
 	private scheduleMaxWait(): void {
 		if (this.timer || (!this.flushSmallOnMaxWait && this.pending.length < this.minChunkChars)) return;
+		const waitMs = this.committedChunks === 0 ? this.initialMaxWaitMs : this.maxWaitMs;
 		this.timer = setTimeout(() => {
 			this.timer = undefined;
 			if (!this.closed && this.pending.length && (this.flushSmallOnMaxWait || this.pending.length >= this.minChunkChars)) this.commit(this.pending.length);
-		}, this.maxWaitMs);
+		}, waitMs);
 	}
 
 	private clearTimer(): void {

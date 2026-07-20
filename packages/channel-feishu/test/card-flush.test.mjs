@@ -27,7 +27,7 @@ test("FlushController lets urgent semantic updates preempt the normal cadence wi
 	flush.close();
 });
 
-test("FlushController rate-limits terminal patches and preserves updates queued during terminal rendering", async () => {
+test("FlushController preserves updates queued during terminal rendering", async () => {
 	const flush = new FlushController(1_000, 50); const frames = []; let releaseTerminal;
 	await flush.schedule(async () => { frames.push("initial"); return true; });
 	const terminal = flush.schedule(async () => { frames.push("terminal"); await new Promise((resolve) => { releaseTerminal = resolve; }); return true; }, true);
@@ -35,4 +35,13 @@ test("FlushController rate-limits terminal patches and preserves updates queued 
 	const concurrent = flush.schedule(async () => { frames.push("latest"); return true; }, false, true); releaseTerminal();
 	await Promise.all([terminal, concurrent]);
 	assert.deepEqual(frames, ["initial", "terminal", "latest"]); flush.close();
+});
+
+test("FlushController lets a terminal render bypass the normal and urgent cadence", async () => {
+	const flush = new FlushController(1_000, 250);
+	await flush.schedule(async () => true);
+	const startedAt = Date.now();
+	await flush.schedule(async () => true, true);
+	assert.ok(Date.now() - startedAt < 80, "terminal render should not wait for the urgent interval");
+	flush.close();
 });

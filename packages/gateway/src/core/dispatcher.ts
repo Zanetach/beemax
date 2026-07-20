@@ -19,7 +19,7 @@ import { createHash } from "node:crypto";
 import { createReadStream } from "node:fs";
 import { realpath, stat } from "node:fs/promises";
 import { basename, isAbsolute, relative, resolve, sep } from "node:path";
-import type { InboundMessage, InteractionPresentationPreferences, PlatformAdapter, PlatformCardAction } from "@beemax/channel-runtime";
+import type { InboundMessage, InteractionPresentationPreferences, PlatformAdapter, PlatformCardAction, PublishedArtifactPresentation } from "@beemax/channel-runtime";
 import { MessageDeduplicator } from "./message-deduplicator.ts";
 import { prepareAgentMediaInput } from "./media-input.ts";
 import type { ProfileBindingResolver } from "./profile-binding.ts";
@@ -33,12 +33,7 @@ interface CardBinding {
 	pendingApprovalId?: string;
 }
 
-export interface PublishedArtifactLink {
-	url: string;
-	name: string;
-	mediaType: string;
-	disposition: "inline" | "attachment";
-}
+export type PublishedArtifactLink = PublishedArtifactPresentation;
 
 export interface ArtifactPublicationPort {
 	publish(artifact: TaskArtifact, media: MediaArtifact): Promise<PublishedArtifactLink>;
@@ -282,10 +277,10 @@ export class Dispatcher {
 					return true;
 				}
 				const preparedArtifacts = await this.prepareTurnArtifacts(result.artifacts);
-				const finalResult = appendPublishedArtifactLinks(completion.result, preparedArtifacts);
+				const publishedArtifacts = publishedArtifactPresentations(preparedArtifacts);
 				let receipt;
 				try {
-					receipt = await presentation.finish(finalResult, { idempotencyKey: completion.deliveryIdempotencyKey, deliveryClass: "interactive" });
+					receipt = await presentation.finish(completion.result, { idempotencyKey: completion.deliveryIdempotencyKey, deliveryClass: "interactive", publishedArtifacts });
 				} catch (error) {
 					console.error(`[beemax] Interactive Objective delivery deferred to Completion Outbox: ${result.completionId} (${error instanceof Error ? error.message : String(error)})`);
 					return true;
@@ -302,7 +297,7 @@ export class Dispatcher {
 				}
 			} else {
 				const preparedArtifacts = await this.prepareTurnArtifacts(result.artifacts);
-				await presentation.finish(appendPublishedArtifactLinks(result.answer, preparedArtifacts));
+				await presentation.finish(result.answer, { publishedArtifacts: publishedArtifactPresentations(preparedArtifacts) });
 				await this.deliverTurnArtifacts(preparedArtifacts, exactSource);
 			}
 			return true;
@@ -463,26 +458,8 @@ export class Dispatcher {
 
 }
 
-function appendPublishedArtifactLinks(answer: string, artifacts: readonly PreparedTurnArtifact[]): string {
-	const seen = new Set<string>();
-	const links = artifacts.flatMap(({ published }) => {
-		if (!published || seen.has(published.url) || !isSafePublishedUrl(published.url)) return [];
-		seen.add(published.url);
-		const name = published.name.replace(/\\/gu, "\\\\").replace(/\[/gu, "\\[").replace(/\]/gu, "\\]");
-		const url = published.url.replace(/\(/gu, "%28").replace(/\)/gu, "%29");
-		return [`- [${name}](${url})${published.disposition === "attachment" ? "（下载）" : ""}`];
-	});
-	if (!links.length) return answer;
-	return `${answer.trimEnd()}\n\n在线打开 / 下载：\n${links.join("\n")}`;
-}
-
-function isSafePublishedUrl(value: string): boolean {
-	try {
-		const url = new URL(value);
-		return (url.protocol === "http:" || url.protocol === "https:") && !url.username && !url.password;
-	} catch {
-		return false;
-	}
+function publishedArtifactPresentations(artifacts: readonly PreparedTurnArtifact[]): PublishedArtifactPresentation[] {
+	return artifacts.flatMap(({ published }) => published ? [published] : []);
 }
 
 async function verifiedWorkspaceMedia(artifact: TaskArtifact, workspace: string): Promise<MediaArtifact> {

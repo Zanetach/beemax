@@ -1036,8 +1036,29 @@ export class FeishuAdapter implements PlatformAdapter {
 
 	/** Send an interactive card. Returns the Feishu message_id for later updates. */
 	async sendCard(chatId: string, card: Record<string, unknown>, replyTo?: string, replyInThread = false, idempotencyKey?: string): Promise<SendResult> {
+		return this.sendInteractiveMessage(chatId, JSON.stringify(card), replyTo, replyInThread, idempotencyKey);
+	}
+
+	/** Create a CardKit entity, then send a message that references its card_id. */
+	async sendStreamingCard(chatId: string, card: Record<string, unknown>, replyTo?: string, replyInThread = false, idempotencyKey?: string): Promise<SendResult & { cardId?: string }> {
+		if (!this.client?.cardkit?.v1?.card) return { success: false, error: "CardKit streaming API unavailable" };
 		try {
-			const payload = { msg_type: "interactive", content: JSON.stringify(card) };
+			const created = await this.client.cardkit.v1.card.create({
+				data: { type: "card_json", data: JSON.stringify(card) },
+			});
+			const cardId = created.data?.card_id;
+			if (created.code !== 0 || !cardId) return { success: false, error: created.msg ?? `feishu code ${created.code ?? "unknown"}` };
+
+			const sent = await this.sendInteractiveMessage(chatId, JSON.stringify({ type: "card", data: { card_id: cardId } }), replyTo, replyInThread, idempotencyKey);
+			return sent.success ? { ...sent, cardId } : sent;
+		} catch (err) {
+			return { success: false, error: err instanceof Error ? err.message : String(err) };
+		}
+	}
+
+	private async sendInteractiveMessage(chatId: string, content: string, replyTo?: string, replyInThread = false, idempotencyKey?: string): Promise<SendResult> {
+		try {
+			const payload = { msg_type: "interactive", content };
 			const uuid = idempotencyKey ? deterministicUuid(idempotencyKey) : randomUUID();
 			let res = replyTo ? await this.retryRequest(() => this.client.im.v1.message.reply({
 				path: { message_id: replyTo },
@@ -1055,6 +1076,56 @@ export class FeishuAdapter implements PlatformAdapter {
 			if (res.code !== 0) return { success: false, error: res.msg ?? `feishu code ${res.code}` };
 			this.rememberOutboundMessage(res.data?.message_id);
 			return { success: true, messageId: res.data?.message_id };
+		} catch (err) {
+			return { success: false, error: err instanceof Error ? err.message : String(err) };
+		}
+	}
+
+	/** Replace one markdown element; Feishu animates only the incremental text. */
+	async updateStreamingCardContent(cardId: string, elementId: string, content: string, sequence: number): Promise<SendResult> {
+		if (!this.client?.cardkit?.v1?.cardElement) return { success: false, error: "CardKit streaming API unavailable" };
+		try {
+			const res = await this.retryRequest(() => this.client.cardkit.v1.cardElement.content({
+				path: { card_id: cardId, element_id: elementId },
+				data: { content, sequence, uuid: deterministicUuid(`card-content:${cardId}:${sequence}`) },
+			}));
+			if (res.code !== 0) return { success: false, error: res.msg ?? `feishu code ${res.code}` };
+			return { success: true };
+		} catch (err) {
+			return { success: false, error: err instanceof Error ? err.message : String(err) };
+		}
+	}
+
+	/** Full CardKit update is reserved for structural state changes, not text deltas. */
+	async updateStreamingCard(cardId: string, card: Record<string, unknown>, sequence: number): Promise<SendResult> {
+		if (!this.client?.cardkit?.v1?.card) return { success: false, error: "CardKit streaming API unavailable" };
+		try {
+			const res = await this.retryRequest(() => this.client.cardkit.v1.card.update({
+				path: { card_id: cardId },
+				data: {
+					card: { type: "card_json", data: JSON.stringify(card) },
+					sequence,
+					uuid: deterministicUuid(`card-update:${cardId}:${sequence}`),
+				},
+			}));
+			if (res.code !== 0) return { success: false, error: res.msg ?? `feishu code ${res.code}` };
+			return { success: true };
+		} catch (err) {
+			return { success: false, error: err instanceof Error ? err.message : String(err) };
+		}
+	}
+
+	/** Disable CardKit streaming mode so the typing cursor and generating summary disappear. */
+	async finishStreamingCard(cardId: string, summary: string, sequence: number): Promise<SendResult> {
+		if (!this.client?.cardkit?.v1?.card) return { success: false, error: "CardKit streaming API unavailable" };
+		try {
+			const settings = { config: { streaming_mode: false, summary: { content: summary } } };
+			const res = await this.retryRequest(() => this.client.cardkit.v1.card.settings({
+				path: { card_id: cardId },
+				data: { settings: JSON.stringify(settings), sequence, uuid: deterministicUuid(`card-settings:${cardId}:${sequence}`) },
+			}));
+			if (res.code !== 0) return { success: false, error: res.msg ?? `feishu code ${res.code}` };
+			return { success: true };
 		} catch (err) {
 			return { success: false, error: err instanceof Error ? err.message : String(err) };
 		}

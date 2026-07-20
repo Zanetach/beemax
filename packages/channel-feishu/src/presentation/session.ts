@@ -47,6 +47,14 @@ export class CardSession {
 		return this.answerText;
 	}
 
+	/** Reconcile the final delivery text after Artifact links have been published. */
+	setDeliveryAnswer(answer: string): boolean {
+		const normalized = normalizeStreamText(answer);
+		if (!normalized.trim() || normalized === this.answerText) return false;
+		this.answerText = boundedAnswer("", normalized);
+		return true;
+	}
+
 	apply(event: string, data: CardEventData): boolean {
 		if (this.status !== "thinking") return false;
 

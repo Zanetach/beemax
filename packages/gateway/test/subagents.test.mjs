@@ -139,7 +139,7 @@ test("Dispatcher adopts a late initial card result instead of creating duplicate
 	assert.equal(sends, 1); assert.ok(updates >= 1); dispatcher.dispose();
 });
 
-test("Dispatcher serializes a late card update and eventually writes the latest terminal snapshot", async () => {
+test("Dispatcher coalesces the terminal card snapshot without a redundant repaint", async () => {
 	let inbound; const updates = [];
 	const platform = {
 		name: "feishu", isConnected: true, onMessage: (handler) => { inbound = handler; }, connect: async () => true, disconnect: async () => undefined,
@@ -152,7 +152,7 @@ test("Dispatcher serializes a late card update and eventually writes the latest 
 	const dispatcher = new Dispatcher({ runtime, flushIntervalMs: 0, presentationTimeoutMs: 20 }, platform);
 	await inbound({ text: "request", messageType: "text", source: { ...source, messageId: "late-update" }, mediaPaths: [], mediaTypes: [], raw: {}, timestamp: Date.now() });
 	await new Promise((resolve) => setTimeout(resolve, 160));
-	assert.ok(updates.length >= 2); assert.match(updates.at(-1), /latest final answer/); dispatcher.dispose();
+	assert.equal(updates.length, 1); assert.match(updates[0], /latest final answer/); dispatcher.dispose();
 });
 
 test("Dispatcher falls back to final text when card updates remain unavailable", async () => {

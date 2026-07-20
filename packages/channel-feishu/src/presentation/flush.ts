@@ -70,12 +70,12 @@ export class FlushController {
 			for (;;) {
 				let terminal = this.pendingTerminal;
 				let urgent = this.pendingUrgent;
-				let delay = (terminal || urgent ? this.urgentIntervalMs : this.intervalMs) - (Date.now() - this.lastFlushAt);
+				let delay = (terminal ? 0 : urgent ? this.urgentIntervalMs : this.intervalMs) - (Date.now() - this.lastFlushAt);
 				if (delay > 0) await this.wait(delay);
 				if (this.closed) return;
 				terminal = this.pendingTerminal;
 				urgent = this.pendingUrgent;
-				delay = (terminal || urgent ? this.urgentIntervalMs : this.intervalMs) - (Date.now() - this.lastFlushAt);
+				delay = (terminal ? 0 : urgent ? this.urgentIntervalMs : this.intervalMs) - (Date.now() - this.lastFlushAt);
 				if (delay > 0) await this.wait(delay);
 				const render = this.latestRender;
 				if (!render) return;

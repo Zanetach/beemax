@@ -27,6 +27,42 @@ test("Feishu cards reply to the triggering message and preserve topic routing", 
 	assert.equal(calls[1][1].data.receive_id, "chat");
 });
 
+test("Feishu CardKit transport creates a card entity and streams only the answer element", async () => {
+	const calls = [];
+	const adapter = new FeishuAdapter({ ...settings });
+	adapter.client = {
+		cardkit: { v1: {
+			card: {
+				create: async (payload) => { calls.push(["card.create", payload]); return { code: 0, data: { card_id: "card-entity" } }; },
+				update: async (payload) => { calls.push(["card.update", payload]); return { code: 0 }; },
+				settings: async (payload) => { calls.push(["card.settings", payload]); return { code: 0 }; },
+			},
+			cardElement: {
+				content: async (payload) => { calls.push(["cardElement.content", payload]); return { code: 0 }; },
+			},
+		} },
+		im: { v1: { message: {
+			reply: async (payload) => { calls.push(["message.reply", payload]); return { code: 0, data: { message_id: "card-message" } }; },
+			create: async (payload) => { calls.push(["message.create", payload]); return { code: 0, data: { message_id: "new-message" } }; },
+		} } },
+	};
+	const card = { schema: "2.0", config: { streaming_mode: true }, body: { elements: [{ tag: "markdown", element_id: "main_content", content: "处理中" }] } };
+
+	assert.deepEqual(await adapter.sendStreamingCard("chat", card, "source-message", true, "stream-key"), { success: true, messageId: "card-message", cardId: "card-entity" });
+	assert.deepEqual(JSON.parse(calls[0][1].data.data), card);
+	assert.deepEqual(JSON.parse(calls[1][1].data.content), { type: "card", data: { card_id: "card-entity" } });
+	assert.equal(calls[1][1].data.reply_in_thread, true);
+	assert.deepEqual(await adapter.updateStreamingCardContent("card-entity", "main_content", "完整正文", 1), { success: true });
+	assert.deepEqual(calls[2][1].path, { card_id: "card-entity", element_id: "main_content" });
+	assert.equal(calls[2][1].data.content, "完整正文");
+	assert.equal(calls[2][1].data.sequence, 1);
+	assert.deepEqual(await adapter.updateStreamingCard("card-entity", card, 2), { success: true });
+	assert.equal(calls[3][1].data.sequence, 2);
+	assert.deepEqual(await adapter.finishStreamingCard("card-entity", "任务已完成", 3), { success: true });
+	assert.deepEqual(JSON.parse(calls[4][1].data.settings), { config: { streaming_mode: false, summary: { content: "任务已完成" } } });
+	assert.equal(calls[4][1].data.sequence, 3);
+});
+
 test("Feishu Card JSON 2.0 callbacks normalize identity, routing, and stable action id", () => {
 	const raw = {
 		context: { open_message_id: "om_card", open_chat_id: "oc_chat" },

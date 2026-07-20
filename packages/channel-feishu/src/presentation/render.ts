@@ -8,6 +8,7 @@
  */
 
 import type { CardSession } from "./session.ts";
+import type { PublishedArtifactPresentation } from "@beemax/channel-runtime";
 import { splitMarkdownBlocks, countMarkdownTables, MAX_CARD_TABLES, normalizeStreamText } from "./text.ts";
 
 const MAIN_CONTENT_CHUNK_CHARS = 2400;
@@ -15,6 +16,7 @@ const DEFAULT_TITLE = "BeeMax Agent";
 const MAX_TIMELINE_ITEMS = 12;
 const MAX_REASONING_CHARS = 1200;
 const MAX_TOOL_RESULT_CHARS = 600;
+const MAX_CARD_SUMMARY_CHARS = 6_000;
 
 const SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
@@ -23,6 +25,10 @@ export interface CardRenderOptions {
 	footerFields?: string[];
 	/** Raw reasoning is for an explicitly trusted diagnostic profile only. */
 	reasoningDisplay?: "off" | "summary" | "raw";
+	/** Use one stable markdown element and let CardKit animate content updates. */
+	streaming?: boolean;
+	/** Trusted publication metadata supplied by the Gateway Artifact boundary. */
+	publishedArtifacts?: readonly PublishedArtifactPresentation[];
 }
 
 export function spinnerFrame(): string {
@@ -32,10 +38,8 @@ export function spinnerFrame(): string {
 export function renderCard(session: CardSession, opts: CardRenderOptions = {}): Record<string, unknown> {
 	const title = (opts.title ?? DEFAULT_TITLE).trim() || DEFAULT_TITLE;
 	const status = renderStatus(session);
-	let primaryText = normalizeStreamText(session.answerText);
-	if (!primaryText) {
-		primaryText = session.status === "thinking" ? normalizeStreamText(session.progressText) || `处理中 ${spinnerFrame()}` : normalizeStreamText(session.visibleMainText);
-	}
+	const projection = projectCardContent(session, opts.publishedArtifacts);
+	let primaryText = projection.content;
 
 	// Cap tables at MAX_CARD_TABLES to avoid Feishu rejecting huge card payloads.
 	if (countMarkdownTables(primaryText) > MAX_CARD_TABLES) {
@@ -43,9 +47,15 @@ export function renderCard(session: CardSession, opts: CardRenderOptions = {}): 
 	}
 
 	const elements: Record<string, unknown>[] = [];
-	elements.push(...renderMainContent(primaryText));
+	elements.push(...(opts.streaming
+		? [{ tag: "markdown", element_id: "main_content", content: primaryText }]
+		: renderMainContent(primaryText)));
+	if (projection.artifacts.length) {
+		elements.push({ tag: "markdown", element_id: "artifact_heading", content: "**交付文件**" });
+		elements.push(...renderArtifactActions(projection.artifacts));
+	}
 
-	const timelineElements = renderTimeline(session, opts.reasoningDisplay === "raw");
+	const timelineElements = projection.summarized ? [] : renderTimeline(session, opts.reasoningDisplay === "raw");
 	elements.push(...timelineElements);
 	if (session.pendingApprovalId) elements.push(renderApprovalActions(session.pendingApprovalId));
 
@@ -66,12 +76,94 @@ export function renderCard(session: CardSession, opts: CardRenderOptions = {}): 
 	};
 	if (status.subtitle) header.subtitle = { tag: "plain_text", content: status.subtitle };
 
+	const config: Record<string, unknown> = { update_multi: true, summary: { content: status.summary ?? status.subtitle } };
+	if (opts.streaming) {
+		config.streaming_mode = true;
+		config.streaming_config = {
+			print_frequency_ms: { default: 70 },
+			print_step: { default: 1 },
+			print_strategy: "fast",
+		};
+	}
+
 	return {
 		schema: "2.0",
-		config: { update_multi: true, summary: { content: status.summary ?? status.subtitle } },
+		config,
 		header,
 		body: { elements },
 	};
+}
+
+export function renderStreamingContent(session: CardSession, publishedArtifacts: readonly PublishedArtifactPresentation[] = []): string {
+	return projectCardContent(session, publishedArtifacts).content;
+}
+
+export function answerNeedsSeparateDelivery(answer: string, publishedArtifacts: readonly PublishedArtifactPresentation[] = []): boolean {
+	return validatedPublishedArtifacts(publishedArtifacts).length === 0 && normalizeStreamText(answer).length > MAX_CARD_SUMMARY_CHARS;
+}
+
+function rawPrimaryText(session: CardSession): string {
+	const answer = normalizeStreamText(session.answerText);
+	if (answer) return answer;
+	return session.status === "thinking"
+		? normalizeStreamText(session.progressText) || `处理中 ${spinnerFrame()}`
+		: normalizeStreamText(session.visibleMainText);
+}
+
+function projectCardContent(session: CardSession, publishedArtifacts: readonly PublishedArtifactPresentation[] = []): { content: string; artifacts: PublishedArtifactPresentation[]; summarized: boolean } {
+	const artifacts = validatedPublishedArtifacts(publishedArtifacts);
+	let content = rawPrimaryText(session).trimEnd();
+	if (!content && artifacts.length) content = "文件已生成，可直接在线打开或下载。";
+	if (content.length <= MAX_CARD_SUMMARY_CHARS) return { content, artifacts, summarized: false };
+	const notice = artifacts.length
+		? "\n\n> 内容较长，卡片仅显示摘要；完整内容请通过下方文件打开。"
+		: session.status === "thinking"
+			? "\n\n> 内容较长，正在继续生成；卡片将保持摘要视图。"
+			: "\n\n> 内容较长，卡片仅显示摘要；完整回答已另行发送。";
+	const budget = Math.max(1, MAX_CARD_SUMMARY_CHARS - notice.length);
+	return { content: `${semanticPrefix(content, budget).trimEnd()}${notice}`, artifacts, summarized: true };
+}
+
+function validatedPublishedArtifacts(artifacts: readonly PublishedArtifactPresentation[]): PublishedArtifactPresentation[] {
+	const seen = new Set<string>();
+	return artifacts.flatMap((artifact) => {
+		if (!safeHttpUrl(artifact.url) || seen.has(artifact.url)) return [];
+		seen.add(artifact.url);
+		return [{ ...artifact, name: compactArtifactName(artifact.name) }];
+	}).slice(0, 6);
+}
+
+function compactArtifactName(value: string): string {
+	return value.replace(/[\u0000-\u001f\u007f]+/gu, " ").replace(/\s+/gu, " ").trim().slice(0, 120) || "文件";
+}
+
+function renderArtifactActions(artifacts: readonly PublishedArtifactPresentation[]): Record<string, unknown>[] {
+	return artifacts.map((artifact, index) => ({
+		tag: "button",
+		element_id: `artifact_action_${index}`,
+		text: { tag: "plain_text", content: `${artifact.disposition === "attachment" ? "下载" : "在线打开"} ${artifact.name}` },
+		type: index === 0 ? "primary" : "default",
+		width: "fill",
+		size: "medium",
+		behaviors: [{ type: "open_url", default_url: artifact.url, pc_url: "", ios_url: "", android_url: "" }],
+	}));
+}
+
+function semanticPrefix(text: string, limit: number): string {
+	if (text.length <= limit) return text;
+	const window = text.slice(0, limit);
+	const candidates = [window.lastIndexOf("\n\n"), window.lastIndexOf("。"), window.lastIndexOf("！"), window.lastIndexOf("？"), window.lastIndexOf("\n")];
+	const boundary = Math.max(...candidates);
+	return boundary >= Math.floor(limit * 0.7) ? window.slice(0, boundary + 1) : window;
+}
+
+function safeHttpUrl(value: string): boolean {
+	try {
+		const url = new URL(value);
+		return (url.protocol === "http:" || url.protocol === "https:") && !url.username && !url.password;
+	} catch {
+		return false;
+	}
 }
 
 function renderApprovalActions(approvalId: string): Record<string, unknown> {
@@ -97,13 +189,22 @@ function renderApprovalActions(approvalId: string): Record<string, unknown> {
 }
 
 function renderStatus(session: CardSession): { subtitle: string; template: string; summary?: string } {
-	if (session.status === "completed") return { subtitle: "已完成", template: "green" };
-	if (session.status === "incomplete") return { subtitle: "尚未完成", template: "yellow" };
-	if (session.status === "rejected") return { subtitle: "验证未通过", template: "red" };
-	if (session.status === "failed") return { subtitle: "处理失败", template: "red" };
-	if (session.status === "cancelled") return { subtitle: "已取消", template: "grey" };
+	if (session.status === "completed") return { subtitle: cardStatusSummary(session.status), template: "green" };
+	if (session.status === "incomplete") return { subtitle: cardStatusSummary(session.status), template: "yellow" };
+	if (session.status === "rejected") return { subtitle: cardStatusSummary(session.status), template: "red" };
+	if (session.status === "failed") return { subtitle: cardStatusSummary(session.status), template: "red" };
+	if (session.status === "cancelled") return { subtitle: cardStatusSummary(session.status), template: "grey" };
 	if (normalizeStreamText(session.answerText).trim()) return { subtitle: "", summary: "处理中", template: "blue" };
 	return { subtitle: "", summary: "处理中", template: "indigo" };
+}
+
+export function cardStatusSummary(status: CardSession["status"]): string {
+	if (status === "completed") return "已完成";
+	if (status === "incomplete") return "尚未完成";
+	if (status === "rejected") return "验证未通过";
+	if (status === "failed") return "处理失败";
+	if (status === "cancelled") return "已取消";
+	return "处理已结束";
 }
 
 function renderMainContent(text: string): Record<string, unknown>[] {

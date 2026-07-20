@@ -1,13 +1,14 @@
-import type { DeliveryOptions, DeliveryReceipt, InteractionEvent } from "@beemax/core";
+import type { DeliveryReceipt, InteractionEvent } from "@beemax/core";
 import { randomUUID } from "node:crypto";
 import type {
 	InteractionPresentationOpen,
 	InteractionPresenter,
 	PlatformAdapter,
 	TurnPresentation,
+	TurnPresentationFinishOptions,
 	WorkProgressPresentation,
 } from "@beemax/channel-runtime";
-import { formatApprovalRequest, formatWorkProgress } from "@beemax/channel-runtime";
+import { formatAnswerWithPublishedArtifacts, formatApprovalRequest, formatWorkProgress } from "@beemax/channel-runtime";
 
 /** Universal presentation fallback for channels that only implement text delivery. */
 export class TextInteractionPresenter implements InteractionPresenter {
@@ -51,8 +52,9 @@ class TextTurnPresentation implements TurnPresentation {
 		if (!result.success) throw new Error(result.error ?? `Failed to present approval for ${event.toolName}`);
 	}
 
-	async finish(answer: string, options?: DeliveryOptions): Promise<DeliveryReceipt> {
-		const result = await this.platform.send(this.input.source.chatId, answer, {
+	async finish(answer: string, options?: TurnPresentationFinishOptions): Promise<DeliveryReceipt> {
+		const deliveryText = formatAnswerWithPublishedArtifacts(answer, options?.publishedArtifacts);
+		const result = await this.platform.send(this.input.source.chatId, deliveryText, {
 			...(options?.idempotencyKey ? { idempotencyKey: options.idempotencyKey } : {}),
 			...(this.input.source.replyToMessageId ? { replyTo: this.input.source.replyToMessageId, replyInThread: Boolean(this.input.source.threadId) } : {}),
 		});

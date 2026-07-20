@@ -1,13 +1,24 @@
-import { AdaptiveTextBuffer, TurnStatusPulse, interactionCompletionDeliveryKey, interactionPhaseForOutcome, type DeliveryOptions, type DeliveryReceipt, type InteractionEvent } from "@beemax/core";
-import { formatApprovalRequest, formatWorkProgress, type InteractionPresentationOpen, type InteractionPresenter, type SendOptions, type SendResult, type TurnPresentation, type WorkProgressPresentation } from "@beemax/channel-runtime";
+import { AdaptiveTextBuffer, TurnStatusPulse, interactionCompletionDeliveryKey, interactionPhaseForOutcome, type DeliveryReceipt, type InteractionEvent } from "@beemax/core";
+import { formatAnswerWithPublishedArtifacts, formatApprovalRequest, formatWorkProgress, type InteractionPresentationOpen, type InteractionPresenter, type PublishedArtifactPresentation, type SendOptions, type SendResult, type TurnPresentation, type TurnPresentationFinishOptions, type WorkProgressPresentation } from "@beemax/channel-runtime";
 import { FlushController } from "./flush.ts";
-import { renderCard, type CardRenderOptions } from "./render.ts";
+import { answerNeedsSeparateDelivery, cardStatusSummary, renderCard, renderStreamingContent, type CardRenderOptions } from "./render.ts";
 import { CardSession } from "./session.ts";
+
+const DEFAULT_FULL_CARD_UPDATE_INTERVAL_MS = 600;
+const NATIVE_TEXT_UPDATE_INTERVAL_MS = 100;
+
+interface StreamingCardSendResult extends SendResult {
+	cardId?: string;
+}
 
 interface FeishuPresentationTransport {
 	send(chatId: string, content: string, options?: SendOptions): Promise<SendResult>;
 	sendCard(chatId: string, card: Record<string, unknown>, replyTo?: string, replyInThread?: boolean, idempotencyKey?: string): Promise<SendResult>;
 	updateCard(messageId: string, card: Record<string, unknown>): Promise<SendResult>;
+	sendStreamingCard?(chatId: string, card: Record<string, unknown>, replyTo?: string, replyInThread?: boolean, idempotencyKey?: string): Promise<StreamingCardSendResult>;
+	updateStreamingCardContent?(cardId: string, elementId: string, content: string, sequence: number): Promise<SendResult>;
+	updateStreamingCard?(cardId: string, card: Record<string, unknown>, sequence: number): Promise<SendResult>;
+	finishStreamingCard?(cardId: string, summary: string, sequence: number): Promise<SendResult>;
 	sendTyping(chatId: string, messageId?: string): Promise<void>;
 	stopTyping(chatId: string, messageId?: string, failed?: boolean): Promise<void>;
 }
@@ -39,13 +50,21 @@ class FeishuTurnPresentation implements TurnPresentation {
 	private readonly input: InteractionPresentationOpen;
 	private readonly card = new CardSession();
 	private readonly flush: FlushController;
+	private readonly answerFlush = new FlushController(NATIVE_TEXT_UPDATE_INTERVAL_MS, NATIVE_TEXT_UPDATE_INTERVAL_MS);
 	private readonly answerBuffer: AdaptiveTextBuffer;
 	private readonly statusPulse: TurnStatusPulse;
 	private readonly renderOptions: CardRenderOptions;
 	private cardMessageId?: string;
-	private cardCreation?: Promise<SendResult>;
+	private cardCreation?: Promise<StreamingCardSendResult>;
 	private cardUpdate?: Promise<boolean>;
 	private pendingCardRender?: Record<string, unknown>;
+	private streamingCardId?: string;
+	private streamingSequence = 0;
+	private streamingTail: Promise<void> = Promise.resolve();
+	private streamingFinalized = false;
+	private lastStreamingContent?: string;
+	private answerStarted = false;
+	private publishedArtifacts: readonly PublishedArtifactPresentation[] = [];
 	private degraded = false;
 	private readonly interactionIdempotencyKey: string;
 
@@ -55,15 +74,22 @@ class FeishuTurnPresentation implements TurnPresentation {
 		this.interactionIdempotencyKey = input.source.messageId
 			? `${interactionCompletionDeliveryKey(input.profileId, input.source, input.source.messageId)}:progress`
 			: `${input.profileId}:turn`;
-		this.flush = new FlushController(input.preferences?.updateIntervalMs ?? 350);
+		const requestedIntervalMs = input.preferences?.updateIntervalMs;
+		this.flush = new FlushController(requestedIntervalMs === 0 ? 0 : Math.max(500, requestedIntervalMs ?? DEFAULT_FULL_CARD_UPDATE_INTERVAL_MS));
 		this.renderOptions = { title: input.preferences?.title, reasoningDisplay: input.preferences?.reasoningDisplay };
 		this.answerBuffer = new AdaptiveTextBuffer(async (chunk) => {
-			try { this.card.apply("answer.delta", { text: chunk }); await this.flush.schedule(() => this.renderUpdate(), false, true); }
+			try {
+				this.card.apply("answer.delta", { text: chunk });
+				if (this.streamingCardId) await this.answerFlush.schedule(() => this.renderAnswerUpdate());
+				else await this.flush.schedule(() => this.renderUpdate());
+			}
 			catch (error) { console.error(`[beemax] Feishu answer presenter failed: ${safeError(error)}`); }
-		}, { minChunkChars: 6, preferredChunkChars: 28, maxChunkChars: 80, maxWaitMs: 50, flushSmallOnMaxWait: true });
+		}, { minChunkChars: 24, initialPreferredChunkChars: 48, preferredChunkChars: 120, maxChunkChars: 240, initialMaxWaitMs: 50, maxWaitMs: 250, flushSmallOnMaxWait: true });
 		this.statusPulse = new TurnStatusPulse(async (message) => {
 			this.card.apply("notice.updated", { id: "turn:status", label: "当前状态", status: "running", message });
-			await this.flush.schedule(() => this.renderUpdate(), false, true);
+			if (message === "正在组织回答" && this.streamingCardId) return;
+			if (!this.cardMessageId) await this.flush.schedule(() => this.renderUpdate());
+			else this.queueAuxiliaryUpdate();
 		});
 	}
 
@@ -77,21 +103,21 @@ class FeishuTurnPresentation implements TurnPresentation {
 			case "tool.changed":
 				this.card.apply("notice.updated", { id: "turn:status", label: "当前状态", status: "running", message: event.state === "running" ? `正在执行 ${event.name}` : event.state === "failed" ? "操作未成功 · 正在处理" : "操作完成 · 正在整理结果" });
 				this.card.apply("tool.updated", { tool_id: event.callId, name: event.name, status: event.state === "failed" ? "error" : event.state, detail: event.summary });
-				await this.flush.schedule(() => this.renderUpdate(), false, true); break;
-			case "answer.delta": this.statusPulse.contentStarted(); this.answerBuffer.push(event.text); break;
+				this.queueAuxiliaryUpdate(); break;
+			case "answer.delta": this.answerStarted = true; this.statusPulse.contentStarted(); this.answerBuffer.push(event.text); break;
 			case "reasoning.delta": this.card.apply("thinking.delta", { text: event.text }); break;
 			case "model.fallback":
 				this.card.apply("notice.updated", { id: `model:${event.turnId}:${event.attempt}`, label: "模型回退", status: "running", message: `${event.from} 暂时不可用，已切换到 ${event.to}` });
-				await this.flush.schedule(() => this.renderUpdate(), false, true); break;
+				this.queueAuxiliaryUpdate(); break;
 			case "planning.selected":
 				this.card.apply("notice.updated", { id: `planning:${event.turnId}`, label: "执行规划", status: "running", message: `${event.mode} · 并发 ${event.concurrency} · 子代理上限 ${event.maxSubagents}${event.requiredTools.length ? ` · ${event.requiredTools.join(" → ")}` : ""}` });
-				await this.flush.schedule(() => this.renderUpdate(), false, true); break;
+				this.queueAuxiliaryUpdate(); break;
 			case "planning.completed":
 				this.card.apply("notice.updated", { id: `planning:${event.turnId}`, label: "执行规划", status: event.compliant ? "completed" : "error", message: `${event.mode}${event.corrected ? " · 已自动纠正" : ""}` });
-				await this.flush.schedule(() => this.renderUpdate(), false, true); break;
+				this.queueAuxiliaryUpdate(); break;
 			case "work.changed":
 				this.card.apply("notice.updated", { id: `work:${event.workId}`, label: event.kind === "subagent" ? "并行子任务" : "异步任务计划", status: event.state === "failed" ? "error" : event.state, message: event.summary ?? (event.state === "queued" ? "已排队" : event.state === "running" ? "运行中" : event.state === "completed" ? "已完成" : event.state === "cancelled" ? "已取消" : "执行失败") });
-				await this.flush.schedule(() => this.renderUpdate(), false, true); break;
+				this.queueAuxiliaryUpdate(); break;
 			case "turn.failed":
 				await this.stopPulse(); await this.answerBuffer.flush(); this.card.apply("message.failed", { error: event.error });
 				await this.flush.schedule(() => this.renderUpdate(), true); break;
@@ -122,45 +148,61 @@ class FeishuTurnPresentation implements TurnPresentation {
 		}
 	}
 
-	async finish(answer: string, options?: DeliveryOptions): Promise<DeliveryReceipt> {
+	async finish(answer: string, options?: TurnPresentationFinishOptions): Promise<DeliveryReceipt> {
 		await this.answerBuffer.flush();
-		if (!this.card.answerText && answer) this.card.apply("answer.delta", { text: answer });
-		await this.flush.schedule(() => this.renderUpdate(), true);
+		await this.answerFlush.drain(5_000);
+		const publishedArtifactsChanged = (options?.publishedArtifacts?.length ?? 0) > 0;
+		this.publishedArtifacts = options?.publishedArtifacts ?? [];
+		const completedWithoutTerminalEvent = this.card.status === "thinking";
+		if (completedWithoutTerminalEvent) this.card.apply("message.completed", { answer });
+		const answerChanged = this.card.setDeliveryAnswer(answer) || completedWithoutTerminalEvent;
+		if (answerChanged || publishedArtifactsChanged || !this.cardMessageId) await this.flush.schedule(() => this.renderUpdate(), true);
 		const drained = await this.flush.drain(5_000);
+		if (drained) await this.finalizeNativeStreaming();
 		if (options?.idempotencyKey) {
 			// The rich card is transient progress. A canonical text delivery uses the
 			// durable Completion key so Outbox recovery can replay the exact same
 			// provider operations, including every chunk of a long result.
-			const result = await this.sendFallback(answer, options.idempotencyKey);
+			const result = await this.sendFallback(formatAnswerWithPublishedArtifacts(answer, this.publishedArtifacts), options.idempotencyKey);
 			return { idempotencyKey: options.idempotencyKey, deliveredAt: Date.now(), ...(result.messageId ? { providerMessageId: result.messageId } : {}) };
+		}
+		if (answerNeedsSeparateDelivery(answer, this.publishedArtifacts)) {
+			const longAnswerKey = `${this.interactionIdempotencyKey}:long-answer`;
+			const result = await this.sendFallback(answer, longAnswerKey);
+			return { idempotencyKey: longAnswerKey, deliveredAt: Date.now(), ...(result.messageId ? { providerMessageId: result.messageId } : {}) };
 		}
 		if (this.cardMessageId && drained && !this.degraded) {
 			return { idempotencyKey: this.interactionIdempotencyKey, deliveredAt: Date.now(), providerMessageId: this.cardMessageId };
 		}
 		const fallbackKey = `${this.interactionIdempotencyKey}:fallback`;
-		const result = await this.sendFallback(this.card.answerText || answer, fallbackKey);
+		const result = await this.sendFallback(formatAnswerWithPublishedArtifacts(this.card.answerText || answer, this.publishedArtifacts), fallbackKey);
 		return { idempotencyKey: fallbackKey, deliveredAt: Date.now(), ...(result.messageId ? { providerMessageId: result.messageId } : {}) };
 	}
 
 	async fail(error: string): Promise<void> {
 		if (this.card.status !== "cancelled" && this.card.status !== "failed") this.card.apply("message.failed", { error });
 		await this.flush.schedule(() => this.renderUpdate(), true);
-		await this.flush.drain(3_000);
+		const drained = await this.flush.drain(3_000);
+		if (drained) await this.finalizeNativeStreaming();
 		if (!this.cardMessageId || this.degraded) await this.sendFallback(`❌ ${error}`);
 	}
 
 	async close(failed: boolean): Promise<void> {
 		await this.stopPulse();
 		await this.answerBuffer.close();
+		await this.answerFlush.drain(3_000);
+		await this.flush.drain(3_000);
+		await this.finalizeNativeStreaming();
 		await this.transport.stopTyping(this.input.source.chatId, this.input.source.messageId, failed).catch(() => undefined);
+		this.answerFlush.close();
 		this.flush.close();
 	}
 
 	private async renderUpdate(): Promise<boolean> {
-		const rendered = renderCard(this.card, this.renderOptions);
+		const rendered = renderCard(this.card, this.currentRenderOptions());
 		if (!this.cardMessageId) {
 			if (!this.cardCreation) {
-				this.cardCreation = this.transport.sendCard(this.input.source.chatId, rendered, this.input.source.replyToMessageId ?? this.input.source.messageId, Boolean(this.input.source.threadId), this.interactionIdempotencyKey).then((result) => {
+				this.cardCreation = this.createInitialCard(rendered).then((result) => {
 					if (result.success && result.messageId) { this.cardMessageId = result.messageId; this.input.onBinding?.(result.messageId, this.card.pendingApprovalId); }
 					return result;
 				});
@@ -168,6 +210,13 @@ class FeishuTurnPresentation implements TurnPresentation {
 			const result = await settleWithin(this.cardCreation, this.ioTimeout());
 			if (!result) { this.degraded = true; return false; }
 			this.degraded = !result.success; return result.success;
+		}
+		if (this.streamingCardId && this.transport.updateStreamingCard) {
+			const cardId = this.streamingCardId;
+			const streamingCard = renderCard(this.card, this.currentRenderOptions(true));
+			const success = await this.runStreamingOperation((sequence) => this.transport.updateStreamingCard!(cardId, streamingCard, sequence));
+			if (success) { this.lastStreamingContent = renderStreamingContent(this.card, this.publishedArtifacts); this.input.onBinding?.(this.cardMessageId, this.card.pendingApprovalId); return true; }
+			this.streamingCardId = undefined;
 		}
 		this.pendingCardRender = rendered;
 		if (!this.cardUpdate) {
@@ -185,6 +234,67 @@ class FeishuTurnPresentation implements TurnPresentation {
 		const success = await settleWithin(this.cardUpdate, this.ioTimeout());
 		if (success === undefined) { this.degraded = true; return false; }
 		this.degraded = !success; return success;
+	}
+
+	private async createInitialCard(legacyCard: Record<string, unknown>): Promise<StreamingCardSendResult> {
+		if (this.hasNativeStreamingTransport()) {
+			const streamingCard = renderCard(this.card, this.currentRenderOptions(true));
+			const result = await this.transport.sendStreamingCard!(this.input.source.chatId, streamingCard, this.input.source.replyToMessageId ?? this.input.source.messageId, Boolean(this.input.source.threadId), this.interactionIdempotencyKey);
+			if (result.success && result.messageId && result.cardId) {
+				this.streamingCardId = result.cardId;
+				this.lastStreamingContent = renderStreamingContent(this.card, this.publishedArtifacts);
+				return result;
+			}
+			console.warn(`[beemax] Feishu native streaming card unavailable; falling back to full-card updates: ${result.error ?? "missing card identity"}`);
+		}
+		return this.transport.sendCard(this.input.source.chatId, legacyCard, this.input.source.replyToMessageId ?? this.input.source.messageId, Boolean(this.input.source.threadId), this.interactionIdempotencyKey);
+	}
+
+	private async renderAnswerUpdate(): Promise<boolean> {
+		if (!this.streamingCardId || !this.transport.updateStreamingCardContent) return this.renderUpdate();
+		const cardId = this.streamingCardId;
+		const content = renderStreamingContent(this.card, this.publishedArtifacts);
+		if (content === this.lastStreamingContent) return true;
+		const success = await this.runStreamingOperation((sequence) => this.transport.updateStreamingCardContent!(cardId, "main_content", content, sequence));
+		if (success) { this.lastStreamingContent = content; return true; }
+		this.streamingCardId = undefined;
+		return this.renderUpdate();
+	}
+
+	private hasNativeStreamingTransport(): boolean {
+		return Boolean(this.transport.sendStreamingCard && this.transport.updateStreamingCardContent && this.transport.updateStreamingCard && this.transport.finishStreamingCard);
+	}
+
+	private currentRenderOptions(streaming = false): CardRenderOptions {
+		return { ...this.renderOptions, ...(streaming ? { streaming: true } : {}), publishedArtifacts: this.publishedArtifacts };
+	}
+
+	private queueAuxiliaryUpdate(): void {
+		if (this.answerStarted) return;
+		void this.flush.schedule(() => this.answerStarted ? Promise.resolve(true) : this.renderUpdate()).catch((error) => {
+			console.warn(`[beemax] Feishu auxiliary card update failed: ${safeError(error)}`);
+		});
+	}
+
+	private runStreamingOperation(operation: (sequence: number) => Promise<SendResult>): Promise<boolean> {
+		let succeeded = false;
+		const task = this.streamingTail.then(async () => {
+			const result = await operation(++this.streamingSequence);
+			succeeded = result.success;
+			if (!result.success) console.warn(`[beemax] Feishu native streaming update failed: ${result.error ?? "unknown error"}`);
+		}).catch((error) => {
+			console.warn(`[beemax] Feishu native streaming update failed: ${safeError(error)}`);
+		});
+		this.streamingTail = task;
+		return task.then(() => succeeded);
+	}
+
+	private async finalizeNativeStreaming(): Promise<boolean> {
+		if (!this.streamingCardId || this.streamingFinalized || !this.transport.finishStreamingCard) return true;
+		const cardId = this.streamingCardId;
+		const success = await this.runStreamingOperation((sequence) => this.transport.finishStreamingCard!(cardId, cardStatusSummary(this.card.status), sequence));
+		if (success) this.streamingFinalized = true;
+		return success;
 	}
 
 	private ioTimeout(): number { return this.input.preferences?.ioTimeoutMs ?? 2_000; }
