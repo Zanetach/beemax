@@ -78,6 +78,8 @@ test("web_search uses an available exa-mcporter Provider when API-key Providers 
 	const result = await tools.get("web_search").execute("search", { query: "current evidence", maxResults: 2 }, new AbortController().signal);
 	assert.equal(result.isError, false);
 	assert.equal(result.details.provider, "exa-mcporter");
+	assert.match(result.details.sourceReceipt.id, /^source-receipt:sha256:[a-f0-9]{64}$/);
+	assert.deepEqual(result.details.sourceReceipt.sourceRefs, ["https://example.com/current"]);
 	assert.match(result.content[0].text, /https:\/\/example\.com\/current/);
 	assert.ok(result.content[0].text.length < 2_000);
 });
@@ -103,6 +105,8 @@ test("exa-mcporter subprocess receives only its isolated runtime environment", a
 		}).map((tool) => [tool.name, tool]));
 		const result = await tools.get("exa_web_search").execute("search", { query: "isolation evidence", maxResults: 1 }, new AbortController().signal);
 		assert.equal(result.isError, false);
+		assert.match(result.details.sourceReceipt.id, /^source-receipt:sha256:[a-f0-9]{64}$/);
+		assert.deepEqual(result.details.sourceReceipt.sourceRefs, ["https://example.com/isolated"]);
 		assert.match(result.content[0].text, /example\.com\/isolated/);
 	} finally { rmSync(root, { recursive: true, force: true }); }
 });

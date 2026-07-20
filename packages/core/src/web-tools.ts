@@ -23,6 +23,7 @@ import { Type } from "typebox";
 import { READ_ONLY_TOOL_POLICY, withToolPolicy } from "./tool-runtime.ts";
 import { redactCredentialMaterial } from "./credential-material.ts";
 import { verifyProviderArtifact } from "./provider-artifact-integrity.ts";
+import { createSourceReceipt, type SourceReceipt } from "./artifact-runtime.ts";
 
 const SEARCH_TIMEOUT_MS = 30_000;
 const EXTRACT_TIMEOUT_MS = 20_000;
@@ -94,7 +95,7 @@ export function createWebTools(options: WebToolsOptions = {}): ToolDefinition[] 
 					try {
 						const result = await executeAgentReachSearch(query, maxResults, requestSignal);
 						providerAttempts.push(providerAttempt("exa-mcporter", publicUrls(compactAgentReachOutput(result, maxResults)).length ? "succeeded" : "empty", startedAt));
-						return agentReachSearchResult(result, maxResults, providerAttempts);
+						return agentReachSearchResult(query, result, maxResults, providerAttempts);
 					} catch (error) {
 						providerAttempts.push(providerAttempt("exa-mcporter", "failed", startedAt, error));
 						throw error;
@@ -128,7 +129,7 @@ export function createWebTools(options: WebToolsOptions = {}): ToolDefinition[] 
 					try {
 						const result = await executeAgentReachSearch(query, maxResults, requestSignal);
 						providerAttempts.push(providerAttempt("exa-mcporter", publicUrls(compactAgentReachOutput(result, maxResults)).length ? "succeeded" : "empty", startedAt));
-						return agentReachSearchResult(result, maxResults, providerAttempts);
+						return agentReachSearchResult(query, result, maxResults, providerAttempts);
 					} catch (fallbackError) {
 						providerAttempts.push(providerAttempt("exa-mcporter", "failed", startedAt, fallbackError));
 						throw new Error(`${attempts.length ? `Configured web Providers failed: ${attempts.join("; ")}; ` : ""}Exa/mcporter fallback failed: ${safeProviderError(fallbackError)}`);
@@ -136,11 +137,13 @@ export function createWebTools(options: WebToolsOptions = {}): ToolDefinition[] 
 				}
 				const { provider, results } = searched;
 				if (!results.length) return textResult(`No web results found for: ${query}`, { provider, resultCount: 0 });
+				const sourceReceipt = webSearchSourceReceipt("web_search", query, provider, results);
 				return textResult(formatSearchResults(query, provider, results), {
 					provider,
 					resultCount: results.length,
 					results,
 					attempts: providerAttempts,
+					sourceReceipt,
 				});
 			} catch (error) {
 				return textResult(`Web search failed: ${safeProviderError(error)}`, { provider: "unknown", resultCount: 0, attempts: providerAttempts }, true);
@@ -204,7 +207,9 @@ export function createWebTools(options: WebToolsOptions = {}): ToolDefinition[] 
 			try {
 				const maxResults = clamp(params.maxResults ?? 5, 1, 10);
 				const output = compactAgentReachOutput(await executeAgentReachSearch(query, maxResults, signal), maxResults);
-				return textResult(output, { provider: "exa-mcporter" });
+				const urls = publicUrls(output);
+				const sourceReceipt = urls.length ? webSearchSourceReceipt("exa_web_search", query, "exa-mcporter", urls.map((url) => ({ title: url, url, snippet: "" }))) : undefined;
+				return textResult(output, { provider: "exa-mcporter", resultCount: urls.length, results: urls.map((url) => ({ url })), ...(sourceReceipt ? { sourceReceipt } : {}) });
 			} catch (error) {
 				return textResult(`Exa/mcporter search unavailable: ${safeProviderError(error)}. Reconcile or reacquire the Profile-scoped exa-mcporter Provider.`, { provider: "exa-mcporter" }, true);
 			}
@@ -223,14 +228,36 @@ export function createWebTools(options: WebToolsOptions = {}): ToolDefinition[] 
 	return [webSearch, agentReachSearch, webExtract].map((tool) => withToolPolicy(tool, publicResearchPolicy));
 }
 
-function agentReachSearchResult(value: string, maxResults: number, attempts: readonly WebSearchProviderAttempt[] = []) {
+function agentReachSearchResult(query: string, value: string, maxResults: number, attempts: readonly WebSearchProviderAttempt[] = []) {
 	const output = compactAgentReachOutput(value, maxResults);
 	const urls = publicUrls(output);
+	const sourceReceipt = urls.length ? webSearchSourceReceipt("web_search", query, "exa-mcporter", urls.map((url) => ({ title: url, url, snippet: "" }))) : undefined;
 	return textResult(output || "No Exa/mcporter results found.", {
 		provider: "exa-mcporter",
 		resultCount: urls.length,
 		results: urls.map((url) => ({ url })),
 		attempts,
+		...(sourceReceipt ? { sourceReceipt } : {}),
+	});
+}
+
+function webSearchSourceReceipt(capability: "web_search" | "exa_web_search", query: string, provider: string, results: readonly SearchResult[]): Readonly<SourceReceipt> {
+	const sourceRefs = [...new Set(results.flatMap((result) => publicUrls(result.url)))];
+	return createSourceReceipt({
+		capability,
+		subject: query.slice(0, 2_000),
+		observedAt: Date.now(),
+		sourceRefs,
+		payload: {
+			provider,
+			resultCount: results.length,
+			results: results.slice(0, 10).map((result) => ({
+				title: result.title.slice(0, 500),
+				url: result.url,
+				snippet: result.snippet.slice(0, 2_000),
+				...(result.score === undefined ? {} : { score: result.score }),
+			})),
+		},
 	});
 }
 

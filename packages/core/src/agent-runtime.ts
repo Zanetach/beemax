@@ -36,7 +36,7 @@ import { deriveTaskVerificationRequirements, mergeTaskVerificationRequirements }
 import { sanitizeTaskCriterionVerifications, unavailableTaskCriterionVerifications } from "./task-criteria.ts";
 import { objectiveCompletionId } from "./objective-completion-delivery.ts";
 import { VERIFICATION_SUBMIT_TOOL_NAME } from "./verification-tools.ts";
-import { validateArtifactManifest, validateArtifactVerificationReceipt, validateSourceReceipt, type ArtifactManifest, type ArtifactVerificationReceipt, type SourceReceipt } from "./artifact-runtime.ts";
+import { createArtifactManifest, validateArtifactManifest, validateArtifactVerificationReceipt, validateSourceReceipt, type ArtifactManifest, type ArtifactVerificationReceipt, type SourceReceipt } from "./artifact-runtime.ts";
 import type { OperationalRoutingReceipt } from "./memory-learning-kernel.ts";
 
 export interface AgentRunInput<Source extends BeeMaxRuntimeSource = BeeMaxRuntimeSource> {
@@ -63,6 +63,8 @@ export interface AgentRunResult {
 	model: string;
 	durationMs: number;
 	usage: { input_tokens?: number; output_tokens?: number };
+	/** Trusted Tool-produced artifacts surfaced to the interactive delivery layer. */
+	artifacts?: readonly TaskArtifact[];
 	/** Host-derived business state; a Provider final message alone can never set accepted. */
 	outcome: AgentRunOutcome;
 	/** Durable completion to acknowledge after the caller's interactive delivery succeeds. */
@@ -229,7 +231,9 @@ function deterministicArtifactBoundaryToolNames(requirementText: string, tools: 
 interface TurnArtifactPipelineSelection {
 	candidates: CapabilitySelectionCandidate[];
 	missingResearchProvider: boolean;
-	searchToolName?: "web_search" | "exa_web_search";
+	requiresResearchEvidence: boolean;
+	researchToolName?: string;
+	researchCandidateNames?: string[];
 }
 
 function deterministicTurnArtifactPipelineSelection(
@@ -243,31 +247,46 @@ function deterministicTurnArtifactPipelineSelection(
 	const separator = String.raw`(?:[,，、+&/]|和|与|及|以及|并且|\b(?:and|plus)\b)`;
 	const pairedFormats = new RegExp(String.raw`(?:${HTML_ARTIFACT_PATTERN}\s*${separator}\s*[^。；;\n]{0,24}?${PDF_ARTIFACT_PATTERN}|${PDF_ARTIFACT_PATTERN}\s*${separator}\s*[^。；;\n]{0,24}?${HTML_ARTIFACT_PATTERN})`, "iu");
 	const pairedFormatMatch = pairedFormats.exec(text);
-	if (!pairedFormatMatch) return { candidates: [], missingResearchProvider: false };
+	if (!pairedFormatMatch) return { candidates: [], missingResearchProvider: false, requiresResearchEvidence: false };
 	const beforePairedFormats = text.slice(Math.max(0, pairedFormatMatch.index - 80), pairedFormatMatch.index);
 	const explicitArtifactOutput = /(?:输出|交付|导出|保存|\b(?:output|deliver|export|save)\b)[^。；;.\n]{0,50}$/iu.test(beforePairedFormats);
 	const creationIntent = /做一份|制作|生成|创建|编写|\b(?:produce|create|generate|make|build|write)\b/iu.test(text);
 	const artifactDeliverable = /文件|文档|报告|格式|版本|成品|\b(?:files?|documents?|reports?|artifacts?|formats?|versions?|deliverables?|outputs?)\b/iu.test(text);
 	const discussesFormats = /(?:关于|比较|对比|区别|差异|\b(?:about|regarding|concerning|compare|comparison|comparing|versus|vs\.?|on)\b)[^。；;.\n]{0,50}$/iu.test(beforePairedFormats);
-	const requestsDelivery = explicitArtifactOutput || (creationIntent && artifactDeliverable && !discussesFormats);
-	if (!requestsDelivery) return { candidates: [], missingResearchProvider: false };
+	const requestsInstructions = /(?:说明|解释|介绍)[^。；;\n]{0,40}?(?:如何|怎么)[^。；;\n]{0,40}?(?:输出|生成|创建|制作|导出|保存)|\b(?:explain|describe|show|tell)\b[^.;\n]{0,40}?\bhow\s+to\b[^.;\n]{0,40}?\b(?:output|generate|create|produce|export|save)\b/iu.test(text);
+	const requestsDelivery = !discussesFormats && !requestsInstructions && (explicitArtifactOutput || (creationIntent && artifactDeliverable));
+	if (!requestsDelivery) return { candidates: [], missingResearchProvider: false, requiresResearchEvidence: false };
 
 	const availableTools = tools.filter((tool) => admittedInventory.has(tool.name));
 	const selected: string[] = [];
 	let missingResearchProvider = false;
-	let searchToolName: TurnArtifactPipelineSelection["searchToolName"];
+	let researchToolName: string | undefined;
+	let researchCandidateNames: string[] | undefined;
 	if (planningSignals?.requiresResearch) {
 		const recoveredProviders = new Set(providerAvailability.recoveries.map((item) => item.toolName));
 		const restrictedProviders = new Set(providerAvailability.restrictions.map((item) => item.toolName));
-		const searchTools = ["web_search", "exa_web_search"]
-			.flatMap((name) => availableTools.filter((tool) => tool.name === name));
-		const operationalSearch = searchTools.find((tool) => {
-			const item = toolSpecInventoryItem(tool);
-			return recoveredProviders.has(tool.name) || (!restrictedProviders.has(tool.name) && item.configured && item.health !== "configuration_required" && item.health !== "unhealthy" && item.health !== "unavailable");
+		const researchTools = availableTools.filter((tool) => {
+			const ranking = (tool as typeof tool & { beemaxToolSpec?: { ranking?: CapabilityOperationalSignals } }).beemaxToolSpec?.ranking;
+			return ["web_search", "exa_web_search"].includes(tool.name) || (toolSideEffect(tool) === "none"
+				&& (ranking?.freshness === "current" || ranking?.freshness === "realtime")
+				&& (ranking?.evidence === "source_receipt" || ranking?.evidence === "verified"));
 		});
-		if (operationalSearch) {
-			searchToolName = operationalSearch.name as TurnArtifactPipelineSelection["searchToolName"];
-			selected.push(operationalSearch.name);
+		researchCandidateNames = researchTools.map((tool) => tool.name);
+		const rankedResearchNames = selectTurnTools(requestText, researchTools, researchTools.length);
+		const orderedResearchNames = [...new Set([
+			...rankedResearchNames,
+			...(["web_search", "exa_web_search"].filter((name) => researchCandidateNames!.includes(name))),
+		])];
+		const operationalResearch = orderedResearchNames
+			.map((name) => researchTools.find((tool) => tool.name === name))
+			.find((tool): tool is ToolDefinition | ToolInfo => {
+				if (!tool) return false;
+				const item = toolSpecInventoryItem(tool);
+				return recoveredProviders.has(tool.name) || (!restrictedProviders.has(tool.name) && item.configured && item.health !== "configuration_required" && item.health !== "unhealthy" && item.health !== "unavailable");
+			});
+		if (operationalResearch) {
+			researchToolName = operationalResearch.name;
+			selected.push(operationalResearch.name);
 		}
 		else missingResearchProvider = true;
 	}
@@ -279,7 +298,13 @@ function deterministicTurnArtifactPipelineSelection(
 		const item = toolSpecInventoryItem(tool);
 		return { kind: item.kind === "mcp" ? "mcp" as const : "tool" as const, name, version: item.version, confidence: 1, necessity: "required" as const, sourceToolName: name };
 	});
-	return { candidates, missingResearchProvider, ...(searchToolName ? { searchToolName } : {}) };
+	return {
+		candidates,
+		missingResearchProvider,
+		requiresResearchEvidence: Boolean(planningSignals?.requiresResearch),
+		...(researchToolName ? { researchToolName } : {}),
+		...(researchCandidateNames?.length ? { researchCandidateNames } : {}),
+	};
 }
 
 function mergeCapabilitySelectionCandidates(
@@ -908,7 +933,7 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 			const capabilityRequirements = (workContract?.capabilityRequirements ?? []).map((clause, index) => ({ id: stableCapabilityRequirementId(index, clause), text: clause.text }));
 			const executionCapabilityInventory = new Set((admittedTools ?? allTools.map((tool) => tool.name)).filter((name) => !operationallySuppressedToolNames.has(name)));
 			let turnLocalArtifactPipeline = workContract
-				? { candidates: [], missingResearchProvider: false }
+				? { candidates: [], missingResearchProvider: false, requiresResearchEvidence: false }
 				: deterministicTurnArtifactPipelineSelection(input.text, planning?.signals, allTools, executionCapabilityInventory);
 			const capabilityBoundaries = workContract ? [
 				...workContract.constraints.map((clause) => ({ kind: "constraint" as const, text: clause.text })),
@@ -950,10 +975,10 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 						if (!workContract) turnLocalArtifactPipeline = deterministicTurnArtifactPipelineSelection(input.text, planning?.signals, allTools, executionCapabilityInventory, providerPrefetchAvailability);
 					}
 					const providerAdmissibleCandidates = restoreUncoveredCapabilityCandidates(reconcileExplicitCapabilityExecutionCandidates(providerCandidates, capabilityRequirements, allTools, operationalInventory), capabilityRequirements, allTools, operationalInventory);
-					const activationProviderCandidates = turnLocalArtifactPipeline.searchToolName
+					const activationProviderCandidates = turnLocalArtifactPipeline.researchToolName
 						? providerAdmissibleCandidates.filter((candidate) => {
 							const name = candidate.sourceToolName ?? candidate.name;
-							return (name !== "web_search" && name !== "exa_web_search") || name === turnLocalArtifactPipeline.searchToolName;
+							return !turnLocalArtifactPipeline.researchCandidateNames?.includes(name) || name === turnLocalArtifactPipeline.researchToolName;
 						})
 						: providerAdmissibleCandidates;
 					const admissibleCandidates = mergeCapabilitySelectionCandidates(activationProviderCandidates, turnLocalArtifactPipeline.candidates);
@@ -1167,6 +1192,8 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 			const settledToolProgress: string[] = [];
 			const successfulToolNames = new Set<string>();
 			const successfulToolSequences = new Map<string, number[]>();
+			const turnArtifacts = new Map<string, TaskArtifact>();
+			const hasTurnSourceReceipt = () => [...turnArtifacts.values()].some((artifact) => Boolean(artifact.sourceReceipt));
 			const durableTaskArtifacts = new Map<string, TaskArtifact>();
 			for (const artifact of objective?.artifacts ?? []) durableTaskArtifacts.set(taskArtifactKey(artifact), artifact);
 			const completedSkillSequences = new Map<string, Array<{ version: string; sequence: number }>>();
@@ -1320,12 +1347,19 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 					if (!event.isError) {
 						successfulToolNames.add(event.toolName);
 						successfulToolSequences.set(event.toolName, [...(successfulToolSequences.get(event.toolName) ?? []), toolAdmissionSequence]);
-						const artifact = taskArtifactMetadata(event.result);
-						if (artifact && objective) {
-							durableTaskArtifacts.set(taskArtifactKey(artifact), artifact);
-							if (this.taskLedger?.transition(objective.id, { status: "running", artifacts: [...durableTaskArtifacts.values()] }) !== true && !turnAbortReason) {
-								turnAbortReason = `Artifact ${artifact.uri} could not be durably attached to Objective ${objective.id}`;
-								void session.piSession.abort();
+						const artifact = taskArtifactMetadata(event.result, {
+							toolName: event.toolName,
+							inferWriteHtmlArtifact: turnLocalArtifactPipeline.candidates.some((candidate) => (candidate.sourceToolName ?? candidate.name) === "write"),
+							sourceRefs: [...turnArtifacts.values()].flatMap((item) => item.sourceReceipt ? [item.sourceReceipt.id] : []),
+						});
+						if (artifact) {
+							turnArtifacts.set(taskArtifactKey(artifact), artifact);
+							if (objective) {
+								durableTaskArtifacts.set(taskArtifactKey(artifact), artifact);
+								if (this.taskLedger?.transition(objective.id, { status: "running", artifacts: [...durableTaskArtifacts.values()] }) !== true && !turnAbortReason) {
+									turnAbortReason = `Artifact ${artifact.uri} could not be durably attached to Objective ${objective.id}`;
+									void session.piSession.abort();
+								}
 							}
 						}
 					}
@@ -1615,6 +1649,11 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 					|| startedArgumentsSha256 !== expectedToolCall.argumentsSha256
 					|| startedToolSpecPlanId !== expectedToolCall.toolSpecPlanId) return { block: true, reason: `Tool ${context.toolCall.name} is not bound to its Provider-backed Tool start` };
 				if (!toolSpecPlan.direct.some((entry) => entry.toolName === context.toolCall.name)) return { block: true, reason: `Tool ${context.toolCall.name} is not direct in the current immutable Tool Spec Plan` };
+				if (turnLocalArtifactPipeline.requiresResearchEvidence
+					&& (context.toolCall.name === "write" || context.toolCall.name === "artifact_render")
+					&& !hasTurnSourceReceipt()) {
+					return { block: true, reason: `Tool ${context.toolCall.name} requires a successful trusted Source Receipt before a research artifact can be produced` };
+				}
 				if (toolSideEffects.get(context.toolCall.name) !== "none") {
 					const durableObjectiveId = executionEnvelope.objectiveId;
 					const durableTaskId = executionEnvelope.taskId;
@@ -1977,7 +2016,10 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 				unsubscribe?.();
 				session.piSession.agent.beforeToolCall = previousToolBoundary;
 			}
-			const answer = completionAnswer ?? (currentTurnAssistantText() || "(no response)");
+			const missingResearchEvidence = turnLocalArtifactPipeline.requiresResearchEvidence && !hasTurnSourceReceipt();
+			const answer = missingResearchEvidence
+				? "报告未生成：没有获得可验证的真实数据来源回执，已阻止使用示例或编造数据生成文件。"
+				: completionAnswer ?? (currentTurnAssistantText() || "(no response)");
 			try {
 				if (await reloadRuntimeResourcesIfNeeded(session.piSession)) console.info("[beemax] skills and resources hot-reloaded after agent evolution");
 			} catch (error) { console.error(`[beemax] resource reload failed: ${errorMessage(error)}`); }
@@ -1993,8 +2035,16 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 					objectiveId: objective.id,
 					...(activeTaskRunId ? { taskRunId: activeTaskRunId } : {}),
 				}
-				: { status: "answered" };
-			return { answer, model: modelOf(session.piSession.agent), durationMs: Date.now() - startedAt, usage: mergeResultUsage(executionUsage, workContractCognitionUsage), outcome, ...(completionId ? { completionId } : {}) };
+				: missingResearchEvidence ? { status: "rejected" } : { status: "answered" };
+			return {
+				answer,
+				model: modelOf(session.piSession.agent),
+				durationMs: Date.now() - startedAt,
+				usage: mergeResultUsage(executionUsage, workContractCognitionUsage),
+				...(turnArtifacts.size ? { artifacts: [...turnArtifacts.values()] } : {}),
+				outcome,
+				...(completionId ? { completionId } : {}),
+			};
 		}, executionEnvelope).catch((cause) => {
 			turnResourceCleanup?.();
 			if (ownsActiveTaskRun && activeTaskRunId && !activeTaskRunSettled) this.taskLedger?.transitionRun(activeTaskRunId, {
@@ -2521,19 +2571,20 @@ function toolArtifactMetadata(result: unknown): { ref: string } | undefined {
 	return typeof ref === "string" && /^beemax-artifact:sha256:[a-f0-9]{64}$/u.test(ref) ? { ref } : undefined;
 }
 
-function taskArtifactMetadata(result: unknown): TaskArtifact | undefined {
+function taskArtifactMetadata(result: unknown, context: { toolName?: string; inferWriteHtmlArtifact?: boolean; sourceRefs?: readonly string[] } = {}): TaskArtifact | undefined {
 	const details = result && typeof result === "object" ? (result as { details?: unknown }).details : undefined;
 	if (!details || typeof details !== "object") return undefined;
-	const value = details as { manifest?: unknown; receipt?: unknown; sourceReceipt?: unknown };
+	const value = details as { artifactManifest?: unknown; manifest?: unknown; receipt?: unknown; sourceReceipt?: unknown };
 	if (value.sourceReceipt && typeof value.sourceReceipt === "object") {
 		try {
 			const sourceReceipt = validateSourceReceipt(value.sourceReceipt as Readonly<SourceReceipt>);
 			return { type: "reference", uri: sourceReceipt.id, label: sourceReceipt.capability, sourceReceipt };
 		} catch { return undefined; }
 	}
-	if (!value.manifest || typeof value.manifest !== "object") return undefined;
+	const rawManifest = value.manifest ?? value.artifactManifest ?? inferredWriteHtmlManifest(details as Record<string, unknown>, context);
+	if (!rawManifest || typeof rawManifest !== "object") return undefined;
 	try {
-		const manifest = validateArtifactManifest(value.manifest as Readonly<ArtifactManifest>);
+		const manifest = validateArtifactManifest(rawManifest as Readonly<ArtifactManifest>);
 		const verificationReceipt = value.receipt && typeof value.receipt === "object"
 			? validateArtifactVerificationReceipt(value.receipt as Readonly<ArtifactVerificationReceipt>, manifest)
 			: undefined;
@@ -2545,6 +2596,24 @@ function taskArtifactMetadata(result: unknown): TaskArtifact | undefined {
 			...(verificationReceipt ? { verificationReceipt } : {}),
 		};
 	} catch { return undefined; }
+}
+
+function inferredWriteHtmlManifest(details: Record<string, unknown>, context: { toolName?: string; inferWriteHtmlArtifact?: boolean; sourceRefs?: readonly string[] }): Readonly<ArtifactManifest> | undefined {
+	if (context.toolName !== "write" || !context.inferWriteHtmlArtifact) return undefined;
+	const effect = details.beemaxEffect;
+	const externalRef = effect && typeof effect === "object" ? (effect as { externalRef?: unknown }).externalRef : undefined;
+	if (typeof externalRef !== "string" || !/^workspace:.+\.html?$/iu.test(externalRef)) return undefined;
+	if (!Number.isSafeInteger(details.byteLength) || (details.byteLength as number) < 0 || (details.byteLength as number) > 1_000_000_000) return undefined;
+	if (typeof details.sha256 !== "string" || !/^[a-f0-9]{64}$/u.test(details.sha256)) return undefined;
+	return createArtifactManifest({
+		locator: { kind: "workspace", uri: externalRef },
+		mediaType: "text/html",
+		byteLength: details.byteLength as number,
+		sha256: details.sha256,
+		producer: { providerId: "beemax.workspace-write", providerVersion: "1", operation: "write" },
+		sourceRefs: [...new Set(context.sourceRefs ?? [])],
+		createdAt: Date.now(),
+	});
 }
 
 function taskArtifactKey(artifact: TaskArtifact): string {

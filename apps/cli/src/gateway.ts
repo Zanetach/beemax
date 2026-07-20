@@ -525,6 +525,7 @@ export async function runGateway(config: BeeMaxConfig): Promise<void> {
 			interaction,
 			turnTimeoutMs: profileTurnTimeoutMs(config),
 			profileId: config.profile,
+			artifactWorkspace: config.paths.cwd,
 			bindingResolver,
 			ingress: profileHost,
 			bindingChannelInstanceId: id,

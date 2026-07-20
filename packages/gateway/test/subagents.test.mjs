@@ -1,12 +1,13 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { buildAgentFactory } from "../../../apps/cli/dist/agent-factory.js";
 import { Dispatcher } from "../dist/core/dispatcher.js";
 import { GatewayIngressController, MessageDeduplicator, ProfileBindingResolver } from "../dist/index.js";
-import { createSubagentTools, ProfileTaskScheduler, SubagentManager } from "@beemax/core";
+import { createArtifactManifest, createSubagentTools, ProfileTaskScheduler, SubagentManager } from "@beemax/core";
 import { FeishuInteractionPresenter } from "@beemax/channel-feishu";
 
 const source = { platform: "feishu", chatId: "chat-1", chatType: "dm", userId: "user-1" };
@@ -789,17 +790,65 @@ test("Dispatcher delegates opaque control handling to the Agent Runtime", async 
 	dispatcher.dispose();
 });
 
+test("Dispatcher delivers trusted workspace HTML and PDF artifacts through native channel media", async () => {
+	const workspace = mkdtempSync(join(tmpdir(), "beemax-interactive-artifacts-"));
+	try {
+		let inbound;
+		const deliveredMedia = [];
+		const artifact = (name, mimeType, contents, producer) => {
+			const bytes = Buffer.from(contents);
+			writeFileSync(join(workspace, name), bytes);
+			const manifest = createArtifactManifest({
+				locator: { kind: "workspace", uri: `workspace:${name}` },
+				mediaType: mimeType,
+				byteLength: bytes.byteLength,
+				sha256: createHash("sha256").update(bytes).digest("hex"),
+				producer: { providerId: producer, providerVersion: "1.0.0", operation: producer === "beemax.write" ? "write" : "render" },
+				sourceRefs: ["source-receipt:test:gold"],
+				createdAt: 1_721_000_000_000,
+			});
+			return { type: "file", uri: manifest.locator.uri, label: mimeType, manifest };
+		};
+		const artifacts = [
+			artifact("gold-report.html", "text/html", "<html>verified gold report</html>", "beemax.write"),
+			artifact("gold-report.pdf", "application/pdf", "%PDF-verified-gold-report", "beemax.chrome-pdf"),
+		];
+		const platform = {
+			name: "feishu", isConnected: true, capabilities: { mediaDelivery: "files" },
+			onMessage: (handler) => { inbound = handler; }, connect: async () => true, disconnect: async () => undefined,
+			send: async () => ({ success: true, messageId: "answer" }),
+			sendMedia: async (...args) => { deliveredMedia.push(args); return { success: true, messageId: `file-${deliveredMedia.length}` }; },
+			editMessage: async () => ({ success: true }), sendTyping: async () => undefined, stopTyping: async () => undefined,
+		};
+		const runtime = {
+			run: async () => ({ answer: "报告已生成", model: "test", durationMs: 1, usage: {}, artifacts, outcome: { status: "answered" } }),
+			cancel: async () => false, handleControl: async () => undefined, isBusy: () => false, dispose: () => undefined,
+		};
+		const dispatcher = new Dispatcher({ runtime, artifactWorkspace: workspace, flushIntervalMs: 0 }, platform);
+		await inbound({ text: "生成黄金报告", messageType: "text", source: { ...source, messageId: "artifact-delivery" }, mediaPaths: [], mediaTypes: [], raw: {}, timestamp: Date.now() });
+		for (let attempt = 0; deliveredMedia.length < 2 && attempt < 100; attempt++) await new Promise((resolve) => setTimeout(resolve, 5));
+		assert.deepEqual(deliveredMedia.map(([, path, mimeType, name]) => ({ path, mimeType, name })), [
+			{ path: realpathSync(join(workspace, "gold-report.html")), mimeType: "text/html", name: "gold-report.html" },
+			{ path: realpathSync(join(workspace, "gold-report.pdf")), mimeType: "application/pdf", name: "gold-report.pdf" },
+		]);
+		await dispatcher.dispose();
+	} finally {
+		rmSync(workspace, { recursive: true, force: true });
+	}
+});
+
 test("Dispatcher replays and acknowledges crash-surviving queued inputs on Gateway startup", async () => {
 	let inbound;
 	const acknowledged = [];
 	const runs = [];
 	const cards = [];
 	let recoveredClaimed = false;
-	const recoveredSource = { ...source, messageId: undefined };
+	const recoveredSource = { ...source, messageId: "om_original_recovered" };
+	const replyAnchors = [];
 	const platform = {
 		name: "feishu", isConnected: true, onMessage: (handler) => { inbound = handler; }, connect: async () => true, disconnect: async () => undefined,
 		send: async () => ({ success: true }), editMessage: async () => ({ success: true }), sendTyping: async () => undefined, stopTyping: async () => undefined,
-		sendCard: async (_chatId, card) => { cards.push(card); return { success: true, messageId: "recovered-card" }; }, updateCard: async (_id, card) => { cards.push(card); return { success: true }; },
+		sendCard: async (_chatId, card, replyTo) => { cards.push(card); replyAnchors.push(replyTo); return { success: true, messageId: "recovered-card" }; }, updateCard: async (_id, card) => { cards.push(card); return { success: true }; },
 	};
 	enableFeishuPresentation(platform);
 	const interaction = {
@@ -824,6 +873,7 @@ test("Dispatcher replays and acknowledges crash-surviving queued inputs on Gatew
 	assert.equal(await dispatcher.recoverQueuedInputs(), 1);
 	assert.deepEqual(runs, ["resume this"]);
 	assert.deepEqual(acknowledged, ["queued-1"]);
+	assert.equal(replyAnchors[0], "om_original_recovered", "recovery must reply to the real Feishu message rather than a synthetic queue id");
 	assert.match(JSON.stringify(cards), /异步任务计划/);
 	assert.match(JSON.stringify(cards), /plan-42/);
 	dispatcher.dispose();

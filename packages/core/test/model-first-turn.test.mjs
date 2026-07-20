@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { AutonomousPlanningPolicy, BeeMaxAgentRuntime } from "../dist/index.js";
+import { AutonomousPlanningPolicy, BeeMaxAgentRuntime, createArtifactManifest, createSourceReceipt } from "../dist/index.js";
 import { attestCapabilityProviderResolutionTool } from "../dist/capability-provider.js";
 
 const bindAssistantToolCall = (listener, call, responseId) => listener({
@@ -14,17 +14,21 @@ const bindAssistantToolCall = (listener, call, responseId) => listener({
 });
 
 async function dispatchToolCall(agent, listener, call) {
+	const blocked = await authorizeToolCall(agent, listener, call);
+	assert.equal(blocked, undefined);
+	listener({ type: "tool_execution_end", toolCallId: call.id, toolName: call.name, result: call.result, isError: false });
+}
+
+async function authorizeToolCall(agent, listener, call) {
 	const responseId = `response:${call.id}`;
 	bindAssistantToolCall(listener, call, responseId);
 	listener({ type: "tool_execution_start", toolCallId: call.id, toolName: call.name, args: call.args ?? {} });
-	const blocked = await agent.beforeToolCall({
+	return agent.beforeToolCall({
 		assistantMessage: { role: "assistant", responseId },
 		toolCall: { id: call.id, name: call.name, arguments: call.args ?? {} },
 		args: call.args ?? {},
 		context: {},
 	}, new AbortController().signal);
-	assert.equal(blocked, undefined);
-	listener({ type: "tool_execution_end", toolCallId: call.id, toolName: call.name, result: call.result, isError: false });
 }
 
 async function activeToolsAtFirstModelPrompt({ request, chatId, tools }) {
@@ -247,6 +251,31 @@ test("turn-local rewriting stays model-first when an unrelated durable Objective
 test("a model-first HTML and PDF report activates research, writing, and rendering on its first execution turn", async () => {
 	const request = "做一份过去1一个月的黄金交易情况。输出PDF，HTML";
 	const source = { platform: "cli", chatId: "model-first-html-pdf-report", chatType: "dm", userId: "local" };
+	const htmlManifest = createArtifactManifest({
+		locator: { kind: "workspace", uri: "workspace:gold-report.html" },
+		mediaType: "text/html",
+		byteLength: 32,
+		sha256: "a".repeat(64),
+		producer: { providerId: "beemax.write", providerVersion: "1.0.0", operation: "write" },
+		sourceRefs: ["source-receipt:test:gold"],
+		createdAt: 1_721_000_000_000,
+	});
+	const pdfManifest = createArtifactManifest({
+		locator: { kind: "workspace", uri: "workspace:gold-report.pdf" },
+		mediaType: "application/pdf",
+		byteLength: 4_096,
+		sha256: "b".repeat(64),
+		producer: { providerId: "beemax.chrome-pdf", providerVersion: "1.0.0", operation: "render" },
+		sourceRefs: [htmlManifest.id],
+		createdAt: 1_721_000_000_001,
+	});
+	const sourceReceipt = createSourceReceipt({
+		capability: "web_search",
+		subject: "XAU/USD 2026-06-12..2026-07-12",
+		observedAt: 1_721_000_000_000,
+		sourceRefs: ["https://example.test/xau"],
+		payload: { resultCount: 3 },
+	});
 	let activeTools = [];
 	let activeAtFirstPrompt = [];
 	let prefetchCalls = 0;
@@ -295,9 +324,9 @@ test("a model-first HTML and PDF report activates research, writing, and renderi
 			subscribe: (next) => { listener = next; return () => undefined; },
 			prompt: async () => {
 				activeAtFirstPrompt = [...activeTools];
-				await dispatchToolCall(agent, listener, { id: "search:gold", name: "web_search", args: { query: "过去一个月黄金交易情况" }, result: { details: { resultCount: 3 } } });
-				await dispatchToolCall(agent, listener, { id: "write:gold", name: "write", args: { path: "gold-report.html", content: "<html><body>report</body></html>" }, result: { details: { path: "gold-report.html" } } });
-				await dispatchToolCall(agent, listener, { id: "render:gold", name: "artifact_render", args: { inputPath: "gold-report.html", outputPath: "gold-report.pdf" }, result: { details: { path: "gold-report.pdf" } } });
+				await dispatchToolCall(agent, listener, { id: "search:gold", name: "web_search", args: { query: "过去一个月黄金交易情况" }, result: { details: { resultCount: 3, sourceReceipt } } });
+				await dispatchToolCall(agent, listener, { id: "write:gold", name: "write", args: { path: "gold-report.html", content: "<html><body>report</body></html>" }, result: { details: { path: "gold-report.html", byteLength: 32, sha256: "a".repeat(64), beemaxEffect: { operation: "write workspace file", externalRef: "workspace:gold-report.html" } } } });
+				await dispatchToolCall(agent, listener, { id: "render:gold", name: "artifact_render", args: { inputPath: "gold-report.html", outputPath: "gold-report.pdf" }, result: { details: { path: "gold-report.pdf", manifest: pdfManifest } } });
 				listener({ type: "message_end", message: { role: "assistant", responseId: "response:gold-report-final", content: [{ type: "text", text: "报告已生成" }], usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0 } } });
 				agent.state.messages = [{ role: "assistant", content: [{ type: "text", text: "报告已生成" }], usage: { input: 1, output: 1 } }];
 			},
@@ -310,6 +339,11 @@ test("a model-first HTML and PDF report activates research, writing, and renderi
 		const result = await runtime.run({ source, text: request, timeoutMs: 1_000 });
 
 		assert.equal(result.answer, "报告已生成");
+		assert.deepEqual(result.artifacts?.filter((artifact) => artifact.type === "file").map((artifact) => artifact.uri), [
+			"workspace:gold-report.html",
+			"workspace:gold-report.pdf",
+		], "ordinary interactive Turns must surface generated artifacts to the delivery layer");
+		assert.deepEqual(result.artifacts?.find((artifact) => artifact.uri === "workspace:gold-report.html")?.manifest?.sourceRefs, [sourceReceipt.id]);
 		assert.equal(workContractCalls, 0);
 		assert.equal(prefetchCalls, 1);
 		assert.ok(activeAtFirstPrompt.includes("web_search"), "research must be available before the model starts the report");
@@ -323,6 +357,97 @@ test("a model-first HTML and PDF report activates research, writing, and renderi
 			{ name: "write", necessity: "required" },
 			{ name: "artifact_render", necessity: "required" },
 		]);
+	} finally {
+		runtime.dispose();
+	}
+});
+
+test("a gold HTML and PDF report prefers its ready structured market Provider on the first execution turn", async () => {
+	const request = "做一份过去1一个月的黄金交易情况。输出PDF，HTML";
+	const tools = [
+		{
+			name: "capability_discover",
+			description: "Discover capabilities",
+			beemaxCapabilityPrefetch: async () => ({
+				cognitionId: "cap:model-first-structured-gold-report",
+				candidates: [{ kind: "tool", name: "artifact_render", confidence: 0.99 }],
+				activatedTools: ["artifact_render"],
+				skills: [],
+			}),
+		},
+		{ name: "market_series", description: "Fetch source-timestamped XAU/USD OHLC with an independent cross-check", triggers: ["黄金走势", "黄金交易", "XAU/USD"], beemaxToolSpec: { configured: true, health: "ready", ranking: { freshness: "current", evidence: "verified" } }, beemaxPolicy: { sideEffect: "none" } },
+		{ name: "web_search", description: "Search current public web evidence", beemaxToolSpec: { configured: false, health: "configuration_required" }, beemaxPolicy: { sideEffect: "none" } },
+		{ name: "exa_web_search", description: "Search current public web evidence through Exa", beemaxToolSpec: { configured: false, health: "configuration_required" }, beemaxPolicy: { sideEffect: "none" } },
+		{ name: "write", description: "Write an HTML file in the workspace", beemaxPolicy: { sideEffect: "local" } },
+		{ name: "artifact_render", description: "Render HTML into a PDF", beemaxPolicy: { sideEffect: "local" } },
+	];
+	const activeAtFirstPrompt = await activeToolsAtFirstModelPrompt({ request, chatId: "model-first-structured-gold-report", tools });
+	assert.ok(activeAtFirstPrompt.includes("market_series"));
+	assert.equal(activeAtFirstPrompt.includes("web_search"), false);
+	assert.equal(activeAtFirstPrompt.includes("exa_web_search"), false);
+	assert.ok(activeAtFirstPrompt.includes("write"));
+	assert.ok(activeAtFirstPrompt.includes("artifact_render"));
+});
+
+test("a research report cannot write fabricated artifacts before a trusted Source Receipt exists", async () => {
+	const request = "做一份过去1一个月的黄金交易情况。输出PDF，HTML";
+	const sourceReceipt = createSourceReceipt({
+		capability: "market_series",
+		subject: "XAU/USD 2026-06-12..2026-07-12",
+		observedAt: 1_721_000_000_000,
+		sourceRefs: ["https://example.test/xau", "https://example.test/xau-crosscheck"],
+		payload: { interval: "daily", points: [{ date: "2026-07-12", close: 2_400 }] },
+	});
+	let activeTools = [];
+	let listener;
+	let earlyWriteBlock;
+	let evidencedWriteBlock;
+	const agent = { state: { model: { id: "test/model" }, messages: [] } };
+	const tools = [
+		{
+			name: "capability_discover",
+			description: "Discover capabilities",
+			beemaxCapabilityPrefetch: async () => ({ cognitionId: "cap:model-first-source-gate", candidates: [{ kind: "tool", name: "artifact_render", confidence: 0.99 }], activatedTools: ["artifact_render"], skills: [] }),
+		},
+		{ name: "market_series", description: "Fetch source-timestamped XAU/USD OHLC with an independent cross-check", triggers: ["黄金交易", "XAU/USD"], beemaxToolSpec: { configured: true, health: "ready", ranking: { freshness: "current", evidence: "source_receipt" } }, beemaxPolicy: { sideEffect: "none" } },
+		{ name: "write", description: "Write an HTML file in the workspace", beemaxPolicy: { sideEffect: "local" } },
+		{ name: "artifact_render", description: "Render HTML into a PDF", beemaxPolicy: { sideEffect: "local" } },
+	];
+	const runtime = new BeeMaxAgentRuntime({
+		profileId: "profile:model-first",
+		planningPolicy: new AutonomousPlanningPolicy(),
+		createAgent: async () => ({
+			agent,
+			getAllTools: () => tools,
+			getActiveToolNames: () => activeTools.length ? [...activeTools] : tools.map(({ name }) => name),
+			setActiveToolsByName: (names) => { activeTools = [...names]; },
+			subscribe: (next) => { listener = next; return () => undefined; },
+			prompt: async () => {
+				const earlyWrite = { id: "write:before-source", name: "write", args: { path: "gold-report.html", content: "示例数据" }, result: { details: { path: "gold-report.html" } } };
+				earlyWriteBlock = await authorizeToolCall(agent, listener, earlyWrite);
+				listener({
+					type: "tool_execution_end",
+					toolCallId: earlyWrite.id,
+					toolName: earlyWrite.name,
+					result: earlyWriteBlock?.block ? { details: { dispatchError: { stage: "authorization", code: "blocked", retryable: false } } } : earlyWrite.result,
+					isError: Boolean(earlyWriteBlock?.block),
+				});
+				await dispatchToolCall(agent, listener, { id: "market:gold", name: "market_series", args: { symbol: "XAU/USD", period: "1m" }, result: { details: { sourceReceipt } } });
+				const evidencedWrite = { id: "write:after-source", name: "write", args: { path: "gold-report.html", content: "真实数据" }, result: { details: { path: "gold-report.html" } } };
+				evidencedWriteBlock = await authorizeToolCall(agent, listener, evidencedWrite);
+				listener({ type: "tool_execution_end", toolCallId: evidencedWrite.id, toolName: evidencedWrite.name, result: evidencedWrite.result, isError: false });
+				listener({ type: "message_end", message: { role: "assistant", responseId: "response:source-gated-report", content: [{ type: "text", text: "真实数据报告已生成" }], usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0 } } });
+				agent.state.messages = [{ role: "assistant", content: [{ type: "text", text: "真实数据报告已生成" }], usage: { input: 1, output: 1 } }];
+			},
+			abort: async () => undefined,
+			dispose: () => undefined,
+		}),
+	});
+	try {
+		await runtime.run({ source: { platform: "cli", chatId: "model-first-source-gate", chatType: "dm", userId: "local" }, text: request, timeoutMs: 1_000 });
+		assert.equal(earlyWriteBlock?.block, true);
+		assert.match(earlyWriteBlock.reason, /Source Receipt/i);
+		assert.equal(evidencedWriteBlock, undefined);
 	} finally {
 		runtime.dispose();
 	}
@@ -413,7 +538,12 @@ test("discussing HTML and PDF does not activate an artifact creation pipeline", 
 		{ name: "write", description: "Write an HTML file in the workspace", beemaxPolicy: { sideEffect: "local" } },
 		{ name: "artifact_render", description: "Render HTML into a PDF", triggers: ["PDF", "HTML to PDF"], beemaxPolicy: { sideEffect: "local" } },
 	];
-	for (const [index, request] of ["Which provider supports PDF and HTML?", "Write a comparison of PDF and HTML", "Write a report comparing PDF and HTML formats"].entries()) {
+	for (const [index, request] of [
+		"Which provider supports PDF and HTML?",
+		"Write a comparison of PDF and HTML",
+		"Write a report comparing PDF and HTML formats",
+		"调研过去一周黄金走势，说明应如何输出 HTML 和 PDF 文件；没有工具时明确说明限制。",
+	].entries()) {
 		const activeAtFirstPrompt = await activeToolsAtFirstModelPrompt({ request, chatId: `model-first-artifact-discussion-${index}`, tools });
 		assert.equal(activeAtFirstPrompt.includes("write"), false, request);
 		assert.equal(activeAtFirstPrompt.includes("artifact_render"), false, request);

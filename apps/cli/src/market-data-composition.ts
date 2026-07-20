@@ -88,7 +88,7 @@ export function createStructuredMarketTools(options: StructuredMarketToolOptions
 		},
 	}), READ_ONLY_TOOL_POLICY), {
 		aliases: ["market_ohlc", "xau_usd_series", "structured_market_data"],
-		triggers: ["XAU/USD", "黄金走势", "gold price", "OHLC", "market series", "行情数据"],
+		triggers: ["XAU/USD", "黄金走势", "黄金交易", "过去一个月的黄金", "gold price", "gold trading", "OHLC", "market series", "行情数据"],
 		beemaxToolSpec: { kind: "tool" as const, version: "1", configured: true, health: "ready" as const, ranking: { inputModalities: ["symbol", "date-range"], outputModalities: ["structured"], freshness: "current" as const, evidence: "verified" as const } },
 	});
 	return [tool];

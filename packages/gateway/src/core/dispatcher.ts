@@ -6,12 +6,19 @@ import {
 	InteractionEventAdapter,
 	parseInteractionCommand,
 	sessionOwnerKey,
+	type AgentRunResult,
+	type MediaArtifact,
+	type TaskArtifact,
 	type ToolApprovalBroker,
 	type AgentRuntimePort,
 	type DeliveryTarget,
 	type TaskLedger,
 	type TaskPlanProgressEvent,
 } from "@beemax/core";
+import { createHash } from "node:crypto";
+import { createReadStream } from "node:fs";
+import { realpath, stat } from "node:fs/promises";
+import { basename, isAbsolute, relative, resolve, sep } from "node:path";
 import type { InboundMessage, InteractionPresentationPreferences, PlatformAdapter, PlatformCardAction } from "@beemax/channel-runtime";
 import { MessageDeduplicator } from "./message-deduplicator.ts";
 import { prepareAgentMediaInput } from "./media-input.ts";
@@ -19,6 +26,7 @@ import type { ProfileBindingResolver } from "./profile-binding.ts";
 import type { GatewayInteractionAdmission } from "./ingress-capacity.ts";
 import { GatewayIngressController } from "./ingress-capacity.ts";
 import { TextInteractionPresenter } from "./text-presentation.ts";
+import { GatewayDeliveryPort } from "./delivery-port.ts";
 
 interface CardBinding {
 	source: InboundMessage["source"];
@@ -51,6 +59,8 @@ export interface DispatcherDeps {
 	/** Shared Profile-level ingress budget; one controller may cover every Channel Instance. */
 	ingress?: GatewayInteractionAdmission;
 	messageDeduplicator?: MessageDeduplicator;
+	/** Trusted Profile workspace used to resolve content-addressed workspace: artifacts. */
+	artifactWorkspace?: string;
 	/** Commits an interactive Delivery Receipt into the shared Completion Outbox. */
 	completionAcknowledger?: Required<Pick<TaskLedger, "getObjectiveCompletion" | "acknowledgeObjectiveCompletion">>;
 	beforeCompletionAcknowledged?: (completionId: string, source: InboundMessage["source"]) => void | Promise<void>;
@@ -65,6 +75,7 @@ export class Dispatcher {
 	private readonly profileId: string;
 	private readonly deduplicator: MessageDeduplicator;
 	private readonly ingress: GatewayInteractionAdmission;
+	private readonly delivery: GatewayDeliveryPort;
 	private readonly sessionOverrides = new Map<string, InboundMessage["source"]>();
 	private readonly cardBindings = new Map<string, CardBinding>();
 	private readonly turnStarts = new Map<string, Promise<void>>();
@@ -84,6 +95,7 @@ export class Dispatcher {
 		this.profileId = deps.profileId ?? "default";
 		this.deduplicator = deps.messageDeduplicator ?? new MessageDeduplicator();
 		this.ingress = deps.ingress ?? new GatewayIngressController();
+		this.delivery = new GatewayDeliveryPort(platform);
 		this.platform.onMessage((msg) => this.admit(msg));
 		this.platform.onCardAction?.((action) => this.handleCardAction(action));
 	}
@@ -261,6 +273,7 @@ export class Dispatcher {
 					console.error(`[beemax] Interactive Objective returned an invalid Delivery Receipt; Completion remains queued: ${result.completionId}`);
 					return true;
 				}
+				await this.deliverTurnArtifacts(result.artifacts, exactSource);
 				try { await this.deps.beforeCompletionAcknowledged?.(result.completionId, msg.source); }
 				catch { console.error(`[beemax] Interactive Objective publication deferred to Completion Outbox: ${result.completionId}`); return true; }
 				if (!this.deps.completionAcknowledger!.acknowledgeObjectiveCompletion(result.completionId, receipt)) {
@@ -268,6 +281,7 @@ export class Dispatcher {
 				}
 			} else {
 				await presentation.finish(result.answer);
+				await this.deliverTurnArtifacts(result.artifacts, exactSource);
 			}
 			return true;
 		} catch (error) {
@@ -275,6 +289,28 @@ export class Dispatcher {
 			throw error;
 		} finally {
 			await presentation.close(failed);
+		}
+	}
+
+	private async deliverTurnArtifacts(artifacts: AgentRunResult["artifacts"], source: InboundMessage["source"]): Promise<void> {
+		const files = artifacts?.filter((artifact) => artifact.type === "file") ?? [];
+		if (!files.length) return;
+		if (!this.deps.artifactWorkspace) throw new Error("Interactive artifact delivery has no trusted Profile workspace");
+		const target: DeliveryTarget = {
+			platform: source.platform,
+			...(source.channelInstanceId ? { channelInstanceId: source.channelInstanceId } : {}),
+			chatId: source.chatId,
+			...(source.chatType ? { chatType: source.chatType } : {}),
+			...(source.userId ? { userId: source.userId } : {}),
+			...(source.threadId ? { threadId: source.threadId } : {}),
+			...(source.replyToMessageId ? { replyToMessageId: source.replyToMessageId } : {}),
+		};
+		for (const artifact of files) {
+			const media = await verifiedWorkspaceMedia(artifact, this.deps.artifactWorkspace);
+			await this.delivery.sendMedia(target, media, {
+				idempotencyKey: `${this.profileId}:${source.messageId ?? "turn"}:${artifact.manifest!.id}`,
+				deliveryClass: "interactive",
+			});
 		}
 	}
 
@@ -290,7 +326,7 @@ export class Dispatcher {
 			const message: InboundMessage = {
 				text: input.text,
 				messageType: "text",
-				source: { ...input.source, messageId: `recovery:${input.id}` },
+				source: input.source.messageId ? input.source : { ...input.source, messageId: `recovery:${input.id}` },
 				mediaPaths: [], mediaTypes: [], raw: { recoveredInputId: input.id }, timestamp: input.createdAt,
 			};
 			const release = await this.acquireTurnAdmission(sessionOwnerKey(input.source));
@@ -319,7 +355,7 @@ export class Dispatcher {
 				const snapshot = await this.interaction.snapshot(source);
 				if (["running", "queued", "awaiting_approval"].includes(snapshot.phase)) { this.interaction.releaseQueuedInput(source, input); return drained; }
 				const message: InboundMessage = {
-					text: input.text, messageType: "text", source: { ...input.source, messageId: `queued:${input.id}` },
+					text: input.text, messageType: "text", source: input.source.messageId ? input.source : { ...input.source, messageId: `queued:${input.id}` },
 					mediaPaths: [], mediaTypes: [], raw: { queuedInputId: input.id }, timestamp: input.createdAt,
 				};
 				if (!await this.runTurn(message, release)) { this.interaction.releaseQueuedInput(source, input); return drained; }
@@ -386,6 +422,36 @@ export class Dispatcher {
 		this.sessionOverrides.set(key, { ...source, threadId });
 	}
 
+}
+
+async function verifiedWorkspaceMedia(artifact: TaskArtifact, workspace: string): Promise<MediaArtifact> {
+	const manifest = artifact.manifest;
+	if (!manifest || manifest.locator.kind !== "workspace" || !manifest.locator.uri.startsWith("workspace:")) {
+		throw new Error(`Interactive file artifact ${artifact.uri} has no trusted workspace Manifest`);
+	}
+	const locatorPath = manifest.locator.uri.slice("workspace:".length);
+	if (!locatorPath || locatorPath.includes("\0") || isAbsolute(locatorPath)) throw new Error(`Invalid workspace artifact locator: ${manifest.locator.uri}`);
+	const workspacePath = await realpath(resolve(workspace));
+	const artifactPath = await realpath(resolve(workspacePath, locatorPath));
+	const relativePath = relative(workspacePath, artifactPath);
+	if (relativePath === ".." || relativePath.startsWith(`..${sep}`) || isAbsolute(relativePath)) {
+		throw new Error(`Workspace artifact escapes the trusted Profile workspace: ${manifest.locator.uri}`);
+	}
+	const file = await stat(artifactPath);
+	if (!file.isFile()) throw new Error(`Workspace artifact is not a regular file: ${manifest.locator.uri}`);
+	if (file.size !== manifest.byteLength) throw new Error(`Workspace artifact byte length no longer matches its Manifest: ${manifest.locator.uri}`);
+	if (await fileSha256(artifactPath) !== manifest.sha256) throw new Error(`Workspace artifact digest no longer matches its Manifest: ${manifest.locator.uri}`);
+	return { path: artifactPath, mimeType: manifest.mediaType, name: basename(artifactPath) };
+}
+
+async function fileSha256(path: string): Promise<string> {
+	return new Promise((resolveDigest, rejectDigest) => {
+		const digest = createHash("sha256");
+		const stream = createReadStream(path);
+		stream.on("data", (chunk) => digest.update(chunk));
+		stream.on("error", rejectDigest);
+		stream.on("end", () => resolveDigest(digest.digest("hex")));
+	});
 }
 
 function channelDedupeKey(source: InboundMessage["source"]): string {
