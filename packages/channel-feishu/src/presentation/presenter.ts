@@ -190,13 +190,21 @@ class FeishuTurnPresentation implements TurnPresentation {
 	private ioTimeout(): number { return this.input.preferences?.ioTimeoutMs ?? 2_000; }
 	private async stopPulse(): Promise<void> { await this.statusPulse.stop().catch((error) => console.error(`[beemax] Feishu status presenter failed: ${safeError(error)}`)); }
 	private async sendFallback(text: string, idempotencyKey?: string): Promise<SendResult> {
-		const result = await this.transport.send(this.input.source.chatId, text, {
+		let result = await this.transport.send(this.input.source.chatId, text, {
 			...(idempotencyKey ? { idempotencyKey } : {}),
 			...(this.input.source.replyToMessageId ? { replyTo: this.input.source.replyToMessageId, replyInThread: Boolean(this.input.source.threadId) } : {}),
 		});
+		if (!result.success && this.input.source.replyToMessageId && replyAnchorRejected(result.error)) {
+			console.warn(`[beemax] Feishu reply anchor was rejected; retrying final delivery as a new chat message: ${result.error ?? "unknown error"}`);
+			result = await this.transport.send(this.input.source.chatId, text, { ...(idempotencyKey ? { idempotencyKey: `${idempotencyKey}:detached` } : {}) });
+		}
 		if (!result.success) throw new Error(result.error ?? "Feishu text fallback failed");
 		return result;
 	}
+}
+
+function replyAnchorRejected(error: string | undefined): boolean {
+	return /(?:\b400\b|message[^\n]{0,40}(?:not found|too old|expired)|invalid[^\n]{0,40}message|reply[^\n]{0,40}(?:invalid|expired|reject))/iu.test(error ?? "");
 }
 
 async function settleWithin<T>(operation: Promise<T>, timeoutMs: number): Promise<T | undefined> {

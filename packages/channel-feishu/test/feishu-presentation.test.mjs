@@ -44,6 +44,33 @@ test("Feishu Adapter owns rich Turn presentation and exposes only the Channel Ru
 	assert.deepEqual(receipt, { idempotencyKey: durableKey, deliveredAt: receipt.deliveredAt, providerMessageId: "text" });
 });
 
+test("Feishu recovery falls back to a new chat message when an old reply anchor is rejected", async () => {
+	const deliveries = [];
+	const adapter = new FeishuAdapter({
+		appId: "app", appSecret: "secret", domain: "feishu", connectionMode: "websocket",
+		requireMention: true, allowedUsers: ["user"], allowedChats: [], allowAllUsers: false,
+	});
+	adapter.sendCard = async () => ({ success: false, error: "reply message is too old" });
+	adapter.updateCard = async () => ({ success: false, error: "card unavailable" });
+	adapter.sendTyping = async () => undefined;
+	adapter.stopTyping = async () => undefined;
+	adapter.send = async (_chatId, text, options) => {
+		deliveries.push({ text, options });
+		return options?.replyTo
+			? { success: false, error: "Request failed with status code 400" }
+			: { success: true, messageId: "top-level-fallback" };
+	};
+	const turn = adapter.presentation.open({ source, profileId: "profile", preferences: { updateIntervalMs: 0, ioTimeoutMs: 100 } });
+	const receipt = await turn.finish("恢复结果", { idempotencyKey: "recovery-result" });
+	await turn.close(false);
+
+	assert.deepEqual(deliveries, [
+		{ text: "恢复结果", options: { idempotencyKey: "recovery-result", replyTo: "incoming", replyInThread: false } },
+		{ text: "恢复结果", options: { idempotencyKey: "recovery-result:detached" } },
+	]);
+	assert.equal(receipt.providerMessageId, "top-level-fallback");
+});
+
 test("Feishu replaces a streamed Candidate Outcome with the canonical Verification result", async () => {
 	const cards = [];
 	const texts = [];
