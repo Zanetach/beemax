@@ -142,6 +142,44 @@ test("Profile config bounds Capability cognition recovery without changing the O
 	assert.equal(loadConfig(paths.configPath, "capability-cognition", { root, home }).agent.capabilityCognition.maxTokens, 8192);
 });
 
+test("Profile config isolates and validates the Caddy Artifact Site", async () => {
+	const root = await mkdtemp(join(tmpdir(), "beemax-artifact-site-config-root-"));
+	const home = await mkdtemp(join(tmpdir(), "beemax-artifact-site-config-home-"));
+	const paths = await createProfile("artifact-site", { root, home });
+	const defaults = loadConfig(paths.configPath, "artifact-site").gateway.artifactSite;
+	assert.equal(defaults.enabled, false);
+	assert.match(defaults.command, /caddy$/u);
+	assert.match(defaults.listen, /^127\.0\.0\.1:\d+$/u);
+	assert.equal(defaults.publicBaseUrl, `http://${defaults.listen}/artifacts`);
+	const secondPaths = await createProfile("artifact-site-second", { root, home });
+	const secondDefaults = loadConfig(secondPaths.configPath, "artifact-site-second").gateway.artifactSite;
+	assert.notEqual(secondDefaults.listen, defaults.listen);
+	assert.notEqual(secondDefaults.publicBaseUrl, defaults.publicBaseUrl);
+
+	await writeFile(paths.configPath, `gateway:
+  artifactSite:
+    enabled: true
+    command: /custom/bin/caddy
+    listen: 0.0.0.0:9443
+    publicBaseUrl: https://reports.example.test/files
+`);
+	assert.deepEqual(loadConfig(paths.configPath, "artifact-site").gateway.artifactSite, {
+		enabled: true,
+		command: "/custom/bin/caddy",
+		listen: "0.0.0.0:9443",
+		publicBaseUrl: "https://reports.example.test/files",
+	});
+
+	await writeFile(paths.configPath, "gateway:\n  artifactSite:\n    listen: bad-address\n");
+	assert.throws(() => loadConfig(paths.configPath, "artifact-site"), /artifact site listen/i);
+	await writeFile(paths.configPath, "gateway:\n  artifactSite:\n    publicBaseUrl: file:\/\/\/tmp\/artifacts\n");
+	assert.throws(() => loadConfig(paths.configPath, "artifact-site"), /artifact site publicBaseUrl/i);
+	await writeFile(paths.configPath, "gateway:\n  artifactSite:\n    publicBaseUrl: https:\/\/user:secret@example.test\/artifacts\n");
+	assert.throws(() => loadConfig(paths.configPath, "artifact-site"), /artifact site publicBaseUrl/i);
+	await writeFile(paths.configPath, "gateway:\n  artifactSite:\n    publicBaseUrl: https:\/\/example.test\/\n");
+	assert.throws(() => loadConfig(paths.configPath, "artifact-site"), /safe non-root path/i);
+});
+
 test("Profile capability preferences are bounded ranking inputs rather than authorization", async () => {
 	const root = await mkdtemp(join(tmpdir(), "beemax-preference-root-"));
 	const home = await mkdtemp(join(tmpdir(), "beemax-preference-home-"));

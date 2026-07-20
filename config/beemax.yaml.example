@@ -11,6 +11,17 @@ model:
   # contextWindow: 128000
   # maxTokens: 8192
 
+gateway:
+  # Immutable, content-addressed links for verified HTML/PDF/Word outputs.
+  # Install Caddy first. Keep loopback unless an authenticated reverse proxy
+  # exposes this route; then set publicBaseUrl to that external URL.
+  artifactSite:
+    enabled: false
+    # command: /opt/homebrew/bin/caddy
+    # Omit both values to use this Profile's stable loopback port.
+    # listen: 127.0.0.1:18788
+    # publicBaseUrl: http://127.0.0.1:18788/artifacts
+
 feishu:
   appId: cli_xxxxxxxxxxxxx
   appSecret: xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx

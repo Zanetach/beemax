@@ -6,6 +6,7 @@
  */
 
 import { existsSync, readFileSync } from "node:fs";
+import { createHash } from "node:crypto";
 import { isAbsolute, join, resolve } from "node:path";
 import { parse as parseYaml } from "yaml";
 import { readEnvFileSync } from "./env-file.ts";
@@ -15,6 +16,7 @@ import { providerApiKeyEnv } from "./provider-resolver.ts";
 import type { MemoryMembership } from "./memory-membership.ts";
 import type { FeishuActivationSettings, FeishuGroupRule } from "@beemax/channel-feishu";
 import { DEFAULT_DOCKER_SANDBOX_IMAGE, DEFAULT_RUNTIME_RESOURCE_LIMITS, resolveRuntimeTaskConcurrency } from "@beemax/core";
+import { artifactSiteLocalBaseUrl, validateArtifactSiteListen, validateArtifactSitePublicBaseUrl } from "./artifact-site.ts";
 
 export { beemaxHome, beemaxRoot, validateProfileName } from "./profile-home.ts";
 
@@ -68,6 +70,12 @@ export interface GatewayBindingConfig {
 	threadId?: string;
 	enabled: boolean;
 }
+export interface ArtifactSiteConfig {
+	enabled: boolean;
+	command: string;
+	listen: string;
+	publicBaseUrl: string;
+}
 export type GatewayChannelCredential =
 	| { adapter: "feishu"; appId: string; appSecret: string; webhookVerificationToken?: string; webhookEncryptKey?: string }
 	| { adapter: "telegram"; botToken: string };
@@ -106,7 +114,16 @@ export interface BeeMaxConfig {
 	};
 	models: Array<{ provider: string; model: string; baseUrl?: string; customProtocol?: CustomProtocol; contextWindow?: number; maxTokens?: number }>;
 	/** Profile-owned channel configuration. A Profile may run its own Gateway. */
-	gateway: { channels: GatewayChannelConfig[]; bindings: GatewayBindingConfig[]; ingress: { maxActive: number; maxActivePerConversation: number }; observation: { retainPerLane: number; minRelevance: number; minCredibility: number; minExpectedValue: number; minConfidence: number; evaluationTimeoutMs: number; maxActiveEvaluations: number; maxActivePerLane: number }; proactiveDelivery: { quietHours?: FeishuActivationSettings["quietHours"]; maxDeliveriesPerWindow: number; deliveryWindowMs: number; maxTrackedLanes: number }; feishu: FeishuConfig; telegram: TelegramConfig };
+	gateway: {
+		channels: GatewayChannelConfig[];
+		bindings: GatewayBindingConfig[];
+		ingress: { maxActive: number; maxActivePerConversation: number };
+		observation: { retainPerLane: number; minRelevance: number; minCredibility: number; minExpectedValue: number; minConfidence: number; evaluationTimeoutMs: number; maxActiveEvaluations: number; maxActivePerLane: number };
+		proactiveDelivery: { quietHours?: FeishuActivationSettings["quietHours"]; maxDeliveriesPerWindow: number; deliveryWindowMs: number; maxTrackedLanes: number };
+		artifactSite: ArtifactSiteConfig;
+		feishu: FeishuConfig;
+		telegram: TelegramConfig;
+	};
 	memory: {
 		dbPath: string;
 		memberships: MemoryMembership[];
@@ -305,6 +322,15 @@ export function loadConfig(configPath?: string, profile = "default"): BeeMaxConf
 		deliveryWindowMs: boundedNumber(env.BEEMAX_PROACTIVE_DELIVERY_WINDOW_MS ?? cfg.gateway?.proactiveDelivery?.deliveryWindowMs ?? feishu.activation.replyWindowMs, 60_000, 1_000, 24 * 60 * 60_000),
 		maxTrackedLanes: boundedNumber(env.BEEMAX_PROACTIVE_MAX_TRACKED_LANES ?? cfg.gateway?.proactiveDelivery?.maxTrackedLanes ?? feishu.activation.maxTrackedResponseLanes, 10_000, 1, 100_000),
 	};
+	const artifactSiteListen = validateArtifactSiteListen(str(env.BEEMAX_ARTIFACT_SITE_LISTEN ?? cfg.gateway?.artifactSite?.listen ?? defaultArtifactSiteListen(profile)));
+	const artifactSiteCommand = str(env.BEEMAX_ARTIFACT_SITE_COMMAND ?? cfg.gateway?.artifactSite?.command ?? defaultCaddyCommand());
+	if (!artifactSiteCommand || /[\u0000-\u001f\u007f]/u.test(artifactSiteCommand)) throw new Error("Invalid gateway.artifactSite.command");
+	const artifactSite: ArtifactSiteConfig = {
+		enabled: parseBool(env.BEEMAX_ARTIFACT_SITE_ENABLED ?? cfg.gateway?.artifactSite?.enabled ?? false),
+		command: artifactSiteCommand,
+		listen: artifactSiteListen,
+		publicBaseUrl: validateArtifactSitePublicBaseUrl(str(env.BEEMAX_ARTIFACT_SITE_PUBLIC_BASE_URL ?? cfg.gateway?.artifactSite?.publicBaseUrl ?? artifactSiteLocalBaseUrl(artifactSiteListen))),
+	};
 	const heartbeatPlatform = str(env.BEEMAX_HEARTBEAT_PLATFORM ?? cfg.automation?.heartbeat?.platform ?? channels.find((channel) => channel.enabled)?.adapter ?? "feishu");
 	const heartbeatInstances = channels.filter((channel) => channel.enabled && channel.adapter === heartbeatPlatform);
 	const heartbeatChannelInstanceId = optional(env.BEEMAX_HEARTBEAT_CHANNEL_INSTANCE_ID ?? cfg.automation?.heartbeat?.channelInstanceId) ?? (heartbeatInstances.length === 1 ? heartbeatInstances[0]!.id : undefined);
@@ -344,7 +370,7 @@ export function loadConfig(configPath?: string, profile = "default"): BeeMaxConf
 			maxTokens,
 		},
 		models: configuredModels,
-		gateway: { channels, bindings, ingress, observation, proactiveDelivery, feishu, telegram },
+		gateway: { channels, bindings, ingress, observation, proactiveDelivery, artifactSite, feishu, telegram },
 		memory: {
 			dbPath: resolveFrom(location.basePath, str(env.BEEMAX_DB_PATH ?? cfg.memory?.dbPath ?? join(profileDataRoot, location.isHome ? "memory.db" : "beemax.db"))),
 			memberships: parseMemoryMemberships(cfg.memory?.memberships),
@@ -742,3 +768,16 @@ function isModelChoice(value: unknown): value is { provider: string; model: stri
 	return typeof candidate.provider === "string" && typeof candidate.model === "string" && (candidate.baseUrl === undefined || typeof candidate.baseUrl === "string") && (candidate.customProtocol === undefined || parseCustomProtocol(candidate.customProtocol) === candidate.customProtocol) && (candidate.contextWindow === undefined || Number.isFinite(candidate.contextWindow)) && (candidate.maxTokens === undefined || Number.isFinite(candidate.maxTokens));
 }
 function parseCustomProtocol(value: unknown): CustomProtocol { return value === "anthropic-messages" || value === "openai-responses" ? value : "openai-completions"; }
+
+function defaultCaddyCommand(): string {
+	for (const candidate of ["/opt/homebrew/bin/caddy", "/home/linuxbrew/.linuxbrew/bin/caddy"]) {
+		if (existsSync(candidate)) return candidate;
+	}
+	return "caddy";
+}
+
+function defaultArtifactSiteListen(profile: string): string {
+	if (profile === "default") return "127.0.0.1:8788";
+	const digest = createHash("sha256").update(`beemax-artifact-site:${profile}`).digest();
+	return `127.0.0.1:${12_000 + digest.readUInt32BE(0) % 20_000}`;
+}

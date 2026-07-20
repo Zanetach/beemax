@@ -50,6 +50,7 @@ import { createProfileCapabilityProviderBundle } from "./capability-provider-com
 import { createLocalArtifactRuntime } from "./artifact-composition.ts";
 import { createInteractiveContractCognition } from "./interactive-contract-cognition.ts";
 import { admitLearningObjective as admitLearningObjectiveThroughRuntime } from "./learning-objective-composition.ts";
+import { CaddyArtifactSite } from "./artifact-site.ts";
 
 export async function runProfileAutomation(
 	runtime: AgentRuntimePort<SessionSource>,
@@ -202,8 +203,22 @@ export async function runGateway(config: BeeMaxConfig): Promise<void> {
 	const profileStartupCleanup: Array<() => void | Promise<void>> = [];
 	let disposeProfileRuntime: (() => Promise<void>) | undefined;
 	let profileHealthTimer: ReturnType<typeof setInterval> | undefined;
+	let artifactSite: CaddyArtifactSite | undefined;
 	try {
 	profileHost.beginStart();
+	if (config.gateway.artifactSite.enabled) {
+		artifactSite = new CaddyArtifactSite({
+			workspace: config.paths.cwd,
+			storageRoot: join(config.paths.agentDir, "artifact-site", "public"),
+			runtimeRoot: join(config.paths.agentDir, "artifact-site", "runtime"),
+			publicBaseUrl: config.gateway.artifactSite.publicBaseUrl,
+			command: config.gateway.artifactSite.command,
+			listen: config.gateway.artifactSite.listen,
+		});
+		await artifactSite.start();
+		startupCleanup.push(() => artifactSite?.stop());
+		console.info(`[beemax:${config.profile}] Artifact Site ready: ${config.gateway.artifactSite.publicBaseUrl}`);
+	}
 
 	const memory = new MemoryStore(config.memory.dbPath, config.profile);
 	const persistence = memoryPersistencePorts(memory);
@@ -526,6 +541,7 @@ export async function runGateway(config: BeeMaxConfig): Promise<void> {
 			turnTimeoutMs: profileTurnTimeoutMs(config),
 			profileId: config.profile,
 			artifactWorkspace: config.paths.cwd,
+			artifactPublisher: artifactSite,
 			bindingResolver,
 			ingress: profileHost,
 			bindingChannelInstanceId: id,
@@ -752,6 +768,7 @@ export async function runGateway(config: BeeMaxConfig): Promise<void> {
 			try { await profileHost.waitForIdle(5_000); } catch (error) { console.error(`[beemax] Profile Host graceful drain timed out; forcing Runtime disposal: ${String(error)}`); }
 			try { await profileRuntime.dispose(); } catch (error) { console.error(`[beemax] Agent Runtime shutdown failed: ${String(error)}`); }
 			try { await channelHost.stop(); } catch (error) { console.error(`[beemax] channel shutdown failed: ${String(error)}`); }
+			try { await artifactSite?.stop(); } catch (error) { console.error(`[beemax] Artifact Site shutdown failed: ${String(error)}`); }
 			try { await profileHost.waitForIdle(1_000); profileHost.completeStop(); } catch (error) { console.error(`[beemax] Profile Host forced stop retained active Interaction state: ${String(error)}`); }
 			await releaseChannelLock();
 			writeGatewayState(config.paths.agentDir, { profile: config.profile, lifecycle: "stopped", version: gatewayVersion, pid: process.pid, stoppedAt: new Date().toISOString() });

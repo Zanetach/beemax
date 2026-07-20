@@ -790,11 +790,13 @@ test("Dispatcher delegates opaque control handling to the Agent Runtime", async 
 	dispatcher.dispose();
 });
 
-test("Dispatcher delivers trusted workspace HTML and PDF artifacts through native channel media", async () => {
+test("Dispatcher publishes trusted HTML, PDF, and Word links before native channel delivery", async () => {
 	const workspace = mkdtempSync(join(tmpdir(), "beemax-interactive-artifacts-"));
 	try {
 		let inbound;
 		const deliveredMedia = [];
+		const publishedMedia = [];
+		const sent = [];
 		const artifact = (name, mimeType, contents, producer) => {
 			const bytes = Buffer.from(contents);
 			writeFileSync(join(workspace, name), bytes);
@@ -812,11 +814,12 @@ test("Dispatcher delivers trusted workspace HTML and PDF artifacts through nativ
 		const artifacts = [
 			artifact("gold-report.html", "text/html", "<html>verified gold report</html>", "beemax.write"),
 			artifact("gold-report.pdf", "application/pdf", "%PDF-verified-gold-report", "beemax.chrome-pdf"),
+			artifact("gold-report.docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document", "PK-verified-gold-report", "beemax.write"),
 		];
 		const platform = {
 			name: "feishu", isConnected: true, capabilities: { mediaDelivery: "files" },
 			onMessage: (handler) => { inbound = handler; }, connect: async () => true, disconnect: async () => undefined,
-			send: async () => ({ success: true, messageId: "answer" }),
+			send: async (_chatId, text) => { sent.push(text); return { success: true, messageId: "answer" }; },
 			sendMedia: async (...args) => { deliveredMedia.push(args); return { success: true, messageId: `file-${deliveredMedia.length}` }; },
 			editMessage: async () => ({ success: true }), sendTyping: async () => undefined, stopTyping: async () => undefined,
 		};
@@ -824,15 +827,79 @@ test("Dispatcher delivers trusted workspace HTML and PDF artifacts through nativ
 			run: async () => ({ answer: "报告已生成", model: "test", durationMs: 1, usage: {}, artifacts, outcome: { status: "answered" } }),
 			cancel: async () => false, handleControl: async () => undefined, isBusy: () => false, dispose: () => undefined,
 		};
-		const dispatcher = new Dispatcher({ runtime, artifactWorkspace: workspace, flushIntervalMs: 0 }, platform);
+		const artifactPublisher = {
+			publish: async (_artifact, media) => {
+				publishedMedia.push(media);
+				return {
+					url: `https://reports.example.test/artifacts/${encodeURIComponent(media.name)}`,
+					name: media.name,
+					mediaType: media.mimeType,
+					disposition: media.name.endsWith(".docx") ? "attachment" : "inline",
+				};
+			},
+		};
+		const dispatcher = new Dispatcher({ runtime, artifactWorkspace: workspace, artifactPublisher, flushIntervalMs: 0 }, platform);
 		await inbound({ text: "生成黄金报告", messageType: "text", source: { ...source, messageId: "artifact-delivery" }, mediaPaths: [], mediaTypes: [], raw: {}, timestamp: Date.now() });
-		for (let attempt = 0; deliveredMedia.length < 2 && attempt < 100; attempt++) await new Promise((resolve) => setTimeout(resolve, 5));
+		for (let attempt = 0; deliveredMedia.length < 3 && attempt < 100; attempt++) await new Promise((resolve) => setTimeout(resolve, 5));
 		assert.deepEqual(deliveredMedia.map(([, path, mimeType, name]) => ({ path, mimeType, name })), [
 			{ path: realpathSync(join(workspace, "gold-report.html")), mimeType: "text/html", name: "gold-report.html" },
 			{ path: realpathSync(join(workspace, "gold-report.pdf")), mimeType: "application/pdf", name: "gold-report.pdf" },
+			{ path: realpathSync(join(workspace, "gold-report.docx")), mimeType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document", name: "gold-report.docx" },
 		]);
+		assert.equal(publishedMedia.length, 3);
+		assert.match(sent.at(-1), /报告已生成/u);
+		assert.match(sent.at(-1), /\[gold-report\.html\]\(https:\/\/reports\.example\.test\/artifacts\/gold-report\.html\)/u);
+		assert.match(sent.at(-1), /\[gold-report\.pdf\]\(https:\/\/reports\.example\.test\/artifacts\/gold-report\.pdf\)/u);
+		assert.match(sent.at(-1), /\[gold-report\.docx\]\(https:\/\/reports\.example\.test\/artifacts\/gold-report\.docx\).*下载/u);
 		await dispatcher.dispose();
 	} finally {
+		rmSync(workspace, { recursive: true, force: true });
+	}
+});
+
+test("Dispatcher preserves native artifact delivery when online publication fails", async () => {
+	const workspace = mkdtempSync(join(tmpdir(), "beemax-interactive-publish-failure-"));
+	const previousWarn = console.warn;
+	try {
+		let inbound;
+		let delivered = 0;
+		const warnings = [];
+		console.warn = (message) => warnings.push(message);
+		const bytes = Buffer.from("%PDF-still-delivered");
+		writeFileSync(join(workspace, "fallback.pdf"), bytes);
+		const manifest = createArtifactManifest({
+			locator: { kind: "workspace", uri: "workspace:fallback.pdf" },
+			mediaType: "application/pdf",
+			byteLength: bytes.byteLength,
+			sha256: createHash("sha256").update(bytes).digest("hex"),
+			producer: { providerId: "beemax.chrome-pdf", providerVersion: "1.0.0", operation: "render" },
+			sourceRefs: ["source-receipt:test:fallback"],
+			createdAt: 1_721_000_000_000,
+		});
+		const platform = {
+			name: "feishu", isConnected: true, capabilities: { mediaDelivery: "files" },
+			onMessage: (handler) => { inbound = handler; }, connect: async () => true, disconnect: async () => undefined,
+			send: async () => ({ success: true, messageId: "answer" }),
+			sendMedia: async () => { delivered += 1; return { success: true, messageId: "file" }; },
+			editMessage: async () => ({ success: true }), sendTyping: async () => undefined, stopTyping: async () => undefined,
+		};
+		const runtime = {
+			run: async () => ({ answer: "报告已生成", model: "test", durationMs: 1, usage: {}, artifacts: [{ type: "file", uri: manifest.locator.uri, manifest }], outcome: { status: "answered" } }),
+			cancel: async () => false, handleControl: async () => undefined, isBusy: () => false, dispose: () => undefined,
+		};
+		const dispatcher = new Dispatcher({
+			runtime,
+			artifactWorkspace: workspace,
+			artifactPublisher: { publish: async () => { throw new Error("publisher unavailable"); } },
+			flushIntervalMs: 0,
+		}, platform);
+		await inbound({ text: "生成报告", messageType: "text", source: { ...source, messageId: "publish-failure" }, mediaPaths: [], mediaTypes: [], raw: {}, timestamp: Date.now() });
+		for (let attempt = 0; delivered < 1 && attempt < 100; attempt++) await new Promise((resolve) => setTimeout(resolve, 5));
+		assert.equal(delivered, 1);
+		assert.ok(warnings.some((warning) => /publisher unavailable/u.test(warning)));
+		await dispatcher.dispose();
+	} finally {
+		console.warn = previousWarn;
 		rmSync(workspace, { recursive: true, force: true });
 	}
 });

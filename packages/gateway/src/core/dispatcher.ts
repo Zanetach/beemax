@@ -33,6 +33,23 @@ interface CardBinding {
 	pendingApprovalId?: string;
 }
 
+export interface PublishedArtifactLink {
+	url: string;
+	name: string;
+	mediaType: string;
+	disposition: "inline" | "attachment";
+}
+
+export interface ArtifactPublicationPort {
+	publish(artifact: TaskArtifact, media: MediaArtifact): Promise<PublishedArtifactLink>;
+}
+
+interface PreparedTurnArtifact {
+	artifact: TaskArtifact;
+	media: MediaArtifact;
+	published?: PublishedArtifactLink;
+}
+
 export interface DispatcherDeps {
 	runtime: AgentRuntimePort<InboundMessage["source"]>;
 	/** Core semantic boundary. When omitted, legacy callers get a local adapter. */
@@ -61,6 +78,8 @@ export interface DispatcherDeps {
 	messageDeduplicator?: MessageDeduplicator;
 	/** Trusted Profile workspace used to resolve content-addressed workspace: artifacts. */
 	artifactWorkspace?: string;
+	/** Optional immutable document publisher; receives only workspace files that passed Manifest verification. */
+	artifactPublisher?: ArtifactPublicationPort;
 	/** Commits an interactive Delivery Receipt into the shared Completion Outbox. */
 	completionAcknowledger?: Required<Pick<TaskLedger, "getObjectiveCompletion" | "acknowledgeObjectiveCompletion">>;
 	beforeCompletionAcknowledged?: (completionId: string, source: InboundMessage["source"]) => void | Promise<void>;
@@ -262,9 +281,11 @@ export class Dispatcher {
 					console.error(`[beemax] Interactive Objective delivery deferred because its Completion is unavailable: ${result.completionId}`);
 					return true;
 				}
+				const preparedArtifacts = await this.prepareTurnArtifacts(result.artifacts);
+				const finalResult = appendPublishedArtifactLinks(completion.result, preparedArtifacts);
 				let receipt;
 				try {
-					receipt = await presentation.finish(completion.result, { idempotencyKey: completion.deliveryIdempotencyKey, deliveryClass: "interactive" });
+					receipt = await presentation.finish(finalResult, { idempotencyKey: completion.deliveryIdempotencyKey, deliveryClass: "interactive" });
 				} catch (error) {
 					console.error(`[beemax] Interactive Objective delivery deferred to Completion Outbox: ${result.completionId} (${error instanceof Error ? error.message : String(error)})`);
 					return true;
@@ -273,15 +294,16 @@ export class Dispatcher {
 					console.error(`[beemax] Interactive Objective returned an invalid Delivery Receipt; Completion remains queued: ${result.completionId}`);
 					return true;
 				}
-				await this.deliverTurnArtifacts(result.artifacts, exactSource);
+				await this.deliverTurnArtifacts(preparedArtifacts, exactSource);
 				try { await this.deps.beforeCompletionAcknowledged?.(result.completionId, msg.source); }
 				catch { console.error(`[beemax] Interactive Objective publication deferred to Completion Outbox: ${result.completionId}`); return true; }
 				if (!this.deps.completionAcknowledger!.acknowledgeObjectiveCompletion(result.completionId, receipt)) {
 					console.error(`[beemax] Interactive Objective acknowledgement deferred to Completion Outbox: ${result.completionId}`);
 				}
 			} else {
-				await presentation.finish(result.answer);
-				await this.deliverTurnArtifacts(result.artifacts, exactSource);
+				const preparedArtifacts = await this.prepareTurnArtifacts(result.artifacts);
+				await presentation.finish(appendPublishedArtifactLinks(result.answer, preparedArtifacts));
+				await this.deliverTurnArtifacts(preparedArtifacts, exactSource);
 			}
 			return true;
 		} catch (error) {
@@ -292,10 +314,28 @@ export class Dispatcher {
 		}
 	}
 
-	private async deliverTurnArtifacts(artifacts: AgentRunResult["artifacts"], source: InboundMessage["source"]): Promise<void> {
+	private async prepareTurnArtifacts(artifacts: AgentRunResult["artifacts"]): Promise<PreparedTurnArtifact[]> {
 		const files = artifacts?.filter((artifact) => artifact.type === "file") ?? [];
-		if (!files.length) return;
+		if (!files.length) return [];
 		if (!this.deps.artifactWorkspace) throw new Error("Interactive artifact delivery has no trusted Profile workspace");
+		const prepared: PreparedTurnArtifact[] = [];
+		for (const artifact of files) {
+			const media = await verifiedWorkspaceMedia(artifact, this.deps.artifactWorkspace);
+			let published: PublishedArtifactLink | undefined;
+			if (this.deps.artifactPublisher) {
+				try {
+					published = await this.deps.artifactPublisher.publish(artifact, media);
+				} catch (error) {
+					console.warn(`[beemax] Artifact Site publication skipped for ${artifact.uri}: ${error instanceof Error ? error.message : String(error)}`);
+				}
+			}
+			prepared.push({ artifact, media, ...(published ? { published } : {}) });
+		}
+		return prepared;
+	}
+
+	private async deliverTurnArtifacts(artifacts: readonly PreparedTurnArtifact[], source: InboundMessage["source"]): Promise<void> {
+		if (!artifacts.length) return;
 		const target: DeliveryTarget = {
 			platform: source.platform,
 			...(source.channelInstanceId ? { channelInstanceId: source.channelInstanceId } : {}),
@@ -305,8 +345,7 @@ export class Dispatcher {
 			...(source.threadId ? { threadId: source.threadId } : {}),
 			...(source.replyToMessageId ? { replyToMessageId: source.replyToMessageId } : {}),
 		};
-		for (const artifact of files) {
-			const media = await verifiedWorkspaceMedia(artifact, this.deps.artifactWorkspace);
+		for (const { artifact, media } of artifacts) {
 			await this.delivery.sendMedia(target, media, {
 				idempotencyKey: `${this.profileId}:${source.messageId ?? "turn"}:${artifact.manifest!.id}`,
 				deliveryClass: "interactive",
@@ -422,6 +461,28 @@ export class Dispatcher {
 		this.sessionOverrides.set(key, { ...source, threadId });
 	}
 
+}
+
+function appendPublishedArtifactLinks(answer: string, artifacts: readonly PreparedTurnArtifact[]): string {
+	const seen = new Set<string>();
+	const links = artifacts.flatMap(({ published }) => {
+		if (!published || seen.has(published.url) || !isSafePublishedUrl(published.url)) return [];
+		seen.add(published.url);
+		const name = published.name.replace(/\\/gu, "\\\\").replace(/\[/gu, "\\[").replace(/\]/gu, "\\]");
+		const url = published.url.replace(/\(/gu, "%28").replace(/\)/gu, "%29");
+		return [`- [${name}](${url})${published.disposition === "attachment" ? "（下载）" : ""}`];
+	});
+	if (!links.length) return answer;
+	return `${answer.trimEnd()}\n\n在线打开 / 下载：\n${links.join("\n")}`;
+}
+
+function isSafePublishedUrl(value: string): boolean {
+	try {
+		const url = new URL(value);
+		return (url.protocol === "http:" || url.protocol === "https:") && !url.username && !url.password;
+	} catch {
+		return false;
+	}
 }
 
 async function verifiedWorkspaceMedia(artifact: TaskArtifact, workspace: string): Promise<MediaArtifact> {

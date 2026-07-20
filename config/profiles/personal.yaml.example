@@ -8,6 +8,15 @@ model:
   model: claude-sonnet-4-5
   # Custom providers may declare contextWindow and maxTokens here.
 
+gateway:
+  artifactSite:
+    enabled: false
+    # Use an absolute command path for launchd/systemd when Caddy is not on PATH.
+    # command: /opt/homebrew/bin/caddy
+    # Omit both values to use this Profile's stable loopback port.
+    # listen: 127.0.0.1:18789
+    # publicBaseUrl: http://127.0.0.1:18789/artifacts
+
 feishu:
   # Keep secrets in /etc/beemax/personal.env, not this file.
   appId: ""
