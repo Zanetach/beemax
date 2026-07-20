@@ -65,17 +65,17 @@ test("systemd Profile resource limits are configurable without allowing directiv
 	}), /memory limit/i);
 });
 
-test("service actions map profiles to systemctl and journalctl units", () => {
+test("service actions map profiles to systemctl and journalctl units", async () => {
 	const calls = [];
 	const runner = (command, args) => {
 		calls.push([command, args]);
 		return { status: 0 };
 	};
-	runServiceAction("start", "personal", runner, "linux");
-	runServiceAction("stop", "personal", runner, "linux");
-	runServiceAction("restart", "personal", runner, "linux");
-	runServiceAction("status", "personal", runner, "linux");
-	runServiceAction("logs", "personal", runner, "linux");
+	await runServiceAction("start", "personal", runner, "linux");
+	await runServiceAction("stop", "personal", runner, "linux");
+	await runServiceAction("restart", "personal", runner, "linux");
+	await runServiceAction("status", "personal", runner, "linux");
+	await runServiceAction("logs", "personal", runner, "linux");
 	assert.deepEqual(calls, [
 		["systemctl", ["--user", "enable", "--now", "beemax@personal.service"]],
 		["systemctl", ["--user", "disable", "--now", "beemax@personal.service"]],
@@ -85,12 +85,29 @@ test("service actions map profiles to systemctl and journalctl units", () => {
 	]);
 });
 
-test("macOS LaunchAgent runs one isolated Gateway per Profile", () => {
+test("macOS LaunchAgent runs one isolated Gateway per Profile", async () => {
 	const plist = renderMacLaunchAgent("personal", "/opt/beemax", "/Users/zane/.beemax", "/usr/local/bin/node");
 	assert.match(plist, /com\.beemax\.agent\.personal/);
 	assert.match(plist, /\/Users\/zane\/\.beemax\/profiles\/personal\/logs\/gateway\.log/);
 	const calls = [];
-	runServiceAction("start", "personal", (command, args) => { calls.push([command, args]); return { status: 0 }; }, "darwin");
+	await runServiceAction("start", "personal", (command, args) => { calls.push([command, args]); return { status: 0 }; }, "darwin");
 	assert.equal(calls[0][0], "launchctl");
 	assert.equal(calls[0][1][0], "bootstrap");
+});
+
+test("macOS LaunchAgent restart retries bootstrap while launchd releases the previous job", async () => {
+	const calls = [];
+	const delays = [];
+	let bootstrapAttempts = 0;
+	await runServiceAction("restart", "personal", (command, args) => {
+		calls.push([command, args]);
+		if (args[0] === "bootstrap") {
+			bootstrapAttempts += 1;
+			return { status: bootstrapAttempts === 1 ? 5 : 0 };
+		}
+		return { status: 0 };
+	}, "darwin", "user", async (milliseconds) => { delays.push(milliseconds); });
+
+	assert.deepEqual(calls.map(([, args]) => args[0]), ["bootout", "bootstrap", "bootstrap"]);
+	assert.deepEqual(delays, [100]);
 });

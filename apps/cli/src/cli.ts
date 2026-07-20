@@ -111,7 +111,7 @@ async function main(): Promise<void> {
 				console.log((await listProfiles()).map((name) => `${name}  ${serviceDisplayName(name)}`).join("\n") || "No Agent Profiles configured.");
 			} else if (["start", "stop", "restart", "status", "logs"].includes(parsed.positionals[1] ?? "")) {
 				const profiles = parsed.options.all === true ? await listProfiles() : [gatewayProfile(parsed)];
-				for (const name of profiles) runServiceAction(parsed.positionals[1] as ServiceAction, name, undefined, process.platform, parsed.options.system === true ? "system" : "user");
+				for (const name of profiles) await runServiceAction(parsed.positionals[1] as ServiceAction, name, undefined, process.platform, parsed.options.system === true ? "system" : "user");
 			} else if (parsed.positionals[1] === "health") {
 				if (!(await runDoctor(loadConfig(parsed.configPath, gatewayProfile(parsed)), { json: parsed.options.json === true }))) process.exitCode = 1;
 			} else if (parsed.positionals[1] === "smoke") {
@@ -219,14 +219,14 @@ async function main(): Promise<void> {
 		case "start":
 		case "stop":
 		case "restart":
-			runServiceAction(cmd, serviceProfile(parsed), undefined, process.platform, parsed.options.system === true ? "system" : "user");
+			await runServiceAction(cmd, serviceProfile(parsed), undefined, process.platform, parsed.options.system === true ? "system" : "user");
 			break;
 		case "status":
 			if (parsed.options.deep === true) { runGatewayStatus(getConfig(), parsed.options.system === true ? "system" : "user"); break; }
-			runServiceAction(cmd, serviceProfile(parsed), undefined, process.platform, parsed.options.system === true ? "system" : "user");
+			await runServiceAction(cmd, serviceProfile(parsed), undefined, process.platform, parsed.options.system === true ? "system" : "user");
 			break;
 		case "logs":
-			if (parsed.options.follow === true) runServiceAction(cmd, serviceProfile(parsed), undefined, process.platform, parsed.options.system === true ? "system" : "user");
+			if (parsed.options.follow === true) await runServiceAction(cmd, serviceProfile(parsed), undefined, process.platform, parsed.options.system === true ? "system" : "user");
 			else console.log(readProfileLogs(serviceProfile(parsed), getConfig().paths.agentDir, Number(optionString(parsed, "tail")) || 200, parsed.options.system === true ? "system" : "user"));
 			break;
 		case "help":

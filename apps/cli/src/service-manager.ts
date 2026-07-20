@@ -6,6 +6,7 @@ import { readGatewayLogs } from "./gateway-observability.ts";
 import { resolveServiceCommands, resolveServiceLayout, serviceDisplayName, type ServiceAction, type ServiceScope } from "./service-platform.ts";
 
 type Runner = (command: string, args: string[]) => Pick<SpawnSyncReturns<Buffer>, "status" | "error">;
+type RetryDelay = (milliseconds: number) => Promise<void>;
 export type { ServiceScope } from "./service-platform.ts";
 export type { ServiceAction } from "./service-platform.ts";
 
@@ -143,15 +144,16 @@ export function renderMacLaunchAgent(profile: string, root = beemaxRoot(), home 
 </dict></plist>\n`;
 }
 
-export function runServiceAction(
+export async function runServiceAction(
 	action: ServiceAction,
 	profile: string,
 	runner: Runner = runInherited,
 	platform = process.platform,
 	scope: ServiceScope = "user",
-): void {
+	retryDelay: RetryDelay = delay,
+): Promise<void> {
 	validateProfileName(profile);
-	if (platform === "darwin") return runMacServiceAction(action, profile, runner);
+	if (platform === "darwin") return runMacServiceAction(action, profile, runner, retryDelay);
 	if (platform !== "linux") {
 		throw new Error(`beemax ${action} requires Linux systemd; use 'beemax gateway --profile ${profile}' for foreground testing`);
 	}
@@ -162,16 +164,33 @@ export function runServiceAction(
 	}
 }
 
-function runMacServiceAction(action: ServiceAction, profile: string, runner: Runner): void {
+async function runMacServiceAction(action: ServiceAction, profile: string, runner: Runner, retryDelay: RetryDelay): Promise<void> {
 	if (action === "logs") {
 		process.stdout.write(`${readGatewayLogs(join(beemaxHome(), "profiles", profile))}\n`);
 		return;
 	}
 	for (const plan of resolveServiceCommands(action, profile, { platform: "darwin" })) {
+		if (action === "restart" && plan.command === "launchctl" && plan.args[0] === "bootstrap") {
+			await runLaunchctlBootstrapWithRetry(plan.args, runner, retryDelay);
+			continue;
+		}
 		const result = runner(plan.command, plan.args);
 		if (!plan.allowFailure) assertCommand(result, `${plan.command} ${plan.args.join(" ")}`);
 		else if (result.error) throw result.error;
 	}
+}
+
+async function runLaunchctlBootstrapWithRetry(args: string[], runner: Runner, retryDelay: RetryDelay): Promise<void> {
+	const label = `launchctl ${args.join(" ")}`;
+	let result: ReturnType<Runner> | undefined;
+	for (let attempt = 0; attempt < 5; attempt += 1) {
+		result = runner("launchctl", args);
+		if (result.error) throw result.error;
+		if (result.status === 0) return;
+		if (result.status !== 5 || attempt === 4) break;
+		await retryDelay(100 * (2 ** attempt));
+	}
+	assertCommand(result!, label);
 }
 
 function macLabel(profile: string): string { return serviceDisplayName(profile, "darwin"); }
@@ -209,6 +228,10 @@ function optionalInteger(value: string | undefined): number | undefined {
 
 function runInherited(command: string, args: string[]): Pick<SpawnSyncReturns<Buffer>, "status" | "error"> {
 	return spawnSync(command, args, { stdio: "inherit" });
+}
+
+function delay(milliseconds: number): Promise<void> {
+	return new Promise((resolveDelay) => setTimeout(resolveDelay, milliseconds));
 }
 
 function assertCommand(result: Pick<SpawnSyncReturns<Buffer>, "status" | "error">, label: string): void {
