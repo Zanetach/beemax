@@ -499,9 +499,9 @@ test("orchestration tool validates a model-authored DAG and dispatches bounded S
 	const planId = output.details.planId;
 	assert.deepEqual(ledger.queryTasks({ ownerKeys: ["cli:local:local"], planIds: [planId] }).map((task) => task.parentId), ["objective-1", "objective-1", "objective-1"]);
 	assert.equal(ledger.queryTaskPlans({ ownerKeys: ["cli:local:local"], id: planId })[0].status, "succeeded");
-	assert.equal(tools.get("task_plan_execute").beemaxPolicy.approval, "never");
+	assert.equal(tools.get("task_plan_execute").beemaxPolicy.risk, "medium");
 	assert.equal(tools.get("task_plan_execute").beemaxPolicy.timeoutMs, 60_000);
-	assert.equal(tools.get("task_plan_pause").beemaxPolicy.approval, "never");
+	assert.equal(tools.get("task_plan_pause").beemaxPolicy.risk, "low");
 	assert.equal(tools.get("task_plan_resume").beemaxPolicy.timeoutMs, 60_000);
 });
 

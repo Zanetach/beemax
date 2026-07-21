@@ -205,7 +205,7 @@ test("Artifact Tools constrain workspace locators and expose render separately f
 	const tools = createArtifactTools(source, "/workspace", runtime);
 	assert.deepEqual(tools.map((tool) => tool.name), ["artifact_render", "artifact_verify", "artifact_inspect"]);
 	assert.equal(tools[0].beemaxPolicy.sideEffect, "local");
-	assert.equal(tools[0].beemaxPolicy.approval, "always");
+	assert.equal(tools[0].beemaxPolicy.sideEffect, "local");
 	assert.equal(tools[1].beemaxPolicy.sideEffect, "none");
 	assert.equal(tools[2].beemaxPolicy.sideEffect, "none");
 	assert.deepEqual(tools[0].beemaxToolSpec.ranking.outputModalities, ["application/pdf"]);

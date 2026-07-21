@@ -10,22 +10,22 @@ const source = { platform: "cli", chatId: "local", chatType: "dm", userId: "loca
 
 test("automation, Skill, and Sub-Agent capabilities publish first-class execution policies", () => {
 	const automation = createAutomationTools({}, source, () => undefined);
-	assert.equal(policy(automation, "schedule_list").approval, "never");
+	assert.equal(policy(automation, "schedule_list").sideEffect, "none");
 	assert.equal(policy(automation, "schedule_get").sideEffect, "none");
-	assert.equal(policy(automation, "schedule_status").approval, "never");
+	assert.equal(policy(automation, "schedule_status").sideEffect, "none");
 	assert.equal(policy(automation, "schedule_create").sideEffect, "local");
-	assert.equal(policy(automation, "schedule_update").approval, "always");
+	assert.equal(policy(automation, "schedule_update").risk, "medium");
 	assert.equal(policy(automation, "schedule_run_now").sideEffect, "local");
 	assert.equal(policy(automation, "schedule_delete").reversible, false);
 
 	const skills = createSkillTools("/tmp/beemax-policy-test", () => undefined);
-	assert.equal(policy(skills, "skill_read").approval, "never");
+	assert.equal(policy(skills, "skill_read").sideEffect, "none");
 	assert.equal(policy(skills, "skill_create").risk, "high");
 	assert.equal(policy(skills, "skill_update").maxAttempts, 1);
 
 	const manager = new SubagentManager({ execute: async () => "done" });
 	const tasks = createSubagentTools(manager, source);
-	assert.equal(policy(tasks, "task_spawn").approval, "never");
+	assert.equal(policy(tasks, "task_spawn").risk, "medium");
 	assert.equal(policy(tasks, "task_spawn").maxAttempts, 1);
 	assert.equal(policy(tasks, "task_wait").timeoutMs, 130_000);
 });
@@ -36,7 +36,6 @@ test("public web research capabilities publish first-class read-only policies", 
 		assert.deepEqual(policy(tools, name), {
 			risk: "low",
 			sideEffect: "none",
-			approval: "never",
 			reversible: true,
 			timeoutMs: 60_000,
 			maxAttempts: 2,
@@ -230,11 +229,11 @@ test("direct exa-mcporter and web extraction failures redact credentials and omi
 
 test("execution backend replacements explicitly preserve built-in safety policy", () => {
 	const tools = createExecutionTools(source, "/workspace", { execute: async () => ({ stdout: "", stderr: "", exitCode: 0 }), readFile: async () => "", writeFile: async () => undefined });
-	assert.equal(policy(tools, "read").approval, "never");
+	assert.equal(policy(tools, "read").risk, "low");
 	assert.equal(policy(tools, "read").sideEffect, "none");
-	assert.equal(policy(tools, "bash").approval, "always");
+	assert.equal(policy(tools, "bash").risk, "high");
 	assert.equal(policy(tools, "bash").sideEffect, "local");
-	assert.equal(policy(tools, "write").approval, "always");
+	assert.equal(policy(tools, "write").risk, "high");
 });
 
 test("an unannotated custom tool cannot silently inherit or replace a known built-in policy", () => {

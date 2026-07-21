@@ -1,6 +1,6 @@
 /**
  * CardSession: accumulates streaming events into Feishu card state.
- * Stripped of interaction (approval/clarify) and attachment handling -
+ * Stripped of clarification and attachment handling -
  * BeeMax's first cut needs answer + tools + footer.
  */
 
@@ -36,7 +36,6 @@ export class CardSession {
 	timeline = new CardTimeline();
 	private thinkingNormalizer = new StreamingTextNormalizer();
 	private answerNormalizer = new StreamingTextNormalizer();
-	pendingApprovalId?: string;
 	progressText = "";
 
 	get toolCount(): number {
@@ -107,12 +106,6 @@ export class CardSession {
 				this.timeline.complete();
 				this.status = "cancelled";
 				this.answerText = boundedAnswer("", typeof data.message === "string" ? data.message : "运行已取消");
-				break;
-			}
-			case "approval.updated": {
-				const status = String(data.status ?? "pending");
-				this.pendingApprovalId = status === "pending" ? String(data.id ?? "approval") : undefined;
-				this.timeline.recordNotice(String(data.id ?? "approval"), "工具审批", String(data.status ?? "pending"), String(data.message ?? ""));
 				break;
 			}
 			case "notice.updated": {

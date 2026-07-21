@@ -3,7 +3,7 @@ import test from "node:test";
 import { LocalActivityPresenter, LocalReasoningPresenter, parseChatCommand, parseReasoningCommand, renderChatFooter } from "../dist/local-chat-renderer.js";
 
 test("chat footer keeps the operational state visible without exposing answer content", () => {
-	assert.equal(renderChatFooter({ profile: "personal", model: "openai/gpt", session: "local-1", phase: "awaiting_approval", context: "120/1000", lastDurationMs: 2_600, queued: 1, tasksRunning: 2, tasksQueued: 3, taskCapacity: 4 }), "\n── personal · openai/gpt · session:local-1 · awaiting_approval · ctx:120/1000 · last:3s · queue:1 · tasks:2+3/4 ──\n");
+	assert.equal(renderChatFooter({ profile: "personal", model: "openai/gpt", session: "local-1", phase: "running", context: "120/1000", lastDurationMs: 2_600, queued: 1, tasksRunning: 2, tasksQueued: 3, taskCapacity: 4 }), "\n── personal · openai/gpt · session:local-1 · running · ctx:120/1000 · last:3s · queue:1 · tasks:2+3/4 ──\n");
 });
 
 test("reasoning visibility keeps raw thought separate and makes summaries opt-in", () => {
@@ -66,8 +66,8 @@ test("tool activity remains separate from the answer stream", () => {
 	assert.equal(new LocalActivityPresenter("collapsed").event({ type: "tool.changed", turnId: "t", callId: "1", name: "bash", state: "completed" }), "\n工具 bash 完成\n");
 	assert.equal(new LocalActivityPresenter("hidden", false).event({ type: "tool.changed", turnId: "t", callId: "1", name: "bash", state: "running" }), "");
 	assert.equal(presenter.event({ type: "turn.queued", turnId: "t", position: 1, replaced: false, mode: "queue", at: 1 }), "\n已加入下一条排队消息（位置 1）。\n");
-	assert.equal(presenter.event({ type: "approval.requested", turnId: "t", toolName: "write", at: 1 }), "\n等待审批：工具 write。可输入 /stop 取消。\n");
-	assert.equal(presenter.event({ type: "approval.resolved", turnId: "t", toolName: "write", allowed: true, at: 2 }), "\n审批已允许，继续执行。\n");
+	assert.equal(presenter.event({ type: "approval.requested", turnId: "t", toolName: "write", at: 1 }), "");
+	assert.equal(presenter.event({ type: "approval.resolved", turnId: "t", toolName: "write", allowed: true, at: 2 }), "");
 	assert.match(presenter.renderDetails(), /工具 web_search · completed/);
 	assert.match(presenter.renderDetails(), /子代理 task_spawn · running/);
 });

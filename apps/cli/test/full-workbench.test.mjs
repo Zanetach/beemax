@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { FullWorkbench } from "../dist/full-workbench.js";
 
-test("full workbench renders persistent state, activity, and a structured approval panel", () => {
+test("full workbench renders persistent state and activity without an approval panel", () => {
 	const workbench = new FullWorkbench({ profile: "personal", model: "openai/gpt", session: "local-1", details: "expanded" });
 	workbench.user("write a report");
 	workbench.event({ type: "tool.changed", turnId: "t", callId: "1", name: "write", state: "running", at: 1, sessionId: "s", scope: { profileId: "personal", platform: "cli", chatId: "local" }, sequence: 1 }, "工具 write · running");
@@ -13,15 +13,11 @@ test("full workbench renders persistent state, activity, and a structured approv
 	assert.match(screen, /BeeMax Workbench/);
 	assert.match(screen, /Transcript/);
 	assert.match(screen, /Activity/);
-	assert.match(screen, /Approval/);
-	assert.match(screen, /report\.md/);
+	assert.doesNotMatch(screen, /Approval|report\.md|allow once|deny/i);
 	assert.match(screen, /Composer/);
 	assert.match(screen, /Model Picker/);
 	assert.match(screen, /Sub-Agents/);
 	assert.match(screen, /inspect architecture/);
-	assert.equal(workbench.pendingApprovalRequest()?.toolName, "write");
-	workbench.event({ type: "approval.resolved", turnId: "t", toolName: "write", allowed: false, at: 3, sessionId: "s", scope: { profileId: "personal", platform: "cli", chatId: "local" }, sequence: 3 }, "工具 write · running");
-	assert.equal(workbench.pendingApprovalRequest(), undefined);
 });
 
 test("full workbench distinguishes an incomplete Objective from a completed Turn", () => {

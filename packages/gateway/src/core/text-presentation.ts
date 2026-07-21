@@ -8,7 +8,7 @@ import type {
 	TurnPresentationFinishOptions,
 	WorkProgressPresentation,
 } from "@beemax/channel-runtime";
-import { formatAnswerWithPublishedArtifacts, formatApprovalRequest, formatWorkProgress } from "@beemax/channel-runtime";
+import { formatAnswerWithPublishedArtifacts, formatWorkProgress } from "@beemax/channel-runtime";
 
 /** Universal presentation fallback for channels that only implement text delivery. */
 export class TextInteractionPresenter implements InteractionPresenter {
@@ -45,12 +45,7 @@ class TextTurnPresentation implements TurnPresentation {
 		});
 	}
 
-	async onEvent(event: InteractionEvent): Promise<void> {
-		if (event.type !== "approval.requested") return;
-		const message = formatApprovalRequest(event);
-		const result = await this.platform.send(event.scope.chatId, message, { idempotencyKey: `approval:${event.turnId}` });
-		if (!result.success) throw new Error(result.error ?? `Failed to present approval for ${event.toolName}`);
-	}
+	async onEvent(_event: InteractionEvent): Promise<void> {}
 
 	async finish(answer: string, options?: TurnPresentationFinishOptions): Promise<DeliveryReceipt> {
 		const deliveryText = formatAnswerWithPublishedArtifacts(answer, options?.publishedArtifacts);

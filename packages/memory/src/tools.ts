@@ -35,10 +35,10 @@ export function createMemoryTools(store: MemoryToolStore, source: BeeMaxRuntimeS
 		defineTool({ name: "memory_candidates", label: "List Memory Candidates", description: "List uncurated conversation facts awaiting promotion or rejection. Read-only.", parameters: Type.Object({ limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 50 })) }), execute: async (_id, params) => {
 			const records = store.listCandidates({ ...scope(), limit: params.limit ?? 20 }); return result(format(records), { records });
 		} }),
-		defineTool({ name: "memory_promote", label: "Promote Memory Candidate", description: "Promote one reviewed candidate into durable long-term memory. Requires approval.", parameters: Type.Object({ id: Type.String({ minLength: 1, maxLength: 64 }) }), execute: async (_id, params) => {
+		defineTool({ name: "memory_promote", label: "Promote Memory Candidate", description: "Promote one reviewed candidate into durable long-term memory.", parameters: Type.Object({ id: Type.String({ minLength: 1, maxLength: 64 }) }), execute: async (_id, params) => {
 			const promoted = store.promoteCandidate(params.id, scope()); return result(promoted ? `Promoted memory candidate ${params.id}` : `Memory candidate ${params.id} was not found`, { id: params.id, promoted });
 		} }),
-		defineTool({ name: "memory_reject", label: "Reject Memory Candidate", description: "Reject one candidate so it is not promoted to durable memory. Requires approval.", parameters: Type.Object({ id: Type.String({ minLength: 1, maxLength: 64 }) }), execute: async (_id, params) => {
+		defineTool({ name: "memory_reject", label: "Reject Memory Candidate", description: "Reject one candidate so it is not promoted to durable memory.", parameters: Type.Object({ id: Type.String({ minLength: 1, maxLength: 64 }) }), execute: async (_id, params) => {
 			const rejected = store.rejectCandidate(params.id, scope()); return result(rejected ? `Rejected memory candidate ${params.id}` : `Memory candidate ${params.id} was not found`, { id: params.id, rejected });
 		} }),
 		defineTool({ name: "memory_remember", label: "Remember", description: "Save a durable user fact, preference, decision, relationship, or recurring workflow. Do not save secrets or transient details.", parameters: Type.Object({ content: Type.String({ minLength: 1, maxLength: 2000 }) }), execute: async (_id, params) => {
@@ -63,7 +63,7 @@ export function createMemoryTools(store: MemoryToolStore, source: BeeMaxRuntimeS
 			const explanation = store.explainClaim?.(params.id, scope());
 			return result(explanation ? `${explanation.claim.statement}\n${explanation.evidence.map(formatEvidence).join("\n")}` : `Memory understanding ${params.id} was not found`, { explanation });
 		} }),
-		defineTool({ name: "memory_correct", label: "Correct Memory", description: "Supersede an incorrect structured memory with a corrected version while preserving provenance. Requires approval.", parameters: Type.Object({ id: Type.String({ minLength: 1, maxLength: 64 }), statement: Type.String({ minLength: 1, maxLength: 2000 }), confidence: Type.Optional(Type.Number({ minimum: 0, maximum: 1 })), stability: Type.Optional(Type.Union([Type.Literal("low"), Type.Literal("medium"), Type.Literal("high")])) }), execute: async (_id, params) => {
+		defineTool({ name: "memory_correct", label: "Correct Memory", description: "Supersede an incorrect structured memory with a corrected version while preserving provenance.", parameters: Type.Object({ id: Type.String({ minLength: 1, maxLength: 64 }), statement: Type.String({ minLength: 1, maxLength: 2000 }), confidence: Type.Optional(Type.Number({ minimum: 0, maximum: 1 })), stability: Type.Optional(Type.Union([Type.Literal("low"), Type.Literal("medium"), Type.Literal("high")])) }), execute: async (_id, params) => {
 			const event = store.latestEvent?.(scope(), "user");
 			const claim = event ? store.correctClaim?.(params.id, { statement: params.statement, confidence: params.confidence, stability: params.stability, evidence: { kind: "correction", eventId: event.id, excerpt: event.content } }, scope()) : undefined;
 			return result(claim ? `Corrected memory ${params.id} as ${claim.id}` : `Memory understanding ${params.id} was not found`, { claim });
@@ -74,7 +74,7 @@ export function createMemoryTools(store: MemoryToolStore, source: BeeMaxRuntimeS
 		defineTool({ name: "memory_list", label: "List Memories", description: "List the user's most recent explicitly curated durable memories.", parameters: Type.Object({ limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 50 })) }), execute: async (_id, params) => {
 			const records = store.list({ ...scope(), limit: params.limit ?? 20 }); return result(format(records), { records });
 		} }),
-		defineTool({ name: "memory_forget", label: "Forget Memory", description: "Permanently delete one explicitly curated memory by ID. Requires approval.", parameters: Type.Object({ id: Type.String({ minLength: 1, maxLength: 64 }) }), execute: async (_id, params) => {
+		defineTool({ name: "memory_forget", label: "Forget Memory", description: "Permanently delete one explicitly curated memory by ID.", parameters: Type.Object({ id: Type.String({ minLength: 1, maxLength: 64 }) }), execute: async (_id, params) => {
 			const deleted = store.forget(params.id, scope()) || store.forgetClaim?.(params.id, scope()) || false; return result(deleted ? `Forgot memory ${params.id}` : `Memory ${params.id} was not found in this user scope`, { id: params.id, deleted });
 		} }),
 	];
@@ -82,8 +82,8 @@ export function createMemoryTools(store: MemoryToolStore, source: BeeMaxRuntimeS
 	const policies: Record<string, ToolPolicy> = {
 		memory_status: { ...READ_ONLY_TOOL_POLICY }, memory_candidates: { ...READ_ONLY_TOOL_POLICY }, memory_explain: { ...READ_ONLY_TOOL_POLICY }, memory_recall: { ...READ_ONLY_TOOL_POLICY }, memory_list: { ...READ_ONLY_TOOL_POLICY },
 		memory_promote: localMemoryWrite, memory_reject: localMemoryWrite, memory_correct: localMemoryWrite,
-		memory_remember: { ...localMemoryWrite, risk: "low", approval: "never", impact: "Stores an explicit non-sensitive user memory that can be forgotten" },
-		memory_understand: { ...localMemoryWrite, risk: "low", approval: "never", impact: "Stores a stable non-sensitive understanding with source evidence" },
+		memory_remember: { ...localMemoryWrite, risk: "low", impact: "Stores an explicit non-sensitive user memory that can be forgotten" },
+		memory_understand: { ...localMemoryWrite, risk: "low", impact: "Stores a stable non-sensitive understanding with source evidence" },
 		memory_forget: { ...localMemoryWrite, risk: "high", reversible: false, impact: "Permanently deletes a scoped memory or understanding" },
 	};
 	return tools.map((tool) => withToolPolicy(tool, policies[tool.name]!));

@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { MemoryStore } from "@beemax/memory";
-import { consumeChannelCredential, loadConfig, profileTaskGrantCapabilities, profileTurnTimeoutMs } from "../dist/config.js";
+import { consumeChannelCredential, loadConfig, profileTurnTimeoutMs } from "../dist/config.js";
 
 const readCredential = (config, channel) => consumeChannelCredential(config, channel, (credential) => ({ ...credential }));
 
@@ -374,38 +374,20 @@ test("runtime configuration rejects misspelled Execution Sandbox policy instead 
 	}
 });
 
-test("Profile execution policy explicitly controls unattended workspace-write grants", async () => {
+test("Profile execution config accepts and discards legacy approval settings", async () => {
 	const home = await mkdtemp(join(tmpdir(), "beemax-workspace-write-policy-home-"));
 	const paths = await createProfile("workspace-write-policy", { home });
 	const defaulted = loadConfig(paths.configPath, "workspace-write-policy");
-	assert.equal(defaulted.execution.workspaceWritePolicy, "approval-required");
-	assert.deepEqual(profileTaskGrantCapabilities(defaulted), []);
-	await writeFile(paths.configPath, "execution:\n  workspaceWritePolicy: allow-within-workspace\n");
-	const authorized = loadConfig(paths.configPath, "workspace-write-policy");
-	assert.equal(authorized.execution.workspaceWritePolicy, "allow-within-workspace");
-	assert.deepEqual(profileTaskGrantCapabilities(authorized), ["write"]);
-	await writeFile(paths.configPath, "execution:\n  workspaceWritePolicy: allow-everything\n");
-	assert.throws(() => loadConfig(paths.configPath, "workspace-write-policy"), /Invalid execution\.workspaceWritePolicy/);
-});
-
-test("Profile execution policy explicitly grants configured Tool capabilities per Task", async () => {
-	const home = await mkdtemp(join(tmpdir(), "beemax-task-capability-policy-home-"));
-	const paths = await createProfile("task-capability-policy", { home });
+	assert.equal("workspaceWritePolicy" in defaulted.execution, false);
+	assert.equal("taskGrantCapabilities" in defaulted.execution, false);
 	await writeFile(paths.configPath, `execution:
+  workspaceWritePolicy: approval-required
   taskGrantCapabilities:
     - mcp_partner_deliver
-    - mcp_partner_schedule
-    - mcp_partner_deliver
 `);
-	const configured = loadConfig(paths.configPath, "task-capability-policy");
-	assert.deepEqual(configured.execution.taskGrantCapabilities, ["mcp_partner_deliver", "mcp_partner_schedule"]);
-	assert.deepEqual(profileTaskGrantCapabilities(configured), ["mcp_partner_deliver", "mcp_partner_schedule"]);
-
-	await writeFile(paths.configPath, `execution:
-  taskGrantCapabilities:
-    - "*"
-`);
-	assert.throws(() => loadConfig(paths.configPath, "task-capability-policy"), /Invalid execution\.taskGrantCapabilities\[0\]/);
+	const migrated = loadConfig(paths.configPath, "workspace-write-policy");
+	assert.equal("workspaceWritePolicy" in migrated.execution, false);
+	assert.equal("taskGrantCapabilities" in migrated.execution, false);
 });
 
 test("curated memory is bounded and rendered as a session snapshot", async () => {

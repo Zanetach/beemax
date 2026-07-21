@@ -5,20 +5,10 @@ import { join } from "node:path";
 import test from "node:test";
 import { agentParityCorpus } from "../../../evals/agent-parity-corpus.mjs";
 import { parseBeeMaxEvidence, parseCodexEvidence, parseHermesEvidence } from "../../../evals/agent-parity-adapters.mjs";
-import { createIsolatedProfile, filterExecution, scenarioTaskGrantCapabilities } from "../../../evals/adapters/beemax-cli.mjs";
+import { createIsolatedProfile, filterExecution } from "../../../evals/adapters/beemax-cli.mjs";
 import { collectFixtureEvidence, digestConfiguration, parityPrompt, resolveValidatedPublicAddresses, runSubprocess, signFixtureAuthorityEvent } from "../../../evals/adapters/subprocess.mjs";
 
 const research = agentParityCorpus.cases.find((scenario) => scenario.id === "current-research");
-
-test("BeeMax parity grants only fixture mutation capabilities required by the current scenario", () => {
-	const pool = ["mcp_agent_parity_deliver", "mcp_agent_parity_schedule_delivery", "mcp_agent_parity_recover_step", "mcp_agent_parity_send_unknown"];
-	const byId = (id) => scenarioTaskGrantCapabilities(pool, agentParityCorpus.cases.find((scenario) => scenario.id === id));
-	assert.deepEqual(byId("conversation-short"), []);
-	assert.deepEqual(byId("gateway-direct"), ["mcp_agent_parity_deliver"]);
-	assert.deepEqual(byId("scheduled-work"), ["mcp_agent_parity_schedule_delivery"]);
-	assert.deepEqual(byId("provider-failure-recovery"), ["mcp_agent_parity_recover_step"]);
-	assert.deepEqual(byId("unknown-effect"), ["mcp_agent_parity_send_unknown"]);
-});
 
 test("parity prompts preserve the user request as the leading semantic input", () => {
 	const scenario = agentParityCorpus.cases.find((candidate) => candidate.id === "conversation-short");
@@ -331,13 +321,13 @@ test("BeeMax parity profiles copy only configuration and credentials into fresh 
 		writeFile(join(sourceRoot, "logs", "execution-trace.jsonl"), "must-not-copy"),
 		writeFile(join(sourceRoot, "state", "credential-vault.key"), "fixture-key"),
 	]);
-	const isolated = await createIsolatedProfile({ sourceHome, sourceProfile: "source", workspace, system: { model: "fixture-model" }, provider: "custom", fixtureRoot: new URL("../../../evals/fixtures/agent-parity", import.meta.url).pathname, taskGrantCapabilities: ["mcp_agent_parity_deliver", "mcp_agent_parity_schedule_delivery"] });
+	const isolated = await createIsolatedProfile({ sourceHome, sourceProfile: "source", workspace, system: { model: "fixture-model" }, provider: "custom" });
 	try {
 		assert.equal(await readFile(join(isolated.profileRoot, "auth.json"), "utf8"), "{}");
 		assert.equal(await readFile(join(isolated.profileRoot, "state", "credential-vault.key"), "utf8"), "fixture-key");
 		assert.match(await readFile(join(isolated.profileRoot, ".env"), "utf8"), /BEEMAX_MODEL="fixture-model"/);
 		assert.ok((await readFile(join(isolated.profileRoot, ".env"), "utf8")).includes(`BEEMAX_CWD=${JSON.stringify(workspace)}`));
-		assert.match(await readFile(join(isolated.profileRoot, ".env"), "utf8"), /BEEMAX_TASK_GRANT_CAPABILITIES="mcp_agent_parity_deliver,mcp_agent_parity_schedule_delivery"/);
+		assert.doesNotMatch(await readFile(join(isolated.profileRoot, ".env"), "utf8"), /BEEMAX_(?:WORKSPACE_WRITE_POLICY|TASK_GRANT_CAPABILITIES)=/);
 		await assert.rejects(readFile(join(isolated.profileRoot, "memory.db")), /ENOENT/);
 		await assert.rejects(readFile(join(isolated.profileRoot, "logs", "execution-trace.jsonl")), /ENOENT/);
 		await assert.rejects(readFile(join(isolated.profileRoot, "skills", "evaluation-research", "SKILL.md")), /ENOENT/);

@@ -5,7 +5,7 @@ import type { InteractionTelemetryEvent } from "@beemax/core";
 const MAX_BYTES = 1_000_000;
 const RETAIN_LINES = 2_000;
 export interface OperationalAlert { severity: "warning" | "critical"; code: string; detail: string }
-export interface OperationalSnapshot { available: boolean; permissionsSafe: boolean; windowMinutes: number; events: number; modelFallbacks: number; approvalDenied: number; replayedEvents: number; planningNoncompliant: number; alerts: OperationalAlert[] }
+export interface OperationalSnapshot { available: boolean; permissionsSafe: boolean; windowMinutes: number; events: number; modelFallbacks: number; replayedEvents: number; planningNoncompliant: number; alerts: OperationalAlert[] }
 
 export function operationalMetricsPath(agentDir: string): string { return join(agentDir, "logs", "operational-metrics.jsonl"); }
 
@@ -38,12 +38,10 @@ export function inspectOperationalMetrics(agentDir: string, now = Date.now(), wi
 		try { const event = JSON.parse(line); return event.at >= since && event.at <= now ? [event] : []; } catch { return []; }
 	}) : [];
 	const modelFallbacks = events.filter((event) => event.type === "interaction.model_fallback").length;
-	const approvalDenied = events.filter((event) => event.type === "interaction.approval_resolved" && event.decision === "denied").length;
 	const replayedEvents = events.filter((event) => event.type === "interaction.presenter_reconnected").reduce((sum, event) => sum + Math.max(0, Number(event.gapEvents) || 0), 0);
 	const planningNoncompliant = events.filter((event) => event.type === "interaction.planning_completed" && event.compliant === false).length;
 	const alerts: OperationalAlert[] = [];
 	if (modelFallbacks >= 3) alerts.push({ severity: "warning", code: "model_fallback_spike", detail: `${modelFallbacks} model fallbacks in ${windowMinutes}m` });
-	if (approvalDenied >= 5) alerts.push({ severity: "warning", code: "approval_denial_spike", detail: `${approvalDenied} denied approvals in ${windowMinutes}m` });
 	if (planningNoncompliant > 0) alerts.push({ severity: "warning", code: "planning_noncompliant", detail: `${planningNoncompliant} noncompliant plans in ${windowMinutes}m` });
-	return { available, permissionsSafe, windowMinutes, events: events.length, modelFallbacks, approvalDenied, replayedEvents, planningNoncompliant, alerts };
+	return { available, permissionsSafe, windowMinutes, events: events.length, modelFallbacks, replayedEvents, planningNoncompliant, alerts };
 }

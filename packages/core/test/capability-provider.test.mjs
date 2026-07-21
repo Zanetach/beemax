@@ -69,7 +69,7 @@ test("Provider acquisition installs an external candidate only after explicit au
 	};
 	const authorizations = [];
 	const runtime = new CapabilityProviderRuntime({
-		installAuthority: { authorize: async (input) => { authorizations.push(input.provider.id); return { allowed: true, evidenceRef: "approval:42" }; } },
+		installAuthority: { authorize: async (input) => { authorizations.push(input.provider.id); return { allowed: true, evidenceRef: "authority:42" }; } },
 		installer: { install: async () => { installed = true; return { receiptId: "install:42", installedAt: 42, evidenceRef: "catalog:receipt:42" }; } },
 	});
 	const result = await runtime.acquire({ capability: "public web research", providers: [provider] });
@@ -77,7 +77,7 @@ test("Provider acquisition installs an external candidate only after explicit au
 	assert.equal(result.selected?.id, "research-mcp");
 	assert.equal(result.selected?.health.status, "ready");
 	assert.equal(result.installationReceipt?.receiptId, "install:42");
-	assert.equal(result.authorityEvidenceRef, "approval:42");
+	assert.equal(result.authorityEvidenceRef, "authority:42");
 	assert.deepEqual(authorizations, ["research-mcp"]);
 });
 
@@ -86,7 +86,7 @@ test("Provider installation state is re-evaluated on later Turns instead of rein
 	let installs = 0;
 	const provider = { id: "dynamic-provider", kind: "mcp", capabilities: ["research"], installed: () => installed, install: { source: "approved-catalog", package: "dynamic-provider", version: "1.0.0" }, health: async () => installed ? { status: "ready", evidenceRef: "health:dynamic-provider" } : { status: "unavailable", reason: "not installed" } };
 	const runtime = new CapabilityProviderRuntime({
-		installAuthority: { authorize: async () => ({ allowed: true, evidenceRef: "approval:dynamic-provider" }) },
+		installAuthority: { authorize: async () => ({ allowed: true, evidenceRef: "authority:dynamic-provider" }) },
 		installer: { install: async () => { installs++; installed = true; return { receiptId: "install:dynamic-provider", installedAt: 42, evidenceRef: "catalog:dynamic-provider" }; } },
 	});
 	assert.equal((await runtime.acquire({ capability: "research", providers: [provider] })).status, "ready");
@@ -96,7 +96,7 @@ test("Provider installation state is re-evaluated on later Turns instead of rein
 
 test("Provider acquisition cannot claim verified installation without an observed health probe", async () => {
 	const runtime = new CapabilityProviderRuntime({
-		installAuthority: { authorize: async () => ({ allowed: true, evidenceRef: "approval:no-probe" }) },
+		installAuthority: { authorize: async () => ({ allowed: true, evidenceRef: "authority:no-probe" }) },
 		installer: { install: async () => ({ receiptId: "install:no-probe", installedAt: 42, evidenceRef: "catalog:no-probe" }) },
 	});
 	const result = await runtime.acquire({ capability: "analysis", providers: [{ id: "no-probe", kind: "tool", capabilities: ["analysis"], installed: false, install: { source: "approved-catalog", package: "no-probe", version: "1.0.0" } }] });
@@ -108,7 +108,7 @@ test("Provider acquisition cannot claim verified installation without an observe
 test("Provider acquisition rejects an installation receipt without evidence", async () => {
 	let installed = false;
 	const runtime = new CapabilityProviderRuntime({
-		installAuthority: { authorize: async () => ({ allowed: true, evidenceRef: "approval:missing-install-evidence" }) },
+		installAuthority: { authorize: async () => ({ allowed: true, evidenceRef: "authority:missing-install-evidence" }) },
 		installer: { install: async () => { installed = true; return { receiptId: "install:no-evidence", installedAt: 42 }; } },
 	});
 	const result = await runtime.acquire({ capability: "analysis", providers: [{ id: "missing-evidence", kind: "tool", capabilities: ["analysis"], installed: false, install: { source: "approved-catalog", package: "missing-evidence", version: "1.0.0" }, health: async () => installed ? { status: "ready", evidenceRef: "health:missing-evidence" } : { status: "unavailable" } }] });
@@ -119,7 +119,7 @@ test("Provider acquisition rejects an installation receipt without evidence", as
 
 test("Provider acquisition keeps an installed but unverified Provider blocked", async () => {
 	const runtime = new CapabilityProviderRuntime({
-		installAuthority: { authorize: async () => ({ allowed: true, evidenceRef: "approval:unverified" }) },
+		installAuthority: { authorize: async () => ({ allowed: true, evidenceRef: "authority:unverified" }) },
 		installer: { install: async () => ({ receiptId: "install:unverified", installedAt: 42, evidenceRef: "catalog:unverified" }) },
 	});
 	const result = await runtime.acquire({ capability: "analysis", providers: [{ id: "unverified", kind: "mcp", capabilities: ["analysis"], installed: false, install: { source: "approved-catalog", package: "unverified", version: "1.0.0" }, health: async () => ({ status: "unverified", reason: "first real execution has not succeeded" }) }] });
@@ -149,14 +149,14 @@ test("Provider health timeout is bounded even when a broken Provider ignores Abo
 
 test("Provider acquisition bounds authority and installer calls that ignore cancellation", async () => {
 	const provider = { id: "slow", kind: "mcp", capabilities: ["research"], installed: false, install: { source: "approved-catalog", package: "slow", version: "1.0.0" }, health: async () => ({ status: "ready", evidenceRef: "health:slow" }) };
-	const slowAuthority = new CapabilityProviderRuntime({ authorityTimeoutMs: 100, installAuthority: { authorize: async () => new Promise((resolve) => setTimeout(() => resolve({ allowed: true, evidenceRef: "approval:late" }), 300)) }, installer: { install: async () => ({ receiptId: "never", installedAt: 1, evidenceRef: "never" }) } });
+	const slowAuthority = new CapabilityProviderRuntime({ authorityTimeoutMs: 100, installAuthority: { authorize: async () => new Promise((resolve) => setTimeout(() => resolve({ allowed: true, evidenceRef: "authority:late" }), 300)) }, installer: { install: async () => ({ receiptId: "never", installedAt: 1, evidenceRef: "never" }) } });
 	const authorityStartedAt = Date.now();
 	const authorityResult = await slowAuthority.acquire({ capability: "research", providers: [provider] });
 	assert.ok(Date.now() - authorityStartedAt < 250);
 	assert.equal(authorityResult.blocker?.code, "installation_authorization_required");
 	assert.match(authorityResult.blocker?.reason ?? "", /timed out/i);
 
-	const slowInstaller = new CapabilityProviderRuntime({ installTimeoutMs: 100, installAuthority: { authorize: async () => ({ allowed: true, evidenceRef: "approval:fast" }) }, installer: { install: async () => new Promise((resolve) => setTimeout(() => resolve({ receiptId: "install:late", installedAt: 1, evidenceRef: "catalog:late" }), 300)) } });
+	const slowInstaller = new CapabilityProviderRuntime({ installTimeoutMs: 100, installAuthority: { authorize: async () => ({ allowed: true, evidenceRef: "authority:fast" }) }, installer: { install: async () => new Promise((resolve) => setTimeout(() => resolve({ receiptId: "install:late", installedAt: 1, evidenceRef: "catalog:late" }), 300)) } });
 	const installStartedAt = Date.now();
 	const installResult = await slowInstaller.acquire({ capability: "research", providers: [provider] });
 	assert.ok(Date.now() - installStartedAt < 250);
@@ -181,7 +181,7 @@ test("all Provider installation waiters observe an interrupted shared outcome wi
 		installAuthority: { authorize: async () => {
 			authorizations++;
 			if (authorizations === 2) waiterAuthorized();
-			return { allowed: true, evidenceRef: "approval:shared-interrupted" };
+			return { allowed: true, evidenceRef: "authority:shared-interrupted" };
 		} },
 		installer: { install: async (_provider, signal) => {
 			installs++;
@@ -221,7 +221,7 @@ test("a later Provider acquisition reconciles stale installed=false with observe
 			: { status: "unavailable", reason: "not installed" },
 	};
 	const runtime = new CapabilityProviderRuntime({
-		installAuthority: { authorize: async () => ({ allowed: true, evidenceRef: "approval:reconciled-present" }) },
+		installAuthority: { authorize: async () => ({ allowed: true, evidenceRef: "authority:reconciled-present" }) },
 		installer: { install: async (_provider, signal) => {
 			installs++;
 			if (installs > 1) return { receiptId: "duplicate", installedAt: Date.now(), evidenceRef: "duplicate" };
@@ -257,7 +257,7 @@ test("an outcome-unknown Provider remains blocked until absence has explicit hea
 				: { status: "unavailable", reason: "not installed, but no observed absence evidence" },
 	};
 	const runtime = new CapabilityProviderRuntime({
-		installAuthority: { authorize: async () => ({ allowed: true, evidenceRef: "approval:reconciled-absent" }) },
+		installAuthority: { authorize: async () => ({ allowed: true, evidenceRef: "authority:reconciled-absent" }) },
 		installer: { install: async (_provider, signal) => {
 			installs++;
 			if (installs === 1) {

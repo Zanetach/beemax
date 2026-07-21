@@ -10,7 +10,7 @@
  */
 
 import { buildMainAgentSystemPrompt, buildSubagentSystemPrompt, createSkillCandidateVerifier, createTaskVerifier, createVerifiedObjectiveMemoryPublisher, executeObjectiveDelivery, executePlannedTask, executeSubagentTask, mainAgentTools, readOnlyAgentTools, runGateway, runProfileAutomation, subagentExecutionTools, verificationAgentToolsForTask } from "./gateway.ts";
-import { beemaxHome, beemaxRoot, consumeChannelCredential, loadConfig, profileTaskGrantCapabilities, profileTurnTimeoutMs } from "./config.ts";
+import { beemaxHome, beemaxRoot, consumeChannelCredential, loadConfig, profileTurnTimeoutMs } from "./config.ts";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { backupSqliteDatabase, MemoryStore, memoryPersistencePorts, verifySqliteDatabase } from "@beemax/memory";
 import { runDoctor } from "./doctor.ts";
@@ -44,7 +44,7 @@ import { fullScreenEnter, fullScreenExit, resolveChatPresentationMode, type Chat
 import { FullWorkbench, startFullWorkbenchInput, type FullWorkbenchInput } from "./full-workbench.ts";
 import { inspectGateway, readGatewayLogs, recordGatewayEvent } from "./gateway-observability.ts";
 import { createTaskAwareConversationContext, ensureBuiltinTasks, installedVersion } from "./runtime-facts.ts";
-import { AUTONOMY_LEVELS, ActionGovernance, AgentRunError, AuthStorage, AutonomyRolloutController, DefaultMemoryLearningKernel, DeterministicLearningExtractor, FileCredentialVault, FileCredentialVaultAuditJournal, ObjectiveCompletionDeliveryService, PiLearningExtractor, ProactiveInvestigationRuntime, ProgressiveLearningExtractor, TaskPlanNoticeDeliveryService, ToolApprovalBroker, ToolPolicyRegistry, buildActiveTaskPreservationEnvelope, buildTaskPreservationEnvelope, compileLongTermMemorySnapshot, conversationKey, createContractAdmissionReceiptIntegrity, createExecutionEnvelope, createSubagentTools, createTaskLedgerTools, createTaskOrchestrationTools, guardVerifiedObjectiveMemoryPublisher, interactionCommandHelp, isVerifiedAutomationOutcome, objectiveIdFromCompletionId, parseInteractionCommand, redactCredentialMaterial, responsibilityOwnerKey, responsibilityOwnerKeys, type AutonomyLevel, type AutonomyRolloutAuthority, type DeliveryPort, type LearningObjectiveAdmissionPort } from "@beemax/core";
+import { AUTONOMY_LEVELS, ActionGovernance, AgentRunError, AuthStorage, AutonomyRolloutController, DefaultMemoryLearningKernel, DeterministicLearningExtractor, FileCredentialVault, FileCredentialVaultAuditJournal, ObjectiveCompletionDeliveryService, PiLearningExtractor, ProactiveInvestigationRuntime, ProgressiveLearningExtractor, TaskPlanNoticeDeliveryService, ToolPolicyRegistry, buildActiveTaskPreservationEnvelope, buildTaskPreservationEnvelope, compileLongTermMemorySnapshot, conversationKey, createContractAdmissionReceiptIntegrity, createExecutionEnvelope, createSubagentTools, createTaskLedgerTools, createTaskOrchestrationTools, guardVerifiedObjectiveMemoryPublisher, interactionCommandHelp, isVerifiedAutomationOutcome, objectiveIdFromCompletionId, parseInteractionCommand, redactCredentialMaterial, responsibilityOwnerKey, responsibilityOwnerKeys, type AutonomyLevel, type AutonomyRolloutAuthority, type DeliveryPort, type LearningObjectiveAdmissionPort } from "@beemax/core";
 import type { SessionSource } from "@beemax/channel-runtime";
 import { PairingStore, assertProfileBindingConfiguration } from "@beemax/gateway";
 import { executeFeishuSmoke } from "./feishu-smoke.ts";
@@ -342,7 +342,7 @@ function runGatewayStatus(config: ReturnType<typeof loadConfig>, scope: "user" |
 	console.log(`Runtime state: ${snapshot.state}`);
 	console.log(`Logs: ${snapshot.logs}`);
 	console.log(`Version: cli=${snapshot.cliVersion}; runtime=${snapshot.version}; matches=${snapshot.versionMatches ?? "unverified"}`);
-	console.log(`Metrics (${snapshot.operational.windowMinutes}m): events=${snapshot.operational.events}; fallbacks=${snapshot.operational.modelFallbacks}; denied=${snapshot.operational.approvalDenied}; replayed=${snapshot.operational.replayedEvents}; noncompliant=${snapshot.operational.planningNoncompliant}`);
+	console.log(`Metrics (${snapshot.operational.windowMinutes}m): events=${snapshot.operational.events}; fallbacks=${snapshot.operational.modelFallbacks}; replayed=${snapshot.operational.replayedEvents}; noncompliant=${snapshot.operational.planningNoncompliant}`);
 	for (const alert of snapshot.operational.alerts) console.log(`Alert [${alert.severity}] ${alert.code}: ${alert.detail}`);
 	if (snapshot.pid) console.log(`PID: ${snapshot.pid}`);
 	if (snapshot.startedAt) console.log(`Started: ${snapshot.startedAt}`);
@@ -1215,11 +1215,6 @@ async function runChat(config: ReturnType<typeof loadConfig>, requestedMode: { f
 	const cognitionModels = await resolveProfileCognitionModels(config, (provider) => profileAuth.getApiKey(provider, { includeFallback: false }));
 	const capabilityProviders = createProfileCapabilityProviderBundle({ profileId: config.profile, agentDir: config.paths.agentDir, installation: config.capabilityProviders.installation });
 	const modelCatalog = new ProfileModelCatalog(config);
-	// Full mode renders approval lifecycle from semantic events in its own panel;
-	// Compact/Plain retain the durable text prompt for SSH and scripts.
-	const localApproval = new ToolApprovalBroker(async (_source, text) => {
-		if (presentationMode !== "full") process.stdout.write(`\n${text}\n`);
-	}, undefined, undefined, profileTaskGrantCapabilities(config));
 	const memory = new MemoryStore(config.memory.dbPath, config.profile);
 	const persistence = memoryPersistencePorts(memory);
 	const autonomyRollout = new AutonomyRolloutController({ store: persistence.autonomyRollout });
@@ -1323,7 +1318,6 @@ async function runChat(config: ReturnType<typeof loadConfig>, requestedMode: { f
 		resources: [
 			{ name: "memory", dispose: () => memory.close() },
 			{ name: "capability", dispose: () => mcp.close() },
-			{ name: "approval", dispose: () => localApproval.dispose() },
 		],
 		compose: (work) => {
 			const { taskScheduler, planningBudgets, taskPlanRuntime, verifyTask, taskRecovery, objectiveRuntime, subagents, toolEffects, executionTrace } = work;
@@ -1356,10 +1350,7 @@ async function runChat(config: ReturnType<typeof loadConfig>, requestedMode: { f
 		])),
 		verifySkillCandidate: createSkillCandidateVerifier(createSubagentAgent, config.subagents.timeoutMs, memory, executionTrace),
 		authorizeSkillCandidatePromotion: async (sessionSource, input) => memory.authorizeWorkflowSkillPromotion(input.source, { profileId: config.profile, platform: sessionSource.platform, chatId: sessionSource.chatId, ...(sessionSource.userId ? { userId: sessionSource.userId } : {}), ...(sessionSource.threadId ? { threadId: sessionSource.threadId } : {}) }, { name: input.name, sha256: input.sha256 }),
-		authorizeTool: (request, signal) => localApproval.authorize(request, signal),
-		executionGrant: (sessionSource) => localApproval.executionGrant(sessionSource),
 		toolEffects,
-			currentTaskId: (sessionSource) => localApproval.executionGrant(sessionSource)?.taskId,
 			compactionInstructions: (sessionSource) => buildActiveTaskPreservationEnvelope(memory, sessionSource),
 		credentials: credentialVault ? { ownerKey: `profile:${config.profile}`, vault: credentialVault } : undefined,
 		sessionTools: (sessionSource) => [
@@ -1401,7 +1392,6 @@ async function runChat(config: ReturnType<typeof loadConfig>, requestedMode: { f
 			mediaUnderstanding: configuredMediaUnderstanding(config, createLocalMediaUnderstandingAdapters(config.mediaUnderstanding.localOcr)),
 			context: createTaskAwareConversationContext(memory, { memoryScope: { profileId: config.profile }, organizationSituationAllowed: () => autonomyRollout.allows("situation_context").allowed, memoryLearningKernel, memoryLearningAllowed: () => autonomyRollout.allows("adaptive_learning").allowed, runtimeSnapshot: () => ({ profile: config.profile }), maxContextChars: config.context.maxTurnChars }),
 		},
-		approvalBroker: localApproval,
 		cancelSubagents: (sessionSource) => subagents?.cancelOwner(sessionSource) ?? 0,
 		cancelTaskPlans: (sessionSource) => {
 			const ownerKey = responsibilityOwnerKey(sessionSource);
@@ -1512,7 +1502,7 @@ async function runChat(config: ReturnType<typeof loadConfig>, requestedMode: { f
 		};
 		const status = async () => `Profile: ${config.profile}\nModel: ${config.model.provider}/${config.model.model}\nSession: ${source.threadId ?? "default"}\nRun: ${runtime.isBusy() ? "running" : "idle"}\n${renderTaskSchedulerStatus(taskScheduler.snapshot())}\n${renderTaskRecoveryStatus(work.recoveryStatus())}\nReasoning: ${reasoningDisplay}\nDetails: ${detailsDisplay}\nToolset: ${config.agent.toolset}\n${await usage()}`;
 		const toolsStatus = () => {
-			const tools = mcp.getTools().map((tool) => `${tool.name}${tool.beemaxPolicy?.approval === "always" ? " (approval required)" : ""}`);
+			const tools = mcp.getTools().map((tool) => tool.name);
 			return `Toolset: ${config.agent.toolset}\nMCP: ${tools.length ? tools.join(", ") : "no MCP tools connected"}`;
 		};
 		const sessions = async (query?: string) => {
@@ -1537,7 +1527,7 @@ async function runChat(config: ReturnType<typeof loadConfig>, requestedMode: { f
 		const stop = async () => {
 			const stopped = await interactionAdapter.dispatch({ type: "turn.cancel", source });
 			if (!("cancelled" in stopped)) throw new Error("Cancellation dispatch did not produce a cancellation result");
-			process.stdout.write(`\n${stopped.cancelled ? "Stopped the active Agent turn" : "No active Agent turn"}${stopped.subagentsCancelled ? `; cancelled ${stopped.subagentsCancelled} Sub-Agent task(s)` : ""}${stopped.taskPlansCancelled ? `; cancelled ${stopped.taskPlansCancelled} Task Plan(s)` : ""}${stopped.approvalCancelled ? "; cancelled pending approval" : ""}${stopped.queuedCancelled ? "; cleared queued input" : ""}.\n`);
+			process.stdout.write(`\n${stopped.cancelled ? "Stopped the active Agent turn" : "No active Agent turn"}${stopped.subagentsCancelled ? `; cancelled ${stopped.subagentsCancelled} Sub-Agent task(s)` : ""}${stopped.taskPlansCancelled ? `; cancelled ${stopped.taskPlansCancelled} Task Plan(s)` : ""}${stopped.queuedCancelled ? "; cleared queued input" : ""}.\n`);
 		};
 		if (presentationMode === "full") {
 			fullScreenActive = true;
@@ -1562,7 +1552,7 @@ async function runChat(config: ReturnType<typeof loadConfig>, requestedMode: { f
 					return;
 				}
 				process.stdout.write(activity.event(event));
-				if (event.type === "turn.started" || event.type === "approval.requested" || event.type === "turn.queued") await writeFooter();
+				if (event.type === "turn.started" || event.type === "turn.queued") await writeFooter();
 				const thinkingDelta = event.type === "reasoning.delta" ? event.text : undefined;
 				if (thinkingDelta) process.stdout.write(reasoning.thinking(thinkingDelta));
 				const delta = event.type === "answer.delta" ? event.text : undefined;
@@ -1605,7 +1595,6 @@ async function runChat(config: ReturnType<typeof loadConfig>, requestedMode: { f
 					process.stdout.write(`\n${result.active || result.tasks ? `Cancelled Task Plan ${command.planId}: active=${result.active}; tasks=${result.tasks}.` : `No active or queued Tasks found in owned Plan ${command.planId}.`}\n`);
 					return;
 				}
-				if (await interactionAdapter.handleApprovalReply(source, trimmed)) return;
 				if (command?.kind === "status") { process.stdout.write(`\n${await status()}\n`); return; }
 				const queued = command?.kind === "steer"
 					? await interactionAdapter.dispatch({ type: "turn.steer", source, text: command.text })
@@ -1800,7 +1789,6 @@ async function runChat(config: ReturnType<typeof loadConfig>, requestedMode: { f
 					(line) => { void handleLine(line); },
 					() => { if (active) void stop(); else closeInput(); },
 					closeInput,
-					(choice) => { void interactionAdapter.dispatch({ type: "approval.decide", source, choice }); },
 				);
 				subagentRefresh = setInterval(() => {
 					if (!workbench || !fullInput) return;

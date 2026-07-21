@@ -68,7 +68,7 @@ export class ReversibleActionAdmission {
 		if (policy.effectiveScope.kind === "access_scope" && policy.effectiveScope.accessScopeId !== input.accessScopeRef.id) return deny("enterprise_policy_scope_mismatch");
 		if (policy.publisher.trust !== "verified" || !policy.evidenceRefs.length) return deny("enterprise_policy_untrusted");
 		const resolvedPolicy = resolveEnterprisePolicyDecision(policy, input.capability.policy);
-		if (!resolvedPolicy.allowed || resolvedPolicy.requiresApproval) return deny("enterprise_policy_does_not_allow_autonomy");
+		if (!resolvedPolicy.allowed) return deny("enterprise_policy_does_not_allow_autonomy");
 		if (input.capability.policy.sideEffect === "none") return deny("mutation_required");
 		if (input.capability.policy.risk !== "low") return deny("low_risk_required");
 		if (input.capability.policy.reversible !== true) return deny("proven_reversibility_required");

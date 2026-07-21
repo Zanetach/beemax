@@ -48,7 +48,7 @@ test("Agent retrieves configured enterprise knowledge and receives source-backed
   assert.match(result.content[0].text, /PCB特殊工艺报价规范V3/);
   assert.match(result.content[0].text, /pricing-v3\.pdf/);
   assert.equal(tool.beemaxPolicy.sideEffect, "none");
-  assert.equal(tool.beemaxPolicy.approval, "never");
+  assert.equal(tool.beemaxPolicy.sideEffect, "none");
 });
 
 test("Agent cannot request an unconfigured knowledge space", async () => {

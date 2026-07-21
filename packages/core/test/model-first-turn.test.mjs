@@ -14,12 +14,12 @@ const bindAssistantToolCall = (listener, call, responseId) => listener({
 });
 
 async function dispatchToolCall(agent, listener, call) {
-	const blocked = await authorizeToolCall(agent, listener, call);
+	const blocked = await admitToolCall(agent, listener, call);
 	assert.equal(blocked, undefined);
 	listener({ type: "tool_execution_end", toolCallId: call.id, toolName: call.name, result: call.result, isError: false });
 }
 
-async function authorizeToolCall(agent, listener, call) {
+async function admitToolCall(agent, listener, call) {
 	const responseId = `response:${call.id}`;
 	bindAssistantToolCall(listener, call, responseId);
 	listener({ type: "tool_execution_start", toolCallId: call.id, toolName: call.name, args: call.args ?? {} });
@@ -424,7 +424,7 @@ test("a research report cannot write fabricated artifacts before a trusted Sourc
 			subscribe: (next) => { listener = next; return () => undefined; },
 			prompt: async () => {
 				const earlyWrite = { id: "write:before-source", name: "write", args: { path: "gold-report.html", content: "示例数据" }, result: { details: { path: "gold-report.html" } } };
-				earlyWriteBlock = await authorizeToolCall(agent, listener, earlyWrite);
+				earlyWriteBlock = await admitToolCall(agent, listener, earlyWrite);
 				listener({
 					type: "tool_execution_end",
 					toolCallId: earlyWrite.id,
@@ -434,7 +434,7 @@ test("a research report cannot write fabricated artifacts before a trusted Sourc
 				});
 				await dispatchToolCall(agent, listener, { id: "market:gold", name: "market_series", args: { symbol: "XAU/USD", period: "1m" }, result: { details: { sourceReceipt } } });
 				const evidencedWrite = { id: "write:after-source", name: "write", args: { path: "gold-report.html", content: "真实数据" }, result: { details: { path: "gold-report.html" } } };
-				evidencedWriteBlock = await authorizeToolCall(agent, listener, evidencedWrite);
+				evidencedWriteBlock = await admitToolCall(agent, listener, evidencedWrite);
 				listener({ type: "tool_execution_end", toolCallId: evidencedWrite.id, toolName: evidencedWrite.name, result: evidencedWrite.result, isError: false });
 				listener({ type: "message_end", message: { role: "assistant", responseId: "response:source-gated-report", content: [{ type: "text", text: "真实数据报告已生成" }], usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0 } } });
 				agent.state.messages = [{ role: "assistant", content: [{ type: "text", text: "真实数据报告已生成" }], usage: { input: 1, output: 1 } }];

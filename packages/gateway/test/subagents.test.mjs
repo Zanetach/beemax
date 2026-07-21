@@ -184,7 +184,7 @@ test("Dispatcher degrades cleanly to final text when a channel has no card capab
 	await dispatcher.dispose();
 });
 
-test("Dispatcher presents approval instructions immediately on a channel without cards", async () => {
+test("Dispatcher ignores legacy approval events on text-only channels", async () => {
 	let inbound; let finishTurn; const texts = [];
 	const telegramSource = { ...source, platform: "telegram", messageId: "approval-text" };
 	const platform = {
@@ -200,13 +200,13 @@ test("Dispatcher presents approval instructions immediately on a channel without
 				resolve(result);
 			}; });
 		},
-		snapshot: async () => ({ phase: "idle", updatedAt: Date.now() }), handleApprovalReply: async () => false,
+		snapshot: async () => ({ phase: "idle", updatedAt: Date.now() }),
 		reservePrimaryInput: (source, text) => ({ id: "primary", key: "key", source, text, createdAt: 1 }), peekQueuedInput: () => undefined, claimQueuedInput: () => undefined,
 	};
 	const dispatcher = new Dispatcher({ runtime: { isBusy: () => false, handleControl: async () => undefined }, interaction, flushIntervalMs: 0 }, platform);
 	const turn = inbound({ text: "submit", messageType: "text", source: telegramSource, mediaPaths: [], mediaTypes: [], raw: {}, timestamp: Date.now() });
 	await new Promise((resolve) => setImmediate(resolve));
-	assert.ok(texts.some((text) => /等待审批：browser_submit/.test(text) && /回复 1/.test(text)));
+	assert.equal(texts.some((text) => /等待审批|回复 1|browser_submit/.test(text)), false);
 	await finishTurn();
 	await turn;
 	await dispatcher.dispose();
@@ -459,11 +459,9 @@ test("/stop bypasses the conversation turn lock and cascades Sub-Agent cancellat
 	};
 	let cancelled = 0;
 	let aborted = 0;
-	let approvalReplies = 0;
 	const dispatcher = new Dispatcher({
 		runtime: { run: async () => { throw new Error("should not run for /stop"); }, cancel: async () => (aborted++, true), handleControl: async () => undefined, isBusy: () => false, dispose: () => undefined },
 		cancelTasks: () => { cancelled++; return 2; },
-		approvalBroker: { handleReply: async () => { approvalReplies++; return true; }, dispose: () => undefined },
 	}, platform);
 	await inbound({
 		text: "/stop", messageType: "command", source,
@@ -471,7 +469,6 @@ test("/stop bypasses the conversation turn lock and cascades Sub-Agent cancellat
 	});
 	assert.equal(cancelled, 1);
 	assert.equal(aborted, 1);
-	assert.equal(approvalReplies, 0, "/stop must not be consumed as an approval reply");
 	assert.match(sent[0], /取消 2 个子任务/);
 	dispatcher.dispose();
 });
@@ -604,7 +601,7 @@ test("Dispatcher defers Completion delivery failure without marking the accepted
 	await dispatcher.dispose();
 });
 
-test("Dispatcher forwards authorized card approval actions through the Core semantic boundary", async () => {
+test("Dispatcher ignores legacy card approval actions", async () => {
 	let inbound;
 	let cardAction;
 	let finishTurn;
@@ -634,20 +631,14 @@ test("Dispatcher forwards authorized card approval actions through the Core sema
 			return { handled: true };
 		},
 		snapshot: async () => ({ phase: "idle", updatedAt: Date.now() }),
-		handleApprovalReply: async () => false,
 		reservePrimaryInput: (source, text) => ({ id: "primary", key: "key", source, text, createdAt: 1 }),
 		peekQueuedInput: () => undefined, claimQueuedInput: () => undefined,
 	};
 	const dispatcher = new Dispatcher({ runtime: { isBusy: () => false, handleControl: async () => undefined }, interaction, flushIntervalMs: 0 }, platform);
+	assert.equal(cardAction, undefined, "Dispatcher must not register a tool-approval card action handler");
 	const turn = inbound({ text: "do it", messageType: "text", source: { ...source, messageId: "request-1" }, mediaPaths: [], mediaTypes: [], raw: {}, timestamp: Date.now() });
 	await new Promise((resolve) => setImmediate(resolve));
-	const value = { beemax_action: "approval.decide", approval_id: "approval:turn", choice: "once" };
-	await cardAction({ messageId: "card-1", chatId: source.chatId, userId: source.userId, actionId: "click-stale", value: { ...value, approval_id: "approval:older" } });
-	await cardAction({ messageId: "card-1", chatId: source.chatId, userId: "attacker", actionId: "click-2", value: { ...value, choice: "session" } });
-	await cardAction({ messageId: "card-1", chatId: source.chatId, userId: source.userId, actionId: "click-1", value });
-	await cardAction({ messageId: "card-1", chatId: source.chatId, userId: source.userId, actionId: "click-replay", value });
-	assert.equal(actions.filter((action) => action.type === "approval.decide").length, 1);
-	assert.deepEqual(actions.at(-1), { type: "approval.decide", source: { ...source, messageId: "request-1" }, choice: "once", actionId: "click-1" });
+	assert.equal(actions.filter((action) => action.type === "approval.decide").length, 0);
 	await finishTurn();
 	await turn;
 	dispatcher.dispose();
@@ -933,7 +924,7 @@ test("Dispatcher replays and acknowledges crash-surviving queued inputs on Gatew
 			await sink({ type: "turn.finished", turnId: "recovered", sessionId: "session", scope: recoveredSource, at: 3, sequence: 3, result });
 			return result;
 		},
-		snapshot: async () => ({ phase: "idle", updatedAt: Date.now() }), handleApprovalReply: async () => false,
+		snapshot: async () => ({ phase: "idle", updatedAt: Date.now() }),
 	};
 	const dispatcher = new Dispatcher({ runtime: { isBusy: () => false, handleControl: async () => undefined }, interaction, flushIntervalMs: 0 }, platform);
 	assert.equal(typeof inbound, "function");

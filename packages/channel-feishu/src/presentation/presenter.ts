@@ -1,5 +1,5 @@
 import { AdaptiveTextBuffer, TurnStatusPulse, interactionCompletionDeliveryKey, interactionPhaseForOutcome, type DeliveryReceipt, type InteractionEvent } from "@beemax/core";
-import { formatAnswerWithPublishedArtifacts, formatApprovalRequest, formatWorkProgress, type InteractionPresentationOpen, type InteractionPresenter, type PublishedArtifactPresentation, type SendOptions, type SendResult, type TurnPresentation, type TurnPresentationFinishOptions, type WorkProgressPresentation } from "@beemax/channel-runtime";
+import { formatAnswerWithPublishedArtifacts, formatWorkProgress, type InteractionPresentationOpen, type InteractionPresenter, type PublishedArtifactPresentation, type SendOptions, type SendResult, type TurnPresentation, type TurnPresentationFinishOptions, type WorkProgressPresentation } from "@beemax/channel-runtime";
 import { FlushController } from "./flush.ts";
 import { answerNeedsSeparateDelivery, cardStatusSummary, renderCard, renderStreamingContent, type CardRenderOptions } from "./render.ts";
 import { CardSession } from "./session.ts";
@@ -133,17 +133,8 @@ class FeishuTurnPresentation implements TurnPresentation {
 				this.card.apply(presentationEvent, { answer: event.result.answer, message: event.result.answer, model: event.result.model, duration: event.result.durationMs / 1000, tokens: event.result.usage });
 				await this.flush.schedule(() => this.renderUpdate(), true); break;
 			}
-			case "approval.requested": {
-				const message = formatApprovalRequest(event);
-				this.card.apply("approval.updated", { id: `approval:${event.turnId}`, status: "pending", message });
-				await this.flush.schedule(() => this.renderUpdate(), false, true);
-				break;
-			}
-			case "approval.resolved":
-				this.card.apply("approval.updated", { id: `approval:${event.turnId}`, status: event.allowed ? "allowed" : "denied", message: `${event.toolName}：${event.allowed ? "已允许" : "已拒绝"}` });
-				await this.flush.schedule(() => this.renderUpdate(), false, true); break;
 			case "turn.queued":
-				this.card.apply("approval.updated", { id: `queue:${event.turnId}`, status: "queued", message: event.mode === "steer" ? "已更新当前任务要求" : event.mode === "follow_up" ? "已收到补充消息，将在当前任务中继续处理" : `${event.mode === "steer_fallback" ? "当前运行时不支持中途引导，" : ""}${event.replaced ? "已更新下一条待处理消息" : `消息已进入当前会话队列（第 ${event.position} 条）`}` });
+				this.card.apply("notice.updated", { id: `queue:${event.turnId}`, label: "队列", status: "queued", message: event.mode === "steer" ? "已更新当前任务要求" : event.mode === "follow_up" ? "已收到补充消息，将在当前任务中继续处理" : `${event.mode === "steer_fallback" ? "当前运行时不支持中途引导，" : ""}${event.replaced ? "已更新下一条待处理消息" : `消息已进入当前会话队列（第 ${event.position} 条）`}` });
 				await this.flush.schedule(() => this.renderUpdate(), false, true); break;
 		}
 	}
@@ -203,7 +194,7 @@ class FeishuTurnPresentation implements TurnPresentation {
 		if (!this.cardMessageId) {
 			if (!this.cardCreation) {
 				this.cardCreation = this.createInitialCard(rendered).then((result) => {
-					if (result.success && result.messageId) { this.cardMessageId = result.messageId; this.input.onBinding?.(result.messageId, this.card.pendingApprovalId); }
+					if (result.success && result.messageId) { this.cardMessageId = result.messageId; this.input.onBinding?.(result.messageId); }
 					return result;
 				});
 			}
@@ -215,7 +206,7 @@ class FeishuTurnPresentation implements TurnPresentation {
 			const cardId = this.streamingCardId;
 			const streamingCard = renderCard(this.card, this.currentRenderOptions(true));
 			const success = await this.runStreamingOperation((sequence) => this.transport.updateStreamingCard!(cardId, streamingCard, sequence));
-			if (success) { this.lastStreamingContent = renderStreamingContent(this.card, this.publishedArtifacts); this.input.onBinding?.(this.cardMessageId, this.card.pendingApprovalId); return true; }
+			if (success) { this.lastStreamingContent = renderStreamingContent(this.card, this.publishedArtifacts); this.input.onBinding?.(this.cardMessageId); return true; }
 			this.streamingCardId = undefined;
 		}
 		this.pendingCardRender = rendered;
@@ -226,7 +217,7 @@ class FeishuTurnPresentation implements TurnPresentation {
 					const next = this.pendingCardRender; this.pendingCardRender = undefined;
 					const result = await this.transport.updateCard(this.cardMessageId!, next);
 					success = success && result.success;
-					if (result.success) this.input.onBinding?.(this.cardMessageId!, this.card.pendingApprovalId);
+					if (result.success) this.input.onBinding?.(this.cardMessageId!);
 				}
 				return success;
 			})().finally(() => { this.cardUpdate = undefined; });

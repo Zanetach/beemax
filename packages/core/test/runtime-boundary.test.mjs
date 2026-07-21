@@ -525,7 +525,7 @@ test("BeeMax preloads credentials for every configured model fallback Provider",
 	} finally { rmSync(root, { recursive: true, force: true }); }
 });
 
-test("BeeMax runtime connects approved mutating Tool calls to the Effect lifecycle", async () => {
+test("BeeMax runtime connects mutating Tool calls directly to the Effect lifecycle", async () => {
 	const root = mkdtempSync(join(tmpdir(), "beemax-effect-hook-"));
 	const events = [];
 	const source = { platform: "cli", chatId: "terminal", chatType: "dm", userId: "user" };
@@ -533,7 +533,7 @@ test("BeeMax runtime connects approved mutating Tool calls to the Effect lifecyc
 		const envelope = createExecutionEnvelope({ executionId: "execution:effect", trigger: { kind: "delegation" }, taskId: "task:envelope", budget: { maxToolCalls: 1 } });
 		const factory = buildBeeMaxRuntimeFactory({
 			provider: "anthropic", model: "claude-sonnet-4-5", cwd: root, agentDir: join(root, "agent"), getApiKey: () => "test",
-			systemPrompt: "test", skillToolset: "safe", tools: ["mutation"], authorizeTool: async () => ({ allowed: true }),
+			systemPrompt: "test", skillToolset: "safe", tools: ["mutation"],
 			toolEffects: {
 				begin(input) { events.push(["begin", input.taskId, input.toolCallId, input.toolName]); return "effect-1"; },
 				finish(input) { events.push(["finish", input.toolCallId, input.toolName, input.isError]); },
@@ -565,7 +565,7 @@ test("BeeMax blocks a new external Tool call after the prior call times out with
 		const envelope = createExecutionEnvelope({ executionId: "execution:timeout", trigger: { kind: "delegation" }, taskId: "task:timeout", taskRunId: "run:timeout", budget: { maxToolCalls: 5 } });
 		const factory = buildBeeMaxRuntimeFactory({
 			provider: "anthropic", model: "claude-sonnet-4-5", cwd: root, agentDir: join(root, "agent"), getApiKey: () => "test",
-			systemPrompt: "test", skillToolset: "safe", tools: ["external_mutation", "alternate_mutation", "safe_read"], authorizeTool: async () => ({ allowed: true }), toolEffects: effects,
+			systemPrompt: "test", skillToolset: "safe", tools: ["external_mutation", "alternate_mutation", "safe_read"], toolEffects: effects,
 			createTools: () => [
 				withToolPolicy(defineTool({
 					name: "external_mutation", label: "External mutation", description: "Mutate an external fixture", parameters: {},
@@ -626,7 +626,7 @@ test("BeeMax restart blocks replay after a process crashes beyond the external m
 			const envelope = createExecutionEnvelope({ executionId: "execution:recovery", trigger: { kind: "recovery" }, taskId: "task:crashed", taskRunId: "run:recovery", budget: { maxToolCalls: 2 }, mode: "recovery" });
 			const factory = buildBeeMaxRuntimeFactory({
 				provider: "anthropic", model: "claude-sonnet-4-5", cwd: root, agentDir: join(root, "agent"), getApiKey: () => "test",
-				systemPrompt: "test", skillToolset: "safe", tools: ["external_mutation"], authorizeTool: async () => ({ allowed: true }), toolEffects: effects,
+				systemPrompt: "test", skillToolset: "safe", tools: ["external_mutation"], toolEffects: effects,
 				createTools: () => [withToolPolicy(defineTool({
 					name: "external_mutation", label: "External mutation", description: "Mutate an external fixture", parameters: {},
 					execute: async () => { restartedBackendCalls++; appendFileSync(backendLog, "called\\n"); return { content: [], details: {} }; },
@@ -647,11 +647,10 @@ test("BeeMax restart blocks replay after a process crashes beyond the external m
 test("BeeMax rejects a model Tool call that is not in the current Pi Active Tools", async () => {
 	const root = mkdtempSync(join(tmpdir(), "beemax-hidden-tool-call-"));
 	const source = { platform: "cli", chatId: "terminal", chatType: "dm", userId: "user" };
-	let approvals = 0;
 	try {
 		const factory = buildBeeMaxRuntimeFactory({
 			provider: "anthropic", model: "claude-sonnet-4-5", cwd: root, agentDir: join(root, "agent"), getApiKey: () => "test",
-			systemPrompt: "test", skillToolset: "safe", tools: ["mutation"], authorizeTool: async () => { approvals++; return { allowed: true }; },
+			systemPrompt: "test", skillToolset: "safe", tools: ["mutation"],
 			createTools: () => [withToolPolicy(defineTool({ name: "mutation", label: "Mutation", description: "Mutate", parameters: {}, execute: async () => ({ content: [], details: {} }) }), MUTATING_TOOL_POLICY)],
 		});
 		const session = await factory("hidden-tool-call", source);
@@ -660,15 +659,14 @@ test("BeeMax rejects a model Tool call that is not in the current Pi Active Tool
 			const blocked = await session.agent.beforeToolCall({ assistantMessage: {}, toolCall: { id: "call-hidden", name: "mutation", arguments: {} }, args: {}, context: {} });
 			assert.equal(blocked.block, true);
 			assert.match(blocked.reason, /not active for the current Pi turn/i);
-			assert.equal(approvals, 0);
 		} finally { session.dispose(); }
 	} finally { rmSync(root, { recursive: true, force: true }); }
 });
 
-test("Enterprise Policy denies an action before legacy approval and Effect admission", async () => {
+test("Enterprise Policy denies an action before Effect admission", async () => {
 	const root = mkdtempSync(join(tmpdir(), "beemax-enterprise-policy-hook-"));
 	const source = { platform: "cli", chatId: "terminal", chatType: "dm", userId: "user" };
-	let approvals = 0; let effects = 0; const audit = [];
+	let effects = 0; const audit = [];
 	try {
 		const enterprisePolicy = createEnterprisePolicyProvider({
 			publisher: createEnterprisePolicyPublisher({ id: "security", authority: { kind: "enterprise_system", reference: "policy-service" }, evidenceRef: "publisher:audit", issuedAt: 1 }),
@@ -678,14 +676,14 @@ test("Enterprise Policy denies an action before legacy approval and Effect admis
 		const factory = buildBeeMaxRuntimeFactory({
 			provider: "anthropic", model: "claude-sonnet-4-5", cwd: root, agentDir: join(root, "agent"), getApiKey: () => "test", systemPrompt: "test", skillToolset: "safe", tools: ["mutation"], enterprisePolicy,
 			executionGrant: () => ({ taskId: "task:profile-grant", allowedCapabilities: ["mutation"], status: "active" }),
-			authorizeTool: async () => { approvals++; return { allowed: true }; }, toolAudit: (event) => audit.push(event),
+			toolAudit: (event) => audit.push(event),
 			toolEffects: { begin() { effects++; return "effect"; }, finish() {} },
 			createTools: () => [withToolPolicy(defineTool({ name: "mutation", label: "Mutation", description: "Mutate", parameters: {}, execute: async () => ({ content: [], details: {} }) }), MUTATING_TOOL_POLICY)],
 		});
 		const session = await factory("policy-deny", source, createExecutionEnvelope({ executionId: "execution:policy", trigger: { kind: "interaction" } }));
 		try {
 			const blocked = await session.agent.beforeToolCall({ assistantMessage: {}, toolCall: { id: "call", name: "mutation", arguments: {} }, args: {}, context: {} });
-			assert.equal(blocked.block, true); assert.match(blocked.reason, /change freeze/i); assert.equal(approvals, 0); assert.equal(effects, 0);
+			assert.equal(blocked.block, true); assert.match(blocked.reason, /change freeze/i); assert.equal(effects, 0);
 			assert.equal(audit.at(-1).enterprisePolicy.version, "v7");
 			assert.deepEqual(audit.at(-1).enterprisePolicy.evidenceRefs, ["change-freeze:2026-07"]);
 			assert.equal(audit.at(-1).governance.reasonCode, "enterprise_policy_deny");
@@ -693,28 +691,24 @@ test("Enterprise Policy denies an action before legacy approval and Effect admis
 	} finally { rmSync(root, { recursive: true, force: true }); }
 });
 
-test("Action Governance requires authority for an unknown high-risk action even when legacy metadata says never approve", async () => {
+test("Action Governance executes an unknown high-risk action directly", async () => {
 	const root = mkdtempSync(join(tmpdir(), "beemax-high-risk-governance-"));
 	const source = { platform: "cli", chatId: "terminal", chatType: "dm", userId: "user" };
-	let approvals = 0;
 	try {
 		const factory = buildBeeMaxRuntimeFactory({
 			provider: "anthropic", model: "claude-sonnet-4-5", cwd: root, agentDir: join(root, "agent"), getApiKey: () => "test", systemPrompt: "test", skillToolset: "safe", tools: ["unknown_mutation"],
-			authorizeTool: async () => { approvals++; return { allowed: true }; },
-			createTools: () => [withToolPolicy(defineTool({ name: "unknown_mutation", label: "Mutation", description: "Mutate", parameters: {}, execute: async () => ({ content: [], details: {} }) }), { ...MUTATING_TOOL_POLICY, approval: "never" })],
+			createTools: () => [withToolPolicy(defineTool({ name: "unknown_mutation", label: "Mutation", description: "Mutate", parameters: {}, execute: async () => ({ content: [], details: {} }) }), { ...MUTATING_TOOL_POLICY })],
 		});
 		const session = await factory("high-risk", source);
 		try {
 			assert.equal(await session.agent.beforeToolCall({ assistantMessage: {}, toolCall: { id: "call", name: "unknown_mutation", arguments: {} }, args: {}, context: {} }), undefined);
-			assert.equal(approvals, 1);
 		} finally { session.dispose(); }
 	} finally { rmSync(root, { recursive: true, force: true }); }
 });
 
-test("Enterprise Policy require_approval reuses the existing approval handler", async () => {
+test("Enterprise Policy require_approval fails closed when interactive approvals are disabled", async () => {
 	const root = mkdtempSync(join(tmpdir(), "beemax-enterprise-policy-approval-"));
 	const source = { platform: "cli", chatId: "terminal", chatType: "dm", userId: "user" };
-	let approvals = 0;
 	try {
 		const enterprisePolicy = createEnterprisePolicyProvider({
 			publisher: createEnterprisePolicyPublisher({ id: "operations", authority: { kind: "administrator_grant", reference: "admin:ops" }, issuedAt: 1 }),
@@ -723,13 +717,13 @@ test("Enterprise Policy require_approval reuses the existing approval handler", 
 		});
 		const factory = buildBeeMaxRuntimeFactory({
 			provider: "anthropic", model: "claude-sonnet-4-5", cwd: root, agentDir: join(root, "agent"), getApiKey: () => "test", systemPrompt: "test", skillToolset: "safe", tools: ["mutation"], enterprisePolicy,
-			authorizeTool: async () => { approvals++; return { allowed: true }; },
 			createTools: () => [withToolPolicy(defineTool({ name: "mutation", label: "Mutation", description: "Mutate", parameters: {}, execute: async () => ({ content: [], details: {} }) }), MUTATING_TOOL_POLICY)],
 		});
 		const session = await factory("policy-approval", source);
 		try {
-			assert.equal(await session.agent.beforeToolCall({ assistantMessage: {}, toolCall: { id: "call", name: "mutation", arguments: {} }, args: {}, context: {} }), undefined);
-			assert.equal(approvals, 1);
+			const blocked = await session.agent.beforeToolCall({ assistantMessage: {}, toolCall: { id: "call", name: "mutation", arguments: {} }, args: {}, context: {} });
+			assert.equal(blocked?.block, true);
+			assert.match(blocked?.reason ?? "", /approval.*disabled/i);
 		} finally { session.dispose(); }
 	} finally { rmSync(root, { recursive: true, force: true }); }
 });
@@ -737,7 +731,7 @@ test("Enterprise Policy require_approval reuses the existing approval handler", 
 test("Pi rechecks proactive mutation authority at the actual Tool boundary", async () => {
 	const root = mkdtempSync(join(tmpdir(), "beemax-proactive-mutation-authority-"));
 	const source = { platform: "cli", chatId: "terminal", chatType: "dm", userId: "user" };
-	const policy = { ...MUTATING_TOOL_POLICY, sideEffect: "local", risk: "low", reversible: true, approval: "never" };
+	const policy = { ...MUTATING_TOOL_POLICY, sideEffect: "local", risk: "low", reversible: true };
 	const accessScopeRef = createAccessScopeRef({ id: "scope:ops", authority: { kind: "enterprise_system", reference: "iam:ops" }, issuedAt: 1 });
 	const enterprisePolicy = createEnterprisePolicyProvider({
 		publisher: createEnterprisePolicyPublisher({ id: "operations", authority: { kind: "enterprise_system", reference: "policy-service" }, evidenceRef: "publisher:audit", issuedAt: 1 }),

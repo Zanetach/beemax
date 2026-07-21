@@ -43,13 +43,13 @@ npm run eval:agent-parity:capture -- \
   --mode best-native \
   --adapter evals/adapters/beemax-cli.mjs \
   --system beemax --version 1.2.0 --model glm-5.2 \
-  --adapter-options '{"fixtureRoot":"evals/fixtures/agent-parity","profile":"e2e-feishu","provider":"custom","workspaceWritePolicy":"allow-within-workspace","taskGrantCapabilities":["mcp_agent_parity_deliver","mcp_agent_parity_schedule_delivery","mcp_agent_parity_recover_step","mcp_agent_parity_send_unknown"]}' \
+  --adapter-options '{"fixtureRoot":"evals/fixtures/agent-parity","profile":"e2e-feishu","provider":"custom"}' \
   --machine-profile darwin-26-arm64 \
   --network-condition live-public-uncontrolled --timeout-ms 180000 \
   --write evals/baselines/agent-parity/beemax-native.json
 ```
 
-Adapter configuration such as a BeeMax Profile or Hermes Provider is pinned as inline JSON with `--adapter-options`. BeeMax's four fixture mutation capabilities are exact per-Task grants for the disposable loopback authority; they are benchmark configuration, not product defaults or semantic business rules. Do not include credentials: the report records evidence identities and digests, not secrets or raw Provider configuration.
+Adapter configuration such as a BeeMax Profile or Hermes Provider is pinned as inline JSON with `--adapter-options`. Fixture mutations execute directly against the disposable loopback authority after the normal hard governance gates; the benchmark does not mint synthetic per-Turn Task grants. Do not include credentials: the report records evidence identities and digests, not secrets or raw Provider configuration.
 
 Compare best supported native configurations:
 

@@ -85,26 +85,6 @@ test("interaction runtime settles a rejected Agent turn instead of remaining run
 	assert.equal((await interaction.snapshot(source)).phase, "failed");
 });
 
-test("interaction runtime bounds execution grants to one turn", async () => {
-	const lifecycle = [];
-	const approvalBroker = {
-		beginTask(_source, taskId) { lifecycle.push(["begin", taskId]); },
-		endTask(_source, taskId) { lifecycle.push(["end", taskId]); return true; },
-		subscribe() { return () => undefined; },
-	};
-	const runtime = {
-		async run() { return { answer: "ok", model: "test/model", durationMs: 1, usage: {}, outcome: { status: "answered" } }; },
-		async cancel() { return false; }, async modelStatus() { return undefined; }, async usage() { return undefined; },
-	};
-	const interaction = new InteractionEventAdapter(runtime, { approvalBroker });
-	await interaction.dispatch({ type: "message.send", source, text: "first", input: { timeoutMs: 1_000 } });
-	await interaction.dispatch({ type: "message.send", source, text: "second", input: { timeoutMs: 1_000 } });
-	assert.deepEqual(lifecycle.map(([phase]) => phase), ["begin", "end", "begin", "end"]);
-	assert.notEqual(lifecycle[0][1], lifecycle[2][1]);
-	assert.equal(lifecycle[0][1], lifecycle[1][1]);
-	assert.equal(lifecycle[2][1], lifecycle[3][1]);
-});
-
 test("interaction runtime supports a reconnecting presenter subscription", async () => {
 	const runtime = {
 		async run(_input, sink) { await sink({ type: "message_update", message: { role: "assistant" }, assistantMessageEvent: { type: "text_delta", delta: "hello" } }); return { answer: "hello", model: "test/model", durationMs: 1, usage: {}, outcome: { status: "answered" } }; },
@@ -262,7 +242,7 @@ test("media understanding crosses the Interaction seam without image bytes or ex
 	assert.doesNotMatch(JSON.stringify(telemetry), /private prompt|image.data|extracted/);
 });
 
-test("approval and queue telemetry includes required latency fields without content", async () => {
+test("queue telemetry includes required latency fields without content", async () => {
 	let rejectTurn;
 	const telemetry = [];
 	const runtime = {
@@ -272,14 +252,10 @@ test("approval and queue telemetry includes required latency fields without cont
 	const interaction = new InteractionEventAdapter(runtime, { telemetry: (event) => telemetry.push(event) });
 	const turn = interaction.dispatch({ type: "message.send", source, text: "private prompt", input: { timeoutMs: 1_000 } });
 	await new Promise((resolve) => setImmediate(resolve));
-	await interaction.approvalRequested(source, "write", { target: "secret.txt", risk: "高", impact: "private", reversibility: "private", argsSummary: "private" });
-	await interaction.approvalResolved(source, "write", false);
 	await interaction.dispatch({ type: "turn.queue", source, text: "private queued text" });
 	await interaction.dispatch({ type: "turn.cancel", source });
 	await assert.rejects(turn, /aborted/);
-	const resolved = telemetry.find((event) => event.type === "interaction.approval_resolved");
 	const queued = telemetry.find((event) => event.type === "interaction.input_queued");
-	assert.equal(typeof resolved.latency, "number");
 	assert.equal(typeof queued.waitMs, "number");
 	assert.doesNotMatch(JSON.stringify(telemetry), /secret|private/);
 });
@@ -297,11 +273,9 @@ test("cancelling a running turn produces a semantic cancellation instead of a fa
 		async modelStatus() { return undefined; },
 		async usage() { return undefined; },
 	};
-	let approvalCancelled = 0;
 	let childCancelled = 0;
 	let plansCancelled = 0;
 	const interaction = new InteractionEventAdapter(runtime, {
-		approvalBroker: { cancel: () => (approvalCancelled++, true) },
 		cancelSubagents: () => (childCancelled++, 2),
 		cancelTaskPlans: () => (plansCancelled++, 1),
 	});
@@ -309,8 +283,7 @@ test("cancelling a running turn produces a semantic cancellation instead of a fa
 	const turn = interaction.dispatch({ type: "message.send", source, text: "hi", input: { timeoutMs: 1_000 } }, (event) => { events.push(event); });
 	await new Promise((resolve) => setImmediate(resolve));
 	const cancellation = await interaction.dispatch({ type: "turn.cancel", source });
-	assert.deepEqual(cancellation, { cancelled: true, approvalCancelled: true, subagentsCancelled: 2, taskPlansCancelled: 1, errors: [], queuedCancelled: false });
-	assert.equal(approvalCancelled, 1);
+	assert.deepEqual(cancellation, { cancelled: true, subagentsCancelled: 2, taskPlansCancelled: 1, errors: [], queuedCancelled: false });
 	assert.equal(childCancelled, 1);
 	assert.equal(plansCancelled, 1);
 	await assert.rejects(turn, /aborted/);
@@ -521,42 +494,6 @@ test("native delivery failures surface instead of being misreported as unsupport
 	assert.equal(interaction.takeQueuedInput(source), "focus", "a native delivery failure remains recoverable instead of losing input");
 	await interaction.dispatch({ type: "turn.cancel", source });
 	await assert.rejects(turn, /aborted/);
-});
-
-test("approval lifecycle is available to presentation without exposing broker internals", async () => {
-	let resolveTurn;
-	const runtime = {
-		run() { return new Promise((resolve) => { resolveTurn = resolve; }); },
-		async cancel() { return false; },
-		async modelStatus() { return undefined; },
-		async usage() { return undefined; },
-	};
-	const interaction = new InteractionEventAdapter(runtime);
-	const events = [];
-	const turn = interaction.dispatch({ type: "message.send", source, text: "hi", input: { timeoutMs: 1_000 } }, (event) => { events.push(event); });
-	await new Promise((resolve) => setImmediate(resolve));
-	await interaction.approvalRequested(source, "write");
-	assert.equal((await interaction.snapshot(source)).phase, "awaiting_approval");
-	await interaction.approvalResolved(source, "write", true);
-	resolveTurn({ answer: "ok", model: "test/model", durationMs: 1, usage: {} });
-	await turn;
-	assert.deepEqual(events.map((event) => event.type), ["turn.started", "approval.requested", "approval.resolved", "turn.finished"]);
-});
-
-test("approval decisions are Core actions, not presenter-specific reply parsing", async () => {
-	let resolveTurn;
-	const runtime = {
-		run() { return new Promise((resolve) => { resolveTurn = resolve; }); },
-		async cancel() { return false; }, async modelStatus() { return undefined; }, async usage() { return undefined; },
-	};
-	let decision;
-	const interaction = new InteractionEventAdapter(runtime, { approvalBroker: { decide: async (_source, choice) => (decision = choice, true) } });
-	const turn = interaction.dispatch({ type: "message.send", source, text: "hi", input: { timeoutMs: 1_000 } });
-	await new Promise((resolve) => setImmediate(resolve));
-	assert.deepEqual(await interaction.dispatch({ type: "approval.decide", source, choice: "session" }), { handled: true });
-	assert.equal(decision, "session");
-	resolveTurn({ answer: "ok", model: "test/model", durationMs: 1, usage: {} });
-	await turn;
 });
 
 test("asynchronous presentation events stay ordered and surface a renderer failure", async () => {

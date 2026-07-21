@@ -49,7 +49,7 @@ fenced proposal → low-risk Learning Objective → independent Verification
 atomic settlement → scoped projection / immutable managed-Skill trial
 ```
 
-Pi owns task understanding, adaptive execution, model interaction, tools, session events, and live compaction. BeeMax Core adds product semantics around Pi: progressive capability disclosure, scope, sandbox and approval policy, durable responsibility where requested, Effect authority, recovery, verification, and delivery. Work Contracts govern durable/background responsibility; they are not a mandatory pre-model classification pass for ordinary interactive work.
+Pi owns task understanding, adaptive execution, model interaction, tools, session events, and live compaction. BeeMax Core adds product semantics around Pi: progressive capability disclosure, scope, sandbox and Tool policy, durable responsibility where requested, Effect authority, recovery, verification, and delivery. Work Contracts govern durable/background responsibility; they are not a mandatory pre-model classification pass for ordinary interactive work.
 
 ## Quick start
 
@@ -174,9 +174,9 @@ flowchart TB
     Delivery --> CH
 ```
 
-[`apps/cli/src/runtime-composition.ts`](apps/cli/src/runtime-composition.ts) is the application composition seam, not a second Agent runtime. It creates one shared Profile Runtime for CLI or Gateway use. [`apps/cli/src/profile-work-runtime.ts`](apps/cli/src/profile-work-runtime.ts) binds the same Task Ledger, Effect authority, execution Trace, recovery service, Verification, approvals, and Memory Learning Kernel.
+[`apps/cli/src/runtime-composition.ts`](apps/cli/src/runtime-composition.ts) is the application composition seam, not a second Agent runtime. It creates one shared Profile Runtime for CLI or Gateway use. [`apps/cli/src/profile-work-runtime.ts`](apps/cli/src/profile-work-runtime.ts) binds the same Task Ledger, Effect authority, execution Trace, recovery service, Verification, and Memory Learning Kernel.
 
-`@beemax/core` is the only Agent Runtime boundary, and Pi is its private execution substrate. Gateway owns authenticated channel transport, routing, lifecycle, presentation, and delivery, but does not select models, assemble prompts, recall Memory, authorize Tools, or decide Agent work. Capability packages enter through Core-owned Tool contracts and cannot bypass current Profile scope, Sandbox, approval, or Effect governance.
+`@beemax/core` is the only Agent Runtime boundary, and Pi is its private execution substrate. Gateway owns authenticated channel transport, routing, lifecycle, presentation, and delivery, but does not select models, assemble prompts, recall Memory, authorize Tools, or decide Agent work. Capability packages enter through Core-owned Tool contracts and cannot bypass current Profile scope, Sandbox, Enterprise Policy, or Effect governance.
 
 Capability packages consume Pi primitives through Core. The CLI presentation layer may use `pi-tui`, but it does not own Agent execution. See the [Core/Gateway ownership contract](docs/architecture/core-gateway-boundaries.md).
 
@@ -247,7 +247,7 @@ agent:
 
 Preference values range from `-1` to `1`. Capability cognition retries distinct Provider models without a cumulative token or cost ceiling; a timed-out model is not retried inside a smaller slice of the same deadline, while a fast structural response may receive one bounded repair. `maxModelAttempts` accepts `1`–`5`. The compact `maxTokens` value is only the output size requested for one bounded JSON decision, not an Agent Turn or Objective budget. `timeoutMs` bounds only this optional preflight lane; it never times out or abandons the Objective. Individual stalled network requests still fail visibly so another Provider or exact deterministic discovery route can continue the unchanged Objective. Neither setting authorizes description-overlap fallback or lexical degradation after malformed or empty semantic responses. Policy, Profile scope, Provider health, Effects, and the turn-scoped Tool Spec still decide whether a selected capability can execute.
 
-Missing Provider acquisition is disabled by default. Operators may pre-authorize exact Provider adapters per Profile; the mutating `capability_acquire` Tool still requires runtime approval, installation uses a pinned adapter in the Profile's private directory, and BeeMax resumes the unchanged Objective only after a health probe returns evidence:
+Missing Provider acquisition is disabled by default. Operators may pre-authorize exact Provider adapters per Profile; the mutating `capability_acquire` Tool executes directly after the configured Provider, Profile scope, Enterprise Policy, and Effect gates pass. Installation uses a pinned adapter in the Profile's private directory, and BeeMax resumes the unchanged Objective only after a health probe returns evidence:
 
 ```yaml
 capabilityProviders:
@@ -266,7 +266,7 @@ Before a release, refresh the credentialed semantic-routing and outcome evidence
 
 BeeMax separates chat history from durable organizational evidence.
 
-- One Profile-bound SQLite database is the semantic Memory authority; Task, Effect, Verification, approval, and delivery ledgers remain separate execution authorities.
+- One Profile-bound SQLite database is the semantic Memory authority; Task, Effect, Verification, and delivery ledgers remain separate execution authorities.
 - Conversation candidates stay pending until reviewed or promoted.
 - Explicit, low-risk personal preferences may additionally be admitted by the governed L4 extractor when `adaptive_learning` is enabled; broader organizational knowledge still requires type-specific authority.
 - Claims retain source evidence, validity, visibility, scope, correction, and conflict lineage.
@@ -284,7 +284,7 @@ The safety model is intentionally strict:
 - Trusted access scope and visibility are filtered before ranking, so relevance cannot widen access.
 - Verification unavailable, cancellation, authorization denial, and ambiguous attribution settle as `unknown`, not as invented success or failure.
 - Corrections and forgetting invalidate dependent receipts and projections instead of silently rewriting provenance.
-- Managed Skills remain subject to current Tool, Sandbox, approval, and Effect governance; learning cannot create new execution authority.
+- Managed Skills remain subject to current Tool, Sandbox, Enterprise Policy, and Effect governance; learning cannot create new execution authority.
 
 This is not an L4 certification claim. That label requires the production-path, multi-provider, paired Memory-On/Memory-Off, fault, privacy, migration, and soak evidence defined by the [L4 rollout and certification gate](docs/operations/l4-memory-learning-rollout-and-certification.md).
 
@@ -316,9 +316,9 @@ Verification unavailable retries Verification against the retained Candidate Res
 
 ## Governed actions and Effects
 
-Every action is evaluated independently from its target, risk, reversibility, enterprise policy, current Effect state, approval, and execution grant.
+Every action is evaluated independently from its target, risk, reversibility, enterprise policy, current Effect state, and execution grant.
 
-Mutating tools require approval unless a trusted, scoped policy permits the specific action. High-risk or irreversible work cannot become autonomous merely because a broad policy says “allow.”
+Tool calls do not pause for interactive approval. Once Profile scope, Tool policy, Enterprise Policy, active-Tool scope, execution budget, and Effect reconciliation permit an action, it executes directly. An Enterprise Policy that explicitly requires manual approval fails closed because no interactive approval mechanism exists.
 
 External mutation follows a durable lifecycle:
 
@@ -483,7 +483,7 @@ beemax pairing approve feishu ABCD2345 --profile personal
 beemax pairing revoke feishu ou_xxx --profile personal
 ```
 
-Each turn renders one streaming interactive card with answer, progress, governed approval actions, bounded tool activity, and usage metadata. Only one Gateway process may own a Profile at a time.
+Each turn renders one streaming interactive card with answer, progress, bounded tool activity, and usage metadata. Tool calls never render approval buttons or wait for approval replies. Only one Gateway process may own a Profile at a time.
 
 Feishu meeting tools cover meeting queries, reservations, participants, host control, and recording lifecycle. Private user resources still require a future Feishu User OAuth layer.
 

@@ -74,7 +74,7 @@ test("standing authority requires a current rollback exercise for a reversible m
 	const mutation = {
 		...base,
 		toolName: "profile_update",
-		toolPolicy: { ...MUTATING_TOOL_POLICY, sideEffect: "local", risk: "low", approval: "never", reversible: true },
+		toolPolicy: { ...MUTATING_TOOL_POLICY, sideEffect: "local", risk: "low", reversible: true },
 		credentialRequirements: [],
 		standingAuthority: { ...standingAuthority, allowedCapabilities: ["profile_update"] },
 		emergencyStop: { scopeId: "scope:finance-research", status: "running", revision: 7, evidenceRef: "emergency-stop:revision-7", observedAt: 200 },
@@ -108,7 +108,7 @@ test("an exact, current scoped Execution Grant admits pre-authorized high-risk w
 			profileId: "profile:analyst",
 			allowedCapabilities: ["payment_send"],
 			accessScopeIds: ["scope:finance-research"],
-			evidenceRefs: ["approval:payment-42"],
+			evidenceRefs: ["authority:payment-42"],
 			statusRevision: 2,
 			statusEvidenceRef: "authority-status:payment-42:2",
 			statusCheckedAt: 200,
@@ -151,7 +151,7 @@ test("a mutation without a current Emergency Stop snapshot cannot run unattended
 		standingAuthority: undefined,
 		executionGrant: {
 			id: "grant:payment-42", kind: "scoped_execution", status: "active", profileId: "profile:analyst",
-			allowedCapabilities: ["payment_send"], accessScopeIds: ["scope:finance-research"], evidenceRefs: ["approval:payment-42"],
+			allowedCapabilities: ["payment_send"], accessScopeIds: ["scope:finance-research"], evidenceRefs: ["authority:payment-42"],
 			statusRevision: 2, statusEvidenceRef: "authority-status:payment-42:2", statusCheckedAt: 200, issuedAt: 150, expiresAt: 250,
 		},
 	});
@@ -206,7 +206,7 @@ test("an Enterprise Policy decision for another Access Scope fails closed", () =
 });
 
 test("an unrelated rollback exercise cannot prove this mutation reversible", () => {
-	const toolPolicy = { ...MUTATING_TOOL_POLICY, sideEffect: "local", risk: "low", approval: "never", reversible: true };
+	const toolPolicy = { ...MUTATING_TOOL_POLICY, sideEffect: "local", risk: "low", reversible: true };
 	assert.throws(() => new UnattendedExecutionAdmission().decide({
 		...base,
 		toolName: "profile_update",
@@ -232,7 +232,7 @@ test("an Emergency Stop snapshot for another Access Scope fails closed", () => {
 		emergencyStop: { scopeId: "scope:other", status: "running", revision: 7, evidenceRef: "emergency-stop:other", observedAt: 200 },
 		executionGrant: {
 			id: "grant:payment-42", kind: "scoped_execution", status: "active", profileId: "profile:analyst",
-			allowedCapabilities: ["payment_send"], accessScopeIds: ["scope:finance-research"], evidenceRefs: ["approval:payment-42"],
+			allowedCapabilities: ["payment_send"], accessScopeIds: ["scope:finance-research"], evidenceRefs: ["authority:payment-42"],
 			statusRevision: 2, statusEvidenceRef: "authority-status:payment-42:2", statusCheckedAt: 200, issuedAt: 150, expiresAt: 250,
 		},
 	});
@@ -251,7 +251,7 @@ test("a mutation grant must cover its mandatory Access Scope even when the advis
 		emergencyStop: { scopeId: "scope:finance-research", status: "running", revision: 7, evidenceRef: "emergency-stop:revision-7", observedAt: 200 },
 		executionGrant: {
 			id: "grant:payment-42", kind: "scoped_execution", status: "active", profileId: "profile:analyst",
-			allowedCapabilities: ["payment_send"], accessScopeIds: ["scope:other"], evidenceRefs: ["approval:payment-42"],
+			allowedCapabilities: ["payment_send"], accessScopeIds: ["scope:other"], evidenceRefs: ["authority:payment-42"],
 			statusRevision: 2, statusEvidenceRef: "authority-status:payment-42:2", statusCheckedAt: 200, issuedAt: 150, expiresAt: 250,
 		},
 	});

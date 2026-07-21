@@ -56,7 +56,7 @@ export function createFeishuMeetingTools(getClient: FeishuClientProvider): ToolD
 	const reserveCreate = defineTool({
 		name: "feishu_meeting_reserve_create",
 		label: "Feishu Meeting Reserve Create",
-		description: "Create a Feishu video meeting reservation. This is a write action and requires approval.",
+		description: "Create a Feishu video meeting reservation. This is a write action.",
 		parameters: Type.Object({
 			topic: Type.String({ description: "Meeting topic" }),
 			endTime: Type.String({ description: "Reservation expiration, Unix timestamp in seconds; must be within 30 days" }),
@@ -105,7 +105,7 @@ export function createFeishuMeetingTools(getClient: FeishuClientProvider): ToolD
 	const reserveUpdate = defineTool({
 		name: "feishu_meeting_reserve_update",
 		label: "Feishu Meeting Reserve Update",
-		description: "Update or renew a Feishu meeting reservation owned by the current identity. Requires approval.",
+		description: "Update or renew a Feishu meeting reservation owned by the current identity.",
 		parameters: Type.Object({
 			reserveId: Type.String({ description: "Feishu reserve_id" }),
 			endTime: Type.Optional(Type.String({ description: "New expiration, Unix timestamp in seconds; within 30 days" })),
@@ -158,7 +158,7 @@ export function createFeishuMeetingTools(getClient: FeishuClientProvider): ToolD
 	const reserveDelete = defineTool({
 		name: "feishu_meeting_reserve_delete",
 		label: "Feishu Meeting Reserve Delete",
-		description: "Delete a Feishu meeting reservation. Irreversible write action; requires approval.",
+		description: "Delete a Feishu meeting reservation. This is an irreversible write action.",
 		parameters: Type.Object({
 			reserveId: Type.String({ description: "Feishu reserve_id" }),
 			idempotencyKey: Type.Optional(Type.String({ minLength: 1, maxLength: 256, description: "Stable local replay identity for this reservation deletion" })),
@@ -172,7 +172,7 @@ export function createFeishuMeetingTools(getClient: FeishuClientProvider): ToolD
 	const meetingEnd = defineTool({
 		name: "feishu_meeting_end",
 		label: "Feishu Meeting End",
-		description: "End an active Feishu meeting. Requires host permission and explicit approval.",
+		description: "End an active Feishu meeting. Requires host permission.",
 		parameters: Type.Object({ meetingId: Type.String({ description: "Feishu meeting_id" }), idempotencyKey: replayKey("Stable local replay identity for ending this meeting") }),
 		execute: async (_id, params) => withClient(getClient, async (client) => {
 			const response = await client.vc.v1.meeting.end({ path: { meeting_id: params.meetingId } });
@@ -183,7 +183,7 @@ export function createFeishuMeetingTools(getClient: FeishuClientProvider): ToolD
 	const meetingInvite = defineTool({
 		name: "feishu_meeting_invite",
 		label: "Feishu Meeting Invite",
-		description: "Invite Feishu users to an active meeting by union_id. Requires approval and meeting permission.",
+		description: "Invite Feishu users to an active meeting by union_id. Requires meeting permission.",
 		parameters: Type.Object({
 			meetingId: Type.String({ description: "Feishu meeting_id" }),
 			userIds: Type.Array(Type.String(), { minItems: 1, maxItems: 100, description: "Invitee union_id values" }),
@@ -202,7 +202,7 @@ export function createFeishuMeetingTools(getClient: FeishuClientProvider): ToolD
 	const meetingKickout = defineTool({
 		name: "feishu_meeting_kickout",
 		label: "Feishu Meeting Kickout",
-		description: "Remove Feishu users from an active meeting by union_id. Requires explicit approval.",
+		description: "Remove Feishu users from an active meeting by union_id. Requires meeting permission.",
 		parameters: Type.Object({
 			meetingId: Type.String({ description: "Feishu meeting_id" }),
 			userIds: Type.Array(Type.String(), { minItems: 1, maxItems: 100, description: "Participant union_id values" }),
@@ -221,7 +221,7 @@ export function createFeishuMeetingTools(getClient: FeishuClientProvider): ToolD
 	const meetingSetHost = defineTool({
 		name: "feishu_meeting_set_host",
 		label: "Feishu Meeting Set Host",
-		description: "Transfer host of an active Feishu meeting. Pass oldHostId for CAS safety when known. Requires approval.",
+		description: "Transfer host of an active Feishu meeting. Pass oldHostId for CAS safety when known.",
 		parameters: Type.Object({
 			meetingId: Type.String({ description: "Feishu meeting_id" }),
 			hostId: Type.String({ description: "New host union_id" }),
@@ -255,7 +255,7 @@ export function createFeishuMeetingTools(getClient: FeishuClientProvider): ToolD
 	const recordingSetPermission = defineTool({
 		name: "feishu_meeting_recording_set_permission",
 		label: "Feishu Meeting Recording Set Permission",
-		description: "Grant or revoke access to a completed meeting recording using Feishu VC permission enum values. Requires approval.",
+		description: "Grant or revoke access to a completed meeting recording using Feishu VC permission enum values.",
 		parameters: Type.Object({
 			meetingId: Type.String({ description: "Feishu meeting_id" }),
 			actionType: Type.Optional(Type.Integer({ description: "Feishu recording permission action type" })),
@@ -281,7 +281,7 @@ export function createFeishuMeetingTools(getClient: FeishuClientProvider): ToolD
 	const recordingStart = defineTool({
 		name: "feishu_meeting_recording_start",
 		label: "Feishu Meeting Recording Start",
-		description: "Start recording an active Feishu meeting. Requires host permission and explicit approval.",
+		description: "Start recording an active Feishu meeting. Requires host permission.",
 		parameters: Type.Object({ meetingId: Type.String({ description: "Feishu meeting_id" }) }),
 		execute: async (_id, params) => withClient(getClient, async (client) => {
 			const response = await client.vc.v1.meetingRecording.start({ path: { meeting_id: params.meetingId } });
@@ -292,7 +292,7 @@ export function createFeishuMeetingTools(getClient: FeishuClientProvider): ToolD
 	const recordingStop = defineTool({
 		name: "feishu_meeting_recording_stop",
 		label: "Feishu Meeting Recording Stop",
-		description: "Stop recording an active Feishu meeting. Requires host permission and explicit approval.",
+		description: "Stop recording an active Feishu meeting. Requires host permission.",
 		parameters: Type.Object({ meetingId: Type.String({ description: "Feishu meeting_id" }) }),
 		execute: async (_id, params) => withClient(getClient, async (client) => {
 			const response = await client.vc.v1.meetingRecording.stop({ path: { meeting_id: params.meetingId } });

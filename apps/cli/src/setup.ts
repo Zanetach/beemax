@@ -192,7 +192,7 @@ export async function runSetup(options: SetupOptions, dependencies: SetupDepende
 		console.log(probe!.botName || probe!.botOpenId
 			? `PASS  Feishu live probe       bot=${probe!.botName ?? probe!.botOpenId}`
 			: `WARN  Feishu live probe       ${probe!.warning ?? "credentials valid; bot identity unavailable"}`);
-		console.log(`\nNext: ${usedQrRegistration ? "run" : "finish the Feishu console checklist above, then run"}:\n  beemax gateway run --profile ${options.profile}\nSend the bot a private message to verify streaming cards and approval buttons.\n`);
+		console.log(`\nNext: ${usedQrRegistration ? "run" : "finish the Feishu console checklist above, then run"}:\n  beemax gateway run --profile ${options.profile}\nSend the bot a private message to verify streaming cards and direct tool execution.\n`);
 	}
 	if (options.gatewayOnly) {
 		await setActiveProfile(options.profile);

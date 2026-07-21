@@ -1,14 +1,12 @@
 import type { AgentRunInput, AgentRunResult, AgentRuntimePort, AgentSessionUsage, BeeMaxAgentRunEvent, CapabilityRankedCandidate } from "./agent-runtime.ts";
 import type { BeeMaxRuntimeSource } from "./runtime.ts";
 import { sessionIdForSource, sessionKeyForSource } from "./session-coordinator.ts";
-import type { ToolApprovalBroker, ToolApprovalChoice } from "./tool-approval.ts";
 import type { InteractionEventJournal } from "./interaction-event-journal.ts";
-import type { ToolApprovalDetails } from "./tool-approval.ts";
 import { conversationIdentity, type ConversationIdentity } from "./agent-scope.ts";
 import type { InteractionInputQueueStore, InteractionQueuedInput } from "./interaction-input-queue.ts";
 
 export type InteractionSurface = "chat" | "gateway" | "web";
-export type InteractionPhase = "idle" | "running" | "queued" | "awaiting_approval" | "completed" | "incomplete" | "rejected" | "failed" | "cancelled";
+export type InteractionPhase = "idle" | "running" | "queued" | "completed" | "incomplete" | "rejected" | "failed" | "cancelled";
 
 /** Stable visibility and authorization boundary for an interaction session. */
 export interface InteractionScope extends ConversationIdentity {
@@ -28,8 +26,6 @@ export type InteractionEvent = InteractionEventMeta & (
 	| { type: "answer.delta"; text: string }
 	| { type: "reasoning.delta"; text: string }
 	| { type: "tool.changed"; callId: string; name: string; state: "running" | "completed" | "failed"; summary?: string }
-	| { type: "approval.requested"; toolName: string; details?: ToolApprovalDetails }
-	| { type: "approval.resolved"; toolName: string; allowed: boolean }
 	| { type: "model.fallback"; from: string; to: string; attempt: number }
 	| { type: "planning.selected"; mode: "direct" | "delegate" | "dag"; concurrency: number; maxSubagents: number; requiredTools: string[] }
 	| { type: "planning.completed"; mode: "direct" | "delegate" | "dag"; compliant: boolean; corrected: boolean }
@@ -48,8 +44,6 @@ type InteractionEventPayload =
 	| { type: "answer.delta"; text: string }
 	| { type: "reasoning.delta"; text: string }
 	| { type: "tool.changed"; callId: string; name: string; state: "running" | "completed" | "failed"; summary?: string }
-	| { type: "approval.requested"; toolName: string; details?: ToolApprovalDetails }
-	| { type: "approval.resolved"; toolName: string; allowed: boolean }
 	| { type: "model.fallback"; from: string; to: string; attempt: number }
 	| { type: "planning.selected"; mode: "direct" | "delegate" | "dag"; concurrency: number; maxSubagents: number; requiredTools: string[] }
 	| { type: "planning.completed"; mode: "direct" | "delegate" | "dag"; compliant: boolean; corrected: boolean }
@@ -66,7 +60,6 @@ export type InteractionAction<Source extends BeeMaxRuntimeSource = BeeMaxRuntime
 	| { type: "message.send"; source: Source; text: string; input: Omit<AgentRunInput<Source>, "source" | "text">; actionId?: string }
 	| { type: "turn.queue"; source: Source; text: string; images?: AgentRunInput<Source>["images"]; actionId?: string }
 	| { type: "turn.steer"; source: Source; text: string; images?: AgentRunInput<Source>["images"]; actionId?: string }
-	| { type: "approval.decide"; source: Source; choice: ToolApprovalChoice; actionId?: string }
 	| { type: "session.open"; source: Source; actionId?: string }
 	| { type: "session.reset"; source: Source; actionId?: string }
 	| { type: "session.compact"; source: Source; instructions?: string; actionId?: string }
@@ -74,7 +67,6 @@ export type InteractionAction<Source extends BeeMaxRuntimeSource = BeeMaxRuntime
 
 export interface InteractionCancelResult {
 	cancelled: boolean;
-	approvalCancelled: boolean;
 	subagentsCancelled: number;
 	taskPlansCancelled: number;
 	errors: string[];
@@ -83,11 +75,10 @@ export interface InteractionCancelResult {
 
 export type InteractionDeliveryMode = "queue" | "steer_fallback" | "steer" | "follow_up";
 export interface InteractionQueueResult { queued: boolean; position: number; replaced: boolean; mode: InteractionDeliveryMode; }
-export interface InteractionApprovalResult { handled: boolean; }
 export interface InteractionSessionResult { opened: boolean; }
 export interface InteractionSessionResetResult { reset: boolean; }
 export interface InteractionSessionCompactResult { compacted: boolean; }
-export type InteractionActionResult = AgentRunResult | InteractionCancelResult | InteractionQueueResult | InteractionApprovalResult | InteractionSessionResult | InteractionSessionResetResult | InteractionSessionCompactResult;
+export type InteractionActionResult = AgentRunResult | InteractionCancelResult | InteractionQueueResult | InteractionSessionResult | InteractionSessionResetResult | InteractionSessionCompactResult;
 
 export interface InteractionSnapshot {
 	phase: InteractionPhase;
@@ -102,8 +93,6 @@ export type InteractionEventSink = (event: InteractionEvent) => void | Promise<v
 /** Content-free operational telemetry. Values must never contain prompts, answers, reasoning, or tool args. */
 export type InteractionTelemetryEvent =
 	| { type: "interaction.turn_started"; surface: string; model: string; session: string }
-	| { type: "interaction.approval_requested"; surface: string; tool: string; risk?: "低" | "中" | "高" }
-	| { type: "interaction.approval_resolved"; surface: string; decision: "allowed" | "denied"; latency: number }
 	| { type: "interaction.input_queued"; surface: string; mode: InteractionDeliveryMode; waitMs: number }
 	| { type: "interaction.model_fallback"; surface: string; from: string; to: string; attempt: number }
 	| { type: "interaction.planning_selected"; surface: string; mode: "direct" | "delegate" | "dag"; concurrency: number; maxSubagents: number; requiredToolCount: number }
@@ -117,7 +106,6 @@ export type InteractionTelemetrySink = (event: InteractionTelemetryEvent) => voi
 
 export interface InteractionEventAdapterOptions<Source extends BeeMaxRuntimeSource = BeeMaxRuntimeSource> {
 	profileId?: string;
-	approvalBroker?: ToolApprovalBroker;
 	cancelSubagents?: (source: Source) => number | Promise<number>;
 	cancelTaskPlans?: (source: Source) => number | Promise<number>;
 	eventHistoryLimit?: number;
@@ -130,8 +118,7 @@ export interface InteractionEventAdapterOptions<Source extends BeeMaxRuntimeSour
 
 /**
  * Core-owned action and event boundary. Channels render semantic events only;
- * runtime cancellation, approval cancellation and child-task cancellation stay
- * in one atomic Core operation.
+ * runtime and child-task cancellation stay in one atomic Core operation.
  */
 export class InteractionEventAdapter<Source extends BeeMaxRuntimeSource = BeeMaxRuntimeSource> {
 	private readonly states = new Map<string, InteractionSnapshot>();
@@ -148,14 +135,11 @@ export class InteractionEventAdapter<Source extends BeeMaxRuntimeSource = BeeMax
 	private readonly primaryQueuedInputs = new Map<string, Set<string>>();
 	private readonly nativeClaimTokens = new Map<string, Map<string, string>>();
 	private readonly actions = new Map<string, Map<string, Promise<InteractionActionResult>>>();
-	private readonly approvalStartedAt = new Map<string, number>();
 	private readonly turnModels = new Map<string, string>();
 	private readonly runtime: AgentRuntimePort<Source>;
-	private readonly approvalBroker?: ToolApprovalBroker;
 	private readonly cancelSubagents?: (source: Source) => number | Promise<number>;
 	private readonly cancelTaskPlans?: (source: Source) => number | Promise<number>;
 	private readonly profileId: string;
-	private readonly unsubscribeApproval?: () => void;
 	private readonly eventHistoryLimit: number;
 	private readonly actionHistoryLimit: number;
 	private readonly maxTrackedInteractions: number;
@@ -165,7 +149,6 @@ export class InteractionEventAdapter<Source extends BeeMaxRuntimeSource = BeeMax
 
 	constructor(runtime: AgentRuntimePort<Source>, options: InteractionEventAdapterOptions<Source> = {}) {
 		this.runtime = runtime;
-		this.approvalBroker = options.approvalBroker;
 		this.cancelSubagents = options.cancelSubagents;
 		this.cancelTaskPlans = options.cancelTaskPlans;
 		this.profileId = options.profileId ?? "default";
@@ -175,11 +158,6 @@ export class InteractionEventAdapter<Source extends BeeMaxRuntimeSource = BeeMax
 		this.eventJournal = options.eventJournal;
 		this.telemetry = options.telemetry;
 		this.inputQueueStore = options.inputQueueStore;
-		this.unsubscribeApproval = this.approvalBroker && typeof this.approvalBroker.subscribe === "function" ? this.approvalBroker.subscribe((event) => {
-			void (event.type === "requested"
-				? this.approvalRequested(event.source as Source, event.toolName, event.details)
-				: this.approvalResolved(event.source as Source, event.toolName, event.allowed));
-		}) : undefined;
 	}
 
 	async dispatch(action: InteractionAction<Source>, sink?: InteractionEventSink): Promise<InteractionActionResult> {
@@ -200,7 +178,6 @@ export class InteractionEventAdapter<Source extends BeeMaxRuntimeSource = BeeMax
 		if (action.type === "turn.cancel") return this.cancel(action.source, sink);
 		if (action.type === "turn.queue") return this.deliverOrQueue(action.source, action.text, action.images, "follow_up", sink);
 		if (action.type === "turn.steer") return this.deliverOrQueue(action.source, action.text, action.images, "steer", sink);
-		if (action.type === "approval.decide") return { handled: await this.approvalBroker?.decide(action.source, action.choice) ?? false };
 		if (action.type === "session.open") {
 			const saved = await this.runtime.listSavedSessions(action.source);
 			const threadId = action.source.threadId;
@@ -218,7 +195,6 @@ export class InteractionEventAdapter<Source extends BeeMaxRuntimeSource = BeeMax
 		// Reserve synchronously before any model/session I/O so concurrent presenters
 		// observe one active turn and route later input through follow-up/steer.
 		this.states.set(key, { phase: "running", turnId, updatedAt: Date.now() });
-		this.approvalBroker?.beginTask?.(action.source, turnId);
 		let completed = false;
 		try {
 			this.turnModels.set(interactionEventMeta(action.source, "", 0, this.profileId).sessionId, (await this.runtime.modelStatus?.(action.source))?.model ?? "unresolved");
@@ -265,23 +241,7 @@ export class InteractionEventAdapter<Source extends BeeMaxRuntimeSource = BeeMax
 			this.primaryQueuedInputs.delete(key);
 			this.nativeClaimTokens.delete(key);
 			this.turnModels.delete(interactionEventMeta(action.source, "", 0, this.profileId).sessionId);
-			this.approvalBroker?.endTask?.(action.source, turnId);
 		}
-	}
-
-	async approvalRequested(source: Source, toolName: string, details?: ToolApprovalDetails): Promise<void> {
-		const turnId = this.states.get(interactionKey(source))?.turnId;
-		if (turnId) await this.publish(source, turnId, { type: "approval.requested", toolName, details });
-	}
-
-	async approvalResolved(source: Source, toolName: string, allowed: boolean): Promise<void> {
-		const turnId = this.states.get(interactionKey(source))?.turnId;
-		if (turnId) await this.publish(source, turnId, { type: "approval.resolved", toolName, allowed });
-	}
-
-	/** Forward a presenter's approval reply through the Core interaction boundary. */
-	async handleApprovalReply(source: Source, text: string): Promise<boolean> {
-		return this.approvalBroker?.handleReply(source, text) ?? false;
 	}
 
 	async snapshot(source: Source): Promise<InteractionSnapshot> {
@@ -315,7 +275,7 @@ export class InteractionEventAdapter<Source extends BeeMaxRuntimeSource = BeeMax
 		};
 	}
 
-	dispose(): void { this.unsubscribeApproval?.(); }
+	dispose(): void {}
 
 	/** Consume the oldest fallback input after a turn reaches a terminal state. */
 	takeQueuedInput(source: Source): string | undefined {
@@ -388,20 +348,15 @@ export class InteractionEventAdapter<Source extends BeeMaxRuntimeSource = BeeMax
 		const key = interactionKey(source);
 		const state = this.states.get(key);
 		if (state?.turnId) this.cancellationRequested.add(key);
-		const cancelApproval = this.approvalBroker && typeof this.approvalBroker.cancel === "function"
-			? this.approvalBroker.cancel(source)
-			: false;
 		const results = await Promise.allSettled([
 			this.runtime.cancel(source),
-			cancelApproval,
 			Promise.resolve(this.cancelSubagents?.(source) ?? 0),
 			Promise.resolve(this.cancelTaskPlans?.(source) ?? 0),
 		]);
 		const errors = results.flatMap((result) => result.status === "rejected" ? [errorMessage(result.reason)] : []);
 		const cancelled = results[0].status === "fulfilled" ? results[0].value : false;
-		const approvalCancelled = results[1].status === "fulfilled" ? results[1].value : false;
-		const subagentsCancelled = results[2].status === "fulfilled" ? results[2].value : 0;
-		const taskPlansCancelled = results[3].status === "fulfilled" ? results[3].value : 0;
+		const subagentsCancelled = results[1].status === "fulfilled" ? results[1].value : 0;
+		const taskPlansCancelled = results[2].status === "fulfilled" ? results[2].value : 0;
 		if (cancelled && state?.turnId && !this.cancellationPublished.has(key)) {
 			this.cancellationPublished.add(key);
 			await this.publish(source, state.turnId, { type: "turn.cancelled" }, sink);
@@ -412,14 +367,14 @@ export class InteractionEventAdapter<Source extends BeeMaxRuntimeSource = BeeMax
 		const nativeQueuedCancelled = this.nativeQueuedInputs.delete(key);
 		const queuedCancelled = localQueuedCancelled || nativeQueuedCancelled;
 		if (!cancelled) this.cancellationRequested.delete(key);
-		return { cancelled, approvalCancelled, subagentsCancelled, taskPlansCancelled, errors, queuedCancelled };
+		return { cancelled, subagentsCancelled, taskPlansCancelled, errors, queuedCancelled };
 	}
 
 	private async queue(source: Source, text: string, mode: InteractionQueueResult["mode"], sink?: InteractionEventSink): Promise<InteractionQueueResult> {
 		const key = interactionKey(source);
 		const turnId = this.states.get(key)?.turnId;
 		const phase = this.states.get(key)?.phase;
-		if (!turnId || !["running", "queued", "awaiting_approval"].includes(phase ?? "")) return { queued: false, position: 0, replaced: false, mode };
+		if (!turnId || !["running", "queued"].includes(phase ?? "")) return { queued: false, position: 0, replaced: false, mode };
 		const input = this.newQueuedInput(key, source, text);
 		const position = this.enqueueQueuedInput(input);
 		if (!position) return { queued: false, position: this.fallbackQueue(key).length, replaced: false, mode };
@@ -431,7 +386,7 @@ export class InteractionEventAdapter<Source extends BeeMaxRuntimeSource = BeeMax
 		const key = interactionKey(source);
 		const turnId = this.states.get(key)?.turnId;
 		const phase = this.states.get(key)?.phase;
-		if (!turnId || !["running", "queued", "awaiting_approval"].includes(phase ?? "")) return { queued: false, position: 0, replaced: false, mode };
+		if (!turnId || !["running", "queued"].includes(phase ?? "")) return { queued: false, position: 0, replaced: false, mode };
 		const deliver = mode === "steer" ? this.runtime.steer : this.runtime.followUp;
 		const recoverableText = images?.length ? `${text}\n\n[Media attachment was delivered in-memory but cannot be replayed after a process restart. Ask the user to resend it if visual evidence is still required.]` : text;
 		if (deliver) {
@@ -507,7 +462,7 @@ export class InteractionEventAdapter<Source extends BeeMaxRuntimeSource = BeeMax
 			.sort((left, right) => left[1].updatedAt - right[1].updatedAt);
 		for (const [key] of candidates.slice(0, this.states.size - this.maxTrackedInteractions)) {
 			this.states.delete(key); this.sequences.delete(key); this.eventHistory.delete(key); this.actions.delete(key);
-			this.approvalStartedAt.delete(key); this.queuedInputs.delete(key); this.nativeQueuedInputs.delete(key);
+			this.queuedInputs.delete(key); this.nativeQueuedInputs.delete(key);
 			this.primaryQueuedInputs.delete(key); this.nativeClaimTokens.delete(key);
 		}
 	}
@@ -541,14 +496,7 @@ export class InteractionEventAdapter<Source extends BeeMaxRuntimeSource = BeeMax
 		if (!this.telemetry) return;
 		const key = event.sessionId;
 		if (event.type === "turn.started") this.telemetry({ type: "interaction.turn_started", surface: event.scope.platform, model: this.turnModels.get(key) ?? "unresolved", session: event.sessionId });
-		else if (event.type === "approval.requested") {
-			this.approvalStartedAt.set(key, event.at);
-			this.telemetry({ type: "interaction.approval_requested", surface: event.scope.platform, tool: event.toolName, risk: event.details?.risk });
-		} else if (event.type === "approval.resolved") {
-			const startedAt = this.approvalStartedAt.get(key) ?? event.at;
-			this.approvalStartedAt.delete(key);
-			this.telemetry({ type: "interaction.approval_resolved", surface: event.scope.platform, decision: event.allowed ? "allowed" : "denied", latency: Math.max(0, event.at - startedAt) });
-		} else if (event.type === "turn.queued") this.telemetry({ type: "interaction.input_queued", surface: event.scope.platform, mode: event.mode, waitMs: 0 });
+		else if (event.type === "turn.queued") this.telemetry({ type: "interaction.input_queued", surface: event.scope.platform, mode: event.mode, waitMs: 0 });
 		else if (event.type === "model.fallback") this.telemetry({ type: "interaction.model_fallback", surface: event.scope.platform, from: event.from, to: event.to, attempt: event.attempt });
 		else if (event.type === "planning.selected") this.telemetry({ type: "interaction.planning_selected", surface: event.scope.platform, mode: event.mode, concurrency: event.concurrency, maxSubagents: event.maxSubagents, requiredToolCount: event.requiredTools.length });
 		else if (event.type === "planning.completed") this.telemetry({ type: "interaction.planning_completed", surface: event.scope.platform, mode: event.mode, compliant: event.compliant, corrected: event.corrected });
@@ -571,9 +519,7 @@ export function reduceInteractionEvent(snapshot: InteractionSnapshot, event: Int
 	if (event.type === "turn.finished") return { ...snapshot, phase: interactionPhaseForOutcome(event.result.outcome), turnId: event.turnId, model: event.result.model, updatedAt: event.at };
 	if (event.type === "turn.failed") return { ...snapshot, phase: "failed", turnId: event.turnId, updatedAt: event.at };
 	if (event.type === "turn.cancelled") return { ...snapshot, phase: "cancelled", turnId: event.turnId, updatedAt: event.at };
-	if (event.type === "approval.requested") return { ...snapshot, phase: "awaiting_approval", turnId: event.turnId, updatedAt: event.at };
-	if (event.type === "approval.resolved") return { ...snapshot, phase: "running", turnId: event.turnId, updatedAt: event.at };
-	if (event.type === "turn.queued") return { ...snapshot, phase: snapshot.phase === "awaiting_approval" ? "awaiting_approval" : event.mode === "steer" ? "running" : "queued", turnId: event.turnId, updatedAt: event.at };
+	if (event.type === "turn.queued") return { ...snapshot, phase: event.mode === "steer" ? "running" : "queued", turnId: event.turnId, updatedAt: event.at };
 	return { ...snapshot, updatedAt: event.at };
 }
 

@@ -21,19 +21,12 @@ test("a waiting card presents its current progress message in the main content",
 	assert.doesNotMatch(rendered, /处理中 [⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]/u);
 });
 
-test("pending approvals render native semantic actions and terminal decisions remove them", () => {
+test("legacy approval events never render prompts or action buttons", () => {
 	const card = new CardSession();
 	card.apply("approval.updated", { id: "approval:turn-1", status: "pending", message: "Review" });
 	const pending = JSON.stringify(renderCard(card));
-	assert.match(pending, /approval\.decide/);
-	assert.match(pending, /允许一次/);
-	assert.match(pending, /本任务允许/);
-	assert.match(pending, /拒绝/);
-	assert.match(pending, /column_set/);
-	assert.match(pending, /callback/);
-	assert.doesNotMatch(pending, /button_group/);
-	card.apply("approval.updated", { id: "approval:turn-1", status: "allowed", message: "Allowed" });
-	assert.doesNotMatch(JSON.stringify(renderCard(card)), /approval\.decide/);
+	assert.doesNotMatch(pending, /approval\.decide|允许一次|本任务允许|拒绝|callback/u);
+	assert.equal("pendingApprovalId" in card, false);
 });
 
 test("card presenter bounds long reasoning and activity histories", () => {

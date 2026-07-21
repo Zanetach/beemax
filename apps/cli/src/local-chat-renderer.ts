@@ -120,12 +120,6 @@ export class LocalActivityPresenter {
 			if (event.mode === "follow_up") return "\n已向当前 Agent 投递后续消息。\n";
 			return `\n${event.mode === "steer_fallback" ? "当前运行时不支持中途引导，已" : "已"}${event.replaced ? "替换" : "加入"}下一条排队消息（位置 ${event.position}）。\n`;
 		}
-		if (event.type === "approval.requested") {
-			const detail = event.details;
-			if (!detail) return `\n等待审批：工具 ${event.toolName}。可输入 /stop 取消。\n`;
-			return `\n⚠️ 等待审批 · ${event.toolName}\n目标：${detail.target}\n风险：${detail.risk} · 影响：${detail.impact}\n可逆性：${detail.reversibility}\n输入 1（一次）/ 2（本会话）/ 3（拒绝），或 /stop 取消。\n`;
-		}
-		if (event.type === "approval.resolved") return `\n审批${event.allowed ? "已允许，继续执行。" : "被拒绝。"}\n`;
 		return "";
 	}
 }

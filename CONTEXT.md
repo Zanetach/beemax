@@ -86,7 +86,7 @@ _Avoid_: Prompt context, Task record, customer business schema, Credential Secre
 
 **Execution Sandbox**:
 A constrained execution environment for selected built-in file and command Capabilities; it does not enlarge Access Scope and does not imply that MCP, Browser, Channel, Profile, or tenant activity is isolated.
-_Avoid_: Profile isolation, Tool approval, local process, tenant boundary
+_Avoid_: Profile isolation, local process, tenant boundary
 
 **Host Execution Adapter**:
 The explicit trusted-mode Adapter that runs selected built-in file and command Capabilities with the BeeMax process user's host authority; it is never an Execution Sandbox.
@@ -249,15 +249,15 @@ An immutable, integrity-sealed snapshot of managed Skill instructions and promot
 _Avoid_: Skill Candidate, mutable file backup, Git commit, global rollout
 
 **Enterprise Policy**:
-An authoritative organizational constraint or decision source that governs an action without defining the customer's entire business model.
+An authoritative organizational constraint or decision source that governs an action without defining the customer's entire business model. Legacy directives that require interactive approval fail closed because BeeMax does not provide a Tool approval workflow.
 _Avoid_: Model guess, Convention Candidate, built-in industry workflow
 
 **Enterprise Policy Decision**:
-A versioned action directive stamped by a trusted enterprise publisher with effective scope, effective time, and audit evidence; its disposition is allow, deny, require approval, constrain, or missing evidence.
+A versioned action directive stamped by a trusted enterprise publisher with effective scope, effective time, and audit evidence; its disposition is allow, deny, require approval, constrain, or missing evidence. `require approval` is retained as an input compatibility disposition and resolves to deny.
 _Avoid_: Model recommendation, learned convention, Tool metadata, global autonomy switch
 
 **Action Governance Decision**:
-The explainable per-action result that combines Tool risk, side effect, reversibility, Enterprise Policy, Effect state, measured reliability, Approval, and Execution Grant immediately before Pi Tool enforcement.
+The explainable per-action result that combines Tool risk, side effect, reversibility, Enterprise Policy, Effect state, measured reliability, and Execution Grant immediately before Pi Tool enforcement.
 _Avoid_: Global autonomy level, Enterprise Policy publication, model confidence
 
 **Autonomy Rollout Level**:
@@ -265,16 +265,16 @@ A Profile-scoped, evidence-gated release boundary for one generic organizational
 _Avoid_: Customer business stage, global intelligence mode, Enterprise Policy, action risk score
 
 **Execution Grant**:
-A bounded active-task authority allowing named capabilities after approval; it never overrides Enterprise deny, Core hard blocks, or unresolved Effect state.
+A bounded active-task authority allowing named capabilities admitted for the active Task; it never overrides Enterprise deny, Core hard blocks, or unresolved Effect state.
 _Avoid_: Session-wide permission, Tool availability, Access Scope
 
 **Standing Profile Authority**:
 A time-bounded, evidence-backed Profile grant for named Capabilities and Access Scopes that may run unattended while current; it is limited to low-risk read-only or proven-reversible work and never authorizes high-risk or irreversible actions.
-_Avoid_: Global autonomy switch, permanent approval, inferred consent, Execution Grant
+_Avoid_: Global autonomy switch, permanent authority, inferred consent, Execution Grant
 
 **Unattended Execution Admission**:
 The pure preflight decision that combines resolved intent, credential availability references, legal authority, trusted Access Scope, Enterprise Policy, Effect state, reliability, Emergency Stop, and either Standing Profile Authority or an exact Execution Grant before zero-touch work may proceed. Tool invocation still rechecks normal Governance and Effect authority.
-_Avoid_: Tool execution, Approval bypass, Credential Secret, global full-autonomy mode
+_Avoid_: Tool execution, authority bypass, Credential Secret, global full-autonomy mode
 
 **Compensation**:
 An authorized inverse action that uses a committed Effect's trusted receipt to restore an acceptable state and produces its own Effect and Verification evidence.
@@ -317,12 +317,12 @@ The control-plane decision that sends ordinary interactive natural-language work
 _Avoid_: Intent router, complexity-as-persistence, global fast mode, model-selected authority, semantic Contract replacement
 
 **Model-First Turn Lane**:
-The turn-local Pi path selected by Adaptive Turn Admission for ordinary interactive work. The main model receives the natural-language task, answers simple requests directly, adapts a plan for complex requests, progressively loads Capabilities, and continues the model–Tool loop after recoverable failures. It skips separate Work Contract cognition while retaining context assembly, Tool Spec policy, Sandbox/approval boundaries, Access Scope, Effect authority, execution tracing, Artifact verifiers, and Provider-result handling. Complexity alone cannot create durable responsibility.
+The turn-local Pi path selected by Adaptive Turn Admission for ordinary interactive work. The main model receives the natural-language task, answers simple requests directly, adapts a plan for complex requests, progressively loads Capabilities, and continues the model–Tool loop after recoverable failures. It skips separate Work Contract cognition while retaining context assembly, Tool Spec policy, Sandbox boundaries, Access Scope, Enterprise Policy, Effect authority, execution tracing, Artifact verifiers, and Provider-result handling. Complexity alone cannot create durable responsibility.
 _Avoid_: Unverified business completion, unrestricted Tool mode, implicit durable Objective, pre-model semantic gate
 
 **Capability Selection**:
 A bounded, explainable ranking of versioned Capabilities for a query plus the Pi Tool names proposed for turn-scoped activation.
-_Avoid_: Tool call, action approval, Capability Router loop
+_Avoid_: Tool call, action execution, Capability Router loop
 
 **Pi Active Tools**:
 The current turn-scoped Tool inventory exposed by Pi and the sole execution authority after Capability Selection; selection never executes a Tool itself.
@@ -376,7 +376,7 @@ The durable owner of Objectives, Tasks, Plans, Sub-Agents, Effects, cancellation
 _Avoid_: Display name, message-text identity, Session ID, automatic permission expansion
 
 **Channel Runtime Contract**:
-The rule that a channel may adapt ingress, media, presentation, approval UI, and delivery but must use the shared Profile Runtime for Task, Effect, Governance, Verification, cancellation, recovery, and Pi execution.
+The rule that a channel may adapt ingress, media, presentation, and delivery but must use the shared Profile Runtime for Task, Effect, Governance, Verification, cancellation, recovery, and Pi execution. Channels never own or render a Tool approval workflow.
 _Avoid_: Channel-specific Agent loop, channel Task store, ungoverned Tool factory
 
 **Channel Runtime**:

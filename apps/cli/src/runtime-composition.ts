@@ -8,7 +8,6 @@ import {
 	type BeeMaxAgentRuntimeOptions,
 	type BeeMaxRuntimeSource,
 	type AgentControlHandler,
-	type ToolApprovalBroker,
 	type SessionCoordinatorOptions,
 	type WorkContractBuilderPort,
 } from "@beemax/core";
@@ -25,7 +24,6 @@ export interface ProfileAgentRuntimeOptions<Source extends BeeMaxRuntimeSource> 
 	policy: SessionCoordinatorOptions;
 	runtime: Omit<BeeMaxAgentRuntimeOptions<Source>, keyof SessionCoordinatorOptions | "controlHandler" | "sessionCatalog" | "profileId" | "workContractBuilder">
 		& { workContractBuilder: WorkContractBuilderPort };
-	approvalBroker?: ToolApprovalBroker;
 	cancelSubagents?: (source: Source) => number | Promise<number>;
 	cancelTaskPlans?: (source: Source) => number | Promise<number>;
 	controlHandler?: (runtime: BeeMaxAgentRuntime<Source>, interaction: InteractionEventAdapter<Source>) => AgentControlHandler<Source>;
@@ -97,7 +95,7 @@ export async function createProfileRuntime<Source extends BeeMaxRuntimeSource>(o
 
 /**
  * One composition root for every Profile surface. Channels may add tools and
- * presenters, but session discovery, interaction events, approvals and
+ * presenters, but session discovery, interaction events and
  * cancellation always receive the same durable runtime wiring.
  */
 export async function createProfileAgentRuntime<Source extends BeeMaxRuntimeSource>(
@@ -130,7 +128,6 @@ export async function createProfileAgentRuntime<Source extends BeeMaxRuntimeSour
 		});
 		interaction = new InteractionEventAdapter(runtime, {
 			profileId: options.profileId,
-			approvalBroker: options.approvalBroker,
 			cancelSubagents: options.cancelSubagents,
 			cancelTaskPlans: options.cancelTaskPlans,
 			eventJournal: new FileInteractionEventJournal(join(options.agentDir, "interaction-events.jsonl")),

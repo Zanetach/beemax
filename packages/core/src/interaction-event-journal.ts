@@ -69,7 +69,6 @@ export function durableEvent(event: InteractionEvent): DurableInteractionEvent |
 	if (event.type === "answer.delta" || event.type === "reasoning.delta") return undefined;
 	if (event.type === "turn.finished") return { ...event, result: { ...event.result, answer: "[not persisted]" } };
 	if (event.type === "turn.failed") return { ...event, error: "Turn failed (details are not persisted)" };
-	if (event.type === "approval.requested") return { ...event, details: undefined };
 	if (event.type === "tool.changed") {
 		const { summary: _summary, ...safe } = event;
 		return safe;

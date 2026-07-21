@@ -12,7 +12,7 @@ export interface BrowserToolsOptions { cdpUrl?: string; fetchImpl?: typeof fetch
 
 /**
  * First-class, Chrome DevTools Protocol browser capability. Read operations
- * are separate from mutating browser actions so approval policy can be exact.
+ * are separate from mutating browser actions so risk policy can be exact.
  */
 export function createBrowserTools(options: BrowserToolsOptions = {}): ToolDefinition[] {
 	const cdpUrl = validateLocalCdpUrl(options.cdpUrl ?? DEFAULT_CDP_URL);
@@ -22,7 +22,7 @@ export function createBrowserTools(options: BrowserToolsOptions = {}): ToolDefin
 			const pages = await listPages(cdpUrl, fetchImpl);
 			return { text: pages.length ? pages.map((page, index) => `${index + 1}. ${page.title || "Untitled"}\n${page.url}`).join("\n\n") : "No browser pages are open.", details: { pages } };
 		}) }),
-		defineTool({ name: "browser_open", label: "Open Browser Page", description: "Navigate the managed browser to an HTTP(S) URL. Requires approval; direct private-network URLs are rejected.", parameters: Type.Object({ url: Type.String({ minLength: 8, maxLength: 4096 }) }), execute: async (_id, params) => browserResult(async () => {
+		defineTool({ name: "browser_open", label: "Open Browser Page", description: "Navigate the managed browser to an HTTP(S) URL. Direct private-network URLs are rejected.", parameters: Type.Object({ url: Type.String({ minLength: 8, maxLength: 4096 }) }), execute: async (_id, params) => browserResult(async () => {
 			const url = validatePublicBrowserUrl(params.url);
 			const page = await activePage(cdpUrl, fetchImpl);
 			await cdp(page.webSocketDebuggerUrl, "Page.navigate", { url });
@@ -35,19 +35,19 @@ export function createBrowserTools(options: BrowserToolsOptions = {}): ToolDefin
 			const value = await evaluate(page.webSocketDebuggerUrl, expression, true);
 			return { text: String(value) || `No readable content matched ${selector}.`, details: { selector, url: page.url } };
 		}) }),
-		defineTool({ name: "browser_click", label: "Click Browser Element", description: "Click a CSS-selected browser element. This can change external state and requires approval.", parameters: Type.Object({ selector: Type.String({ minLength: 1, maxLength: 512 }) }), execute: async (_id, params) => browserResult(async () => {
+		defineTool({ name: "browser_click", label: "Click Browser Element", description: "Click a CSS-selected browser element. This can change external state.", parameters: Type.Object({ selector: Type.String({ minLength: 1, maxLength: 512 }) }), execute: async (_id, params) => browserResult(async () => {
 			const page = await activePage(cdpUrl, fetchImpl);
 			const expression = `(() => { const el = document.querySelector(${JSON.stringify(params.selector)}); if (!el) return { ok: false, reason: "not found" }; (el instanceof HTMLElement ? el : el).click(); return { ok: true }; })()`;
 			const value = await evaluate(page.webSocketDebuggerUrl, expression, true) as { ok?: boolean; reason?: string };
 			return { text: value?.ok ? `Clicked ${params.selector}` : `Could not click ${params.selector}: ${value?.reason ?? "unknown error"}`, details: { selector: params.selector, url: page.url, ...value }, isError: !value?.ok };
 		}) }),
-		defineTool({ name: "browser_fill", label: "Fill Browser Field", description: "Fill a CSS-selected browser input and dispatch input/change events. Requires approval.", parameters: Type.Object({ selector: Type.String({ minLength: 1, maxLength: 512 }), text: Type.String({ maxLength: 10_000 }) }), execute: async (_id, params) => browserResult(async () => {
+		defineTool({ name: "browser_fill", label: "Fill Browser Field", description: "Fill a CSS-selected browser input and dispatch input/change events.", parameters: Type.Object({ selector: Type.String({ minLength: 1, maxLength: 512 }), text: Type.String({ maxLength: 10_000 }) }), execute: async (_id, params) => browserResult(async () => {
 			const page = await activePage(cdpUrl, fetchImpl);
 			const expression = fillExpression(params.selector, params.text);
 			const value = await evaluate(page.webSocketDebuggerUrl, expression, true) as { ok?: boolean; reason?: string };
 			return { text: value?.ok ? `Filled ${params.selector}` : `Could not fill ${params.selector}: ${value?.reason ?? "unknown error"}`, details: { selector: params.selector, url: page.url, ...value }, isError: !value?.ok };
 		}) }),
-		...(options.credentials ? [defineTool({ name: "browser_fill_credential", label: "Fill Browser Credential", description: "Fill a browser input from an encrypted Credential Ref without exposing its Secret. Requires approval.", parameters: Type.Object({ selector: Type.String({ minLength: 1, maxLength: 512 }), credentialRef: Type.String({ pattern: "^cred_[a-f0-9-]{36}$" }) }), execute: async (_id, params) => browserResult(async () => {
+		...(options.credentials ? [defineTool({ name: "browser_fill_credential", label: "Fill Browser Credential", description: "Fill a browser input from an encrypted Credential Ref without exposing its Secret.", parameters: Type.Object({ selector: Type.String({ minLength: 1, maxLength: 512 }), credentialRef: Type.String({ pattern: "^cred_[a-f0-9-]{36}$" }) }), execute: async (_id, params) => browserResult(async () => {
 			const page = await activePage(cdpUrl, fetchImpl);
 			const value = await options.credentials!.vault.withSecret(options.credentials!.ownerKey, params.credentialRef, "browser.fill", async (secret) => {
 				const expression = fillExpression(params.selector, secret);
@@ -55,7 +55,7 @@ export function createBrowserTools(options: BrowserToolsOptions = {}): ToolDefin
 			});
 			return { text: value?.ok ? `Filled ${params.selector} using Credential Ref` : `Could not fill ${params.selector} using Credential Ref: ${value?.reason ?? "unknown error"}`, details: { selector: params.selector, credentialRef: params.credentialRef, url: page.url, ok: Boolean(value?.ok), reason: value?.reason }, isError: !value?.ok };
 		}) })] : []),
-		...(options.credentials ? [defineTool({ name: "browser_generate_credential", label: "Generate Browser Credential", description: "Generate a strong password locally, save it in the encrypted Profile Vault, and fill a browser input without exposing the Secret. Requires approval.", parameters: Type.Object({ selector: Type.String({ minLength: 1, maxLength: 512 }), label: Type.String({ minLength: 1, maxLength: 256 }), purpose: Type.String({ minLength: 1, maxLength: 512 }), length: Type.Optional(Type.Integer({ minimum: 16, maximum: 64 })) }), execute: async (_id, params) => browserResult(async () => {
+		...(options.credentials ? [defineTool({ name: "browser_generate_credential", label: "Generate Browser Credential", description: "Generate a strong password locally, save it in the encrypted Profile Vault, and fill a browser input without exposing the Secret.", parameters: Type.Object({ selector: Type.String({ minLength: 1, maxLength: 512 }), label: Type.String({ minLength: 1, maxLength: 256 }), purpose: Type.String({ minLength: 1, maxLength: 512 }), length: Type.Optional(Type.Integer({ minimum: 16, maximum: 64 })) }), execute: async (_id, params) => browserResult(async () => {
 			const page = await activePage(cdpUrl, fetchImpl);
 			const secret = generateBrowserSecret(params.length ?? 24);
 			const credential = options.credentials!.vault.put({ ownerKey: options.credentials!.ownerKey, label: params.label, purpose: params.purpose, secret });
@@ -71,7 +71,7 @@ export function createBrowserTools(options: BrowserToolsOptions = {}): ToolDefin
 				throw error;
 			}
 		}) })] : []),
-		defineTool({ name: "browser_cookies", label: "Read Browser Cookies", description: "Read browser cookies for diagnostics. Sensitive: requires approval.", parameters: Type.Object({}), execute: async () => browserResult(async () => {
+		defineTool({ name: "browser_cookies", label: "Read Browser Cookies", description: "Read browser cookies for sensitive diagnostics.", parameters: Type.Object({}), execute: async () => browserResult(async () => {
 			const page = await activePage(cdpUrl, fetchImpl);
 			const result = await cdp(page.webSocketDebuggerUrl, "Network.getAllCookies") as { cookies?: Array<{ name: string; domain: string; httpOnly: boolean; secure: boolean }> };
 			const cookies = (result.cookies ?? []).map(({ name, domain, httpOnly, secure }) => ({ name, domain, httpOnly, secure }));

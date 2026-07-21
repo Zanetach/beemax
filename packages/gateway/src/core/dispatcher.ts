@@ -9,7 +9,6 @@ import {
 	type AgentRunResult,
 	type MediaArtifact,
 	type TaskArtifact,
-	type ToolApprovalBroker,
 	type AgentRuntimePort,
 	type DeliveryTarget,
 	type TaskLedger,
@@ -19,7 +18,7 @@ import { createHash } from "node:crypto";
 import { createReadStream } from "node:fs";
 import { realpath, stat } from "node:fs/promises";
 import { basename, isAbsolute, relative, resolve, sep } from "node:path";
-import type { InboundMessage, InteractionPresentationPreferences, PlatformAdapter, PlatformCardAction, PublishedArtifactPresentation } from "@beemax/channel-runtime";
+import type { InboundMessage, InteractionPresentationPreferences, PlatformAdapter, PublishedArtifactPresentation } from "@beemax/channel-runtime";
 import { MessageDeduplicator } from "./message-deduplicator.ts";
 import { prepareAgentMediaInput } from "./media-input.ts";
 import type { ProfileBindingResolver } from "./profile-binding.ts";
@@ -27,11 +26,6 @@ import type { GatewayInteractionAdmission } from "./ingress-capacity.ts";
 import { GatewayIngressController } from "./ingress-capacity.ts";
 import { TextInteractionPresenter } from "./text-presentation.ts";
 import { GatewayDeliveryPort } from "./delivery-port.ts";
-
-interface CardBinding {
-	source: InboundMessage["source"];
-	pendingApprovalId?: string;
-}
 
 export type PublishedArtifactLink = PublishedArtifactPresentation;
 
@@ -56,7 +50,6 @@ export interface DispatcherDeps {
 	presentationTimeoutMs?: number;
 	/** Optional Turn deadline. Null means the Objective continues until settlement or explicit cancellation. */
 	turnTimeoutMs?: number | null;
-	approvalBroker?: ToolApprovalBroker;
 	cancelTasks?: (source: InboundMessage["source"]) => number;
 	/** Isolated deployment/profile identity used for ingress idempotency. */
 	profileId?: string;
@@ -91,7 +84,6 @@ export class Dispatcher {
 	private readonly ingress: GatewayInteractionAdmission;
 	private readonly delivery: GatewayDeliveryPort;
 	private readonly sessionOverrides = new Map<string, InboundMessage["source"]>();
-	private readonly cardBindings = new Map<string, CardBinding>();
 	private readonly turnStarts = new Map<string, Promise<void>>();
 	private readonly activeHandles = new Set<Promise<void>>();
 	private recoveryTimer?: ReturnType<typeof setTimeout>;
@@ -102,7 +94,6 @@ export class Dispatcher {
 		this.platform = platform;
 		this.runtime = deps.runtime;
 		this.interaction = deps.interaction ?? new InteractionEventAdapter(deps.runtime, {
-			approvalBroker: deps.approvalBroker,
 			cancelSubagents: deps.cancelTasks,
 		});
 		this.turnTimeoutMs = deps.turnTimeoutMs === null ? null : Math.max(30_000, Math.min(60 * 60_000, deps.turnTimeoutMs ?? 10 * 60_000));
@@ -111,7 +102,6 @@ export class Dispatcher {
 		this.ingress = deps.ingress ?? new GatewayIngressController();
 		this.delivery = new GatewayDeliveryPort(platform);
 		this.platform.onMessage((msg) => this.admit(msg));
-		this.platform.onCardAction?.((action) => this.handleCardAction(action));
 	}
 
 	private admit(msg: InboundMessage): Promise<void> {
@@ -162,13 +152,12 @@ export class Dispatcher {
 			if (command?.kind === "stop") {
 				const outcome = await this.interaction.dispatch({ type: "turn.cancel", source: effective.source });
 				if (!("cancelled" in outcome)) throw new Error("Cancellation dispatch did not produce a cancellation result");
-				await this.platform.send(msg.source.chatId, `${outcome.cancelled ? "已停止当前任务" : "当前没有正在执行的任务"}${outcome.subagentsCancelled ? `；同时取消 ${outcome.subagentsCancelled} 个子任务` : ""}${outcome.approvalCancelled ? "；已取消待审批操作" : ""}。`);
+				await this.platform.send(msg.source.chatId, `${outcome.cancelled ? "已停止当前任务" : "当前没有正在执行的任务"}${outcome.subagentsCancelled ? `；同时取消 ${outcome.subagentsCancelled} 个子任务` : ""}。`);
 				onAdmitted?.();
 				return;
 			}
 			const admissionKey = sessionOwnerKey(effective.source);
 			releaseAdmission = await this.acquireTurnAdmission(admissionKey);
-			if (await this.interaction.handleApprovalReply(effective.source, effective.text)) { admit(); return; }
 			const control = await this.runtime.handleControl({ source: effective.source, text: effective.text });
 			if (control?.handled) {
 				if (control.nextSource) this.setSessionOverride(msg.source, control.nextSource.threadId);
@@ -177,7 +166,7 @@ export class Dispatcher {
 				return;
 			}
 			const snapshot = await this.interaction.snapshot(effective.source);
-			if (["running", "queued", "awaiting_approval"].includes(snapshot.phase)) {
+			if (["running", "queued"].includes(snapshot.phase)) {
 				const media = effective.mediaPaths.length ? await prepareAgentMediaInput(effective) : undefined;
 				const queued = command?.kind === "steer"
 					? await this.interaction.dispatch({ type: "turn.steer", source: effective.source, text: command.text, images: media?.images })
@@ -252,7 +241,6 @@ export class Dispatcher {
 				updateIntervalMs: this.deps.presentationOptions?.updateIntervalMs ?? this.deps.flushIntervalMs,
 				ioTimeoutMs: this.deps.presentationOptions?.ioTimeoutMs ?? this.deps.presentationTimeoutMs,
 			},
-			onBinding: (messageId, pendingApprovalId) => this.rememberCardBinding(messageId, msg.source, pendingApprovalId),
 		});
 		let failed = false;
 		try {
@@ -387,7 +375,7 @@ export class Dispatcher {
 			const release = await this.acquireTurnAdmission(sessionOwnerKey(source));
 			try {
 				const snapshot = await this.interaction.snapshot(source);
-				if (["running", "queued", "awaiting_approval"].includes(snapshot.phase)) { this.interaction.releaseQueuedInput(source, input); return drained; }
+				if (["running", "queued"].includes(snapshot.phase)) { this.interaction.releaseQueuedInput(source, input); return drained; }
 				const message: InboundMessage = {
 					text: input.text, messageType: "text", source: input.source.messageId ? input.source : { ...input.source, messageId: `queued:${input.id}` },
 					mediaPaths: [], mediaTypes: [], raw: { queuedInputId: input.id }, timestamp: input.createdAt,
@@ -421,29 +409,6 @@ export class Dispatcher {
 			await Promise.race([Promise.allSettled([...this.activeHandles]).then(() => undefined), timeout]);
 			clearTimeout(timer);
 		}
-		this.deps.approvalBroker?.dispose();
-	}
-
-	private async handleCardAction(action: PlatformCardAction): Promise<void> {
-		const binding = this.cardBindings.get(action.messageId);
-		const source = binding?.source;
-		if (!binding || !source || source.chatId !== action.chatId) return;
-		const expectedUserIds = [source.userId, source.userIdAlt].filter((value): value is string => Boolean(value));
-		const actionUserIds = [action.userId, action.userIdAlt].filter((value): value is string => Boolean(value));
-		const sameUser = expectedUserIds.length > 0 && actionUserIds.some((value) => expectedUserIds.includes(value));
-		if (!sameUser || action.value.beemax_action !== "approval.decide") return;
-		const choice = action.value.choice;
-		if (choice !== "once" && choice !== "task" && choice !== "session" && choice !== "deny") return;
-		if (typeof action.value.approval_id !== "string" || action.value.approval_id !== binding.pendingApprovalId) return;
-		// Consume before dispatch so concurrent/re-delivered clicks fail closed.
-		binding.pendingApprovalId = undefined;
-		await this.interaction.dispatch({ type: "approval.decide", source, choice, actionId: action.actionId });
-	}
-
-	private rememberCardBinding(messageId: string, source: InboundMessage["source"], pendingApprovalId?: string): void {
-		this.cardBindings.delete(messageId);
-		if (this.cardBindings.size >= Dispatcher.maxSessionOverrides) this.cardBindings.delete(this.cardBindings.keys().next().value!);
-		this.cardBindings.set(messageId, { source: { ...source }, pendingApprovalId });
 	}
 
 	private setSessionOverride(source: InboundMessage["source"], threadId: string | undefined): void {

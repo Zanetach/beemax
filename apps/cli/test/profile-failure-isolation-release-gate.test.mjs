@@ -64,18 +64,21 @@ test("Profile failure and capacity remain isolated behind independent production
 
 function waitForLine(child, expected) {
 	return new Promise((resolve, reject) => {
-		let buffer = "";
-		const timer = setTimeout(() => reject(new Error(`Timed out waiting for ${expected}; stderr=${buffer}`)), 5_000);
+		let stdout = "";
+		let stderr = "";
+		const timer = setTimeout(() => reject(new Error(`Timed out waiting for ${expected}; stdout=${JSON.stringify(stdout)}; stderr=${JSON.stringify(stderr)}`)), 15_000);
 		const onData = (chunk) => {
-			buffer += chunk;
-			const line = buffer.split(/\r?\n/).find((entry) => entry === expected);
+			stdout += chunk;
+			const line = stdout.split(/\r?\n/).find((entry) => entry === expected);
 			if (!line) return;
 			clearTimeout(timer);
 			child.stdout.off("data", onData);
 			resolve(line);
 		};
 		child.stdout.setEncoding("utf8");
+		child.stderr.setEncoding("utf8");
 		child.stdout.on("data", onData);
+		child.stderr.on("data", (chunk) => { stderr += chunk; });
 		child.once("error", reject);
 	});
 }

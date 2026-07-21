@@ -332,23 +332,23 @@ export function createSkillTools(agentDir: string, markReloadNeeded: () => void,
 			const declaredTools = legacy ? activatedTools.filter((name) => name !== "skill_complete") : [];
 			return ephemeralResult(modelSafeSkillText(activated.instructions), { descriptor: publicSkill(activated.descriptor), routes: activated.routes, state: runtime.snapshot(), legacy, declaredTools, ...(sourceDeclaredTools.length ? { sourceDeclaredTools } : {}), activatedTools, providerResolutions: publicProviderResolutions(providerResolutions), skillLifecycleReceipt: skillLifecycleReceipt(activated.descriptor.name, activated.descriptor.sha256, "read", "skill_read", toolCallId) });
 		} })),
-		defineTool({ name: "skill_create", label: "Create Skill", description: "Create a durable instruction-only Agent Skill after a workflow proves reusable. Requires approval. Never put credentials in skills.", parameters: Type.Object({ name: Type.String({ pattern: "^[a-z0-9]+(?:-[a-z0-9]+)*$", maxLength: 64 }), description: Type.String({ minLength: 10, maxLength: 1024 }), instructions: Type.String({ minLength: 20, maxLength: 30_000 }) }), execute: async (_id, params) => {
+		defineTool({ name: "skill_create", label: "Create Skill", description: "Create a durable instruction-only Agent Skill after a workflow proves reusable. Never put credentials in skills.", parameters: Type.Object({ name: Type.String({ pattern: "^[a-z0-9]+(?:-[a-z0-9]+)*$", maxLength: 64 }), description: Type.String({ minLength: 10, maxLength: 1024 }), instructions: Type.String({ minLength: 20, maxLength: 30_000 }) }), execute: async (toolCallId, params) => {
 			assertSafeCandidate({ ...params, source: "direct Skill creation" });
 			const path = skillPath(root, params.name); await mkdir(resolve(path, ".."), { recursive: true });
 			try { await readFile(path, "utf8"); throw new Error(`Skill ${params.name} already exists; use skill_update`); } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
 			await writeFile(path, renderSkill(params), { encoding: "utf8", flag: "wx" });
 			const version = skillVersionOf({ ...params, source: "direct Skill creation", sha256: createHash("sha256").update(params.instructions.trim()).digest("hex") });
 			await persistSkillVersion(versionRoot, version, await signingKey());
-			await recordSkillVersionEvent(versionRoot, { id: crypto.randomUUID(), kind: "promoted", name: params.name, toSha256: version.sha256, evidenceRef: "approved:direct-skill-creation", at: Date.now(), signature: "" }, await signingKey());
+			await recordSkillVersionEvent(versionRoot, { id: crypto.randomUUID(), kind: "promoted", name: params.name, toSha256: version.sha256, evidenceRef: directToolExecutionEvidence("skill_create", toolCallId), at: Date.now(), signature: "" }, await signingKey());
 			markSkillsChanged(); return result(`Created and queued skill ${params.name} for hot reload after this turn.`, { name: params.name, path, sha256: version.sha256 });
 		} }),
-		defineTool({ name: "skill_update", label: "Update Skill", description: "Replace a managed instruction-only Agent Skill after learning a better verified workflow. Requires approval.", parameters: Type.Object({ name: Type.String({ pattern: "^[a-z0-9]+(?:-[a-z0-9]+)*$", maxLength: 64 }), description: Type.String({ minLength: 10, maxLength: 1024 }), instructions: Type.String({ minLength: 20, maxLength: 30_000 }) }), execute: async (_id, params) => {
+		defineTool({ name: "skill_update", label: "Update Skill", description: "Replace a managed instruction-only Agent Skill after learning a better verified workflow.", parameters: Type.Object({ name: Type.String({ pattern: "^[a-z0-9]+(?:-[a-z0-9]+)*$", maxLength: 64 }), description: Type.String({ minLength: 10, maxLength: 1024 }), instructions: Type.String({ minLength: 20, maxLength: 30_000 }) }), execute: async (toolCallId, params) => {
 			assertSafeCandidate({ ...params, source: "direct Skill update" });
 			const path = skillPath(root, params.name); const previous = await activeSkillVersion(path, params.name); if (!previous) throw new Error(`Skill ${params.name} is not active`);
 			const key = await signingKey(); await persistSkillVersion(versionRoot, previous, key);
 			const version = skillVersionOf({ ...params, source: "direct Skill update", sha256: createHash("sha256").update(params.instructions.trim()).digest("hex") });
 			await persistSkillVersion(versionRoot, version, key); await writeTextAtomic(path, renderSkill(params));
-			await recordSkillVersionEvent(versionRoot, { id: crypto.randomUUID(), kind: "promoted", name: params.name, fromSha256: previous.sha256, toSha256: version.sha256, evidenceRef: "approved:direct-skill-update", at: Date.now(), signature: "" }, key);
+			await recordSkillVersionEvent(versionRoot, { id: crypto.randomUUID(), kind: "promoted", name: params.name, fromSha256: previous.sha256, toSha256: version.sha256, evidenceRef: directToolExecutionEvidence("skill_update", toolCallId), at: Date.now(), signature: "" }, key);
 			markSkillsChanged(); return result(`Updated and queued skill ${params.name} for hot reload after this turn.`, { name: params.name, path, sha256: version.sha256 });
 		} }),
 		defineTool({ name: "skill_candidate_install", label: "Install Skill Candidate", description: "Safely stage an instruction-only Skill candidate in quarantine. Does not execute code or affect active Agent behavior.", parameters: Type.Object({ name: Type.String({ pattern: "^[a-z0-9]+(?:-[a-z0-9]+)*$", maxLength: 64 }), description: Type.String({ minLength: 10, maxLength: 1024 }), instructions: Type.String({ minLength: 20, maxLength: 30_000 }), source: Type.String({ minLength: 1, maxLength: 2_000 }) }), execute: async (_id, params) => {
@@ -380,7 +380,7 @@ export function createSkillTools(agentDir: string, markReloadNeeded: () => void,
 				return result(`Independent verifier recorded ${outcome} for ${params.name}.`, candidateSummary(candidate));
 			});
 		} }),
-		defineTool({ name: "skill_candidate_promote", label: "Promote Skill Candidate", description: "Register a quarantined instruction-only candidate after the required independent consecutive successful trials. Requires approval; managed versions enter a durable stable/canary rollout.", parameters: Type.Object({ name: Type.String({ pattern: "^[a-z0-9]+(?:-[a-z0-9]+)*$", maxLength: 64 }) }), execute: async (_id, params) => withCandidateLock(candidateRoot, params.name, async () => {
+		defineTool({ name: "skill_candidate_promote", label: "Promote Skill Candidate", description: "Register a quarantined instruction-only candidate after the required independent consecutive successful trials; managed versions enter a durable stable/canary rollout.", parameters: Type.Object({ name: Type.String({ pattern: "^[a-z0-9]+(?:-[a-z0-9]+)*$", maxLength: 64 }) }), execute: async (_id, params) => withCandidateLock(candidateRoot, params.name, async () => {
 			const candidateFile = candidatePath(candidateRoot, params.name);
 			const candidate = await readCandidate(candidateFile, await signingKey());
 			const consecutive = consecutiveAccepted(candidate.attempts);
@@ -440,14 +440,14 @@ export function createSkillTools(agentDir: string, markReloadNeeded: () => void,
 			const active = await activeSkillVersion(skillPath(root, params.name), params.name);
 			return result(`Found ${versions.length} immutable versions for ${params.name}.`, { name: params.name, currentSha256: active?.sha256, versions: versions.map(({ instructions: _instructions, signature: _signature, ...version }) => version), events: events.map(({ signature: _signature, ...event }) => event) });
 		} }),
-		defineTool({ name: "skill_rollback", label: "Rollback Skill", description: "Restore one immutable verified managed Skill version. Requires approval and retains a durable rollback event.", parameters: Type.Object({ name: Type.String({ pattern: "^[a-z0-9]+(?:-[a-z0-9]+)*$", maxLength: 64 }), sha256: Type.String({ pattern: "^[a-f0-9]{64}$" }) }), execute: async (toolCallId, params) => withCandidateLock(candidateRoot, params.name, async () => {
+		defineTool({ name: "skill_rollback", label: "Rollback Skill", description: "Restore one immutable verified managed Skill version and retain a durable rollback event.", parameters: Type.Object({ name: Type.String({ pattern: "^[a-z0-9]+(?:-[a-z0-9]+)*$", maxLength: 64 }), sha256: Type.String({ pattern: "^[a-f0-9]{64}$" }) }), execute: async (toolCallId, params) => withCandidateLock(candidateRoot, params.name, async () => {
 			const key = await signingKey();
 			const target = await readSkillVersion(versionRoot, params.name, params.sha256, key);
 			const path = skillPath(root, params.name);
 			const current = await activeSkillVersion(path, params.name);
 			if (!current) throw new Error(`Skill ${params.name} is not active`);
 			await persistSkillVersion(versionRoot, current, key);
-			const evidenceRef = `approved:skill-rollback:${createHash("sha256").update(toolCallId).digest("hex")}`;
+			const evidenceRef = directToolExecutionEvidence("skill_rollback", toolCallId);
 			const managedPointer = managedSkillLearning?.authority.rollbackVersion({ profileId: managedSkillLearning.profileId, name: params.name, targetVersionSha256: target.sha256, evidenceRef, policyVersion: managedSkillLearning.policyVersion ?? "l4.v1", rolledBackAt: Date.now() });
 			await writeTextAtomic(path, renderSkill(target));
 			await recordSkillVersionEvent(versionRoot, { id: crypto.randomUUID(), kind: "rollback", name: params.name, fromSha256: current.sha256, toSha256: target.sha256, evidenceRef, at: Date.now(), signature: "" }, key);
@@ -458,7 +458,7 @@ export function createSkillTools(agentDir: string, markReloadNeeded: () => void,
 	const evolveSkill: ToolPolicy = { ...MUTATING_TOOL_POLICY, sideEffect: "local", risk: "high", reversible: "unknown", impact: "Changes durable instructions that influence future Agent behavior" };
 	const policies: Record<string, ToolPolicy> = {
 		capability_discover: { ...READ_ONLY_TOOL_POLICY },
-		capability_acquire: { ...MUTATING_TOOL_POLICY, sideEffect: "local", risk: "high", approval: "always", reversible: "unknown", maxAttempts: 1, impact: "Installs a versioned Tool or MCP Provider from a trusted catalog after evidence-backed authority" },
+		capability_acquire: { ...MUTATING_TOOL_POLICY, sideEffect: "local", risk: "high", reversible: "unknown", maxAttempts: 1, impact: "Installs a versioned Tool or MCP Provider from a trusted catalog after evidence-backed authority" },
 		skill_list: { ...READ_ONLY_TOOL_POLICY },
 		skill_read: { ...READ_ONLY_TOOL_POLICY },
 		skill_activate: { ...READ_ONLY_TOOL_POLICY },
@@ -468,7 +468,7 @@ export function createSkillTools(agentDir: string, markReloadNeeded: () => void,
 		skill_create: { ...evolveSkill, reversible: true },
 		skill_update: evolveSkill,
 		skill_candidate_install: { ...evolveSkill, reversible: true },
-		skill_candidate_verify: { ...MUTATING_TOOL_POLICY, sideEffect: "local", risk: "low", approval: "never", reversible: false, impact: "Appends immutable bounded verification evidence in isolated candidate storage" },
+		skill_candidate_verify: { ...MUTATING_TOOL_POLICY, sideEffect: "local", risk: "low", reversible: false, impact: "Appends immutable bounded verification evidence in isolated candidate storage" },
 		skill_candidate_promote: { ...evolveSkill, reversible: true },
 		skill_versions: { ...READ_ONLY_TOOL_POLICY },
 		skill_rollback: { ...evolveSkill, reversible: true },
@@ -707,6 +707,9 @@ function publicProviderAcquisition(acquisition: CapabilityProviderAcquisition) {
 }
 function ephemeralResult(text: string, details: Record<string, unknown>) { return result(text, { ...details, beemaxPersistence: { mode: "summary", text: "[Turn-scoped Skill context omitted; versioned execution metadata retained.]" } }); }
 function publicSkill(skill: { name: string; description: string; sha256: string; priority?: number }) { return { name: skill.name, description: skill.description, sha256: skill.sha256, priority: skill.priority }; }
+function directToolExecutionEvidence(toolName: "skill_create" | "skill_update" | "skill_rollback", toolCallId: string): string {
+	return `tool-execution:${toolName}:${createHash("sha256").update(toolCallId).digest("hex")}`;
+}
 function skillLifecycleReceipt(name: string, sha256: string, phase: "activated" | "routed" | "resource_read" | "read" | "completed", sourceTool: "skill_activate" | "skill_route" | "skill_resource_read" | "skill_read" | "skill_complete", discriminator = "stage") {
 	const suffix = createHash("sha256").update(discriminator).digest("hex");
 	return { id: `receipt:skill-lifecycle:${phase}:${name}:${sha256}:${suffix}`, name, version: `sha256:${sha256}`, phase, sourceTool };

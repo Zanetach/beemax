@@ -34,7 +34,7 @@ export const INTERACTION_COMMANDS: readonly InteractionCommandDefinition[] = [
 	{ name: "resume", usage: "/resume <session-id|number>", description: "Resume a session" },
 	{ name: "history", usage: "/history [n]", description: "Show recent session history" },
 	{ name: "usage", usage: "/usage", description: "Show context and token usage" },
-	{ name: "stop", usage: "/stop", description: "Cancel the active turn and pending approval" },
+	{ name: "stop", usage: "/stop", description: "Cancel the active turn and queued input" },
 	{ name: "continue", usage: "/continue", description: "Continue the current durable Objective" },
 	{ name: "compact", usage: "/compact", description: "Compact the current context" },
 	{ name: "models", usage: "/models", description: "List configured models" },

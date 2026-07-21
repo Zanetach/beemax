@@ -163,7 +163,7 @@ function compensationAuthorityRejection(candidate: ProactiveReversibleActionCand
 	if (decision.effectiveScope.kind === "access_scope" && decision.effectiveScope.accessScopeId !== candidate.accessScopeRef.id) return "compensation_policy_scope_mismatch";
 	if (decision.publisher.trust !== "verified" || !decision.evidenceRefs.length) return "compensation_policy_untrusted";
 	const resolved = resolveEnterprisePolicyDecision(decision, policy);
-	return !resolved.allowed || resolved.requiresApproval ? "compensation_policy_does_not_allow_autonomy" : undefined;
+	return !resolved.allowed ? "compensation_policy_does_not_allow_autonomy" : undefined;
 }
 
 function mutationPrompt(observation: InitiativeObservation, capability: string): string {

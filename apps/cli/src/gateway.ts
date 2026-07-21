@@ -9,7 +9,7 @@
 
 import { AutomationStore } from "@beemax/automation";
 import { createHash } from "node:crypto";
-import { ActionGovernance, AuthStorage, AutonomyRolloutController, AutomationDeliveryWorker, AutomationScheduler, BeeMaxAgentRuntime, DefaultMemoryLearningKernel, DeliveryDeferredError, DeterministicLearningExtractor, DeterministicSituationBuilder, FileCredentialVault, FileCredentialVaultAuditJournal, GroupObservationRecorder, HeartbeatRunner, InitiativeRuntime, InitiativeTriggerService, ObjectiveCompletionDeliveryService, PiAmbientObservationEvaluator, PiLearningExtractor, ProactiveInvestigationRuntime, ProgressiveLearningExtractor, TaskPlanNoticeDeliveryService, TaskTransitionInitiativeAdapter, ToolApprovalBroker, ToolPolicyRegistry, VERIFICATION_SUBMIT_TOOL_NAME, buildActiveTaskPreservationEnvelope, buildTaskPreservationEnvelope, canonicalUserId, containsCredentialMaterial, conversationKey, responsibilityOwnerKey, responsibilityOwnerKeys, createContractAdmissionReceiptIntegrity, createExecutionEnvelope, createSubagentTools, createTaskCheckpoint, createTaskLedgerTools, createTaskOrchestrationTools, decideInitiativeFromSituation, guardVerifiedObjectiveMemoryPublisher, isVerifiedAutomationOutcome, objectiveIdFromCompletionId, redactCredentialMaterial, renderTaskCheckpoint, selectTurnTools, taskCriterionDefinitions, taskRequiresCurrentSourceEvidence, type AgentRuntimePort, type AmbientObservationEvaluator, type BeeMaxAgentRunEvent, type BeeMaxAgentRunEventSink, type ContextCompactionAuditEvent, type DeliveryPort, type ExecutionEnvelope, type ExecutionTraceSink, type InitiativeObservation, type LearningObjectiveAdmissionPort, type ObjectiveDeliveryInput, type SkillCandidateTrialInput, type SkillTrialAssertion, type SkillTrialToolCall, type SubagentTask, type TaskGraphExecutionContext, type TaskGraphExecutionResult, type TaskGraphVerifier, type TaskLedger, type TaskRecord, type ToolEffectProjectionReader, type VerifiedObjectiveMemoryPublisher, type VerifiedObjectiveOutcome } from "@beemax/core";
+import { ActionGovernance, AuthStorage, AutonomyRolloutController, AutomationDeliveryWorker, AutomationScheduler, BeeMaxAgentRuntime, DefaultMemoryLearningKernel, DeliveryDeferredError, DeterministicLearningExtractor, DeterministicSituationBuilder, FileCredentialVault, FileCredentialVaultAuditJournal, GroupObservationRecorder, HeartbeatRunner, InitiativeRuntime, InitiativeTriggerService, ObjectiveCompletionDeliveryService, PiAmbientObservationEvaluator, PiLearningExtractor, ProactiveInvestigationRuntime, ProgressiveLearningExtractor, TaskPlanNoticeDeliveryService, TaskTransitionInitiativeAdapter, ToolPolicyRegistry, VERIFICATION_SUBMIT_TOOL_NAME, buildActiveTaskPreservationEnvelope, buildTaskPreservationEnvelope, canonicalUserId, containsCredentialMaterial, conversationKey, responsibilityOwnerKey, responsibilityOwnerKeys, createContractAdmissionReceiptIntegrity, createExecutionEnvelope, createSubagentTools, createTaskCheckpoint, createTaskLedgerTools, createTaskOrchestrationTools, decideInitiativeFromSituation, guardVerifiedObjectiveMemoryPublisher, isVerifiedAutomationOutcome, objectiveIdFromCompletionId, redactCredentialMaterial, renderTaskCheckpoint, selectTurnTools, taskCriterionDefinitions, taskRequiresCurrentSourceEvidence, type AgentRuntimePort, type AmbientObservationEvaluator, type BeeMaxAgentRunEvent, type BeeMaxAgentRunEventSink, type ContextCompactionAuditEvent, type DeliveryPort, type ExecutionEnvelope, type ExecutionTraceSink, type InitiativeObservation, type LearningObjectiveAdmissionPort, type ObjectiveDeliveryInput, type SkillCandidateTrialInput, type SkillTrialAssertion, type SkillTrialToolCall, type SubagentTask, type TaskGraphExecutionContext, type TaskGraphExecutionResult, type TaskGraphVerifier, type TaskLedger, type TaskRecord, type ToolEffectProjectionReader, type VerifiedObjectiveMemoryPublisher, type VerifiedObjectiveOutcome } from "@beemax/core";
 import {
 	AdapterRegistry,
 	ChannelHost,
@@ -31,7 +31,7 @@ import { MemoryStore, memoryPersistencePorts, type OrganizationMemoryPort } from
 import { createFeishuMeetingTools } from "@beemax/feishu-capability";
 import { WeKnoraKnowledgeProvider, createKnowledgeTools } from "@beemax/knowledge";
 import type { SessionSource } from "@beemax/channel-runtime";
-import { beemaxHome, consumeChannelCredential, profileTaskGrantCapabilities, profileTurnTimeoutMs, type BeeMaxConfig } from "./config.ts";
+import { beemaxHome, consumeChannelCredential, profileTurnTimeoutMs, type BeeMaxConfig } from "./config.ts";
 import { acquireChannelLock } from "./channel-lock.ts";
 import { createTaskAwareConversationContext } from "./runtime-facts.ts";
 import { createProfileRuntime } from "./runtime-composition.ts";
@@ -259,16 +259,6 @@ export async function runGateway(config: BeeMaxConfig): Promise<void> {
 		else console.warn(`[beemax] MCP ${status.name}: unavailable (${status.error})`);
 	}
 	const apiKey = config.model.apiKey ?? "";
-	const approvalBroker = new ToolApprovalBroker(async (source, text) => {
-		await deliveryPort.sendText(source, text);
-	}, undefined, (event) => recordGatewayEvent(config.paths.agentDir, "approval", {
-		profile: config.profile,
-		tool: event.toolName,
-		allowed: event.allowed,
-		reason: event.reason,
-		conversation: `${event.source.platform}:${event.source.chatId}`,
-	}), profileTaskGrantCapabilities(config));
-	profileStartupCleanup.push(() => approvalBroker.dispose());
 	const readOnlyMcpTools = mcp.getTools().filter((tool) => tool.beemaxPolicy?.sideEffect === "none");
 	const mainMcpTools = config.agent.toolset === "safe" ? readOnlyMcpTools : mcp.getTools();
 	const soleFeishuAdapter = feishuAdapters.size === 1 ? [...feishuAdapters.values()][0] : undefined;
@@ -407,7 +397,6 @@ export async function runGateway(config: BeeMaxConfig): Promise<void> {
 			{ name: "memory", dispose: () => memory.close() },
 			{ name: "automation", dispose: () => automation.close() },
 			{ name: "capability", dispose: () => mcp.close() },
-			{ name: "approval", dispose: () => approvalBroker.dispose() },
 		],
 		compose: (work) => {
 			const { taskScheduler, planningBudgets, taskPlanRuntime, verifyTask, taskRecovery, objectiveRuntime, subagents, toolEffects, executionTrace } = work;
@@ -435,10 +424,7 @@ export async function runGateway(config: BeeMaxConfig): Promise<void> {
 		],
 		automationStore: automation,
 		wakeAutomation: () => scheduler?.wake(),
-		authorizeTool: (request, signal) => approvalBroker.authorize(request, signal),
-		executionGrant: (source) => approvalBroker.executionGrant(source),
 		toolEffects,
-		currentTaskId: (source) => approvalBroker.executionGrant(source)?.taskId,
 			compactionInstructions: (source) => buildActiveTaskPreservationEnvelope(memory, source),
 		credentials: credentialVault ? { ownerKey: `profile:${config.profile}`, vault: credentialVault } : undefined,
 			});
@@ -480,7 +466,6 @@ export async function runGateway(config: BeeMaxConfig): Promise<void> {
 			mediaUnderstanding: configuredMediaUnderstanding(config, createLocalMediaUnderstandingAdapters(config.mediaUnderstanding.localOcr)),
 			context: createTaskAwareConversationContext(memory, { memoryScope: { profileId: config.profile }, resolveMemoryScope, organizationSituationAllowed: () => autonomyRollout.allows("situation_context").allowed, memoryLearningKernel, memoryLearningAllowed: () => autonomyRollout.allows("adaptive_learning").allowed, recordDirectRoute: (_route, source) => automation.setLastRoute({ platform: source.platform, ...(source.channelInstanceId ? { channelInstanceId: source.channelInstanceId } : {}), chatId: source.chatId, chatType: source.chatType, userId: source.userIdAlt ?? source.userId }), runtimeSnapshot: () => ({ profile: config.profile }), maxContextChars: config.context.maxTurnChars }),
 		},
-		approvalBroker,
 		cancelSubagents: (source) => subagents?.cancelOwner(source) ?? 0,
 		cancelTaskPlans: (source) => {
 			const ownerKey = responsibilityOwnerKey(source);
@@ -562,7 +547,6 @@ export async function runGateway(config: BeeMaxConfig): Promise<void> {
 				reasoningDisplay: config.agent.reasoningDisplay,
 				updateIntervalMs: 350,
 			},
-			approvalBroker,
 			cancelTasks: (source) => subagents?.cancelOwner(source) ?? 0,
 			completionAcknowledger: persistence.completionOutbox,
 			beforeCompletionAcknowledged: async (completionId, source) => {

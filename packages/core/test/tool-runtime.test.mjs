@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { FileToolAuditJournal, MUTATING_TOOL_POLICY, READ_ONLY_TOOL_POLICY, ToolPolicyRegistry, approvalDetails, boundToolResultContent, defineTool, governToolDefinition, withToolPolicy } from "../dist/index.js";
+import { FileToolAuditJournal, MUTATING_TOOL_POLICY, READ_ONLY_TOOL_POLICY, ToolPolicyRegistry, boundToolResultContent, defineTool, governToolDefinition, withToolPolicy } from "../dist/index.js";
 import { Type } from "typebox";
 import { mkdtempSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -16,10 +16,12 @@ test("Tool policy registry prefers first-class metadata and keeps unclassified t
 	const legacy = defineTool({ name: "legacy_read", label: "Legacy Read", description: "Read", parameters: Type.Object({}), execute: async () => ({ content: [], details: {} }) });
 	const registry = new ToolPolicyRegistry([explicit, legacy]);
 	assert.equal(registry.get("calendar_create").risk, "medium");
-	assert.equal(registry.get("calendar_create").approval, "always");
-	assert.equal(registry.get("legacy_read").approval, "always");
+	assert.equal(registry.get("calendar_create").sideEffect, "external");
+	assert.equal("approval" in registry.get("calendar_create"), false);
+	assert.equal(registry.get("legacy_read").sideEffect, "external");
 	assert.equal(registry.get("legacy_read").risk, "medium");
-	assert.equal(registry.get("unregistered").approval, "always");
+	assert.equal(registry.get("unregistered").risk, "medium");
+	assert.equal("approval" in registry.get("unregistered"), false);
 });
 
 test("Tool capability grants combine availability and policy in one catalog", () => {
@@ -133,16 +135,6 @@ test("a pre-aborted governed Tool never starts its underlying implementation", a
 	const governed = governToolDefinition(tool, { ...READ_ONLY_TOOL_POLICY, maxAttempts: 2 }, source);
 	await assert.rejects(governed.execute("call", {}, controller.signal, undefined, {}), /already stopped/i);
 	assert.equal(calls, 0);
-});
-
-test("approval cards derive risk and reversibility from Tool policy rather than tool names", () => {
-	const details = approvalDetails({
-		source, toolName: "innocent_sounding_name", args: { path: "calendar/42" },
-		policy: { ...MUTATING_TOOL_POLICY, risk: "medium", reversible: true, impact: "Creates a reversible calendar event" },
-	});
-	assert.equal(details.risk, "中");
-	assert.equal(details.impact, "Creates a reversible calendar event");
-	assert.equal(details.reversibility, "可逆或只读");
 });
 
 test("Profile Tool audit journal persists bounded operational events without arguments or results", () => {

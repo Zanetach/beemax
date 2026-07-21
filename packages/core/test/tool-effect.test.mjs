@@ -153,7 +153,7 @@ test("effect ledger recovers a mutation abandoned by a crashed process", () => {
 	} finally { rmSync(root, { recursive: true, force: true }); }
 });
 
-test("turn cleanup marks a mutation unknown when Pi aborts after approval but before execution", () => {
+test("turn cleanup marks a mutation unknown when Pi aborts after Effect admission but before execution", () => {
 	const root = mkdtempSync(join(tmpdir(), "beemax-effects-abort-"));
 	try {
 		const effects = new FileToolEffectJournal(join(root, "tool-effects.jsonl"));

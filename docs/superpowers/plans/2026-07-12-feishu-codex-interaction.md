@@ -13,7 +13,7 @@
 - One continuously updated card per Turn.
 - At most four card patches per second.
 - Terminal state always contains the complete buffered answer.
-- Preserve approval, recovery, payload, and transport compatibility.
+- Preserve recovery, payload, and transport compatibility; do not add Tool approval actions or reply parsing.
 
 ---
 
@@ -55,4 +55,3 @@
 - [ ] Review the diff against the design and repository standards.
 - [ ] Commit the implementation.
 - [ ] Restart `e2e-feishu` and verify running status plus `Feishu gateway connected` in logs.
-

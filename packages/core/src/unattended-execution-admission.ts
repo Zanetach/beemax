@@ -138,7 +138,6 @@ export class UnattendedExecutionAdmission {
 			return allowed(scopedGrant, "scoped_execution_grant", "A current exact Execution Grant authorizes this unattended action");
 		}
 
-		if (resolvedPolicy?.requiresApproval) return blocked("scoped_execution_grant_required", "Enterprise Policy requires a scoped Execution Grant");
 		if (requiresScopedGrant(input)) return blocked("scoped_execution_grant_required", "This action is not eligible for standing Profile authority");
 		if (!input.standingAuthority) return blocked("standing_profile_authority_required", "No standing Profile authority covers this unattended action");
 		if (input.toolPolicy.sideEffect !== "none" && input.reversibleCapability) evidenceRefs.push(...input.reversibleCapability.compensation.evidenceRefs);
@@ -224,7 +223,7 @@ function grantBlocker(grant: UnattendedAuthorityGrant, input: UnattendedExecutio
 
 function requiresScopedGrant(input: UnattendedExecutionAdmissionInput): boolean {
 	const { toolPolicy: policy, reliability } = input;
-	if (policy.approval === "always" || policy.risk !== "low") return true;
+	if (policy.risk !== "low") return true;
 	if (policy.sideEffect !== "none" && (policy.reversible !== true || !currentReversibility(input.reversibleCapability, input.toolName, policy, input.at))) return true;
 	if (policy.sideEffect !== "none" && reliability !== "reliable") return true;
 	return false;
@@ -269,7 +268,7 @@ function currentReversibility(capability: ReversibleActionCapability | undefined
 }
 
 function samePolicy(left: ToolPolicy, right: ToolPolicy): boolean {
-	return left.risk === right.risk && left.sideEffect === right.sideEffect && left.approval === right.approval && left.reversible === right.reversible
+	return left.risk === right.risk && left.sideEffect === right.sideEffect && left.reversible === right.reversible
 		&& left.timeoutMs === right.timeoutMs && left.maxAttempts === right.maxAttempts && left.maxResultBytes === right.maxResultBytes
 		&& left.impact === right.impact && left.effectProofProvider === right.effectProofProvider;
 }

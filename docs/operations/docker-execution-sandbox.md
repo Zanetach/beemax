@@ -11,22 +11,13 @@ execution:
   backend: docker
   mode: all
   workspaceAccess: none # none | ro | rw
-  workspaceWritePolicy: approval-required # approval-required | allow-within-workspace
-  taskGrantCapabilities: [] # explicit exact Tool capability names; no wildcards
   image: node:22.19-alpine
   timeoutMs: 180000
 ```
 
 运行 `beemax doctor --profile <name>`。Docker daemon 不可用、`mode: all` 搭配 local，或配置值拼写错误都会失败，不会静默退回宿主执行。
 
-`workspaceWritePolicy` 控制 Profile 是否预先授权内置 `write` Tool：
-
-- `approval-required` 是默认值，每次写入继续走审批；适合交互式 Profile。
-- `allow-within-workspace` 只给当前 Task 的内置 `write` capability 签发 Execution Grant；适合无人值守但工作区受控的 Profile。也可通过 `BEEMAX_WORKSPACE_WRITE_POLICY` 配置。
-
-这个授权不会扩展到 `bash`、MCP 或其他写工具，也不能越过 Enterprise Policy deny、Core hard block、工作区路径校验、Effect reconciliation 或 Sandbox 的 `workspaceAccess`。因此 Docker 配置为 `none`/`ro` 时，Profile 写策略不会把挂载权限提升为 `rw`。
-
-`taskGrantCapabilities` 用于企业或运维方显式预授权当前 Profile 中可无人值守执行的具体 Tool。它默认空、按精确 capability 名匹配、拒绝 `*` 等通配符，并且每个新 Task 都重新签发；也可用逗号分隔的 `BEEMAX_TASK_GRANT_CAPABILITIES` 配置。该列表只免除重复的人机批准，不会绕过 Enterprise Policy、Tool Policy、Effect Authority、Scope 或 Sandbox 边界。
+Tool 调用不进入人工审批等待。旧 `workspaceWritePolicy`、`taskGrantCapabilities`、`BEEMAX_WORKSPACE_WRITE_POLICY` 与 `BEEMAX_TASK_GRANT_CAPABILITIES` 已退役；旧 Profile 中的 YAML 字段在读取时被忽略，建议删除。是否允许工作区写入只由 `workspaceAccess`、路径校验、Execution Sandbox、Enterprise Policy、Core hard block 与 Effect reconciliation 决定；`none`/`ro` 不会被 Tool 调用提升为 `rw`。
 
 ## 强制边界
 
@@ -37,7 +28,7 @@ execution:
 - Workspace 默认不挂载；`ro` 只能读，`rw` 才允许写。路径必须保持在配置的 workspace 内。
 - 模块不传递宿主环境、Docker socket 或 Credential Secret。
 
-Execution Sandbox 不隔离 MCP、Browser、Channel Adapter、模型 Provider 或 Gateway 本身，也不能单独构成不同客户之间的 hostile-tenant 边界。Tool Approval、Enterprise Policy、Execution Grant 与 Effect Authority 仍然在 Sandbox 之前决定动作是否允许。
+Execution Sandbox 不隔离 MCP、Browser、Channel Adapter、模型 Provider 或 Gateway 本身，也不能单独构成不同客户之间的 hostile-tenant 边界。Enterprise Policy、Execution Grant 与 Effect Authority 仍然在 Sandbox 之前决定动作是否允许；Tool 调用不会等待人工审批。
 
 ## 发布验收
 

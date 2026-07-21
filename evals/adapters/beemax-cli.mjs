@@ -20,7 +20,7 @@ export async function createAgentParityAdapter({ system, options = {} }) {
 	const mcpServerPath = resolve(options.mcpServerPath || `${options.fixtureRoot}/mcp-server.mjs`);
 	return async (scenario, signal) => {
 		const workspace = await isolatedEvaluationWorkspace(options.fixtureRoot, "beemax-parity-beemax-");
-		const isolatedProfile = await createIsolatedProfile({ sourceHome, sourceProfile, workspace: workspace.cwd, system, provider: options.provider, fixtureRoot: options.fixtureRoot, workspaceWritePolicy: options.workspaceWritePolicy, taskGrantCapabilities: scenarioTaskGrantCapabilities(options.taskGrantCapabilities, scenario) });
+		const isolatedProfile = await createIsolatedProfile({ sourceHome, sourceProfile, workspace: workspace.cwd, system, provider: options.provider });
 		const interactionPath = join(isolatedProfile.profileRoot, "interaction-events.jsonl");
 		const tracePath = join(isolatedProfile.profileRoot, "logs", "execution-trace.jsonl");
 		const memoryPath = join(isolatedProfile.profileRoot, "memory.db");
@@ -45,22 +45,7 @@ export async function createAgentParityAdapter({ system, options = {} }) {
 	};
 }
 
-const FIXTURE_GRANT_BY_REQUIRED_CAPABILITY = Object.freeze({
-	message_deliver: "mcp_agent_parity_deliver",
-	schedule_run: "mcp_agent_parity_schedule_delivery",
-	task_recover: "mcp_agent_parity_recover_step",
-	effect_reconcile: "mcp_agent_parity_send_unknown",
-});
-
-export function scenarioTaskGrantCapabilities(configured, scenario) {
-	const allowed = new Set(Array.isArray(configured) ? configured : []);
-	return [...new Set((scenario?.requiredCapabilities ?? []).flatMap((capability) => {
-		const grant = FIXTURE_GRANT_BY_REQUIRED_CAPABILITY[capability];
-		return grant && allowed.has(grant) ? [grant] : [];
-	}))];
-}
-
-export async function createIsolatedProfile({ sourceHome, sourceProfile, workspace, system, provider, fixtureRoot, workspaceWritePolicy, taskGrantCapabilities }) {
+export async function createIsolatedProfile({ sourceHome, sourceProfile, workspace, system, provider }) {
 	const home = await mkdtemp(join(tmpdir(), "beemax-parity-profile-"));
 	const profile = "parity";
 	const profileRoot = join(home, "profiles", profile);
@@ -72,8 +57,6 @@ export async function createIsolatedProfile({ sourceHome, sourceProfile, workspa
 		BEEMAX_MODEL: system.model,
 		BEEMAX_CWD: workspace,
 		...(provider ? { BEEMAX_PROVIDER: String(provider) } : {}),
-		...(workspaceWritePolicy ? { BEEMAX_WORKSPACE_WRITE_POLICY: String(workspaceWritePolicy) } : {}),
-		...(Array.isArray(taskGrantCapabilities) && taskGrantCapabilities.length ? { BEEMAX_TASK_GRANT_CAPABILITIES: taskGrantCapabilities.join(",") } : {}),
 	});
 	return { home, profile, profileRoot, dispose: () => rm(home, { recursive: true, force: true }) };
 }

@@ -437,7 +437,7 @@ export function createSubagentTools(manager: SubagentManager, source: BeeMaxRunt
 			execute: async (_id, params) => toolResult(manager.cancel(source, params.id)),
 		}),
 	];
-	const localControl: ToolPolicy = { ...MUTATING_TOOL_POLICY, sideEffect: "local", risk: "low", approval: "never", reversible: true, impact: "Changes only the current conversation's bounded Sub-Agent tasks" };
+	const localControl: ToolPolicy = { ...MUTATING_TOOL_POLICY, sideEffect: "local", risk: "low", reversible: true, impact: "Changes only the current conversation's bounded Sub-Agent tasks" };
 	const policies: Record<string, ToolPolicy> = {
 		task_spawn: { ...localControl, risk: "medium", impact: "Starts one bounded read-only Sub-Agent task" },
 		task_status: { ...READ_ONLY_TOOL_POLICY },

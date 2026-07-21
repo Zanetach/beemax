@@ -2,7 +2,7 @@
 
 ## Problem Statement
 
-BeeMax exposes one `ExecutionPort`, but the current configuration makes `local` look like a peer Sandbox backend even though it executes with the BeeMax host user's authority. Docker already applies several constraints, but cancellation cleanup, privilege hardening, executable evidence, and the exact capability boundary are not yet a production release contract. Operators therefore cannot distinguish “Profile isolation”, “Tool approval”, and “command isolation”, or prove that an interrupted Docker Tool did not leave a container running.
+BeeMax exposes one `ExecutionPort`, but the current configuration makes `local` look like a peer Sandbox backend even though it executes with the BeeMax host user's authority. Docker already applies several constraints, but cancellation cleanup, privilege hardening, executable evidence, and the exact capability boundary are not yet a production release contract. Operators therefore cannot distinguish “Profile isolation”, “Tool governance”, and “command isolation”, or prove that an interrupted Docker Tool did not leave a container running.
 
 ## Solution
 
@@ -31,7 +31,7 @@ Declare Docker as the first production Execution Sandbox and retain local execut
 - Docker receives no host environment or credential mounts from this module. It runs as the BeeMax process UID/GID, network stays `none`, the container root stays read-only, and the only writable root path is bounded `/tmp`.
 - Workspace mount policy is `none`, `ro`, or `rw`. `writeFile` fails before launching Docker unless policy is `rw`.
 - Default image is pinned to the declared Node 22 release tag. Enterprises may configure another image, but that choice is operator authority and must pass the same runtime gate.
-- Tool approval, Enterprise Policy, Effect Authority, and Execution Grant remain upstream governance. Sandbox constraints are defense in depth and never grant an action.
+- Tool Governance, Enterprise Policy, Effect Authority, and Execution Grant remain upstream controls. Sandbox constraints are defense in depth and never grant an action.
 - Update P2/TBD-4 to record Docker as the first production Sandbox and local execution as trusted compatibility mode.
 
 ## Testing Decisions

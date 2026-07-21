@@ -12,13 +12,13 @@ test("automatic long-term understanding requires stable, non-sensitive source ev
 	assert.equal(canAutomaticallyUnderstand("用户默认使用中文", 0.9, "high", "我有高血压"), false);
 });
 
-test("memory tools declare intelligent write and destructive approval policies", () => {
+test("memory tools declare intelligent write and destructive risk policies", () => {
 	let remembered = 0;
 	const store = { stats: () => ({ curated: 0, pending: 0, promoted: 0, rejected: 0 }), listCandidates: () => [], promoteCandidate: () => false, rejectCandidate: () => false, remember: () => { remembered++; return "id"; }, recall: () => [], list: () => [], forget: () => false };
 	const tools = createMemoryTools(store, { platform: "cli", chatId: "local", chatType: "dm", userId: "local" });
-	assert.equal(tools.find((tool) => tool.name === "memory_recall").beemaxPolicy.approval, "never");
-	assert.equal(tools.find((tool) => tool.name === "memory_understand").beemaxPolicy.approval, "never");
+	assert.equal(tools.find((tool) => tool.name === "memory_recall").beemaxPolicy.sideEffect, "none");
 	assert.equal(tools.find((tool) => tool.name === "memory_understand").beemaxPolicy.sideEffect, "local");
+	assert.equal(tools.find((tool) => tool.name === "memory_understand").beemaxPolicy.risk, "low");
 	assert.equal(tools.find((tool) => tool.name === "memory_forget").beemaxPolicy.reversible, false);
 	return tools.find((tool) => tool.name === "memory_remember").execute("call", { content: "我的密码是 private-secret" }).then((result) => {
 		assert.match(result.content[0].text, /Refused/);

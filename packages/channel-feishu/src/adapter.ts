@@ -1188,9 +1188,8 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function cardActionId(messageId: string, openId: string, element: string, value: unknown): string {
 	const action = isRecord(value) ? String(value.beemax_action ?? "") : "";
-	const approvalId = isRecord(value) ? String(value.approval_id ?? "") : "";
 	const choice = isRecord(value) ? String(value.choice ?? "") : "";
-	return `feishu-card:${messageId}:${openId}:${element}:${action}:${approvalId}:${choice}`;
+	return `feishu-card:${messageId}:${openId}:${element}:${action}:${choice}`;
 }
 
 export function parseFeishuCardActionEvent(data: RawCardActionEvent): PlatformCardAction | undefined {

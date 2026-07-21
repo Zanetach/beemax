@@ -5,12 +5,10 @@ import { attestCapabilityProviderAcquisitionTool, attestCapabilityProviderResolu
 
 export type ToolRisk = "low" | "medium" | "high";
 export type ToolSideEffect = "none" | "local" | "external";
-export type ToolApprovalMode = "never" | "always";
 
 export interface ToolPolicy {
 	risk: ToolRisk;
 	sideEffect: ToolSideEffect;
-	approval: ToolApprovalMode;
 	reversible: boolean | "unknown";
 	timeoutMs: number;
 	maxAttempts: number;
@@ -50,7 +48,7 @@ export interface ToolSpecAvailabilityMetadata {
 }
 export type GovernedToolDefinition = ToolDefinition & { beemaxPolicy?: ToolPolicy; beemaxToolSpec?: ToolSpecAvailabilityMetadata };
 export type ToolRuntimeAuditEvent = {
-	phase: "requested" | "allowed" | "blocked" | "started" | "completed" | "failed";
+	phase: "allowed" | "blocked" | "started" | "completed" | "failed";
 	source: BeeMaxRuntimeSource;
 	toolName: string;
 	policy: ToolPolicy;
@@ -74,7 +72,7 @@ export type ToolRuntimeAuditEvent = {
 	};
 	governance?: {
 		decisionId: string;
-		outcome: "allow" | "deny" | "require_approval" | "missing_evidence";
+		outcome: "allow" | "deny" | "missing_evidence";
 		reasonCode: string;
 		factors: string[];
 		policyDecisionId?: string;
@@ -84,13 +82,13 @@ export type ToolRuntimeAuditEvent = {
 export type ToolRuntimeAuditSink = (event: ToolRuntimeAuditEvent) => void;
 
 export const READ_ONLY_TOOL_POLICY: Readonly<ToolPolicy> = Object.freeze({
-	risk: "low", sideEffect: "none", approval: "never", reversible: true,
+	risk: "low", sideEffect: "none", reversible: true,
 	timeoutMs: 60_000, maxAttempts: 2, maxResultBytes: 128 * 1024,
 	impact: "Reads data without changing local or external state",
 });
 
 export const MUTATING_TOOL_POLICY: Readonly<ToolPolicy> = Object.freeze({
-	risk: "high", sideEffect: "external", approval: "always", reversible: "unknown",
+	risk: "high", sideEffect: "external", reversible: "unknown",
 	timeoutMs: 3 * 60_000, maxAttempts: 1, maxResultBytes: 128 * 1024,
 	impact: "May change local files, Profile state, or an external service",
 });
@@ -100,7 +98,7 @@ const BUILTIN_POLICIES = new Map<string, ToolPolicy>([
 	...["bash", "edit", "write"].map((name) => [name, { ...MUTATING_TOOL_POLICY, sideEffect: "local" as const }] as const),
 ]);
 
-/** Core-owned policy catalog used by execution, approval, audit, and future health reporting. */
+/** Core-owned policy catalog used by execution, risk evaluation, audit, and future health reporting. */
 export class ToolPolicyRegistry {
 	private readonly policies = new Map<string, ToolPolicy>();
 	private readonly enabledTools = new Set<string>();

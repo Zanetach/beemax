@@ -10,11 +10,11 @@ Make one continuously updated Feishu card feel like Codex: acknowledge immediate
 
 - The first card is sent immediately when a Turn begins and says `已收到 · 正在理解需求`.
 - Waiting updates remain truthful and appear at bounded intervals; a silent model must never look frozen.
-- Tool, planning, work, fallback, approval, queue, and terminal state changes bypass ordinary text throttling.
+- Tool, planning, work, fallback, queue, and terminal state changes bypass ordinary text throttling.
 - Answer deltas are coalesced into readable chunks and card patches are rate-limited to at most 4 updates per second.
 - Once answer content starts, progress remains in the collapsed execution panel and the main area becomes the answer.
 - Completion, failure, and cancellation force the latest buffered answer and terminal state onto the card.
-- Existing approval actions, payload limits, recovery, and one-card behavior remain compatible.
+- Tool calls never create approval actions or wait for numeric replies; payload limits, recovery, and one-card behavior remain compatible.
 
 ## Architecture
 

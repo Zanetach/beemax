@@ -15,7 +15,7 @@ const hangingMcpFixture = fileURLToPath(new URL("./fixtures/hanging-mcp-server.m
 
 test("Feishu meeting tools publish read, mutation, and destructive policies", () => {
 	const tools = new Map(createFeishuMeetingTools(() => undefined).map((tool) => [tool.name, tool]));
-	assert.equal(tools.get("feishu_meeting_reserve_active_get").beemaxPolicy.approval, "never");
+	assert.equal(tools.get("feishu_meeting_reserve_active_get").beemaxPolicy.sideEffect, "none");
 	assert.equal(tools.get("feishu_meeting_reserve_create").beemaxPolicy.risk, "medium");
 	assert.equal(tools.get("feishu_meeting_end").beemaxPolicy.reversible, false);
 });
@@ -53,7 +53,7 @@ test("Pi keeps Skill metadata out of the base prompt and hot-reloads the registr
 	const factory = buildAgentFactory({
 		profileId: "profile:test",
 		provider: "anthropic", model: "claude-sonnet-4-5", cwd, agentDir,
-		getApiKey: () => "test", memoryStore, authorizeTool: async () => ({ allowed: true }),
+		getApiKey: () => "test", memoryStore,
 	});
 	const session = await factory("skill-test", { platform: "feishu", chatId: "c", chatType: "dm", userId: "u" });
 	try {
@@ -77,7 +77,7 @@ test("Pi keeps Skill metadata out of the base prompt and hot-reloads the registr
 	}
 });
 
-test("MCP tools are discovered, callable, and mutating tools require approval", async () => {
+test("MCP tools are discovered, callable, and expose approval-free policies", async () => {
 	const manager = new McpManager();
 	try {
 		const status = await manager.connectAll({
@@ -89,9 +89,10 @@ test("MCP tools are discovered, callable, and mutating tools require approval", 
 		assert.equal(status[0].prompts, 1);
 		const tools = new Map(manager.getTools().map((tool) => [tool.name, tool]));
 		assert.deepEqual(tools.get("mcp_smoke_echo").beemaxToolSpec, { kind: "mcp", configured: true, health: "ready" });
-		assert.equal(tools.get("mcp_smoke_echo").beemaxPolicy.approval, "never");
+		assert.equal(tools.get("mcp_smoke_echo").beemaxPolicy.sideEffect, "none");
 		assert.deepEqual(tools.get("mcp_smoke_echo").aliases, ["echo", "smoke echo", "smoke/echo"]);
-		assert.equal(tools.get("mcp_smoke_mutate").beemaxPolicy.approval, "always");
+		assert.equal(tools.get("mcp_smoke_mutate").beemaxPolicy.sideEffect, "external");
+		assert.equal("approval" in tools.get("mcp_smoke_mutate").beemaxPolicy, false);
 		assert.equal(tools.get("mcp_smoke_resource_read").beemaxPolicy.sideEffect, "none");
 		const result = await tools.get("mcp_smoke_echo").execute(
 			"echo",

@@ -2280,7 +2280,7 @@ function shouldBindDurableObjective<Source extends BeeMaxRuntimeSource>(input: A
  * Separates model cognition from durable control-plane admission.
  *
  * In the product's model-first lane, ordinary interactive work reaches Pi
- * directly regardless of lexical complexity. Tool policy, approvals, sandbox
+ * directly regardless of lexical complexity. Tool policy, sandbox
  * boundaries, immutable Tool Specs, execution receipts, and artifact verifiers
  * remain authoritative during the model/tool loop. Semantic Work Contracts are
  * reserved for Automation and explicit Objective lifecycle operations.

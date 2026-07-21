@@ -65,7 +65,7 @@ export function createTaskLedgerTools(ledger: TaskLedger, source: BeeMaxRuntimeS
 		}),
 	];
 	return tools.map((tool) => tool.name === "task_checkpoint_save"
-		? withToolPolicy(tool, { ...MUTATING_TOOL_POLICY, sideEffect: "local", risk: "low", approval: "never", reversible: true, impact: "Persists bounded progress for one owned running Task" })
+		? withToolPolicy(tool, { ...MUTATING_TOOL_POLICY, sideEffect: "local", risk: "low", reversible: true, impact: "Persists bounded progress for one owned running Task" })
 		: withToolPolicy(tool, { ...READ_ONLY_TOOL_POLICY, impact: "Reads durable Task lifecycle without changing execution state" }));
 }
 

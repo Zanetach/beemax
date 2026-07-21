@@ -12,7 +12,7 @@ export function createExecutionTools(source: BeeMaxRuntimeSource, cwd: string, e
 		defineTool({
 			name: "bash",
 			label: "Run Command",
-			description: "Run a shell command through BeeMax's configured execution backend. Requires approval.",
+			description: "Run a shell command through BeeMax's configured execution backend.",
 			parameters: Type.Object({
 				command: Type.String({ minLength: 1, maxLength: 20_000 }),
 				timeout: Type.Optional(Type.Integer({ minimum: 1, maximum: 600 })),
@@ -36,7 +36,7 @@ export function createExecutionTools(source: BeeMaxRuntimeSource, cwd: string, e
 		Object.assign(defineTool({
 			name: "write",
 			label: "Write File",
-			description: "Write a workspace file through BeeMax's configured execution backend. Keep ordinary reports under 18,000 characters and finish them in one complete replace call. Only genuinely longer requested artifacts should use complete chunks: replace first, then append with the prior receipt's exact byte length and SHA-256. Requires approval.",
+			description: "Write a workspace file through BeeMax's configured execution backend. Keep ordinary reports under 18,000 characters and finish them in one complete replace call. Only genuinely longer requested artifacts should use complete chunks: replace first, then append with the prior receipt's exact byte length and SHA-256.",
 			parameters: Type.Object({
 				path: Type.String({ minLength: 1 }),
 				content: Type.String({ maxLength: 1_000_000 }),

@@ -262,7 +262,7 @@ test("Feishu Adapter owns rich Turn presentation and exposes only the Channel Ru
 		source,
 		profileId: "profile",
 		preferences: { title: "BeeMax · profile", updateIntervalMs: 0, ioTimeoutMs: 100 },
-		onBinding: (messageId, pendingApprovalId) => bindings.push({ messageId, pendingApprovalId }),
+		onBinding: (messageId) => bindings.push({ messageId }),
 	});
 	await turn.start();
 	await turn.onEvent({ type: "answer.delta", sessionId: "session", scope: source, turnId: "turn", at: 1, sequence: 1, text: streamedAnswer });
@@ -274,7 +274,7 @@ test("Feishu Adapter owns rich Turn presentation and exposes only the Channel Ru
 
 	assert.ok(cards.length >= 1);
 	assert.match(JSON.stringify(cards.at(-1)), /xxxxx/);
-	assert.deepEqual(bindings.at(-1), { messageId: "card-1", pendingApprovalId: undefined });
+	assert.deepEqual(bindings.at(-1), { messageId: "card-1" });
 	assert.notEqual(cardKeys[0], durableKey, "transient progress and durable final delivery must not share a Provider key");
 	assert.deepEqual(textDeliveries, [{ text: canonicalResult, options: { idempotencyKey: durableKey, replyTo: "incoming", replyInThread: false } }]);
 	assert.deepEqual(receipt, { idempotencyKey: durableKey, deliveredAt: receipt.deliveredAt, providerMessageId: "text" });

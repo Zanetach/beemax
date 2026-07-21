@@ -1,7 +1,6 @@
 import type { AgentRunInput } from "./agent-runtime.ts";
 import type { BeeMaxRuntimeSource } from "./runtime.ts";
 import { InteractionEventAdapter, interactionScopeForSource, type InteractionActionResult, type InteractionEvent, type InteractionScope, type InteractionSnapshot } from "./interaction-runtime.ts";
-import type { ToolApprovalChoice } from "./tool-approval.ts";
 
 /** Transport-neutral contract for authenticated Web/remote presenters. */
 export const INTERACTION_PROTOCOL_VERSION = 1 as const;
@@ -10,7 +9,6 @@ export type ProtocolInteractionAction =
 	| { type: "message.send"; text: string; input: Omit<AgentRunInput, "source" | "text">; actionId?: string }
 	| { type: "turn.queue"; text: string; actionId?: string }
 	| { type: "turn.steer"; text: string; actionId?: string }
-	| { type: "approval.decide"; choice: ToolApprovalChoice; actionId?: string }
 	| { type: "session.open"; actionId?: string }
 	| { type: "session.reset"; actionId?: string }
 	| { type: "session.compact"; instructions?: string; actionId?: string }
@@ -63,10 +61,9 @@ export function parseInteractionProtocolRequest(value: unknown): InteractionProt
 	if (request.type === "events") return request.afterSequence === undefined || Number.isSafeInteger(request.afterSequence) ? request as InteractionProtocolRequest : undefined;
 	if (request.type !== "action" || !request.action || typeof request.action !== "object") return undefined;
 	const action = request.action as Record<string, unknown>;
-	if (!(["message.send", "turn.queue", "turn.steer", "approval.decide", "session.open", "session.reset", "session.compact", "turn.cancel"] as string[]).includes(String(action.type))) return undefined;
+	if (!(["message.send", "turn.queue", "turn.steer", "session.open", "session.reset", "session.compact", "turn.cancel"] as string[]).includes(String(action.type))) return undefined;
 	if (action.type === "message.send") return typeof action.text === "string" && action.input && typeof action.input === "object" ? request as InteractionProtocolRequest : undefined;
 	if (action.type === "turn.queue" || action.type === "turn.steer") return typeof action.text === "string" ? request as InteractionProtocolRequest : undefined;
-	if (action.type === "approval.decide") return ["once", "task", "session", "deny"].includes(String(action.choice)) ? request as InteractionProtocolRequest : undefined;
 	return request as InteractionProtocolRequest;
 }
 

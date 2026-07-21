@@ -26,10 +26,6 @@ import { createToolArtifactReadTool, FileToolArtifactStore } from "./tool-artifa
 
 export type BeeMaxRuntimeSource = AgentScope;
 
-export interface BeeMaxRuntimeAuthorization<Source extends BeeMaxRuntimeSource = BeeMaxRuntimeSource> {
-	(source: Source, toolName: string, args: unknown, policy: ToolPolicy, signal?: AbortSignal): Promise<{ allowed: boolean; reason?: string }>;
-}
-
 export interface ProactiveMutationAuthority<Source extends BeeMaxRuntimeSource = BeeMaxRuntimeSource> {
 	(input: { source: Source; executionEnvelope: Readonly<ExecutionEnvelope>; toolName: string; policy: ToolPolicy; enterprisePolicy: EnterprisePolicyDecision }): Promise<{ allowed: boolean; reason?: string }> | { allowed: boolean; reason?: string };
 }
@@ -71,7 +67,6 @@ export interface BeeMaxRuntimeFactoryOptions<Source extends BeeMaxRuntimeSource 
 	skillToolset: "safe" | "standard";
 	tools?: string[];
 	createTools: (source: Source, onResourcesChanged: () => void, getRuntimeApiKey: (provider: string) => Promise<string | undefined>, activateTools: (names: string[]) => void) => ToolDefinition[];
-	authorizeTool?: BeeMaxRuntimeAuthorization<Source>;
 	enterprisePolicy?: EnterprisePolicyProvider;
 	actionReliability?: (toolName: string) => MeasuredActionReliability;
 	executionGrant?: (source: Source) => { taskId: string; allowedCapabilities: string[]; status: "active" } | undefined;
@@ -218,7 +213,7 @@ export function buildBeeMaxRuntimeFactory<Source extends BeeMaxRuntimeSource = B
 			if (taskId) opts.toolEffects?.interruptTask?.(taskId);
 		};
 		if (modelFallbackMessage) console.warn(`[beemax] ${modelFallbackMessage}`);
-		installSecurityHook(session, cwd, source, opts.authorizeTool, policies, opts.enterprisePolicy, opts.actionReliability, opts.executionGrant, opts.proactiveMutationAuthority, opts.toolAudit, opts.toolEffects, opts.currentTaskId, toolArtifacts, toolResultBudget);
+		installSecurityHook(session, cwd, source, policies, opts.enterprisePolicy, opts.actionReliability, opts.executionGrant, opts.proactiveMutationAuthority, opts.toolAudit, opts.toolEffects, opts.currentTaskId, toolArtifacts, toolResultBudget);
 		return session;
 	};
 }
@@ -262,7 +257,7 @@ async function restoreOrCreateSession(cwd: string, sessionDir: string, sessionId
 	return matchingFiles[0] ? SessionManager.open(join(sessionDir, matchingFiles[0]), sessionDir, cwd) : SessionManager.create(cwd, sessionDir, { id: sessionId });
 }
 
-function installSecurityHook<Source extends BeeMaxRuntimeSource>(session: AgentSession, cwd: string, source: Source, authorizeTool: BeeMaxRuntimeAuthorization<Source> | undefined, policies: ToolPolicyRegistry, enterprisePolicy: EnterprisePolicyProvider | undefined, actionReliability: ((toolName: string) => MeasuredActionReliability) | undefined, executionGrant: ((source: Source) => { taskId: string; allowedCapabilities: string[]; status: "active" } | undefined) | undefined, proactiveMutationAuthority: ProactiveMutationAuthority<Source> | undefined, audit: ToolRuntimeAuditSink | undefined, effects: ToolEffectAuthorityPort | undefined, currentTaskId: ((source: Source) => string | undefined) | undefined, toolArtifacts: FileToolArtifactStore, toolResultBudget: ToolResultBudget): void {
+function installSecurityHook<Source extends BeeMaxRuntimeSource>(session: AgentSession, cwd: string, source: Source, policies: ToolPolicyRegistry, enterprisePolicy: EnterprisePolicyProvider | undefined, actionReliability: ((toolName: string) => MeasuredActionReliability) | undefined, executionGrant: ((source: Source) => { taskId: string; allowedCapabilities: string[]; status: "active" } | undefined) | undefined, proactiveMutationAuthority: ProactiveMutationAuthority<Source> | undefined, audit: ToolRuntimeAuditSink | undefined, effects: ToolEffectAuthorityPort | undefined, currentTaskId: ((source: Source) => string | undefined) | undefined, toolArtifacts: FileToolArtifactStore, toolResultBudget: ToolResultBudget): void {
 	const enterprisePolicies = new EnterprisePolicyRuntime(enterprisePolicy);
 	const governance = new ActionGovernance();
 	let budgetExecutionId: string | undefined;
@@ -332,27 +327,15 @@ function installSecurityHook<Source extends BeeMaxRuntimeSource>(session: AgentS
 			return { block: true, reason };
 		}
 		const governanceInput = { actionId: context.toolCall.id, toolName: context.toolCall.name, toolPolicy: policy, effectStatus, reliability: actionReliability?.(context.toolCall.name) ?? "unknown" as const, ...(enterpriseDecision ? { enterprisePolicy: enterpriseDecision } : {}), ...(grant ? { executionGrant: { id: `task:${grant.taskId}`, ...grant } } : {}) };
-		let governanceDecision = governance.decide({ ...governanceInput, at: Date.now() });
-		let governanceAudit = governanceAuditMetadata(governanceDecision);
-		if (governanceDecision.outcome === "deny" || governanceDecision.outcome === "missing_evidence") {
+		const governanceDecision = governance.decide({ ...governanceInput, at: Date.now() });
+		const governanceAudit = governanceAuditMetadata(governanceDecision);
+		if (governanceDecision.outcome !== "allow") {
 			audit?.({ phase: "blocked", source, toolName: context.toolCall.name, policy, at: Date.now(), reason: governanceDecision.explanation, ...(enterprisePolicyAudit ? { enterprisePolicy: enterprisePolicyAudit } : {}), governance: governanceAudit });
 			return { block: true, reason: governanceDecision.explanation };
 		}
-		if (governanceDecision.outcome === "allow") {
-			audit?.({ phase: "allowed", source, toolName: context.toolCall.name, policy, at: Date.now(), reason: governanceDecision.explanation, ...(enterprisePolicyAudit ? { enterprisePolicy: enterprisePolicyAudit } : {}), governance: governanceAudit });
-			const effectBlock = beginToolEffect(effects, { source, executionEnvelope: currentExecutionEnvelope(session), taskId: currentExecutionEnvelope(session)?.taskId ?? currentTaskId?.(source) ?? source.delegatedTask?.id, toolCallId: context.toolCall.id, toolName: context.toolCall.name, policy, args: context.args });
-			if (effectBlock) { audit?.({ phase: "blocked", source, toolName: context.toolCall.name, policy, at: Date.now(), reason: effectBlock, ...(enterprisePolicyAudit ? { enterprisePolicy: enterprisePolicyAudit } : {}), governance: governanceAudit }); return { block: true, reason: effectBlock }; }
-			return priorResult;
-		}
-		audit?.({ phase: "requested", source, toolName: context.toolCall.name, policy, at: Date.now(), ...(enterprisePolicyAudit ? { enterprisePolicy: enterprisePolicyAudit } : {}), governance: governanceAudit });
-		if (!authorizeTool) { const reason = "This tool requires an approval handler in the current channel"; audit?.({ phase: "blocked", source, toolName: context.toolCall.name, policy, at: Date.now(), reason, ...(enterprisePolicyAudit ? { enterprisePolicy: enterprisePolicyAudit } : {}), governance: governanceAudit }); return { block: true, reason }; }
-		const decision = await authorizeTool(source, context.toolCall.name, context.args, policy, signal);
-		governanceDecision = governance.decide({ ...governanceInput, approval: decision.allowed ? "approved" as const : "denied" as const, at: Date.now() });
-		governanceAudit = governanceAuditMetadata(governanceDecision);
-		audit?.({ phase: governanceDecision.outcome === "allow" ? "allowed" : "blocked", source, toolName: context.toolCall.name, policy, at: Date.now(), reason: decision.reason ?? governanceDecision.explanation, ...(enterprisePolicyAudit ? { enterprisePolicy: enterprisePolicyAudit } : {}), governance: governanceAudit });
-		if (governanceDecision.outcome !== "allow") return { block: true, reason: decision.reason ?? governanceDecision.explanation };
+		audit?.({ phase: "allowed", source, toolName: context.toolCall.name, policy, at: Date.now(), reason: governanceDecision.explanation, ...(enterprisePolicyAudit ? { enterprisePolicy: enterprisePolicyAudit } : {}), governance: governanceAudit });
 		const effectBlock = beginToolEffect(effects, { source, executionEnvelope: currentExecutionEnvelope(session), taskId: currentExecutionEnvelope(session)?.taskId ?? currentTaskId?.(source) ?? source.delegatedTask?.id, toolCallId: context.toolCall.id, toolName: context.toolCall.name, policy, args: context.args });
-		if (effectBlock) { audit?.({ phase: "blocked", source, toolName: context.toolCall.name, policy, at: Date.now(), reason: effectBlock }); return { block: true, reason: effectBlock }; }
+		if (effectBlock) { audit?.({ phase: "blocked", source, toolName: context.toolCall.name, policy, at: Date.now(), reason: effectBlock, ...(enterprisePolicyAudit ? { enterprisePolicy: enterprisePolicyAudit } : {}), governance: governanceAudit }); return { block: true, reason: effectBlock }; }
 		return priorResult;
 	};
 	const previousAfter = session.agent.afterToolCall;

@@ -275,7 +275,7 @@ test("capability acquisition installs an exact Provider with authority evidence 
 	try {
 		let installed = false;
 		const providerRuntime = new CapabilityProviderRuntime({
-			installAuthority: { authorize: async ({ provider }) => ({ allowed: provider.id === "approved-analysis-mcp", evidenceRef: "approval:analysis-mcp" }) },
+			installAuthority: { authorize: async ({ provider }) => ({ allowed: provider.id === "approved-analysis-mcp", evidenceRef: "authority:analysis-mcp" }) },
 			installer: { install: async (provider) => { installed = provider.id === "approved-analysis-mcp"; return { receiptId: "install:analysis-mcp", installedAt: 42, evidenceRef: "catalog:analysis-mcp" }; } },
 		});
 		const tools = toolsAt(root, [{
@@ -287,10 +287,10 @@ test("capability acquisition installs an exact Provider with authority evidence 
 		assert.equal(discovered.details.providerResolutions[0].status, "blocked");
 		const acquired = await tools.get("capability_acquire").execute("acquire", { capability: "remote_analysis" });
 		assert.equal(acquired.details.providerAcquisition.status, "ready");
-		assert.equal(acquired.details.providerAcquisition.authorityEvidenceRef, "approval:analysis-mcp");
+		assert.equal(acquired.details.providerAcquisition.authorityEvidenceRef, "authority:analysis-mcp");
 		assert.equal(acquired.details.providerAcquisition.installationReceipt.receiptId, "install:analysis-mcp");
 		assert.deepEqual(acquired.details.activatedTools, ["remote_analysis"]);
-		assert.equal(tools.get("capability_acquire").beemaxPolicy.approval, "always");
+		assert.equal(tools.get("capability_acquire").beemaxPolicy.risk, "high");
 	} finally { rmSync(root, { recursive: true, force: true }); }
 });
 

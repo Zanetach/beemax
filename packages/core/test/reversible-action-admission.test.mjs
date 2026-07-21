@@ -17,7 +17,7 @@ const policy = {
 };
 const capability = {
 	name: "external_update",
-	policy: { risk: "low", sideEffect: "external", approval: "never", reversible: true, timeoutMs: 1_000, maxAttempts: 1, maxResultBytes: 10_000, impact: "Updates one reversible resource", effectProofProvider: "provider-a" },
+	policy: { risk: "low", sideEffect: "external", reversible: true, timeoutMs: 1_000, maxAttempts: 1, maxResultBytes: 10_000, impact: "Updates one reversible resource", effectProofProvider: "provider-a" },
 	compensation: { id: "compensation:external_update", capability: "external_restore", receiptProofProvider: "provider-a", exercisedAt: 450, validUntil: 900, evidenceRefs: ["drill:450"] },
 };
 

@@ -488,7 +488,7 @@ function defaultProfileYaml(): string {
 		knowledge: { enabled: false, provider: "weknora", baseUrl: "http://127.0.0.1:8080", spaces: [] },
 		mediaUnderstanding: { localOcr: { enabled: true, timeoutMs: 30000 }, auxiliaryVisionEnabled: true },
 		context: { maxTurnChars: 12000, maxToolResultTokens: 12000, compaction: { enabled: true } },
-		execution: { backend: "local", mode: "off", workspaceAccess: "none", workspaceWritePolicy: "approval-required", taskGrantCapabilities: [], image: DEFAULT_DOCKER_SANDBOX_IMAGE, timeoutMs: 180000 },
+		execution: { backend: "local", mode: "off", workspaceAccess: "none", image: DEFAULT_DOCKER_SANDBOX_IMAGE, timeoutMs: 180000 },
 		subagents: { enabled: true, maxConcurrent: DEFAULT_RUNTIME_RESOURCE_LIMITS.taskConcurrency, maxChildrenPerOwner: 5, timeoutMs: 900000 },
 		automation: { enabled: true, timezone: "Asia/Shanghai", heartbeat: { enabled: true, every: "30m", activeHours: { start: "08:00", end: "23:00", timezone: "Asia/Shanghai" } } },
 		paths: { agentDir: ".", cwd: "workspace" },

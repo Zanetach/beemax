@@ -113,15 +113,16 @@ export class EnterprisePolicyRuntime {
 	}
 }
 
-export function resolveEnterprisePolicyDecision(decision: EnterprisePolicyDecision, policy: ToolPolicy): { allowed: boolean; requiresApproval: boolean; reason: string } {
-	if (decision.disposition === "deny" || decision.disposition === "missing_evidence") return { allowed: false, requiresApproval: false, reason: decision.reason };
-	if (decision.disposition === "require_approval") return { allowed: true, requiresApproval: true, reason: decision.reason };
-	if (decision.disposition === "allow") return { allowed: true, requiresApproval: false, reason: decision.reason };
+export function resolveEnterprisePolicyDecision(decision: EnterprisePolicyDecision, policy: ToolPolicy): { allowed: boolean; reason: string } {
+	if (decision.disposition === "deny" || decision.disposition === "missing_evidence") return { allowed: false, reason: decision.reason };
+	if (decision.disposition === "require_approval") return { allowed: false, reason: decision.reason };
+	if (decision.disposition === "allow") return { allowed: true, reason: decision.reason };
 	const constraints = decision.constraints!;
-	if (constraints.allowedSideEffects && !constraints.allowedSideEffects.includes(policy.sideEffect)) return { allowed: false, requiresApproval: false, reason: decision.reason };
-	if (constraints.maximumRisk && riskRank(policy.risk) > riskRank(constraints.maximumRisk)) return { allowed: false, requiresApproval: false, reason: decision.reason };
-	if (constraints.requireReversible && policy.reversible !== true) return { allowed: false, requiresApproval: false, reason: decision.reason };
-	return { allowed: true, requiresApproval: constraints.requireApproval === true, reason: decision.reason };
+	if (constraints.allowedSideEffects && !constraints.allowedSideEffects.includes(policy.sideEffect)) return { allowed: false, reason: decision.reason };
+	if (constraints.maximumRisk && riskRank(policy.risk) > riskRank(constraints.maximumRisk)) return { allowed: false, reason: decision.reason };
+	if (constraints.requireReversible && policy.reversible !== true) return { allowed: false, reason: decision.reason };
+	if (constraints.requireApproval === true) return { allowed: false, reason: decision.reason };
+	return { allowed: true, reason: decision.reason };
 }
 
 function policyApplies(provider: EnterprisePolicyProvider, input: EnterprisePolicyInput): boolean {

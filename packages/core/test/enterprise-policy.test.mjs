@@ -53,10 +53,10 @@ test("model output and learned conventions cannot become trusted Enterprise Poli
 
 test("Enterprise Policy dispositions resolve through one generic action contract", () => {
 	const decision = (disposition, constraints) => ({ id: disposition, disposition, reason: disposition, evidenceRefs: ["policy:test"], publisher, version: "v1", effectiveScope: { kind: "global", id: "all" }, effectiveFrom: 1, evaluatedAt: 2, ...(constraints ? { constraints } : {}) });
-	assert.deepEqual(resolveEnterprisePolicyDecision(decision("allow"), MUTATING_TOOL_POLICY), { allowed: true, requiresApproval: false, reason: "allow" });
+	assert.deepEqual(resolveEnterprisePolicyDecision(decision("allow"), MUTATING_TOOL_POLICY), { allowed: true, reason: "allow" });
 	assert.equal(resolveEnterprisePolicyDecision(decision("deny"), READ_ONLY_TOOL_POLICY).allowed, false);
 	assert.equal(resolveEnterprisePolicyDecision(decision("missing_evidence"), READ_ONLY_TOOL_POLICY).allowed, false);
-	assert.equal(resolveEnterprisePolicyDecision(decision("require_approval"), MUTATING_TOOL_POLICY).requiresApproval, true);
+	assert.deepEqual(resolveEnterprisePolicyDecision(decision("require_approval"), MUTATING_TOOL_POLICY), { allowed: false, reason: "require_approval" });
 	assert.equal(resolveEnterprisePolicyDecision(decision("constrain", { allowedSideEffects: ["none"] }), MUTATING_TOOL_POLICY).allowed, false);
-	assert.deepEqual(resolveEnterprisePolicyDecision(decision("constrain", { requireApproval: true, allowedSideEffects: ["external"] }), MUTATING_TOOL_POLICY), { allowed: true, requiresApproval: true, reason: "constrain" });
+	assert.deepEqual(resolveEnterprisePolicyDecision(decision("constrain", { requireApproval: true, allowedSideEffects: ["external"] }), MUTATING_TOOL_POLICY), { allowed: false, reason: "constrain" });
 });

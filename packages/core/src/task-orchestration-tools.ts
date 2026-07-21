@@ -106,14 +106,14 @@ export function createTaskOrchestrationTools(
 		},
 	});
 	const executePolicy: ToolPolicy = {
-		...MUTATING_TOOL_POLICY, sideEffect: "local", risk: "medium", approval: "never", reversible: false,
+		...MUTATING_TOOL_POLICY, sideEffect: "local", risk: "medium", reversible: false,
 		timeoutMs: 60_000, maxAttempts: 1,
 		impact: "Creates a bounded durable Task Plan and runs isolated read-only Sub-Agents",
 	};
 	return [
 		withToolPolicy(executeTool, executePolicy),
 		withToolPolicy(statusTool, { ...READ_ONLY_TOOL_POLICY, impact: "Reads one durable Task Plan without changing it" }),
-		withToolPolicy(pauseTool, { ...MUTATING_TOOL_POLICY, sideEffect: "local", risk: "low", approval: "never", reversible: true, impact: "Pauses owned durable work at a safe Task boundary" }),
+		withToolPolicy(pauseTool, { ...MUTATING_TOOL_POLICY, sideEffect: "local", risk: "low", reversible: true, impact: "Pauses owned durable work at a safe Task boundary" }),
 		withToolPolicy(resumeTool, { ...executePolicy, reversible: true, impact: "Resumes owned durable work from persisted checkpoints" }),
 	];
 }

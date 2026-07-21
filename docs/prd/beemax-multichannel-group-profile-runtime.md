@@ -386,7 +386,7 @@ graph TB
             PROFILE[Profile Runtime<br/>唯一组合单元]
             PI[Pi Execution Kernel<br/>模型/Tool/Steering]
             WORK[Durable Work<br/>Objective/Task/Checkpoint]
-            GOV[Governance<br/>Policy/Approval/Effect]
+			GOV[Governance<br/>Policy/Scope/Effect]
             COG[Cognition<br/>Situation/Memory/Verification]
         end
         subgraph 平台能力
@@ -952,7 +952,7 @@ Interaction/Schedule/Event → Situation → durable admission → Objective/Tas
 | 并发冲突 | 同一 Conversation 同时收到多条消息 | Conversation Lane 串行；明确 Steer/Follow-up/Objective 语义 |
 | 路由冲突 | 多条同优先级 Binding 命中 | 启动/保存时拒绝；运行时隔离并告警 |
 | 数据异常 | Profile A 打开 Profile B 数据库 | identity 校验失败并停止该 Profile 启动 |
-| 权限异常 | 群成员声称自己是管理员 | 只信任 Adapter/企业系统验证角色；否则 require approval/deny |
+| 权限异常 | 群成员声称自己是管理员 | 只信任 Adapter/企业系统验证角色；否则 deny |
 | 隐私异常 | 私聊 Memory 与群问题高度相关 | 可用于受限内部判断，但禁止披露；必要时转私聊确认 |
 | Channel 异常 | 单 Adapter 断线或 SDK 死锁 | 超时、熔断、重连；其他 Adapter 与 Profile Runtime 继续 |
 | Profile 崩溃 | OOM、未捕获异常、机器重启 | systemd 重启；Task/Effect/Outbox reconciliation；不乐观重放 Effect |
@@ -1060,7 +1060,7 @@ Interaction/Schedule/Event → Situation → durable admission → Objective/Tas
 | --- | --- | --- | --- |
 | Channel ingress | 平台签名/连接凭证 | Channel Instance + Admission | 平台、instance、actor 多级 |
 | Read-only Capability | Credential consumer callback | Access Scope + Tool Policy | Profile/Provider budget |
-| Mutation Capability | Vault + provider auth | Policy + Approval/Grant + Effect Authority | Task/Capability/Provider budget |
+| Mutation Capability | Vault + provider auth | Policy + Access Scope/Grant + Effect Authority | Task/Capability/Provider budget |
 | Profile control | 本机/管理认证 | 管理角色 + profile scope | 严格管理限流 |
 | Cross Profile | 双方运行身份 | allowlist + delegation policy + receipt | source/target 双边预算 |
 

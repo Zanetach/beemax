@@ -67,10 +67,10 @@ test("Feishu Card JSON 2.0 callbacks normalize identity, routing, and stable act
 	const raw = {
 		context: { open_message_id: "om_card", open_chat_id: "oc_chat" },
 		operator: { open_id: "ou_user", user_id: "user", union_id: "on_user" },
-		action: { tag: "button", name: "approve_once", value: { choice: "once", approval_id: "approval:turn", beemax_action: "approval.decide" } },
+		action: { tag: "button", name: "show_details", value: { choice: "expanded", beemax_action: "details.set" } },
 	};
 	const first = parseFeishuCardActionEvent(raw);
-	const reordered = parseFeishuCardActionEvent({ ...raw, action: { ...raw.action, value: { beemax_action: "approval.decide", approval_id: "approval:turn", choice: "once" } } });
+	const reordered = parseFeishuCardActionEvent({ ...raw, action: { ...raw.action, value: { beemax_action: "details.set", choice: "expanded" } } });
 	assert.equal(first.messageId, "om_card");
 	assert.equal(first.chatId, "oc_chat");
 	assert.equal(first.userId, "ou_user");

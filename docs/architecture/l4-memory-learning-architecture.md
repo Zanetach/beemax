@@ -31,7 +31,7 @@ The following invariants are release-blocking:
 1. One Profile has one semantic Memory authority. Claims, Episodes, Candidates,
    assessments, projections, contribution receipts, and learning settlements are
    stored through the same Profile-bound SQLite authority.
-2. Durable Objective, Task, Task Run, Effect, Checkpoint, Verification, approval,
+2. Durable Objective, Task, Task Run, Effect, Checkpoint, Verification,
    and delivery state remain execution authorities. Memory observes their signed
    outcomes but never owns or rewrites them.
 3. Semantic truth and operational utility are separate. A correct Claim can be
@@ -427,7 +427,7 @@ the filesystem holds the exact loadable content.
 | --- | --- | --- |
 | semantic truth | Claim validity, correction, conflict, evidence, Episode status | source evidence, trusted correction, explicit authority, expiry rules |
 | operational utility | contextual success estimate, cautious/suppressed state, Skill health | correlated independent outcomes and revalidation |
-| execution responsibility | Objective, Task, Effect, Checkpoint, approval, delivery | existing execution state machines only |
+| execution responsibility | Objective, Task, Effect, Checkpoint, delivery | existing execution state machines only |
 
 Cross-plane changes occur only through explicit events. A Tool failure can lower
 the Tool route assessment but cannot revoke the factual Claim it was rendering.
@@ -971,7 +971,7 @@ Existing gates remain independent:
 
 - `read_only_investigation` controls external Learning Objectives;
 - `reversible_action` controls their external effects;
-- Tool governance, approvals, Credentials, Enterprise Policy, and Core hard blocks
+- Tool Governance, Credentials, Enterprise Policy, and Core hard blocks
   remain authoritative for every learned route;
 - emergency stop prevents new learning influence and transitions but keeps
   evidence capture, inspection, rollback, and unrelated Objective execution.
@@ -1105,7 +1105,7 @@ meets the certification gate.
 ### Slice 9 — active Learning Objectives
 
 - turn high-value missing evidence/capability into normal durable Objectives;
-- enforce current authority, approval, Effect, Verification, and delivery paths;
+- enforce current authority, Governance, Effect, Verification, and delivery paths;
 - prohibit hidden side-effect replay.
 
 Done when investigation improves evidence without bypassing any governance boundary.

@@ -2,7 +2,7 @@ import type { EnterpriseActionConstraints, EnterprisePolicyDisposition } from ".
 import type { ToolPolicy, ToolRisk } from "./tool-runtime.ts";
 import type { ToolEffectStatus } from "./tool-effect.ts";
 
-export type ActionGovernanceOutcome = "allow" | "deny" | "require_approval" | "missing_evidence";
+export type ActionGovernanceOutcome = "allow" | "deny" | "missing_evidence";
 export type MeasuredActionReliability = "reliable" | "degraded" | "unknown";
 
 export interface ActionExecutionGrant {
@@ -19,7 +19,6 @@ export interface ActionGovernanceInput {
 	reliability: MeasuredActionReliability;
 	enterprisePolicy?: { id: string; disposition: EnterprisePolicyDisposition; reason: string; constraints?: EnterpriseActionConstraints };
 	executionGrant?: ActionExecutionGrant;
-	approval?: "approved" | "denied";
 	at: number;
 }
 
@@ -39,7 +38,7 @@ export interface ActionGovernanceDecision {
 /** Pure per-action decision kernel; Pi's Tool hook remains the enforcement point. */
 export class ActionGovernance {
 	decide(input: ActionGovernanceInput): ActionGovernanceDecision {
-		const factors = [`risk:${input.toolPolicy.risk}`, `side_effect:${input.toolPolicy.sideEffect}`, `reversible:${String(input.toolPolicy.reversible)}`, `reliability:${input.reliability}`, `effect:${input.effectStatus}`];
+		const factors = [`risk:${input.toolPolicy.risk}`, `side_effect:${input.toolPolicy.sideEffect}`, `reversible:${String(input.toolPolicy.reversible)}`, `reliability:${input.reliability}`, `effect:${input.effectStatus}`, "execution_mode:direct"];
 		const decide = (outcome: ActionGovernanceOutcome, reasonCode: string, explanation: string, extra: Pick<ActionGovernanceDecision, "policyDecisionId" | "executionGrantId"> = {}) => Object.freeze({
 			id: `governance:${required(input.actionId, "actionId", 256)}:${timestamp(input.at)}`, actionId: input.actionId, toolName: required(input.toolName, "toolName", 128), outcome, reasonCode, explanation,
 			factors: Object.freeze([...factors]) as unknown as string[], ...extra, decidedAt: input.at,
@@ -49,21 +48,19 @@ export class ActionGovernance {
 		const enterprise = input.enterprisePolicy;
 		if (enterprise?.disposition === "deny") return decide("deny", "enterprise_policy_deny", enterprise.reason, { policyDecisionId: enterprise.id });
 		if (enterprise?.disposition === "missing_evidence") return decide("missing_evidence", "enterprise_policy_missing_evidence", enterprise.reason, { policyDecisionId: enterprise.id });
-		if (input.approval === "denied") return decide("deny", "approval_denied", "The action approval was denied", enterprise ? { policyDecisionId: enterprise.id } : {});
 		if (enterprise?.disposition === "constrain") {
 			const mismatch = constraintMismatch(enterprise.constraints, input.toolPolicy);
 			if (mismatch) return decide("deny", "enterprise_constraint", mismatch, { policyDecisionId: enterprise.id });
 		}
 		const requiresEnterpriseApproval = enterprise?.disposition === "require_approval" || enterprise?.disposition === "constrain" && enterprise.constraints?.requireApproval === true;
 		const granted = input.executionGrant?.status === "active" && input.executionGrant.allowedCapabilities.includes(input.toolName);
+		if (requiresEnterpriseApproval) return decide("deny", "enterprise_approval_disabled", "Enterprise Policy requires approval, but interactive approvals are disabled", { policyDecisionId: enterprise!.id });
 		if (granted) return decide("allow", "execution_grant", "An active Execution Grant covers this capability", { ...(enterprise ? { policyDecisionId: enterprise.id } : {}), executionGrantId: input.executionGrant!.id });
-		if (input.approval === "approved") return decide("allow", "action_approved", "The action received explicit approval", enterprise ? { policyDecisionId: enterprise.id } : {});
-		if (requiresEnterpriseApproval) return decide("require_approval", "enterprise_policy_approval", enterprise!.reason, { policyDecisionId: enterprise!.id });
-		if (input.toolPolicy.risk === "high") return decide("require_approval", "high_risk_requires_authority", "High-risk action requires explicit authority");
-		if (input.toolPolicy.sideEffect !== "none" && input.toolPolicy.reversible !== true) return decide("require_approval", "irreversible_requires_authority", "An irreversible or unproven mutation requires explicit authority");
-		if (input.reliability === "degraded" && input.toolPolicy.sideEffect !== "none") return decide("require_approval", "degraded_reliability", "Measured reliability is degraded for a state-changing action");
-		if (input.toolPolicy.approval === "always") return decide("require_approval", "tool_policy_approval", "Tool policy requires approval");
 		if (enterprise?.disposition === "allow") return decide("allow", "enterprise_policy_allow", enterprise.reason, { policyDecisionId: enterprise.id });
+		if (input.toolPolicy.risk === "high" || input.toolPolicy.sideEffect !== "none" && input.toolPolicy.reversible !== true || input.reliability === "degraded" && input.toolPolicy.sideEffect !== "none") {
+			return decide("allow", "direct_execution", "The action may proceed directly under the remaining Governance controls");
+		}
+		if (input.toolPolicy.sideEffect !== "none") return decide("allow", "direct_execution", "The action may proceed directly under the remaining Governance controls");
 		return decide("allow", "low_risk_investigation", "Low-risk investigation may proceed under the current Tool policy");
 	}
 }

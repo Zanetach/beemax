@@ -26,11 +26,10 @@ test("operational metrics aggregate content-free events and raise bounded alerts
 	const root = mkdtempSync(join(tmpdir(), "beemax-metrics-"));
 	try {
 		for (let index = 0; index < 3; index++) recordOperationalMetric(root, { type: "interaction.model_fallback", surface: "cli", from: "a", to: "b", attempt: index + 1 }, 1_000 + index);
-		for (let index = 0; index < 5; index++) recordOperationalMetric(root, { type: "interaction.approval_resolved", surface: "cli", decision: "denied", latency: 10 }, 1_010 + index);
 		recordOperationalMetric(root, { type: "interaction.presenter_reconnected", surface: "cli", gapEvents: 20 }, 1_020);
 		const snapshot = inspectOperationalMetrics(root, 2_000, 15);
-		assert.deepEqual(snapshot.alerts.map((alert) => alert.code), ["model_fallback_spike", "approval_denial_spike"]);
-		assert.equal(snapshot.events, 9);
+		assert.deepEqual(snapshot.alerts.map((alert) => alert.code), ["model_fallback_spike"]);
+		assert.equal(snapshot.events, 4);
 		assert.equal(snapshot.replayedEvents, 20);
 		assert.equal(snapshot.permissionsSafe, true);
 		assert.equal(inspectGateway("personal", root).operational.events, 0);
@@ -40,7 +39,7 @@ test("operational metrics aggregate content-free events and raise bounded alerts
 test("gateway logs rotate event history and tail large process logs without loading their full history", () => {
 	const root = mkdtempSync(join(tmpdir(), "beemax-observability-bounds-"));
 	try {
-		for (let index = 0; index < 3_000; index++) recordGatewayEvent(root, "approval", { index, detail: "x".repeat(400) });
+		for (let index = 0; index < 3_000; index++) recordGatewayEvent(root, "context_compaction", { index, detail: "x".repeat(400) });
 		assert.ok(statSync(join(root, "logs", "gateway.jsonl")).size <= 1_000_000);
 		mkdirSync(join(root, "logs"), { recursive: true });
 		writeFileSync(join(root, "logs", "gateway.log"), `${"old\n".repeat(100_000)}latest-line\n`);

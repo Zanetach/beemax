@@ -45,13 +45,12 @@ export {
 	markRuntimeResourcesChanged,
 	reloadRuntimeResourcesIfNeeded,
 	resolveRuntimeModel,
-	type BeeMaxRuntimeAuthorization,
 	type BeeMaxRuntimeFactoryOptions,
 	type ContextCompactionAuditEvent,
 	type BeeMaxRuntimeSource,
 	type ProactiveMutationAuthority,
 } from "./runtime.ts";
-export { ToolPolicyRegistry, READ_ONLY_TOOL_POLICY, MUTATING_TOOL_POLICY, boundToolResultContent, governToolDefinition, normalizeToolResultBudget, withToolPolicy, type GovernedToolDefinition, type ToolApprovalMode, type ToolCapabilityGrant, type ToolPolicy, type ToolResultBudget, type ToolRisk, type ToolRuntimeAuditEvent, type ToolRuntimeAuditSink, type ToolSideEffect, type ToolSpecAvailabilityMetadata } from "./tool-runtime.ts";
+export { ToolPolicyRegistry, READ_ONLY_TOOL_POLICY, MUTATING_TOOL_POLICY, boundToolResultContent, governToolDefinition, normalizeToolResultBudget, withToolPolicy, type GovernedToolDefinition, type ToolCapabilityGrant, type ToolPolicy, type ToolResultBudget, type ToolRisk, type ToolRuntimeAuditEvent, type ToolRuntimeAuditSink, type ToolSideEffect, type ToolSpecAvailabilityMetadata } from "./tool-runtime.ts";
 export { TOOL_SPEC_PLAN_SCHEMA_VERSION, activateToolSpecPlan, buildToolSpecPlan, deferToolSpecPlan, hideToolSpecPlan, renderToolSpecPlan, restoreProviderToolSpecPlan, type HiddenToolSpecEntry, type ToolSpecEntry, type ToolSpecHiddenReason, type ToolSpecInventoryItem, type ToolSpecPlan, type ToolSpecPlanInput } from "./tool-spec-plan.ts";
 export { createVerificationSubmitTool, VERIFICATION_SUBMIT_TOOL_NAME } from "./verification-tools.ts";
 export { FileToolAuditJournal, type DurableToolAuditEvent } from "./tool-audit-journal.ts";
@@ -149,7 +148,6 @@ export {
 	type ObjectiveRuntimeInterruptionResult,
 } from "./agent-runtime.ts";
 export type { AgentControlHandler, AgentControlInput, AgentControlResult } from "./agent-control.ts";
-export { ToolApprovalBroker, approvalDetails, type ApprovalAuditSink, type ApprovalPromptSender, type TaskExecutionGrantSnapshot, type ToolApprovalChoice, type ToolApprovalDecision, type ToolApprovalDetails, type ToolApprovalEvent, type ToolApprovalRequest } from "./tool-approval.ts";
 export { memoryScopeForSource, type MemoryScope } from "./memory-scope.ts";
 export { createAccessScopeRef, type AccessScopeRef, type AccessScopeRefInput, type TrustedAccessAuthority, type TrustedAccessAuthorityKind } from "./access-scope.ts";
 export { createSituation, type Situation, type SituationAction, type SituationConflict, type SituationEvidenceSource, type SituationEvidenceSourceKind, type SituationEvidenceTrust, type SituationInput, type SituationObservation } from "./situation.ts";
@@ -163,7 +161,7 @@ export { ProactiveInvestigationRuntime, type ProactiveCapability, type Proactive
 export { createReversibleActionMutationAuthority, ReversibleActionAdmission, type CompensationProof, type EmergencyStopRecord, type EmergencyStopSnapshot, type ReversibleActionAdmissionDecision, type ReversibleActionAdmissionInput, type ReversibleActionCapability, type ReversibleActionControlPort } from "./reversible-action-admission.ts";
 export { ProactiveReversibleActionRuntime, type ProactiveCompensationExecution, type ProactiveCompensationResult, type ProactiveReversibleActionCandidate, type ProactiveReversibleActionExecution, type ProactiveReversibleActionExecutionResult, type ProactiveReversibleActionResult, type ProactiveReversibleActionRuntimeOptions } from "./proactive-reversible-action-runtime.ts";
 export { EnterpriseEventInitiativeAdapter, InitiativeTriggerService, TaskTransitionInitiativeAdapter, type DurableInitiativeTrigger, type DurableInitiativeTriggerInput, type DurableInitiativeTriggerStatus, type InitiativeTriggerAdapterInput, type InitiativeTriggerInbox, type InitiativeTriggerServiceOptions } from "./initiative-trigger-service.ts";
-export { InteractionEventAdapter, interactionPhaseForOutcome, mapAgentSessionEvent, reduceInteractionEvent, interactionScopeForSource, type InteractionAction, type InteractionActionResult, type InteractionApprovalResult, type InteractionDeliveryMode, type InteractionEvent, type InteractionEventSink, type InteractionPhase, type InteractionQueueResult, type InteractionScope, type InteractionSessionCompactResult, type InteractionSessionResetResult, type InteractionSessionResult, type InteractionSnapshot, type InteractionSurface, type InteractionTelemetryEvent, type InteractionTelemetrySink } from "./interaction-runtime.ts";
+export { InteractionEventAdapter, interactionPhaseForOutcome, mapAgentSessionEvent, reduceInteractionEvent, interactionScopeForSource, type InteractionAction, type InteractionActionResult, type InteractionDeliveryMode, type InteractionEvent, type InteractionEventSink, type InteractionPhase, type InteractionQueueResult, type InteractionScope, type InteractionSessionCompactResult, type InteractionSessionResetResult, type InteractionSessionResult, type InteractionSnapshot, type InteractionSurface, type InteractionTelemetryEvent, type InteractionTelemetrySink } from "./interaction-runtime.ts";
 export { AdaptiveTextBuffer, TurnStatusPulse, type AdaptiveTextBufferOptions, type TurnStatusPulseOptions } from "./interaction-presentation.ts";
 export { FileInteractionInputQueueStore, type InteractionInputQueueStore, type InteractionQueuedInput } from "./interaction-input-queue.ts";
 export { FileInteractionEventJournal, durableEvent, type DurableInteractionEvent, type InteractionEventJournal } from "./interaction-event-journal.ts";
