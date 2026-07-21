@@ -666,9 +666,6 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 				throw new AgentRunError(`Work Contract admission blocked: ${errorMessage(error)}`, true, error, false, workContractCognitionUsage);
 			}
 		}
-		planning = planningContractInput
-			? this.planningPolicy?.decide(planningContractInput)
-			: interactive ? this.planningPolicy?.decide(input.text) : undefined;
 		const targetObjectiveId = workContract?.targetObjective?.id;
 		if (targetObjectiveId) {
 			activeObjective = activeObjectiveCandidates.find((candidate) => candidate.id === targetObjectiveId);
@@ -679,6 +676,14 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 			? { ...workContractUnderstanding(workContract, fallbackUnderstanding), ...(activeObjective && workContract.action === "continue" ? { goal: activeObjective.title } : {}) }
 			: fallbackUnderstanding;
 		const referencesActiveObjective = Boolean(activeObjective && (input.objectiveTaskId || workContract?.targetObjective));
+		const defersFailedTurnLocalContinuationSemantics = interactive
+			&& !input.source.delegatedTask
+			&& !workContract
+			&& !referencesActiveObjective
+			&& isExplicitShortContinuation(input.text);
+		planning = planningContractInput
+			? this.planningPolicy?.decide(planningContractInput)
+			: interactive && !defersFailedTurnLocalContinuationSemantics ? this.planningPolicy?.decide(input.text) : undefined;
 		if (workContract?.action === "cancel") {
 			if (!activeObjective || !referencesActiveObjective) throw new AgentRunError("Work Contract cancellation does not identify one active Objective", false, undefined);
 			const cancelledObjective = activeObjective;
@@ -720,7 +725,7 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 				: `Cancelled Objective ${activeObjective.title}.`;
 			return { answer, model: "beemax/work-contract", durationMs: Date.now() - startedAt, usage: cognitionResultUsage(workContractCognitionUsage), outcome: { status: "cancelled", objectiveId: activeObjective.id } };
 		}
-		const situation = understanding ? (await this.situationBuilder.build({
+		const situation = understanding && !defersFailedTurnLocalContinuationSemantics ? (await this.situationBuilder.build({
 			text: input.text,
 			fallback: understanding,
 			...(activeObjective ? { activeObjective: { id: activeObjective.id, title: activeObjective.title, ...(activeObjective.situation ? { situation: activeObjective.situation } : {}) } } : {}),
@@ -786,7 +791,7 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 		});
 		// A planning token estimate may trigger early context compaction, but it is
 		// never an execution ceiling and never authorizes aborting a live Turn.
-		const piContextPreparationTarget = planning?.budget.maxTokens ?? undefined;
+		let piContextPreparationTarget = planning?.budget.maxTokens ?? undefined;
 		let activeTaskRunId = executionEnvelope.taskRunId;
 		const ownsActiveTaskRun = Boolean(ownedTaskRunId);
 		let activeTaskRunSettled = false;
@@ -800,6 +805,20 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 			await this.sessionCatalog?.touch(input.source);
 			const scopedSession = session.piSession as typeof session.piSession & { beemaxSkillHistorySanitized?: boolean };
 			if (!scopedSession.beemaxSkillHistorySanitized) { releaseHistoricalSkillContext(session.piSession); scopedSession.beemaxSkillHistorySanitized = true; }
+			const recoveredContinuationRequest = defersFailedTurnLocalContinuationSemantics
+				? recoverFailedTurnLocalContinuationRequest(input.text, session.piSession.agent.state.messages)
+				: undefined;
+			const executionRequestText = recoveredContinuationRequest ?? input.text;
+			const executionUnderstanding = defersFailedTurnLocalContinuationSemantics
+				? this.turnUnderstanding.understand(executionRequestText)
+				: understanding;
+			const executionSituation = defersFailedTurnLocalContinuationSemantics && executionUnderstanding
+				? (await this.situationBuilder.build({ text: executionRequestText, fallback: executionUnderstanding })).situation
+				: situation;
+			if (defersFailedTurnLocalContinuationSemantics) {
+				planning = this.planningPolicy?.decide(executionRequestText);
+				piContextPreparationTarget = planning?.budget.maxTokens ?? undefined;
+			}
 			if (shouldCompactForExecutionBudget(session.piSession, piContextPreparationTarget)) {
 				const taskEnvelope = objective
 					? buildTaskPreservationEnvelope([objective])
@@ -857,10 +876,13 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 				if (planningLease) this.planningBudgets?.end(planningScope, planningLease);
 			};
 			turnResourceCleanup = cleanupTurnResources;
-			const requestedText = explicitSkillRequest(input.text);
-			const explicitlyRequestedSkill = explicitSkillName(input.text);
+			const explicitlyRequestedSkill = explicitSkillName(executionRequestText);
+			const requestedText = recoveredContinuationRequest
+				? renderRecoveredContinuationRequest(explicitSkillRequest(executionRequestText), input.text)
+				: explicitSkillRequest(input.text);
+			const requiresRequestedCapabilityBootstrap = Boolean(explicitlyRequestedSkill) || explicitSkillRequest(input.text) !== input.text;
 			const taskPreservation = activeObjective && referencesActiveObjective ? buildTaskPreservationEnvelope([activeObjective], 6_000) : undefined;
-			const contextRuntime = { model: modelOf(session.piSession.agent), memoryQuery: understanding?.memoryQuery, situation, accessScopeRef, ...(workContract ? { workContractDigest: createHash("sha256").update(JSON.stringify(workContract)).digest("hex") } : {}) };
+			const contextRuntime = { model: modelOf(session.piSession.agent), memoryQuery: executionUnderstanding?.memoryQuery, situation: executionSituation, accessScopeRef, ...(workContract ? { workContractDigest: createHash("sha256").update(JSON.stringify(workContract)).digest("hex") } : {}) };
 			const contextAdditionalItems = taskPreservation ? [{ kind: "task_preservation" as const, source: "task_ledger", priority: 110, compressible: false, text: taskPreservation }] : [];
 			const contextAssembly = cognitiveRun && this.context
 				? typeof this.context.assembleForExecution === "function"
@@ -868,7 +890,7 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 					: typeof this.context.assemble === "function" ? this.context.assemble(contextSource, requestedText, contextRuntime, contextAdditionalItems) : undefined
 				: undefined;
 			const recalledText = contextAssembly?.text ?? (cognitiveRun
-				? this.context?.enrich(contextSource, requestedText, { model: modelOf(session.piSession.agent), memoryQuery: understanding?.memoryQuery, situation, accessScopeRef }) ?? requestedText
+				? this.context?.enrich(contextSource, requestedText, { model: modelOf(session.piSession.agent), memoryQuery: executionUnderstanding?.memoryQuery, situation: executionSituation, accessScopeRef }) ?? requestedText
 				: requestedText);
 			const enrichedBase = workContract ? `${renderWorkContract(workContract)}\n\n${recalledText}` : recalledText;
 			const enrichedText = contextAssembly ? enrichedBase : [taskPreservation, enrichedBase].filter(Boolean).join("\n\n");
@@ -911,15 +933,15 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 				/** Pre-semantic compatibility seam for injected test/legacy runtimes only. */
 				beemaxSkillPrefetch?: (query: string, signal?: AbortSignal) => Promise<Array<{ name: string; version: string }>>;
 			}) | undefined;
-			const prefetchQuery = boundedCapabilityQuery(understanding?.capabilityQuery ?? input.text);
+			const prefetchQuery = boundedCapabilityQuery(executionUnderstanding?.capabilityQuery ?? executionRequestText);
 			const lexicalPrefetchHints = selectTurnTools(prefetchQuery, allTools);
 			const shouldRunCapabilityPrefetch = Boolean(
 				workContract?.capabilityRequirements.length
 				|| planning?.requiredTools.length
 				|| planning?.signals.requiresResearch
 				|| planning?.signals.requiresVerification
-				|| requestsExplicitCapabilityResolution(input.text)
-				|| requestedText !== input.text
+				|| requestsExplicitCapabilityResolution(executionRequestText)
+				|| requiresRequestedCapabilityBootstrap
 				|| input.source.delegatedTask
 				|| lexicalPrefetchHints.length,
 			);
@@ -938,7 +960,10 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 			const executionCapabilityInventory = new Set((admittedTools ?? allTools.map((tool) => tool.name)).filter((name) => !operationallySuppressedToolNames.has(name)));
 			let turnLocalArtifactPipeline = workContract
 				? { candidates: [], missingResearchProvider: false, requiresResearchEvidence: false }
-				: deterministicTurnArtifactPipelineSelection(input.text, planning?.signals, allTools, executionCapabilityInventory);
+				: deterministicTurnArtifactPipelineSelection(executionRequestText, planning?.signals, allTools, executionCapabilityInventory);
+			const requiresCurrentContinuationSourceReceipt = Boolean(recoveredContinuationRequest
+				&& planning?.signals.requiresResearch
+				&& !explicitlyForbidsCurrentSourceResearch(executionRequestText));
 			const capabilityBoundaries = workContract ? [
 				...workContract.constraints.map((clause) => ({ kind: "constraint" as const, text: clause.text })),
 				...workContract.prohibitions.map((clause) => ({ kind: "prohibition" as const, text: clause.text })),
@@ -976,7 +1001,7 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 					});
 					if (isTrustedCapabilityProviderResolutionTool(capabilityPrefetch)) {
 						providerPrefetchAvailability = providerAvailabilityMetadata(proposal.providerResolutions, admittedInventory);
-						if (!workContract) turnLocalArtifactPipeline = deterministicTurnArtifactPipelineSelection(input.text, planning?.signals, allTools, executionCapabilityInventory, providerPrefetchAvailability);
+						if (!workContract) turnLocalArtifactPipeline = deterministicTurnArtifactPipelineSelection(executionRequestText, planning?.signals, allTools, executionCapabilityInventory, providerPrefetchAvailability);
 					}
 					const providerAdmissibleCandidates = restoreUncoveredCapabilityCandidates(reconcileExplicitCapabilityExecutionCandidates(providerCandidates, capabilityRequirements, allTools, operationalInventory), capabilityRequirements, allTools, operationalInventory);
 					const activationProviderCandidates = turnLocalArtifactPipeline.researchToolName
@@ -1039,7 +1064,7 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 				}
 			}
 			if (turnLocalArtifactPipeline.candidates.length) {
-				const cognitionId = `cap:core-turn-artifact-pipeline:${createHash("sha256").update(JSON.stringify({ text: input.text, candidates: capabilityDecisionCandidates(turnLocalArtifactPipeline.candidates) })).digest("hex")}`;
+				const cognitionId = `cap:core-turn-artifact-pipeline:${createHash("sha256").update(JSON.stringify({ text: executionRequestText, candidates: capabilityDecisionCandidates(turnLocalArtifactPipeline.candidates) })).digest("hex")}`;
 				capabilityDecisions.set(cognitionId, capabilityDecisionCandidates(turnLocalArtifactPipeline.candidates));
 			}
 			if (explicitlyRequestedSkill && !admittedSkills.has(explicitlyRequestedSkill)) {
@@ -1079,6 +1104,12 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 					...turnLocalArtifactPipeline.candidates.map((candidate) => candidate.sourceToolName ?? candidate.name),
 					...deterministicContractFallbackTools,
 				])];
+			const currentSourceEvidenceToolNames = [...new Set([...semanticRequestedTools, ...prefetchedTools])].filter((name) => {
+				const tool = allTools.find((candidate) => candidate.name === name);
+				const ranking = (tool as typeof tool & { beemaxToolSpec?: { ranking?: CapabilityOperationalSignals } } | undefined)?.beemaxToolSpec?.ranking;
+				return ["web_search", "exa_web_search"].includes(name)
+					|| (toolSideEffect(tool) === "none" && (ranking?.evidence === "source_receipt" || ranking?.evidence === "verified"));
+			});
 			// Only the entry controls are visible before a selected Skill advances.
 			// Route, resource, and completion controls remain in the immutable inventory
 			// and are promoted by version-locked lifecycle receipts from the prior phase.
@@ -1092,12 +1123,12 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 						workContract?.capabilityRequirements.length
 						|| planning?.requiredTools.length
 						|| planning?.signals.requiresResearch
-						|| requestsExplicitCapabilityResolution(input.text)
+						|| requestsExplicitCapabilityResolution(executionRequestText)
 						|| input.source.delegatedTask
 					))
-					|| requestedText !== input.text
+					|| requiresRequestedCapabilityBootstrap
 					|| (prefetchedTools.length === 0 && (
-						requestsExplicitCapabilityResolution(input.text)
+						requestsExplicitCapabilityResolution(executionRequestText)
 						|| planning?.signals.requiresResearch
 				)),
 			);
@@ -1636,7 +1667,17 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 					toolStartedAt.clear();
 					observableProgress = true;
 				}
-				enqueueEvent(outwardEvent);
+				const quarantinedContinuationResearchAssistantEvent = requiresCurrentContinuationSourceReceipt
+					&& !hasTurnSourceReceipt()
+					&& ((event.type === "message_update"
+						&& (event.assistantMessageEvent.type === "text_delta" || event.assistantMessageEvent.type === "thinking_delta"))
+						|| (event.type === "message_end" && event.message.role === "assistant"));
+				// A failed prior research Turn is not evidence about the current Tool state.
+				// Drop every pre-receipt assistant surface event instead of replaying it
+				// later: it can contain stale Provider claims or internal deliberation.
+				// Tool progress remains visible, and assistant streaming resumes after a
+				// trusted current Source Receipt.
+				if (!quarantinedContinuationResearchAssistantEvent) enqueueEvent(outwardEvent);
 			});
 			let timedOut = false;
 			const abortFromCaller = () => { void session.piSession.abort(); };
@@ -1780,6 +1821,13 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 					await promptSession(`${renderToolSpecPlan(toolSpecPlan)}\n\n[BeeMax capability reroute: ${failedTool} failed without a recorded equivalent-capability discovery. Use capability_discover now to find an already available alternative, then continue the original request. Do not retry the same external mutation; reconcile any uncertain side effect before another write.]`, { expandPromptTemplates: false });
 					assertTaskRunAuthority();
 				}
+				if (requiresCurrentContinuationSourceReceipt && !hasTurnSourceReceipt() && !turnAbortReason) {
+					const activatedEvidenceTools = activatePlannedTools(currentSourceEvidenceToolNames);
+					if (!activatedEvidenceTools.length && supportsProgressiveTools && allTools.some((tool) => tool.name === "capability_discover")) activatePlannedTools(["capability_discover"]);
+					await requireToolSpecPublication();
+					await promptSession(`${renderToolSpecPlan(toolSpecPlan)}\n\n[BeeMax continuation evidence correction: this continued research request must be reverified in the current Turn. Call one active current-source evidence Tool now; if none is active, call capability_discover first. Do not report Provider availability or research conclusions until a successful current Source Receipt exists.]`, { expandPromptTemplates: false });
+					assertTaskRunAuthority();
+				}
 					let capabilityContinuations = 0;
 					const capabilityContinuationLimit = Math.max(3, pendingProviderRequirements.size + 1);
 					while (discoveredCapabilities && !turnAbortReason) {
@@ -1799,6 +1847,9 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 						await promptSession(`${renderToolSpecPlan(toolSpecPlan)}\n\n[BeeMax capability continuation: matching Tools or Skills are now active. Continue the original request using them. Do not repeat capability discovery.]`, { expandPromptTemplates: false });
 						assertTaskRunAuthority();
 					}
+				if (requiresCurrentContinuationSourceReceipt && !hasTurnSourceReceipt() && !turnAbortReason) {
+					throw new AgentRunError("Continued research request cannot complete without a current successful Source Receipt", false, undefined);
+				}
 				const capabilityCandidateCompleted = (candidate: AdmittedCapabilityCandidate) => candidate.kind === "skill"
 					? (completedSkillSequences.get(candidate.name) ?? []).some((receipt) => receipt.sequence > candidate.selectedAtSequence && (!candidate.version || receipt.version === candidate.version))
 					: (successfulToolSequences.get(candidate.sourceToolName ?? candidate.name) ?? []).some((sequence) => sequence > candidate.selectedAtSequence);
@@ -2504,6 +2555,208 @@ function boundedContractItems(items: readonly string[], maxChars: number): strin
 function requestsExplicitCapabilityResolution(text: string): boolean {
 	return /(?:调用|使用|通过|借助|接入|配置|安装|加载|启用|查找|找到)[^。；;.!?？\n]{0,80}(?:tool|mcp|provider|skill|plugin|工具|技能|插件)/iu.test(text)
 		|| /\b(?:call|use|via|through|with|configure|install|load|enable|find)\b[^.;!?\n]{0,80}\b(?:tool|mcp|provider|skill|plugin)s?\b/iu.test(text);
+}
+
+/**
+ * A failed turn-local request has no Task Ledger identity, so an explicit short
+ * continuation must recover it from the same Pi conversation before Tool
+ * admission. Only user-authored text is recovered; assistant summaries and Tool
+ * output remain untrusted evidence. A later substantive user request fences an
+ * older failure from being resumed accidentally.
+ */
+function recoverFailedTurnLocalContinuationRequest(currentRequest: string, messages: readonly unknown[]): string | undefined {
+	if (!isExplicitShortContinuation(currentRequest)) return undefined;
+	const firstIndex = Math.max(0, messages.length - 512);
+	let failedAssistantIndex = -1;
+	for (let index = messages.length - 1; index >= firstIndex; index--) {
+		const message = objectRecord(messages[index]);
+		if (message?.role === "assistant" && (message.stopReason === "aborted" || message.stopReason === "error")) {
+			failedAssistantIndex = index;
+			break;
+		}
+	}
+	if (failedAssistantIndex < 0) return undefined;
+	for (let index = failedAssistantIndex + 1; index < messages.length; index++) {
+		const historicalTurn = historicalUserTurn(messages[index]);
+		if (historicalTurn?.kind === "fence") return undefined;
+		const request = historicalTurn?.kind === "request" ? historicalTurn.text : undefined;
+		if (request && !isNonSubstantiveConversationTurn(request) && !isExplicitShortContinuation(request)) return undefined;
+	}
+	for (let index = failedAssistantIndex - 1; index >= firstIndex; index--) {
+		const historicalTurn = historicalUserTurn(messages[index]);
+		if (historicalTurn?.kind === "fence") return undefined;
+		const request = historicalTurn?.kind === "request" ? historicalTurn.text : undefined;
+		if (!request) continue;
+		// The nearest real user turn owns this failure. A greeting/acknowledgement is
+		// therefore a hard fence: crossing it could replay an older completed action.
+		if (isNonSubstantiveConversationTurn(request)) return undefined;
+		// A failed continuation may still chain back to the unfinished substantive
+		// request; only explicit continuation turns are transparent here.
+		if (isExplicitShortContinuation(request)) continue;
+		return request.slice(0, 12_000);
+	}
+	return undefined;
+}
+
+function historicalUserTurn(value: unknown): { kind: "request"; text: string } | { kind: "fence" } | undefined {
+	const message = objectRecord(value);
+	if (message?.role !== "user") return undefined;
+	const text = messageText(message.content).trim();
+	if (!text) return undefined;
+	const persistedEnvelope = persistedRuntimeEnvelopeRequest(text);
+	if (persistedEnvelope.recognized) return persistedEnvelope.request ? { kind: "request", text: persistedEnvelope.request } : { kind: "fence" };
+	if (text === "[Turn-scoped BeeMax execution guidance released.]") return undefined;
+	return /^(?:<beemax-|\[(?:BeeMax|Turn-scoped BeeMax)\b)/iu.test(text) ? { kind: "fence" } : { kind: "request", text };
+}
+
+/**
+ * Session JSONL retains the original runtime prompt even after the in-memory
+ * history is released to raw user text. Parse that compatibility envelope only
+ * when its outer structure is unambiguous. A user can quote these marker strings,
+ * so multiple request/policy boundaries fail closed instead of promoting quoted
+ * text and dropping the user's preceding constraints.
+ */
+function persistedRuntimeEnvelopeRequest(text: string): { recognized: boolean; request?: string } {
+	const planOpen = "<beemax-tool-spec-plan>\n";
+	const planIndex = text.indexOf(planOpen);
+	if (planIndex < 0) return { recognized: false };
+	const prefix = text.slice(0, planIndex);
+	if (prefix && !/^<beemax-skill-preflight>[^]*<\/beemax-skill-preflight>\n\n$/u.test(prefix)) return { recognized: false };
+	const planContentStart = planIndex + planOpen.length;
+	const planClose = "\n</beemax-tool-spec-plan>";
+	const planCloseIndex = text.indexOf(planClose, planContentStart);
+	if (planCloseIndex < 0) return { recognized: true };
+	try {
+		const plan = objectRecord(JSON.parse(text.slice(planContentStart, planCloseIndex)));
+		if (plan?.schemaVersion !== "beemax.tool-spec-plan.v1" || typeof plan.planId !== "string" || !/^tool-plan:sha256:[a-f0-9]{64}$/u.test(plan.planId)) return { recognized: true };
+	} catch {
+		return { recognized: true };
+	}
+	const bodyStart = planCloseIndex + planClose.length;
+	const requestMarker = "\n\nCurrent user request:\n";
+	const requestMarkers = stringIndices(text, requestMarker, bodyStart);
+	if (requestMarkers.length !== 1) return { recognized: true };
+	const requestStart = requestMarkers[0]! + requestMarker.length;
+	const policyPattern = /\n\n\[BeeMax (?:contract )?execution policy:/gu;
+	const policyIndices = [...text.slice(requestStart).matchAll(policyPattern)].map((match) => requestStart + match.index);
+	if (policyIndices.length !== 1) return { recognized: true };
+	const policyIndex = policyIndices[0]!;
+	if (!text.slice(policyIndex + 2).endsWith("]")) return { recognized: true };
+	const request = text.slice(requestStart, policyIndex).trim();
+	return request ? { recognized: true, request } : { recognized: true };
+}
+
+function stringIndices(text: string, needle: string, fromIndex: number): number[] {
+	const indices: number[] = [];
+	for (let index = text.indexOf(needle, fromIndex); index >= 0; index = text.indexOf(needle, index + needle.length)) indices.push(index);
+	return indices;
+}
+
+function messageText(content: unknown): string {
+	if (typeof content === "string") return content;
+	if (!Array.isArray(content)) return "";
+	return content.flatMap((block) => {
+		const item = objectRecord(block);
+		return item?.type === "text" && typeof item.text === "string" ? [item.text] : [];
+	}).join("");
+}
+
+function objectRecord(value: unknown): Record<string, unknown> | undefined {
+	return value !== null && typeof value === "object" ? value as Record<string, unknown> : undefined;
+}
+
+function isExplicitShortContinuation(value: string): boolean {
+	const compact = value.normalize("NFKC").toLocaleLowerCase().trim().replace(/[\s，,。.!！?？、]+/gu, "");
+	if (!compact || compact.length > 40) return false;
+	if (/^(?:请)?(?:继续|接着|续上)(?:(?:完成|处理|执行|进行|做完|下去|来|搞完)(?:一下)?)?(?:吧)?$/u.test(compact)) return true;
+	if (/^(?:请)?(?:继续|接着)(?:完成|处理|执行|进行|做完)?(?:(?:刚才|之前|上次|前面|原来)(?:的)?|(?:这个|该|它)(?:的)?)(?:任务|工作|报告|调研)?(?:一下|吧)?$/u.test(compact)) return true;
+	const words = value.normalize("NFKC").toLocaleLowerCase().trim().replace(/[,.;!?。！？]+/gu, " ").replace(/\s+/gu, " ");
+	return /^(?:please )?(?:continue|resume|carry on)(?: (?:and )?(?:complete|finish|with))?(?: (?:the )?(?:(?:previous|prior|last|same|unfinished) )?(?:task|work|report|research|it))?(?: please)?$/u.test(words);
+}
+
+const CHINESE_DIRECT_CURRENT_SOURCE_PROHIBITION = /(?:不要|请勿|不得|禁止|无需|无须|不需要|不用|不允许|不)\s*(?:再\s*)?(?:(?:(?:进行|做)\s*)?(?:(?:任何|一切|全部)\s*)?(?:联网|上网|网络搜索|网页搜索|在线搜索|外部搜索|实时搜索|搜索|检索|查询|调研|研究|访问\s*(?:互联网|外部网络)|调用\s*(?:web[_ -]?search|搜索工具))|(?:在|通过)\s*(?:互联网|网络|网页)(?:上)?\s*(?:(?:进行|做)\s*)?(?:搜索|检索|查询|调研|研究))/u;
+const CHINESE_EXTERNAL_SOURCE_USE_PROHIBITION = /(?:不要|请勿|不得|禁止|无需|无须|不需要|不用|不允许|不)\s*(?:再\s*)?(?:使用|用|依赖|引用|获取)\s*(?:任何\s*)?(?:(?:互联网|网络|网页|外部|实时|在线)(?:资料|数据|来源|信息|内容)?|web[_ -]?search)/u;
+const CHINESE_STALE_SOURCE_REJECTION = /(?:不要|请勿|不得|禁止|不)\s*[^，,。；;.!！?？\n]{0,24}(?:过时|陈旧|旧版|归档|历史|不可靠|低质量)[^，,。；;.!！?？\n]{0,24}(?:资料|数据|来源|信息|内容|网页|网站)?/u;
+const ENGLISH_STALE_SOURCE_REJECTION = /\b(?:do not|don't|must not|never)\b[^,.;!?\n]{0,40}\b(?:outdated|stale|archived|old|historical|unreliable|low-quality)\b[^,.;!?\n]{0,30}\b(?:sources?|data|information|content|pages?|sites?)?\b/u;
+const ENGLISH_CURRENT_SOURCE_PROHIBITION = /\b(?:do not|don't|must not|never|no need to)\s+(?:(?:browse|search|research)(?:\s+(?:the\s+)?(?:web|internet))?|access\s+(?:the\s+)?(?:web|internet)|use\s+(?:the\s+)?(?:web|internet|external sources?|live sources?))\b/u;
+const ENGLISH_WITHOUT_CURRENT_SOURCE = /\bwithout\s+(?:(?:web|internet|external|live)\s+)?(?:access|browsing|search|research|sources?)\b/u;
+const ENGLISH_NO_CURRENT_SOURCE = /\bno\s+(?:(?:web|internet|external|live)\s+)?(?:access|browsing|search|research|sources?)\b/u;
+
+function explicitlyOfflineResearchClause(value: string): boolean {
+	return /(?:请|要|需要|必须|务必)?\s*(?:在\s*)?(?:完全|全程)\s*离线/u.test(value)
+		|| /保持\s*离线|离线\s*(?:模式|情况下)|断网\s*(?:状态|情况下|模式)?/u.test(value)
+		|| /(?:仅|只)\s*(?:能|可|需|要)?\s*(?:使用|基于|依赖)[^，,。；;.!！?？\n]{0,12}(?:已有知识|已有材料|训练数据|当前对话|提供(?:的)?材料|用户提供)/u.test(value)
+		|| /\b(?:work|remain|stay|operate)\s+(?:(?:entirely|fully|completely)\s+)?offline\b/u.test(value)
+		|| /\boffline\s+only\b/u.test(value)
+		|| /\buse\s+only\s+(?:the\s+)?(?:provided|supplied) materials?\b/u.test(value)
+		|| /\buse\s+only\s+(?:the\s+)?(?:existing knowledge|training data|current conversation)\b/u.test(value);
+}
+
+function rejectsStaleSourcesClause(value: string): boolean {
+	return CHINESE_STALE_SOURCE_REJECTION.test(value) || ENGLISH_STALE_SOURCE_REJECTION.test(value);
+}
+
+function affirmativelyRequiresCurrentSourcesClause(value: string): boolean {
+	if (/^(?:不要|请勿|不得|禁止|无需|无须|不需要|不用|不允许|不)/u.test(value)
+		|| /^(?:do not|don't|must not|never|no need to|without|no)\b/u.test(value)) return false;
+	return /^(?:(?:请|需要|必须|务必|要|重新|继续|立即)\s*)*(?:联网|上网|网络搜索|网页搜索|在线搜索|外部搜索|实时搜索|搜索|检索|查询|访问\s*(?:互联网|外部网络)|调用\s*(?:web[_ -]?search|搜索工具))/u.test(value)
+		|| /^(?:(?:请|需要|必须|务必|要|重新|继续)\s*)*(?:调研|研究)[^，,。；;.!！?？\n]{0,30}(?:最新|实时|当前|近期|在线)/u.test(value)
+		|| /^(?:(?:please|must|need to|continue to)\s+)*(?:browse|search)\b/u.test(value)
+		|| /^(?:(?:please|must|need to|continue to)\s+)*(?:research|investigate)\b[^,.;!?\n]{0,30}\b(?:latest|current|live|real-time|online)\b/u.test(value);
+}
+
+function blanketCurrentSourceProhibitionClause(value: string): boolean {
+	return CHINESE_DIRECT_CURRENT_SOURCE_PROHIBITION.test(value)
+		|| CHINESE_EXTERNAL_SOURCE_USE_PROHIBITION.test(value)
+		|| ENGLISH_CURRENT_SOURCE_PROHIBITION.test(value)
+		|| ENGLISH_WITHOUT_CURRENT_SOURCE.test(value)
+		|| ENGLISH_NO_CURRENT_SOURCE.test(value);
+}
+
+function explicitlyForbidsCurrentSourceResearch(value: string): boolean {
+	const normalized = currentSourceDirectiveControlText(value);
+	const clauses = normalized.split(/(?:[，,。；;.!！?？\n]+|但是|不过|而是|但|\bbut\b|\bhowever\b)/u).map((clause) => clause.trim()).filter(Boolean);
+	let directive: "forbid" | "require" | undefined;
+	for (const clause of clauses) {
+		if (explicitlyOfflineResearchClause(clause)) directive = "forbid";
+		// Rejecting stale material is a source-quality constraint, not an
+		// affirmative retrieval command and not a blanket offline instruction.
+		else if (rejectsStaleSourcesClause(clause)) continue;
+		else if (affirmativelyRequiresCurrentSourcesClause(clause)) directive = "require";
+		else if (blanketCurrentSourceProhibitionClause(clause)) directive = "forbid";
+	}
+	return directive === "forbid";
+}
+
+function currentSourceDirectiveControlText(value: string): string {
+	const normalized = value.normalize("NFKC").toLocaleLowerCase();
+	const quotedContentBoundaries = [
+		/(?:^|\n)\s*current user request:\s*(?:\n|$)/u,
+		/(?:下面|以下)(?:内容)?(?:只是|仅是|为)?(?:一个)?示例\s*[:：]?/u,
+		/(?:例如|举例)\s*[:：]/u,
+		/\b(?:for example|quoted example)\b\s*[:：]?/u,
+	].flatMap((pattern) => {
+		const match = pattern.exec(normalized);
+		return match?.index === undefined ? [] : [match.index];
+	});
+	return quotedContentBoundaries.length ? normalized.slice(0, Math.min(...quotedContentBoundaries)) : normalized;
+}
+
+function isNonSubstantiveConversationTurn(value: string): boolean {
+	const compact = value.normalize("NFKC").toLocaleLowerCase().trim().replace(/[\s，,。.!！?？、~～]+/gu, "");
+	return /^(?:你好|您好|哈喽|嗨|在吗|谢谢|多谢|好的|好|可以|行|嗯|嗯嗯|收到|辛苦了|hi|hello|hey|thanks|thankyou|ok|okay)$/u.test(compact);
+}
+
+function renderRecoveredContinuationRequest(unfinishedRequest: string, currentRequest: string): string {
+	return [
+		"[BeeMax continuation recovery]",
+		"Continue the unfinished task from the earlier user message in this same conversation. Re-evaluate Tool and Provider availability in this Turn; never present a historical failure as current without a new Tool receipt.",
+		"Unfinished user request:",
+		unfinishedRequest,
+		"Current user instruction:",
+		currentRequest,
+		"[/BeeMax continuation recovery]",
+	].join("\n");
 }
 
 function releaseHistoricalSkillContext(session: AgentSession, fromIndex = 0): void {

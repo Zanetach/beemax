@@ -457,8 +457,8 @@ export function createSkillTools(agentDir: string, markReloadNeeded: () => void,
 	];
 	const evolveSkill: ToolPolicy = { ...MUTATING_TOOL_POLICY, sideEffect: "local", risk: "high", reversible: "unknown", impact: "Changes durable instructions that influence future Agent behavior" };
 	const policies: Record<string, ToolPolicy> = {
-		capability_discover: { ...READ_ONLY_TOOL_POLICY },
-		capability_acquire: { ...MUTATING_TOOL_POLICY, sideEffect: "local", risk: "high", reversible: "unknown", maxAttempts: 1, impact: "Installs a versioned Tool or MCP Provider from a trusted catalog after evidence-backed authority" },
+		capability_discover: { ...READ_ONLY_TOOL_POLICY, timeoutMs: 5 * 60_000 },
+		capability_acquire: { ...MUTATING_TOOL_POLICY, sideEffect: "local", risk: "high", reversible: "unknown", timeoutMs: 10 * 60_000, maxAttempts: 1, impact: "Installs a versioned Tool or MCP Provider from a trusted catalog after evidence-backed authority" },
 		skill_list: { ...READ_ONLY_TOOL_POLICY },
 		skill_read: { ...READ_ONLY_TOOL_POLICY },
 		skill_activate: { ...READ_ONLY_TOOL_POLICY },

@@ -4,7 +4,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { CapabilityProviderRuntime, ModelBackedSemanticCapabilityPort, SemanticCapabilityRanker, createSkillTools } from "../dist/index.js";
+import { CapabilityProviderRuntime, ModelBackedSemanticCapabilityPort, SemanticCapabilityRanker, createSkillTools, governToolDefinition } from "../dist/index.js";
 
 function toolsAt(root, inventory = [], verifier, activateTools, promotionAuthority, providerRuntime) {
 	return new Map(createSkillTools(root, () => undefined, inventory, verifier, [], activateTools, undefined, promotionAuthority, undefined, providerRuntime).map((tool) => [tool.name, tool]));
@@ -632,12 +632,81 @@ test("capability acquisition rejects an undiscovered invented capability as a st
 	const root = mkdtempSync(join(tmpdir(), "beemax-capability-acquire-invented-"));
 	try {
 		const tool = toolsAt(root).get("capability_acquire");
+		assert.equal(tool.beemaxPolicy.timeoutMs, 10 * 60_000);
 		const result = await tool.execute("acquire-invented", { capability: "file.write" });
 		assert.equal(result.isError, true);
 		assert.equal(result.details.providerAcquisition.status, "blocked");
 		assert.deepEqual(result.details.activatedTools, []);
 		assert.match(result.content[0].text, /file\.write.*unavailable/i);
 	} finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("the governed capability discovery budget exceeds two Provider health batches", async (context) => {
+	const root = mkdtempSync(join(tmpdir(), "beemax-capability-discover-composed-timeout-"));
+	let resolutionSignal;
+	let resolutionStartedResolve;
+	let releaseResolutionResolve;
+	const resolutionStarted = new Promise((resolve) => { resolutionStartedResolve = resolve; });
+	const releaseResolution = new Promise((resolve) => { releaseResolutionResolve = resolve; });
+	context.mock.timers.enable({ apis: ["setTimeout"] });
+	try {
+		const selected = { id: "exa-mcporter", kind: "tool", installed: true, health: { status: "ready", evidenceRef: "health:exa-mcporter" }, installable: true };
+		const providerRuntime = {
+			resolve: async ({ capability, signal }) => {
+				resolutionSignal = signal;
+				resolutionStartedResolve();
+				await releaseResolution;
+				return { status: "ready", capability, selected, candidates: [selected] };
+			},
+			acquire: async () => assert.fail("discovery must not acquire a Provider"),
+		};
+		const raw = toolsAt(root, [{ name: "web_search", description: "Search the current public web", providers: [{ id: "exa-mcporter" }] }], undefined, undefined, undefined, providerRuntime).get("capability_discover");
+		assert.equal(raw.beemaxPolicy.timeoutMs, 5 * 60_000);
+		const governed = governToolDefinition(raw, raw.beemaxPolicy, { platform: "cli", chatId: "provider-discovery-timeout", chatType: "dm", userId: "local" });
+		const execution = governed.execute("discover", { query: "web_search" });
+		void execution.catch(() => undefined);
+		await resolutionStarted;
+		context.mock.timers.tick(4 * 60_000 + 10_001);
+		await Promise.resolve();
+		assert.equal(resolutionSignal.aborted, false, "the discovery Tool boundary must leave slack for fallback selection and two health batches");
+		releaseResolutionResolve();
+		assert.notEqual((await execution).isError, true);
+	} finally {
+		releaseResolutionResolve();
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("the governed capability acquisition budget exceeds install, health, and authority child ceilings", async (context) => {
+	const root = mkdtempSync(join(tmpdir(), "beemax-capability-acquire-composed-timeout-"));
+	let acquisitionSignal;
+	let acquisitionStartedResolve;
+	let releaseAcquisitionResolve;
+	const acquisitionStarted = new Promise((resolve) => { acquisitionStartedResolve = resolve; });
+	const releaseAcquisition = new Promise((resolve) => { releaseAcquisitionResolve = resolve; });
+	context.mock.timers.enable({ apis: ["setTimeout"] });
+	try {
+		const selected = { id: "exa-mcporter", kind: "tool", installed: true, health: { status: "ready", evidenceRef: "health:exa-mcporter" }, installable: true };
+		const providerRuntime = { acquire: async ({ capability, signal }) => {
+			acquisitionSignal = signal;
+			acquisitionStartedResolve();
+			await releaseAcquisition;
+			return { status: "ready", capability, selected, candidates: [selected], installationReceipt: { receiptId: "install:exa", installedAt: 1, evidenceRef: "install:exa" }, authorityEvidenceRef: "authority:exa" };
+		} };
+		const raw = toolsAt(root, [{ name: "web_search", description: "Search", providers: [] }], undefined, undefined, undefined, providerRuntime).get("capability_acquire");
+		const governed = governToolDefinition(raw, raw.beemaxPolicy, { platform: "cli", chatId: "provider-timeout", chatType: "dm", userId: "local" });
+		const execution = governed.execute("acquire", { capability: "web_search" });
+		void execution.catch(() => undefined);
+		await acquisitionStarted;
+		context.mock.timers.tick(8 * 60_000 + 10_001);
+		await Promise.resolve();
+		assert.equal(acquisitionSignal.aborted, false, "the outer Tool boundary must leave settlement slack beyond all child ceilings");
+		releaseAcquisitionResolve();
+		assert.notEqual((await execution).isError, true);
+	} finally {
+		releaseAcquisitionResolve();
+		rmSync(root, { recursive: true, force: true });
+	}
 });
 
 test("repeated Skill lifecycle calls retain replay identity without colliding across Tool calls", async () => {

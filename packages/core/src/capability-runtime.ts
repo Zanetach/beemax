@@ -2,7 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import type { Api, Model } from "@earendil-works/pi-ai";
 import { parseJsonWithRepair } from "@earendil-works/pi-ai";
 import { completeSimple } from "@earendil-works/pi-ai/compat";
-import { rankCapabilityIndex, type RankableCapability } from "./capability-ranking.ts";
+import { matchesCanonicalCapabilityName, rankCapabilityIndex, type RankableCapability } from "./capability-ranking.ts";
 import type { ToolSideEffect } from "./tool-runtime.ts";
 
 export type CapabilityKind = "tool" | "mcp" | "skill";
@@ -615,9 +615,7 @@ function exactMetadataAdmission(text: string, match: RankedCapability): RankedCa
 	const normalize = (value: string) => value.normalize("NFKC").toLocaleLowerCase();
 	const trigger = match.descriptor.triggers?.find((value) => normalized.includes(normalize(value)));
 	const alias = match.descriptor.aliases?.find((value) => normalized.includes(normalize(value)));
-	const name = normalize(match.descriptor.name);
-	const namePhrase = name.replace(/[^\p{L}\p{N}]+/gu, " ").trim();
-	const nameMatched = normalized === name || normalized === namePhrase || normalized.includes(name) || Boolean(namePhrase && normalized.includes(namePhrase));
+	const nameMatched = matchesCanonicalCapabilityName(normalized, match.descriptor.name);
 	const kind = trigger ? "trigger" : alias ? "alias" : nameMatched ? "name" : undefined;
 	if (!kind) return undefined;
 	const confidence = kind === "name" ? 0.99 : kind === "trigger" ? 0.97 : 0.95;

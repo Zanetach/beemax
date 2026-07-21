@@ -43,6 +43,67 @@ test("Profile Provider composition installs only a pinned pre-authorized adapter
 	} finally { rmSync(root, { recursive: true, force: true }); }
 });
 
+test("Profile Provider composition gives a cold pinned npm install more than sixty seconds", async (context) => {
+	const root = mkdtempSync(join(tmpdir(), "beemax-profile-provider-cold-timeout-"));
+	let installationSignal;
+	let installationStartedResolve;
+	let releaseInstallationResolve;
+	const installationStarted = new Promise((resolve) => { installationStartedResolve = resolve; });
+	const releaseInstallation = new Promise((resolve) => { releaseInstallationResolve = resolve; });
+	context.mock.timers.enable({ apis: ["setTimeout"] });
+	try {
+		const bundle = createProfileCapabilityProviderBundle({
+			profileId: "profile:test", agentDir: root,
+			installation: { enabled: true, allowedProviders: ["exa-mcporter"] },
+			runCommand: async (_command, _args, options) => {
+				installationSignal = options.signal;
+				installationStartedResolve();
+				await releaseInstallation;
+				await mkdir(join(options.cwd, "node_modules", "mcporter", "dist"), { recursive: true });
+				await writeFile(join(options.cwd, "node_modules", "mcporter", "dist", "cli.js"), "stub");
+			},
+		});
+		const acquisition = bundle.runtime.acquire({ capability: "web_search", providers: [{ ...provider(false), health: async () => ({ status: "ready", evidenceRef: "health:exa-mcporter" }) }] });
+		await installationStarted;
+		context.mock.timers.tick(60_001);
+		await Promise.resolve();
+		assert.equal(installationSignal.aborted, false, "a normal cold installation must not enter outcome-unknown quarantine at sixty seconds");
+		releaseInstallationResolve();
+		assert.equal((await acquisition).status, "ready");
+	} finally {
+		releaseInstallationResolve();
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("Profile Provider composition gives integrity-backed health probes more than five seconds", async (context) => {
+	const root = mkdtempSync(join(tmpdir(), "beemax-profile-provider-health-timeout-"));
+	let healthSignal;
+	let healthStartedResolve;
+	let releaseHealthResolve;
+	const healthStarted = new Promise((resolve) => { healthStartedResolve = resolve; });
+	const releaseHealth = new Promise((resolve) => { releaseHealthResolve = resolve; });
+	context.mock.timers.enable({ apis: ["setTimeout"] });
+	try {
+		const bundle = createProfileCapabilityProviderBundle({ profileId: "profile:test", agentDir: root, installation: { enabled: true, allowedProviders: ["exa-mcporter"] } });
+		const resolution = bundle.runtime.resolve({ capability: "web_search", providers: [{ ...provider(true), health: async (signal) => {
+			healthSignal = signal;
+			healthStartedResolve();
+			await releaseHealth;
+			return { status: "ready", evidenceRef: "health:exa-mcporter" };
+		} }] });
+		await healthStarted;
+		context.mock.timers.tick(5_001);
+		await Promise.resolve();
+		assert.equal(healthSignal.aborted, false, "integrity verification must not be classified unavailable after only five seconds");
+		releaseHealthResolve();
+		assert.equal((await resolution).status, "ready");
+	} finally {
+		releaseHealthResolve();
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
 test("Profile Provider composition serializes concurrent installation and atomically reuses the first result", async () => {
 	const root = mkdtempSync(join(tmpdir(), "beemax-profile-provider-concurrent-"));
 	let commands = 0;

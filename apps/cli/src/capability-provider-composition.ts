@@ -9,6 +9,8 @@ export const EXA_MCPORTER_VERSION = "0.9.0";
 export const EXA_MCPORTER_LOCK_SHA256 = "7c8ca25b89c4a23618c4385a373660cbf23512d7f461e82f2197c19027a183ec";
 export const EXA_MCPORTER_PROVIDER_VERSION = `mcporter:${EXA_MCPORTER_VERSION}:lock:${EXA_MCPORTER_LOCK_SHA256}`;
 const EXA_MCPORTER_SOURCE = "beemax-provider-lock";
+const EXA_MCPORTER_INSTALL_TIMEOUT_MS = 4 * 60_000;
+const EXA_MCPORTER_HEALTH_TIMEOUT_MS = 60_000;
 const LOCK_WAIT_MS = 30_000;
 const LOCK_POLL_MS = 100;
 
@@ -68,6 +70,8 @@ export function createProfileCapabilityProviderBundle(input: {
 	const policyEvidence = `profile-config:${createHash("sha256").update(JSON.stringify({ profileId, enabled: input.installation.enabled, allowedProviders: [...allowedProviders].sort() })).digest("hex")}`;
 
 	const runtime = new CapabilityProviderRuntime({
+		installTimeoutMs: EXA_MCPORTER_INSTALL_TIMEOUT_MS,
+		healthTimeoutMs: EXA_MCPORTER_HEALTH_TIMEOUT_MS,
 		installAuthority: {
 			authorize: async ({ provider }) => input.installation.enabled && allowedProviders.has(provider.id)
 				? { allowed: true, evidenceRef: policyEvidence }

@@ -320,6 +320,43 @@ test("progressive capability ranking skips semantic cognition for strong unbound
 	assert.ok(selection.candidates.every(({ confidence }) => confidence >= 0.75));
 });
 
+test("progressive capability ranking does not treat a canonical name inside a larger token as exact metadata", async () => {
+	const query = "必须调用 web_search 搜索 BeeMax-Agent GitHub";
+	const capabilities = [
+		capabilityDescriptor({ kind: "tool", name: "web_search", description: "Search current public information", version: "1", activeTools: ["web_search"] }),
+		capabilityDescriptor({ kind: "skill", name: "hub", description: "Read web_search results aloud with VoxFlow voices", version: "1", activeTools: ["skill_activate"] }),
+	];
+	const hubRecall = (await new LexicalCapabilityRanker().rank(query, capabilities, 10)).find(({ descriptor }) => descriptor.name === "hub");
+	assert.ok(hubRecall, "description overlap should keep hub available for weak semantic recall");
+	assert.ok(hubRecall.confidence < 0.2, "GitHub must not add canonical-name authority to hub");
+	let semanticCalls = 0;
+	const selection = await new CapabilityRuntime({
+		ranker: new ProgressiveCapabilityRanker(
+			new LexicalCapabilityRanker(),
+			{ async rank() { semanticCalls++; return []; } },
+		),
+	}).discover({ query, inventory: capabilities });
+	assert.equal(semanticCalls, 0);
+	assert.deepEqual(selection.candidates.map(({ name }) => name), ["web_search"]);
+});
+
+test("progressive capability ranking still admits an independently named canonical capability", async () => {
+	let semanticCalls = 0;
+	const selection = await new CapabilityRuntime({
+		ranker: new ProgressiveCapabilityRanker(
+			new LexicalCapabilityRanker(),
+			{ async rank() { semanticCalls++; return []; } },
+		),
+	}).discover({
+		query: "Use hub to read text aloud",
+		inventory: [
+			capabilityDescriptor({ kind: "skill", name: "hub", description: "Read text aloud with VoxFlow voices", version: "1", activeTools: ["skill_activate"] }),
+		],
+	});
+	assert.equal(semanticCalls, 0);
+	assert.deepEqual(selection.candidates.map(({ name, confidence }) => ({ name, confidence })), [{ name: "hub", confidence: 0.99 }]);
+});
+
 test("progressive capability ranking keeps semantic cognition for weak unbound lexical overlap", async () => {
 	let semanticCalls = 0;
 	const semanticDescriptor = capabilityDescriptor({ kind: "tool", name: "trusted_route", description: "Resolve an ambiguous objective", version: "1", activeTools: ["trusted_route"] });
