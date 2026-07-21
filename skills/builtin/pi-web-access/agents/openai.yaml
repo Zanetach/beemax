@@ -1,0 +1,3 @@
+interface:
+  display_name: "Pi Web Access"
+  short_description: "Use an isolated Profile browser"

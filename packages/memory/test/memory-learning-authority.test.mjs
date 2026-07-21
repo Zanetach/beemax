@@ -162,21 +162,38 @@ test("Learning extraction renews its SQLite lease until the extractor returns", 
 		for (const [index, level] of ["situation_context", "episode_publication", "adaptive_learning"].entries()) rollout.promote(level, { actor: "operator", evidenceRef: "evaluation:extraction-lease" }, 100 + index);
 		const deterministic = new DeterministicLearningExtractor();
 		let extractions = 0;
+		let extractionStarted;
+		const started = new Promise((resolve) => { extractionStarted = resolve; });
+		let releaseExtraction;
+		const released = new Promise((resolve) => { releaseExtraction = resolve; });
+		let logicalNow = 0;
 		const kernel = new DefaultMemoryLearningKernel({
 			authority: persistence.memoryLearningAuthority,
+			now: () => logicalNow,
 			extractor: { extract: async (claim) => {
 				extractions++;
-				await new Promise((resolve) => setTimeout(resolve, 90));
+				extractionStarted();
+				await released;
 				return deterministic.extract(claim);
 			} },
 		});
 		const content = "Prefer concise reports with compact source tables";
 		const observed = kernel.observe({ type: "evidence", scope: { profileId: "profile-a", platform: "cli", chatId: "chat-a", userId: "user-a", chatType: "dm" }, evidenceKind: "feedback", content, evidenceDigest: digest(content), occurredAt: Date.now() });
-		const maintained = await kernel.maintain({ profileId: "profile-a", trigger: "signal", maxItems: 10, maxModelCalls: 1, leaseMs: 60, now: observed.recordedAt + 1 });
+		const claimNow = observed.recordedAt + 1;
+		logicalNow = claimNow + 50;
+		const maintenance = kernel.maintain({ profileId: "profile-a", trigger: "signal", maxItems: 10, maxModelCalls: 1, leaseMs: 60, now: claimNow });
+		await started;
+		const claimableBeforeFirstHeartbeat = persistence.memoryLearningAuthority.claimLearningExtractions({ profileId: "profile-a", maxItems: 1, leaseMs: 60, now: claimNow + 61 });
+		logicalNow = claimNow + 80;
+		await new Promise((resolve) => setTimeout(resolve, 25));
+		const claimableWhileExtractorRuns = persistence.memoryLearningAuthority.claimLearningExtractions({ profileId: "profile-a", maxItems: 1, leaseMs: 60, now: claimNow + 111 });
+		releaseExtraction();
+		const maintained = await maintenance;
+		assert.equal(claimableBeforeFirstHeartbeat.length, 0);
+		assert.equal(claimableWhileExtractorRuns.length, 0);
 		assert.equal(maintained.failed, 0);
 		assert.equal(maintained.deferred, 0);
 		assert.equal(maintained.completed, 1);
-		await kernel.maintain({ profileId: "profile-a", trigger: "scheduled", maxItems: 10, maxModelCalls: 1, leaseMs: 60, now: Date.now() + 1 });
 		assert.equal(extractions, 1);
 		store.close();
 	} finally { rmSync(root, { recursive: true, force: true }); }
@@ -262,17 +279,35 @@ test("Learning Objective admission renews its SQLite lease until the governed ru
 		const persistence = memoryPersistencePorts(store);
 		const rollout = new AutonomyRolloutController({ store: persistence.autonomyRollout, evidence: () => rolloutEvidence });
 		for (const [index, level] of ["situation_context", "episode_publication", "adaptive_learning"].entries()) rollout.promote(level, { actor: "operator", evidenceRef: "evaluation:learning-objective-lease" }, 100 + index);
+		let admissionStarted;
+		const started = new Promise((resolve) => { admissionStarted = resolve; });
+		let releaseAdmission;
+		const released = new Promise((resolve) => { releaseAdmission = resolve; });
+		let logicalNow = 0;
 		const kernel = new DefaultMemoryLearningKernel({
 			authority: persistence.memoryLearningAuthority,
+			now: () => logicalNow,
 			extractor: new DeterministicLearningExtractor(),
 			learningObjectiveAdmission: { admit: async (candidate) => {
-				await new Promise((resolve) => setTimeout(resolve, 90));
+				admissionStarted();
+				await released;
 				return { status: "admitted", objectiveId: `objective:learning:${candidate.proposalId.slice(-16)}` };
 			} },
 		});
 		const content = "Missing provider capability for source-backed verification";
 		const observed = kernel.observe({ type: "evidence", scope: { profileId: "profile-a", platform: "cli", chatId: "chat-a", userId: "user-a", chatType: "dm" }, evidenceKind: "feedback", content, evidenceDigest: digest(content), occurredAt: Date.now() });
-		const maintained = await kernel.maintain({ profileId: "profile-a", trigger: "signal", maxItems: 10, maxModelCalls: 1, leaseMs: 60, now: observed.recordedAt + 1 });
+		const claimNow = observed.recordedAt + 1;
+		logicalNow = claimNow + 50;
+		const maintenance = kernel.maintain({ profileId: "profile-a", trigger: "signal", maxItems: 10, maxModelCalls: 1, leaseMs: 60, now: claimNow });
+		await started;
+		const claimableBeforeFirstHeartbeat = persistence.memoryLearningAuthority.claimLearningObjectives({ profileId: "profile-a", maxItems: 1, leaseMs: 60, now: claimNow + 61 });
+		logicalNow = claimNow + 80;
+		await new Promise((resolve) => setTimeout(resolve, 25));
+		const claimableWhileAdmissionRuns = persistence.memoryLearningAuthority.claimLearningObjectives({ profileId: "profile-a", maxItems: 1, leaseMs: 60, now: claimNow + 111 });
+		releaseAdmission();
+		const maintained = await maintenance;
+		assert.equal(claimableBeforeFirstHeartbeat.length, 0);
+		assert.equal(claimableWhileAdmissionRuns.length, 0);
 		assert.equal(maintained.failed, 0);
 		assert.equal(maintained.deferred, 0);
 		assert.equal(maintained.createdObjectiveIds.length, 1);

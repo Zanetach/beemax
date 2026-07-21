@@ -4,8 +4,12 @@ import { mkdir, readFile, readdir, symlink, truncate, writeFile } from "node:fs/
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { EXA_MCPORTER_LOCK_SHA256, EXA_MCPORTER_PROVIDER_VERSION, createProfileCapabilityProviderBundle } from "../dist/capability-provider-composition.js";
+import { EXA_MCPORTER_LOCK_SHA256, EXA_MCPORTER_PROVIDER_VERSION, createProfileCapabilityProviderBundle as createProfileCapabilityProviderBundleWithKey, inspectProfileExaMcporter as inspectProfileExaMcporterWithKey } from "../dist/capability-provider-composition.js";
 import { CapabilityProviderRuntime, createWebTools } from "../../../packages/core/dist/index.js";
+
+const TEST_PROVIDER_INTEGRITY_KEY = Buffer.alloc(32, 0x41);
+const createProfileCapabilityProviderBundle = (input) => createProfileCapabilityProviderBundleWithKey({ ...input, integrityKey: TEST_PROVIDER_INTEGRITY_KEY });
+const inspectProfileExaMcporter = (agentDir, integrityKey = TEST_PROVIDER_INTEGRITY_KEY) => inspectProfileExaMcporterWithKey(agentDir, integrityKey);
 
 const provider = (installed) => ({
 	id: "exa-mcporter", kind: "tool", capabilities: ["web_search"], installed,
@@ -20,7 +24,8 @@ test("Profile Provider composition installs only a pinned pre-authorized adapter
 		const bundle = createProfileCapabilityProviderBundle({
 			profileId: "profile:test", agentDir: root,
 			installation: { enabled: true, allowedProviders: ["exa-mcporter"] },
-			environment: { PATH: process.env.PATH, MODEL_API_KEY: "must-not-enter-installer" },
+			environment: { PATH: "/profile-controlled/bin", BEEMAX_NPM: "/profile-controlled/npm", MODEL_API_KEY: "must-not-enter-installer" },
+			trustedHostEnvironment: { PATH: "/trusted-host/bin", BEEMAX_NPM: "/trusted-host/npm" },
 			now: () => 42,
 			runCommand: async (command, args, options) => {
 				commands.push({ command, args: [...args], env: options.env });
@@ -35,11 +40,17 @@ test("Profile Provider composition installs only a pinned pre-authorized adapter
 		assert.match(result.installationReceipt?.evidenceRef ?? "", /^sha256:[a-f0-9]{64}$/);
 		assert.match(result.authorityEvidenceRef ?? "", /^profile-config:[a-f0-9]{64}$/);
 		assert.equal(commands.length, 1);
+		assert.equal(commands[0].command, "/trusted-host/npm");
 		assert.deepEqual(commands[0].args, ["ci", "--ignore-scripts", "--no-audit", "--no-fund", "--omit=dev"]);
 		assert.equal(commands.every((entry) => entry.env.MODEL_API_KEY === undefined), true);
+		assert.equal(commands[0].env.PATH.includes("/profile-controlled/bin"), false);
+		assert.equal(commands[0].env.PATH.endsWith("/trusted-host/bin"), true);
 		assert.equal(bundle.environment.MODEL_API_KEY, undefined);
+		assert.equal(bundle.environment.BEEMAX_AGENT_REACH_PATH.includes("/profile-controlled/bin"), false);
+		assert.equal(bundle.environment.BEEMAX_AGENT_REACH_PATH.endsWith("/trusted-host/bin"), true);
 		assert.match(bundle.environment.BEEMAX_AGENT_REACH_MCPORTER ?? "", /providers[/\\]exa-mcporter/);
 		assert.equal(EXA_MCPORTER_LOCK_SHA256.length, 64);
+		assert.deepEqual(await inspectProfileExaMcporter(root, Buffer.alloc(32, 0x99)), { state: "invalid" }, "a public-hash-valid manifest must remain bound to its Profile key");
 	} finally { rmSync(root, { recursive: true, force: true }); }
 });
 
@@ -227,6 +238,92 @@ test("Profile Provider composition rejects a symlinked installation root", async
 	} finally { rmSync(root, { recursive: true, force: true }); rmSync(outside, { recursive: true, force: true }); }
 });
 
+test("Profile Provider composition quarantines an invalid current tree before reinstalling", async () => {
+	const root = mkdtempSync(join(tmpdir(), "beemax-profile-provider-invalid-reinstall-"));
+	const providerRoot = join(root, "providers", "exa-mcporter");
+	const current = join(providerRoot, "current");
+	let installed = false;
+	try {
+		await mkdir(current, { recursive: true, mode: 0o700 });
+		await writeFile(join(current, "untrusted.txt"), "preserve for audit");
+		const bundle = createProfileCapabilityProviderBundle({
+			profileId: "profile:test",
+			agentDir: root,
+			installation: { enabled: true, allowedProviders: ["exa-mcporter"] },
+			now: () => 84,
+			runCommand: async (_command, _args, options) => {
+				await mkdir(join(options.cwd, "node_modules", "mcporter", "dist"), { recursive: true });
+				await writeFile(join(options.cwd, "node_modules", "mcporter", "dist", "cli.js"), "stub");
+				installed = true;
+			},
+		});
+		const result = await bundle.runtime.acquire({
+			capability: "web_search",
+			providers: [{ ...provider(false), health: async () => installed ? { status: "ready", evidenceRef: "health:reinstalled" } : { status: "unavailable" } }],
+		});
+		assert.equal(result.status, "ready");
+		const entries = await readdir(providerRoot);
+		const quarantined = entries.find((name) => name.startsWith("invalid-84-") && !name.endsWith(".json"));
+		assert.ok(quarantined);
+		assert.equal(await readFile(join(providerRoot, quarantined, "untrusted.txt"), "utf8"), "preserve for audit");
+		assert.ok(entries.includes(`${quarantined}.json`));
+	} finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("Profile Provider installation refuses a symlinked journal without overwriting its target", async () => {
+	const root = mkdtempSync(join(tmpdir(), "beemax-profile-provider-journal-link-"));
+	const outsideRoot = mkdtempSync(join(tmpdir(), "beemax-profile-provider-journal-target-"));
+	const outside = join(outsideRoot, "outside.json");
+	let commands = 0;
+	try {
+		const providerRoot = join(root, "providers", "exa-mcporter");
+		await mkdir(providerRoot, { recursive: true, mode: 0o700 });
+		await writeFile(outside, "preserve-me");
+		await symlink(outside, join(providerRoot, "installation-in-progress.json"));
+		const bundle = createProfileCapabilityProviderBundle({
+			profileId: "profile:test",
+			agentDir: root,
+			installation: { enabled: true, allowedProviders: ["exa-mcporter"] },
+			runCommand: async () => { commands++; },
+		});
+		const result = await bundle.runtime.acquire({ capability: "web_search", providers: [{ ...provider(false), health: async () => ({ status: "unavailable", reason: "not installed" }) }] });
+		assert.equal(result.status, "blocked");
+		assert.match(result.blocker?.reason ?? "", /regular file/i);
+		assert.equal(commands, 0);
+		assert.equal(await readFile(outside, "utf8"), "preserve-me");
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+		rmSync(outsideRoot, { recursive: true, force: true });
+	}
+});
+
+test("Profile Provider inspection rejects another Profile reached through an ancestor symlink", async () => {
+	const trustedRoot = mkdtempSync(join(tmpdir(), "beemax-profile-provider-trusted-"));
+	const crossedRoot = mkdtempSync(join(tmpdir(), "beemax-profile-provider-crossed-"));
+	try {
+		let installed = false;
+		const bundle = createProfileCapabilityProviderBundle({
+			profileId: "profile:trusted",
+			agentDir: trustedRoot,
+			installation: { enabled: true, allowedProviders: ["exa-mcporter"] },
+			runCommand: async (_command, _args, options) => {
+				await mkdir(join(options.cwd, "node_modules", "mcporter", "dist"), { recursive: true });
+				await writeFile(join(options.cwd, "node_modules", "mcporter", "dist", "cli.js"), "stub");
+				installed = true;
+			},
+		});
+		assert.equal((await bundle.runtime.acquire({
+			capability: "web_search",
+			providers: [{ ...provider(false), health: async () => installed ? { status: "ready", evidenceRef: "health:trusted" } : { status: "unavailable" } }],
+		})).status, "ready");
+		await symlink(join(trustedRoot, "providers"), join(crossedRoot, "providers"), process.platform === "win32" ? "junction" : "dir");
+		assert.deepEqual(await inspectProfileExaMcporter(crossedRoot), { state: "invalid" });
+	} finally {
+		rmSync(trustedRoot, { recursive: true, force: true });
+		rmSync(crossedRoot, { recursive: true, force: true });
+	}
+});
+
 test("published Provider integrity rejects tampering and oversized sparse artifacts before health", async () => {
 	const root = mkdtempSync(join(tmpdir(), "beemax-profile-provider-integrity-"));
 	const cliText = `console.log(JSON.stringify({ status: "ok", tools: [{ name: "web_search_exa" }] }));`;
@@ -240,7 +337,7 @@ test("published Provider integrity rejects tampering and oversized sparse artifa
 					await writeFile(join(options.cwd, "node_modules", "transitive-dependency", "data.txt"), "trusted");
 				},
 			});
-			const webProvider = createWebTools({ env: bundle.environment }).find((tool) => tool.name === "web_search").providers.find((candidate) => candidate.id === "exa-mcporter");
+			const webProvider = createWebTools({ env: bundle.environment, providerArtifactIntegrityKey: bundle.artifactIntegrityKey }).find((tool) => tool.name === "web_search").providers.find((candidate) => candidate.id === "exa-mcporter");
 			assert.equal((await bundle.runtime.acquire({ capability: "web_search", providers: [webProvider] })).status, "ready");
 			const current = join(root, "providers", "exa-mcporter", "current");
 			const cli = join(current, "node_modules", "mcporter", "dist", "cli.js");

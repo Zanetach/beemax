@@ -44,8 +44,8 @@ import {
 } from "@beemax/core";
 import type { SessionSource } from "@beemax/channel-runtime";
 import { join } from "node:path";
-import { homedir } from "node:os";
 import { createStructuredMarketTools } from "./market-data-composition.ts";
+import { assertProfileBrowserEndpoint, resolveProfileBrowserCdpUrl } from "./profile-browser.ts";
 
 export { filterEligibleSkills } from "@beemax/core";
 
@@ -95,6 +95,10 @@ export interface AgentFactoryOptions {
 	capabilityProviderRuntime?: CapabilityProviderRuntime;
 	/** Profile-scoped environment used by Provider-backed built-in Tools. */
 	capabilityProviderEnvironment?: NodeJS.ProcessEnv;
+	/** Complete immutable Profile snapshot used only to admit Profile-local Skills that declare env/bin requirements. */
+	skillEnvironment?: Readonly<NodeJS.ProcessEnv>;
+	/** Profile-owned authentication key for immutable Provider manifests. */
+	capabilityProviderIntegrityKey?: Uint8Array;
 	/** Optional trusted, versioned enterprise decision source. */
 	enterprisePolicy?: EnterprisePolicyProvider;
 	actionReliability?: (toolName: string) => MeasuredActionReliability;
@@ -131,7 +135,10 @@ export function attestAgentFactoryProfile<T extends Function>(factory: T, profil
 }
 
 export function buildAgentFactory(opts: AgentFactoryOptions) {
-	const webTools = createWebTools(opts.capabilityProviderEnvironment ? { env: opts.capabilityProviderEnvironment } : {});
+	const webTools = createWebTools({
+		...(opts.capabilityProviderEnvironment ? { env: opts.capabilityProviderEnvironment } : {}),
+		...(opts.capabilityProviderIntegrityKey ? { providerArtifactIntegrityKey: opts.capabilityProviderIntegrityKey } : {}),
+	});
 	const baseCustomTools = [...webTools, ...createStructuredMarketTools(), ...(opts.customTools ?? [])];
 	const execution = opts.executionPort ?? new LocalExecutionPort();
 	const toolAudit = new FileToolAuditJournal(join(opts.agentDir, "tool-audit.jsonl"));
@@ -139,7 +146,7 @@ export function buildAgentFactory(opts: AgentFactoryOptions) {
 		const executionRoleTools = createExecutionRoleTools(executionEnvelope);
 		const session = await buildBeeMaxRuntimeFactory<SessionSource>({
 			provider: valueOf(opts.provider), model: valueOf(opts.model), baseUrl: valueOf(opts.baseUrl), customProtocol: valueOf(opts.customProtocol), modelLimits: valueOf(opts.modelLimits), cwd: opts.cwd, agentDir: opts.agentDir,
-			getApiKey: opts.getApiKey, additionalModelProviders: valueOf(opts.additionalModelProviders), systemPrompt: opts.systemPrompt ?? DEFAULT_SYSTEM_PROMPT, skillToolset: opts.skillToolset ?? "standard",
+			getApiKey: opts.getApiKey, additionalModelProviders: valueOf(opts.additionalModelProviders), systemPrompt: opts.systemPrompt ?? DEFAULT_SYSTEM_PROMPT, skillToolset: opts.skillToolset ?? "standard", skillEnvironment: opts.skillEnvironment ?? {},
 			...(opts.tools === undefined ? {} : { tools: [...new Set([...opts.tools, ...executionRoleTools.map((tool) => tool.name)])] }),
 		toolAudit: toolAudit.append,
 		toolEffects: opts.toolEffects,
@@ -153,7 +160,11 @@ export function buildAgentFactory(opts: AgentFactoryOptions) {
 		compactionAudit: opts.compactionAudit,
 		toolResultBudget: opts.toolResultBudget,
 		createTools: (source, onResourcesChanged, getRuntimeApiKey, activateTools) => {
-			const browserTools = createBrowserTools({ credentials: opts.credentials });
+			const browserTools = createBrowserTools({
+				cdpUrl: () => resolveProfileBrowserCdpUrl(opts.agentDir),
+				assertEndpoint: (cdpUrl) => assertProfileBrowserEndpoint(opts.agentDir, cdpUrl),
+				credentials: opts.credentials,
+			});
 			const executionTools = createExecutionTools(source, opts.cwd, opts.executionPortForSource?.(source) ?? execution);
 			const artifactTools = opts.artifactRuntime ? createArtifactTools(source, opts.cwd, opts.artifactRuntime) : [];
 			const memoryTools = opts.memoryStore ? createMemoryTools(opts.memoryStore, source, { profileId: opts.profileId, ...opts.resolveMemoryScope?.(source) }) : [];
@@ -169,7 +180,9 @@ export function buildAgentFactory(opts: AgentFactoryOptions) {
 					signals: capability.signals,
 				});
 			});
-		const skillRoots = [join(opts.cwd, ".agents", "skills"), join(opts.cwd, "skills"), join(homedir(), ".agents", "skills")];
+		// A Profile never inherits project or machine-global Skills implicitly.
+		// Shared catalogs must be installed/materialized into this Profile first.
+		const skillRoots: string[] = [];
 		const skillTools = createSkillTools(opts.agentDir, onResourcesChanged, inventory, opts.verifySkillCandidate ? (input, signal) => opts.verifySkillCandidate!(source, input, signal) : undefined, skillRoots, activateTools, opts.capabilityRanker, opts.authorizeSkillCandidatePromotion ? (input) => opts.authorizeSkillCandidatePromotion!(source, input) : undefined, opts.capabilityPreferences, opts.capabilityProviderRuntime, opts.managedSkillLearning ? { profileId: opts.profileId, authority: opts.managedSkillLearning, policyVersion: "l4.v1" } : undefined);
 		return [...executionTools, ...artifactTools, ...baseCustomTools, ...executionRoleTools, ...browserTools, ...memoryTools, ...automationTools, ...skillTools, ...scopedTools];
 		},

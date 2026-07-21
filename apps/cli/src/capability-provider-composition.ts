@@ -1,9 +1,9 @@
 import { createHash, randomUUID } from "node:crypto";
 import { execFile } from "node:child_process";
-import { chmod, copyFile, link, lstat, mkdir, readFile, readdir, realpath, rename, rm, unlink, writeFile } from "node:fs/promises";
+import { chmod, copyFile, link, lstat, mkdir, open, readFile, readdir, realpath, rename, rm, unlink, writeFile } from "node:fs/promises";
 import { basename, delimiter, dirname, join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
-import { CapabilityProviderRuntime, providerArtifactSha256, providerFileSha256, providerManifestEvidenceRef, verifyProviderArtifact, type CapabilityProviderDescriptor, type CapabilityProviderInstallReceipt, type ProviderArtifactManifest } from "@beemax/core";
+import { CapabilityProviderRuntime, providerArtifactSha256, providerFileSha256, providerManifestEvidenceRef, providerManifestIntegrityTag, verifyProviderArtifact, type CapabilityProviderDescriptor, type CapabilityProviderInstallReceipt, type ProviderArtifactManifest } from "@beemax/core";
 
 export const EXA_MCPORTER_VERSION = "0.9.0";
 export const EXA_MCPORTER_LOCK_SHA256 = "7c8ca25b89c4a23618c4385a373660cbf23512d7f461e82f2197c19027a183ec";
@@ -30,6 +30,13 @@ export type CapabilityProviderCommandRunner = (command: string, args: readonly s
 export interface ProfileCapabilityProviderBundle {
 	runtime: CapabilityProviderRuntime;
 	environment: NodeJS.ProcessEnv;
+	artifactIntegrityKey: Uint8Array;
+}
+
+export interface ProfileExaMcporterStatus {
+	state: "installed" | "absent" | "invalid";
+	evidenceRef?: string;
+	installedAt?: number;
 }
 
 /** Profile-scoped production composition for approved, reproducibly locked Provider adapters. */
@@ -37,12 +44,16 @@ export function createProfileCapabilityProviderBundle(input: {
 	profileId: string;
 	agentDir: string;
 	installation: ProfileCapabilityProviderInstallationPolicy;
+	integrityKey: Uint8Array;
 	environment?: NodeJS.ProcessEnv;
+	/** Host-owned command resolution; never source this from a Profile .env. */
+	trustedHostEnvironment?: NodeJS.ProcessEnv;
 	runCommand?: CapabilityProviderCommandRunner;
 	now?: () => number;
 }): ProfileCapabilityProviderBundle {
 	const profileId = identifier(input.profileId, "Profile id");
 	const agentDir = resolve(input.agentDir);
+	const integrityKey = validatedIntegrityKey(input.integrityKey);
 	const allowedProviders = new Set(input.installation.allowedProviders.map((value) => identifier(value, "Allowed Provider id")));
 	const providerRoot = join(agentDir, "providers", "exa-mcporter");
 	const currentRoot = join(providerRoot, "current");
@@ -52,6 +63,7 @@ export function createProfileCapabilityProviderBundle(input: {
 	const mcporterConfig = join(providerHome, ".agent-reach", "mcporter.json");
 	const installManifest = join(currentRoot, "beemax-provider.json");
 	const baseEnvironment = input.environment ?? process.env;
+	const trustedHostEnvironment = input.trustedHostEnvironment ?? process.env;
 	const environment: NodeJS.ProcessEnv = {
 		...(baseEnvironment.TAVILY_API_KEY ? { TAVILY_API_KEY: baseEnvironment.TAVILY_API_KEY } : {}),
 		...(baseEnvironment.BRAVE_SEARCH_API_KEY ? { BRAVE_SEARCH_API_KEY: baseEnvironment.BRAVE_SEARCH_API_KEY } : {}),
@@ -61,7 +73,7 @@ export function createProfileCapabilityProviderBundle(input: {
 		BEEMAX_AGENT_REACH_CONFIG: mcporterConfig,
 		BEEMAX_AGENT_REACH_MANIFEST: installManifest,
 		BEEMAX_AGENT_REACH_HOME: providerHome,
-		BEEMAX_AGENT_REACH_PATH: [executableRoot, baseEnvironment.PATH ?? ""].filter(Boolean).join(delimiter),
+		BEEMAX_AGENT_REACH_PATH: [executableRoot, trustedHostEnvironment.PATH ?? ""].filter(Boolean).join(delimiter),
 		...(baseEnvironment.LANG ? { LANG: baseEnvironment.LANG } : {}),
 		...(baseEnvironment.LC_ALL ? { LC_ALL: baseEnvironment.LC_ALL } : {}),
 	};
@@ -77,14 +89,15 @@ export function createProfileCapabilityProviderBundle(input: {
 				? { allowed: true, evidenceRef: policyEvidence }
 				: { allowed: false, reason: `Profile ${profileId} has not pre-authorized installation of Provider ${provider.id}` },
 		},
-		installer: {
-			install: async (provider, signal) => {
-				assertExaMcporterProvider(provider);
-				await secureProviderRoot(agentDir, providerRoot);
-				return withProviderInstallLock(providerRoot, signal, async () => {
-					const existing = await readValidInstallation(currentRoot);
-					if (existing) return receiptFromManifest(existing);
-					const quarantine = join(providerRoot, "installation-unknown.json");
+			installer: {
+				install: async (provider, signal) => {
+					assertExaMcporterProvider(provider);
+					await secureProviderRoot(agentDir, providerRoot);
+					return withProviderInstallLock(providerRoot, agentDir, integrityKey, signal, async () => {
+						const existing = await readValidInstallation(currentRoot, agentDir, integrityKey);
+						if (existing) return receiptFromManifest(existing);
+						if (await pathExists(currentRoot)) await quarantineInvalidInstallation(providerRoot, currentRoot, now());
+						const quarantine = join(providerRoot, "installation-unknown.json");
 					await reconcileQuarantine(providerRoot, quarantine);
 
 					const stagingRoot = join(providerRoot, `.staging-${randomUUID()}`);
@@ -98,8 +111,8 @@ export function createProfileCapabilityProviderBundle(input: {
 						if (sha256(lockBytes) !== EXA_MCPORTER_LOCK_SHA256) throw new Error("Bundled Exa mcporter Provider dependency lock failed its SHA-256 verification");
 						await copyFile(join(lockSource, "package.json"), join(stagingRoot, "package.json"));
 						await copyFile(join(lockSource, "package-lock.json"), join(stagingRoot, "package-lock.json"));
-						const commandEnvironment = installationEnvironment(baseEnvironment, join(stagingRoot, "home"), join(stagingRoot, "node_modules", ".bin"));
-						const npm = baseEnvironment.BEEMAX_NPM?.trim() || "npm";
+						const commandEnvironment = installationEnvironment(trustedHostEnvironment, join(stagingRoot, "home"), join(stagingRoot, "node_modules", ".bin"));
+						const npm = trustedHostEnvironment.BEEMAX_NPM?.trim() || "npm";
 						await runCommand(npm, ["ci", "--ignore-scripts", "--no-audit", "--no-fund", "--omit=dev"], { cwd: stagingRoot, env: commandEnvironment, signal });
 						const stagingHome = join(stagingRoot, "home");
 						const stagingAgentReach = join(stagingHome, ".agent-reach");
@@ -113,11 +126,12 @@ export function createProfileCapabilityProviderBundle(input: {
 							providerFileSha256(join(stagingRoot, "node_modules", "mcporter", "dist", "cli.js")),
 							providerFileSha256(join(stagingAgentReach, "mcporter.json")),
 						]);
-						const unsignedManifest: Omit<ProviderArtifactManifest, "evidenceRef"> = {
-							schemaVersion: "beemax.provider-artifact.v1", providerId: "exa-mcporter", version: EXA_MCPORTER_PROVIDER_VERSION,
+						const unsignedManifest: Omit<ProviderArtifactManifest, "evidenceRef" | "integrityTag"> = {
+							schemaVersion: "beemax.provider-artifact.v2", providerId: "exa-mcporter", version: EXA_MCPORTER_PROVIDER_VERSION,
 							lockSha256: EXA_MCPORTER_LOCK_SHA256, artifactSha256, entrypointSha256, configurationSha256, installedAt,
 						};
-						const manifest: ProviderArtifactManifest = { ...unsignedManifest, evidenceRef: providerManifestEvidenceRef(unsignedManifest) };
+						const authenticatedManifest: Omit<ProviderArtifactManifest, "integrityTag"> = { ...unsignedManifest, evidenceRef: providerManifestEvidenceRef(unsignedManifest) };
+						const manifest: ProviderArtifactManifest = { ...authenticatedManifest, integrityTag: providerManifestIntegrityTag(authenticatedManifest, integrityKey) };
 						await writePrivateJson(join(stagingRoot, "beemax-provider.json"), manifest);
 						if (await pathExists(currentRoot)) throw new Error("Provider current installation appeared during atomic publication");
 						await rename(stagingRoot, currentRoot);
@@ -136,7 +150,54 @@ export function createProfileCapabilityProviderBundle(input: {
 			},
 		},
 	});
-	return { runtime, environment };
+	return { runtime, environment, artifactIntegrityKey: new Uint8Array(integrityKey) };
+}
+
+/** Inspect the pinned Profile-local Exa MCP adapter without contacting the network. */
+export async function inspectProfileExaMcporter(agentDir: string, integrityKey: Uint8Array): Promise<ProfileExaMcporterStatus> {
+	const profileRoot = resolve(agentDir);
+	const currentRoot = join(profileRoot, "providers", "exa-mcporter", "current");
+	if (!await pathExists(currentRoot)) return { state: "absent" };
+	const manifest = await readValidInstallation(currentRoot, profileRoot, validatedIntegrityKey(integrityKey));
+	return manifest
+		? { state: "installed", evidenceRef: manifest.evidenceRef, installedAt: manifest.installedAt }
+		: { state: "invalid" };
+}
+
+/**
+ * Materialize the same exact Provider used by runtime acquisition, but verify
+ * local artifact health only. The explicit CLI preinstall command must remain
+ * useful while the public Exa endpoint is temporarily offline.
+ */
+export async function installProfileExaMcporter(input: {
+	profileId: string;
+	agentDir: string;
+	installation: ProfileCapabilityProviderInstallationPolicy;
+	integrityKey: Uint8Array;
+	environment?: NodeJS.ProcessEnv;
+	trustedHostEnvironment?: NodeJS.ProcessEnv;
+	runCommand?: CapabilityProviderCommandRunner;
+	signal?: AbortSignal;
+}): Promise<CapabilityProviderInstallReceipt | undefined> {
+	const bundle = createProfileCapabilityProviderBundle(input);
+	const currentRoot = join(resolve(input.agentDir), "providers", "exa-mcporter", "current");
+	const descriptor: CapabilityProviderDescriptor = {
+		id: "exa-mcporter",
+		kind: "mcp",
+		capabilities: ["web_search"],
+		installed: () => false,
+		install: { source: EXA_MCPORTER_SOURCE, package: "mcporter", version: EXA_MCPORTER_PROVIDER_VERSION },
+		configuration: { required: [], instructions: "Pre-authorize exa-mcporter in this Profile." },
+		health: async () => {
+			const manifest = await readValidInstallation(currentRoot, resolve(input.agentDir), validatedIntegrityKey(input.integrityKey));
+			return manifest
+				? { status: "ready", installationState: "present", evidenceRef: manifest.evidenceRef }
+				: { status: "unavailable", installationState: "absent", evidenceRef: "health:exa-mcporter:absent", reason: "The Profile-local Exa MCP adapter is absent or failed integrity verification" };
+		},
+	};
+	const result = await bundle.runtime.acquire({ capability: "web_search", providers: [descriptor], ...(input.signal ? { signal: input.signal } : {}) });
+	if (result.status !== "ready") throw new Error(result.blocker?.reason ?? "Could not install the Profile-local Exa MCP adapter");
+	return result.installationReceipt;
 }
 
 function assertExaMcporterProvider(provider: CapabilityProviderDescriptor): void {
@@ -181,7 +242,7 @@ function isInside(root: string, candidate: string): boolean {
 	return candidate === root || candidate.startsWith(root.endsWith(sep) ? root : `${root}${sep}`);
 }
 
-async function withProviderInstallLock<T>(providerRoot: string, signal: AbortSignal, operation: () => Promise<T>): Promise<T> {
+async function withProviderInstallLock<T>(providerRoot: string, profileBoundary: string, integrityKey: Uint8Array, signal: AbortSignal, operation: () => Promise<T>): Promise<T> {
 	const lockPath = join(providerRoot, ".install.lock.json");
 	const deadline = Date.now() + LOCK_WAIT_MS;
 	const ownerToken = randomUUID();
@@ -203,7 +264,7 @@ async function withProviderInstallLock<T>(providerRoot: string, signal: AbortSig
 			const staleInvalidOwner = typeof owner?.pid !== "number" && Date.now() - lockStat.mtimeMs > 1_000;
 			if (staleOwner || staleInvalidOwner) {
 				if (!await claimStaleInstallLock(lockPath, providerRoot, lockStat.dev, lockStat.ino, typeof owner?.token === "string" ? owner.token : undefined)) continue;
-				if (await readValidInstallation(join(providerRoot, "current"))) {
+				if (await readValidInstallation(join(providerRoot, "current"), profileBoundary, integrityKey)) {
 					await rm(join(providerRoot, "installation-in-progress.json"), { force: true });
 					continue;
 				}
@@ -274,6 +335,23 @@ async function reconcileQuarantine(providerRoot: string, quarantinePath: string)
 	await rm(quarantinePath, { force: true });
 }
 
+async function quarantineInvalidInstallation(providerRoot: string, currentRoot: string, observedAt: number): Promise<void> {
+	await requireDirectoryNotSymlink(providerRoot);
+	await requireDirectoryNotSymlink(currentRoot);
+	const [realProvider, realCurrent] = await Promise.all([realpath(providerRoot), realpath(currentRoot)]);
+	if (!isInside(realProvider, realCurrent) || dirname(realCurrent) !== realProvider) throw new Error("Invalid Provider installation is outside its Profile boundary");
+	const quarantineId = `invalid-${observedAt}-${randomUUID()}`;
+	const quarantineRoot = join(providerRoot, quarantineId);
+	await rename(currentRoot, quarantineRoot);
+	await writePrivateJson(join(providerRoot, `${quarantineId}.json`), {
+		schemaVersion: "beemax.provider-invalid-quarantine.v1",
+		provider: "exa-mcporter",
+		observedAt,
+		quarantineRoot,
+		reason: "existing installation failed integrity verification",
+	});
+}
+
 function processAlive(pid: number): boolean {
 	try { process.kill(pid, 0); return true; }
 	catch (error) { return (error as NodeJS.ErrnoException).code === "EPERM"; }
@@ -289,16 +367,23 @@ function abortableDelay(ms: number, signal: AbortSignal): Promise<void> {
 	});
 }
 
-async function readValidInstallation(currentRoot: string): Promise<ProviderArtifactManifest | undefined> {
+async function readValidInstallation(currentRoot: string, boundaryRoot: string, integrityKey: Uint8Array): Promise<ProviderArtifactManifest | undefined> {
 	try {
+		await requireDirectoryNotSymlink(boundaryRoot);
 		await requireDirectoryNotSymlink(currentRoot);
-		const manifestPath = join(currentRoot, "beemax-provider.json");
-		const entrypointPath = join(currentRoot, "node_modules", "mcporter", "dist", "cli.js");
-		const configurationPath = join(currentRoot, "home", ".agent-reach", "mcporter.json");
-		await requireRegularFileInside(currentRoot, manifestPath);
-		await requireRegularFileInside(currentRoot, entrypointPath);
-		await requireRegularFileInside(currentRoot, configurationPath);
-		return await verifyProviderArtifact({ root: currentRoot, manifestPath, entrypointPath, configurationPath, expected: { providerId: "exa-mcporter", version: EXA_MCPORTER_PROVIDER_VERSION, lockSha256: EXA_MCPORTER_LOCK_SHA256 } });
+		const initial = await lstat(currentRoot);
+		const [realBoundary, realCurrent] = await Promise.all([realpath(boundaryRoot), realpath(currentRoot)]);
+		if (!isInside(realBoundary, realCurrent)) throw new Error("Provider installation escapes the current Profile boundary");
+		const manifestPath = join(realCurrent, "beemax-provider.json");
+		const entrypointPath = join(realCurrent, "node_modules", "mcporter", "dist", "cli.js");
+		const configurationPath = join(realCurrent, "home", ".agent-reach", "mcporter.json");
+		await requireRegularFileInside(realCurrent, manifestPath);
+		await requireRegularFileInside(realCurrent, entrypointPath);
+		await requireRegularFileInside(realCurrent, configurationPath);
+		const manifest = await verifyProviderArtifact({ root: realCurrent, manifestPath, entrypointPath, configurationPath, expected: { providerId: "exa-mcporter", version: EXA_MCPORTER_PROVIDER_VERSION, lockSha256: EXA_MCPORTER_LOCK_SHA256 }, integrityKey });
+		const [finalLexical, finalPinned] = await Promise.all([lstat(currentRoot), lstat(realCurrent)]);
+		if (!sameFile(initial, finalLexical) || !sameFile(initial, finalPinned) || await realpath(currentRoot) !== realCurrent) throw new Error("Provider installation changed during integrity verification");
+		return manifest;
 	} catch { return undefined; }
 }
 
@@ -309,6 +394,12 @@ function receiptFromManifest(manifest: ProviderArtifactManifest): CapabilityProv
 function installationEnvironment(source: NodeJS.ProcessEnv, home: string, executableRoot: string): NodeJS.ProcessEnv {
 	return {
 		HOME: home,
+		USERPROFILE: home,
+		APPDATA: join(home, "AppData", "Roaming"),
+		LOCALAPPDATA: join(home, "AppData", "Local"),
+		XDG_CONFIG_HOME: join(home, ".config"),
+		XDG_CACHE_HOME: join(home, ".cache"),
+		XDG_DATA_HOME: join(home, ".local", "share"),
 		PATH: [executableRoot, source.PATH ?? ""].filter(Boolean).join(delimiter),
 		...(source.LANG ? { LANG: source.LANG } : {}),
 		...(source.LC_ALL ? { LC_ALL: source.LC_ALL } : {}),
@@ -325,8 +416,20 @@ function executeCommand(command: string, args: readonly string[], options: Capab
 }
 
 async function writePrivateJson(path: string, value: unknown): Promise<void> {
-	await mkdir(dirname(path), { recursive: true, mode: 0o700 });
-	await writeFile(path, `${JSON.stringify(value, null, 2)}\n`, { mode: 0o600 });
+	const parent = dirname(path);
+	await requireDirectoryNotSymlink(parent);
+	const existing = await lstat(path).catch((error: NodeJS.ErrnoException) => { if (error.code === "ENOENT") return undefined; throw error; });
+	if (existing && (existing.isSymbolicLink() || !existing.isFile())) throw new Error(`Provider state must be a regular file: ${path}`);
+	const temporary = join(parent, `.${randomUUID()}.tmp`);
+	try {
+		const handle = await open(temporary, "wx", 0o600);
+		try { await handle.writeFile(`${JSON.stringify(value, null, 2)}\n`); await handle.sync(); }
+		finally { await handle.close(); }
+		await rename(temporary, path);
+	} catch (error) {
+		await rm(temporary, { force: true });
+		throw error;
+	}
 }
 
 async function readJson(path: string): Promise<unknown | undefined> {
@@ -340,6 +443,22 @@ async function pathExists(path: string): Promise<boolean> {
 }
 
 function sha256(value: string | Uint8Array): string { return createHash("sha256").update(value).digest("hex"); }
+function sameFile(left: { dev: number; ino: number }, right: { dev: number; ino: number }): boolean { return left.dev === right.dev && left.ino === right.ino; }
+
+/** Decode the Profile-owned Vault key used to authenticate Provider manifests. */
+export function profileProviderIntegrityKey(encodedKey: string | undefined, profileId: string): Uint8Array {
+	const value = encodedKey?.trim() ?? "";
+	if (!value || !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(value)) {
+		throw new Error(`Credential Vault key is missing or invalid for Profile '${profileId}'; recreate or migrate the Profile before installing Providers`);
+	}
+	try { return validatedIntegrityKey(Buffer.from(value, "base64")); }
+	catch { throw new Error(`Credential Vault key is missing or invalid for Profile '${profileId}'; recreate or migrate the Profile before installing Providers`); }
+}
+
+function validatedIntegrityKey(value: Uint8Array): Uint8Array {
+	if (!(value instanceof Uint8Array) || value.byteLength < 32) throw new Error("Provider integrity key must contain at least 32 bytes");
+	return new Uint8Array(value);
+}
 
 function identifier(value: string, label: string): string {
 	const result = value.trim();

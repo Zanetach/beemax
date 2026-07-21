@@ -422,14 +422,17 @@ export class DefaultMemoryLearningKernel implements MemoryLearningKernel {
 			extractionWatermark = Math.max(extractionWatermark, claim.authorityWatermark);
 			let leaseLost = false;
 			const heartbeatMs = Math.max(10, Math.min(30_000, Math.trunc(input.leaseMs / 3)));
-			const heartbeat = this.authority.renewLearningExtraction ? setInterval(() => {
+			const renewLease = this.authority.renewLearningExtraction ? () => {
 				try {
 					const now = this.now();
 					if (!this.authority.renewLearningExtraction!({ claim, now, leaseExpiresAt: now + input.leaseMs })) leaseLost = true;
 				} catch { leaseLost = true; }
-			}, heartbeatMs) : undefined;
+			} : undefined;
+			renewLease?.();
+			const heartbeat = renewLease && !leaseLost ? setInterval(renewLease, heartbeatMs) : undefined;
 			heartbeat?.unref();
 			try {
+				if (leaseLost) throw new Error("Learning extraction lease was lost before extraction");
 				const bundle = await this.extractor!.extract(claim);
 				if (leaseLost) throw new Error("Learning extraction lease was lost during extraction");
 				const committed = this.authority.commitLearningExtraction!({ claim, bundle, now: this.now() });
@@ -455,14 +458,17 @@ export class DefaultMemoryLearningKernel implements MemoryLearningKernel {
 			objectiveWatermark = Math.max(objectiveWatermark, claim.authorityWatermark);
 			let leaseLost = false;
 			const heartbeatMs = Math.max(10, Math.min(30_000, Math.trunc(input.leaseMs / 3)));
-			const heartbeat = this.authority.renewLearningObjective ? setInterval(() => {
+			const renewLease = this.authority.renewLearningObjective ? () => {
 				try {
 					const now = this.now();
 					if (!this.authority.renewLearningObjective!({ claim, now, leaseExpiresAt: now + input.leaseMs })) leaseLost = true;
 				} catch { leaseLost = true; }
-			}, heartbeatMs) : undefined;
+			} : undefined;
+			renewLease?.();
+			const heartbeat = renewLease && !leaseLost ? setInterval(renewLease, heartbeatMs) : undefined;
 			heartbeat?.unref();
 			try {
+				if (leaseLost) throw new Error("Learning Objective lease was lost before admission");
 				const admission = await this.learningObjectiveAdmission!.admit(claim);
 				if (leaseLost) throw new Error("Learning Objective lease was lost during admission");
 				if (admission.status === "deferred") {

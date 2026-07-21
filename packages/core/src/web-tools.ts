@@ -11,8 +11,6 @@
  * HTML into compact readable text.
  */
 
-import { lookup } from "node:dns/promises";
-import { isIP } from "node:net";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { homedir } from "node:os";
@@ -24,6 +22,7 @@ import { READ_ONLY_TOOL_POLICY, withToolPolicy } from "./tool-runtime.ts";
 import { redactCredentialMaterial } from "./credential-material.ts";
 import { verifyProviderArtifact } from "./provider-artifact-integrity.ts";
 import { createSourceReceipt, type SourceReceipt } from "./artifact-runtime.ts";
+import { requestValidatedPublicUrlFollowingRedirects, type PublicHttpDependencies } from "./public-http.ts";
 
 const SEARCH_TIMEOUT_MS = 30_000;
 const EXTRACT_TIMEOUT_MS = 20_000;
@@ -43,6 +42,8 @@ export interface WebToolsOptions {
 	apiSearch?: (provider: WebApiProvider, query: string, maxResults: number, env: NodeJS.ProcessEnv, signal: AbortSignal) => Promise<WebSearchProviderResult>;
 	agentReachSearch?: (query: string, maxResults: number, signal?: AbortSignal) => Promise<string>;
 	agentReachHealth?: (signal: AbortSignal) => Promise<boolean>;
+	providerArtifactIntegrityKey?: Uint8Array;
+	publicHttp?: PublicHttpDependencies;
 }
 
 export interface SearchResult {
@@ -69,8 +70,8 @@ export type WebApiProvider = "tavily" | "brave" | "searxng";
 export function createWebTools(options: WebToolsOptions = {}): ToolDefinition[] {
 	const env = options.env ?? process.env;
 	const agentReachAvailable = () => options.agentReachAvailable ?? agentReachInstallationAvailable(env);
-	const executeApiSearch = options.apiSearch ?? searchWebProvider;
-	const executeAgentReachSearch = options.agentReachSearch ?? ((query: string, maxResults: number, signal?: AbortSignal) => agentReachSearchText(query, maxResults, env, signal));
+	const executeApiSearch = options.apiSearch ?? ((provider, query, maxResults, providerEnv, signal) => searchWebProvider(provider, query, maxResults, providerEnv, signal, options.publicHttp));
+	const executeAgentReachSearch = options.agentReachSearch ?? ((query: string, maxResults: number, signal?: AbortSignal) => agentReachSearchText(query, maxResults, env, options.providerArtifactIntegrityKey, signal));
 
 	const webSearch = Object.assign(defineTool({
 		name: "web_search",
@@ -158,7 +159,7 @@ export function createWebTools(options: WebToolsOptions = {}): ToolDefinition[] 
 			configuredWebProvider("tavily", "TAVILY_API_KEY", Boolean(env.TAVILY_API_KEY?.trim()), "Configure the Tavily API credential reference for this Profile."),
 			configuredWebProvider("brave", "BRAVE_SEARCH_API_KEY", Boolean(env.BRAVE_SEARCH_API_KEY?.trim()), "Configure the Brave Search API credential reference for this Profile."),
 			configuredWebProvider("searxng", "SEARXNG_URL", Boolean(env.SEARXNG_URL?.trim()), "Configure the public SearXNG endpoint URL for this Profile."),
-			agentReachWebProvider(agentReachAvailable, env, options.agentReachHealth),
+			agentReachWebProvider(agentReachAvailable, env, options.providerArtifactIntegrityKey, options.agentReachHealth),
 		],
 	});
 
@@ -177,7 +178,7 @@ export function createWebTools(options: WebToolsOptions = {}): ToolDefinition[] 
 			const maxChars = clamp(params.maxChars ?? 12_000, 1_000, 30_000);
 			try {
 				const requestSignal = signal ?? new AbortController().signal;
-				const page = await extractPublicUrl(params.url, maxChars, requestSignal);
+				const page = await extractPublicUrl(params.url, maxChars, requestSignal, options.publicHttp);
 				const body = [
 					`# ${page.title || page.finalUrl}`,
 					`Source: ${page.finalUrl}`,
@@ -219,6 +220,7 @@ export function createWebTools(options: WebToolsOptions = {}): ToolDefinition[] 
 		aliases: ["agent_reach_search", "agent-reach", "Exa", "联网检索", "网络检索", "实时网络搜索"],
 		triggers: ["exa", "exa-mcporter", "可验证的公开趋势", "真实可溯源来源", "检索公开趋势", "实时核验", "交叉验证", "相互独立", "截至今天", "自主调研", "过去一周", "实时来源", "多个来源", "多个独立来源", "来源 URL", "source URL", "live web research", "current sources"],
 		priority: 10,
+		providers: [agentReachWebProvider(agentReachAvailable, env, options.providerArtifactIntegrityKey, options.agentReachHealth)],
 	});
 
 	const publicResearchPolicy = {
@@ -292,18 +294,18 @@ function configuredWebProvider(id: string, key: string, configured: boolean, ins
 	});
 }
 
-function agentReachWebProvider(available: () => boolean, env: NodeJS.ProcessEnv, healthProbe?: (signal: AbortSignal) => Promise<boolean>) {
+function agentReachWebProvider(available: () => boolean, env: NodeJS.ProcessEnv, integrityKey?: Uint8Array, healthProbe?: (signal: AbortSignal) => Promise<boolean>) {
 	return Object.freeze({
 		id: "exa-mcporter",
-		kind: "tool" as const,
-		capabilities: Object.freeze(["web_search"]),
+		kind: "mcp" as const,
+		capabilities: Object.freeze(["web_search", "exa_web_search"]),
 		installed: available,
 		install: Object.freeze({ source: "beemax-provider-lock", package: "mcporter", version: EXA_MCPORTER_PROVIDER_VERSION }),
 		configuration: Object.freeze({ required: Object.freeze([]), instructions: "Enable the Profile-scoped exa-mcporter Provider installation policy, then acquire this pinned Provider." }),
 		health: async (signal: AbortSignal) => {
 			if (!available()) return { status: "unavailable" as const, installationState: "absent" as const, evidenceRef: "health:exa-mcporter:installation-absent", reason: "The Profile-scoped exa-mcporter Provider installation is observably absent" };
 			try {
-				const ready = await (healthProbe ?? ((probeSignal) => agentReachHealth(env, probeSignal)))(signal);
+				const ready = await (healthProbe ?? ((probeSignal) => agentReachHealth(env, integrityKey, probeSignal)))(signal);
 				return ready ? { status: "ready" as const, installationState: "present" as const, evidenceRef: "health:exa-mcporter" } : { status: "unhealthy" as const, installationState: "present" as const, reason: "The exa-mcporter Provider is installed but its Exa search Tool is not healthy" };
 			} catch (error) {
 				return { status: "unhealthy" as const, reason: `exa-mcporter health probe failed: ${safeProviderError(error)}` };
@@ -328,10 +330,10 @@ function agentReachInstallationAvailable(env: NodeJS.ProcessEnv): boolean {
 	return regularFile(binary) && regularFile(config) && Boolean(manifest && root);
 }
 
-async function agentReachHealth(env: NodeJS.ProcessEnv, signal: AbortSignal): Promise<boolean> {
+async function agentReachHealth(env: NodeJS.ProcessEnv, integrityKey: Uint8Array | undefined, signal: AbortSignal): Promise<boolean> {
 	const binary = env.BEEMAX_AGENT_REACH_MCPORTER?.trim() || join(homedir(), ".agent-reach", "mcporter", "node_modules", ".bin", "mcporter");
 	const config = env.BEEMAX_AGENT_REACH_CONFIG?.trim() || join(homedir(), ".agent-reach", "mcporter.json");
-	await requireAgentReachArtifactIntegrity(env, binary, config, signal);
+	await requireAgentReachArtifactIntegrity(env, binary, config, integrityKey, signal);
 	const invocation = agentReachInvocation(binary, ["--config", config, "list", "exa", "--json"]);
 	const { stdout } = await execFileAsync(invocation.command, invocation.args, { env: agentReachSubprocessEnvironment(env), signal: combinedSignal(signal, 10_000), timeout: 10_000, maxBuffer: 256 * 1024 });
 	const result = JSON.parse(stdout) as { status?: unknown; tools?: Array<{ name?: unknown }> };
@@ -356,10 +358,10 @@ function compactAgentReachOutput(value: string, maxResults: number): string {
 	return String(value).trim().slice(0, 6_000) || "No Exa/mcporter results found.";
 }
 
-async function agentReachSearchText(query: string, maxResults: number, env: NodeJS.ProcessEnv, signal?: AbortSignal): Promise<string> {
+async function agentReachSearchText(query: string, maxResults: number, env: NodeJS.ProcessEnv, integrityKey?: Uint8Array, signal?: AbortSignal): Promise<string> {
 	const binary = env.BEEMAX_AGENT_REACH_MCPORTER?.trim() || join(homedir(), ".agent-reach", "mcporter", "node_modules", ".bin", "mcporter");
 	const config = env.BEEMAX_AGENT_REACH_CONFIG?.trim() || join(homedir(), ".agent-reach", "mcporter.json");
-	await requireAgentReachArtifactIntegrity(env, binary, config, signal);
+	await requireAgentReachArtifactIntegrity(env, binary, config, integrityKey, signal);
 	const controller = new AbortController();
 	const timeout = setTimeout(() => controller.abort(), SEARCH_TIMEOUT_MS);
 	try {
@@ -374,8 +376,15 @@ function agentReachInvocation(binary: string, args: readonly string[]): { comman
 }
 
 function agentReachSubprocessEnvironment(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+	const home = env.BEEMAX_AGENT_REACH_HOME?.trim() || homedir();
 	return {
-		HOME: env.BEEMAX_AGENT_REACH_HOME?.trim() || homedir(),
+		HOME: home,
+		USERPROFILE: home,
+		APPDATA: join(home, "AppData", "Roaming"),
+		LOCALAPPDATA: join(home, "AppData", "Local"),
+		XDG_CONFIG_HOME: join(home, ".config"),
+		XDG_CACHE_HOME: join(home, ".cache"),
+		XDG_DATA_HOME: join(home, ".local", "share"),
 		PATH: env.BEEMAX_AGENT_REACH_PATH?.trim() || env.PATH || process.env.PATH || "",
 		...(env.LANG ? { LANG: env.LANG } : {}),
 		...(env.LC_ALL ? { LC_ALL: env.LC_ALL } : {}),
@@ -388,20 +397,21 @@ function regularFile(path: string): boolean {
 	catch { return false; }
 }
 
-async function requireAgentReachArtifactIntegrity(env: NodeJS.ProcessEnv, entrypointPath: string, configurationPath: string, signal?: AbortSignal): Promise<void> {
+async function requireAgentReachArtifactIntegrity(env: NodeJS.ProcessEnv, entrypointPath: string, configurationPath: string, integrityKey?: Uint8Array, signal?: AbortSignal): Promise<void> {
 	const root = env.BEEMAX_AGENT_REACH_ROOT?.trim();
 	const manifestPath = env.BEEMAX_AGENT_REACH_MANIFEST?.trim();
 	if (!root && !manifestPath) return; // Explicit test/legacy injection; production composition always supplies both.
-	if (!root || !manifestPath || !await verifiedAgentReachArtifact(root, manifestPath, entrypointPath, configurationPath, signal)) throw new Error("Exa mcporter Provider artifact integrity verification failed");
+	if (!root || !manifestPath || !integrityKey || !await verifiedAgentReachArtifact(root, manifestPath, entrypointPath, configurationPath, integrityKey, signal)) throw new Error("Exa mcporter Provider artifact integrity verification failed");
 }
 
-async function verifiedAgentReachArtifact(root: string, manifestPath: string, entrypointPath: string, configurationPath: string, signal?: AbortSignal): Promise<boolean> {
+async function verifiedAgentReachArtifact(root: string, manifestPath: string, entrypointPath: string, configurationPath: string, integrityKey: Uint8Array, signal?: AbortSignal): Promise<boolean> {
 	const key = [root, manifestPath, entrypointPath, configurationPath].join("\0");
 	await acquireArtifactVerificationSlot(key, signal);
 	try {
 		return Boolean(await verifyProviderArtifact({
 			root, manifestPath, entrypointPath, configurationPath,
 			expected: { providerId: "exa-mcporter", version: EXA_MCPORTER_PROVIDER_VERSION, lockSha256: EXA_MCPORTER_LOCK_SHA256 },
+			integrityKey,
 		}, signal));
 	} finally { releaseArtifactVerificationSlot(key); }
 }
@@ -446,6 +456,7 @@ async function searchWebProvider(
 	maxResults: number,
 	env: NodeJS.ProcessEnv,
 	signal: AbortSignal,
+	publicHttp: PublicHttpDependencies = {},
 ): Promise<{ provider: string; results: SearchResult[] }> {
 	if (provider === "tavily" && env.TAVILY_API_KEY?.trim()) {
 		return { provider: "tavily", results: await searchTavily(query, maxResults, env.TAVILY_API_KEY.trim(), signal) };
@@ -454,7 +465,7 @@ async function searchWebProvider(
 		return { provider: "brave", results: await searchBrave(query, maxResults, env.BRAVE_SEARCH_API_KEY.trim(), signal) };
 	}
 	if (provider === "searxng" && env.SEARXNG_URL?.trim()) {
-		return { provider: "searxng", results: await searchSearxng(query, maxResults, env.SEARXNG_URL.trim(), signal) };
+		return { provider: "searxng", results: await searchSearxng(query, maxResults, env.SEARXNG_URL.trim(), signal, publicHttp) };
 	}
 	throw new Error(
 		`Search Provider ${provider} is not configured.`,
@@ -469,7 +480,7 @@ async function searchTavily(query: string, maxResults: number, apiKey: string, s
 		signal: combinedSignal(signal, SEARCH_TIMEOUT_MS),
 	});
 	await requireOk(response, "Tavily");
-	const payload = (await response.json()) as { results?: Array<{ title?: string; url?: string; content?: string; score?: number }> };
+	const payload = await readLimitedJson<{ results?: Array<{ title?: string; url?: string; content?: string; score?: number }> }>(response, "Tavily");
 	return (payload.results ?? []).slice(0, maxResults).map((item) => ({
 		title: item.title?.trim() || item.url || "Untitled",
 		url: item.url ?? "",
@@ -488,7 +499,7 @@ async function searchBrave(query: string, maxResults: number, apiKey: string, si
 		signal: combinedSignal(signal, SEARCH_TIMEOUT_MS),
 	});
 	await requireOk(response, "Brave Search");
-	const payload = (await response.json()) as { web?: { results?: Array<{ title?: string; url?: string; description?: string }> } };
+	const payload = await readLimitedJson<{ web?: { results?: Array<{ title?: string; url?: string; description?: string }> } }>(response, "Brave Search");
 	return (payload.web?.results ?? []).slice(0, maxResults).map((item) => ({
 		title: stripHtml(item.title ?? item.url ?? "Untitled"),
 		url: item.url ?? "",
@@ -496,18 +507,17 @@ async function searchBrave(query: string, maxResults: number, apiKey: string, si
 	})).filter((item) => item.url);
 }
 
-async function searchSearxng(query: string, maxResults: number, baseUrl: string, signal: AbortSignal): Promise<SearchResult[]> {
+async function searchSearxng(query: string, maxResults: number, baseUrl: string, signal: AbortSignal, publicHttp: PublicHttpDependencies): Promise<SearchResult[]> {
 	const url = new URL("search", ensureTrailingSlash(baseUrl));
-	await validatePublicUrl(url);
 	url.searchParams.set("q", query);
 	url.searchParams.set("format", "json");
 	url.searchParams.set("categories", "general");
-	const response = await fetch(url, {
+	const { response } = await requestValidatedPublicUrlFollowingRedirects(url, {
 		headers: { accept: "application/json", "user-agent": USER_AGENT },
 		signal: combinedSignal(signal, SEARCH_TIMEOUT_MS),
-	});
+	}, publicHttp, MAX_REDIRECTS);
 	await requireOk(response, "SearXNG");
-	const payload = (await response.json()) as { results?: Array<{ title?: string; url?: string; content?: string; score?: number }> };
+	const payload = await readLimitedJson<{ results?: Array<{ title?: string; url?: string; content?: string; score?: number }> }>(response, "SearXNG");
 	return (payload.results ?? []).slice(0, maxResults).map((item) => ({
 		title: stripHtml(item.title ?? item.url ?? "Untitled"),
 		url: item.url ?? "",
@@ -516,7 +526,7 @@ async function searchSearxng(query: string, maxResults: number, baseUrl: string,
 	})).filter((item) => item.url);
 }
 
-async function extractPublicUrl(input: string, maxChars: number, signal: AbortSignal): Promise<{
+async function extractPublicUrl(input: string, maxChars: number, signal: AbortSignal, publicHttp: PublicHttpDependencies = {}): Promise<{
 	url: string;
 	finalUrl: string;
 	title: string;
@@ -524,60 +534,27 @@ async function extractPublicUrl(input: string, maxChars: number, signal: AbortSi
 	text: string;
 	truncated: boolean;
 }> {
-	let url = new URL(input);
-	for (let redirect = 0; redirect <= MAX_REDIRECTS; redirect++) {
-		await validatePublicUrl(url);
-		const response = await fetch(url, {
+	const url = new URL(input);
+	const { response, finalUrl } = await requestValidatedPublicUrlFollowingRedirects(url, {
 			headers: { accept: "text/html,text/plain,application/json;q=0.9,*/*;q=0.1", "user-agent": USER_AGENT },
-			redirect: "manual",
 			signal: combinedSignal(signal, EXTRACT_TIMEOUT_MS),
-		});
-		if (response.status >= 300 && response.status < 400) {
-			const location = response.headers.get("location");
-			if (!location) throw new Error(`Redirect ${response.status} missing Location header`);
-			url = new URL(location, url);
-			continue;
-		}
-		await requireOk(response, "URL fetch");
-		const contentType = (response.headers.get("content-type") ?? "application/octet-stream").split(";", 1)[0].trim();
-		if (!isTextContentType(contentType)) throw new Error(`Unsupported content type: ${contentType}`);
-		const raw = await readLimitedBody(response, MAX_RESPONSE_BYTES);
-		const title = contentType === "text/html" ? extractTitle(raw) : "";
-		const extracted = contentType === "text/html" ? htmlToText(raw) : raw.trim();
-		const truncated = extracted.length > maxChars;
-		return { url: input, finalUrl: url.toString(), title, contentType, text: extracted.slice(0, maxChars), truncated };
-	}
-	throw new Error(`Too many redirects (>${MAX_REDIRECTS})`);
-}
-
-async function validatePublicUrl(url: URL): Promise<void> {
-	if (url.protocol !== "http:" && url.protocol !== "https:") throw new Error("Only http:// and https:// URLs are allowed");
-	if (url.username || url.password) throw new Error("URLs containing credentials are not allowed");
-	const host = url.hostname.replace(/^\[|\]$/g, "").toLowerCase();
-	if (host === "localhost" || host.endsWith(".localhost") || host === "metadata.google.internal") {
-		throw new Error("Local or metadata host is not allowed");
-	}
-	const addresses = isIP(host) ? [{ address: host }] : await lookup(host, { all: true, verbatim: true });
-	if (!addresses.length) throw new Error("Hostname did not resolve");
-	for (const item of addresses) {
-		if (isPrivateAddress(item.address)) throw new Error(`Private or reserved address is not allowed: ${item.address}`);
-	}
-}
-
-function isPrivateAddress(address: string): boolean {
-	if (address === "::1" || address === "::" || address.startsWith("fe80:") || address.startsWith("fc") || address.startsWith("fd")) return true;
-	if (address.startsWith("::ffff:")) return isPrivateAddress(address.slice(7));
-	const parts = address.split(".").map(Number);
-	if (parts.length !== 4 || parts.some((n) => !Number.isInteger(n))) return false;
-	const [a, b] = parts;
-	return a === 0 || a === 10 || a === 127 || (a === 100 && b >= 64 && b <= 127) ||
-		(a === 169 && b === 254) || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168) ||
-		(a === 192 && b === 0) || a >= 224;
+		}, publicHttp, MAX_REDIRECTS);
+	await requireOk(response, "URL fetch");
+	const contentType = (response.headers.get("content-type") ?? "application/octet-stream").split(";", 1)[0].trim();
+	if (!isTextContentType(contentType)) throw new Error(`Unsupported content type: ${contentType}`);
+	const raw = await readLimitedBody(response, MAX_RESPONSE_BYTES);
+	const title = contentType === "text/html" ? extractTitle(raw) : "";
+	const extracted = contentType === "text/html" ? htmlToText(raw) : raw.trim();
+	const truncated = extracted.length > maxChars;
+	return { url: input, finalUrl: finalUrl.toString(), title, contentType, text: extracted.slice(0, maxChars), truncated };
 }
 
 async function readLimitedBody(response: Response, maxBytes: number): Promise<string> {
 	const declared = Number(response.headers.get("content-length"));
-	if (Number.isFinite(declared) && declared > maxBytes) throw new Error(`Response exceeds ${maxBytes} bytes`);
+	if (Number.isFinite(declared) && declared > maxBytes) {
+		await response.body?.cancel().catch(() => undefined);
+		throw new Error(`Response exceeds ${maxBytes} bytes`);
+	}
 	if (!response.body) return "";
 	const reader = response.body.getReader();
 	const decoder = new TextDecoder();
@@ -594,6 +571,12 @@ async function readLimitedBody(response: Response, maxBytes: number): Promise<st
 		output += decoder.decode(value, { stream: true });
 	}
 	return output + decoder.decode();
+}
+
+async function readLimitedJson<T>(response: Response, label: string): Promise<T> {
+	const body = await readLimitedBody(response, MAX_RESPONSE_BYTES);
+	try { return JSON.parse(body) as T; }
+	catch { throw new Error(`${label} returned invalid JSON`); }
 }
 
 function htmlToText(html: string): string {
@@ -648,7 +631,7 @@ function textResult(text: string, details: unknown, isError = false) {
 
 async function requireOk(response: Response, label: string): Promise<void> {
 	if (response.ok) return;
-	const body = (await response.text().catch(() => "")).slice(0, 300);
+	const body = (await readLimitedBody(response, 4_096).catch(() => "")).slice(0, 300);
 	throw new Error(`${label} returned HTTP ${response.status}${body ? `: ${redactCredentialMaterial(body)}` : ""}`);
 }
 

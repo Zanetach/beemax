@@ -4,7 +4,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createAutomationTools, createExecutionTools, createSkillTools, createSubagentTools, createWebTools, SubagentManager, ToolPolicyRegistry } from "../dist/index.js";
+import { CapabilityProviderRuntime, createAutomationTools, createExecutionTools, createSkillTools, createSubagentTools, createWebTools, SubagentManager, ToolPolicyRegistry } from "../dist/index.js";
 
 const source = { platform: "cli", chatId: "local", chatType: "dm", userId: "local" };
 
@@ -65,6 +65,25 @@ test("public web research Tools expose unified Provider configuration and health
 	assert.equal((await unhealthyAgentReach.health(new AbortController().signal)).status, "unhealthy");
 	const healthyAgentReach = new Map(createWebTools({ env: {}, agentReachAvailable: true, agentReachHealth: async () => true }).map((tool) => [tool.name, tool])).get("web_search").providers.find((provider) => provider.id === "exa-mcporter");
 	assert.equal((await healthyAgentReach.health(new AbortController().signal)).status, "ready");
+});
+
+test("exa-mcporter keeps one MCP Provider identity across general, explicit, and status paths", async () => {
+	const tools = new Map(createWebTools({
+		env: {},
+		agentReachAvailable: true,
+		agentReachHealth: async () => true,
+	}).map((tool) => [tool.name, tool]));
+	const general = tools.get("web_search").providers.find((provider) => provider.id === "exa-mcporter");
+	const explicit = tools.get("exa_web_search").providers.find((provider) => provider.id === "exa-mcporter");
+	assert.equal(general.kind, "mcp");
+	assert.equal(explicit.kind, "mcp");
+
+	const status = await new CapabilityProviderRuntime().resolve({
+		capability: "exa_web_search",
+		providers: tools.get("exa_web_search").providers,
+	});
+	assert.equal(status.status, "ready");
+	assert.equal(status.selected.kind, "mcp");
 });
 
 test("web_search uses an available exa-mcporter Provider when API-key Providers are absent", async () => {
@@ -157,6 +176,9 @@ test("web Tool Spec availability reflects configured Providers without exposing 
 	const unavailable = new Map(createWebTools({ env: {}, agentReachAvailable: false }).map((tool) => [tool.name, tool]));
 	assert.deepEqual(unavailable.get("web_search").beemaxToolSpec, { kind: "tool", configured: false, health: "configuration_required", ranking: { inputModalities: ["text"], outputModalities: ["structured"], freshness: "realtime", evidence: "source_receipt" } });
 	assert.deepEqual(unavailable.get("exa_web_search").beemaxToolSpec, { kind: "tool", configured: false, health: "configuration_required", ranking: { inputModalities: ["text"], outputModalities: ["text"], freshness: "current", evidence: "source_receipt" } });
+	assert.deepEqual(unavailable.get("exa_web_search").providers.map(({ id, capabilities }) => ({ id, capabilities })), [
+		{ id: "exa-mcporter", capabilities: ["web_search", "exa_web_search"] },
+	]);
 	const configured = new Map(createWebTools({ env: { TAVILY_API_KEY: "credential-must-not-appear" }, agentReachAvailable: false }).map((tool) => [tool.name, tool]));
 	assert.deepEqual(configured.get("web_search").beemaxToolSpec, { kind: "tool", configured: true, health: "unverified", ranking: { inputModalities: ["text"], outputModalities: ["structured"], freshness: "realtime", evidence: "source_receipt" } });
 	assert.doesNotMatch(JSON.stringify(configured.get("web_search").beemaxToolSpec), /credential-must-not-appear/);
@@ -225,6 +247,131 @@ test("direct exa-mcporter and web extraction failures redact credentials and omi
 	assert.equal(extract.isError, true);
 	assert.doesNotMatch(JSON.stringify(extract), /secret-password|private-value/);
 	assert.deepEqual(extract.details, { status: "failed" });
+});
+
+test("web_extract binds one validated DNS answer to the outbound request while preserving HTTP and TLS authority", async () => {
+	const lookups = [];
+	const requests = [];
+	const tools = new Map(createWebTools({
+		env: {},
+		agentReachAvailable: false,
+		publicHttp: {
+			lookup: async (hostname) => {
+				lookups.push(hostname);
+				return lookups.length === 1
+					? [{ address: "93.184.216.34", family: 4 }]
+					: [{ address: "127.0.0.1", family: 4 }];
+			},
+			request: async (url, options) => {
+				requests.push({ url: url.toString(), ...options.destination, hostHeader: options.hostHeader, servername: options.servername });
+				return new Response("<html><title>Pinned</title><body>validated body</body></html>", { status: 200, headers: { "content-type": "text/html" } });
+			},
+		},
+	}).map((tool) => [tool.name, tool]));
+
+	const result = await tools.get("web_extract").execute("extract", { url: "https://rebind.example.test/report" }, new AbortController().signal);
+	assert.equal(result.isError, false);
+	assert.match(result.content[0].text, /validated body/);
+	assert.deepEqual(lookups, ["rebind.example.test"]);
+	assert.deepEqual(requests, [{
+		url: "https://rebind.example.test/report",
+		address: "93.184.216.34",
+		family: 4,
+		hostHeader: "rebind.example.test",
+		servername: "rebind.example.test",
+	}]);
+});
+
+test("SearXNG manually validates every redirect before issuing the next pinned request", async () => {
+	const lookups = [];
+	const requests = [];
+	const tools = new Map(createWebTools({
+		env: { SEARXNG_URL: "https://search.example.test/base/" },
+		agentReachAvailable: false,
+		publicHttp: {
+			lookup: async (hostname) => {
+				lookups.push(hostname);
+				return hostname === "search.example.test"
+					? [{ address: "93.184.216.34", family: 4 }]
+					: [{ address: "127.0.0.1", family: 4 }];
+			},
+			request: async (url, options) => {
+				requests.push({ url: url.toString(), address: options.destination.address });
+				return new Response(null, { status: 302, headers: { location: "https://internal.example.test/results" } });
+			},
+		},
+	}).map((tool) => [tool.name, tool]));
+
+	const result = await tools.get("web_search").execute("search", { query: "current evidence", maxResults: 1 }, new AbortController().signal);
+	assert.equal(result.isError, true);
+	assert.deepEqual(lookups, ["search.example.test", "internal.example.test"]);
+	assert.equal(requests.length, 1);
+	assert.match(requests[0].url, /^https:\/\/search\.example\.test\/base\/search\?/u);
+	assert.equal(requests[0].address, "93.184.216.34");
+});
+
+test("public Web providers bound success and error bodies before parsing or logging them", async () => {
+	let successCancelled = false;
+	const oversizedSuccess = new ReadableStream({
+		start(controller) { controller.enqueue(new Uint8Array(2 * 1024 * 1024 + 1)); },
+		cancel() { successCancelled = true; },
+	});
+	const successTools = new Map(createWebTools({
+		env: { SEARXNG_URL: "https://search.example.test/" },
+		agentReachAvailable: false,
+		publicHttp: {
+			lookup: async () => [{ address: "93.184.216.34", family: 4 }],
+			request: async () => new Response(oversizedSuccess, { status: 200, headers: { "content-type": "application/json" } }),
+		},
+	}).map((tool) => [tool.name, tool]));
+	const success = await successTools.get("web_search").execute("search", { query: "bounded", maxResults: 1 }, new AbortController().signal);
+	assert.equal(success.isError, true);
+	assert.match(success.content[0].text, /exceeds 2097152 bytes/u);
+	assert.equal(successCancelled, true);
+
+	let errorCancelled = false;
+	const oversizedError = new ReadableStream({
+		start(controller) { controller.enqueue(new Uint8Array(4_097)); },
+		cancel() { errorCancelled = true; },
+	});
+	const errorTools = new Map(createWebTools({
+		env: {},
+		agentReachAvailable: false,
+		publicHttp: {
+			lookup: async () => [{ address: "93.184.216.34", family: 4 }],
+			request: async () => new Response(oversizedError, { status: 502, headers: { "content-type": "text/plain" } }),
+		},
+	}).map((tool) => [tool.name, tool]));
+	const failure = await errorTools.get("web_extract").execute("extract", { url: "https://source.example.test/report" }, new AbortController().signal);
+	assert.equal(failure.isError, true);
+	assert.match(failure.content[0].text, /HTTP 502/u);
+	assert.equal(errorCancelled, true);
+});
+
+test("web_extract revalidates a redirect target before issuing the next pinned request", async () => {
+	const lookups = [];
+	const requests = [];
+	const tools = new Map(createWebTools({
+		env: {},
+		agentReachAvailable: false,
+		publicHttp: {
+			lookup: async (hostname) => {
+				lookups.push(hostname);
+				return hostname === "source.example.test"
+					? [{ address: "93.184.216.34", family: 4 }]
+					: [{ address: "169.254.169.254", family: 4 }];
+			},
+			request: async (url, options) => {
+				requests.push({ url: url.toString(), address: options.destination.address });
+				return new Response(null, { status: 302, headers: { location: "http://metadata-hop.example.test/latest/meta-data" } });
+			},
+		},
+	}).map((tool) => [tool.name, tool]));
+
+	const result = await tools.get("web_extract").execute("extract", { url: "https://source.example.test/report" }, new AbortController().signal);
+	assert.equal(result.isError, true);
+	assert.deepEqual(lookups, ["source.example.test", "metadata-hop.example.test"]);
+	assert.deepEqual(requests, [{ url: "https://source.example.test/report", address: "93.184.216.34" }]);
 });
 
 test("execution backend replacements explicitly preserve built-in safety policy", () => {

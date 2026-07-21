@@ -67,12 +67,12 @@ type RunEvent =
   | { type: "tool.started"; callId: string; name: string; summary?: string }
   | { type: "tool.progress"; callId: string; summary: string }
   | { type: "tool.finished"; callId: string; outcome: "ok" | "error"; summary?: string }
-  | { type: "approval.requested"; callId: string; risk: "low" | "high" }
+  | { type: "governance.blocked"; callId: string; reasonCode: string }
   | { type: "reasoning.delta"; text: string; providerRequired?: boolean }
   | { type: "run.finished"; answer: string; usage?: Usage };
 ```
 
-`RunRecord`（event、时间、run/session ID、工具 canonical input/output、审批、错误）独立于 `ConversationTranscript`（仅 user、assistant final/interim、必要 tool protocol item）。这直接吸收 Hermes 的“工具进度不能污染 assistant text”与 OpenClaw 的“恢复时不把内部记录直接回放”为原则。
+`RunRecord`（event、时间、run/session ID、工具 canonical input/output、治理结果、错误）独立于 `ConversationTranscript`（仅 user、assistant final/interim、必要 tool protocol item）。这直接吸收 Hermes 的“工具进度不能污染 assistant text”与 OpenClaw 的“恢复时不把内部记录直接回放”为原则。BeeMax 不把上游的审批事件复制成 Tool 等待协议。
 
 ### 2. 把三种“思考”拆开
 

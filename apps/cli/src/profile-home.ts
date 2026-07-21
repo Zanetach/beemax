@@ -1,6 +1,6 @@
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, lstatSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, isAbsolute, join, resolve } from "node:path";
+import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 
 export interface ProfileStorageOptions {
 	root?: string;
@@ -68,6 +68,9 @@ export function resolveProfileLocation(
 		const configPath = isAbsolute(explicitConfig) ? explicitConfig : resolve(root, explicitConfig);
 		const basePath = dirname(configPath);
 		const isHome = configPath === modern.configPath || existsSync(join(basePath, "SOUL.md"));
+		if (isHome && basename(basePath) !== profile) {
+			throw new Error(`Explicit Profile config path belongs to '${basename(basePath)}', not requested Profile '${profile}'`);
+		}
 		return {
 			...(isHome ? { ...modern, homePath: basePath, dataPath: basePath } : legacyProfilePaths(profile, { root, home })),
 			configPath,
@@ -77,9 +80,19 @@ export function resolveProfileLocation(
 			isHome,
 		};
 	}
-	if (existsSync(modern.configPath)) return { ...modern, basePath: modern.homePath, isHome: true };
+	// Once a modern Profile Home exists, never fall back to stale legacy/global
+	// configuration merely because config.yaml is missing or temporarily unreadable.
+	if (pathEntryExists(modern.homePath)) return { ...modern, basePath: modern.homePath, isHome: true };
 	const legacy = legacyProfilePaths(profile, { root, home });
 	return { ...legacy, basePath: root, isHome: false };
+}
+
+function pathEntryExists(path: string): boolean {
+	try { lstatSync(path); return true; }
+	catch (error) {
+		if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
+		throw error;
+	}
 }
 
 export function activeProfile(env: NodeJS.ProcessEnv = process.env): string {

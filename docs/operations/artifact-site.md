@@ -2,7 +2,10 @@
 
 BeeMax can publish Artifact Manifest integrity-checked document outputs through a Profile-owned Caddy
 process. The final channel reply contains stable links in addition to the
-existing native file delivery.
+existing native file delivery. It is enabled by default for new Profiles and
+for existing Profiles that do not configure `gateway.artifactSite.enabled`.
+Set that field or `BEEMAX_ARTIFACT_SITE_ENABLED` to `false` for an explicit
+Profile opt-out.
 
 ## Configuration
 
@@ -10,18 +13,31 @@ existing native file delivery.
 gateway:
   artifactSite:
     enabled: true
-    command: /opt/homebrew/bin/caddy
     # Optional overrides; omit both for this Profile's stable loopback port.
     listen: 127.0.0.1:18788
     publicBaseUrl: http://127.0.0.1:18788/artifacts
 ```
 
-The equivalent environment variables are
-`BEEMAX_ARTIFACT_SITE_ENABLED`, `BEEMAX_ARTIFACT_SITE_COMMAND`,
-`BEEMAX_ARTIFACT_SITE_LISTEN`, and
-`BEEMAX_ARTIFACT_SITE_PUBLIC_BASE_URL`.
+The Profile-scoped environment equivalents are
+`BEEMAX_ARTIFACT_SITE_ENABLED`, `BEEMAX_ARTIFACT_SITE_LISTEN`, and
+`BEEMAX_ARTIFACT_SITE_PUBLIC_BASE_URL`. The executable is deliberately not a
+Profile setting: when Caddy is not on the Gateway service's trusted `PATH`, set
+`BEEMAX_ARTIFACT_SITE_COMMAND` in the Gateway host/service environment. A
+`command` field in Profile YAML, or `BEEMAX_ARTIFACT_SITE_COMMAND` in the
+Profile `.env`, is rejected.
 
-Each enabled Profile owns a separate Caddy child process, generated Caddyfile,
+Caddy is a required host dependency while the site is enabled. The standard
+BeeMax installer provisions it on supported Ubuntu/macOS hosts. `beemax doctor`
+runs the host-resolved command's `version` operation and fails before Gateway
+startup when it is unavailable. Doctor and Gateway use the same resolver and
+credential-free child environment. The managed Caddy process receives only a
+small allowlist from the trusted host environment (for example `PATH`, platform
+launch variables, display, locale, and timezone); it receives no Profile
+environment or Secret and never inherits the host environment wholesale.
+`HOME`, `USERPROFILE`, all XDG state, `TMPDIR`, `TMP`, and `TEMP` point into this
+Profile's private `artifact-site/runtime` directory.
+
+Each Profile owns a separate Caddy child process, generated Caddyfile,
 PID file, publication store, and stable default loopback port. If ports are
 overridden manually, every concurrently running Profile must use a distinct
 `listen` address and matching `publicBaseUrl`.
@@ -34,8 +50,9 @@ port. An explicit port already reserved by another Profile fails closed.
 The loopback default opens from a browser on the Gateway machine. To make links
 reachable from other devices, put an authenticated HTTPS reverse proxy or
 tunnel in front of `listen`, then set `publicBaseUrl` to its external
-`https://.../artifacts` URL. Do not bind an unauthenticated document site to a
-public interface.
+`https://.../artifacts` URL. Preserve a distinct origin for every Profile; do
+not merge multiple Profile sites under paths on one shared origin. Do not bind
+an unauthenticated document site to a public interface.
 
 ## Supported outputs
 
@@ -47,11 +64,16 @@ public interface.
 Only file Artifacts with a workspace Manifest whose byte length and SHA-256
 still match are eligible. BeeMax copies each accepted file into
 `<agentDir>/artifact-site/public/<sha256>/<name>` and serves that immutable
-copy. It never exposes the Profile workspace itself.
+copy. Source bytes are read and hashed from the same pinned file descriptor,
+then committed through an exclusive temporary file and atomic rename. Invalid
+pre-existing entries are moved outside the served tree. It never exposes the
+Profile workspace itself.
 
 Directory browsing is disabled. Requests outside the configured artifact path
 return 404. Responses use `nosniff`; HTML also receives a restrictive Content
-Security Policy.
+Security Policy with an opaque sandboxed origin, no form submission, and no
+network connections. Inline scripts remain available for self-contained charts
+but cannot read other same-origin documents.
 
 The Caddy process starts and stops with the Profile Gateway. Runtime files live
 under `<agentDir>/artifact-site/runtime`, including the generated Caddyfile and

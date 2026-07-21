@@ -73,7 +73,9 @@ cd beemax
 ./scripts/install.sh
 ```
 
-Ubuntu 和 macOS 安装过程会发现或安装 Tesseract OCR。Ubuntu 还会安装 Noto CJK 字体，保证中文 HTML/PDF 报告中的文字可见且可提取。只有宿主镜像自行管理这些依赖时，才应设置 `BEEMAX_INSTALL_MEDIA_DEPS=0`。
+Ubuntu 和 macOS 安装过程会发现或安装 Caddy 与 Tesseract OCR。Ubuntu 还会安装 Noto CJK 字体，保证中文 HTML/PDF 报告中的文字可见且可提取。只有宿主镜像自行管理全部这些依赖时，才应设置 `BEEMAX_INSTALL_MEDIA_DEPS=0`。
+
+每个 Profile 默认启用独立的 Caddy Artifact Site，为通过完整性校验的 HTML、PDF 和 Word 输出提供链接。`beemax doctor` 与 Gateway 共用可信宿主命令解析器，并在启动前验证 `caddy version`。仍可通过 `gateway.artifactSite.enabled: false` 显式关闭。Caddy 只接收宿主启动所需的非敏感白名单变量，不接收 Profile 环境或 Secret；HOME、XDG 和临时状态始终留在当前 Profile 的私有 runtime 目录。
 
 ### 2. 创建 Profile
 
@@ -247,7 +249,7 @@ agent:
 
 偏好值范围为 `-1` 到 `1`，只优化等价候选，不授予权限。`maxTokens` 只是一次有界 JSON 判断的最大输出，不是 Agent Turn 或 Objective 的 Token 上限；`timeoutMs` 只约束可选预检，不会超时或放弃 Objective。能力认知没有累计 Token 或成本上限。单个卡死的网络请求仍会显式失败，使其他 Provider 或精确确定性发现路径继续同一个 Objective。
 
-缺失 Provider 的自动获取默认关闭。管理员可以在 Profile 中配置精确 Provider Adapter；变更型 `capability_acquire` Tool 在 Provider、Profile 作用域、Enterprise Policy 和 Effect 边界全部通过后直接执行，且必须在健康探测返回证据后才恢复原 Objective：
+每个新 Profile 默认启用 `standard-web` 能力包，并且只预授权 BeeMax 固定版本的 `exa-mcporter` Adapter。变更型 `capability_acquire` Tool 在 Provider、Profile 作用域、Enterprise Policy 和 Effect 边界全部通过后直接执行，且必须在健康探测返回证据后才恢复原 Objective。管理员仍可在 Profile 中关闭自动获取或替换精确 allowlist：
 
 ```yaml
 capabilityProviders:
@@ -256,7 +258,7 @@ capabilityProviders:
     allowedProviders: [exa-mcporter]
 ```
 
-等价环境变量为 `BEEMAX_PROVIDER_INSTALLATION_ENABLED=true` 和 `BEEMAX_PROVIDER_INSTALLATION_ALLOW=exa-mcporter`。BeeMax 当前提供固定版本的 Exa/mcporter Adapter 以恢复 `web_search`；不会接受任意包名或模型生成的 shell 命令。安装依赖来自 SHA-256 验证的 `package-lock`，禁用包生命周期脚本，并在 Profile 私有目录中原子发布。配置缺失、权限拒绝、安装不健康或结果未知都会 fail closed。
+等价环境变量为 `BEEMAX_PROVIDER_INSTALLATION_ENABLED=true` 和 `BEEMAX_PROVIDER_INSTALLATION_ALLOW=exa-mcporter`；将前者设为 `false` 可显式关闭。BeeMax 当前提供固定版本的 Exa/mcporter Adapter 以恢复 `web_search`；不会接受任意包名或模型生成的 shell 命令。安装依赖来自 SHA-256 验证的 `package-lock`，禁用包生命周期脚本，并在 Profile 私有目录中原子发布。配置缺失、权限拒绝、安装不健康或结果未知都会 fail closed。
 
 每个 Capability 决策都有不含原始内容的 cognition ID，用于关联模型用量、fallback 遥测、execution Trace 和最终 Task 结果。发布前可刷新真实语义路由与结果证据：
 
@@ -406,10 +408,11 @@ mediaUnderstanding:
   auxiliaryVisionEnabled: true
   localOcr:
     enabled: true
-    # command: /usr/bin/tesseract
     # languages: eng+chi_sim
     timeoutMs: 30000
 ```
+
+OCR 可执行文件由宿主管理。若不在可信服务 `PATH` 中，请在宿主/服务环境设置绝对路径 `BEEMAX_LOCAL_OCR_COMMAND`；Profile YAML 与 Profile `.env` 不能选择可执行代码。
 
 媒体结果以不可信证据进入 Pi，携带 digest、来源、置信度、告警和耗时。原始图片字节不会写入回执、遥测、Task Ledger 或 Memory。
 
@@ -421,12 +424,26 @@ BeeMax 安装内置 Profile Skill，并渐进发现可用 Pi Skill。初始 Prom
 beemax skills list --profile personal
 beemax skills sync --profile personal
 beemax skills install pi-web-access --profile personal
+beemax skills inspect --from /absolute/path/customer-skill --json
+beemax skills install --from /absolute/path/customer-skill --sha256 <tree-digest> --profile personal
+beemax capabilities status --profile personal
+beemax capabilities install standard-web --profile personal
+beemax capabilities start pi-web-access --profile personal
+beemax capabilities stop pi-web-access --profile personal
 ```
 
-MCP 支持 stdio 和 Streamable HTTP Server。Secret 应通过 `${ENV_VAR}` 引用。没有显式只读标注的 Tool 按变更操作治理。
+新 Profile 默认包含 `standard-web` 三件套：内置 `web_search`/`exa_web_search`（首次使用时直接获取 Profile 私有的 Exa MCP Adapter）、BeeMax 原生 Agent Reach 路由 Skill，以及内置 Pi 兼容 CDP 浏览器 Tool 与 Pi Web Access Skill。生产 Runtime 只发现当前 Profile 的 Skill，不会隐式继承 workspace 或机器全局 Skill。Chrome 启动时由操作系统分配空闲 loopback CDP 端口，把端点持久化在当前 Profile 内，并在每次连接前验证端点确实属于当前 Profile 的浏览器数据目录和仍新鲜的 Runner/egress 心跳。生产 Runner 会强制 HTTP(S)、重定向、JavaScript 请求和 WebSocket 经过 loopback egress proxy；代理解析并固定公开目标地址，拒绝私网、链路本地、metadata 和保留地址。浏览器只在需要时启动，可显式停止，并会在删除 Profile 前停止；它不导入用户日常 Chrome Profile，也不输出 Cookie 值。客户可以用 `capabilities install standard-web` 主动预装 Exa Runtime；Pi 兼容浏览器实现已经随 Core 安装，该命令会验证/补齐完整 Skill 树。迁移会保留旧 Profile 已明确配置的 Provider opt-out；执行安装命令会把环境变量覆盖折叠进 Profile 策略，并明确重新启用该 Profile。
+
+MCP 支持 stdio 和 Streamable HTTP Server。`${ENV_VAR}` 从所选 Profile `.env` 的不可变快照解析；stdio 子进程只接收安全运行变量和该 Server `env` 中显式映射的键，不会继承无关的宿主或 Profile Secret。外部 Tool 及 resource/prompt 调用默认都按变更操作治理，即使 Server 自报 `readOnlyHint` 也不会直接降级。只有管理员核验该精确 Server 的读行为后，才能在当前 Profile 的 Server 条目中设置 `trustReadOnlyOperations: true`；它只改变 Effect 分类，不引入审批流程。
+
+客户 Skill 只从有界本地目录安装，并要求完整树的规范摘要与 `--sha256` 一致；同名 Skill 永不覆盖。自助安装 MCP 只接受远程 HTTPS 描述符（受管本机服务可用 loopback HTTP），拒绝未知字段和明文凭据，凭据字段必须写成 `${ENV_VAR}` 引用。stdio MCP 会以 Gateway 的 OS 账号执行宿主代码，因此只能由可信宿主管理员直接在 Profile 清单中配置固定绝对路径的命令和工作目录；两者都禁止使用 Profile 环境变量引用，运行时也会拒绝非真实文件、符号链接或不可执行的命令。可执行文件的完整性与升级由可信宿主的软件包或部署控制负责。租户彼此不可信时，逻辑 Profile 不能替代独立 OS 用户或容器。
+
+Streamable HTTP MCP 会在每次 HTTPS 重定向时重新解析、验证并固定目标地址；明确配置的本机 HTTP 服务只能连接 loopback 地址。跨源重定向会移除凭据与会话头，JSON/SSE 响应流在交给 MCP SDK 解析前限制为最多 16 MiB。
 
 ```bash
+beemax mcp add company-search --from /absolute/path/company-search.json --profile personal
 beemax mcp status --profile personal
+beemax mcp remove company-search --profile personal
 ```
 
 Web 调研支持 Provider-backed Search 和带 SSRF 防护的正文提取。WeKnora 只通过只读 `knowledge_retrieve` Tool 暴露显式配置的知识空间。

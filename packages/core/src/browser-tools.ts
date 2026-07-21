@@ -8,59 +8,76 @@ import type { CredentialVault } from "./credential-vault.ts";
 const DEFAULT_CDP_URL = "http://127.0.0.1:9222";
 const MAX_TEXT_CHARS = 30_000;
 
-export interface BrowserToolsOptions { cdpUrl?: string; fetchImpl?: typeof fetch; credentials?: { ownerKey: string; vault: Pick<CredentialVault, "put" | "remove" | "withSecret"> }; }
+export interface BrowserToolsOptions {
+	cdpUrl?: string | (() => string | Promise<string>);
+	/** Trusted composition hook used to prove that the endpoint belongs to this Profile before any CDP request. */
+	assertEndpoint?: (cdpUrl: string) => void | Promise<void>;
+	fetchImpl?: typeof fetch;
+	credentials?: { ownerKey: string; vault: Pick<CredentialVault, "put" | "remove" | "withSecret"> };
+}
 
 /**
  * First-class, Chrome DevTools Protocol browser capability. Read operations
  * are separate from mutating browser actions so risk policy can be exact.
  */
 export function createBrowserTools(options: BrowserToolsOptions = {}): ToolDefinition[] {
-	const cdpUrl = validateLocalCdpUrl(options.cdpUrl ?? DEFAULT_CDP_URL);
 	const fetchImpl = options.fetchImpl ?? fetch;
+	const endpoint = async (): Promise<string> => {
+		const configured = typeof options.cdpUrl === "function" ? await options.cdpUrl() : options.cdpUrl ?? DEFAULT_CDP_URL;
+		const cdpUrl = validateLocalCdpUrl(configured);
+		await options.assertEndpoint?.(cdpUrl);
+		return cdpUrl;
+	};
 	const tools = [
 		defineTool({ name: "browser_status", label: "Browser Status", description: "List pages available in the local managed Chrome browser.", parameters: Type.Object({}), execute: async () => browserResult(async () => {
-			const pages = await listPages(cdpUrl, fetchImpl);
+			const pages = await listPages(await endpoint(), fetchImpl);
 			return { text: pages.length ? pages.map((page, index) => `${index + 1}. ${page.title || "Untitled"}\n${page.url}`).join("\n\n") : "No browser pages are open.", details: { pages } };
 		}) }),
-		defineTool({ name: "browser_open", label: "Open Browser Page", description: "Navigate the managed browser to an HTTP(S) URL. Direct private-network URLs are rejected.", parameters: Type.Object({ url: Type.String({ minLength: 8, maxLength: 4096 }) }), execute: async (_id, params) => browserResult(async () => {
+		defineTool({ name: "browser_open", label: "Open Browser Page", description: "Navigate the managed browser to a public HTTP(S) URL through its Profile egress guard.", parameters: Type.Object({ url: Type.String({ minLength: 8, maxLength: 4096 }) }), execute: async (_id, params) => browserResult(async () => {
 			const url = validatePublicBrowserUrl(params.url);
+			const cdpUrl = await endpoint();
 			const page = await activePage(cdpUrl, fetchImpl);
-			await cdp(page.webSocketDebuggerUrl, "Page.navigate", { url });
+			await cdp(page.webSocketDebuggerUrl, "Page.navigate", { url }, cdpUrl);
 			return { text: `Opened ${url}`, details: { url, pageId: page.id } };
 		}) }),
 		defineTool({ name: "browser_read", label: "Read Browser Page", description: "Read visible text from the active browser page or a CSS selector.", parameters: Type.Object({ selector: Type.Optional(Type.String({ maxLength: 512 })), maxChars: Type.Optional(Type.Integer({ minimum: 500, maximum: MAX_TEXT_CHARS })) }), execute: async (_id, params) => browserResult(async () => {
+			const cdpUrl = await endpoint();
 			const page = await activePage(cdpUrl, fetchImpl);
 			const selector = params.selector?.trim() || "body";
 			const expression = `(() => document.querySelector(${JSON.stringify(selector)})?.innerText?.slice(0, ${params.maxChars ?? 12_000}) ?? "")()`;
-			const value = await evaluate(page.webSocketDebuggerUrl, expression, true);
+			const value = await evaluate(page.webSocketDebuggerUrl, expression, true, cdpUrl);
 			return { text: String(value) || `No readable content matched ${selector}.`, details: { selector, url: page.url } };
 		}) }),
 		defineTool({ name: "browser_click", label: "Click Browser Element", description: "Click a CSS-selected browser element. This can change external state.", parameters: Type.Object({ selector: Type.String({ minLength: 1, maxLength: 512 }) }), execute: async (_id, params) => browserResult(async () => {
+			const cdpUrl = await endpoint();
 			const page = await activePage(cdpUrl, fetchImpl);
 			const expression = `(() => { const el = document.querySelector(${JSON.stringify(params.selector)}); if (!el) return { ok: false, reason: "not found" }; (el instanceof HTMLElement ? el : el).click(); return { ok: true }; })()`;
-			const value = await evaluate(page.webSocketDebuggerUrl, expression, true) as { ok?: boolean; reason?: string };
+			const value = await evaluate(page.webSocketDebuggerUrl, expression, true, cdpUrl) as { ok?: boolean; reason?: string };
 			return { text: value?.ok ? `Clicked ${params.selector}` : `Could not click ${params.selector}: ${value?.reason ?? "unknown error"}`, details: { selector: params.selector, url: page.url, ...value }, isError: !value?.ok };
 		}) }),
 		defineTool({ name: "browser_fill", label: "Fill Browser Field", description: "Fill a CSS-selected browser input and dispatch input/change events.", parameters: Type.Object({ selector: Type.String({ minLength: 1, maxLength: 512 }), text: Type.String({ maxLength: 10_000 }) }), execute: async (_id, params) => browserResult(async () => {
+			const cdpUrl = await endpoint();
 			const page = await activePage(cdpUrl, fetchImpl);
 			const expression = fillExpression(params.selector, params.text);
-			const value = await evaluate(page.webSocketDebuggerUrl, expression, true) as { ok?: boolean; reason?: string };
+			const value = await evaluate(page.webSocketDebuggerUrl, expression, true, cdpUrl) as { ok?: boolean; reason?: string };
 			return { text: value?.ok ? `Filled ${params.selector}` : `Could not fill ${params.selector}: ${value?.reason ?? "unknown error"}`, details: { selector: params.selector, url: page.url, ...value }, isError: !value?.ok };
 		}) }),
 		...(options.credentials ? [defineTool({ name: "browser_fill_credential", label: "Fill Browser Credential", description: "Fill a browser input from an encrypted Credential Ref without exposing its Secret.", parameters: Type.Object({ selector: Type.String({ minLength: 1, maxLength: 512 }), credentialRef: Type.String({ pattern: "^cred_[a-f0-9-]{36}$" }) }), execute: async (_id, params) => browserResult(async () => {
+			const cdpUrl = await endpoint();
 			const page = await activePage(cdpUrl, fetchImpl);
 			const value = await options.credentials!.vault.withSecret(options.credentials!.ownerKey, params.credentialRef, "browser.fill", async (secret) => {
 				const expression = fillExpression(params.selector, secret);
-				return await evaluate(page.webSocketDebuggerUrl, expression, true) as { ok?: boolean; reason?: string };
+				return await evaluate(page.webSocketDebuggerUrl, expression, true, cdpUrl) as { ok?: boolean; reason?: string };
 			});
 			return { text: value?.ok ? `Filled ${params.selector} using Credential Ref` : `Could not fill ${params.selector} using Credential Ref: ${value?.reason ?? "unknown error"}`, details: { selector: params.selector, credentialRef: params.credentialRef, url: page.url, ok: Boolean(value?.ok), reason: value?.reason }, isError: !value?.ok };
 		}) })] : []),
 		...(options.credentials ? [defineTool({ name: "browser_generate_credential", label: "Generate Browser Credential", description: "Generate a strong password locally, save it in the encrypted Profile Vault, and fill a browser input without exposing the Secret.", parameters: Type.Object({ selector: Type.String({ minLength: 1, maxLength: 512 }), label: Type.String({ minLength: 1, maxLength: 256 }), purpose: Type.String({ minLength: 1, maxLength: 512 }), length: Type.Optional(Type.Integer({ minimum: 16, maximum: 64 })) }), execute: async (_id, params) => browserResult(async () => {
+			const cdpUrl = await endpoint();
 			const page = await activePage(cdpUrl, fetchImpl);
 			const secret = generateBrowserSecret(params.length ?? 24);
 			const credential = options.credentials!.vault.put({ ownerKey: options.credentials!.ownerKey, label: params.label, purpose: params.purpose, secret });
 			try {
-				const value = await evaluate(page.webSocketDebuggerUrl, fillExpression(params.selector, secret), true) as { ok?: boolean; reason?: string };
+				const value = await evaluate(page.webSocketDebuggerUrl, fillExpression(params.selector, secret), true, cdpUrl) as { ok?: boolean; reason?: string };
 				if (!value?.ok) {
 					const rolledBack = options.credentials!.vault.remove(options.credentials!.ownerKey, credential.ref);
 					return { text: rolledBack ? `Could not generate and fill ${params.selector}: ${value?.reason ?? "unknown error"}; the new Credential was removed` : `Could not generate and fill ${params.selector}: ${value?.reason ?? "unknown error"}; remove Credential Ref ${credential.ref} manually`, details: { selector: params.selector, ...(rolledBack ? {} : { credentialRef: credential.ref }), url: page.url, ok: false, reason: value?.reason, rolledBack }, isError: true };
@@ -72,8 +89,9 @@ export function createBrowserTools(options: BrowserToolsOptions = {}): ToolDefin
 			}
 		}) })] : []),
 		defineTool({ name: "browser_cookies", label: "Read Browser Cookies", description: "Read browser cookies for sensitive diagnostics.", parameters: Type.Object({}), execute: async () => browserResult(async () => {
+			const cdpUrl = await endpoint();
 			const page = await activePage(cdpUrl, fetchImpl);
-			const result = await cdp(page.webSocketDebuggerUrl, "Network.getAllCookies") as { cookies?: Array<{ name: string; domain: string; httpOnly: boolean; secure: boolean }> };
+			const result = await cdp(page.webSocketDebuggerUrl, "Network.getAllCookies", undefined, cdpUrl) as { cookies?: Array<{ name: string; domain: string; httpOnly: boolean; secure: boolean }> };
 			const cookies = (result.cookies ?? []).map(({ name, domain, httpOnly, secure }) => ({ name, domain, httpOnly, secure }));
 			return { text: cookies.length ? cookies.map((cookie) => `${cookie.name} · ${cookie.domain}${cookie.httpOnly ? " · HttpOnly" : ""}${cookie.secure ? " · Secure" : ""}`).join("\n") : "No cookies found.", details: { cookies } };
 		}) }),
@@ -94,9 +112,11 @@ export function createBrowserTools(options: BrowserToolsOptions = {}): ToolDefin
 interface BrowserPage { id: string; title: string; url: string; type: string; webSocketDebuggerUrl: string; }
 
 async function listPages(cdpUrl: string, fetchImpl: typeof fetch): Promise<BrowserPage[]> {
-	const response = await fetchImpl(`${cdpUrl.replace(/\/$/, "")}/json`, { signal: AbortSignal.timeout(5_000) });
-	if (!response.ok) throw new Error(`Managed browser is unavailable (${response.status}). Start it with the Pi browser-start.js script.`);
-	return ((await response.json()) as BrowserPage[]).filter((page) => page.type === "page" && page.webSocketDebuggerUrl && isLocalDebuggerUrl(page.webSocketDebuggerUrl));
+	let response: Response;
+	try { response = await fetchImpl(`${cdpUrl.replace(/\/$/, "")}/json`, { signal: AbortSignal.timeout(5_000) }); }
+	catch { throw new Error("Managed browser is unavailable. Start it with 'beemax capabilities start pi-web-access' for this Profile."); }
+	if (!response.ok) throw new Error(`Managed browser is unavailable (${response.status}). Start it with 'beemax capabilities start pi-web-access' for this Profile.`);
+	return ((await response.json()) as BrowserPage[]).filter((page) => page.type === "page" && page.webSocketDebuggerUrl && isDebuggerUrlForCdp(page.webSocketDebuggerUrl, cdpUrl));
 }
 
 async function activePage(cdpUrl: string, fetchImpl: typeof fetch): Promise<BrowserPage> {
@@ -105,8 +125,8 @@ async function activePage(cdpUrl: string, fetchImpl: typeof fetch): Promise<Brow
 	return page;
 }
 
-async function cdp(url: string, method: string, params?: unknown): Promise<unknown> {
-	if (!isLocalDebuggerUrl(url)) throw new Error("Managed browser debugger endpoint must be local.");
+async function cdp(url: string, method: string, params?: unknown, expectedCdpUrl?: string): Promise<unknown> {
+	if (!isLocalDebuggerUrl(url) || (expectedCdpUrl && !isDebuggerUrlForCdp(url, expectedCdpUrl))) throw new Error("Managed browser debugger endpoint must match the verified Profile endpoint.");
 	const socket = new WebSocket(url);
 	return new Promise((resolve, reject) => {
 		const timer = setTimeout(() => { socket.close(); reject(new Error(`Browser command ${method} timed out`)); }, 10_000);
@@ -123,14 +143,15 @@ async function cdp(url: string, method: string, params?: unknown): Promise<unkno
 	});
 }
 
-async function evaluate(url: string, expression: string, returnByValue: boolean): Promise<unknown> {
-	const result = await cdp(url, "Runtime.evaluate", { expression, returnByValue, awaitPromise: true }) as { result?: { value?: unknown } };
+async function evaluate(url: string, expression: string, returnByValue: boolean, expectedCdpUrl?: string): Promise<unknown> {
+	const result = await cdp(url, "Runtime.evaluate", { expression, returnByValue, awaitPromise: true }, expectedCdpUrl) as { result?: { value?: unknown } };
 	return result.result?.value;
 }
 
 function validatePublicBrowserUrl(input: string): string {
 	const url = new URL(input);
 	if (url.protocol !== "http:" && url.protocol !== "https:") throw new Error("Browser navigation only supports public HTTP(S) URLs.");
+	if (url.username || url.password) throw new Error("Browser navigation URLs must not contain embedded credentials.");
 	const host = url.hostname.toLowerCase();
 	if (host === "localhost" || host.endsWith(".localhost") || isIP(host) || host.startsWith("127.") || host.startsWith("10.") || host.startsWith("192.168.") || host.startsWith("169.254.") || host.startsWith("100.") || /^172\.(1[6-9]|2\d|3[01])\./.test(host)) throw new Error("Browser navigation to local or private network addresses is blocked.");
 	return url.toString();
@@ -147,7 +168,19 @@ function isLocalDebuggerUrl(input: string): boolean {
 	catch { return false; }
 }
 
+function isDebuggerUrlForCdp(input: string, cdpUrl: string): boolean {
+	try {
+		const debuggerUrl = new URL(input);
+		const endpoint = new URL(cdpUrl);
+		return isLocalDebuggerUrl(input)
+			&& debuggerUrl.protocol === (endpoint.protocol === "https:" ? "wss:" : "ws:")
+			&& debuggerUrl.hostname === endpoint.hostname
+			&& effectivePort(debuggerUrl) === effectivePort(endpoint);
+	} catch { return false; }
+}
+
 function isLoopbackHost(host: string): boolean { return host === "127.0.0.1" || host === "::1" || host === "localhost"; }
+function effectivePort(url: URL): string { return url.port || (url.protocol === "wss:" || url.protocol === "https:" ? "443" : "80"); }
 
 function fillExpression(selector: string, value: string): string {
 	return `(() => { const el = document.querySelector(${JSON.stringify(selector)}); if (!(el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement)) return { ok: false, reason: "not an input" }; el.value = ${JSON.stringify(value)}; el.dispatchEvent(new Event("input", { bubbles: true })); el.dispatchEvent(new Event("change", { bubbles: true })); return { ok: true }; })()`;

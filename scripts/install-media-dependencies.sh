@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
-# Install local OCR and the Linux CJK font coverage used by report rendering.
+# Install the local document-serving, OCR, and Linux CJK dependencies.
 set -euo pipefail
 
 MEDIA_DEPS_ENABLED="${BEEMAX_INSTALL_MEDIA_DEPS:-1}"
 TESSERACT_BIN="${BEEMAX_TESSERACT:-tesseract}"
 FC_LIST_BIN="${BEEMAX_FC_LIST:-fc-list}"
+CADDY_BIN="${BEEMAX_CADDY:-caddy}"
 
 case "${MEDIA_DEPS_ENABLED}" in
 	0|false|FALSE|no|NO|off|OFF)
@@ -41,6 +42,10 @@ tesseract_ready() {
 	command -v "${TESSERACT_BIN}" >/dev/null 2>&1
 }
 
+caddy_ready() {
+	command -v "${CADDY_BIN}" >/dev/null 2>&1
+}
+
 ubuntu_cjk_font_ready() {
 	command -v "${FC_LIST_BIN}" >/dev/null 2>&1 || return 1
 	local families
@@ -49,20 +54,20 @@ ubuntu_cjk_font_ready() {
 }
 
 print_ready() {
-	echo "BeeMax media dependencies ready: $("${TESSERACT_BIN}" --version 2>&1 | head -n 1)"
+	echo "BeeMax document dependencies ready: $("${CADDY_BIN}" version 2>&1 | head -n 1); $("${TESSERACT_BIN}" --version 2>&1 | head -n 1)"
 }
 
 install_ubuntu() {
 	local apt_get="${BEEMAX_APT_GET:-apt-get}"
 	local effective_uid="${BEEMAX_INSTALL_EUID:-$(id -u)}"
-	local -a packages=(tesseract-ocr tesseract-ocr-eng tesseract-ocr-chi-sim fonts-noto-cjk)
+	local -a packages=(caddy tesseract-ocr tesseract-ocr-eng tesseract-ocr-chi-sim fonts-noto-cjk)
 
 	command -v "${apt_get}" >/dev/null 2>&1 || {
 		echo "BeeMax could not install OCR and CJK report dependencies: apt-get is unavailable." >&2
 		exit 1
 	}
 
-	echo "BeeMax is installing local OCR and CJK report fonts with apt-get..."
+	echo "BeeMax is installing Caddy, local OCR, and CJK report fonts with apt-get..."
 	if [[ "${effective_uid}" == "0" ]]; then
 		env DEBIAN_FRONTEND=noninteractive "${apt_get}" update
 		env DEBIAN_FRONTEND=noninteractive "${apt_get}" install -y --no-install-recommends "${packages[@]}"
@@ -83,32 +88,32 @@ install_macos() {
 		exit 1
 	}
 
-	echo "BeeMax is installing local OCR and language data with Homebrew..."
-	"${brew}" install tesseract tesseract-lang
+	echo "BeeMax is installing Caddy, local OCR, and language data with Homebrew..."
+	"${brew}" install caddy tesseract tesseract-lang
 }
 
 PLATFORM="$(detect_platform)"
 case "${PLATFORM}" in
 	ubuntu|debian)
-		if tesseract_ready && ubuntu_cjk_font_ready; then
+		if caddy_ready && tesseract_ready && ubuntu_cjk_font_ready; then
 			print_ready
 			exit 0
 		fi
 		install_ubuntu
 		;;
 	macos)
-		if tesseract_ready; then
+		if caddy_ready && tesseract_ready; then
 			print_ready
 			exit 0
 		fi
 		install_macos
 		;;
 	*)
-		if tesseract_ready; then
+		if caddy_ready && tesseract_ready; then
 			print_ready
 			exit 0
 		fi
-		echo "BeeMax cannot automatically install Tesseract on this operating system. Preinstall it or set BEEMAX_INSTALL_MEDIA_DEPS=0." >&2
+		echo "BeeMax cannot automatically install Caddy and Tesseract on this operating system. Preinstall them or set BEEMAX_INSTALL_MEDIA_DEPS=0." >&2
 		exit 1
 		;;
 esac
@@ -118,9 +123,14 @@ if ! tesseract_ready; then
 	exit 1
 fi
 
+if ! caddy_ready; then
+	echo "BeeMax installed the document packages, but caddy is not available on PATH." >&2
+	exit 1
+fi
+
 if [[ "${PLATFORM}" == "ubuntu" || "${PLATFORM}" == "debian" ]] && ! ubuntu_cjk_font_ready; then
 	echo "BeeMax installed the media packages, but no Simplified Chinese font is visible through fontconfig." >&2
 	exit 1
 fi
 
-echo "BeeMax media dependency installed: $("${TESSERACT_BIN}" --version 2>&1 | head -n 1)"
+echo "BeeMax document dependencies installed: $("${CADDY_BIN}" version 2>&1 | head -n 1); $("${TESSERACT_BIN}" --version 2>&1 | head -n 1)"

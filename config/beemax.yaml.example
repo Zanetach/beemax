@@ -16,8 +16,9 @@ gateway:
   # Install Caddy first. Keep loopback unless an authenticated reverse proxy
   # exposes this route; then set publicBaseUrl to that external URL.
   artifactSite:
-    enabled: false
-    # command: /opt/homebrew/bin/caddy
+    enabled: true
+    # If Caddy is not on PATH, set BEEMAX_ARTIFACT_SITE_COMMAND in the trusted
+    # Gateway service/host environment; Profile YAML and Profile .env are rejected.
     # Omit both values to use this Profile's stable loopback port.
     # listen: 127.0.0.1:18788
     # publicBaseUrl: http://127.0.0.1:18788/artifacts
@@ -37,12 +38,12 @@ memory:
 mcp:
   configPath: config/mcp.json
 
-# Disabled by default. Each Provider must be explicitly allowlisted and still
-# passes runtime Tool approval plus post-install health verification.
+# Each Provider must be explicitly allowlisted and pass Profile scope, policy,
+# integrity, Effect, and post-install health checks before first use.
 capabilityProviders:
   installation:
-    enabled: false
-    allowedProviders: [] # e.g. [exa-mcporter]
+    enabled: true
+    allowedProviders: [exa-mcporter]
 
 # WeKnora-backed enterprise knowledge. Keep BEEMAX_WEKNORA_API_KEY in .env.
 knowledge:
@@ -60,7 +61,7 @@ mediaUnderstanding:
   auxiliaryVisionEnabled: true
   localOcr:
     enabled: true
-    # command: /usr/bin/tesseract
+    # The executable is host-owned via PATH or BEEMAX_LOCAL_OCR_COMMAND.
     # languages: eng+chi_sim
     timeoutMs: 30000
 

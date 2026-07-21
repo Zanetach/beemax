@@ -15,8 +15,8 @@
  * open_id (userId), matching the channel identity contract.
  */
 
-import { createReadStream, createWriteStream } from "node:fs";
-import { chmod, mkdir, mkdtemp, rm, stat } from "node:fs/promises";
+import { constants as fsConstants, createWriteStream } from "node:fs";
+import { chmod, lstat, mkdir, mkdtemp, open, rm, stat } from "node:fs/promises";
 import { createServer, type Server } from "node:http";
 import type { Socket } from "node:net";
 import { tmpdir } from "node:os";
@@ -49,6 +49,7 @@ const LARK_DOMAIN = lark.Domain.Lark;
 const MAX_TEXT_LENGTH = 4000; // Feishu text message soft cap; we chunk on this.
 const MAX_WEBHOOK_BODY_BYTES = 1_048_576;
 const MAX_INBOUND_MEDIA_BYTES = 25 * 1024 * 1024;
+const MAX_OUTBOUND_IMAGE_BYTES = 10 * 1024 * 1024;
 const MAX_OUTBOUND_FILE_BYTES = 30 * 1024 * 1024;
 const MAX_PROCESSING_REACTIONS = 1024;
 const MAX_MEDIA_BATCH_MESSAGES = 8;
@@ -58,6 +59,7 @@ const OBSERVE_ONLY = Symbol("observe_only");
 
 export interface FeishuAdapterDependencies {
 	createClient?: (credentials: Readonly<{ appId: string; appSecret: string }>, domain: typeof FEISHU_DOMAIN | typeof LARK_DOMAIN) => Client;
+	createWsClient?: (options: ConstructorParameters<typeof lark.WSClient>[0]) => WSClient;
 }
 
 interface PendingInboundEvent {
@@ -261,7 +263,7 @@ export class FeishuAdapter implements PlatformAdapter {
 		}
 
 		let wsClient!: WSClient;
-		const createdWsClient = this.consumeCredentials((credentials) => new lark.WSClient({
+		const createdWsClient = this.consumeCredentials((credentials) => (this.dependencies.createWsClient ?? ((options) => new lark.WSClient(options)))({
 			appId: credentials.appId,
 			appSecret: credentials.appSecret,
 			loggerLevel: lark.LoggerLevel.warn,
@@ -269,7 +271,6 @@ export class FeishuAdapter implements PlatformAdapter {
 			autoReconnect: true,
 			source: "beemax",
 			extraUaTags: ["channel"],
-			handshakeTimeoutMs: 15_000,
 			wsConfig: { pingTimeout: 10 },
 			onReady: () => { if (this.isCurrentConnection(generation, wsClient)) this.markConnected(generation); },
 			onReconnecting: () => { if (this.isCurrentConnection(generation, wsClient)) this.connected = false; },
@@ -913,13 +914,10 @@ export class FeishuAdapter implements PlatformAdapter {
 
 	async sendImage(chatId: string, imagePath: string): Promise<SendResult> {
 		try {
-			const info = await stat(imagePath);
-			if (!info.isFile() || info.size === 0 || info.size > 10 * 1024 * 1024) {
-				return { success: false, error: "Feishu image must be a non-empty file no larger than 10MB" };
-			}
-			const uploaded = await this.retryRequest(() => withFileStream(imagePath, (image) => this.client.im.v1.image.create({
+			const image = await readStableOutboundFile(imagePath, MAX_OUTBOUND_IMAGE_BYTES, "Feishu image must be a non-empty file no larger than 10MB");
+			const uploaded = await this.retryRequest(() => this.client.im.v1.image.create({
 				data: { image_type: "message", image },
-			})));
+			}));
 			if (!uploaded?.image_key) return { success: false, error: "Feishu image upload returned no image_key" };
 			const uuid = randomUUID();
 			const sent = await this.retryRequest(() => this.client.im.v1.message.create({
@@ -942,14 +940,11 @@ export class FeishuAdapter implements PlatformAdapter {
 	async sendMedia(chatId: string, mediaPath: string, mimeType?: string, name?: string): Promise<SendResult> {
 		if (isImageMedia(mediaPath, mimeType)) return this.sendImage(chatId, mediaPath);
 		try {
-			const info = await stat(mediaPath);
-			if (!info.isFile() || info.size === 0 || info.size > MAX_OUTBOUND_FILE_BYTES) {
-				return { success: false, error: "Feishu media must be a non-empty file no larger than 30MB" };
-			}
+			const file = await readStableOutboundFile(mediaPath, MAX_OUTBOUND_FILE_BYTES, "Feishu media must be a non-empty file no larger than 30MB");
 			const fileType = feishuFileType(mediaPath, mimeType);
-			const uploaded = await this.retryRequest(() => withFileStream(mediaPath, (file) => this.client.im.v1.file.create({
+			const uploaded = await this.retryRequest(() => this.client.im.v1.file.create({
 				data: { file_type: fileType, file_name: name || basename(mediaPath), file },
-			})));
+			}));
 			if (!uploaded?.file_key) return { success: false, error: "Feishu file upload returned no file_key" };
 			const msgType = fileType === "opus" ? "audio" : fileType === "mp4" ? "media" : "file";
 			const uuid = randomUUID();
@@ -1357,13 +1352,43 @@ function replayGroupMessage(messages: InboundMessage[]): InboundMessage {
 	};
 }
 
-async function withFileStream<T>(path: string, operation: (stream: ReturnType<typeof createReadStream>) => Promise<T>): Promise<T> {
-	const stream = createReadStream(path);
-	try {
-		return await operation(stream);
-	} finally {
-		stream.destroy();
+async function readStableOutboundFile(path: string, maximumBytes: number, invalidMessage: string): Promise<Buffer> {
+	const pathInfo = await lstat(path);
+	if (pathInfo.isSymbolicLink() || !pathInfo.isFile() || pathInfo.size === 0 || pathInfo.size > maximumBytes) {
+		throw new Error(invalidMessage);
 	}
+	const noFollow = fsConstants.O_NOFOLLOW ?? 0;
+	const handle = await open(path, fsConstants.O_RDONLY | noFollow);
+	try {
+		const opened = await handle.stat();
+		if (!opened.isFile() || !sameFileIdentity(pathInfo, opened) || opened.size === 0 || opened.size > maximumBytes) {
+			throw new Error(invalidMessage);
+		}
+		const bytes = Buffer.allocUnsafe(opened.size);
+		let offset = 0;
+		while (offset < bytes.byteLength) {
+			const { bytesRead } = await handle.read(bytes, offset, bytes.byteLength - offset, offset);
+			if (bytesRead === 0) throw new Error("Feishu outbound file changed while being read");
+			offset += bytesRead;
+		}
+		const extra = Buffer.allocUnsafe(1);
+		if ((await handle.read(extra, 0, 1, offset)).bytesRead !== 0) {
+			throw new Error("Feishu outbound file changed while being read");
+		}
+		const final = await handle.stat();
+		const finalPath = await lstat(path);
+		if (!sameFileIdentity(opened, final) || !sameFileIdentity(opened, finalPath)
+			|| final.size !== opened.size || final.mtimeMs !== opened.mtimeMs || final.ctimeMs !== opened.ctimeMs) {
+			throw new Error("Feishu outbound file changed while being read");
+		}
+		return bytes;
+	} finally {
+		await handle.close();
+	}
+}
+
+function sameFileIdentity(left: { dev: number; ino: number }, right: { dev: number; ino: number }): boolean {
+	return left.dev === right.dev && left.ino === right.ino;
 }
 
 async function mediaByteCount(message: InboundMessage): Promise<number> {

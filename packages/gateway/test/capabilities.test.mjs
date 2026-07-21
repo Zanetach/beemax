@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { createServer } from "node:http";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
@@ -12,6 +13,7 @@ import { createSkillTools } from "@beemax/core";
 
 const fixture = fileURLToPath(new URL("./fixtures/mcp-server.mjs", import.meta.url));
 const hangingMcpFixture = fileURLToPath(new URL("./fixtures/hanging-mcp-server.mjs", import.meta.url));
+const environmentMcpFixture = fileURLToPath(new URL("./fixtures/mcp-environment-server.mjs", import.meta.url));
 
 test("Feishu meeting tools publish read, mutation, and destructive policies", () => {
 	const tools = new Map(createFeishuMeetingTools(() => undefined).map((tool) => [tool.name, tool]));
@@ -78,10 +80,10 @@ test("Pi keeps Skill metadata out of the base prompt and hot-reloads the registr
 });
 
 test("MCP tools are discovered, callable, and expose approval-free policies", async () => {
-	const manager = new McpManager();
+	const manager = new McpManager({ environment: {} });
 	try {
 		const status = await manager.connectAll({
-			servers: { smoke: { type: "stdio", command: process.execPath, args: [fixture], required: true } },
+			servers: { smoke: { type: "stdio", command: process.execPath, args: [fixture], required: true, trustReadOnlyOperations: true } },
 		});
 		assert.equal(status[0].connected, true);
 		assert.equal(status[0].tools.length, 6);
@@ -112,8 +114,23 @@ test("MCP tools are discovered, callable, and expose approval-free policies", as
 	}
 });
 
+test("MCP read-only hints fail closed until the Profile explicitly trusts that server", async () => {
+	const manager = new McpManager({ environment: {} });
+	try {
+		await manager.connectAll({
+			servers: { untrusted: { type: "stdio", command: process.execPath, args: [fixture], required: true } },
+		});
+		const tools = new Map(manager.getTools().map((tool) => [tool.name, tool]));
+		assert.equal(tools.get("mcp_untrusted_echo").beemaxPolicy.sideEffect, "external");
+		assert.equal(tools.get("mcp_untrusted_resource_read").beemaxPolicy.sideEffect, "external");
+		assert.equal("approval" in tools.get("mcp_untrusted_echo").beemaxPolicy, false);
+	} finally {
+		await manager.close();
+	}
+});
+
 test("MCP initialization times out and degrades optional servers", async () => {
-	const manager = new McpManager({ initializationTimeoutMs: 100 });
+	const manager = new McpManager({ environment: {}, initializationTimeoutMs: 100 });
 	const startedAt = Date.now();
 	try {
 		const status = await manager.connectAll({
@@ -124,6 +141,99 @@ test("MCP initialization times out and degrades optional servers", async () => {
 		assert.ok(Date.now() - startedAt < 750, "timed-out MCP startup must also terminate its child process promptly");
 	} finally {
 		await manager.close();
+	}
+});
+
+test("stdio MCP argument expansion and child environment use one immutable caller snapshot", async () => {
+	const root = mkdtempSync(join(tmpdir(), "beemax-mcp-environment-"));
+	const previousUser = process.env.USER;
+	process.env.USER = "ambient-user-must-not-enter-profile";
+	const environment = {
+		MCP_FIXTURE: environmentMcpFixture,
+		PROFILE_ARG: "profile-argument",
+		PROFILE_VALUE: "profile-value",
+		PROFILE_SECRET: "profile-secret-must-not-enter-child",
+		HOME: join(root, "profile-home"),
+	};
+	const manager = new McpManager({ environment });
+	try {
+		environment.MCP_FIXTURE = join(root, "mutated-fixture.mjs");
+		environment.PROFILE_ARG = "mutated-argument";
+		environment.PROFILE_VALUE = "mutated-value";
+		environment.HOME = join(root, "mutated-home");
+		const status = await manager.connectAll({
+			servers: {
+				environment: {
+					type: "stdio",
+					command: process.execPath,
+					args: ["${MCP_FIXTURE}", "${PROFILE_ARG}"],
+					cwd: root,
+					env: { SERVER_VALUE: "${PROFILE_VALUE}" },
+					required: true,
+				},
+			},
+		});
+		assert.equal(status[0].connected, true);
+		const tool = manager.getTools().find((candidate) => candidate.name === "mcp_environment_runtime_context");
+		const result = await tool.execute("context", {}, new AbortController().signal);
+		const context = JSON.parse(result.content[0].text);
+		assert.deepEqual(context, {
+			args: ["profile-argument"],
+			cwd: realpathSync(root),
+			serverValue: "profile-value",
+			home: join(root, "profile-home"),
+			user: "",
+		});
+	} finally {
+		await manager.close();
+		if (previousUser === undefined) delete process.env.USER;
+		else process.env.USER = previousUser;
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("HTTP MCP URL and headers use the same immutable caller snapshot", async () => {
+	let captureRequest;
+	const request = new Promise((resolve) => { captureRequest = resolve; });
+	const server = createServer((incoming, response) => {
+		captureRequest({ url: incoming.url, authorization: incoming.headers.authorization });
+		response.writeHead(500, { "content-type": "text/plain" });
+		response.end("intentional MCP test failure");
+	});
+	await new Promise((resolve, reject) => {
+		server.once("error", reject);
+		server.listen(0, "127.0.0.1", resolve);
+	});
+	const address = server.address();
+	assert.ok(address && typeof address === "object");
+	const previousToken = process.env.MCP_HTTP_TOKEN;
+	process.env.MCP_HTTP_TOKEN = "ambient-token-must-not-be-used";
+	const environment = {
+		MCP_HTTP_PORT: String(address.port),
+		MCP_HTTP_PATH: "profile-endpoint",
+		MCP_HTTP_TOKEN: "profile-token",
+	};
+	const manager = new McpManager({ environment, initializationTimeoutMs: 1_000 });
+	try {
+		environment.MCP_HTTP_PORT = "1";
+		environment.MCP_HTTP_PATH = "mutated-endpoint";
+		environment.MCP_HTTP_TOKEN = "mutated-token";
+		const status = await manager.connectAll({
+			servers: {
+				http: {
+					type: "http",
+					url: "http://127.0.0.1:${MCP_HTTP_PORT}/${MCP_HTTP_PATH}",
+					headers: { authorization: "Bearer ${MCP_HTTP_TOKEN}" },
+				},
+			},
+		});
+		assert.equal(status[0].connected, false);
+		assert.deepEqual(await request, { url: "/profile-endpoint", authorization: "Bearer profile-token" });
+	} finally {
+		await manager.close();
+		await new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+		if (previousToken === undefined) delete process.env.MCP_HTTP_TOKEN;
+		else process.env.MCP_HTTP_TOKEN = previousToken;
 	}
 });
 

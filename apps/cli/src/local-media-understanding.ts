@@ -1,4 +1,4 @@
-import { accessSync, constants } from "node:fs";
+import { accessSync, constants, lstatSync, realpathSync } from "node:fs";
 import { delimiter, isAbsolute, join } from "node:path";
 import { spawn } from "node:child_process";
 import type { MediaUnderstandingAdapter, MediaUnderstandingAdapterResult, MediaUnderstandingEvaluation, MediaUnderstandingRequest } from "@beemax/core";
@@ -18,6 +18,7 @@ export interface LocalCommandInput {
 	args: string[];
 	stdin: Buffer;
 	timeoutMs: number;
+	env: NodeJS.ProcessEnv;
 	signal?: AbortSignal;
 }
 
@@ -34,6 +35,8 @@ export interface LocalTesseractMediaAdapterOptions {
 	languages?: string;
 	timeoutMs?: number;
 	run?: LocalCommandRunner;
+	/** Host-owned environment snapshot; Profile .env values must never be passed here. */
+	environment?: NodeJS.ProcessEnv;
 }
 
 /** Local OCR adapter. Image bytes use stdin, so no temporary path crosses the seam. */
@@ -43,12 +46,14 @@ export class LocalTesseractMediaAdapter implements MediaUnderstandingAdapter {
 	private readonly languages?: string;
 	private readonly timeoutMs: number;
 	private readonly run: LocalCommandRunner;
+	private readonly environment: NodeJS.ProcessEnv;
 
 	constructor(options: LocalTesseractMediaAdapterOptions) {
 		this.command = options.command;
 		this.languages = options.languages?.trim() || undefined;
 		this.timeoutMs = Math.max(1_000, Math.min(options.timeoutMs ?? 30_000, 300_000));
 		this.run = options.run ?? runLocalCommand;
+		this.environment = localOcrRuntimeEnvironment(options.environment ?? process.env);
 	}
 
 	evaluate(request: MediaUnderstandingRequest): MediaUnderstandingEvaluation | undefined {
@@ -67,7 +72,7 @@ export class LocalTesseractMediaAdapter implements MediaUnderstandingAdapter {
 		const warnings: string[] = [];
 		for (const [index, image] of request.images.entries()) {
 			const args = ["stdin", "stdout", ...(this.languages ? ["-l", this.languages] : []), "tsv"];
-			const result = await this.run({ command: this.command, args, stdin: Buffer.from(image.data, "base64"), timeoutMs: this.timeoutMs, signal: request.signal });
+			const result = await this.run({ command: this.command, args, stdin: Buffer.from(image.data, "base64"), timeoutMs: this.timeoutMs, env: this.environment, signal: request.signal });
 			if (result.exitCode !== 0) throw new Error(`Tesseract exited with code ${result.exitCode}: ${result.stderr.slice(0, 500)}`);
 			const parsed = parseTesseractTsv(result.stdout);
 			if (parsed.content) outputs.push({ kind: "text", content: request.images.length > 1 ? `[image ${index + 1}]\n${parsed.content}` : parsed.content, ...(parsed.confidence === undefined ? {} : { confidence: parsed.confidence }) });
@@ -104,16 +109,24 @@ export function createLocalMediaUnderstandingAdapters(options: LocalMediaUnderst
 	if (options.enabled === false) return [];
 	const env = options.env ?? process.env;
 	const command = findExecutable(options.command?.trim() || "tesseract", env);
-	return command ? [new LocalTesseractMediaAdapter({ command, languages: options.languages, timeoutMs: options.timeoutMs })] : [];
+	return command ? [new LocalTesseractMediaAdapter({ command, languages: options.languages, timeoutMs: options.timeoutMs, environment: env })] : [];
+}
+
+/** Host-only resolver used by Profile config composition. */
+export function resolveLocalOcrHostCommand(env: NodeJS.ProcessEnv = process.env): string | undefined {
+	const configured = env.BEEMAX_LOCAL_OCR_COMMAND?.trim();
+	if (configured && !isAbsolute(configured)) throw new Error("Trusted host BEEMAX_LOCAL_OCR_COMMAND must be an absolute executable path");
+	return findExecutable(configured || "tesseract", env);
 }
 
 export function findExecutable(command: string, env: NodeJS.ProcessEnv = process.env): string | undefined {
 	const candidate = command.trim();
 	if (!candidate) return undefined;
-	if (isAbsolute(candidate) || candidate.includes("/")) return executable(candidate) ? candidate : undefined;
+	if (isAbsolute(candidate) || candidate.includes("/")) return executable(candidate);
 	for (const directory of (env.PATH ?? "").split(delimiter).filter(Boolean)) {
 		const path = join(directory, candidate);
-		if (executable(path)) return path;
+		const trusted = executable(path);
+		if (trusted) return trusted;
 	}
 	return undefined;
 }
@@ -124,7 +137,7 @@ export const runLocalCommand: LocalCommandRunner = (input) => new Promise((resol
 	let stderrBytes = 0;
 	const stdout: Buffer[] = [];
 	const stderr: Buffer[] = [];
-	const child = spawn(input.command, input.args, { shell: false, stdio: ["pipe", "pipe", "pipe"], signal: input.signal });
+	const child = spawn(input.command, input.args, { shell: false, stdio: ["pipe", "pipe", "pipe"], signal: input.signal, env: input.env });
 	const timeout = setTimeout(() => child.kill("SIGKILL"), input.timeoutMs);
 	const fail = (error: unknown) => {
 		if (settled) return;
@@ -154,6 +167,21 @@ export const runLocalCommand: LocalCommandRunner = (input) => new Promise((resol
 	child.stdin.end(input.stdin);
 });
 
-function executable(path: string): boolean {
-	try { accessSync(path, constants.X_OK); return true; } catch { return false; }
+function executable(path: string): string | undefined {
+	try {
+		const info = lstatSync(path);
+		if (info.isSymbolicLink() || !info.isFile()) return undefined;
+		accessSync(path, constants.X_OK);
+		return realpathSync(path);
+	} catch { return undefined; }
+}
+
+function localOcrRuntimeEnvironment(source: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+	return {
+		...(source.PATH ? { PATH: source.PATH } : {}),
+		...(source.LANG ? { LANG: source.LANG } : {}),
+		...(source.LC_ALL ? { LC_ALL: source.LC_ALL } : {}),
+		...(source.LC_CTYPE ? { LC_CTYPE: source.LC_CTYPE } : {}),
+		...(source.TESSDATA_PREFIX ? { TESSDATA_PREFIX: source.TESSDATA_PREFIX } : {}),
+	};
 }

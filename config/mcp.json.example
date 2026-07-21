@@ -2,8 +2,8 @@
   "servers": {
     "filesystem-example": {
       "type": "stdio",
-      "command": "npx",
-      "args": ["-y", "@modelcontextprotocol/server-filesystem", "."],
+      "command": "/absolute/host/path/to/mcp-filesystem-server",
+      "args": ["${MCP_FILESYSTEM_ROOT}"],
       "required": false
     },
     "remote-example": {

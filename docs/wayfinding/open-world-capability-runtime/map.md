@@ -47,6 +47,6 @@ BeeMax can take an outcome-oriented request from any supported channel, let the 
 
 - Embedding or invoking an external general-purpose Agent runtime inside BeeMax.
 - Copying another project's prompts, brand identity, unrestricted package installer, or user-home layout.
-- Bypassing credentials, approvals, enterprise policy, Access Scope, network isolation, or side-effect reconciliation to avoid asking for user input.
+- Bypassing credentials, standing authority or execution grants, enterprise policy, Access Scope, network isolation, or side-effect reconciliation to avoid asking for user input.
 - Preinstalling one Tool for every imaginable product. Open-world coverage comes from contracts, discovery, composition, trusted acquisition, and verification.
 - Reporting “all scenarios supported” from synthetic Tool receipts or a finite routing corpus.

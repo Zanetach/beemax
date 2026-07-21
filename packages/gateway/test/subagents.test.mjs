@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { createHash } from "node:crypto";
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { buildAgentFactory } from "../../../apps/cli/dist/agent-factory.js";
@@ -102,7 +102,7 @@ test("Dispatcher publishes the initial progress card before starting a slow Agen
 	};
 	const dispatcher = new Dispatcher({ runtime, flushIntervalMs: 800 }, platform);
 	const turn = inbound({ text: "slow request", messageType: "text", source: { ...source, messageId: "slow-request" }, mediaPaths: [], mediaTypes: [], raw: {}, timestamp: Date.now() });
-	await new Promise((resolve) => setTimeout(resolve, 50));
+	for (let attempt = 0; order.length < 2 && attempt < 100; attempt++) await new Promise((resolve) => setTimeout(resolve, 5));
 	assert.deepEqual(order.slice(0, 2), ["card", "runtime"]);
 	finish({ answer: "done", model: "test", durationMs: 1, usage: {} }); await turn; dispatcher.dispose();
 });
@@ -782,9 +782,17 @@ test("Dispatcher delegates opaque control handling to the Agent Runtime", async 
 });
 
 test("Dispatcher publishes trusted HTML, PDF, and Word links before native channel delivery", async () => {
-	const workspace = mkdtempSync(join(tmpdir(), "beemax-interactive-artifacts-"));
+	const profileRoot = mkdtempSync(join(tmpdir(), "beemax-interactive-artifacts-"));
+	const workspace = join(profileRoot, "workspace");
+	const snapshotRoot = join(profileRoot, "state", "artifact-delivery");
+	mkdirSync(workspace, { recursive: true, mode: 0o700 });
+	mkdirSync(snapshotRoot, { recursive: true, mode: 0o700 });
 	try {
 		let inbound;
+		let markFinalDeliveryStarted;
+		let finishFinalDelivery;
+		const finalDeliveryStarted = new Promise((resolve) => { markFinalDeliveryStarted = resolve; });
+		const finalDeliveryMayFinish = new Promise((resolve) => { finishFinalDelivery = resolve; });
 		const deliveredMedia = [];
 		const publishedMedia = [];
 		const sent = [];
@@ -811,7 +819,16 @@ test("Dispatcher publishes trusted HTML, PDF, and Word links before native chann
 			name: "feishu", isConnected: true, capabilities: { mediaDelivery: "files" },
 			onMessage: (handler) => { inbound = handler; }, connect: async () => true, disconnect: async () => undefined,
 			send: async (_chatId, text) => { sent.push(text); return { success: true, messageId: "answer" }; },
-			sendMedia: async (...args) => { deliveredMedia.push(args); return { success: true, messageId: `file-${deliveredMedia.length}` }; },
+			sendMedia: async (...args) => {
+				if (args[3] === "gold-report.docx") {
+					markFinalDeliveryStarted(args[1]);
+					await finalDeliveryMayFinish;
+				}
+				const delivered = [...args];
+				delivered.snapshotBytes = readFileSync(args[1]);
+				deliveredMedia.push(delivered);
+				return { success: true, messageId: `file-${deliveredMedia.length}` };
+			},
 			editMessage: async () => ({ success: true }), sendTyping: async () => undefined, stopTyping: async () => undefined,
 		};
 		const runtime = {
@@ -820,7 +837,7 @@ test("Dispatcher publishes trusted HTML, PDF, and Word links before native chann
 		};
 		const artifactPublisher = {
 			publish: async (_artifact, media) => {
-				publishedMedia.push(media);
+				publishedMedia.push({ ...media, snapshotBytes: readFileSync(media.path) });
 				return {
 					url: `https://reports.example.test/artifacts/${encodeURIComponent(media.name)}`,
 					name: media.name,
@@ -829,27 +846,45 @@ test("Dispatcher publishes trusted HTML, PDF, and Word links before native chann
 				};
 			},
 		};
-		const dispatcher = new Dispatcher({ runtime, artifactWorkspace: workspace, artifactPublisher, flushIntervalMs: 0 }, platform);
+		const dispatcher = new Dispatcher({ runtime, artifactWorkspace: workspace, artifactSnapshotRoot: snapshotRoot, artifactPublisher, flushIntervalMs: 0 }, platform);
 		await inbound({ text: "生成黄金报告", messageType: "text", source: { ...source, messageId: "artifact-delivery" }, mediaPaths: [], mediaTypes: [], raw: {}, timestamp: Date.now() });
-		for (let attempt = 0; deliveredMedia.length < 3 && attempt < 100; attempt++) await new Promise((resolve) => setTimeout(resolve, 5));
-		assert.deepEqual(deliveredMedia.map(([, path, mimeType, name]) => ({ path, mimeType, name })), [
-			{ path: realpathSync(join(workspace, "gold-report.html")), mimeType: "text/html", name: "gold-report.html" },
-			{ path: realpathSync(join(workspace, "gold-report.pdf")), mimeType: "application/pdf", name: "gold-report.pdf" },
-			{ path: realpathSync(join(workspace, "gold-report.docx")), mimeType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document", name: "gold-report.docx" },
+		const disposal = dispatcher.dispose();
+		const pendingDelivery = await Promise.race([
+			finalDeliveryStarted.then((path) => ({ state: "started", path })),
+			disposal.then(() => ({ state: "settled" })),
 		]);
+		try {
+			assert.equal(pendingDelivery.state, "started");
+			assert.deepEqual(readFileSync(pendingDelivery.path), Buffer.from("PK-verified-gold-report"));
+		} finally {
+			finishFinalDelivery();
+		}
+		await disposal;
+		assert.deepEqual(deliveredMedia.map(([, , mimeType, name]) => ({ mimeType, name })), [
+			{ mimeType: "text/html", name: "gold-report.html" },
+			{ mimeType: "application/pdf", name: "gold-report.pdf" },
+			{ mimeType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document", name: "gold-report.docx" },
+		]);
+		assert.ok(deliveredMedia.every(([, path], index) => path !== publishedMedia[index].path));
+		assert.deepEqual(deliveredMedia.map(({ snapshotBytes }) => snapshotBytes), publishedMedia.map(({ snapshotBytes }) => snapshotBytes));
+		assert.ok(deliveredMedia.every(([, path, , name]) => path !== realpathSync(join(workspace, name))));
 		assert.equal(publishedMedia.length, 3);
 		assert.match(sent.at(-1), /报告已生成/u);
 		assert.match(sent.at(-1), /\[gold-report\.html\]\(https:\/\/reports\.example\.test\/artifacts\/gold-report\.html\)/u);
 		assert.match(sent.at(-1), /\[gold-report\.pdf\]\(https:\/\/reports\.example\.test\/artifacts\/gold-report\.pdf\)/u);
 		assert.match(sent.at(-1), /\[gold-report\.docx\]\(https:\/\/reports\.example\.test\/artifacts\/gold-report\.docx\).*下载/u);
-		await dispatcher.dispose();
+		assert.deepEqual(readdirSync(snapshotRoot), []);
 	} finally {
-		rmSync(workspace, { recursive: true, force: true });
+		rmSync(profileRoot, { recursive: true, force: true });
 	}
 });
 
 test("Dispatcher preserves native artifact delivery when online publication fails", async () => {
-	const workspace = mkdtempSync(join(tmpdir(), "beemax-interactive-publish-failure-"));
+	const profileRoot = mkdtempSync(join(tmpdir(), "beemax-interactive-publish-failure-"));
+	const workspace = join(profileRoot, "workspace");
+	const snapshotRoot = join(profileRoot, "state", "artifact-delivery");
+	mkdirSync(workspace, { recursive: true, mode: 0o700 });
+	mkdirSync(snapshotRoot, { recursive: true, mode: 0o700 });
 	const previousWarn = console.warn;
 	try {
 		let inbound;
@@ -881,6 +916,7 @@ test("Dispatcher preserves native artifact delivery when online publication fail
 		const dispatcher = new Dispatcher({
 			runtime,
 			artifactWorkspace: workspace,
+			artifactSnapshotRoot: snapshotRoot,
 			artifactPublisher: { publish: async () => { throw new Error("publisher unavailable"); } },
 			flushIntervalMs: 0,
 		}, platform);
@@ -891,7 +927,192 @@ test("Dispatcher preserves native artifact delivery when online publication fail
 		await dispatcher.dispose();
 	} finally {
 		console.warn = previousWarn;
-		rmSync(workspace, { recursive: true, force: true });
+		rmSync(profileRoot, { recursive: true, force: true });
+	}
+});
+
+test("Dispatcher delivers the verified Artifact Manifest bytes after the workspace file changes", async () => {
+	const profileRoot = mkdtempSync(join(tmpdir(), "beemax-interactive-artifact-snapshot-"));
+	const workspace = join(profileRoot, "workspace");
+	const snapshotRoot = join(profileRoot, "state", "artifact-delivery");
+	mkdirSync(workspace, { recursive: true, mode: 0o700 });
+	mkdirSync(snapshotRoot, { recursive: true, mode: 0o700 });
+	try {
+		let inbound;
+		let delivered;
+		let publisherPath;
+		const original = Buffer.from("%PDF-verified-manifest-bytes");
+		const workspacePath = join(workspace, "report.pdf");
+		writeFileSync(workspacePath, original);
+		const manifest = createArtifactManifest({
+			locator: { kind: "workspace", uri: "workspace:report.pdf" },
+			mediaType: "application/pdf",
+			byteLength: original.byteLength,
+			sha256: createHash("sha256").update(original).digest("hex"),
+			producer: { providerId: "beemax.chrome-pdf", providerVersion: "1.0.0", operation: "render" },
+			sourceRefs: ["source-receipt:test:snapshot"],
+			createdAt: 1_721_000_000_000,
+		});
+		const platform = {
+			name: "feishu", isConnected: true, capabilities: { mediaDelivery: "files" },
+			onMessage: (handler) => { inbound = handler; }, connect: async () => true, disconnect: async () => undefined,
+			send: async () => ({ success: true, messageId: "answer" }),
+			sendMedia: async (_chatId, path, mimeType, name) => {
+				delivered = { path, mimeType, name, bytes: readFileSync(path) };
+				return { success: true, messageId: "file" };
+			},
+			editMessage: async () => ({ success: true }), sendTyping: async () => undefined, stopTyping: async () => undefined,
+		};
+		const runtime = {
+			run: async () => ({ answer: "报告已生成", model: "test", durationMs: 1, usage: {}, artifacts: [{ type: "file", uri: manifest.locator.uri, manifest }], outcome: { status: "answered" } }),
+			cancel: async () => false, handleControl: async () => undefined, isBusy: () => false, dispose: () => undefined,
+		};
+		const dispatcher = new Dispatcher({
+			runtime,
+			artifactWorkspace: workspace,
+			artifactSnapshotRoot: snapshotRoot,
+			artifactPublisher: {
+				publish: async (_artifact, media) => {
+					publisherPath = media.path;
+					writeFileSync(workspacePath, "%PDF-replaced-after-verification");
+					return { url: "https://reports.example.test/report.pdf", name: media.name, mediaType: media.mimeType, disposition: "inline" };
+				},
+			},
+			flushIntervalMs: 0,
+		}, platform);
+
+		await inbound({ text: "生成报告", messageType: "text", source: { ...source, messageId: "artifact-snapshot" }, mediaPaths: [], mediaTypes: [], raw: {}, timestamp: Date.now() });
+		for (let attempt = 0; !delivered && attempt < 100; attempt++) await new Promise((resolve) => setTimeout(resolve, 5));
+		assert.deepEqual(delivered?.bytes, original);
+		assert.notEqual(delivered?.path, realpathSync(workspacePath));
+		assert.notEqual(delivered?.path, publisherPath);
+		assert.ok(delivered?.path.startsWith(`${realpathSync(snapshotRoot)}/`));
+		assert.equal(delivered?.mimeType, "application/pdf");
+		assert.equal(delivered?.name, "report.pdf");
+		await dispatcher.dispose();
+		assert.throws(() => readFileSync(delivered.path), /ENOENT/u);
+		assert.deepEqual(readdirSync(snapshotRoot), []);
+	} finally {
+		rmSync(profileRoot, { recursive: true, force: true });
+	}
+});
+
+test("Dispatcher rejects a Publisher that rewrites its known snapshot after Manifest verification", async () => {
+	const profileRoot = mkdtempSync(join(tmpdir(), "beemax-interactive-artifact-snapshot-rewrite-"));
+	const workspace = join(profileRoot, "workspace");
+	const snapshotRoot = join(profileRoot, "state", "artifact-delivery");
+	mkdirSync(workspace, { recursive: true, mode: 0o700 });
+	mkdirSync(snapshotRoot, { recursive: true, mode: 0o700 });
+	const previousError = console.error;
+	try {
+		let inbound;
+		let delivered;
+		const original = Buffer.from("%PDF-manifest-original");
+		const tampered = Buffer.alloc(original.byteLength, 0x58);
+		const workspacePath = join(workspace, "report.pdf");
+		writeFileSync(workspacePath, original);
+		const manifest = createArtifactManifest({
+			locator: { kind: "workspace", uri: "workspace:report.pdf" },
+			mediaType: "application/pdf",
+			byteLength: original.byteLength,
+			sha256: createHash("sha256").update(original).digest("hex"),
+			producer: { providerId: "beemax.chrome-pdf", providerVersion: "1.0.0", operation: "render" },
+			sourceRefs: ["source-receipt:test:snapshot-rewrite"],
+			createdAt: 1_721_000_000_000,
+		});
+		const platform = {
+			name: "feishu", isConnected: true, capabilities: { mediaDelivery: "files" },
+			onMessage: (handler) => { inbound = handler; }, connect: async () => true, disconnect: async () => undefined,
+			send: async () => ({ success: true, messageId: "answer" }),
+			sendMedia: async (_chatId, path) => { delivered = readFileSync(path); return { success: true, messageId: "file" }; },
+			editMessage: async () => ({ success: true }), sendTyping: async () => undefined, stopTyping: async () => undefined,
+		};
+		const runtime = {
+			run: async () => ({ answer: "报告已生成", model: "test", durationMs: 1, usage: {}, artifacts: [{ type: "file", uri: manifest.locator.uri, manifest }], outcome: { status: "answered" } }),
+			cancel: async () => false, handleControl: async () => undefined, isBusy: () => false, dispose: () => undefined,
+		};
+		console.error = () => undefined;
+		const dispatcher = new Dispatcher({
+			runtime,
+			artifactWorkspace: workspace,
+			artifactSnapshotRoot: snapshotRoot,
+			artifactPublisher: {
+				publish: async (_artifact, media) => {
+					chmodSync(media.path, 0o600);
+					writeFileSync(media.path, tampered);
+					return { url: "https://reports.example.test/report.pdf", name: media.name, mediaType: media.mimeType, disposition: "inline" };
+				},
+			},
+			flushIntervalMs: 0,
+		}, platform);
+
+		await inbound({ text: "生成报告", messageType: "text", source: { ...source, messageId: "artifact-snapshot-rewrite" }, mediaPaths: [], mediaTypes: [], raw: {}, timestamp: Date.now() });
+		await dispatcher.dispose();
+		assert.equal(delivered, undefined);
+		assert.deepEqual(readdirSync(snapshotRoot), []);
+	} finally {
+		console.error = previousError;
+		rmSync(profileRoot, { recursive: true, force: true });
+	}
+});
+
+test("Dispatcher rejects a Publisher that replaces its known snapshot path after Manifest verification", async () => {
+	const profileRoot = mkdtempSync(join(tmpdir(), "beemax-interactive-artifact-snapshot-replace-"));
+	const workspace = join(profileRoot, "workspace");
+	const snapshotRoot = join(profileRoot, "state", "artifact-delivery");
+	mkdirSync(workspace, { recursive: true, mode: 0o700 });
+	mkdirSync(snapshotRoot, { recursive: true, mode: 0o700 });
+	const previousError = console.error;
+	try {
+		let inbound;
+		let delivered;
+		const original = Buffer.from("%PDF-manifest-original");
+		const tampered = Buffer.alloc(original.byteLength, 0x58);
+		const workspacePath = join(workspace, "report.pdf");
+		writeFileSync(workspacePath, original);
+		const manifest = createArtifactManifest({
+			locator: { kind: "workspace", uri: "workspace:report.pdf" },
+			mediaType: "application/pdf",
+			byteLength: original.byteLength,
+			sha256: createHash("sha256").update(original).digest("hex"),
+			producer: { providerId: "beemax.chrome-pdf", providerVersion: "1.0.0", operation: "render" },
+			sourceRefs: ["source-receipt:test:snapshot-replace"],
+			createdAt: 1_721_000_000_000,
+		});
+		const platform = {
+			name: "feishu", isConnected: true, capabilities: { mediaDelivery: "files" },
+			onMessage: (handler) => { inbound = handler; }, connect: async () => true, disconnect: async () => undefined,
+			send: async () => ({ success: true, messageId: "answer" }),
+			sendMedia: async (_chatId, path) => { delivered = readFileSync(path); return { success: true, messageId: "file" }; },
+			editMessage: async () => ({ success: true }), sendTyping: async () => undefined, stopTyping: async () => undefined,
+		};
+		const runtime = {
+			run: async () => ({ answer: "报告已生成", model: "test", durationMs: 1, usage: {}, artifacts: [{ type: "file", uri: manifest.locator.uri, manifest }], outcome: { status: "answered" } }),
+			cancel: async () => false, handleControl: async () => undefined, isBusy: () => false, dispose: () => undefined,
+		};
+		console.error = () => undefined;
+		const dispatcher = new Dispatcher({
+			runtime,
+			artifactWorkspace: workspace,
+			artifactSnapshotRoot: snapshotRoot,
+			artifactPublisher: {
+				publish: async (_artifact, media) => {
+					const replacement = `${media.path}.replacement`;
+					writeFileSync(replacement, tampered, { mode: 0o400 });
+					renameSync(replacement, media.path);
+					return { url: "https://reports.example.test/report.pdf", name: media.name, mediaType: media.mimeType, disposition: "inline" };
+				},
+			},
+			flushIntervalMs: 0,
+		}, platform);
+
+		await inbound({ text: "生成报告", messageType: "text", source: { ...source, messageId: "artifact-snapshot-replace" }, mediaPaths: [], mediaTypes: [], raw: {}, timestamp: Date.now() });
+		await dispatcher.dispose();
+		assert.equal(delivered, undefined);
+		assert.deepEqual(readdirSync(snapshotRoot), []);
+	} finally {
+		console.error = previousError;
+		rmSync(profileRoot, { recursive: true, force: true });
 	}
 });
 

@@ -1,6 +1,6 @@
-import { existsSync, mkdirSync } from "node:fs";
+import { existsSync, mkdirSync, realpathSync } from "node:fs";
 import { readdir } from "node:fs/promises";
-import { basename, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { basename, delimiter, isAbsolute, join, relative, resolve, sep } from "node:path";
 import type { Api, Model } from "@earendil-works/pi-ai";
 import { getBuiltinModel } from "@earendil-works/pi-ai/providers/all";
 import { curatedMemoryPrompt } from "./curated-memory.ts";
@@ -92,6 +92,8 @@ export interface BeeMaxRuntimeFactoryOptions<Source extends BeeMaxRuntimeSource 
 	additionalModelProviders?: readonly string[];
 	systemPrompt: string | (() => string);
 	skillToolset: "safe" | "standard";
+	/** Immutable Profile environment used only to evaluate Skill prerequisites. */
+	skillEnvironment?: Readonly<NodeJS.ProcessEnv>;
 	tools?: string[];
 	createTools: (source: Source, onResourcesChanged: () => void, getRuntimeApiKey: (provider: string) => Promise<string | undefined>, activateTools: (names: string[]) => void) => ToolDefinition[];
 	enterprisePolicy?: EnterprisePolicyProvider;
@@ -155,10 +157,12 @@ export function buildBeeMaxRuntimeFactory<Source extends BeeMaxRuntimeSource = B
 			cwd,
 			agentDir,
 			settingsManager,
+			noSkills: true,
+			additionalSkillPaths: [join(agentDir, "skills")],
 			appendSystemPromptOverride: (base) => [...base, channelPrompt],
-			// Discovery is owned by capability_discover. Keep Skills registered for
-			// explicit /skill:name compatibility without injecting the full catalog.
-			skillsOverride: (base) => ({ ...base, skills: filterEligibleSkills(base.skills, opts.skillToolset).map((skill) => ({ ...skill, disableModelInvocation: true })) }),
+			// Discovery is owned by capability_discover. Keep only Profile-local Skills
+			// for explicit /skill:name compatibility without injecting the full catalog.
+			skillsOverride: (base) => ({ ...base, skills: profileLocalSkills(filterEligibleSkills(base.skills, opts.skillToolset, opts.skillEnvironment), agentDir).map((skill) => ({ ...skill, disableModelInvocation: true })) }),
 			extensionFactories: opts.compactionInstructions || opts.compactionAudit ? [{ name: "beemax-context-governance", factory: (pi) => {
 				if (opts.compactionInstructions || opts.compactionAudit) {
 				pi.on("session_before_compact", (event) => {
@@ -261,15 +265,29 @@ function installToolExecutionModes(session: AgentSession, policies: ToolPolicyRe
 	apply();
 }
 
-export function filterEligibleSkills(skills: Skill[], toolset: "safe" | "standard"): Skill[] {
+export function filterEligibleSkills(skills: Skill[], toolset: "safe" | "standard", environment: Readonly<NodeJS.ProcessEnv> = {}): Skill[] {
 	return skills.filter((skill) => {
 		const metadata = asRecord(skill.metadata);
 		const beemax = asRecord(metadata.beemax);
 		if (beemax.toolset === "standard" && toolset === "safe") return false;
 		const env = arrayOfStrings(beemax.env);
-		if (env.some((key) => !process.env[key]?.trim())) return false;
-		return arrayOfStrings(beemax.bins).every((bin) => (process.env.PATH ?? "").split(":").some((directory) => existsSync(join(directory, bin))));
+		if (env.some((key) => !environment[key]?.trim())) return false;
+		return arrayOfStrings(beemax.bins).every((bin) => (environment.PATH ?? "").split(delimiter).filter(Boolean).some((directory) => existsSync(join(directory, bin))));
 	});
+}
+
+function profileLocalSkills(skills: Skill[], agentDir: string): Skill[] {
+	const lexicalRoot = resolve(agentDir);
+	const physicalRoot = realpathSync(lexicalRoot);
+	return skills.filter((skill) => {
+		const lexicalPath = resolve(skill.filePath);
+		if (!insidePath(lexicalRoot, lexicalPath)) return false;
+		try { return insidePath(physicalRoot, realpathSync(lexicalPath)); } catch { return false; }
+	});
+}
+
+function insidePath(root: string, candidate: string): boolean {
+	return candidate === root || candidate.startsWith(root.endsWith(sep) ? root : `${root}${sep}`);
 }
 
 async function restoreOrCreateSession(cwd: string, sessionDir: string, sessionId: string, legacySessionIds: string[] = []): Promise<SessionManager> {

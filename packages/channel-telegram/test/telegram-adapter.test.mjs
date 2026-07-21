@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
-import { access } from "node:fs/promises";
+import { access, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
 import { TelegramAdapter } from "../dist/index.js";
 
@@ -179,6 +181,27 @@ test("Telegram adapter downloads inbound photos into bounded temporary media wit
 	await received[0].releaseMedia();
 	await assert.rejects(access(received[0].mediaPaths[0]));
 	await adapter.disconnect();
+});
+
+test("Telegram adapter rejects oversized outbound media before reading or uploading it", async () => {
+	const directory = await mkdtemp(join(tmpdir(), "beemax-telegram-outbound-limit-"));
+	try {
+		const path = join(directory, "oversized.pdf");
+		await writeFile(path, Buffer.alloc(1_025, 1));
+		let fetchCalls = 0;
+		const adapter = telegramAdapter({
+			botToken: "token",
+			allowedUsers: ["42"],
+			allowedChats: [],
+			allowAllUsers: false,
+			mediaMaxBytes: 1_024,
+		}, { fetch: async () => { fetchCalls += 1; return json({ ok: true, result: { message_id: 1 } }); } });
+
+		await assert.rejects(adapter.sendMedia("100", path, "application/pdf", "oversized.pdf"), /exceeds 1024 byte limit/u);
+		assert.equal(fetchCalls, 0);
+	} finally {
+		await rm(directory, { recursive: true, force: true });
+	}
 });
 
 async function waitFor(predicate) {

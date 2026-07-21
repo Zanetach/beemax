@@ -46,8 +46,7 @@ PartOf=beemax.target
 [Service]
 Type=simple
 ${scope === "system" ? `User=${serviceUser ?? "beemax"}\n` : ""}WorkingDirectory=${systemdQuote(absoluteRoot)}
-EnvironmentFile=-${systemdQuote(join(absoluteHome, "profiles", "%i", ".env"))}
-EnvironmentFile=-${systemdQuote(join(absoluteRoot, "config", "profiles", "%i.env"))}
+# Profile .env is read through BeeMax's scoped config boundary; never inject it into the host process environment.
 EnvironmentFile=-${systemdQuote(join(systemEnvironmentDirectory, "%i.env"))}
 Environment=NODE_ENV=production
 Environment=BEEMAX_PROFILE=%i
@@ -138,6 +137,7 @@ export function renderMacLaunchAgent(profile: string, root = beemaxRoot(), home 
   <key>ProgramArguments</key><array><string>${xml(nodePath)}</string><string>${xml(cliPath)}</string><string>gateway</string><string>--profile</string><string>${xml(profile)}</string><string>--home</string><string>${xml(resolve(home))}</string><string>--root</string><string>${xml(resolve(root))}</string></array>
   <key>WorkingDirectory</key><string>${xml(resolve(root))}</string>
   <key>EnvironmentVariables</key><dict><key>NODE_ENV</key><string>production</string><key>BEEMAX_PROFILE</key><string>${xml(profile)}</string></dict>
+  <key>ProcessType</key><string>Interactive</string>
   <key>RunAtLoad</key><true/><key>KeepAlive</key><true/>
   <key>StandardOutPath</key><string>${xml(join(logsDir, "gateway.log"))}</string>
   <key>StandardErrorPath</key><string>${xml(join(logsDir, "gateway.error.log"))}</string>

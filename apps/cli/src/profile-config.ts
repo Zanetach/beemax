@@ -1,14 +1,16 @@
-import { constants } from "node:fs";
-import { access, copyFile, cp, lstat, mkdir, open, readFile, readdir, readlink, rename, rm, stat, writeFile } from "node:fs/promises";
-import { dirname, isAbsolute, join, relative, resolve } from "node:path";
+import { constants, type Stats } from "node:fs";
+import { access, copyFile, cp, lstat, mkdir, open, readFile, readdir, readlink, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { fileURLToPath } from "node:url";
 import { backupSqliteDatabase, verifySqliteDatabase } from "@beemax/memory";
 import { DEFAULT_DOCKER_SANDBOX_IMAGE, DEFAULT_RUNTIME_RESOURCE_LIMITS } from "@beemax/core";
 import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
-import { readEnvFile, writeEnvFile } from "./env-file.ts";
+import { readEnvFile, renderEnv, writeEnvFile } from "./env-file.ts";
 import { DEFAULT_SOUL, resolveSoul, validateCustomSoul } from "./soul.ts";
 import { providerApiKeyEnv } from "./provider-resolver.ts";
 import type { CustomProtocol } from "./config.ts";
 import { mutateProfileConfig } from "./profile-config-transaction.ts";
+import { inspectProfileSkillTree } from "./profile-skill-integrity.ts";
 import {
 	beemaxHome,
 	beemaxRoot,
@@ -64,9 +66,16 @@ export interface FeishuProbeResult {
 
 export async function createProfile(profile: string, options: ProfileStorageOptions = {}): Promise<ProfilePaths> {
 	const paths = profilePaths(profile, options);
-	if (await exists(paths.homePath)) throw new Error(`Agent profile ${profile} already exists`);
+	const storageHome = resolve(options.home ?? beemaxHome());
+	const existingStorageHome = await lstatIfPresent(storageHome);
+	if (existingStorageHome && (existingStorageHome.isSymbolicLink() || !existingStorageHome.isDirectory())) {
+		throw new Error(`BeeMax Home must be a real directory, not a symbolic link: ${storageHome}`);
+	}
+	await mkdir(storageHome, { recursive: true, mode: 0o700 });
+	await ensureProfileOwnedDirectory(storageHome, dirname(paths.homePath));
+	const profilesParent = await stableDirectoryIdentity(dirname(paths.homePath), "Profiles directory");
+	if (await lstatIfPresent(paths.homePath)) throw new Error(`Agent profile ${profile} already exists`);
 	const temp = `${paths.homePath}.creating-${crypto.randomUUID()}`;
-	await mkdir(dirname(paths.homePath), { recursive: true, mode: 0o700 });
 	await mkdir(temp, { recursive: false, mode: 0o700 });
 	try {
 		await Promise.all([
@@ -82,7 +91,9 @@ export async function createProfile(profile: string, options: ProfileStorageOpti
 		await writeFile(join(temp, "MEMORY.md"), "", { encoding: "utf8", mode: 0o600 });
 		await writeEnvFile(join(temp, ".env"), {});
 		await writeFile(join(temp, "state", "credential-vault.key"), Buffer.from(crypto.getRandomValues(new Uint8Array(32))).toString("base64"), { encoding: "utf8", mode: 0o600 });
-		await installBuiltinSkills(temp, options.root ?? beemaxRoot());
+		await installBuiltinSkills(temp, options.root);
+		await assertSameDirectory(dirname(paths.homePath), profilesParent, "Profiles directory changed before Profile creation");
+		if (await lstatIfPresent(paths.homePath)) throw new Error(`Agent profile ${profile} appeared during creation`);
 		await rename(temp, paths.homePath);
 	} catch (error) {
 		await rm(temp, { recursive: true, force: true });
@@ -114,12 +125,48 @@ export async function listProfiles(options: ProfileStorageOptions = {}): Promise
 	return [...profiles].sort();
 }
 
-/** Add missing packaged skills to an existing Profile without replacing its custom skills. */
-export async function syncBuiltinSkills(profile: string, options: ProfileStorageOptions = {}): Promise<ProfilePaths> {
+/** Add missing packaged skills to the directory used by the Profile Skill Runtime without replacing custom skills. */
+export async function syncBuiltinSkills(profile: string, options: ProfileStorageOptions = {}, agentDir?: string): Promise<ProfilePaths> {
 	const paths = await writableProfilePaths(profile, options);
 	await ensureCredentialVaultKey(profile, options);
-	await mkdir(join(paths.homePath, "skills"), { recursive: true });
-	await installBuiltinSkills(paths.homePath, options.root ?? beemaxRoot());
+	await syncBuiltinSkillsAtProfileHome(paths.dataPath, agentDir ?? paths.dataPath, options.root);
+	return paths;
+}
+
+/** Startup upgrade hook for an already-resolved Profile; never crosses its Profile Home. */
+export async function syncBuiltinSkillsAtProfileHome(profileHome: string, agentDir: string, rootOverride?: string): Promise<void> {
+	const target = resolve(agentDir);
+	await ensureProfileOwnedDirectory(resolve(profileHome), join(target, "skills"));
+	await installBuiltinSkills(target, rootOverride);
+}
+
+/** Explicitly enable the pinned standard-web Provider without removing other operator-approved Providers. */
+export async function enableStandardWebProvider(profile: string, options: ProfileStorageOptions = {}): Promise<ProfilePaths> {
+	const paths = await writableProfilePaths(profile, options);
+	const environment = await readEnvFile(paths.envPath);
+	const environmentAllowedProviders = (environment.BEEMAX_PROVIDER_INSTALLATION_ALLOW ?? "")
+		.split(",")
+		.map((value) => value.trim())
+		.filter(Boolean);
+	await mutateProfileConfig(paths.configPath, (config) => {
+		const providers = asRecord(config.capabilityProviders);
+		const installation = asRecord(providers.installation);
+		const allowed = Array.isArray(installation.allowedProviders)
+			? installation.allowedProviders.filter((value): value is string => typeof value === "string")
+			: [];
+		providers.installation = {
+			...installation,
+			enabled: true,
+			allowedProviders: [...new Set([...allowed, ...environmentAllowedProviders, "exa-mcporter"])],
+		};
+		config.capabilityProviders = providers;
+	});
+	// An explicit install is the operator's opt-in. Fold legacy environment
+	// overrides into YAML, then remove them so they cannot silently keep the
+	// effective policy disabled after this command succeeds.
+	delete environment.BEEMAX_PROVIDER_INSTALLATION_ENABLED;
+	delete environment.BEEMAX_PROVIDER_INSTALLATION_ALLOW;
+	await writeStableProfileTextFile(paths, paths.envPath, "Profile environment", renderEnv(environment), MAX_PROFILE_ENV_BYTES);
 	return paths;
 }
 
@@ -127,14 +174,14 @@ export async function ensureCredentialVaultKey(profile: string, options: Profile
 	const paths = await writableProfilePaths(profile, options);
 	const env = await readEnvFile(paths.envPath);
 	const keyPath = join(paths.dataPath, "state", "credential-vault.key");
-	const configured = env.BEEMAX_CREDENTIAL_VAULT_KEY || await readFile(keyPath, "utf8").catch(() => "");
+	const configured = env.BEEMAX_CREDENTIAL_VAULT_KEY || await readStableProfileTextFile(paths, keyPath, "Profile Credential Vault key", MAX_PROFILE_VAULT_KEY_BYTES, true);
 	if (configured) {
 		if (Buffer.from(configured, "base64").byteLength !== 32) throw new Error(`Credential Vault key is invalid for Profile '${profile}'`);
 		return paths;
 	}
 	if (await exists(join(paths.dataPath, "credentials.vault"))) throw new Error(`Credential Vault key is missing for Profile '${profile}', but encrypted data already exists; restore the original Profile .env`);
-	await mkdir(dirname(keyPath), { recursive: true, mode: 0o700 });
-	await writeFile(keyPath, Buffer.from(crypto.getRandomValues(new Uint8Array(32))).toString("base64"), { encoding: "utf8", mode: 0o600 });
+	await ensureProfileOwnedDirectory(paths.homePath, dirname(keyPath));
+	await writeStableProfileTextFile(paths, keyPath, "Profile Credential Vault key", Buffer.from(crypto.getRandomValues(new Uint8Array(32))).toString("base64"), MAX_PROFILE_VAULT_KEY_BYTES);
 	return paths;
 }
 
@@ -143,14 +190,23 @@ export async function deleteProfile(profile: string, options: ProfileStorageOpti
 	const home = resolve(options.home ?? beemaxHome());
 	let preserved = paths.dataPath;
 	if (paths.configPath === join(paths.homePath, "config.yaml")) {
+		const source = await stableDirectoryIdentity(paths.homePath, "Profile Home");
 		const archive = join(home, "deleted", `${profile}-${Date.now()}-${crypto.randomUUID()}`);
-		await mkdir(dirname(archive), { recursive: true, mode: 0o700 });
+		await ensureProfileOwnedDirectory(home, dirname(archive));
+		const archiveParent = await stableDirectoryIdentity(dirname(archive), "Deleted Profiles directory");
+		if (await lstatIfPresent(archive)) throw new Error(`Deleted Profile archive already exists: ${archive}`);
+		await validateModernWritableProfile(paths, profile);
+		await assertSameDirectory(paths.homePath, source, "Profile Home changed before deletion");
+		await assertSameDirectory(dirname(archive), archiveParent, "Deleted Profiles directory changed before deletion");
 		await rename(paths.homePath, archive);
+		const archived = await stableDirectoryIdentity(archive, "Deleted Profile archive");
+		if (archived.dev !== source.dev || archived.ino !== source.ino) throw new Error(`Profile Home changed during deletion: ${archive}`);
 		await rm(join(archive, "config.yaml"), { force: true });
 		await rm(join(archive, ".env"), { force: true });
 		await rm(join(archive, "SOUL.md"), { force: true });
 		preserved = archive;
 	} else {
+		await validateLegacyWritableProfile(paths);
 		await rm(paths.configPath, { force: true });
 		await rm(paths.envPath, { force: true });
 	}
@@ -194,7 +250,7 @@ export async function configureFeishuChannel(
 		};
 		delete config.feishu;
 	});
-	await writeEnvFile(paths.envPath, {
+	await writeStableProfileTextFile(paths, paths.envPath, "Profile environment", renderEnv({
 		...await readEnvFile(paths.envPath),
 		FEISHU_APP_ID: input.appId.trim(),
 		FEISHU_APP_SECRET: input.appSecret.trim(),
@@ -204,7 +260,7 @@ export async function configureFeishuChannel(
 			FEISHU_WEBHOOK_VERIFICATION_TOKEN: input.webhookVerificationToken ?? "",
 			FEISHU_WEBHOOK_ENCRYPT_KEY: input.webhookEncryptKey ?? "",
 		} : { FEISHU_CONNECTION_MODE: "websocket" }),
-	});
+	}), MAX_PROFILE_ENV_BYTES);
 	return paths;
 }
 
@@ -235,10 +291,10 @@ export async function configureTelegramChannel(
 			}),
 		};
 	});
-	await writeEnvFile(paths.envPath, {
+	await writeStableProfileTextFile(paths, paths.envPath, "Profile environment", renderEnv({
 		...await readEnvFile(paths.envPath),
 		TELEGRAM_BOT_TOKEN: input.botToken.trim(),
-	});
+	}), MAX_PROFILE_ENV_BYTES);
 	return paths;
 }
 
@@ -268,10 +324,10 @@ export async function configureModel(profile: string, input: ModelInput, options
 		config.models = [next, ...choices.filter((item) => !sameModelChoice(item, next))];
 	});
 	if (input.apiKey?.trim()) {
-		await writeEnvFile(paths.envPath, {
+		await writeStableProfileTextFile(paths, paths.envPath, "Profile environment", renderEnv({
 			...await readEnvFile(paths.envPath),
 			[providerApiKeyEnv(input.provider)]: input.apiKey.trim(),
-		});
+		}), MAX_PROFILE_ENV_BYTES);
 	}
 	return paths;
 }
@@ -280,7 +336,7 @@ export async function configureSoul(profile: string, identity: string, options: 
 	const value = validateCustomSoul(identity);
 	const paths = await writableProfilePaths(profile, options);
 	if (paths.configPath === join(paths.homePath, "config.yaml")) {
-		await writeFile(paths.soulPath, `${value}\n`, { encoding: "utf8", mode: 0o600 });
+		await writeStableProfileTextFile(paths, paths.soulPath, "Profile SOUL", `${value}\n`, MAX_PROFILE_SOUL_BYTES);
 		return paths;
 	}
 	await mutateProfileConfig(paths.configPath, (config) => { config.agent = { ...asRecord(config.agent), systemPrompt: value }; });
@@ -296,7 +352,7 @@ export async function removeFeishuChannel(profile: string, options: ProfileStora
 	delete values.FEISHU_CONNECTION_MODE;
 	delete values.FEISHU_WEBHOOK_VERIFICATION_TOKEN;
 	delete values.FEISHU_WEBHOOK_ENCRYPT_KEY;
-	await writeEnvFile(paths.envPath, values);
+	await writeStableProfileTextFile(paths, paths.envPath, "Profile environment", renderEnv(values), MAX_PROFILE_ENV_BYTES);
 	await mutateProfileConfig(paths.configPath, (config) => {
 		const gateway = asRecord(config.gateway);
 		config.gateway = { ...gateway, channels: removeGatewayChannel(gateway.channels, "feishu") };
@@ -310,7 +366,7 @@ export async function removeTelegramChannel(profile: string, options: ProfileSto
 	delete values.TELEGRAM_BOT_TOKEN;
 	delete values.TELEGRAM_ALLOWED_USERS;
 	delete values.TELEGRAM_ALLOWED_CHATS;
-	await writeEnvFile(paths.envPath, values);
+	await writeStableProfileTextFile(paths, paths.envPath, "Profile environment", renderEnv(values), MAX_PROFILE_ENV_BYTES);
 	await mutateProfileConfig(paths.configPath, (config) => {
 		const gateway = asRecord(config.gateway);
 		config.gateway = { ...gateway, channels: removeGatewayChannel(gateway.channels, "telegram") };
@@ -412,10 +468,17 @@ export async function migrateProfile(profile: string, options: ProfileStorageOpt
 	const home = resolve(options.home ?? beemaxHome());
 	const legacy = legacyProfilePaths(profile, { root, home });
 	const target = profilePaths(profile, { root, home });
-	if (!(await exists(legacy.configPath))) throw new Error(`Legacy Agent profile ${profile} does not exist`);
-	if (await exists(target.homePath)) throw new Error(`Agent profile ${profile} already exists at ${target.homePath}`);
+	if (!(await lstatIfPresent(legacy.configPath))) throw new Error(`Legacy Agent profile ${profile} does not exist`);
+	await validateLegacyWritableProfile(legacy);
+	const existingHome = await lstatIfPresent(home);
+	if (existingHome && (existingHome.isSymbolicLink() || !existingHome.isDirectory())) throw new Error(`BeeMax Home must be a real directory, not a symbolic link: ${home}`);
+	await mkdir(home, { recursive: true, mode: 0o700 });
+	await ensureProfileOwnedDirectory(home, dirname(target.homePath));
+	const targetParent = await stableDirectoryIdentity(dirname(target.homePath), "Profiles directory");
+	if (await lstatIfPresent(target.homePath)) throw new Error(`Agent profile ${profile} already exists at ${target.homePath}`);
 
-	const raw = await readFile(legacy.configPath, "utf8");
+	const legacyConfigParent = await stableDirectoryIdentity(dirname(legacy.configPath), "Legacy Profile configuration directory");
+	const raw = await readStableTextFile(legacy.configPath, "Profile configuration", MAX_PROFILE_CONFIG_BYTES, false, legacyConfigParent.realPath);
 	const originalConfig = configFromYaml(raw);
 	const legacyEnv = await readEnvFile(legacy.envPath);
 	const legacyFeishu = { ...asRecord(originalConfig.feishu), ...asRecord(asRecord(originalConfig.gateway).feishu) };
@@ -430,6 +493,9 @@ export async function migrateProfile(profile: string, options: ProfileStorageOpt
 	config.agent = agent;
 	config.memory = { ...asRecord(config.memory), dbPath: "memory.db" };
 	config.mcp = { ...asRecord(config.mcp), configPath: "mcp.json" };
+	const capabilityProviders = asRecord(config.capabilityProviders);
+	capabilityProviders.installation = migratedProviderInstallation(capabilityProviders.installation);
+	config.capabilityProviders = capabilityProviders;
 	delete config.imageGeneration;
 	const pathsConfig = asRecord(config.paths);
 	const workspace = absoluteFrom(root, legacyEnv.BEEMAX_CWD || (typeof pathsConfig.cwd === "string" ? pathsConfig.cwd : "."));
@@ -445,7 +511,6 @@ export async function migrateProfile(profile: string, options: ProfileStorageOpt
 	for (const key of PROFILE_ROUTING_ENV) delete migratedEnv[key];
 
 	const temp = `${target.homePath}.migrating-${crypto.randomUUID()}`;
-	await mkdir(dirname(target.homePath), { recursive: true, mode: 0o700 });
 	await mkdir(temp, { recursive: false, mode: 0o700 });
 	try {
 		await writeFile(join(temp, "config.yaml"), stringifyYaml(config), { encoding: "utf8", mode: 0o600 });
@@ -461,7 +526,7 @@ export async function migrateProfile(profile: string, options: ProfileStorageOpt
 		for (const directory of ["sessions", "skills", "cache", "state"]) await mkdir(join(temp, directory), { recursive: true });
 		await writeFile(join(temp, "USER.md"), "", { encoding: "utf8", mode: 0o600 });
 		await writeFile(join(temp, "MEMORY.md"), "", { encoding: "utf8", mode: 0o600 });
-		await installBuiltinSkills(temp, options.root ?? beemaxRoot());
+		await installBuiltinSkills(temp, options.root);
 		await verifyMigratedProfile(temp, {
 			identity,
 			oldAgent,
@@ -469,6 +534,8 @@ export async function migrateProfile(profile: string, options: ProfileStorageOpt
 			sourceHadMemory: await exists(oldMemory),
 			sourceHadMcp: await exists(oldMcp),
 		});
+		await assertSameDirectory(dirname(target.homePath), targetParent, "Profiles directory changed before Profile migration");
+		if (await lstatIfPresent(target.homePath)) throw new Error(`Agent profile ${profile} appeared during migration`);
 		await rename(temp, target.homePath);
 	} catch (error) {
 		await rm(temp, { recursive: true, force: true });
@@ -477,14 +544,33 @@ export async function migrateProfile(profile: string, options: ProfileStorageOpt
 	return target;
 }
 
+function migratedProviderInstallation(value: unknown): Record<string, unknown> {
+	const installation = asRecord(value);
+	const configuredAllowlist = installation.allowedProviders;
+	const hasExplicitEnabled = typeof installation.enabled === "boolean";
+	const hasExplicitAllowlist = Array.isArray(configuredAllowlist);
+	if (hasExplicitEnabled && hasExplicitAllowlist) return installation;
+	// A legacy operator's explicit false is an opt-out even when an older
+	// release did not persist the companion allowlist field.
+	if (installation.enabled === false) return { ...installation, enabled: false, allowedProviders: [] };
+	const allowedProviders = hasExplicitAllowlist
+		? configuredAllowlist.filter((provider: unknown): provider is string => typeof provider === "string")
+		: [];
+	return {
+		...installation,
+		enabled: true,
+		allowedProviders: [...new Set([...allowedProviders, "exa-mcporter"])],
+	};
+}
+
 function defaultProfileYaml(): string {
 	return stringifyYaml({
 		agent: { toolset: "standard", maxSessions: 100, sessionIdleMs: 1800000 },
 		model: { provider: "anthropic", model: "claude-sonnet-4-5" },
-		gateway: { feishu: { domain: "feishu", requireMention: true, allowedUsers: [], allowedChats: [], allowAllUsers: false }, channels: [] },
+		gateway: { artifactSite: { enabled: true }, feishu: { domain: "feishu", requireMention: true, allowedUsers: [], allowedChats: [], allowAllUsers: false }, channels: [] },
 		memory: { dbPath: "memory.db", memberships: [] },
 		mcp: { configPath: "mcp.json" },
-		capabilityProviders: { installation: { enabled: false, allowedProviders: [] } },
+		capabilityProviders: { installation: { enabled: true, allowedProviders: ["exa-mcporter"] } },
 		knowledge: { enabled: false, provider: "weknora", baseUrl: "http://127.0.0.1:8080", spaces: [] },
 		mediaUnderstanding: { localOcr: { enabled: true, timeoutMs: 30000 }, auxiliaryVisionEnabled: true },
 		context: { maxTurnChars: 12000, maxToolResultTokens: 12000, compaction: { enabled: true } },
@@ -495,23 +581,342 @@ function defaultProfileYaml(): string {
 	});
 }
 
-async function installBuiltinSkills(profileHome: string, root: string): Promise<void> {
-	const source = join(resolve(root), "skills", "builtin");
-	if (!(await exists(source))) return;
+const REQUIRED_BUILTIN_SKILLS = ["agent-reach", "pi-web-access"] as const;
+const MAX_PROFILE_CONFIG_BYTES = 1024 * 1024;
+const MAX_PROFILE_ENV_BYTES = 256 * 1024;
+const MAX_PROFILE_SOUL_BYTES = 64 * 1024;
+const MAX_PROFILE_VAULT_KEY_BYTES = 4 * 1024;
+
+async function installBuiltinSkills(profileHome: string, rootOverride?: string): Promise<void> {
+	const packagedSource = fileURLToPath(new URL("../../../skills/builtin/", import.meta.url));
+	const overrideSource = rootOverride ? join(resolve(rootOverride), "skills", "builtin") : undefined;
+	const overrideInfo = overrideSource
+		? await lstat(overrideSource).catch((error: NodeJS.ErrnoException) => {
+			if (error.code === "ENOENT") return undefined;
+			throw error;
+		})
+		: undefined;
+	// BEEMAX_ROOT controls Profile/workspace storage in several CLI workflows;
+	// it is not necessarily the installation directory that owns packaged assets.
+	// Keep an explicit existing fixture/installation override, otherwise resolve
+	// bundled Skills relative to the installed CLI module.
+	const source = overrideInfo ? overrideSource! : packagedSource;
+	const packagedSkills = dirname(source);
+	const [packagedSkillsInfo, sourceInfo] = await Promise.all([
+		lstat(packagedSkills).catch(() => undefined),
+		lstat(source).catch(() => undefined),
+	]);
+	if (!packagedSkillsInfo?.isDirectory() || packagedSkillsInfo.isSymbolicLink() || !sourceInfo?.isDirectory() || sourceInfo.isSymbolicLink()) {
+		throw new Error(`Packaged builtin Skills directory is missing or invalid: ${source}`);
+	}
+	for (const name of REQUIRED_BUILTIN_SKILLS) {
+		const skillRoot = join(source, name);
+		if ((await inspectProfileSkillTree(source, name)).state !== "present") {
+			throw new Error(`Required packaged builtin Skill '${name}' is missing or invalid: ${skillRoot}`);
+		}
+	}
+	const targetSkills = join(profileHome, "skills");
+	const targetSkillsInfo = await lstat(targetSkills).catch(() => undefined);
+	if (!targetSkillsInfo?.isDirectory() || targetSkillsInfo.isSymbolicLink()) throw new Error(`Profile Skills directory is missing or invalid: ${targetSkills}`);
 	for (const entry of await readdir(source, { withFileTypes: true })) {
 		if (!entry.isDirectory()) continue;
-		const destination = join(profileHome, "skills", entry.name);
+		const destination = join(targetSkills, entry.name);
 		if (await exists(destination)) continue;
 		await cp(join(source, entry.name), destination, { recursive: true, force: false, errorOnExist: true });
 	}
+	for (const name of REQUIRED_BUILTIN_SKILLS) {
+		if ((await inspectProfileSkillTree(targetSkills, name)).state !== "present") {
+			throw new Error(`Profile Skill '${name}' is missing or invalid after builtin synchronization: ${join(targetSkills, name)}`);
+		}
+	}
+}
+
+async function ensureProfileOwnedDirectory(profileHome: string, target: string): Promise<void> {
+	const boundary = resolve(profileHome);
+	const destination = resolve(target);
+	const relativeTarget = relative(boundary, destination);
+	if (isAbsolute(relativeTarget) || relativeTarget === ".." || relativeTarget.startsWith(`..${sep}`)) {
+		throw new Error(`Profile-owned directory must stay inside its Profile Home: ${destination}`);
+	}
+	const boundaryInfo = await lstat(boundary);
+	if (boundaryInfo.isSymbolicLink() || !boundaryInfo.isDirectory()) throw new Error(`Profile Home must be a real directory: ${boundary}`);
+	let current = boundary;
+	for (const segment of relativeTarget.split(sep).filter(Boolean)) {
+		current = join(current, segment);
+		let info = await lstat(current).catch((error: NodeJS.ErrnoException) => {
+			if (error.code === "ENOENT") return undefined;
+			throw error;
+		});
+		if (!info) {
+			await mkdir(current, { recursive: false, mode: 0o700 });
+			info = await lstat(current);
+		}
+		if (info.isSymbolicLink() || !info.isDirectory()) throw new Error(`Profile-owned path must be a real directory: ${current}`);
+	}
+	const [realBoundary, realDestination] = await Promise.all([realpath(boundary), realpath(destination)]);
+	const relativeReal = relative(realBoundary, realDestination);
+	if (isAbsolute(relativeReal) || relativeReal === ".." || relativeReal.startsWith(`..${sep}`)) throw new Error(`Profile-owned directory escapes its Profile Home: ${destination}`);
 }
 
 async function writableProfilePaths(profile: string, options: ProfileStorageOptions): Promise<ProfilePaths> {
 	const modern = profilePaths(profile, options);
-	if (await exists(modern.configPath)) return modern;
+	// The Home entry itself is authoritative. A missing, unreadable, or linked
+	// config beneath an existing modern Home must never redirect writes into the
+	// legacy/global layout.
+	if (await lstatIfPresent(modern.homePath)) {
+		await validateModernWritableProfile(modern, profile);
+		return modern;
+	}
 	const legacy = legacyProfilePaths(profile, options);
-	if (await exists(legacy.configPath)) return legacy;
+	if (await lstatIfPresent(legacy.configPath)) {
+		await validateLegacyWritableProfile(legacy);
+		return legacy;
+	}
 	throw new Error(`Agent profile ${profile} does not exist; run beemax profile create ${profile}`);
+}
+
+async function validateModernWritableProfile(paths: ProfilePaths, profile: string): Promise<void> {
+	const parent = await stableDirectoryIdentity(dirname(paths.homePath), "Profiles directory");
+	const home = await stableDirectoryIdentity(paths.homePath, "Profile Home");
+	if (relative(parent.realPath, home.realPath) !== profile) {
+		throw new Error(`Profile Home escapes the selected Profile '${profile}': ${paths.homePath}`);
+	}
+	await assertStableRegularFile(paths.configPath, "Profile configuration", MAX_PROFILE_CONFIG_BYTES, false, home.realPath);
+	await assertStableRegularFile(paths.envPath, "Profile environment", MAX_PROFILE_ENV_BYTES, true, home.realPath);
+	await assertStableRegularFile(paths.soulPath, "Profile SOUL", MAX_PROFILE_SOUL_BYTES, true, home.realPath);
+	const statePath = join(paths.homePath, "state");
+	const state = await lstatIfPresent(statePath);
+	if (state) await assertStableDirectoryInside(statePath, "Profile state directory", home.realPath);
+	await assertStableRegularFile(join(statePath, "credential-vault.key"), "Profile Credential Vault key", MAX_PROFILE_VAULT_KEY_BYTES, true, home.realPath);
+	await assertSameDirectory(paths.homePath, home, "Profile Home changed while resolving writable files");
+}
+
+async function validateLegacyWritableProfile(paths: ProfilePaths): Promise<void> {
+	const configParent = await stableDirectoryIdentity(dirname(paths.configPath), "Legacy Profile configuration directory");
+	await assertStableRegularFile(paths.configPath, "Profile configuration", MAX_PROFILE_CONFIG_BYTES, false, configParent.realPath);
+	await assertStableRegularFile(paths.envPath, "Profile environment", MAX_PROFILE_ENV_BYTES, true, configParent.realPath);
+	const data = await lstatIfPresent(paths.homePath);
+	if (data) {
+		const home = await stableDirectoryIdentity(paths.homePath, "Profile Home");
+		const statePath = join(paths.homePath, "state");
+		const state = await lstatIfPresent(statePath);
+		if (state) await assertStableDirectoryInside(statePath, "Profile state directory", home.realPath);
+		await assertStableRegularFile(join(statePath, "credential-vault.key"), "Profile Credential Vault key", MAX_PROFILE_VAULT_KEY_BYTES, true, home.realPath);
+	}
+}
+
+async function writeStableProfileTextFile(
+	paths: ProfilePaths,
+	path: string,
+	label: string,
+	content: string,
+	maxBytes: number,
+): Promise<void> {
+	const encoded = Buffer.from(content, "utf8");
+	if (encoded.byteLength > maxBytes) throw new Error(`${label} exceeds the ${maxBytes}-byte size limit: ${path}`);
+	const modern = paths.configPath === join(paths.homePath, "config.yaml");
+	if (modern) await validateModernWritableProfile(paths, basename(paths.homePath));
+	else await validateLegacyWritableProfile(paths);
+	const parent = await stableDirectoryIdentity(dirname(path), `${label} parent`);
+	const profileHome = modern ? (await stableDirectoryIdentity(paths.homePath, "Profile Home")).realPath : undefined;
+	if (profileHome && !pathIsInside(profileHome, parent.realPath)) throw new Error(`${label} parent escapes its Profile Home: ${path}`);
+	const existing = await stableOptionalFileState(path, label, maxBytes, parent.realPath);
+	let temporary = join(dirname(path), `.${basename(path) || "profile"}-${crypto.randomUUID()}.tmp`);
+	try {
+		const handle = await open(temporary, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | (constants.O_NOFOLLOW ?? 0), 0o600);
+		try {
+			await handle.writeFile(encoded);
+			await handle.sync();
+		} finally {
+			await handle.close();
+		}
+		await assertSameDirectory(dirname(path), parent, `${label} parent changed before publish`);
+		await assertSameOptionalFile(path, label, existing);
+		await rename(temporary, path);
+		temporary = "";
+		await assertSameDirectory(dirname(path), parent, `${label} parent changed during publish`);
+		await assertStableRegularFile(path, label, maxBytes, false, parent.realPath);
+		await syncStableDirectory(dirname(path), parent, label);
+	} finally {
+		if (temporary) await rm(temporary, { force: true }).catch(() => undefined);
+	}
+}
+
+async function readStableProfileTextFile(
+	paths: ProfilePaths,
+	path: string,
+	label: string,
+	maxBytes: number,
+	optional: boolean,
+): Promise<string> {
+	const modern = paths.configPath === join(paths.homePath, "config.yaml");
+	if (modern) await validateModernWritableProfile(paths, basename(paths.homePath));
+	else await validateLegacyWritableProfile(paths);
+	if (optional && !(await lstatIfPresent(path))) return "";
+	const boundary = modern ? (await stableDirectoryIdentity(paths.homePath, "Profile Home")).realPath : (await stableDirectoryIdentity(dirname(path), `${label} parent`)).realPath;
+	return readStableTextFile(path, label, maxBytes, optional, boundary);
+}
+
+async function readStableTextFile(path: string, label: string, maxBytes: number, optional: boolean, boundary: string): Promise<string> {
+	const initial = await lstatIfPresent(path);
+	if (!initial) {
+		if (optional) return "";
+		throw new Error(`${label} is missing: ${path}`);
+	}
+	if (initial.isSymbolicLink() || !initial.isFile()) throw new Error(`${label} must be a regular file, not a symbolic link: ${path}`);
+	if (initial.size > maxBytes) throw new Error(`${label} exceeds the ${maxBytes}-byte size limit: ${path}`);
+	const realPath = await realpath(path);
+	if (!pathIsInside(boundary, realPath)) throw new Error(`${label} escapes its Profile boundary: ${path}`);
+	const handle = await open(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+	try {
+		const opened = await handle.stat();
+		if (!opened.isFile() || !sameFilesystemObject(initial, opened)) throw new Error(`${label} changed while opening: ${path}`);
+		const bytes = await readBoundedFile(handle, maxBytes, label);
+		const finalOpened = await handle.stat();
+		const finalPath = await lstat(path);
+		if (finalPath.isSymbolicLink()
+			|| !finalPath.isFile()
+			|| !sameFileState(fileState(initial), fileState(finalPath))
+			|| !sameFileState(fileState(opened), fileState(finalOpened))
+			|| await realpath(path) !== realPath) {
+			throw new Error(`${label} changed while reading: ${path}`);
+		}
+		try { return new TextDecoder("utf-8", { fatal: true }).decode(bytes); }
+		catch { throw new Error(`${label} is not valid UTF-8: ${path}`); }
+	} finally {
+		await handle.close();
+	}
+}
+
+interface StableDirectoryIdentity {
+	dev: number;
+	ino: number;
+	realPath: string;
+}
+
+interface StableFileState {
+	dev: number;
+	ino: number;
+	size: number;
+	mtimeMs: number;
+	ctimeMs: number;
+}
+
+async function stableDirectoryIdentity(path: string, label: string): Promise<StableDirectoryIdentity> {
+	const initial = await lstat(path);
+	if (initial.isSymbolicLink() || !initial.isDirectory()) throw new Error(`${label} must be a real directory, not a symbolic link: ${path}`);
+	const realPath = await realpath(path);
+	const final = await lstat(path);
+	if (final.isSymbolicLink() || !final.isDirectory() || !sameFilesystemObject(initial, final) || await realpath(path) !== realPath) {
+		throw new Error(`${label} changed while resolving: ${path}`);
+	}
+	return { dev: initial.dev, ino: initial.ino, realPath };
+}
+
+async function assertStableDirectoryInside(path: string, label: string, boundary: string): Promise<StableDirectoryIdentity> {
+	const identity = await stableDirectoryIdentity(path, label);
+	if (!pathIsInside(boundary, identity.realPath)) throw new Error(`${label} escapes its Profile Home: ${path}`);
+	return identity;
+}
+
+async function assertSameDirectory(path: string, expected: StableDirectoryIdentity, message: string): Promise<void> {
+	const current = await lstat(path);
+	if (current.isSymbolicLink()
+		|| !current.isDirectory()
+		|| current.dev !== expected.dev
+		|| current.ino !== expected.ino
+		|| await realpath(path) !== expected.realPath) throw new Error(`${message}: ${path}`);
+}
+
+async function assertStableRegularFile(path: string, label: string, maxBytes: number, optional: boolean, boundary: string): Promise<StableFileState | undefined> {
+	const initial = await lstatIfPresent(path);
+	if (!initial) {
+		if (optional) return undefined;
+		throw new Error(`${label} is missing: ${path}`);
+	}
+	if (initial.isSymbolicLink() || !initial.isFile()) throw new Error(`${label} must be a regular file, not a symbolic link: ${path}`);
+	if (initial.size > maxBytes) throw new Error(`${label} exceeds the ${maxBytes}-byte size limit: ${path}`);
+	const realPath = await realpath(path);
+	if (!pathIsInside(boundary, realPath)) throw new Error(`${label} escapes its Profile boundary: ${path}`);
+	const handle = await open(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+	try {
+		const opened = await handle.stat();
+		const final = await lstat(path);
+		if (!opened.isFile()
+			|| final.isSymbolicLink()
+			|| !final.isFile()
+			|| !sameFileState(fileState(initial), fileState(opened))
+			|| !sameFileState(fileState(initial), fileState(final))
+			|| await realpath(path) !== realPath) throw new Error(`${label} changed while opening: ${path}`);
+		return fileState(initial);
+	} finally {
+		await handle.close();
+	}
+}
+
+async function stableOptionalFileState(path: string, label: string, maxBytes: number, boundary: string): Promise<StableFileState | undefined> {
+	return assertStableRegularFile(path, label, maxBytes, true, boundary);
+}
+
+async function assertSameOptionalFile(path: string, label: string, expected: StableFileState | undefined): Promise<void> {
+	const current = await lstatIfPresent(path);
+	if (!expected) {
+		if (current) throw new Error(`${label} appeared before publish: ${path}`);
+		return;
+	}
+	if (!current || current.isSymbolicLink() || !current.isFile() || !sameFileState(expected, fileState(current))) {
+		throw new Error(`${label} changed before publish: ${path}`);
+	}
+}
+
+async function syncStableDirectory(path: string, expected: StableDirectoryIdentity, label: string): Promise<void> {
+	const handle = await open(path, constants.O_RDONLY | (constants.O_DIRECTORY ?? 0) | (constants.O_NOFOLLOW ?? 0));
+	try {
+		const opened = await handle.stat();
+		if (!opened.isDirectory() || opened.dev !== expected.dev || opened.ino !== expected.ino) throw new Error(`${label} parent changed while syncing: ${path}`);
+		await handle.sync();
+	} finally {
+		await handle.close();
+	}
+}
+
+async function readBoundedFile(handle: Awaited<ReturnType<typeof open>>, maxBytes: number, label: string): Promise<Buffer> {
+	const buffer = Buffer.alloc(maxBytes + 1);
+	let offset = 0;
+	while (offset < buffer.length) {
+		const { bytesRead } = await handle.read(buffer, offset, buffer.length - offset, null);
+		if (bytesRead === 0) break;
+		offset += bytesRead;
+	}
+	if (offset > maxBytes) throw new Error(`${label} exceeds the ${maxBytes}-byte size limit`);
+	return buffer.subarray(0, offset);
+}
+
+async function lstatIfPresent(path: string): Promise<Stats | undefined> {
+	return lstat(path).catch((error: NodeJS.ErrnoException) => {
+		if (error.code === "ENOENT") return undefined;
+		throw error;
+	});
+}
+
+function pathIsInside(boundary: string, candidate: string): boolean {
+	const relation = relative(boundary, candidate);
+	return !isAbsolute(relation) && relation !== ".." && !relation.startsWith(`..${sep}`);
+}
+
+function fileState(value: { dev: number; ino: number; size: number; mtimeMs: number; ctimeMs: number }): StableFileState {
+	return { dev: value.dev, ino: value.ino, size: value.size, mtimeMs: value.mtimeMs, ctimeMs: value.ctimeMs };
+}
+
+function sameFilesystemObject(left: { dev: number; ino: number }, right: { dev: number; ino: number }): boolean {
+	return left.dev === right.dev && left.ino === right.ino;
+}
+
+function sameFileState(left: StableFileState, right: StableFileState): boolean {
+	return sameFilesystemObject(left, right)
+		&& left.size === right.size
+		&& left.mtimeMs === right.mtimeMs
+		&& left.ctimeMs === right.ctimeMs;
 }
 
 async function exists(path: string): Promise<boolean> {

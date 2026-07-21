@@ -1,13 +1,11 @@
-import { createHash } from "node:crypto";
-import { accessSync, constants, existsSync } from "node:fs";
-import { mkdtemp, readFile, realpath, rm, stat, writeFile } from "node:fs/promises";
+import { createHash, randomUUID } from "node:crypto";
+import { accessSync, constants, lstatSync, realpathSync } from "node:fs";
+import { lstat, mkdtemp, open, readFile, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { basename, dirname, join, relative, resolve, sep } from "node:path";
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { pathToFileURL } from "node:url";
 import { execFileSync, spawn, type ChildProcess } from "node:child_process";
-import { createCanvas } from "@napi-rs/canvas";
 import { parse, serialize, type DefaultTreeAdapterMap } from "parse5";
-import { getDocument } from "pdfjs-dist/legacy/build/pdf.mjs";
 import {
 	ArtifactRuntime,
 	type ArtifactLocator,
@@ -29,6 +27,8 @@ const BLOCKED_HTML_ELEMENTS = new Set([
 ]);
 const RESOURCE_ATTRIBUTES = new Set(["archive", "background", "codebase", "data", "formaction", "manifest", "ping", "poster", "srcdoc"]);
 const INERT_DOCUMENT_CSP = "default-src 'none'; script-src 'none'; connect-src 'none'; frame-src 'none'; object-src 'none'; media-src 'none'; style-src 'unsafe-inline'; img-src data:; font-src data:; base-uri 'none'; form-action 'none'";
+let canvasModule: Promise<typeof import("@napi-rs/canvas")> | undefined;
+let pdfModule: Promise<typeof import("pdfjs-dist/legacy/build/pdf.mjs")> | undefined;
 
 export interface LocalArtifactRuntimeOptions {
 	chromeExecutable?: string;
@@ -50,7 +50,7 @@ export function createLocalArtifactRuntime(cwd: string, options: LocalArtifactRu
 export function discoverChromeExecutable(env: NodeJS.ProcessEnv = process.env): string | undefined {
 	const configured = env.BEEMAX_CHROME_EXECUTABLE?.trim();
 	if (configured) {
-		try { accessSync(configured, constants.X_OK); return configured; } catch { return undefined; }
+		return trustedExecutable(configured);
 	}
 	const candidates = [
 		...(process.platform === "darwin" ? [
@@ -62,9 +62,20 @@ export function discoverChromeExecutable(env: NodeJS.ProcessEnv = process.env): 
 		] : ["/usr/bin/google-chrome", "/usr/bin/chromium", "/usr/bin/chromium-browser"]),
 	].filter((candidate): candidate is string => Boolean(candidate));
 	for (const candidate of candidates) {
-		try { accessSync(candidate, constants.X_OK); return candidate; } catch { /* Try the next declared executable. */ }
+		const trusted = trustedExecutable(candidate);
+		if (trusted) return trusted;
 	}
 	return undefined;
+}
+
+function trustedExecutable(candidate: string): string | undefined {
+	try {
+		if (!isAbsolute(candidate)) return undefined;
+		const info = lstatSync(candidate);
+		if (info.isSymbolicLink() || !info.isFile()) return undefined;
+		accessSync(candidate, constants.X_OK);
+		return realpathSync(candidate);
+	} catch { return undefined; }
 }
 
 export class ChromePdfArtifactProvider implements ArtifactProviderPort {
@@ -84,21 +95,22 @@ export class ChromePdfArtifactProvider implements ArtifactProviderPort {
 
 	async produce(request: ArtifactProduceRequest): Promise<{ locator: ArtifactLocator; mediaType: string; sourceRefs: readonly string[] }> {
 		if (request.operation !== "render" || request.inputMediaType !== "text/html" || request.outputMediaType !== "application/pdf") throw new Error("Chrome PDF Provider supports only text/html -> application/pdf rendering");
-		const inputPath = await existingWorkspacePath(this.cwd, request.input, MAX_INPUT_BYTES);
+		const inputFile = await readWorkspaceFile(this.cwd, request.input, MAX_INPUT_BYTES, request.signal);
 		const outputPath = await writableWorkspacePath(this.cwd, request.output);
 		const profileRoot = await mkdtemp(join(tmpdir(), "beemax-chrome-pdf-"));
 		try {
-			const input = inspectHtml(await readFile(inputPath, { signal: request.signal }));
+			const input = inspectHtml(inputFile.bytes);
 			if (!input.valid || !input.inertSource) throw new Error(`Chrome PDF Provider rejected HTML: ${input.reason ?? "inert document preparation failed"}`);
 			const inertInputPath = join(profileRoot, "input.html");
 			await writeFile(inertInputPath, input.inertSource, { signal: request.signal });
-			await rm(outputPath, { force: true });
+			const renderedOutputPath = join(profileRoot, "render.pdf");
 			await runExecutable(this.executable, [
-				...inertChromeArguments(join(profileRoot, "profile")), "--no-pdf-header-footer", "--print-to-pdf-no-header", `--print-to-pdf=${outputPath}`, pathToFileURL(inertInputPath).href,
-			], outputPath, request.signal, 120_000);
-			const output = await stat(outputPath);
+				...inertChromeArguments(join(profileRoot, "profile")), "--no-pdf-header-footer", "--print-to-pdf-no-header", `--print-to-pdf=${renderedOutputPath}`, pathToFileURL(inertInputPath).href,
+			], renderedOutputPath, request.signal, 120_000);
+			const output = await stat(renderedOutputPath);
 			if (!output.isFile() || output.size <= 0 || output.size > MAX_ARTIFACT_BYTES) throw new Error("Chrome PDF Provider did not produce a bounded PDF file");
-			return { locator: request.output, mediaType: "application/pdf", sourceRefs: [`workspace:${relative(await realpath(this.cwd), inputPath).replaceAll("\\", "/")}`] };
+			await publishWorkspaceArtifact(renderedOutputPath, outputPath, MAX_ARTIFACT_BYTES);
+			return { locator: request.output, mediaType: "application/pdf", sourceRefs: [`workspace:${relative(await realpath(this.cwd), inputFile.path).replaceAll("\\", "/")}`] };
 		} finally {
 			await rm(profileRoot, { recursive: true, force: true });
 		}
@@ -120,8 +132,9 @@ export class LocalArtifactVerifier implements ArtifactVerifierPort {
 	async verify(request: { locator: ArtifactLocator; mediaType: string; dimensions: readonly ArtifactVerificationDimension[]; expectation: Readonly<ArtifactVerificationExpectation>; signal?: AbortSignal }): Promise<{ observed: { locator: ArtifactLocator; mediaType: string; byteLength: number; sha256: string }; checks: readonly ArtifactVerificationCheck[] }> {
 		throwIfAborted(request.signal);
 		if (request.dimensions.includes("consistency") && request.expectation.consistentWith?.mediaType !== "text/html") throw new Error("Local Artifact consistency requires a text/html source; inspect the rendered Artifact as output and supply the HTML through consistentWith");
-		const path = await existingWorkspacePath(this.cwd, request.locator, MAX_ARTIFACT_BYTES);
-		const bytes = await readFile(path, { signal: request.signal });
+		const file = await readWorkspaceFile(this.cwd, request.locator, MAX_ARTIFACT_BYTES, request.signal);
+		const path = file.path;
+		const bytes = file.bytes;
 		throwIfAborted(request.signal);
 		const sha256 = createHash("sha256").update(bytes).digest("hex");
 		const media = request.mediaType === "application/pdf" ? await inspectPdf(bytes, request.signal) : request.mediaType === "text/html" ? inspectHtml(bytes) : undefined;
@@ -312,6 +325,7 @@ async function inspectPdf(bytes: Buffer, signal?: AbortSignal): Promise<Inspecte
 
 async function loadPdf(bytes: Buffer, signal?: AbortSignal) {
 	throwIfAborted(signal);
+	const { getDocument } = await (pdfModule ??= import("pdfjs-dist/legacy/build/pdf.mjs"));
 	const task = getDocument({ data: new Uint8Array(bytes) });
 	if (signal) signal.addEventListener("abort", () => { void task.destroy(); }, { once: true });
 	return await task.promise;
@@ -363,8 +377,7 @@ async function consistencyCheck(cwd: string, output: InspectedMedia, expectation
 	if (!source) return check("consistency", "unavailable", [], "No consistency source was supplied");
 	if (source.mediaType !== "text/html") return check("consistency", "unavailable", [], `Consistency source ${source.mediaType} is unsupported`);
 	try {
-		const path = await existingWorkspacePath(cwd, source.locator, MAX_INPUT_BYTES);
-		const input = inspectHtml(await readFile(path, { signal }));
+		const input = inspectHtml((await readWorkspaceFile(cwd, source.locator, MAX_INPUT_BYTES, signal)).bytes);
 		if (!input.valid) return check("consistency", "rejected", [], input.reason ?? "Consistency source HTML is invalid");
 		const inputTokens = tokens(input.text);
 		const outputTokens = new Set(tokens(output.text));
@@ -419,6 +432,7 @@ function htmlNodeVisibleText(root: HtmlNode): string {
 }
 
 async function inspectRenderedPdf(pdf: Awaited<ReturnType<typeof loadPdf>>, signal?: AbortSignal): Promise<{ accepted: boolean; evidenceRefs: string[] }> {
+	const { createCanvas } = await (canvasModule ??= import("@napi-rs/canvas"));
 	const samples = samplePageNumbers(pdf.numPages);
 	let minimumInkRatio = 1;
 	for (const pageNumber of samples) {
@@ -443,13 +457,29 @@ function check(dimension: ArtifactVerificationDimension, status: ArtifactVerific
 	return Object.freeze({ dimension, status, evidenceRefs: Object.freeze(evidenceRefs), ...(message ? { message: message.slice(0, 1000) } : {}) });
 }
 
-async function existingWorkspacePath(cwd: string, locator: ArtifactLocator, maxBytes: number): Promise<string> {
+async function readWorkspaceFile(cwd: string, locator: ArtifactLocator, maxBytes: number, signal?: AbortSignal): Promise<{ path: string; bytes: Buffer }> {
 	const candidate = workspacePath(cwd, locator);
+	const initial = await lstat(candidate);
+	if (initial.isSymbolicLink() || !initial.isFile() || initial.size > maxBytes) throw new Error("Artifact is not a bounded regular workspace file");
 	const [root, path] = await Promise.all([realpath(cwd), realpath(candidate)]);
 	assertWithinWorkspace(root, path);
-	const metadata = await stat(path);
-	if (!metadata.isFile() || metadata.size > maxBytes) throw new Error("Artifact is not a bounded regular workspace file");
-	return path;
+	const handle = await open(candidate, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+	try {
+		const opened = await handle.stat();
+		if (!opened.isFile() || opened.dev !== initial.dev || opened.ino !== initial.ino || opened.size !== initial.size || opened.size > maxBytes) throw new Error("Artifact changed while opening");
+		const bytes = Buffer.alloc(opened.size);
+		let offset = 0;
+		while (offset < bytes.byteLength) {
+			throwIfAborted(signal);
+			const { bytesRead } = await handle.read(bytes, offset, Math.min(64 * 1024, bytes.byteLength - offset), offset);
+			if (!bytesRead) break;
+			offset += bytesRead;
+		}
+		if (offset !== bytes.byteLength) throw new Error("Artifact changed while reading");
+		const [final, finalPath, finalOpened] = await Promise.all([lstat(candidate), realpath(candidate), handle.stat()]);
+		if (final.isSymbolicLink() || !final.isFile() || final.dev !== initial.dev || final.ino !== initial.ino || finalOpened.dev !== opened.dev || finalOpened.ino !== opened.ino || final.size !== opened.size || finalPath !== path) throw new Error("Artifact changed while reading");
+		return { path, bytes };
+	} finally { await handle.close(); }
 }
 
 async function writableWorkspacePath(cwd: string, locator: ArtifactLocator): Promise<string> {
@@ -457,8 +487,35 @@ async function writableWorkspacePath(cwd: string, locator: ArtifactLocator): Pro
 	const [root, parent] = await Promise.all([realpath(cwd), realpath(dirname(candidate))]);
 	assertWithinWorkspace(root, parent);
 	const output = join(parent, basename(candidate));
-	if (existsSync(output)) assertWithinWorkspace(root, await realpath(output));
+	const existing = await lstat(output).catch((error: NodeJS.ErrnoException) => { if (error.code === "ENOENT") return undefined; throw error; });
+	if (existing && (existing.isSymbolicLink() || !existing.isFile())) throw new Error("Artifact output must be a regular workspace file");
 	return output;
+}
+
+async function publishWorkspaceArtifact(source: string, destination: string, maxBytes: number): Promise<void> {
+	const bytes = await readFile(source);
+	if (!bytes.byteLength || bytes.byteLength > maxBytes) throw new Error("Rendered Artifact is outside its byte limit");
+	const parent = dirname(destination);
+	const parentInfo = await lstat(parent);
+	if (parentInfo.isSymbolicLink() || !parentInfo.isDirectory()) throw new Error("Artifact output parent must be a real directory");
+	const temporary = join(parent, `.${basename(destination)}.${randomUUID()}.tmp`);
+	const handle = await open(temporary, "wx", 0o600);
+	let temporaryInfo;
+	try {
+		await handle.writeFile(bytes);
+		await handle.sync();
+		temporaryInfo = await handle.stat();
+	} finally { await handle.close(); }
+	try {
+		const currentParent = await lstat(parent);
+		if (currentParent.isSymbolicLink() || !currentParent.isDirectory() || currentParent.dev !== parentInfo.dev || currentParent.ino !== parentInfo.ino) throw new Error("Artifact output parent changed during publication");
+		const existing = await lstat(destination).catch((error: NodeJS.ErrnoException) => { if (error.code === "ENOENT") return undefined; throw error; });
+		if (existing && (existing.isSymbolicLink() || !existing.isFile())) throw new Error("Artifact output must not replace a linked or special file");
+		if (existing) await rm(destination);
+		await rename(temporary, destination);
+		const published = await lstat(destination);
+		if (!published.isFile() || published.isSymbolicLink() || published.dev !== temporaryInfo.dev || published.ino !== temporaryInfo.ino || published.size !== bytes.byteLength) throw new Error("Published Artifact failed final file identity validation");
+	} finally { await rm(temporary, { force: true }); }
 }
 
 function workspacePath(cwd: string, locator: ArtifactLocator): string {

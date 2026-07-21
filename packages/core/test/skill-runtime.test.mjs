@@ -24,6 +24,27 @@ test("Skill discovery returns ranked metadata without loading unrelated bodies",
 	} finally { rmSync(f.root, { recursive: true, force: true }); }
 });
 
+test("Profile-local Skill wins over project or global Skills with the same name", async () => {
+	const root = mkdtempSync(join(tmpdir(), "beemax-skill-priority-"));
+	const profileRoot = join(root, "profile");
+	const globalRoot = join(root, "global");
+	for (const [skillRoot, marker] of [[profileRoot, "PROFILE_LOCAL"], [globalRoot, "GLOBAL_EXTERNAL"]]) {
+		const skill = join(skillRoot, "agent-reach");
+		mkdirSync(skill, { recursive: true });
+		writeFileSync(join(skill, "SKILL.md"), `---\nname: agent-reach\ndescription: Retrieve current public Web evidence (${marker})\n---\n${marker}`);
+	}
+	try {
+		const registry = new SkillRegistry([profileRoot, globalRoot]);
+		const [descriptor] = await registry.list();
+		assert.equal(descriptor.name, "agent-reach");
+		assert.equal(descriptor.root, join(profileRoot, "agent-reach"));
+		assert.equal(descriptor.sourcePriority, 0);
+		const runtime = new SkillRuntime(registry);
+		await runtime.admitDiscovered(["agent-reach"]);
+		assert.match((await runtime.activate("agent-reach")).instructions, /PROFILE_LOCAL/);
+	} finally { rmSync(root, { recursive: true, force: true }); }
+});
+
 test("Skill Runtime enforces discover, activate, route and declared-resource order", async () => {
 	const f = fixture();
 	try {

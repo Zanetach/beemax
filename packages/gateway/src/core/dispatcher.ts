@@ -15,8 +15,8 @@ import {
 	type TaskPlanProgressEvent,
 } from "@beemax/core";
 import { createHash } from "node:crypto";
-import { createReadStream } from "node:fs";
-import { realpath, stat } from "node:fs/promises";
+import { constants } from "node:fs";
+import { lstat, open, realpath, rm } from "node:fs/promises";
 import { basename, isAbsolute, relative, resolve, sep } from "node:path";
 import type { InboundMessage, InteractionPresentationPreferences, PlatformAdapter, PublishedArtifactPresentation } from "@beemax/channel-runtime";
 import { MessageDeduplicator } from "./message-deduplicator.ts";
@@ -26,6 +26,7 @@ import type { GatewayInteractionAdmission } from "./ingress-capacity.ts";
 import { GatewayIngressController } from "./ingress-capacity.ts";
 import { TextInteractionPresenter } from "./text-presentation.ts";
 import { GatewayDeliveryPort } from "./delivery-port.ts";
+import { createPrivateArtifactSnapshotDirectory } from "./artifact-snapshot-root.ts";
 
 export type PublishedArtifactLink = PublishedArtifactPresentation;
 
@@ -37,6 +38,14 @@ interface PreparedTurnArtifact {
 	artifact: TaskArtifact;
 	media: MediaArtifact;
 	published?: PublishedArtifactLink;
+	verify(): Promise<void>;
+	release(): Promise<void>;
+}
+
+interface VerifiedMediaSnapshot {
+	media: MediaArtifact;
+	verify(): Promise<void>;
+	release(): Promise<void>;
 }
 
 export interface DispatcherDeps {
@@ -66,6 +75,8 @@ export interface DispatcherDeps {
 	messageDeduplicator?: MessageDeduplicator;
 	/** Trusted Profile workspace used to resolve content-addressed workspace: artifacts. */
 	artifactWorkspace?: string;
+	/** Trusted Profile-private host directory outside artifactWorkspace. Production callers must provide it. */
+	artifactSnapshotRoot?: string;
 	/** Optional immutable document publisher; receives only workspace files that passed Artifact Manifest integrity checks. */
 	artifactPublisher?: ArtifactPublicationPort;
 	/** Commits an interactive Delivery Receipt into the shared Completion Outbox. */
@@ -265,28 +276,36 @@ export class Dispatcher {
 					return true;
 				}
 				const preparedArtifacts = await this.prepareTurnArtifacts(result.artifacts);
-				const publishedArtifacts = publishedArtifactPresentations(preparedArtifacts);
-				let receipt;
 				try {
-					receipt = await presentation.finish(completion.result, { idempotencyKey: completion.deliveryIdempotencyKey, deliveryClass: "interactive", publishedArtifacts });
-				} catch (error) {
-					console.error(`[beemax] Interactive Objective delivery deferred to Completion Outbox: ${result.completionId} (${error instanceof Error ? error.message : String(error)})`);
-					return true;
-				}
-				if (receipt.idempotencyKey !== completion.deliveryIdempotencyKey) {
-					console.error(`[beemax] Interactive Objective returned an invalid Delivery Receipt; Completion remains queued: ${result.completionId}`);
-					return true;
-				}
-				await this.deliverTurnArtifacts(preparedArtifacts, exactSource);
-				try { await this.deps.beforeCompletionAcknowledged?.(result.completionId, msg.source); }
-				catch { console.error(`[beemax] Interactive Objective publication deferred to Completion Outbox: ${result.completionId}`); return true; }
-				if (!this.deps.completionAcknowledger!.acknowledgeObjectiveCompletion(result.completionId, receipt)) {
-					console.error(`[beemax] Interactive Objective acknowledgement deferred to Completion Outbox: ${result.completionId}`);
+					const publishedArtifacts = publishedArtifactPresentations(preparedArtifacts);
+					let receipt;
+					try {
+						receipt = await presentation.finish(completion.result, { idempotencyKey: completion.deliveryIdempotencyKey, deliveryClass: "interactive", publishedArtifacts });
+					} catch (error) {
+						console.error(`[beemax] Interactive Objective delivery deferred to Completion Outbox: ${result.completionId} (${error instanceof Error ? error.message : String(error)})`);
+						return true;
+					}
+					if (receipt.idempotencyKey !== completion.deliveryIdempotencyKey) {
+						console.error(`[beemax] Interactive Objective returned an invalid Delivery Receipt; Completion remains queued: ${result.completionId}`);
+						return true;
+					}
+					await this.deliverTurnArtifacts(preparedArtifacts, exactSource);
+					try { await this.deps.beforeCompletionAcknowledged?.(result.completionId, msg.source); }
+					catch { console.error(`[beemax] Interactive Objective publication deferred to Completion Outbox: ${result.completionId}`); return true; }
+					if (!this.deps.completionAcknowledger!.acknowledgeObjectiveCompletion(result.completionId, receipt)) {
+						console.error(`[beemax] Interactive Objective acknowledgement deferred to Completion Outbox: ${result.completionId}`);
+					}
+				} finally {
+					await releaseTurnArtifacts(preparedArtifacts);
 				}
 			} else {
 				const preparedArtifacts = await this.prepareTurnArtifacts(result.artifacts);
-				await presentation.finish(result.answer, { publishedArtifacts: publishedArtifactPresentations(preparedArtifacts) });
-				await this.deliverTurnArtifacts(preparedArtifacts, exactSource);
+				try {
+					await presentation.finish(result.answer, { publishedArtifacts: publishedArtifactPresentations(preparedArtifacts) });
+					await this.deliverTurnArtifacts(preparedArtifacts, exactSource);
+				} finally {
+					await releaseTurnArtifacts(preparedArtifacts);
+				}
 			}
 			return true;
 		} catch (error) {
@@ -301,20 +320,37 @@ export class Dispatcher {
 		const files = artifacts?.filter((artifact) => artifact.type === "file") ?? [];
 		if (!files.length) return [];
 		if (!this.deps.artifactWorkspace) throw new Error("Interactive artifact delivery has no trusted Profile workspace");
+		if (!this.deps.artifactSnapshotRoot) throw new Error("Interactive artifact delivery has no trusted Profile snapshot root");
+		const snapshotRoot = this.deps.artifactSnapshotRoot;
 		const prepared: PreparedTurnArtifact[] = [];
-		for (const artifact of files) {
-			const media = await verifiedWorkspaceMedia(artifact, this.deps.artifactWorkspace);
-			let published: PublishedArtifactLink | undefined;
-			if (this.deps.artifactPublisher) {
+		try {
+			for (const artifact of files) {
+				const snapshot = await verifiedWorkspaceMedia(artifact, this.deps.artifactWorkspace, snapshotRoot);
+				let retainSnapshot = true;
+				let published: PublishedArtifactLink | undefined;
 				try {
-					published = await this.deps.artifactPublisher.publish(artifact, media);
-				} catch (error) {
-					console.warn(`[beemax] Artifact Site publication skipped for ${artifact.uri}: ${error instanceof Error ? error.message : String(error)}`);
+					if (this.deps.artifactPublisher) {
+						try {
+							published = await this.deps.artifactPublisher.publish(artifact, snapshot.media);
+						} catch (error) {
+							console.warn(`[beemax] Artifact Site publication skipped for ${artifact.uri}: ${error instanceof Error ? error.message : String(error)}`);
+						}
+						await snapshot.verify();
+						const deliverySnapshot = await verifiedSnapshotCopy(snapshot.media.path, snapshot.media.name!, artifact, this.deps.artifactWorkspace, snapshotRoot);
+						prepared.push({ artifact, media: deliverySnapshot.media, verify: deliverySnapshot.verify, release: deliverySnapshot.release, ...(published ? { published } : {}) });
+					} else {
+						prepared.push({ artifact, media: snapshot.media, verify: snapshot.verify, release: snapshot.release });
+						retainSnapshot = false;
+					}
+				} finally {
+					if (retainSnapshot) await snapshot.release().catch(() => undefined);
 				}
 			}
-			prepared.push({ artifact, media, ...(published ? { published } : {}) });
+			return prepared;
+		} catch (error) {
+			await releaseTurnArtifacts(prepared);
+			throw error;
 		}
-		return prepared;
 	}
 
 	private async deliverTurnArtifacts(artifacts: readonly PreparedTurnArtifact[], source: InboundMessage["source"]): Promise<void> {
@@ -328,7 +364,8 @@ export class Dispatcher {
 			...(source.threadId ? { threadId: source.threadId } : {}),
 			...(source.replyToMessageId ? { replyToMessageId: source.replyToMessageId } : {}),
 		};
-		for (const { artifact, media } of artifacts) {
+		for (const { artifact, media, verify } of artifacts) {
+			await verify();
 			await this.delivery.sendMedia(target, media, {
 				idempotencyKey: `${this.profileId}:${source.messageId ?? "turn"}:${artifact.manifest!.id}`,
 				deliveryClass: "interactive",
@@ -427,7 +464,7 @@ function publishedArtifactPresentations(artifacts: readonly PreparedTurnArtifact
 	return artifacts.flatMap(({ published }) => published ? [published] : []);
 }
 
-async function verifiedWorkspaceMedia(artifact: TaskArtifact, workspace: string): Promise<MediaArtifact> {
+async function verifiedWorkspaceMedia(artifact: TaskArtifact, workspace: string, snapshotRoot: string): Promise<VerifiedMediaSnapshot> {
 	const manifest = artifact.manifest;
 	if (!manifest || manifest.locator.kind !== "workspace" || !manifest.locator.uri.startsWith("workspace:")) {
 		throw new Error(`Interactive file artifact ${artifact.uri} has no trusted workspace Manifest`);
@@ -440,22 +477,102 @@ async function verifiedWorkspaceMedia(artifact: TaskArtifact, workspace: string)
 	if (relativePath === ".." || relativePath.startsWith(`..${sep}`) || isAbsolute(relativePath)) {
 		throw new Error(`Workspace artifact escapes the trusted Profile workspace: ${manifest.locator.uri}`);
 	}
-	const file = await stat(artifactPath);
-	if (!file.isFile()) throw new Error(`Workspace artifact is not a regular file: ${manifest.locator.uri}`);
-	if (file.size !== manifest.byteLength) throw new Error(`Workspace artifact byte length no longer matches its Manifest: ${manifest.locator.uri}`);
-	if (await fileSha256(artifactPath) !== manifest.sha256) throw new Error(`Workspace artifact digest no longer matches its Manifest: ${manifest.locator.uri}`);
-	return { path: artifactPath, mimeType: manifest.mediaType, name: basename(artifactPath) };
+	return verifiedSnapshotCopy(artifactPath, basename(artifactPath), artifact, workspacePath, snapshotRoot);
 }
 
-async function fileSha256(path: string): Promise<string> {
-	return new Promise((resolveDigest, rejectDigest) => {
-		const digest = createHash("sha256");
-		const stream = createReadStream(path);
-		stream.on("data", (chunk) => digest.update(chunk));
-		stream.on("error", rejectDigest);
-		stream.on("end", () => resolveDigest(digest.digest("hex")));
-	});
+async function verifiedSnapshotCopy(sourcePath: string, snapshotName: string, artifact: TaskArtifact, workspace: string, snapshotRoot: string): Promise<VerifiedMediaSnapshot> {
+	const manifest = artifact.manifest;
+	if (!manifest) throw new Error(`Interactive file artifact ${artifact.uri} has no trusted Manifest`);
+	if (!snapshotName || snapshotName !== basename(snapshotName) || snapshotName.includes("\0")) throw new Error("Artifact snapshot name is invalid");
+	const initial = await lstat(sourcePath);
+	if (initial.isSymbolicLink() || !initial.isFile()) throw new Error(`Workspace artifact is not a regular file: ${manifest.locator.uri}`);
+	if (initial.size !== manifest.byteLength) throw new Error(`Workspace artifact byte length no longer matches its Manifest: ${manifest.locator.uri}`);
+	const directory = await createPrivateArtifactSnapshotDirectory(resolve(workspace), snapshotRoot);
+	const snapshotPath = resolve(directory, snapshotName);
+	try {
+		const source = await open(sourcePath, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+		try {
+			const opened = await source.stat();
+			if (!opened.isFile() || !sameFile(opened, initial) || opened.size !== manifest.byteLength) throw new Error(`Workspace artifact changed while opening: ${manifest.locator.uri}`);
+			const snapshot = await open(snapshotPath, "wx", 0o600);
+			try {
+				const created = await snapshot.stat();
+				if (!created.isFile() || created.nlink !== 1) throw new Error(`Could not create a private Artifact snapshot: ${manifest.locator.uri}`);
+				const digest = createHash("sha256");
+				const buffer = Buffer.allocUnsafe(64 * 1024);
+				let offset = 0;
+				while (offset < manifest.byteLength) {
+					const length = Math.min(buffer.byteLength, manifest.byteLength - offset);
+					const { bytesRead } = await source.read(buffer, 0, length, offset);
+					if (!bytesRead) throw new Error(`Workspace artifact changed while snapshotting: ${manifest.locator.uri}`);
+					digest.update(buffer.subarray(0, bytesRead));
+					let written = 0;
+					while (written < bytesRead) {
+						const result = await snapshot.write(buffer, written, bytesRead - written, offset + written);
+						if (!result.bytesWritten) throw new Error(`Could not snapshot workspace artifact: ${manifest.locator.uri}`);
+						written += result.bytesWritten;
+					}
+					offset += bytesRead;
+				}
+				if (digest.digest("hex") !== manifest.sha256) throw new Error(`Workspace artifact digest no longer matches its Manifest: ${manifest.locator.uri}`);
+				await snapshot.sync();
+				await snapshot.chmod(0o400);
+				const sealed = await snapshot.stat();
+				if (!sealed.isFile() || sealed.nlink !== 1 || sealed.size !== manifest.byteLength || (sealed.mode & 0o222) !== 0) throw new Error(`Artifact snapshot could not be sealed: ${manifest.locator.uri}`);
+			} finally {
+				await snapshot.close();
+			}
+		} finally {
+			await source.close();
+		}
+		const identity = await lstat(snapshotPath);
+		let released = false;
+		return {
+			media: { path: snapshotPath, mimeType: manifest.mediaType, name: snapshotName },
+			verify: () => verifySnapshot(snapshotPath, identity, manifest.byteLength, manifest.sha256),
+			release: async () => {
+				if (released) return;
+				released = true;
+				await rm(directory, { recursive: true, force: true });
+			},
+		};
+	} catch (error) {
+		await rm(directory, { recursive: true, force: true });
+		throw error;
+	}
 }
+
+async function verifySnapshot(path: string, identity: { dev: number; ino: number }, expectedSize: number, expectedDigest: string): Promise<void> {
+	const initial = await lstat(path);
+	if (initial.isSymbolicLink() || !initial.isFile() || !sameFile(initial, identity) || initial.nlink !== 1 || initial.size !== expectedSize || (initial.mode & 0o222) !== 0) {
+		throw new Error("Artifact delivery snapshot identity or permissions changed");
+	}
+	const handle = await open(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+	try {
+		const opened = await handle.stat();
+		if (!opened.isFile() || !sameFile(opened, identity) || opened.nlink !== 1 || opened.size !== expectedSize || (opened.mode & 0o222) !== 0) throw new Error("Artifact delivery snapshot changed while opening");
+		const digest = createHash("sha256");
+		const buffer = Buffer.allocUnsafe(64 * 1024);
+		let offset = 0;
+		while (offset < expectedSize) {
+			const { bytesRead } = await handle.read(buffer, 0, Math.min(buffer.byteLength, expectedSize - offset), offset);
+			if (!bytesRead) throw new Error("Artifact delivery snapshot changed while reading");
+			digest.update(buffer.subarray(0, bytesRead));
+			offset += bytesRead;
+		}
+		if (digest.digest("hex") !== expectedDigest) throw new Error("Artifact delivery snapshot digest changed");
+		const final = await handle.stat();
+		if (!sameFile(final, opened) || final.size !== opened.size || (final.mode & 0o222) !== 0) throw new Error("Artifact delivery snapshot changed while reading");
+	} finally {
+		await handle.close();
+	}
+}
+
+async function releaseTurnArtifacts(artifacts: readonly PreparedTurnArtifact[]): Promise<void> {
+	await Promise.all(artifacts.map((artifact) => artifact.release().catch(() => undefined)));
+}
+
+function sameFile(left: { dev: number; ino: number }, right: { dev: number; ino: number }): boolean { return left.dev === right.dev && left.ino === right.ino; }
 
 function channelDedupeKey(source: InboundMessage["source"]): string {
 	return source.channelInstanceId ? `${source.platform}@${source.channelInstanceId}` : source.platform;

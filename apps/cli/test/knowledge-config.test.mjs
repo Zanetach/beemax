@@ -8,9 +8,8 @@ import { loadConfig } from "../dist/config.js";
 import { createProfile } from "../dist/profile-config.js";
 
 test("Profile loads a WeKnora connection and explicit Agent knowledge spaces without storing secrets in YAML", async () => {
-  const root = await mkdtemp(join(tmpdir(), "beemax-knowledge-root-"));
   const home = await mkdtemp(join(tmpdir(), "beemax-knowledge-home-"));
-  const paths = await createProfile("knowledge", { root, home });
+  const paths = await createProfile("knowledge", { home });
   await writeFile(paths.configPath, `
 agent:
   toolset: standard
@@ -42,9 +41,8 @@ knowledge:
 });
 
 test("knowledge integration stays disabled until connection and spaces are configured", async () => {
-  const root = await mkdtemp(join(tmpdir(), "beemax-knowledge-root-"));
   const home = await mkdtemp(join(tmpdir(), "beemax-knowledge-home-"));
-  const paths = await createProfile("empty", { root, home });
+  const paths = await createProfile("empty", { home });
   assert.deepEqual(loadConfig(paths.configPath, "empty").knowledge, {
     enabled: false,
     provider: "weknora",

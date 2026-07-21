@@ -96,8 +96,8 @@ export function renderStreamingContent(session: CardSession, publishedArtifacts:
 	return projectCardContent(session, publishedArtifacts).content;
 }
 
-export function answerNeedsSeparateDelivery(answer: string, publishedArtifacts: readonly PublishedArtifactPresentation[] = []): boolean {
-	return validatedPublishedArtifacts(publishedArtifacts).length === 0 && normalizeStreamText(answer).length > MAX_CARD_SUMMARY_CHARS;
+export function answerNeedsSeparateDelivery(answer: string, _publishedArtifacts: readonly PublishedArtifactPresentation[] = []): boolean {
+	return normalizeStreamText(answer).length > MAX_CARD_SUMMARY_CHARS;
 }
 
 function rawPrimaryText(session: CardSession): string {
@@ -113,10 +113,12 @@ function projectCardContent(session: CardSession, publishedArtifacts: readonly P
 	let content = rawPrimaryText(session).trimEnd();
 	if (!content && artifacts.length) content = "文件已生成，可直接在线打开或下载。";
 	if (content.length <= MAX_CARD_SUMMARY_CHARS) return { content, artifacts, summarized: false };
-	const notice = artifacts.length
-		? "\n\n> 内容较长，卡片仅显示摘要；完整内容请通过下方文件打开。"
-		: session.status === "thinking"
-			? "\n\n> 内容较长，正在继续生成；卡片将保持摘要视图。"
+	const notice = session.status === "thinking"
+		? artifacts.length
+			? "\n\n> 内容较长，正在继续生成；卡片将保持摘要视图，已生成文件可通过下方按钮打开。"
+			: "\n\n> 内容较长，正在继续生成；卡片将保持摘要视图。"
+		: artifacts.length
+			? "\n\n> 内容较长，卡片仅显示摘要；完整回答已另行发送，文件可通过下方按钮打开。"
 			: "\n\n> 内容较长，卡片仅显示摘要；完整回答已另行发送。";
 	const budget = Math.max(1, MAX_CARD_SUMMARY_CHARS - notice.length);
 	return { content: `${semanticPrefix(content, budget).trimEnd()}${notice}`, artifacts, summarized: true };
@@ -208,7 +210,7 @@ function renderTimeline(session: CardSession, showRawReasoning: boolean): Record
 	if (folded) {
 		panelElements.push({
 			tag: "markdown",
-			element_id: "auxiliary_timeline_folded",
+			element_id: "aux_folded",
 		content: `> 已折叠 ${folded} 条早期执行记录`,
 			text_size: "x-small",
 		});
@@ -218,14 +220,14 @@ function renderTimeline(session: CardSession, showRawReasoning: boolean): Record
 		const entry = all[i];
 		if (entry.kind === "reasoning") {
 			const content = limitText(entry.content, MAX_REASONING_CHARS, "思考内容过长，已截断");
-			panelElements.push({ tag: "markdown", element_id: `auxiliary_timeline_reasoningentry_${i}`, content: `**${entry.title}** · ${entry.status}\n${content}`, text_size: "small" });
+			panelElements.push({ tag: "markdown", element_id: `aux_reason_${i}`, content: `**${entry.title}** · ${entry.status}\n${content}`, text_size: "small" });
 		} else if (entry.kind === "tool") {
 			const detail = limitText(entry.detail, MAX_TOOL_RESULT_CHARS, "工具详情过长，已截断");
 			const lines = [`\`${entry.title}\` · ${entry.status}`];
 			if (detail) lines.push(detail);
 			panelElements.push({
 				tag: "markdown",
-				element_id: `auxiliary_timeline_toolentry_${i}`,
+				element_id: `aux_tool_${i}`,
 				content: quoteMarkdown(lines.join("\n")),
 				text_size: "x-small",
 			});
@@ -235,7 +237,7 @@ function renderTimeline(session: CardSession, showRawReasoning: boolean): Record
 			if (content) lines.push(content);
 			panelElements.push({
 				tag: "markdown",
-				element_id: `auxiliary_timeline_noticeentry_${i}`,
+				element_id: `aux_notice_${i}`,
 				content: quoteMarkdown(lines.join("\n")),
 				text_size: "x-small",
 			});

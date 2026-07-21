@@ -1,9 +1,9 @@
-import { createHash } from "node:crypto";
+import { createHash, createHmac, timingSafeEqual } from "node:crypto";
 import { lstat, open, readdir, readlink, realpath } from "node:fs/promises";
 import { join, relative, sep } from "node:path";
 
 export interface ProviderArtifactManifest {
-	schemaVersion: "beemax.provider-artifact.v1";
+	schemaVersion: "beemax.provider-artifact.v2";
 	providerId: string;
 	version: string;
 	lockSha256: string;
@@ -12,6 +12,7 @@ export interface ProviderArtifactManifest {
 	configurationSha256: string;
 	installedAt: number;
 	evidenceRef: string;
+	integrityTag: string;
 }
 
 const MAX_FILES = 100_000;
@@ -62,8 +63,13 @@ export async function providerFileSha256(path: string, maxBytes = MAX_ENTRYPOINT
 	return hash.digest("hex");
 }
 
-export function providerManifestEvidenceRef(manifest: Omit<ProviderArtifactManifest, "evidenceRef">): string {
+export function providerManifestEvidenceRef(manifest: Omit<ProviderArtifactManifest, "evidenceRef" | "integrityTag">): string {
 	return `sha256:${createHash("sha256").update(JSON.stringify(manifest)).digest("hex")}`;
+}
+
+export function providerManifestIntegrityTag(manifest: Omit<ProviderArtifactManifest, "integrityTag">, key: Uint8Array): string {
+	if (key.byteLength < 32) throw new Error("Provider integrity key must contain at least 32 bytes");
+	return `hmac-sha256:${createHmac("sha256", key).update(JSON.stringify(manifest)).digest("hex")}`;
 }
 
 export async function verifyProviderArtifact(input: {
@@ -72,20 +78,29 @@ export async function verifyProviderArtifact(input: {
 	entrypointPath: string;
 	configurationPath: string;
 	expected: Pick<ProviderArtifactManifest, "providerId" | "version" | "lockSha256">;
+	integrityKey: Uint8Array;
 }, signal?: AbortSignal): Promise<ProviderArtifactManifest | undefined> {
 	try {
 		const raw = JSON.parse((await readBoundedFile(input.manifestPath, MAX_MANIFEST_BYTES, signal)).toString("utf8")) as Partial<ProviderArtifactManifest>;
-		if (raw.schemaVersion !== "beemax.provider-artifact.v1" || raw.providerId !== input.expected.providerId || raw.version !== input.expected.version || raw.lockSha256 !== input.expected.lockSha256 || !Number.isSafeInteger(raw.installedAt) || typeof raw.artifactSha256 !== "string" || typeof raw.entrypointSha256 !== "string" || typeof raw.configurationSha256 !== "string" || typeof raw.evidenceRef !== "string") return undefined;
+		if (raw.schemaVersion !== "beemax.provider-artifact.v2" || raw.providerId !== input.expected.providerId || raw.version !== input.expected.version || raw.lockSha256 !== input.expected.lockSha256 || !Number.isSafeInteger(raw.installedAt) || typeof raw.artifactSha256 !== "string" || typeof raw.entrypointSha256 !== "string" || typeof raw.configurationSha256 !== "string" || typeof raw.evidenceRef !== "string" || typeof raw.integrityTag !== "string") return undefined;
 		const manifest = raw as ProviderArtifactManifest;
-		if (!/^[a-f0-9]{64}$/.test(manifest.artifactSha256) || !/^[a-f0-9]{64}$/.test(manifest.entrypointSha256) || !/^[a-f0-9]{64}$/.test(manifest.configurationSha256) || !/^sha256:[a-f0-9]{64}$/.test(manifest.evidenceRef)) return undefined;
+		if (!/^[a-f0-9]{64}$/.test(manifest.artifactSha256) || !/^[a-f0-9]{64}$/.test(manifest.entrypointSha256) || !/^[a-f0-9]{64}$/.test(manifest.configurationSha256) || !/^sha256:[a-f0-9]{64}$/.test(manifest.evidenceRef) || !/^hmac-sha256:[a-f0-9]{64}$/.test(manifest.integrityTag)) return undefined;
 		const [artifactSha256, entrypointSha256, configurationSha256] = await Promise.all([
 			providerArtifactSha256(input.root, signal), providerFileSha256(input.entrypointPath, MAX_ENTRYPOINT_BYTES, signal), providerFileSha256(input.configurationPath, MAX_CONFIGURATION_BYTES, signal),
 		]);
 		if (artifactSha256 !== manifest.artifactSha256 || entrypointSha256 !== manifest.entrypointSha256 || configurationSha256 !== manifest.configurationSha256) return undefined;
-		const { evidenceRef: _evidenceRef, ...unsigned } = manifest;
+		const { evidenceRef: _evidenceRef, integrityTag: _integrityTag, ...unsigned } = manifest;
 		if (providerManifestEvidenceRef(unsigned) !== manifest.evidenceRef) return undefined;
+		const expectedTag = providerManifestIntegrityTag({ ...unsigned, evidenceRef: manifest.evidenceRef }, input.integrityKey);
+		if (!safeTagEqual(expectedTag, manifest.integrityTag)) return undefined;
 		return manifest;
 	} catch { return undefined; }
+}
+
+function safeTagEqual(left: string, right: string): boolean {
+	const leftBytes = Buffer.from(left);
+	const rightBytes = Buffer.from(right);
+	return leftBytes.byteLength === rightBytes.byteLength && timingSafeEqual(leftBytes, rightBytes);
 }
 
 async function readBoundedFile(path: string, maxBytes: number, signal?: AbortSignal): Promise<Buffer> {

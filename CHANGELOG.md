@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- Added a default Profile-scoped `standard-web` capability pack: new Profiles and migrated Profiles without an explicit Provider policy receive Agent Reach and Pi Web Access Skills, pre-authorize only the pinned Exa/mcporter Provider for direct first-use acquisition, and use native browser Tools with an OS-assigned loopback CDP endpoint and browser data directory per Profile. Explicit legacy opt-outs remain intact. Added `beemax capabilities status|install|start|stop` for customer self-service provisioning and diagnostics; browser ownership now also requires a fresh runner/egress heartbeat and Profile deletion stops that process group first.
+- Isolated MCP and standard-Web Provider environment resolution to an immutable Profile snapshot. MCP stdio children now inherit only safe runtime variables plus each server's explicit `env` mapping, while HOME/XDG state is redirected into the selected Profile for both modern and legacy layouts.
+- MCP servers can no longer self-declare an operation as read-only: external Tool, resource, and prompt calls fail closed to mutation governance unless that exact Profile server is locally attested with `trustReadOnlyOperations: true`.
+- Production Skill discovery is now Profile-only, capability operations verify that `agentDir` remains inside the selected Profile Home, explicit standard-Web installs absorb legacy environment opt-outs, and invalid Exa trees are moved to an audit quarantine before a clean reinstall.
+- Profile Chrome now runs behind a dedicated loopback egress proxy that DNS-validates and address-pins every HTTP request and CONNECT tunnel, preventing redirects, JavaScript subrequests, WebSockets, and DNS rebinding from reaching private, link-local, metadata, or reserved networks.
+- Enabled one independently managed Caddy Artifact Site per Profile by default while preserving explicit opt-outs. Gateway startup and Doctor now use the same trusted-host command resolver and credential-free environment allowlist; Caddy receives neither an unfiltered host environment nor any Profile environment or Secret, while HOME/XDG/temporary state is redirected into the Profile runtime.
+- Added digest-pinned local Skill installation and strict Profile-local MCP add/remove commands. MCP descriptors reject unknown fields, plaintext credentials, unsafe commands, and non-public cleartext HTTP endpoints; no self-service operation introduces a Tool approval workflow.
+- Added Caddy to the supported-host dependency installer so the default per-Profile document site is ready after a normal installation.
+- Bounded Profile environment reads and writes to 256 KiB with no-follow descriptor and inode/state revalidation, and separated full Profile Skill requirement admission from the deliberately narrowed Provider subprocess environment.
+
 ## 1.5.1
 
 - Fixed release-archive construction on GNU tar so nested vendored `.github` workflow metadata is excluded consistently with macOS bsdtar, keeping prohibited external Agent tooling outside the published BeeMax archive.

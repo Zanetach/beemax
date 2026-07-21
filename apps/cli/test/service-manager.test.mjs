@@ -37,11 +37,11 @@ test("systemd installation is testable through the service platform seam", async
 	}
 });
 
-test("systemd service binds the installed CLI, profile env, and safe runtime defaults", () => {
+test("systemd service binds the installed CLI, trusted host env, and safe runtime defaults without sourcing Profile env", () => {
 	const unit = renderSystemdService("/opt/beemax", "/usr/bin/node", "user", undefined, "/home/beemax/.beemax");
 	assert.match(unit, /WorkingDirectory="\/opt\/beemax"/);
-	assert.match(unit, /EnvironmentFile=-"\/home\/beemax\/\.beemax\/profiles\/%i\/\.env"/);
-	assert.match(unit, /EnvironmentFile=-"\/opt\/beemax\/config\/profiles\/%i\.env"/);
+	assert.doesNotMatch(unit, /EnvironmentFile=.*profiles\/%i(?:\/\.env|\.env)/);
+	assert.match(unit, /EnvironmentFile=-"\/etc\/beemax\/%i\.env"/);
 	assert.match(unit, /ExecStart="\/usr\/bin\/node" "\/opt\/beemax\/apps\/cli\/dist\/cli\.js" gateway --profile %i --home "\/home\/beemax\/\.beemax" --root "\/opt\/beemax"/);
 	assert.match(unit, /NoNewPrivileges=true/);
 	assert.match(unit, /MemoryMax=2G/);
@@ -89,6 +89,7 @@ test("macOS LaunchAgent runs one isolated Gateway per Profile", async () => {
 	const plist = renderMacLaunchAgent("personal", "/opt/beemax", "/Users/zane/.beemax", "/usr/local/bin/node");
 	assert.match(plist, /com\.beemax\.agent\.personal/);
 	assert.match(plist, /\/Users\/zane\/\.beemax\/profiles\/personal\/logs\/gateway\.log/);
+	assert.match(plist, /<key>ProcessType<\/key><string>Interactive<\/string>/);
 	const calls = [];
 	await runServiceAction("start", "personal", (command, args) => { calls.push([command, args]); return { status: 0 }; }, "darwin");
 	assert.equal(calls[0][0], "launchctl");

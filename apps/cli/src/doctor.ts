@@ -8,12 +8,14 @@ import { validateFeishuWebhookSettings } from "@beemax/channel-feishu";
 import { loadMcpConfig, McpManager } from "@beemax/mcp-capability";
 import { MemoryStore } from "@beemax/memory";
 import { FileCredentialVault } from "@beemax/core";
-import { consumeChannelCredential, type BeeMaxConfig } from "./config.ts";
+import { consumeChannelCredential, profileEnvironmentSnapshot, type BeeMaxConfig } from "./config.ts";
 import { providerApiKeyEnv } from "./provider-resolver.ts";
 import { inspectOperationalMetrics, operationalMetricsPath } from "./operational-metrics.ts";
 import { WeKnoraKnowledgeProvider } from "@beemax/knowledge";
 import { ProfileModelCatalog } from "./model-catalog.ts";
 import { createLocalMediaUnderstandingAdapters } from "./local-media-understanding.ts";
+import { caddyHostEnvironment, caddyRuntimeEnvironment, prepareCaddyRuntimeDirectories, resolveCaddyHostCommand } from "./artifact-site.ts";
+import { assertStandardWebProfileBoundary } from "./profile-capability-pack.ts";
 
 export interface DoctorCheck { name: string; status: "PASS" | "WARN" | "FAIL"; detail: string }
 export interface DoctorResult { ok: boolean; checks: DoctorCheck[] }
@@ -35,6 +37,13 @@ export async function inspectDoctor(config: BeeMaxConfig, options: DoctorOptions
 	const checks: DoctorCheck[] = [];
 	const node = process.versions.node.split(".").map(Number);
 	checks.push({ name: "Node.js", status: node[0] > 22 || (node[0] === 22 && node[1] >= 19) ? "PASS" : "FAIL", detail: process.versions.node });
+	try {
+		await assertStandardWebProfileBoundary({ profileHome: config.paths.profileHome, agentDir: config.paths.agentDir });
+		checks.push({ name: "Profile boundary", status: "PASS", detail: config.paths.agentDir });
+	} catch (error) {
+		checks.push({ name: "Profile boundary", status: "FAIL", detail: error instanceof Error ? error.message : String(error) });
+		return { ok: false, checks };
+	}
 
 	const apiKey = config.model.apiKey;
 	checks.push({ name: "Model", status: apiKey ? "PASS" : "FAIL", detail: apiKey ? `${config.model.provider}/${config.model.model}` : `missing ${providerApiKeyEnv(config.model.provider)} or BEEMAX_API_KEY` });
@@ -56,6 +65,7 @@ export async function inspectDoctor(config: BeeMaxConfig, options: DoctorOptions
 	const gatewayRequired = options.requireGateway ?? true;
 	const enabledChannels = config.gateway.channels.filter((channel) => channel.enabled);
 	checks.push({ name: "Gateway channels", status: enabledChannels.length ? "PASS" : gatewayRequired ? "FAIL" : "WARN", detail: enabledChannels.length ? enabledChannels.map((channel) => `${channel.id}:${channel.adapter}`).join(", ") : "none enabled" });
+	await checkCaddyArtifactSite(config, checks);
 	if (enabledChannels.some((channel) => channel.adapter === "feishu")) {
 		const feishuChannels = enabledChannels.filter((channel) => channel.adapter === "feishu");
 		const credentials = feishuChannels.every((channel) => consumeChannelCredential(config, channel, (credential) => credential.adapter === "feishu") === true);
@@ -191,9 +201,9 @@ export async function inspectDoctor(config: BeeMaxConfig, options: DoctorOptions
 		checks.push({ name: "Skills", status: "FAIL", detail: error instanceof Error ? error.message : String(error) });
 	}
 
-	const mcp = new McpManager();
+	const mcp = new McpManager({ environment: profileEnvironmentSnapshot(config) });
 	try {
-		const statuses = await mcp.connectAll(loadMcpConfig(config.mcp.configPath));
+		const statuses = await mcp.connectAll(loadMcpConfig(config.mcp.configPath, config.mcp.profileHome ? { profileHome: config.mcp.profileHome } : {}));
 		if (statuses.length === 0) checks.push({ name: "MCP", status: "PASS", detail: "no servers configured" });
 		for (const status of statuses) checks.push({
 			name: `MCP ${status.name}`,
@@ -208,6 +218,39 @@ export async function inspectDoctor(config: BeeMaxConfig, options: DoctorOptions
 
 	const ok = !checks.some((check) => check.status === "FAIL");
 	return { ok, checks };
+}
+
+async function checkCaddyArtifactSite(config: BeeMaxConfig, checks: DoctorCheck[]): Promise<void> {
+	if (!config.gateway.artifactSite.enabled) {
+		checks.push({ name: "Caddy Artifact Site", status: "WARN", detail: "disabled by Profile configuration" });
+		return;
+	}
+	const runtimeRoot = join(config.paths.agentDir, "artifact-site", "runtime");
+	try {
+		const resolvedRuntimeRoot = await prepareCaddyRuntimeDirectories(config.paths.agentDir, runtimeRoot);
+		const command = resolveCaddyHostCommand(process.env);
+		const result = await execFileAsync(command, ["version"], {
+			cwd: resolvedRuntimeRoot,
+			env: caddyRuntimeEnvironment(caddyHostEnvironment(process.env), resolvedRuntimeRoot),
+			timeout: 5_000,
+			windowsHide: true,
+			maxBuffer: 64 * 1024,
+		});
+		const version = `${result.stdout}\n${result.stderr}`.trim().split(/\r?\n/u)[0]?.trim();
+		if (!version) throw new Error("Caddy returned an empty version response");
+		checks.push({ name: "Caddy Artifact Site", status: "PASS", detail: `${version}; ${config.gateway.artifactSite.listen}` });
+	} catch (error) {
+		checks.push({
+			name: "Caddy Artifact Site",
+			status: "FAIL",
+			detail: `${resolveCaddyCommandForDoctorDetail(config)}: ${error instanceof Error ? error.message : String(error)}`,
+		});
+	}
+}
+
+function resolveCaddyCommandForDoctorDetail(config: BeeMaxConfig): string {
+	try { return resolveCaddyHostCommand(process.env); }
+	catch { return config.gateway.artifactSite.command; }
 }
 
 async function checkExecutionBackend(config: BeeMaxConfig, checks: DoctorCheck[]): Promise<void> {

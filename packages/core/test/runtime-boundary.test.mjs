@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { appendFileSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -283,6 +283,37 @@ test("BeeMax applies Profile compaction policy as an in-memory Pi session settin
 			assert.deepEqual(session.compactionSettings, { enabled: false, reserveTokens: 12_000, keepRecentTokens: 16_000 });
 		} finally { session.dispose(); }
 	} finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("BeeMax keeps Pi Skill compatibility discovery inside the Profile Agent directory", async () => {
+	const root = mkdtempSync(join(tmpdir(), "beemax-profile-skill-compatibility-"));
+	const machineHome = join(root, "machine-home");
+	const cwd = join(root, "workspace");
+	const agentDir = join(root, "profile");
+	const previousHome = process.env.HOME;
+	const writeSkill = (skillsRoot, name) => {
+		const skill = join(skillsRoot, name);
+		mkdirSync(skill, { recursive: true });
+		writeFileSync(join(skill, "SKILL.md"), `---\nname: ${name}\ndescription: Test fixture for ${name}.\n---\n${name}\n`);
+	};
+	try {
+		writeSkill(join(agentDir, "skills"), "profile-only");
+		writeSkill(join(machineHome, ".agents", "skills"), "machine-global");
+		writeSkill(join(cwd, ".agents", "skills"), "project-local");
+		process.env.HOME = machineHome;
+		const factory = buildBeeMaxRuntimeFactory({
+			provider: "anthropic", model: "claude-sonnet-4-5", cwd, agentDir, getApiKey: () => "test",
+			systemPrompt: "test", skillToolset: "safe", createTools: () => [],
+		});
+		const session = await factory("profile-skill-compatibility", { platform: "cli", chatId: "terminal", chatType: "dm", userId: "user" });
+		try {
+			assert.deepEqual(session.resourceLoader.getSkills().skills.map(({ name }) => name), ["profile-only"]);
+		} finally { session.dispose(); }
+	} finally {
+		if (previousHome === undefined) delete process.env.HOME;
+		else process.env.HOME = previousHome;
+		rmSync(root, { recursive: true, force: true });
+	}
 });
 
 test("BeeMax compacts restored history before it consumes the Pi execution token budget", async () => {

@@ -20,6 +20,7 @@ import {
 	GroupResponseGovernor,
 	PairingStore,
 	ProfileHost,
+	prepareArtifactSnapshotRoot,
 	assessProfileChannelHealth,
 	assertProfileBindingConfiguration,
 } from "@beemax/gateway";
@@ -31,7 +32,7 @@ import { MemoryStore, memoryPersistencePorts, type OrganizationMemoryPort } from
 import { createFeishuMeetingTools } from "@beemax/feishu-capability";
 import { WeKnoraKnowledgeProvider, createKnowledgeTools } from "@beemax/knowledge";
 import type { SessionSource } from "@beemax/channel-runtime";
-import { beemaxHome, consumeChannelCredential, profileTurnTimeoutMs, type BeeMaxConfig } from "./config.ts";
+import { beemaxHome, consumeChannelCredential, profileEnvironmentSnapshot, profileTurnTimeoutMs, type BeeMaxConfig } from "./config.ts";
 import { acquireChannelLock } from "./channel-lock.ts";
 import { createTaskAwareConversationContext } from "./runtime-facts.ts";
 import { createProfileRuntime } from "./runtime-composition.ts";
@@ -42,15 +43,16 @@ import { createProfileControlHandler, type TaskRecoveryStatus } from "./profile-
 import { boundGatewayProcessLogs, recordGatewayEvent, writeGatewayState } from "./gateway-observability.ts";
 import { installedVersion } from "./runtime-facts.ts";
 import { configuredAuxiliaryTextModels, configuredCapabilityRanker, configuredMediaUnderstanding, configuredRuntimeModels, resolveProfileCognitionModels } from "./model-catalog.ts";
-import { setFeishuHomeChat } from "./profile-config.ts";
+import { setFeishuHomeChat, syncBuiltinSkillsAtProfileHome } from "./profile-config.ts";
 import { createMemoryScopeResolver } from "./memory-membership.ts";
 import { createLocalMediaUnderstandingAdapters } from "./local-media-understanding.ts";
 import { createSuccessfulVerificationReceipt, normalizeVerifierEvidenceRefs, parseVerifierSubmission, type SuccessfulVerificationReceipt } from "./verification-protocol.ts";
-import { createProfileCapabilityProviderBundle } from "./capability-provider-composition.ts";
+import { createProfileCapabilityProviderBundle, profileProviderIntegrityKey } from "./capability-provider-composition.ts";
+import { assertStandardWebProfileBoundary } from "./profile-capability-pack.ts";
 import { createLocalArtifactRuntime } from "./artifact-composition.ts";
 import { createInteractiveContractCognition } from "./interactive-contract-cognition.ts";
 import { admitLearningObjective as admitLearningObjectiveThroughRuntime } from "./learning-objective-composition.ts";
-import { artifactSiteLocalBaseUrl, CaddyArtifactSite } from "./artifact-site.ts";
+import { artifactSiteLocalBaseUrl, caddyHostEnvironment, CaddyArtifactSite, resolveCaddyHostCommand } from "./artifact-site.ts";
 import { reserveProfileArtifactSiteListen } from "./artifact-site-address-registry.ts";
 
 export async function runProfileAutomation(
@@ -89,6 +91,8 @@ export async function runProfileAutomation(
 }
 
 export async function runGateway(config: BeeMaxConfig): Promise<void> {
+	await syncBuiltinSkillsAtProfileHome(config.paths.profileHome, config.paths.agentDir);
+	await assertStandardWebProfileBoundary({ profileHome: config.paths.profileHome, agentDir: config.paths.agentDir });
 	const enabledChannels = config.gateway.channels.filter((channel) => channel.enabled);
 	if (!enabledChannels.length) {
 		const error = "No enabled Gateway channels. Configure gateway.channels and the corresponding Profile credentials.";
@@ -106,7 +110,13 @@ export async function runGateway(config: BeeMaxConfig): Promise<void> {
 		recordGatewayEvent(config.paths.agentDir, "failed", { profile: config.profile, error: message });
 		throw error;
 	}
-	const capabilityProviders = createProfileCapabilityProviderBundle({ profileId: config.profile, agentDir: config.paths.agentDir, installation: config.capabilityProviders.installation });
+	const capabilityProviders = createProfileCapabilityProviderBundle({
+		profileId: config.profile,
+		agentDir: config.paths.agentDir,
+		installation: config.capabilityProviders.installation,
+		integrityKey: profileProviderIntegrityKey(config.credentials.key, config.profile),
+		environment: profileEnvironmentSnapshot(config),
+	});
 	let bindingResolver;
 	try {
 		bindingResolver = assertProfileBindingConfiguration(config.gateway.bindings, { profileId: config.profile, channelInstanceIds: enabledChannels.map((channel) => channel.id) });
@@ -207,6 +217,11 @@ export async function runGateway(config: BeeMaxConfig): Promise<void> {
 	let artifactSite: CaddyArtifactSite | undefined;
 	try {
 	profileHost.beginStart();
+	const artifactSnapshotRoot = await prepareArtifactSnapshotRoot({
+		agentDir: config.paths.agentDir,
+		workspace: config.paths.cwd,
+		snapshotRoot: join(config.paths.agentDir, "state", "artifact-delivery"),
+	});
 	if (config.gateway.artifactSite.enabled) {
 		const listen = await reserveProfileArtifactSiteListen({
 			home: beemaxHome(),
@@ -218,12 +233,15 @@ export async function runGateway(config: BeeMaxConfig): Promise<void> {
 			? artifactSiteLocalBaseUrl(listen)
 			: config.gateway.artifactSite.publicBaseUrl;
 		artifactSite = new CaddyArtifactSite({
+			agentDir: config.paths.agentDir,
 			workspace: config.paths.cwd,
+			snapshotRoot: artifactSnapshotRoot,
 			storageRoot: join(config.paths.agentDir, "artifact-site", "public"),
 			runtimeRoot: join(config.paths.agentDir, "artifact-site", "runtime"),
 			publicBaseUrl,
-			command: config.gateway.artifactSite.command,
+			command: resolveCaddyHostCommand(process.env),
 			listen,
+			hostEnvironment: caddyHostEnvironment(process.env),
 		});
 		await artifactSite.start();
 		startupCleanup.push(() => artifactSite?.stop());
@@ -251,9 +269,9 @@ export async function runGateway(config: BeeMaxConfig): Promise<void> {
 	const automation = new AutomationStore(config.memory.dbPath);
 	const automationDelivery = new AutomationDeliveryWorker(automation, deliveryPort);
 	profileStartupCleanup.push(() => automation.close());
-	const mcp = new McpManager();
+	const mcp = new McpManager({ environment: profileEnvironmentSnapshot(config) });
 	profileStartupCleanup.push(() => mcp.close());
-	const mcpStatus = await mcp.connectAll(loadMcpConfig(config.mcp.configPath));
+	const mcpStatus = await mcp.connectAll(loadMcpConfig(config.mcp.configPath, config.mcp.profileHome ? { profileHome: config.mcp.profileHome } : {}));
 	for (const status of mcpStatus) {
 		if (status.connected) console.info(`[beemax] MCP ${status.name}: connected (${status.tools.length} tools, ${status.resources} resources, ${status.prompts} prompts)`);
 		else console.warn(`[beemax] MCP ${status.name}: unavailable (${status.error})`);
@@ -298,6 +316,8 @@ export async function runGateway(config: BeeMaxConfig): Promise<void> {
 		managedSkillLearning: persistence.managedSkillLearning,
 		capabilityProviderRuntime: capabilityProviders.runtime,
 		capabilityProviderEnvironment: capabilityProviders.environment,
+		skillEnvironment: profileEnvironmentSnapshot(config),
+		capabilityProviderIntegrityKey: capabilityProviders.artifactIntegrityKey,
 		compaction: config.context.compaction,
 		toolResultBudget: { maxEstimatedTokens: config.context.maxToolResultTokens },
 		compactionAudit: (event: ContextCompactionAuditEvent<SessionSource>) => recordGatewayEvent(config.paths.agentDir, "context_compaction", {
@@ -536,6 +556,7 @@ export async function runGateway(config: BeeMaxConfig): Promise<void> {
 			turnTimeoutMs: profileTurnTimeoutMs(config),
 			profileId: config.profile,
 			artifactWorkspace: config.paths.cwd,
+			artifactSnapshotRoot,
 			artifactPublisher: artifactSite,
 			bindingResolver,
 			ingress: profileHost,

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync, chmodSync } from "node:fs";
+import { mkdtempSync, mkdirSync, realpathSync, rmSync, writeFileSync, chmodSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import { LocalTesseractMediaAdapter, createLocalMediaUnderstandingAdapters, findExecutable, parseTesseractTsv } from "../dist/local-media-understanding.js";
@@ -15,7 +15,7 @@ test("findExecutable discovers an executable from PATH without invoking a shell"
 	writeFileSync(executable, "#!/bin/sh\nexit 0\n");
 	chmodSync(executable, 0o755);
 	try {
-		assert.equal(findExecutable("tesseract", { PATH: [join(root, "missing"), bin].join(delimiter) }), executable);
+		assert.equal(findExecutable("tesseract", { PATH: [join(root, "missing"), bin].join(delimiter) }), realpathSync(executable));
 		assert.equal(findExecutable("missing", { PATH: bin }), undefined);
 	} finally { rmSync(root, { recursive: true, force: true }); }
 });
@@ -25,6 +25,7 @@ test("local Tesseract adapter sends decoded image bytes over stdin and returns O
 	const adapter = new LocalTesseractMediaAdapter({
 		command: "/usr/bin/tesseract",
 		languages: "eng+chi_sim",
+		environment: { PATH: "/trusted/bin", LANG: "C.UTF-8", PROFILE_SECRET: "must-not-enter-ocr" },
 		run: async (input) => { calls.push(input); return { stdout: "level\tpage_num\tblock_num\tpar_num\tline_num\tword_num\tleft\ttop\twidth\theight\tconf\ttext\n5\t1\t1\t1\t1\t1\t0\t0\t10\t10\t96\t识别结果\n5\t1\t1\t1\t1\t2\t10\t0\t10\t10\t84\t88.00\n", stderr: "", exitCode: 0 }; },
 	});
 	const request = { text: "提取文字", images: [image], primaryModel: { id: "text", input: ["text"] } };
@@ -34,6 +35,7 @@ test("local Tesseract adapter sends decoded image bytes over stdin and returns O
 	assert.equal(calls.length, 1);
 	assert.deepEqual(calls[0].args, ["stdin", "stdout", "-l", "eng+chi_sim", "tsv"]);
 	assert.deepEqual(calls[0].stdin, Buffer.from("pixels"));
+	assert.deepEqual(calls[0].env, { PATH: "/trusted/bin", LANG: "C.UTF-8" });
 	assert.equal(result.outputs[0].content, "识别结果 88.00");
 	assert.equal(result.outputs[0].confidence, 0.9);
 });

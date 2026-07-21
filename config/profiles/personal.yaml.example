@@ -10,9 +10,9 @@ model:
 
 gateway:
   artifactSite:
-    enabled: false
-    # Use an absolute command path for launchd/systemd when Caddy is not on PATH.
-    # command: /opt/homebrew/bin/caddy
+    enabled: true
+    # If Caddy is not on PATH, set BEEMAX_ARTIFACT_SITE_COMMAND in the trusted
+    # Gateway service/host environment; Profile YAML and Profile .env are rejected.
     # Omit both values to use this Profile's stable loopback port.
     # listen: 127.0.0.1:18789
     # publicBaseUrl: http://127.0.0.1:18789/artifacts
@@ -35,8 +35,8 @@ mcp:
 
 capabilityProviders:
   installation:
-    enabled: false
-    allowedProviders: [] # e.g. [exa-mcporter]
+    enabled: true
+    allowedProviders: [exa-mcporter]
 
 # Set BEEMAX_WEKNORA_API_KEY in the Profile env file, never in YAML.
 knowledge:
@@ -52,7 +52,7 @@ mediaUnderstanding:
   auxiliaryVisionEnabled: true
   localOcr:
     enabled: true
-    # command: /usr/bin/tesseract
+    # The executable is host-owned via PATH or BEEMAX_LOCAL_OCR_COMMAND.
     # languages: eng+chi_sim
     timeoutMs: 30000
 

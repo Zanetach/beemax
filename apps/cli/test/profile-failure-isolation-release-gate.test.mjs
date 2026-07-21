@@ -8,7 +8,8 @@ test("Profile failure and capacity remain isolated behind independent production
 	const unit = renderSystemdService("/opt/beemax", "/usr/bin/node", "system", "beemax", "/srv/beemax");
 	assert.match(unit, /Description=BeeMax Agent profile %i/);
 	assert.match(unit, /Environment=BEEMAX_PROFILE=%i/);
-	assert.match(unit, /profiles\/%i\/\.env/);
+	assert.doesNotMatch(unit, /EnvironmentFile=.*profiles\/%i(?:\/\.env|\.env)/);
+	assert.match(unit, /EnvironmentFile=-"\/etc\/beemax\/%i\.env"/);
 	assert.match(unit, /gateway --profile %i/);
 	assert.match(unit, /Restart=on-failure/);
 	assert.match(unit, /MemoryMax=2G/);

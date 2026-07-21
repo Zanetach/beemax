@@ -126,3 +126,28 @@ test("Feishu disconnect force-closes the WebSocket and marks the adapter unavail
 	assert.equal(adapter.isConnected, false);
 	assert.deepEqual(closes, [{ force: true }]);
 });
+
+test("Feishu leaves the SDK handshake watchdog disabled because it can emit an unhandled socket error", async () => {
+	let wsOptions;
+	const adapter = new FeishuAdapter(
+		{ ...settings },
+		(operation) => operation({
+			appId: "app",
+			appSecret: "secret",
+		}),
+		{
+			createClient: () => ({
+				request: async () => ({ code: 0, bot: { open_id: "bot" } }),
+			}),
+			createWsClient: (options) => {
+				wsOptions = options;
+				return { start: async () => {}, close: () => {} };
+			},
+		},
+	);
+
+	assert.equal(await adapter.connect(), true);
+	assert.ok(wsOptions, "the injected WebSocket client must be used");
+	assert.equal(wsOptions.handshakeTimeoutMs, undefined);
+	await adapter.disconnect();
+});

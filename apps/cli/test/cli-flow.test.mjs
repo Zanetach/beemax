@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { cp, mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import test from "node:test";
@@ -12,13 +12,21 @@ import { runSetup } from "../dist/setup.js";
 import { ensureBuiltinTasks, installedVersion, taskLedgerContextForQuestion } from "../dist/runtime-facts.js";
 import { MemoryStore } from "@beemax/memory";
 import { FileCredentialVault } from "@beemax/core";
+import { installProfileExaMcporter } from "../dist/capability-provider-composition.js";
 
 const cli = resolve("apps/cli/dist/cli.js");
+
+async function createReleaseFixtureRoot(prefix) {
+	const root = await mkdtemp(join(tmpdir(), prefix));
+	await cp(resolve("skills/builtin"), join(root, "skills", "builtin"), { recursive: true });
+	return root;
+}
 
 test("CLI supports init, model setup, Feishu channel setup, listing, and safe deletion", async () => {
 	const root = await mkdtemp(join(tmpdir(), "beemax-cli-"));
 	const home = await mkdtemp(join(tmpdir(), "beemax-home-"));
 	const invocationDir = await mkdtemp(join(tmpdir(), "beemax-invoke-"));
+	await cp(resolve("skills/builtin"), join(root, "skills", "builtin"), { recursive: true });
 	const run = (args, env = {}) => {
 		const inherited = { ...process.env };
 		for (const key of [
@@ -40,6 +48,44 @@ test("CLI supports init, model setup, Feishu channel setup, listing, and safe de
 
 	assert.match(run(["init", "--profile", "personal"]), /Created BeeMax Agent 'personal'/);
 	assert.match(run(["--help"]), /persistent personal agent/);
+	assert.match(run(["skills", "list", "--profile", "personal"]), /agent-reach[\s\S]*pi-web-access/);
+	const standardWeb = JSON.parse(run(["capabilities", "status", "--profile", "personal", "--json"]));
+	assert.deepEqual(standardWeb.components.map(({ id, state }) => ({ id, state })), [
+		{ id: "exa-web-search", state: "ready_on_demand" },
+		{ id: "agent-reach", state: "installed" },
+		{ id: "pi-web-access", state: "installed" },
+	]);
+	assert.match(run(["capabilities", "install", "agent-reach", "--profile", "personal"]), /Installed BeeMax-native Agent Reach/);
+	assert.match(run(["capabilities", "install", "pi-web-access", "--profile", "personal"]), /Verified native Pi Web Access/);
+	await installProfileExaMcporter({
+		profileId: "personal",
+		agentDir: join(home, "profiles", "personal"),
+		installation: { enabled: true, allowedProviders: ["exa-mcporter"] },
+		integrityKey: Buffer.from((await readFile(join(home, "profiles", "personal", "state", "credential-vault.key"), "utf8")).trim(), "base64"),
+		runCommand: async (_command, _args, options) => {
+			const entrypoint = join(options.cwd, "node_modules", "mcporter", "dist");
+			await mkdir(entrypoint, { recursive: true });
+			await writeFile(join(entrypoint, "cli.js"), "console.log('{}')");
+		},
+	});
+	assert.match(run(["capabilities", "install", "exa-web-search", "--profile", "personal"]), /Installed and verified the pinned Exa MCP adapter/);
+	assert.match(run(["capabilities", "install", "standard-web", "--profile", "personal"]), /Installed standard-web runtime/);
+	const agentReachPath = join(home, "profiles", "personal", "skills", "agent-reach", "SKILL.md");
+	const packagedAgentReach = await readFile(agentReachPath, "utf8");
+	await writeFile(agentReachPath, "---\nname: agent-reach\ndescription: External same-name Skill.\n---\nRun an external CLI.\n");
+	assert.throws(
+		() => run(["capabilities", "install", "agent-reach", "--profile", "personal"]),
+		/differs from BeeMax's packaged revision/,
+	);
+	await writeFile(agentReachPath, packagedAgentReach);
+	const profileEnvPath = join(home, "profiles", "personal", ".env");
+	await writeFile(profileEnvPath, `${await readFile(profileEnvPath, "utf8")}BEEMAX_CHROME_EXECUTABLE=${JSON.stringify(join(root, "missing-chrome"))}\n`, { mode: 0o600 });
+	// A Profile .env cannot choose the browser executable. A trusted host value
+	// remains authoritative and lets this CLI flow fail without spawning Chrome.
+	assert.throws(
+		() => run(["capabilities", "start", "pi-web-access", "--profile", "personal"], { BEEMAX_CHROME_EXECUTABLE: join(root, "trusted-host-missing-chrome") }),
+		/Chrome\/Chromium is not installed or executable/,
+	);
 	assert.match(run(["model", "list"]), /Anthropic/);
 	assert.equal(run(["agent", "list"]).trim(), "personal");
 	assert.throws(
@@ -109,7 +155,7 @@ test("CLI supports init, model setup, Feishu channel setup, listing, and safe de
 	assert.equal(config.model.apiKey, "custom-key");
 	assert.equal(readCredential(config, config.gateway.channels.find((channel) => channel.adapter === "feishu")).appSecret, "feishu-key");
 	assert.doesNotMatch(JSON.stringify(config.gateway), /feishu-key/);
-	assert.match(await readFile(join(home, "profiles", "personal", "config.yaml"), "utf8"), /gateway:\n\s+feishu:/);
+	assert.match(await readFile(join(home, "profiles", "personal", "config.yaml"), "utf8"), /gateway:\n\s+artifactSite:\n\s+enabled: true\n\s+feishu:/u);
 	assert.equal(config.paths.agentDir, join(home, "profiles", "personal"));
 
 	assert.match(run(["profile", "delete", "personal", "--yes"]), /Runtime data was preserved/);
@@ -141,7 +187,7 @@ test("fact-sensitive chat questions receive task and installed-version facts, no
 });
 
 test("unified setup configures an isolated Profile and Feishu gateway non-interactively", async () => {
-	const root = await mkdtemp(join(tmpdir(), "beemax-setup-"));
+	const root = await createReleaseFixtureRoot("beemax-setup-");
 	const home = await mkdtemp(join(tmpdir(), "beemax-home-"));
 	const previousRoot = process.env.BEEMAX_ROOT;
 	const previousHome = process.env.BEEMAX_HOME;
@@ -210,7 +256,7 @@ test("unified setup configures an isolated Profile and Feishu gateway non-intera
 });
 
 test("setup keeps the generated SOUL unless the user explicitly supplies a custom identity", async () => {
-	const root = await mkdtemp(join(tmpdir(), "beemax-default-soul-"));
+	const root = await createReleaseFixtureRoot("beemax-default-soul-");
 	const home = await mkdtemp(join(tmpdir(), "beemax-default-soul-home-"));
 	const previousRoot = process.env.BEEMAX_ROOT;
 	const previousHome = process.env.BEEMAX_HOME;
@@ -235,7 +281,7 @@ test("setup keeps the generated SOUL unless the user explicitly supplies a custo
 });
 
 test("base setup creates a local Agent that can be used before any Gateway exists", async () => {
-	const root = await mkdtemp(join(tmpdir(), "beemax-local-setup-"));
+	const root = await createReleaseFixtureRoot("beemax-local-setup-");
 	const home = await mkdtemp(join(tmpdir(), "beemax-local-home-"));
 	const previousRoot = process.env.BEEMAX_ROOT;
 	const previousHome = process.env.BEEMAX_HOME;
@@ -259,7 +305,7 @@ test("base setup creates a local Agent that can be used before any Gateway exist
 });
 
 test("Feishu Gateway manual fallback is guided and keeps safe WebSocket defaults", async () => {
-	const root = await mkdtemp(join(tmpdir(), "beemax-wizard-root-"));
+	const root = await createReleaseFixtureRoot("beemax-wizard-root-");
 	const home = await mkdtemp(join(tmpdir(), "beemax-wizard-home-"));
 	const previousRoot = process.env.BEEMAX_ROOT;
 	const previousHome = process.env.BEEMAX_HOME;
@@ -303,7 +349,7 @@ test("Feishu Gateway manual fallback is guided and keeps safe WebSocket defaults
 });
 
 test("Feishu Gateway QR setup stores generated credentials and authorizes only the scanning user", async () => {
-	const root = await mkdtemp(join(tmpdir(), "beemax-qr-wizard-root-"));
+	const root = await createReleaseFixtureRoot("beemax-qr-wizard-root-");
 	const home = await mkdtemp(join(tmpdir(), "beemax-qr-wizard-home-"));
 	const previousRoot = process.env.BEEMAX_ROOT;
 	const previousHome = process.env.BEEMAX_HOME;
@@ -336,7 +382,7 @@ test("Feishu Gateway QR setup stores generated credentials and authorizes only t
 });
 
 test("Feishu Gateway setup keeps an existing configuration unless replacement is explicit", async () => {
-	const root = await mkdtemp(join(tmpdir(), "beemax-keep-root-"));
+	const root = await createReleaseFixtureRoot("beemax-keep-root-");
 	const home = await mkdtemp(join(tmpdir(), "beemax-keep-home-"));
 	const previousRoot = process.env.BEEMAX_ROOT;
 	const previousHome = process.env.BEEMAX_HOME;

@@ -1,9 +1,26 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { FeishuAdapter, FeishuInteractionPresenter } from "../dist/index.js";
+import { CardSession, FeishuAdapter, FeishuInteractionPresenter, renderCard } from "../dist/index.js";
 import { interactionCompletionDeliveryKey } from "@beemax/core";
 
 const source = { platform: "feishu", chatId: "chat", chatType: "dm", userId: "user", messageId: "incoming", replyToMessageId: "incoming" };
+
+test("Feishu CardKit element IDs satisfy the platform naming limit", () => {
+	const session = new CardSession();
+	for (let index = 0; index < 12; index++) {
+		session.apply("notice.updated", { id: `history-${index}`, label: "历史进度", status: "info", message: `记录 ${index}` });
+	}
+	session.apply("thinking.delta", { text: "正在分析问题" });
+	session.apply("tool.updated", { tool_id: "search", name: "web_search", status: "completed", detail: "已找到资料" });
+	session.apply("notice.updated", { id: "notice", label: "进度", status: "info", message: "正在整理结果" });
+	const card = renderCard(session, { reasoningDisplay: "raw" });
+	const elementIds = collectElementIds(card);
+
+	assert.ok(elementIds.length > 0);
+	for (const elementId of elementIds) {
+		assert.match(elementId, /^[A-Za-z][A-Za-z0-9_]{0,19}$/, `invalid Feishu CardKit element_id: ${elementId}`);
+	}
+});
 
 test("Feishu long-answer fallback respects the normal full-card refresh cadence", async () => {
 	const sentAt = [];
@@ -176,14 +193,14 @@ test("Feishu long document results stay compact and expose Profile Caddy actions
 	const serialized = JSON.stringify(finalCard);
 	assert.ok(serialized.length < 15_000, "long document cards should remain a compact summary");
 	assert.ok(Buffer.byteLength(serialized, "utf8") < 30_000, "long document cards must stay below Feishu's payload limit");
-	assert.match(serialized, /完整内容请通过下方文件打开/);
+	assert.match(serialized, /完整回答已另行发送，文件可通过下方按钮打开/);
 	const buttons = finalCard.body.elements.filter((element) => element.tag === "button");
 	assert.deepEqual(buttons.map((button) => button.text.content), ["在线打开 report.html", "下载 report.docx"]);
 	assert.deepEqual(buttons.map((button) => button.behaviors[0].default_url), [
 		"http://127.0.0.1:18888/artifacts/report.html",
 		"http://127.0.0.1:18888/artifacts/report.docx",
 	]);
-	assert.deepEqual(textDeliveries, []);
+	assert.deepEqual(textDeliveries, [longAnswer]);
 	await turn.close(false);
 });
 
@@ -406,6 +423,17 @@ test("Feishu work progress degrades to mandatory text delivery when CardKit is u
 	});
 	assert.deepEqual(texts, ["季度复盘 · 1/3"]);
 });
+
+function collectElementIds(value, results = []) {
+	if (Array.isArray(value)) {
+		for (const item of value) collectElementIds(item, results);
+		return results;
+	}
+	if (!value || typeof value !== "object") return results;
+	if (typeof value.element_id === "string") results.push(value.element_id);
+	for (const nested of Object.values(value)) collectElementIds(nested, results);
+	return results;
+}
 
 async function waitFor(predicate, timeoutMs) {
 	const deadline = Date.now() + timeoutMs;

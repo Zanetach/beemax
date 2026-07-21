@@ -21,12 +21,14 @@ test("source installer keeps native dependency scripts and pins CLI commands to 
 	assert.match(installer, /apps\/cli\/dist\/cli\.js/);
 });
 
-test("media dependency installer auto-installs OCR and CJK report dependencies", async () => {
+test("document dependency installer auto-installs Caddy, OCR, and CJK report dependencies", async () => {
 	const installer = await readFile("scripts/install-media-dependencies.sh", "utf8");
 	assert.match(installer, /BEEMAX_INSTALL_MEDIA_DEPS/);
 	assert.match(installer, /BEEMAX_TESSERACT:-tesseract/);
 	assert.match(installer, /BEEMAX_FC_LIST:-fc-list/);
+	assert.match(installer, /BEEMAX_CADDY:-caddy/);
 	assert.match(installer, /command -v "\$\{TESSERACT_BIN\}"/);
+	assert.match(installer, /command -v "\$\{CADDY_BIN\}"/);
 	assert.match(installer, /tesseract-ocr/);
 	assert.match(installer, /tesseract-ocr-eng/);
 	assert.match(installer, /tesseract-ocr-chi-sim/);
@@ -43,13 +45,16 @@ test("media dependency installer executes the Ubuntu package plan and verifies T
 		const aptGet = join(fixture, "apt-get");
 		const tesseract = join(fixture, "tesseract");
 		const fcList = join(fixture, "fc-list");
+		const caddy = join(fixture, "caddy");
 		const fontReady = join(fixture, "font-ready");
 		const calls = join(fixture, "calls.log");
 		await writeFile(aptGet, `#!/usr/bin/env bash
 printf '%s\\n' "$*" >> "$BEEMAX_TEST_CALLS"
 if [[ "$1" == "install" ]]; then
-  printf '#!/usr/bin/env bash\\nprintf "tesseract 5.5.0\\n"\\n' > "$BEEMAX_TEST_TESSERACT"
-  chmod 0755 "$BEEMAX_TEST_TESSERACT"
+	  printf '#!/usr/bin/env bash\\nprintf "tesseract 5.5.0\\n"\\n' > "$BEEMAX_TEST_TESSERACT"
+	  chmod 0755 "$BEEMAX_TEST_TESSERACT"
+	  printf '#!/usr/bin/env bash\\nprintf "v2.11.4\\n"\\n' > "$BEEMAX_TEST_CADDY"
+	  chmod 0755 "$BEEMAX_TEST_CADDY"
   touch "$BEEMAX_TEST_FONT_READY"
 fi
 `);
@@ -68,7 +73,9 @@ fi
 				BEEMAX_INSTALL_OS: "ubuntu",
 				BEEMAX_TESSERACT: tesseract,
 				BEEMAX_FC_LIST: fcList,
+				BEEMAX_CADDY: caddy,
 				BEEMAX_TEST_TESSERACT: tesseract,
+				BEEMAX_TEST_CADDY: caddy,
 				BEEMAX_TEST_FONT_READY: fontReady,
 				BEEMAX_TEST_CALLS: calls,
 				PATH: `${fixture}:${process.env.PATH}`,
@@ -77,8 +84,8 @@ fi
 		assert.equal(result.status, 0, result.stderr);
 		const packageCalls = await readFile(calls, "utf8");
 		assert.match(packageCalls, /^update$/m);
-		assert.match(packageCalls, /install -y --no-install-recommends tesseract-ocr tesseract-ocr-eng tesseract-ocr-chi-sim fonts-noto-cjk/);
-		assert.match(result.stdout, /media dependency installed: tesseract 5\.5\.0/);
+		assert.match(packageCalls, /install -y --no-install-recommends caddy tesseract-ocr tesseract-ocr-eng tesseract-ocr-chi-sim fonts-noto-cjk/);
+		assert.match(result.stdout, /document dependencies installed: v2\.11\.4; tesseract 5\.5\.0/);
 	} finally {
 		await rm(fixture, { recursive: true, force: true });
 	}
@@ -90,10 +97,13 @@ test("media dependency installer provisions a CJK font when Tesseract is already
 		const aptGet = join(fixture, "apt-get");
 		const tesseract = join(fixture, "tesseract");
 		const fcList = join(fixture, "fc-list");
+		const caddy = join(fixture, "caddy");
 		const fontReady = join(fixture, "font-ready");
 		const calls = join(fixture, "calls.log");
 		await writeFile(tesseract, "#!/usr/bin/env bash\nprintf 'tesseract 5.5.0\\n'\n");
 		await chmod(tesseract, 0o755);
+		await writeFile(caddy, "#!/usr/bin/env bash\nprintf 'v2.11.4\\n'\n");
+		await chmod(caddy, 0o755);
 		await writeFile(fcList, `#!/usr/bin/env bash
 [[ -f "$BEEMAX_TEST_FONT_READY" ]] && printf 'Noto Sans CJK SC\\n'
 `);
@@ -115,6 +125,7 @@ fi
 				BEEMAX_INSTALL_OS: "ubuntu",
 				BEEMAX_TESSERACT: tesseract,
 				BEEMAX_FC_LIST: fcList,
+				BEEMAX_CADDY: caddy,
 				BEEMAX_TEST_FONT_READY: fontReady,
 				BEEMAX_TEST_CALLS: calls,
 				PATH: `${fixture}:${process.env.PATH}`,

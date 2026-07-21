@@ -8,6 +8,7 @@ import { promisify } from "node:util";
 import { BeeMaxAgentRuntime, createSkillTools, createWebTools, ModelBackedSemanticCapabilityPort, SemanticCapabilityRanker } from "@beemax/core";
 import { createProfileCapabilityProviderBundle } from "../dist/capability-provider-composition.js";
 import { createProfile } from "../dist/profile-config.js";
+import { loadConfig } from "../dist/config.js";
 
 const fixtureRoot = resolve("apps/cli/test/fixtures/cold-profile-root");
 const hermeticMcporter = resolve("apps/cli/test/fixtures/hermetic-mcporter.mjs");
@@ -20,18 +21,26 @@ const semanticAdjudication = Object.freeze({
 
 test("a cold Profile installs a Skill, acquires its missing Provider, resumes the unchanged Objective, and verifies real receipts", async () => {
 	const home = await mkdtemp(join(tmpdir(), "beemax-cold-fulfillment-home-"));
+	const root = join(home, "fixture-root");
+	await cp(fixtureRoot, root, { recursive: true });
+	for (const name of ["agent-reach", "pi-web-access"]) {
+		await cp(resolve("skills", "builtin", name), join(root, "skills", "builtin", name), { recursive: true });
+	}
 	const source = { platform: "cli", chatId: "cold-fulfillment", chatType: "dm", userId: "owner" };
 	const rawRequest = "Create a hermetic current-source research brief and verify HERMETIC-SOURCE-42 without using remembered facts.";
 	let runtime;
 	try {
-		const paths = await createProfile("cold", { home, root: fixtureRoot });
+		const paths = await createProfile("cold", { home, root });
 		const installedSkill = join(paths.homePath, "skills", "hermetic-research", "SKILL.md");
 		assert.match(await readFile(installedSkill, "utf8"), /hermetic current-source research brief/i);
 		assert.equal(await pathExists(join(paths.homePath, "providers", "exa-mcporter", "current")), false);
+		const profileConfig = loadConfig(paths.configPath, "cold", { home, root });
+		assert.deepEqual(profileConfig.capabilityProviders.installation, { enabled: true, allowedProviders: ["exa-mcporter"] });
 
 		const providerBundle = createProfileCapabilityProviderBundle({
 			profileId: "cold", agentDir: paths.homePath,
-			installation: { enabled: true, allowedProviders: ["exa-mcporter"] },
+			installation: profileConfig.capabilityProviders.installation,
+			integrityKey: Buffer.from(profileConfig.credentials.key, "base64"),
 			environment: { PATH: process.env.PATH, LANG: "C.UTF-8" },
 			runCommand: async (_command, args, options) => {
 				assert.deepEqual(args, ["ci", "--ignore-scripts", "--no-audit", "--no-fund", "--omit=dev"]);
@@ -40,7 +49,7 @@ test("a cold Profile installs a Skill, acquires its missing Provider, resumes th
 				await cp(hermeticMcporter, destination);
 			},
 		});
-		const webSearch = createWebTools({ env: providerBundle.environment }).find((tool) => tool.name === "web_search");
+		const webSearch = createWebTools({ env: providerBundle.environment, providerArtifactIntegrityKey: providerBundle.artifactIntegrityKey }).find((tool) => tool.name === "web_search");
 		assert.ok(webSearch);
 		const capability = {
 			name: webSearch.name, description: webSearch.description, parameters: webSearch.parameters, kind: "tool",

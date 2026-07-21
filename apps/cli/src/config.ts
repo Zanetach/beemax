@@ -5,9 +5,9 @@
  * Channel Secrets are resolved from protected Profile sources, never YAML.
  */
 
-import { existsSync, readFileSync } from "node:fs";
+import { closeSync, constants, fstatSync, lstatSync, openSync, readFileSync, realpathSync } from "node:fs";
 import { createHash } from "node:crypto";
-import { isAbsolute, join, resolve } from "node:path";
+import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import { parse as parseYaml } from "yaml";
 import { readEnvFileSync } from "./env-file.ts";
 import { beemaxRoot, resolveProfileLocation, validateProfileName } from "./profile-home.ts";
@@ -16,7 +16,8 @@ import { providerApiKeyEnv } from "./provider-resolver.ts";
 import type { MemoryMembership } from "./memory-membership.ts";
 import type { FeishuActivationSettings, FeishuGroupRule } from "@beemax/channel-feishu";
 import { DEFAULT_DOCKER_SANDBOX_IMAGE, DEFAULT_RUNTIME_RESOURCE_LIMITS, resolveRuntimeTaskConcurrency } from "@beemax/core";
-import { artifactSiteLocalBaseUrl, validateArtifactSiteListen, validateArtifactSitePublicBaseUrl } from "./artifact-site.ts";
+import { artifactSiteLocalBaseUrl, resolveCaddyHostCommand, validateArtifactSiteListen, validateArtifactSitePublicBaseUrl } from "./artifact-site.ts";
+import { resolveLocalOcrHostCommand } from "./local-media-understanding.ts";
 
 export { beemaxHome, beemaxRoot, validateProfileName } from "./profile-home.ts";
 
@@ -135,6 +136,8 @@ export interface BeeMaxConfig {
 	credentials: { vaultPath: string; keyPath: string; key?: string };
 	mcp: {
 		configPath: string;
+		/** Present only for modern Profiles whose MCP manifest is confined to their own Home. */
+		profileHome?: string;
 	};
 	knowledge: {
 		enabled: boolean;
@@ -188,6 +191,7 @@ export interface BeeMaxConfig {
 		};
 	};
 	paths: {
+		profileHome: string;
 		agentDir: string;
 		cwd: string;
 		profileEnvPath: string;
@@ -195,9 +199,26 @@ export interface BeeMaxConfig {
 	};
 }
 
+export type ProfileEnvironmentSnapshot = Readonly<Record<string, string>>;
+
+const profileEnvironmentSnapshots = new WeakMap<BeeMaxConfig, ProfileEnvironmentSnapshot>();
+const PROFILE_EXECUTION_AMBIENT_KEYS = Object.freeze([
+	"PATH", "PATHEXT", "SystemRoot", "SYSTEMROOT", "WINDIR", "COMSPEC", "PROCESSOR_ARCHITECTURE", "SYSTEMDRIVE", "PROGRAMFILES",
+	"SHELL", "TERM", "LANG", "LANGUAGE", "LC_ALL", "LC_CTYPE", "LC_MESSAGES", "LC_COLLATE", "LC_MONETARY", "LC_NUMERIC", "LC_TIME",
+	"LC_PAPER", "LC_NAME", "LC_ADDRESS", "LC_TELEPHONE", "LC_MEASUREMENT", "LC_IDENTIFICATION", "TZ", "TMPDIR", "TMP", "TEMP",
+	"HOME", "USERPROFILE", "APPDATA", "LOCALAPPDATA",
+] as const);
+
 /** Objectives terminate only through completion, explicit cancellation, or a visible unrecoverable failure. */
 export function profileTurnTimeoutMs(_config: Pick<BeeMaxConfig, "subagents" | "execution">): null {
 	return null;
+}
+
+/** Return the hidden immutable environment authority captured by loadConfig for MCP execution. */
+export function profileEnvironmentSnapshot(config: BeeMaxConfig): ProfileEnvironmentSnapshot {
+	const snapshot = profileEnvironmentSnapshots.get(config);
+	if (!snapshot) throw new Error("Profile environment snapshot is unavailable; obtain BeeMaxConfig through loadConfig");
+	return snapshot;
 }
 
 export function loadConfig(configPath?: string, profile = "default"): BeeMaxConfig {
@@ -207,16 +228,17 @@ export function loadConfig(configPath?: string, profile = "default"): BeeMaxConf
 	const path = location.configPath;
 	const envPath = location.envPath;
 	let raw = "";
-	try {
-		raw = readFileSync(path, "utf8");
-	} catch {
-		// config file optional; env-only mode
+	if (location.isHome) raw = readStableProfileFile(path, location.homePath, "configuration", 1024 * 1024, false);
+	else {
+		try { raw = readFileSync(path, "utf8"); }
+		catch { /* legacy config file optional; env-only mode */ }
 	}
 	const cfg = (raw ? parseYaml(raw) : {}) as Partial<BeeMaxConfig> & { feishu?: Partial<FeishuConfig> };
 	// Profile credentials and runtime policy win over ambient shell variables.
 	// BEEMAX_HOME/PROFILE are resolved before this point and remain explicit routing inputs.
 	const profileEnv = readEnvFileSync(envPath);
 	const env = location.isHome ? profileEnv : process.env;
+	const mcpEnvironment = createProfileEnvironmentSnapshot(profileEnv, location.homePath);
 	const configuredChannels = parseGatewayChannels(cfg.gateway?.channels);
 	const configuredFeishuChannel = configuredChannels.find((channel) => channel.adapter === "feishu");
 	const configuredTelegramChannel = configuredChannels.find((channel) => channel.adapter === "telegram");
@@ -244,7 +266,7 @@ export function loadConfig(configPath?: string, profile = "default"): BeeMaxConf
 	const profileDataRoot = location.isHome
 		? location.homePath
 		: join(root, profile === "default" ? "data" : `data/profiles/${profile}`);
-	const storedSoul = location.isHome && existsSync(location.soulPath) ? readFileSync(location.soulPath, "utf8") : "";
+	const storedSoul = location.isHome ? readStableProfileFile(location.soulPath, location.homePath, "SOUL", 64 * 1024, true) : "";
 	const soul = resolveSoul(storedSoul || env.BEEMAX_SYSTEM_PROMPT || cfg.agent?.systemPrompt);
 	const feishuAllowedUsers = parseList(env.FEISHU_ALLOWED_USERS ?? configuredFeishu?.allowedUsers);
 	const configuredAdmins = parseList(env.FEISHU_ADMINS ?? configuredFeishu?.admins);
@@ -318,17 +340,25 @@ export function loadConfig(configPath?: string, profile = "default"): BeeMaxConf
 	};
 	const configuredArtifactSiteListen = env.BEEMAX_ARTIFACT_SITE_LISTEN ?? cfg.gateway?.artifactSite?.listen;
 	const artifactSiteListen = validateArtifactSiteListen(str(configuredArtifactSiteListen ?? defaultArtifactSiteListen(profile)));
-	const artifactSiteCommand = str(env.BEEMAX_ARTIFACT_SITE_COMMAND ?? cfg.gateway?.artifactSite?.command ?? defaultCaddyCommand());
-	if (!artifactSiteCommand || /[\u0000-\u001f\u007f]/u.test(artifactSiteCommand)) throw new Error("Invalid gateway.artifactSite.command");
+	if (Object.prototype.hasOwnProperty.call(cfg.gateway?.artifactSite ?? {}, "command")
+		|| Object.prototype.hasOwnProperty.call(profileEnv, "BEEMAX_ARTIFACT_SITE_COMMAND")) {
+		throw new Error("Caddy command must be configured by the trusted host environment, not Profile YAML or Profile .env");
+	}
+	const artifactSiteCommand = resolveCaddyHostCommand(process.env);
 	const configuredArtifactSitePublicBaseUrl = env.BEEMAX_ARTIFACT_SITE_PUBLIC_BASE_URL ?? cfg.gateway?.artifactSite?.publicBaseUrl;
 	const artifactSite: ArtifactSiteConfig = {
-		enabled: parseBool(env.BEEMAX_ARTIFACT_SITE_ENABLED ?? cfg.gateway?.artifactSite?.enabled ?? false),
+		enabled: parseBool(env.BEEMAX_ARTIFACT_SITE_ENABLED ?? cfg.gateway?.artifactSite?.enabled ?? true),
 		command: artifactSiteCommand,
 		listen: artifactSiteListen,
 		publicBaseUrl: validateArtifactSitePublicBaseUrl(str(configuredArtifactSitePublicBaseUrl ?? artifactSiteLocalBaseUrl(artifactSiteListen))),
 		automaticListen: configuredArtifactSiteListen === undefined,
 		automaticPublicBaseUrl: configuredArtifactSitePublicBaseUrl === undefined,
 	};
+	if (Object.prototype.hasOwnProperty.call(cfg.mediaUnderstanding?.localOcr ?? {}, "command")
+		|| Object.prototype.hasOwnProperty.call(profileEnv, "BEEMAX_LOCAL_OCR_COMMAND")) {
+		throw new Error("Local OCR command must be configured by the trusted host environment, not Profile YAML or Profile .env");
+	}
+	const localOcrCommand = resolveLocalOcrHostCommand(process.env);
 	const heartbeatPlatform = str(env.BEEMAX_HEARTBEAT_PLATFORM ?? cfg.automation?.heartbeat?.platform ?? channels.find((channel) => channel.enabled)?.adapter ?? "feishu");
 	const heartbeatInstances = channels.filter((channel) => channel.enabled && channel.adapter === heartbeatPlatform);
 	const heartbeatChannelInstanceId = optional(env.BEEMAX_HEARTBEAT_CHANNEL_INSTANCE_ID ?? cfg.automation?.heartbeat?.channelInstanceId) ?? (heartbeatInstances.length === 1 ? heartbeatInstances[0]!.id : undefined);
@@ -340,7 +370,9 @@ export function loadConfig(configPath?: string, profile = "default"): BeeMaxConf
 		// interactive report SLO; deterministic discovery continues the same Task.
 		timeoutMs: boundedConfiguredInteger(env.BEEMAX_CAPABILITY_COGNITION_TIMEOUT_MS ?? cfg.agent?.capabilityCognition?.timeoutMs, 12_000, 1_000, 60_000, "agent.capabilityCognition.timeoutMs"),
 	};
-	return {
+	const configuredMcpPath = str(env.BEEMAX_MCP_CONFIG ?? cfg.mcp?.configPath ?? (location.isHome ? "mcp.json" : profile === "default" ? "config/mcp.json" : `config/profiles/${profile}.mcp.json`));
+	const defaultProviderInstallation = providerInstallationDefaults(cfg.capabilityProviders?.installation);
+	const resolved: BeeMaxConfig = {
 		profile,
 		agent: {
 			systemPrompt: soul,
@@ -353,8 +385,8 @@ export function loadConfig(configPath?: string, profile = "default"): BeeMaxConf
 		},
 		capabilityProviders: {
 			installation: {
-				enabled: parseBool(env.BEEMAX_PROVIDER_INSTALLATION_ENABLED ?? cfg.capabilityProviders?.installation?.enabled ?? false),
-				allowedProviders: parseProviderIds(env.BEEMAX_PROVIDER_INSTALLATION_ALLOW ?? cfg.capabilityProviders?.installation?.allowedProviders),
+				enabled: parseBool(env.BEEMAX_PROVIDER_INSTALLATION_ENABLED ?? defaultProviderInstallation.enabled),
+				allowedProviders: parseProviderIds(env.BEEMAX_PROVIDER_INSTALLATION_ALLOW ?? defaultProviderInstallation.allowedProviders),
 			},
 		},
 		model: {
@@ -376,10 +408,15 @@ export function loadConfig(configPath?: string, profile = "default"): BeeMaxConf
 		credentials: {
 			vaultPath: resolveFrom(location.basePath, str(env.BEEMAX_CREDENTIAL_VAULT_PATH ?? join(profileDataRoot, "credentials.vault"))),
 			keyPath: join(profileDataRoot, "state", "credential-vault.key"),
-			key: optional(env.BEEMAX_CREDENTIAL_VAULT_KEY) ?? optional(readFileIfPresent(join(profileDataRoot, "state", "credential-vault.key"))),
+			key: optional(env.BEEMAX_CREDENTIAL_VAULT_KEY) ?? optional(location.isHome
+				? readStableProfileFile(join(profileDataRoot, "state", "credential-vault.key"), location.homePath, "Credential Vault key", 4_096, true)
+				: readFileIfPresent(join(profileDataRoot, "state", "credential-vault.key"))),
 		},
 		mcp: {
-			configPath: resolveFrom(location.basePath, str(env.BEEMAX_MCP_CONFIG ?? cfg.mcp?.configPath ?? (location.isHome ? "mcp.json" : profile === "default" ? "config/mcp.json" : `config/profiles/${profile}.mcp.json`))),
+			configPath: location.isHome
+				? resolveProfileMcpConfigPath(location.homePath, configuredMcpPath)
+				: resolveFrom(location.basePath, configuredMcpPath),
+			...(location.isHome ? { profileHome: location.homePath } : {}),
 		},
 		knowledge: {
 			enabled: parseBool(env.BEEMAX_KNOWLEDGE_ENABLED ?? cfg.knowledge?.enabled ?? false),
@@ -391,7 +428,7 @@ export function loadConfig(configPath?: string, profile = "default"): BeeMaxConf
 		mediaUnderstanding: {
 			localOcr: {
 				enabled: parseBool(env.BEEMAX_LOCAL_OCR_ENABLED ?? cfg.mediaUnderstanding?.localOcr?.enabled ?? true),
-				command: optional(env.BEEMAX_LOCAL_OCR_COMMAND ?? cfg.mediaUnderstanding?.localOcr?.command),
+				...(localOcrCommand ? { command: localOcrCommand } : {}),
 				languages: optional(env.BEEMAX_LOCAL_OCR_LANGUAGES ?? cfg.mediaUnderstanding?.localOcr?.languages),
 				timeoutMs: boundedNumber(env.BEEMAX_LOCAL_OCR_TIMEOUT_MS ?? cfg.mediaUnderstanding?.localOcr?.timeoutMs, 30_000, 1_000, 300_000),
 			},
@@ -441,17 +478,47 @@ export function loadConfig(configPath?: string, profile = "default"): BeeMaxConf
 			},
 		},
 		paths: {
+			profileHome: location.homePath,
 			agentDir: resolveFrom(location.basePath, str(env.BEEMAX_AGENT_DIR ?? cfg.paths?.agentDir ?? (location.isHome ? "." : join(profileDataRoot, "agent")))),
 			cwd: resolveFrom(location.basePath, str(env.BEEMAX_CWD ?? cfg.paths?.cwd ?? (location.isHome ? root : "."))),
 			profileEnvPath: envPath,
 			channelCredentialEnvironment: location.isHome ? "profile" : "ambient",
 		},
 	};
+	profileEnvironmentSnapshots.set(resolved, mcpEnvironment);
+	return resolved;
+}
+
+function createProfileEnvironmentSnapshot(profileEnv: Readonly<Record<string, string>>, profileHome: string): ProfileEnvironmentSnapshot {
+	const ambientCore = Object.fromEntries(PROFILE_EXECUTION_AMBIENT_KEYS.flatMap((key) => {
+		const value = process.env[key];
+		return typeof value === "string" ? [[key, value] as const] : [];
+	}));
+	const profileHomeEnvironment: Record<string, string> = {
+		HOME: profileHome,
+		USERPROFILE: profileHome,
+		XDG_CONFIG_HOME: join(profileHome, ".config"),
+		XDG_CACHE_HOME: join(profileHome, ".cache"),
+		XDG_DATA_HOME: join(profileHome, ".local", "share"),
+		APPDATA: join(profileHome, "AppData", "Roaming"),
+		LOCALAPPDATA: join(profileHome, "AppData", "Local"),
+	};
+	return Object.freeze({ ...ambientCore, ...profileEnv, ...profileHomeEnvironment });
 }
 
 function boundedNumber(value: unknown, fallback: number, min: number, max: number): number {
 	const parsed = typeof value === "number" ? value : Number(value);
 	return Number.isFinite(parsed) ? Math.max(min, Math.min(max, Math.trunc(parsed))) : fallback;
+}
+
+function providerInstallationDefaults(value: unknown): { enabled: boolean; allowedProviders: string[] } {
+	const installation = value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
+	const hasEnabled = typeof installation.enabled === "boolean";
+	const hasAllowlist = Array.isArray(installation.allowedProviders);
+	if (hasEnabled && hasAllowlist) return { enabled: installation.enabled as boolean, allowedProviders: installation.allowedProviders as string[] };
+	if (installation.enabled === false) return { enabled: false, allowedProviders: [] };
+	const allowed = hasAllowlist ? (installation.allowedProviders as unknown[]).filter((item): item is string => typeof item === "string") : [];
+	return { enabled: true, allowedProviders: [...new Set([...allowed, "exa-mcporter"])] };
 }
 function boundedConfiguredInteger(value: unknown, fallback: number, min: number, max: number, label: string): number {
 	if (value === undefined || value === null || value === "") return fallback;
@@ -475,7 +542,51 @@ function resolveFrom(root: string, path: string): string {
 	return isAbsolute(path) ? path : resolve(root, path);
 }
 
+function resolveProfileMcpConfigPath(profileHome: string, configuredPath: string): string {
+	const boundary = resolve(profileHome);
+	const candidate = resolve(boundary, configuredPath);
+	const relation = relative(boundary, candidate);
+	if (!relation || isAbsolute(relation) || relation === ".." || relation.startsWith(`..${sep}`)) {
+		throw new Error(`MCP config path must stay inside its Profile Home: ${configuredPath}`);
+	}
+	return candidate;
+}
+
 function readFileIfPresent(path: string): string { try { return readFileSync(path, "utf8"); } catch { return ""; } }
+
+function readStableProfileFile(path: string, profileHome: string, label: string, maxBytes: number, optional: boolean): string {
+	const boundary = resolve(profileHome);
+	const candidate = resolve(path);
+	const relation = relative(boundary, candidate);
+	if (!relation || isAbsolute(relation) || relation === ".." || relation.startsWith(`..${sep}`)) throw new Error(`Profile ${label} must stay inside its Profile Home: ${candidate}`);
+	let descriptor: number | undefined;
+	try {
+		const initialBoundary = lstatSync(boundary);
+		if (initialBoundary.isSymbolicLink() || !initialBoundary.isDirectory()) throw new Error(`Profile Home must be a real directory: ${boundary}`);
+		const initial = lstatSync(candidate);
+		if (initial.isSymbolicLink() || !initial.isFile() || initial.size > maxBytes) throw new Error(`Profile ${label} file is invalid: ${candidate}`);
+		const realBoundary = realpathSync(boundary);
+		const realCandidate = realpathSync(candidate);
+		const physicalRelation = relative(realBoundary, realCandidate);
+		if (!physicalRelation || isAbsolute(physicalRelation) || physicalRelation === ".." || physicalRelation.startsWith(`..${sep}`)) throw new Error(`Profile ${label} escapes its Profile Home: ${candidate}`);
+		descriptor = openSync(candidate, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+		const opened = fstatSync(descriptor);
+		if (!opened.isFile() || !sameFilesystemObject(opened, initial) || opened.size > maxBytes) throw new Error(`Profile ${label} changed while opening: ${candidate}`);
+		const content = readFileSync(descriptor);
+		const [finalBoundary, final, finalOpened] = [lstatSync(boundary), lstatSync(candidate), fstatSync(descriptor)];
+		if (finalBoundary.isSymbolicLink() || !finalBoundary.isDirectory() || !sameFilesystemObject(finalBoundary, initialBoundary) || realpathSync(boundary) !== realBoundary) throw new Error(`Profile Home changed while reading ${label}`);
+		if (final.isSymbolicLink() || !final.isFile() || !sameFilesystemObject(final, initial) || !sameFilesystemObject(finalOpened, opened) || final.size !== opened.size || realpathSync(candidate) !== realCandidate) throw new Error(`Profile ${label} changed while reading: ${candidate}`);
+		try { return new TextDecoder("utf-8", { fatal: true }).decode(content); }
+		catch { throw new Error(`Profile ${label} is not valid UTF-8: ${candidate}`); }
+	} catch (error) {
+		if (optional && (error as NodeJS.ErrnoException).code === "ENOENT") return "";
+		throw error;
+	} finally { if (descriptor !== undefined) closeSync(descriptor); }
+}
+
+function sameFilesystemObject(left: { dev: number; ino: number }, right: { dev: number; ino: number }): boolean {
+	return left.dev === right.dev && left.ino === right.ino;
+}
 
 const DEFAULT_HEARTBEAT_PROMPT = "Read HEARTBEAT.md if it exists in the workspace and follow it strictly. Review due reminders, scheduled work, recent failures, and anything that genuinely needs the user's attention. Do not infer or repeat stale tasks from old chats. If nothing needs attention, reply HEARTBEAT_OK.";
 
@@ -748,13 +859,6 @@ function isModelChoice(value: unknown): value is { provider: string; model: stri
 	return typeof candidate.provider === "string" && typeof candidate.model === "string" && (candidate.baseUrl === undefined || typeof candidate.baseUrl === "string") && (candidate.customProtocol === undefined || parseCustomProtocol(candidate.customProtocol) === candidate.customProtocol) && (candidate.contextWindow === undefined || Number.isFinite(candidate.contextWindow)) && (candidate.maxTokens === undefined || Number.isFinite(candidate.maxTokens));
 }
 function parseCustomProtocol(value: unknown): CustomProtocol { return value === "anthropic-messages" || value === "openai-responses" ? value : "openai-completions"; }
-
-function defaultCaddyCommand(): string {
-	for (const candidate of ["/opt/homebrew/bin/caddy", "/home/linuxbrew/.linuxbrew/bin/caddy"]) {
-		if (existsSync(candidate)) return candidate;
-	}
-	return "caddy";
-}
 
 function defaultArtifactSiteListen(profile: string): string {
 	if (profile === "default") return "127.0.0.1:8788";

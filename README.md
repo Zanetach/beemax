@@ -73,7 +73,9 @@ cd beemax
 ./scripts/install.sh
 ```
 
-On Ubuntu and macOS, installation also discovers or installs Tesseract OCR. Ubuntu installation additionally provisions Noto CJK fonts so Chinese HTML/PDF reports retain visible, extractable text. Set `BEEMAX_INSTALL_MEDIA_DEPS=0` only when the host image manages these dependencies separately.
+On Ubuntu and macOS, installation discovers or installs Caddy and Tesseract OCR. Ubuntu installation additionally provisions Noto CJK fonts so Chinese HTML/PDF reports retain visible, extractable text. Set `BEEMAX_INSTALL_MEDIA_DEPS=0` only when the host image manages all of these dependencies separately.
+
+Every Profile enables its own Caddy Artifact Site by default for integrity-checked HTML, PDF, and Word links. `beemax doctor` and Gateway use the same trusted-host command resolver, and Doctor verifies `caddy version` before startup. An explicit `gateway.artifactSite.enabled: false` remains available. Caddy receives only an allowlist of non-secret host launch variables—never the Profile environment or its Secrets—while HOME, XDG, and temporary state stay inside that Profile's private runtime directory.
 
 ### 2. Create a Profile
 
@@ -247,7 +249,7 @@ agent:
 
 Preference values range from `-1` to `1`. Capability cognition retries distinct Provider models without a cumulative token or cost ceiling; a timed-out model is not retried inside a smaller slice of the same deadline, while a fast structural response may receive one bounded repair. `maxModelAttempts` accepts `1`–`5`. The compact `maxTokens` value is only the output size requested for one bounded JSON decision, not an Agent Turn or Objective budget. `timeoutMs` bounds only this optional preflight lane; it never times out or abandons the Objective. Individual stalled network requests still fail visibly so another Provider or exact deterministic discovery route can continue the unchanged Objective. Neither setting authorizes description-overlap fallback or lexical degradation after malformed or empty semantic responses. Policy, Profile scope, Provider health, Effects, and the turn-scoped Tool Spec still decide whether a selected capability can execute.
 
-Missing Provider acquisition is disabled by default. Operators may pre-authorize exact Provider adapters per Profile; the mutating `capability_acquire` Tool executes directly after the configured Provider, Profile scope, Enterprise Policy, and Effect gates pass. Installation uses a pinned adapter in the Profile's private directory, and BeeMax resumes the unchanged Objective only after a health probe returns evidence:
+Every new Profile enables the `standard-web` pack and pre-authorizes only BeeMax's pinned `exa-mcporter` adapter. The mutating `capability_acquire` Tool executes directly after the configured Provider, Profile scope, Enterprise Policy, and Effect gates pass. Installation uses a pinned adapter in the Profile's private directory, and BeeMax resumes the unchanged Objective only after a health probe returns evidence. Operators can still disable acquisition or replace the exact allowlist in a Profile:
 
 ```yaml
 capabilityProviders:
@@ -256,7 +258,7 @@ capabilityProviders:
     allowedProviders: [exa-mcporter]
 ```
 
-The equivalent environment settings are `BEEMAX_PROVIDER_INSTALLATION_ENABLED=true` and `BEEMAX_PROVIDER_INSTALLATION_ALLOW=exa-mcporter`. BeeMax currently ships a pinned Exa/mcporter adapter for restoring `web_search`; arbitrary package names or model-authored shell commands are never accepted. The adapter installs a fixed mcporter dependency closure from BeeMax's SHA-256-verified `package-lock`, disables package lifecycle scripts, runs with a minimal Profile-scoped environment, and publishes through an atomic cross-process lock plus rename. Its manifest content-addresses the executable, configuration, and complete dependency tree; integrity is rechecked before health probes and searches. Interrupted or ambiguous installs leave a durable quarantine; the next acquisition first reconciles the isolated staging state, then retries without overlapping the previous installer. Missing configuration, denied authority, unhealthy installation, and unknown outcomes fail closed instead of producing an evergreen substitute.
+The equivalent environment settings are `BEEMAX_PROVIDER_INSTALLATION_ENABLED=true` and `BEEMAX_PROVIDER_INSTALLATION_ALLOW=exa-mcporter`; set the first to `false` for an explicit opt-out. BeeMax currently ships a pinned Exa/mcporter adapter for restoring `web_search`; arbitrary package names or model-authored shell commands are never accepted. The adapter installs a fixed mcporter dependency closure from BeeMax's SHA-256-verified `package-lock`, disables package lifecycle scripts, runs with a minimal Profile-scoped environment, and publishes through an atomic cross-process lock plus rename. Its manifest content-addresses the executable, configuration, and complete dependency tree; integrity is rechecked before health probes and searches. Interrupted or ambiguous installs leave a durable quarantine; the next acquisition first reconciles the isolated staging state, then retries without overlapping the previous installer. Missing configuration, denied authority, unhealthy installation, and unknown outcomes fail closed instead of producing an evergreen substitute.
 
 Every Capability decision receives a content-free cognition ID that correlates model usage, fallback telemetry, the execution trace, and the eventual verified, rejected, failed, cancelled, or unverified task outcome. Calibration reports keep lexical, frozen-semantic, and live-Provider results separate and measure Top-1, Top-K, required-capability recall, unnecessary activation, no-match precision, completion, latency, tokens, and cost. Versioned threshold trials cannot be promoted when authorization, false-positive, recall, or completion metrics regress.
 
@@ -400,10 +402,11 @@ mediaUnderstanding:
   auxiliaryVisionEnabled: true
   localOcr:
     enabled: true
-    # command: /usr/bin/tesseract
     # languages: eng+chi_sim
     timeoutMs: 30000
 ```
+
+The OCR executable is host-owned. If it is not on the trusted service `PATH`, set an absolute `BEEMAX_LOCAL_OCR_COMMAND` in the host/service environment; Profile YAML and Profile `.env` cannot choose executable code.
 
 Media output enters Pi as untrusted evidence with digest, provenance, confidence, warnings, and timing. Raw image bytes are not copied into receipts, telemetry, Task Ledger, or Memory.
 
@@ -415,12 +418,26 @@ BeeMax installs bundled Profile Skills and discovers eligible Pi Skills progress
 beemax skills list --profile personal
 beemax skills sync --profile personal
 beemax skills install pi-web-access --profile personal
+beemax skills inspect --from /absolute/path/customer-skill --json
+beemax skills install --from /absolute/path/customer-skill --sha256 <tree-digest> --profile personal
+beemax capabilities status --profile personal
+beemax capabilities install standard-web --profile personal
+beemax capabilities start pi-web-access --profile personal
+beemax capabilities stop pi-web-access --profile personal
 ```
 
-MCP supports stdio and Streamable HTTP servers. Use `${ENV_VAR}` references for secrets. Tools without an explicit read-only annotation are governed as mutations.
+New Profiles include the three-part `standard-web` pack: native `web_search`/`exa_web_search` with a Profile-local Exa MCP adapter acquired on first use, the BeeMax-native Agent Reach routing Skill, and native Pi-compatible CDP browser Tools plus the Pi Web Access Skill. Production Skill discovery is Profile-only; workspace and machine-global Skill directories are not inherited implicitly. Chrome asks the OS for a free loopback CDP port at startup, persists that endpoint inside the Profile, and proves it belongs to the same Profile data directory and a fresh runner/egress heartbeat before every connection. Its production runner forces HTTP(S), redirects, JavaScript requests and WebSockets through a loopback egress proxy that resolves and pins public destinations while rejecting private, link-local, metadata and reserved addresses. The browser is started only when needed, can be stopped explicitly, is stopped before Profile deletion, and never imports the user's normal Chrome profile or exposes Cookie values. `capabilities install standard-web` lets customers preinstall the Exa runtime; the Pi-compatible browser implementation is already bundled and the command verifies/backfills its complete Skill tree. Migration preserves an existing explicit Provider opt-out; running this install command folds environment overrides into the Profile policy and opts that Profile back in.
+
+MCP supports stdio and Streamable HTTP servers. `${ENV_VAR}` references are resolved from an immutable snapshot of the selected Profile's `.env`; the stdio child receives only safe runtime variables plus keys explicitly mapped in that server's `env`, so unrelated host or Profile secrets are not inherited. External Tools and resource/prompt calls are governed as mutations by default—even if the server self-reports `readOnlyHint`. Set `trustReadOnlyOperations: true` on that exact Profile-local server entry only after the operator has attested its read behavior; this changes effect classification, not the no-approval execution model.
+
+Customer Skills are installed from bounded local trees only after their complete canonical digest matches `--sha256`; existing same-name Skills are never overwritten. Self-service MCP installation accepts remote HTTPS descriptors (and loopback HTTP for a local managed service), rejects unknown fields and literal credentials, and requires credential fields to use `${ENV_VAR}` references. Because stdio MCP is host code under the Gateway OS account, only a trusted host operator may provision its fixed absolute command and working directory directly in the Profile manifest; Profile environment references are forbidden for both, and runtime rejects a command that is not a real, executable, non-symlink file. Executable integrity and updates remain the responsibility of trusted host package/deployment controls. Logical Profiles are not a substitute for separate OS users or containers when tenants are mutually untrusted.
+
+Streamable HTTP MCP connections resolve and pin a validated address again for every HTTPS redirect hop; explicitly local HTTP endpoints are confined to loopback addresses. Cross-origin redirects discard credential and session headers, and JSON/SSE response streams are capped at 16 MiB before the MCP SDK can parse them.
 
 ```bash
+beemax mcp add company-search --from /absolute/path/company-search.json --profile personal
 beemax mcp status --profile personal
+beemax mcp remove company-search --profile personal
 ```
 
 Web research supports provider-backed search plus SSRF-guarded extraction. WeKnora integration exposes only explicitly configured knowledge spaces through the read-only `knowledge_retrieve` tool.

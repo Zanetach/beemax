@@ -1,6 +1,6 @@
 # Separate group Conversations from Actors and route concrete Channel Instances
 
-BeeMax identifies a group Conversation by its Channel Instance, platform conversation, and optional Thread, without including the current Actor. Actor identity remains separate and continues to own personal responsibility, private Memory, approval, and Access Scope. Direct-message Conversations retain their peer identity.
+BeeMax identifies a group Conversation by its Channel Instance, platform conversation, and optional Thread, without including the current Actor. Actor identity remains separate and continues to own personal responsibility, private Memory, standing authority, and Access Scope. Direct-message Conversations retain their peer identity.
 
 BeeMax also treats a Channel Instance, rather than a platform name, as the concrete ingress and delivery route. Multiple instances may use the same platform Adapter; platform-only delivery remains compatible only when exactly one connected instance is unambiguous.
 

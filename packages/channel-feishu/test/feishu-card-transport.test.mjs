@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm, truncate, writeFile } from "node:fs/promises";
+import { mkdtemp, rename, rm, truncate, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import test from "node:test";
@@ -141,6 +141,42 @@ test("Feishu uploads and sends generic files, video, and Opus audio natively", a
 			assert.equal(calls[1][1].data.msg_type, messageType);
 			assert.deepEqual(JSON.parse(calls[1][1].data.content), { file_key: "file-key" });
 		}
+	} finally {
+		await rm(dir, { recursive: true, force: true });
+	}
+});
+
+test("Feishu retries an outbound upload from one bounded stable read when the source path is replaced", async () => {
+	const dir = await mkdtemp(join(tmpdir(), "beemax-feishu-media-retry-snapshot-"));
+	try {
+		const path = join(dir, "report.pdf");
+		const replacementPath = join(dir, "replacement.pdf");
+		const original = Buffer.from("%PDF-original-stable-upload");
+		const replacement = Buffer.alloc(original.byteLength, 0x58);
+		await writeFile(path, original);
+		const uploads = [];
+		let uploadAttempts = 0;
+		const adapter = new FeishuAdapter({ ...settings, retryBaseDelayMs: 0 });
+		adapter.client = { im: { v1: {
+			file: { create: async (payload) => {
+				const chunks = [];
+				if (Buffer.isBuffer(payload.data.file)) chunks.push(Buffer.from(payload.data.file));
+				else for await (const chunk of payload.data.file) chunks.push(Buffer.from(chunk));
+				uploads.push(Buffer.concat(chunks));
+				uploadAttempts += 1;
+				if (uploadAttempts === 1) {
+					await writeFile(replacementPath, replacement);
+					await rename(replacementPath, path);
+					throw Object.assign(new Error("socket hang up"), { code: "ECONNRESET" });
+				}
+				return { file_key: "file-key" };
+			} },
+			message: { create: async () => ({ code: 0, data: { message_id: "sent" } }) },
+		} } };
+
+		assert.deepEqual(await adapter.sendMedia("chat", path, "application/pdf"), { success: true, messageId: "sent" });
+		assert.equal(uploadAttempts, 2);
+		assert.deepEqual(uploads, [original, original]);
 	} finally {
 		await rm(dir, { recursive: true, force: true });
 	}

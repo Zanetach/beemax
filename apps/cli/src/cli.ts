@@ -10,7 +10,7 @@
  */
 
 import { buildMainAgentSystemPrompt, buildSubagentSystemPrompt, createSkillCandidateVerifier, createTaskVerifier, createVerifiedObjectiveMemoryPublisher, executeObjectiveDelivery, executePlannedTask, executeSubagentTask, mainAgentTools, readOnlyAgentTools, runGateway, runProfileAutomation, subagentExecutionTools, verificationAgentToolsForTask } from "./gateway.ts";
-import { beemaxHome, beemaxRoot, consumeChannelCredential, loadConfig, profileTurnTimeoutMs } from "./config.ts";
+import { beemaxHome, beemaxRoot, consumeChannelCredential, loadConfig, profileEnvironmentSnapshot, profileTurnTimeoutMs } from "./config.ts";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { backupSqliteDatabase, MemoryStore, memoryPersistencePorts, verifySqliteDatabase } from "@beemax/memory";
 import { runDoctor } from "./doctor.ts";
@@ -20,6 +20,7 @@ import {
 	configureModel,
 	createProfile,
 	deleteProfile,
+	enableStandardWebProvider,
 	ensureCredentialVaultKey,
 	listProfiles,
 	migrateProfile,
@@ -27,6 +28,7 @@ import {
 	removeTelegramChannel,
 	setActiveProfile,
 	syncBuiltinSkills,
+	syncBuiltinSkillsAtProfileHome,
 	testFeishuCredentials,
 	testTelegramCredentials,
 } from "./profile-config.ts";
@@ -51,7 +53,7 @@ import { executeFeishuSmoke } from "./feishu-smoke.ts";
 import { existsSync } from "node:fs";
 import { spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { access, copyFile, cp, lstat, mkdir, readFile, readdir, realpath, rm, stat } from "node:fs/promises";
+import { access, copyFile, cp, mkdir, readFile, readdir, rm, stat } from "node:fs/promises";
 import { createInterface } from "node:readline/promises";
 import { Writable } from "node:stream";
 import { loadMcpConfig, McpManager } from "@beemax/mcp-capability";
@@ -64,12 +66,14 @@ import { createLocalMediaUnderstandingAdapters } from "./local-media-understandi
 import { setProfileBindingEnabled } from "./profile-binding-config.ts";
 import { applyProfileChannelInstanceMigration, planProfileChannelInstanceMigration, rollbackProfileChannelInstanceMigration } from "./channel-instance-migration.ts";
 import { applyProfileSessionOwnershipMigration, planProfileSessionOwnershipMigration, rollbackProfileSessionOwnershipMigration } from "./session-ownership-migration.ts";
-import { createProfileCapabilityProviderBundle } from "./capability-provider-composition.ts";
+import { createProfileCapabilityProviderBundle, installProfileExaMcporter, profileProviderIntegrityKey } from "./capability-provider-composition.ts";
+import { assertStandardWebProfileBoundary, inspectStandardWebPack, inspectStandardWebSkill, installPiWebAccess, installStandardWebRuntime, type StandardWebPackStatus, type StandardWebSkillId } from "./profile-capability-pack.ts";
+import { startProfileBrowser, stopProfileBrowser } from "./profile-browser.ts";
+import { inspectLocalSkill, installLocalSkill } from "./profile-skill-install.ts";
+import { addProfileMcpServer, removeProfileMcpServer } from "./profile-mcp-config.ts";
 import { createLocalArtifactRuntime } from "./artifact-composition.ts";
 import { createInteractiveContractCognition } from "./interactive-contract-cognition.ts";
 import { admitLearningObjective as admitLearningObjectiveThroughRuntime } from "./learning-objective-composition.ts";
-
-const PI_SKILLS_BROWSER_TOOLS_COMMIT = "90bb51cae36515a648515b633a81c0c6efc8c74d";
 
 async function main(): Promise<void> {
 	const parsed = parseArgs(process.argv.slice(2));
@@ -169,6 +173,9 @@ async function main(): Promise<void> {
 		case "skills":
 			await runSkillsCommand(parsed);
 			break;
+		case "capabilities":
+			await runCapabilitiesCommand(parsed);
+			break;
 		case "mcp":
 			await runMcpCommand(parsed, getConfig());
 			break;
@@ -247,8 +254,9 @@ Commands:
   update     Update the installed BeeMax release, preserving all Profiles
   profile    create | list | show | path | use | migrate | backup | delete
   migration  channel-instance | session plan | apply | rollback (explicit legacy ownership)
-  skills     list | sync (prepackaged Profile Skills)
-  mcp        status (probe configured MCP servers)
+  skills     list | sync | inspect --from <path> | install pi-web-access | install --from <path> --sha256 <digest>
+  capabilities status | install <standard-web|exa-web-search|agent-reach|pi-web-access> | start | stop pi-web-access
+  mcp        status | add <name> --from <descriptor.json> | remove <name>
   memory     status | list | candidates | claims | explain <id> | compile | promote <id> | reject <id> | forget <id>
   autonomy   status | promote <level> | stop <level> | rollback <level> | resume <level> (evidence-gated Profile rollout)
   credentials add | list | rotate | remove (encrypted Profile Credential Vault)
@@ -330,7 +338,7 @@ function parseArgs(args: string[]): ParsedArgs {
 	return parsed;
 }
 
-const BOOLEAN_OPTIONS = new Set(["yes", "require-mention", "no-require-mention", "non-interactive", "system", "all", "open", "help", "deep", "follow", "full", "compact", "plain", "no-alt-screen"]);
+const BOOLEAN_OPTIONS = new Set(["yes", "require-mention", "no-require-mention", "non-interactive", "system", "all", "open", "help", "deep", "follow", "full", "compact", "plain", "no-alt-screen", "json"]);
 
 function runGatewayStatus(config: ReturnType<typeof loadConfig>, scope: "user" | "system"): void {
 	const snapshot = inspectGateway(config.profile, config.paths.agentDir, scope, installedVersion());
@@ -409,6 +417,9 @@ async function runAgentCommand(parsed: ParsedArgs): Promise<void> {
 	}
 	if (action === "delete") {
 		if (parsed.options.yes !== true) throw new Error("Agent deletion requires --yes; runtime data is preserved");
+		const deleting = loadConfig(undefined, profile);
+		await assertStandardWebProfileBoundary({ profileHome: deleting.paths.profileHome, agentDir: deleting.paths.agentDir });
+		await stopProfileBrowser(deleting.paths.agentDir);
 		const paths = await deleteProfile(profile);
 		console.log(`Deleted Agent configuration '${profile}'. Runtime data was preserved at ${paths.dataPath}`);
 		return;
@@ -932,6 +943,9 @@ async function runProfileCommand(parsed: ParsedArgs): Promise<void> {
 	}
 	if (action === "delete") {
 		if (parsed.options.yes !== true) throw new Error("Profile deletion requires --yes; runtime data is preserved");
+		const deleting = loadConfig(explicitConfig, name);
+		await assertStandardWebProfileBoundary({ profileHome: deleting.paths.profileHome, agentDir: deleting.paths.agentDir });
+		await stopProfileBrowser(deleting.paths.agentDir);
 		const paths = await deleteProfile(name);
 		console.log(`Deleted Agent configuration '${name}'. Runtime data was preserved at ${paths.dataPath}`);
 		return;
@@ -966,40 +980,41 @@ async function runProfileCommand(parsed: ParsedArgs): Promise<void> {
 async function runSkillsCommand(parsed: ParsedArgs): Promise<void> {
 	const action = parsed.positionals[1] ?? "list";
 	const profile = selectedProfile(parsed);
-	const paths = resolveProfileLocation(profile, parsed.configPath);
+	const config = loadConfig(parsed.configPath, profile);
+	if (action === "inspect") {
+		const source = typeof parsed.options.from === "string" ? parsed.options.from : parsed.positionals[2];
+		if (!source) throw new Error("Usage: beemax skills inspect --from /absolute/path/to/skill [--json]");
+		const result = await inspectLocalSkill(source);
+		if (parsed.options.json === true) console.log(JSON.stringify(result));
+		else console.log(`${result.name}  sha256=${result.sha256}  files=${result.fileCount}  bytes=${result.totalBytes}`);
+		return;
+	}
 	if (action === "sync") {
-		await syncBuiltinSkills(profile);
+		await syncBuiltinSkills(profile, {}, config.paths.agentDir);
+		await assertStandardWebProfileBoundary({ profileHome: config.paths.profileHome, agentDir: config.paths.agentDir });
 		console.log(`Synced bundled Skills into Agent '${profile}' without replacing existing skills.`);
 		return;
 	}
 	if (action === "install") {
 		const name = parsed.positionals[2];
-		if (name !== "pi-web-access") throw new Error("Usage: beemax skills install pi-web-access --profile <name>");
-		const skillsRoot = join(paths.homePath, "skills");
-		const piSkillsRoot = join(skillsRoot, "pi-skills");
-		const browserTools = join(piSkillsRoot, "browser-tools");
-		const directoryExists = async (path: string): Promise<boolean> => {
-			const info = await lstat(path).catch(() => undefined);
-			return Boolean(info?.isDirectory() && !info.isSymbolicLink());
-		};
-		const rootExists = await lstat(piSkillsRoot).then(() => true).catch(() => false);
-		if (!await directoryExists(browserTools)) {
-			if (rootExists) throw new Error(`Untrusted or incomplete Pi Skills directory at ${piSkillsRoot}; remove it before reinstalling.`);
-			await mkdir(skillsRoot, { recursive: true, mode: 0o700 });
-			const clone = spawnSync("git", ["clone", "--depth", "1", "https://github.com/badlogic/pi-skills.git", piSkillsRoot], { stdio: "inherit" });
-			if (clone.status !== 0) throw new Error("Could not install official Pi Web Access skill. Ensure git and network access are available.");
+		const source = typeof parsed.options.from === "string" ? parsed.options.from : name !== "pi-web-access" ? name : undefined;
+		if (source) {
+			const expectedSha256 = typeof parsed.options.sha256 === "string" ? parsed.options.sha256 : "";
+			await assertStandardWebProfileBoundary({ profileHome: config.paths.profileHome, agentDir: config.paths.agentDir });
+			const result = await installLocalSkill({ profileHome: config.paths.profileHome, agentDir: config.paths.agentDir, source, expectedSha256 });
+			console.log(`Installed digest-pinned local Skill '${result.name}' for Profile '${profile}'.\nSHA-256: ${result.sha256}\nPath: ${result.destination}`);
+			return;
 		}
-		const [resolvedSkillsRoot, resolvedBrowserTools] = await Promise.all([realpath(skillsRoot), realpath(browserTools)]);
-		if (!resolvedBrowserTools.startsWith(`${resolvedSkillsRoot}/`)) throw new Error("Pi Web Access skill path escapes this Profile's Skills directory.");
-		const revision = spawnSync("git", ["-C", piSkillsRoot, "rev-parse", "HEAD"], { encoding: "utf8" });
-		const origin = spawnSync("git", ["-C", piSkillsRoot, "remote", "get-url", "origin"], { encoding: "utf8" });
-		if (revision.status !== 0 || revision.stdout.trim() !== PI_SKILLS_BROWSER_TOOLS_COMMIT || origin.status !== 0 || origin.stdout.trim() !== "https://github.com/badlogic/pi-skills.git") throw new Error(`Pi Skills installation is not the approved official revision ${PI_SKILLS_BROWSER_TOOLS_COMMIT}.`);
-		const install = spawnSync("npm", ["ci", "--omit=dev", "--ignore-scripts"], { cwd: resolvedBrowserTools, stdio: "inherit" });
-		if (install.status !== 0) throw new Error("Pi Web Access skill was downloaded but its npm dependencies could not be installed.");
-		console.log(`Installed official Pi Web Access (browser-tools) revision ${PI_SKILLS_BROWSER_TOOLS_COMMIT.slice(0, 12)} for Profile '${profile}'. Start Chrome with:\n${join(resolvedBrowserTools, "browser-start.js")} --profile`);
+		if (name !== "pi-web-access") throw new Error("Usage: beemax skills install pi-web-access | --from /absolute/path/to/skill --sha256 <digest> --profile <name>");
+		await syncBuiltinSkills(profile, {}, config.paths.agentDir);
+		await assertStandardWebProfileBoundary({ profileHome: config.paths.profileHome, agentDir: config.paths.agentDir });
+		await requirePackagedStandardWebSkill(config.paths.agentDir, "pi-web-access");
+		const result = await installPiWebAccess();
+		console.log(`${result.installed ? "Installed" : "Verified"} pinned Pi Web Access revision ${result.revision.slice(0, 12)} for Profile '${profile}'.\nRuntime: ${result.path}\nBrowser state is isolated to this Profile; no personal Chrome profile or Cookie values are copied.`);
 		return;
 	}
-	if (action !== "list") throw new Error("Usage: beemax skills [list | sync | install pi-web-access] --profile <name>");
+	if (action !== "list") throw new Error("Usage: beemax skills [list | sync | inspect --from <path> | install pi-web-access | install --from <path> --sha256 <digest>] --profile <name>");
+	await assertStandardWebProfileBoundary({ profileHome: config.paths.profileHome, agentDir: config.paths.agentDir });
 	const skills: Array<{ name: string; description: string; sha256: string }> = [];
 	const visit = async (directory: string, prefix = ""): Promise<void> => {
 		for (const entry of await readdir(directory, { withFileTypes: true })) {
@@ -1013,17 +1028,132 @@ async function runSkillsCommand(parsed: ParsedArgs): Promise<void> {
 		}
 	};
 	try {
-		await visit(join(paths.homePath, "skills"));
+		await visit(join(config.paths.agentDir, "skills"));
 	} catch { /* no Skills directory yet */ }
 	if (parsed.options.json === true) { console.log(JSON.stringify({ profile, skills: skills.sort((a, b) => a.name.localeCompare(b.name)) })); return; }
 	console.log(skills.sort((a, b) => a.name.localeCompare(b.name)).map((skill) => `${skill.name}  sha256=${skill.sha256.slice(0, 12)}  ${skill.description}`).join("\n") || "No Profile Skills installed. Run: beemax skills sync --profile " + profile);
 }
 
+async function runCapabilitiesCommand(parsed: ParsedArgs): Promise<void> {
+	if (parsed.configPath) throw new Error("beemax capabilities does not support --config; select a Profile with --profile");
+	const action = parsed.positionals[1] ?? "status";
+	const target = parsed.positionals[2];
+	const profile = selectedProfile(parsed);
+	if (!(await listProfiles()).includes(profile)) throw new Error(`Agent profile ${profile} does not exist`);
+	const paths = resolveProfileLocation(profile);
+	let config = loadConfig(undefined, profile);
+	let capabilityEnvironment = { ...profileEnvironmentSnapshot(config) };
+	let capabilityIntegrityKey = profileProviderIntegrityKey(config.credentials.key, profile);
+	let packInput = {
+		profile,
+		profileHome: paths.homePath,
+		agentDir: config.paths.agentDir,
+		installation: config.capabilityProviders.installation,
+		integrityKey: capabilityIntegrityKey,
+		environment: capabilityEnvironment,
+	};
+	if (action === "status") {
+		if (target) throw new Error("Usage: beemax capabilities status --profile <name> [--json]");
+		await assertStandardWebProfileBoundary({ profileHome: paths.homePath, agentDir: config.paths.agentDir });
+		const status = await inspectStandardWebPack(packInput);
+		if (parsed.options.json === true) console.log(JSON.stringify(status));
+		else console.log(renderStandardWebStatus(status));
+		return;
+	}
+	if (action === "start") {
+		if (target !== "pi-web-access") throw new Error("Usage: beemax capabilities start pi-web-access --profile <name>");
+		await assertStandardWebProfileBoundary({ profileHome: paths.homePath, agentDir: config.paths.agentDir });
+		const browser = await startProfileBrowser(config.paths.agentDir);
+		console.log(`Started Profile-isolated Pi Web Access browser for '${profile}' at ${browser.cdpUrl}. State: ${browser.dataDir}`);
+		return;
+	}
+	if (action === "stop") {
+		if (target !== "pi-web-access") throw new Error("Usage: beemax capabilities stop pi-web-access --profile <name>");
+		await assertStandardWebProfileBoundary({ profileHome: paths.homePath, agentDir: config.paths.agentDir });
+		const browser = await stopProfileBrowser(config.paths.agentDir);
+		console.log(`Stopped Profile-isolated Pi Web Access browser for '${profile}'. State remains isolated at ${browser.dataDir}.`);
+		return;
+	}
+	if (action !== "install") throw new Error("Usage: beemax capabilities status | install <standard-web|exa-web-search|agent-reach|pi-web-access> | start | stop pi-web-access --profile <name>");
+	if (!target || !["standard-web", "exa-web-search", "agent-reach", "pi-web-access"].includes(target)) throw new Error("Usage: beemax capabilities install <standard-web|exa-web-search|agent-reach|pi-web-access> --profile <name>");
+	await syncBuiltinSkills(profile, {}, config.paths.agentDir);
+	await assertStandardWebProfileBoundary({ profileHome: paths.homePath, agentDir: config.paths.agentDir });
+	if (target === "standard-web" || target === "agent-reach") await requirePackagedStandardWebSkill(config.paths.agentDir, "agent-reach");
+	if (target === "standard-web" || target === "pi-web-access") await requirePackagedStandardWebSkill(config.paths.agentDir, "pi-web-access");
+	if (target === "standard-web" || target === "exa-web-search") {
+		await enableStandardWebProvider(profile);
+		config = loadConfig(undefined, profile);
+		capabilityEnvironment = { ...profileEnvironmentSnapshot(config) };
+		capabilityIntegrityKey = profileProviderIntegrityKey(config.credentials.key, profile);
+		packInput = {
+			...packInput,
+			installation: config.capabilityProviders.installation,
+			integrityKey: capabilityIntegrityKey,
+			environment: capabilityEnvironment,
+		};
+	}
+	if (target === "agent-reach") {
+		console.log(`Installed BeeMax-native Agent Reach routing Skill for Profile '${profile}'. Login-backed channels remain explicit customer opt-ins.`);
+		return;
+	}
+	if (target === "pi-web-access") {
+		const result = await installPiWebAccess();
+		console.log(`Verified native Pi Web Access ${result.revision} for Profile '${profile}' at ${result.path}. Start its isolated browser with: beemax capabilities start pi-web-access --profile ${profile}`);
+		return;
+	}
+	if (target === "exa-web-search") {
+		const result = await installProfileExaMcporter({
+			profileId: profile,
+			agentDir: config.paths.agentDir,
+			installation: config.capabilityProviders.installation,
+			integrityKey: capabilityIntegrityKey,
+			environment: capabilityEnvironment,
+		});
+		console.log(`Installed and verified the pinned Exa MCP adapter for Profile '${profile}' (${result?.evidenceRef ?? "existing verified artifact"}).`);
+		return;
+	}
+	const result = await installStandardWebRuntime(packInput);
+	console.log(`Installed standard-web runtime for Profile '${profile}'.\nExa MCP: ${result.exaEvidenceRef ?? "existing verified artifact"}\nPi Web Access: ${result.pi.evidenceRef} (native)`);
+}
+
+function renderStandardWebStatus(status: StandardWebPackStatus): string {
+	return [
+		`Standard Web pack v${status.version} · Profile ${status.profile}`,
+		...status.components.map((component) => `${component.id}  [${component.state}]  ${component.detail}`),
+		"Install all runtime payloads now: beemax capabilities install standard-web --profile " + status.profile,
+	].join("\n");
+}
+
+async function requirePackagedStandardWebSkill(agentDir: string, skill: StandardWebSkillId): Promise<void> {
+	const state = await inspectStandardWebSkill(agentDir, skill);
+	if (state !== "installed") throw new Error(state === "customized"
+		? `Profile-local Skill '${skill}' differs from BeeMax's packaged revision and was preserved. Review or remove it explicitly before installing the BeeMax-native Skill.`
+		: `BeeMax-native Skill '${skill}' could not be verified after synchronization (state=${state}).`);
+}
+
 async function runMcpCommand(parsed: ParsedArgs, config: ReturnType<typeof loadConfig>): Promise<void> {
-	if ((parsed.positionals[1] ?? "status") !== "status") throw new Error("Usage: beemax mcp status --profile <name>");
-	const mcp = new McpManager();
+	const action = parsed.positionals[1] ?? "status";
+	if (action === "add") {
+		const name = parsed.positionals[2];
+		const descriptorPath = typeof parsed.options.from === "string" ? parsed.options.from : undefined;
+		if (!name || !descriptorPath) throw new Error("Usage: beemax mcp add <name> --from /absolute/path/server.json --profile <name>");
+		if (!config.mcp.profileHome) throw new Error("MCP self-service installation requires a Profile-local MCP config");
+		const result = await addProfileMcpServer({ profileHome: config.mcp.profileHome, configPath: config.mcp.configPath, name, descriptorPath });
+		console.log(`Installed MCP server '${name}' for Profile '${config.profile}' without exposing descriptor secrets.\nConfig: ${result.configPath}\nRun: beemax mcp status --profile ${config.profile}`);
+		return;
+	}
+	if (action === "remove") {
+		const name = parsed.positionals[2];
+		if (!name) throw new Error("Usage: beemax mcp remove <name> --profile <name>");
+		if (!config.mcp.profileHome) throw new Error("MCP self-service removal requires a Profile-local MCP config");
+		const result = await removeProfileMcpServer({ profileHome: config.mcp.profileHome, configPath: config.mcp.configPath, name });
+		console.log(`Removed MCP server '${name}' from Profile '${config.profile}'.\nConfig: ${result.configPath}`);
+		return;
+	}
+	if (action !== "status") throw new Error("Usage: beemax mcp [status | add <name> --from <descriptor.json> | remove <name>] --profile <name>");
+	const mcp = new McpManager({ environment: profileEnvironmentSnapshot(config) });
 	try {
-		const statuses = await mcp.connectAll(loadMcpConfig(config.mcp.configPath));
+		const statuses = await mcp.connectAll(loadMcpConfig(config.mcp.configPath, config.mcp.profileHome ? { profileHome: config.mcp.profileHome } : {}));
 		if (parsed.options.json === true) {
 			console.log(JSON.stringify({ profile: config.profile, servers: statuses }));
 			if (statuses.some((status) => !status.connected)) process.exitCode = 1;
@@ -1207,13 +1337,21 @@ async function promptLine(message: string): Promise<string> {
 }
 
 async function runChat(config: ReturnType<typeof loadConfig>, requestedMode: { full: boolean; compact: boolean; plain: boolean; noAltScreen: boolean; once?: string; thread?: string }): Promise<void> {
+	await syncBuiltinSkillsAtProfileHome(config.paths.profileHome, config.paths.agentDir);
+	await assertStandardWebProfileBoundary({ profileHome: config.paths.profileHome, agentDir: config.paths.agentDir });
 	const presentationMode: ChatPresentationMode = resolveChatPresentationMode({
 		...requestedMode, isInputTty: process.stdin.isTTY === true, isOutputTty: process.stdout.isTTY === true, term: process.env.TERM,
 	});
 	const apiKey = config.model.apiKey ?? "";
 	const profileAuth = AuthStorage.create(join(config.paths.agentDir, "auth.json"));
 	const cognitionModels = await resolveProfileCognitionModels(config, (provider) => profileAuth.getApiKey(provider, { includeFallback: false }));
-	const capabilityProviders = createProfileCapabilityProviderBundle({ profileId: config.profile, agentDir: config.paths.agentDir, installation: config.capabilityProviders.installation });
+	const capabilityProviders = createProfileCapabilityProviderBundle({
+		profileId: config.profile,
+		agentDir: config.paths.agentDir,
+		installation: config.capabilityProviders.installation,
+		integrityKey: profileProviderIntegrityKey(config.credentials.key, config.profile),
+		environment: profileEnvironmentSnapshot(config),
+	});
 	const modelCatalog = new ProfileModelCatalog(config);
 	const memory = new MemoryStore(config.memory.dbPath, config.profile);
 	const persistence = memoryPersistencePorts(memory);
@@ -1234,8 +1372,8 @@ async function runChat(config: ReturnType<typeof loadConfig>, requestedMode: { f
 	const knowledgeProvider = config.knowledge.enabled && config.knowledge.apiKey && config.knowledge.spaces.length
 		? new WeKnoraKnowledgeProvider({ baseUrl: config.knowledge.baseUrl, apiKey: config.knowledge.apiKey })
 		: undefined;
-	const mcp = new McpManager();
-	await mcp.connectAll(loadMcpConfig(config.mcp.configPath));
+	const mcp = new McpManager({ environment: profileEnvironmentSnapshot(config) });
+	await mcp.connectAll(loadMcpConfig(config.mcp.configPath, config.mcp.profileHome ? { profileHome: config.mcp.profileHome } : {}));
 	const credentialAudit = new FileCredentialVaultAuditJournal(join(config.paths.agentDir, "credential-audit.jsonl"));
 	const credentialVault = config.credentials.key ? new FileCredentialVault(config.credentials.vaultPath, Buffer.from(config.credentials.key, "base64"), credentialAudit.append.bind(credentialAudit)) : undefined;
 	const contractAdmissionIntegrity = config.credentials.key ? createContractAdmissionReceiptIntegrity({ key: Buffer.from(config.credentials.key, "base64"), profileId: config.profile }) : undefined;
@@ -1265,6 +1403,8 @@ async function runChat(config: ReturnType<typeof loadConfig>, requestedMode: { f
 		managedSkillLearning: persistence.managedSkillLearning,
 		capabilityProviderRuntime: capabilityProviders.runtime,
 		capabilityProviderEnvironment: capabilityProviders.environment,
+		skillEnvironment: profileEnvironmentSnapshot(config),
+		capabilityProviderIntegrityKey: capabilityProviders.artifactIntegrityKey,
 		provider: () => config.model.provider,
 		model: () => config.model.model,
 		baseUrl: () => config.model.baseUrl,
@@ -1326,8 +1466,10 @@ async function runChat(config: ReturnType<typeof loadConfig>, requestedMode: { f
 		capabilityRanker,
 		capabilityPreferences: config.agent.capabilityPreferences,
 		managedSkillLearning: persistence.managedSkillLearning,
-		capabilityProviderRuntime: capabilityProviders.runtime,
-		capabilityProviderEnvironment: capabilityProviders.environment,
+			capabilityProviderRuntime: capabilityProviders.runtime,
+			capabilityProviderEnvironment: capabilityProviders.environment,
+			skillEnvironment: profileEnvironmentSnapshot(config),
+			capabilityProviderIntegrityKey: capabilityProviders.artifactIntegrityKey,
 		provider: () => config.model.provider,
 		model: () => config.model.model,
 		baseUrl: () => config.model.baseUrl,

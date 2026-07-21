@@ -14,6 +14,60 @@ test("browser capability exposes read and explicitly mutating operations separat
 	assert.match(status.content[0].text, /Example/);
 });
 
+test("browser capability resolves and verifies its Profile endpoint before connecting", async () => {
+	const calls = [];
+	const [statusTool] = createBrowserTools({
+		cdpUrl: async () => "http://127.0.0.1:24567",
+		assertEndpoint: async (cdpUrl) => { calls.push(["assert", cdpUrl]); },
+		fetchImpl: async (input) => {
+			calls.push(["fetch", String(input)]);
+			return new Response("[]", { status: 200 });
+		},
+	});
+	assert.equal((await statusTool.execute("call", {}, new AbortController().signal)).isError, undefined);
+	assert.deepEqual(calls, [
+		["assert", "http://127.0.0.1:24567"],
+		["fetch", "http://127.0.0.1:24567/json"],
+	]);
+
+	let fetchCalls = 0;
+	const [blocked] = createBrowserTools({
+		cdpUrl: () => "http://127.0.0.1:24568",
+		assertEndpoint: () => { throw new Error("wrong Profile"); },
+		fetchImpl: async () => { fetchCalls++; return new Response("[]", { status: 200 }); },
+	});
+	const result = await blocked.execute("call", {}, new AbortController().signal);
+	assert.equal(result.isError, true);
+	assert.match(result.content[0].text, /wrong Profile/);
+	assert.equal(fetchCalls, 0);
+
+	const [redirected] = createBrowserTools({
+		cdpUrl: "http://127.0.0.1:24568",
+		fetchImpl: async () => new Response(JSON.stringify([{
+			id: "foreign-page",
+			type: "page",
+			title: "Foreign Profile",
+			url: "https://example.com/private",
+			webSocketDebuggerUrl: "ws://127.0.0.1:24569/devtools/page/foreign",
+		}]), { status: 200 }),
+	});
+	const redirectedResult = await redirected.execute("call", {}, new AbortController().signal);
+	assert.match(redirectedResult.content[0].text, /No browser pages are open/);
+	assert.doesNotMatch(redirectedResult.content[0].text, /Foreign Profile/);
+});
+
+test("browser navigation rejects URL credentials before opening or echoing them", async () => {
+	let fetchCalls = 0;
+	const tool = createBrowserTools({
+		fetchImpl: async () => { fetchCalls++; return new Response("[]", { status: 200 }); },
+	}).find((candidate) => candidate.name === "browser_open");
+	const result = await tool.execute("call", { url: "https://alice:private-value@example.com/report" }, new AbortController().signal);
+	assert.equal(result.isError, true);
+	assert.match(result.content[0].text, /must not contain embedded credentials/i);
+	assert.doesNotMatch(JSON.stringify(result), /alice|private-value/i);
+	assert.equal(fetchCalls, 0);
+});
+
 test("browser credential fill injects a Vault Secret without returning it to the Agent", async () => {
 	const original = globalThis.WebSocket;
 	let expression = "";

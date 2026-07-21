@@ -1,6 +1,6 @@
 import { basename, join } from "node:path";
-import { createWriteStream } from "node:fs";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { constants, createWriteStream } from "node:fs";
+import { lstat, mkdtemp, open, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { Readable, Transform } from "node:stream";
 import { pipeline } from "node:stream/promises";
@@ -295,7 +295,7 @@ export class TelegramAdapter implements PlatformAdapter {
 	private async sendMultipart(method: string, chatId: string, field: string, path: string, mimeType?: string, name?: string): Promise<SendResult> {
 		const form = new FormData();
 		form.set("chat_id", chatId);
-		form.set(field, new Blob([await readFile(path)], { type: mimeType ?? "application/octet-stream" }), name ?? basename(path));
+		form.set(field, new Blob([await readBoundedOutboundFile(path, this.settings.mediaMaxBytes)], { type: mimeType ?? "application/octet-stream" }), name ?? basename(path));
 		const response = await this.consumeCredentials((credentials) => this.fetchImpl(`${this.settings.apiBaseUrl}/bot${credentials.botToken}/${method}`, { method: "POST", body: form }));
 		if (!response) throw new Error("Telegram credentials are unavailable");
 		const envelope = await response.json() as TelegramEnvelope<{ message_id: number }>;
@@ -303,6 +303,35 @@ export class TelegramAdapter implements PlatformAdapter {
 		return { success: true, messageId: String(envelope.result.message_id) };
 	}
 }
+
+async function readBoundedOutboundFile(path: string, maxBytes: number): Promise<Buffer> {
+	const initial = await lstat(path);
+	if (initial.isSymbolicLink() || !initial.isFile()) throw new Error("Telegram outbound media must be a regular file");
+	if (initial.size <= 0) throw new Error("Telegram outbound media must not be empty");
+	if (initial.size > maxBytes) throw new Error(`Telegram outbound media exceeds ${maxBytes} byte limit`);
+	const handle = await open(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+	try {
+		const opened = await handle.stat();
+		if (!opened.isFile() || !sameFile(initial, opened)) throw new Error("Telegram outbound media changed while opening");
+		if (opened.size <= 0) throw new Error("Telegram outbound media must not be empty");
+		if (opened.size > maxBytes) throw new Error(`Telegram outbound media exceeds ${maxBytes} byte limit`);
+		const content = Buffer.allocUnsafe(opened.size);
+		let offset = 0;
+		while (offset < content.byteLength) {
+			const { bytesRead } = await handle.read(content, offset, content.byteLength - offset, offset);
+			if (!bytesRead) throw new Error("Telegram outbound media changed while reading");
+			offset += bytesRead;
+		}
+		const extra = Buffer.allocUnsafe(1);
+		if ((await handle.read(extra, 0, 1, offset)).bytesRead > 0) throw new Error(`Telegram outbound media exceeds ${maxBytes} byte limit or changed while reading`);
+		if ((await handle.stat()).size !== opened.size) throw new Error("Telegram outbound media changed while reading");
+		return content;
+	} finally {
+		await handle.close();
+	}
+}
+
+function sameFile(left: { dev: number; ino: number }, right: { dev: number; ino: number }): boolean { return left.dev === right.dev && left.ino === right.ino; }
 
 function normalizeIds(values: string[]): string[] { return [...new Set(values.map(String).map((value) => value.trim()).filter(Boolean))]; }
 function telegramActivationSignals(message: TelegramMessage, botId?: number, botUsername?: string): Partial<Record<GroupActivationSignal, boolean>> {

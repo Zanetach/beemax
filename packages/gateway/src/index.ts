@@ -1,4 +1,5 @@
 export { Dispatcher, type ArtifactPublicationPort, type DispatcherDeps, type PublishedArtifactLink } from "./core/dispatcher.ts";
+export { prepareArtifactSnapshotRoot, type ArtifactSnapshotRootOptions } from "./core/artifact-snapshot-root.ts";
 export { InteractionControlServer, type InteractionControlServerOptions } from "./core/interaction-control-server.ts";
 export { GatewayDeliveryPort } from "./core/delivery-port.ts";
 export { GovernedDeliveryPort, type GovernedDeliveryEvent, type GroupDeliveryGovernorResolver } from "./core/governed-delivery-port.ts";

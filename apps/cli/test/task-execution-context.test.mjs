@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -176,6 +176,80 @@ test("the real Agent factory enables the internal verdict Tool only for its veri
 	} finally {
 		normal.dispose();
 		verifier.dispose();
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("the production Agent factory discovers only Profile-local Skills without project fallback", async () => {
+	const root = mkdtempSync(join(tmpdir(), "beemax-agent-factory-skill-priority-"));
+	const agentDir = join(root, "agent");
+	const profileSkill = join(agentDir, "skills", "agent-reach");
+	const projectSkill = join(root, ".agents", "skills", "agent-reach");
+	for (const [path, marker] of [[profileSkill, "PROFILE_NATIVE"], [projectSkill, "PROJECT_EXTERNAL"]]) {
+		mkdirSync(path, { recursive: true });
+		writeFileSync(join(path, "SKILL.md"), `---\nname: agent-reach\ndescription: Current public Web retrieval ${marker}\n---\n${marker}\n`);
+	}
+	const projectOnlySkill = join(root, ".agents", "skills", "project-only");
+	mkdirSync(projectOnlySkill, { recursive: true });
+	writeFileSync(join(projectOnlySkill, "SKILL.md"), "---\nname: project-only\ndescription: Must not cross the Profile boundary.\n---\nPROJECT_ONLY\n");
+	const factory = buildAgentFactory({
+		profileId: "profile:test",
+		provider: "anthropic",
+		model: "claude-sonnet-4-5",
+		cwd: root,
+		agentDir,
+		getApiKey: () => "test",
+	});
+	const session = await factory("skill-priority", { platform: "cli", chatId: "local", chatType: "dm", userId: "local" });
+	try {
+		const skillList = session.getToolDefinition("skill_list");
+		const skillRead = session.getToolDefinition("skill_read");
+		assert.ok(skillList);
+		assert.ok(skillRead);
+		const listed = await skillList.execute("list", {}, new AbortController().signal);
+		const reach = listed.details.skills.find(({ name }) => name === "agent-reach");
+		assert.equal(listed.details.skills.some(({ name }) => name === "project-only"), false);
+		assert.match(reach.description, /PROFILE_NATIVE/);
+		assert.doesNotMatch(reach.description, /PROJECT_EXTERNAL/);
+		const activated = await skillRead.execute("read", { name: "agent-reach" }, new AbortController().signal);
+		assert.match(activated.content[0].text, /PROFILE_NATIVE/);
+		assert.doesNotMatch(activated.content[0].text, /PROJECT_EXTERNAL/);
+	} finally {
+		session.dispose();
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("the Agent factory admits Profile-local Skill requirements from the full Profile snapshot, not the narrowed Provider environment", async () => {
+	const root = mkdtempSync(join(tmpdir(), "beemax-agent-factory-skill-environment-"));
+	const agentDir = join(root, "agent");
+	const skill = join(agentDir, "skills", "customer-acme");
+	mkdirSync(skill, { recursive: true });
+	writeFileSync(join(skill, "SKILL.md"), `---
+name: customer-acme
+description: Customer Profile Skill requiring its own credential.
+metadata:
+  beemax:
+    env: [ACME_API_KEY]
+---
+Use the customer-scoped ACME capability.
+`);
+	const factory = buildAgentFactory({
+		profileId: "profile:test",
+		provider: "anthropic",
+		model: "claude-sonnet-4-5",
+		cwd: root,
+		agentDir,
+		getApiKey: () => "test",
+		capabilityProviderEnvironment: { TAVILY_API_KEY: "provider-only" },
+		skillEnvironment: { ACME_API_KEY: "profile-secret", PATH: process.env.PATH ?? "" },
+	});
+	const session = await factory("skill-environment", { platform: "cli", chatId: "local", chatType: "dm", userId: "local" });
+	try {
+		const listed = await session.getToolDefinition("skill_list").execute("list", {}, new AbortController().signal);
+		assert.equal(listed.details.skills.some(({ name }) => name === "customer-acme"), true);
+	} finally {
+		session.dispose();
 		rmSync(root, { recursive: true, force: true });
 	}
 });

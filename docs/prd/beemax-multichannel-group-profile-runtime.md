@@ -320,7 +320,7 @@ BeeMax 不通过预制行业对象和规则覆盖客户场景，而是用 Situat
 | 编号 | 风险类别 | 风险描述 | 概率 | 影响 | 应对方案 |
 | --- | --- | --- | --- | --- | --- |
 | R1 | 产品 | 群聊过度响应造成打扰 | 中 | 高 | contextual 默认、激活信号、频率预算和 observe 决策 |
-| R2 | 产品 | 群聊共享上下文造成隐私泄露 | 中 | 高 | Visibility、披露检查、敏感审批转私聊、红队用例 |
+| R2 | 产品 | 群聊共享上下文造成隐私泄露 | 中 | 高 | Visibility、披露检查、敏感授权或凭证交互转私聊、红队用例 |
 | R3 | 技术 | Session Key 迁移导致历史断裂 | 中 | 高 | additive read、显式 Session Ownership Migration、legacy 非破坏保留和摘要回滚 |
 | R4 | 技术 | 多实例路由造成错误投递 | 中 | 高 | instance identity、Binding 优先级、Delivery Receipt 和契约测试 |
 | R5 | 技术 | 单 Profile OOM 影响宿主 | 中 | 高 | systemd MemoryMax、队列背压、附件和 Tool Result 上限 |
@@ -767,7 +767,7 @@ Platform Event → Adapter 验证 → Interaction Envelope → Admission → Bin
 | GRP-3 | 约束 | observe 不得创建 Objective、调用 Tool 或发送通知 |
 | GRP-4 | 约束 | 群成员不能通过消息内容替其他成员授予 Tool 权限 |
 | GRP-5 | 触发 | 多个独立 Thread 可以并发；同一 Lane 默认串行并支持 Steer/Follow-up |
-| GRP-6 | 约束 | 敏感批准和凭证交互必须转私聊或可信审批面 |
+| GRP-6 | 约束 | 敏感授权请求和凭证交互必须转私聊或可信管理面；不得创建 Tool 审批等待 |
 | GRP-7 | 推论 | 无需回应但有可信价值的内容可成为候选观察，不自动成为长期 Convention/Policy |
 | GRP-8 | 约束 | Ambient Observation 必须显式启用并通过 Profile 的 initiative_observation rollout；默认关闭且只保留有界文本候选 |
 | GRP-9 | 约束 | quiet hours 仅抑制主动 ambient 响应；命令不受回复窗口预算阻断 |
