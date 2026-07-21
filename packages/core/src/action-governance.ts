@@ -38,7 +38,7 @@ export interface ActionGovernanceDecision {
 /** Pure per-action decision kernel; Pi's Tool hook remains the enforcement point. */
 export class ActionGovernance {
 	decide(input: ActionGovernanceInput): ActionGovernanceDecision {
-		const factors = [`risk:${input.toolPolicy.risk}`, `side_effect:${input.toolPolicy.sideEffect}`, `reversible:${String(input.toolPolicy.reversible)}`, `reliability:${input.reliability}`, `effect:${input.effectStatus}`, "execution_mode:direct"];
+		const factors = [`risk:${input.toolPolicy.risk}`, `side_effect:${input.toolPolicy.sideEffect}`, `reversible:${String(input.toolPolicy.reversible)}`, `reliability:${input.reliability}`, `effect:${input.effectStatus}`, "approval_mode:none"];
 		const decide = (outcome: ActionGovernanceOutcome, reasonCode: string, explanation: string, extra: Pick<ActionGovernanceDecision, "policyDecisionId" | "executionGrantId"> = {}) => Object.freeze({
 			id: `governance:${required(input.actionId, "actionId", 256)}:${timestamp(input.at)}`, actionId: input.actionId, toolName: required(input.toolName, "toolName", 128), outcome, reasonCode, explanation,
 			factors: Object.freeze([...factors]) as unknown as string[], ...extra, decidedAt: input.at,
@@ -57,11 +57,22 @@ export class ActionGovernance {
 		if (requiresEnterpriseApproval) return decide("deny", "enterprise_approval_disabled", "Enterprise Policy requires approval, but interactive approvals are disabled", { policyDecisionId: enterprise!.id });
 		if (granted) return decide("allow", "execution_grant", "An active Execution Grant covers this capability", { ...(enterprise ? { policyDecisionId: enterprise.id } : {}), executionGrantId: input.executionGrant!.id });
 		if (enterprise?.disposition === "allow") return decide("allow", "enterprise_policy_allow", enterprise.reason, { policyDecisionId: enterprise.id });
-		if (input.toolPolicy.risk === "high" || input.toolPolicy.sideEffect !== "none" && input.toolPolicy.reversible !== true || input.reliability === "degraded" && input.toolPolicy.sideEffect !== "none") {
+		if (input.toolPolicy.risk === "high" || input.toolPolicy.sideEffect !== "none") {
 			return decide("allow", "direct_execution", "The action may proceed directly under the remaining Governance controls");
 		}
-		if (input.toolPolicy.sideEffect !== "none") return decide("allow", "direct_execution", "The action may proceed directly under the remaining Governance controls");
 		return decide("allow", "low_risk_investigation", "Low-risk investigation may proceed under the current Tool policy");
+	}
+}
+
+/** Presenter-safe copy derived only from Core-owned Governance reason codes. */
+export function actionGovernancePresenterSummary(decision: ActionGovernanceDecision): string {
+	switch (decision.reasonCode) {
+		case "effect_reconciliation_required": return "A prior mutating Effect must settle or reconcile before this Tool action can proceed.";
+		case "enterprise_policy_deny": return "Enterprise Policy denies this Tool action.";
+		case "enterprise_policy_missing_evidence": return "Enterprise Policy evidence is incomplete, so this Tool action was blocked.";
+		case "enterprise_constraint": return "This Tool action does not satisfy the active Enterprise Policy constraints.";
+		case "enterprise_approval_disabled": return "Enterprise Policy requires approval, but interactive approvals are disabled.";
+		default: return "Governance blocked this Tool action.";
 	}
 }
 

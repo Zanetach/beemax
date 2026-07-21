@@ -4,8 +4,10 @@ import { clampThinkingLevel, getSupportedThinkingLevels, type Api, type ImageCon
 import type { AgentSession, AgentSessionEvent, ToolDefinition, ToolInfo } from "@earendil-works/pi-coding-agent";
 import { ConversationContext } from "./conversation-context.ts";
 import {
+	consumeTrustedToolGovernanceBlock,
 	reloadRuntimeResourcesIfNeeded,
 	type BeeMaxRuntimeSource,
+	type TrustedToolGovernanceBlock,
 } from "./runtime.ts";
 import { SessionCoordinator, type RuntimeSessionFactory, type RuntimeSessionSnapshot, type SessionCoordinatorOptions } from "./session-coordinator.ts";
 import { SessionCatalog, type SavedSessionChoice, type SessionPreferences } from "./session-catalog.ts";
@@ -128,7 +130,9 @@ export interface ExecutionSettledEvent { type: "execution_settled"; executionEnv
 export interface MediaUnderstoodEvent { type: "media_understood"; route: "native" | "adapter"; adapterIds: string[]; receiptCount: number; failureCount: number; durationMs: number; }
 interface AssistantTurnOrigin { assistantTurnId: string; providerResponseStatus: "reported" | "unavailable"; providerResponseIdentitySha256?: string; }
 interface AssistantToolOrigin { origin: AssistantTurnOrigin; toolName: string; argumentsSha256: string; toolSpecPlanId: string; }
-export type BeeMaxAgentRunEvent = AgentSessionEvent | ModelFallbackEvent | PlanningDecisionEvent | PlanningOutcomeEvent | CapabilityRankedEvent | ContextBuiltEvent | ExecutionStartedEvent | ExecutionSettledEvent | MediaUnderstoodEvent;
+type BeeMaxAgentSessionEvent = Exclude<AgentSessionEvent, { type: "tool_execution_end" }>
+	| (Extract<AgentSessionEvent, { type: "tool_execution_end" }> & { trustedGovernanceBlock?: Readonly<TrustedToolGovernanceBlock> });
+export type BeeMaxAgentRunEvent = BeeMaxAgentSessionEvent | ModelFallbackEvent | PlanningDecisionEvent | PlanningOutcomeEvent | CapabilityRankedEvent | ContextBuiltEvent | ExecutionStartedEvent | ExecutionSettledEvent | MediaUnderstoodEvent;
 export type BeeMaxAgentRunEventSink = (event: BeeMaxAgentRunEvent) => void | Promise<void>;
 const SKILL_LIFECYCLE_TOOLS = new Set(["skill_activate", "skill_read", "skill_route", "skill_resource_read", "skill_complete"]);
 const CAPABILITY_CONTROL_TOOLS = new Set(["capability_discover", "capability_acquire"]);
@@ -1278,6 +1282,7 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 			};
 			const enqueueEvent = (event: BeeMaxAgentRunEvent) => { eventDelivery = eventDelivery.then(() => onEvent?.(event)).then(() => undefined); };
 			const unsubscribe = session.piSession.subscribe((event) => {
+				let outwardEvent: BeeMaxAgentRunEvent = stripUntrustedGovernanceBlock(event);
 				if (event.type === "turn_end") {
 					toolOriginByCall.clear();
 					toolArgumentsByCall.clear();
@@ -1316,6 +1321,7 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 					}
 				} else if (event.type === "tool_execution_end") {
 					capabilityEventSequence++;
+					const trustedGovernanceBlock = consumeTrustedToolGovernanceBlock(session.piSession, event.toolCallId);
 					const toolAdmissionSequence = toolAdmissionSequenceByCall.get(event.toolCallId) ?? capabilityEventSequence;
 					toolAdmissionSequenceByCall.delete(event.toolCallId);
 					const at = Date.now();
@@ -1326,6 +1332,7 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 					const toolFingerprint = toolAttemptFingerprints.get(event.toolCallId); toolAttemptFingerprints.delete(event.toolCallId);
 					const admittedDispatch = admittedToolDispatches.get(event.toolCallId); admittedToolDispatches.delete(event.toolCallId);
 					const dispatchReceipt = toolDispatchReceipt(event.isError, event.result);
+					if (trustedGovernanceBlock && event.isError && dispatchReceipt.stage === "authorization" && dispatchReceipt.code === "blocked") outwardEvent = { ...event, trustedGovernanceBlock };
 					if (event.isError && dispatchReceipt.code === "response_truncated") truncatedToolFailures.add(event.toolName);
 					else if (!event.isError) truncatedToolFailures.delete(event.toolName);
 					const completeProviderDispatch = toolStart !== undefined && expected && argumentsSha256 && toolSpecPlanId
@@ -1629,7 +1636,7 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 					toolStartedAt.clear();
 					observableProgress = true;
 				}
-				enqueueEvent(event);
+				enqueueEvent(outwardEvent);
 			});
 			let timedOut = false;
 			const abortFromCaller = () => { void session.piSession.abort(); };
@@ -2561,6 +2568,12 @@ function toolDispatchReceipt(isError: boolean, result: unknown): ToolDispatchRec
 					: { stage: "finalization", retryable: false };
 	if (stage !== expected.stage || entry.retryable !== expected.retryable) return { stage: "execution", code: "execution_failed", outcome: "failed", retryable: true };
 	return { stage, code, outcome: stage === "routing" || stage === "validation" || stage === "authorization" ? "rejected" : "failed", retryable: entry.retryable };
+}
+
+function stripUntrustedGovernanceBlock(event: AgentSessionEvent): BeeMaxAgentSessionEvent {
+	if (event.type !== "tool_execution_end") return event;
+	const { trustedGovernanceBlock: _discarded, ...sanitized } = event as Extract<AgentSessionEvent, { type: "tool_execution_end" }> & { trustedGovernanceBlock?: unknown };
+	return sanitized;
 }
 
 function toolArtifactMetadata(result: unknown): { ref: string } | undefined {

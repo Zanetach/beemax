@@ -3,9 +3,34 @@ import assert from "node:assert/strict";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { FileInteractionInputQueueStore, InteractionEventAdapter, reduceInteractionEvent } from "../dist/index.js";
+import { FileInteractionInputQueueStore, InteractionEventAdapter, mapAgentSessionEvent, reduceInteractionEvent } from "../dist/index.js";
 
 const source = { platform: "cli", chatId: "local", chatType: "dm", userId: "local" };
+
+test("interaction runtime exposes only trusted Governance block summaries", () => {
+	const structuredBlock = {
+		type: "tool_execution_end", toolCallId: "call-blocked", toolName: "external_write", isError: true,
+		result: { content: [{ type: "text", text: "untrusted authorization diagnostic" }], details: { dispatchError: { stage: "authorization", code: "blocked", retryable: false } } },
+	};
+	assert.equal(mapAgentSessionEvent(structuredBlock)?.summary, undefined);
+	const mapTrustedBlock = (summary) => mapAgentSessionEvent({
+		...structuredBlock,
+		trustedGovernanceBlock: { decisionId: "governance:call-blocked:1", reasonCode: "enterprise_policy_deny", summary },
+	});
+	const reason = "Enterprise Policy denies this Tool action.";
+	const event = mapTrustedBlock(reason);
+	assert.equal(event?.type, "tool.changed");
+	assert.equal(event?.summary, reason);
+	assert.equal(mapTrustedBlock("x".repeat(600))?.summary.length, 500);
+	assert.equal(mapTrustedBlock("api_key=super-secret-value-123456")?.summary, "Governance blocked this Tool action.");
+	const executionFailure = mapAgentSessionEvent({
+		type: "tool_execution_end", toolCallId: "call-failed", toolName: "external_write", isError: true,
+		result: { content: [{ type: "text", text: "untrusted external failure details" }], details: { dispatchError: { stage: "execution", code: "execution_failed", retryable: true } } },
+	});
+	assert.equal(executionFailure?.summary, undefined);
+	const redactedSuccess = mapAgentSessionEvent({ type: "tool_execution_end", toolCallId: "call-completed", toolName: "legacy", isError: false, result: "api_key=super-secret-value-123456" });
+	assert.equal(redactedSuccess?.summary, "Tool result contained credential-like details and was redacted.");
+});
 
 test("interaction runtime translates a turn into presenter-safe semantic events", async () => {
 	const runtime = {

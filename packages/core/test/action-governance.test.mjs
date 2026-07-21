@@ -11,6 +11,8 @@ test("Action Governance allows interactive tools without an approval round trip"
 	assert.equal(read.outcome, "allow");
 	assert.equal(mutation.outcome, "allow");
 	assert.equal(mutation.reasonCode, "direct_execution");
+	assert.equal(mutation.factors.includes("approval_mode:none"), true);
+	assert.equal(mutation.factors.some((factor) => factor.startsWith("execution_mode:")), false);
 	assert.notEqual(read.id, mutation.id);
 });
 

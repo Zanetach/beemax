@@ -20,7 +20,7 @@ import { conversationKey, responsibilityOwnerKey, type AgentScope } from "./agen
 import { ToolEffectConflictError, type ToolEffectAuthorityPort, type ToolEffectSink } from "./tool-effect.ts";
 import type { ExecutionEnvelope } from "./execution-envelope.ts";
 import { EnterprisePolicyRuntime, type EnterprisePolicyDecision, type EnterprisePolicyProvider } from "./enterprise-policy.ts";
-import { ActionGovernance, type ActionGovernanceDecision, type MeasuredActionReliability } from "./action-governance.ts";
+import { ActionGovernance, actionGovernancePresenterSummary, type ActionGovernanceDecision, type MeasuredActionReliability } from "./action-governance.ts";
 import { evaluateCompactionQuality, planContextCompaction, recoverCompactionPreservation, taskIdsFromCompactionPreservation } from "./context-compaction.ts";
 import { createToolArtifactReadTool, FileToolArtifactStore } from "./tool-artifact-store.ts";
 
@@ -28,6 +28,33 @@ export type BeeMaxRuntimeSource = AgentScope;
 
 export interface ProactiveMutationAuthority<Source extends BeeMaxRuntimeSource = BeeMaxRuntimeSource> {
 	(input: { source: Source; executionEnvelope: Readonly<ExecutionEnvelope>; toolName: string; policy: ToolPolicy; enterprisePolicy: EnterprisePolicyDecision }): Promise<{ allowed: boolean; reason?: string }> | { allowed: boolean; reason?: string };
+}
+
+export interface TrustedToolGovernanceBlock {
+	readonly decisionId: string;
+	readonly reasonCode: string;
+	readonly summary: string;
+}
+
+const trustedToolGovernanceBlocks = new WeakMap<AgentSession, Map<string, TrustedToolGovernanceBlock>>();
+
+/** Internal Core seam: Pi and extensions cannot manufacture entries in this session-local store. */
+export function consumeTrustedToolGovernanceBlock(session: AgentSession, toolCallId: string): TrustedToolGovernanceBlock | undefined {
+	const blocks = trustedToolGovernanceBlocks.get(session);
+	const block = blocks?.get(toolCallId);
+	blocks?.delete(toolCallId);
+	return block;
+}
+
+function recordTrustedToolGovernanceBlock(session: AgentSession, toolCallId: string, decision: ActionGovernanceDecision): void {
+	let blocks = trustedToolGovernanceBlocks.get(session);
+	if (!blocks) { blocks = new Map(); trustedToolGovernanceBlocks.set(session, blocks); }
+	if (blocks.size >= 128) blocks.delete(blocks.keys().next().value!);
+	blocks.set(toolCallId, Object.freeze({ decisionId: decision.id, reasonCode: decision.reasonCode, summary: actionGovernancePresenterSummary(decision) }));
+}
+
+function clearTrustedToolGovernanceBlocks(session: AgentSession): void {
+	trustedToolGovernanceBlocks.delete(session);
 }
 
 export type ContextCompactionAuditEvent<Source extends BeeMaxRuntimeSource = BeeMaxRuntimeSource> = {
@@ -209,6 +236,7 @@ export function buildBeeMaxRuntimeFactory<Source extends BeeMaxRuntimeSource = B
 		(session as AgentSession & { beemaxExecutionEnvelope?: Readonly<ExecutionEnvelope> }).beemaxExecutionEnvelope = executionEnvelope;
 		(session as AgentSession & { beemaxResetTurnResources?: () => void }).beemaxResetTurnResources = () => {
 			for (const reset of turnResetters) reset();
+			clearTrustedToolGovernanceBlocks(session);
 			const taskId = currentExecutionEnvelope(session)?.taskId ?? opts.currentTaskId?.(source) ?? source.delegatedTask?.id;
 			if (taskId) opts.toolEffects?.interruptTask?.(taskId);
 		};
@@ -331,6 +359,7 @@ function installSecurityHook<Source extends BeeMaxRuntimeSource>(session: AgentS
 		const governanceAudit = governanceAuditMetadata(governanceDecision);
 		if (governanceDecision.outcome !== "allow") {
 			audit?.({ phase: "blocked", source, toolName: context.toolCall.name, policy, at: Date.now(), reason: governanceDecision.explanation, ...(enterprisePolicyAudit ? { enterprisePolicy: enterprisePolicyAudit } : {}), governance: governanceAudit });
+			recordTrustedToolGovernanceBlock(session, context.toolCall.id, governanceDecision);
 			return { block: true, reason: governanceDecision.explanation };
 		}
 		audit?.({ phase: "allowed", source, toolName: context.toolCall.name, policy, at: Date.now(), reason: governanceDecision.explanation, ...(enterprisePolicyAudit ? { enterprisePolicy: enterprisePolicyAudit } : {}), governance: governanceAudit });

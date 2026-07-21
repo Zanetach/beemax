@@ -4,6 +4,7 @@ import { sessionIdForSource, sessionKeyForSource } from "./session-coordinator.t
 import type { InteractionEventJournal } from "./interaction-event-journal.ts";
 import { conversationIdentity, type ConversationIdentity } from "./agent-scope.ts";
 import type { InteractionInputQueueStore, InteractionQueuedInput } from "./interaction-input-queue.ts";
+import { redactCredentialMaterial } from "./credential-material.ts";
 
 export type InteractionSurface = "chat" | "gateway" | "web";
 export type InteractionPhase = "idle" | "running" | "queued" | "completed" | "incomplete" | "rejected" | "failed" | "cancelled";
@@ -539,11 +540,23 @@ export function mapAgentSessionEvent(event: BeeMaxAgentRunEvent): InteractionEve
 	if (event.type === "context_built") return { type: "context.built", included: event.included.map((item) => ({ ...item })), released: event.released.map((item) => ({ ...item })), contextChars: event.contextChars };
 	if (event.type === "media_understood") return { type: "media.understood", route: event.route, adapterIds: [...event.adapterIds], receiptCount: event.receiptCount, failureCount: event.failureCount, durationMs: event.durationMs };
 	if (event.type === "tool_execution_start") return { type: "tool.changed", callId: event.toolCallId, name: event.toolName, state: "running" };
-	if (event.type === "tool_execution_end") return { type: "tool.changed", callId: event.toolCallId, name: event.toolName, state: event.isError ? "failed" : "completed", summary: typeof event.result === "string" ? event.result.slice(0, 500) : undefined };
+	if (event.type === "tool_execution_end") return { type: "tool.changed", callId: event.toolCallId, name: event.toolName, state: event.isError ? "failed" : "completed", summary: toolEventSummary(event) };
 	if (event.type !== "message_update" || event.message.role !== "assistant") return undefined;
 	if (event.assistantMessageEvent.type === "text_delta") return { type: "answer.delta", text: event.assistantMessageEvent.delta };
 	if (event.assistantMessageEvent.type === "thinking_delta") return { type: "reasoning.delta", text: event.assistantMessageEvent.delta };
 	return undefined;
+}
+
+function toolEventSummary(event: Extract<BeeMaxAgentRunEvent, { type: "tool_execution_end" }>): string | undefined {
+	if (event.trustedGovernanceBlock) return boundedPresenterSummary(event.trustedGovernanceBlock.summary, "Governance blocked this Tool action.");
+	if (typeof event.result === "string") return boundedPresenterSummary(event.result, "Tool result contained credential-like details and was redacted.");
+	return undefined;
+}
+
+function boundedPresenterSummary(value: string, credentialReplacement: string): string | undefined {
+	const summary = value.trim();
+	if (!summary) return undefined;
+	return redactCredentialMaterial(summary, credentialReplacement).slice(0, 500);
 }
 
 function mapAgentWorkEvent(event: BeeMaxAgentRunEvent): InteractionEventPayload | undefined {
