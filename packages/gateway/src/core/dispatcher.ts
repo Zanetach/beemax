@@ -13,12 +13,12 @@ import {
 	type DeliveryTarget,
 	type TaskLedger,
 	type TaskPlanProgressEvent,
-} from "@beemax/core";
+} from "@thruvera/core";
 import { createHash } from "node:crypto";
 import { constants } from "node:fs";
 import { lstat, open, realpath, rm } from "node:fs/promises";
 import { basename, isAbsolute, relative, resolve, sep } from "node:path";
-import type { InboundMessage, InteractionPresentationPreferences, PlatformAdapter, PublishedArtifactPresentation } from "@beemax/channel-runtime";
+import type { InboundMessage, InteractionPresentationPreferences, PlatformAdapter, PublishedArtifactPresentation } from "@thruvera/channel-runtime";
 import { MessageDeduplicator } from "./message-deduplicator.ts";
 import { prepareAgentMediaInput } from "./media-input.ts";
 import type { ProfileBindingResolver } from "./profile-binding.ts";
@@ -131,7 +131,7 @@ export class Dispatcher {
 				});
 				if (binding.profileId !== this.profileId) throw new Error(`Binding selected Profile ${binding.profileId}`);
 			} catch (error) {
-				console.warn(`[beemax] rejected inbound Interaction by Profile Binding: ${error instanceof Error ? error.message : String(error)}`);
+				console.warn(`[thruvera] rejected inbound Interaction by Profile Binding: ${error instanceof Error ? error.message : String(error)}`);
 				return scoped.releaseMedia?.().catch(() => undefined) ?? Promise.resolve();
 			}
 		}
@@ -147,7 +147,7 @@ export class Dispatcher {
 			let work!: Promise<void>;
 			work = this.handle(scoped, markAdmitted).then(markAdmitted).catch((error) => {
 				if (!admitted) { this.deduplicator.rollback(this.profileId, channelDedupeKey(scoped.source), scoped.source.messageId); reject(error); }
-				else console.error(`[beemax] message dispatch failed after admission: ${error instanceof Error ? error.message : String(error)}`);
+				else console.error(`[thruvera] message dispatch failed after admission: ${error instanceof Error ? error.message : String(error)}`);
 			}).finally(() => { releaseIngress(); this.activeHandles.delete(work); });
 			this.activeHandles.add(work);
 		});
@@ -216,7 +216,7 @@ export class Dispatcher {
 		} finally {
 			releaseAdmission?.();
 			await msg.releaseMedia?.().catch((error) => {
-				console.warn(`[beemax] temporary inbound media cleanup failed: ${error instanceof Error ? error.message : String(error)}`);
+				console.warn(`[thruvera] temporary inbound media cleanup failed: ${error instanceof Error ? error.message : String(error)}`);
 			});
 		}
 	}
@@ -272,7 +272,7 @@ export class Dispatcher {
 			const completion = result.completionId ? this.deps.completionAcknowledger?.getObjectiveCompletion(result.completionId) : undefined;
 			if (result.completionId) {
 				if (!completion) {
-					console.error(`[beemax] Interactive Objective delivery deferred because its Completion is unavailable: ${result.completionId}`);
+					console.error(`[thruvera] Interactive Objective delivery deferred because its Completion is unavailable: ${result.completionId}`);
 					return true;
 				}
 				const preparedArtifacts = await this.prepareTurnArtifacts(result.artifacts);
@@ -282,18 +282,18 @@ export class Dispatcher {
 					try {
 						receipt = await presentation.finish(completion.result, { idempotencyKey: completion.deliveryIdempotencyKey, deliveryClass: "interactive", publishedArtifacts });
 					} catch (error) {
-						console.error(`[beemax] Interactive Objective delivery deferred to Completion Outbox: ${result.completionId} (${error instanceof Error ? error.message : String(error)})`);
+						console.error(`[thruvera] Interactive Objective delivery deferred to Completion Outbox: ${result.completionId} (${error instanceof Error ? error.message : String(error)})`);
 						return true;
 					}
 					if (receipt.idempotencyKey !== completion.deliveryIdempotencyKey) {
-						console.error(`[beemax] Interactive Objective returned an invalid Delivery Receipt; Completion remains queued: ${result.completionId}`);
+						console.error(`[thruvera] Interactive Objective returned an invalid Delivery Receipt; Completion remains queued: ${result.completionId}`);
 						return true;
 					}
 					await this.deliverTurnArtifacts(preparedArtifacts, exactSource);
 					try { await this.deps.beforeCompletionAcknowledged?.(result.completionId, msg.source); }
-					catch { console.error(`[beemax] Interactive Objective publication deferred to Completion Outbox: ${result.completionId}`); return true; }
+					catch { console.error(`[thruvera] Interactive Objective publication deferred to Completion Outbox: ${result.completionId}`); return true; }
 					if (!this.deps.completionAcknowledger!.acknowledgeObjectiveCompletion(result.completionId, receipt)) {
-						console.error(`[beemax] Interactive Objective acknowledgement deferred to Completion Outbox: ${result.completionId}`);
+						console.error(`[thruvera] Interactive Objective acknowledgement deferred to Completion Outbox: ${result.completionId}`);
 					}
 				} finally {
 					await releaseTurnArtifacts(preparedArtifacts);
@@ -333,7 +333,7 @@ export class Dispatcher {
 						try {
 							published = await this.deps.artifactPublisher.publish(artifact, snapshot.media);
 						} catch (error) {
-							console.warn(`[beemax] Artifact Site publication skipped for ${artifact.uri}: ${error instanceof Error ? error.message : String(error)}`);
+							console.warn(`[thruvera] Artifact Site publication skipped for ${artifact.uri}: ${error instanceof Error ? error.message : String(error)}`);
 						}
 						await snapshot.verify();
 						const deliverySnapshot = await verifiedSnapshotCopy(snapshot.media.path, snapshot.media.name!, artifact, this.deps.artifactWorkspace, snapshotRoot);
@@ -398,7 +398,7 @@ export class Dispatcher {
 		}
 		for (const input of failed) this.interaction.releaseQueuedInput(input.source, input);
 		if (firstFailed && !this.recoveryTimer) {
-			this.recoveryTimer = setTimeout(() => { this.recoveryTimer = undefined; void this.recoverQueuedInputs().catch((error) => console.error(`[beemax] queued input recovery failed: ${String(error)}`)); }, 5_000);
+			this.recoveryTimer = setTimeout(() => { this.recoveryTimer = undefined; void this.recoverQueuedInputs().catch((error) => console.error(`[thruvera] queued input recovery failed: ${String(error)}`)); }, 5_000);
 			this.recoveryTimer.unref?.();
 		}
 		return recovered;

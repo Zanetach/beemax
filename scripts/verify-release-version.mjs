@@ -4,7 +4,7 @@ import { pathToFileURL } from "node:url";
 
 const DEPENDENCY_GROUPS = ["dependencies", "devDependencies", "optionalDependencies", "peerDependencies"];
 
-export function verifyBeeMaxReleaseVersion(root, releaseTag) {
+export function verifyThruveraReleaseVersion(root, releaseTag) {
 	const sourceRoot = resolve(root);
 	const manifestPaths = discoverManifestPaths(sourceRoot);
 	const manifests = manifestPaths.map((path) => ({ path, value: JSON.parse(readFileSync(path, "utf8")) }));
@@ -13,10 +13,10 @@ export function verifyBeeMaxReleaseVersion(root, releaseTag) {
 	if (releaseTag !== `v${version}`) throw new Error(`Release tag ${releaseTag} does not match package version v${version}`);
 	for (const { path, value } of manifests) {
 		const manifestName = portableRelative(sourceRoot, path);
-		if (requiredVersion(value.version, manifestName) !== version) throw new Error(`BeeMax workspace version does not match ${version}: ${manifestName}`);
+		if (requiredVersion(value.version, manifestName) !== version) throw new Error(`Thruvera workspace version does not match ${version}: ${manifestName}`);
 		for (const group of DEPENDENCY_GROUPS) {
 			for (const [dependency, dependencyVersion] of Object.entries(value[group] ?? {})) {
-				if (dependency.startsWith("@beemax/") && dependencyVersion !== version) {
+				if (dependency.startsWith("@thruvera/") && dependencyVersion !== version) {
 					throw new Error(`${value.name ?? manifestName} dependency ${dependency} must be exactly ${version}; found ${dependencyVersion}`);
 				}
 			}
@@ -43,7 +43,7 @@ function discoverManifestPaths(root) {
 }
 
 function requiredVersion(value, manifest) {
-	if (typeof value !== "string" || !value.trim()) throw new Error(`BeeMax manifest has no version: ${manifest}`);
+	if (typeof value !== "string" || !value.trim()) throw new Error(`Thruvera manifest has no version: ${manifest}`);
 	return value;
 }
 
@@ -55,8 +55,8 @@ function run() {
 	const root = process.argv[2];
 	const tag = process.argv[3];
 	if (!root || !tag) throw new Error("Usage: node scripts/verify-release-version.mjs <source-root> <release-tag>");
-	const result = verifyBeeMaxReleaseVersion(root, tag);
-	process.stdout.write(`Verified BeeMax ${result.version} across ${result.manifests.length} manifests.\n`);
+	const result = verifyThruveraReleaseVersion(root, tag);
+	process.stdout.write(`Verified Thruvera ${result.version} across ${result.manifests.length} manifests.\n`);
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) run();

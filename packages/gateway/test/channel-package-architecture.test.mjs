@@ -7,21 +7,21 @@ const root = resolve(import.meta.dirname, "../../..");
 
 test("Channel Runtime builds independently of Gateway and messaging platform SDKs", async () => {
 	const runtime = JSON.parse(await readFile(join(root, "packages/channel-runtime/package.json"), "utf8"));
-	assert.equal(runtime.name, "@beemax/channel-runtime");
-	assert.equal(runtime.dependencies?.["@beemax/gateway"], undefined);
+	assert.equal(runtime.name, "@thruvera/channel-runtime");
+	assert.equal(runtime.dependencies?.["@thruvera/gateway"], undefined);
 	assert.equal(runtime.dependencies?.["@larksuiteoapi/node-sdk"], undefined);
 	const sources = await sourceText(join(root, "packages/channel-runtime/src"));
-	assert.doesNotMatch(sources, /@beemax\/(?:gateway|channel-feishu|channel-telegram)|@larksuiteoapi\/node-sdk/u);
+	assert.doesNotMatch(sources, /@thruvera\/(?:gateway|channel-feishu|channel-telegram)|@larksuiteoapi\/node-sdk/u);
 	assert.doesNotMatch(sources, /\b(?:sendCard|updateCard|asCard)\b/u);
 });
 
 test("Interaction Gateway does not publish or depend on messaging platform implementations", async () => {
 	const gateway = JSON.parse(await readFile(join(root, "packages/gateway/package.json"), "utf8"));
 	assert.equal(gateway.dependencies?.["@larksuiteoapi/node-sdk"], undefined);
-	assert.equal(gateway.dependencies?.["@beemax/channel-feishu"], undefined);
-	assert.equal(gateway.dependencies?.["@beemax/channel-telegram"], undefined);
+	assert.equal(gateway.dependencies?.["@thruvera/channel-feishu"], undefined);
+	assert.equal(gateway.dependencies?.["@thruvera/channel-telegram"], undefined);
 	const sources = await sourceText(join(root, "packages/gateway/src"));
-	assert.doesNotMatch(sources, /@larksuiteoapi\/node-sdk|platforms\/(?:feishu|telegram)|@beemax\/channel-(?:feishu|telegram)/u);
+	assert.doesNotMatch(sources, /@larksuiteoapi\/node-sdk|platforms\/(?:feishu|telegram)|@thruvera\/channel-(?:feishu|telegram)/u);
 	assert.doesNotMatch(sources, /\b(?:CardSession|renderCard|FlushController)\b/u);
 	const gatewayEntries = await readdir(join(root, "packages/gateway/src"), { withFileTypes: true });
 	assert.equal(gatewayEntries.some((entry) => entry.isDirectory() && entry.name === "card"), false);

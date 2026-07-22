@@ -36,7 +36,7 @@ import {
 	type SelectManagedSkillVersionInput,
 	type SettleLearningInput,
 	type SituationFingerprint,
-} from "@beemax/core";
+} from "@thruvera/core";
 
 interface RecallHit {
 	id: string;

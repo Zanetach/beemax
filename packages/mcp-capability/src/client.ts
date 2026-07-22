@@ -6,7 +6,7 @@ import { isIP } from "node:net";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { DEFAULT_INHERITED_ENV_VARS, StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
-import { MUTATING_TOOL_POLICY, READ_ONLY_TOOL_POLICY, defineTool, isGloballyReachableIp, redactCredentialMaterial, withToolPolicy, type GovernedToolDefinition, type PublicHttpDependencies, type ToolPolicy } from "@beemax/core";
+import { MUTATING_TOOL_POLICY, READ_ONLY_TOOL_POLICY, defineTool, isGloballyReachableIp, redactCredentialMaterial, withToolPolicy, type GovernedToolDefinition, type PublicHttpDependencies, type ToolPolicy } from "@thruvera/core";
 import { Type, type TSchema } from "typebox";
 import { createMcpHttpFetch } from "./http-fetch.ts";
 
@@ -596,7 +596,7 @@ function expandEnv(value: string, environment: Readonly<Record<string, string>>)
 function isolatedStdioEnvironment(environment: Readonly<Record<string, string>>, overrides: Readonly<Record<string, string>>): Record<string, string> {
 	// The upstream SDK always merges its ambient default environment. Explicitly
 	// shadow every inherited key so an omitted Profile value cannot fall through
-	// to the BeeMax host process.
+	// to the Thruvera host process.
 	const inheritedShields = Object.fromEntries(DEFAULT_INHERITED_ENV_VARS.map((key) => [key, environment[key] ?? ""]));
 	const safeCore = Object.fromEntries(STDIO_SAFE_ENVIRONMENT_KEYS.flatMap((key) => {
 		const value = environment[key];

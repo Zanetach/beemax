@@ -1,10 +1,10 @@
 # Caddy Artifact Site
 
-BeeMax can publish Artifact Manifest integrity-checked document outputs through a Profile-owned Caddy
+Thruvera can publish Artifact Manifest integrity-checked document outputs through a Profile-owned Caddy
 process. The final channel reply contains stable links in addition to the
 existing native file delivery. It is enabled by default for new Profiles and
 for existing Profiles that do not configure `gateway.artifactSite.enabled`.
-Set that field or `BEEMAX_ARTIFACT_SITE_ENABLED` to `false` for an explicit
+Set that field or `THRUVERA_ARTIFACT_SITE_ENABLED` to `false` for an explicit
 Profile opt-out.
 
 ## Configuration
@@ -19,15 +19,15 @@ gateway:
 ```
 
 The Profile-scoped environment equivalents are
-`BEEMAX_ARTIFACT_SITE_ENABLED`, `BEEMAX_ARTIFACT_SITE_LISTEN`, and
-`BEEMAX_ARTIFACT_SITE_PUBLIC_BASE_URL`. The executable is deliberately not a
+`THRUVERA_ARTIFACT_SITE_ENABLED`, `THRUVERA_ARTIFACT_SITE_LISTEN`, and
+`THRUVERA_ARTIFACT_SITE_PUBLIC_BASE_URL`. The executable is deliberately not a
 Profile setting: when Caddy is not on the Gateway service's trusted `PATH`, set
-`BEEMAX_ARTIFACT_SITE_COMMAND` in the Gateway host/service environment. A
-`command` field in Profile YAML, or `BEEMAX_ARTIFACT_SITE_COMMAND` in the
+`THRUVERA_ARTIFACT_SITE_COMMAND` in the Gateway host/service environment. A
+`command` field in Profile YAML, or `THRUVERA_ARTIFACT_SITE_COMMAND` in the
 Profile `.env`, is rejected.
 
 Caddy is a required host dependency while the site is enabled. The standard
-BeeMax installer provisions it on supported Ubuntu/macOS hosts. `beemax doctor`
+Thruvera installer provisions it on supported Ubuntu/macOS hosts. `thruvera doctor`
 runs the host-resolved command's `version` operation and fails before Gateway
 startup when it is unavailable. Doctor and Gateway use the same resolver and
 credential-free child environment. The managed Caddy process receives only a
@@ -43,7 +43,7 @@ overridden manually, every concurrently running Profile must use a distinct
 `listen` address and matching `publicBaseUrl`.
 
 Automatic addresses are persisted in
-`<BEEMAX_HOME>/state/artifact-site-addresses.json`. Allocation is serialized
+`<THRUVERA_HOME>/state/artifact-site-addresses.json`. Allocation is serialized
 across Profile Gateway processes and resolves a hash collision to the next free
 port. An explicit port already reserved by another Profile fails closed.
 
@@ -62,7 +62,7 @@ an unauthenticated document site to a public interface.
   editing or Office Online integration is not enabled.
 
 Only file Artifacts with a workspace Manifest whose byte length and SHA-256
-still match are eligible. BeeMax copies each accepted file into
+still match are eligible. Thruvera copies each accepted file into
 `<agentDir>/artifact-site/public/<sha256>/<name>` and serves that immutable
 copy. Source bytes are read and hashed from the same pinned file descriptor,
 then committed through an exclusive temporary file and atomic rename. Invalid

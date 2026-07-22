@@ -114,7 +114,7 @@ export class FileToolArtifactStore {
 			maxEstimatedTokens: Math.max(0, input.budget.maxEstimatedTokens - markerTokens),
 		});
 		const content = [
-			...summary.content.filter((block) => !(block.type === "text" && block.text === "\n[Tool result truncated by BeeMax Tool Runtime]")),
+			...summary.content.filter((block) => !(block.type === "text" && block.text === "\n[Tool result truncated by Thruvera Tool Runtime]")),
 			{ type: "text" as const, text: marker },
 		];
 		return {

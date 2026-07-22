@@ -1,8 +1,8 @@
-import { runFeishuSmoke, type FeishuSmokeResult } from "@beemax/channel-feishu";
-import { consumeChannelCredential, type BeeMaxConfig } from "./config.ts";
+import { runFeishuSmoke, type FeishuSmokeResult } from "@thruvera/channel-feishu";
+import { consumeChannelCredential, type ThruveraConfig } from "./config.ts";
 
 export async function executeFeishuSmoke(
-	config: BeeMaxConfig,
+	config: ThruveraConfig,
 	chatId: string,
 	runner: typeof runFeishuSmoke = runFeishuSmoke,
 ): Promise<{ success: boolean; output: string }> {

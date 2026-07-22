@@ -1,9 +1,9 @@
 import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { ConversationContext, redactCredentialMaterial, responsibilityOwnerKeys, type ConversationContextOptions, type ConversationMemoryPort, type TaskLedger } from "@beemax/core";
-import type { TaskFactRecord } from "@beemax/memory";
-import { beemaxRoot } from "./config.ts";
+import { ConversationContext, redactCredentialMaterial, responsibilityOwnerKeys, type ConversationContextOptions, type ConversationMemoryPort, type TaskLedger } from "@thruvera/core";
+import type { TaskFactRecord } from "@thruvera/memory";
+import { thruveraRoot } from "./config.ts";
 
 export interface RuntimeFactSnapshot {
 	model?: string;
@@ -15,7 +15,7 @@ export interface TaskAwareConversationOptions extends ConversationContextOptions
 }
 
 const BUILTIN_TASKS: Array<Pick<TaskFactRecord, "id" | "title" | "status" | "evidence" | "completedAt">> = [
-	{ id: "upgrade-preview-13", title: "Upgrade BeeMax to v0.1.0-preview.13", status: "done", evidence: "tag:v0.1.0-preview.13", completedAt: 1783728719000 },
+	{ id: "upgrade-preview-13", title: "Upgrade Thruvera to v0.1.0-preview.13", status: "done", evidence: "tag:v0.1.0-preview.13", completedAt: 1783728719000 },
 	{ id: "anthropic-protocol", title: "Support Anthropic Messages protocol", status: "done", evidence: "tag:v0.1.0-preview.15", completedAt: 1783729196000 },
 ];
 
@@ -62,7 +62,7 @@ function compactFact(value: string, limit: number): string {
 }
 
 /** Prefer the checked-out release description; release installs fall back to package metadata. */
-export function installedVersion(root = beemaxRoot()): string {
+export function installedVersion(root = thruveraRoot()): string {
 	const described = spawnSync("git", ["describe", "--tags", "--always", "--dirty"], { cwd: root, encoding: "utf8", timeout: 1_000 });
 	if (described.status === 0 && described.stdout.trim()) return described.stdout.trim();
 	try {

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { createFeishuMeetingTools } from "@beemax/feishu-capability";
-import { FileToolEffectJournal } from "@beemax/core";
+import { createFeishuMeetingTools } from "@thruvera/feishu-capability";
+import { FileToolEffectJournal } from "@thruvera/core";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";

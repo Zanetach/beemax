@@ -54,12 +54,12 @@
   ],
   "targets": [
     {
-      "id": "beemax",
+      "id": "thruvera",
       "version": "1.4.0",
       "nativeModel": "glm-5.2",
       "source": "workspace-package",
       "capture": {
-        "adapter": "evals/adapters/beemax-cli.mjs",
+        "adapter": "evals/adapters/thruvera-cli.mjs",
         "bestNativeOptions": { "fixtureRoot": "evals/fixtures/agent-parity", "profile": "e2e-feishu", "provider": "custom" },
         "sameModelOptions": { "fixtureRoot": "evals/fixtures/agent-parity", "profile": "e2e-feishu", "provider": "custom" }
       }
@@ -106,7 +106,7 @@
     }
   },
   "scoring": {
-    "rule": "BeeMax must be no worse than every baseline on each declared dimension; no aggregate score may hide a regression",
+    "rule": "Thruvera must be no worse than every baseline on each declared dimension; no aggregate score may hide a regression",
     "higherIsBetter": [
       "endToEndSuccessRate",
       "requiredCapabilityRecall",

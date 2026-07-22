@@ -39,28 +39,28 @@ export function resolveServiceLayout(options: ServicePlatformOptions = {}): Serv
 	const home = options.homeDir ?? homedir();
 	if (platform === "darwin") {
 		if (scope === "system") throw new Error("macOS system-wide Gateway services are not supported; use the user LaunchAgent");
-		const unitDirectory = configuredPath(env.BEEMAX_LAUNCH_AGENTS_DIR) ?? join(home, "Library", "LaunchAgents");
-		return { platform, scope, unitDirectory, unitTemplatePath: join(unitDirectory, "com.beemax.agent.%i.plist") };
+		const unitDirectory = configuredPath(env.THRUVERA_LAUNCH_AGENTS_DIR) ?? join(home, "Library", "LaunchAgents");
+		return { platform, scope, unitDirectory, unitTemplatePath: join(unitDirectory, "com.thruvera.agent.%i.plist") };
 	}
 	const userConfig = configuredPath(env.XDG_CONFIG_HOME) ?? join(home, ".config");
 	const unitDirectory = scope === "user"
-		? configuredPath(env.BEEMAX_SYSTEMD_USER_DIR) ?? join(userConfig, "systemd", "user")
-		: configuredPath(env.BEEMAX_SYSTEMD_SYSTEM_DIR) ?? "/etc/systemd/system";
+		? configuredPath(env.THRUVERA_SYSTEMD_USER_DIR) ?? join(userConfig, "systemd", "user")
+		: configuredPath(env.THRUVERA_SYSTEMD_SYSTEM_DIR) ?? "/etc/systemd/system";
 	return {
 		platform,
 		scope,
 		unitDirectory,
-		unitTemplatePath: join(unitDirectory, "beemax@.service"),
-		targetPath: join(unitDirectory, "beemax.target"),
-		environmentDirectory: scope === "system" ? configuredPath(env.BEEMAX_SYSTEM_CONFIG_DIR) ?? "/etc/beemax" : undefined,
+		unitTemplatePath: join(unitDirectory, "thruvera@.service"),
+		targetPath: join(unitDirectory, "thruvera.target"),
+		environmentDirectory: scope === "system" ? configuredPath(env.THRUVERA_SYSTEM_CONFIG_DIR) ?? "/etc/thruvera" : undefined,
 	};
 }
 
 export function serviceDisplayName(profile: string, platform: NodeJS.Platform = process.platform): string {
 	validateProfileName(profile);
-	if (platform === "linux") return `beemax@${profile}.service`;
-	if (platform === "darwin") return `com.beemax.agent.${profile}`;
-	return `beemax:${profile}`;
+	if (platform === "linux") return `thruvera@${profile}.service`;
+	if (platform === "darwin") return `com.thruvera.agent.${profile}`;
+	return `thruvera:${profile}`;
 }
 
 export function serviceInstallationPath(profile: string, options: ServicePlatformOptions = {}): string {
@@ -103,7 +103,7 @@ export function resolveServiceLogCommand(profile: string, tail: number, options:
 
 function supportedPlatform(platform: NodeJS.Platform): ServicePlatform {
 	if (platform === "linux" || platform === "darwin") return platform;
-	throw new Error(`BeeMax service management is not available on ${platform}; run 'beemax gateway' under an external supervisor`);
+	throw new Error(`Thruvera service management is not available on ${platform}; run 'thruvera gateway' under an external supervisor`);
 }
 
 function configuredPath(value: string | undefined): string | undefined {

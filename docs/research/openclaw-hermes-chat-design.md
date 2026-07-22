@@ -1,12 +1,12 @@
 # OpenClaw 与 Hermes Agent：Chat 运行与回复呈现设计
 
-核查日期：2026-07-11。范围仅限 OpenClaw 与 Nous Research/Hermes Agent 的官方文档、官方仓库源码；下文“已核实”均附一手来源。“建议/推断”是针对 BeeMax 的产品设计判断，不是上游已有功能的宣称。
+核查日期：2026-07-11。范围仅限 OpenClaw 与 Nous Research/Hermes Agent 的官方文档、官方仓库源码；下文“已核实”均附一手来源。“建议/推断”是针对 Thruvera 的产品设计判断，不是上游已有功能的宣称。
 
 ## 结论
 
 两者的共同原则是：**对话正文、工具生命周期、推理可见性、持久化记录是不同层**。用户应获得干净的最终回复和可理解的执行状态；富客户端通过带类型的事件渲染工具卡片/进度，不能把调试文本或模型推理混进 assistant 正文。推理强度、推理是否展示、推理是否因协议需要保存，也应是三个独立开关。
 
-BeeMax 已把通用 Interaction 事件与平台呈现分离：Gateway 只通过 `InteractionPresenter` 驱动呈现，飞书 Adapter 独立拥有单卡流式更新、工具时间线和最终 footer，纯文本渠道使用通用降级 Presenter。原始 `thinking_delta` 默认不展示，只有受信任诊断配置显式选择 `raw` 时才进入飞书时间线；后续仍可继续深化统一的持久化 `RunRecord`。
+Thruvera 已把通用 Interaction 事件与平台呈现分离：Gateway 只通过 `InteractionPresenter` 驱动呈现，飞书 Adapter 独立拥有单卡流式更新、工具时间线和最终 footer，纯文本渠道使用通用降级 Presenter。原始 `thinking_delta` 默认不展示，只有受信任诊断配置显式选择 `raw` 时才进入飞书时间线；后续仍可继续深化统一的持久化 `RunRecord`。
 
 ## 已核实：OpenClaw
 
@@ -43,17 +43,17 @@ BeeMax 已把通用 Interaction 事件与平台呈现分离：Gateway 只通过 
 
 - `show_reasoning` 默认 `false`，streaming 默认也为 `false`。这与 OpenClaw 一致：显示思考是显式展示策略，而不是流式回答的默认组成部分。[官方 configuration 文档](https://github.com/NousResearch/hermes-agent/blob/main/website/docs/user-guide/configuration.md#L1249-L1264)
 
-## BeeMax 当前实现（仓库核查）
+## Thruvera 当前实现（仓库核查）
 
 | 项目 | 当前行为 | 结论 |
 | --- | --- | --- |
-| 会话路由 | Core 以可信 Profile、Channel Instance、Conversation 和 Thread 构造 session key；群聊共享 Conversation 与 Actor 权限保持分离。 | 路由语义由通用 Runtime 持有，不属于任何平台 Adapter。[session-coordinator.ts](/Users/zane/Documents/Github/BeeMax-Agent/packages/core/src/session-coordinator.ts:8) [agent-scope.ts](/Users/zane/Documents/Github/BeeMax-Agent/packages/core/src/agent-scope.ts:18) |
-| 流式交付 | Dispatcher 只调用 `InteractionPresenter`；飞书 Adapter 的 Presenter 独立管理 `CardSession`、单卡更新和 FlushController，其他渠道可使用纯文本降级。 | 与两者的“结构化事件→平台能力呈现”方向一致，Gateway 不拥有飞书卡片实现。[dispatcher.ts](/Users/zane/Documents/Github/BeeMax-Agent/packages/gateway/src/core/dispatcher.ts:210) [presenter.ts](/Users/zane/Documents/Github/BeeMax-Agent/packages/channel-feishu/src/presentation/presenter.ts:18) |
-| 工具进度 | 通用 Interaction 事件跨 Presenter seam 传递；飞书 `CardSession` 将 `tool.updated` 聚合为有界工具状态和 timeline。 | 平台细节保持在 Adapter 内，工具状态不会混入最终 answer。[session.ts](/Users/zane/Documents/Github/BeeMax-Agent/packages/channel-feishu/src/presentation/session.ts:52) |
-| reasoning | `thinking.delta` 可保留为运行事件，但 Feishu renderer 默认过滤 reasoning；只有受信任诊断 Profile 显式选择 `reasoningDisplay: raw` 时展示，且单项最多 1200 字。 | 已与 OpenClaw、Hermes 的默认隐藏策略一致。[render.ts](/Users/zane/Documents/Github/BeeMax-Agent/packages/channel-feishu/src/presentation/render.ts:25) |
-| 最终格式 | 飞书 Adapter 渲染主 Markdown、默认不含 raw reasoning 的执行时间线和可选 footer；无富呈现能力时 Gateway 发送最终纯文本。 | 最终正文与执行状态分层，平台能力不足时仍有确定降级路径。[render.ts](/Users/zane/Documents/Github/BeeMax-Agent/packages/channel-feishu/src/presentation/render.ts:29) [text-presentation.ts](/Users/zane/Documents/Github/BeeMax-Agent/packages/gateway/src/core/text-presentation.ts:11) |
+| 会话路由 | Core 以可信 Profile、Channel Instance、Conversation 和 Thread 构造 session key；群聊共享 Conversation 与 Actor 权限保持分离。 | 路由语义由通用 Runtime 持有，不属于任何平台 Adapter。[session-coordinator.ts](/Users/zane/Documents/Github/Thruvera-Agent/packages/core/src/session-coordinator.ts:8) [agent-scope.ts](/Users/zane/Documents/Github/Thruvera-Agent/packages/core/src/agent-scope.ts:18) |
+| 流式交付 | Dispatcher 只调用 `InteractionPresenter`；飞书 Adapter 的 Presenter 独立管理 `CardSession`、单卡更新和 FlushController，其他渠道可使用纯文本降级。 | 与两者的“结构化事件→平台能力呈现”方向一致，Gateway 不拥有飞书卡片实现。[dispatcher.ts](/Users/zane/Documents/Github/Thruvera-Agent/packages/gateway/src/core/dispatcher.ts:210) [presenter.ts](/Users/zane/Documents/Github/Thruvera-Agent/packages/channel-feishu/src/presentation/presenter.ts:18) |
+| 工具进度 | 通用 Interaction 事件跨 Presenter seam 传递；飞书 `CardSession` 将 `tool.updated` 聚合为有界工具状态和 timeline。 | 平台细节保持在 Adapter 内，工具状态不会混入最终 answer。[session.ts](/Users/zane/Documents/Github/Thruvera-Agent/packages/channel-feishu/src/presentation/session.ts:52) |
+| reasoning | `thinking.delta` 可保留为运行事件，但 Feishu renderer 默认过滤 reasoning；只有受信任诊断 Profile 显式选择 `reasoningDisplay: raw` 时展示，且单项最多 1200 字。 | 已与 OpenClaw、Hermes 的默认隐藏策略一致。[render.ts](/Users/zane/Documents/Github/Thruvera-Agent/packages/channel-feishu/src/presentation/render.ts:25) |
+| 最终格式 | 飞书 Adapter 渲染主 Markdown、默认不含 raw reasoning 的执行时间线和可选 footer；无富呈现能力时 Gateway 发送最终纯文本。 | 最终正文与执行状态分层，平台能力不足时仍有确定降级路径。[render.ts](/Users/zane/Documents/Github/Thruvera-Agent/packages/channel-feishu/src/presentation/render.ts:29) [text-presentation.ts](/Users/zane/Documents/Github/Thruvera-Agent/packages/gateway/src/core/text-presentation.ts:11) |
 
-## 对 BeeMax 的建议（设计推断）
+## 对 Thruvera 的建议（设计推断）
 
 ### 1. 建立统一的运行事件与记录
 
@@ -72,7 +72,7 @@ type RunEvent =
   | { type: "run.finished"; answer: string; usage?: Usage };
 ```
 
-`RunRecord`（event、时间、run/session ID、工具 canonical input/output、治理结果、错误）独立于 `ConversationTranscript`（仅 user、assistant final/interim、必要 tool protocol item）。这直接吸收 Hermes 的“工具进度不能污染 assistant text”与 OpenClaw 的“恢复时不把内部记录直接回放”为原则。BeeMax 不把上游的审批事件复制成 Tool 等待协议。
+`RunRecord`（event、时间、run/session ID、工具 canonical input/output、治理结果、错误）独立于 `ConversationTranscript`（仅 user、assistant final/interim、必要 tool protocol item）。这直接吸收 Hermes 的“工具进度不能污染 assistant text”与 OpenClaw 的“恢复时不把内部记录直接回放”为原则。Thruvera 不把上游的审批事件复制成 Tool 等待协议。
 
 ### 2. 把三种“思考”拆开
 

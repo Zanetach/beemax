@@ -1,16 +1,16 @@
-# BeeMax L4 Outcome-Driven Memory and Learning System
+# Thruvera L4 Outcome-Driven Memory and Learning System
 
 Label: `ready-for-agent`
 
 ## Problem Statement
 
-BeeMax already persists conversation evidence, typed Claims, Episodes, Corrections,
+Thruvera already persists conversation evidence, typed Claims, Episodes, Corrections,
 Conflicts, Exceptions, Convention Candidates, Workflow Candidates, managed Skill
 versions, Task state, Verification outcomes, and execution receipts. These pieces
 provide a strong governed-memory foundation, but they do not yet operate as one
 closed learning system.
 
-From the user's perspective, BeeMax must not merely remember more text. It must
+From the user's perspective, Thruvera must not merely remember more text. It must
 become better at completing real work: retain trustworthy preferences and facts,
 reuse successful procedures, avoid repeating failures, adapt when sources and
 Tools change, recover from interruption, and make fewer requests for routine user
@@ -32,7 +32,7 @@ that every possible task can be completed without credentials, Tools, or evidenc
 
 ## Solution
 
-BeeMax will add one native `Memory Learning Kernel` behind the existing Profile
+Thruvera will add one native `Memory Learning Kernel` behind the existing Profile
 Runtime. It exposes four conceptual operations:
 
 - `prepare`: build an evidence-backed, progressively disclosed Context Pack for a
@@ -77,27 +77,27 @@ where possible.
 
 ## User Stories
 
-1. As a user, I want BeeMax to remember my stable preferences, so that I do not have to repeat formatting, language, and delivery expectations.
-2. As a user, I want BeeMax to distinguish a preference from a factual claim, so that stylistic choices do not become false business facts.
-3. As a user, I want BeeMax to preserve the source of every important remembered fact, so that I can understand why it believes something.
-4. As a user, I want BeeMax to know when remembered information has expired, so that current tasks do not reuse stale prices, policies, or system state.
+1. As a user, I want Thruvera to remember my stable preferences, so that I do not have to repeat formatting, language, and delivery expectations.
+2. As a user, I want Thruvera to distinguish a preference from a factual claim, so that stylistic choices do not become false business facts.
+3. As a user, I want Thruvera to preserve the source of every important remembered fact, so that I can understand why it believes something.
+4. As a user, I want Thruvera to know when remembered information has expired, so that current tasks do not reuse stale prices, policies, or system state.
 5. As a user, I want corrections to replace or narrow prior understanding everywhere it is used, so that I do not need to correct the same mistake repeatedly.
-6. As a user, I want conflicting evidence to remain visible, so that BeeMax investigates uncertainty instead of silently choosing a convenient answer.
-7. As a user, I want BeeMax to forget selected information on request, so that removed evidence and all derived views can be deleted consistently.
-8. As a user, I want BeeMax to remember successful work across sessions and restarts, so that a new conversation does not reset its practical experience.
-9. As a user, I want BeeMax to resume an unfinished Objective from durable state, so that conversation summaries never become the only recovery mechanism.
-10. As a user, I want BeeMax to load only relevant Memory and Skills, so that irrelevant history does not reduce answer quality.
+6. As a user, I want conflicting evidence to remain visible, so that Thruvera investigates uncertainty instead of silently choosing a convenient answer.
+7. As a user, I want Thruvera to forget selected information on request, so that removed evidence and all derived views can be deleted consistently.
+8. As a user, I want Thruvera to remember successful work across sessions and restarts, so that a new conversation does not reset its practical experience.
+9. As a user, I want Thruvera to resume an unfinished Objective from durable state, so that conversation summaries never become the only recovery mechanism.
+10. As a user, I want Thruvera to load only relevant Memory and Skills, so that irrelevant history does not reduce answer quality.
 11. As a user, I want the current request to remain complete even when supporting context is compacted, so that Memory cannot weaken my instructions.
-12. As a user, I want BeeMax to learn from independently accepted outcomes, so that confident self-reporting is not mistaken for success.
-13. As a user, I want BeeMax to identify which part of a failed workflow caused the failure, so that correct knowledge is not downgraded with the broken component.
-14. As a user, I want BeeMax to try a safe alternative when a Tool or Skill fails, so that routine recovery does not require my participation.
-15. As a user, I want BeeMax to retain failure lessons, so that it does not repeat a known invalid route.
+12. As a user, I want Thruvera to learn from independently accepted outcomes, so that confident self-reporting is not mistaken for success.
+13. As a user, I want Thruvera to identify which part of a failed workflow caused the failure, so that correct knowledge is not downgraded with the broken component.
+14. As a user, I want Thruvera to try a safe alternative when a Tool or Skill fails, so that routine recovery does not require my participation.
+15. As a user, I want Thruvera to retain failure lessons, so that it does not repeat a known invalid route.
 16. As a user, I want a repaired Memory or Skill to be revalidated and restored, so that automatic downgrade is reversible rather than permanent deletion.
 17. As a user, I want volatile facts to be refreshed during current-data tasks, so that old observations are never presented as current truth.
-18. As a user, I want BeeMax to generate high-quality HTML and PDF reports using previously verified procedures, so that repeated work becomes faster and more stable.
+18. As a user, I want Thruvera to generate high-quality HTML and PDF reports using previously verified procedures, so that repeated work becomes faster and more stable.
 19. As a user, I want every delivered Artifact to remain bound to source and Verification receipts, so that learning is based on observable output.
-20. As a user, I want BeeMax to know what it is uncertain about, so that it can gather missing evidence before making a material claim.
-21. As a user, I want BeeMax to create safe investigation work when evidence is missing, so that it learns actively instead of waiting for another failure.
+20. As a user, I want Thruvera to know what it is uncertain about, so that it can gather missing evidence before making a material claim.
+21. As a user, I want Thruvera to create safe investigation work when evidence is missing, so that it learns actively instead of waiting for another failure.
 22. As a project member, I want project Memory isolated from unrelated projects, so that relevant precedent is reusable without data leakage.
 23. As a team member, I want repeated verified practices to become team Convention Candidates, so that useful experience can be shared deliberately.
 24. As a team member, I want personal experience to remain private by default, so that scope expansion never happens merely because a model found it useful.
@@ -570,7 +570,7 @@ abandonment conditions.
 ## Out of Scope
 
 - foundation-model fine-tuning or autonomous weight updates;
-- embedding or invoking another general-purpose Agent runtime inside BeeMax;
+- embedding or invoking another general-purpose Agent runtime inside Thruvera;
 - a second Agent loop, Memory authority, Task queue, scheduler, Capability router,
   Policy engine, or Skill loader;
 - model-authored executable code or unrestricted package installation as learning;
@@ -595,7 +595,7 @@ The authority decisions are recorded in ADRs
 [`0009`](../../adr/0009-separate-semantic-truth-from-operational-utility.md), and
 [`0010`](../../adr/0010-settle-learning-only-from-correlated-independent-verification.md).
 
-The current BeeMax implementation is an L3-quality foundation with several L4
+The current Thruvera implementation is an L3-quality foundation with several L4
 building blocks already present: typed and scoped Claims, provenance, correction
 and conflict chains, verified Episodes, Convention rollback, Workflow lineage,
 progressive Skill loading, Skill candidate quarantine, independent trials,
@@ -608,7 +608,7 @@ receipts, criterion-level outcome attribution, contextual assessment, derived
 knowledge projections, automatic operational downgrade and restoration, and
 continuous Skill canary health.
 
-BeeMax remains the sole product identity and Runtime. Research inputs may influence
+Thruvera remains the sole product identity and Runtime. Research inputs may influence
 architecture decisions, but no external Agent identity, prompt, package tree,
 runtime dependency, home-directory convention, or execution path enters the
 production package.

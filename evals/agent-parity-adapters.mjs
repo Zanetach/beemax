@@ -89,7 +89,7 @@ export function hermesSuccessfulToolSourceMaterial(messages) {
 	return (messages ?? []).filter((message) => message.role === "tool" && hermesToolResultSucceeded(message)).map((message) => String(message.content ?? "")).join("\n");
 }
 
-export function parseBeeMaxEvidence(input) {
+export function parseThruveraEvidence(input) {
 	const executionEvents = input.executionTrace.filter((event) => event.triggerKind !== "verification");
 	const callKey = (event) => `${event.executionId ?? "unknown"}:${event.toolCallId}`;
 	const started = new Map(executionEvents.filter((event) => event.type === "tool.started" && event.toolCallId).map((event) => [callKey(event), event]));
@@ -113,7 +113,7 @@ export function parseBeeMaxEvidence(input) {
 	const committedEffects = input.effects.filter((effect) => effect.status === "committed");
 	const sourceRefs = input.scenario.outputContract.minPublicSources > 0 ? (input.validatedSourceRefs ?? []) : [...new Set([...publicSourceRefs(objective?.evidence), ...(input.validatedSourceRefs ?? [])])];
 	const result = resultFromEvidence(input, { status, inputTokens, outputTokens, calls, duplicateEffects: input.fixtureEvidence ? input.fixtureEvidence.duplicateEffects : committedEffects.length - new Set(committedEffects.map((effect) => effect.id)).size, answer: objective?.result ?? input.stdout, sourceRefs, recovered: input.scenario.id === "provider-failure-recovery" ? status === "succeeded" && Boolean(objective?.checkpoint) : null });
-	result.evidenceKinds = [...new Set([...beeMaxAuthorityEvidenceKinds(objective, input.effects, calls.filter((call) => call.status === "succeeded")), ...(input.fixtureEvidence?.kinds ?? [])])];
+	result.evidenceKinds = [...new Set([...thruveraAuthorityEvidenceKinds(objective, input.effects, calls.filter((call) => call.status === "succeeded")), ...(input.fixtureEvidence?.kinds ?? [])])];
 	if (input.scenario.outputContract.minPublicSources > 0 && sourceRefs.length < input.scenario.outputContract.minPublicSources) result.evidenceKinds = result.evidenceKinds.filter((kind) => kind !== "source");
 	if (!objective && result.status === "blocked" && input.exitCode === 0 && input.stdout.trim() && result.outcomeVerified
 		&& input.scenario.requiredCapabilities.every((capability) => result.toolCalls.some((call) => call.name === capability && call.status === "succeeded"))
@@ -200,7 +200,7 @@ function evidenceKindsFor(names) {
 	return [...kinds];
 }
 
-function beeMaxAuthorityEvidenceKinds(task, effects, calls) {
+function thruveraAuthorityEvidenceKinds(task, effects, calls) {
 	const kinds = new Set(calls.length ? ["tool"] : []);
 	if (task?.evidence) kinds.add("source");
 	if (task?.artifacts) { kinds.add("artifact"); kinds.add("filesystem"); }

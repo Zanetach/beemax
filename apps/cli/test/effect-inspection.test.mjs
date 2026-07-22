@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { FileToolEffectJournal, MUTATING_TOOL_POLICY } from "@beemax/core";
+import { FileToolEffectJournal, MUTATING_TOOL_POLICY } from "@thruvera/core";
 import { inspectProfileEffects, reconcileProfileEffect } from "../dist/effect-inspection.js";
 
 test("operators can inspect and reconcile an unknown Effect without replaying its mutation", () => {

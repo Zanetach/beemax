@@ -5,11 +5,11 @@ import { createServer } from "node:http";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
-import { createFeishuMeetingTools } from "@beemax/feishu-capability";
-import { McpManager } from "@beemax/mcp-capability";
-import { filterEligibleSkills, reloadRuntimeResourcesIfNeeded } from "@beemax/core";
+import { createFeishuMeetingTools } from "@thruvera/feishu-capability";
+import { McpManager } from "@thruvera/mcp-capability";
+import { filterEligibleSkills, reloadRuntimeResourcesIfNeeded } from "@thruvera/core";
 import { buildAgentFactory } from "../../../apps/cli/dist/agent-factory.js";
-import { createSkillTools } from "@beemax/core";
+import { createSkillTools } from "@thruvera/core";
 
 const fixture = fileURLToPath(new URL("./fixtures/mcp-server.mjs", import.meta.url));
 const hangingMcpFixture = fileURLToPath(new URL("./fixtures/hanging-mcp-server.mjs", import.meta.url));

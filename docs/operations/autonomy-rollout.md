@@ -1,6 +1,6 @@
 # Organizational intelligence autonomy rollout
 
-BeeMax releases organizational-intelligence capabilities per Profile. These levels are platform capability boundaries, not customer business stages and not an ontology for orders, tickets, customers, or any other domain object.
+Thruvera releases organizational-intelligence capabilities per Profile. These levels are platform capability boundaries, not customer business stages and not an ontology for orders, tickets, customers, or any other domain object.
 
 ## Levels and dependencies
 
@@ -16,7 +16,7 @@ New Profiles are fail-closed: all five levels start `disabled`. Enabling a level
 
 ## Promotion evidence
 
-Promotion and resume consume only the passing, schema-versioned `evals/baselines/current.json` shipped with the installed release. BeeMax maps its measured quality, safety, value, interruption, duplication, and reversibility metrics and derives an evidence reference from the corpus identity plus the artifact SHA-256. Callers cannot supply their own promotion JSON or evidence reference. Enterprise `allow` cannot override a failed metric or disabled dependency. Enterprise `deny`, stop, and rollback fail closed.
+Promotion and resume consume only the passing, schema-versioned `evals/baselines/current.json` shipped with the installed release. Thruvera maps its measured quality, safety, value, interruption, duplication, and reversibility metrics and derives an evidence reference from the corpus identity plus the artifact SHA-256. Callers cannot supply their own promotion JSON or evidence reference. Enterprise `allow` cannot override a failed metric or disabled dependency. Enterprise `deny`, stop, and rollback fail closed.
 
 Minimum gates are:
 
@@ -31,11 +31,11 @@ The internal mapped shape is the `AutonomyRolloutEvidence` interface in `package
 ## Operations
 
 ```bash
-beemax autonomy status --profile <profile>
-beemax autonomy promote situation_context --yes --profile <profile>
-beemax autonomy stop read_only_investigation --evidence-ref incident:2026-07-13 --yes --profile <profile>
-beemax autonomy rollback reversible_action --evidence-ref release:rollback-42 --yes --profile <profile>
-beemax autonomy resume read_only_investigation --yes --profile <profile>
+thruvera autonomy status --profile <profile>
+thruvera autonomy promote situation_context --yes --profile <profile>
+thruvera autonomy stop read_only_investigation --evidence-ref incident:2026-07-13 --yes --profile <profile>
+thruvera autonomy rollback reversible_action --evidence-ref release:rollback-42 --yes --profile <profile>
+thruvera autonomy resume read_only_investigation --yes --profile <profile>
 ```
 
 Stop and rollback affect only the named persisted level. Lower independent levels remain active. Any higher level that depends on a stopped level is effectively denied without having its own history overwritten. Resume re-runs current evidence gates; it is not a blind toggle. Gateway workers read the same SQLite authority on each admission boundary, so a stop takes effect without restarting the Profile.

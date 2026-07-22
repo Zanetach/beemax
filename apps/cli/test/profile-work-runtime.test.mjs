@@ -3,7 +3,7 @@ import test from "node:test";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { MemoryStore } from "@beemax/memory";
+import { MemoryStore } from "@thruvera/memory";
 import { createProfileWorkRuntime } from "../dist/profile-work-runtime.js";
 
 test("Profile Work Runtime composes one channel-neutral Task, Recovery, Verification and Effect graph", async () => {

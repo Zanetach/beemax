@@ -1,6 +1,6 @@
-import type { DeliveryOptions, DeliveryPort, DeliveryReceipt, DeliveryTarget, MediaArtifact } from "@beemax/core";
+import type { DeliveryOptions, DeliveryPort, DeliveryReceipt, DeliveryTarget, MediaArtifact } from "@thruvera/core";
 import { extname } from "node:path";
-import type { ChannelAdapterResolver, PlatformAdapter } from "@beemax/channel-runtime";
+import type { ChannelAdapterResolver, PlatformAdapter } from "@thruvera/channel-runtime";
 
 /** Concrete channel delivery adapter. It is the only layer that knows how a
  * Core artifact becomes a Feishu (or future channel) message. */

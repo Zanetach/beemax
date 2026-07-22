@@ -4,11 +4,11 @@ Label: `wayfinder:resolved`
 
 ## Question
 
-How should BeeMax accept a natural-language task, let the main Pi model understand and adapt it, progressively load Tools and Skills, recover inside the model–Tool loop, and deliver text or files without forcing every complex turn through a separate durable Work Contract cognition pass?
+How should Thruvera accept a natural-language task, let the main Pi model understand and adapt it, progressively load Tools and Skills, recover inside the model–Tool loop, and deliver text or files without forcing every complex turn through a separate durable Work Contract cognition pass?
 
 ## Implemented
 
-`BeeMaxAgentRuntime` now defaults interactive turns to `model_first`. A new request with no explicit durable binding reaches the main Pi model directly whether it is simple, unfamiliar, research-oriented, multi-step, or artifact-producing. `AutonomousPlanningPolicy` still supplies a bounded execution posture and exposes planning Tools when the task warrants them; Pi performs the actual Tool calls and can continue after Capability discovery, Provider recovery, Skill activation, read rerouting, model fallback, output-limit recovery, or Verification correction.
+`ThruveraAgentRuntime` now defaults interactive turns to `model_first`. A new request with no explicit durable binding reaches the main Pi model directly whether it is simple, unfamiliar, research-oriented, multi-step, or artifact-producing. `AutonomousPlanningPolicy` still supplies a bounded execution posture and exposes planning Tools when the task warrants them; Pi performs the actual Tool calls and can continue after Capability discovery, Provider recovery, Skill activation, read rerouting, model fallback, output-limit recovery, or Verification correction.
 
 Progressive Tool Spec plans remain immutable per transition. Capability discovery may activate only installed and policy-eligible Tools; selected Skills still require immutable version evidence plus their complete read/activate/route/resource/complete lifecycle. Tool calls remain bound to the exact Provider response and argument digest. Sandbox, Access Scope, Enterprise Policy, Effect authority, unknown-mutation reconciliation, Artifact verification, execution tracing, caller cancellation, and explicit deadlines remain enforced; Tool calls do not enter an interactive approval round trip.
 

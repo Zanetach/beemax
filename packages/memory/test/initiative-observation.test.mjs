@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { createSituation } from "@beemax/core";
+import { createSituation } from "@thruvera/core";
 import { MemoryStore, memoryPersistencePorts } from "../dist/index.js";
 
 const scope = { profileId: "profile", platform: "feishu", chatId: "chat", userId: "user" };

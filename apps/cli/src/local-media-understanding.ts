@@ -1,7 +1,7 @@
 import { accessSync, constants, lstatSync, realpathSync } from "node:fs";
 import { delimiter, isAbsolute, join } from "node:path";
 import { spawn } from "node:child_process";
-import type { MediaUnderstandingAdapter, MediaUnderstandingAdapterResult, MediaUnderstandingEvaluation, MediaUnderstandingRequest } from "@beemax/core";
+import type { MediaUnderstandingAdapter, MediaUnderstandingAdapterResult, MediaUnderstandingEvaluation, MediaUnderstandingRequest } from "@thruvera/core";
 
 const MAX_PROCESS_OUTPUT_BYTES = 1024 * 1024;
 
@@ -114,8 +114,8 @@ export function createLocalMediaUnderstandingAdapters(options: LocalMediaUnderst
 
 /** Host-only resolver used by Profile config composition. */
 export function resolveLocalOcrHostCommand(env: NodeJS.ProcessEnv = process.env): string | undefined {
-	const configured = env.BEEMAX_LOCAL_OCR_COMMAND?.trim();
-	if (configured && !isAbsolute(configured)) throw new Error("Trusted host BEEMAX_LOCAL_OCR_COMMAND must be an absolute executable path");
+	const configured = env.THRUVERA_LOCAL_OCR_COMMAND?.trim();
+	if (configured && !isAbsolute(configured)) throw new Error("Trusted host THRUVERA_LOCAL_OCR_COMMAND must be an absolute executable path");
 	return findExecutable(configured || "tesseract", env);
 }
 

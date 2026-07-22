@@ -34,9 +34,14 @@ data/
 pi/packages/*/dist/
 
 # local config overrides
+config/thruvera.local.yaml
 config/beemax.local.yaml
 config/mcp.json
 config/profiles/*.env
+
+# Profile homes created inside a checkout
+.thruvera/
+.beemax/
 
 # vendored sidecar is tracked (do not ignore)
 !vendor/

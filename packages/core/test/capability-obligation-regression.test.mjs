@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { BeeMaxAgentRuntime, DeterministicWorkContractBuilder } from "../dist/index.js";
+import { ThruveraAgentRuntime, DeterministicWorkContractBuilder } from "../dist/index.js";
 import { attestCapabilityProviderResolutionTool } from "../dist/capability-provider.js";
 
 const semanticReview = Object.freeze({
@@ -151,7 +151,7 @@ test("a later unbound discovery cannot erase an unfulfilled Work Contract obliga
 		);
 		assert.equal(verifications, 0);
 		assert.notEqual([...tasks.values()][0]?.verificationStatus, "accepted");
-		assert.ok(prompts >= 2, "BeeMax must still request the missing archive receipt");
+		assert.ok(prompts >= 2, "Thruvera must still request the missing archive receipt");
 	} finally { runtime.dispose(); }
 });
 
@@ -320,7 +320,7 @@ function createObjectiveRuntime({ rawRequest, capabilityRequirements, tools, ver
 		},
 	};
 	const agent = { state: { model: { id: "test" }, messages: [] } };
-	const runtime = new BeeMaxAgentRuntime({
+	const runtime = new ThruveraAgentRuntime({
 		profileId: "profile:capability-obligation-regression",
 		interactiveAdmission: "contract_first",
 		taskLedger: ledger,

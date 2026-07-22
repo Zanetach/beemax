@@ -1,9 +1,9 @@
 import { chmodSync, closeSync, fsyncSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { randomInt, randomUUID } from "node:crypto";
-import type { PairingApproval, PairingAuthority, PairingRequest, PairingRequestResult } from "@beemax/channel-runtime";
+import type { PairingApproval, PairingAuthority, PairingRequest, PairingRequestResult } from "@thruvera/channel-runtime";
 
-export type { PairingApproval, PairingAuthority, PairingRequest, PairingRequestResult } from "@beemax/channel-runtime";
+export type { PairingApproval, PairingAuthority, PairingRequest, PairingRequestResult } from "@thruvera/channel-runtime";
 
 const ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 const CODE_TTL_MS = 60 * 60_000;

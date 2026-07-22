@@ -1,4 +1,4 @@
-import { assertProfileBindingConfiguration, type ProfileBinding } from "@beemax/gateway";
+import { assertProfileBindingConfiguration, type ProfileBinding } from "@thruvera/gateway";
 import { mutateProfileConfig } from "./profile-config-transaction.ts";
 
 /**

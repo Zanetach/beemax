@@ -4,9 +4,9 @@ import { PiWorkContractBuilder, TurnUnderstandingEngine } from "../dist/index.js
 import { loadConfig } from "../../../apps/cli/dist/config.js";
 import { configuredAuxiliaryTextModels } from "../../../apps/cli/dist/model-catalog.js";
 
-const profile = process.env.BEEMAX_LIVE_WORK_CONTRACT_PROFILE?.trim();
+const profile = process.env.THRUVERA_LIVE_WORK_CONTRACT_PROFILE?.trim();
 let models = [];
-let skipReason = profile ? "" : "set BEEMAX_LIVE_WORK_CONTRACT_PROFILE to run the real-provider Work Contract evaluation";
+let skipReason = profile ? "" : "set THRUVERA_LIVE_WORK_CONTRACT_PROFILE to run the real-provider Work Contract evaluation";
 if (profile) {
 	try {
 		models = configuredAuxiliaryTextModels(loadConfig(undefined, profile));

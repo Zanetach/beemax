@@ -1,15 +1,15 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import test from "node:test";
-import { GatewayIngressController, ProfileHost } from "@beemax/gateway";
+import { GatewayIngressController, ProfileHost } from "@thruvera/gateway";
 import { renderSystemdService } from "../dist/service-manager.js";
 
 test("Profile failure and capacity remain isolated behind independent production units", async () => {
 	const unit = renderSystemdService("/opt/beemax", "/usr/bin/node", "system", "beemax", "/srv/beemax");
-	assert.match(unit, /Description=BeeMax Agent profile %i/);
-	assert.match(unit, /Environment=BEEMAX_PROFILE=%i/);
+	assert.match(unit, /Description=Thruvera Agent profile %i/);
+	assert.match(unit, /Environment=THRUVERA_PROFILE=%i/);
 	assert.doesNotMatch(unit, /EnvironmentFile=.*profiles\/%i(?:\/\.env|\.env)/);
-	assert.match(unit, /EnvironmentFile=-"\/etc\/beemax\/%i\.env"/);
+	assert.match(unit, /EnvironmentFile=-"\/etc\/thruvera\/%i\.env"/);
 	assert.match(unit, /gateway --profile %i/);
 	assert.match(unit, /Restart=on-failure/);
 	assert.match(unit, /MemoryMax=2G/);

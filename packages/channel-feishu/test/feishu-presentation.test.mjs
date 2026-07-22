@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { CardSession, FeishuAdapter, FeishuInteractionPresenter, renderCard } from "../dist/index.js";
-import { interactionCompletionDeliveryKey } from "@beemax/core";
+import { interactionCompletionDeliveryKey } from "@thruvera/core";
 
 const source = { platform: "feishu", chatId: "chat", chatType: "dm", userId: "user", messageId: "incoming", replyToMessageId: "incoming" };
 
@@ -278,7 +278,7 @@ test("Feishu Adapter owns rich Turn presentation and exposes only the Channel Ru
 	const turn = adapter.presentation.open({
 		source,
 		profileId: "profile",
-		preferences: { title: "BeeMax · profile", updateIntervalMs: 0, ioTimeoutMs: 100 },
+		preferences: { title: "Thruvera · profile", updateIntervalMs: 0, ioTimeoutMs: 100 },
 		onBinding: (messageId) => bindings.push({ messageId }),
 	});
 	await turn.start();
@@ -340,7 +340,7 @@ test("Feishu replaces a streamed Candidate Outcome with the canonical Verificati
 	const turn = adapter.presentation.open({
 		source,
 		profileId: "profile",
-		preferences: { title: "BeeMax · profile", updateIntervalMs: 0, ioTimeoutMs: 100 },
+		preferences: { title: "Thruvera · profile", updateIntervalMs: 0, ioTimeoutMs: 100 },
 	});
 	await turn.start();
 	await turn.onEvent({ type: "answer.delta", sessionId: "session", scope: source, turnId: "turn", at: 1, sequence: 1, text: "UNVERIFIED CANDIDATE" });
@@ -369,7 +369,7 @@ test("Feishu fails closed when a legacy Runtime omits the Host outcome", async (
 	adapter.stopTyping = async () => undefined;
 	adapter.send = async () => ({ success: true, messageId: "text-legacy" });
 
-	const turn = adapter.presentation.open({ source, profileId: "profile", preferences: { title: "BeeMax · profile", updateIntervalMs: 0, ioTimeoutMs: 100 } });
+	const turn = adapter.presentation.open({ source, profileId: "profile", preferences: { title: "Thruvera · profile", updateIntervalMs: 0, ioTimeoutMs: 100 } });
 	await turn.start();
 	const result = { answer: "legacy result without Host state", model: "test", durationMs: 1, usage: {} };
 	await turn.onEvent({ type: "turn.finished", sessionId: "session", scope: source, turnId: "turn", at: 1, sequence: 1, result });
@@ -393,7 +393,7 @@ test("Feishu renders a Host-rejected Candidate as a distinct red Verification st
 	adapter.stopTyping = async () => undefined;
 	adapter.send = async () => ({ success: true, messageId: "text-rejected" });
 
-	const turn = adapter.presentation.open({ source, profileId: "profile", preferences: { title: "BeeMax · profile", updateIntervalMs: 0, ioTimeoutMs: 100 } });
+	const turn = adapter.presentation.open({ source, profileId: "profile", preferences: { title: "Thruvera · profile", updateIntervalMs: 0, ioTimeoutMs: 100 } });
 	await turn.start();
 	await turn.onEvent({ type: "answer.delta", sessionId: "session", scope: source, turnId: "turn", at: 1, sequence: 1, text: "UNVERIFIED CANDIDATE" });
 	const result = { answer: "任务未通过独立 Verification：缺少来源证据。", model: "test", durationMs: 1, usage: {}, outcome: { status: "rejected", objectiveId: "objective:1" } };

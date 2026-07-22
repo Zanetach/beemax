@@ -28,7 +28,7 @@ if (!developmentHost) assert.equal(docker.architecture, profile.dockerArchitectu
 execFileSync("docker", ["pull", profile.image], { stdio: "ignore", timeout: 120_000 });
 const image = dockerImageFacts(profile.image);
 
-const root = mkdtempSync(join(developmentHost ? process.cwd() : tmpdir(), ".beemax-docker-sandbox-"));
+const root = mkdtempSync(join(developmentHost ? process.cwd() : tmpdir(), ".thruvera-docker-sandbox-"));
 const source = { platform: "eval", chatId: "sandbox", chatType: "dm", userId: "sandbox" };
 const profileId = `sandbox-eval-${process.pid}`;
 const baseOptions = { profileId, image: profile.image, timeoutMs: 10_000, workspace: root };
@@ -73,8 +73,8 @@ try {
 	const active = none.execute({ source, cwd: root, command: "sleep 30", timeoutMs: 10_000, signal: controller.signal });
 	const containerId = await waitForContainer(profileId, true);
 	const inspection = JSON.parse(execFileSync("docker", ["inspect", containerId], { encoding: "utf8", timeout: 5_000 }))[0];
-	assert.equal(inspection.Config.Labels["com.beemax.sandbox"], "execution");
-	assert.equal(inspection.Config.Labels["com.beemax.profile"], profileId);
+	assert.equal(inspection.Config.Labels["com.thruvera.sandbox"], "execution");
+	assert.equal(inspection.Config.Labels["com.thruvera.profile"], profileId);
 	controller.abort(new Error("sandbox evaluation cancellation"));
 	const cancelled = await active;
 	assert.notEqual(cancelled.exitCode, 0);
@@ -157,7 +157,7 @@ async function waitForContainer(profileId, expected) {
 }
 
 function containerIds(profileId) {
-	return execFileSync("docker", ["ps", "-aq", "--filter", `label=com.beemax.profile=${profileId}`], { encoding: "utf8", timeout: 5_000 }).trim().split("\n").filter(Boolean);
+	return execFileSync("docker", ["ps", "-aq", "--filter", `label=com.thruvera.profile=${profileId}`], { encoding: "utf8", timeout: 5_000 }).trim().split("\n").filter(Boolean);
 }
 
 function valueAfter(values, flag) { const index = values.indexOf(flag); return index < 0 ? undefined : values[index + 1]; }

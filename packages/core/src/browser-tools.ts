@@ -114,8 +114,8 @@ interface BrowserPage { id: string; title: string; url: string; type: string; we
 async function listPages(cdpUrl: string, fetchImpl: typeof fetch): Promise<BrowserPage[]> {
 	let response: Response;
 	try { response = await fetchImpl(`${cdpUrl.replace(/\/$/, "")}/json`, { signal: AbortSignal.timeout(5_000) }); }
-	catch { throw new Error("Managed browser is unavailable. Start it with 'beemax capabilities start pi-web-access' for this Profile."); }
-	if (!response.ok) throw new Error(`Managed browser is unavailable (${response.status}). Start it with 'beemax capabilities start pi-web-access' for this Profile.`);
+	catch { throw new Error("Managed browser is unavailable. Start it with 'thruvera capabilities start pi-web-access' for this Profile."); }
+	if (!response.ok) throw new Error(`Managed browser is unavailable (${response.status}). Start it with 'thruvera capabilities start pi-web-access' for this Profile.`);
 	return ((await response.json()) as BrowserPage[]).filter((page) => page.type === "page" && page.webSocketDebuggerUrl && isDebuggerUrlForCdp(page.webSocketDebuggerUrl, cdpUrl));
 }
 

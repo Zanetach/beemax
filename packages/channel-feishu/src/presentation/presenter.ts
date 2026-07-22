@@ -1,5 +1,5 @@
-import { AdaptiveTextBuffer, TurnStatusPulse, interactionCompletionDeliveryKey, interactionPhaseForOutcome, type DeliveryReceipt, type InteractionEvent } from "@beemax/core";
-import { formatAnswerWithPublishedArtifacts, formatWorkProgress, type InteractionPresentationOpen, type InteractionPresenter, type PublishedArtifactPresentation, type SendOptions, type SendResult, type TurnPresentation, type TurnPresentationFinishOptions, type WorkProgressPresentation } from "@beemax/channel-runtime";
+import { AdaptiveTextBuffer, TurnStatusPulse, interactionCompletionDeliveryKey, interactionPhaseForOutcome, type DeliveryReceipt, type InteractionEvent } from "@thruvera/core";
+import { formatAnswerWithPublishedArtifacts, formatWorkProgress, type InteractionPresentationOpen, type InteractionPresenter, type PublishedArtifactPresentation, type SendOptions, type SendResult, type TurnPresentation, type TurnPresentationFinishOptions, type WorkProgressPresentation } from "@thruvera/channel-runtime";
 import { FlushController } from "./flush.ts";
 import { answerNeedsSeparateDelivery, cardStatusSummary, renderCard, renderStreamingContent, type CardRenderOptions } from "./render.ts";
 import { CardSession } from "./session.ts";
@@ -38,7 +38,7 @@ export class FeishuInteractionPresenter implements InteractionPresenter {
 			const result = await this.transport.sendCard(target.chatId, renderCard(card), undefined, Boolean(target.threadId), idempotencyKey);
 			if (result.success) return;
 		} catch (error) {
-			console.warn(`[beemax] Feishu work progress card failed: ${safeError(error)}`);
+			console.warn(`[thruvera] Feishu work progress card failed: ${safeError(error)}`);
 		}
 		const fallback = await this.transport.send(target.chatId, formatWorkProgress(event), { idempotencyKey });
 		if (!fallback.success) throw new Error(fallback.error ?? `Failed to present Task Plan ${event.workId}`);
@@ -83,7 +83,7 @@ class FeishuTurnPresentation implements TurnPresentation {
 				if (this.streamingCardId) await this.answerFlush.schedule(() => this.renderAnswerUpdate());
 				else await this.flush.schedule(() => this.renderUpdate());
 			}
-			catch (error) { console.error(`[beemax] Feishu answer presenter failed: ${safeError(error)}`); }
+			catch (error) { console.error(`[thruvera] Feishu answer presenter failed: ${safeError(error)}`); }
 		}, { minChunkChars: 24, initialPreferredChunkChars: 48, preferredChunkChars: 120, maxChunkChars: 240, initialMaxWaitMs: 50, maxWaitMs: 250, flushSmallOnMaxWait: true });
 		this.statusPulse = new TurnStatusPulse(async (message) => {
 			this.card.apply("notice.updated", { id: "turn:status", label: "当前状态", status: "running", message });
@@ -95,7 +95,7 @@ class FeishuTurnPresentation implements TurnPresentation {
 
 	async start(): Promise<void> {
 		await settleWithin(this.statusPulse.start(), this.ioTimeout());
-		await this.transport.sendTyping(this.input.source.chatId, this.input.source.messageId).catch((error) => console.warn(`[beemax] Feishu typing indicator failed: ${safeError(error)}`));
+		await this.transport.sendTyping(this.input.source.chatId, this.input.source.messageId).catch((error) => console.warn(`[thruvera] Feishu typing indicator failed: ${safeError(error)}`));
 	}
 
 	async onEvent(event: InteractionEvent): Promise<void> {
@@ -236,7 +236,7 @@ class FeishuTurnPresentation implements TurnPresentation {
 				this.lastStreamingContent = renderStreamingContent(this.card, this.publishedArtifacts);
 				return result;
 			}
-			console.warn(`[beemax] Feishu native streaming card unavailable; falling back to full-card updates: ${result.error ?? "missing card identity"}`);
+			console.warn(`[thruvera] Feishu native streaming card unavailable; falling back to full-card updates: ${result.error ?? "missing card identity"}`);
 		}
 		return this.transport.sendCard(this.input.source.chatId, legacyCard, this.input.source.replyToMessageId ?? this.input.source.messageId, Boolean(this.input.source.threadId), this.interactionIdempotencyKey);
 	}
@@ -263,7 +263,7 @@ class FeishuTurnPresentation implements TurnPresentation {
 	private queueAuxiliaryUpdate(): void {
 		if (this.answerStarted) return;
 		void this.flush.schedule(() => this.answerStarted ? Promise.resolve(true) : this.renderUpdate()).catch((error) => {
-			console.warn(`[beemax] Feishu auxiliary card update failed: ${safeError(error)}`);
+			console.warn(`[thruvera] Feishu auxiliary card update failed: ${safeError(error)}`);
 		});
 	}
 
@@ -272,9 +272,9 @@ class FeishuTurnPresentation implements TurnPresentation {
 		const task = this.streamingTail.then(async () => {
 			const result = await operation(++this.streamingSequence);
 			succeeded = result.success;
-			if (!result.success) console.warn(`[beemax] Feishu native streaming update failed: ${result.error ?? "unknown error"}`);
+			if (!result.success) console.warn(`[thruvera] Feishu native streaming update failed: ${result.error ?? "unknown error"}`);
 		}).catch((error) => {
-			console.warn(`[beemax] Feishu native streaming update failed: ${safeError(error)}`);
+			console.warn(`[thruvera] Feishu native streaming update failed: ${safeError(error)}`);
 		});
 		this.streamingTail = task;
 		return task.then(() => succeeded);
@@ -289,14 +289,14 @@ class FeishuTurnPresentation implements TurnPresentation {
 	}
 
 	private ioTimeout(): number { return this.input.preferences?.ioTimeoutMs ?? 2_000; }
-	private async stopPulse(): Promise<void> { await this.statusPulse.stop().catch((error) => console.error(`[beemax] Feishu status presenter failed: ${safeError(error)}`)); }
+	private async stopPulse(): Promise<void> { await this.statusPulse.stop().catch((error) => console.error(`[thruvera] Feishu status presenter failed: ${safeError(error)}`)); }
 	private async sendFallback(text: string, idempotencyKey?: string): Promise<SendResult> {
 		let result = await this.transport.send(this.input.source.chatId, text, {
 			...(idempotencyKey ? { idempotencyKey } : {}),
 			...(this.input.source.replyToMessageId ? { replyTo: this.input.source.replyToMessageId, replyInThread: Boolean(this.input.source.threadId) } : {}),
 		});
 		if (!result.success && this.input.source.replyToMessageId && replyAnchorRejected(result.error)) {
-			console.warn(`[beemax] Feishu reply anchor was rejected; retrying final delivery as a new chat message: ${result.error ?? "unknown error"}`);
+			console.warn(`[thruvera] Feishu reply anchor was rejected; retrying final delivery as a new chat message: ${result.error ?? "unknown error"}`);
 			result = await this.transport.send(this.input.source.chatId, text, { ...(idempotencyKey ? { idempotencyKey: `${idempotencyKey}:detached` } : {}) });
 		}
 		if (!result.success) throw new Error(result.error ?? "Feishu text fallback failed");

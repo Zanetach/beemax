@@ -1,5 +1,5 @@
 import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
-import type { BeeMaxRuntimeSource } from "./runtime.ts";
+import type { ThruveraRuntimeSource } from "./runtime.ts";
 import type { CapabilityKind, CapabilityOperationalSignals } from "./capability-runtime.ts";
 import { attestCapabilityProviderAcquisitionTool, attestCapabilityProviderResolutionTool, isTrustedCapabilityProviderAcquisitionTool, isTrustedCapabilityProviderResolutionTool, type CapabilityProviderHealthStatus } from "./capability-provider.ts";
 
@@ -49,7 +49,7 @@ export interface ToolSpecAvailabilityMetadata {
 export type GovernedToolDefinition = ToolDefinition & { beemaxPolicy?: ToolPolicy; beemaxToolSpec?: ToolSpecAvailabilityMetadata };
 export type ToolRuntimeAuditEvent = {
 	phase: "allowed" | "blocked" | "started" | "completed" | "failed";
-	source: BeeMaxRuntimeSource;
+	source: ThruveraRuntimeSource;
 	toolName: string;
 	policy: ToolPolicy;
 	at: number;
@@ -145,14 +145,14 @@ export function withToolPolicy<T extends ToolDefinition>(tool: T, policy: ToolPo
 	return Object.assign(tool, { beemaxPolicy: normalizeToolPolicy(policy) });
 }
 
-/** Compile BeeMax Effect semantics into Pi's native per-Tool execution contract. */
+/** Compile Thruvera Effect semantics into Pi's native per-Tool execution contract. */
 export function toolExecutionModeForPolicy(policy: ToolPolicy, declared?: "parallel" | "sequential"): "parallel" | "sequential" {
 	if (policy.sideEffect !== "none") return "sequential";
 	return declared === "sequential" ? "sequential" : "parallel";
 }
 
 /** Apply the policy execution contract to a custom first-class Tool. */
-export function governToolDefinition<T extends ToolDefinition>(tool: T, policy: ToolPolicy, source: BeeMaxRuntimeSource, audit?: ToolRuntimeAuditSink, resultBudget?: ToolResultBudget, options: { deferResultProjection?: boolean } = {}): T & GovernedToolDefinition {
+export function governToolDefinition<T extends ToolDefinition>(tool: T, policy: ToolPolicy, source: ThruveraRuntimeSource, audit?: ToolRuntimeAuditSink, resultBudget?: ToolResultBudget, options: { deferResultProjection?: boolean } = {}): T & GovernedToolDefinition {
 	const normalized = normalizeToolPolicy(policy);
 	const maxEstimatedTokens = resultBudget ? normalizeToolResultBudget(resultBudget).maxEstimatedTokens : Number.POSITIVE_INFINITY;
 	const execute = tool.execute.bind(tool);
@@ -249,7 +249,7 @@ export function boundToolResultContent<T extends { type: string; text?: string }
 	const maxTokenUnits = Number.isFinite(budget.maxEstimatedTokens) ? budget.maxEstimatedTokens * 4 : Number.POSITIVE_INFINITY;
 	const initial = sliceToolResultContent(content, budget.maxBytes, maxTokenUnits);
 	if (!initial.truncated) return { content: initial.content, bytes: initial.bytes, estimatedTokens: Math.ceil(initial.tokenUnits / 4), truncated: false };
-	const marker = "\n[Tool result truncated by BeeMax Tool Runtime]";
+	const marker = "\n[Tool result truncated by Thruvera Tool Runtime]";
 	const markerBytes = Buffer.byteLength(marker);
 	const markerUnits = estimatedTokenUnits(marker);
 	const bounded = sliceToolResultContent(content, Math.max(0, budget.maxBytes - markerBytes), Math.max(0, maxTokenUnits - markerUnits));

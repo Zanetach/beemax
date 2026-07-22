@@ -2,7 +2,8 @@
 
 ## Unreleased
 
-- Added a default Profile-scoped `standard-web` capability pack: new Profiles and migrated Profiles without an explicit Provider policy receive Agent Reach and Pi Web Access Skills, pre-authorize only the pinned Exa/mcporter Provider for direct first-use acquisition, and use native browser Tools with an OS-assigned loopback CDP endpoint and browser data directory per Profile. Explicit legacy opt-outs remain intact. Added `beemax capabilities status|install|start|stop` for customer self-service provisioning and diagnostics; browser ownership now also requires a fresh runner/egress heartbeat and Profile deletion stops that process group first.
+- Renamed the product to Thruvera（承行）, including the primary `thruvera` CLI, `@thruvera/*` workspace packages, `THRUVERA_*` environment variables, `~/.thruvera` Profile home, release archives, and service names. Existing `beemax` commands, `BEEMAX_*` variables, `~/.beemax` installations, and durable `beemax.*` protocol identifiers remain compatible.
+- Added a default Profile-scoped `standard-web` capability pack: new Profiles and migrated Profiles without an explicit Provider policy receive Agent Reach and Pi Web Access Skills, pre-authorize only the pinned Exa/mcporter Provider for direct first-use acquisition, and use native browser Tools with an OS-assigned loopback CDP endpoint and browser data directory per Profile. Explicit legacy opt-outs remain intact. Added `thruvera capabilities status|install|start|stop` for customer self-service provisioning and diagnostics; browser ownership now also requires a fresh runner/egress heartbeat and Profile deletion stops that process group first.
 - Isolated MCP and standard-Web Provider environment resolution to an immutable Profile snapshot. MCP stdio children now inherit only safe runtime variables plus each server's explicit `env` mapping, while HOME/XDG state is redirected into the selected Profile for both modern and legacy layouts.
 - MCP servers can no longer self-declare an operation as read-only: external Tool, resource, and prompt calls fail closed to mutation governance unless that exact Profile server is locally attested with `trustReadOnlyOperations: true`.
 - Production Skill discovery is now Profile-only, capability operations verify that `agentDir` remains inside the selected Profile Home, explicit standard-Web installs absorb legacy environment opt-outs, and invalid Exa trees are moved to an audit quarantine before a clean reinstall.
@@ -14,7 +15,7 @@
 
 ## 1.5.1
 
-- Fixed release-archive construction on GNU tar so nested vendored `.github` workflow metadata is excluded consistently with macOS bsdtar, keeping prohibited external Agent tooling outside the published BeeMax archive.
+- Fixed release-archive construction on GNU tar so nested vendored `.github` workflow metadata is excluded consistently with macOS bsdtar, keeping prohibited external Agent tooling outside the published Thruvera archive.
 
 ## 1.5.0
 
@@ -37,7 +38,7 @@
 
 ## 1.3.0 - 2026-07-16
 
-- Removed external Agent authentication, provider registration, model exposure, image tooling, Skill roots, and bundled upstream Skills from the BeeMax production runtime.
+- Removed external Agent authentication, provider registration, model exposure, image tooling, Skill roots, and bundled upstream Skills from the Thruvera production runtime.
 - Added a mandatory release boundary gate that scans the built CLI, runtime packages, bundled Skills, configuration, and package manifests before release verification continues.
 - Hardened semantic Capability ranking so unscoped single matches ignore irrelevant grouping metadata and real-model routing remains stable across repeated trials.
 - Added independently adjudicated, exact-source Work Contracts with bounded Provider failover, atomic Capability requirements, requirement-bound execution evidence, and fail-closed negative-operation handling.
@@ -56,12 +57,12 @@
 - Added deterministic multi-instance Profile Bindings, group Conversation/Actor separation, bounded contextual activation and observation, governed proactive delivery, ingress backpressure, and Profile Host lifecycle isolation.
 - Added explicit, fenced migrations for legacy Channel Instance and shared-session ownership, including integrity manifests, rollback protection, and operator diagnostics.
 - Split the platform-neutral Channel Runtime, Feishu Adapter, and Telegram Adapter into independent packages; rich presentation now stays behind the Adapter-owned `InteractionPresenter` seam with declared capability fallbacks.
-- Removed long-lived Feishu and Telegram plaintext credentials from ordinary `BeeMaxConfig` and Adapter settings; Channel Instance `credentialRef` values are consumed through a callback-only trusted boundary and observe rotations without rebuilding the config object.
+- Removed long-lived Feishu and Telegram plaintext credentials from ordinary `ThruveraConfig` and Adapter settings; Channel Instance `credentialRef` values are consumed through a callback-only trusted boundary and observe rotations without rebuilding the config object.
 - Aligned Telegram groups with the transport-neutral Activation contract: verified mention/reply/command signals, bounded same-Thread contextual follow-ups, and observe-only delivery that cannot enter the Agent message path.
 - Added a hardened Docker Execution Sandbox with CPU, memory, PID, filesystem, network, capability, output, timeout, cancellation, and workspace-access controls while retaining explicit trusted-host execution.
 - Added Ubuntu 24.04 resource high-water gates for RSS, SQLite size, queues, concurrency, systemd limits, and Docker isolation, plus release security evidence for Profile and Memory separation and exactly-once Effects.
 - Added release evidence for independent Profile failure/capacity boundaries, Session migration crash continuation, a shared Feishu/Telegram factory conformance harness, and real builds with either platform Adapter package absent.
-- Hardened clean builds and release archives so stale generated modules cannot mask failures; isolated archive smoke now creates and reloads a Profile and verifies packaged Skills without inheriting host BeeMax state.
+- Hardened clean builds and release archives so stale generated modules cannot mask failures; isolated archive smoke now creates and reloads a Profile and verifies packaged Skills without inheriting host Thruvera state.
 
 ## 1.1.0
 
@@ -132,7 +133,7 @@
   runtime policy.
 - Added Profile-level multi-provider model switching and dynamic new-session
   model resolution.
-- Added `beemax update`, which verifies and atomically installs the latest
+- Added `thruvera update`, which verifies and atomically installs the latest
   release (including Preview releases) archive without changing Profile data.
 - Added an optional hardened Docker execution backend with explicit workspace
   access and Doctor validation.
@@ -141,7 +142,7 @@
 
 - Added a Profile-aware model provider catalog for Anthropic, OpenAI,
   OpenRouter, Gemini, DeepSeek, Ollama, and custom OpenAI-compatible endpoints.
-- `beemax model list` and `beemax setup` now share provider defaults and
+- `thruvera model list` and `thruvera setup` now share provider defaults and
   custom-endpoint Base URL handling.
 
 ## 0.1.0-preview.7
@@ -163,7 +164,7 @@
 
 ## 0.1.0-preview.5
 
-- Rebuilt the product boundary around `@beemax/core` as the sole Agent Runtime.
+- Rebuilt the product boundary around `@thruvera/core` as the sole Agent Runtime.
 - Separated Gateway enterprise control-plane transport from MCP, Feishu meeting,
   Web, Memory, Automation, Skills and image capabilities.
 - Added profile-scoped inbound idempotency, architecture-boundary tests, and
@@ -171,13 +172,13 @@
 
 ## 0.1.0-preview.4
 
-- Switched the Pi submodule to the maintained BeeMax fork so release archives can be reproduced by GitHub Actions.
+- Switched the Pi submodule to the maintained Thruvera fork so release archives can be reproduced by GitHub Actions.
 
 > Current source layout vendors Pi directly in `pi/`; the independent Pi repository remains available for subtree synchronization.
 
 ## 0.1.0-preview.3
 
-- Added a single verified release archive containing BeeMax and Pi; the one-command installer no longer requires Git or clones submodules.
+- Added a single verified release archive containing Thruvera and Pi; the one-command installer no longer requires Git or clones submodules.
 
 ## 0.1.0-preview.2
 
@@ -185,12 +186,12 @@
 
 ## 0.1.0-preview.1
 
-- Added installable BeeMax CLI with Agent profile, model, Feishu channel, doctor, and systemd lifecycle commands.
+- Added installable Thruvera CLI with Agent profile, model, Feishu channel, doctor, and systemd lifecycle commands.
 - Added Feishu streaming Gateway, persistent Pi sessions, FTS5 memory, Skills, MCP, web research, meetings, automation, Heartbeat, and optional GPT Image 2 delivery.
 - Added bounded read-only Sub-Agents with `task_spawn`, `task_status`, `task_wait`, `task_cancel`, and cascading `/stop`.
 - Added deny-by-default access, mutating-tool approval, workspace/credential boundaries, and non-root service defaults.
-- Added isolated Profile Homes under `~/.beemax/profiles`, `SOUL.md` identity, active Profile selection, and non-destructive migration from legacy repository-local Profiles.
-- Added unified `beemax setup` and `beemax gateway setup` flows with Feishu permissions guidance, live credential/bot probing, and readiness diagnostics.
+- Added isolated Profile Homes under `~/.thruvera/profiles`, `SOUL.md` identity, active Profile selection, and non-destructive migration from legacy repository-local Profiles.
+- Added unified `thruvera setup` and `thruvera gateway setup` flows with Feishu permissions guidance, live credential/bot probing, and readiness diagnostics.
 - Added Gateway lifecycle subcommands and per-Feishu-App Profile locks to prevent duplicate consumers.
 - Added hardened Feishu webhook handling, safe/standard toolsets, bundled progressive Skills, curated profile memory, candidate review commands, MCP resources/prompts, and MCP diagnostics.
 - Fixed model-secret handling so API keys are accepted only from the environment or masked interactive prompt, never CLI arguments.

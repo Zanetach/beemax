@@ -1,7 +1,7 @@
 /**
- * BeeMax Core is the Agent runtime seam.
+ * Thruvera Core is the Agent runtime seam.
  *
- * Pi is the current implementation, but every BeeMax-owned package imports
+ * Pi is the current implementation, but every Thruvera-owned package imports
  * runtime primitives from this module so runtime evolution stays local here.
  */
 
@@ -40,14 +40,14 @@ export type {
 	ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
 export {
-	buildBeeMaxRuntimeFactory,
+	buildThruveraRuntimeFactory,
 	filterEligibleSkills,
 	markRuntimeResourcesChanged,
 	reloadRuntimeResourcesIfNeeded,
 	resolveRuntimeModel,
-	type BeeMaxRuntimeFactoryOptions,
+	type ThruveraRuntimeFactoryOptions,
 	type ContextCompactionAuditEvent,
-	type BeeMaxRuntimeSource,
+	type ThruveraRuntimeSource,
 	type ProactiveMutationAuthority,
 } from "./runtime.ts";
 export { ToolPolicyRegistry, READ_ONLY_TOOL_POLICY, MUTATING_TOOL_POLICY, boundToolResultContent, governToolDefinition, normalizeToolResultBudget, withToolPolicy, type GovernedToolDefinition, type ToolCapabilityGrant, type ToolPolicy, type ToolResultBudget, type ToolRisk, type ToolRuntimeAuditEvent, type ToolRuntimeAuditSink, type ToolSideEffect, type ToolSpecAvailabilityMetadata } from "./tool-runtime.ts";
@@ -122,7 +122,7 @@ export {
 export { SessionCatalog, type SavedSessionChoice, type SessionPreferences, type SessionCatalogOwnershipReceipt, type StoredSessionChoice } from "./session-catalog.ts";
 export { ProfileSessionOwnershipMigration, type AppliedSessionOwnershipMigration, type ApplySessionOwnershipMigrationInput, type PreparedSessionOwnershipMigration, type SessionOwnershipCandidate, type SessionOwnershipMigrationPlan } from "./session-ownership-migration.ts";
 export {
-	BeeMaxAgentRuntime,
+	ThruveraAgentRuntime,
 	buildTaskPreservationEnvelope,
 	buildActiveTaskPreservationEnvelope,
 	AgentRunError,
@@ -130,8 +130,8 @@ export {
 	type AgentRunInput,
 	type AgentRunOutcome,
 	type AgentRunResult,
-	type BeeMaxAgentRunEvent,
-	type BeeMaxAgentRunEventSink,
+	type ThruveraAgentRunEvent,
+	type ThruveraAgentRunEventSink,
 	type ModelFallbackEvent,
 	type PlanningDecisionEvent,
 	type PlanningOutcomeEvent,
@@ -144,7 +144,7 @@ export {
 	type AgentHistoryEntry,
 	type AgentSessionUsage,
 	type AgentRuntimePort,
-	type BeeMaxAgentRuntimeOptions,
+	type ThruveraAgentRuntimeOptions,
 	type ObjectiveRuntimeInterruptionResult,
 } from "./agent-runtime.ts";
 export type { AgentControlHandler, AgentControlInput, AgentControlResult } from "./agent-control.ts";

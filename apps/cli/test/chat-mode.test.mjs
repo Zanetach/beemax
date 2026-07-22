@@ -9,6 +9,6 @@ test("chat presentation selects one adaptive mode without changing the command s
 	assert.equal(resolveChatPresentationMode({ isInputTty: false, isOutputTty: true }), "plain");
 	assert.equal(resolveChatPresentationMode({ isInputTty: true, isOutputTty: true, compact: true, full: true }), "full");
 	assert.equal(resolveChatPresentationMode({ isInputTty: true, isOutputTty: true, full: true, noAltScreen: true }), "compact");
-	assert.equal(fullScreenEnter("BeeMax Chat"), "\x1b[?1049h\x1b[H\x1b[2JBeeMax Chat\n\n");
+	assert.equal(fullScreenEnter("Thruvera Chat"), "\x1b[?1049h\x1b[H\x1b[2JThruvera Chat\n\n");
 	assert.equal(fullScreenExit(), "\x1b[?1049l");
 });

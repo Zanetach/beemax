@@ -4,7 +4,7 @@ import { containsPromptInjection } from "./soul.ts";
 
 const MAX_TOOLS_CONTEXT_CHARS = 4_000;
 
-/** Optional workspace-owned operational notes; never created or modified by BeeMax. */
+/** Optional workspace-owned operational notes; never created or modified by Thruvera. */
 export function workspaceToolsPrompt(workspace: string): string {
 	try {
 		const tools = readFileSync(join(workspace, "TOOLS.md"), "utf8").trim();

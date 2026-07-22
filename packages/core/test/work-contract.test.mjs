@@ -1,15 +1,15 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { fauxAssistantMessage, registerFauxProvider } from "@earendil-works/pi-ai/compat";
-import { AutonomousPlanningPolicy, BeeMaxAgentRuntime, DeterministicWorkContractBuilder, ModelBackedWorkContractBuilder, PiWorkContractBuilder, TurnUnderstandingEngine, WorkContractCognitionError, createExecutionEnvelope } from "../dist/index.js";
+import { AutonomousPlanningPolicy, ThruveraAgentRuntime, DeterministicWorkContractBuilder, ModelBackedWorkContractBuilder, PiWorkContractBuilder, TurnUnderstandingEngine, WorkContractCognitionError, createExecutionEnvelope } from "../dist/index.js";
 import { attestCapabilityProviderResolutionTool } from "../dist/capability-provider.js";
 
-const createRuntime = (options) => new BeeMaxAgentRuntime({ profileId: "profile:test", interactiveAdmission: "contract_first", ...options });
+const createRuntime = (options) => new ThruveraAgentRuntime({ profileId: "profile:test", interactiveAdmission: "contract_first", ...options });
 const semanticReview = Object.freeze({ schemaVersion: "beemax.work-contract-adjudication.v1", inventorySchemaVersion: "beemax.semantic-inventory.v1", primaryModelIdentity: "test/primary/test", reviewerModelIdentity: "test/reviewer/test", reviewMode: "different_models", independentSamples: true, cognitionUsage: { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, costUsd: 0, modelIdentities: ["test/primary/test", "test/reviewer/test"] }, cognitionBudgetChargeTokens: 1 });
 
 test("runtime without semantic Work Contract cognition blocks instead of silently using regex", async () => {
 	let agents = 0;
-	const runtime = new BeeMaxAgentRuntime({ profileId: "profile:test", interactiveAdmission: "contract_first", createAgent: async () => { agents++; throw new Error("Pi must not start"); } });
+	const runtime = new ThruveraAgentRuntime({ profileId: "profile:test", interactiveAdmission: "contract_first", createAgent: async () => { agents++; throw new Error("Pi must not start"); } });
 	try {
 		await assert.rejects(runtime.run({ source: { platform: "cli", chatId: "no-cognition", userId: "user" }, text: "不要取消，继续做", timeoutMs: 1_000 }), /MODEL_UNAVAILABLE/i);
 		assert.equal(agents, 0);
@@ -238,7 +238,7 @@ test("a Work Contract rejects unsupported model additions without executing a co
 	await assert.rejects(builder.build({ rawRequest, fallback: new TurnUnderstandingEngine().understand(rawRequest) }), /not supported by its Raw Request source span/i);
 });
 
-test("BeeMax sends the validated Work Contract to Pi and binds its criteria to the durable Objective", async () => {
+test("Thruvera sends the validated Work Contract to Pi and binds its criteria to the durable Objective", async () => {
 	const rawRequest = "生成报告，必须中文，不要发布，只保存草稿";
 	const clause = (text) => ({ text, source: { kind: "raw_request", start: rawRequest.indexOf(text), end: rawRequest.indexOf(text) + text.length } });
 	let prompt;
@@ -310,7 +310,7 @@ test("BeeMax sends the validated Work Contract to Pi and binds its criteria to t
 	} finally { runtime.dispose(); }
 });
 
-test("BeeMax carries multilingual, paraphrased, and unknown-enterprise Work Contracts end to end", async (t) => {
+test("Thruvera carries multilingual, paraphrased, and unknown-enterprise Work Contracts end to end", async (t) => {
 	const cases = [
 		{
 			name: "Chinese",
@@ -412,7 +412,7 @@ test("a contradictory Work Contract cannot classify a prohibited action as an ac
 	await assert.rejects(builder.build({ rawRequest, fallback: new TurnUnderstandingEngine().understand(rawRequest) }), /overlap/i);
 });
 
-test("BeeMax revalidates claimed trusted provenance against runtime understanding", async () => {
+test("Thruvera revalidates claimed trusted provenance against runtime understanding", async () => {
 	const rawRequest = "生成报告";
 	let prompt = "";
 	const agent = { state: { model: { id: "test" }, messages: [] } };
@@ -434,7 +434,7 @@ test("BeeMax revalidates claimed trusted provenance against runtime understandin
 	} finally { runtime.dispose(); }
 });
 
-test("BeeMax blocks a low-confidence semantic Contract before Pi or Task mutation", async () => {
+test("Thruvera blocks a low-confidence semantic Contract before Pi or Task mutation", async () => {
 	const rawRequest = "生成报告";
 	let agents = 0;
 	let mutations = 0;
@@ -452,7 +452,7 @@ test("BeeMax blocks a low-confidence semantic Contract before Pi or Task mutatio
 	} finally { runtime.dispose(); }
 });
 
-test("BeeMax records auxiliary Work Contract cognition without blocking Pi on a token ceiling", async () => {
+test("Thruvera records auxiliary Work Contract cognition without blocking Pi on a token ceiling", async () => {
 	const rawRequest = "生成报告";
 	const clause = { text: rawRequest, source: { kind: "raw_request", start: 0, end: rawRequest.length } };
 	let agents = 0;
@@ -471,7 +471,7 @@ test("BeeMax records auxiliary Work Contract cognition without blocking Pi on a 
 	} finally { runtime.dispose(); }
 });
 
-test("BeeMax continues Pi when observed Work Contract cognition exceeds a legacy envelope token value", async () => {
+test("Thruvera continues Pi when observed Work Contract cognition exceeds a legacy envelope token value", async () => {
 	const rawRequest = "生成报告";
 	const clause = { text: rawRequest, source: { kind: "raw_request", start: 0, end: rawRequest.length } };
 	const cognitionUsage = { inputTokens: 5, outputTokens: 5, cacheReadTokens: 0, cacheWriteTokens: 0, costUsd: 0.01, modelIdentities: ["test/primary/test", "test/reviewer/test"] };
@@ -523,7 +523,7 @@ test("semantic admission and autonomous Pi execution use separate token budgets 
 	} finally { runtime.dispose(); }
 });
 
-test("BeeMax preserves source-bound uncertainty in a durable Objective Situation", async () => {
+test("Thruvera preserves source-bound uncertainty in a durable Objective Situation", async () => {
 	const rawRequest = "生成 aurora:gate 报告，若版本不明确则先确认";
 	const quote = (text) => ({ text, start: rawRequest.indexOf(text), end: rawRequest.indexOf(text) + text.length });
 	let objective;

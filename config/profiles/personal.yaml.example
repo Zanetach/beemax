@@ -11,14 +11,14 @@ model:
 gateway:
   artifactSite:
     enabled: true
-    # If Caddy is not on PATH, set BEEMAX_ARTIFACT_SITE_COMMAND in the trusted
+    # If Caddy is not on PATH, set THRUVERA_ARTIFACT_SITE_COMMAND in the trusted
     # Gateway service/host environment; Profile YAML and Profile .env are rejected.
     # Omit both values to use this Profile's stable loopback port.
     # listen: 127.0.0.1:18789
     # publicBaseUrl: http://127.0.0.1:18789/artifacts
 
 feishu:
-  # Keep secrets in /etc/beemax/personal.env, not this file.
+  # Keep secrets in /etc/thruvera/personal.env, not this file.
   appId: ""
   appSecret: ""
   domain: feishu
@@ -28,7 +28,7 @@ feishu:
   allowAllUsers: false
 
 memory:
-  dbPath: data/profiles/personal/beemax.db
+  dbPath: data/profiles/personal/thruvera.db
 
 mcp:
   configPath: config/profiles/personal.mcp.json
@@ -38,7 +38,7 @@ capabilityProviders:
     enabled: true
     allowedProviders: [exa-mcporter]
 
-# Set BEEMAX_WEKNORA_API_KEY in the Profile env file, never in YAML.
+# Set THRUVERA_WEKNORA_API_KEY in the Profile env file, never in YAML.
 knowledge:
   enabled: false
   provider: weknora
@@ -52,7 +52,7 @@ mediaUnderstanding:
   auxiliaryVisionEnabled: true
   localOcr:
     enabled: true
-    # The executable is host-owned via PATH or BEEMAX_LOCAL_OCR_COMMAND.
+    # The executable is host-owned via PATH or THRUVERA_LOCAL_OCR_COMMAND.
     # languages: eng+chi_sim
     timeoutMs: 30000
 

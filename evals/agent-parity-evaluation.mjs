@@ -90,14 +90,14 @@ export function evaluateAgentRun(corpus, run) {
 
 export function compareAgentParity({ corpus, candidate, baselines, requireExactModelIdentity = true }) {
 	if (!Array.isArray(baselines) || baselines.length === 0) throw new Error("At least one pinned baseline run is required");
-	if (candidate?.system?.id !== "beemax") throw new Error("Agent parity candidate must be beemax");
+	if (candidate?.system?.id !== "thruvera") throw new Error("Agent parity candidate must be thruvera");
 	const baselineIds = baselines.map((baseline) => baseline?.system?.id).sort();
 	if (baselineIds.length !== 2 || baselineIds[0] !== "codex" || baselineIds[1] !== "hermes") throw new Error("Agent parity baselines must be exactly codex and hermes");
 	const evaluatedCandidate = evaluateAgentRun(corpus, candidate);
 	const evaluatedBaselines = baselines.map((baseline) => evaluateAgentRun(corpus, baseline));
 	const failures = [];
 	const expectedMode = requireExactModelIdentity ? "same-model" : "best-native";
-	if (evaluatedCandidate.provenance.mode !== expectedMode) failures.push(`beemax: provenance mode ${evaluatedCandidate.provenance.mode} does not match comparison ${expectedMode}`);
+	if (evaluatedCandidate.provenance.mode !== expectedMode) failures.push(`thruvera: provenance mode ${evaluatedCandidate.provenance.mode} does not match comparison ${expectedMode}`);
 	for (const baseline of evaluatedBaselines) {
 		if (baseline.provenance.mode !== expectedMode) failures.push(`${baseline.system.id}: provenance mode ${baseline.provenance.mode} does not match comparison ${expectedMode}`);
 		if (requireExactModelIdentity && baseline.system.model !== evaluatedCandidate.system.model) failures.push(`${baseline.system.id}: model differs from candidate`);

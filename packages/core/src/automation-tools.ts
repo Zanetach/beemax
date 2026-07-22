@@ -1,13 +1,13 @@
 /** Core-owned Agent tools over the Automation persistence capability. */
-import type { AutomationOwner, AutomationStore } from "@beemax/automation";
+import type { AutomationOwner, AutomationStore } from "@thruvera/automation";
 import { conversationIdentity } from "./agent-scope.ts";
 import { StringEnum } from "@earendil-works/pi-ai";
 import { defineTool, type ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import type { BeeMaxRuntimeSource } from "./runtime.ts";
+import type { ThruveraRuntimeSource } from "./runtime.ts";
 import { MUTATING_TOOL_POLICY, READ_ONLY_TOOL_POLICY, withToolPolicy, type ToolPolicy } from "./tool-runtime.ts";
 
-export function createAutomationTools(store: AutomationStore, source: BeeMaxRuntimeSource, wakeScheduler: () => void): ToolDefinition[] {
+export function createAutomationTools(store: AutomationStore, source: ThruveraRuntimeSource, wakeScheduler: () => void): ToolDefinition[] {
 	const owner = (): AutomationOwner => {
 		const { platform, channelInstanceId, chatId, userId } = conversationIdentity(source);
 		return { platform, ...(channelInstanceId ? { channelInstanceId } : {}), chatId, chatType: source.chatType, userId };

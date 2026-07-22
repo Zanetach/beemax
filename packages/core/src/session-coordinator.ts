@@ -1,28 +1,28 @@
 import { createHash } from "node:crypto";
 import type { AgentSession } from "@earendil-works/pi-coding-agent";
-import type { BeeMaxRuntimeSource } from "./runtime.ts";
+import type { ThruveraRuntimeSource } from "./runtime.ts";
 import { canonicalUserId, conversationKey, conversationOwnerKey } from "./agent-scope.ts";
 import type { ExecutionEnvelope } from "./execution-envelope.ts";
 
 /** Stable per-conversation identity, independent of a transport adapter. */
-export function sessionKeyForSource(source: BeeMaxRuntimeSource): string {
+export function sessionKeyForSource(source: ThruveraRuntimeSource): string {
 	return conversationKey(source);
 }
 
 /** Stable identity for a channel conversation, excluding a particular thread. */
-export function sessionOwnerKey(source: BeeMaxRuntimeSource): string {
+export function sessionOwnerKey(source: ThruveraRuntimeSource): string {
 	return conversationOwnerKey(source);
 }
 
 /** A deterministic UUID-shaped id used by the runtime's persisted session store. */
-export function sessionIdForSource(source: BeeMaxRuntimeSource): string {
+export function sessionIdForSource(source: ThruveraRuntimeSource): string {
 	// Preserve the pre-R2 stable persisted transcript ids while the catalog adds
 	// a separate owner/thread index for discovery.
 	return sessionIdForKey(conversationKey(source));
 }
 
 /** Pre-shared-conversation transcript ids, ordered from the closest legacy identity to the oldest. */
-export function legacySessionIdsForSource(source: BeeMaxRuntimeSource): string[] {
+export function legacySessionIdsForSource(source: ThruveraRuntimeSource): string[] {
 	const actor = canonicalUserId(source) ?? "anon";
 	const chat = source.threadId ? `${source.chatId}#${source.threadId}` : source.chatId;
 	const keys = [
@@ -40,7 +40,7 @@ function sessionIdForKey(key: string): string {
 export interface RuntimeSession {
 	sessionKey: string;
 	sessionId: string;
-	source: BeeMaxRuntimeSource;
+	source: ThruveraRuntimeSource;
 	piSession: AgentSession;
 	executionEnvelope?: Readonly<ExecutionEnvelope>;
 	busy: boolean;
@@ -56,7 +56,7 @@ export interface RuntimeSessionSnapshot {
 	lastActiveAt: number;
 }
 
-export type RuntimeSessionFactory<Source extends BeeMaxRuntimeSource = BeeMaxRuntimeSource> = (
+export type RuntimeSessionFactory<Source extends ThruveraRuntimeSource = ThruveraRuntimeSource> = (
 	sessionId: string,
 	source: Source,
 	executionEnvelope?: Readonly<ExecutionEnvelope>,
@@ -73,7 +73,7 @@ export interface SessionCoordinatorOptions {
  * execution, cancellation, and bounded in-memory session lifecycle. Gateway
  * renderers never decide these agent invariants.
  */
-export class SessionCoordinator<Source extends BeeMaxRuntimeSource = BeeMaxRuntimeSource> {
+export class SessionCoordinator<Source extends ThruveraRuntimeSource = ThruveraRuntimeSource> {
 	private readonly sessions = new Map<string, RuntimeSession>();
 	private readonly creations = new Map<string, Promise<RuntimeSession>>();
 	private readonly locks = new Map<string, Promise<void>>();

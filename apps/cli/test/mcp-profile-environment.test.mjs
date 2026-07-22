@@ -4,7 +4,7 @@ import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import test from "node:test";
-import { loadMcpConfig } from "@beemax/mcp-capability";
+import { loadMcpConfig } from "@thruvera/mcp-capability";
 import { createProfile } from "../dist/profile-config.js";
 
 const cli = resolve("apps/cli/dist/cli.js");
@@ -34,8 +34,8 @@ test("CLI MCP composition injects the selected Profile environment instead of am
 			encoding: "utf8",
 			env: {
 				...process.env,
-				BEEMAX_ROOT: root,
-				BEEMAX_HOME: home,
+				THRUVERA_ROOT: root,
+				THRUVERA_HOME: home,
 				MCP_SERVER_FIXTURE: join(home, "ambient-fixture-must-not-be-used.mjs"),
 			},
 		});
@@ -64,7 +64,7 @@ test("MCP server stderr is drained privately and cannot print Profile secrets in
 		}));
 		const result = spawnSync(process.execPath, [cli, "mcp", "status", "--profile", "mcp-stderr"], {
 			encoding: "utf8",
-			env: { ...process.env, BEEMAX_ROOT: root, BEEMAX_HOME: home },
+			env: { ...process.env, THRUVERA_ROOT: root, THRUVERA_HOME: home },
 		});
 		assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
 		assert.match(result.stdout, /PASS\s+profile/u);
@@ -103,7 +103,7 @@ test("CLI MCP composition applies the selected modern Profile boundary", async (
 		assert.throws(
 			() => execFileSync(process.execPath, [cli, "mcp", "status", "--profile", "mcp-boundary"], {
 				encoding: "utf8",
-				env: { ...process.env, BEEMAX_ROOT: root, BEEMAX_HOME: home },
+				env: { ...process.env, THRUVERA_ROOT: root, THRUVERA_HOME: home },
 				stdio: "pipe",
 			}),
 			/MCP config path must stay physically inside its Profile Home/u,

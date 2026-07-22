@@ -41,7 +41,7 @@ export interface StandardWebPackStatus {
 
 export interface PiWebAccessInstallResult {
 	installed: false;
-	path: "@beemax/core/browser-tools";
+	path: "@thruvera/core/browser-tools";
 	evidenceRef: string;
 	revision: typeof PI_WEB_ACCESS_VERSION;
 }
@@ -91,9 +91,9 @@ export async function inspectStandardWebPack(input: StandardWebProfile, options:
 				kind: "skill",
 				state: agentReachSkill,
 				detail: agentReachSkill === "installed"
-					? "BeeMax-native Agent Reach routing Skill matches the packaged revision; login-backed social channels remain explicit customer opt-ins."
+					? "Thruvera-native Agent Reach routing Skill matches the packaged revision; login-backed social channels remain explicit customer opt-ins."
 					: agentReachSkill === "customized"
-						? "A Profile-local agent-reach Skill exists but differs from BeeMax's packaged revision; it was preserved and is not claimed as BeeMax-native."
+						? "A Profile-local agent-reach Skill exists but differs from Thruvera's packaged revision; it was preserved and is not claimed as Thruvera-native."
 					: agentReachSkill === "invalid"
 							? "The Profile-local Agent Reach Skill tree failed bounded integrity validation."
 							: "Agent Reach routing Skill is missing; run capabilities install agent-reach.",
@@ -105,7 +105,7 @@ export async function inspectStandardWebPack(input: StandardWebProfile, options:
 				detail: piSkill === "installed"
 					? `Native Pi-compatible CDP Tools ${PI_WEB_ACCESS_VERSION} and the packaged Skill revision are installed; browser process=${browser.state}, endpoint=${browser.cdpUrl ?? "not started"}.`
 					: piSkill === "customized"
-						? "A Profile-local pi-web-access Skill exists but differs from BeeMax's packaged revision; it was preserved and is not claimed as BeeMax-native."
+						? "A Profile-local pi-web-access Skill exists but differs from Thruvera's packaged revision; it was preserved and is not claimed as Thruvera-native."
 					: piSkill === "invalid"
 							? "The Profile-local Pi Web Access Skill tree failed bounded integrity validation."
 							: "Pi Web Access routing Skill is missing; run capabilities install pi-web-access.",
@@ -135,11 +135,11 @@ export async function installStandardWebRuntime(input: StandardWebProfile & {
 	return { ...(exa?.evidenceRef ? { exaEvidenceRef: exa.evidenceRef } : {}), pi: await installPiWebAccess() };
 }
 
-/** Compatibility install: the browser implementation is already shipped in @beemax/core. */
+/** Compatibility install: the browser implementation is already shipped in @thruvera/core. */
 export async function installPiWebAccess(): Promise<PiWebAccessInstallResult> {
 	return {
 		installed: false,
-		path: "@beemax/core/browser-tools",
+		path: "@thruvera/core/browser-tools",
 		evidenceRef: `builtin:${PI_WEB_ACCESS_VERSION}`,
 		revision: PI_WEB_ACCESS_VERSION,
 	};

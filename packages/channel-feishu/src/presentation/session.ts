@@ -1,7 +1,7 @@
 /**
  * CardSession: accumulates streaming events into Feishu card state.
  * Stripped of clarification and attachment handling -
- * BeeMax's first cut needs answer + tools + footer.
+ * Thruvera's first cut needs answer + tools + footer.
  */
 
 import { CardTimeline } from "./timeline.ts";

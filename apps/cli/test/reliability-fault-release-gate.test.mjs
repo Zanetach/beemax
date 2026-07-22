@@ -3,8 +3,8 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { FileToolEffectJournal, MUTATING_TOOL_POLICY, RUNTIME_FAULT_CATALOG, assessRuntimeFaultCoverage } from "@beemax/core";
-import { MemoryStore } from "@beemax/memory";
+import { FileToolEffectJournal, MUTATING_TOOL_POLICY, RUNTIME_FAULT_CATALOG, assessRuntimeFaultCoverage } from "@thruvera/core";
+import { MemoryStore } from "@thruvera/memory";
 import { inspectProfileEffects, reconcileProfileEffect } from "../dist/effect-inspection.js";
 
 test("reliability release gate prevents duplicate committed mutations across instances", () => {

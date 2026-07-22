@@ -1,16 +1,16 @@
-# Build the BeeMax Open-World Autonomous Capability Runtime
+# Build the Thruvera Open-World Autonomous Capability Runtime
 
 Label: `wayfinder:map`
 
 ## Destination
 
-BeeMax can take an outcome-oriented request from any supported channel, let the main model understand and adapt ordinary interactive work, progressively discover and load only the Tools and Skills needed, recover from missing capabilities without weakening the goal, and deliver guarded text or files. Durable/background responsibility is compiled into a complete Work Contract and independently verified. The destination is a versioned architecture specification, implementation sequence, and real end-to-end release gate—not a claim that every external system can be used without credentials or authority.
+Thruvera can take an outcome-oriented request from any supported channel, let the main model understand and adapt ordinary interactive work, progressively discover and load only the Tools and Skills needed, recover from missing capabilities without weakening the goal, and deliver guarded text or files. Durable/background responsibility is compiled into a complete Work Contract and independently verified. The destination is a versioned architecture specification, implementation sequence, and real end-to-end release gate—not a claim that every external system can be used without credentials or authority.
 
 ## Notes
 
 - This effort carries execution into the map: every unblocked AFK ticket may be implemented without waiting for user participation.
-- Use primary-source design evidence and current BeeMax code. Reference patterns from other systems, but never import their Agent runtime, product identity, prompts, or unrestricted installers.
-- Preserve BeeMax's sole Pi execution loop, model-first interactive lane, source-bound durable Work Contract, Profile/Access Scope, Tool Spec authority, Effect journal, Task recovery, independent Verification, and release external-Agent boundary.
+- Use primary-source design evidence and current Thruvera code. Reference patterns from other systems, but never import their Agent runtime, product identity, prompts, or unrestricted installers.
+- Preserve Thruvera's sole Pi execution loop, model-first interactive lane, source-bound durable Work Contract, Profile/Access Scope, Tool Spec authority, Effect journal, Task recovery, independent Verification, and release external-Agent boundary.
 - “No user operation” means the runtime proceeds autonomously for read-only and pre-authorized reversible work. Missing credentials, absent legal authority, irreversible high-risk actions, and materially ambiguous user intent remain honest blockers; the runtime must not manufacture consent or secrets.
 - Every implementation ticket requires focused tests and must keep deterministic, live-Provider, live-Pi, and real end-to-end evidence separate.
 
@@ -45,7 +45,7 @@ BeeMax can take an outcome-oriented request from any supported channel, let the 
 
 ## Out of scope
 
-- Embedding or invoking an external general-purpose Agent runtime inside BeeMax.
+- Embedding or invoking an external general-purpose Agent runtime inside Thruvera.
 - Copying another project's prompts, brand identity, unrestricted package installer, or user-home layout.
 - Bypassing credentials, standing authority or execution grants, enterprise policy, Access Scope, network isolation, or side-effect reconciliation to avoid asking for user input.
 - Preinstalling one Tool for every imaginable product. Open-world coverage comes from contracts, discovery, composition, trusted acquisition, and verification.

@@ -15,7 +15,7 @@ import {
 	type ArtifactVerificationDimension,
 	type ArtifactVerificationExpectation,
 	type ArtifactVerifierPort,
-} from "@beemax/core";
+} from "@thruvera/core";
 
 const MAX_INPUT_BYTES = 25 * 1024 * 1024;
 const MAX_ARTIFACT_BYTES = 100 * 1024 * 1024;
@@ -48,7 +48,7 @@ export function createLocalArtifactRuntime(cwd: string, options: LocalArtifactRu
 }
 
 export function discoverChromeExecutable(env: NodeJS.ProcessEnv = process.env): string | undefined {
-	const configured = env.BEEMAX_CHROME_EXECUTABLE?.trim();
+	const configured = env.THRUVERA_CHROME_EXECUTABLE?.trim();
 	if (configured) {
 		return trustedExecutable(configured);
 	}

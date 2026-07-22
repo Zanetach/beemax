@@ -2,8 +2,8 @@ import { constants, type Stats } from "node:fs";
 import { access, copyFile, cp, lstat, mkdir, open, readFile, readdir, readlink, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
-import { backupSqliteDatabase, verifySqliteDatabase } from "@beemax/memory";
-import { DEFAULT_DOCKER_SANDBOX_IMAGE, DEFAULT_RUNTIME_RESOURCE_LIMITS } from "@beemax/core";
+import { backupSqliteDatabase, verifySqliteDatabase } from "@thruvera/memory";
+import { DEFAULT_DOCKER_SANDBOX_IMAGE, DEFAULT_RUNTIME_RESOURCE_LIMITS } from "@thruvera/core";
 import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
 import { readEnvFile, renderEnv, writeEnvFile } from "./env-file.ts";
 import { DEFAULT_SOUL, resolveSoul, validateCustomSoul } from "./soul.ts";
@@ -12,8 +12,9 @@ import type { CustomProtocol } from "./config.ts";
 import { mutateProfileConfig } from "./profile-config-transaction.ts";
 import { inspectProfileSkillTree } from "./profile-skill-integrity.ts";
 import {
-	beemaxHome,
-	beemaxRoot,
+	applyThruveraEnvironmentAliases,
+	thruveraHome,
+	thruveraRoot,
 	legacyProfilePaths,
 	profilePaths,
 	type ProfilePaths,
@@ -66,10 +67,10 @@ export interface FeishuProbeResult {
 
 export async function createProfile(profile: string, options: ProfileStorageOptions = {}): Promise<ProfilePaths> {
 	const paths = profilePaths(profile, options);
-	const storageHome = resolve(options.home ?? beemaxHome());
+	const storageHome = resolve(options.home ?? thruveraHome());
 	const existingStorageHome = await lstatIfPresent(storageHome);
 	if (existingStorageHome && (existingStorageHome.isSymbolicLink() || !existingStorageHome.isDirectory())) {
-		throw new Error(`BeeMax Home must be a real directory, not a symbolic link: ${storageHome}`);
+		throw new Error(`Thruvera Home must be a real directory, not a symbolic link: ${storageHome}`);
 	}
 	await mkdir(storageHome, { recursive: true, mode: 0o700 });
 	await ensureProfileOwnedDirectory(storageHome, dirname(paths.homePath));
@@ -104,10 +105,13 @@ export async function createProfile(profile: string, options: ProfileStorageOpti
 
 export async function listProfiles(options: ProfileStorageOptions = {}): Promise<string[]> {
 	const profiles = new Set<string>();
-	const root = resolve(options.root ?? beemaxRoot());
-	const home = resolve(options.home ?? beemaxHome());
+	const root = resolve(options.root ?? thruveraRoot());
+	const home = resolve(options.home ?? thruveraHome());
 	try {
-		await readFile(join(root, "config", "beemax.yaml"), "utf8");
+		await Promise.any([
+			readFile(join(root, "config", "thruvera.yaml"), "utf8"),
+			readFile(join(root, "config", "beemax.yaml"), "utf8"),
+		]);
 		profiles.add("default");
 	} catch { /* optional default profile */ }
 	try {
@@ -144,7 +148,7 @@ export async function syncBuiltinSkillsAtProfileHome(profileHome: string, agentD
 export async function enableStandardWebProvider(profile: string, options: ProfileStorageOptions = {}): Promise<ProfilePaths> {
 	const paths = await writableProfilePaths(profile, options);
 	const environment = await readEnvFile(paths.envPath);
-	const environmentAllowedProviders = (environment.BEEMAX_PROVIDER_INSTALLATION_ALLOW ?? "")
+	const environmentAllowedProviders = (environment.THRUVERA_PROVIDER_INSTALLATION_ALLOW ?? environment.BEEMAX_PROVIDER_INSTALLATION_ALLOW ?? "")
 		.split(",")
 		.map((value) => value.trim())
 		.filter(Boolean);
@@ -164,6 +168,8 @@ export async function enableStandardWebProvider(profile: string, options: Profil
 	// An explicit install is the operator's opt-in. Fold legacy environment
 	// overrides into YAML, then remove them so they cannot silently keep the
 	// effective policy disabled after this command succeeds.
+	delete environment.THRUVERA_PROVIDER_INSTALLATION_ENABLED;
+	delete environment.THRUVERA_PROVIDER_INSTALLATION_ALLOW;
 	delete environment.BEEMAX_PROVIDER_INSTALLATION_ENABLED;
 	delete environment.BEEMAX_PROVIDER_INSTALLATION_ALLOW;
 	await writeStableProfileTextFile(paths, paths.envPath, "Profile environment", renderEnv(environment), MAX_PROFILE_ENV_BYTES);
@@ -174,7 +180,7 @@ export async function ensureCredentialVaultKey(profile: string, options: Profile
 	const paths = await writableProfilePaths(profile, options);
 	const env = await readEnvFile(paths.envPath);
 	const keyPath = join(paths.dataPath, "state", "credential-vault.key");
-	const configured = env.BEEMAX_CREDENTIAL_VAULT_KEY || await readStableProfileTextFile(paths, keyPath, "Profile Credential Vault key", MAX_PROFILE_VAULT_KEY_BYTES, true);
+	const configured = env.THRUVERA_CREDENTIAL_VAULT_KEY || env.BEEMAX_CREDENTIAL_VAULT_KEY || await readStableProfileTextFile(paths, keyPath, "Profile Credential Vault key", MAX_PROFILE_VAULT_KEY_BYTES, true);
 	if (configured) {
 		if (Buffer.from(configured, "base64").byteLength !== 32) throw new Error(`Credential Vault key is invalid for Profile '${profile}'`);
 		return paths;
@@ -187,7 +193,7 @@ export async function ensureCredentialVaultKey(profile: string, options: Profile
 
 export async function deleteProfile(profile: string, options: ProfileStorageOptions = {}): Promise<ProfilePaths> {
 	const paths = await writableProfilePaths(profile, options);
-	const home = resolve(options.home ?? beemaxHome());
+	const home = resolve(options.home ?? thruveraHome());
 	let preserved = paths.dataPath;
 	if (paths.configPath === join(paths.homePath, "config.yaml")) {
 		const source = await stableDirectoryIdentity(paths.homePath, "Profile Home");
@@ -449,7 +455,7 @@ async function responseJson(response: Response, label: string): Promise<Record<s
 export async function setActiveProfile(profile: string, options: ProfileStorageOptions = {}): Promise<void> {
 	validateProfileName(profile);
 	if (!(await listProfiles(options)).includes(profile)) throw new Error(`Agent profile ${profile} does not exist`);
-	const home = resolve(options.home ?? beemaxHome());
+	const home = resolve(options.home ?? thruveraHome());
 	await mkdir(home, { recursive: true, mode: 0o700 });
 	const target = join(home, "active-profile");
 	const temp = join(home, `.active-profile-${crypto.randomUUID()}`);
@@ -464,14 +470,14 @@ export async function setActiveProfile(profile: string, options: ProfileStorageO
 
 export async function migrateProfile(profile: string, options: ProfileStorageOptions = {}): Promise<ProfilePaths> {
 	validateProfileName(profile);
-	const root = resolve(options.root ?? beemaxRoot());
-	const home = resolve(options.home ?? beemaxHome());
+	const root = resolve(options.root ?? thruveraRoot());
+	const home = resolve(options.home ?? thruveraHome());
 	const legacy = legacyProfilePaths(profile, { root, home });
 	const target = profilePaths(profile, { root, home });
 	if (!(await lstatIfPresent(legacy.configPath))) throw new Error(`Legacy Agent profile ${profile} does not exist`);
 	await validateLegacyWritableProfile(legacy);
 	const existingHome = await lstatIfPresent(home);
-	if (existingHome && (existingHome.isSymbolicLink() || !existingHome.isDirectory())) throw new Error(`BeeMax Home must be a real directory, not a symbolic link: ${home}`);
+	if (existingHome && (existingHome.isSymbolicLink() || !existingHome.isDirectory())) throw new Error(`Thruvera Home must be a real directory, not a symbolic link: ${home}`);
 	await mkdir(home, { recursive: true, mode: 0o700 });
 	await ensureProfileOwnedDirectory(home, dirname(target.homePath));
 	const targetParent = await stableDirectoryIdentity(dirname(target.homePath), "Profiles directory");
@@ -481,11 +487,12 @@ export async function migrateProfile(profile: string, options: ProfileStorageOpt
 	const raw = await readStableTextFile(legacy.configPath, "Profile configuration", MAX_PROFILE_CONFIG_BYTES, false, legacyConfigParent.realPath);
 	const originalConfig = configFromYaml(raw);
 	const legacyEnv = await readEnvFile(legacy.envPath);
+	applyThruveraEnvironmentAliases(legacyEnv);
 	const legacyFeishu = { ...asRecord(originalConfig.feishu), ...asRecord(asRecord(originalConfig.gateway).feishu) };
 	const config = structuredClone(originalConfig);
 	scrubLegacyChannelSecrets(config);
 	const agent = asRecord(config.agent);
-	const legacyIdentity = legacyEnv.BEEMAX_SYSTEM_PROMPT?.trim()
+	const legacyIdentity = legacyEnv.THRUVERA_SYSTEM_PROMPT?.trim()
 		|| (typeof agent.systemPrompt === "string" ? agent.systemPrompt.trim() : "")
 		|| DEFAULT_SOUL;
 	const identity = resolveSoul(legacyIdentity);
@@ -498,12 +505,13 @@ export async function migrateProfile(profile: string, options: ProfileStorageOpt
 	config.capabilityProviders = capabilityProviders;
 	delete config.imageGeneration;
 	const pathsConfig = asRecord(config.paths);
-	const workspace = absoluteFrom(root, legacyEnv.BEEMAX_CWD || (typeof pathsConfig.cwd === "string" ? pathsConfig.cwd : "."));
+	const workspace = absoluteFrom(root, legacyEnv.THRUVERA_CWD || (typeof pathsConfig.cwd === "string" ? pathsConfig.cwd : "."));
 	config.paths = { ...pathsConfig, agentDir: ".", cwd: workspace };
-	const oldMemory = absoluteFrom(root, legacyEnv.BEEMAX_DB_PATH || stringAt(originalConfig, ["memory", "dbPath"]) || join(legacy.dataPath, "beemax.db"));
-	const oldMcp = absoluteFrom(root, legacyEnv.BEEMAX_MCP_CONFIG || stringAt(originalConfig, ["mcp", "configPath"]) || legacy.configPath.replace(/\.ya?ml$/i, ".mcp.json"));
-	const oldAgent = absoluteFrom(root, legacyEnv.BEEMAX_AGENT_DIR || stringAt(originalConfig, ["paths", "agentDir"]) || join(legacy.dataPath, "agent"));
+	const oldMemory = absoluteFrom(root, legacyEnv.THRUVERA_DB_PATH || stringAt(originalConfig, ["memory", "dbPath"]) || join(legacy.dataPath, "beemax.db"));
+	const oldMcp = absoluteFrom(root, legacyEnv.THRUVERA_MCP_CONFIG || stringAt(originalConfig, ["mcp", "configPath"]) || legacy.configPath.replace(/\.ya?ml$/i, ".mcp.json"));
+	const oldAgent = absoluteFrom(root, legacyEnv.THRUVERA_AGENT_DIR || stringAt(originalConfig, ["paths", "agentDir"]) || join(legacy.dataPath, "agent"));
 	const migratedEnv = { ...legacyEnv };
+	for (const key of Object.keys(migratedEnv)) if (key.startsWith("BEEMAX_")) delete migratedEnv[key];
 	for (const [envKey, configKey] of [["FEISHU_APP_ID", "appId"], ["FEISHU_APP_SECRET", "appSecret"], ["FEISHU_WEBHOOK_VERIFICATION_TOKEN", "webhookVerificationToken"], ["FEISHU_WEBHOOK_ENCRYPT_KEY", "webhookEncryptKey"]] as const) {
 		const legacyValue = legacyFeishu[configKey];
 		if (!migratedEnv[envKey] && typeof legacyValue === "string" && legacyValue.trim()) migratedEnv[envKey] = legacyValue.trim();
@@ -596,7 +604,7 @@ async function installBuiltinSkills(profileHome: string, rootOverride?: string):
 			throw error;
 		})
 		: undefined;
-	// BEEMAX_ROOT controls Profile/workspace storage in several CLI workflows;
+	// THRUVERA_ROOT controls Profile/workspace storage in several CLI workflows;
 	// it is not necessarily the installation directory that owns packaged assets.
 	// Keep an explicit existing fixture/installation override, otherwise resolve
 	// bundled Skills relative to the installed CLI module.
@@ -672,7 +680,7 @@ async function writableProfilePaths(profile: string, options: ProfileStorageOpti
 		await validateLegacyWritableProfile(legacy);
 		return legacy;
 	}
-	throw new Error(`Agent profile ${profile} does not exist; run beemax profile create ${profile}`);
+	throw new Error(`Agent profile ${profile} does not exist; run thruvera profile create ${profile}`);
 }
 
 async function validateModernWritableProfile(paths: ProfilePaths, profile: string): Promise<void> {
@@ -987,14 +995,14 @@ async function treeManifest(root: string): Promise<Map<string, string>> {
 }
 
 const PROFILE_ROUTING_ENV = [
-	"BEEMAX_HOME",
-	"BEEMAX_ROOT",
-	"BEEMAX_PROFILE",
-	"BEEMAX_DB_PATH",
-	"BEEMAX_MCP_CONFIG",
-	"BEEMAX_AGENT_DIR",
-	"BEEMAX_CWD",
-	"BEEMAX_SYSTEM_PROMPT",
+	"THRUVERA_HOME",
+	"THRUVERA_ROOT",
+	"THRUVERA_PROFILE",
+	"THRUVERA_DB_PATH",
+	"THRUVERA_MCP_CONFIG",
+	"THRUVERA_AGENT_DIR",
+	"THRUVERA_CWD",
+	"THRUVERA_SYSTEM_PROMPT",
 ] as const;
 
 function asRecord(value: unknown): Record<string, unknown> {

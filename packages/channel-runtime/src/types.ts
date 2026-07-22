@@ -1,13 +1,13 @@
 /**
  * Normalized platform-agnostic Channel Runtime message types.
  *
- * Defines BeeMax MessageEvent / SessionSource / SendResult contracts in
- * TypeScript for the BeeMax gateway. All platform adapters convert their
+ * Defines Thruvera MessageEvent / SessionSource / SendResult contracts in
+ * TypeScript for the Thruvera gateway. All platform adapters convert their
  * native events into these shapes so the dispatcher stays
  * platform-agnostic.
  */
 
-import type { AgentScope } from "@beemax/core";
+import type { AgentScope } from "@thruvera/core";
 import type { InteractionPresenter } from "./presentation.ts";
 
 /** Registry-validated adapter id. Core never enumerates transport platforms. */

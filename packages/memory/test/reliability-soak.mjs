@@ -4,11 +4,11 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { MemoryStore } from "../dist/index.js";
-import { TaskGraph, TaskRecoveryRunner } from "@beemax/core";
+import { TaskGraph, TaskRecoveryRunner } from "@thruvera/core";
 
-const configuredDuration = process.env.BEEMAX_RELIABILITY_DURATION_MS ?? "60000";
+const configuredDuration = process.env.THRUVERA_RELIABILITY_DURATION_MS ?? "60000";
 const durationMs = Number(configuredDuration);
-if (!Number.isSafeInteger(durationMs) || durationMs < 1_000) throw new Error("BEEMAX_RELIABILITY_DURATION_MS must be an integer of at least 1000");
+if (!Number.isSafeInteger(durationMs) || durationMs < 1_000) throw new Error("THRUVERA_RELIABILITY_DURATION_MS must be an integer of at least 1000");
 
 test("Agent core remains stable under sustained durable recovery load", { timeout: durationMs + 30_000 }, async () => {
 	const root = mkdtempSync(join(tmpdir(), "beemax-reliability-soak-"));

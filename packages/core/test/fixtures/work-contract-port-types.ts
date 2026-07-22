@@ -2,7 +2,7 @@ import {
 	DeterministicWorkContractBuilder,
 	ModelBackedWorkContractBuilder,
 	PiWorkContractBuilder,
-	type BeeMaxAgentRuntimeOptions,
+	type ThruveraAgentRuntimeOptions,
 	type WorkContractBuilderPort,
 	type WorkContractProposalBuilderPort,
 } from "../../dist/index.js";
@@ -15,7 +15,7 @@ type ModelBackedIsProposalOnly = Assert<IsAssignable<ModelBackedWorkContractBuil
 type ModelBackedIsNotRuntime = Assert<IsNotAssignable<ModelBackedWorkContractBuilder, WorkContractBuilderPort>>;
 type PiIsRuntime = Assert<IsAssignable<PiWorkContractBuilder, WorkContractBuilderPort>>;
 type DeterministicIsRuntime = Assert<IsAssignable<DeterministicWorkContractBuilder, WorkContractBuilderPort>>;
-type StandaloneRuntimeBuilderRemainsOptional = Assert<{} extends Pick<BeeMaxAgentRuntimeOptions, "workContractBuilder"> ? true : false>;
+type StandaloneRuntimeBuilderRemainsOptional = Assert<{} extends Pick<ThruveraAgentRuntimeOptions, "workContractBuilder"> ? true : false>;
 
 export type WorkContractPortTypeAssertions =
 	| ModelBackedIsProposalOnly

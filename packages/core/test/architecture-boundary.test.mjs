@@ -23,19 +23,19 @@ function sourceText(directory) {
 
 test("architecture boundary: Core never imports Gateway or a channel SDK", () => {
 	for (const file of sourceText(join(root, "packages/core/src"))) {
-		assert.doesNotMatch(file.text, /from ["']@beemax\/gateway["']/, file.path);
+		assert.doesNotMatch(file.text, /from ["']@thruvera\/gateway["']/, file.path);
 		assert.doesNotMatch(file.text, /from ["']@larksuiteoapi\//, file.path);
 	}
 });
 
 test("architecture boundary: Gateway contains no Agent capability composition", () => {
 	for (const file of sourceText(join(root, "packages/gateway/src"))) {
-		assert.doesNotMatch(file.text, /from ["']@beemax\/(automation|memory|mcp-capability|feishu-capability)["']/, file.path);
+		assert.doesNotMatch(file.text, /from ["']@thruvera\/(automation|memory|mcp-capability|feishu-capability)["']/, file.path);
 		assert.doesNotMatch(file.text, /\b(buildAgentFactory|createMemoryTools|createAutomationTools|createSkillTools|createWebTools|McpManager)\b/, file.path);
 	}
 });
 
-test("architecture boundary: BeeMax capabilities and Gateway consume Pi primitives only through Core", () => {
+test("architecture boundary: Thruvera capabilities and Gateway consume Pi primitives only through Core", () => {
 	for (const directory of ["packages/gateway/src", "packages/memory/src", "packages/mcp-capability/src", "packages/feishu-capability/src"]) {
 		for (const file of sourceText(join(root, directory))) {
 			assert.doesNotMatch(file.text, /from ["']@earendil-works\/pi-(?:ai|agent-core|coding-agent)[^"']*["']/, file.path);
@@ -43,7 +43,7 @@ test("architecture boundary: BeeMax capabilities and Gateway consume Pi primitiv
 	}
 });
 
-test("release boundary: production BeeMax contains no external agent runtime", () => {
+test("release boundary: production Thruvera contains no external agent runtime", () => {
 	const productionDirectories = [
 		"apps/cli/src",
 		"packages/automation/src",
@@ -60,7 +60,7 @@ test("release boundary: production BeeMax contains no external agent runtime", (
 	for (const directory of productionDirectories) {
 		for (const file of sourceText(join(root, directory))) assert.doesNotMatch(file.text, FORBIDDEN_EXTERNAL_AGENT_PATTERN, file.path);
 	}
-	for (const path of ["config/beemax.yaml.example", "config/profiles/personal.yaml.example", "apps/cli/package.json", "package.json"]) {
+	for (const path of ["config/thruvera.yaml.example", "config/profiles/personal.yaml.example", "apps/cli/package.json", "package.json"]) {
 		assert.doesNotMatch(readFileSync(join(root, path), "utf8"), FORBIDDEN_EXTERNAL_AGENT_PATTERN, path);
 	}
 	assert.equal(existsSync(join(root, "packages", "codex-image-capability", "package.json")), false, "external-agent image package must not ship");

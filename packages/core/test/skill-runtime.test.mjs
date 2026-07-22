@@ -123,7 +123,7 @@ test("Skill Registry parses standard multiline YAML routing metadata", async () 
 	} finally { rmSync(root, { recursive: true, force: true }); }
 });
 
-test("standard SKILL.md compatibility route exposes referenced local resources without a BeeMax manifest", async () => {
+test("standard SKILL.md compatibility route exposes referenced local resources without a Thruvera manifest", async () => {
 	const root = mkdtempSync(join(tmpdir(), "beemax-standard-skill-"));
 	const skill = join(root, "research-brief");
 	mkdirSync(join(skill, "references"), { recursive: true });

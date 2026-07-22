@@ -1,4 +1,4 @@
-import type { BeeMaxRuntimeSource } from "./runtime.ts";
+import type { ThruveraRuntimeSource } from "./runtime.ts";
 
 export type ExecutionBackend = "local" | "docker";
 export type SandboxMode = "off" | "all";
@@ -12,7 +12,7 @@ export interface ExecutionPolicy {
 }
 
 export interface ExecutionRequest {
-	source: BeeMaxRuntimeSource;
+	source: ThruveraRuntimeSource;
 	command: string;
 	cwd: string;
 	timeoutMs?: number;
@@ -20,7 +20,7 @@ export interface ExecutionRequest {
 }
 
 export interface ExecutionFileRequest {
-	source: BeeMaxRuntimeSource;
+	source: ThruveraRuntimeSource;
 	/** Host workspace used to validate and map file access. */
 	cwd: string;
 	/** Absolute path already constrained to cwd by the caller. */
@@ -51,7 +51,7 @@ export function executionErrorResult(error: unknown): ExecutionResult {
 	};
 }
 
-export function resolveExecutionBackend(policy: Pick<ExecutionPolicy, "backend" | "mode">, source: BeeMaxRuntimeSource): ExecutionBackend {
+export function resolveExecutionBackend(policy: Pick<ExecutionPolicy, "backend" | "mode">, source: ThruveraRuntimeSource): ExecutionBackend {
 	if (policy.mode === "off") return "local";
 	if (policy.backend !== "docker") throw new Error("Sandbox mode 'all' requires the Docker Execution Sandbox");
 	return policy.backend;

@@ -1,4 +1,4 @@
-import { parseInteractionCommand, type InteractionCommand, type InteractionDetailsDisplay, type InteractionEvent } from "@beemax/core";
+import { parseInteractionCommand, type InteractionCommand, type InteractionDetailsDisplay, type InteractionEvent } from "@thruvera/core";
 
 export type ReasoningDisplay = "off" | "summary" | "raw";
 export type DetailsDisplay = InteractionDetailsDisplay;
@@ -73,7 +73,7 @@ export function parseReasoningCommand(input: string): ReasoningCommand | undefin
 	return { kind: "invalid" };
 }
 
-/** @deprecated Import parseInteractionCommand from @beemax/core for new presenters. */
+/** @deprecated Import parseInteractionCommand from @thruvera/core for new presenters. */
 export const parseChatCommand: (input: string) => InteractionCommand | undefined = parseInteractionCommand;
 
 /** Compact tool lifecycle lines for a terminal activity stream. */

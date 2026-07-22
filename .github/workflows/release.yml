@@ -45,7 +45,7 @@ jobs:
             release_flag="--prerelease"
           fi
           gh release create "${GITHUB_REF_NAME}" \
-            "dist/release/beemax-${GITHUB_REF_NAME}.tar.gz" \
-            "dist/release/beemax-${GITHUB_REF_NAME}.tar.gz.sha256" \
-            --title "BeeMax Agent ${GITHUB_REF_NAME}" \
+            "dist/release/thruvera-${GITHUB_REF_NAME}.tar.gz" \
+            "dist/release/thruvera-${GITHUB_REF_NAME}.tar.gz.sha256" \
+            --title "Thruvera Agent ${GITHUB_REF_NAME}" \
             "${release_flag}"

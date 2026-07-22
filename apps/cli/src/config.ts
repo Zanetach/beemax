@@ -1,5 +1,5 @@
 /**
- * BeeMax config. Loads from config/beemax.yaml + env overrides.
+ * Thruvera config. Loads from a Profile config or legacy repository config.
  *
  * Profile-owned model, runtime, and registry-based channel configuration.
  * Channel Secrets are resolved from protected Profile sources, never YAML.
@@ -10,16 +10,16 @@ import { createHash } from "node:crypto";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import { parse as parseYaml } from "yaml";
 import { readEnvFileSync } from "./env-file.ts";
-import { beemaxRoot, resolveProfileLocation, validateProfileName } from "./profile-home.ts";
+import { applyThruveraEnvironmentAliases, thruveraRoot, resolveProfileLocation, validateProfileName } from "./profile-home.ts";
 import { resolveSoul } from "./soul.ts";
 import { providerApiKeyEnv } from "./provider-resolver.ts";
 import type { MemoryMembership } from "./memory-membership.ts";
-import type { FeishuActivationSettings, FeishuGroupRule } from "@beemax/channel-feishu";
-import { DEFAULT_DOCKER_SANDBOX_IMAGE, DEFAULT_RUNTIME_RESOURCE_LIMITS, resolveRuntimeTaskConcurrency } from "@beemax/core";
+import type { FeishuActivationSettings, FeishuGroupRule } from "@thruvera/channel-feishu";
+import { DEFAULT_DOCKER_SANDBOX_IMAGE, DEFAULT_RUNTIME_RESOURCE_LIMITS, resolveRuntimeTaskConcurrency } from "@thruvera/core";
 import { artifactSiteLocalBaseUrl, resolveCaddyHostCommand, validateArtifactSiteListen, validateArtifactSitePublicBaseUrl } from "./artifact-site.ts";
 import { resolveLocalOcrHostCommand } from "./local-media-understanding.ts";
 
-export { beemaxHome, beemaxRoot, validateProfileName } from "./profile-home.ts";
+export { beemaxHome, beemaxRoot, thruveraHome, thruveraRoot, validateProfileName } from "./profile-home.ts";
 
 export interface FeishuConfig {
 	domain: "feishu" | "lark";
@@ -92,7 +92,7 @@ export interface KnowledgeSpaceConfig {
 	knowledgeBaseId: string;
 }
 
-export interface BeeMaxConfig {
+export interface ThruveraConfig {
 	profile: string;
 	agent: {
 		systemPrompt?: string;
@@ -201,7 +201,7 @@ export interface BeeMaxConfig {
 
 export type ProfileEnvironmentSnapshot = Readonly<Record<string, string>>;
 
-const profileEnvironmentSnapshots = new WeakMap<BeeMaxConfig, ProfileEnvironmentSnapshot>();
+const profileEnvironmentSnapshots = new WeakMap<ThruveraConfig, ProfileEnvironmentSnapshot>();
 const PROFILE_EXECUTION_AMBIENT_KEYS = Object.freeze([
 	"PATH", "PATHEXT", "SystemRoot", "SYSTEMROOT", "WINDIR", "COMSPEC", "PROCESSOR_ARCHITECTURE", "SYSTEMDRIVE", "PROGRAMFILES",
 	"SHELL", "TERM", "LANG", "LANGUAGE", "LC_ALL", "LC_CTYPE", "LC_MESSAGES", "LC_COLLATE", "LC_MONETARY", "LC_NUMERIC", "LC_TIME",
@@ -210,20 +210,20 @@ const PROFILE_EXECUTION_AMBIENT_KEYS = Object.freeze([
 ] as const);
 
 /** Objectives terminate only through completion, explicit cancellation, or a visible unrecoverable failure. */
-export function profileTurnTimeoutMs(_config: Pick<BeeMaxConfig, "subagents" | "execution">): null {
+export function profileTurnTimeoutMs(_config: Pick<ThruveraConfig, "subagents" | "execution">): null {
 	return null;
 }
 
 /** Return the hidden immutable environment authority captured by loadConfig for MCP execution. */
-export function profileEnvironmentSnapshot(config: BeeMaxConfig): ProfileEnvironmentSnapshot {
+export function profileEnvironmentSnapshot(config: ThruveraConfig): ProfileEnvironmentSnapshot {
 	const snapshot = profileEnvironmentSnapshots.get(config);
-	if (!snapshot) throw new Error("Profile environment snapshot is unavailable; obtain BeeMaxConfig through loadConfig");
+	if (!snapshot) throw new Error("Profile environment snapshot is unavailable; obtain ThruveraConfig through loadConfig");
 	return snapshot;
 }
 
-export function loadConfig(configPath?: string, profile = "default"): BeeMaxConfig {
+export function loadConfig(configPath?: string, profile = "default"): ThruveraConfig {
 	validateProfileName(profile);
-	const root = beemaxRoot();
+	const root = thruveraRoot();
 	const location = resolveProfileLocation(profile, configPath);
 	const path = location.configPath;
 	const envPath = location.envPath;
@@ -233,10 +233,11 @@ export function loadConfig(configPath?: string, profile = "default"): BeeMaxConf
 		try { raw = readFileSync(path, "utf8"); }
 		catch { /* legacy config file optional; env-only mode */ }
 	}
-	const cfg = (raw ? parseYaml(raw) : {}) as Partial<BeeMaxConfig> & { feishu?: Partial<FeishuConfig> };
+	const cfg = (raw ? parseYaml(raw) : {}) as Partial<ThruveraConfig> & { feishu?: Partial<FeishuConfig> };
 	// Profile credentials and runtime policy win over ambient shell variables.
-	// BEEMAX_HOME/PROFILE are resolved before this point and remain explicit routing inputs.
+	// THRUVERA_HOME/PROFILE are resolved before this point and remain explicit routing inputs.
 	const profileEnv = readEnvFileSync(envPath);
+	applyThruveraEnvironmentAliases(profileEnv);
 	const env = location.isHome ? profileEnv : process.env;
 	const mcpEnvironment = createProfileEnvironmentSnapshot(profileEnv, location.homePath);
 	const configuredChannels = parseGatewayChannels(cfg.gateway?.channels);
@@ -250,16 +251,16 @@ export function loadConfig(configPath?: string, profile = "default"): BeeMaxConf
 	const appId = str(env.FEISHU_APP_ID);
 	const appSecret = str(env.FEISHU_APP_SECRET);
 
-	const provider = str(env.BEEMAX_PROVIDER ?? cfg.model?.provider ?? "anthropic");
-	const model = str(env.BEEMAX_MODEL ?? cfg.model?.model ?? "claude-sonnet-4-5");
-	const apiKey = str(env[providerApiKeyEnv(provider)] ?? env.BEEMAX_API_KEY ?? cfg.model?.apiKey);
+	const provider = str(env.THRUVERA_PROVIDER ?? cfg.model?.provider ?? "anthropic");
+	const model = str(env.THRUVERA_MODEL ?? cfg.model?.model ?? "claude-sonnet-4-5");
+	const apiKey = str(env[providerApiKeyEnv(provider)] ?? env.THRUVERA_API_KEY ?? cfg.model?.apiKey);
 	const customProtocol = parseCustomProtocol(cfg.model?.customProtocol);
-	const contextWindow = provider === "custom" ? optionalBoundedNumber(env.BEEMAX_MODEL_CONTEXT_WINDOW ?? cfg.model?.contextWindow, 8_000, 10_000_000) : undefined;
-	const maxTokens = provider === "custom" ? optionalBoundedNumber(env.BEEMAX_MODEL_MAX_TOKENS ?? cfg.model?.maxTokens, 256, 1_000_000) : undefined;
+	const contextWindow = provider === "custom" ? optionalBoundedNumber(env.THRUVERA_MODEL_CONTEXT_WINDOW ?? cfg.model?.contextWindow, 8_000, 10_000_000) : undefined;
+	const maxTokens = provider === "custom" ? optionalBoundedNumber(env.THRUVERA_MODEL_MAX_TOKENS ?? cfg.model?.maxTokens, 256, 1_000_000) : undefined;
 	const configuredModels = modelChoices(cfg.models, { provider, model, baseUrl: cfg.model?.baseUrl, customProtocol, contextWindow, maxTokens });
 	const apiKeys = Object.fromEntries(
 		[...new Set(configuredModels.map((choice) => choice.provider))]
-			.map((candidate) => [candidate, str(env[providerApiKeyEnv(candidate)] ?? (candidate === provider ? env.BEEMAX_API_KEY : ""))])
+			.map((candidate) => [candidate, str(env[providerApiKeyEnv(candidate)] ?? (candidate === provider ? env.THRUVERA_API_KEY : ""))])
 			.filter(([, key]) => Boolean(key)),
 	);
 
@@ -267,7 +268,7 @@ export function loadConfig(configPath?: string, profile = "default"): BeeMaxConf
 		? location.homePath
 		: join(root, profile === "default" ? "data" : `data/profiles/${profile}`);
 	const storedSoul = location.isHome ? readStableProfileFile(location.soulPath, location.homePath, "SOUL", 64 * 1024, true) : "";
-	const soul = resolveSoul(storedSoul || env.BEEMAX_SYSTEM_PROMPT || cfg.agent?.systemPrompt);
+	const soul = resolveSoul(storedSoul || env.THRUVERA_SYSTEM_PROMPT || cfg.agent?.systemPrompt);
 	const feishuAllowedUsers = parseList(env.FEISHU_ALLOWED_USERS ?? configuredFeishu?.allowedUsers);
 	const configuredAdmins = parseList(env.FEISHU_ADMINS ?? configuredFeishu?.admins);
 	const requireMention = parseBool(env.FEISHU_REQUIRE_MENTION ?? configuredFeishu?.requireMention ?? true);
@@ -312,42 +313,42 @@ export function loadConfig(configPath?: string, profile = "default"): BeeMaxConf
 		: configuredChannels;
 	const bindings = parseGatewayBindings(cfg.gateway?.bindings, profile, channels);
 	const ingress = {
-		maxActive: boundedNumber(env.BEEMAX_GATEWAY_MAX_ACTIVE ?? cfg.gateway?.ingress?.maxActive, 1_000, 1, 100_000),
-		maxActivePerConversation: boundedNumber(env.BEEMAX_GATEWAY_MAX_ACTIVE_PER_CONVERSATION ?? cfg.gateway?.ingress?.maxActivePerConversation, 100, 1, 10_000),
+		maxActive: boundedNumber(env.THRUVERA_GATEWAY_MAX_ACTIVE ?? cfg.gateway?.ingress?.maxActive, 1_000, 1, 100_000),
+		maxActivePerConversation: boundedNumber(env.THRUVERA_GATEWAY_MAX_ACTIVE_PER_CONVERSATION ?? cfg.gateway?.ingress?.maxActivePerConversation, 100, 1, 10_000),
 	};
 	const observation = {
 		retainPerLane: boundedNumber(
-			env.BEEMAX_GROUP_OBSERVATION_RETAIN_PER_LANE
+			env.THRUVERA_GROUP_OBSERVATION_RETAIN_PER_LANE
 				?? cfg.gateway?.observation?.retainPerLane
 				?? (cfg.gateway?.feishu?.activation as (Record<string, unknown> | undefined))?.observationRetainPerLane
 				?? env.FEISHU_OBSERVATION_RETAIN_PER_LANE,
 			100, 1, 10_000,
 		),
-		minRelevance: boundedScore(env.BEEMAX_GROUP_OBSERVATION_MIN_RELEVANCE ?? cfg.gateway?.observation?.minRelevance, 0.6),
-		minCredibility: boundedScore(env.BEEMAX_GROUP_OBSERVATION_MIN_CREDIBILITY ?? cfg.gateway?.observation?.minCredibility, 0.4),
-		minExpectedValue: boundedScore(env.BEEMAX_GROUP_OBSERVATION_MIN_EXPECTED_VALUE ?? cfg.gateway?.observation?.minExpectedValue, 0.6),
-		minConfidence: boundedScore(env.BEEMAX_GROUP_OBSERVATION_MIN_CONFIDENCE ?? cfg.gateway?.observation?.minConfidence, 0.65),
-		evaluationTimeoutMs: boundedNumber(env.BEEMAX_GROUP_OBSERVATION_EVALUATION_TIMEOUT_MS ?? cfg.gateway?.observation?.evaluationTimeoutMs, 15_000, 1_000, 120_000),
-		maxActiveEvaluations: boundedNumber(env.BEEMAX_GROUP_OBSERVATION_MAX_ACTIVE_EVALUATIONS ?? cfg.gateway?.observation?.maxActiveEvaluations, 8, 1, 1_000),
-		maxActivePerLane: boundedNumber(env.BEEMAX_GROUP_OBSERVATION_MAX_ACTIVE_PER_LANE ?? cfg.gateway?.observation?.maxActivePerLane, 1, 1, 100),
+		minRelevance: boundedScore(env.THRUVERA_GROUP_OBSERVATION_MIN_RELEVANCE ?? cfg.gateway?.observation?.minRelevance, 0.6),
+		minCredibility: boundedScore(env.THRUVERA_GROUP_OBSERVATION_MIN_CREDIBILITY ?? cfg.gateway?.observation?.minCredibility, 0.4),
+		minExpectedValue: boundedScore(env.THRUVERA_GROUP_OBSERVATION_MIN_EXPECTED_VALUE ?? cfg.gateway?.observation?.minExpectedValue, 0.6),
+		minConfidence: boundedScore(env.THRUVERA_GROUP_OBSERVATION_MIN_CONFIDENCE ?? cfg.gateway?.observation?.minConfidence, 0.65),
+		evaluationTimeoutMs: boundedNumber(env.THRUVERA_GROUP_OBSERVATION_EVALUATION_TIMEOUT_MS ?? cfg.gateway?.observation?.evaluationTimeoutMs, 15_000, 1_000, 120_000),
+		maxActiveEvaluations: boundedNumber(env.THRUVERA_GROUP_OBSERVATION_MAX_ACTIVE_EVALUATIONS ?? cfg.gateway?.observation?.maxActiveEvaluations, 8, 1, 1_000),
+		maxActivePerLane: boundedNumber(env.THRUVERA_GROUP_OBSERVATION_MAX_ACTIVE_PER_LANE ?? cfg.gateway?.observation?.maxActivePerLane, 1, 1, 100),
 	};
-	const proactiveQuietHours = parseQuietHours(cfg.gateway?.proactiveDelivery?.quietHours ?? feishu.activation.quietHours, env.BEEMAX_TIMEZONE);
+	const proactiveQuietHours = parseQuietHours(cfg.gateway?.proactiveDelivery?.quietHours ?? feishu.activation.quietHours, env.THRUVERA_TIMEZONE);
 	const proactiveDelivery = {
 		...(proactiveQuietHours ? { quietHours: proactiveQuietHours } : {}),
-		maxDeliveriesPerWindow: boundedNumber(env.BEEMAX_PROACTIVE_MAX_DELIVERIES_PER_WINDOW ?? cfg.gateway?.proactiveDelivery?.maxDeliveriesPerWindow ?? feishu.activation.maxRepliesPerWindow, 6, 1, 1_000),
-		deliveryWindowMs: boundedNumber(env.BEEMAX_PROACTIVE_DELIVERY_WINDOW_MS ?? cfg.gateway?.proactiveDelivery?.deliveryWindowMs ?? feishu.activation.replyWindowMs, 60_000, 1_000, 24 * 60 * 60_000),
-		maxTrackedLanes: boundedNumber(env.BEEMAX_PROACTIVE_MAX_TRACKED_LANES ?? cfg.gateway?.proactiveDelivery?.maxTrackedLanes ?? feishu.activation.maxTrackedResponseLanes, 10_000, 1, 100_000),
+		maxDeliveriesPerWindow: boundedNumber(env.THRUVERA_PROACTIVE_MAX_DELIVERIES_PER_WINDOW ?? cfg.gateway?.proactiveDelivery?.maxDeliveriesPerWindow ?? feishu.activation.maxRepliesPerWindow, 6, 1, 1_000),
+		deliveryWindowMs: boundedNumber(env.THRUVERA_PROACTIVE_DELIVERY_WINDOW_MS ?? cfg.gateway?.proactiveDelivery?.deliveryWindowMs ?? feishu.activation.replyWindowMs, 60_000, 1_000, 24 * 60 * 60_000),
+		maxTrackedLanes: boundedNumber(env.THRUVERA_PROACTIVE_MAX_TRACKED_LANES ?? cfg.gateway?.proactiveDelivery?.maxTrackedLanes ?? feishu.activation.maxTrackedResponseLanes, 10_000, 1, 100_000),
 	};
-	const configuredArtifactSiteListen = env.BEEMAX_ARTIFACT_SITE_LISTEN ?? cfg.gateway?.artifactSite?.listen;
+	const configuredArtifactSiteListen = env.THRUVERA_ARTIFACT_SITE_LISTEN ?? cfg.gateway?.artifactSite?.listen;
 	const artifactSiteListen = validateArtifactSiteListen(str(configuredArtifactSiteListen ?? defaultArtifactSiteListen(profile)));
 	if (Object.prototype.hasOwnProperty.call(cfg.gateway?.artifactSite ?? {}, "command")
-		|| Object.prototype.hasOwnProperty.call(profileEnv, "BEEMAX_ARTIFACT_SITE_COMMAND")) {
+		|| Object.prototype.hasOwnProperty.call(profileEnv, "THRUVERA_ARTIFACT_SITE_COMMAND")) {
 		throw new Error("Caddy command must be configured by the trusted host environment, not Profile YAML or Profile .env");
 	}
 	const artifactSiteCommand = resolveCaddyHostCommand(process.env);
-	const configuredArtifactSitePublicBaseUrl = env.BEEMAX_ARTIFACT_SITE_PUBLIC_BASE_URL ?? cfg.gateway?.artifactSite?.publicBaseUrl;
+	const configuredArtifactSitePublicBaseUrl = env.THRUVERA_ARTIFACT_SITE_PUBLIC_BASE_URL ?? cfg.gateway?.artifactSite?.publicBaseUrl;
 	const artifactSite: ArtifactSiteConfig = {
-		enabled: parseBool(env.BEEMAX_ARTIFACT_SITE_ENABLED ?? cfg.gateway?.artifactSite?.enabled ?? true),
+		enabled: parseBool(env.THRUVERA_ARTIFACT_SITE_ENABLED ?? cfg.gateway?.artifactSite?.enabled ?? true),
 		command: artifactSiteCommand,
 		listen: artifactSiteListen,
 		publicBaseUrl: validateArtifactSitePublicBaseUrl(str(configuredArtifactSitePublicBaseUrl ?? artifactSiteLocalBaseUrl(artifactSiteListen))),
@@ -355,38 +356,38 @@ export function loadConfig(configPath?: string, profile = "default"): BeeMaxConf
 		automaticPublicBaseUrl: configuredArtifactSitePublicBaseUrl === undefined,
 	};
 	if (Object.prototype.hasOwnProperty.call(cfg.mediaUnderstanding?.localOcr ?? {}, "command")
-		|| Object.prototype.hasOwnProperty.call(profileEnv, "BEEMAX_LOCAL_OCR_COMMAND")) {
+		|| Object.prototype.hasOwnProperty.call(profileEnv, "THRUVERA_LOCAL_OCR_COMMAND")) {
 		throw new Error("Local OCR command must be configured by the trusted host environment, not Profile YAML or Profile .env");
 	}
 	const localOcrCommand = resolveLocalOcrHostCommand(process.env);
-	const heartbeatPlatform = str(env.BEEMAX_HEARTBEAT_PLATFORM ?? cfg.automation?.heartbeat?.platform ?? channels.find((channel) => channel.enabled)?.adapter ?? "feishu");
+	const heartbeatPlatform = str(env.THRUVERA_HEARTBEAT_PLATFORM ?? cfg.automation?.heartbeat?.platform ?? channels.find((channel) => channel.enabled)?.adapter ?? "feishu");
 	const heartbeatInstances = channels.filter((channel) => channel.enabled && channel.adapter === heartbeatPlatform);
-	const heartbeatChannelInstanceId = optional(env.BEEMAX_HEARTBEAT_CHANNEL_INSTANCE_ID ?? cfg.automation?.heartbeat?.channelInstanceId) ?? (heartbeatInstances.length === 1 ? heartbeatInstances[0]!.id : undefined);
+	const heartbeatChannelInstanceId = optional(env.THRUVERA_HEARTBEAT_CHANNEL_INSTANCE_ID ?? cfg.automation?.heartbeat?.channelInstanceId) ?? (heartbeatInstances.length === 1 ? heartbeatInstances[0]!.id : undefined);
 	const capabilityCognition = {
-		maxModelAttempts: boundedConfiguredInteger(env.BEEMAX_CAPABILITY_COGNITION_MAX_ATTEMPTS ?? cfg.agent?.capabilityCognition?.maxModelAttempts, 3, 1, 5, "agent.capabilityCognition.maxModelAttempts"),
-		maxTokens: boundedConfiguredInteger(env.BEEMAX_CAPABILITY_COGNITION_MAX_TOKENS ?? cfg.agent?.capabilityCognition?.maxTokens, 2_048, 256, 8_192, "agent.capabilityCognition.maxTokens"),
+		maxModelAttempts: boundedConfiguredInteger(env.THRUVERA_CAPABILITY_COGNITION_MAX_ATTEMPTS ?? cfg.agent?.capabilityCognition?.maxModelAttempts, 3, 1, 5, "agent.capabilityCognition.maxModelAttempts"),
+		maxTokens: boundedConfiguredInteger(env.THRUVERA_CAPABILITY_COGNITION_MAX_TOKENS ?? cfg.agent?.capabilityCognition?.maxTokens, 2_048, 256, 8_192, "agent.capabilityCognition.maxTokens"),
 		// Capability cognition is an optional preflight lane, never the Objective
 		// deadline. Fail it over quickly so Provider stalls cannot consume the
 		// interactive report SLO; deterministic discovery continues the same Task.
-		timeoutMs: boundedConfiguredInteger(env.BEEMAX_CAPABILITY_COGNITION_TIMEOUT_MS ?? cfg.agent?.capabilityCognition?.timeoutMs, 12_000, 1_000, 60_000, "agent.capabilityCognition.timeoutMs"),
+		timeoutMs: boundedConfiguredInteger(env.THRUVERA_CAPABILITY_COGNITION_TIMEOUT_MS ?? cfg.agent?.capabilityCognition?.timeoutMs, 12_000, 1_000, 60_000, "agent.capabilityCognition.timeoutMs"),
 	};
-	const configuredMcpPath = str(env.BEEMAX_MCP_CONFIG ?? cfg.mcp?.configPath ?? (location.isHome ? "mcp.json" : profile === "default" ? "config/mcp.json" : `config/profiles/${profile}.mcp.json`));
+	const configuredMcpPath = str(env.THRUVERA_MCP_CONFIG ?? cfg.mcp?.configPath ?? (location.isHome ? "mcp.json" : profile === "default" ? "config/mcp.json" : `config/profiles/${profile}.mcp.json`));
 	const defaultProviderInstallation = providerInstallationDefaults(cfg.capabilityProviders?.installation);
-	const resolved: BeeMaxConfig = {
+	const resolved: ThruveraConfig = {
 		profile,
 		agent: {
 			systemPrompt: soul,
-			reasoningDisplay: reasoningDisplay(env.BEEMAX_REASONING_DISPLAY ?? cfg.agent?.reasoningDisplay),
-			toolset: (env.BEEMAX_TOOLSET ?? cfg.agent?.toolset) === "safe" ? "safe" : "standard",
-			maxSessions: parseNumber(env.BEEMAX_MAX_SESSIONS ?? cfg.agent?.maxSessions, 100),
-			sessionIdleMs: parseNumber(env.BEEMAX_SESSION_IDLE_MS ?? cfg.agent?.sessionIdleMs, 30 * 60_000),
+			reasoningDisplay: reasoningDisplay(env.THRUVERA_REASONING_DISPLAY ?? cfg.agent?.reasoningDisplay),
+			toolset: (env.THRUVERA_TOOLSET ?? cfg.agent?.toolset) === "safe" ? "safe" : "standard",
+			maxSessions: parseNumber(env.THRUVERA_MAX_SESSIONS ?? cfg.agent?.maxSessions, 100),
+			sessionIdleMs: parseNumber(env.THRUVERA_SESSION_IDLE_MS ?? cfg.agent?.sessionIdleMs, 30 * 60_000),
 			capabilityPreferences: parseCapabilityPreferences(cfg.agent?.capabilityPreferences),
 			capabilityCognition,
 		},
 		capabilityProviders: {
 			installation: {
-				enabled: parseBool(env.BEEMAX_PROVIDER_INSTALLATION_ENABLED ?? defaultProviderInstallation.enabled),
-				allowedProviders: parseProviderIds(env.BEEMAX_PROVIDER_INSTALLATION_ALLOW ?? defaultProviderInstallation.allowedProviders),
+				enabled: parseBool(env.THRUVERA_PROVIDER_INSTALLATION_ENABLED ?? defaultProviderInstallation.enabled),
+				allowedProviders: parseProviderIds(env.THRUVERA_PROVIDER_INSTALLATION_ALLOW ?? defaultProviderInstallation.allowedProviders),
 			},
 		},
 		model: {
@@ -402,13 +403,13 @@ export function loadConfig(configPath?: string, profile = "default"): BeeMaxConf
 		models: configuredModels,
 		gateway: { channels, bindings, ingress, observation, proactiveDelivery, artifactSite, feishu, telegram },
 		memory: {
-			dbPath: resolveFrom(location.basePath, str(env.BEEMAX_DB_PATH ?? cfg.memory?.dbPath ?? join(profileDataRoot, location.isHome ? "memory.db" : "beemax.db"))),
+			dbPath: resolveFrom(location.basePath, str(env.THRUVERA_DB_PATH ?? cfg.memory?.dbPath ?? join(profileDataRoot, location.isHome ? "memory.db" : "beemax.db"))),
 			memberships: parseMemoryMemberships(cfg.memory?.memberships),
 		},
 		credentials: {
-			vaultPath: resolveFrom(location.basePath, str(env.BEEMAX_CREDENTIAL_VAULT_PATH ?? join(profileDataRoot, "credentials.vault"))),
+			vaultPath: resolveFrom(location.basePath, str(env.THRUVERA_CREDENTIAL_VAULT_PATH ?? join(profileDataRoot, "credentials.vault"))),
 			keyPath: join(profileDataRoot, "state", "credential-vault.key"),
-			key: optional(env.BEEMAX_CREDENTIAL_VAULT_KEY) ?? optional(location.isHome
+			key: optional(env.THRUVERA_CREDENTIAL_VAULT_KEY) ?? optional(location.isHome
 				? readStableProfileFile(join(profileDataRoot, "state", "credential-vault.key"), location.homePath, "Credential Vault key", 4_096, true)
 				: readFileIfPresent(join(profileDataRoot, "state", "credential-vault.key"))),
 		},
@@ -419,68 +420,68 @@ export function loadConfig(configPath?: string, profile = "default"): BeeMaxConf
 			...(location.isHome ? { profileHome: location.homePath } : {}),
 		},
 		knowledge: {
-			enabled: parseBool(env.BEEMAX_KNOWLEDGE_ENABLED ?? cfg.knowledge?.enabled ?? false),
+			enabled: parseBool(env.THRUVERA_KNOWLEDGE_ENABLED ?? cfg.knowledge?.enabled ?? false),
 			provider: "weknora",
-			baseUrl: str(env.BEEMAX_WEKNORA_BASE_URL ?? cfg.knowledge?.baseUrl ?? "http://127.0.0.1:8080"),
-			apiKey: optional(env.BEEMAX_WEKNORA_API_KEY),
+			baseUrl: str(env.THRUVERA_WEKNORA_BASE_URL ?? cfg.knowledge?.baseUrl ?? "http://127.0.0.1:8080"),
+			apiKey: optional(env.THRUVERA_WEKNORA_API_KEY),
 			spaces: parseKnowledgeSpaces(cfg.knowledge?.spaces),
 		},
 		mediaUnderstanding: {
 			localOcr: {
-				enabled: parseBool(env.BEEMAX_LOCAL_OCR_ENABLED ?? cfg.mediaUnderstanding?.localOcr?.enabled ?? true),
+				enabled: parseBool(env.THRUVERA_LOCAL_OCR_ENABLED ?? cfg.mediaUnderstanding?.localOcr?.enabled ?? true),
 				...(localOcrCommand ? { command: localOcrCommand } : {}),
-				languages: optional(env.BEEMAX_LOCAL_OCR_LANGUAGES ?? cfg.mediaUnderstanding?.localOcr?.languages),
-				timeoutMs: boundedNumber(env.BEEMAX_LOCAL_OCR_TIMEOUT_MS ?? cfg.mediaUnderstanding?.localOcr?.timeoutMs, 30_000, 1_000, 300_000),
+				languages: optional(env.THRUVERA_LOCAL_OCR_LANGUAGES ?? cfg.mediaUnderstanding?.localOcr?.languages),
+				timeoutMs: boundedNumber(env.THRUVERA_LOCAL_OCR_TIMEOUT_MS ?? cfg.mediaUnderstanding?.localOcr?.timeoutMs, 30_000, 1_000, 300_000),
 			},
-			auxiliaryVisionEnabled: parseBool(env.BEEMAX_AUXILIARY_VISION_ENABLED ?? cfg.mediaUnderstanding?.auxiliaryVisionEnabled ?? true),
+			auxiliaryVisionEnabled: parseBool(env.THRUVERA_AUXILIARY_VISION_ENABLED ?? cfg.mediaUnderstanding?.auxiliaryVisionEnabled ?? true),
 		},
 		context: {
-			maxTurnChars: boundedNumber(env.BEEMAX_CONTEXT_MAX_TURN_CHARS ?? cfg.context?.maxTurnChars, 12_000, 1_000, 100_000),
-			maxToolResultTokens: boundedNumber(env.BEEMAX_MAX_TOOL_RESULT_TOKENS ?? cfg.context?.maxToolResultTokens, 12_000, 256, 1_000_000),
+			maxTurnChars: boundedNumber(env.THRUVERA_CONTEXT_MAX_TURN_CHARS ?? cfg.context?.maxTurnChars, 12_000, 1_000, 100_000),
+			maxToolResultTokens: boundedNumber(env.THRUVERA_MAX_TOOL_RESULT_TOKENS ?? cfg.context?.maxToolResultTokens, 12_000, 256, 1_000_000),
 			compaction: {
-				enabled: parseBool(env.BEEMAX_COMPACTION_ENABLED ?? cfg.context?.compaction?.enabled ?? true),
-				reserveTokens: optionalBoundedNumber(env.BEEMAX_COMPACTION_RESERVE_TOKENS ?? cfg.context?.compaction?.reserveTokens, 1_024, 1_000_000),
-				keepRecentTokens: optionalBoundedNumber(env.BEEMAX_COMPACTION_KEEP_RECENT_TOKENS ?? cfg.context?.compaction?.keepRecentTokens, 1_024, 1_000_000),
+				enabled: parseBool(env.THRUVERA_COMPACTION_ENABLED ?? cfg.context?.compaction?.enabled ?? true),
+				reserveTokens: optionalBoundedNumber(env.THRUVERA_COMPACTION_RESERVE_TOKENS ?? cfg.context?.compaction?.reserveTokens, 1_024, 1_000_000),
+				keepRecentTokens: optionalBoundedNumber(env.THRUVERA_COMPACTION_KEEP_RECENT_TOKENS ?? cfg.context?.compaction?.keepRecentTokens, 1_024, 1_000_000),
 			},
 		},
 		execution: {
-			backend: executionBackend(env.BEEMAX_EXECUTION_BACKEND ?? cfg.execution?.backend),
-			mode: sandboxMode(env.BEEMAX_SANDBOX_MODE ?? cfg.execution?.mode),
-			workspaceAccess: workspaceAccess(env.BEEMAX_SANDBOX_WORKSPACE_ACCESS ?? cfg.execution?.workspaceAccess),
-			image: str(env.BEEMAX_SANDBOX_IMAGE ?? cfg.execution?.image ?? DEFAULT_DOCKER_SANDBOX_IMAGE),
-			timeoutMs: boundedNumber(env.BEEMAX_SANDBOX_TIMEOUT_MS ?? cfg.execution?.timeoutMs, 180_000, 1_000, 600_000),
+			backend: executionBackend(env.THRUVERA_EXECUTION_BACKEND ?? cfg.execution?.backend),
+			mode: sandboxMode(env.THRUVERA_SANDBOX_MODE ?? cfg.execution?.mode),
+			workspaceAccess: workspaceAccess(env.THRUVERA_SANDBOX_WORKSPACE_ACCESS ?? cfg.execution?.workspaceAccess),
+			image: str(env.THRUVERA_SANDBOX_IMAGE ?? cfg.execution?.image ?? DEFAULT_DOCKER_SANDBOX_IMAGE),
+			timeoutMs: boundedNumber(env.THRUVERA_SANDBOX_TIMEOUT_MS ?? cfg.execution?.timeoutMs, 180_000, 1_000, 600_000),
 		},
 		subagents: {
-			enabled: parseBool(env.BEEMAX_SUBAGENTS_ENABLED ?? cfg.subagents?.enabled ?? true),
-			maxConcurrent: resolveRuntimeTaskConcurrency(parseNumber(env.BEEMAX_SUBAGENTS_MAX_CONCURRENT ?? cfg.subagents?.maxConcurrent, DEFAULT_RUNTIME_RESOURCE_LIMITS.taskConcurrency)),
-			maxChildrenPerOwner: parseNumber(env.BEEMAX_SUBAGENTS_MAX_CHILDREN ?? cfg.subagents?.maxChildrenPerOwner, 5),
-			timeoutMs: parseNumber(env.BEEMAX_SUBAGENTS_TIMEOUT_MS ?? cfg.subagents?.timeoutMs, 15 * 60_000),
+			enabled: parseBool(env.THRUVERA_SUBAGENTS_ENABLED ?? cfg.subagents?.enabled ?? true),
+			maxConcurrent: resolveRuntimeTaskConcurrency(parseNumber(env.THRUVERA_SUBAGENTS_MAX_CONCURRENT ?? cfg.subagents?.maxConcurrent, DEFAULT_RUNTIME_RESOURCE_LIMITS.taskConcurrency)),
+			maxChildrenPerOwner: parseNumber(env.THRUVERA_SUBAGENTS_MAX_CHILDREN ?? cfg.subagents?.maxChildrenPerOwner, 5),
+			timeoutMs: parseNumber(env.THRUVERA_SUBAGENTS_TIMEOUT_MS ?? cfg.subagents?.timeoutMs, 15 * 60_000),
 		},
 		automation: {
-			enabled: parseBool(env.BEEMAX_AUTOMATION_ENABLED ?? cfg.automation?.enabled ?? true),
-			timezone: str(env.BEEMAX_TIMEZONE ?? cfg.automation?.timezone ?? Intl.DateTimeFormat().resolvedOptions().timeZone ?? "UTC"),
+			enabled: parseBool(env.THRUVERA_AUTOMATION_ENABLED ?? cfg.automation?.enabled ?? true),
+			timezone: str(env.THRUVERA_TIMEZONE ?? cfg.automation?.timezone ?? Intl.DateTimeFormat().resolvedOptions().timeZone ?? "UTC"),
 			heartbeat: {
-				enabled: parseBool(env.BEEMAX_HEARTBEAT_ENABLED ?? cfg.automation?.heartbeat?.enabled ?? true),
-				every: str(env.BEEMAX_HEARTBEAT_EVERY ?? cfg.automation?.heartbeat?.every ?? "30m"),
+				enabled: parseBool(env.THRUVERA_HEARTBEAT_ENABLED ?? cfg.automation?.heartbeat?.enabled ?? true),
+				every: str(env.THRUVERA_HEARTBEAT_EVERY ?? cfg.automation?.heartbeat?.every ?? "30m"),
 				platform: heartbeatPlatform,
 				channelInstanceId: heartbeatChannelInstanceId,
-				chatId: optional(env.BEEMAX_HEARTBEAT_CHAT_ID ?? cfg.automation?.heartbeat?.chatId ?? feishu.homeChatId),
+				chatId: optional(env.THRUVERA_HEARTBEAT_CHAT_ID ?? cfg.automation?.heartbeat?.chatId ?? feishu.homeChatId),
 				chatType: cfg.automation?.heartbeat?.chatType ?? feishu.homeChatType,
-				userId: optional(env.BEEMAX_HEARTBEAT_USER_ID ?? cfg.automation?.heartbeat?.userId ?? feishu.homeUserId),
-				prompt: str(env.BEEMAX_HEARTBEAT_PROMPT ?? cfg.automation?.heartbeat?.prompt ?? DEFAULT_HEARTBEAT_PROMPT),
-				ackMaxChars: parseNumber(env.BEEMAX_HEARTBEAT_ACK_MAX_CHARS ?? cfg.automation?.heartbeat?.ackMaxChars, 300),
-				timeoutMs: parseNumber(env.BEEMAX_HEARTBEAT_TIMEOUT_MS ?? cfg.automation?.heartbeat?.timeoutMs, 120_000),
+				userId: optional(env.THRUVERA_HEARTBEAT_USER_ID ?? cfg.automation?.heartbeat?.userId ?? feishu.homeUserId),
+				prompt: str(env.THRUVERA_HEARTBEAT_PROMPT ?? cfg.automation?.heartbeat?.prompt ?? DEFAULT_HEARTBEAT_PROMPT),
+				ackMaxChars: parseNumber(env.THRUVERA_HEARTBEAT_ACK_MAX_CHARS ?? cfg.automation?.heartbeat?.ackMaxChars, 300),
+				timeoutMs: parseNumber(env.THRUVERA_HEARTBEAT_TIMEOUT_MS ?? cfg.automation?.heartbeat?.timeoutMs, 120_000),
 				activeHours: {
-					start: str(env.BEEMAX_HEARTBEAT_ACTIVE_START ?? cfg.automation?.heartbeat?.activeHours?.start ?? "08:00"),
-					end: str(env.BEEMAX_HEARTBEAT_ACTIVE_END ?? cfg.automation?.heartbeat?.activeHours?.end ?? "23:00"),
-					timezone: str(env.BEEMAX_TIMEZONE ?? cfg.automation?.heartbeat?.activeHours?.timezone ?? cfg.automation?.timezone) || undefined,
+					start: str(env.THRUVERA_HEARTBEAT_ACTIVE_START ?? cfg.automation?.heartbeat?.activeHours?.start ?? "08:00"),
+					end: str(env.THRUVERA_HEARTBEAT_ACTIVE_END ?? cfg.automation?.heartbeat?.activeHours?.end ?? "23:00"),
+					timezone: str(env.THRUVERA_TIMEZONE ?? cfg.automation?.heartbeat?.activeHours?.timezone ?? cfg.automation?.timezone) || undefined,
 				},
 			},
 		},
 		paths: {
 			profileHome: location.homePath,
-			agentDir: resolveFrom(location.basePath, str(env.BEEMAX_AGENT_DIR ?? cfg.paths?.agentDir ?? (location.isHome ? "." : join(profileDataRoot, "agent")))),
-			cwd: resolveFrom(location.basePath, str(env.BEEMAX_CWD ?? cfg.paths?.cwd ?? (location.isHome ? root : "."))),
+			agentDir: resolveFrom(location.basePath, str(env.THRUVERA_AGENT_DIR ?? cfg.paths?.agentDir ?? (location.isHome ? "." : join(profileDataRoot, "agent")))),
+			cwd: resolveFrom(location.basePath, str(env.THRUVERA_CWD ?? cfg.paths?.cwd ?? (location.isHome ? root : "."))),
 			profileEnvPath: envPath,
 			channelCredentialEnvironment: location.isHome ? "profile" : "ambient",
 		},
@@ -708,8 +709,8 @@ function parseGatewayChannels(value: unknown): GatewayChannelConfig[] {
 	});
 }
 
-/** Resolve one Channel Secret only at the trusted Adapter boundary; never retain it in BeeMaxConfig. */
-export function consumeChannelCredential<T>(config: BeeMaxConfig, channel: Pick<GatewayChannelConfig, "id" | "adapter" | "credentialRef">, consumer: (credential: Readonly<GatewayChannelCredential>) => T): T | undefined {
+/** Resolve one Channel Secret only at the trusted Adapter boundary; never retain it in ThruveraConfig. */
+export function consumeChannelCredential<T>(config: ThruveraConfig, channel: Pick<GatewayChannelConfig, "id" | "adapter" | "credentialRef">, consumer: (credential: Readonly<GatewayChannelCredential>) => T): T | undefined {
 	const ref = channel.credentialRef;
 	if (!ref) return undefined;
 	const env: Record<string, string | undefined> = config.paths.channelCredentialEnvironment === "profile"
@@ -734,7 +735,7 @@ export function consumeChannelCredential<T>(config: BeeMaxConfig, channel: Pick<
 }
 
 function channelEnvPrefix(instanceId: string): string {
-	return `BEEMAX_CHANNEL_${instanceId.replace(/[^a-z0-9]/giu, "_").toUpperCase()}`;
+	return `THRUVERA_CHANNEL_${instanceId.replace(/[^a-z0-9]/giu, "_").toUpperCase()}`;
 }
 
 function parseGatewayBindings(value: unknown, profileId: string, channels: GatewayChannelConfig[]): GatewayBindingConfig[] {
@@ -788,7 +789,7 @@ export function parseMemoryMemberships(value: unknown): MemoryMembership[] {
 function parseGroupPolicy(value: unknown): "open" | "allowlist" | "disabled" { return value === "open" || value === "disabled" ? value : "allowlist"; }
 function parseFeishuActivation(value: unknown, requireMention: boolean, env: Record<string, string | undefined>): FeishuActivationSettings {
 	const candidate = value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
-	const quietHours = parseQuietHours(candidate.quietHours, env.BEEMAX_TIMEZONE);
+	const quietHours = parseQuietHours(candidate.quietHours, env.THRUVERA_TIMEZONE);
 	return {
 		mode: parseActivationMode(env.FEISHU_ACTIVATION_MODE ?? candidate.mode, requireMention ? "contextual" : "ambient"),
 		respondTo: parseActivationSignals(env.FEISHU_ACTIVATION_RESPOND_TO ?? candidate.respondTo),

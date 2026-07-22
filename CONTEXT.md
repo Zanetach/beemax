@@ -1,6 +1,6 @@
-# BeeMax Agent
+# Thruvera Agent
 
-BeeMax coordinates durable work for a personal Agent across conversations, channels, automation, and delegated workers.
+Thruvera coordinates durable work for a personal Agent across conversations, channels, automation, and delegated workers.
 
 ## Language
 
@@ -89,7 +89,7 @@ A constrained execution environment for selected built-in file and command Capab
 _Avoid_: Profile isolation, local process, tenant boundary
 
 **Host Execution Adapter**:
-The explicit trusted-mode Adapter that runs selected built-in file and command Capabilities with the BeeMax process user's host authority; it is never an Execution Sandbox.
+The explicit trusted-mode Adapter that runs selected built-in file and command Capabilities with the Thruvera process user's host authority; it is never an Execution Sandbox.
 _Avoid_: Local Sandbox, restricted host, safe mode
 
 **Execution Trace**:
@@ -249,7 +249,7 @@ An immutable, integrity-sealed snapshot of managed Skill instructions and promot
 _Avoid_: Skill Candidate, mutable file backup, Git commit, global rollout
 
 **Enterprise Policy**:
-An authoritative organizational constraint or decision source that governs an action without defining the customer's entire business model. Legacy directives that require interactive approval fail closed because BeeMax does not provide a Tool approval workflow.
+An authoritative organizational constraint or decision source that governs an action without defining the customer's entire business model. Legacy directives that require interactive approval fail closed because Thruvera does not provide a Tool approval workflow.
 _Avoid_: Model guess, Convention Candidate, built-in industry workflow
 
 **Enterprise Policy Decision**:

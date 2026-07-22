@@ -221,7 +221,7 @@ async function fetchValidatedPublicUrl(initialUrl, signal) {
 		const dispatcher = new Agent({ connect: { lookup: (_hostname, lookupOptions, callback) => lookupOptions?.all ? callback(null, [{ address: selected.address, family }]) : callback(null, selected.address, family) } });
 		let response;
 		try {
-			response = await undiciFetch(current, { dispatcher, redirect: "manual", signal, headers: { "user-agent": "BeeMax-Agent-Parity/1.0" } });
+			response = await undiciFetch(current, { dispatcher, redirect: "manual", signal, headers: { "user-agent": "Thruvera-Agent-Parity/1.0" } });
 			await response.body?.cancel().catch(() => {});
 		}
 		finally { await dispatcher.close(); }
@@ -244,7 +244,7 @@ export async function resolveValidatedPublicAddresses(host, options = {}) {
 	endpoint.searchParams.set("type", "A");
 	const response = await dohFetch(endpoint, {
 		signal: options.signal,
-		headers: { accept: "application/dns-json", "user-agent": "BeeMax-Agent-Parity/1.0" },
+		headers: { accept: "application/dns-json", "user-agent": "Thruvera-Agent-Parity/1.0" },
 	});
 	if (!response.ok) throw new Error(`Public DNS fallback failed with HTTP ${response.status}`);
 	const payload = await response.json();

@@ -1,4 +1,4 @@
-import type { ChannelHostSnapshot } from "@beemax/channel-runtime";
+import type { ChannelHostSnapshot } from "@thruvera/channel-runtime";
 import { GatewayIngressController, type GatewayIngressSnapshot, type GatewayInteractionAdmission } from "./ingress-capacity.ts";
 
 export type ProfileHostState = "stopped" | "starting" | "healthy" | "degraded" | "failed" | "recovering" | "draining";

@@ -1,4 +1,4 @@
-import type { DeliveryOptions, DeliveryReceipt, DeliveryTarget, InteractionEvent, TaskPlanProgressEvent } from "@beemax/core";
+import type { DeliveryOptions, DeliveryReceipt, DeliveryTarget, InteractionEvent, TaskPlanProgressEvent } from "@thruvera/core";
 import type { SessionSource } from "./types.ts";
 
 export interface PublishedArtifactPresentation {

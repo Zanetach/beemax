@@ -1,0 +1,34 @@
+[Unit]
+Description=Thruvera Agent profile %i
+After=network-online.target
+Wants=network-online.target
+PartOf=thruvera.target
+
+[Service]
+Type=simple
+User=thruvera
+Group=thruvera
+WorkingDirectory=/opt/thruvera
+EnvironmentFile=-/var/lib/thruvera/profiles/%i/.env
+EnvironmentFile=-/opt/thruvera/config/profiles/%i.env
+EnvironmentFile=-/etc/thruvera/%i.env
+Environment=NODE_ENV=production
+Environment=THRUVERA_PROFILE=%i
+ExecStart=/usr/bin/env npm run gateway -- --profile %i --home /var/lib/thruvera --root /opt/thruvera
+Restart=on-failure
+RestartSec=5s
+StartLimitIntervalSec=60
+StartLimitBurst=5
+TimeoutStopSec=60s
+KillSignal=SIGTERM
+NoNewPrivileges=true
+PrivateTmp=true
+UMask=0077
+StandardOutput=journal
+StandardError=journal
+LogRateLimitIntervalSec=30s
+LogRateLimitBurst=200
+SyslogIdentifier=thruvera-%i
+
+[Install]
+WantedBy=multi-user.target

@@ -2,17 +2,17 @@ import { defineTool, type ToolDefinition } from "@earendil-works/pi-coding-agent
 import { createHash } from "node:crypto";
 import { Type } from "typebox";
 import { relative, resolve, sep } from "node:path";
-import type { BeeMaxRuntimeSource } from "./runtime.ts";
+import type { ThruveraRuntimeSource } from "./runtime.ts";
 import type { ExecutionPort } from "./execution.ts";
 import { MUTATING_TOOL_POLICY, READ_ONLY_TOOL_POLICY, withToolPolicy } from "./tool-runtime.ts";
 import { createArtifactManifest } from "./artifact-runtime.ts";
 
-export function createExecutionTools(source: BeeMaxRuntimeSource, cwd: string, execution: ExecutionPort): ToolDefinition[] {
+export function createExecutionTools(source: ThruveraRuntimeSource, cwd: string, execution: ExecutionPort): ToolDefinition[] {
 	const tools = [
 		defineTool({
 			name: "bash",
 			label: "Run Command",
-			description: "Run a shell command through BeeMax's configured execution backend.",
+			description: "Run a shell command through Thruvera's configured execution backend.",
 			parameters: Type.Object({
 				command: Type.String({ minLength: 1, maxLength: 20_000 }),
 				timeout: Type.Optional(Type.Integer({ minimum: 1, maximum: 600 })),
@@ -25,7 +25,7 @@ export function createExecutionTools(source: BeeMaxRuntimeSource, cwd: string, e
 		Object.assign(defineTool({
 			name: "read",
 			label: "Read File",
-			description: "Read a workspace file through BeeMax's configured execution backend.",
+			description: "Read a workspace file through Thruvera's configured execution backend.",
 			parameters: Type.Object({ path: Type.String({ minLength: 1 }) }),
 			execute: async (_id, params, signal) => {
 				const path = workspacePath(cwd, params.path);
@@ -36,7 +36,7 @@ export function createExecutionTools(source: BeeMaxRuntimeSource, cwd: string, e
 		Object.assign(defineTool({
 			name: "write",
 			label: "Write File",
-			description: "Write a workspace file through BeeMax's configured execution backend. Keep ordinary reports under 18,000 characters and finish them in one complete replace call. Only genuinely longer requested artifacts should use complete chunks: replace first, then append with the prior receipt's exact byte length and SHA-256.",
+			description: "Write a workspace file through Thruvera's configured execution backend. Keep ordinary reports under 18,000 characters and finish them in one complete replace call. Only genuinely longer requested artifacts should use complete chunks: replace first, then append with the prior receipt's exact byte length and SHA-256.",
 			parameters: Type.Object({
 				path: Type.String({ minLength: 1 }),
 				content: Type.String({ maxLength: 1_000_000 }),

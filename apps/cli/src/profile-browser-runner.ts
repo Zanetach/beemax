@@ -78,6 +78,6 @@ async function writeHeartbeat(path: string, value: unknown): Promise<void> {
 }
 
 void main().catch((error) => {
-	process.stderr.write(`BeeMax Profile browser runner failed: ${error instanceof Error ? error.message : String(error)}\n`);
+	process.stderr.write(`Thruvera Profile browser runner failed: ${error instanceof Error ? error.message : String(error)}\n`);
 	process.exitCode = 1;
 });

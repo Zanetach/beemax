@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { relative, resolve, sep } from "node:path";
 import { defineTool, type ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import type { BeeMaxRuntimeSource } from "./runtime.ts";
+import type { ThruveraRuntimeSource } from "./runtime.ts";
 import { MUTATING_TOOL_POLICY, READ_ONLY_TOOL_POLICY, withToolPolicy } from "./tool-runtime.ts";
 import type { ArtifactVerificationDimension } from "./open-world-contract.ts";
 
@@ -274,7 +274,7 @@ export class ArtifactRuntime {
 	}
 }
 
-export function createArtifactTools(source: BeeMaxRuntimeSource, cwd: string, runtime: ArtifactRuntime): ToolDefinition[] {
+export function createArtifactTools(source: ThruveraRuntimeSource, cwd: string, runtime: ArtifactRuntime): ToolDefinition[] {
 	const supportedDimensions = new Set(runtime.verifiers.flatMap((verifier) => verifier.descriptor.dimensions));
 	const exposedDimensions = ARTIFACT_DIMENSION_VALUES.filter((dimension) => supportedDimensions.has(dimension));
 	const dimensionLiterals = (exposedDimensions.length ? exposedDimensions : ARTIFACT_DIMENSION_VALUES).map((dimension) => Type.Literal(dimension));

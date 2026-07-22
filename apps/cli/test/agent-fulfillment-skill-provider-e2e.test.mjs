@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import test from "node:test";
 import { promisify } from "node:util";
-import { BeeMaxAgentRuntime, createSkillTools, createWebTools, ModelBackedSemanticCapabilityPort, SemanticCapabilityRanker } from "@beemax/core";
+import { ThruveraAgentRuntime, createSkillTools, createWebTools, ModelBackedSemanticCapabilityPort, SemanticCapabilityRanker } from "@thruvera/core";
 import { createProfileCapabilityProviderBundle } from "../dist/capability-provider-composition.js";
 import { createProfile } from "../dist/profile-config.js";
 import { loadConfig } from "../dist/config.js";
@@ -83,7 +83,7 @@ test("a cold Profile installs a Skill, acquires its missing Provider, resumes th
 		const verificationText = "verify HERMETIC-SOURCE-42";
 		const verificationStart = rawRequest.indexOf(verificationText);
 		const verificationClause = { text: verificationText, source: { kind: "raw_request", start: verificationStart, end: verificationStart + verificationText.length } };
-		runtime = new BeeMaxAgentRuntime({
+		runtime = new ThruveraAgentRuntime({
 			profileId: "profile:cold", interactiveAdmission: "contract_first", taskLedger: ledger,
 			turnUnderstanding: { understand: () => ({ action: "create", goal: rawRequest, constraints: ["without using remembered facts"], acceptanceCriteria: [outcomeText], uncertainties: [], memoryQuery: rawRequest, capabilityQuery: "hermetic current-source research brief", executionMode: "direct", confidence: 1 }) },
 			workContractBuilder: { build: async () => ({ source: "model", cognitionBudgetChargeTokens: 2, semanticAdjudication, contract: { schemaVersion: "beemax.work-contract.v1", rawRequest, action: "create", objective: outcomeClause, constraints: [], prohibitions: [constraintClause], acceptanceCriteria: [outcomeClause], capabilityRequirements: [researchClause, verificationClause], uncertainties: [], executionMode: "direct", confidence: 1 } }) },

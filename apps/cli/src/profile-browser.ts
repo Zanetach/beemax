@@ -65,7 +65,7 @@ export async function resolveProfileBrowserCdpUrl(agentDir: string): Promise<str
 	await requireRealDirectory(root, "Profile Agent directory");
 	await requireExistingBrowserDirectoriesInside(root);
 	const record = await readEndpointRecord(root);
-	if (!record) throw new Error("This Profile browser has not been started. Run 'beemax capabilities start pi-web-access' first.");
+	if (!record) throw new Error("This Profile browser has not been started. Run 'thruvera capabilities start pi-web-access' first.");
 	return record.cdpUrl;
 }
 
@@ -79,7 +79,7 @@ export async function assertProfileBrowserEndpoint(agentDir: string, cdpUrl: str
 	if (normalizeCdpUrl(cdpUrl) !== expected) throw new Error("Managed browser endpoint does not match this Profile's current endpoint");
 	const probe = await probeBrowser(expected, options.fetchImpl ?? fetch);
 	if (!probe || !await endpointBelongsToProfile(resolve(agentDir), expected, probe, options.processAliveImpl ?? processAlive)) {
-		throw new Error("Managed browser endpoint is not owned by this Profile. Start it with 'beemax capabilities start pi-web-access' for this Profile.");
+		throw new Error("Managed browser endpoint is not owned by this Profile. Start it with 'thruvera capabilities start pi-web-access' for this Profile.");
 	}
 }
 
@@ -122,8 +122,8 @@ export async function startProfileBrowser(agentDir: string, options: StartProfil
 		await reconcileBrowserQuarantine(capabilityRoot, isAlive);
 		const before = await inspectProfileBrowser(root, options);
 		if (before.state === "running") return before;
-		if (before.state === "port_conflict") throw new Error("The Profile browser endpoint is live but its runner/egress heartbeat is invalid. Stop it with 'beemax capabilities stop pi-web-access' before restarting.");
-		if (!before.chromeExecutable) throw new Error("Chrome/Chromium is not installed or executable; configure BEEMAX_CHROME_EXECUTABLE in the trusted Gateway/service host environment");
+		if (before.state === "port_conflict") throw new Error("The Profile browser endpoint is live but its runner/egress heartbeat is invalid. Stop it with 'thruvera capabilities stop pi-web-access' before restarting.");
+		if (!before.chromeExecutable) throw new Error("Chrome/Chromium is not installed or executable; configure THRUVERA_CHROME_EXECUTABLE in the trusted Gateway/service host environment");
 		const endpointPath = join(capabilityRoot, "browser-endpoint.json");
 		const processPath = join(capabilityRoot, "browser-process.json");
 		const runnerPath = join(capabilityRoot, "browser-runner.json");

@@ -7,8 +7,8 @@ import { join } from "node:path";
 import { buildAgentFactory } from "../../../apps/cli/dist/agent-factory.js";
 import { Dispatcher } from "../dist/core/dispatcher.js";
 import { GatewayIngressController, MessageDeduplicator, ProfileBindingResolver } from "../dist/index.js";
-import { createArtifactManifest, createSubagentTools, ProfileTaskScheduler, SubagentManager } from "@beemax/core";
-import { FeishuInteractionPresenter } from "@beemax/channel-feishu";
+import { createArtifactManifest, createSubagentTools, ProfileTaskScheduler, SubagentManager } from "@thruvera/core";
+import { FeishuInteractionPresenter } from "@thruvera/channel-feishu";
 
 const source = { platform: "feishu", chatId: "chat-1", chatType: "dm", userId: "user-1" };
 

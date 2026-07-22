@@ -1,15 +1,15 @@
 #!/usr/bin/env bash
-# Verify a BeeMax release archive by checksum, source layout, isolated install, and Profile smoke test.
+# Verify a Thruvera release archive by checksum, source layout, isolated install, and Profile smoke test.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 VERSION="${1:?Usage: scripts/verify-release-archive.sh <version> [archive-directory]}"
 ARCHIVE_DIR="${2:-${ROOT}/dist/release}"
-ARCHIVE="${ARCHIVE_DIR}/beemax-${VERSION}.tar.gz"
+ARCHIVE="${ARCHIVE_DIR}/thruvera-${VERSION}.tar.gz"
 CHECKSUM="${ARCHIVE}.sha256"
 
 fail() {
-	echo "BeeMax release verification failed: $*" >&2
+	echo "Thruvera release verification failed: $*" >&2
 	exit 1
 }
 
@@ -27,7 +27,7 @@ fi
 STAGING="$(mktemp -d)"
 trap 'rm -rf "${STAGING}"' EXIT
 tar -xzf "${ARCHIVE}" -C "${STAGING}"
-SOURCE="${STAGING}/beemax"
+SOURCE="${STAGING}/thruvera"
 [[ -f "${SOURCE}/package.json" && -f "${SOURCE}/pi/package.json" ]] || fail "archive source layout is incomplete"
 [[ "$(tr -d '\r\n' < "${SOURCE}/RELEASE_VERSION")" == "${VERSION}" ]] || fail "RELEASE_VERSION does not match ${VERSION}"
 node "${SOURCE}/scripts/verify-release-version.mjs" "${SOURCE}" "${VERSION}" || fail "release version metadata is inconsistent"
@@ -52,27 +52,27 @@ if find "${SOURCE}" \( -name .git -o -name node_modules -o -name dist -o -name '
 fi
 
 mkdir -p "${STAGING}/home" "${STAGING}/bin"
-SMOKE_HOME="${STAGING}/home/.beemax"
-HOME="${STAGING}/home" BEEMAX_HOME="${SMOKE_HOME}" BEEMAX_BIN_DIR="${STAGING}/bin" BEEMAX_INSTALL_MEDIA_DEPS=0 bash "${SOURCE}/scripts/install.sh"
-run_beemax() {
-	env -i HOME="${STAGING}/home" BEEMAX_HOME="${SMOKE_HOME}" PATH="${PATH}" "${STAGING}/bin/beemax" "$@"
+SMOKE_HOME="${STAGING}/home/.thruvera"
+HOME="${STAGING}/home" THRUVERA_HOME="${SMOKE_HOME}" THRUVERA_BIN_DIR="${STAGING}/bin" THRUVERA_INSTALL_MEDIA_DEPS=0 bash "${SOURCE}/scripts/install.sh"
+run_thruvera() {
+	env -i HOME="${STAGING}/home" THRUVERA_HOME="${SMOKE_HOME}" PATH="${PATH}" "${STAGING}/bin/thruvera" "$@"
 }
-HELP_OUTPUT="$(run_beemax --help)"
-grep -Fq "BeeMax" <<<"${HELP_OUTPUT}" || fail "installed beemax --help did not start correctly"
-PROFILE_CREATE_OUTPUT="$(run_beemax profile create release-smoke)"
-grep -Fq "Created Agent 'release-smoke'" <<<"${PROFILE_CREATE_OUTPUT}" || fail "installed beemax could not create a Profile"
-PROFILE_SHOW_OUTPUT="$(run_beemax profile show release-smoke)"
-grep -Fq '"profile": "release-smoke"' <<<"${PROFILE_SHOW_OUTPUT}" || fail "installed beemax could not reload the created Profile"
-SKILLS_OUTPUT="$(run_beemax skills list --profile release-smoke)"
+HELP_OUTPUT="$(run_thruvera --help)"
+grep -Fq "Thruvera" <<<"${HELP_OUTPUT}" || fail "installed thruvera --help did not start correctly"
+PROFILE_CREATE_OUTPUT="$(run_thruvera profile create release-smoke)"
+grep -Fq "Created Agent 'release-smoke'" <<<"${PROFILE_CREATE_OUTPUT}" || fail "installed thruvera could not create a Profile"
+PROFILE_SHOW_OUTPUT="$(run_thruvera profile show release-smoke)"
+grep -Fq '"profile": "release-smoke"' <<<"${PROFILE_SHOW_OUTPUT}" || fail "installed thruvera could not reload the created Profile"
+SKILLS_OUTPUT="$(run_thruvera skills list --profile release-smoke)"
 grep -Fq "business-report" <<<"${SKILLS_OUTPUT}" || fail "installed Profile does not contain packaged Skills"
 grep -Fq "agent-reach" <<<"${SKILLS_OUTPUT}" || fail "installed Profile does not contain the standard-web Agent Reach Skill"
 grep -Fq "pi-web-access" <<<"${SKILLS_OUTPUT}" || fail "installed Profile does not contain the standard-web Pi Web Access Skill"
-CAPABILITIES_OUTPUT="$(run_beemax capabilities status --profile release-smoke --json)"
+CAPABILITIES_OUTPUT="$(run_thruvera capabilities status --profile release-smoke --json)"
 grep -Fq '"id":"exa-web-search","kind":"builtin+mcp","state":"ready_on_demand"' <<<"${CAPABILITIES_OUTPUT}" || fail "installed Profile does not pre-authorize the pinned Exa MCP Provider"
 grep -Fq '"id":"pi-web-access","kind":"builtin-browser+skill","state":"installed"' <<<"${CAPABILITIES_OUTPUT}" || fail "installed Profile does not contain native Pi Web Access"
-AGENT_REACH_INSTALL_OUTPUT="$(run_beemax capabilities install agent-reach --profile release-smoke)"
-grep -Fq "Installed BeeMax-native Agent Reach" <<<"${AGENT_REACH_INSTALL_OUTPUT}" || fail "installed release cannot self-service verify Agent Reach"
-PI_INSTALL_OUTPUT="$(run_beemax capabilities install pi-web-access --profile release-smoke)"
+AGENT_REACH_INSTALL_OUTPUT="$(run_thruvera capabilities install agent-reach --profile release-smoke)"
+grep -Fq "Installed Thruvera-native Agent Reach" <<<"${AGENT_REACH_INSTALL_OUTPUT}" || fail "installed release cannot self-service verify Agent Reach"
+PI_INSTALL_OUTPUT="$(run_thruvera capabilities install pi-web-access --profile release-smoke)"
 grep -Fq "Verified native Pi Web Access" <<<"${PI_INSTALL_OUTPUT}" || fail "installed release cannot self-service verify Pi Web Access"
 [[ "$(tr -d '\r\n' < "${SOURCE}/RELEASE_VERSION")" == "${VERSION}" ]] || fail "installed release identity changed"
 

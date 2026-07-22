@@ -1,21 +1,21 @@
-# BeeMax L4 Memory Learning Rollout and Certification
+# Thruvera L4 Memory Learning Rollout and Certification
 
 Status: release-gate design
 
-Architecture: [BeeMax L4 Memory Learning Architecture](../architecture/l4-memory-learning-architecture.md)
+Architecture: [Thruvera L4 Memory Learning Architecture](../architecture/l4-memory-learning-architecture.md)
 
-Product specification: [BeeMax L4 Outcome-Driven Memory and Learning System](../superpowers/specs/2026-07-18-beemax-l4-memory-learning-system.md)
+Product specification: [Thruvera L4 Outcome-Driven Memory and Learning System](../superpowers/specs/2026-07-18-thruvera-l4-memory-learning-system.md)
 
 ## 1. Release truth
 
-BeeMax may be labeled L4 Memory only after this document's production-path gates
+Thruvera may be labeled L4 Memory only after this document's production-path gates
 pass. Deterministic fixtures, simulated faults, mocked providers, route-only
 checks, and live end-to-end trials are reported separately. None may substitute
 for another category.
 
 A real trial has all of these properties:
 
-- the released BeeMax application entry point is used;
+- the released Thruvera application entry point is used;
 - the declared real model and Tool providers are actually called;
 - authentication, network, sandbox, file generation, Verification, and delivery
   use the same production path as a user Objective;
@@ -56,7 +56,7 @@ must still be present.
 
 `manifest.json` records:
 
-- BeeMax release candidate commit and package version;
+- Thruvera release candidate commit and package version;
 - SQLite schema and L4 policy versions;
 - Profile rollout configuration;
 - task corpus version and case IDs;
@@ -121,7 +121,7 @@ and the limitation is reported.
 Memory-Off disables optional L4 retrieval, contextual assessment influence,
 projections, and learned managed Skill selection. It keeps safety Memory, current
 request, Work Contract, Task preservation, Credentials, Policy, and normal Runtime
-recovery so the comparison isolates L4 contribution rather than disabling BeeMax.
+recovery so the comparison isolates L4 contribution rather than disabling Thruvera.
 
 ### 3.2 Repetition and stability
 

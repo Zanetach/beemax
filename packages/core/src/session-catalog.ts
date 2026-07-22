@@ -1,6 +1,6 @@
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
-import type { BeeMaxRuntimeSource } from "./runtime.ts";
+import type { ThruveraRuntimeSource } from "./runtime.ts";
 import { sessionOwnerKey } from "./session-coordinator.ts";
 import { responsibilityOwnerKeys } from "./agent-scope.ts";
 
@@ -28,7 +28,7 @@ export interface SessionCatalogOwnershipReceipt {
  * Content-free, profile-local discovery index. AgentSession/Pi remains the
  * transcript authority; the Core runtime owns how channels discover choices.
  */
-export class SessionCatalog<Source extends BeeMaxRuntimeSource = BeeMaxRuntimeSource> {
+export class SessionCatalog<Source extends ThruveraRuntimeSource = ThruveraRuntimeSource> {
 	private readonly path: string;
 	private readonly records = new Map<string, StoredSessionChoice>();
 	private loading?: Promise<void>;
@@ -36,7 +36,7 @@ export class SessionCatalog<Source extends BeeMaxRuntimeSource = BeeMaxRuntimeSo
 	private writeGeneration = 0;
 	private readonly limit: number;
 
-	static forAgentDir<Source extends BeeMaxRuntimeSource>(agentDir: string): SessionCatalog<Source> {
+	static forAgentDir<Source extends ThruveraRuntimeSource>(agentDir: string): SessionCatalog<Source> {
 		return new SessionCatalog(join(agentDir, "sessions", "beemax-session-index.json"));
 	}
 
@@ -153,14 +153,14 @@ export class SessionCatalog<Source extends BeeMaxRuntimeSource = BeeMaxRuntimeSo
 			for (const candidate of parsed) if (isRecord(candidate)) this.records.set(`${candidate.owner}:${candidate.threadId ?? ""}`, { ...candidate, preferences: candidate.preferences ?? {} });
 			this.prune();
 		} catch (error) {
-			if ((error as NodeJS.ErrnoException).code !== "ENOENT") console.warn(`[beemax] unable to read session index: ${error instanceof Error ? error.message : String(error)}`);
+			if ((error as NodeJS.ErrnoException).code !== "ENOENT") console.warn(`[thruvera] unable to read session index: ${error instanceof Error ? error.message : String(error)}`);
 		}
 	}
 }
 
-function recordKey(source: BeeMaxRuntimeSource): string { return `${sessionOwnerKey(source)}:${source.threadId ?? ""}`; }
-function ownerKeys(source: BeeMaxRuntimeSource): string[] { return [...new Set([sessionOwnerKey(source), ...responsibilityOwnerKeys(source)])]; }
-function recordKeys(source: BeeMaxRuntimeSource): string[] { return ownerKeys(source).map((owner) => `${owner}:${source.threadId ?? ""}`); }
+function recordKey(source: ThruveraRuntimeSource): string { return `${sessionOwnerKey(source)}:${source.threadId ?? ""}`; }
+function ownerKeys(source: ThruveraRuntimeSource): string[] { return [...new Set([sessionOwnerKey(source), ...responsibilityOwnerKeys(source)])]; }
+function recordKeys(source: ThruveraRuntimeSource): string[] { return ownerKeys(source).map((owner) => `${owner}:${source.threadId ?? ""}`); }
 function firstRecord(records: Map<string, StoredSessionChoice>, keys: string[]): StoredSessionChoice | undefined {
 	for (const key of keys) { const record = records.get(key); if (record) return record; }
 	return undefined;

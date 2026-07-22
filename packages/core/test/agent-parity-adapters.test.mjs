@@ -4,8 +4,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { agentParityCorpus } from "../../../evals/agent-parity-corpus.mjs";
-import { parseBeeMaxEvidence, parseCodexEvidence, parseHermesEvidence } from "../../../evals/agent-parity-adapters.mjs";
-import { createIsolatedProfile, filterExecution } from "../../../evals/adapters/beemax-cli.mjs";
+import { parseThruveraEvidence, parseCodexEvidence, parseHermesEvidence } from "../../../evals/agent-parity-adapters.mjs";
+import { createIsolatedProfile, filterExecution } from "../../../evals/adapters/thruvera-cli.mjs";
 import { collectFixtureEvidence, digestConfiguration, parityPrompt, resolveValidatedPublicAddresses, runSubprocess, signFixtureAuthorityEvent } from "../../../evals/adapters/subprocess.mjs";
 
 const research = agentParityCorpus.cases.find((scenario) => scenario.id === "current-research");
@@ -179,7 +179,7 @@ test("signed fixture events still require a matching observed Tool receipt", () 
 	assert.equal(parseCodexEvidence({ scenario, stdout, stderr: "", exitCode: 0, durationMs: 1, fixtureEvidence }).outcomeVerified, true);
 });
 
-test("BeeMax adapter requires accepted Verification for a successful Objective", () => {
+test("Thruvera adapter requires accepted Verification for a successful Objective", () => {
 	const base = {
 		scenario: research,
 		stdout: "source-backed result\n",
@@ -196,7 +196,7 @@ test("BeeMax adapter requires accepted Verification for a successful Objective",
 			{ type: "execution.settled", triggerKind: "interaction", executionId: "execution-1", status: "succeeded" },
 		],
 	};
-	const accepted = parseBeeMaxEvidence(base);
+	const accepted = parseThruveraEvidence(base);
 	assert.equal(accepted.status, "succeeded");
 	assert.deepEqual(accepted.toolCalls.map((call) => call.name), ["web_search"]);
 	assert.deepEqual(accepted.toolCalls[0].argumentEvidence, { kind: "diagnostic_trace_correlation", reference: "execution-1:call-1" });
@@ -204,13 +204,13 @@ test("BeeMax adapter requires accepted Verification for a successful Objective",
 	assert.deepEqual(accepted.evidenceKinds, ["tool", "verification"]);
 	assert.equal(accepted.duplicateEffects, 0);
 	assert.equal(accepted.evidenceRefs.task.id, "objective-1");
-	const unavailable = parseBeeMaxEvidence({ ...base, tasks: [{ ...base.tasks[0], status: "running", verificationOutcome: "unavailable" }] });
+	const unavailable = parseThruveraEvidence({ ...base, tasks: [{ ...base.tasks[0], status: "running", verificationOutcome: "unavailable" }] });
 	assert.equal(unavailable.status, "blocked");
 });
 
-test("BeeMax adapter canonically binds trailing-slash answer citations to validated receipts", () => {
+test("Thruvera adapter canonically binds trailing-slash answer citations to validated receipts", () => {
 	const urls = ["https://source-a.test/report", "https://source-b.test/fact"];
-	const result = parseBeeMaxEvidence({
+	const result = parseThruveraEvidence({
 		scenario: research,
 		stdout: "",
 		stderr: "",
@@ -226,17 +226,17 @@ test("BeeMax adapter canonically binds trailing-slash answer citations to valida
 	assert.equal(result.objectiveDegraded, false);
 });
 
-test("BeeMax adapter does not claim source evidence when public validation is insufficient", () => {
-	const result = parseBeeMaxEvidence({
+test("Thruvera adapter does not claim source evidence when public validation is insufficient", () => {
+	const result = parseThruveraEvidence({
 		scenario: research, stdout: "", stderr: "", exitCode: 0, durationMs: 1, interactionEvents: [], executionTrace: [], effects: [], validatedSourceRefs: [],
 		tasks: [{ id: "objective", parentId: null, status: "succeeded", verificationOutcome: "accepted", result: "unsupported", evidence: "https://source-a.test/report https://source-b.test/fact" }],
 	});
 	assert.equal(result.evidenceKinds.includes("source"), false);
 });
 
-test("BeeMax adapter accepts a completed turn-local Tool result only when its receipt and output contract agree", () => {
+test("Thruvera adapter accepts a completed turn-local Tool result only when its receipt and output contract agree", () => {
 	const scenario = agentParityCorpus.cases.find((candidate) => candidate.id === "tool-arguments");
-	const result = parseBeeMaxEvidence({
+	const result = parseThruveraEvidence({
 		scenario,
 		stdout: "fixture-42 status ready owner fixture",
 		stderr: "",
@@ -254,8 +254,8 @@ test("BeeMax adapter accepts a completed turn-local Tool result only when its re
 	assert.equal(result.outcomeVerified, true);
 });
 
-test("BeeMax adapter scores the full Objective graph but excludes verifier Tool calls", () => {
-	const result = parseBeeMaxEvidence({
+test("Thruvera adapter scores the full Objective graph but excludes verifier Tool calls", () => {
+	const result = parseThruveraEvidence({
 		scenario: research, exitCode: 0, durationMs: 20, stderr: "",
 		interactionEvents: [{ type: "turn.finished", turnId: "turn-graph", result: { usage: { input_tokens: 9, output_tokens: 3 } } }],
 		tasks: [{ id: "objective-graph", parentId: null, status: "succeeded", verificationOutcome: "accepted", evidence: "source receipt" }],
@@ -281,7 +281,7 @@ test("BeeMax adapter scores the full Objective graph but excludes verifier Tool 
 	assert.equal(result.outputTokens, 70);
 });
 
-test("BeeMax evidence keys Tool attempts by execution and includes direct Objective verifier tokens", () => {
+test("Thruvera evidence keys Tool attempts by execution and includes direct Objective verifier tokens", () => {
 	const objectiveId = "objective-1";
 	const trace = [
 		{ type: "execution.started", at: 10, triggerKind: "interaction", executionId: "main", objectiveId, taskId: objectiveId },
@@ -293,7 +293,7 @@ test("BeeMax evidence keys Tool attempts by execution and includes direct Object
 	];
 	const filtered = filterExecution(trace, 10);
 	assert.equal(filtered.length, trace.length);
-	const result = parseBeeMaxEvidence({
+	const result = parseThruveraEvidence({
 		scenario: research, stdout: "", stderr: "", exitCode: 0, durationMs: 1,
 		interactionEvents: [], executionTrace: filtered,
 		tasks: [{ id: objectiveId, parentId: null, status: "running", verificationOutcome: "unavailable" }], effects: [],
@@ -303,7 +303,7 @@ test("BeeMax evidence keys Tool attempts by execution and includes direct Object
 	assert.equal(result.outputTokens, 3);
 });
 
-test("BeeMax parity profiles copy only configuration and credentials into fresh per-case state", async () => {
+test("Thruvera parity profiles copy only configuration and credentials into fresh per-case state", async () => {
 	const root = await mkdtemp(join(tmpdir(), "beemax-parity-profile-test-"));
 	const sourceHome = join(root, "source-home");
 	const sourceRoot = join(sourceHome, "profiles", "source");
@@ -313,7 +313,7 @@ test("BeeMax parity profiles copy only configuration and credentials into fresh 
 	await mkdir(workspace, { recursive: true });
 	await Promise.all([
 		writeFile(join(sourceRoot, "config.yaml"), "model:\n  provider: custom\npaths:\n  cwd: workspace\n"),
-		writeFile(join(sourceRoot, ".env"), "BEEMAX_API_KEY=fixture-secret\n"),
+		writeFile(join(sourceRoot, ".env"), "THRUVERA_API_KEY=fixture-secret\n"),
 		writeFile(join(sourceRoot, "SOUL.md"), "fixture soul"),
 		writeFile(join(sourceRoot, "USER.md"), "fixture user"),
 		writeFile(join(sourceRoot, "auth.json"), "{}"),
@@ -325,9 +325,9 @@ test("BeeMax parity profiles copy only configuration and credentials into fresh 
 	try {
 		assert.equal(await readFile(join(isolated.profileRoot, "auth.json"), "utf8"), "{}");
 		assert.equal(await readFile(join(isolated.profileRoot, "state", "credential-vault.key"), "utf8"), "fixture-key");
-		assert.match(await readFile(join(isolated.profileRoot, ".env"), "utf8"), /BEEMAX_MODEL="fixture-model"/);
-		assert.ok((await readFile(join(isolated.profileRoot, ".env"), "utf8")).includes(`BEEMAX_CWD=${JSON.stringify(workspace)}`));
-		assert.doesNotMatch(await readFile(join(isolated.profileRoot, ".env"), "utf8"), /BEEMAX_(?:WORKSPACE_WRITE_POLICY|TASK_GRANT_CAPABILITIES)=/);
+		assert.match(await readFile(join(isolated.profileRoot, ".env"), "utf8"), /THRUVERA_MODEL="fixture-model"/);
+		assert.ok((await readFile(join(isolated.profileRoot, ".env"), "utf8")).includes(`THRUVERA_CWD=${JSON.stringify(workspace)}`));
+		assert.doesNotMatch(await readFile(join(isolated.profileRoot, ".env"), "utf8"), /THRUVERA_(?:WORKSPACE_WRITE_POLICY|TASK_GRANT_CAPABILITIES)=/);
 		await assert.rejects(readFile(join(isolated.profileRoot, "memory.db")), /ENOENT/);
 		await assert.rejects(readFile(join(isolated.profileRoot, "logs", "execution-trace.jsonl")), /ENOENT/);
 		await assert.rejects(readFile(join(isolated.profileRoot, "skills", "evaluation-research", "SKILL.md")), /ENOENT/);

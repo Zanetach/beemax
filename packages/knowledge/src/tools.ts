@@ -4,9 +4,9 @@ import {
   conversationKey,
   defineTool,
   withToolPolicy,
-  type BeeMaxRuntimeSource,
+  type ThruveraRuntimeSource,
   type ToolDefinition,
-} from "@beemax/core";
+} from "@thruvera/core";
 import { Type } from "typebox";
 import type { KnowledgeProvider } from "./types.ts";
 
@@ -25,17 +25,17 @@ export interface KnowledgeToolsOptions {
 
 export function createKnowledgeTools(
   provider: KnowledgeProvider,
-  source: BeeMaxRuntimeSource,
+  source: ThruveraRuntimeSource,
   options: KnowledgeToolsOptions,
 ): ToolDefinition[] {
   const spacesById = new Map(options.spaces.map((space) => [space.id, space]));
   const retrieve = withToolPolicy(defineTool({
     name: "knowledge_retrieve",
     label: "Enterprise Knowledge",
-    description: "Search authorized enterprise knowledge uploaded in the BeeMax Knowledge Center. Use for company rules, product documentation, customer history, project materials, and other enterprise facts. Returns source-backed excerpts; never searches unconfigured spaces.",
+    description: "Search authorized enterprise knowledge uploaded in the Thruvera Knowledge Center. Use for company rules, product documentation, customer history, project materials, and other enterprise facts. Returns source-backed excerpts; never searches unconfigured spaces.",
     parameters: Type.Object({
       query: Type.String({ description: "The precise enterprise knowledge question or search query" }),
-      spaceIds: Type.Optional(Type.Array(Type.String(), { description: "Optional BeeMax knowledge space IDs to narrow the search" })),
+      spaceIds: Type.Optional(Type.Array(Type.String(), { description: "Optional Thruvera knowledge space IDs to narrow the search" })),
     }),
     execute: async (toolCallId, params) => {
       const requested = params.spaceIds?.length ? params.spaceIds : [...spacesById.keys()];
@@ -93,7 +93,7 @@ export function createKnowledgeTools(
     ...READ_ONLY_TOOL_POLICY,
     timeoutMs: 60_000,
     maxAttempts: 2,
-    impact: "Reads only the enterprise knowledge spaces authorized for this BeeMax Agent",
+    impact: "Reads only the enterprise knowledge spaces authorized for this Thruvera Agent",
   });
   return [retrieve];
 }

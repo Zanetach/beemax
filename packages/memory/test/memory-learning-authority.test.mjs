@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import Database from "better-sqlite3";
-import { AutonomyRolloutController, ConversationContext, DefaultMemoryLearningKernel, DeterministicLearningExtractor, ModelBackedLearningExtractor, createArtifactManifest, createExecutionEnvelope, createSituation } from "@beemax/core";
+import { AutonomyRolloutController, ConversationContext, DefaultMemoryLearningKernel, DeterministicLearningExtractor, ModelBackedLearningExtractor, createArtifactManifest, createExecutionEnvelope, createSituation } from "@thruvera/core";
 import { MemoryStore, memoryPersistencePorts } from "../dist/index.js";
 
 const digest = (value) => createHash("sha256").update(value).digest("hex");

@@ -11,10 +11,10 @@ const cli = resolve("apps/cli/dist/cli.js");
 function isolatedEnvironment(root, home) {
 	const environment = { ...process.env };
 	for (const key of [
-		"BEEMAX_PROFILE", "BEEMAX_PROVIDER", "BEEMAX_MODEL", "BEEMAX_API_KEY", "BEEMAX_DB_PATH",
-		"BEEMAX_MCP_CONFIG", "BEEMAX_AGENT_DIR", "BEEMAX_CWD", "FEISHU_APP_ID", "FEISHU_APP_SECRET",
+		"THRUVERA_PROFILE", "THRUVERA_PROVIDER", "THRUVERA_MODEL", "THRUVERA_API_KEY", "THRUVERA_DB_PATH",
+		"THRUVERA_MCP_CONFIG", "THRUVERA_AGENT_DIR", "THRUVERA_CWD", "FEISHU_APP_ID", "FEISHU_APP_SECRET",
 	]) delete environment[key];
-	return { ...environment, BEEMAX_ROOT: root, BEEMAX_HOME: home };
+	return { ...environment, THRUVERA_ROOT: root, THRUVERA_HOME: home };
 }
 
 async function useMissingAgentDirectory(paths, name) {
@@ -47,7 +47,7 @@ test("CLI install commands safely create a missing Profile-local Agent directory
 		await useMissingAgentDirectory(capabilitiesProfile, "runtime");
 		assert.match(
 			run(["capabilities", "install", "agent-reach", "--profile", "capability-repair"]),
-			/Installed BeeMax-native Agent Reach/u,
+			/Installed Thruvera-native Agent Reach/u,
 		);
 		assert.match(await readFile(join(capabilitiesProfile.homePath, "runtime", "skills", "pi-web-access", "SKILL.md"), "utf8"), /pi-web-access/u);
 	} finally {

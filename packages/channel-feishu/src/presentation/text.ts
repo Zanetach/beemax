@@ -1,6 +1,6 @@
 /**
  * Feishu stream text normalization + markdown block splitting.
- * BeeMax Feishu streaming-card rendering logic.
+ * Thruvera Feishu streaming-card rendering logic.
  */
 
 const THINK_TAG_RE = /<\/?think>|<\/?thinking>/gi;

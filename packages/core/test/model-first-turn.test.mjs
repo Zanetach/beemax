@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { AutonomousPlanningPolicy, BeeMaxAgentRuntime, createArtifactManifest, createSourceReceipt } from "../dist/index.js";
+import { AutonomousPlanningPolicy, ThruveraAgentRuntime, createArtifactManifest, createSourceReceipt } from "../dist/index.js";
 import { attestCapabilityProviderResolutionTool } from "../dist/capability-provider.js";
 
 const bindAssistantToolCall = (listener, call, responseId) => listener({
@@ -35,7 +35,7 @@ async function activeToolsAtFirstModelPrompt({ request, chatId, tools }) {
 	let activeTools = [];
 	let activeAtFirstPrompt = [];
 	const agent = { state: { model: { id: "test/model" }, messages: [] } };
-	const runtime = new BeeMaxAgentRuntime({
+	const runtime = new ThruveraAgentRuntime({
 		profileId: "profile:model-first",
 		planningPolicy: new AutonomousPlanningPolicy(),
 		createAgent: async () => ({
@@ -71,7 +71,7 @@ test("an ordinary complex interactive task is model-first, adaptive, and turn-lo
 	let activeTools = ["task_spawn", "task_wait"];
 	const agent = { state: { model: { id: "test/model" }, messages: [] } };
 	const policy = new AutonomousPlanningPolicy();
-	const runtime = new BeeMaxAgentRuntime({
+	const runtime = new ThruveraAgentRuntime({
 		profileId: "profile:model-first",
 		taskLedger: {
 			record: () => assert.fail("ordinary interactive work must not become a durable Objective before the model runs"),
@@ -140,7 +140,7 @@ test("an unrelated interactive request does not inherit an active durable Object
 		executionScope: { platform: "cli", chatId: "unrelated", chatType: "dm", userId: "local" },
 	};
 	const agent = { state: { model: { id: "test/model" }, messages: [] } };
-	const runtime = new BeeMaxAgentRuntime({
+	const runtime = new ThruveraAgentRuntime({
 		profileId: "profile:model-first",
 		taskLedger: {
 			record: () => assert.fail("unrelated work must not create a durable Objective"),
@@ -172,10 +172,10 @@ test("an unrelated interactive request does not inherit an active durable Object
 });
 
 test("turn-local rewriting language is not mistaken for durable Objective correction", async () => {
-	const request = "把这段话改成更简洁的版本：BeeMax 会根据任务按需加载工具";
+	const request = "把这段话改成更简洁的版本：Thruvera 会根据任务按需加载工具";
 	let workContractCalls = 0;
 	const agent = { state: { model: { id: "test/model" }, messages: [] } };
-	const runtime = new BeeMaxAgentRuntime({
+	const runtime = new ThruveraAgentRuntime({
 		profileId: "profile:model-first",
 		workContractBuilder: { build: async () => { workContractCalls++; assert.fail("turn-local rewriting must reach the main model directly"); } },
 		planningPolicy: new AutonomousPlanningPolicy(),
@@ -185,7 +185,7 @@ test("turn-local rewriting language is not mistaken for durable Objective correc
 			getActiveToolNames: () => [],
 			setActiveToolsByName: () => undefined,
 			subscribe: () => () => undefined,
-			prompt: async () => { agent.state.messages = [{ role: "assistant", content: [{ type: "text", text: "BeeMax 按需加载工具。" }], usage: { input: 1, output: 1 } }]; },
+			prompt: async () => { agent.state.messages = [{ role: "assistant", content: [{ type: "text", text: "Thruvera 按需加载工具。" }], usage: { input: 1, output: 1 } }]; },
 			abort: async () => undefined,
 			dispose: () => undefined,
 		}),
@@ -194,7 +194,7 @@ test("turn-local rewriting language is not mistaken for durable Objective correc
 	try {
 		const result = await runtime.run({ source: { platform: "cli", chatId: "rewrite", chatType: "dm", userId: "local" }, text: request, timeoutMs: 1_000 });
 		assert.equal(workContractCalls, 0);
-		assert.equal(result.answer, "BeeMax 按需加载工具。");
+		assert.equal(result.answer, "Thruvera 按需加载工具。");
 		assert.deepEqual(result.outcome, { status: "answered" });
 	} finally {
 		runtime.dispose();
@@ -202,7 +202,7 @@ test("turn-local rewriting language is not mistaken for durable Objective correc
 });
 
 test("turn-local rewriting stays model-first when an unrelated durable Objective is active", async () => {
-	const request = "把这段话改成更简洁的版本：BeeMax 会根据任务按需加载工具";
+	const request = "把这段话改成更简洁的版本：Thruvera 会根据任务按需加载工具";
 	const source = { platform: "cli", chatId: "rewrite-with-objective", chatType: "dm", userId: "local" };
 	const activeObjective = {
 		id: "objective:background-report",
@@ -217,7 +217,7 @@ test("turn-local rewriting stays model-first when an unrelated durable Objective
 	};
 	let workContractCalls = 0;
 	const agent = { state: { model: { id: "test/model" }, messages: [] } };
-	const runtime = new BeeMaxAgentRuntime({
+	const runtime = new ThruveraAgentRuntime({
 		profileId: "profile:model-first",
 		taskLedger: {
 			record: () => assert.fail("turn-local rewriting must not create a durable Objective"),
@@ -232,7 +232,7 @@ test("turn-local rewriting stays model-first when an unrelated durable Objective
 			getActiveToolNames: () => [],
 			setActiveToolsByName: () => undefined,
 			subscribe: () => () => undefined,
-			prompt: async () => { agent.state.messages = [{ role: "assistant", content: [{ type: "text", text: "BeeMax 按需加载工具。" }], usage: { input: 1, output: 1 } }]; },
+			prompt: async () => { agent.state.messages = [{ role: "assistant", content: [{ type: "text", text: "Thruvera 按需加载工具。" }], usage: { input: 1, output: 1 } }]; },
 			abort: async () => undefined,
 			dispose: () => undefined,
 		}),
@@ -241,7 +241,7 @@ test("turn-local rewriting stays model-first when an unrelated durable Objective
 	try {
 		const result = await runtime.run({ source, text: request, timeoutMs: 1_000 });
 		assert.equal(workContractCalls, 0);
-		assert.equal(result.answer, "BeeMax 按需加载工具。");
+		assert.equal(result.answer, "Thruvera 按需加载工具。");
 		assert.deepEqual(result.outcome, { status: "answered" });
 	} finally {
 		runtime.dispose();
@@ -306,7 +306,7 @@ test("a model-first HTML and PDF report activates research, writing, and renderi
 		{ name: "artifact_render", description: "Render HTML into a PDF", triggers: ["PDF", "HTML to PDF"], beemaxPolicy: { sideEffect: "local" } },
 		{ name: "unrelated_tool", description: "Perform an unrelated operation", beemaxPolicy: { sideEffect: "none" } },
 	];
-	const runtime = new BeeMaxAgentRuntime({
+	const runtime = new ThruveraAgentRuntime({
 		profileId: "profile:model-first",
 		workContractBuilder: {
 			build: async () => {
@@ -413,7 +413,7 @@ test("a research report cannot write fabricated artifacts before a trusted Sourc
 		{ name: "write", description: "Write an HTML file in the workspace", beemaxPolicy: { sideEffect: "local" } },
 		{ name: "artifact_render", description: "Render HTML into a PDF", beemaxPolicy: { sideEffect: "local" } },
 	];
-	const runtime = new BeeMaxAgentRuntime({
+	const runtime = new ThruveraAgentRuntime({
 		profileId: "profile:model-first",
 		planningPolicy: new AutonomousPlanningPolicy(),
 		createAgent: async () => ({

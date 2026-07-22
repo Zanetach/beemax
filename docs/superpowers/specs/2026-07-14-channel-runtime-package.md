@@ -2,7 +2,7 @@
 
 ## Problem Statement
 
-BeeMax already has two messaging Adapters and a registry, but the platform-neutral Channel Runtime, the Interaction Gateway, Feishu, Telegram, and Feishu presentation are published from one package. Production factories largely ignore each Channel Instance's own settings and instead read Profile-level Feishu or Telegram singletons, so the apparent multi-instance seam does not reliably provide independent accounts. Adding or removing a platform also changes the generic Gateway dependency graph and tests can remain green without crossing the documented Channel Runtime Contract.
+Thruvera already has two messaging Adapters and a registry, but the platform-neutral Channel Runtime, the Interaction Gateway, Feishu, Telegram, and Feishu presentation are published from one package. Production factories largely ignore each Channel Instance's own settings and instead read Profile-level Feishu or Telegram singletons, so the apparent multi-instance seam does not reliably provide independent accounts. Adding or removing a platform also changes the generic Gateway dependency graph and tests can remain green without crossing the documented Channel Runtime Contract.
 
 ## Solution
 
@@ -76,7 +76,7 @@ This slice establishes the package and runtime seam required by future platforms
 
 ## Implementation Status
 
-- Implemented `@beemax/channel-runtime`, `@beemax/channel-feishu`, and `@beemax/channel-telegram` as independently buildable packages.
+- Implemented `@thruvera/channel-runtime`, `@thruvera/channel-feishu`, and `@thruvera/channel-telegram` as independently buildable packages.
 - Made explicit Channel Instance settings and Credential Refs authoritative, including independent same-platform instances.
 - Moved Feishu CardKit rendering, state, throttling, degradation, and interactive binding behind `InteractionPresenter`; Gateway now supplies only a platform-neutral text fallback.
 - Added package-graph architecture gates and a real `ChannelHost → Dispatcher → Runtime → Delivery` contract test covering concrete instance routing and cancellation.

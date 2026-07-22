@@ -17,16 +17,16 @@ test("source installer keeps native dependency scripts and pins CLI commands to 
 	assert.match(installer, /npm ci\n/);
 	assert.doesNotMatch(installer, /npm ci --ignore-scripts/);
 	assert.match(installer, /install-media-dependencies\.sh/);
-	assert.match(installer, /export BEEMAX_ROOT/);
+	assert.match(installer, /export THRUVERA_ROOT/);
 	assert.match(installer, /apps\/cli\/dist\/cli\.js/);
 });
 
 test("document dependency installer auto-installs Caddy, OCR, and CJK report dependencies", async () => {
 	const installer = await readFile("scripts/install-media-dependencies.sh", "utf8");
-	assert.match(installer, /BEEMAX_INSTALL_MEDIA_DEPS/);
-	assert.match(installer, /BEEMAX_TESSERACT:-tesseract/);
-	assert.match(installer, /BEEMAX_FC_LIST:-fc-list/);
-	assert.match(installer, /BEEMAX_CADDY:-caddy/);
+	assert.match(installer, /THRUVERA_INSTALL_MEDIA_DEPS/);
+	assert.match(installer, /THRUVERA_TESSERACT:-\$\{BEEMAX_TESSERACT:-tesseract\}/);
+	assert.match(installer, /THRUVERA_FC_LIST:-\$\{BEEMAX_FC_LIST:-fc-list\}/);
+	assert.match(installer, /THRUVERA_CADDY:-\$\{BEEMAX_CADDY:-caddy\}/);
 	assert.match(installer, /command -v "\$\{TESSERACT_BIN\}"/);
 	assert.match(installer, /command -v "\$\{CADDY_BIN\}"/);
 	assert.match(installer, /tesseract-ocr/);
@@ -49,18 +49,18 @@ test("media dependency installer executes the Ubuntu package plan and verifies T
 		const fontReady = join(fixture, "font-ready");
 		const calls = join(fixture, "calls.log");
 		await writeFile(aptGet, `#!/usr/bin/env bash
-printf '%s\\n' "$*" >> "$BEEMAX_TEST_CALLS"
+printf '%s\\n' "$*" >> "$THRUVERA_TEST_CALLS"
 if [[ "$1" == "install" ]]; then
-	  printf '#!/usr/bin/env bash\\nprintf "tesseract 5.5.0\\n"\\n' > "$BEEMAX_TEST_TESSERACT"
-	  chmod 0755 "$BEEMAX_TEST_TESSERACT"
-	  printf '#!/usr/bin/env bash\\nprintf "v2.11.4\\n"\\n' > "$BEEMAX_TEST_CADDY"
-	  chmod 0755 "$BEEMAX_TEST_CADDY"
-  touch "$BEEMAX_TEST_FONT_READY"
+	  printf '#!/usr/bin/env bash\\nprintf "tesseract 5.5.0\\n"\\n' > "$THRUVERA_TEST_TESSERACT"
+	  chmod 0755 "$THRUVERA_TEST_TESSERACT"
+	  printf '#!/usr/bin/env bash\\nprintf "v2.11.4\\n"\\n' > "$THRUVERA_TEST_CADDY"
+	  chmod 0755 "$THRUVERA_TEST_CADDY"
+  touch "$THRUVERA_TEST_FONT_READY"
 fi
 `);
 		await chmod(aptGet, 0o755);
 		await writeFile(fcList, `#!/usr/bin/env bash
-[[ -f "$BEEMAX_TEST_FONT_READY" ]] && printf 'Noto Sans CJK SC\\n'
+[[ -f "$THRUVERA_TEST_FONT_READY" ]] && printf 'Noto Sans CJK SC\\n'
 `);
 		await chmod(fcList, 0o755);
 		const result = spawnSync("bash", ["scripts/install-media-dependencies.sh"], {
@@ -68,16 +68,16 @@ fi
 			encoding: "utf8",
 			env: {
 				...process.env,
-				BEEMAX_APT_GET: aptGet,
-				BEEMAX_INSTALL_EUID: "0",
-				BEEMAX_INSTALL_OS: "ubuntu",
-				BEEMAX_TESSERACT: tesseract,
-				BEEMAX_FC_LIST: fcList,
-				BEEMAX_CADDY: caddy,
-				BEEMAX_TEST_TESSERACT: tesseract,
-				BEEMAX_TEST_CADDY: caddy,
-				BEEMAX_TEST_FONT_READY: fontReady,
-				BEEMAX_TEST_CALLS: calls,
+				THRUVERA_APT_GET: aptGet,
+				THRUVERA_INSTALL_EUID: "0",
+				THRUVERA_INSTALL_OS: "ubuntu",
+				THRUVERA_TESSERACT: tesseract,
+				THRUVERA_FC_LIST: fcList,
+				THRUVERA_CADDY: caddy,
+				THRUVERA_TEST_TESSERACT: tesseract,
+				THRUVERA_TEST_CADDY: caddy,
+				THRUVERA_TEST_FONT_READY: fontReady,
+				THRUVERA_TEST_CALLS: calls,
 				PATH: `${fixture}:${process.env.PATH}`,
 			},
 		});
@@ -105,13 +105,13 @@ test("media dependency installer provisions a CJK font when Tesseract is already
 		await writeFile(caddy, "#!/usr/bin/env bash\nprintf 'v2.11.4\\n'\n");
 		await chmod(caddy, 0o755);
 		await writeFile(fcList, `#!/usr/bin/env bash
-[[ -f "$BEEMAX_TEST_FONT_READY" ]] && printf 'Noto Sans CJK SC\\n'
+[[ -f "$THRUVERA_TEST_FONT_READY" ]] && printf 'Noto Sans CJK SC\\n'
 `);
 		await chmod(fcList, 0o755);
 		await writeFile(aptGet, `#!/usr/bin/env bash
-printf '%s\\n' "$*" >> "$BEEMAX_TEST_CALLS"
+printf '%s\\n' "$*" >> "$THRUVERA_TEST_CALLS"
 if [[ "$1" == "install" ]]; then
-  touch "$BEEMAX_TEST_FONT_READY"
+  touch "$THRUVERA_TEST_FONT_READY"
 fi
 `);
 		await chmod(aptGet, 0o755);
@@ -120,14 +120,14 @@ fi
 			encoding: "utf8",
 			env: {
 				...process.env,
-				BEEMAX_APT_GET: aptGet,
-				BEEMAX_INSTALL_EUID: "0",
-				BEEMAX_INSTALL_OS: "ubuntu",
-				BEEMAX_TESSERACT: tesseract,
-				BEEMAX_FC_LIST: fcList,
-				BEEMAX_CADDY: caddy,
-				BEEMAX_TEST_FONT_READY: fontReady,
-				BEEMAX_TEST_CALLS: calls,
+				THRUVERA_APT_GET: aptGet,
+				THRUVERA_INSTALL_EUID: "0",
+				THRUVERA_INSTALL_OS: "ubuntu",
+				THRUVERA_TESSERACT: tesseract,
+				THRUVERA_FC_LIST: fcList,
+				THRUVERA_CADDY: caddy,
+				THRUVERA_TEST_FONT_READY: fontReady,
+				THRUVERA_TEST_CALLS: calls,
 				PATH: `${fixture}:${process.env.PATH}`,
 			},
 		});
@@ -142,16 +142,17 @@ fi
 
 test("bootstrap installer downloads a verified single release archive and preserves Profile data on uninstall", async () => {
 	const installer = await readFile("scripts/bootstrap-install.sh", "utf8");
-	assert.match(installer, /BEEMAX_VERSION:-latest/);
-	assert.match(installer, /BEEMAX_RELEASE_API/);
+	assert.match(installer, /THRUVERA_VERSION:-\$\{BEEMAX_VERSION:-latest\}/);
+	assert.match(installer, /THRUVERA_RELEASE_API/);
 	assert.match(installer, /curl[^\n]+\$\{RELEASE_API\}/);
 	assert.match(installer, /releases\/download/);
 	assert.match(installer, /checksum verification failed/);
 	assert.doesNotMatch(installer, /git clone/);
 	assert.match(installer, /Node\.js 22\.19\+/);
 	assert.match(installer, /command -v shasum[\s\S]*command -v sha256sum/);
-	assert.match(installer, /Profiles and data under/);
-	assert.match(installer, /BEEMAX_BIN_DIR/);
+	assert.match(installer, /Profile data was kept/);
+	assert.match(installer, /Legacy BEEMAX_\*/);
+	assert.match(installer, /THRUVERA_BIN_DIR/);
 });
 
 test("source installer requires the vendored Pi source without submodule initialization", async () => {
@@ -175,7 +176,7 @@ test("release archive includes Pi and excludes git metadata and dependencies", a
 	assert.match(packager, /--exclude='\*\/\.github'/);
 	assert.match(packager, /--exclude='\.\/\.scratch'/);
 	assert.match(packager, /--exclude='\.\/tmp'/);
-	assert.match(packager, /rm -f "\$\{STAGING\}\/beemax\/core" "\$\{STAGING\}\/beemax"\/core\.\*/);
+	assert.match(packager, /rm -f "\$\{STAGING\}\/thruvera\/core" "\$\{STAGING\}\/thruvera"\/core\.\*/);
 	assert.match(packager, /--exclude='\*\/test'/);
 	assert.match(packager, /--exclude='\.\/scripts'/);
 	assert.match(packager, /clean-build-output\.mjs/);
@@ -210,16 +211,16 @@ test("tag releases pass build, test, and isolated archive installation gates bef
 	assert.match(verifier, /--whole-tree/);
 	assert.doesNotMatch(verifier, /await import\s*\(/);
 	assert.match(verifier, /node_modules/);
-	assert.match(verifier, /BEEMAX_BIN_DIR/);
-	assert.match(verifier, /BEEMAX_INSTALL_MEDIA_DEPS=0/);
+	assert.match(verifier, /THRUVERA_BIN_DIR/);
+	assert.match(verifier, /THRUVERA_INSTALL_MEDIA_DEPS=0/);
 	assert.match(verifier, /scripts\/install\.sh/);
-	assert.match(verifier, /run_beemax --help/);
+	assert.match(verifier, /run_thruvera --help/);
 	assert.match(verifier, /env -i/);
-	assert.match(verifier, /SMOKE_HOME="\$\{STAGING\}\/home\/\.beemax"/);
-	assert.match(verifier, /BEEMAX_HOME="\$\{SMOKE_HOME\}"/);
-	assert.match(verifier, /run_beemax profile create release-smoke/);
-	assert.match(verifier, /run_beemax profile show release-smoke/);
-	assert.match(verifier, /run_beemax skills list --profile release-smoke/);
+	assert.match(verifier, /SMOKE_HOME="\$\{STAGING\}\/home\/\.thruvera"/);
+	assert.match(verifier, /THRUVERA_HOME="\$\{SMOKE_HOME\}"/);
+	assert.match(verifier, /run_thruvera profile create release-smoke/);
+	assert.match(verifier, /run_thruvera profile show release-smoke/);
+	assert.match(verifier, /run_thruvera skills list --profile release-smoke/);
 	assert.doesNotMatch(workflow, /uses:\s+actions\/checkout@v4\s*\n\s+with:\s*$/m);
 	assert.doesNotMatch(ci, /uses:\s+actions\/checkout@v4\s*\n\s+with:\s*$/m);
 	assert.match(workflow, /--latest/);

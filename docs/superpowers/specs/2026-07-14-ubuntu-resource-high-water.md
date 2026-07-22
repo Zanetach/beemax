@@ -2,7 +2,7 @@
 
 ## Problem
 
-BeeMax 已有 systemd 资源限制、内存稳定测试与延迟 Profile，但 RSS、输入队列、Profile 任务并发和 SQLite 增长没有在同一个 Ubuntu 部署规格下形成可执行合同。macOS 测量不能作为 Ubuntu 发布证据，单纯声明 `MemoryMax` 也不能证明应用层队列和并发有界。
+Thruvera 已有 systemd 资源限制、内存稳定测试与延迟 Profile，但 RSS、输入队列、Profile 任务并发和 SQLite 增长没有在同一个 Ubuntu 部署规格下形成可执行合同。macOS 测量不能作为 Ubuntu 发布证据，单纯声明 `MemoryMax` 也不能证明应用层队列和并发有界。
 
 ## Solution
 

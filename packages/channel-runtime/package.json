@@ -1,5 +1,5 @@
 {
-  "name": "@beemax/channel-runtime",
+  "name": "@thruvera/channel-runtime",
   "version": "1.5.1",
   "private": true,
   "type": "module",
@@ -16,6 +16,6 @@
     "typecheck": "tsgo --noEmit -p tsconfig.build.json"
   },
   "dependencies": {
-    "@beemax/core": "1.5.1"
+    "@thruvera/core": "1.5.1"
   }
 }

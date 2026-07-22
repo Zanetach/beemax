@@ -1,5 +1,5 @@
-import type { AgentRunInput, AgentRunResult, AgentRuntimePort, AgentSessionUsage, BeeMaxAgentRunEvent, CapabilityRankedCandidate } from "./agent-runtime.ts";
-import type { BeeMaxRuntimeSource } from "./runtime.ts";
+import type { AgentRunInput, AgentRunResult, AgentRuntimePort, AgentSessionUsage, ThruveraAgentRunEvent, CapabilityRankedCandidate } from "./agent-runtime.ts";
+import type { ThruveraRuntimeSource } from "./runtime.ts";
 import { sessionIdForSource, sessionKeyForSource } from "./session-coordinator.ts";
 import type { InteractionEventJournal } from "./interaction-event-journal.ts";
 import { conversationIdentity, type ConversationIdentity } from "./agent-scope.ts";
@@ -57,7 +57,7 @@ type InteractionEventPayload =
 	| { type: "turn.failed"; error: string }
 	| { type: "turn.cancelled" };
 
-export type InteractionAction<Source extends BeeMaxRuntimeSource = BeeMaxRuntimeSource> =
+export type InteractionAction<Source extends ThruveraRuntimeSource = ThruveraRuntimeSource> =
 	| { type: "message.send"; source: Source; text: string; input: Omit<AgentRunInput<Source>, "source" | "text">; actionId?: string }
 	| { type: "turn.queue"; source: Source; text: string; images?: AgentRunInput<Source>["images"]; actionId?: string }
 	| { type: "turn.steer"; source: Source; text: string; images?: AgentRunInput<Source>["images"]; actionId?: string }
@@ -105,7 +105,7 @@ export type InteractionTelemetryEvent =
 	| { type: "interaction.session_resumed"; source: string; age: number };
 export type InteractionTelemetrySink = (event: InteractionTelemetryEvent) => void;
 
-export interface InteractionEventAdapterOptions<Source extends BeeMaxRuntimeSource = BeeMaxRuntimeSource> {
+export interface InteractionEventAdapterOptions<Source extends ThruveraRuntimeSource = ThruveraRuntimeSource> {
 	profileId?: string;
 	cancelSubagents?: (source: Source) => number | Promise<number>;
 	cancelTaskPlans?: (source: Source) => number | Promise<number>;
@@ -121,7 +121,7 @@ export interface InteractionEventAdapterOptions<Source extends BeeMaxRuntimeSour
  * Core-owned action and event boundary. Channels render semantic events only;
  * runtime and child-task cancellation stay in one atomic Core operation.
  */
-export class InteractionEventAdapter<Source extends BeeMaxRuntimeSource = BeeMaxRuntimeSource> {
+export class InteractionEventAdapter<Source extends ThruveraRuntimeSource = ThruveraRuntimeSource> {
 	private readonly states = new Map<string, InteractionSnapshot>();
 	private readonly sinks = new Map<string, InteractionEventSink>();
 	private readonly eventQueues = new Map<string, Promise<void>>();
@@ -507,11 +507,11 @@ export class InteractionEventAdapter<Source extends BeeMaxRuntimeSource = BeeMax
 	}
 }
 
-export function interactionScopeForSource(source: BeeMaxRuntimeSource, profileId = "default"): InteractionScope {
+export function interactionScopeForSource(source: ThruveraRuntimeSource, profileId = "default"): InteractionScope {
 	return { profileId, ...conversationIdentity(source) };
 }
 
-function interactionEventMeta(source: BeeMaxRuntimeSource, turnId: string, sequence: number, profileId: string): InteractionEventMeta {
+function interactionEventMeta(source: ThruveraRuntimeSource, turnId: string, sequence: number, profileId: string): InteractionEventMeta {
 	return { sessionId: `${profileId}:${sessionIdForSource(source)}`, scope: interactionScopeForSource(source, profileId), turnId, at: Date.now(), sequence };
 }
 
@@ -532,7 +532,7 @@ export function interactionPhaseForOutcome(outcome: AgentRunResult["outcome"] | 
 	return "incomplete";
 }
 
-export function mapAgentSessionEvent(event: BeeMaxAgentRunEvent): InteractionEventPayload | undefined {
+export function mapAgentSessionEvent(event: ThruveraAgentRunEvent): InteractionEventPayload | undefined {
 	if (event.type === "model_fallback") return { type: "model.fallback", from: event.from, to: event.to, attempt: event.attempt };
 	if (event.type === "planning_decision") return { type: "planning.selected", mode: event.mode, concurrency: event.concurrency, maxSubagents: event.maxSubagents, requiredTools: [...event.requiredTools] };
 	if (event.type === "planning_outcome") return { type: "planning.completed", mode: event.mode, compliant: event.compliant, corrected: event.corrected };
@@ -547,7 +547,7 @@ export function mapAgentSessionEvent(event: BeeMaxAgentRunEvent): InteractionEve
 	return undefined;
 }
 
-function toolEventSummary(event: Extract<BeeMaxAgentRunEvent, { type: "tool_execution_end" }>): string | undefined {
+function toolEventSummary(event: Extract<ThruveraAgentRunEvent, { type: "tool_execution_end" }>): string | undefined {
 	if (event.trustedGovernanceBlock) return boundedPresenterSummary(event.trustedGovernanceBlock.summary, "Governance blocked this Tool action.");
 	if (typeof event.result === "string") return boundedPresenterSummary(event.result, "Tool result contained credential-like details and was redacted.");
 	return undefined;
@@ -559,7 +559,7 @@ function boundedPresenterSummary(value: string, credentialReplacement: string): 
 	return redactCredentialMaterial(summary, credentialReplacement).slice(0, 500);
 }
 
-function mapAgentWorkEvent(event: BeeMaxAgentRunEvent): InteractionEventPayload | undefined {
+function mapAgentWorkEvent(event: ThruveraAgentRunEvent): InteractionEventPayload | undefined {
 	if (event.type !== "tool_execution_start" && event.type !== "tool_execution_end") return undefined;
 	if (event.toolName !== "task_spawn" && event.toolName !== "task_wait" && event.toolName !== "task_plan_execute") return undefined;
 	const kind = event.toolName === "task_plan_execute" ? "task_plan" : "subagent";
@@ -585,5 +585,5 @@ function mapAgentWorkEvent(event: BeeMaxAgentRunEvent): InteractionEventPayload 
 }
 
 
-function interactionKey(source: BeeMaxRuntimeSource): string { return sessionKeyForSource(source); }
+function interactionKey(source: ThruveraRuntimeSource): string { return sessionKeyForSource(source); }
 function errorMessage(error: unknown): string { return error instanceof Error ? error.message : String(error); }

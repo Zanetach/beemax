@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "profile": {
     "id": "apple-m5-32gb-node22",
-    "description": "BeeMax production development profile: Apple M5, 10 logical CPUs, 32 GiB RAM, Node.js 22"
+    "description": "Thruvera production development profile: Apple M5, 10 logical CPUs, 32 GiB RAM, Node.js 22"
   },
   "assessment": {
     "machineProfileId": "apple-m5-32gb-node22",

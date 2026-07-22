@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { BeeMaxAgentRuntime, DeterministicSituationBuilder, DeterministicWorkContractBuilder, ModelBackedSituationBuilder, TurnUnderstandingEngine, createAccessScopeRef, createSituation } from "../dist/index.js";
+import { ThruveraAgentRuntime, DeterministicSituationBuilder, DeterministicWorkContractBuilder, ModelBackedSituationBuilder, TurnUnderstandingEngine, createAccessScopeRef, createSituation } from "../dist/index.js";
 
-const createRuntime = (options) => new BeeMaxAgentRuntime({ profileId: "profile:test", interactiveAdmission: "contract_first", workContractBuilder: new DeterministicWorkContractBuilder(), ...options });
+const createRuntime = (options) => new ThruveraAgentRuntime({ profileId: "profile:test", interactiveAdmission: "contract_first", workContractBuilder: new DeterministicWorkContractBuilder(), ...options });
 
 const fallback = (text) => new TurnUnderstandingEngine().understand(text);
 
@@ -59,7 +59,7 @@ test("Agent Runtime persists async Situation cognition while authority stays on 
 	const ledger = { record: (task) => { objective = task; }, transition: () => true, queryTasks: () => [] };
 	const runtime = createRuntime({
 		taskLedger: ledger,
-		planningPolicy: { decide: () => ({ mode: "direct", requiredTools: [], suggestedConcurrency: 1, budget: { maxSubagents: 0, maxToolCalls: null, maxTokens: null, maxCorrectiveAttempts: 0 }, signals: { substantialWork: true }, reason: "test", directive: () => "[BeeMax execution policy: substantial work]" }) },
+		planningPolicy: { decide: () => ({ mode: "direct", requiredTools: [], suggestedConcurrency: 1, budget: { maxSubagents: 0, maxToolCalls: null, maxTokens: null, maxCorrectiveAttempts: 0 }, signals: { substantialWork: true }, reason: "test", directive: () => "[Thruvera execution policy: substantial work]" }) },
 		situationBuilder: { build: async () => {
 			await Promise.resolve();
 			const situation = createSituation({ summary: "模型理解了玄穹事项", goals: ["完成玄穹事项"], confidence: 0.8 });

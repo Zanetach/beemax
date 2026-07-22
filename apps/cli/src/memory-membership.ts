@@ -1,4 +1,4 @@
-import { canonicalUserId, type BeeMaxRuntimeSource, type MemoryScope } from "@beemax/core";
+import { canonicalUserId, type ThruveraRuntimeSource, type MemoryScope } from "@thruvera/core";
 
 export interface MemoryMembership {
 	platform: string;
@@ -8,7 +8,7 @@ export interface MemoryMembership {
 }
 
 /** Build a fail-closed resolver from operator-controlled Profile configuration. */
-export function createMemoryScopeResolver(memberships: readonly MemoryMembership[] = []): (source: BeeMaxRuntimeSource) => Pick<MemoryScope, "projectId" | "organizationId"> {
+export function createMemoryScopeResolver(memberships: readonly MemoryMembership[] = []): (source: ThruveraRuntimeSource) => Pick<MemoryScope, "projectId" | "organizationId"> {
 	const index = new Map<string, Pick<MemoryScope, "projectId" | "organizationId">>();
 	for (const membership of memberships) {
 		const platform = membership.platform.trim();

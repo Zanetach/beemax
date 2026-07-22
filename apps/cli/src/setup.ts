@@ -58,7 +58,7 @@ export async function runSetup(options: SetupOptions, dependencies: SetupDepende
 	};
 	const profiles = await listProfiles();
 	const exists = profiles.includes(options.profile);
-	if (!exists && options.gatewayOnly) throw new Error(`Agent profile ${options.profile} does not exist; run beemax profile create ${options.profile}`);
+	if (!exists && options.gatewayOnly) throw new Error(`Agent profile ${options.profile} does not exist; run thruvera profile create ${options.profile}`);
 	const current = loadConfig(undefined, options.profile);
 	const currentFeishu = current.gateway.feishu;
 	const currentFeishuInstance = current.gateway.channels.find((channel) => channel.adapter === "feishu");
@@ -118,7 +118,7 @@ export async function runSetup(options: SetupOptions, dependencies: SetupDepende
 	if (configureGateway) {
 		let qrOwnerId: string | undefined;
 		if (!options.nonInteractive) {
-			console.log("\nBeeMax Feishu Gateway setup\nScan to create a bot automatically, or choose manual setup.\n");
+			console.log("\nThruvera Feishu Gateway setup\nScan to create a bot automatically, or choose manual setup.\n");
 			const method = await ask("[1/5] Setup method (qr or manual)", "qr");
 			if (method !== "qr" && method !== "manual") throw new Error("Setup method must be qr or manual");
 			if (method === "qr") {
@@ -192,18 +192,18 @@ export async function runSetup(options: SetupOptions, dependencies: SetupDepende
 		console.log(probe!.botName || probe!.botOpenId
 			? `PASS  Feishu live probe       bot=${probe!.botName ?? probe!.botOpenId}`
 			: `WARN  Feishu live probe       ${probe!.warning ?? "credentials valid; bot identity unavailable"}`);
-		console.log(`\nNext: ${usedQrRegistration ? "run" : "finish the Feishu console checklist above, then run"}:\n  beemax gateway run --profile ${options.profile}\nSend the bot a private message to verify streaming cards and direct tool execution.\n`);
+		console.log(`\nNext: ${usedQrRegistration ? "run" : "finish the Feishu console checklist above, then run"}:\n  thruvera gateway run --profile ${options.profile}\nSend the bot a private message to verify streaming cards and direct tool execution.\n`);
 	}
 	if (options.gatewayOnly) {
 		await setActiveProfile(options.profile);
-		console.log(`BeeMax Gateway setup complete for Profile '${options.profile}'.`);
+		console.log(`Thruvera Gateway setup complete for Profile '${options.profile}'.`);
 		return true;
 	}
 	const ready = await (dependencies.doctor ?? runDoctor)(loadConfig(undefined, options.profile), { requireGateway });
 	if (ready) {
 		await setActiveProfile(options.profile);
-		console.log(`BeeMax setup complete for Profile '${options.profile}'.`);
-		if (!configureGateway) console.log(`Start chatting now: beemax chat --profile ${options.profile}\nConnect Feishu later: beemax gateway setup --profile ${options.profile}`);
+		console.log(`Thruvera setup complete for Profile '${options.profile}'.`);
+		if (!configureGateway) console.log(`Start chatting now: thruvera chat --profile ${options.profile}\nConnect Feishu later: thruvera gateway setup --profile ${options.profile}`);
 	}
 	return ready;
 }

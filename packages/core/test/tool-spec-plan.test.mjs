@@ -3,10 +3,10 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { BeeMaxAgentRuntime, CapabilityProviderRuntime, DeterministicWorkContractBuilder, activateToolSpecPlan, buildToolSpecPlan, createSkillTools, renderToolSpecPlan } from "../dist/index.js";
+import { ThruveraAgentRuntime, CapabilityProviderRuntime, DeterministicWorkContractBuilder, activateToolSpecPlan, buildToolSpecPlan, createSkillTools, renderToolSpecPlan } from "../dist/index.js";
 import { attestCapabilityProviderAcquisitionTool, attestCapabilityProviderResolutionTool } from "../dist/capability-provider.js";
 
-const createRuntime = (options) => new BeeMaxAgentRuntime({ profileId: "profile:test", interactiveAdmission: "contract_first", workContractBuilder: new DeterministicWorkContractBuilder(), ...options });
+const createRuntime = (options) => new ThruveraAgentRuntime({ profileId: "profile:test", interactiveAdmission: "contract_first", workContractBuilder: new DeterministicWorkContractBuilder(), ...options });
 
 const bindAssistantTurn = (listener, calls, responseId) => listener({
 	type: "message_end",
@@ -37,8 +37,8 @@ const tool = (overrides) => ({
 });
 
 test("Agent Runtime composition rejects a missing trusted Profile identity", () => {
-	assert.throws(() => new BeeMaxAgentRuntime({ createAgent: async () => undefined }), /Trusted Profile identity/i);
-	assert.throws(() => new BeeMaxAgentRuntime({ profileId: "x".repeat(257), createAgent: async () => undefined }), /256 characters/i);
+	assert.throws(() => new ThruveraAgentRuntime({ createAgent: async () => undefined }), /Trusted Profile identity/i);
+	assert.throws(() => new ThruveraAgentRuntime({ profileId: "x".repeat(257), createAgent: async () => undefined }), /256 characters/i);
 });
 
 test("Tool Spec planning exposes only selected eligible schemas and classifies every other capability", () => {
@@ -134,7 +134,7 @@ test("large Tool catalogs keep only a bounded direct set in model context", () =
 	assert.doesNotMatch(rendered, /Deferred catalog description/);
 });
 
-test("BeeMax exposes the compiled direct Tool Spec to Pi and keeps the rest of the catalog deferred or hidden", async () => {
+test("Thruvera exposes the compiled direct Tool Spec to Pi and keeps the rest of the catalog deferred or hidden", async () => {
 	const source = { platform: "cli", chatId: "tool-plan", chatType: "dm", userId: "owner" };
 	let prompt = "";
 	let toolsDuringPrompt = [];

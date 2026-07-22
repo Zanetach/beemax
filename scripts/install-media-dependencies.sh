@@ -2,21 +2,21 @@
 # Install the local document-serving, OCR, and Linux CJK dependencies.
 set -euo pipefail
 
-MEDIA_DEPS_ENABLED="${BEEMAX_INSTALL_MEDIA_DEPS:-1}"
-TESSERACT_BIN="${BEEMAX_TESSERACT:-tesseract}"
-FC_LIST_BIN="${BEEMAX_FC_LIST:-fc-list}"
-CADDY_BIN="${BEEMAX_CADDY:-caddy}"
+MEDIA_DEPS_ENABLED="${THRUVERA_INSTALL_MEDIA_DEPS:-${BEEMAX_INSTALL_MEDIA_DEPS:-1}}"
+TESSERACT_BIN="${THRUVERA_TESSERACT:-${BEEMAX_TESSERACT:-tesseract}}"
+FC_LIST_BIN="${THRUVERA_FC_LIST:-${BEEMAX_FC_LIST:-fc-list}}"
+CADDY_BIN="${THRUVERA_CADDY:-${BEEMAX_CADDY:-caddy}}"
 
 case "${MEDIA_DEPS_ENABLED}" in
 	0|false|FALSE|no|NO|off|OFF)
-		echo "BeeMax media dependencies: automatic installation disabled."
+		echo "Thruvera media dependencies: automatic installation disabled."
 		exit 0
 		;;
 esac
 
 detect_platform() {
-	if [[ -n "${BEEMAX_INSTALL_OS:-}" ]]; then
-		printf '%s\n' "${BEEMAX_INSTALL_OS}"
+	if [[ -n "${THRUVERA_INSTALL_OS:-${BEEMAX_INSTALL_OS:-}}" ]]; then
+		printf '%s\n' "${THRUVERA_INSTALL_OS:-${BEEMAX_INSTALL_OS}}"
 		return
 	fi
 
@@ -54,26 +54,26 @@ ubuntu_cjk_font_ready() {
 }
 
 print_ready() {
-	echo "BeeMax document dependencies ready: $("${CADDY_BIN}" version 2>&1 | head -n 1); $("${TESSERACT_BIN}" --version 2>&1 | head -n 1)"
+	echo "Thruvera document dependencies ready: $("${CADDY_BIN}" version 2>&1 | head -n 1); $("${TESSERACT_BIN}" --version 2>&1 | head -n 1)"
 }
 
 install_ubuntu() {
-	local apt_get="${BEEMAX_APT_GET:-apt-get}"
-	local effective_uid="${BEEMAX_INSTALL_EUID:-$(id -u)}"
+	local apt_get="${THRUVERA_APT_GET:-${BEEMAX_APT_GET:-apt-get}}"
+	local effective_uid="${THRUVERA_INSTALL_EUID:-${BEEMAX_INSTALL_EUID:-$(id -u)}}"
 	local -a packages=(caddy tesseract-ocr tesseract-ocr-eng tesseract-ocr-chi-sim fonts-noto-cjk)
 
 	command -v "${apt_get}" >/dev/null 2>&1 || {
-		echo "BeeMax could not install OCR and CJK report dependencies: apt-get is unavailable." >&2
+		echo "Thruvera could not install OCR and CJK report dependencies: apt-get is unavailable." >&2
 		exit 1
 	}
 
-	echo "BeeMax is installing Caddy, local OCR, and CJK report fonts with apt-get..."
+	echo "Thruvera is installing Caddy, local OCR, and CJK report fonts with apt-get..."
 	if [[ "${effective_uid}" == "0" ]]; then
 		env DEBIAN_FRONTEND=noninteractive "${apt_get}" update
 		env DEBIAN_FRONTEND=noninteractive "${apt_get}" install -y --no-install-recommends "${packages[@]}"
 	else
 		command -v sudo >/dev/null 2>&1 || {
-			echo "BeeMax needs sudo to install OCR and CJK report dependencies. Re-run the installer with sudo access, or preinstall them." >&2
+			echo "Thruvera needs sudo to install OCR and CJK report dependencies. Re-run the installer with sudo access, or preinstall them." >&2
 			exit 1
 		}
 		sudo env DEBIAN_FRONTEND=noninteractive "${apt_get}" update
@@ -82,13 +82,13 @@ install_ubuntu() {
 }
 
 install_macos() {
-	local brew="${BEEMAX_BREW:-brew}"
+	local brew="${THRUVERA_BREW:-${BEEMAX_BREW:-brew}}"
 	command -v "${brew}" >/dev/null 2>&1 || {
-		echo "BeeMax could not install Tesseract: Homebrew is unavailable. Install Homebrew or set BEEMAX_INSTALL_MEDIA_DEPS=0." >&2
+		echo "Thruvera could not install Tesseract: Homebrew is unavailable. Install Homebrew or set THRUVERA_INSTALL_MEDIA_DEPS=0." >&2
 		exit 1
 	}
 
-	echo "BeeMax is installing Caddy, local OCR, and language data with Homebrew..."
+	echo "Thruvera is installing Caddy, local OCR, and language data with Homebrew..."
 	"${brew}" install caddy tesseract tesseract-lang
 }
 
@@ -113,24 +113,24 @@ case "${PLATFORM}" in
 			print_ready
 			exit 0
 		fi
-		echo "BeeMax cannot automatically install Caddy and Tesseract on this operating system. Preinstall them or set BEEMAX_INSTALL_MEDIA_DEPS=0." >&2
+		echo "Thruvera cannot automatically install Caddy and Tesseract on this operating system. Preinstall them or set THRUVERA_INSTALL_MEDIA_DEPS=0." >&2
 		exit 1
 		;;
 esac
 
 if ! tesseract_ready; then
-	echo "BeeMax installed the OCR packages, but tesseract is not available on PATH." >&2
+	echo "Thruvera installed the OCR packages, but tesseract is not available on PATH." >&2
 	exit 1
 fi
 
 if ! caddy_ready; then
-	echo "BeeMax installed the document packages, but caddy is not available on PATH." >&2
+	echo "Thruvera installed the document packages, but caddy is not available on PATH." >&2
 	exit 1
 fi
 
 if [[ "${PLATFORM}" == "ubuntu" || "${PLATFORM}" == "debian" ]] && ! ubuntu_cjk_font_ready; then
-	echo "BeeMax installed the media packages, but no Simplified Chinese font is visible through fontconfig." >&2
+	echo "Thruvera installed the media packages, but no Simplified Chinese font is visible through fontconfig." >&2
 	exit 1
 fi
 
-echo "BeeMax document dependencies installed: $("${CADDY_BIN}" version 2>&1 | head -n 1); $("${TESSERACT_BIN}" --version 2>&1 | head -n 1)"
+echo "Thruvera document dependencies installed: $("${CADDY_BIN}" version 2>&1 | head -n 1); $("${TESSERACT_BIN}" --version 2>&1 | head -n 1)"

@@ -1,4 +1,4 @@
-import type { ChannelAdapterRegistration, ChannelInstanceConfig } from "@beemax/channel-runtime";
+import type { ChannelAdapterRegistration, ChannelInstanceConfig } from "@thruvera/channel-runtime";
 import { FeishuAdapter, type FeishuAdapterDependencies } from "./adapter.ts";
 import type { FeishuCredentialConsumer, FeishuCredentials, FeishuRuntimeSettings } from "./settings.ts";
 

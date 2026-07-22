@@ -1,4 +1,4 @@
-import { PiWorkContractBuilder, type PiWorkContractModelCandidate } from "@beemax/core";
+import { PiWorkContractBuilder, type PiWorkContractModelCandidate } from "@thruvera/core";
 
 /**
  * Interactive execution admits the user's intent once, then lets Pi execute and

@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { InteractionControlServer } from "../dist/index.js";
-import { InteractionEventAdapter, InteractionProtocol } from "@beemax/core";
+import { InteractionEventAdapter, InteractionProtocol } from "@thruvera/core";
 
 const source = { platform: "web", chatId: "remote-1", chatType: "dm", userId: "user-1" };
 const scope = { profileId: "personal", platform: "web", chatId: "remote-1", userId: "user-1" };

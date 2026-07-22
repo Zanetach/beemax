@@ -1,9 +1,10 @@
 {
-  "name": "@beemax/cli",
+  "name": "@thruvera/cli",
   "version": "1.5.1",
   "private": true,
   "type": "module",
   "bin": {
+    "thruvera": "./dist/cli.js",
     "beemax": "./dist/cli.js"
   },
   "main": "./dist/cli.js",
@@ -12,16 +13,16 @@
     "typecheck": "tsgo --noEmit -p tsconfig.build.json"
   },
   "dependencies": {
-    "@beemax/automation": "1.5.1",
-    "@beemax/channel-feishu": "1.5.1",
-    "@beemax/channel-runtime": "1.5.1",
-    "@beemax/channel-telegram": "1.5.1",
-    "@beemax/core": "1.5.1",
-    "@beemax/feishu-capability": "1.5.1",
-    "@beemax/gateway": "1.5.1",
-    "@beemax/knowledge": "1.5.1",
-    "@beemax/mcp-capability": "1.5.1",
-    "@beemax/memory": "1.5.1",
+    "@thruvera/automation": "1.5.1",
+    "@thruvera/channel-feishu": "1.5.1",
+    "@thruvera/channel-runtime": "1.5.1",
+    "@thruvera/channel-telegram": "1.5.1",
+    "@thruvera/core": "1.5.1",
+    "@thruvera/feishu-capability": "1.5.1",
+    "@thruvera/gateway": "1.5.1",
+    "@thruvera/knowledge": "1.5.1",
+    "@thruvera/mcp-capability": "1.5.1",
+    "@thruvera/memory": "1.5.1",
     "@earendil-works/pi-tui": "^0.80.6",
 		"@napi-rs/canvas": "1.0.2",
 		"parse5": "8.0.1",

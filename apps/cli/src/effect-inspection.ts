@@ -1,5 +1,5 @@
 import { join } from "node:path";
-import { containsCredentialMaterial, FileExecutionTraceStore, FileToolEffectJournal, type ToolEffectRecord } from "@beemax/core";
+import { containsCredentialMaterial, FileExecutionTraceStore, FileToolEffectJournal, type ToolEffectRecord } from "@thruvera/core";
 
 export function inspectProfileEffects(agentDir: string, status: ToolEffectRecord["status"] | "all" = "unknown"): ToolEffectRecord[] {
 	const journal = openEffectAuthority(agentDir);

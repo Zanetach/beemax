@@ -1,5 +1,5 @@
 {
-  "name": "@beemax/memory",
+  "name": "@thruvera/memory",
   "version": "1.5.1",
   "private": true,
   "type": "module",
@@ -16,7 +16,7 @@
     "typecheck": "tsgo --noEmit -p tsconfig.build.json"
   },
   "dependencies": {
-    "@beemax/core": "1.5.1",
+    "@thruvera/core": "1.5.1",
     "better-sqlite3": "11.10.0",
     "typebox": "1.1.38"
   }

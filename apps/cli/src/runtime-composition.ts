@@ -1,16 +1,16 @@
 import {
-	BeeMaxAgentRuntime,
+	ThruveraAgentRuntime,
 	FileInteractionEventJournal,
 	FileInteractionInputQueueStore,
 	InteractionEventAdapter,
 	SessionCatalog,
 	DEFAULT_RUNTIME_RESOURCE_LIMITS,
-	type BeeMaxAgentRuntimeOptions,
-	type BeeMaxRuntimeSource,
+	type ThruveraAgentRuntimeOptions,
+	type ThruveraRuntimeSource,
 	type AgentControlHandler,
 	type SessionCoordinatorOptions,
 	type WorkContractBuilderPort,
-} from "@beemax/core";
+} from "@thruvera/core";
 import { join } from "node:path";
 import { recordOperationalMetric } from "./operational-metrics.ts";
 import { createProfileWorkRuntime, type ProfileWorkRuntimeOptions } from "./profile-work-runtime.ts";
@@ -18,15 +18,15 @@ import { assertAgentFactorySecurity } from "./agent-factory.ts";
 
 export type ProfileWorkRuntime = ReturnType<typeof createProfileWorkRuntime>;
 
-export interface ProfileAgentRuntimeOptions<Source extends BeeMaxRuntimeSource> {
+export interface ProfileAgentRuntimeOptions<Source extends ThruveraRuntimeSource> {
 	profileId: string;
 	agentDir: string;
 	policy: SessionCoordinatorOptions;
-	runtime: Omit<BeeMaxAgentRuntimeOptions<Source>, keyof SessionCoordinatorOptions | "controlHandler" | "sessionCatalog" | "profileId" | "workContractBuilder">
+	runtime: Omit<ThruveraAgentRuntimeOptions<Source>, keyof SessionCoordinatorOptions | "controlHandler" | "sessionCatalog" | "profileId" | "workContractBuilder">
 		& { workContractBuilder: WorkContractBuilderPort };
 	cancelSubagents?: (source: Source) => number | Promise<number>;
 	cancelTaskPlans?: (source: Source) => number | Promise<number>;
-	controlHandler?: (runtime: BeeMaxAgentRuntime<Source>, interaction: InteractionEventAdapter<Source>) => AgentControlHandler<Source>;
+	controlHandler?: (runtime: ThruveraAgentRuntime<Source>, interaction: InteractionEventAdapter<Source>) => AgentControlHandler<Source>;
 	resources?: readonly ProfileRuntimeResource[];
 }
 
@@ -36,24 +36,24 @@ export interface ProfileRuntimeResource {
 	dispose(): void | Promise<void>;
 }
 
-export interface ProfileAgentRuntime<Source extends BeeMaxRuntimeSource> {
-	runtime: BeeMaxAgentRuntime<Source>;
+export interface ProfileAgentRuntime<Source extends ThruveraRuntimeSource> {
+	runtime: ThruveraAgentRuntime<Source>;
 	interaction: InteractionEventAdapter<Source>;
 	dispose(): Promise<void>;
 }
 
-export interface ProfileRuntimeOptions<Source extends BeeMaxRuntimeSource> {
+export interface ProfileRuntimeOptions<Source extends ThruveraRuntimeSource> {
 	work: ProfileWorkRuntimeOptions;
 	resources?: readonly ProfileRuntimeResource[];
 	compose(work: ProfileWorkRuntime): Omit<ProfileAgentRuntimeOptions<Source>, "resources">;
 }
 
-export interface ProfileRuntime<Source extends BeeMaxRuntimeSource> extends ProfileAgentRuntime<Source> {
+export interface ProfileRuntime<Source extends ThruveraRuntimeSource> extends ProfileAgentRuntime<Source> {
 	work: ProfileWorkRuntime;
 }
 
 /** The sole external composition seam for a channel-backed Profile Runtime. */
-export async function createProfileRuntime<Source extends BeeMaxRuntimeSource>(options: ProfileRuntimeOptions<Source>): Promise<ProfileRuntime<Source>> {
+export async function createProfileRuntime<Source extends ThruveraRuntimeSource>(options: ProfileRuntimeOptions<Source>): Promise<ProfileRuntime<Source>> {
 	let work: ProfileWorkRuntime;
 	try {
 		work = createProfileWorkRuntime(options.work);
@@ -98,7 +98,7 @@ export async function createProfileRuntime<Source extends BeeMaxRuntimeSource>(o
  * presenters, but session discovery, interaction events and
  * cancellation always receive the same durable runtime wiring.
  */
-export async function createProfileAgentRuntime<Source extends BeeMaxRuntimeSource>(
+export async function createProfileAgentRuntime<Source extends ThruveraRuntimeSource>(
 	options: ProfileAgentRuntimeOptions<Source>,
 ): Promise<ProfileAgentRuntime<Source>> {
 	if (!options.runtime.workContractBuilder) throw new Error("Profile Agent Runtime Work Contract Builder is required");
@@ -114,10 +114,10 @@ export async function createProfileAgentRuntime<Source extends BeeMaxRuntimeSour
 		}
 		throw error;
 	}
-	let runtime!: BeeMaxAgentRuntime<Source>;
+	let runtime!: ThruveraAgentRuntime<Source>;
 	let interaction!: InteractionEventAdapter<Source>;
 	try {
-		runtime = new BeeMaxAgentRuntime({
+		runtime = new ThruveraAgentRuntime({
 			...options.runtime,
 			...options.policy,
 			profileId: options.profileId,

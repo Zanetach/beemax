@@ -111,7 +111,7 @@ export class WeKnoraKnowledgeProvider implements KnowledgeProvider {
     if (input.authorizedKnowledgeBaseIds.length === 0) {
       throw new KnowledgeProviderError(
         "knowledge_scope_required",
-        "BeeMax must authorize at least one knowledge space before retrieval",
+        "Thruvera must authorize at least one knowledge space before retrieval",
       );
     }
 
@@ -132,10 +132,18 @@ export class WeKnoraKnowledgeProvider implements KnowledgeProvider {
     return {
       "X-API-Key": this.apiKey,
       "X-Request-ID": context.runId,
+      "X-Thruvera-Organization-ID": context.organizationId,
+      "X-Thruvera-Profile-ID": context.profileId,
+      "X-Thruvera-User-ID": context.userId,
+      "X-Thruvera-Conversation-ID": context.conversationId,
+      // Preserve the established provider contract while downstream services
+      // migrate to the Thruvera header namespace.
       "X-BeeMax-Organization-ID": context.organizationId,
       "X-BeeMax-Profile-ID": context.profileId,
       "X-BeeMax-User-ID": context.userId,
       "X-BeeMax-Conversation-ID": context.conversationId,
+      ...(context.workspaceId ? { "X-Thruvera-Workspace-ID": context.workspaceId } : {}),
+      ...(context.taskId ? { "X-Thruvera-Task-ID": context.taskId } : {}),
       ...(context.workspaceId ? { "X-BeeMax-Workspace-ID": context.workspaceId } : {}),
       ...(context.taskId ? { "X-BeeMax-Task-ID": context.taskId } : {}),
       ...(json ? { "Content-Type": "application/json" } : {}),

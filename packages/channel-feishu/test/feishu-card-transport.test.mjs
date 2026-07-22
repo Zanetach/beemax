@@ -75,8 +75,18 @@ test("Feishu Card JSON 2.0 callbacks normalize identity, routing, and stable act
 	assert.equal(first.chatId, "oc_chat");
 	assert.equal(first.userId, "ou_user");
 	assert.equal(first.userIdAlt, "on_user");
+	assert.match(first.actionId, /:details\.set:expanded$/u);
 	assert.equal(first.actionId, reordered.actionId);
 	assert.deepEqual(first.value, raw.action.value);
+});
+
+test("Feishu Card callbacks prefer the Thruvera action key while accepting the BeeMax key", () => {
+	const raw = {
+		context: { open_message_id: "om_card", open_chat_id: "oc_chat" },
+		operator: { open_id: "ou_user", user_id: "user", union_id: "on_user" },
+		action: { tag: "button", name: "show_details", value: { choice: "expanded", thruvera_action: "new.action", beemax_action: "legacy.action" } },
+	};
+	assert.match(parseFeishuCardActionEvent(raw).actionId, /:new\.action:expanded$/u);
 });
 
 test("Feishu processing reactions mirror Hermes start, success, and failure states", async () => {

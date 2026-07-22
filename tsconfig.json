@@ -2,13 +2,13 @@
   "extends": "./pi/tsconfig.base.json",
   "compilerOptions": {
     "paths": {
-		"@beemax/core": ["./packages/core/src/index.ts"],
-      "@beemax/channel-feishu": ["./packages/channel-feishu/src/index.ts"],
-      "@beemax/channel-runtime": ["./packages/channel-runtime/src/index.ts"],
-      "@beemax/channel-telegram": ["./packages/channel-telegram/src/index.ts"],
-      "@beemax/gateway": ["./packages/gateway/src/index.ts"],
-      "@beemax/knowledge": ["./packages/knowledge/src/index.ts"],
-      "@beemax/memory": ["./packages/memory/src/index.ts"]
+		"@thruvera/core": ["./packages/core/src/index.ts"],
+      "@thruvera/channel-feishu": ["./packages/channel-feishu/src/index.ts"],
+      "@thruvera/channel-runtime": ["./packages/channel-runtime/src/index.ts"],
+      "@thruvera/channel-telegram": ["./packages/channel-telegram/src/index.ts"],
+      "@thruvera/gateway": ["./packages/gateway/src/index.ts"],
+      "@thruvera/knowledge": ["./packages/knowledge/src/index.ts"],
+      "@thruvera/memory": ["./packages/memory/src/index.ts"]
     }
   },
   "include": ["packages/*/src", "apps/*/src"],

@@ -47,7 +47,7 @@ export function createSkillTools(agentDir: string, markReloadNeeded: () => void,
 	const canonicalToolNames = canonicalToolNameResolver(availableTools.filter((tool) => tool.name !== "bash"));
 	const runtime = new SkillRuntime(registry, 200_000, 20, [...canonicalToolNames.keys()]);
 	const resolveDeclaredTools = (names: readonly string[]) => [...new Set(names.map((name) => canonicalToolNames.get(name) ?? name))];
-	// Selection returns proposed activation metadata; BeeMaxAgentRuntime is the
+	// Selection returns proposed activation metadata; ThruveraAgentRuntime is the
 	// sole authority that compiles it into the next Pi Tool Spec Plan.
 	const capabilities = new CapabilityRuntime({ ...(capabilityRanker ? { ranker: capabilityRanker } : {}) });
 	let signingKeyPromise: Promise<Buffer> | undefined;

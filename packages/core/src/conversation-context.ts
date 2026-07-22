@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import type { BeeMaxRuntimeSource } from "./runtime.ts";
+import type { ThruveraRuntimeSource } from "./runtime.ts";
 import { memoryScopeForSource, type MemoryScope } from "./memory-scope.ts";
 import type { AccessScopeRef } from "./access-scope.ts";
 import type { Situation } from "./situation.ts";
@@ -16,11 +16,11 @@ export interface ConversationContextOptions {
 	/** Trusted Profile/business scope supplied by the composition root, never by a channel payload. */
 	memoryScope?: Pick<MemoryScope, "profileId" | "projectId" | "organizationId">;
 	/** Resolve an opaque Access Scope through a trusted composition-root adapter. */
-	resolveMemoryScope?: (source: BeeMaxRuntimeSource, accessScopeRef?: AccessScopeRef) => Pick<MemoryScope, "projectId" | "organizationId">;
+	resolveMemoryScope?: (source: ThruveraRuntimeSource, accessScopeRef?: AccessScopeRef) => Pick<MemoryScope, "projectId" | "organizationId">;
 	/** Persist a delivery route for proactive work without coupling Core to a channel. */
-	recordDirectRoute?: (route: MemoryScope, source: BeeMaxRuntimeSource) => void;
+	recordDirectRoute?: (route: MemoryScope, source: ThruveraRuntimeSource) => void;
 	/** Supplies verified, volatile facts (for example current task state) for fact-sensitive turns. */
-	runtimeFacts?: (source: BeeMaxRuntimeSource, text: string, facts: VerifiedRuntimeFacts) => string;
+	runtimeFacts?: (source: ThruveraRuntimeSource, text: string, facts: VerifiedRuntimeFacts) => string;
 	/** Dynamic Profile rollout boundary for Situation-backed organizational recall. */
 	organizationSituationAllowed?: () => boolean;
 	/** Turn-scoped enrichment budget. The current user request is always preserved outside this budget. */
@@ -91,11 +91,11 @@ export class ConversationContext {
 		this.maxContextChars = budget;
 	}
 
-	enrich(source: BeeMaxRuntimeSource, text: string, runtime: VerifiedRuntimeFacts = {}): string {
+	enrich(source: ThruveraRuntimeSource, text: string, runtime: VerifiedRuntimeFacts = {}): string {
 		return this.assemble(source, text, runtime).text;
 	}
 
-	assemble(source: BeeMaxRuntimeSource, text: string, runtime: VerifiedRuntimeFacts = {}, additionalItems: readonly ContextItemInput[] = []): ContextAssembly {
+	assemble(source: ThruveraRuntimeSource, text: string, runtime: VerifiedRuntimeFacts = {}, additionalItems: readonly ContextItemInput[] = []): ContextAssembly {
 		const scope = this.scopeFor(source, runtime.accessScopeRef);
 		const eventId = this.memory.recordEvent?.({ ...scope, kind: "user", content: text });
 		if (this.memoryLearningKernel && scope.profileId) {
@@ -145,7 +145,7 @@ export class ConversationContext {
 		return { text: included.length === 0 ? text : [...included.map((item) => item.text), "", "Current user request:", text].join("\n"), included, released, contextChars };
 	}
 
-	async assembleForExecution(source: BeeMaxRuntimeSource, text: string, runtime: VerifiedRuntimeFacts, executionEnvelope: Readonly<ExecutionEnvelope>, additionalItems: readonly ContextItemInput[] = []): Promise<ContextAssembly> {
+	async assembleForExecution(source: ThruveraRuntimeSource, text: string, runtime: VerifiedRuntimeFacts, executionEnvelope: Readonly<ExecutionEnvelope>, additionalItems: readonly ContextItemInput[] = []): Promise<ContextAssembly> {
 		const base = this.assemble(source, text, runtime, additionalItems);
 		if (!this.memoryLearningKernel) return base;
 		const scope = this.scopeFor(source, runtime.accessScopeRef);
@@ -205,7 +205,7 @@ export class ConversationContext {
 		}
 	}
 
-	record(source: BeeMaxRuntimeSource, exchange: ConversationExchange, runtime: Pick<VerifiedRuntimeFacts, "accessScopeRef"> = {}): void {
+	record(source: ThruveraRuntimeSource, exchange: ConversationExchange, runtime: Pick<VerifiedRuntimeFacts, "accessScopeRef"> = {}): void {
 		const scope = this.scopeFor(source, runtime.accessScopeRef);
 		if (source.chatType === "dm") this.recordDirectRoute?.(scope, source);
 		this.memory.recordCandidate({ ...scope, role: "user", content: exchange.user });
@@ -213,7 +213,7 @@ export class ConversationContext {
 		this.memory.recordEvent?.({ ...scope, kind: "assistant", content: exchange.assistant });
 	}
 
-	private scopeFor(source: BeeMaxRuntimeSource, accessScopeRef?: AccessScopeRef): MemoryScope {
+	private scopeFor(source: ThruveraRuntimeSource, accessScopeRef?: AccessScopeRef): MemoryScope {
 		const resolved = this.resolveMemoryScope?.(source, accessScopeRef);
 		return memoryScopeForSource(source, {
 			...this.memoryScope,

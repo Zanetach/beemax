@@ -7,10 +7,10 @@ import { join, resolve } from "node:path";
 import {
 	AuthStorage,
 	AutonomousPlanningPolicy,
-	BeeMaxAgentRuntime,
+	ThruveraAgentRuntime,
 	FileExecutionTraceStore,
 	PiWorkContractBuilder,
-	buildBeeMaxRuntimeFactory,
+	buildThruveraRuntimeFactory,
 	createAccessScopeRef,
 	createExecutionEnvelope,
 } from "../packages/core/dist/index.js";
@@ -22,8 +22,8 @@ import { liveAdaptiveAdmissionImplementationDigest } from "./adaptive-turn-admis
 
 const args = process.argv.slice(2);
 const profileIndex = args.indexOf("--profile");
-const profile = profileIndex >= 0 ? args[profileIndex + 1]?.trim() : process.env.BEEMAX_PROFILE?.trim();
-if (!profile) throw new Error("Live Adaptive Turn Admission evaluation requires --profile <name> or BEEMAX_PROFILE");
+const profile = profileIndex >= 0 ? args[profileIndex + 1]?.trim() : process.env.THRUVERA_PROFILE?.trim();
+if (!profile) throw new Error("Live Adaptive Turn Admission evaluation requires --profile <name> or THRUVERA_PROFILE");
 
 const config = loadConfig(undefined, profile);
 const auth = AuthStorage.create(join(config.paths.agentDir, "auth.json"));
@@ -128,7 +128,7 @@ async function executeCase(scenario, modelCandidates, evaluationRoot) {
 	const primary = modelCandidates[0];
 	const caseRoot = join(evaluationRoot, scenario.id);
 	const trace = new FileExecutionTraceStore(join(caseRoot, "trace.jsonl"), 1_000);
-	const factory = buildBeeMaxRuntimeFactory({
+	const factory = buildThruveraRuntimeFactory({
 		provider: "custom",
 		model: primary.model.id,
 		baseUrl: primary.model.baseUrl,
@@ -138,13 +138,13 @@ async function executeCase(scenario, modelCandidates, evaluationRoot) {
 		agentDir: join(caseRoot, "agent"),
 		getApiKey: async (provider) => modelCandidates.find((candidate) => candidate.model.provider === provider)?.apiKey ?? primary.apiKey,
 		additionalModelProviders: modelCandidates.map((candidate) => candidate.model.provider),
-		systemPrompt: "You are the BeeMax live Adaptive Turn Admission evaluator. Answer the user's request concisely. Do not invent current facts or sources when no research Tool is available; state that limitation plainly.",
+		systemPrompt: "You are the Thruvera live Adaptive Turn Admission evaluator. Answer the user's request concisely. Do not invent current facts or sources when no research Tool is available; state that limitation plainly.",
 		skillToolset: "safe",
 		tools: [],
 		createTools: () => [],
 	});
 	const events = [];
-	const runtime = new BeeMaxAgentRuntime({
+	const runtime = new ThruveraAgentRuntime({
 		profileId: `profile:adaptive-admission:${scenario.id}`,
 		interactiveAdmission: "model_first",
 		fallbackModels: modelCandidates.slice(1).map((candidate) => candidate.model),

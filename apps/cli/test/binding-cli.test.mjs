@@ -11,7 +11,7 @@ test("CLI validates and explains deterministic Profile Binding routes", () => {
 	const home = mkdtempSync(join(tmpdir(), "beemax-binding-cli-"));
 	const profileDir = join(home, "profiles", "operations");
 	const run = (...args) => execFileSync(process.execPath, [cli, ...args, "--profile", "operations"], {
-		encoding: "utf8", env: { ...process.env, BEEMAX_HOME: home },
+		encoding: "utf8", env: { ...process.env, THRUVERA_HOME: home },
 	});
 	try {
 		run("init");
@@ -59,7 +59,7 @@ test("CLI atomically activates and disables an existing Profile Binding", () => 
 	const profileDir = join(home, "profiles", "operations");
 	const configPath = join(profileDir, "config.yaml");
 	const run = (...args) => execFileSync(process.execPath, [cli, ...args, "--profile", "operations"], {
-		encoding: "utf8", env: { ...process.env, BEEMAX_HOME: home },
+		encoding: "utf8", env: { ...process.env, THRUVERA_HOME: home },
 	});
 	try {
 		run("init");
@@ -101,7 +101,7 @@ test("CLI leaves Profile configuration unchanged when Binding activation conflic
 	const profileDir = join(home, "profiles", "operations");
 	const configPath = join(profileDir, "config.yaml");
 	const run = (...args) => execFileSync(process.execPath, [cli, ...args, "--profile", "operations"], {
-		encoding: "utf8", env: { ...process.env, BEEMAX_HOME: home },
+		encoding: "utf8", env: { ...process.env, THRUVERA_HOME: home },
 	});
 	try {
 		run("init");
@@ -135,7 +135,7 @@ test("CLI refuses to republish duplicate disabled Profile Binding identities", (
 	const profileDir = join(home, "profiles", "operations");
 	const configPath = join(profileDir, "config.yaml");
 	const run = (...args) => execFileSync(process.execPath, [cli, ...args, "--profile", "operations"], {
-		encoding: "utf8", env: { ...process.env, BEEMAX_HOME: home },
+		encoding: "utf8", env: { ...process.env, THRUVERA_HOME: home },
 	});
 	try {
 		run("init");

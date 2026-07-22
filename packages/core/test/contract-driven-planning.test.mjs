@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
 	AutonomousPlanningPolicy,
-	BeeMaxAgentRuntime,
+	ThruveraAgentRuntime,
 	OPEN_WORLD_CONTRACT_ADJUDICATION_SCHEMA_VERSION,
 	WORK_CONTRACT_ADJUDICATION_SCHEMA_VERSION,
 	WORK_CONTRACT_SCHEMA_VERSION,
@@ -268,7 +268,7 @@ test("a simple conversational query uses the direct lane without semantic Work C
 	let promptText = "";
 	const runEvents = [];
 	const agent = { state: { model: { id: "test/model" }, messages: [] } };
-	const runtime = new BeeMaxAgentRuntime({
+	const runtime = new ThruveraAgentRuntime({
 		profileId: "profile:test",
 		turnUnderstanding: { understand: () => ({ action: "query", goal: request, constraints: [], acceptanceCriteria: [], uncertainties: [], memoryQuery: request, capabilityQuery: request, executionMode: "direct", confidence: 1 }) },
 		workContractBuilder: { build: async () => { contractCognitionCalls++; throw new Error("simple direct queries must not invoke semantic Contract cognition"); } },
@@ -316,7 +316,7 @@ test("ordinary interactive queries remain model-first across dynamic and composi
 	let contractCognitionCalls = 0;
 	const planningBases = [];
 	const agent = { state: { model: { id: "test/model" }, messages: [] } };
-	const runtime = new BeeMaxAgentRuntime({
+	const runtime = new ThruveraAgentRuntime({
 		profileId: "profile:test",
 		turnUnderstanding: { understand: (request) => ({ action: "query", goal: request, constraints: [], acceptanceCriteria: [], uncertainties: [], memoryQuery: request, capabilityQuery: request, executionMode: "direct", confidence: 1 }) },
 		workContractBuilder: { build: async () => { contractCognitionCalls++; assert.fail("ordinary interactive work must reach the main model directly"); } },
@@ -364,7 +364,7 @@ test("a research query is model-first interactively while Automation remains Con
 	const runEvents = [];
 	const policy = new AutonomousPlanningPolicy();
 	const agent = { state: { model: { id: "test/model" }, messages: [] } };
-	const runtime = new BeeMaxAgentRuntime({
+	const runtime = new ThruveraAgentRuntime({
 		profileId: "profile:test",
 		turnUnderstanding: { understand: () => ({ action: "query", goal: request, constraints: [], acceptanceCriteria: [], uncertainties: [], memoryQuery: request, executionMode: "direct", confidence: 1 }) },
 		workContractBuilder: { build: async () => { semanticallyAdmitted = true; return admission(contract); } },
@@ -423,7 +423,7 @@ test("Agent runtime compiles a reviewed OpenWorld graph without imposing an exec
 	let promptText = "";
 	const policy = new AutonomousPlanningPolicy();
 	const agent = { state: { model: { id: "test/model" }, messages: [] } };
-	const runtime = new BeeMaxAgentRuntime({
+	const runtime = new ThruveraAgentRuntime({
 		profileId: "profile:test",
 		interactiveAdmission: "contract_first",
 		turnUnderstanding: { understand: () => ({ action: "create", goal: runtimeGoldRequest, constraints: [], acceptanceCriteria: ["调研过去一周黄金走势", "输出 HTML", "PDF"], uncertainties: [], memoryQuery: runtimeGoldRequest, executionMode: "direct", confidence: 1 }) },
@@ -491,7 +491,7 @@ test("a restarted runtime revalidates the durable OpenWorld admission without re
 			dispose: () => undefined,
 		};
 	};
-	const first = new BeeMaxAgentRuntime({
+	const first = new ThruveraAgentRuntime({
 		profileId: "profile:test",
 		interactiveAdmission: "contract_first",
 		taskLedger: ledger,
@@ -511,7 +511,7 @@ test("a restarted runtime revalidates the durable OpenWorld admission without re
 	let cognitionCalls = 0;
 	let piCalls = 0;
 	const restoredEvents = [];
-	const restored = new BeeMaxAgentRuntime({
+	const restored = new ThruveraAgentRuntime({
 		profileId: "profile:test",
 		taskLedger: ledger,
 		planningPolicy: new AutonomousPlanningPolicy(),
@@ -537,7 +537,7 @@ test("a restarted runtime revalidates the durable OpenWorld admission without re
 	const current = tasks.get(objective.id);
 	tasks.set(objective.id, { ...current, contractAdmission: { ...structuredClone(current.contractAdmission), admittedAt: 0, expiresAt: 1 } });
 	let expiredPiCalls = 0;
-	const expired = new BeeMaxAgentRuntime({
+	const expired = new ThruveraAgentRuntime({
 		profileId: "profile:test",
 		taskLedger: ledger,
 		planningPolicy: new AutonomousPlanningPolicy(),
@@ -589,7 +589,7 @@ test("a signed correction admission binds every earlier Objective revision befor
 			abort: async () => undefined, dispose: () => undefined,
 		};
 	};
-	const createRuntime = (contract, understood) => new BeeMaxAgentRuntime({
+	const createRuntime = (contract, understood) => new ThruveraAgentRuntime({
 		profileId: "profile:revision-chain",
 		interactiveAdmission: "contract_first",
 		taskLedger: ledger,
@@ -625,7 +625,7 @@ test("a signed correction admission binds every earlier Objective revision befor
 	corrected.objectiveRevisions[0].situation.summary = "被篡改的早期修订";
 
 	let piCalls = 0;
-	const restored = new BeeMaxAgentRuntime({
+	const restored = new ThruveraAgentRuntime({
 		profileId: "profile:revision-chain",
 		taskLedger: ledger,
 		planningPolicy: new AutonomousPlanningPolicy(),
@@ -642,7 +642,7 @@ test("a production runtime without a Profile integrity key blocks durable model 
 	let piCalls = 0;
 	const tasks = [];
 	const contract = workContract({ acceptanceCriteria: [clause(rawRequest)], capabilityRequirements: [], executionMode: "direct" });
-	const runtime = new BeeMaxAgentRuntime({
+	const runtime = new ThruveraAgentRuntime({
 		profileId: "profile:missing-integrity",
 		interactiveAdmission: "contract_first",
 		taskLedger: { record: (task) => tasks.push(task), transition: () => true, queryTasks: () => [], reviseObjective: () => undefined },
@@ -674,7 +674,7 @@ test("the contract-derived correction budget bounds the real Objective verificat
 	let verifications = 0;
 	const executionEnvelopes = [];
 	const agent = { state: { model: { id: "test/model" }, messages: [] } };
-	const runtime = new BeeMaxAgentRuntime({
+	const runtime = new ThruveraAgentRuntime({
 		profileId: "profile:test",
 		interactiveAdmission: "contract_first",
 		taskLedger: ledger,

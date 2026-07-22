@@ -4,7 +4,7 @@ import { accessSync, constants as fsConstants, realpathSync, statSync, type Stat
 import { chmod, lstat, mkdir, open, realpath, rename, rm } from "node:fs/promises";
 import type { FileHandle } from "node:fs/promises";
 import { basename, delimiter, dirname, extname, isAbsolute, join, relative, sep } from "node:path";
-import type { MediaArtifact, TaskArtifact } from "@beemax/core";
+import type { MediaArtifact, TaskArtifact } from "@thruvera/core";
 
 export interface CaddyArtifactSiteOptions {
 	agentDir: string;
@@ -340,10 +340,10 @@ export function artifactSiteLocalBaseUrl(listen: string): string {
 
 /** Resolve only from the trusted Gateway host process and fixed installation candidates. */
 export function resolveCaddyHostCommand(environment: Readonly<Record<string, string | undefined>> = process.env): string {
-	const configured = environment.BEEMAX_ARTIFACT_SITE_COMMAND;
+	const configured = environment.THRUVERA_ARTIFACT_SITE_COMMAND;
 	if (configured !== undefined) {
 		if (!configured || configured !== configured.trim() || /[\u0000-\u001f\u007f]/u.test(configured)) {
-			throw new Error("Invalid trusted host BEEMAX_ARTIFACT_SITE_COMMAND");
+			throw new Error("Invalid trusted host THRUVERA_ARTIFACT_SITE_COMMAND");
 		}
 		return canonicalHostExecutable(configured, environment) ?? configured;
 	}

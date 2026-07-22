@@ -1,8 +1,8 @@
-import { parseInteractionCommand, sanitizeDisplayText, type AgentControlHandler, type InteractionEventAdapter, type ProfileTaskSchedulerSnapshot, type TaskPlanRecord, type TaskPlanRetryResult, type TaskRecord, type TaskVerificationRetryResult } from "@beemax/core";
-import type { SessionSource } from "@beemax/channel-runtime";
-import type { GatewayIngressSnapshot, ProfileHostSnapshot } from "@beemax/gateway";
-import type { BeeMaxAgentRuntime } from "@beemax/core";
-import type { BeeMaxConfig } from "./config.ts";
+import { parseInteractionCommand, sanitizeDisplayText, type AgentControlHandler, type InteractionEventAdapter, type ProfileTaskSchedulerSnapshot, type TaskPlanRecord, type TaskPlanRetryResult, type TaskRecord, type TaskVerificationRetryResult } from "@thruvera/core";
+import type { SessionSource } from "@thruvera/channel-runtime";
+import type { GatewayIngressSnapshot, ProfileHostSnapshot } from "@thruvera/gateway";
+import type { ThruveraAgentRuntime } from "@thruvera/core";
+import type { ThruveraConfig } from "./config.ts";
 import { configureModel } from "./profile-config.ts";
 import { readdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -72,8 +72,8 @@ export function renderTaskPlanRetryResult(planId: string, result: TaskPlanRetryR
 
 /** Profile control plane shared by local chat and every Gateway channel. */
 export function createProfileControlHandler(
-	runtime: BeeMaxAgentRuntime<SessionSource>,
-	config: BeeMaxConfig,
+	runtime: ThruveraAgentRuntime<SessionSource>,
+	config: ThruveraConfig,
 	interaction?: InteractionEventAdapter<SessionSource>,
 	operationalFacts?: () => ProfileOperationalFacts,
 	actions?: ProfileControlActions,

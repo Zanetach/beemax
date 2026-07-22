@@ -15,7 +15,7 @@ test("Profile browser egress blocks hostnames resolving to private or mixed addr
 	try {
 		const response = await proxyRequest(proxy.url, "http://rebind.example.test/latest/meta-data");
 		assert.equal(response.statusCode, 403);
-		assert.match(response.body, /Blocked by BeeMax/u);
+		assert.match(response.body, /Blocked by Thruvera/u);
 		assert.deepEqual(lookups, ["rebind.example.test"]);
 	} finally { await proxy.close(); }
 });
@@ -37,7 +37,7 @@ test("Profile browser egress rejects local-use IPv6 translation addresses over H
 	try {
 		const response = await proxyRequest(proxy.url, "http://local-nat64.example.test/latest/meta-data");
 		assert.equal(response.statusCode, 403);
-		assert.match(response.body, /Blocked by BeeMax/u);
+		assert.match(response.body, /Blocked by Thruvera/u);
 	} finally { await proxy.close(); }
 });
 

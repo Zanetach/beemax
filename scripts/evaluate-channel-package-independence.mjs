@@ -24,7 +24,7 @@ for (const scenario of scenarios) {
 		for (const name of scenario.packages) {
 			await execFileAsync(join(root, "node_modules", ".bin", "tsgo"), ["-p", join(sandbox, "packages", name, "tsconfig.build.json")], { cwd: sandbox, maxBuffer: 8 * 1024 * 1024 });
 		}
-		evidence.push({ id: scenario.id, absent: `@beemax/${scenario.absent}`, built: scenario.packages.map((name) => `@beemax/${name}`), passed: true });
+		evidence.push({ id: scenario.id, absent: `@thruvera/${scenario.absent}`, built: scenario.packages.map((name) => `@thruvera/${name}`), passed: true });
 	} finally {
 		await rm(sandbox, { recursive: true, force: true });
 	}
@@ -44,10 +44,10 @@ async function installIsolatedNodeModules(sandbox, selected, absent) {
 	const modules = join(sandbox, "node_modules");
 	await mkdir(modules, { recursive: true });
 	for (const entry of await readdir(join(root, "node_modules"), { withFileTypes: true })) {
-		if (entry.name === "@beemax") continue;
+		if (entry.name === "@thruvera") continue;
 		await symlink(join(root, "node_modules", entry.name), join(modules, entry.name), entry.isDirectory() ? "dir" : "file");
 	}
-	const scope = join(modules, "@beemax");
+	const scope = join(modules, "@thruvera");
 	await mkdir(scope, { recursive: true });
 	await symlink(join(root, "packages", "core"), join(scope, "core"), "dir");
 	for (const name of selected) await symlink(join(sandbox, "packages", name), join(scope, name), "dir");

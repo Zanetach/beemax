@@ -10,7 +10,7 @@ test("full workbench renders persistent state and activity without an approval p
 	workbench.setPicker("Model Picker · /model <number>", ["1. openai/gpt", "2. anthropic/claude"]);
 	workbench.setSubagents([{ id: "sub-1", name: "research", goal: "inspect architecture", capability: "research", status: "running", createdAt: 1, startedAt: 1, timeoutMs: 60_000 }]);
 	const screen = workbench.render(80, 30);
-	assert.match(screen, /BeeMax Workbench/);
+	assert.match(screen, /Thruvera Workbench/);
 	assert.match(screen, /Transcript/);
 	assert.match(screen, /Activity/);
 	assert.doesNotMatch(screen, /Approval|report\.md|allow once|deny/i);

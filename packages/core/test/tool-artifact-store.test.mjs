@@ -19,6 +19,7 @@ test("oversized Tool text becomes a bounded scoped Artifact with a safe context 
 		assert.equal(projected.truncated, true);
 		assert.ok(projected.artifact);
 		assert.match(projected.artifact.ref, /^beemax-artifact:sha256:[a-f0-9]{64}$/u);
+		assert.equal(projected.artifact.mediaType, "application/vnd.beemax.tool-artifact+json");
 		assert.ok(Buffer.byteLength(JSON.stringify(projected.result.content)) < 2_000);
 		assert.match(projected.result.content.at(-1).text, /artifact_ref=/u);
 		assert.equal(projected.result.details.provider, "fixture");

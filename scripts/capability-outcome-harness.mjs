@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
-	BeeMaxAgentRuntime,
+	ThruveraAgentRuntime,
 	FileExecutionTraceStore,
 	compareCapabilityCalibrations,
 	createAccessScopeRef,
@@ -151,7 +151,7 @@ export async function executeOutcomeBoundCapabilityTask({ scenario, cognitionId,
 	const rawRequest = scenario.query;
 	const contractClauses = evaluationContractClauses(rawRequest);
 	const clause = contractClauses.acceptance[0];
-	const runtime = new BeeMaxAgentRuntime({
+	const runtime = new ThruveraAgentRuntime({
 		profileId: "profile:capability-eval", interactiveAdmission: "contract_first", taskLedger: ledger, executionTrace: traceStore,
 		turnUnderstanding: { understand: () => ({ action: "create", goal: clause.text, constraints: contractClauses.prohibitions.map(({ text }) => text), acceptanceCriteria: contractClauses.acceptance.map(({ text }) => text), uncertainties: [], memoryQuery: rawRequest, capabilityQuery: rawRequest, executionMode: "direct", confidence: 1 }) },
 		workContractBuilder: { build: async () => ({ source: "model", cognitionBudgetChargeTokens: 1, semanticAdjudication: semanticReview, contract: { schemaVersion: "beemax.work-contract.v1", rawRequest, action: "create", objective: clause, constraints: [], prohibitions: contractClauses.prohibitions, acceptanceCriteria: contractClauses.acceptance, capabilityRequirements: required.length ? contractClauses.acceptance.slice(0, required.length) : [], uncertainties: [], executionMode: "direct", confidence: 1 } }) },

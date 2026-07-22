@@ -23,7 +23,7 @@ export interface RuntimeCapabilitySnapshot {
 	primitives: readonly ["agent-loop", "session", "tool", "skill", "chat-provider", "image-provider"];
 }
 
-/** Neutral BeeMax view of the Provider capabilities registered by the bundled Pi runtime. */
+/** Neutral Thruvera view of the Provider capabilities registered by the bundled Pi runtime. */
 export function getRuntimeCapabilitySnapshot(): RuntimeCapabilitySnapshot {
 	const chat = builtinProviders().map((provider) => ({
 		id: provider.id,

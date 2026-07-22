@@ -2,7 +2,7 @@ import type { AgentScope } from "./agent-scope.ts";
 import type { AccessScopeRef, TrustedAccessAuthority } from "./access-scope.ts";
 import type { ToolPolicy, ToolRisk, ToolSideEffect } from "./tool-runtime.ts";
 
-const PROVIDER_BRAND: unique symbol = Symbol("BeeMaxEnterprisePolicyProvider");
+const PROVIDER_BRAND: unique symbol = Symbol("ThruveraEnterprisePolicyProvider");
 const TRUSTED_PUBLISHER_AUTHORITIES = new Set(["enterprise_system", "administrator_grant"]);
 const DISPOSITIONS = new Set<EnterprisePolicyDisposition>(["allow", "deny", "require_approval", "constrain", "missing_evidence"]);
 

@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { createTaskCheckpoint, TaskGraph, TaskRecoveryRunner } from "@beemax/core";
+import { createTaskCheckpoint, TaskGraph, TaskRecoveryRunner } from "@thruvera/core";
 import { MemoryStore } from "../dist/index.js";
 
 test("P7 recovery gate restores at least 95% of safely replayable interrupted Tasks", async () => {

@@ -36,7 +36,7 @@ function run(system, overrides = {}) {
 }
 
 test("parity evaluation scores one complete run through the public report contract", () => {
-	const report = evaluateAgentRun(agentParityCorpus, run("beemax"));
+	const report = evaluateAgentRun(agentParityCorpus, run("thruvera"));
 	assert.equal(report.corpus.cases, agentParityCorpus.cases.length);
 	assert.equal(report.coverage.missingCases.length, 0);
 	assert.equal(report.quality.endToEndSuccessRate, 1);
@@ -81,10 +81,10 @@ test("a model answer without required Capability and evidence receipts is not en
 });
 
 test("parity evaluation rejects a run that does not use the exact pinned corpus", () => {
-	const incomplete = run("beemax");
+	const incomplete = run("thruvera");
 	incomplete.cases.pop();
 	assert.throws(() => evaluateAgentRun(agentParityCorpus, incomplete), /missing case/i);
-	const foreign = run("beemax");
+	const foreign = run("thruvera");
 	foreign.corpus.seed = "different";
 	assert.throws(() => evaluateAgentRun(agentParityCorpus, foreign), /corpus identity/i);
 });
@@ -92,7 +92,7 @@ test("parity evaluation rejects a run that does not use the exact pinned corpus"
 test("parity comparison exposes per-dimension regressions instead of hiding them in an aggregate", () => {
 	const routedCase = agentParityCorpus.cases.find((scenario) => scenario.requiredCapabilities.length && scenario.requiredEvidenceKinds.length);
 	const effectCase = agentParityCorpus.cases.find((scenario) => scenario.facets.includes("external_effect") || scenario.requiredEvidenceKinds.includes("effect") || scenario.requiredEvidenceKinds.includes("delivery"));
-	const candidate = run("beemax", {
+	const candidate = run("thruvera", {
 		[routedCase.id]: {
 			status: "succeeded",
 			durationMs: 500,
@@ -115,8 +115,8 @@ test("parity comparison exposes per-dimension regressions instead of hiding them
 });
 
 test("best-native comparison permits different pinned models without weakening metric gates", () => {
-	const candidate = run("beemax");
-	candidate.system.model = "beemax-native-model";
+	const candidate = run("thruvera");
+	candidate.system.model = "thruvera-native-model";
 	candidate.provenance.mode = "best-native";
 	const baseline = run("hermes");
 	baseline.system.model = "hermes-native-model";
@@ -130,19 +130,19 @@ test("best-native comparison permits different pinned models without weakening m
 });
 
 test("parity comparison fixes candidate and baseline roles", () => {
-	assert.throws(() => compareAgentParity({ corpus: agentParityCorpus, candidate: run("codex"), baselines: [run("beemax"), run("hermes")] }), /candidate must be beemax/i);
-	assert.throws(() => compareAgentParity({ corpus: agentParityCorpus, candidate: run("beemax"), baselines: [run("codex")] }), /exactly codex and hermes/i);
-	assert.throws(() => compareAgentParity({ corpus: agentParityCorpus, candidate: run("beemax"), baselines: [run("codex"), run("codex")] }), /exactly codex and hermes/i);
+	assert.throws(() => compareAgentParity({ corpus: agentParityCorpus, candidate: run("codex"), baselines: [run("thruvera"), run("hermes")] }), /candidate must be thruvera/i);
+	assert.throws(() => compareAgentParity({ corpus: agentParityCorpus, candidate: run("thruvera"), baselines: [run("codex")] }), /exactly codex and hermes/i);
+	assert.throws(() => compareAgentParity({ corpus: agentParityCorpus, candidate: run("thruvera"), baselines: [run("codex"), run("codex")] }), /exactly codex and hermes/i);
 });
 
 test("parity CLI rejects hand-authored reports that only imitate provenance fields", () => {
-	const root = mkdtempSync(join(tmpdir(), "beemax-agent-parity-"));
+	const root = mkdtempSync(join(tmpdir(), "thruvera-agent-parity-"));
 	try {
-		const candidate = join(root, "beemax.json");
+		const candidate = join(root, "thruvera.json");
 		const codex = join(root, "codex.json");
 		const hermes = join(root, "hermes.json");
 		const output = join(root, "comparison.json");
-		writeFileSync(candidate, JSON.stringify(run("beemax")));
+		writeFileSync(candidate, JSON.stringify(run("thruvera")));
 		writeFileSync(codex, JSON.stringify(run("codex")));
 		writeFileSync(hermes, JSON.stringify(run("hermes")));
 		const executed = spawnSync(process.execPath, ["scripts/evaluate-agent-parity.mjs", "--candidate", candidate, "--baseline", codex, "--baseline", hermes, "--write", output], { cwd: new URL("../../../", import.meta.url), encoding: "utf8" });
@@ -156,9 +156,9 @@ test("parity CLI rejects hand-authored reports that only imitate provenance fiel
 test("pinned run validation binds a capture to the current manifest, fixture, target and environment", async () => {
 	const manifestBytes = await import("node:fs/promises").then(({ readFile }) => readFile(new URL("../../../evals/agent-parity-targets.json", import.meta.url)));
 	const manifest = JSON.parse(manifestBytes);
-	const target = manifest.targets.find((candidate) => candidate.id === "beemax");
+	const target = manifest.targets.find((candidate) => candidate.id === "thruvera");
 	const machine = manifest.machineProfiles[0];
-	const report = run("beemax");
+	const report = run("thruvera");
 	report.system = { id: target.id, version: target.version, model: target.nativeModel };
 	report.environment = { platform: machine.platform, arch: machine.arch, node: machine.node, osId: machine.osId, osVersion: `${machine.osVersionPrefix}0`, machineProfile: machine.id, networkCondition: "live-public-uncontrolled", networkEnforcement: "observed-public-network" };
 	const captureConfiguration = { adapter: target.capture.adapter, options: target.capture.bestNativeOptions };
@@ -174,7 +174,7 @@ test("parity targets pin product versions and separate same-model from native-pr
 	assert.deepEqual(targets.platforms, ["darwin-26-arm64", "ubuntu-24.04-x64"]);
 	assert.deepEqual(targets.networkConditions.map((condition) => condition.id), ["isolated-fixture", "live-public-uncontrolled", "offline"]);
 	assert.deepEqual(targets.execution, { caseTimeoutMs: 180000, productConcurrency: 1, caseConcurrency: 1, sideEffects: "blocked-unless-isolated-fixture-provider" });
-	assert.deepEqual(targets.targets.map((target) => target.id), ["beemax", "codex", "hermes"]);
+	assert.deepEqual(targets.targets.map((target) => target.id), ["thruvera", "codex", "hermes"]);
 	for (const target of targets.targets) {
 		assert.match(target.version, /^\d+\.\d+\.\d+/);
 		assert.doesNotMatch(target.version, /latest|main/i);
@@ -187,7 +187,7 @@ test("parity runner executes the exact corpus and retains failed cases", async (
 	const observed = [];
 	const report = await runAgentParityCorpus({
 		corpus: agentParityCorpus,
-		system: { id: "beemax", version: "1.2.0", model: "shared-model" },
+		system: { id: "thruvera", version: "1.2.0", model: "shared-model" },
 		environment: { platform: "test", arch: "test", node: process.version, osId: "test-os", osVersion: "1.0", machineProfile: "test", networkCondition: "isolated-fixture", networkEnforcement: "deterministic-fixture-adapter" },
 		executeCase: async (scenario) => {
 			observed.push(scenario.id);
@@ -220,7 +220,7 @@ test("parity runner gives an aborted adapter a bounded grace window to retain pa
 	const corpus = { version: 1, seed: "timeout", cases: [{ id: "timeout", requiredCapabilities: [], requiredEvidenceKinds: [], facets: [] }] };
 	const report = await runAgentParityCorpus({
 		corpus,
-		system: { id: "beemax", version: "1", model: "model" },
+		system: { id: "thruvera", version: "1", model: "model" },
 		environment: { platform: "test", arch: "test", node: process.version, osId: "test-os", osVersion: "1.0", machineProfile: "test", networkCondition: "isolated-fixture", networkEnforcement: "deterministic-fixture-adapter" },
 		timeoutMs: 100,
 		executeCase: (_scenario, signal) => new Promise((resolve) => signal.addEventListener("abort", () => resolve({
@@ -234,7 +234,7 @@ test("parity runner gives an aborted adapter a bounded grace window to retain pa
 });
 
 test("capture CLI runs a pluggable Agent adapter unattended", (context) => {
-	const root = mkdtempSync(join(tmpdir(), "beemax-agent-parity-capture-"));
+	const root = mkdtempSync(join(tmpdir(), "thruvera-agent-parity-capture-"));
 	try {
 		const output = join(root, "run.json");
 		const adapter = new URL("./fixtures/agent-parity-adapter.mjs", import.meta.url).pathname;

@@ -4,7 +4,7 @@ import { lstat, mkdtemp, open, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { Readable, Transform } from "node:stream";
 import { pipeline } from "node:stream/promises";
-import { GroupActivationController, type GroupActivationDecision, type GroupActivationMode, type GroupActivationSignal, type InboundMessage, type MessageHandler, type ObservationHandler, type PlatformAdapter, type SendOptions, type SendResult } from "@beemax/channel-runtime";
+import { GroupActivationController, type GroupActivationDecision, type GroupActivationMode, type GroupActivationSignal, type InboundMessage, type MessageHandler, type ObservationHandler, type PlatformAdapter, type SendOptions, type SendResult } from "@thruvera/channel-runtime";
 
 export interface TelegramSettings {
 	allowedUsers: string[];
@@ -129,7 +129,7 @@ export class TelegramAdapter implements PlatformAdapter {
 		if (controller.signal.aborted) return false;
 		this.connected = true;
 		this.pollTask = this.pollLoop(controller.signal).catch((error) => {
-			if (!controller.signal.aborted) console.error(`[beemax] Telegram polling stopped: ${safeError(error)}`);
+			if (!controller.signal.aborted) console.error(`[thruvera] Telegram polling stopped: ${safeError(error)}`);
 		}).finally(() => { this.connected = false; });
 		return true;
 	}
@@ -196,7 +196,7 @@ export class TelegramAdapter implements PlatformAdapter {
 				if (signal.aborted) return;
 				failures++;
 				const delay = Math.min(30_000, this.settings.retryBaseDelayMs * 2 ** Math.min(failures - 1, 5));
-				console.warn(`[beemax] Telegram polling retry ${failures}: ${safeError(error)}`);
+				console.warn(`[thruvera] Telegram polling retry ${failures}: ${safeError(error)}`);
 				if (delay) await wait(delay, signal);
 			}
 		}

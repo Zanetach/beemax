@@ -25,7 +25,7 @@ knowledge:
       name: PCB专业知识
       knowledgeBaseId: kb-pcb
 `);
-  await writeFile(paths.envPath, 'BEEMAX_WEKNORA_API_KEY="secret-key"\n', { mode: 0o600 });
+  await writeFile(paths.envPath, 'THRUVERA_WEKNORA_API_KEY="secret-key"\n', { mode: 0o600 });
 
   const config = loadConfig(paths.configPath, "knowledge");
   assert.deepEqual(config.knowledge, {

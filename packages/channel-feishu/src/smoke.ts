@@ -62,7 +62,7 @@ export async function runFeishuSmoke(
 	try {
 		const response = await retry(() => client.im.v1.message.create({
 			params: { receive_id_type: "chat_id" },
-			data: { receive_id: chatId, msg_type: "text", content: JSON.stringify({ text: "BeeMax Feishu smoke test: text delivery passed." }), uuid: textUuid },
+			data: { receive_id: chatId, msg_type: "text", content: JSON.stringify({ text: "Thruvera Feishu smoke test: text delivery passed." }), uuid: textUuid },
 		}));
 		if (response.code !== 0 || !response.data?.message_id) throw feishuResponseError(response.code, response.msg);
 		textMessageId = response.data.message_id;
@@ -75,7 +75,7 @@ export async function runFeishuSmoke(
 			data: {
 				receive_id: chatId,
 				msg_type: "interactive",
-				content: JSON.stringify({ schema: "2.0", header: { title: { tag: "plain_text", content: "BeeMax smoke test" }, template: "green" }, body: { elements: [{ tag: "markdown", content: "✅ Interactive-card delivery passed." }] } }),
+				content: JSON.stringify({ schema: "2.0", header: { title: { tag: "plain_text", content: "Thruvera smoke test" }, template: "green" }, body: { elements: [{ tag: "markdown", content: "✅ Interactive-card delivery passed." }] } }),
 				uuid: cardUuid,
 			},
 		}));

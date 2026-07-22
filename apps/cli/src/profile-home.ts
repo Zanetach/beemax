@@ -20,17 +20,48 @@ export interface ProfileLocation extends ProfilePaths {
 	isHome: boolean;
 }
 
-export function beemaxRoot(env: NodeJS.ProcessEnv = process.env): string {
-	return resolve(env.BEEMAX_ROOT?.trim() || process.cwd());
+/**
+ * Thruvera is the public environment namespace. BeeMax variables remain a
+ * compatibility input for existing Profiles and installations.
+ */
+export function applyThruveraEnvironmentAliases(env: NodeJS.ProcessEnv = process.env): void {
+	const suffixes = new Set<string>();
+	for (const key of Object.keys(env)) {
+		if (key.startsWith("THRUVERA_")) suffixes.add(key.slice("THRUVERA_".length));
+		if (key.startsWith("BEEMAX_")) suffixes.add(key.slice("BEEMAX_".length));
+	}
+	for (const suffix of suffixes) {
+		const canonical = `THRUVERA_${suffix}`;
+		const legacy = `BEEMAX_${suffix}`;
+		const value = env[canonical] ?? env[legacy];
+		if (value === undefined) continue;
+		env[canonical] = value;
+		env[legacy] = value;
+	}
 }
 
-export function beemaxHome(env: NodeJS.ProcessEnv = process.env): string {
-	return resolve(env.BEEMAX_HOME?.trim() || join(homedir(), ".beemax"));
+applyThruveraEnvironmentAliases();
+
+export function thruveraRoot(env: NodeJS.ProcessEnv = process.env): string {
+	return resolve(env.THRUVERA_ROOT?.trim() || env.BEEMAX_ROOT?.trim() || process.cwd());
 }
+
+export function thruveraHome(env: NodeJS.ProcessEnv = process.env): string {
+	const explicit = env.THRUVERA_HOME?.trim() || env.BEEMAX_HOME?.trim();
+	if (explicit) return resolve(explicit);
+	const preferred = join(homedir(), ".thruvera");
+	const legacy = join(homedir(), ".beemax");
+	return resolve(!existsSync(preferred) && existsSync(legacy) ? legacy : preferred);
+}
+
+/** @deprecated Use thruveraRoot. */
+export const beemaxRoot = thruveraRoot;
+/** @deprecated Use thruveraHome. */
+export const beemaxHome = thruveraHome;
 
 export function profilePaths(profile: string, options: ProfileStorageOptions = {}): ProfilePaths {
 	validateProfileName(profile);
-	const homePath = join(resolve(options.home ?? beemaxHome()), "profiles", profile);
+	const homePath = join(resolve(options.home ?? thruveraHome()), "profiles", profile);
 	return {
 		homePath,
 		configPath: join(homePath, "config.yaml"),
@@ -42,9 +73,11 @@ export function profilePaths(profile: string, options: ProfileStorageOptions = {
 
 export function legacyProfilePaths(profile: string, options: ProfileStorageOptions = {}): ProfilePaths {
 	validateProfileName(profile);
-	const root = resolve(options.root ?? beemaxRoot());
+	const root = resolve(options.root ?? thruveraRoot());
+	const thruveraConfigPath = join(root, "config", "thruvera.yaml");
+	const beemaxConfigPath = join(root, "config", "beemax.yaml");
 	const configPath = profile === "default"
-		? join(root, "config", "beemax.yaml")
+		? (existsSync(thruveraConfigPath) || !existsSync(beemaxConfigPath) ? thruveraConfigPath : beemaxConfigPath)
 		: join(root, "config", "profiles", `${profile}.yaml`);
 	const dataPath = profile === "default" ? join(root, "data") : join(root, "data", "profiles", profile);
 	return {
@@ -61,8 +94,8 @@ export function resolveProfileLocation(
 	explicitConfig?: string,
 	options: ProfileStorageOptions = {},
 ): ProfileLocation {
-	const root = resolve(options.root ?? beemaxRoot());
-	const home = resolve(options.home ?? beemaxHome());
+	const root = resolve(options.root ?? thruveraRoot());
+	const home = resolve(options.home ?? thruveraHome());
 	const modern = profilePaths(profile, { root, home });
 	if (explicitConfig) {
 		const configPath = isAbsolute(explicitConfig) ? explicitConfig : resolve(root, explicitConfig);
@@ -96,14 +129,14 @@ function pathEntryExists(path: string): boolean {
 }
 
 export function activeProfile(env: NodeJS.ProcessEnv = process.env): string {
-	const explicit = env.BEEMAX_PROFILE?.trim();
+	const explicit = env.THRUVERA_PROFILE?.trim() || env.BEEMAX_PROFILE?.trim();
 	if (explicit) {
 		validateProfileName(explicit);
 		return explicit;
 	}
 	try {
-		const selected = readFileSync(join(beemaxHome(env), "active-profile"), "utf8").trim();
-		if (!selected) throw new Error("BeeMax active-profile marker is empty");
+		const selected = readFileSync(join(thruveraHome(env), "active-profile"), "utf8").trim();
+		if (!selected) throw new Error("Thruvera active-profile marker is empty");
 		validateProfileName(selected);
 		return selected;
 	} catch (error) {

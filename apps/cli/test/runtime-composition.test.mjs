@@ -5,8 +5,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createProfileAgentRuntime, createProfileRuntime } from "../dist/runtime-composition.js";
 import { attestAgentFactorySecurity } from "../dist/agent-factory.js";
-import { DeterministicWorkContractBuilder } from "@beemax/core";
-import { MemoryStore } from "@beemax/memory";
+import { DeterministicWorkContractBuilder } from "@thruvera/core";
+import { MemoryStore } from "@thruvera/memory";
 
 test("Profile Agent composition rejects missing Work Contract cognition before starting resources", async () => {
 	const root = await mkdtemp(join(tmpdir(), "beemax-profile-runtime-admission-"));

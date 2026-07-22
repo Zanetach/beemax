@@ -1,7 +1,7 @@
 import { defineTool, type ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { StringEnum } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
-import type { BeeMaxRuntimeSource } from "./runtime.ts";
+import type { ThruveraRuntimeSource } from "./runtime.ts";
 import { MUTATING_TOOL_POLICY, READ_ONLY_TOOL_POLICY, withToolPolicy, type ToolPolicy } from "./tool-runtime.ts";
 import { responsibilityOwnerKey, responsibilityOwnerKeys } from "./agent-scope.ts";
 import type { TaskLedger, TaskStatus } from "./task-ledger.ts";
@@ -27,7 +27,7 @@ export interface SubagentTaskSnapshot {
 
 export interface SubagentTask extends SubagentTaskSnapshot {
 	ownerKey: string;
-	source: BeeMaxRuntimeSource;
+	source: ThruveraRuntimeSource;
 	context?: string;
 	parentId?: string;
 	acceptanceCriteria?: string;
@@ -97,7 +97,7 @@ export class SubagentManager {
 		this.maxCorrectiveAttempts = Math.max(0, Math.min(Math.trunc(options.maxCorrectiveAttempts ?? 1), 2));
 	}
 
-	spawn(source: BeeMaxRuntimeSource, input: {
+	spawn(source: ThruveraRuntimeSource, input: {
 		name?: string;
 		goal: string;
 		context?: string;
@@ -147,7 +147,7 @@ export class SubagentManager {
 		return snapshot(task);
 	}
 
-	list(source: BeeMaxRuntimeSource): SubagentTaskSnapshot[] {
+	list(source: ThruveraRuntimeSource): SubagentTaskSnapshot[] {
 		const ownerKey = responsibilityOwnerKey(source);
 		return [...this.tasks.values()]
 			.filter((task) => task.ownerKey === ownerKey)
@@ -155,7 +155,7 @@ export class SubagentManager {
 			.map(summarySnapshot);
 	}
 
-	get(source: BeeMaxRuntimeSource, id: string): SubagentTaskSnapshot {
+	get(source: ThruveraRuntimeSource, id: string): SubagentTaskSnapshot {
 		const task = this.tasks.get(id);
 		if (task?.ownerKey === responsibilityOwnerKey(source)) return snapshot(task);
 		const durable = this.durableSnapshot(source, id);
@@ -163,7 +163,7 @@ export class SubagentManager {
 		throw new Error(`Sub-Agent task not found: ${id}`);
 	}
 
-	async wait(source: BeeMaxRuntimeSource, id: string, timeoutMs = 120_000, signal?: AbortSignal): Promise<SubagentTaskSnapshot> {
+	async wait(source: ThruveraRuntimeSource, id: string, timeoutMs = 120_000, signal?: AbortSignal): Promise<SubagentTaskSnapshot> {
 		const task = this.tasks.get(id);
 		if (!task || task.ownerKey !== responsibilityOwnerKey(source)) {
 			const durable = this.durableSnapshot(source, id);
@@ -187,7 +187,7 @@ export class SubagentManager {
 		return snapshot(task);
 	}
 
-	cancel(source: BeeMaxRuntimeSource, id: string): SubagentTaskSnapshot {
+	cancel(source: ThruveraRuntimeSource, id: string): SubagentTaskSnapshot {
 		const task = this.ownedTask(source, id);
 		if (TERMINAL.has(task.status)) return snapshot(task);
 		task.stopReason = "cancelled";
@@ -201,7 +201,7 @@ export class SubagentManager {
 		return snapshot(task);
 	}
 
-	cancelOwner(source: BeeMaxRuntimeSource): number {
+	cancelOwner(source: ThruveraRuntimeSource): number {
 		let cancelled = 0;
 		for (const task of this.tasks.values()) {
 			if (task.ownerKey === responsibilityOwnerKey(source) && !TERMINAL.has(task.status)) {
@@ -251,7 +251,7 @@ export class SubagentManager {
 			if (!task || task.status !== "queued") continue;
 			this.running++;
 			const active = this.run(task).catch((error) => {
-				console.error(`[beemax] Sub-Agent Task lifecycle failed: ${error instanceof Error ? error.message : String(error)}`);
+				console.error(`[thruvera] Sub-Agent Task lifecycle failed: ${error instanceof Error ? error.message : String(error)}`);
 			}).finally(() => {
 				this.running--;
 				this.activeRuns.delete(active);
@@ -371,13 +371,13 @@ export class SubagentManager {
 		for (const task of terminal.slice(this.maxRetainedTerminalTasks)) this.tasks.delete(task.id);
 	}
 
-	private ownedTask(source: BeeMaxRuntimeSource, id: string): ManagedTask {
+	private ownedTask(source: ThruveraRuntimeSource, id: string): ManagedTask {
 		const task = this.tasks.get(id);
 		if (!task || task.ownerKey !== responsibilityOwnerKey(source)) throw new Error(`Sub-Agent task not found: ${id}`);
 		return task;
 	}
 
-	private durableSnapshot(source: BeeMaxRuntimeSource, id: string): SubagentTaskSnapshot | undefined {
+	private durableSnapshot(source: ThruveraRuntimeSource, id: string): SubagentTaskSnapshot | undefined {
 		const task = this.taskLedger?.queryTasks({ ownerKeys: responsibilityOwnerKeys(source), id, kinds: ["delegated"], limit: 1 })[0];
 		if (!task || (task.status !== "succeeded" && task.status !== "failed" && task.status !== "cancelled")) return undefined;
 		return {
@@ -400,7 +400,7 @@ export class SubagentManager {
 	}
 }
 
-export function createSubagentTools(manager: SubagentManager, source: BeeMaxRuntimeSource, options: { objectiveTaskId?: () => string | undefined } = {}): ToolDefinition[] {
+export function createSubagentTools(manager: SubagentManager, source: ThruveraRuntimeSource, options: { objectiveTaskId?: () => string | undefined } = {}): ToolDefinition[] {
 	const tools = [
 		defineTool({
 			name: "task_spawn",

@@ -5,7 +5,7 @@ import {
 	type AutomationDeliveryInput,
 	type AutomationOwner,
 	type AutomationStore,
-} from "@beemax/automation";
+} from "@thruvera/automation";
 import { DeliveryDeferredError, type DeliveryPort } from "./delivery-port.ts";
 import type { TaskRecord } from "./task-ledger.ts";
 
@@ -82,7 +82,7 @@ export class AutomationScheduler {
 			const capacity = Math.max(0, this.maxConcurrent - this.running.size);
 			if (capacity > 0) for (const job of this.store.claimDue(Date.now(), capacity)) this.launch(job);
 		} catch (error) {
-			console.error(`[beemax] automation scheduler tick failed: ${error instanceof Error ? error.message : String(error)}`);
+			console.error(`[thruvera] automation scheduler tick failed: ${error instanceof Error ? error.message : String(error)}`);
 		}
 		const next = this.store.nextDueAt();
 		this.schedule(next === undefined ? 30_000 : Math.min(30_000, Math.max(250, next - Date.now())));
@@ -217,7 +217,7 @@ export class HeartbeatRunner {
 			this.store.recordHeartbeat(filtered.notify ? "alert" : "ok", reason);
 		} catch (error) {
 			this.store.recordHeartbeat("error", error instanceof Error ? error.message : String(error));
-			console.error(`[beemax] heartbeat failed: ${error instanceof Error ? error.message : String(error)}`);
+			console.error(`[thruvera] heartbeat failed: ${error instanceof Error ? error.message : String(error)}`);
 		} finally { this.running = false; this.schedule(this.intervalMs); }
 	}
 }

@@ -1,5 +1,5 @@
 /**
- * `beemax gateway` - start one Profile-scoped multi-channel Gateway.
+ * `thruvera gateway` - start one Profile-scoped multi-channel Gateway.
  *
  * A registry-owned ChannelHost connects Feishu/Lark, Telegram, and future
  * adapters to the same Core-owned Profile Runtime. Channels own transport and
@@ -7,9 +7,9 @@
  * remain in the shared runtime.
  */
 
-import { AutomationStore } from "@beemax/automation";
+import { AutomationStore } from "@thruvera/automation";
 import { createHash } from "node:crypto";
-import { ActionGovernance, AuthStorage, AutonomyRolloutController, AutomationDeliveryWorker, AutomationScheduler, BeeMaxAgentRuntime, DefaultMemoryLearningKernel, DeliveryDeferredError, DeterministicLearningExtractor, DeterministicSituationBuilder, FileCredentialVault, FileCredentialVaultAuditJournal, GroupObservationRecorder, HeartbeatRunner, InitiativeRuntime, InitiativeTriggerService, ObjectiveCompletionDeliveryService, PiAmbientObservationEvaluator, PiLearningExtractor, ProactiveInvestigationRuntime, ProgressiveLearningExtractor, TaskPlanNoticeDeliveryService, TaskTransitionInitiativeAdapter, ToolPolicyRegistry, VERIFICATION_SUBMIT_TOOL_NAME, buildActiveTaskPreservationEnvelope, buildTaskPreservationEnvelope, canonicalUserId, containsCredentialMaterial, conversationKey, responsibilityOwnerKey, responsibilityOwnerKeys, createContractAdmissionReceiptIntegrity, createExecutionEnvelope, createSubagentTools, createTaskCheckpoint, createTaskLedgerTools, createTaskOrchestrationTools, decideInitiativeFromSituation, guardVerifiedObjectiveMemoryPublisher, isVerifiedAutomationOutcome, objectiveIdFromCompletionId, redactCredentialMaterial, renderTaskCheckpoint, selectTurnTools, taskCriterionDefinitions, taskRequiresCurrentSourceEvidence, type AgentRuntimePort, type AmbientObservationEvaluator, type BeeMaxAgentRunEvent, type BeeMaxAgentRunEventSink, type ContextCompactionAuditEvent, type DeliveryPort, type ExecutionEnvelope, type ExecutionTraceSink, type InitiativeObservation, type LearningObjectiveAdmissionPort, type ObjectiveDeliveryInput, type SkillCandidateTrialInput, type SkillTrialAssertion, type SkillTrialToolCall, type SubagentTask, type TaskGraphExecutionContext, type TaskGraphExecutionResult, type TaskGraphVerifier, type TaskLedger, type TaskRecord, type ToolEffectProjectionReader, type VerifiedObjectiveMemoryPublisher, type VerifiedObjectiveOutcome } from "@beemax/core";
+import { ActionGovernance, AuthStorage, AutonomyRolloutController, AutomationDeliveryWorker, AutomationScheduler, ThruveraAgentRuntime, DefaultMemoryLearningKernel, DeliveryDeferredError, DeterministicLearningExtractor, DeterministicSituationBuilder, FileCredentialVault, FileCredentialVaultAuditJournal, GroupObservationRecorder, HeartbeatRunner, InitiativeRuntime, InitiativeTriggerService, ObjectiveCompletionDeliveryService, PiAmbientObservationEvaluator, PiLearningExtractor, ProactiveInvestigationRuntime, ProgressiveLearningExtractor, TaskPlanNoticeDeliveryService, TaskTransitionInitiativeAdapter, ToolPolicyRegistry, VERIFICATION_SUBMIT_TOOL_NAME, buildActiveTaskPreservationEnvelope, buildTaskPreservationEnvelope, canonicalUserId, containsCredentialMaterial, conversationKey, responsibilityOwnerKey, responsibilityOwnerKeys, createContractAdmissionReceiptIntegrity, createExecutionEnvelope, createSubagentTools, createTaskCheckpoint, createTaskLedgerTools, createTaskOrchestrationTools, decideInitiativeFromSituation, guardVerifiedObjectiveMemoryPublisher, isVerifiedAutomationOutcome, objectiveIdFromCompletionId, redactCredentialMaterial, renderTaskCheckpoint, selectTurnTools, taskCriterionDefinitions, taskRequiresCurrentSourceEvidence, type AgentRuntimePort, type AmbientObservationEvaluator, type ThruveraAgentRunEvent, type ThruveraAgentRunEventSink, type ContextCompactionAuditEvent, type DeliveryPort, type ExecutionEnvelope, type ExecutionTraceSink, type InitiativeObservation, type LearningObjectiveAdmissionPort, type ObjectiveDeliveryInput, type SkillCandidateTrialInput, type SkillTrialAssertion, type SkillTrialToolCall, type SubagentTask, type TaskGraphExecutionContext, type TaskGraphExecutionResult, type TaskGraphVerifier, type TaskLedger, type TaskRecord, type ToolEffectProjectionReader, type VerifiedObjectiveMemoryPublisher, type VerifiedObjectiveOutcome } from "@thruvera/core";
 import {
 	AdapterRegistry,
 	ChannelHost,
@@ -23,16 +23,16 @@ import {
 	prepareArtifactSnapshotRoot,
 	assessProfileChannelHealth,
 	assertProfileBindingConfiguration,
-} from "@beemax/gateway";
-import { createFeishuAdapterRegistration, type FeishuAdapter, type FeishuSettings } from "@beemax/channel-feishu";
-import { createTelegramAdapterRegistration } from "@beemax/channel-telegram";
-import { loadMcpConfig, McpManager } from "@beemax/mcp-capability";
+} from "@thruvera/gateway";
+import { createFeishuAdapterRegistration, type FeishuAdapter, type FeishuSettings } from "@thruvera/channel-feishu";
+import { createTelegramAdapterRegistration } from "@thruvera/channel-telegram";
+import { loadMcpConfig, McpManager } from "@thruvera/mcp-capability";
 import { buildAgentFactory, profileIdForAgentFactory } from "./agent-factory.ts";
-import { MemoryStore, memoryPersistencePorts, type OrganizationMemoryPort } from "@beemax/memory";
-import { createFeishuMeetingTools } from "@beemax/feishu-capability";
-import { WeKnoraKnowledgeProvider, createKnowledgeTools } from "@beemax/knowledge";
-import type { SessionSource } from "@beemax/channel-runtime";
-import { beemaxHome, consumeChannelCredential, profileEnvironmentSnapshot, profileTurnTimeoutMs, type BeeMaxConfig } from "./config.ts";
+import { MemoryStore, memoryPersistencePorts, type OrganizationMemoryPort } from "@thruvera/memory";
+import { createFeishuMeetingTools } from "@thruvera/feishu-capability";
+import { WeKnoraKnowledgeProvider, createKnowledgeTools } from "@thruvera/knowledge";
+import type { SessionSource } from "@thruvera/channel-runtime";
+import { thruveraHome, consumeChannelCredential, profileEnvironmentSnapshot, profileTurnTimeoutMs, type ThruveraConfig } from "./config.ts";
 import { acquireChannelLock } from "./channel-lock.ts";
 import { createTaskAwareConversationContext } from "./runtime-facts.ts";
 import { createProfileRuntime } from "./runtime-composition.ts";
@@ -90,7 +90,7 @@ export async function runProfileAutomation(
 	return { answer: result.answer.trim(), ...(settledEnvelope?.objectiveId ? { objectiveId: settledEnvelope.objectiveId } : {}), ...(settledEnvelope?.taskRunId ? { taskRunId: settledEnvelope.taskRunId } : {}), ...(result.completionId ? { completionId: result.completionId } : {}) };
 }
 
-export async function runGateway(config: BeeMaxConfig): Promise<void> {
+export async function runGateway(config: ThruveraConfig): Promise<void> {
 	await syncBuiltinSkillsAtProfileHome(config.paths.profileHome, config.paths.agentDir);
 	await assertStandardWebProfileBoundary({ profileHome: config.paths.profileHome, agentDir: config.paths.agentDir });
 	const enabledChannels = config.gateway.channels.filter((channel) => channel.enabled);
@@ -204,7 +204,7 @@ export async function runGateway(config: BeeMaxConfig): Promise<void> {
 		onSettled: (event) => recordGatewayEvent(config.paths.agentDir, "delivery_settled", { profile: config.profile, ...event }),
 	});
 	let releaseChannelLock: () => Promise<void>;
-	try { releaseChannelLock = await acquireChannelLock(beemaxHome(), `profile:${config.profile}`); }
+	try { releaseChannelLock = await acquireChannelLock(thruveraHome(), `profile:${config.profile}`); }
 	catch (error) {
 		writeGatewayState(config.paths.agentDir, { profile: config.profile, lifecycle: "failed", version: gatewayVersion, pid: process.pid, stoppedAt: new Date().toISOString(), lastError: String(error).slice(0, 500) });
 		recordGatewayEvent(config.paths.agentDir, "failed", { profile: config.profile, error: String(error).slice(0, 500) });
@@ -224,7 +224,7 @@ export async function runGateway(config: BeeMaxConfig): Promise<void> {
 	});
 	if (config.gateway.artifactSite.enabled) {
 		const listen = await reserveProfileArtifactSiteListen({
-			home: beemaxHome(),
+			home: thruveraHome(),
 			profile: config.profile,
 			preferredListen: config.gateway.artifactSite.listen,
 			automatic: config.gateway.artifactSite.automaticListen,
@@ -245,7 +245,7 @@ export async function runGateway(config: BeeMaxConfig): Promise<void> {
 		});
 		await artifactSite.start();
 		startupCleanup.push(() => artifactSite?.stop());
-		console.info(`[beemax:${config.profile}] Artifact Site ready: ${publicBaseUrl}`);
+		console.info(`[thruvera:${config.profile}] Artifact Site ready: ${publicBaseUrl}`);
 	}
 
 	const memory = new MemoryStore(config.memory.dbPath, config.profile);
@@ -273,8 +273,8 @@ export async function runGateway(config: BeeMaxConfig): Promise<void> {
 	profileStartupCleanup.push(() => mcp.close());
 	const mcpStatus = await mcp.connectAll(loadMcpConfig(config.mcp.configPath, config.mcp.profileHome ? { profileHome: config.mcp.profileHome } : {}));
 	for (const status of mcpStatus) {
-		if (status.connected) console.info(`[beemax] MCP ${status.name}: connected (${status.tools.length} tools, ${status.resources} resources, ${status.prompts} prompts)`);
-		else console.warn(`[beemax] MCP ${status.name}: unavailable (${status.error})`);
+		if (status.connected) console.info(`[thruvera] MCP ${status.name}: connected (${status.tools.length} tools, ${status.resources} resources, ${status.prompts} prompts)`);
+		else console.warn(`[thruvera] MCP ${status.name}: unavailable (${status.error})`);
 	}
 	const apiKey = config.model.apiKey ?? "";
 	const readOnlyMcpTools = mcp.getTools().filter((tool) => tool.beemaxPolicy?.sideEffect === "none");
@@ -375,7 +375,7 @@ export async function runGateway(config: BeeMaxConfig): Promise<void> {
 				if (!result.claimed && !result.completed && !result.deferred && !result.failed) return;
 				recordGatewayEvent(config.paths.agentDir, "memory_learning_maintenance", { profile: config.profile, trigger, claimed: result.claimed, completed: result.completed, deferred: result.deferred, failed: result.failed, transitions: result.transitions.length });
 			},
-			onError: (error) => console.error(`[beemax] Memory Learning maintenance failed: ${error instanceof Error ? error.message : String(error)}`),
+			onError: (error) => console.error(`[thruvera] Memory Learning maintenance failed: ${error instanceof Error ? error.message : String(error)}`),
 		},
 		executeTask: (task, signal, context, executionTrace, effectAuthority) => executePlannedTask(createSubagentAgent, task, task.executionScope as SessionSource, signal, null, context, executionTrace, effectAuthority, persistence.taskLedger),
 		verifyTaskCandidate: (task, result, signal, context, executionTrace) => createTaskVerifier(createSubagentAgent, null, executionTrace, verificationAgentToolsForTask(readOnlyMcpTools, task, context?.successfulToolNames))(task, result, signal, context),
@@ -403,15 +403,15 @@ export async function runGateway(config: BeeMaxConfig): Promise<void> {
 			await deliveryPort.sendText(target, `任务未通过独立 Verification：${resolution.feedback}`, { idempotencyKey: `direct-objective:${task.id}:verification:${task.verificationAttempts ?? 0}`, deliveryClass: "proactive" });
 		},
 		executeSubagent: (task, signal, executionTrace) => executeSubagentTask(createSubagentAgent, task, signal, undefined, undefined, undefined, executionTrace, undefined, undefined, persistence.taskLedger),
-		onTaskPlanError: ({ planId, error }) => console.error(`[beemax] background Task Plan ${planId} failed: ${redactCredentialMaterial(error instanceof Error ? error.message : String(error))}`),
+		onTaskPlanError: ({ planId, error }) => console.error(`[thruvera] background Task Plan ${planId} failed: ${redactCredentialMaterial(error instanceof Error ? error.message : String(error))}`),
 		onRecoveryStatus: (_status, cycle) => {
 			if (!cycle) return;
 			const { reconciled, verification, recovery: summary } = cycle;
-			if (reconciled.retried || reconciled.failed) console.info(`[beemax] reconciled interrupted Task Runs: retry=${reconciled.retried}; failed=${reconciled.failed}`);
-			if (verification.attempted) console.info(`[beemax] retried Candidate Verification: attempted=${verification.attempted}; accepted=${verification.accepted}; rejected=${verification.rejected}; unavailable=${verification.unavailable}`);
-			if (summary.plans) console.info(`[beemax] resumed ${summary.plans} Task Plan(s): succeeded=${summary.succeeded}; failed=${summary.failed}; blocked=${summary.blocked.length}`);
+			if (reconciled.retried || reconciled.failed) console.info(`[thruvera] reconciled interrupted Task Runs: retry=${reconciled.retried}; failed=${reconciled.failed}`);
+			if (verification.attempted) console.info(`[thruvera] retried Candidate Verification: attempted=${verification.attempted}; accepted=${verification.accepted}; rejected=${verification.rejected}; unavailable=${verification.unavailable}`);
+			if (summary.plans) console.info(`[thruvera] resumed ${summary.plans} Task Plan(s): succeeded=${summary.succeeded}; failed=${summary.failed}; blocked=${summary.blocked.length}`);
 		},
-		onRecoveryError: (error) => console.error(`[beemax] Task recovery failed: ${error instanceof Error ? error.message : String(error)}`),
+		onRecoveryError: (error) => console.error(`[thruvera] Task recovery failed: ${error instanceof Error ? error.message : String(error)}`),
 		},
 		resources: [
 			{ name: "memory", dispose: () => memory.close() },
@@ -564,7 +564,7 @@ export async function runGateway(config: BeeMaxConfig): Promise<void> {
 			channelAccountRef: enabledChannels.find((channel) => channel.id === id)?.accountRef,
 			channelInstanceId: (platformInstanceCounts.get(channelAdapter.name) ?? 0) > 1 ? id : undefined,
 			presentationOptions: {
-				title: config.profile === "default" ? "BeeMax Agent" : `BeeMax · ${config.profile}`,
+				title: config.profile === "default" ? "Thruvera Agent" : `Thruvera · ${config.profile}`,
 				reasoningDisplay: config.agent.reasoningDisplay,
 				updateIntervalMs: 350,
 			},
@@ -583,14 +583,14 @@ export async function runGateway(config: BeeMaxConfig): Promise<void> {
 	const taskPlanNotices = platforms.map((platform) => new TaskPlanNoticeDeliveryService(persistence.completionOutbox, deliveryPort, {
 		platform,
 		deliverObjective: (notice, signal) => objectiveRuntime.settlePlanIfLinked(notice.ownerKey, notice.planId, notice.planStatus, signal),
-		onCycle: (result) => { if (result.delivered) for (const service of objectiveCompletions) service.wake(); if (result.claimed) console.info(`[beemax] ${platform} Task Plan notices: delivered=${result.delivered}; deferred=${result.deferred}; failed=${result.failed}`); },
-		onError: (error) => console.error(`[beemax] ${platform} Task Plan notice delivery failed: ${error instanceof Error ? error.message : String(error)}`),
+		onCycle: (result) => { if (result.delivered) for (const service of objectiveCompletions) service.wake(); if (result.claimed) console.info(`[thruvera] ${platform} Task Plan notices: delivered=${result.delivered}; deferred=${result.deferred}; failed=${result.failed}`); },
+		onError: (error) => console.error(`[thruvera] ${platform} Task Plan notice delivery failed: ${error instanceof Error ? error.message : String(error)}`),
 	}));
 	objectiveCompletions = platforms.map((platform) => new ObjectiveCompletionDeliveryService(persistence.completionOutbox, deliveryPort, {
 		platform,
 		onDelivered: (completion) => objectiveRuntime.publishDelivered(completion),
-		onCycle: (result) => { if (result.claimed) console.info(`[beemax] ${platform} Objective completions: delivered=${result.delivered}; deferred=${result.deferred}; failed=${result.failed}; blocked=${result.blocked}`); },
-		onError: (error) => console.error(`[beemax] ${platform} Objective completion delivery failed: ${error instanceof Error ? error.message : String(error)}`),
+		onCycle: (result) => { if (result.claimed) console.info(`[thruvera] ${platform} Objective completions: delivered=${result.delivered}; deferred=${result.deferred}; failed=${result.failed}; blocked=${result.blocked}`); },
+		onError: (error) => console.error(`[thruvera] ${platform} Objective completion delivery failed: ${error instanceof Error ? error.message : String(error)}`),
 	}));
 	startupCleanup.push(() => Promise.all([...taskPlanNotices, ...objectiveCompletions].map((service) => service.stop())).then(() => undefined));
 
@@ -728,11 +728,11 @@ export async function runGateway(config: BeeMaxConfig): Promise<void> {
 	const channelSnapshot = await channelHost.start();
 	await work.recoveryService.runOnce({ maxConcurrent: config.subagents.maxConcurrent });
 	const recoveredInputs = (await Promise.all([...dispatchers.values()].map((channelDispatcher) => channelDispatcher.recoverQueuedInputs()))).reduce((sum, count) => sum + count, 0);
-	if (recoveredInputs) console.info(`[beemax:${config.profile}] recovered ${recoveredInputs} queued conversation input(s)`);
+	if (recoveredInputs) console.info(`[thruvera:${config.profile}] recovered ${recoveredInputs} queued conversation input(s)`);
 	const initialProfileHealth = profileHost.reportHealth(assessProfileChannelHealth(channelSnapshot));
 	writeGatewayState(config.paths.agentDir, { profile: config.profile, lifecycle: "running", version: gatewayVersion, pid: process.pid, startedAt: new Date().toISOString() });
 	recordGatewayEvent(config.paths.agentDir, "started", { profile: config.profile, pid: process.pid, version: gatewayVersion, profileHostState: initialProfileHealth.state, channels: channelSnapshot.channels });
-	console.info(`[beemax:${config.profile}] Gateway connected: ${channelSnapshot.channels.filter((channel) => channel.state === "connected").map((channel) => channel.platform).join(", ")} (model: ${config.model.provider}/${config.model.model})`);
+	console.info(`[thruvera:${config.profile}] Gateway connected: ${channelSnapshot.channels.filter((channel) => channel.state === "connected").map((channel) => channel.platform).join(", ")} (model: ${config.model.provider}/${config.model.model})`);
 	profileHealthTimer = setInterval(() => {
 		try {
 			const state = profileHost.snapshot().state;
@@ -740,7 +740,7 @@ export async function runGateway(config: BeeMaxConfig): Promise<void> {
 			const next = profileHost.reportHealth(assessProfileChannelHealth(channelHost.status()));
 			if (next.state !== state) recordGatewayEvent(config.paths.agentDir, "profile_health_changed", { profile: config.profile, from: state, to: next.state, degradedReasons: next.degradedReasons });
 		} catch (error) {
-			console.error(`[beemax] Profile health observation failed: ${error instanceof Error ? error.message : String(error)}`);
+			console.error(`[thruvera] Profile health observation failed: ${error instanceof Error ? error.message : String(error)}`);
 		}
 	}, 5_000);
 	profileHealthTimer.unref();
@@ -749,7 +749,7 @@ export async function runGateway(config: BeeMaxConfig): Promise<void> {
 	if (config.automation.enabled) scheduler.start();
 	heartbeat.start();
 	const runInitiativeTriggers = () => {
-		if (autonomyRollout.allows("initiative_observation").allowed) void initiativeTriggers.runOnce().catch((error) => console.error(`[beemax] Initiative Trigger worker failed: ${String(error)}`));
+		if (autonomyRollout.allows("initiative_observation").allowed) void initiativeTriggers.runOnce().catch((error) => console.error(`[thruvera] Initiative Trigger worker failed: ${String(error)}`));
 	};
 	const initiativeTimer = setInterval(runInitiativeTriggers, 5_000);
 	initiativeTimer.unref();
@@ -758,7 +758,7 @@ export async function runGateway(config: BeeMaxConfig): Promise<void> {
 	const runMediaDeliveries = () => {
 		boundGatewayProcessLogs(config.paths.agentDir);
 		if (mediaDeliveryWork) return;
-		const work = flushAutomationDeliveries(automationDelivery, automation, deliveryPort).catch((error) => console.error(`[beemax] automation delivery worker failed: ${String(error)}`));
+		const work = flushAutomationDeliveries(automationDelivery, automation, deliveryPort).catch((error) => console.error(`[thruvera] automation delivery worker failed: ${String(error)}`));
 		mediaDeliveryWork = work;
 		void work.then(() => { if (mediaDeliveryWork === work) mediaDeliveryWork = undefined; });
 	};
@@ -769,22 +769,22 @@ export async function runGateway(config: BeeMaxConfig): Promise<void> {
 	const shutdown = () => {
 		if (shutdownPromise) return shutdownPromise;
 		shutdownPromise = (async () => {
-			console.info("\n[beemax] shutting down...");
+			console.info("\n[thruvera] shutting down...");
 			profileHost.beginDrain();
 			if (profileHealthTimer) clearInterval(profileHealthTimer);
 			clearInterval(initiativeTimer);
 			clearInterval(mediaDeliveryTimer);
 			await settleBackgroundWork(initiativeTriggers.waitForIdle(), 30_000, "Initiative Trigger worker");
 			if (mediaDeliveryWork) await settleBackgroundWork(mediaDeliveryWork, 30_000, "media delivery worker");
-			try { await heartbeat?.stop(); } catch (error) { console.error(`[beemax] heartbeat shutdown failed: ${String(error)}`); }
-			try { await scheduler?.stop(); } catch (error) { console.error(`[beemax] scheduler shutdown failed: ${String(error)}`); }
-			try { await Promise.all([...taskPlanNotices, ...objectiveCompletions].map((service) => service.stop())); } catch (error) { console.error(`[beemax] completion delivery shutdown failed: ${String(error)}`); }
-			try { await Promise.all([...dispatchers.values()].map((channelDispatcher) => channelDispatcher.dispose())); } catch (error) { console.error(`[beemax] dispatcher shutdown failed: ${String(error)}`); }
-			try { await profileHost.waitForIdle(5_000); } catch (error) { console.error(`[beemax] Profile Host graceful drain timed out; forcing Runtime disposal: ${String(error)}`); }
-			try { await profileRuntime.dispose(); } catch (error) { console.error(`[beemax] Agent Runtime shutdown failed: ${String(error)}`); }
-			try { await channelHost.stop(); } catch (error) { console.error(`[beemax] channel shutdown failed: ${String(error)}`); }
-			try { await artifactSite?.stop(); } catch (error) { console.error(`[beemax] Artifact Site shutdown failed: ${String(error)}`); }
-			try { await profileHost.waitForIdle(1_000); profileHost.completeStop(); } catch (error) { console.error(`[beemax] Profile Host forced stop retained active Interaction state: ${String(error)}`); }
+			try { await heartbeat?.stop(); } catch (error) { console.error(`[thruvera] heartbeat shutdown failed: ${String(error)}`); }
+			try { await scheduler?.stop(); } catch (error) { console.error(`[thruvera] scheduler shutdown failed: ${String(error)}`); }
+			try { await Promise.all([...taskPlanNotices, ...objectiveCompletions].map((service) => service.stop())); } catch (error) { console.error(`[thruvera] completion delivery shutdown failed: ${String(error)}`); }
+			try { await Promise.all([...dispatchers.values()].map((channelDispatcher) => channelDispatcher.dispose())); } catch (error) { console.error(`[thruvera] dispatcher shutdown failed: ${String(error)}`); }
+			try { await profileHost.waitForIdle(5_000); } catch (error) { console.error(`[thruvera] Profile Host graceful drain timed out; forcing Runtime disposal: ${String(error)}`); }
+			try { await profileRuntime.dispose(); } catch (error) { console.error(`[thruvera] Agent Runtime shutdown failed: ${String(error)}`); }
+			try { await channelHost.stop(); } catch (error) { console.error(`[thruvera] channel shutdown failed: ${String(error)}`); }
+			try { await artifactSite?.stop(); } catch (error) { console.error(`[thruvera] Artifact Site shutdown failed: ${String(error)}`); }
+			try { await profileHost.waitForIdle(1_000); profileHost.completeStop(); } catch (error) { console.error(`[thruvera] Profile Host forced stop retained active Interaction state: ${String(error)}`); }
 			await releaseChannelLock();
 			writeGatewayState(config.paths.agentDir, { profile: config.profile, lifecycle: "stopped", version: gatewayVersion, pid: process.pid, stoppedAt: new Date().toISOString() });
 			recordGatewayEvent(config.paths.agentDir, "stopped", { profile: config.profile, pid: process.pid });
@@ -834,7 +834,7 @@ export async function executeSubagentTask(
 	task: SubagentTask,
 	signal: AbortSignal,
 	runtimeTimeoutMs: number | null = null,
-	onEvent?: BeeMaxAgentRunEventSink,
+	onEvent?: ThruveraAgentRunEventSink,
 	executionEnvelope?: Readonly<ExecutionEnvelope>,
 	executionTrace?: ExecutionTraceSink,
 	allowedCapabilities?: readonly string[],
@@ -849,7 +849,7 @@ export async function executeSubagentTask(
 		messageId: undefined,
 		delegatedTask: { id: task.id, ownerKey: task.ownerKey },
 	};
-	const runtime = new BeeMaxAgentRuntime({ createAgent: factory, profileId: profileIdForAgentFactory(factory), executionTrace, toolEffectProjectionReader, taskLedger });
+	const runtime = new ThruveraAgentRuntime({ createAgent: factory, profileId: profileIdForAgentFactory(factory), executionTrace, toolEffectProjectionReader, taskLedger });
 	try {
 		const envelope = executionEnvelope ?? createExecutionEnvelope({ executionId: task.taskRunId ? `execution:${task.taskRunId}` : `execution:${crypto.randomUUID()}`, trigger: { kind: "delegation", id: task.id }, ...(task.parentId ? { objectiveId: task.parentId } : {}), taskId: task.id, ...(task.taskRunId ? { taskRunId: task.taskRunId } : {}), ...(runtimeTimeoutMs === null ? {} : { budget: { deadlineAt: Date.now() + runtimeTimeoutMs } }) });
 		const acceptanceCriteria = task.acceptanceCriteria?.trim() || `The delegated result satisfies the requested goal: ${task.goal}`;
@@ -916,12 +916,12 @@ export async function executePlannedTask(
 	return parsePlannedTaskResult(await executeSubagentTask(factory, delegated, signal ?? new AbortController().signal, null, checkpointEvent, executionEnvelope, executionTrace, undefined, effectAuthority, taskLedger));
 }
 
-function nativeCheckpointRecorder(task: TaskRecord, context: TaskGraphExecutionContext | undefined, effects: ToolEffectProjectionReader | undefined): BeeMaxAgentRunEventSink | undefined {
+function nativeCheckpointRecorder(task: TaskRecord, context: TaskGraphExecutionContext | undefined, effects: ToolEffectProjectionReader | undefined): ThruveraAgentRunEventSink | undefined {
 	if (!context) return undefined;
 	const completed: string[] = [];
 	const evidenceRefs: string[] = [];
 	const unresolvedIssues: string[] = [];
-	return (event: BeeMaxAgentRunEvent) => {
+	return (event: ThruveraAgentRunEvent) => {
 		if (event.type === "tool_execution_end") {
 			const reference = `${event.toolName}:${event.toolCallId}`;
 			if (event.isError) unresolvedIssues.push(`Tool failed: ${reference}`);
@@ -1087,7 +1087,7 @@ export function createTaskVerifier(factory: ReturnType<typeof buildAgentFactory>
 				currentSourceRequired
 					? `The durable Work Contract requires current source evidence. At least one assertion must bind a successful receipt from one of these selected capabilities (exact-source extraction is authoritative when cited URLs exist): ${JSON.stringify([...verificationCurrentSourceCapabilities])}.`
 					: "The durable Work Contract does not declare a current source-evidence requirement.",
-				`Call ${VERIFICATION_SUBMIT_TOOL_NAME} exactly once with the final status, factual reason, and exactly one receipt-bound assertion for every criterion. Set each assertion status to accepted or rejected. In evidenceRefs use \"tool:<exact successful Tool name>\"; BeeMax binds every matching successful call to its concrete receipt. Use \"tool-call:<exact Tool call id>\" only when known. Do not use the Candidate itself, paths, excerpts, bare URLs, or prose as evidence. Do not express the verdict only as prose.`,
+				`Call ${VERIFICATION_SUBMIT_TOOL_NAME} exactly once with the final status, factual reason, and exactly one receipt-bound assertion for every criterion. Set each assertion status to accepted or rejected. In evidenceRefs use \"tool:<exact successful Tool name>\"; Thruvera binds every matching successful call to its concrete receipt. Use \"tool-call:<exact Tool call id>\" only when known. Do not use the Candidate itself, paths, excerpts, bare URLs, or prose as evidence. Do not express the verdict only as prose.`,
 				"Use accepted only when every criterion assertion is accepted. Use rejected when every criterion was independently evaluated and at least one assertion is rejected. Use unavailable when any criterion cannot be evaluated; never disguise unavailable evidence as acceptance or rejection.",
 				`Task: ${task.title}`,
 				`Goal: ${task.description ?? task.title}`,
@@ -1119,7 +1119,7 @@ export function createTaskVerifier(factory: ReturnType<typeof buildAgentFactory>
 		let sourceVisiblePairsObserved = false;
 		const artifactExternalUrlCounts = new Set<number>();
 		let verdictSubmissionAttempts = 0;
-		const recordVerificationEvent = (receiptExecutionId: string): BeeMaxAgentRunEventSink => (event) => {
+		const recordVerificationEvent = (receiptExecutionId: string): ThruveraAgentRunEventSink => (event) => {
 			if (event.type === "tool_execution_start") {
 				toolArguments.set(event.toolCallId, event.args);
 				if (event.toolName === VERIFICATION_SUBMIT_TOOL_NAME) verdictSubmissionAttempts++;
@@ -1355,7 +1355,7 @@ function parseSkillTrialAssertions(value: string): SkillTrialAssertion[] {
 
 export function buildSubagentSystemPrompt(parentPrompt?: string): string {
 	return [
-		parentPrompt ?? "You are a focused BeeMax Sub-Agent working for a parent personal Agent.",
+		parentPrompt ?? "You are a focused Thruvera Sub-Agent working for a parent personal Agent.",
 		"# Sub-Agent isolation",
 		"You have a fresh context and only the task below. Work independently and return evidence to the parent Agent.",
 		"You cannot contact the user, mutate long-term memory, modify files, run shell commands, change Skills, schedule work, or spawn more agents.",
@@ -1374,7 +1374,7 @@ export function buildMainAgentSystemPrompt(parentPrompt?: string): string {
 	].filter((part): part is string => Boolean(part?.trim())).join("\n\n");
 }
 
-function profilePrompt(config: BeeMaxConfig): string {
+function profilePrompt(config: ThruveraConfig): string {
 	return [config.agent.systemPrompt, workspaceToolsPrompt(config.paths.cwd)]
 		.filter((part): part is string => Boolean(part?.trim()))
 		.join("\n\n");
@@ -1459,7 +1459,7 @@ async function settleBackgroundWork(work: Promise<unknown>, timeoutMs: number, l
 	try {
 		await Promise.race([work, new Promise<void>((resolve) => { timer = setTimeout(resolve, timeoutMs); })]);
 	} catch (error) {
-		console.error(`[beemax] ${label} shutdown failed: ${String(error)}`);
+		console.error(`[thruvera] ${label} shutdown failed: ${String(error)}`);
 	} finally {
 		if (timer) clearTimeout(timer);
 	}

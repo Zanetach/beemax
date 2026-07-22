@@ -1,8 +1,8 @@
 import { closeSync, existsSync, openSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
-import type { BeeMaxRuntimeSource } from "./runtime.ts";
+import type { ThruveraRuntimeSource } from "./runtime.ts";
 
-export interface InteractionQueuedInput<Source extends BeeMaxRuntimeSource = BeeMaxRuntimeSource> {
+export interface InteractionQueuedInput<Source extends ThruveraRuntimeSource = ThruveraRuntimeSource> {
 	id: string;
 	key: string;
 	text: string;
@@ -12,7 +12,7 @@ export interface InteractionQueuedInput<Source extends BeeMaxRuntimeSource = Bee
 	claimExpiresAt?: number;
 }
 
-export interface InteractionInputQueueStore<Source extends BeeMaxRuntimeSource = BeeMaxRuntimeSource> {
+export interface InteractionInputQueueStore<Source extends ThruveraRuntimeSource = ThruveraRuntimeSource> {
 	load(key: string): InteractionQueuedInput<Source>[];
 	all(): InteractionQueuedInput<Source>[];
 	enqueue(input: InteractionQueuedInput<Source>, limit?: number): number;
@@ -26,7 +26,7 @@ export interface InteractionInputQueueStore<Source extends BeeMaxRuntimeSource =
 }
 
 /** Owner-only, lock-protected fallback store for deployments without SQLite composition. */
-export class FileInteractionInputQueueStore<Source extends BeeMaxRuntimeSource = BeeMaxRuntimeSource> implements InteractionInputQueueStore<Source> {
+export class FileInteractionInputQueueStore<Source extends ThruveraRuntimeSource = ThruveraRuntimeSource> implements InteractionInputQueueStore<Source> {
 	private readonly lockPath: string;
 	private readonly maxRecords: number;
 	private readonly maxBytes: number;
@@ -192,7 +192,7 @@ export class FileInteractionInputQueueStore<Source extends BeeMaxRuntimeSource =
 function isQueuedInput(value: unknown): value is InteractionQueuedInput {
 	if (!value || typeof value !== "object") return false;
 	const input = value as Partial<InteractionQueuedInput>;
-	const source = input.source as Partial<BeeMaxRuntimeSource> | undefined;
+	const source = input.source as Partial<ThruveraRuntimeSource> | undefined;
 	const claimValid = input.claimToken === undefined && input.claimExpiresAt === undefined
 		|| typeof input.claimToken === "string" && input.claimToken.length > 0 && typeof input.claimExpiresAt === "number" && Number.isFinite(input.claimExpiresAt);
 	return typeof input.id === "string" && input.id.length > 0 && typeof input.key === "string" && input.key.length > 0 && typeof input.text === "string"

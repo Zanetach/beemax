@@ -142,7 +142,7 @@ test("operator migration rejects a dangling backup symlink instead of escaping t
 test("CLI exposes explicit plan, confirmed apply, and confirmed rollback", () => {
 	const home = mkdtempSync(join(tmpdir(), "beemax-instance-migration-cli-"));
 	const run = (...args) => execFileSync(process.execPath, [cli, ...args, "--profile", "personal"], {
-		encoding: "utf8", env: { ...process.env, BEEMAX_HOME: home },
+		encoding: "utf8", env: { ...process.env, THRUVERA_HOME: home },
 	});
 	try {
 		run("init");

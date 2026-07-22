@@ -123,7 +123,7 @@ test("Turn Understanding preserves explicit constraints and acceptance criteria 
 
 test("Turn Understanding treats bilingual negation as a constraint instead of reversing the requested action", () => {
 	const engine = new TurnUnderstandingEngine();
-	const activeObjective = "研究 BeeMax Provider 架构";
+	const activeObjective = "研究 Thruvera Provider 架构";
 	for (const text of [
 		"不要取消任务，继续分析并保留来源",
 		"Do not stop the task; continue the analysis and keep citations.",

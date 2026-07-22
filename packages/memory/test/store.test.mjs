@@ -8,7 +8,7 @@ import { createHash } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { MemoryStore } from "../dist/index.js";
 import Database from "better-sqlite3";
-import { BeeMaxAgentRuntime, createAccessScopeRef, createContractAdmissionReceiptIntegrity, createSituation, createTaskCheckpoint, DeterministicWorkContractBuilder, interactionCompletionDeliveryKey, MUTATING_TOOL_POLICY, ObjectiveCompletionDeliveryService, ObjectiveRuntime, TaskGraph, TaskPlanNoticeDeliveryService, TaskPlanRuntime, TaskRecoveryRunner, TaskRecoveryService, WORK_CONTRACT_ADJUDICATION_SCHEMA_VERSION } from "@beemax/core";
+import { ThruveraAgentRuntime, createAccessScopeRef, createContractAdmissionReceiptIntegrity, createSituation, createTaskCheckpoint, DeterministicWorkContractBuilder, interactionCompletionDeliveryKey, MUTATING_TOOL_POLICY, ObjectiveCompletionDeliveryService, ObjectiveRuntime, TaskGraph, TaskPlanNoticeDeliveryService, TaskPlanRuntime, TaskRecoveryRunner, TaskRecoveryService, WORK_CONTRACT_ADJUDICATION_SCHEMA_VERSION } from "@thruvera/core";
 import { createAdmittedWorkContractPlanningInput } from "../../core/dist/contract-planning-admission.js";
 import { createDurableContractAdmissionReceipt } from "../../core/dist/contract-admission-receipt.js";
 
@@ -876,8 +876,8 @@ test("two Runtimes sharing SQLite block a post-cancellation mutation until the d
 	let runtimeA; let runtimeB;
 	try {
 		first.record({ id: objectiveId, ownerKey, kind: "objective", title: "Cross Runtime", description: "continue durable work", status: "running", createdAt: 1 });
-		runtimeA = new BeeMaxAgentRuntime({ profileId: "profile:test", taskLedger: first, workContractBuilder: new DeterministicWorkContractBuilder(), createAgent: async () => session() });
-		runtimeB = new BeeMaxAgentRuntime({
+		runtimeA = new ThruveraAgentRuntime({ profileId: "profile:test", taskLedger: first, workContractBuilder: new DeterministicWorkContractBuilder(), createAgent: async () => session() });
+		runtimeB = new ThruveraAgentRuntime({
 			profileId: "profile:test", taskLedger: second, workContractBuilder: new DeterministicWorkContractBuilder(), objectiveInterruptionTimeoutMs: 500,
 			interruptObjectiveWork: async (_runtimeSource, cancellation) => ({ interruptedEffects: 0, pendingExecutions: second.objectiveInterruptionConvergence(ownerKey, cancellation.objectiveId).pendingExecutions }),
 			createAgent: async () => { const agent = { state: { model: { id: "test" }, messages: [] } }; return { agent, subscribe: () => () => undefined, prompt: async () => { agent.state.messages = [{ role: "assistant", content: [{ type: "text", text: "ok" }], usage: { input: 1, output: 1 } }]; }, abort: async () => undefined, dispose: () => undefined }; },
@@ -2249,7 +2249,7 @@ test("structured understandings retain evidence, support correction, and compile
 			confidence: 0.95, stability: "high", evidence: { kind: "conversation", excerpt: "默认中文，先给结论。" },
 		});
 		store.upsertClaim({
-			...scope, kind: "project", statement: "BeeMax 正在建设可解释的长期记忆系统。",
+			...scope, kind: "project", statement: "Thruvera 正在建设可解释的长期记忆系统。",
 			confidence: 0.9, stability: "medium", evidence: { excerpt: "按设计实施记忆系统。" },
 		});
 		assert.equal(store.recallBrief("用户默认使用中文", scope).claims[0].id, preference.id);
@@ -2262,7 +2262,7 @@ test("structured understandings retain evidence, support correction, and compile
 		assert.equal(store.explainClaim(preference.id, scope).claim.supersededBy, corrected.id);
 		assert.ok(store.explainClaim(corrected.id, scope).evidence[0].eventId);
 		assert.match(store.compileLongTermMemory({ ...scope, maxChars: 1000 }), /架构讨论时需要完整方案/);
-		assert.match(store.compileLongTermMemory({ ...scope, maxChars: 1000 }), /BeeMax 正在建设/);
+		assert.match(store.compileLongTermMemory({ ...scope, maxChars: 1000 }), /Thruvera 正在建设/);
 		store.upsertClaim({ ...scope, userId: "another-user", kind: "fact", statement: "Other user's private fact", confidence: 1, stability: "high" });
 		assert.doesNotMatch(store.compileLongTermMemory({ ...scope, maxChars: 1000 }), /Other user's private fact/);
 		const foreignEvent = store.recordEvent({ ...scope, userId: "another-user", kind: "user", content: "Private source" });

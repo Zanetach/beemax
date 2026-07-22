@@ -1,16 +1,16 @@
-# Tickets: BeeMax Pi-native Organizational Agent Runtime
+# Tickets: Thruvera Pi-native Organizational Agent Runtime
 
-Build BeeMax from its current durable Agent foundation into a Pi-native organizational runtime with trusted Situation understanding, one execution path, verified outcomes, organizational memory, and progressively governed initiative. Source direction: the unified Agent Runtime PRD and the intelligence-first organizational agent design.
+Build Thruvera from its current durable Agent foundation into a Pi-native organizational runtime with trusted Situation understanding, one execution path, verified outcomes, organizational memory, and progressively governed initiative. Source direction: the unified Agent Runtime PRD and the intelligence-first organizational agent design.
 
 Work the **frontier**: any ticket whose blockers are all done. Do not bypass blocking edges. Preserve the current P6/P7 durable Task, recovery, checkpoint, and verification behavior while replacing shallow or duplicate paths.
 
-## Unify the BeeMax Pi-native Runtime specification
+## Unify the Thruvera Pi-native Runtime specification
 
-**What to build:** A single authoritative product and architecture specification that reconciles the original runtime PRD with the organizational-intelligence direction and defines Pi as BeeMax's sole intelligent execution kernel.
+**What to build:** A single authoritative product and architecture specification that reconciles the original runtime PRD with the organizational-intelligence direction and defines Pi as Thruvera's sole intelligent execution kernel.
 
 **Blocked by:** None — can start immediately.
 
-- [x] Define the product axiom, Pi/BeeMax responsibilities, one Objective-to-Pi execution path, and the five state authorities.
+- [x] Define the product axiom, Pi/Thruvera responsibilities, one Objective-to-Pi execution path, and the five state authorities.
 - [x] Reconcile Situation, Access Scope, Task, Verification, Memory, Initiative, and legacy Work Context terminology.
 - [x] Record compatibility, migration, rollout, rollback, and explicitly deferred capabilities.
 
@@ -18,7 +18,7 @@ Work the **frontier**: any ticket whose blockers are all done. Do not bypass blo
 
 **What to build:** A reproducible evaluation corpus and baseline that measures current reliability, understanding, capability selection, cost, and recovery without assuming customer, order, ticket, or project domains.
 
-**Blocked by:** Unify the BeeMax Pi-native Runtime specification.
+**Blocked by:** Unify the Thruvera Pi-native Runtime specification.
 
 - [x] Cover random enterprise vocabulary, corrections, conflicts, long-running work, crashes, and side effects.
 - [x] Record current Situation accuracy, scope isolation, Capability Top-5, verified completion, latency, token, Tool, and Sub-Agent baselines.
@@ -28,7 +28,7 @@ Work the **frontier**: any ticket whose blockers are all done. Do not bypass blo
 
 **What to build:** Add a trust-aware representation in which open business meaning belongs to Situation and only verified adapters can produce Access Scope references, while legacy data remains readable.
 
-**Blocked by:** Unify the BeeMax Pi-native Runtime specification.
+**Blocked by:** Unify the Thruvera Pi-native Runtime specification.
 
 - [x] Preserve source, evidence, confidence, and trust class for inferred and verified information.
 - [x] Prevent text and model output from becoming trusted authorization references.
@@ -68,7 +68,7 @@ Work the **frontier**: any ticket whose blockers are all done. Do not bypass blo
 
 **What to build:** One deep Profile Runtime module owns common Memory, Pi, Capability, Task, Effect, recovery, verification, credential, and shutdown wiring; channels supply only their real variations.
 
-**Blocked by:** Unify the BeeMax Pi-native Runtime specification.
+**Blocked by:** Unify the Thruvera Pi-native Runtime specification.
 
 - [x] CLI and Feishu use the same runtime graph and lifecycle contract.
 - [x] Adding a shared runtime dependency requires one composition change.
@@ -367,7 +367,7 @@ These remain in scope for the long-term destination but need production Episodes
 
 # Tickets: Codex/Hermes parity and verified Agent completion
 
-Bring BeeMax to Hermes Agent feature parity and Codex-level Tool routing, then exceed both in durable enterprise execution, evidence-bound completion, Profile isolation, and capability acquisition. These tickets remediate gaps found after the original Pi-native runtime program; prior completion marks are retained as historical implementation evidence, not proof that these stricter gates already pass.
+Bring Thruvera to Hermes Agent feature parity and Codex-level Tool routing, then exceed both in durable enterprise execution, evidence-bound completion, Profile isolation, and capability acquisition. These tickets remediate gaps found after the original Pi-native runtime program; prior completion marks are retained as historical implementation evidence, not proof that these stricter gates already pass.
 
 Work the **frontier**: any ticket whose blockers are all done. Do not bypass blocking edges, silently degrade the user's Objective, introduce a second Agent Loop beside Pi, or encode customer business vocabulary in Core.
 
@@ -388,7 +388,7 @@ This ordering is the implementation plan, not a fixed business workflow. Core re
 
 ## Establish the differential Agent benchmark
 
-**What to build:** A reproducible harness runs the same short, long, realtime, Skill, Tool, MCP, file, image, Gateway, failure, and recovery tasks against BeeMax and pinned Codex/Hermes baselines.
+**What to build:** A reproducible harness runs the same short, long, realtime, Skill, Tool, MCP, file, image, Gateway, failure, and recovery tasks against Thruvera and pinned Codex/Hermes baselines.
 
 **Blocked by:** None — can start immediately.
 
@@ -408,7 +408,7 @@ This ordering is the implementation plan, not a fixed business workflow. Core re
 
 ## Stabilize direct and durable completion under the corpus
 
-**What to build:** BeeMax completes short, constrained, Tool-backed, and durable tasks repeatedly without semantic-wrapper bias, unnecessary Objective promotion, unbounded capability exploration, or verifier-format flakiness.
+**What to build:** Thruvera completes short, constrained, Tool-backed, and durable tasks repeatedly without semantic-wrapper bias, unnecessary Objective promotion, unbounded capability exploration, or verifier-format flakiness.
 
 **Blocked by:** Reconcile the current parity working tree.
 
@@ -422,7 +422,7 @@ This ordering is the implementation plan, not a fixed business workflow. Core re
 
 ## Produce native macOS and Ubuntu parity evidence
 
-**What to build:** Pinned BeeMax, Codex, and Hermes runs complete the same final corpus on macOS arm64 and Ubuntu 24.04 x64, producing source-backed differential reports that can be audited as release evidence.
+**What to build:** Pinned Thruvera, Codex, and Hermes runs complete the same final corpus on macOS arm64 and Ubuntu 24.04 x64, producing source-backed differential reports that can be audited as release evidence.
 
 **Blocked by:** Stabilize direct and durable completion under the corpus.
 
@@ -483,7 +483,7 @@ This ordering is the implementation plan, not a fixed business workflow. Core re
 
 ## Calibrate Capability ranking against real task outcomes
 
-**What to build:** BeeMax continuously tunes Capability selection from reproducible task outcomes rather than hand-authored business phrases, while preserving deterministic safety and authority boundaries.
+**What to build:** Thruvera continuously tunes Capability selection from reproducible task outcomes rather than hand-authored business phrases, while preserving deterministic safety and authority boundaries.
 
 **Blocked by:** Route Capability requirements semantically.
 
@@ -513,7 +513,7 @@ This ordering is the implementation plan, not a fixed business workflow. Core re
 
 ## Acquire missing Tool and MCP Providers without degrading the Objective
 
-**What to build:** When an installed capability cannot satisfy the Contract, BeeMax searches configured and installable Providers, obtains authority, installs safely, verifies health, and resumes the original Objective.
+**What to build:** When an installed capability cannot satisfy the Contract, Thruvera searches configured and installable Providers, obtains authority, installs safely, verifies health, and resumes the original Objective.
 
 **Blocked by:** Calibrate Capability ranking against real task outcomes.
 
@@ -641,9 +641,9 @@ This ordering is the implementation plan, not a fixed business workflow. Core re
 - [ ] Restrict child scope, Tools, budgets, deadlines, and Memory and return evidence-backed child outcomes.
 - [ ] Prove child failure, cancellation, timeout, or crash cannot complete or corrupt the parent responsibility.
 
-## Install and operate BeeMax reproducibly on Ubuntu
+## Install and operate Thruvera reproducibly on Ubuntu
 
-**What to build:** A clean supported Ubuntu host can install dependencies, configure a Profile, start BeeMax under production supervision, run a smoke task, and upgrade or roll back safely.
+**What to build:** A clean supported Ubuntu host can install dependencies, configure a Profile, start Thruvera under production supervision, run a smoke task, and upgrade or roll back safely.
 
 **Blocked by:** Run scheduled and proactive work through the unified durable lifecycle; Isolate Gateway channels and Profile runtimes end to end; Route images, documents, and OCR through auxiliary capabilities.
 
@@ -655,7 +655,7 @@ This ordering is the implementation plan, not a fixed business workflow. Core re
 
 **What to build:** Fault injection and soak tests prove safe behavior under model errors, Provider timeout, MCP crash, network loss, Gateway reconnect, process exit, SQLite contention, compaction, low memory, and sustained concurrency.
 
-**Blocked by:** Install and operate BeeMax reproducibly on Ubuntu; Delegate complex work without creating a second Agent Loop.
+**Blocked by:** Install and operate Thruvera reproducibly on Ubuntu; Delegate complex work without creating a second Agent Loop.
 
 - [ ] Demonstrate bounded queues, context, Tool output, process memory, handles, child processes, and backpressure.
 - [ ] Prove committed Effects never duplicate and every incomplete responsibility remains observable and recoverable.
@@ -663,17 +663,17 @@ This ordering is the implementation plan, not a fixed business workflow. Core re
 
 ## Pass the Hermes Agent parity gate
 
-**What to build:** A pinned Hermes baseline and BeeMax run the same model and tasks across conversation, Skills, Tools, Providers, Memory, context, files, vision, scheduling, Gateway, recovery, and operator experience.
+**What to build:** A pinned Hermes baseline and Thruvera run the same model and tasks across conversation, Skills, Tools, Providers, Memory, context, files, vision, scheduling, Gateway, recovery, and operator experience.
 
 **Blocked by:** Exercise the production fault and resource matrix; Isolate Gateway channels and Profile runtimes end to end.
 
 - [ ] Close or explicitly document every feature, success-rate, latency, cost, stability, and usability gap.
-- [ ] Require BeeMax to be no worse on each declared parity dimension rather than hiding regressions in an aggregate score.
+- [ ] Require Thruvera to be no worse on each declared parity dimension rather than hiding regressions in an aggregate score.
 - [ ] Preserve reproducible traces and evidence for every claimed advantage.
 
 ## Pass the Codex Tool routing gate
 
-**What to build:** A pinned Codex baseline and BeeMax use the same model, tools, schemas, permissions, and tasks to compare dynamic visibility, discovery, selection, arguments, parallelism, recovery, context use, and final completion.
+**What to build:** A pinned Codex baseline and Thruvera use the same model, tools, schemas, permissions, and tasks to compare dynamic visibility, discovery, selection, arguments, parallelism, recovery, context use, and final completion.
 
 **Blocked by:** Exercise the production fault and resource matrix; Complete realtime research without silent fallback.
 
@@ -683,7 +683,7 @@ This ordering is the implementation plan, not a fixed business workflow. Core re
 
 ## Release only after parity and verified-completion gates pass
 
-**What to build:** Produce a formal BeeMax release only when all release blockers, Ubuntu checks, migration drills, parity reports, security isolation, and completion evidence are green.
+**What to build:** Produce a formal Thruvera release only when all release blockers, Ubuntu checks, migration drills, parity reports, security isolation, and completion evidence are green.
 
 **Blocked by:** Pass the Hermes Agent parity gate; Pass the Codex Tool routing gate.
 

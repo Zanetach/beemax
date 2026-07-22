@@ -1,6 +1,6 @@
-import { interactionPhaseForOutcome, type InteractionEvent } from "@beemax/core";
+import { interactionPhaseForOutcome, type InteractionEvent } from "@thruvera/core";
 import { Editor, ProcessTerminal, TUI, matchesKey, type Component } from "@earendil-works/pi-tui";
-import type { SubagentTaskSnapshot } from "@beemax/core";
+import type { SubagentTaskSnapshot } from "@thruvera/core";
 import type { ChatFooterState, DetailsDisplay } from "./local-chat-renderer.ts";
 
 export interface FullWorkbenchOptions {
@@ -32,8 +32,8 @@ export class FullWorkbench {
 	notice(text: string): void { this.pushTranscript(`System  ${text}`); }
 	answer(text: string): void {
 		const last = this.transcript.at(-1);
-		if (last?.startsWith("BeeMax  ")) this.transcript[this.transcript.length - 1] = `${last}${text}`;
-		else this.pushTranscript(`BeeMax  ${text}`);
+		if (last?.startsWith("Thruvera  ")) this.transcript[this.transcript.length - 1] = `${last}${text}`;
+		else this.pushTranscript(`Thruvera  ${text}`);
 	}
 
 	event(event: InteractionEvent, activityDetails: string): void {
@@ -65,7 +65,7 @@ export class FullWorkbench {
 	renderLines(width = process.stdout.columns || 100, height = process.stdout.rows || 32): string[] {
 		const inner = Math.max(24, width - 4);
 		const rows = [
-			border("BeeMax Workbench", inner),
+			border("Thruvera Workbench", inner),
 			line(`${this.footer.profile} · ${this.footer.model} · session:${this.footer.session} · ${this.footer.phase}${this.footer.context ? ` · ctx:${this.footer.context}` : ""}${this.footer.queued ? ` · queue:${this.footer.queued}` : ""}${this.footer.taskCapacity === undefined ? "" : ` · tasks:${this.footer.tasksRunning ?? 0}+${this.footer.tasksQueued ?? 0}/${this.footer.taskCapacity}`}`, inner),
 			divider("Transcript", inner),
 			...this.transcript.flatMap((entry) => wrap(entry, inner)),

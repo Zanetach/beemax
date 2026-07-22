@@ -1,14 +1,14 @@
-# BeeMax Scheduled Tasks: Codex, Hermes Agent, and OpenClaw Comparison
+# Thruvera Scheduled Tasks: Codex, Hermes Agent, and OpenClaw Comparison
 
 Research date: 2026-07-14. External claims below use first-party product documentation or official repositories.
 
 ## Executive conclusion
 
-BeeMax already has a real durable scheduled-task subsystem, not a prompt-only reminder feature. It persists one-shot, interval, and cron schedules in SQLite; supports IANA timezones; fences concurrent workers with renewable leases; records bounded run history; retries failures; runs scheduled Agent work through the shared Profile Runtime; and delivers results through the channel-neutral Delivery Port.
+Thruvera already has a real durable scheduled-task subsystem, not a prompt-only reminder feature. It persists one-shot, interval, and cron schedules in SQLite; supports IANA timezones; fences concurrent workers with renewable leases; records bounded run history; retries failures; runs scheduled Agent work through the shared Profile Runtime; and delivers results through the channel-neutral Delivery Port.
 
 Its strongest differentiator is semantic integration: a responsible scheduled Agent occurrence becomes the same durable Objective / Task Run / Checkpoint / Verification lifecycle used by interactive Pi work. The follow-up implementation now gives each nominal due time a durable Occurrence, binds Pi identity before execution settles, delivers only accepted Verification outcomes, retains bounded one-shot/misfire/dead-letter evidence, bounds retry attempts, exposes skip/run-once misfire policy, separates verified execution from durable delivery retry, preserves cadence after manual runs, and adds get/update/run-now/status management. Remaining breadth gaps are per-job delivery/failure destinations, bounded catch-up, model/Skill/workdir policy, and governed non-LLM actions.
 
-## BeeMax current implementation
+## Thruvera current implementation
 
 - `AutomationStore` persists jobs, delivery ownership, next-run time, retry state, claims, and run history in the Profile SQLite database: [`packages/automation/src/store.ts`](../../packages/automation/src/store.ts).
 - Schedule forms are one-shot `at`, fixed `every`, and five/six-field `cron`; cron calculation accepts an IANA timezone.
@@ -20,7 +20,7 @@ Its strongest differentiator is semantic integration: a responsible scheduled Ag
 
 ## Product comparison
 
-| Dimension | BeeMax 1.1 | Codex Automations | Hermes Agent | OpenClaw |
+| Dimension | Thruvera 1.1 | Codex Automations | Hermes Agent | OpenClaw |
 |---|---|---|---|---|
 | Durable local store | SQLite WAL | Product-managed; local implementation details are not public | `jobs.json` plus tick lock | Stored jobs plus per-job JSONL run logs |
 | Schedule forms | at, interval, cron, timezone | Recurring schedules/triggers exposed through product UX | one-shot, interval, cron, ISO | at, interval, cron, timezone |
@@ -40,7 +40,7 @@ Hermes exposes one unified `cronjob` tool and matching slash/CLI operations. It 
 
 OpenClaw supports main-session or isolated jobs, explicit delivery and failure destinations, manual run/wait, bounded run logs, isolated-session retention, per-job Agent/model selection, lightweight context, and deterministic command jobs with argv/cwd/env/stdin/output limits. [OpenClaw scheduled tasks](https://docs.openclaw.ai/automation/cron-jobs), [OpenClaw cron CLI](https://docs.openclaw.ai/cli/cron), [OpenClaw configuration reference](https://github.com/openclaw/openclaw/blob/main/docs/gateway/configuration-reference.md)
 
-## Recommended BeeMax direction
+## Recommended Thruvera direction
 
 Do not replace `AutomationStore` or create a second Agent loop. Preserve the existing `Schedule -> Trigger -> Profile Runtime -> durable Objective/Task -> Verification -> Delivery` path.
 
@@ -53,4 +53,4 @@ The next practical increment should add, in order:
 5. Expanded operator metrics and dead-letter control beyond the implemented status snapshot.
 6. Internally split the `AutomationStore` facade into migration, occurrence and delivery repositories when those areas next change; retain one public store and one database.
 
-This borrows Hermes/OpenClaw's management strengths while keeping BeeMax's stronger SQLite fencing and Pi/Task/Verification integration.
+This borrows Hermes/OpenClaw's management strengths while keeping Thruvera's stronger SQLite fencing and Pi/Task/Verification integration.

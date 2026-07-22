@@ -6,7 +6,7 @@ import { ConversationContext } from "./conversation-context.ts";
 import {
 	consumeTrustedToolGovernanceBlock,
 	reloadRuntimeResourcesIfNeeded,
-	type BeeMaxRuntimeSource,
+	type ThruveraRuntimeSource,
 	type TrustedToolGovernanceBlock,
 } from "./runtime.ts";
 import { SessionCoordinator, type RuntimeSessionFactory, type RuntimeSessionSnapshot, type SessionCoordinatorOptions } from "./session-coordinator.ts";
@@ -41,7 +41,7 @@ import { VERIFICATION_SUBMIT_TOOL_NAME } from "./verification-tools.ts";
 import { createArtifactManifest, validateArtifactManifest, validateArtifactVerificationReceipt, validateSourceReceipt, type ArtifactManifest, type ArtifactVerificationReceipt, type SourceReceipt } from "./artifact-runtime.ts";
 import type { OperationalRoutingReceipt } from "./memory-learning-kernel.ts";
 
-export interface AgentRunInput<Source extends BeeMaxRuntimeSource = BeeMaxRuntimeSource> {
+export interface AgentRunInput<Source extends ThruveraRuntimeSource = ThruveraRuntimeSource> {
 	source: Source;
 	text: string;
 	timeoutMs: number | null;
@@ -130,10 +130,10 @@ export interface ExecutionSettledEvent { type: "execution_settled"; executionEnv
 export interface MediaUnderstoodEvent { type: "media_understood"; route: "native" | "adapter"; adapterIds: string[]; receiptCount: number; failureCount: number; durationMs: number; }
 interface AssistantTurnOrigin { assistantTurnId: string; providerResponseStatus: "reported" | "unavailable"; providerResponseIdentitySha256?: string; }
 interface AssistantToolOrigin { origin: AssistantTurnOrigin; toolName: string; argumentsSha256: string; toolSpecPlanId: string; }
-type BeeMaxAgentSessionEvent = Exclude<AgentSessionEvent, { type: "tool_execution_end" }>
+type ThruveraAgentSessionEvent = Exclude<AgentSessionEvent, { type: "tool_execution_end" }>
 	| (Extract<AgentSessionEvent, { type: "tool_execution_end" }> & { trustedGovernanceBlock?: Readonly<TrustedToolGovernanceBlock> });
-export type BeeMaxAgentRunEvent = BeeMaxAgentSessionEvent | ModelFallbackEvent | PlanningDecisionEvent | PlanningOutcomeEvent | CapabilityRankedEvent | ContextBuiltEvent | ExecutionStartedEvent | ExecutionSettledEvent | MediaUnderstoodEvent;
-export type BeeMaxAgentRunEventSink = (event: BeeMaxAgentRunEvent) => void | Promise<void>;
+export type ThruveraAgentRunEvent = ThruveraAgentSessionEvent | ModelFallbackEvent | PlanningDecisionEvent | PlanningOutcomeEvent | CapabilityRankedEvent | ContextBuiltEvent | ExecutionStartedEvent | ExecutionSettledEvent | MediaUnderstoodEvent;
+export type ThruveraAgentRunEventSink = (event: ThruveraAgentRunEvent) => void | Promise<void>;
 const SKILL_LIFECYCLE_TOOLS = new Set(["skill_activate", "skill_read", "skill_route", "skill_resource_read", "skill_complete"]);
 const CAPABILITY_CONTROL_TOOLS = new Set(["capability_discover", "capability_acquire"]);
 interface AdmittedSkillIdentity { name: string; version: string; }
@@ -398,8 +398,8 @@ function capabilityDecisionCandidates(candidates: readonly CapabilitySelectionCa
 	return candidates.slice(0, 20).map(({ sourceToolName: _sourceToolName, ...candidate }) => candidate);
 }
 /** Gateway-facing runtime contract; implementations may be local or remote. */
-export interface AgentRuntimePort<Source extends BeeMaxRuntimeSource = BeeMaxRuntimeSource> {
-	run(input: AgentRunInput<Source>, onEvent?: BeeMaxAgentRunEventSink): Promise<AgentRunResult>;
+export interface AgentRuntimePort<Source extends ThruveraRuntimeSource = ThruveraRuntimeSource> {
+	run(input: AgentRunInput<Source>, onEvent?: ThruveraAgentRunEventSink): Promise<AgentRunResult>;
 	/** Deliver guidance into an active Pi run. Optional for legacy/remote runtimes. */
 	steer?(source: Source, text: string, images?: ImageContent[]): Promise<boolean>;
 	/** Deliver a message after the active Pi run becomes idle. Optional for legacy/remote runtimes. */
@@ -428,7 +428,7 @@ export interface AgentRuntimePort<Source extends BeeMaxRuntimeSource = BeeMaxRun
 
 export interface ObjectiveRuntimeInterruptionResult { interruptedEffects: number; pendingExecutions?: number; }
 
-export interface BeeMaxAgentRuntimeOptions<Source extends BeeMaxRuntimeSource = BeeMaxRuntimeSource> extends SessionCoordinatorOptions {
+export interface ThruveraAgentRuntimeOptions<Source extends ThruveraRuntimeSource = ThruveraRuntimeSource> extends SessionCoordinatorOptions {
 	createAgent: RuntimeSessionFactory<Source>;
 	/** Trusted Profile identity used to scope the turn Tool Spec Plan. */
 	profileId: string;
@@ -483,7 +483,7 @@ export interface BeeMaxAgentRuntimeOptions<Source extends BeeMaxRuntimeSource = 
  * persistent session reuse, turn timeout, event subscription, resource reload
  * and candidate-memory capture. Channels only subscribe and present events.
  */
-export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRuntimeSource> implements AgentRuntimePort<Source> {
+export class ThruveraAgentRuntime<Source extends ThruveraRuntimeSource = ThruveraRuntimeSource> implements AgentRuntimePort<Source> {
 	private readonly sessions: SessionCoordinator<Source>;
 	private readonly createAgent: RuntimeSessionFactory<Source>;
 	private readonly profileId: string;
@@ -515,7 +515,7 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 	private readonly supplementalMediaControllers = new Map<string, Set<AbortController>>();
 	private readonly objectiveInterruptions = new Map<string, Set<() => Promise<void>>>();
 
-	constructor(options: BeeMaxAgentRuntimeOptions<Source>) {
+	constructor(options: ThruveraAgentRuntimeOptions<Source>) {
 		this.sessions = new SessionCoordinator(options);
 		this.createAgent = options.createAgent;
 		this.profileId = options.profileId?.trim();
@@ -548,7 +548,7 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 		this.mediaUnderstanding = options.mediaUnderstanding ?? new MediaUnderstandingRuntime([]);
 	}
 
-	async run(input: AgentRunInput<Source>, onEvent?: BeeMaxAgentRunEventSink): Promise<AgentRunResult> {
+	async run(input: AgentRunInput<Source>, onEvent?: ThruveraAgentRunEventSink): Promise<AgentRunResult> {
 		const factory = input.mode === "automation" ? this.createAutomationAgent ?? this.createAgent : this.createAgent;
 		if (input.executionEnvelope?.accessScopeRef && input.accessScopeRef && input.executionEnvelope.accessScopeRef.id !== input.accessScopeRef.id) {
 			throw new AgentRunError("Execution Envelope Access Scope conflicts with the requested Access Scope", false, undefined);
@@ -1311,9 +1311,9 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 					return false;
 				}
 			};
-			const enqueueEvent = (event: BeeMaxAgentRunEvent) => { eventDelivery = eventDelivery.then(() => onEvent?.(event)).then(() => undefined); };
+			const enqueueEvent = (event: ThruveraAgentRunEvent) => { eventDelivery = eventDelivery.then(() => onEvent?.(event)).then(() => undefined); };
 			const unsubscribe = session.piSession.subscribe((event) => {
-				let outwardEvent: BeeMaxAgentRunEvent = stripUntrustedGovernanceBlock(event);
+				let outwardEvent: ThruveraAgentRunEvent = stripUntrustedGovernanceBlock(event);
 				if (event.type === "turn_end") {
 					toolOriginByCall.clear();
 					toolArgumentsByCall.clear();
@@ -1784,7 +1784,7 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 				if (contractRequiresCapabilityResolution && (!capabilityResolutionEvidenceRef || !hasRequiredCapabilitySelection()) && !turnAbortReason && !runtimeCapabilityDiscoveryAttempted) {
 					if (supportsProgressiveTools && allTools.some((tool) => tool.name === "capability_discover")) activatePlannedTools(["capability_discover"]);
 					await requireToolSpecPublication();
-					await promptSession(`${renderToolSpecPlan(toolSpecPlan)}\n\n[BeeMax required Capability correction: the Work Contract explicitly requires external or specialized capability resolution, but preflight did not produce a usable trusted selection. Call capability_discover now for the unchanged Objective. Do not answer from memory, omit the requirement, or substitute a weaker result.]`, { expandPromptTemplates: false });
+					await promptSession(`${renderToolSpecPlan(toolSpecPlan)}\n\n[Thruvera required Capability correction: the Work Contract explicitly requires external or specialized capability resolution, but preflight did not produce a usable trusted selection. Call capability_discover now for the unchanged Objective. Do not answer from memory, omit the requirement, or substitute a weaker result.]`, { expandPromptTemplates: false });
 					assertTaskRunAuthority();
 				}
 				if (contractRequiresCapabilityResolution && !capabilityResolutionEvidenceRef && !turnAbortReason) await retryContractCapabilityPrefetch();
@@ -1792,12 +1792,12 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 				if (contractRequiresCapabilityResolution && !turnAbortReason && !hasRequiredCapabilitySelection()) throw new AgentRunError(`Objective cannot complete because no installed, configured, or safely acquirable Capability matched the Work Contract requirements: ${workContract!.capabilityRequirements.map((clause) => clause.text).join("; ")}`, false, undefined);
 				const unacquiredProviderRequirements = () => [...pendingProviderRequirements.entries()].filter(([, requirement]) => !requirement.acquired);
 				if (unacquiredProviderRequirements().length && !turnAbortReason) {
-					await promptSession(`[BeeMax Provider correction: the original Objective requires these unavailable Capabilities: ${unacquiredProviderRequirements().map(([name]) => name).join(", ")}. Use capability_acquire now. Do not answer, omit the requirement, or substitute a weaker result.]`, { expandPromptTemplates: false });
+					await promptSession(`[Thruvera Provider correction: the original Objective requires these unavailable Capabilities: ${unacquiredProviderRequirements().map(([name]) => name).join(", ")}. Use capability_acquire now. Do not answer, omit the requirement, or substitute a weaker result.]`, { expandPromptTemplates: false });
 					assertTaskRunAuthority();
 				}
 				const completedMatchingSkill = () => prefetchedSkills.some((name) => activatedPrefetchedSkills.has(name) && completedPrefetchedSkills.has(name));
 					if (prefetchedSkills.length && !completedMatchingSkill() && !turnAbortReason) {
-						await promptSession(`[BeeMax Skill correction: an installed Skill matched this Task (${prefetchedSkills.join(", ")}) but its lifecycle is incomplete. Use skill_read or skill_activate with the exact best-matching name, select its route, read every required module/resource, follow it, and finish with skill_complete before answering. Do not substitute another Skill.]`, { expandPromptTemplates: false });
+						await promptSession(`[Thruvera Skill correction: an installed Skill matched this Task (${prefetchedSkills.join(", ")}) but its lifecycle is incomplete. Use skill_read or skill_activate with the exact best-matching name, select its route, read every required module/resource, follow it, and finish with skill_complete before answering. Do not substitute another Skill.]`, { expandPromptTemplates: false });
 						assertTaskRunAuthority();
 						if (!completedMatchingSkill()) throw new AgentRunError(`${skillLifecycleBlocker ? `${skillLifecycleBlocker}; ` : ""}Agent did not complete the installed matching Skill lifecycle: ${prefetchedSkills.join(", ")}`, false, undefined);
 				}
@@ -1807,7 +1807,7 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 					if (!recoveryTools.length) throw new AgentRunError(`Provider output truncation left no active recovery Tool for: ${[...truncatedToolFailures].join(", ")}`, false, undefined);
 					if (activeTools) session.piSession.setActiveToolsByName(recoveryTools);
 					try {
-						await promptSession(`[BeeMax truncated Tool-call correction: the Provider reached its output limit and these Tool calls were rejected before execution: ${recoveryTools.join(", ")}. Retry only the rejected operation using the evidence already in this Session; do not repeat discovery. Keep every invocation complete and compact. For write, create large artifacts incrementally: first call mode=replace with at most 6000 characters, then use mode=append with at most 6000 characters and the exact expectedByteLength and expectedSha256 from the preceding receipt. Preserve all required facts, source URLs, and closing structure. Do not answer until the rejected Tool has completed successfully.]`, { expandPromptTemplates: false });
+						await promptSession(`[Thruvera truncated Tool-call correction: the Provider reached its output limit and these Tool calls were rejected before execution: ${recoveryTools.join(", ")}. Retry only the rejected operation using the evidence already in this Session; do not repeat discovery. Keep every invocation complete and compact. For write, create large artifacts incrementally: first call mode=replace with at most 6000 characters, then use mode=append with at most 6000 characters and the exact expectedByteLength and expectedSha256 from the preceding receipt. Preserve all required facts, source URLs, and closing structure. Do not answer until the rejected Tool has completed successfully.]`, { expandPromptTemplates: false });
 						assertTaskRunAuthority();
 					} finally {
 						if (activeTools) session.piSession.setActiveToolsByName(directTools);
@@ -1818,14 +1818,14 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 					const failedTool = readReroute.failedTool;
 					if (supportsProgressiveTools && allTools.some((tool) => tool.name === "capability_discover")) activatePlannedTools(["capability_discover"]);
 					await requireToolSpecPublication();
-					await promptSession(`${renderToolSpecPlan(toolSpecPlan)}\n\n[BeeMax capability reroute: ${failedTool} failed without a recorded equivalent-capability discovery. Use capability_discover now to find an already available alternative, then continue the original request. Do not retry the same external mutation; reconcile any uncertain side effect before another write.]`, { expandPromptTemplates: false });
+					await promptSession(`${renderToolSpecPlan(toolSpecPlan)}\n\n[Thruvera capability reroute: ${failedTool} failed without a recorded equivalent-capability discovery. Use capability_discover now to find an already available alternative, then continue the original request. Do not retry the same external mutation; reconcile any uncertain side effect before another write.]`, { expandPromptTemplates: false });
 					assertTaskRunAuthority();
 				}
 				if (requiresCurrentContinuationSourceReceipt && !hasTurnSourceReceipt() && !turnAbortReason) {
 					const activatedEvidenceTools = activatePlannedTools(currentSourceEvidenceToolNames);
 					if (!activatedEvidenceTools.length && supportsProgressiveTools && allTools.some((tool) => tool.name === "capability_discover")) activatePlannedTools(["capability_discover"]);
 					await requireToolSpecPublication();
-					await promptSession(`${renderToolSpecPlan(toolSpecPlan)}\n\n[BeeMax continuation evidence correction: this continued research request must be reverified in the current Turn. Call one active current-source evidence Tool now; if none is active, call capability_discover first. Do not report Provider availability or research conclusions until a successful current Source Receipt exists.]`, { expandPromptTemplates: false });
+					await promptSession(`${renderToolSpecPlan(toolSpecPlan)}\n\n[Thruvera continuation evidence correction: this continued research request must be reverified in the current Turn. Call one active current-source evidence Tool now; if none is active, call capability_discover first. Do not report Provider availability or research conclusions until a successful current Source Receipt exists.]`, { expandPromptTemplates: false });
 					assertTaskRunAuthority();
 				}
 					let capabilityContinuations = 0;
@@ -1844,7 +1844,7 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 							break;
 						}
 						await requireToolSpecPublication();
-						await promptSession(`${renderToolSpecPlan(toolSpecPlan)}\n\n[BeeMax capability continuation: matching Tools or Skills are now active. Continue the original request using them. Do not repeat capability discovery.]`, { expandPromptTemplates: false });
+						await promptSession(`${renderToolSpecPlan(toolSpecPlan)}\n\n[Thruvera capability continuation: matching Tools or Skills are now active. Continue the original request using them. Do not repeat capability discovery.]`, { expandPromptTemplates: false });
 						assertTaskRunAuthority();
 					}
 				if (requiresCurrentContinuationSourceReceipt && !hasTurnSourceReceipt() && !turnAbortReason) {
@@ -1860,7 +1860,7 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 					const activatedAlternatives = activatePlannedTools(pending.flatMap((obligation) => obligation.candidates.filter((candidate) => candidate.kind !== "skill").map((candidate) => candidate.sourceToolName ?? candidate.name)));
 					if (activatedAlternatives.length) publishToolSpecTransition();
 					await requireToolSpecPublication();
-					await promptSession(`[BeeMax required Capability execution correction: trusted discovery selected ${selected.join(", ")}, but one or more required outcome groups still lack a successful execution or completed Skill receipt. Use an active selected primary or same-group alternative now and continue the unchanged Objective. Do not answer until every required receipt exists.]`, { expandPromptTemplates: false });
+					await promptSession(`[Thruvera required Capability execution correction: trusted discovery selected ${selected.join(", ")}, but one or more required outcome groups still lack a successful execution or completed Skill receipt. Use an active selected primary or same-group alternative now and continue the unchanged Objective. Do not answer until every required receipt exists.]`, { expandPromptTemplates: false });
 					assertTaskRunAuthority();
 					if (!requiredCapabilityCompleted()) throw new AgentRunError(`Objective cannot complete because selected required Capabilities did not execute successfully: ${selected.join(", ")}`, false, undefined);
 				}
@@ -1870,7 +1870,7 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 					if (!unacquired.length) {
 						await requireToolSpecPublication();
 						const acquiredButUnused = [...pendingProviderRequirements.keys()];
-						await promptSession(`[BeeMax Provider completion correction: Provider health is verified, but the original Capabilities have not completed successfully. Use these exact Tools now: ${acquiredButUnused.join(", ")}. Do not answer until their successful Tool receipts exist.]`, { expandPromptTemplates: false });
+						await promptSession(`[Thruvera Provider completion correction: Provider health is verified, but the original Capabilities have not completed successfully. Use these exact Tools now: ${acquiredButUnused.join(", ")}. Do not answer until their successful Tool receipts exist.]`, { expandPromptTemplates: false });
 						assertTaskRunAuthority();
 					}
 					if (pendingProviderRequirements.size) {
@@ -1884,7 +1884,7 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 				let planningCorrected = false;
 				if (missingTools.length && !turnAbortReason) {
 					planningCorrected = true;
-					await promptSession(`[BeeMax planning correction: objective=${objective?.id ?? "turn-local"}; complete these tools in order now using the active execution budget: ${missingTools.join(" -> ")}. This correction applies only to this Objective. Do not answer directly.]`, { expandPromptTemplates: false });
+					await promptSession(`[Thruvera planning correction: objective=${objective?.id ?? "turn-local"}; complete these tools in order now using the active execution budget: ${missingTools.join(" -> ")}. This correction applies only to this Objective. Do not answer directly.]`, { expandPromptTemplates: false });
 					assertTaskRunAuthority();
 					const stillMissing = planning?.requiredTools.slice(requiredToolsUsed.length) ?? [];
 					if (stillMissing.length) {
@@ -1934,8 +1934,8 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 					if (activeTools) session.piSession.setActiveToolsByName(terminalRecoveryTools);
 					try {
 						await promptSession(verificationRecovery
-							? `[BeeMax verification submission correction: the prior Provider Turn reached its output limit after evidence collection but before the required structured verdict. Use only the successful evidence receipts already in this Session. Call ${VERIFICATION_SUBMIT_TOOL_NAME} exactly once now. Do not repeat evidence checks, perform discovery, or express the verdict only as prose.]`
-							: "[BeeMax terminal response correction: the prior Provider Turn reached its output limit before producing a complete terminal response. Treat its partial prose as incomplete. Use only the existing Tool results and evidence already in context. Do not perform more discovery or call Tools. Return one concise, complete final structured response now, preserving material source references and unresolved issues.]", { expandPromptTemplates: false });
+							? `[Thruvera verification submission correction: the prior Provider Turn reached its output limit after evidence collection but before the required structured verdict. Use only the successful evidence receipts already in this Session. Call ${VERIFICATION_SUBMIT_TOOL_NAME} exactly once now. Do not repeat evidence checks, perform discovery, or express the verdict only as prose.]`
+							: "[Thruvera terminal response correction: the prior Provider Turn reached its output limit before producing a complete terminal response. Treat its partial prose as incomplete. Use only the existing Tool results and evidence already in context. Do not perform more discovery or call Tools. Return one concise, complete final structured response now, preserving material source references and unresolved issues.]", { expandPromptTemplates: false });
 						assertTaskRunAuthority();
 					} finally {
 						if (activeTools) session.piSession.setActiveToolsByName(recoveryTools);
@@ -2009,7 +2009,7 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 							this.recordTrace({ type: "execution.started", executionEnvelope, at: correctionStartedAt });
 							await onEvent?.({ type: "execution_started", executionEnvelope });
 							correctionInFlight = true;
-							await promptSession(`[BeeMax Verification correction: the Candidate Outcome did not satisfy the durable Objective. Feedback: ${feedback}. Correct the result within the existing Objective and Task Run. Do not repeat committed Effects; reconcile unknown Effects before any mutation.]`, { expandPromptTemplates: false });
+							await promptSession(`[Thruvera Verification correction: the Candidate Outcome did not satisfy the durable Objective. Feedback: ${feedback}. Correct the result within the existing Objective and Task Run. Do not repeat committed Effects; reconcile unknown Effects before any mutation.]`, { expandPromptTemplates: false });
 							assertTaskRunAuthority();
 							const correctionFailure = currentTurnAssistantFailure();
 							if (correctionFailure) throw correctionFailure;
@@ -2079,8 +2079,8 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 				? "报告未生成：没有获得可验证的真实数据来源回执，已阻止使用示例或编造数据生成文件。"
 				: completionAnswer ?? (currentTurnAssistantText() || "(no response)");
 			try {
-				if (await reloadRuntimeResourcesIfNeeded(session.piSession)) console.info("[beemax] skills and resources hot-reloaded after agent evolution");
-			} catch (error) { console.error(`[beemax] resource reload failed: ${errorMessage(error)}`); }
+				if (await reloadRuntimeResourcesIfNeeded(session.piSession)) console.info("[thruvera] skills and resources hot-reloaded after agent evolution");
+			} catch (error) { console.error(`[thruvera] resource reload failed: ${errorMessage(error)}`); }
 			if (input.mode !== "automation") this.context?.record(input.source, { user: input.text, assistant: answer }, { accessScopeRef });
 			const executionUsage = turnUsageObserved
 				? { input_tokens: turnInputTokens, output_tokens: turnOutputTokens }
@@ -2324,7 +2324,7 @@ export class BeeMaxAgentRuntime<Source extends BeeMaxRuntimeSource = BeeMaxRunti
 	}
 }
 
-function shouldBindDurableObjective<Source extends BeeMaxRuntimeSource>(input: AgentRunInput<Source>, understanding: TurnUnderstanding | undefined, planning: AutonomousPlanningDecision | undefined): boolean {
+function shouldBindDurableObjective<Source extends ThruveraRuntimeSource>(input: AgentRunInput<Source>, understanding: TurnUnderstanding | undefined, planning: AutonomousPlanningDecision | undefined): boolean {
 	if (input.objectiveTaskId) return true;
 	if (!understanding || understanding.action === "cancel") return false;
 	if (understanding.action === "query") return Boolean(understanding.acceptanceCriteria.length || planning?.signals.requiresResearch || planning?.signals.requiresVerification || planning?.signals.substantialWork);
@@ -2605,8 +2605,8 @@ function historicalUserTurn(value: unknown): { kind: "request"; text: string } |
 	if (!text) return undefined;
 	const persistedEnvelope = persistedRuntimeEnvelopeRequest(text);
 	if (persistedEnvelope.recognized) return persistedEnvelope.request ? { kind: "request", text: persistedEnvelope.request } : { kind: "fence" };
-	if (text === "[Turn-scoped BeeMax execution guidance released.]") return undefined;
-	return /^(?:<beemax-|\[(?:BeeMax|Turn-scoped BeeMax)\b)/iu.test(text) ? { kind: "fence" } : { kind: "request", text };
+	if (text === "[Turn-scoped Thruvera execution guidance released.]") return undefined;
+	return /^(?:<beemax-|\[(?:Thruvera|Turn-scoped Thruvera)\b)/iu.test(text) ? { kind: "fence" } : { kind: "request", text };
 }
 
 /**
@@ -2637,7 +2637,7 @@ function persistedRuntimeEnvelopeRequest(text: string): { recognized: boolean; r
 	const requestMarkers = stringIndices(text, requestMarker, bodyStart);
 	if (requestMarkers.length !== 1) return { recognized: true };
 	const requestStart = requestMarkers[0]! + requestMarker.length;
-	const policyPattern = /\n\n\[BeeMax (?:contract )?execution policy:/gu;
+	const policyPattern = /\n\n\[Thruvera (?:contract )?execution policy:/gu;
 	const policyIndices = [...text.slice(requestStart).matchAll(policyPattern)].map((match) => requestStart + match.index);
 	if (policyIndices.length !== 1) return { recognized: true };
 	const policyIndex = policyIndices[0]!;
@@ -2749,13 +2749,13 @@ function isNonSubstantiveConversationTurn(value: string): boolean {
 
 function renderRecoveredContinuationRequest(unfinishedRequest: string, currentRequest: string): string {
 	return [
-		"[BeeMax continuation recovery]",
+		"[Thruvera continuation recovery]",
 		"Continue the unfinished task from the earlier user message in this same conversation. Re-evaluate Tool and Provider availability in this Turn; never present a historical failure as current without a new Tool receipt.",
 		"Unfinished user request:",
 		unfinishedRequest,
 		"Current user instruction:",
 		currentRequest,
-		"[/BeeMax continuation recovery]",
+		"[/Thruvera continuation recovery]",
 	].join("\n");
 }
 
@@ -2787,7 +2787,7 @@ function releaseTurnInputContext(session: AgentSession, fromIndex: number, rawTe
 	for (let index = Math.max(0, fromIndex); index < current.length; index++) {
 		const message = current[index]!;
 		if (message.role !== "user") continue;
-		const replacement = first ? rawText : "[Turn-scoped BeeMax execution guidance released.]";
+		const replacement = first ? rawText : "[Turn-scoped Thruvera execution guidance released.]";
 		first = false;
 		messages ??= [...current];
 		if (typeof message.content === "string") messages[index] = { ...message, content: replacement };
@@ -2823,7 +2823,7 @@ function toolDispatchReceipt(isError: boolean, result: unknown): ToolDispatchRec
 	return { stage, code, outcome: stage === "routing" || stage === "validation" || stage === "authorization" ? "rejected" : "failed", retryable: entry.retryable };
 }
 
-function stripUntrustedGovernanceBlock(event: AgentSessionEvent): BeeMaxAgentSessionEvent {
+function stripUntrustedGovernanceBlock(event: AgentSessionEvent): ThruveraAgentSessionEvent {
 	if (event.type !== "tool_execution_end") return event;
 	const { trustedGovernanceBlock: _discarded, ...sanitized } = event as Extract<AgentSessionEvent, { type: "tool_execution_end" }> & { trustedGovernanceBlock?: unknown };
 	return sanitized;
@@ -3137,7 +3137,7 @@ function toolSpecInventoryItem(tool: ToolDefinition | ToolInfo, admittedTools?: 
 	};
 }
 
-export function buildActiveTaskPreservationEnvelope(ledger: Pick<TaskLedger, "queryTasks">, source: BeeMaxRuntimeSource, maxTasks = 100): string | undefined {
+export function buildActiveTaskPreservationEnvelope(ledger: Pick<TaskLedger, "queryTasks">, source: ThruveraRuntimeSource, maxTasks = 100): string | undefined {
 	return buildTaskPreservationEnvelope(ledger.queryTasks({ ownerKeys: responsibilityOwnerKeys(source), statuses: ["pending", "running"], limit: maxTasks }));
 }
 

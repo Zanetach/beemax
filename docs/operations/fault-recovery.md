@@ -1,6 +1,6 @@
-# BeeMax Runtime 故障恢复手册
+# Thruvera Runtime 故障恢复手册
 
-本文只定义 BeeMax Runtime 的通用故障协议，不定义客户业务规则。订单、工单、合同、项目或任何企业实体都不进入恢复判断；是否可重放只由 durable Task、Recovery Policy、幂等身份、Effect Authority、Checkpoint 与 Verification 证据决定。
+本文只定义 Thruvera Runtime 的通用故障协议，不定义客户业务规则。订单、工单、合同、项目或任何企业实体都不进入恢复判断；是否可重放只由 durable Task、Recovery Policy、幂等身份、Effect Authority、Checkpoint 与 Verification 证据决定。
 
 ## 处理原则
 
@@ -13,11 +13,11 @@
 ## 快速检查
 
 ```text
-beemax gateway status --profile <profile>
-beemax gateway logs --profile <profile>
-beemax status --deep --profile <profile>
-beemax effect list --status unknown --profile <profile>
-beemax trace show <execution-id> --profile <profile>
+thruvera gateway status --profile <profile>
+thruvera gateway logs --profile <profile>
+thruvera status --deep --profile <profile>
+thruvera effect list --status unknown --profile <profile>
+thruvera trace show <execution-id> --profile <profile>
 ```
 
 在会话中使用 `/status`、`/tasks plans` 和 `/tasks show <plan-id>` 检查责任与恢复状态。
@@ -30,7 +30,7 @@ beemax trace show <execution-id> --profile <profile>
 | Tool timeout | `unknown` Effect、trace event | 阻止重放 | 查外部系统；将 Effect reconcile 为 `committed` 或 `failed` |
 | Process exit / restart | durable Task、Effect、outbox、recovery status | 重开 authority，回收过期 lease | 查 Gateway 状态和日志；处理 unknown Effect 或失败 Task |
 | Multi-instance claim | claim owner、lease、authority transition | 原子 claim，只允许一个实例执行 | 停止非预期重复实例，等待 lease 到期后恢复 |
-| Unknown Effect | Effect scope、Tool、idempotency key、status | fail closed | `beemax effect reconcile <id> --status committed --operation <observed>`，或明确标记 `failed` |
+| Unknown Effect | Effect scope、Tool、idempotency key、status | fail closed | `thruvera effect reconcile <id> --status committed --operation <observed>`，或明确标记 `failed` |
 | Verification unavailable | Candidate Outcome、Verification status、backoff | 有界重试 Verification，不重放执行 | verifier 恢复后运行 `/tasks verify <plan-id>` |
 | Delivery failure | outbox attempts、last error、delivery lease | 有界重试并回收 lease | 修复渠道 adapter；从 `/tasks show` 读取结果，不重复执行 Objective |
 | Compaction | preservation envelope、Checkpoint、Trace | 从 Task Ledger 重建未完成责任 | 查 `/tasks show`；会话变化时使用 `/resume <session-id>` |
@@ -40,9 +40,9 @@ beemax trace show <execution-id> --profile <profile>
 ## Unknown Effect 对账
 
 ```text
-beemax effect list --status unknown --profile <profile>
-beemax effect reconcile <effect-id> --status committed --operation <observed-operation> --external-ref <reference> --profile <profile>
-beemax effect reconcile <effect-id> --status failed --profile <profile>
+thruvera effect list --status unknown --profile <profile>
+thruvera effect reconcile <effect-id> --status committed --operation <observed-operation> --external-ref <reference> --profile <profile>
+thruvera effect reconcile <effect-id> --status failed --profile <profile>
 ```
 
 只有在外部系统已观察到 mutation 成功时才使用 `committed`，并填写实际 operation。若确认 mutation 未发生，使用 `failed`；之后 Runtime 才可能按完整恢复策略允许新的显式尝试。命令拒绝 Credential Secret，且只能结算当前为 `unknown` 的 Effect。

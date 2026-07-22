@@ -3,12 +3,12 @@
 ## Status
 
 Historical design input. Its approved direction has been merged into the canonical
-[`BeeMax Pi-native 组织智能 Runtime PRD`](../../prd/beemax-pi-unified-agent-runtime.md).
+[`Thruvera Pi-native 组织智能 Runtime PRD`](../../prd/thruvera-pi-unified-agent-runtime.md).
 When this document and the canonical PRD differ, the canonical PRD governs.
 
 ## Product axiom
 
-BeeMax fixes execution integrity, not customer business ontology. Customer work may contain industries, entities, relationships, conventions, exceptions, and authority structures that BeeMax cannot enumerate in advance. The Agent therefore interprets business meaning dynamically from language, history, tools, and enterprise knowledge. Runtime code must not define customer concepts such as order, project, ticket, contract, or workflow stage.
+Thruvera fixes execution integrity, not customer business ontology. Customer work may contain industries, entities, relationships, conventions, exceptions, and authority structures that Thruvera cannot enumerate in advance. The Agent therefore interprets business meaning dynamically from language, history, tools, and enterprise knowledge. Runtime code must not define customer concepts such as order, project, ticket, contract, or workflow stage.
 
 The product relationship is:
 

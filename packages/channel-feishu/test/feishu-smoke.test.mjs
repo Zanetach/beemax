@@ -8,7 +8,7 @@ test("Feishu smoke test verifies credentials, text, card, Reaction, and image de
 	const messages = [];
 	const reactions = [];
 	const client = {
-		request: async () => ({ code: 0, bot: { open_id: "ou_bot", app_name: "BeeMax" } }),
+		request: async () => ({ code: 0, bot: { open_id: "ou_bot", app_name: "Thruvera" } }),
 		im: { v1: {
 			message: { create: async (payload) => { messages.push(payload.data.msg_type); return { code: 0, data: { message_id: `message-${messages.length}` } }; } },
 			messageReaction: {
@@ -20,7 +20,7 @@ test("Feishu smoke test verifies credentials, text, card, Reaction, and image de
 	};
 	const result = await runFeishuSmoke(settings, "oc_chat", client);
 	assert.equal(result.success, true);
-	assert.equal(result.botName, "BeeMax");
+	assert.equal(result.botName, "Thruvera");
 	assert.deepEqual(result.checks.map((check) => [check.name, check.status]), [
 		["credentials", "pass"], ["text", "pass"], ["card", "pass"], ["reaction", "pass"], ["image", "pass"],
 	]);

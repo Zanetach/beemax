@@ -1,4 +1,4 @@
-import type { BeeMaxRuntimeSource } from "./runtime.ts";
+import type { ThruveraRuntimeSource } from "./runtime.ts";
 import { conversationIdentity } from "./agent-scope.ts";
 import type { AgentScope } from "./agent-scope.ts";
 
@@ -18,7 +18,7 @@ export interface MemoryScope {
 	organizationId?: string;
 }
 
-export function memoryScopeForSource(source: BeeMaxRuntimeSource, trusted: Pick<MemoryScope, "profileId" | "projectId" | "organizationId"> = {}): MemoryScope {
+export function memoryScopeForSource(source: ThruveraRuntimeSource, trusted: Pick<MemoryScope, "profileId" | "projectId" | "organizationId"> = {}): MemoryScope {
 	const { platform, channelInstanceId, chatId, userId, threadId } = conversationIdentity(source);
 	const memoryPlatform = channelInstanceId ? `${platform}@${channelInstanceId}` : platform;
 	return {

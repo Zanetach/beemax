@@ -4,7 +4,7 @@ import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promi
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { ProfileSessionOwnershipMigration, legacySessionIdsForSource } from "@beemax/core";
+import { ProfileSessionOwnershipMigration, legacySessionIdsForSource } from "@thruvera/core";
 import {
 	applyProfileSessionOwnershipMigration,
 	planProfileSessionOwnershipMigration,
@@ -40,7 +40,7 @@ test("operator explicitly plans, applies, and rolls back one Profile Session own
 
 test("CLI requires explicit Session selection and confirmation before apply and rollback", async () => {
 	const home = await mkdtemp(join(tmpdir(), "beemax-session-migration-cli-"));
-	const run = (...args) => execFileSync(process.execPath, [cli, ...args, "--profile", "personal"], { encoding: "utf8", env: { ...process.env, BEEMAX_HOME: home } });
+	const run = (...args) => execFileSync(process.execPath, [cli, ...args, "--profile", "personal"], { encoding: "utf8", env: { ...process.env, THRUVERA_HOME: home } });
 	try {
 		run("init");
 		const profileHome = join(home, "profiles", "personal");
@@ -63,7 +63,7 @@ test("CLI requires explicit Session selection and confirmation before apply and 
 
 test("CLI resumes a prepared Session migration after a crash before transcript publication", async () => {
 	const home = await mkdtemp(join(tmpdir(), "beemax-session-migration-cli-crash-"));
-	const run = (...args) => execFileSync(process.execPath, [cli, ...args, "--profile", "personal"], { encoding: "utf8", env: { ...process.env, BEEMAX_HOME: home } });
+	const run = (...args) => execFileSync(process.execPath, [cli, ...args, "--profile", "personal"], { encoding: "utf8", env: { ...process.env, THRUVERA_HOME: home } });
 	try {
 		run("init");
 		const profileHome = join(home, "profiles", "personal");

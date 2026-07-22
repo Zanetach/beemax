@@ -52,7 +52,7 @@ export class DockerExecutionPort implements ExecutionPort {
 		const hostIdentity = typeof process.getuid === "function" && typeof process.getgid === "function" ? `${process.getuid()}:${process.getgid()}` : undefined;
 		const args = [
 			"run", "--rm", ...(stdin === undefined ? [] : ["-i"]), "--name", name,
-			"--label", "com.beemax.sandbox=execution", "--label", `com.beemax.profile=${this.options.profileId}`,
+			"--label", "com.thruvera.sandbox=execution", "--label", `com.thruvera.profile=${this.options.profileId}`,
 			...(hostIdentity ? ["--user", hostIdentity] : []),
 			"--init", "--network", "none", "--ipc", "none", "--read-only", "--cap-drop", "ALL",
 			"--security-opt", "no-new-privileges:true", "--pids-limit", String(limits.pids),

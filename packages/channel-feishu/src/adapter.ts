@@ -1,7 +1,7 @@
 /**
  * Feishu (飞书) Channel Runtime Adapter.
  *
- * BeeMax Feishu adapter implemented in TypeScript on top of
+ * Thruvera Feishu adapter implemented in TypeScript on top of
  * the official `@larksuiteoapi/node-sdk`.
  *
  * Connection: WebSocket long-connection by default, with an optional local
@@ -25,7 +25,7 @@ import { Transform } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { createHash, randomUUID } from "node:crypto";
 import lark, { adaptDefault, normalizeCardAction, type Client, type EventDispatcher, type RawCardActionEvent, type WSClient } from "@larksuiteoapi/node-sdk";
-import { conversationKey, sessionOwnerKey } from "@beemax/core";
+import { conversationKey, sessionOwnerKey } from "@thruvera/core";
 import type {
 	InboundMessage,
 	CardActionHandler,
@@ -37,11 +37,11 @@ import type {
 	SendOptions,
 	SendResult,
 	SessionSource,
-} from "@beemax/channel-runtime";
+} from "@thruvera/channel-runtime";
 import { validateFeishuWebhookSettings, type FeishuCredentialConsumer, type FeishuRuntimeSettings } from "./settings.ts";
 import { retryFeishuOperation } from "./retry.ts";
 import { FeishuInteractionPresenter } from "./presentation/presenter.ts";
-import { GroupActivationController, GroupResponseGovernor, type GroupActivationDecision } from "@beemax/channel-runtime";
+import { GroupActivationController, GroupResponseGovernor, type GroupActivationDecision } from "@thruvera/channel-runtime";
 
 const FEISHU_DOMAIN = lark.Domain.Feishu;
 const LARK_DOMAIN = lark.Domain.Lark;
@@ -139,7 +139,7 @@ export class FeishuAdapter implements PlatformAdapter {
 
 	onMessage(handler: MessageHandler): void {
 		this.handler = handler;
-		void this.drainPendingInbound().catch((error) => console.error(`[beemax] Feishu inbound replay failed: ${error instanceof Error ? error.message : String(error)}`));
+		void this.drainPendingInbound().catch((error) => console.error(`[thruvera] Feishu inbound replay failed: ${error instanceof Error ? error.message : String(error)}`));
 	}
 
 	onObservation(handler: ObservationHandler): void {
@@ -176,7 +176,7 @@ export class FeishuAdapter implements PlatformAdapter {
 		this.assertCurrentConnection(generation);
 		if (!this.settings.allowAllUsers && this.settings.allowedUsers.length === 0) {
 			console.warn(
-				"[beemax] Feishu access is deny-by-default and FEISHU_ALLOWED_USERS is empty; all user messages will be rejected",
+				"[thruvera] Feishu access is deny-by-default and FEISHU_ALLOWED_USERS is empty; all user messages will be rejected",
 			);
 		}
 		const domain = this.settings.domain === "lark" ? LARK_DOMAIN : FEISHU_DOMAIN;
@@ -241,7 +241,7 @@ export class FeishuAdapter implements PlatformAdapter {
 				});
 				void handler(req, res).catch((error) => {
 					if (rejected) return;
-					console.error(`[beemax] Feishu webhook failed: ${String(error)}`);
+					console.error(`[thruvera] Feishu webhook failed: ${String(error)}`);
 					if (!res.headersSent) res.writeHead(500);
 					res.end("internal error");
 				});
@@ -269,7 +269,7 @@ export class FeishuAdapter implements PlatformAdapter {
 			loggerLevel: lark.LoggerLevel.warn,
 			domain,
 			autoReconnect: true,
-			source: "beemax",
+			source: "thruvera",
 			extraUaTags: ["channel"],
 			wsConfig: { pingTimeout: 10 },
 			onReady: () => { if (this.isCurrentConnection(generation, wsClient)) this.markConnected(generation); },
@@ -278,7 +278,7 @@ export class FeishuAdapter implements PlatformAdapter {
 			onError: (error) => {
 				if (!this.isCurrentConnection(generation, wsClient)) return;
 				this.connected = false;
-				console.error(`[beemax] Feishu WebSocket connection failed: ${error.message}`);
+				console.error(`[thruvera] Feishu WebSocket connection failed: ${error.message}`);
 			},
 		}));
 		if (!createdWsClient) throw new Error("Feishu credentials are unavailable");
@@ -315,13 +315,13 @@ export class FeishuAdapter implements PlatformAdapter {
 
 	private assertCurrentConnection(generation: number, wsClient?: WSClient): void {
 		if (this.isCurrentConnection(generation, wsClient)) return;
-		throw Object.assign(new Error("Feishu connection attempt was cancelled"), { code: "BEEMAX_CONNECTION_CANCELLED" });
+		throw Object.assign(new Error("Feishu connection attempt was cancelled"), { code: "THRUVERA_CONNECTION_CANCELLED" });
 	}
 
 	private markConnected(generation: number): void {
 		if (!this.isCurrentConnection(generation)) return;
 		this.connected = true;
-		void this.drainPendingInbound().catch((error) => console.error(`[beemax] Feishu inbound replay failed: ${error instanceof Error ? error.message : String(error)}`));
+		void this.drainPendingInbound().catch((error) => console.error(`[thruvera] Feishu inbound replay failed: ${error instanceof Error ? error.message : String(error)}`));
 	}
 
 	async disconnect(): Promise<void> {
@@ -355,11 +355,11 @@ export class FeishuAdapter implements PlatformAdapter {
 				this.settings.botName = bot.app_name ?? bot.bot_name;
 			}
 			if (!this.settings.botOpenId) {
-				console.warn("[beemax] Feishu bot info did not include open_id; group @mention matching may be unavailable");
+				console.warn("[thruvera] Feishu bot info did not include open_id; group @mention matching may be unavailable");
 			}
 		} catch (error) {
 			console.warn(
-				`[beemax] Could not hydrate Feishu bot identity: ${error instanceof Error ? error.message : String(error)}`,
+				`[thruvera] Could not hydrate Feishu bot identity: ${error instanceof Error ? error.message : String(error)}`,
 			);
 		}
 	}
@@ -369,7 +369,7 @@ export class FeishuAdapter implements PlatformAdapter {
 		data: FeishuMeetingRecordingEvent,
 	): void {
 		// Do not log the recording URL: it is a bearer-like sensitive resource.
-		console.info("[beemax] Feishu meeting recording event", {
+		console.info("[thruvera] Feishu meeting recording event", {
 			status,
 			meetingId: data.meeting?.id,
 			meetingNo: data.meeting?.meeting_no,
@@ -390,13 +390,13 @@ export class FeishuAdapter implements PlatformAdapter {
 			try {
 				await this.observationHandler({ text, source: this.buildSource(data), timestamp: Number.parseInt(msg.create_time, 10) * 1000 || Date.now() });
 			} catch (error) {
-				console.warn(`[beemax] Feishu ambient Observation was rejected: ${error instanceof Error ? error.message : String(error)}`);
+				console.warn(`[thruvera] Feishu ambient Observation was rejected: ${error instanceof Error ? error.message : String(error)}`);
 			}
 			return;
 		}
 		if (reason !== null) {
 			if (reason === "pairing required" && !this.isDuplicate(msg.message_id)) await this.handlePairing(sender, msg);
-			console.warn(`[beemax] rejected Feishu message ${msg.message_id}: ${reason}`);
+			console.warn(`[thruvera] rejected Feishu message ${msg.message_id}: ${reason}`);
 			return;
 		}
 		if (this.isDuplicate(msg.message_id)) return;
@@ -405,9 +405,9 @@ export class FeishuAdapter implements PlatformAdapter {
 		const text = await this.extractText(msg);
 		if (text.trim().toLowerCase() === "/set-home" && this.settings.setHomeChat) {
 			const actorIds = [source.userIdAlt, source.userId].filter((id): id is string => Boolean(id));
-			if (!this.settings.admins?.some((id) => actorIds.includes(id))) { await this.send(msg.chat_id, "Only a BeeMax Profile administrator can set the home chat."); return; }
+			if (!this.settings.admins?.some((id) => actorIds.includes(id))) { await this.send(msg.chat_id, "Only a Thruvera Profile administrator can set the home chat."); return; }
 			await this.settings.setHomeChat(msg.chat_id, source.userIdAlt ?? source.userId, source.chatType === "dm" ? "dm" : "group");
-			await this.send(msg.chat_id, "This chat is now the BeeMax home destination for heartbeat alerts.");
+			await this.send(msg.chat_id, "This chat is now the Thruvera home destination for heartbeat alerts.");
 			return;
 		}
 		const media = parseFeishuMediaDescriptor(msg);
@@ -468,7 +468,7 @@ export class FeishuAdapter implements PlatformAdapter {
 					resolve();
 					return;
 				}
-				console.warn("[beemax] Feishu pending inbound queue full; dropped oldest event");
+				console.warn("[thruvera] Feishu pending inbound queue full; dropped oldest event");
 			}
 			this.pendingInbound.push({ message, resolve, reject });
 		});
@@ -729,7 +729,7 @@ export class FeishuAdapter implements PlatformAdapter {
 			const limiter = new Transform({
 				transform(chunk: Buffer, _encoding, callback) {
 					bytes += chunk.byteLength;
-					callback(bytes > MAX_INBOUND_MEDIA_BYTES ? new Error("Feishu attachment exceeds BeeMax's 25MB inbound limit") : undefined, chunk);
+					callback(bytes > MAX_INBOUND_MEDIA_BYTES ? new Error("Feishu attachment exceeds Thruvera's 25MB inbound limit") : undefined, chunk);
 				},
 			});
 			await pipeline(resource.getReadableStream(), limiter, createWriteStream(path, { flags: "wx", mode: 0o600 }));
@@ -802,9 +802,9 @@ export class FeishuAdapter implements PlatformAdapter {
 		if (!identity || !this.settings.pairing) return;
 		const result = this.settings.pairing.request("feishu", identity);
 		if (result.status === "created" || result.status === "existing") {
-			await this.send(msg.chat_id, `BeeMax access approval is required.\n\nPairing code: ${result.code}\n\nAsk the Profile owner to run:\nbeemax pairing approve feishu ${result.code}\n\nThis code expires in 1 hour.`);
+			await this.send(msg.chat_id, `Thruvera access approval is required.\n\nPairing code: ${result.code}\n\nAsk the Profile owner to run:\nthruvera pairing approve feishu ${result.code}\n\nThis code expires in 1 hour.`);
 		} else if (result.status === "capacity") {
-			await this.send(msg.chat_id, "BeeMax has too many pending access requests. Ask the Profile owner to review them with `beemax pairing list`.");
+			await this.send(msg.chat_id, "Thruvera has too many pending access requests. Ask the Profile owner to review them with `thruvera pairing list`.");
 		}
 	}
 
@@ -1182,7 +1182,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 function cardActionId(messageId: string, openId: string, element: string, value: unknown): string {
-	const action = isRecord(value) ? String(value.beemax_action ?? "") : "";
+	const action = isRecord(value) ? String(value.thruvera_action ?? value.beemax_action ?? "") : "";
 	const choice = isRecord(value) ? String(value.choice ?? "") : "";
 	return `feishu-card:${messageId}:${openId}:${element}:${action}:${choice}`;
 }

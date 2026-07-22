@@ -49,18 +49,18 @@ jobs:
           --machine-profile ${{ matrix.machine-profile }} --network-condition live-public-uncontrolled
           --adapter-options '{"fixtureRoot":"evals/fixtures/agent-parity","provider":"custom:ark"}' --timeout-ms 180000
           --write artifacts/hermes-native.json > artifacts/hermes-native.stdout.json
-      - name: Capture BeeMax native baseline
+      - name: Capture Thruvera native baseline
         run: >-
           node scripts/capture-agent-parity.mjs --mode best-native
-          --adapter evals/adapters/beemax-cli.mjs --system beemax --version 1.2.0 --model glm-5.2
+          --adapter evals/adapters/thruvera-cli.mjs --system thruvera --version 1.2.0 --model glm-5.2
           --machine-profile ${{ matrix.machine-profile }} --network-condition live-public-uncontrolled
           --adapter-options '{"fixtureRoot":"evals/fixtures/agent-parity","profile":"e2e-feishu","provider":"custom"}' --timeout-ms 180000
-          --write artifacts/beemax-native.json > artifacts/beemax-native.stdout.json
+          --write artifacts/thruvera-native.json > artifacts/thruvera-native.stdout.json
       - name: Produce differential report
         id: compare
         run: >-
           node scripts/evaluate-agent-parity.mjs --mode best-native
-          --candidate artifacts/beemax-native.json
+          --candidate artifacts/thruvera-native.json
           --baseline artifacts/codex-native.json --baseline artifacts/hermes-native.json
           --write artifacts/best-native-comparison.json > artifacts/best-native-comparison.stdout.json
       - uses: actions/upload-artifact@v4

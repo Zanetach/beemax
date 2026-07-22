@@ -18,7 +18,7 @@ test("guided Feishu smoke command renders a compact compatibility matrix", async
 	const command = await executeFeishuSmoke(config, "oc_chat", async (_settings, chatId) => {
 		receivedChat = chatId;
 		return {
-			success: false, chatId, botName: "BeeMax",
+			success: false, chatId, botName: "Thruvera",
 			checks: [
 				{ name: "credentials", status: "pass", detail: "authenticated" },
 				{ name: "reaction", status: "fail", detail: "permission missing" },

@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { createSourceReceipt, defineTool, READ_ONLY_TOOL_POLICY, withToolPolicy, type ToolDefinition } from "@beemax/core";
+import { createSourceReceipt, defineTool, READ_ONLY_TOOL_POLICY, withToolPolicy, type ToolDefinition } from "@thruvera/core";
 import { parse, type DefaultTreeAdapterMap } from "parse5";
 import { Type } from "typebox";
 
@@ -117,7 +117,7 @@ function strictUtcDate(value: string): number {
 }
 
 async function fetchBounded(fetchPort: FetchPort, url: string, expectedType: "text/html" | "application/json", signal: AbortSignal): Promise<string> {
-	const response = await fetchPort(url, { method: "GET", headers: { accept: expectedType, "user-agent": "BeeMax/1.4 structured-market-provider" }, redirect: "error", signal });
+	const response = await fetchPort(url, { method: "GET", headers: { accept: expectedType, "user-agent": "Thruvera/1.4 structured-market-provider" }, redirect: "error", signal });
 	if (!response.ok) throw new Error(`Structured market source ${new URL(url).hostname} returned HTTP ${response.status}`);
 	const contentType = response.headers.get("content-type")?.split(";", 1)[0]?.trim().toLowerCase();
 	if (contentType !== expectedType) throw new Error(`Structured market source ${new URL(url).hostname} returned unexpected content type ${contentType || "missing"}`);

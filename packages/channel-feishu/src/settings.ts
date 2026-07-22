@@ -1,7 +1,7 @@
 /**
  * Feishu Channel Runtime Adapter settings.
  *
- * Identity model follows BeeMax's Profile-owned Feishu adapter:
+ * Identity model follows Thruvera's Profile-owned Feishu adapter:
  *
  *   open_id  (ou_xxx)  - app-scoped. Always in event payloads. Used as the
  *                        de-facto unique user id in single-bot mode.
@@ -16,8 +16,8 @@
  * is fetched at startup via /bot/v3/info and used only for @-mention matching.
  */
 
-import type { PairingAuthority } from "@beemax/channel-runtime";
-import type { GroupActivationMode, GroupActivationSignal, GroupQuietHours } from "@beemax/channel-runtime";
+import type { PairingAuthority } from "@thruvera/channel-runtime";
+import type { GroupActivationMode, GroupActivationSignal, GroupQuietHours } from "@thruvera/channel-runtime";
 
 export interface FeishuActivationSettings {
 	mode: GroupActivationMode;
@@ -52,7 +52,7 @@ export interface FeishuSettings {
 	webhookEncryptKey?: string;
 	/**
 	 * Require @mention of the bot in group chats to respond. DMs always respond.
-	 * BeeMax defaults to FEISHU_REQUIRE_MENTION=true.
+	 * Thruvera defaults to FEISHU_REQUIRE_MENTION=true.
 	 */
 	requireMention: boolean;
 	/** Transport-neutral group activation; requireMention remains a legacy fallback when omitted. */

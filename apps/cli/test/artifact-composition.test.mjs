@@ -9,7 +9,7 @@ import { createLocalArtifactRuntime, discoverChromeExecutable, LocalArtifactVeri
 const chrome = discoverChromeExecutable();
 
 test("Artifact composition fails closed on an explicitly invalid Chrome executable", () => {
-	assert.equal(discoverChromeExecutable({ BEEMAX_CHROME_EXECUTABLE: "/definitely/not/chrome" }), undefined);
+	assert.equal(discoverChromeExecutable({ THRUVERA_CHROME_EXECUTABLE: "/definitely/not/chrome" }), undefined);
 	const runtime = createLocalArtifactRuntime("/tmp", { chromeExecutable: "/definitely/not/chrome" });
 	assert.equal(runtime.providers.length, 0);
 });

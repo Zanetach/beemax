@@ -25,7 +25,7 @@ import {
 	type DirectObjectiveVerificationNotifier,
 	type VerifiedObjectiveMemoryPublisher,
 	type TaskLedger,
-} from "@beemax/core";
+} from "@thruvera/core";
 import { join } from "node:path";
 import type { TaskRecoveryStatus } from "./profile-control.ts";
 import type { ProfileRuntimeResource } from "./runtime-composition.ts";

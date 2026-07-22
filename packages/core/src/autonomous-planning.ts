@@ -132,7 +132,7 @@ export class AutonomousPlanningPolicy {
 		const decision = { mode, basis: "raw_prompt" as const, verificationDepth, requiredTool, requiredTools, suggestedConcurrency, budget, signals, reason };
 		return {
 			...decision,
-			directive: (objectiveId) => `[BeeMax execution policy: objective=${objectiveId ?? "turn-local"}; basis=raw_prompt; mode=${mode}; requiredTools=${requiredTools.length ? requiredTools.join("->") : "none"}; concurrency=${suggestedConcurrency}; maxSubagents=${budget.maxSubagents}; maxToolCalls=${budget.maxToolCalls ?? "unbounded"}; cumulativeTokenCeiling=none; correctiveAttempts=${budget.maxCorrectiveAttempts}. This is the sole current execution policy for this Objective; ignore earlier BeeMax planning correction or execution policy messages for other Objectives, including unscoped messages. Complete requiredTools in order before giving a final answer.]`,
+			directive: (objectiveId) => `[Thruvera execution policy: objective=${objectiveId ?? "turn-local"}; basis=raw_prompt; mode=${mode}; requiredTools=${requiredTools.length ? requiredTools.join("->") : "none"}; concurrency=${suggestedConcurrency}; maxSubagents=${budget.maxSubagents}; maxToolCalls=${budget.maxToolCalls ?? "unbounded"}; cumulativeTokenCeiling=none; correctiveAttempts=${budget.maxCorrectiveAttempts}. This is the sole current execution policy for this Objective; ignore earlier Thruvera planning correction or execution policy messages for other Objectives, including unscoped messages. Complete requiredTools in order before giving a final answer.]`,
 		};
 	}
 
@@ -239,7 +239,7 @@ export class AutonomousPlanningPolicy {
 			budget,
 			signals,
 			reason,
-			directive: (objectiveId) => `[BeeMax contract execution policy: objective=${objectiveId ?? "turn-local"}; contract=${coverage.contractId}; basis=${basis}; outcomes=${coverage.outcomeIds.join(",") || "none"}; capabilities=${coverage.capabilityRequirementIds.join(",") || "none"}; artifacts=${coverage.artifactRequirementIds.join(",") || "none"}; evidence=${coverage.evidenceRequirementIds.join(",") || "none"}; verificationDepth=${verificationDepth}; mode=${mode}; requiredTools=${requiredTools.length ? requiredTools.join("->") : "none"}; concurrency=${suggestedConcurrency}; maxSubagents=${budget.maxSubagents}; maxToolCalls=${budget.maxToolCalls ?? "unbounded"}; cumulativeTokenCeiling=none; correctiveAttempts=${budget.maxCorrectiveAttempts}. This policy was derived after semantic Work Contract admission. Preserve every listed requirement through execution and Verification; do not substitute raw-prompt planning heuristics.]`,
+			directive: (objectiveId) => `[Thruvera contract execution policy: objective=${objectiveId ?? "turn-local"}; contract=${coverage.contractId}; basis=${basis}; outcomes=${coverage.outcomeIds.join(",") || "none"}; capabilities=${coverage.capabilityRequirementIds.join(",") || "none"}; artifacts=${coverage.artifactRequirementIds.join(",") || "none"}; evidence=${coverage.evidenceRequirementIds.join(",") || "none"}; verificationDepth=${verificationDepth}; mode=${mode}; requiredTools=${requiredTools.length ? requiredTools.join("->") : "none"}; concurrency=${suggestedConcurrency}; maxSubagents=${budget.maxSubagents}; maxToolCalls=${budget.maxToolCalls ?? "unbounded"}; cumulativeTokenCeiling=none; correctiveAttempts=${budget.maxCorrectiveAttempts}. This policy was derived after semantic Work Contract admission. Preserve every listed requirement through execution and Verification; do not substitute raw-prompt planning heuristics.]`,
 		};
 	}
 }

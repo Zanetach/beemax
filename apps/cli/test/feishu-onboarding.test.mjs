@@ -19,7 +19,7 @@ test("QR onboarding performs init, begin, pending poll, and returns owner-scoped
 		showQr: (url) => { qrUrl = url; },
 	});
 	assert.deepEqual(result, { appId: "cli_created", appSecret: "created-secret", domain: "feishu", openId: "ou_owner" });
-	assert.match(qrUrl, /from=beemax&tp=beemax/);
+	assert.match(qrUrl, /from=thruvera&tp=thruvera/);
 	assert.deepEqual(requests.map(([, body]) => body.action), ["init", "begin", "poll", "poll"]);
 	assert.equal(requests[1][1].archetype, "PersonalAgent");
 	assert.equal(requests[1][1].request_user_info, "open_id");

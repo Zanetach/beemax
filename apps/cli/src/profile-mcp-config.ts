@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { constants } from "node:fs";
 import { lstat, open, readFile, realpath, rename, rm, unlink } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
-import { loadMcpConfig, validateMcpConfig, type McpConfig, type McpServerConfig } from "@beemax/mcp-capability";
+import { loadMcpConfig, validateMcpConfig, type McpConfig, type McpServerConfig } from "@thruvera/mcp-capability";
 
 const MAX_DESCRIPTOR_BYTES = 64 * 1024;
 

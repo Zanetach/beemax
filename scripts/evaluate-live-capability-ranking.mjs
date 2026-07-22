@@ -11,8 +11,8 @@ import { executeLivePiCapabilityOutcomeRun } from "./pi-capability-outcome-harne
 
 const args = process.argv.slice(2);
 const profileIndex = args.indexOf("--profile");
-const profile = profileIndex >= 0 ? args[profileIndex + 1]?.trim() : process.env.BEEMAX_PROFILE?.trim();
-if (!profile) throw new Error("Live Capability ranking evaluation requires --profile <name> or BEEMAX_PROFILE");
+const profile = profileIndex >= 0 ? args[profileIndex + 1]?.trim() : process.env.THRUVERA_PROFILE?.trim();
+if (!profile) throw new Error("Live Capability ranking evaluation requires --profile <name> or THRUVERA_PROFILE");
 const piConcurrencyIndex = args.indexOf("--pi-concurrency");
 const piConcurrencyValue = piConcurrencyIndex >= 0 ? Number(args[piConcurrencyIndex + 1]) : 2;
 if (!Number.isSafeInteger(piConcurrencyValue) || piConcurrencyValue < 1 || piConcurrencyValue > 8) throw new Error("--pi-concurrency must be an integer from 1 to 8");

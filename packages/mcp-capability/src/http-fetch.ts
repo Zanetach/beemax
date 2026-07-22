@@ -4,7 +4,7 @@ import {
 	requestValidatedPublicUrl,
 	type PublicHttpDependencies,
 	type PublicHttpRequestOptions,
-} from "@beemax/core";
+} from "@thruvera/core";
 
 export const DEFAULT_MCP_HTTP_MAX_RESPONSE_BYTES = 16 * 1_024 * 1_024;
 

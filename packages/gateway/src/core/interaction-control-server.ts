@@ -2,13 +2,13 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import {
 	InteractionProtocol,
 	parseInteractionProtocolRequest,
-	type BeeMaxRuntimeSource,
+	type ThruveraRuntimeSource,
 	type InteractionScope,
-} from "@beemax/core";
+} from "@thruvera/core";
 
 const MAX_BODY_BYTES = 128 * 1024;
 
-export interface InteractionControlServerOptions<Source extends BeeMaxRuntimeSource> {
+export interface InteractionControlServerOptions<Source extends ThruveraRuntimeSource> {
 	protocol: InteractionProtocol<Source>;
 	/** Maps a bearer credential to its exact authorized scope; never return a broader scope. */
 	authenticate(request: IncomingMessage): Promise<InteractionScope | undefined> | InteractionScope | undefined;
@@ -17,7 +17,7 @@ export interface InteractionControlServerOptions<Source extends BeeMaxRuntimeSou
 }
 
 /** Local-only HTTP transport for the Core interaction control protocol. */
-export class InteractionControlServer<Source extends BeeMaxRuntimeSource> {
+export class InteractionControlServer<Source extends ThruveraRuntimeSource> {
 	private readonly options: Required<Pick<InteractionControlServerOptions<Source>, "host" | "port">> & InteractionControlServerOptions<Source>;
 	private server?: Server;
 

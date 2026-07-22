@@ -66,7 +66,7 @@ function retryDelayMs(error: unknown, baseDelayMs: number, attempt: number): num
 }
 
 function isRetryCancelled(error: unknown): boolean {
-	return Boolean(error && typeof error === "object" && (error as { code?: unknown }).code === "BEEMAX_CONNECTION_CANCELLED");
+	return Boolean(error && typeof error === "object" && (error as { code?: unknown }).code === "THRUVERA_CONNECTION_CANCELLED");
 }
 
 function numberValue(value: unknown): number | undefined {

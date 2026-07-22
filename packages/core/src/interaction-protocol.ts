@@ -1,5 +1,5 @@
 import type { AgentRunInput } from "./agent-runtime.ts";
-import type { BeeMaxRuntimeSource } from "./runtime.ts";
+import type { ThruveraRuntimeSource } from "./runtime.ts";
 import { InteractionEventAdapter, interactionScopeForSource, type InteractionActionResult, type InteractionEvent, type InteractionScope, type InteractionSnapshot } from "./interaction-runtime.ts";
 
 /** Transport-neutral contract for authenticated Web/remote presenters. */
@@ -25,14 +25,14 @@ export type InteractionProtocolResponse =
 	| { version: typeof INTERACTION_PROTOCOL_VERSION; id: string; ok: true; type: "action"; result: InteractionActionResult }
 	| { version: typeof INTERACTION_PROTOCOL_VERSION; id: string; ok: false; error: "unauthorized_scope" | "invalid_request" | "unsupported_version"; message: string };
 
-export interface InteractionProtocolOptions<Source extends BeeMaxRuntimeSource> {
+export interface InteractionProtocolOptions<Source extends ThruveraRuntimeSource> {
 	adapter: InteractionEventAdapter<Source>;
 	/** Resolves a scope only after the authenticated scope is proven equal. */
 	resolveSource(scope: InteractionScope): Source;
 }
 
 /** Core protocol facade: transport authenticates; Core enforces exact scope. */
-export class InteractionProtocol<Source extends BeeMaxRuntimeSource> {
+export class InteractionProtocol<Source extends ThruveraRuntimeSource> {
 	private readonly adapter: InteractionEventAdapter<Source>;
 	private readonly resolveSource: (scope: InteractionScope) => Source;
 
@@ -77,7 +77,7 @@ function isScope(value: unknown): value is InteractionScope {
 	return typeof scope.profileId === "string" && typeof scope.platform === "string" && typeof scope.chatId === "string" && (scope.userId === undefined || typeof scope.userId === "string") && (scope.threadId === undefined || typeof scope.threadId === "string");
 }
 
-function hydrateAction<Source extends BeeMaxRuntimeSource>(action: ProtocolInteractionAction, source: Source) {
+function hydrateAction<Source extends ThruveraRuntimeSource>(action: ProtocolInteractionAction, source: Source) {
 	return { ...action, source } as Parameters<InteractionEventAdapter<Source>["dispatch"]>[0];
 }
 function clampSequence(sequence: number | undefined): number { return Number.isSafeInteger(sequence) ? Math.max(0, sequence!) : 0; }

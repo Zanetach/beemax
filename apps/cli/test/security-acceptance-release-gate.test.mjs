@@ -3,8 +3,8 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { FileToolEffectJournal, MUTATING_TOOL_POLICY } from "@beemax/core";
-import { MemoryStore } from "@beemax/memory";
+import { FileToolEffectJournal, MUTATING_TOOL_POLICY } from "@thruvera/core";
+import { MemoryStore } from "@thruvera/memory";
 
 test("security acceptance gate never discloses a private DM claim in a group", () => {
 	const root = mkdtempSync(join(tmpdir(), "beemax-security-private-group-"));

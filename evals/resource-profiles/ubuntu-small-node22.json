@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "id": "ubuntu-small-node22",
-  "description": "BeeMax small Ubuntu Profile host: Ubuntu 24.04, Node.js 22, at least 2 logical CPUs and 6 GiB host RAM",
+  "description": "Thruvera small Ubuntu Profile host: Ubuntu 24.04, Node.js 22, at least 2 logical CPUs and 6 GiB host RAM",
   "platform": "linux",
   "osId": "ubuntu",
   "osVersionPattern": "^24\\.04",

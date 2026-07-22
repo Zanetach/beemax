@@ -24,8 +24,8 @@ test("Profile Provider composition installs only a pinned pre-authorized adapter
 		const bundle = createProfileCapabilityProviderBundle({
 			profileId: "profile:test", agentDir: root,
 			installation: { enabled: true, allowedProviders: ["exa-mcporter"] },
-			environment: { PATH: "/profile-controlled/bin", BEEMAX_NPM: "/profile-controlled/npm", MODEL_API_KEY: "must-not-enter-installer" },
-			trustedHostEnvironment: { PATH: "/trusted-host/bin", BEEMAX_NPM: "/trusted-host/npm" },
+			environment: { PATH: "/profile-controlled/bin", THRUVERA_NPM: "/profile-controlled/npm", MODEL_API_KEY: "must-not-enter-installer" },
+			trustedHostEnvironment: { PATH: "/trusted-host/bin", THRUVERA_NPM: "/trusted-host/npm" },
 			now: () => 42,
 			runCommand: async (command, args, options) => {
 				commands.push({ command, args: [...args], env: options.env });
@@ -46,9 +46,9 @@ test("Profile Provider composition installs only a pinned pre-authorized adapter
 		assert.equal(commands[0].env.PATH.includes("/profile-controlled/bin"), false);
 		assert.equal(commands[0].env.PATH.endsWith("/trusted-host/bin"), true);
 		assert.equal(bundle.environment.MODEL_API_KEY, undefined);
-		assert.equal(bundle.environment.BEEMAX_AGENT_REACH_PATH.includes("/profile-controlled/bin"), false);
-		assert.equal(bundle.environment.BEEMAX_AGENT_REACH_PATH.endsWith("/trusted-host/bin"), true);
-		assert.match(bundle.environment.BEEMAX_AGENT_REACH_MCPORTER ?? "", /providers[/\\]exa-mcporter/);
+		assert.equal(bundle.environment.THRUVERA_AGENT_REACH_PATH.includes("/profile-controlled/bin"), false);
+		assert.equal(bundle.environment.THRUVERA_AGENT_REACH_PATH.endsWith("/trusted-host/bin"), true);
+		assert.match(bundle.environment.THRUVERA_AGENT_REACH_MCPORTER ?? "", /providers[/\\]exa-mcporter/);
 		assert.equal(EXA_MCPORTER_LOCK_SHA256.length, 64);
 		assert.deepEqual(await inspectProfileExaMcporter(root, Buffer.alloc(32, 0x99)), { state: "invalid" }, "a public-hash-valid manifest must remain bound to its Profile key");
 	} finally { rmSync(root, { recursive: true, force: true }); }

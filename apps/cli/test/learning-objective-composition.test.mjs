@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { ActionGovernance, ProactiveInvestigationRuntime, READ_ONLY_TOOL_POLICY } from "@beemax/core";
+import { ActionGovernance, ProactiveInvestigationRuntime, READ_ONLY_TOOL_POLICY } from "@thruvera/core";
 import { admitLearningObjective, learningObjectiveInvestigationCandidate } from "../dist/learning-objective-composition.js";
 
 const claim = {

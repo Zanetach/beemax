@@ -9,7 +9,7 @@ import {
 	type AppliedChannelInstanceMigration,
 	type ChannelInstanceMigrationPlan,
 	type PreparedChannelInstanceMigration,
-} from "@beemax/memory";
+} from "@thruvera/memory";
 import { acquireChannelLock } from "./channel-lock.ts";
 
 export interface ProfileChannelInstanceMigrationTarget {

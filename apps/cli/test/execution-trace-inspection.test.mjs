@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { createAccessScopeRef, createExecutionEnvelope, FileExecutionTraceStore } from "@beemax/core";
+import { createAccessScopeRef, createExecutionEnvelope, FileExecutionTraceStore } from "@thruvera/core";
 import { inspectProfileExecutionTrace, renderExecutionTrace } from "../dist/execution-trace-inspection.js";
 
 test("operator inspection diagnoses one scoped execution from the shared Trace contract", () => {

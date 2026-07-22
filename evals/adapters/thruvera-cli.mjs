@@ -2,21 +2,21 @@ import { cp, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import Database from "better-sqlite3";
-import { parseBeeMaxEvidence } from "../agent-parity-adapters.mjs";
+import { parseThruveraEvidence } from "../agent-parity-adapters.mjs";
 import { collectFixtureEvidence, digestConfiguration, isolatedEvaluationWorkspace, parityPrompt, runSubprocess, startFixtureAuthorityServer, validatePublicSources } from "./subprocess.mjs";
 
 export async function inspectAgentParityTarget({ system, options = {} }) {
 	const manifest = JSON.parse(await readFile(new URL("../../package.json", import.meta.url), "utf8"));
-	const sourceProfile = String(options.profile || process.env.BEEMAX_PROFILE || "personal");
-	const sourceHome = resolve(options.sourceHome || options.home || process.env.BEEMAX_HOME || join(homedir(), ".beemax"));
+	const sourceProfile = String(options.profile || process.env.THRUVERA_PROFILE || "personal");
+	const sourceHome = resolve(options.sourceHome || options.home || process.env.THRUVERA_HOME || join(homedir(), ".thruvera"));
 	const root = join(sourceHome, "profiles", sourceProfile);
 	return { version: manifest.version, configurationSha256: await digestConfiguration([join(root, "config.yaml"), join(root, ".env"), join(root, "SOUL.md"), join(root, "USER.md")], { model: system.model, provider: options.provider ?? "profile" }) };
 }
 
 export async function createAgentParityAdapter({ system, options = {} }) {
 	const cliPath = resolve(options.cliPath || "apps/cli/dist/cli.js");
-	const sourceProfile = String(options.profile || process.env.BEEMAX_PROFILE || "personal");
-	const sourceHome = resolve(options.sourceHome || options.home || process.env.BEEMAX_HOME || join(homedir(), ".beemax"));
+	const sourceProfile = String(options.profile || process.env.THRUVERA_PROFILE || "personal");
+	const sourceHome = resolve(options.sourceHome || options.home || process.env.THRUVERA_HOME || join(homedir(), ".thruvera"));
 	const mcpServerPath = resolve(options.mcpServerPath || `${options.fixtureRoot}/mcp-server.mjs`);
 	return async (scenario, signal) => {
 		const workspace = await isolatedEvaluationWorkspace(options.fixtureRoot, "beemax-parity-beemax-");
@@ -32,7 +32,7 @@ export async function createAgentParityAdapter({ system, options = {} }) {
 			authority = await startFixtureAuthorityServer({ serverPath: mcpServerPath, workspace, signal });
 			const mcpConfigPath = join(isolatedProfile.profileRoot, "mcp.json");
 			await writeFile(mcpConfigPath, JSON.stringify({ servers: { agent_parity: { type: "http", url: authority.url, required: true } } }));
-			await appendProfileRouting(isolatedProfile.profileRoot, { BEEMAX_MODEL: system.model, BEEMAX_MCP_CONFIG: mcpConfigPath, BEEMAX_CWD: workspace.cwd, ...(options.provider ? { BEEMAX_PROVIDER: String(options.provider) } : {}) });
+			await appendProfileRouting(isolatedProfile.profileRoot, { THRUVERA_MODEL: system.model, THRUVERA_MCP_CONFIG: mcpConfigPath, THRUVERA_CWD: workspace.cwd, ...(options.provider ? { THRUVERA_PROVIDER: String(options.provider) } : {}) });
 			const captured = await runSubprocess(process.execPath, args, { cwd: workspace.cwd, signal });
 			const interactionEvents = filterInteraction(await readJsonLinesSince(interactionPath, 0), startedAt);
 			const executionTrace = filterExecution(await readJsonLinesSince(tracePath, 0), startedAt);
@@ -40,7 +40,7 @@ export async function createAgentParityAdapter({ system, options = {} }) {
 			const authorities = objectiveId ? readAuthorities(memoryPath, effectAuthorityPath, objectiveId) : { tasks: [], effects: [] };
 			const fixtureEvidence = await collectFixtureEvidence(workspace.cwd, workspace.authorityDir, workspace.receiptKey);
 			const validatedSourceRefs = await validatePublicSources(authorities.tasks.map((task) => task.evidence ?? "").join("\n"), scenario.outputContract.minPublicSources, signal);
-			return parseBeeMaxEvidence({ scenario, ...captured, interactionEvents, executionTrace, fixtureEvidence, validatedSourceRefs, ...authorities });
+			return parseThruveraEvidence({ scenario, ...captured, interactionEvents, executionTrace, fixtureEvidence, validatedSourceRefs, ...authorities });
 		} finally { await authority?.dispose(); await Promise.all([workspace.dispose(), isolatedProfile.dispose()]); }
 	};
 }
@@ -54,9 +54,9 @@ export async function createIsolatedProfile({ sourceHome, sourceProfile, workspa
 	for (const name of ["config.yaml", ".env", "SOUL.md", "USER.md", "auth.json", "credentials.vault"]) await copyIfPresent(join(sourceRoot, name), join(profileRoot, name));
 	await copyIfPresent(join(sourceRoot, "state", "credential-vault.key"), join(profileRoot, "state", "credential-vault.key"));
 	await appendProfileRouting(profileRoot, {
-		BEEMAX_MODEL: system.model,
-		BEEMAX_CWD: workspace,
-		...(provider ? { BEEMAX_PROVIDER: String(provider) } : {}),
+		THRUVERA_MODEL: system.model,
+		THRUVERA_CWD: workspace,
+		...(provider ? { THRUVERA_PROVIDER: String(provider) } : {}),
 	});
 	return { home, profile, profileRoot, dispose: () => rm(home, { recursive: true, force: true }) };
 }

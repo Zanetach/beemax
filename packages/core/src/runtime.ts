@@ -24,9 +24,9 @@ import { ActionGovernance, actionGovernancePresenterSummary, type ActionGovernan
 import { evaluateCompactionQuality, planContextCompaction, recoverCompactionPreservation, taskIdsFromCompactionPreservation } from "./context-compaction.ts";
 import { createToolArtifactReadTool, FileToolArtifactStore } from "./tool-artifact-store.ts";
 
-export type BeeMaxRuntimeSource = AgentScope;
+export type ThruveraRuntimeSource = AgentScope;
 
-export interface ProactiveMutationAuthority<Source extends BeeMaxRuntimeSource = BeeMaxRuntimeSource> {
+export interface ProactiveMutationAuthority<Source extends ThruveraRuntimeSource = ThruveraRuntimeSource> {
 	(input: { source: Source; executionEnvelope: Readonly<ExecutionEnvelope>; toolName: string; policy: ToolPolicy; enterprisePolicy: EnterprisePolicyDecision }): Promise<{ allowed: boolean; reason?: string }> | { allowed: boolean; reason?: string };
 }
 
@@ -57,7 +57,7 @@ function clearTrustedToolGovernanceBlocks(session: AgentSession): void {
 	trustedToolGovernanceBlocks.delete(session);
 }
 
-export type ContextCompactionAuditEvent<Source extends BeeMaxRuntimeSource = BeeMaxRuntimeSource> = {
+export type ContextCompactionAuditEvent<Source extends ThruveraRuntimeSource = ThruveraRuntimeSource> = {
 	phase: "started" | "completed" | "failed";
 	source: Source;
 	reason: "manual" | "threshold" | "overflow";
@@ -78,7 +78,7 @@ export type ContextCompactionAuditEvent<Source extends BeeMaxRuntimeSource = Bee
 	error?: string;
 };
 
-export interface BeeMaxRuntimeFactoryOptions<Source extends BeeMaxRuntimeSource = BeeMaxRuntimeSource> {
+export interface ThruveraRuntimeFactoryOptions<Source extends ThruveraRuntimeSource = ThruveraRuntimeSource> {
 	provider: string;
 	model: string;
 	baseUrl?: string;
@@ -128,8 +128,8 @@ export async function reloadRuntimeResourcesIfNeeded(session: AgentSession): Pro
 	return true;
 }
 
-/** Build the BeeMax-owned persistent Agent Runtime; Pi is an internal implementation detail. */
-export function buildBeeMaxRuntimeFactory<Source extends BeeMaxRuntimeSource = BeeMaxRuntimeSource>(opts: BeeMaxRuntimeFactoryOptions<Source>) {
+/** Build the Thruvera-owned persistent Agent Runtime; Pi is an internal implementation detail. */
+export function buildThruveraRuntimeFactory<Source extends ThruveraRuntimeSource = ThruveraRuntimeSource>(opts: ThruveraRuntimeFactoryOptions<Source>) {
 	const cwd = resolve(opts.cwd);
 	const agentDir = resolve(opts.agentDir);
 	const sessionDir = join(agentDir, "sessions", "feishu");
@@ -244,7 +244,7 @@ export function buildBeeMaxRuntimeFactory<Source extends BeeMaxRuntimeSource = B
 			const taskId = currentExecutionEnvelope(session)?.taskId ?? opts.currentTaskId?.(source) ?? source.delegatedTask?.id;
 			if (taskId) opts.toolEffects?.interruptTask?.(taskId);
 		};
-		if (modelFallbackMessage) console.warn(`[beemax] ${modelFallbackMessage}`);
+		if (modelFallbackMessage) console.warn(`[thruvera] ${modelFallbackMessage}`);
 		installSecurityHook(session, cwd, source, policies, opts.enterprisePolicy, opts.actionReliability, opts.executionGrant, opts.proactiveMutationAuthority, opts.toolAudit, opts.toolEffects, opts.currentTaskId, toolArtifacts, toolResultBudget);
 		return session;
 	};
@@ -268,11 +268,11 @@ function installToolExecutionModes(session: AgentSession, policies: ToolPolicyRe
 export function filterEligibleSkills(skills: Skill[], toolset: "safe" | "standard", environment: Readonly<NodeJS.ProcessEnv> = {}): Skill[] {
 	return skills.filter((skill) => {
 		const metadata = asRecord(skill.metadata);
-		const beemax = asRecord(metadata.beemax);
-		if (beemax.toolset === "standard" && toolset === "safe") return false;
-		const env = arrayOfStrings(beemax.env);
+		const productMetadata = asRecord(metadata.thruvera ?? metadata.beemax);
+		if (productMetadata.toolset === "standard" && toolset === "safe") return false;
+		const env = arrayOfStrings(productMetadata.env);
 		if (env.some((key) => !environment[key]?.trim())) return false;
-		return arrayOfStrings(beemax.bins).every((bin) => (environment.PATH ?? "").split(delimiter).filter(Boolean).some((directory) => existsSync(join(directory, bin))));
+		return arrayOfStrings(productMetadata.bins).every((bin) => (environment.PATH ?? "").split(delimiter).filter(Boolean).some((directory) => existsSync(join(directory, bin))));
 	});
 }
 
@@ -303,7 +303,7 @@ async function restoreOrCreateSession(cwd: string, sessionDir: string, sessionId
 	return matchingFiles[0] ? SessionManager.open(join(sessionDir, matchingFiles[0]), sessionDir, cwd) : SessionManager.create(cwd, sessionDir, { id: sessionId });
 }
 
-function installSecurityHook<Source extends BeeMaxRuntimeSource>(session: AgentSession, cwd: string, source: Source, policies: ToolPolicyRegistry, enterprisePolicy: EnterprisePolicyProvider | undefined, actionReliability: ((toolName: string) => MeasuredActionReliability) | undefined, executionGrant: ((source: Source) => { taskId: string; allowedCapabilities: string[]; status: "active" } | undefined) | undefined, proactiveMutationAuthority: ProactiveMutationAuthority<Source> | undefined, audit: ToolRuntimeAuditSink | undefined, effects: ToolEffectAuthorityPort | undefined, currentTaskId: ((source: Source) => string | undefined) | undefined, toolArtifacts: FileToolArtifactStore, toolResultBudget: ToolResultBudget): void {
+function installSecurityHook<Source extends ThruveraRuntimeSource>(session: AgentSession, cwd: string, source: Source, policies: ToolPolicyRegistry, enterprisePolicy: EnterprisePolicyProvider | undefined, actionReliability: ((toolName: string) => MeasuredActionReliability) | undefined, executionGrant: ((source: Source) => { taskId: string; allowedCapabilities: string[]; status: "active" } | undefined) | undefined, proactiveMutationAuthority: ProactiveMutationAuthority<Source> | undefined, audit: ToolRuntimeAuditSink | undefined, effects: ToolEffectAuthorityPort | undefined, currentTaskId: ((source: Source) => string | undefined) | undefined, toolArtifacts: FileToolArtifactStore, toolResultBudget: ToolResultBudget): void {
 	const enterprisePolicies = new EnterprisePolicyRuntime(enterprisePolicy);
 	const governance = new ActionGovernance();
 	let budgetExecutionId: string | undefined;
@@ -428,7 +428,7 @@ function beginToolEffect(effects: ToolEffectSink | undefined, input: Parameters<
 	catch (error) { if (error instanceof ToolEffectConflictError) return error.message; throw error; }
 }
 
-function unresolvedTaskEffectStatus<Source extends BeeMaxRuntimeSource>(effects: ToolEffectAuthorityPort | undefined, source: Source, taskId: string | undefined, policy: ToolPolicy): "none" | "unknown" {
+function unresolvedTaskEffectStatus<Source extends ThruveraRuntimeSource>(effects: ToolEffectAuthorityPort | undefined, source: Source, taskId: string | undefined, policy: ToolPolicy): "none" | "unknown" {
 	if (policy.sideEffect === "none" || !effects || !taskId) return "none";
 	const taskProjection = effects.taskProjection;
 	if (typeof taskProjection !== "function") return "none";
@@ -480,7 +480,7 @@ export function resolveRuntimeModel(provider: string, modelId: string, baseUrl?:
 	}
 	const get = getBuiltinModel as <P extends string, M extends string>(p: P, m: M) => Model<Api>;
 	const model = get(provider, modelId);
-	if (!model) throw new Error(`Could not resolve model ${provider}/${modelId} from the BeeMax runtime catalog`);
+	if (!model) throw new Error(`Could not resolve model ${provider}/${modelId} from the Thruvera runtime catalog`);
 	return model;
 }
 
@@ -490,7 +490,7 @@ function boundedModelLimit(value: number | undefined, fallback: number, min: num
 	return Math.max(min, Math.min(Math.trunc(value), max));
 }
 
-function normalizeProviderRetry(value: BeeMaxRuntimeFactoryOptions["providerRetry"]): { timeoutMs: number; maxRetries: number; maxRetryDelayMs: number } {
+function normalizeProviderRetry(value: ThruveraRuntimeFactoryOptions["providerRetry"]): { timeoutMs: number; maxRetries: number; maxRetryDelayMs: number } {
 	return {
 		timeoutMs: boundedRuntimeInteger(value?.timeoutMs, 60_000, 1_000, 300_000, "Provider timeout"),
 		maxRetries: boundedRuntimeInteger(value?.maxRetries, 2, 0, 5, "Provider retry count"),
@@ -504,7 +504,7 @@ function boundedRuntimeInteger(value: number | undefined, fallback: number, min:
 	return resolved;
 }
 
-function channelContextFor(source: BeeMaxRuntimeSource): string {
+function channelContextFor(source: ThruveraRuntimeSource): string {
 	const parts = ["# Channel context", `platform: ${source.platform}`];
 	parts.push(source.chatType === "dm" ? `chat: direct message with ${source.userName ?? source.userIdAlt ?? source.userId ?? "user"}` : `chat: ${source.chatType} ${source.chatName ?? source.chatId}`);
 	if (source.isBot) parts.push("sender: bot");

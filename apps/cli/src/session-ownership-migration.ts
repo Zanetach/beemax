@@ -4,12 +4,12 @@ import { dirname, join, relative, resolve } from "node:path";
 import {
 	ProfileSessionOwnershipMigration,
 	type AppliedSessionOwnershipMigration,
-	type BeeMaxRuntimeSource,
+	type ThruveraRuntimeSource,
 	type SessionOwnershipMigrationPlan,
-} from "@beemax/core";
+} from "@thruvera/core";
 import { acquireChannelLock } from "./channel-lock.ts";
 
-export interface ProfileSessionOwnershipTarget<Source extends BeeMaxRuntimeSource = BeeMaxRuntimeSource> {
+export interface ProfileSessionOwnershipTarget<Source extends ThruveraRuntimeSource = ThruveraRuntimeSource> {
 	lockRoot: string;
 	profileHome: string;
 	agentDir: string;
@@ -17,14 +17,14 @@ export interface ProfileSessionOwnershipTarget<Source extends BeeMaxRuntimeSourc
 	source: Source;
 }
 
-export interface ApplyProfileSessionOwnershipInput<Source extends BeeMaxRuntimeSource = BeeMaxRuntimeSource> extends ProfileSessionOwnershipTarget<Source> {
+export interface ApplyProfileSessionOwnershipInput<Source extends ThruveraRuntimeSource = ThruveraRuntimeSource> extends ProfileSessionOwnershipTarget<Source> {
 	legacySessionId: string;
 	migrationId?: string;
 }
 
 export type ProfileSessionOwnershipStatus = "prepared" | "applied" | "rollback_prepared" | "rolled_back" | "aborted";
 
-export interface ProfileSessionOwnershipManifest<Source extends BeeMaxRuntimeSource = BeeMaxRuntimeSource> {
+export interface ProfileSessionOwnershipManifest<Source extends ThruveraRuntimeSource = ThruveraRuntimeSource> {
 	version: 1;
 	status: ProfileSessionOwnershipStatus;
 	migrationId: string;
@@ -37,7 +37,7 @@ export interface ProfileSessionOwnershipManifest<Source extends BeeMaxRuntimeSou
 	result: AppliedSessionOwnershipMigration<Source>;
 }
 
-export interface AppliedProfileSessionOwnership<Source extends BeeMaxRuntimeSource = BeeMaxRuntimeSource> extends ProfileSessionOwnershipManifest<Source> {
+export interface AppliedProfileSessionOwnership<Source extends ThruveraRuntimeSource = ThruveraRuntimeSource> extends ProfileSessionOwnershipManifest<Source> {
 	manifestPath: string;
 }
 
@@ -51,7 +51,7 @@ export interface RollbackProfileSessionOwnershipInput {
 
 interface MigrationPaths { profileHome: string; agentDir: string; directory: string; }
 
-export async function planProfileSessionOwnershipMigration<Source extends BeeMaxRuntimeSource>(input: ProfileSessionOwnershipTarget<Source>, legacySessionId?: string): Promise<SessionOwnershipMigrationPlan> {
+export async function planProfileSessionOwnershipMigration<Source extends ThruveraRuntimeSource>(input: ProfileSessionOwnershipTarget<Source>, legacySessionId?: string): Promise<SessionOwnershipMigrationPlan> {
 	return withProfileOffline(input.lockRoot, input.profile, async () => {
 		const paths = await resolveMigrationPaths(input.profileHome, input.agentDir);
 		const plan = await new ProfileSessionOwnershipMigration<Source>(paths.agentDir).plan(input.source, legacySessionId);
@@ -60,7 +60,7 @@ export async function planProfileSessionOwnershipMigration<Source extends BeeMax
 	});
 }
 
-export async function applyProfileSessionOwnershipMigration<Source extends BeeMaxRuntimeSource>(input: ApplyProfileSessionOwnershipInput<Source>): Promise<AppliedProfileSessionOwnership<Source>> {
+export async function applyProfileSessionOwnershipMigration<Source extends ThruveraRuntimeSource>(input: ApplyProfileSessionOwnershipInput<Source>): Promise<AppliedProfileSessionOwnership<Source>> {
 	return withProfileOffline(input.lockRoot, input.profile, async () => {
 		const paths = await resolveMigrationPaths(input.profileHome, input.agentDir);
 		const migrationId = migrationFileId(input.migrationId ?? `session-ownership-${Date.now()}-${randomUUID()}`);

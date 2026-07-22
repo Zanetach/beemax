@@ -1,6 +1,6 @@
 # OpenClaw 与 Hermes Agent：运行时状态处理（官方资料核查）
 
-核查日期：2026-07-11。本文只引用 OpenClaw 和 Nous Research/Hermes Agent 的官方文档或其官方仓库；不修改 BeeMax 生产代码。
+核查日期：2026-07-11。本文只引用 OpenClaw 和 Nous Research/Hermes Agent 的官方文档或其官方仓库；不修改 Thruvera 生产代码。
 
 ## 结论
 
@@ -39,7 +39,7 @@ OpenClaw 将“存储会话”与“活着的频道连接”明确区分：`open
 
 Hermes 把 Profile 的 logs 和 Gateway state 与该 Profile 一起保存。官方服务路径是 `hermes gateway install` 后 `hermes gateway start`，用 `hermes gateway status` 和 `hermes logs -f` 验证；排障文档也给出 Gateway 日志 `~/.hermes/logs/gateway.log`、`hermes doctor` 以及 systemd 的 `reset-failed`。因此，尚未启动过某 Profile 的 Gateway 时，缺少该 Gateway 日志应被解释为“未产生服务日志”，而非聊天运行时出错。[多 Profile Gateway](https://github.com/NousResearch/hermes-agent/blob/main/website/docs/user-guide/messaging/multi-profile-gateways.md) [Hermes 部署排障](https://github.com/NousResearch/hermes-agent/blob/main/website/docs/user-guide/skills/bundled/autonomous-ai-agents/autonomous-ai-agents-hermes-agent.md)
 
-## 对 BeeMax 的直接启示（设计原则，非实现结论）
+## 对 Thruvera 的直接启示（设计原则，非实现结论）
 
 1. 将“对话恢复”和“事实刷新”分成两个动作：恢复 session 后，在首轮或问及版本/进度时读取本地安装版本、Git revision/tag、服务 PID/启动时间、Gateway health 与任务账本；输出应标明这些值的采集时间与来源。
 2. 持久化结构化任务账本：至少包含任务 ID、状态、证据（PR/commit/tag）、完成时间和适用 Profile。聊天摘要只能是账本的投影，不能反向成为状态源。

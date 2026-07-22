@@ -1,6 +1,6 @@
 import { readFile, stat } from "node:fs/promises";
-import type { ImageContent } from "@beemax/core";
-import type { InboundMessage } from "@beemax/channel-runtime";
+import type { ImageContent } from "@thruvera/core";
+import type { InboundMessage } from "@thruvera/channel-runtime";
 
 const MAX_IMAGE_BYTES = 20 * 1024 * 1024;
 const MAX_TOTAL_IMAGE_BYTES = 30 * 1024 * 1024;
@@ -25,7 +25,7 @@ export async function prepareAgentMediaInput(message: InboundMessage): Promise<A
 		if (!info.isFile()) throw new Error(`Inbound attachment is not a file: ${path}`);
 		if (mimeType.startsWith("image/")) {
 			if (info.size > MAX_IMAGE_BYTES || totalImageBytes + info.size > MAX_TOTAL_IMAGE_BYTES) {
-				throw new Error("Inbound image exceeds BeeMax's 20MB per-image or 30MB total vision limit");
+				throw new Error("Inbound image exceeds Thruvera's 20MB per-image or 30MB total vision limit");
 			}
 			const data = await readFile(path);
 			totalImageBytes += data.byteLength;

@@ -1,11 +1,11 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import type { BeeMaxRuntimeSource } from "./runtime.ts";
+import type { ThruveraRuntimeSource } from "./runtime.ts";
 
 const LIMITS = { memory: 2_200, user: 1_375 } as const;
 
 /** Core-owned, bounded personal snapshot. Shared channel sessions never receive it. */
-export function curatedMemoryPrompt(agentDir: string, source: BeeMaxRuntimeSource): string {
+export function curatedMemoryPrompt(agentDir: string, source: ThruveraRuntimeSource): string {
 	const userId = source.userIdAlt ?? source.userId;
 	if (source.platform !== "cli" || source.chatId !== "local" || userId !== "local") return "";
 	const user = readBounded(join(agentDir, "USER.md"), LIMITS.user);

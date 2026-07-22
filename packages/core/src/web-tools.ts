@@ -28,10 +28,10 @@ const SEARCH_TIMEOUT_MS = 30_000;
 const EXTRACT_TIMEOUT_MS = 20_000;
 const MAX_RESPONSE_BYTES = 2 * 1024 * 1024;
 const MAX_REDIRECTS = 5;
-const USER_AGENT = "BeeMax-Agent/0.1 (+https://pi.dev)";
+const USER_AGENT = "Thruvera-Agent/0.1 (+https://pi.dev)";
 const execFileAsync = promisify(execFile);
 const EXA_MCPORTER_VERSION = "0.9.0";
-const EXA_MCPORTER_LOCK_SHA256 = "7c8ca25b89c4a23618c4385a373660cbf23512d7f461e82f2197c19027a183ec";
+const EXA_MCPORTER_LOCK_SHA256 = "428c1aaf7f10ddaad3ed172bac926ef46b0c8e713a874b8574780fdaba705a58";
 const EXA_MCPORTER_PROVIDER_VERSION = `mcporter:${EXA_MCPORTER_VERSION}:lock:${EXA_MCPORTER_LOCK_SHA256}`;
 interface ArtifactVerificationWaiter { signal?: AbortSignal; resolve: () => void; reject: (reason: unknown) => void; aborted?: () => void; }
 const providerArtifactVerificationSlots = new Map<string, { locked: boolean; waiters: ArtifactVerificationWaiter[] }>();
@@ -200,7 +200,7 @@ export function createWebTools(options: WebToolsOptions = {}): ToolDefinition[] 
 	const agentReachSearch = Object.assign(defineTool({
 		name: "exa_web_search",
 		label: "Exa Web Search",
-		description: "Search the live web through BeeMax's Profile-scoped Exa/mcporter adapter for semantic/current research, independent public sources, citations, and trend verification. 通过实时公开网络研究当前趋势，核验多个独立来源并保留引用。",
+		description: "Search the live web through Thruvera's Profile-scoped Exa/mcporter adapter for semantic/current research, independent public sources, citations, and trend verification. 通过实时公开网络研究当前趋势，核验多个独立来源并保留引用。",
 		parameters: Type.Object({ query: Type.String({ description: "Semantic web search query" }), maxResults: Type.Optional(Type.Integer({ minimum: 1, maximum: 10 })) }),
 		execute: async (_id, params, signal) => {
 			const query = params.query.trim();
@@ -323,16 +323,16 @@ function configuredApiSearchProviders(env: NodeJS.ProcessEnv): WebApiProvider[] 
 }
 
 function agentReachInstallationAvailable(env: NodeJS.ProcessEnv): boolean {
-	const binary = env.BEEMAX_AGENT_REACH_MCPORTER?.trim() || join(homedir(), ".agent-reach", "mcporter", "node_modules", ".bin", "mcporter");
-	const config = env.BEEMAX_AGENT_REACH_CONFIG?.trim() || join(homedir(), ".agent-reach", "mcporter.json");
-	const manifest = env.BEEMAX_AGENT_REACH_MANIFEST?.trim();
-	const root = env.BEEMAX_AGENT_REACH_ROOT?.trim();
+	const binary = env.THRUVERA_AGENT_REACH_MCPORTER?.trim() || join(homedir(), ".agent-reach", "mcporter", "node_modules", ".bin", "mcporter");
+	const config = env.THRUVERA_AGENT_REACH_CONFIG?.trim() || join(homedir(), ".agent-reach", "mcporter.json");
+	const manifest = env.THRUVERA_AGENT_REACH_MANIFEST?.trim();
+	const root = env.THRUVERA_AGENT_REACH_ROOT?.trim();
 	return regularFile(binary) && regularFile(config) && Boolean(manifest && root);
 }
 
 async function agentReachHealth(env: NodeJS.ProcessEnv, integrityKey: Uint8Array | undefined, signal: AbortSignal): Promise<boolean> {
-	const binary = env.BEEMAX_AGENT_REACH_MCPORTER?.trim() || join(homedir(), ".agent-reach", "mcporter", "node_modules", ".bin", "mcporter");
-	const config = env.BEEMAX_AGENT_REACH_CONFIG?.trim() || join(homedir(), ".agent-reach", "mcporter.json");
+	const binary = env.THRUVERA_AGENT_REACH_MCPORTER?.trim() || join(homedir(), ".agent-reach", "mcporter", "node_modules", ".bin", "mcporter");
+	const config = env.THRUVERA_AGENT_REACH_CONFIG?.trim() || join(homedir(), ".agent-reach", "mcporter.json");
 	await requireAgentReachArtifactIntegrity(env, binary, config, integrityKey, signal);
 	const invocation = agentReachInvocation(binary, ["--config", config, "list", "exa", "--json"]);
 	const { stdout } = await execFileAsync(invocation.command, invocation.args, { env: agentReachSubprocessEnvironment(env), signal: combinedSignal(signal, 10_000), timeout: 10_000, maxBuffer: 256 * 1024 });
@@ -359,8 +359,8 @@ function compactAgentReachOutput(value: string, maxResults: number): string {
 }
 
 async function agentReachSearchText(query: string, maxResults: number, env: NodeJS.ProcessEnv, integrityKey?: Uint8Array, signal?: AbortSignal): Promise<string> {
-	const binary = env.BEEMAX_AGENT_REACH_MCPORTER?.trim() || join(homedir(), ".agent-reach", "mcporter", "node_modules", ".bin", "mcporter");
-	const config = env.BEEMAX_AGENT_REACH_CONFIG?.trim() || join(homedir(), ".agent-reach", "mcporter.json");
+	const binary = env.THRUVERA_AGENT_REACH_MCPORTER?.trim() || join(homedir(), ".agent-reach", "mcporter", "node_modules", ".bin", "mcporter");
+	const config = env.THRUVERA_AGENT_REACH_CONFIG?.trim() || join(homedir(), ".agent-reach", "mcporter.json");
 	await requireAgentReachArtifactIntegrity(env, binary, config, integrityKey, signal);
 	const controller = new AbortController();
 	const timeout = setTimeout(() => controller.abort(), SEARCH_TIMEOUT_MS);
@@ -376,7 +376,7 @@ function agentReachInvocation(binary: string, args: readonly string[]): { comman
 }
 
 function agentReachSubprocessEnvironment(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
-	const home = env.BEEMAX_AGENT_REACH_HOME?.trim() || homedir();
+	const home = env.THRUVERA_AGENT_REACH_HOME?.trim() || homedir();
 	return {
 		HOME: home,
 		USERPROFILE: home,
@@ -385,7 +385,7 @@ function agentReachSubprocessEnvironment(env: NodeJS.ProcessEnv): NodeJS.Process
 		XDG_CONFIG_HOME: join(home, ".config"),
 		XDG_CACHE_HOME: join(home, ".cache"),
 		XDG_DATA_HOME: join(home, ".local", "share"),
-		PATH: env.BEEMAX_AGENT_REACH_PATH?.trim() || env.PATH || process.env.PATH || "",
+		PATH: env.THRUVERA_AGENT_REACH_PATH?.trim() || env.PATH || process.env.PATH || "",
 		...(env.LANG ? { LANG: env.LANG } : {}),
 		...(env.LC_ALL ? { LC_ALL: env.LC_ALL } : {}),
 	};
@@ -398,8 +398,8 @@ function regularFile(path: string): boolean {
 }
 
 async function requireAgentReachArtifactIntegrity(env: NodeJS.ProcessEnv, entrypointPath: string, configurationPath: string, integrityKey?: Uint8Array, signal?: AbortSignal): Promise<void> {
-	const root = env.BEEMAX_AGENT_REACH_ROOT?.trim();
-	const manifestPath = env.BEEMAX_AGENT_REACH_MANIFEST?.trim();
+	const root = env.THRUVERA_AGENT_REACH_ROOT?.trim();
+	const manifestPath = env.THRUVERA_AGENT_REACH_MANIFEST?.trim();
 	if (!root && !manifestPath) return; // Explicit test/legacy injection; production composition always supplies both.
 	if (!root || !manifestPath || !integrityKey || !await verifiedAgentReachArtifact(root, manifestPath, entrypointPath, configurationPath, integrityKey, signal)) throw new Error("Exa mcporter Provider artifact integrity verification failed");
 }

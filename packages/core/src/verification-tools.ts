@@ -9,7 +9,7 @@ export function createVerificationSubmitTool() {
 	return withToolPolicy(defineTool({
 		name: VERIFICATION_SUBMIT_TOOL_NAME,
 		label: "Submit Verification Verdict",
-		description: "Submit exactly one structured independent Verification verdict for the current Task. Every criterion has an accepted, rejected, or unavailable assertion; evaluated assertions cite successful evidence Tools as tool:<exact_name>, which BeeMax binds to concrete call receipts.",
+		description: "Submit exactly one structured independent Verification verdict for the current Task. Every criterion has an accepted, rejected, or unavailable assertion; evaluated assertions cite successful evidence Tools as tool:<exact_name>, which Thruvera binds to concrete call receipts.",
 		parameters: Type.Object({
 			status: Type.Union([Type.Literal("accepted"), Type.Literal("rejected"), Type.Literal("unavailable")]),
 			reason: Type.String({ minLength: 1, maxLength: 5_000 }),

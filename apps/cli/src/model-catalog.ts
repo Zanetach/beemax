@@ -1,5 +1,5 @@
-import { builtinProviders, getBuiltinModel, getSupportedThinkingLevels, LexicalCapabilityRanker, MediaUnderstandingRuntime, PiSemanticCapabilityPort, PiVisionMediaUnderstandingAdapter, ProgressiveCapabilityRanker, resolveRuntimeModel, SemanticCapabilityRanker, type Api, type CapabilityCognitionFailureCode, type CapabilityRanker, type MediaUnderstandingAdapter, type Model, type PiSemanticCapabilityPortOptions, type PiWorkContractModelCandidate } from "@beemax/core";
-import type { BeeMaxConfig } from "./config.ts";
+import { builtinProviders, getBuiltinModel, getSupportedThinkingLevels, LexicalCapabilityRanker, MediaUnderstandingRuntime, PiSemanticCapabilityPort, PiVisionMediaUnderstandingAdapter, ProgressiveCapabilityRanker, resolveRuntimeModel, SemanticCapabilityRanker, type Api, type CapabilityCognitionFailureCode, type CapabilityRanker, type MediaUnderstandingAdapter, type Model, type PiSemanticCapabilityPortOptions, type PiWorkContractModelCandidate } from "@thruvera/core";
+import type { ThruveraConfig } from "./config.ts";
 
 export interface ModelProviderPreset {
 	id: string;
@@ -22,7 +22,7 @@ export interface ProfileModelCapability {
 	runtimeModel?: Model<Api>;
 }
 
-type ProfileModelConfig = Pick<BeeMaxConfig, "model" | "models">;
+type ProfileModelConfig = Pick<ThruveraConfig, "model" | "models">;
 type ConfiguredCapabilityRankerOptions = Pick<PiSemanticCapabilityPortOptions, "maxModelAttempts" | "maxTokens" | "timeoutMs"> & {
 	onFallback?: (event: { query: string; code: CapabilityCognitionFailureCode; cognitionId?: string }) => void;
 };
@@ -95,7 +95,7 @@ export function renderModelProviderChoices(): string {
 }
 
 /** Human-readable capabilities for the models configured in this Profile. */
-export function renderConfiguredModels(config: BeeMaxConfig): string {
+export function renderConfiguredModels(config: ThruveraConfig): string {
 	return new ProfileModelCatalog(config).list().map((entry) => {
 		if (!entry.capabilities) return `${entry.key}  configured; capability metadata unavailable`;
 		const capabilities = [`input=${entry.capabilities.input.join("+")}`, `context=${entry.capabilities.contextWindow}`, `tools=${entry.capabilities.input.includes("text") ? "yes" : "no"}`, `thinking=${entry.capabilities.thinkingLevels.join("/")}`];
@@ -104,12 +104,12 @@ export function renderConfiguredModels(config: BeeMaxConfig): string {
 }
 
 /** Runtime-ready ordered model candidates; unsupported custom definitions stay out of automatic failover. */
-export function configuredRuntimeModels(config: BeeMaxConfig): Model<Api>[] {
+export function configuredRuntimeModels(config: ThruveraConfig): Model<Api>[] {
 	return new ProfileModelCatalog(config).runtimeModels();
 }
 
 /** Runtime-ready text models with Profile-owned auth, including supported custom endpoints. */
-export function configuredAuxiliaryTextModels(config: BeeMaxConfig): Array<{ model: Model<Api>; apiKey?: string }> {
+export function configuredAuxiliaryTextModels(config: ThruveraConfig): Array<{ model: Model<Api>; apiKey?: string }> {
 	return config.models.flatMap((choice) => {
 		try {
 			const model = resolveRuntimeModel(choice.provider, choice.model, choice.baseUrl, choice.customProtocol, { contextWindow: choice.contextWindow, maxTokens: choice.maxTokens });
@@ -126,7 +126,7 @@ export function configuredAuxiliaryTextModels(config: BeeMaxConfig): Array<{ mod
  * keeps a resolver so a long-running Gateway can refresh short-lived tokens.
  */
 export async function resolveProfileCognitionModels(
-	config: BeeMaxConfig,
+	config: ThruveraConfig,
 	getCredential: (provider: string) => Promise<string | undefined>,
 ): Promise<PiWorkContractModelCandidate[]> {
 	let mainModel: Model<Api>;
@@ -138,7 +138,7 @@ export async function resolveProfileCognitionModels(
 	}
 	const mainConfiguredKey = config.model.apiKeys[config.model.provider] ?? config.model.apiKey;
 	const mainCredential = mainConfiguredKey || await getCredential(config.model.provider);
-	if (!mainCredential) throw new Error(`Profile ${config.profile} main model ${config.model.provider}/${config.model.model} has no credential; configure its API key or run BeeMax authentication before starting this Profile`);
+	if (!mainCredential) throw new Error(`Profile ${config.profile} main model ${config.model.provider}/${config.model.model} has no credential; configure its API key or run Thruvera authentication before starting this Profile`);
 	if (!mainModel.input.includes("text")) throw new Error(`Profile ${config.profile} main model ${config.model.provider}/${config.model.model} does not accept text`);
 
 	const candidates: PiWorkContractModelCandidate[] = [];
@@ -193,7 +193,7 @@ export function configuredSemanticCapabilityRanker(
 }
 
 /** Configured image-capable Pi models automatically become auxiliary perception adapters. */
-export function configuredMediaUnderstanding(config: BeeMaxConfig, localAdapters: readonly MediaUnderstandingAdapter[] = []): MediaUnderstandingRuntime {
+export function configuredMediaUnderstanding(config: ThruveraConfig, localAdapters: readonly MediaUnderstandingAdapter[] = []): MediaUnderstandingRuntime {
 	const visionAdapters = config.mediaUnderstanding?.auxiliaryVisionEnabled === false ? [] : configuredRuntimeModels(config)
 		.filter((model) => model.input.includes("image"))
 		.map((model, index) => new PiVisionMediaUnderstandingAdapter({

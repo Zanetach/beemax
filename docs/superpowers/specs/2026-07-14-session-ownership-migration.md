@@ -2,7 +2,7 @@
 
 ## Problem Statement
 
-共享群 Conversation 上线前，BeeMax 的 Session transcript 可能按消息 Actor 建立。一个新共享 Conversation 因而可能对应多个旧 transcript。运行时 fallback 虽能读取历史，却无法安全决定哪个旧 transcript 应成为共享历史；自动任选或合并都会制造错误上下文、重复消息或披露风险，也让 fallback 永久存在。
+共享群 Conversation 上线前，Thruvera 的 Session transcript 可能按消息 Actor 建立。一个新共享 Conversation 因而可能对应多个旧 transcript。运行时 fallback 虽能读取历史，却无法安全决定哪个旧 transcript 应成为共享历史；自动任选或合并都会制造错误上下文、重复消息或披露风险，也让 fallback 永久存在。
 
 ## Solution
 
@@ -10,7 +10,7 @@
 
 ## User Stories
 
-1. As a Profile Administrator, I want to inspect legacy transcript candidates before migration, so that BeeMax never guesses which history belongs to a shared group Conversation.
+1. As a Profile Administrator, I want to inspect legacy transcript candidates before migration, so that Thruvera never guesses which history belongs to a shared group Conversation.
 2. As a Profile Administrator, I want to select one legacy Actor transcript explicitly, so that ambiguous histories are resolved by an accountable human choice.
 3. As a group user, I want the selected history to resume under the canonical shared Conversation identity, so that later participants receive one continuous Session.
 4. As a security administrator, I want unselected legacy transcripts preserved and never merged, so that unrelated histories cannot be silently disclosed.

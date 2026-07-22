@@ -17,7 +17,7 @@ test("Telegram adapter normalizes authorized long-poll messages and sends replie
 	const fetch = async (url, init = {}) => {
 		const method = String(url).split("/").at(-1);
 		calls.push([method, init.body ? JSON.parse(String(init.body)) : undefined]);
-		if (method === "getMe") return json({ ok: true, result: { id: 7, username: "beemax_bot" } });
+		if (method === "getMe") return json({ ok: true, result: { id: 7, username: "thruvera_bot" } });
 		if (method === "getUpdates" && !updateDelivered) {
 			updateDelivered = true;
 			return json({ ok: true, result: [{
@@ -68,12 +68,12 @@ test("Telegram explicit group activation admits verified mention and command sig
 	let updatesDelivered = false;
 	const fetch = async (url, init = {}) => {
 		const method = String(url).split("/").at(-1);
-		if (method === "getMe") return json({ ok: true, result: { id: 7, username: "beemax_bot" } });
+		if (method === "getMe") return json({ ok: true, result: { id: 7, username: "thruvera_bot" } });
 		if (method === "getUpdates" && !updatesDelivered) {
 			updatesDelivered = true;
 			return json({ ok: true, result: [
 				{ update_id: 20, message: { message_id: 30, date: 1, message_thread_id: 9, chat: { id: 100, type: "supergroup" }, from: { id: 42 }, text: "ordinary" } },
-				{ update_id: 21, message: { message_id: 31, date: 2, message_thread_id: 9, chat: { id: 100, type: "supergroup" }, from: { id: 42 }, text: "@beemax_bot inspect", entities: [{ type: "mention", offset: 0, length: 11 }] } },
+				{ update_id: 21, message: { message_id: 31, date: 2, message_thread_id: 9, chat: { id: 100, type: "supergroup" }, from: { id: 42 }, text: "@thruvera_bot inspect", entities: [{ type: "mention", offset: 0, length: 13 }] } },
 				{ update_id: 22, message: { message_id: 32, date: 3, message_thread_id: 9, chat: { id: 100, type: "supergroup" }, from: { id: 42 }, text: "/status", entities: [{ type: "bot_command", offset: 0, length: 7 }] } },
 			] });
 		}
@@ -86,7 +86,7 @@ test("Telegram explicit group activation admits verified mention and command sig
 	await adapter.connect();
 	await waitFor(() => received.length === 2);
 	assert.deepEqual(received.map((message) => [message.text, message.messageType, message.source.threadId]), [
-		["@beemax_bot inspect", "text", "9"],
+		["@thruvera_bot inspect", "text", "9"],
 		["/status", "command", "9"],
 	]);
 	await adapter.disconnect();
@@ -96,11 +96,11 @@ test("Telegram contextual activation keeps natural follow-ups inside the activat
 	let delivered = false;
 	const fetch = async (url, init = {}) => {
 		const method = String(url).split("/").at(-1);
-		if (method === "getMe") return json({ ok: true, result: { id: 7, username: "beemax_bot" } });
+		if (method === "getMe") return json({ ok: true, result: { id: 7, username: "thruvera_bot" } });
 		if (method === "getUpdates" && !delivered) {
 			delivered = true;
 			return json({ ok: true, result: [
-				{ update_id: 30, message: { message_id: 40, date: 1, message_thread_id: 9, chat: { id: 100, type: "supergroup" }, from: { id: 42 }, text: "@beemax_bot start", entities: [{ type: "mention", offset: 0, length: 11 }] } },
+				{ update_id: 30, message: { message_id: 40, date: 1, message_thread_id: 9, chat: { id: 100, type: "supergroup" }, from: { id: 42 }, text: "@thruvera_bot start", entities: [{ type: "mention", offset: 0, length: 13 }] } },
 				{ update_id: 31, message: { message_id: 41, date: 2, message_thread_id: 9, chat: { id: 100, type: "supergroup" }, from: { id: 42 }, text: "continue" } },
 				{ update_id: 32, message: { message_id: 42, date: 3, message_thread_id: 10, chat: { id: 100, type: "supergroup" }, from: { id: 42 }, text: "unrelated thread" } },
 			] });
@@ -116,7 +116,7 @@ test("Telegram contextual activation keeps natural follow-ups inside the activat
 	adapter.onMessage((message) => { received.push(message); });
 	await adapter.connect();
 	await waitFor(() => received.length === 2);
-	assert.deepEqual(received.map((message) => [message.text, message.source.threadId]), [["@beemax_bot start", "9"], ["continue", "9"]]);
+	assert.deepEqual(received.map((message) => [message.text, message.source.threadId]), [["@thruvera_bot start", "9"], ["continue", "9"]]);
 	await adapter.disconnect();
 });
 
@@ -124,7 +124,7 @@ test("Telegram ambient observation stays outside the Agent message path", async 
 	let delivered = false;
 	const fetch = async (url, init = {}) => {
 		const method = String(url).split("/").at(-1);
-		if (method === "getMe") return json({ ok: true, result: { id: 7, username: "beemax_bot" } });
+		if (method === "getMe") return json({ ok: true, result: { id: 7, username: "thruvera_bot" } });
 		if (method === "getUpdates" && !delivered) {
 			delivered = true;
 			return json({ ok: true, result: [{ update_id: 40, message: { message_id: 50, date: 4, chat: { id: 100, type: "supergroup" }, from: { id: 42 }, text: "potentially useful context" } }] });

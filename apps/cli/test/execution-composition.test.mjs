@@ -32,7 +32,7 @@ test("doctor distinguishes trusted host execution from an invalid Sandbox config
 	config.model.apiKey = "doctor-test";
 	const trusted = await inspectDoctor(config, { requireGateway: false });
 	assert.deepEqual(trusted.checks.find((check) => check.name === "Execution Sandbox"), {
-		name: "Execution Sandbox", status: "WARN", detail: "disabled; Host Execution Adapter has the BeeMax process user's authority (local; mode=off; workspace=none)",
+		name: "Execution Sandbox", status: "WARN", detail: "disabled; Host Execution Adapter has the Thruvera process user's authority (local; mode=off; workspace=none)",
 	});
 	config.execution.mode = "all";
 	const invalid = await inspectDoctor(config, { requireGateway: false });
@@ -60,7 +60,7 @@ test("doctor validates enabled Caddy with the same credential-free Profile runti
 	const command = join(paths.homePath, "caddy-fixture");
 	const runtimeRoot = join(paths.homePath, "artifact-site", "runtime");
 	await writeFile(paths.envPath, [
-		"BEEMAX_API_KEY=doctor-model-secret",
+		"THRUVERA_API_KEY=doctor-model-secret",
 		"CADDY_TEST_CREDENTIAL=must-not-reach-caddy",
 		"PATH=/profile/attacker-bin",
 		"TMP=/profile/attacker-tmp",
@@ -74,12 +74,12 @@ test("doctor validates enabled Caddy with the same credential-free Profile runti
 [ "$HOME" = '${runtimeRoot}' ] || exit 15
 [ "$XDG_CONFIG_HOME" = '${join(runtimeRoot, "config")}' ] || exit 16
 [ -z "$CADDY_TEST_CREDENTIAL" ] || exit 17
-[ -z "$BEEMAX_API_KEY" ] || exit 18
+[ -z "$THRUVERA_API_KEY" ] || exit 18
 printf 'v9.9.9-test\n'
 `);
 	await chmod(command, 0o755);
-	const previousHostCommand = process.env.BEEMAX_ARTIFACT_SITE_COMMAND;
-	process.env.BEEMAX_ARTIFACT_SITE_COMMAND = command;
+	const previousHostCommand = process.env.THRUVERA_ARTIFACT_SITE_COMMAND;
+	process.env.THRUVERA_ARTIFACT_SITE_COMMAND = command;
 	try {
 		const config = loadConfig(paths.configPath, "caddy-doctor");
 		const available = await inspectDoctor(config, { requireGateway: false });
@@ -89,14 +89,14 @@ printf 'v9.9.9-test\n'
 			detail: `v9.9.9-test; ${config.gateway.artifactSite.listen}`,
 		});
 
-		process.env.BEEMAX_ARTIFACT_SITE_COMMAND = join(paths.homePath, "missing-caddy");
+		process.env.THRUVERA_ARTIFACT_SITE_COMMAND = join(paths.homePath, "missing-caddy");
 		const missing = await inspectDoctor(loadConfig(paths.configPath, "caddy-doctor"), { requireGateway: false });
 		const missingCheck = missing.checks.find((check) => check.name === "Caddy Artifact Site");
 		assert.equal(missingCheck?.status, "FAIL");
 		assert.match(missingCheck?.detail ?? "", /missing-caddy|ENOENT|no such file/i);
 	} finally {
-		if (previousHostCommand === undefined) delete process.env.BEEMAX_ARTIFACT_SITE_COMMAND;
-		else process.env.BEEMAX_ARTIFACT_SITE_COMMAND = previousHostCommand;
+		if (previousHostCommand === undefined) delete process.env.THRUVERA_ARTIFACT_SITE_COMMAND;
+		else process.env.THRUVERA_ARTIFACT_SITE_COMMAND = previousHostCommand;
 		await rm(home, { recursive: true, force: true });
 	}
 });

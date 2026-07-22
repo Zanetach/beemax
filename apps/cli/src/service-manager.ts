@@ -1,7 +1,7 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { spawnSync, type SpawnSyncReturns } from "node:child_process";
-import { beemaxHome, beemaxRoot, validateProfileName } from "./config.ts";
+import { thruveraHome, thruveraRoot, validateProfileName } from "./config.ts";
 import { readGatewayLogs } from "./gateway-observability.ts";
 import { resolveServiceCommands, resolveServiceLayout, serviceDisplayName, type ServiceAction, type ServiceScope } from "./service-platform.ts";
 
@@ -25,12 +25,12 @@ export interface ServiceResourceLimits {
 }
 
 export function renderSystemdService(
-	root = beemaxRoot(),
+	root = thruveraRoot(),
 	nodePath = process.execPath,
 	scope: ServiceScope = "user",
 	serviceUser?: string,
-	home = beemaxHome(),
-	systemEnvironmentDirectory = "/etc/beemax",
+	home = thruveraHome(),
+	systemEnvironmentDirectory = "/etc/thruvera",
 	resourceLimits: ServiceResourceLimits = {},
 ): string {
 	const absoluteRoot = resolve(root);
@@ -38,18 +38,18 @@ export function renderSystemdService(
 	const cliPath = join(absoluteRoot, "apps", "cli", "dist", "cli.js");
 	const limits = normalizeServiceResourceLimits(resourceLimits);
 	return `[Unit]
-Description=BeeMax Agent profile %i
+Description=Thruvera Agent profile %i
 After=network-online.target
 Wants=network-online.target
-PartOf=beemax.target
+PartOf=thruvera.target
 
 [Service]
 Type=simple
-${scope === "system" ? `User=${serviceUser ?? "beemax"}\n` : ""}WorkingDirectory=${systemdQuote(absoluteRoot)}
-# Profile .env is read through BeeMax's scoped config boundary; never inject it into the host process environment.
+${scope === "system" ? `User=${serviceUser ?? "thruvera"}\n` : ""}WorkingDirectory=${systemdQuote(absoluteRoot)}
+# Profile .env is read through Thruvera's scoped config boundary; never inject it into the host process environment.
 EnvironmentFile=-${systemdQuote(join(systemEnvironmentDirectory, "%i.env"))}
 Environment=NODE_ENV=production
-Environment=BEEMAX_PROFILE=%i
+Environment=THRUVERA_PROFILE=%i
 ExecStart=${systemdQuote(nodePath)} ${systemdQuote(cliPath)} gateway --profile %i --home ${systemdQuote(absoluteHome)} --root ${systemdQuote(absoluteRoot)}
 Restart=on-failure
 RestartSec=5s
@@ -67,7 +67,7 @@ StandardOutput=journal
 StandardError=journal
 LogRateLimitIntervalSec=30s
 LogRateLimitBurst=200
-SyslogIdentifier=beemax-%i
+SyslogIdentifier=thruvera-%i
 
 [Install]
 WantedBy=${scope === "user" ? "default.target" : "multi-user.target"}
@@ -75,7 +75,7 @@ WantedBy=${scope === "user" ? "default.target" : "multi-user.target"}
 }
 
 export async function installSystemdService(
-	root = beemaxRoot(),
+	root = thruveraRoot(),
 	scope: ServiceScope = "user",
 	options: ServiceInstallOptions = {},
 ): Promise<void> {
@@ -88,21 +88,21 @@ export async function installSystemdService(
 		throw new Error("systemd installation requires root; rerun with sudo");
 	}
 	const serviceUser = scope === "system"
-		? env.BEEMAX_SERVICE_USER || env.SUDO_USER || (env.USER !== "root" ? env.USER : undefined)
+		? env.THRUVERA_SERVICE_USER || env.SUDO_USER || (env.USER !== "root" ? env.USER : undefined)
 		: undefined;
 	if (scope === "system" && !serviceUser) {
-		throw new Error("systemd system service needs a non-root account; set BEEMAX_SERVICE_USER");
+		throw new Error("systemd system service needs a non-root account; set THRUVERA_SERVICE_USER");
 	}
-	const serviceHome = scope === "system" ? env.BEEMAX_HOME?.trim() : beemaxHome(env);
+	const serviceHome = scope === "system" ? env.THRUVERA_HOME?.trim() : thruveraHome(env);
 	if (!serviceHome) {
-		throw new Error("systemd system service needs an explicit BEEMAX_HOME owned by BEEMAX_SERVICE_USER");
+		throw new Error("systemd system service needs an explicit THRUVERA_HOME owned by THRUVERA_SERVICE_USER");
 	}
 	await mkdir(layout.unitDirectory, { recursive: true });
 	if (layout.environmentDirectory) await mkdir(layout.environmentDirectory, { recursive: true, mode: 0o700 });
 	await writeFile(layout.unitTemplatePath, renderSystemdService(root, options.nodePath ?? process.execPath, scope, serviceUser, serviceHome, layout.environmentDirectory, {
-		memoryMax: env.BEEMAX_SERVICE_MEMORY_MAX,
-		cpuQuota: env.BEEMAX_SERVICE_CPU_QUOTA,
-		tasksMax: optionalInteger(env.BEEMAX_SERVICE_TASKS_MAX),
+		memoryMax: env.THRUVERA_SERVICE_MEMORY_MAX,
+		cpuQuota: env.THRUVERA_SERVICE_CPU_QUOTA,
+		tasksMax: optionalInteger(env.THRUVERA_SERVICE_TASKS_MAX),
 	}), { mode: 0o644 });
 	await writeFile(layout.targetPath!, renderSystemdTarget(scope), { mode: 0o644 });
 	const args = scope === "user" ? ["--user", "daemon-reload"] : ["daemon-reload"];
@@ -111,8 +111,8 @@ export async function installSystemdService(
 
 export async function installMacLaunchAgent(
 	profile: string,
-	root = beemaxRoot(),
-	home = beemaxHome(),
+	root = thruveraRoot(),
+	home = thruveraHome(),
 	launchAgentsDir = resolveServiceLayout({ platform: "darwin", scope: "user" }).unitDirectory,
 ): Promise<string> {
 	validateProfileName(profile);
@@ -125,7 +125,7 @@ export async function installMacLaunchAgent(
 	return plist;
 }
 
-export function renderMacLaunchAgent(profile: string, root = beemaxRoot(), home = beemaxHome(), nodePath = process.execPath): string {
+export function renderMacLaunchAgent(profile: string, root = thruveraRoot(), home = thruveraHome(), nodePath = process.execPath): string {
 	validateProfileName(profile);
 	const profileHome = join(resolve(home), "profiles", profile);
 	const logsDir = join(profileHome, "logs");
@@ -136,7 +136,7 @@ export function renderMacLaunchAgent(profile: string, root = beemaxRoot(), home 
   <key>Label</key><string>${xml(macLabel(profile))}</string>
   <key>ProgramArguments</key><array><string>${xml(nodePath)}</string><string>${xml(cliPath)}</string><string>gateway</string><string>--profile</string><string>${xml(profile)}</string><string>--home</string><string>${xml(resolve(home))}</string><string>--root</string><string>${xml(resolve(root))}</string></array>
   <key>WorkingDirectory</key><string>${xml(resolve(root))}</string>
-  <key>EnvironmentVariables</key><dict><key>NODE_ENV</key><string>production</string><key>BEEMAX_PROFILE</key><string>${xml(profile)}</string></dict>
+  <key>EnvironmentVariables</key><dict><key>NODE_ENV</key><string>production</string><key>THRUVERA_PROFILE</key><string>${xml(profile)}</string></dict>
   <key>ProcessType</key><string>Interactive</string>
   <key>RunAtLoad</key><true/><key>KeepAlive</key><true/>
   <key>StandardOutPath</key><string>${xml(join(logsDir, "gateway.log"))}</string>
@@ -155,7 +155,7 @@ export async function runServiceAction(
 	validateProfileName(profile);
 	if (platform === "darwin") return runMacServiceAction(action, profile, runner, retryDelay);
 	if (platform !== "linux") {
-		throw new Error(`beemax ${action} requires Linux systemd; use 'beemax gateway --profile ${profile}' for foreground testing`);
+		throw new Error(`thruvera ${action} requires Linux systemd; use 'thruvera gateway --profile ${profile}' for foreground testing`);
 	}
 	for (const plan of resolveServiceCommands(action, profile, { platform, scope })) {
 		const result = runner(plan.command, plan.args);
@@ -166,7 +166,7 @@ export async function runServiceAction(
 
 async function runMacServiceAction(action: ServiceAction, profile: string, runner: Runner, retryDelay: RetryDelay): Promise<void> {
 	if (action === "logs") {
-		process.stdout.write(`${readGatewayLogs(join(beemaxHome(), "profiles", profile))}\n`);
+		process.stdout.write(`${readGatewayLogs(join(thruveraHome(), "profiles", profile))}\n`);
 		return;
 	}
 	for (const plan of resolveServiceCommands(action, profile, { platform: "darwin" })) {
@@ -198,7 +198,7 @@ function xml(value: string): string { return value.replaceAll("&", "&amp;").repl
 
 function renderSystemdTarget(scope: ServiceScope): string {
 	return `[Unit]
-Description=BeeMax Agent profiles
+Description=Thruvera Agent profiles
 Wants=network-online.target
 After=network-online.target
 

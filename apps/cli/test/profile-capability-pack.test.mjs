@@ -58,7 +58,7 @@ test("a fresh Profile reports the complete standard Web pack", async () => {
 			installation: authorizedInstallation,
 			integrityKey: providerIntegrityKey,
 		}, {
-			trustedHostEnvironment: { BEEMAX_CHROME_EXECUTABLE: join(fixture.root, "missing-chrome") },
+			trustedHostEnvironment: { THRUVERA_CHROME_EXECUTABLE: join(fixture.root, "missing-chrome") },
 			fetchImpl: unavailableFetch,
 			builtinSkillsRoot: join(fixture.root, "skills", "builtin"),
 		});
@@ -90,7 +90,7 @@ test("standard Web operations refuse an Agent directory owned by another Profile
 	}
 });
 
-test("standard Web status does not mislabel a customized same-name Skill as BeeMax-native", async () => {
+test("standard Web status does not mislabel a customized same-name Skill as Thruvera-native", async () => {
 	const fixture = await createProfileFixture("beemax-standard-web-custom-skill-", ["custom-web"]);
 	try {
 		const [paths] = fixture.paths;
@@ -102,13 +102,13 @@ test("standard Web status does not mislabel a customized same-name Skill as BeeM
 			installation: authorizedInstallation,
 			integrityKey: providerIntegrityKey,
 		}, {
-			trustedHostEnvironment: { BEEMAX_CHROME_EXECUTABLE: join(fixture.root, "missing-chrome") },
+			trustedHostEnvironment: { THRUVERA_CHROME_EXECUTABLE: join(fixture.root, "missing-chrome") },
 			fetchImpl: unavailableFetch,
 			builtinSkillsRoot: join(fixture.root, "skills", "builtin"),
 		});
 		assert.equal(status.components.find(({ id }) => id === "agent-reach").state, "customized");
 		assert.equal(status.components.find(({ id }) => id === "pi-web-access").state, "installed");
-		assert.match(status.components.find(({ id }) => id === "agent-reach").detail, /not claimed as BeeMax-native/);
+		assert.match(status.components.find(({ id }) => id === "agent-reach").detail, /not claimed as Thruvera-native/);
 	} finally {
 		await rm(fixture.root, { recursive: true, force: true });
 	}
@@ -247,7 +247,7 @@ test("Profile browsers use distinct loopback ports and Profile-owned data direct
 			return { pid: 10_000 + spawns.length, once() {}, unref: () => { call.unrefCalls++; }, kill: () => { call.killCalls++; } };
 		};
 		const trustedHostEnvironment = {
-			BEEMAX_CHROME_EXECUTABLE: process.execPath,
+			THRUVERA_CHROME_EXECUTABLE: process.execPath,
 			HOME: join(root, "empty-test-home"),
 			PATH: resolve(process.execPath, ".."),
 		};
@@ -312,7 +312,7 @@ test("Profile browser ownership rejects a live CDP endpoint whose runner heartbe
 			updatedAt: Date.now() - 60_000,
 		}));
 		const inspected = await inspectProfileBrowser(agentDir, {
-			trustedHostEnvironment: { BEEMAX_CHROME_EXECUTABLE: process.execPath },
+			trustedHostEnvironment: { THRUVERA_CHROME_EXECUTABLE: process.execPath },
 			fetchImpl: async () => ({ ok: true, json: async () => ({ webSocketDebuggerUrl: `ws://127.0.0.1:26777${browserPath}` }) }),
 			processAliveImpl: () => true,
 		});
@@ -388,11 +388,11 @@ test("Profile browser refuses a symlinked state directory before spawning", asyn
 	try {
 		await symlink(outside, join(agentDir, "state"), process.platform === "win32" ? "junction" : "dir");
 		await assert.rejects(() => inspectProfileBrowser(agentDir, {
-			trustedHostEnvironment: { BEEMAX_CHROME_EXECUTABLE: process.execPath, HOME: join(agentDir, "empty-test-home") },
+			trustedHostEnvironment: { THRUVERA_CHROME_EXECUTABLE: process.execPath, HOME: join(agentDir, "empty-test-home") },
 			fetchImpl: unavailableFetch,
 		}), /real directory/i);
 		await assert.rejects(() => startProfileBrowser(agentDir, {
-			trustedHostEnvironment: { BEEMAX_CHROME_EXECUTABLE: process.execPath, HOME: join(agentDir, "empty-test-home") },
+			trustedHostEnvironment: { THRUVERA_CHROME_EXECUTABLE: process.execPath, HOME: join(agentDir, "empty-test-home") },
 			fetchImpl: unavailableFetch,
 			spawnImpl: () => { spawnCalls++; return { pid: 1, unref() {} }; },
 		}), /real directory/i);
@@ -413,7 +413,7 @@ test("Profile browser refuses a symlinked process record without touching its ta
 		await writeFile(outside, "preserve-me");
 		await symlink(outside, join(capabilityRoot, "browser-process.json"));
 		await assert.rejects(() => startProfileBrowser(agentDir, {
-			trustedHostEnvironment: { BEEMAX_CHROME_EXECUTABLE: process.execPath, HOME: join(agentDir, "empty-test-home") },
+			trustedHostEnvironment: { THRUVERA_CHROME_EXECUTABLE: process.execPath, HOME: join(agentDir, "empty-test-home") },
 			fetchImpl: unavailableFetch,
 			spawnImpl: () => { spawnCalls++; return { pid: 1, once() {}, unref() {}, kill() {} }; },
 		}), /regular file/i);
@@ -438,7 +438,7 @@ test("Profile browser safely recovers a dead-owner start lock", async () => {
 			return browserPath ? { ok: true, json: async () => ({ webSocketDebuggerUrl: `ws://127.0.0.1:${endpoint.port}${browserPath}` }) } : { ok: false };
 		};
 		const started = await startProfileBrowser(agentDir, {
-			trustedHostEnvironment: { BEEMAX_CHROME_EXECUTABLE: process.execPath, HOME: join(agentDir, "empty-test-home") },
+			trustedHostEnvironment: { THRUVERA_CHROME_EXECUTABLE: process.execPath, HOME: join(agentDir, "empty-test-home") },
 			fetchImpl,
 			processAliveImpl: (pid) => pid === 12_001,
 			spawnImpl: (_command, args) => {
@@ -461,7 +461,7 @@ test("failed browser startup escalates termination and quarantines an unkillable
 	const signals = [];
 	try {
 		await assert.rejects(() => startProfileBrowser(agentDir, {
-			trustedHostEnvironment: { BEEMAX_CHROME_EXECUTABLE: process.execPath, HOME: join(agentDir, "empty-test-home") },
+			trustedHostEnvironment: { THRUVERA_CHROME_EXECUTABLE: process.execPath, HOME: join(agentDir, "empty-test-home") },
 			fetchImpl: unavailableFetch,
 			processAliveImpl: () => true,
 			spawnImpl: () => ({ pid: 12_002, once() {}, unref() {}, kill: (signal) => { signals.push(signal); return true; } }),
@@ -478,7 +478,7 @@ test("failed browser startup escalates termination and quarantines an unkillable
 test("Pi Web Access installation is network-free and idempotent", async () => {
 	const expected = {
 		installed: false,
-		path: "@beemax/core/browser-tools",
+		path: "@thruvera/core/browser-tools",
 		evidenceRef: `builtin:${PI_WEB_ACCESS_VERSION}`,
 		revision: PI_WEB_ACCESS_VERSION,
 	};

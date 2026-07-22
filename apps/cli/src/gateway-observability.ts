@@ -91,7 +91,7 @@ function pidAlive(pid: number): boolean {
 }
 
 function serviceLifecycle(profile: string, scope: "user" | "system"): "running" | "stopped" | "unknown" {
-	if (process.platform === "darwin") return spawnSync("launchctl", ["print", `gui/${process.getuid?.() ?? 0}/com.beemax.agent.${profile}`], { stdio: "ignore" }).status === 0 ? "running" : "stopped";
-	if (process.platform === "linux") return spawnSync("systemctl", [...(scope === "user" ? ["--user"] : []), "is-active", "--quiet", `beemax@${profile}.service`], { stdio: "ignore" }).status === 0 ? "running" : "stopped";
+	if (process.platform === "darwin") return spawnSync("launchctl", ["print", `gui/${process.getuid?.() ?? 0}/com.thruvera.agent.${profile}`], { stdio: "ignore" }).status === 0 ? "running" : "stopped";
+	if (process.platform === "linux") return spawnSync("systemctl", [...(scope === "user" ? ["--user"] : []), "is-active", "--quiet", `thruvera@${profile}.service`], { stdio: "ignore" }).status === 0 ? "running" : "stopped";
 	return "unknown";
 }

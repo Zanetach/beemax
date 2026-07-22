@@ -8,11 +8,11 @@
  */
 
 import type { CardSession } from "./session.ts";
-import type { PublishedArtifactPresentation } from "@beemax/channel-runtime";
+import type { PublishedArtifactPresentation } from "@thruvera/channel-runtime";
 import { splitMarkdownBlocks, countMarkdownTables, MAX_CARD_TABLES, normalizeStreamText } from "./text.ts";
 
 const MAIN_CONTENT_CHUNK_CHARS = 2400;
-const DEFAULT_TITLE = "BeeMax Agent";
+const DEFAULT_TITLE = "Thruvera Agent";
 const MAX_TIMELINE_ITEMS = 12;
 const MAX_REASONING_CHARS = 1200;
 const MAX_TOOL_RESULT_CHARS = 600;

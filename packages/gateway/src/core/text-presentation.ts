@@ -1,4 +1,4 @@
-import type { DeliveryReceipt, InteractionEvent } from "@beemax/core";
+import type { DeliveryReceipt, InteractionEvent } from "@thruvera/core";
 import { randomUUID } from "node:crypto";
 import type {
 	InteractionPresentationOpen,
@@ -7,8 +7,8 @@ import type {
 	TurnPresentation,
 	TurnPresentationFinishOptions,
 	WorkProgressPresentation,
-} from "@beemax/channel-runtime";
-import { formatAnswerWithPublishedArtifacts, formatWorkProgress } from "@beemax/channel-runtime";
+} from "@thruvera/channel-runtime";
+import { formatAnswerWithPublishedArtifacts, formatWorkProgress } from "@thruvera/channel-runtime";
 
 /** Universal presentation fallback for channels that only implement text delivery. */
 export class TextInteractionPresenter implements InteractionPresenter {
@@ -41,7 +41,7 @@ class TextTurnPresentation implements TurnPresentation {
 
 	async start(): Promise<void> {
 		await this.platform.sendTyping(this.input.source.chatId, this.input.source.messageId).catch((error) => {
-			console.warn(`[beemax] typing indicator failed: ${safeError(error)}`);
+			console.warn(`[thruvera] typing indicator failed: ${safeError(error)}`);
 		});
 	}
 

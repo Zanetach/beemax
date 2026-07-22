@@ -5,8 +5,8 @@ import { mkdtemp, rm, truncate, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { createFeishuAdapterRegistration } from "@beemax/channel-feishu";
-import { createTelegramAdapterRegistration } from "@beemax/channel-telegram";
+import { createFeishuAdapterRegistration } from "@thruvera/channel-feishu";
+import { createTelegramAdapterRegistration } from "@thruvera/channel-telegram";
 
 const candidates = [feishuCandidate(), telegramCandidate()];
 
@@ -105,7 +105,7 @@ function telegramCandidate() {
 			let getFileCalls = 0;
 			const fetch = async (url, init = {}) => {
 				const method = String(url).split("/").at(-1);
-				if (method === "getMe") return json({ ok: true, result: { id: 7, username: "beemax_bot" } });
+				if (method === "getMe") return json({ ok: true, result: { id: 7, username: "thruvera_bot" } });
 				if (method === "getUpdates") {
 					const instance = String(url).includes("token-secondary") ? "secondary" : "primary";
 					const count = deliveries.get(instance) ?? 0;

@@ -6,7 +6,7 @@ import {
 	type ProactiveCapability,
 	type ProactiveInvestigationCandidate,
 	type ProactiveInvestigationRuntime,
-} from "@beemax/core";
+} from "@thruvera/core";
 
 export interface LearningObjectiveCompositionOptions {
 	allowsReadOnlyInvestigation: () => boolean;

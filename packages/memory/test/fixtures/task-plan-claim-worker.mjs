@@ -1,6 +1,6 @@
 import { appendFileSync } from "node:fs";
 import { MemoryStore } from "../../dist/index.js";
-import { TaskGraph, TaskRecoveryRunner } from "@beemax/core";
+import { TaskGraph, TaskRecoveryRunner } from "@thruvera/core";
 
 const request = JSON.parse(process.argv[2] ?? "null");
 if (!request?.databasePath || !request?.mode || !request?.executionLog) throw new Error("claim worker request is required");

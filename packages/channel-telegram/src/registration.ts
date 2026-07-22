@@ -1,4 +1,4 @@
-import type { ChannelAdapterRegistration, ChannelInstanceConfig } from "@beemax/channel-runtime";
+import type { ChannelAdapterRegistration, ChannelInstanceConfig } from "@thruvera/channel-runtime";
 import { TelegramAdapter, type TelegramAdapterDependencies, type TelegramCredentialConsumer, type TelegramCredentials, type TelegramSettings } from "./adapter.ts";
 
 export interface TelegramAdapterRegistrationOptions {

@@ -4,7 +4,7 @@ Label: `wayfinder:resolved`
 
 ## Question
 
-Which actions may BeeMax execute unattended under standing Profile authority, which require a scoped execution grant, and which must remain blocked because credentials, legal authority, irreversible risk, or material intent are absent? Define the decision inputs, durable evidence, expiry, revocation, and failure behavior without introducing a global “full autonomy” bypass.
+Which actions may Thruvera execute unattended under standing Profile authority, which require a scoped execution grant, and which must remain blocked because credentials, legal authority, irreversible risk, or material intent are absent? Define the decision inputs, durable evidence, expiry, revocation, and failure behavior without introducing a global “full autonomy” bypass.
 
 ## Resolution
 

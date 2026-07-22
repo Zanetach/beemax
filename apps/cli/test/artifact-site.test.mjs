@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PassThrough } from "node:stream";
 import test from "node:test";
-import { createArtifactManifest } from "@beemax/core";
+import { createArtifactManifest } from "@thruvera/core";
 import { CaddyArtifactSite } from "../dist/artifact-site.js";
 
 function fileArtifact(name, mediaType, bytes) {
@@ -181,7 +181,7 @@ test("Caddy Artifact Site owns a Profile-scoped Caddy lifecycle and probes readi
 		LANG: "zh_CN.UTF-8",
 		LC_CTYPE: "zh_CN.UTF-8",
 		TZ: "Asia/Shanghai",
-		BEEMAX_API_KEY: "must-not-reach-caddy",
+		THRUVERA_API_KEY: "must-not-reach-caddy",
 		FEISHU_APP_SECRET: "must-not-reach-caddy",
 	});
 	try {

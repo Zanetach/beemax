@@ -2,7 +2,7 @@ import type { AccessScopeRef } from "./access-scope.ts";
 import type { EnterprisePolicyDecision } from "./enterprise-policy.ts";
 import { resolveEnterprisePolicyDecision } from "./enterprise-policy.ts";
 import type { ToolPolicy } from "./tool-runtime.ts";
-import type { ProactiveMutationAuthority, BeeMaxRuntimeSource } from "./runtime.ts";
+import type { ProactiveMutationAuthority, ThruveraRuntimeSource } from "./runtime.ts";
 
 export interface CompensationProof {
 	id: string;
@@ -84,7 +84,7 @@ export class ReversibleActionAdmission {
 }
 
 /** Rechecks durable mutation controls at Pi's actual beforeToolCall boundary. */
-export function createReversibleActionMutationAuthority<Source extends BeeMaxRuntimeSource = BeeMaxRuntimeSource>(
+export function createReversibleActionMutationAuthority<Source extends ThruveraRuntimeSource = ThruveraRuntimeSource>(
 	controls: Pick<ReversibleActionControlPort, "emergencyStop" | "compensationProof">,
 	now: () => number = Date.now,
 ): ProactiveMutationAuthority<Source> {

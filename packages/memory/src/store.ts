@@ -1,7 +1,7 @@
 /**
  * Long-term memory store backed by SQLite + FTS5.
  *
- * BeeMax memory management and FTS5 session search.
+ * Thruvera memory management and FTS5 session search.
  * Two tables:
  *   - memories: curated facts/preferences the agent chose to remember.
  *   - exchanges: full user<->assistant turns, FTS5-indexed for cross-session
@@ -16,8 +16,8 @@ import type { Database as DatabaseType } from "better-sqlite3";
 import { chmodSync, existsSync, mkdirSync, rmSync } from "node:fs";
 import { dirname } from "node:path";
 import { createHash, randomUUID } from "node:crypto";
-import { AUTONOMY_LEVELS, MAX_OBJECTIVE_REVISIONS, containsCredentialMaterial, createAccessScopeRef, createEnterprisePolicyPublisher, createExecutionEnvelope, createSituation, decodeDurableContractAdmissionReceipt, decodeStoredWorkContract, interactionCompletionDeliveryKey, multilingualLexicalTerms, objectiveCompletionId, parseTaskCheckpoint, redactCredentialMaterial, renderTaskCheckpoint, unavailableTaskCriterionVerifications, validateArtifactManifest, validateArtifactVerificationReceipt, validateSourceReceipt, workContractFromLegacyObjective, type AutonomyLevel, type AutonomyRolloutEvidence, type AutonomyRolloutRecord, type AutonomyRolloutStateStore, type CompensationProof, type ConversationMemoryPort, type CriterionOutcome, type DeliveryReceipt, type DeliveryTarget, type DirectObjectiveCompletionSettlement, type DurableContractAdmissionReceipt, type DurableInitiativeTrigger, type DurableInitiativeTriggerInput, type EmergencyStopRecord, type EnterprisePolicyPublisher, type InitiativeObservation, type InitiativeObservationInput, type InitiativeObservationStore, type InitiativeScope, type InitiativeTriggerInbox, type ObjectiveCancellationResult, type ObjectiveCompletion, type ObjectiveCompletionOutbox, type ObjectiveInterruptionRecord, type OrganizationKnowledgeHit, type OrganizationKnowledgeRecall, type ReversibleActionControlPort, type Situation, type TaskCandidateVerificationResolution, type TaskCheckpoint, type TaskDependency, type TaskLedger, type TaskPlanCompletionNotice, type TaskPlanNoticeOutbox, type TaskPlanQuery, type TaskPlanRecord, type TaskPlanTransition, type TaskQuery, type TaskRecord as RuntimeTaskRecord, type TaskRecoveryResult, type TaskRunAndTaskSuccessSettlement, type TaskRunEffectStateReader, type TaskRunRecord, type TaskRunTransition, type TaskTransition } from "@beemax/core";
-import type { ManagedSkillLearningPort, MemoryLearningAuthorityPort } from "@beemax/core";
+import { AUTONOMY_LEVELS, MAX_OBJECTIVE_REVISIONS, containsCredentialMaterial, createAccessScopeRef, createEnterprisePolicyPublisher, createExecutionEnvelope, createSituation, decodeDurableContractAdmissionReceipt, decodeStoredWorkContract, interactionCompletionDeliveryKey, multilingualLexicalTerms, objectiveCompletionId, parseTaskCheckpoint, redactCredentialMaterial, renderTaskCheckpoint, unavailableTaskCriterionVerifications, validateArtifactManifest, validateArtifactVerificationReceipt, validateSourceReceipt, workContractFromLegacyObjective, type AutonomyLevel, type AutonomyRolloutEvidence, type AutonomyRolloutRecord, type AutonomyRolloutStateStore, type CompensationProof, type ConversationMemoryPort, type CriterionOutcome, type DeliveryReceipt, type DeliveryTarget, type DirectObjectiveCompletionSettlement, type DurableContractAdmissionReceipt, type DurableInitiativeTrigger, type DurableInitiativeTriggerInput, type EmergencyStopRecord, type EnterprisePolicyPublisher, type InitiativeObservation, type InitiativeObservationInput, type InitiativeObservationStore, type InitiativeScope, type InitiativeTriggerInbox, type ObjectiveCancellationResult, type ObjectiveCompletion, type ObjectiveCompletionOutbox, type ObjectiveInterruptionRecord, type OrganizationKnowledgeHit, type OrganizationKnowledgeRecall, type ReversibleActionControlPort, type Situation, type TaskCandidateVerificationResolution, type TaskCheckpoint, type TaskDependency, type TaskLedger, type TaskPlanCompletionNotice, type TaskPlanNoticeOutbox, type TaskPlanQuery, type TaskPlanRecord, type TaskPlanTransition, type TaskQuery, type TaskRecord as RuntimeTaskRecord, type TaskRecoveryResult, type TaskRunAndTaskSuccessSettlement, type TaskRunEffectStateReader, type TaskRunRecord, type TaskRunTransition, type TaskTransition } from "@thruvera/core";
+import type { ManagedSkillLearningPort, MemoryLearningAuthorityPort } from "@thruvera/core";
 import { MEMORY_LEARNING_SCHEMA_VERSION, SqliteMemoryLearningAuthority } from "./memory-learning-authority.ts";
 
 export const MEMORY_CLAIM_KINDS = ["preference", "fact", "decision", "goal", "project", "relationship", "workflow", "exception"] as const;
@@ -1585,7 +1585,7 @@ export class MemoryStore {
 			.filter((claim) => claim.stability !== "low" || claim.confidence >= 0.85);
 		const grouped = new Map<MemoryClaim["kind"], MemoryClaim[]>();
 		for (const claim of claims) grouped.set(claim.kind, [...(grouped.get(claim.kind) ?? []), claim]);
-		const lines = ["# BeeMax 长期记忆", "", "此文件由记忆账本生成；原始证据与可纠正版本保存在 SQLite。"];
+		const lines = ["# Thruvera 长期记忆", "", "此文件由记忆账本生成；原始证据与可纠正版本保存在 SQLite。"];
 		for (const kind of MEMORY_CLAIM_KINDS) {
 			const entries = grouped.get(kind);
 			if (!entries?.length) continue;

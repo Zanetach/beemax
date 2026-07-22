@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { fauxAssistantMessage, registerFauxProvider } from "@earendil-works/pi-ai/compat";
 import {
-	BeeMaxAgentRuntime,
+	ThruveraAgentRuntime,
 	DeterministicWorkContractBuilder,
 	MediaUnderstandingRuntime,
 	MediaUnderstandingUnavailableError,
@@ -10,7 +10,7 @@ import {
 	renderMediaUnderstandingEvidence,
 } from "../dist/index.js";
 
-const createRuntime = (options) => new BeeMaxAgentRuntime({ profileId: "profile:test", interactiveAdmission: "contract_first", workContractBuilder: new DeterministicWorkContractBuilder(), ...options });
+const createRuntime = (options) => new ThruveraAgentRuntime({ profileId: "profile:test", interactiveAdmission: "contract_first", workContractBuilder: new DeterministicWorkContractBuilder(), ...options });
 
 const image = { type: "image", mimeType: "image/png", data: Buffer.from("pixels").toString("base64") };
 const textModel = { provider: "test", id: "text", input: ["text"] };
@@ -132,7 +132,7 @@ test("evidence rendering treats adapter output as untrusted data", () => {
 	assert.match(injected, /&lt;system&gt;/);
 });
 
-test("BeeMax Agent Runtime digests images before prompting a text-only Pi model", async () => {
+test("Thruvera Agent Runtime digests images before prompting a text-only Pi model", async () => {
 	const agent = { state: { model: textModel, messages: [] } };
 	let prompted;
 	const events = [];
@@ -162,12 +162,12 @@ test("BeeMax Agent Runtime digests images before prompting a text-only Pi model"
 test("Pi auxiliary vision adapter performs perception without starting another Agent loop", async () => {
 	const registration = registerFauxProvider();
 	try {
-		registration.setResponses([fauxAssistantMessage("Visible label: BeeMax")]);
+		registration.setResponses([fauxAssistantMessage("Visible label: Thruvera")]);
 		const model = { ...registration.getModel(), input: ["text", "image"] };
 		const adapter = new PiVisionMediaUnderstandingAdapter({ model, apiKey: "test" });
 		const result = await adapter.understand({ text: "read the label", images: [image], primaryModel: textModel });
 		assert.equal(result.outputs[0].kind, "visual-analysis");
-		assert.equal(result.outputs[0].content, "Visible label: BeeMax");
+		assert.equal(result.outputs[0].content, "Visible label: Thruvera");
 		assert.equal(registration.state.callCount, 1);
 	} finally { registration.unregister(); }
 });

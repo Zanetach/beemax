@@ -99,7 +99,7 @@ function renderQr(url: string, log: (message: string) => void): Promise<void> {
 	}));
 }
 
-function appendTracking(url: string): string { return `${url}${url.includes("?") ? "&" : "?"}from=beemax&tp=beemax`; }
+function appendTracking(url: string): string { return `${url}${url.includes("?") ? "&" : "?"}from=thruvera&tp=thruvera`; }
 function recordValue(value: unknown): Record<string, unknown> { return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {}; }
 function stringValue(value: unknown): string { return typeof value === "string" ? value : ""; }
 function stringArray(value: unknown): string[] { return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : []; }

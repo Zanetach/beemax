@@ -3,7 +3,7 @@ import { createServer, request as httpRequest, type IncomingMessage, type Server
 import { request as httpsRequest } from "node:https";
 import { connect as netConnect, isIP } from "node:net";
 import type { Duplex } from "node:stream";
-import { isGloballyReachableIp } from "@beemax/core";
+import { isGloballyReachableIp } from "@thruvera/core";
 
 export interface ProfileBrowserEgressProxy {
 	url: string;
@@ -73,7 +73,7 @@ async function proxyHttpRequest(incoming: IncomingMessage, response: ServerRespo
 		incoming.pipe(request);
 	} catch {
 		response.writeHead(403, { "content-type": "text/plain; charset=utf-8", "cache-control": "no-store" });
-		response.end("Blocked by BeeMax Profile browser egress policy.\n");
+		response.end("Blocked by Thruvera Profile browser egress policy.\n");
 	}
 }
 
@@ -86,7 +86,7 @@ async function proxyConnect(incoming: IncomingMessage, client: Duplex, head: Buf
 		const upstream = netConnect({ host: destination.address, family: destination.family, port });
 		upstream.setTimeout(30_000, () => upstream.destroy(new Error("browser egress CONNECT timed out")));
 		upstream.once("connect", () => {
-			client.write("HTTP/1.1 200 Connection Established\r\nProxy-Agent: BeeMax\r\n\r\n");
+			client.write("HTTP/1.1 200 Connection Established\r\nProxy-Agent: Thruvera\r\n\r\n");
 			if (head.length) upstream.write(head);
 			client.pipe(upstream);
 			upstream.pipe(client);

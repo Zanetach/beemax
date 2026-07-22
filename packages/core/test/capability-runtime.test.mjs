@@ -321,7 +321,7 @@ test("progressive capability ranking skips semantic cognition for strong unbound
 });
 
 test("progressive capability ranking does not treat a canonical name inside a larger token as exact metadata", async () => {
-	const query = "必须调用 web_search 搜索 BeeMax-Agent GitHub";
+	const query = "必须调用 web_search 搜索 Thruvera-Agent GitHub";
 	const capabilities = [
 		capabilityDescriptor({ kind: "tool", name: "web_search", description: "Search current public information", version: "1", activeTools: ["web_search"] }),
 		capabilityDescriptor({ kind: "skill", name: "hub", description: "Read web_search results aloud with VoxFlow voices", version: "1", activeTools: ["skill_activate"] }),

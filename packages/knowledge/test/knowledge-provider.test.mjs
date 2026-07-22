@@ -70,11 +70,11 @@ test("captures manually uploaded and channel-produced knowledge through one asse
   assert.equal(firstBody.channel, "knowledge_center");
   assert.equal(secondBody.channel, "feishu");
   assert.equal(requests[0].init.headers["X-Request-ID"], "run-1");
-  assert.equal(requests[0].init.headers["X-BeeMax-Organization-ID"], "org-1");
-  assert.equal(requests[0].init.headers["X-BeeMax-Task-ID"], "task-1");
+  assert.equal(requests[0].init.headers["X-Thruvera-Organization-ID"], "org-1");
+  assert.equal(requests[0].init.headers["X-Thruvera-Task-ID"], "task-1");
 });
 
-test("retrieval is constrained to the knowledge bases authorized by BeeMax", async () => {
+test("retrieval is constrained to the knowledge bases authorized by Thruvera", async () => {
   let request;
   const provider = new WeKnoraKnowledgeProvider({
     baseUrl: "http://knowledge.internal:8080/",
@@ -118,7 +118,7 @@ test("retrieval is constrained to the knowledge bases authorized by BeeMax", asy
   });
 });
 
-test("refuses retrieval without an explicit BeeMax knowledge scope", async () => {
+test("refuses retrieval without an explicit Thruvera knowledge scope", async () => {
   const provider = new WeKnoraKnowledgeProvider({
     baseUrl: "http://knowledge.internal:8080",
     apiKey: "secret",
@@ -133,7 +133,7 @@ test("refuses retrieval without an explicit BeeMax knowledge scope", async () =>
   );
 });
 
-test("maps WeKnora failures to a stable BeeMax knowledge error", async () => {
+test("maps WeKnora failures to a stable Thruvera knowledge error", async () => {
   const provider = new WeKnoraKnowledgeProvider({
     baseUrl: "http://knowledge.internal:8080",
     apiKey: "secret",
@@ -153,7 +153,7 @@ test("maps WeKnora failures to a stable BeeMax knowledge error", async () => {
   );
 });
 
-test("uploads channel attachments with their provenance and BeeMax ownership metadata", async () => {
+test("uploads channel attachments with their provenance and Thruvera ownership metadata", async () => {
   let request;
   const provider = new WeKnoraKnowledgeProvider({
     baseUrl: "http://knowledge.internal:8080",

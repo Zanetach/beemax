@@ -1,5 +1,5 @@
-/** Agent-facing memory capability. Persistent policy remains in BeeMax Core. */
-import { MUTATING_TOOL_POLICY, READ_ONLY_TOOL_POLICY, defineTool, memoryScopeForSource, withToolPolicy, type BeeMaxRuntimeSource, type MemoryScope, type ToolDefinition, type ToolPolicy } from "@beemax/core";
+/** Agent-facing memory capability. Persistent policy remains in Thruvera Core. */
+import { MUTATING_TOOL_POLICY, READ_ONLY_TOOL_POLICY, defineTool, memoryScopeForSource, withToolPolicy, type ThruveraRuntimeSource, type MemoryScope, type ToolDefinition, type ToolPolicy } from "@thruvera/core";
 import { Type } from "typebox";
 import { MEMORY_CLAIM_KINDS, type ClaimInput, type MemoryClaim, type MemoryEvidence } from "./store.ts";
 
@@ -26,7 +26,7 @@ export interface MemoryToolStore {
 	forgetClaim?(id: string, options: MemoryScope): boolean;
 }
 
-export function createMemoryTools(store: MemoryToolStore, source: BeeMaxRuntimeSource, trustedScope: Pick<MemoryScope, "profileId" | "projectId" | "organizationId"> = {}): ToolDefinition[] {
+export function createMemoryTools(store: MemoryToolStore, source: ThruveraRuntimeSource, trustedScope: Pick<MemoryScope, "profileId" | "projectId" | "organizationId"> = {}): ToolDefinition[] {
 	const scope = () => memoryScopeForSource(source, trustedScope);
 	const tools = [
 		defineTool({ name: "memory_status", label: "Memory Status", description: "Show curated-memory and candidate-memory counts for this user scope.", parameters: Type.Object({}), execute: async () => {

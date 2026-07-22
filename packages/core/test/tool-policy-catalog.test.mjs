@@ -49,7 +49,7 @@ test("public web research Tools expose unified Provider configuration and health
 	const tools = new Map(createWebTools({ env: {}, agentReachAvailable: false }).map((tool) => [tool.name, tool]));
 	const webProviders = tools.get("web_search").providers;
 	assert.deepEqual(webProviders.map((provider) => provider.id), ["tavily", "brave", "searxng", "exa-mcporter"]);
-	assert.deepEqual(webProviders.find((provider) => provider.id === "exa-mcporter").install, { source: "beemax-provider-lock", package: "mcporter", version: "mcporter:0.9.0:lock:7c8ca25b89c4a23618c4385a373660cbf23512d7f461e82f2197c19027a183ec" });
+	assert.deepEqual(webProviders.find((provider) => provider.id === "exa-mcporter").install, { source: "beemax-provider-lock", package: "mcporter", version: "mcporter:0.9.0:lock:428c1aaf7f10ddaad3ed172bac926ef46b0c8e713a874b8574780fdaba705a58" });
 	for (const provider of webProviders.filter((candidate) => candidate.id !== "exa-mcporter")) {
 		const health = await provider.health(new AbortController().signal);
 		assert.equal(health.status, "configuration_required");
@@ -111,10 +111,10 @@ test("exa-mcporter subprocess receives only its isolated runtime environment", a
 		await writeFile(config, "{}");
 		const tools = new Map(createWebTools({
 			env: {
-				BEEMAX_AGENT_REACH_MCPORTER: binary,
-				BEEMAX_AGENT_REACH_CONFIG: config,
-				BEEMAX_AGENT_REACH_HOME: root,
-				BEEMAX_AGENT_REACH_PATH: process.env.PATH,
+				THRUVERA_AGENT_REACH_MCPORTER: binary,
+				THRUVERA_AGENT_REACH_CONFIG: config,
+				THRUVERA_AGENT_REACH_HOME: root,
+				THRUVERA_AGENT_REACH_PATH: process.env.PATH,
 				MODEL_API_KEY: "must-not-leak",
 				FEISHU_APP_SECRET: "must-not-leak",
 				TAVILY_API_KEY: "must-not-leak",

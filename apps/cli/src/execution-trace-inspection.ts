@@ -1,4 +1,4 @@
-import { FileExecutionTraceStore, type ExecutionTrace } from "@beemax/core";
+import { FileExecutionTraceStore, type ExecutionTrace } from "@thruvera/core";
 import { join } from "node:path";
 
 export function inspectProfileExecutionTrace(agentDir: string, executionId: string, accessScopeId?: string): ExecutionTrace | undefined {

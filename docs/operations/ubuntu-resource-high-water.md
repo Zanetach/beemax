@@ -1,6 +1,6 @@
 # Ubuntu 资源高水位
 
-首期生产资源规格为 `ubuntu-small-node22`：Ubuntu 24.04 x64、Node.js 22、至少 2 个逻辑 CPU 与 6 GiB 宿主内存。它是 BeeMax 当前唯一声明并由发布门禁验证的 Ubuntu 规格；其他机器可以运行，但不能沿用本规格的容量结论。
+首期生产资源规格为 `ubuntu-small-node22`：Ubuntu 24.04 x64、Node.js 22、至少 2 个逻辑 CPU 与 6 GiB 宿主内存。它是 Thruvera 当前唯一声明并由发布门禁验证的 Ubuntu 规格；其他机器可以运行，但不能沿用本规格的容量结论。
 
 ## 边界与高水位
 
@@ -29,8 +29,8 @@ npm run eval:resources:ubuntu -- --write artifacts/resource-high-water-ubuntu.js
 macOS 开发机可用仓库内的 Dockerfile 做等价 Ubuntu x64 验证：
 
 ```bash
-docker build --platform linux/amd64 -f scripts/ubuntu-resource.Dockerfile -t beemax-ubuntu-resource .
-docker run --rm --platform linux/amd64 beemax-ubuntu-resource
+docker build --platform linux/amd64 -f scripts/ubuntu-resource.Dockerfile -t thruvera-ubuntu-resource .
+docker run --rm --platform linux/amd64 thruvera-ubuntu-resource
 ```
 
 门禁会验证机器声明、systemd 默认值、进程峰值 RSS/heap、队列落盘、任务并发栅栏和真实 SQLite 增长。CI 与 tag release 都上传 `resource-high-water-ubuntu.json`，便于比较不同提交，而不是把某次 runner 延迟宣传为生产 SLA。

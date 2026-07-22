@@ -1,6 +1,6 @@
 import { appendFileSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import type { InteractionTelemetryEvent } from "@beemax/core";
+import type { InteractionTelemetryEvent } from "@thruvera/core";
 
 const MAX_BYTES = 1_000_000;
 const RETAIN_LINES = 2_000;

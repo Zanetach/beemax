@@ -1,15 +1,15 @@
-# BeeMax 多渠道、群聊与 Profile 隔离运行架构 PRD
+# Thruvera 多渠道、群聊与 Profile 隔离运行架构 PRD
 
 | 项目 | 内容 |
 | --- | --- |
 | PRD 审核人 | [TODO: 产品负责人、Runtime 负责人、安全负责人] |
 | 重要性 | 高 |
 | 紧迫性 | 高 |
-| 需求方 | BeeMax 产品与 Runtime 团队 |
+| 需求方 | Thruvera 产品与 Runtime 团队 |
 | PRD 编写人 | Codex（基于产品负责人确认方向） |
 | PRD 提交日期 | 2026-07-14 |
 | 产品定型 | 商业化产品 × 企业级基础服务型软件 |
-| 关联权威规格 | `BeeMax Pi-native 组织智能 Runtime PRD` |
+| 关联权威规格 | `Thruvera Pi-native 组织智能 Runtime PRD` |
 
 ## PRD 修改记录
 
@@ -45,7 +45,7 @@
 - Profile Binding 已实现 Thread→Conversation→Account→Instance 优先级、同层冲突失败、启动校验与入站 fail-closed；模型不能选择 Profile。
 - Activation 契约已支持 disabled/explicit/contextual/ambient 与 mention/reply/active-thread/command；飞书和 Telegram 共用通用决策边界。Telegram 只信任平台 entity、目标 Bot reply 和同 Thread 有界活动状态，observe-only 内容不进入 Agent 消息路径。
 - Gateway ingress 已实现 Profile 全局和单 Conversation 高水位、拒绝计数和 `/status` 诊断；容量耗尽时仍允许 `/stop`。
-- `beemax binding validate/explain` 已复用 Gateway 强隔离校验，可诊断唯一匹配层级并拒绝冲突、未知实例和跨 Profile 路由。
+- `thruvera binding validate/explain` 已复用 Gateway 强隔离校验，可诊断唯一匹配层级并拒绝冲突、未知实例和跨 Profile 路由。
 - 通用 Active Conversation Lane 已实现有界 TTL/LRU 状态；飞书支持 mention、可信回复、命令及同 Thread 自然追问，不向其他 Thread 扩散。
 - 通用 Group Response Governor 已实现跨午夜 quiet hours、每 Lane 有界回复预算和有界 Lane 状态；入站触发的 ambient 响应受控，`/stop` 等命令不被预算锁死。
 - 飞书非激活群消息可按显式配置投递为 Ambient Group Observation；该路径只写入现有 Profile SQLite 的有界 Initiative Observation 候选，不进入 Agent、Pi、Task、Tool 或 Delivery。
@@ -54,20 +54,20 @@
 - 主动出站统一经过 `GovernedDeliveryPort`；治理按可信 Conversation Type 区分 DM 与群聊，并按 Profile 的 transport-neutral quiet hours、每 Lane 频率预算执行，交互回复和控制消息不被误限流。
 - Schedule、Initiative、Task Completion 与媒体的 durable Delivery Target 均保留可信 Conversation Type；Initiative 验证结果先进入 durable Delivery Outbox，治理延迟不会重跑 Pi 或消耗普通失败重试预算。
 - Legacy 主动目标缺少可信 Conversation Type 时 fail-closed，Heartbeat 多实例路由有歧义时不投递；`delivery_settled` 按 Profile/Channel Instance 记录 delivered/deferred/failed、原因、尝试次数和延迟，媒体投递也具备 lease/token fencing。
-- `beemax binding activate/disable <id>` 仅修改既有 Binding：独占写锁阻止并发 CLI 丢失更新，完整强隔离校验在发布前执行，临时文件 fsync + rename 保证原子替换；未知 Binding 或冲突不会改变原配置。
+- `thruvera binding activate/disable <id>` 仅修改既有 Binding：独占写锁阻止并发 CLI 丢失更新，完整强隔离校验在发布前执行，临时文件 fsync + rename 保证原子替换；未知 Binding 或冲突不会改变原配置。
 - 最小 `ProfileHost` 已成为普通 Interaction 的 Profile 级 admission 权威：仅 healthy/degraded 接收新 Turn，draining/failed/recovering/stopped fail-closed；Gateway 停止时先 drain，再等待已接收 Turn 释放。
 - 独立 systemd `%i` Profile unit、每 Profile 资源限制与双 `ProfileHost` 故障/容量验收共同证明一个 Profile failed/saturated 时另一 Profile 仍可接收 Interaction；该行为进入 `eval:reliability` 和 P10 证据。
 - Profile Host 从 Channel Host 快照推导运行健康并持续更新：单个 Channel Instance 故障进入 degraded，不停止其他 Channel 或 Profile Runtime；核心 authority 不可用才进入 failed。`/status` 可查看 state、accepting、lifecycle rejection 与降级原因。
-- 旧版无 instance 的 Memory、Automation、Initiative 和 Completion Notice 路由数据不再靠运行时猜测归属；管理员使用 `beemax migration channel-instance plan/apply` 显式选择唯一目标实例，所有相关表在同一 Profile SQLite 事务内更新。
+- 旧版无 instance 的 Memory、Automation、Initiative 和 Completion Notice 路由数据不再靠运行时猜测归属；管理员使用 `thruvera migration channel-instance plan/apply` 显式选择唯一目标实例，所有相关表在同一 Profile SQLite 事务内更新。
 - 迁移会验证目标是该 Profile 中已启用且 adapter 匹配的 Channel Instance，并在 Gateway Profile 锁与 SQLite 写栅栏内创建经完整性校验的快照、数据库审计记录和迁移前后逻辑 SHA-256 清单；结构化 Memory scope、Initiative 嵌套路由和唯一键冲突均在写入前检查。`rollback` 仅在迁移后数据库未发生任何新写入时恢复，并保留迁移后快照。
-- 旧 Actor-scoped 群聊 transcript 不再依赖永久 fallback 或自动任选；管理员通过 `beemax migration session plan/apply` 显式选择一个 legacy Session 作为 canonical shared Conversation 历史。迁移流式复制 Pi JSONL、收敛内容无关的 Session Catalog owner，保留全部 legacy 文件且不自动合并或删除。
+- 旧 Actor-scoped 群聊 transcript 不再依赖永久 fallback 或自动任选；管理员通过 `thruvera migration session plan/apply` 显式选择一个 legacy Session 作为 canonical shared Conversation 历史。迁移流式复制 Pi JSONL、收敛内容无关的 Session Catalog owner，保留全部 legacy 文件且不自动合并或删除。
 - Session rollback 以 source/target SHA-256、canonical identity、Profile 路径与 Catalog receipt 共同校验；canonical transcript 或偏好一旦出现新变化就 fail-closed。保留期固定为“无自动过期”，未来删除必须进入独立的企业 retention policy 与审计动作。
 - Session Migration 的 CLI 公共入口已覆盖 prepare manifest 写入后、canonical transcript 发布前崩溃的续作：确认 rollback 后安全标记 aborted，不遗留 canonical 文件或猜测重放。
 - `npm run eval:security` 使用真实 SQLite Memory authority 与跨实例 Effect Journal 独立验收：Private DM Claim 不进入群聊 recall、一个 Profile 的 Memory Store 不能由另一 Profile 打开、同一 idempotency key 只能产生一个 committed mutation；该门禁已进入 `verify:release` 与 P10 证据清单。
 - `ubuntu-small-node22` 把 Ubuntu 24.04 x64 小型主机的 systemd 2 GiB/200%/512 tasks、Interaction Queue 500 条/2 MiB、Profile Task 并发 4 与 RSS 1.5 GiB/DB 1 GiB 运维高水位收敛为配置合同；`eval:resources:ubuntu` 用真实队列、Scheduler、SQLite 与 RSS 压测，CI 和 tag release 上传逐次 JSON 证据。
-- Docker 是首个生产 Execution Sandbox；`local` 明确为继承 BeeMax 进程用户权限的 Host Execution Adapter。`mode: all` 不允许静默使用 local，配置拼写错误 fail-closed；内置 `bash/read/write` 统一经过 `ExecutionPort`，其他 Pi 宿主文件 Tool 被移除。
+- Docker 是首个生产 Execution Sandbox；`local` 明确为继承 Thruvera 进程用户权限的 Host Execution Adapter。`mode: all` 不允许静默使用 local，配置拼写错误 fail-closed；内置 `bash/read/write` 统一经过 `ExecutionPort`，其他 Pi 宿主文件 Tool 被移除。
 - 一次一容器的 Docker Adapter 已加入 network/rootfs/capability/no-new-privileges/IPC/CPU/memory/PID/tmpfs/nofile/output 边界、Profile label 和取消/超时强制清理；`eval:sandbox:ubuntu` 用真实 Docker daemon 验证 workspace none/ro/rw 与全部隔离观察。
-- `BeeMaxConfig` 不再保存 Feishu/Telegram 明文 Secret 注册表或 legacy token 字段；`credentialRef` 只在可信 Adapter、doctor、setup/test 边界即时解析受保护的 Profile `.env`，Secret 轮换不要求重载普通配置对象。
+- `ThruveraConfig` 不再保存 Feishu/Telegram 明文 Secret 注册表或 legacy token 字段；`credentialRef` 只在可信 Adapter、doctor、setup/test 边界即时解析受保护的 Profile `.env`，Secret 轮换不要求重载普通配置对象。
 - `eval:architecture` 在两个隔离临时依赖域中真实删除 Feishu 或 Telegram 包并构建 Channel Runtime、Gateway 与剩余 Adapter；Feishu/Telegram factory 同时运行共享 conformance harness。
 
 仍按本 PRD 后续阶段实施，不计为本切片完成：
@@ -83,7 +83,7 @@
 
 ### 1.1 业务现状
 
-BeeMax 已形成以 Pi 为唯一智能执行内核、以 Profile 为运行身份、以 Memory 与 Task Ledger 承载长期认知和责任、以 Gateway 接入飞书与 Telegram 的企业 Agent Runtime。现有系统已经具备 durable Task、Verification、Effect、Checkpoint、Automation、Media Understanding、Credential Vault 和 Linux systemd 部署基础。
+Thruvera 已形成以 Pi 为唯一智能执行内核、以 Profile 为运行身份、以 Memory 与 Task Ledger 承载长期认知和责任、以 Gateway 接入飞书与 Telegram 的企业 Agent Runtime。现有系统已经具备 durable Task、Verification、Effect、Checkpoint、Automation、Media Understanding、Credential Vault 和 Linux systemd 部署基础。
 
 当前多渠道能力仍处于从“平台实现”向“通用渠道运行架构”迁移的阶段：ChannelHost 已存在，但平台 Adapter、群聊准入、Profile 组合、会话身份和平台能力仍有部分耦合。尤其是群聊 Conversation 与消息发送者 Actor 尚未完全分离，同平台多账号也受到 `platform` 唯一索引限制。
 
@@ -103,7 +103,7 @@ BeeMax 已形成以 Pi 为唯一智能执行内核、以 Profile 为运行身份
 
 ### 1.4 决策依据
 
-- 现有 BeeMax 已有 Profile 目录、Memory Store identity、systemd 实例、ChannelHost 和 Interaction Runtime，无需推倒重写。
+- 现有 Thruvera 已有 Profile 目录、Memory Store identity、systemd 实例、ChannelHost 和 Interaction Runtime，无需推倒重写。
 - Hermes 官方默认采用一 Profile 一 Gateway 进程，证明强故障隔离具有实际运维价值。
 - OpenClaw 的 Binding、多 Agent state、Sandbox 和多账号路由证明共享渠道与确定性路由具有扩展价值。
 - 客户业务对象和企业规则无法预先枚举，Runtime 只能提供通用完整性、安全和配置机制。
@@ -113,7 +113,7 @@ BeeMax 已形成以 Pi 为唯一智能执行内核、以 Profile 为运行身份
 
 | 要素 | 内容 |
 | --- | --- |
-| **需求提出人** | BeeMax 产品负责人 |
+| **需求提出人** | Thruvera 产品负责人 |
 | **功能使用人** | 企业员工、群管理员、Profile 管理员、平台运维人员、能力开发者 |
 | **受影响人** | 企业安全负责人、IT 管理员、渠道平台管理员、被委托任务的协作者 |
 | **场景描述** | 多渠道私聊、群聊协作、Thread 连续工作、多 Profile 独立运行与恢复 |
@@ -125,10 +125,10 @@ BeeMax 已形成以 Pi 为唯一智能执行内核、以 Profile 为运行身份
 
 **场景1：群聊中的连续协作**
 
-- **人物**：多名企业成员与一个 BeeMax Profile。
+- **人物**：多名企业成员与一个 Thruvera Profile。
 - **时间**：工作群中连续讨论和执行任务期间。
 - **地点**：飞书、钉钉、企业微信、Telegram 等群聊或 Thread。
-- **起因**：成员 @BeeMax、回复 BeeMax，或继续一个已激活的任务 Thread。
+- **起因**：成员 @Thruvera、回复 Thruvera，或继续一个已激活的任务 Thread。
 - **经过**：Gateway 准入并标准化消息；Runtime 识别共享 Conversation 与独立 Actor；Pi 判断回答、观察、追问或建立 durable Objective。
 - **结果**：任务在原 Thread 持续推进，结果经 Verification 后投递；私人 Memory 不泄露到群聊。
 
@@ -145,7 +145,7 @@ BeeMax 已形成以 Pi 为唯一智能执行内核、以 Profile 为运行身份
 
 - **人物**：渠道 Adapter 开发者和企业管理员。
 - **时间**：新建第二个飞书机器人、接入钉钉或企微时。
-- **地点**：BeeMax 配置和 Channel Runtime。
+- **地点**：Thruvera 配置和 Channel Runtime。
 - **起因**：企业有多个工作区、账号或机器人身份。
 - **经过**：管理员创建 `ChannelInstance` 并使用 Credential Ref；Adapter 声明能力；Gateway 按 instance identity 管理连接和投递。
 - **结果**：无需修改 Pi、Memory、Task Ledger 或业务语义代码即可扩展平台和账号。
@@ -168,7 +168,7 @@ BeeMax 已形成以 Pi 为唯一智能执行内核、以 Profile 为运行身份
 
 ### 3.2 竞品分析
 
-| 分析维度 | Hermes Agent | OpenClaw | BeeMax 目标定位 |
+| 分析维度 | Hermes Agent | OpenClaw | Thruvera 目标定位 |
 | --- | --- | --- | --- |
 | **运行模型** | 默认 Profile 独立 Gateway，可选 multiplex | 单 Gateway 多 Agent | 默认独立 Profile，后续可选 Channel Relay |
 | **渠道能力** | 多 Adapter Gateway | 多账号 Binding 与插件渠道 | Channel Runtime + 多实例 + 确定性 Binding |
@@ -179,7 +179,7 @@ BeeMax 已形成以 Pi 为唯一智能执行内核、以 Profile 为运行身份
 
 ### 3.3 差异化定位
 
-BeeMax 不通过预制行业对象和规则覆盖客户场景，而是用 Situation、Organization Memory、Enterprise Policy Adapter 和 Pi 动态理解未知业务；Runtime 只固化身份、权限、责任、副作用、恢复和验证。这使平台扩展与智能深化可以分别演进。
+Thruvera 不通过预制行业对象和规则覆盖客户场景，而是用 Situation、Organization Memory、Enterprise Policy Adapter 和 Pi 动态理解未知业务；Runtime 只固化身份、权限、责任、副作用、恢复和验证。这使平台扩展与智能深化可以分别演进。
 
 ### 3.4 SaaS/商业模型待验证项
 
@@ -271,7 +271,7 @@ BeeMax 不通过预制行业对象和规则覆盖客户场景，而是用 Situat
 
 | 系统名称 | 关系类型 | 影响描述 | 责任方 |
 | --- | --- | --- | --- |
-| BeeMax Core/Pi Runtime | 核心执行 | 接收标准 Interaction，保持唯一执行链 | Runtime 团队 |
+| Thruvera Core/Pi Runtime | 核心执行 | 接收标准 Interaction，保持唯一执行链 | Runtime 团队 |
 | Gateway/Channel Runtime | 消息控制面 | 多实例、准入、路由、连接和投递 | Gateway 团队 |
 | Memory/Task Ledger | 状态权威 | 增加 Conversation、Actor、Visibility 与 Responsibility 语义 | Runtime 团队 |
 | Automation/Outbox | 异步执行 | 保持执行与投递分离 | Runtime 团队 |
@@ -350,7 +350,7 @@ BeeMax 不通过预制行业对象和规则覆盖客户场景，而是用 Situat
 
 | 文档名称 | 版本 | 位置 | 说明 |
 | --- | --- | --- | --- |
-| BeeMax Pi-native 组织智能 Runtime PRD | v2.2 | `docs/prd/beemax-pi-unified-agent-runtime.md` | 唯一 Pi、Memory、Task、Effect 和 Verification 权威规格 |
+| Thruvera Pi-native 组织智能 Runtime PRD | v2.2 | `docs/prd/thruvera-pi-unified-agent-runtime.md` | 唯一 Pi、Memory、Task、Effect 和 Verification 权威规格 |
 | Interaction Runtime PRD | 当前 | `docs/architecture/interaction-runtime-prd.md` | Interaction 生命周期和命令语义 |
 | Channel Runtime Contract | 当前 | `docs/architecture/channel-runtime-contract.md` | 现有 Channel/Gateway interface |
 | Core/Gateway Boundaries | 当前 | `docs/architecture/core-gateway-boundaries.md` | 模块职责和依赖规则 |
@@ -843,12 +843,12 @@ Channel Instance Config → Adapter Registry 创建 → ChannelHost 独立连接
 Profile Gateway 必须先停止；迁移命令复用同一个 Profile 进程锁，运行中的 Gateway 会使操作失败。管理员先执行只读计划，再确认写入：
 
 ```bash
-beemax migration channel-instance plan --platform feishu --channel-instance company-a --profile personal
-beemax migration channel-instance apply --platform feishu --channel-instance company-a --migration-id assign-company-a --yes --profile personal
-beemax migration channel-instance rollback ~/.beemax/profiles/personal/migrations/channel-instance/assign-company-a.json --yes --profile personal
+thruvera migration channel-instance plan --platform feishu --channel-instance company-a --profile personal
+thruvera migration channel-instance apply --platform feishu --channel-instance company-a --migration-id assign-company-a --yes --profile personal
+thruvera migration channel-instance rollback ~/.thruvera/profiles/personal/migrations/channel-instance/assign-company-a.json --yes --profile personal
 ```
 
-`apply` 只处理 BeeMax 基础设施显式登记的路由表，在一个 SQLite 写栅栏和事务中覆盖 before backup、编码式 Memory scope、独立 `channel_instance_id` 路由、迁移后摘要与 prepared recovery manifest；客户扩展表不会因列名相似而被猜测改写。结构化 scope key 与 Initiative 嵌套路由同步更新。目标唯一键冲突、无效嵌套 JSON 或并发变化全部 fail-closed。`rollback` 从所选 Profile 配置派生并校验所有路径，以经过摘要验证的 before SQLite snapshot 作为精确恢复源，通过集合式 SQL、精确整数/REAL、分块内容摘要、no-clobber artifact 发布、同一 SQLite inode 内的 exclusive 反向事务和持久状态机支持大数据量与崩溃后幂等续作；任何后续写入都会阻止恢复，排队 writer 则在回滚提交后继续，避免抹掉新业务数据。详细操作见 [`docs/operations/channel-instance-ownership-migration.md`](../operations/channel-instance-ownership-migration.md)。
+`apply` 只处理 Thruvera 基础设施显式登记的路由表，在一个 SQLite 写栅栏和事务中覆盖 before backup、编码式 Memory scope、独立 `channel_instance_id` 路由、迁移后摘要与 prepared recovery manifest；客户扩展表不会因列名相似而被猜测改写。结构化 scope key 与 Initiative 嵌套路由同步更新。目标唯一键冲突、无效嵌套 JSON 或并发变化全部 fail-closed。`rollback` 从所选 Profile 配置派生并校验所有路径，以经过摘要验证的 before SQLite snapshot 作为精确恢复源，通过集合式 SQL、精确整数/REAL、分块内容摘要、no-clobber artifact 发布、同一 SQLite inode 内的 exclusive 反向事务和持久状态机支持大数据量与崩溃后幂等续作；任何后续写入都会阻止恢复，排队 writer 则在回滚提交后继续，避免抹掉新业务数据。详细操作见 [`docs/operations/channel-instance-ownership-migration.md`](../operations/channel-instance-ownership-migration.md)。
 
 #### 10.2.5 Binding 与 Profile 路由
 
@@ -968,7 +968,7 @@ Interaction/Schedule/Event → Situation → durable admission → Objective/Tas
 ### 11.1 埋点策略
 
 - **埋点目标**：回答渠道是否稳定、群聊是否有用、Profile 是否隔离、任务是否真实完成、资源是否有界。
-- **采集方式**：沿用 BeeMax Operational Metrics、Execution Trace、Gateway event journal 和结构化日志；后续可输出 OpenTelemetry。
+- **采集方式**：沿用 Thruvera Operational Metrics、Execution Trace、Gateway event journal 和结构化日志；后续可输出 OpenTelemetry。
 - **数据原则**：不采集 Credential Secret、模型思维链、完整私人消息或未经授权的 Memory 内容。
 
 ### 11.2 管理面埋点
@@ -1014,7 +1014,7 @@ Interaction/Schedule/Event → Situation → durable admission → Objective/Tas
 
 | 角色 | 说明 | 权限范围 |
 | --- | --- | --- |
-| Machine Operator | 安装、升级和观察 BeeMax | 机器级生命周期，不读取 Profile 业务内容 |
+| Machine Operator | 安装、升级和观察 Thruvera | 机器级生命周期，不读取 Profile 业务内容 |
 | Profile Administrator | 配置单个 Profile、Channel、Binding、模型和预算 | 指定 Profile |
 | Security Administrator | 发布安全 Policy、紧急停止和审计 | 指定组织/租户作用域 |
 | Channel Administrator | 管理 IM 应用、Webhook、bot token 和平台权限 | 指定 Channel Instance |
@@ -1026,7 +1026,7 @@ Interaction/Schedule/Event → Situation → durable admission → Objective/Tas
 
 | 功能 | Machine Operator | Profile Admin | Security Admin | Channel Admin | Profile User |
 | --- | --- | --- | --- | --- | --- |
-| 安装/升级 BeeMax | ✓ | — | — | — | — |
+| 安装/升级 Thruvera | ✓ | — | — | — | — |
 | 创建/删除 Profile | ✓ | 按授权 | — | — | — |
 | 启停/重启 Profile | ✓ | ✓ | 紧急停止 | — | — |
 | 查看 Profile 健康 | ✓ | ✓ | ✓ | 仅 Channel | 本人可见简化状态 |
@@ -1085,7 +1085,7 @@ Interaction/Schedule/Event → Situation → durable admission → Objective/Tas
 
 ### 13.3 Onboarding 与客户成功
 
-1. 安装 BeeMax 和 Ubuntu 依赖。
+1. 安装 Thruvera 和 Ubuntu 依赖。
 2. 创建 Profile 并生成独立目录、Vault 和 systemd unit。
 3. 通过 setup/doctor 配置 Channel Instance 和最小平台权限。
 4. 配置群聊 activation、allowlist/Binding 和资源预算。

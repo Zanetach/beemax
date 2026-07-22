@@ -1,7 +1,7 @@
 /** Feishu VC capability tools backed by @larksuiteoapi/node-sdk. */
 
 import type { Client } from "@larksuiteoapi/node-sdk";
-import { createToolEffectDetails, MUTATING_TOOL_POLICY, READ_ONLY_TOOL_POLICY, defineTool, withToolPolicy, type ToolDefinition, type ToolPolicy } from "@beemax/core";
+import { createToolEffectDetails, MUTATING_TOOL_POLICY, READ_ONLY_TOOL_POLICY, defineTool, withToolPolicy, type ToolDefinition, type ToolPolicy } from "@thruvera/core";
 import { Type } from "typebox";
 import { createHash } from "node:crypto";
 

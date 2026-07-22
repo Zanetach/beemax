@@ -34,7 +34,7 @@ export interface MediaUnderstandingOutput {
 	confidence?: number;
 }
 
-/** Adapter result before BeeMax adds trusted provenance and timing facts. */
+/** Adapter result before Thruvera adds trusted provenance and timing facts. */
 export interface MediaUnderstandingAdapterResult {
 	adapterId?: string;
 	engine?: string;

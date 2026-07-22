@@ -6,18 +6,18 @@ import { join } from "node:path";
 import test from "node:test";
 
 const semanticReview = Object.freeze({ schemaVersion: "beemax.work-contract-adjudication.v1", inventorySchemaVersion: "beemax.semantic-inventory.v1", primaryModelIdentity: "test/primary/test", reviewerModelIdentity: "test/reviewer/test", reviewMode: "different_models", independentSamples: true, cognitionUsage: { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, costUsd: 0, modelIdentities: ["test/primary/test", "test/reviewer/test"] }, cognitionBudgetChargeTokens: 1 });
-import { MemoryStore } from "@beemax/memory";
+import { MemoryStore } from "@thruvera/memory";
 import { createAssistantMessageEventStream } from "@earendil-works/pi-ai";
-import { AgentRunError, AuthStorage, BeeMaxAgentRuntime, buildBeeMaxRuntimeFactory, buildTaskPreservationEnvelope, ConversationContext, createAccessScopeRef, createEnterprisePolicyProvider, createEnterprisePolicyPublisher, createExecutionEnvelope, createSituation, DefaultMemoryLearningKernel, defineTool, DeterministicWorkContractBuilder, FileExecutionTraceStore, FileToolEffectJournal, getBuiltinModel, isRecoverableModelFailure, MUTATING_TOOL_POLICY, READ_ONLY_TOOL_POLICY, resolveRuntimeModel, SessionCoordinator, sessionIdForSource, withToolPolicy } from "../dist/index.js";
+import { AgentRunError, AuthStorage, ThruveraAgentRuntime, buildThruveraRuntimeFactory, buildTaskPreservationEnvelope, ConversationContext, createAccessScopeRef, createEnterprisePolicyProvider, createEnterprisePolicyPublisher, createExecutionEnvelope, createSituation, DefaultMemoryLearningKernel, defineTool, DeterministicWorkContractBuilder, FileExecutionTraceStore, FileToolEffectJournal, getBuiltinModel, isRecoverableModelFailure, MUTATING_TOOL_POLICY, READ_ONLY_TOOL_POLICY, resolveRuntimeModel, SessionCoordinator, sessionIdForSource, withToolPolicy } from "../dist/index.js";
 import { consumeTrustedToolGovernanceBlock } from "../dist/runtime.js";
 
-const createRuntime = (options) => new BeeMaxAgentRuntime({ profileId: "profile:test", interactiveAdmission: "contract_first", workContractBuilder: new DeterministicWorkContractBuilder(), ...options });
+const createRuntime = (options) => new ThruveraAgentRuntime({ profileId: "profile:test", interactiveAdmission: "contract_first", workContractBuilder: new DeterministicWorkContractBuilder(), ...options });
 
-test("BeeMax Core owns the runtime primitive boundary", () => {
+test("Thruvera Core owns the runtime primitive boundary", () => {
 	assert.equal(typeof AuthStorage.create, "function");
 	assert.equal(typeof defineTool, "function");
 	assert.equal(typeof getBuiltinModel, "function");
-	assert.equal(typeof buildBeeMaxRuntimeFactory, "function");
+	assert.equal(typeof buildThruveraRuntimeFactory, "function");
 	assert.equal(isRecoverableModelFailure({ status: 429 }), true);
 	assert.equal(isRecoverableModelFailure({ statusCode: 503 }), true);
 	assert.equal(isRecoverableModelFailure(new Error("upstream returned 503")), true);
@@ -270,10 +270,10 @@ test("an observed assistant success does not revive a state-only error", async (
 	} finally { runtime.dispose(); }
 });
 
-test("BeeMax applies Profile compaction policy as an in-memory Pi session setting", async () => {
+test("Thruvera applies Profile compaction policy as an in-memory Pi session setting", async () => {
 	const root = mkdtempSync(join(tmpdir(), "beemax-compaction-settings-"));
 	try {
-		const factory = buildBeeMaxRuntimeFactory({
+		const factory = buildThruveraRuntimeFactory({
 			provider: "anthropic", model: "claude-sonnet-4-5", cwd: root, agentDir: join(root, "agent"), getApiKey: () => "test",
 			systemPrompt: "test", skillToolset: "safe", createTools: () => [],
 			compaction: { enabled: false, reserveTokens: 12_000, keepRecentTokens: 16_000 },
@@ -285,7 +285,7 @@ test("BeeMax applies Profile compaction policy as an in-memory Pi session settin
 	} finally { rmSync(root, { recursive: true, force: true }); }
 });
 
-test("BeeMax keeps Pi Skill compatibility discovery inside the Profile Agent directory", async () => {
+test("Thruvera keeps Pi Skill compatibility discovery inside the Profile Agent directory", async () => {
 	const root = mkdtempSync(join(tmpdir(), "beemax-profile-skill-compatibility-"));
 	const machineHome = join(root, "machine-home");
 	const cwd = join(root, "workspace");
@@ -301,7 +301,7 @@ test("BeeMax keeps Pi Skill compatibility discovery inside the Profile Agent dir
 		writeSkill(join(machineHome, ".agents", "skills"), "machine-global");
 		writeSkill(join(cwd, ".agents", "skills"), "project-local");
 		process.env.HOME = machineHome;
-		const factory = buildBeeMaxRuntimeFactory({
+		const factory = buildThruveraRuntimeFactory({
 			provider: "anthropic", model: "claude-sonnet-4-5", cwd, agentDir, getApiKey: () => "test",
 			systemPrompt: "test", skillToolset: "safe", createTools: () => [],
 		});
@@ -316,7 +316,7 @@ test("BeeMax keeps Pi Skill compatibility discovery inside the Profile Agent dir
 	}
 });
 
-test("BeeMax compacts restored history before it consumes the Pi execution token budget", async () => {
+test("Thruvera compacts restored history before it consumes the Pi execution token budget", async () => {
 	const source = { platform: "cli", chatId: "budget-aware-compaction", chatType: "dm", userId: "user" };
 	const agent = { state: { model: { id: "test", contextWindow: 128_000 }, messages: [{ role: "assistant", content: [{ type: "text", text: "old session context" }] }] } };
 	let listener;
@@ -353,7 +353,7 @@ test("BeeMax compacts restored history before it consumes the Pi execution token
 	} finally { runtime.dispose(); }
 });
 
-test("BeeMax estimates restored message size when Pi reports post-compaction context usage as unknown", async () => {
+test("Thruvera estimates restored message size when Pi reports post-compaction context usage as unknown", async () => {
 	const source = { platform: "cli", chatId: "unknown-post-compaction-usage", chatType: "dm", userId: "user" };
 	const agent = { state: { model: { id: "test", contextWindow: 128_000 }, messages: [{ role: "assistant", content: [{ type: "text", text: "x".repeat(80_000) }] }] } };
 	const lifecycle = [];
@@ -380,7 +380,7 @@ test("BeeMax estimates restored message size when Pi reports post-compaction con
 	} finally { runtime.dispose(); }
 });
 
-test("BeeMax starts a fresh context branch when successful compaction remains over execution budget", async () => {
+test("Thruvera starts a fresh context branch when successful compaction remains over execution budget", async () => {
 	const source = { platform: "cli", chatId: "oversized-compaction-summary", chatType: "dm", userId: "user" };
 	const lifecycle = [];
 	const agent = {
@@ -412,7 +412,7 @@ test("BeeMax starts a fresh context branch when successful compaction remains ov
 	} finally { runtime.dispose(); }
 });
 
-test("BeeMax starts a fresh persisted context branch when budget compaction times out", async () => {
+test("Thruvera starts a fresh persisted context branch when budget compaction times out", async () => {
 	const source = { platform: "cli", chatId: "budget-compaction-timeout", chatType: "dm", userId: "user" };
 	const lifecycle = [];
 	let listener;
@@ -447,11 +447,11 @@ test("BeeMax starts a fresh persisted context branch when budget compaction time
 	} finally { runtime.dispose(); }
 });
 
-test("BeeMax runtime projects oversized Tool output once and exposes its scoped Artifact reader", async () => {
+test("Thruvera runtime projects oversized Tool output once and exposes its scoped Artifact reader", async () => {
 	const root = mkdtempSync(join(tmpdir(), "beemax-runtime-tool-artifact-"));
 	const source = { platform: "cli", chatId: "artifact-runtime", chatType: "dm", userId: "user" };
 	try {
-		const factory = buildBeeMaxRuntimeFactory({
+		const factory = buildThruveraRuntimeFactory({
 			provider: "anthropic", model: "claude-sonnet-4-5", cwd: root, agentDir: join(root, "agent"), getApiKey: () => "test",
 			systemPrompt: "test", skillToolset: "safe", tools: ["large_result"],
 			createTools: () => [withToolPolicy(defineTool({
@@ -478,11 +478,11 @@ test("BeeMax runtime projects oversized Tool output once and exposes its scoped 
 	} finally { rmSync(root, { recursive: true, force: true }); }
 });
 
-test("BeeMax result projection preserves a Tool's structured error status and details", async () => {
+test("Thruvera result projection preserves a Tool's structured error status and details", async () => {
 	const root = mkdtempSync(join(tmpdir(), "beemax-error-projection-"));
 	try {
 		const details = { artifactObservation: { sha256: "a".repeat(64) } };
-		const factory = buildBeeMaxRuntimeFactory({
+		const factory = buildThruveraRuntimeFactory({
 			provider: "anthropic", model: "claude-sonnet-4-5", cwd: root, agentDir: join(root, "agent"), getApiKey: () => "test",
 			systemPrompt: "test", skillToolset: "safe", tools: ["structured_failure"],
 			createTools: () => [withToolPolicy(defineTool({
@@ -502,10 +502,10 @@ test("BeeMax result projection preserves a Tool's structured error status and de
 	} finally { rmSync(root, { recursive: true, force: true }); }
 });
 
-test("BeeMax derives Pi Tool concurrency from Policy Effects and preserves explicit read serialization", async () => {
+test("Thruvera derives Pi Tool concurrency from Policy Effects and preserves explicit read serialization", async () => {
 	const root = mkdtempSync(join(tmpdir(), "beemax-tool-execution-modes-"));
 	try {
-		const factory = buildBeeMaxRuntimeFactory({
+		const factory = buildThruveraRuntimeFactory({
 			provider: "anthropic", model: "claude-sonnet-4-5", cwd: root, agentDir: join(root, "agent"), getApiKey: () => "test",
 			systemPrompt: "test", skillToolset: "safe", tools: ["read", "write", "safe_parallel", "safe_serial", "external_mutation"],
 			createTools: () => [
@@ -527,7 +527,7 @@ test("BeeMax derives Pi Tool concurrency from Policy Effects and preserves expli
 test("custom model limits drive model-aware compaction instead of a fixed 128K assumption", async () => {
 	const root = mkdtempSync(join(tmpdir(), "beemax-custom-model-limits-"));
 	try {
-		const factory = buildBeeMaxRuntimeFactory({
+		const factory = buildThruveraRuntimeFactory({
 			provider: "custom", model: "private-model", baseUrl: "https://models.example.test/v1",
 			modelLimits: { contextWindow: 32_000, maxTokens: 4_096 }, cwd: root, agentDir: join(root, "agent"), getApiKey: () => "test",
 			systemPrompt: "test", skillToolset: "safe", createTools: () => [],
@@ -541,11 +541,11 @@ test("custom model limits drive model-aware compaction instead of a fixed 128K a
 	} finally { rmSync(root, { recursive: true, force: true }); }
 });
 
-test("BeeMax preloads credentials for every configured model fallback Provider", async () => {
+test("Thruvera preloads credentials for every configured model fallback Provider", async () => {
 	const root = mkdtempSync(join(tmpdir(), "beemax-model-provider-auth-"));
 	const requestedProviders = [];
 	try {
-		const factory = buildBeeMaxRuntimeFactory({
+		const factory = buildThruveraRuntimeFactory({
 			provider: "anthropic", model: "claude-sonnet-4-5", additionalModelProviders: ["openai", "anthropic", "google"],
 			cwd: root, agentDir: join(root, "agent"), getApiKey: (provider) => { requestedProviders.push(provider); return `key:${provider}`; },
 			systemPrompt: "test", skillToolset: "safe", createTools: () => [],
@@ -557,13 +557,13 @@ test("BeeMax preloads credentials for every configured model fallback Provider",
 	} finally { rmSync(root, { recursive: true, force: true }); }
 });
 
-test("BeeMax runtime connects mutating Tool calls directly to the Effect lifecycle", async () => {
+test("Thruvera runtime connects mutating Tool calls directly to the Effect lifecycle", async () => {
 	const root = mkdtempSync(join(tmpdir(), "beemax-effect-hook-"));
 	const events = [];
 	const source = { platform: "cli", chatId: "terminal", chatType: "dm", userId: "user" };
 	try {
 		const envelope = createExecutionEnvelope({ executionId: "execution:effect", trigger: { kind: "delegation" }, taskId: "task:envelope", budget: { maxToolCalls: 1 } });
-		const factory = buildBeeMaxRuntimeFactory({
+		const factory = buildThruveraRuntimeFactory({
 			provider: "anthropic", model: "claude-sonnet-4-5", cwd: root, agentDir: join(root, "agent"), getApiKey: () => "test",
 			systemPrompt: "test", skillToolset: "safe", tools: ["mutation"],
 			toolEffects: {
@@ -587,7 +587,7 @@ test("BeeMax runtime connects mutating Tool calls directly to the Effect lifecyc
 	} finally { rmSync(root, { recursive: true, force: true }); }
 });
 
-test("BeeMax blocks a new external Tool call after the prior call times out with an unknown Effect", async () => {
+test("Thruvera blocks a new external Tool call after the prior call times out with an unknown Effect", async () => {
 	const root = mkdtempSync(join(tmpdir(), "beemax-effect-timeout-replay-"));
 	const source = { platform: "cli", chatId: "terminal", chatType: "dm", userId: "user" };
 	const effects = new FileToolEffectJournal(join(root, "tool-effects.jsonl"));
@@ -595,7 +595,7 @@ test("BeeMax blocks a new external Tool call after the prior call times out with
 	let alternateBackendCalls = 0;
 	try {
 		const envelope = createExecutionEnvelope({ executionId: "execution:timeout", trigger: { kind: "delegation" }, taskId: "task:timeout", taskRunId: "run:timeout", budget: { maxToolCalls: 5 } });
-		const factory = buildBeeMaxRuntimeFactory({
+		const factory = buildThruveraRuntimeFactory({
 			provider: "anthropic", model: "claude-sonnet-4-5", cwd: root, agentDir: join(root, "agent"), getApiKey: () => "test",
 			systemPrompt: "test", skillToolset: "safe", tools: ["external_mutation", "alternate_mutation", "safe_read"], toolEffects: effects,
 			createTools: () => [
@@ -633,7 +633,7 @@ test("BeeMax blocks a new external Tool call after the prior call times out with
 	} finally { effects.close(); rmSync(root, { recursive: true, force: true }); }
 });
 
-test("BeeMax restart blocks replay after a process crashes beyond the external mutation boundary", async () => {
+test("Thruvera restart blocks replay after a process crashes beyond the external mutation boundary", async () => {
 	const root = mkdtempSync(join(tmpdir(), "beemax-effect-crash-replay-"));
 	const journalPath = join(root, "tool-effects.jsonl");
 	const backendLog = join(root, "backend-calls.log");
@@ -656,7 +656,7 @@ test("BeeMax restart blocks replay after a process crashes beyond the external m
 		try {
 			let restartedBackendCalls = 0;
 			const envelope = createExecutionEnvelope({ executionId: "execution:recovery", trigger: { kind: "recovery" }, taskId: "task:crashed", taskRunId: "run:recovery", budget: { maxToolCalls: 2 }, mode: "recovery" });
-			const factory = buildBeeMaxRuntimeFactory({
+			const factory = buildThruveraRuntimeFactory({
 				provider: "anthropic", model: "claude-sonnet-4-5", cwd: root, agentDir: join(root, "agent"), getApiKey: () => "test",
 				systemPrompt: "test", skillToolset: "safe", tools: ["external_mutation"], toolEffects: effects,
 				createTools: () => [withToolPolicy(defineTool({
@@ -676,11 +676,11 @@ test("BeeMax restart blocks replay after a process crashes beyond the external m
 	} finally { rmSync(root, { recursive: true, force: true }); }
 });
 
-test("BeeMax rejects a model Tool call that is not in the current Pi Active Tools", async () => {
+test("Thruvera rejects a model Tool call that is not in the current Pi Active Tools", async () => {
 	const root = mkdtempSync(join(tmpdir(), "beemax-hidden-tool-call-"));
 	const source = { platform: "cli", chatId: "terminal", chatType: "dm", userId: "user" };
 	try {
-		const factory = buildBeeMaxRuntimeFactory({
+		const factory = buildThruveraRuntimeFactory({
 			provider: "anthropic", model: "claude-sonnet-4-5", cwd: root, agentDir: join(root, "agent"), getApiKey: () => "test",
 			systemPrompt: "test", skillToolset: "safe", tools: ["mutation"],
 			createTools: () => [withToolPolicy(defineTool({ name: "mutation", label: "Mutation", description: "Mutate", parameters: {}, execute: async () => ({ content: [], details: {} }) }), MUTATING_TOOL_POLICY)],
@@ -706,7 +706,7 @@ test("Enterprise Policy denies an action before Effect admission", async () => {
 			version: "v7", effectiveScope: { kind: "global", id: "enterprise" }, effectiveFrom: 1,
 			decide: async () => ({ id: "deny-mutation", disposition: "deny", reason: "Enterprise change freeze", evidenceRefs: ["change-freeze:2026-07"] }),
 		});
-		const factory = buildBeeMaxRuntimeFactory({
+		const factory = buildThruveraRuntimeFactory({
 			provider: "anthropic", model: "claude-sonnet-4-5", cwd: root, agentDir: join(root, "agent"), getApiKey: () => "test", systemPrompt: "test", skillToolset: "safe", tools: ["mutation"], enterprisePolicy,
 			executionGrant: () => ({ taskId: "task:profile-grant", allowedCapabilities: ["mutation"], status: "active" }),
 			toolAudit: (event) => audit.push(event),
@@ -733,7 +733,7 @@ test("Action Governance executes an unknown high-risk action directly", async ()
 	const root = mkdtempSync(join(tmpdir(), "beemax-high-risk-governance-"));
 	const source = { platform: "cli", chatId: "terminal", chatType: "dm", userId: "user" };
 	try {
-		const factory = buildBeeMaxRuntimeFactory({
+		const factory = buildThruveraRuntimeFactory({
 			provider: "anthropic", model: "claude-sonnet-4-5", cwd: root, agentDir: join(root, "agent"), getApiKey: () => "test", systemPrompt: "test", skillToolset: "safe", tools: ["unknown_mutation"],
 			createTools: () => [withToolPolicy(defineTool({ name: "unknown_mutation", label: "Mutation", description: "Mutate", parameters: {}, execute: async () => ({ content: [], details: {} }) }), { ...MUTATING_TOOL_POLICY })],
 		});
@@ -753,7 +753,7 @@ test("Enterprise Policy require_approval fails closed when interactive approvals
 			version: "v1", effectiveScope: { kind: "global", id: "enterprise" }, effectiveFrom: 1,
 			decide: async () => ({ id: "approval", disposition: "require_approval", reason: "Operator confirmation required", evidenceRefs: ["policy:ops:1"] }),
 		});
-		const factory = buildBeeMaxRuntimeFactory({
+		const factory = buildThruveraRuntimeFactory({
 			provider: "anthropic", model: "claude-sonnet-4-5", cwd: root, agentDir: join(root, "agent"), getApiKey: () => "test", systemPrompt: "test", skillToolset: "safe", tools: ["mutation"], enterprisePolicy,
 			createTools: () => [withToolPolicy(defineTool({ name: "mutation", label: "Mutation", description: "Mutate", parameters: {}, execute: async () => ({ content: [], details: {} }) }), MUTATING_TOOL_POLICY)],
 		});
@@ -786,7 +786,7 @@ test("Pi rechecks proactive mutation authority at the actual Tool boundary", asy
 		createTools: () => [withToolPolicy(defineTool({ name: "bounded_mutation", label: "Mutation", description: "Mutate", parameters: {}, execute: async () => ({ content: [], details: {} }) }), policy)],
 	};
 	try {
-		const allowedFactory = buildBeeMaxRuntimeFactory({ ...common, proactiveMutationAuthority: (input) => { calls.push(input); return { allowed: true }; } });
+		const allowedFactory = buildThruveraRuntimeFactory({ ...common, proactiveMutationAuthority: (input) => { calls.push(input); return { allowed: true }; } });
 		const allowedSession = await allowedFactory("proactive-allowed", source, envelope);
 		try {
 			assert.equal(await allowedSession.agent.beforeToolCall({ assistantMessage: {}, toolCall: { id: "call", name: "bounded_mutation", arguments: {} }, args: {}, context: {} }), undefined);
@@ -794,7 +794,7 @@ test("Pi rechecks proactive mutation authority at the actual Tool boundary", asy
 			assert.equal(calls[0].executionEnvelope.proactiveAction.compensationId, "compensation:bounded");
 		} finally { allowedSession.dispose(); }
 
-		const unavailableFactory = buildBeeMaxRuntimeFactory(common);
+		const unavailableFactory = buildThruveraRuntimeFactory(common);
 		const unavailableSession = await unavailableFactory("proactive-unavailable", source, envelope);
 		try {
 			const blocked = await unavailableSession.agent.beforeToolCall({ assistantMessage: {}, toolCall: { id: "call", name: "bounded_mutation", arguments: {} }, args: {}, context: {} });
@@ -804,7 +804,7 @@ test("Pi rechecks proactive mutation authority at the actual Tool boundary", asy
 	} finally { rmSync(root, { recursive: true, force: true }); }
 });
 
-test("BeeMax Agent Runtime carries one structured Execution Envelope into the Pi session", async () => {
+test("Thruvera Agent Runtime carries one structured Execution Envelope into the Pi session", async () => {
 	const source = { platform: "cli", chatId: "terminal", chatType: "dm", userId: "user" };
 	const envelope = createExecutionEnvelope({ executionId: "execution:runtime", trigger: { kind: "interaction", id: "message:1" }, objectiveId: "objective:1", taskRunId: "run:1", mode: "normal" });
 	let factoryEnvelope;
@@ -850,7 +850,7 @@ test("Turn-scoped Memory and execution guidance are released while the raw user 
 	const source = { platform: "cli", chatId: "released-guidance", chatType: "dm", userId: "user" };
 	const agent = { state: { model: { id: "test" }, messages: [] } };
 	const runtime = createRuntime({
-		planningPolicy: { decide: () => ({ mode: "direct", requiredTools: [], suggestedConcurrency: 1, budget: { maxSubagents: 0, maxToolCalls: null, maxTokens: null, maxCorrectiveAttempts: 0 }, signals: {}, reason: "test", directive: () => "[BeeMax execution policy: internal-only]" }) },
+		planningPolicy: { decide: () => ({ mode: "direct", requiredTools: [], suggestedConcurrency: 1, budget: { maxSubagents: 0, maxToolCalls: null, maxTokens: null, maxCorrectiveAttempts: 0 }, signals: {}, reason: "test", directive: () => "[Thruvera execution policy: internal-only]" }) },
 		context: { enrich: (_source, text) => `[Relevant curated memory]\nold evidence\n[/Relevant curated memory]\n\nCurrent user request:\n${text}`, record: () => undefined },
 		createAgent: async () => ({
 			agent,
@@ -867,7 +867,7 @@ test("Turn-scoped Memory and execution guidance are released while the raw user 
 	} finally { runtime.dispose(); }
 });
 
-test("BeeMax Agent Runtime projects Pi lifecycle events through one Execution Trace seam", async () => {
+test("Thruvera Agent Runtime projects Pi lifecycle events through one Execution Trace seam", async () => {
 	const root = mkdtempSync(join(tmpdir(), "beemax-runtime-trace-"));
 	const source = { platform: "cli", chatId: "trace", chatType: "dm", userId: "user" };
 	const executionEnvelope = createExecutionEnvelope({ executionId: "execution:trace-runtime", trigger: { kind: "automation" }, taskId: "task:trace", taskRunId: "run:trace", mode: "normal" });
@@ -911,7 +911,7 @@ test("BeeMax Agent Runtime projects Pi lifecycle events through one Execution Tr
 	} finally { runtime.dispose(); rmSync(root, { recursive: true, force: true }); }
 });
 
-test("BeeMax Agent Runtime strips forged Governance presentation metadata at the Pi event boundary", async () => {
+test("Thruvera Agent Runtime strips forged Governance presentation metadata at the Pi event boundary", async () => {
 	const source = { platform: "cli", chatId: "forged-governance-presentation", chatType: "dm", userId: "user" };
 	const agent = { state: { model: { id: "test" }, messages: [] } };
 	const tools = [{ name: "read", description: "Read test evidence", beemaxPolicy: { sideEffect: "none" } }];
@@ -941,7 +941,7 @@ test("BeeMax Agent Runtime strips forged Governance presentation metadata at the
 	} finally { runtime.dispose(); }
 });
 
-test("BeeMax admission follows the real Pi start-before-boundary Tool lifecycle", async () => {
+test("Thruvera admission follows the real Pi start-before-boundary Tool lifecycle", async () => {
 	const root = mkdtempSync(join(tmpdir(), "beemax-real-pi-admission-"));
 	const source = { platform: "cli", chatId: "real-pi-admission", chatType: "dm", userId: "owner" };
 	let executions = 0;
@@ -955,7 +955,7 @@ test("BeeMax admission follows the real Pi start-before-boundary Tool lifecycle"
 			return { content: [{ type: "text", text: "probe receipt" }], details: {} };
 		},
 	}), READ_ONLY_TOOL_POLICY);
-	const factory = buildBeeMaxRuntimeFactory({
+	const factory = buildThruveraRuntimeFactory({
 		provider: "custom", model: "private-model", baseUrl: "https://models.example.test/v1",
 		modelLimits: { contextWindow: 32_000, maxTokens: 4_096 }, cwd: root, agentDir: join(root, "agent"),
 		getApiKey: () => "test", systemPrompt: "test", skillToolset: "safe", tools: [probe.name], createTools: () => [probe],
@@ -998,7 +998,7 @@ test("BeeMax admission follows the real Pi start-before-boundary Tool lifecycle"
 	} finally { runtime.dispose(); rmSync(root, { recursive: true, force: true }); }
 });
 
-test("BeeMax Agent Runtime rejects Tool calls without a Provider response identity or exact model-emitted shape", async () => {
+test("Thruvera Agent Runtime rejects Tool calls without a Provider response identity or exact model-emitted shape", async () => {
 	for (const variant of [
 		{ name: "missing-response", responseId: undefined, emittedName: "read", emittedArgs: { path: "a" }, startedName: "read", startedArgs: { path: "a" }, error: /Provider did not report a response identity/u },
 		{ name: "changed-name", responseId: "response:changed-name", emittedName: "read", emittedArgs: { path: "a" }, startedName: "write", startedArgs: { path: "a" }, error: /does not exactly match/u },
@@ -1019,7 +1019,7 @@ test("BeeMax Agent Runtime rejects Tool calls without a Provider response identi
 	}
 });
 
-test("BeeMax Agent Runtime bounds canonical Tool argument identity work before execution", async () => {
+test("Thruvera Agent Runtime bounds canonical Tool argument identity work before execution", async () => {
 	let deep = {};
 	for (let index = 0; index < 34; index++) deep = { child: deep };
 	for (const [name, argumentsValue, error] of [
@@ -1039,7 +1039,7 @@ test("BeeMax Agent Runtime bounds canonical Tool argument identity work before e
 	}
 });
 
-test("BeeMax Agent Runtime lists only Task Plans visible to the conversation owners", () => {
+test("Thruvera Agent Runtime lists only Task Plans visible to the conversation owners", () => {
 	let query;
 	let taskQuery;
 	const runtime = createRuntime({
@@ -1289,7 +1289,7 @@ test("Session coordinator owns serial execution, cancellation, and bounded lifec
 	coordinator.dispose();
 });
 
-test("BeeMax Agent Runtime executes a turn and records context without a Gateway", async () => {
+test("Thruvera Agent Runtime executes a turn and records context without a Gateway", async () => {
 	const root = mkdtempSync(join(tmpdir(), "beemax-runtime-test-"));
 	const memory = new MemoryStore(join(root, "memory.db"));
 	const source = { platform: "cli", chatId: "terminal", chatType: "dm", userId: "user" };
@@ -1317,7 +1317,7 @@ test("BeeMax Agent Runtime executes a turn and records context without a Gateway
 	}
 });
 
-test("BeeMax Agent Runtime awaits the execution-aware L4 Context Pack before prompting Pi", async () => {
+test("Thruvera Agent Runtime awaits the execution-aware L4 Context Pack before prompting Pi", async () => {
 	const source = { platform: "cli", chatId: "l4-runtime", chatType: "dm", userId: "user" };
 	let received = "";
 	const observations = [];
@@ -1388,7 +1388,7 @@ test("durably receipted operational suppression removes an exact Tool version fr
 	} finally { runtime.dispose(); }
 });
 
-test("BeeMax Agent Runtime injects one structured Work Contract into the model turn", async () => {
+test("Thruvera Agent Runtime injects one structured Work Contract into the model turn", async () => {
 	const source = { platform: "cli", chatId: "terminal", chatType: "dm", userId: "user" };
 	let received = "";
 	const runtime = createRuntime({
@@ -1405,7 +1405,7 @@ test("BeeMax Agent Runtime injects one structured Work Contract into the model t
 	} finally { runtime.dispose(); }
 });
 
-test("BeeMax Agent Runtime preserves identity-looking text without compiling fixed business slots", async () => {
+test("Thruvera Agent Runtime preserves identity-looking text without compiling fixed business slots", async () => {
 	const source = { platform: "cli", chatId: "terminal", chatType: "dm", userId: "user" };
 	let received = "";
 	const runtime = createRuntime({ createAgent: async () => {
@@ -1413,14 +1413,14 @@ test("BeeMax Agent Runtime preserves identity-looking text without compiling fix
 		return { agent, subscribe: () => () => undefined, prompt: async (text) => { received = text; agent.state.messages = [{ role: "assistant", content: [{ type: "text", text: "done" }], usage: { input: 1, output: 1 } }]; }, abort: async () => undefined, dispose: () => undefined };
 	} });
 	try {
-		await runtime.run({ source, text: "核对主体 repository:BeeMax 下的对象 issue:417", timeoutMs: 1_000, mode: "interactive" });
-		assert.match(received, /repository:BeeMax/);
+		await runtime.run({ source, text: "核对主体 repository:Thruvera 下的对象 issue:417", timeoutMs: 1_000, mode: "interactive" });
+		assert.match(received, /repository:Thruvera/);
 		assert.match(received, /issue:417/);
 		assert.doesNotMatch(received, /businessContext/);
 	} finally { runtime.dispose(); }
 });
 
-test("BeeMax Agent Runtime ignores removed business-context input instead of treating it as authority", async () => {
+test("Thruvera Agent Runtime ignores removed business-context input instead of treating it as authority", async () => {
 	const source = { platform: "cli", chatId: "terminal", chatType: "dm", userId: "user" };
 	let received = "";
 	const runtime = createRuntime({ createAgent: async () => {
@@ -1433,7 +1433,7 @@ test("BeeMax Agent Runtime ignores removed business-context input instead of tre
 	} finally { runtime.dispose(); }
 });
 
-test("BeeMax Agent Runtime binds continuation understanding to the active Objective", async () => {
+test("Thruvera Agent Runtime binds continuation understanding to the active Objective", async () => {
 	const source = { platform: "cli", chatId: "terminal", chatType: "dm", userId: "user" };
 	let received = "";
 	let recallOptions;
@@ -1990,7 +1990,7 @@ test("validated correction Contract revises only its selected Objective among ac
 	} finally { runtime.dispose(); }
 });
 
-test("BeeMax Agent Runtime leaves legacy business context immutable during correction", async () => {
+test("Thruvera Agent Runtime leaves legacy business context immutable during correction", async () => {
 	const source = { platform: "cli", chatId: "terminal", chatType: "dm", userId: "user" };
 	const active = { id: "objective-1", ownerKey: "cli:terminal:user", kind: "objective", title: "处理采购记录", status: "running", createdAt: 1, businessContext: { subject: { type: "account", id: "A" }, object: { type: "purchase", id: "PO-1" } } };
 	let updates = 0;
@@ -2010,7 +2010,7 @@ test("BeeMax Agent Runtime leaves legacy business context immutable during corre
 	} finally { runtime.dispose(); }
 });
 
-test("BeeMax Agent Runtime corrects durable Situation without replacing scope or duplicating the Objective", async () => {
+test("Thruvera Agent Runtime corrects durable Situation without replacing scope or duplicating the Objective", async () => {
 	const source = { platform: "cli", chatId: "terminal", chatType: "dm", userId: "user" };
 	const originalScope = createAccessScopeRef({ id: "scope:original", authority: { kind: "membership_registry", reference: "membership:original" }, issuedAt: 1 });
 	const replacementScope = createAccessScopeRef({ id: "scope:replacement", authority: { kind: "membership_registry", reference: "membership:replacement" }, issuedAt: 2 });
@@ -2055,7 +2055,7 @@ test("BeeMax Agent Runtime corrects durable Situation without replacing scope or
 	} finally { runtime.dispose(); }
 });
 
-test("BeeMax Agent Runtime uses the Turn Understanding memory query for recall", async () => {
+test("Thruvera Agent Runtime uses the Turn Understanding memory query for recall", async () => {
 	const source = { platform: "cli", chatId: "terminal", chatType: "dm", userId: "user" };
 	let recalledQuery = "";
 	const memory = { recall: (query) => { recalledQuery = query; return []; }, recordCandidate: () => "candidate" };
@@ -2072,7 +2072,7 @@ test("BeeMax Agent Runtime uses the Turn Understanding memory query for recall",
 	} finally { runtime.dispose(); }
 });
 
-test("BeeMax Agent Runtime keeps inferred business identity semantic while trusted Access Scope controls recall", async () => {
+test("Thruvera Agent Runtime keeps inferred business identity semantic while trusted Access Scope controls recall", async () => {
 	const source = { platform: "cli", chatId: "terminal", chatType: "dm", userId: "user" };
 	let recalledQuery = "";
 	let recalledScope;
@@ -2110,7 +2110,7 @@ test("BeeMax Agent Runtime keeps inferred business identity semantic while trust
 	} finally { runtime.dispose(); }
 });
 
-test("BeeMax Agent Runtime rejects a pre-aborted turn before creating an agent session", async () => {
+test("Thruvera Agent Runtime rejects a pre-aborted turn before creating an agent session", async () => {
 	const source = { platform: "cli", chatId: "terminal", chatType: "dm", userId: "user" };
 	const controller = new AbortController();
 	let aborts = 0;
@@ -2129,7 +2129,7 @@ test("BeeMax Agent Runtime rejects a pre-aborted turn before creating an agent s
 	runtime.dispose();
 });
 
-test("BeeMax Agent Runtime passes native image attachments to Pi without prompt serialization", async () => {
+test("Thruvera Agent Runtime passes native image attachments to Pi without prompt serialization", async () => {
 	const source = { platform: "cli", chatId: "terminal", chatType: "dm", userId: "user" };
 	const images = [{ type: "image", mimeType: "image/png", data: "aW1hZ2U=" }];
 	let received;
@@ -2152,7 +2152,7 @@ test("BeeMax Agent Runtime passes native image attachments to Pi without prompt 
 	runtime.dispose();
 });
 
-test("BeeMax Agent Runtime exposes Pi native steer and follow-up only during an active run", async () => {
+test("Thruvera Agent Runtime exposes Pi native steer and follow-up only during an active run", async () => {
 	const source = { platform: "cli", chatId: "terminal", chatType: "dm", userId: "user" };
 	const envelope = createExecutionEnvelope({ executionId: "execution:steering", trigger: { kind: "interaction" }, taskRunId: "run:steering", mode: "normal" });
 	let release;
@@ -2183,7 +2183,7 @@ test("BeeMax Agent Runtime exposes Pi native steer and follow-up only during an 
 	runtime.dispose();
 });
 
-test("BeeMax Agent Runtime automatically continues a safe transient failure on a configured fallback model", async () => {
+test("Thruvera Agent Runtime automatically continues a safe transient failure on a configured fallback model", async () => {
 	const source = { platform: "cli", chatId: "terminal", chatType: "dm", userId: "user" };
 	const fallback = { provider: "test", id: "fallback", input: ["text"], reasoning: false };
 	const events = [];
@@ -2207,7 +2207,7 @@ test("BeeMax Agent Runtime automatically continues a safe transient failure on a
 	runtime.dispose();
 });
 
-test("BeeMax Agent Runtime refuses automatic model replay after observable output or tool execution", async () => {
+test("Thruvera Agent Runtime refuses automatic model replay after observable output or tool execution", async () => {
 	const source = { platform: "cli", chatId: "terminal", chatType: "dm", userId: "user" };
 	let listener;
 	let retries = 0;
@@ -2236,7 +2236,7 @@ test("BeeMax Agent Runtime refuses automatic model replay after observable outpu
 	runtime.dispose();
 });
 
-test("BeeMax Agent Runtime exposes explicit context compaction only for an idle session", async () => {
+test("Thruvera Agent Runtime exposes explicit context compaction only for an idle session", async () => {
 	const source = { platform: "cli", chatId: "terminal", chatType: "dm", userId: "user" };
 	const envelope = createExecutionEnvelope({ executionId: "execution:compaction", trigger: { kind: "interaction" }, taskRunId: "run:compaction", mode: "normal" });
 	let compactions = 0;
@@ -2304,7 +2304,7 @@ test("successive compactions preserve a multilingual corrected Work Contract", a
 			artifacts: [{ type: "reference", uri: "beemax-artifact:sha256:compaction", label: "draft evidence" }], accessScopeRef,
 		});
 		assert.ok(store.reviseObjective(ownerKey, taskId, { workContract: correction, situation: createSituation({ summary: "继续同一报告，改成中文且禁止外部发布", goals: ["完成报告"], constraints: ["改成中文", "禁止外部发布"], confidence: 0.99 }) }, 2));
-		const factory = buildBeeMaxRuntimeFactory({
+		const factory = buildThruveraRuntimeFactory({
 			provider: "custom", model: "private-model", baseUrl: "https://models.example.test/v1", modelLimits: { contextWindow: 32_000, maxTokens: 4_096 },
 			cwd: root, agentDir: join(root, "agent"), getApiKey: () => "test", systemPrompt: "test", skillToolset: "safe", createTools: () => [],
 			compaction: { reserveTokens: 4_800, keepRecentTokens: 1_024 },
@@ -2367,7 +2367,7 @@ test("Task preservation keeps durable Situation semantics without exposing Acces
 	assert.doesNotMatch(envelope, /iam:starport-secret/);
 });
 
-test("BeeMax Agent Runtime exposes session history, snapshots, and idle reset through Core", async () => {
+test("Thruvera Agent Runtime exposes session history, snapshots, and idle reset through Core", async () => {
 	const source = { platform: "cli", chatId: "terminal", chatType: "dm", userId: "user", threadId: "thread-1" };
 	let disposed = 0;
 	const runtime = createRuntime({

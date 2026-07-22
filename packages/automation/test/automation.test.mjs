@@ -9,7 +9,7 @@ import {
 	computeNextRun,
 	parseDuration,
 } from "../dist/index.js";
-import { AutomationDeliveryWorker, AutomationScheduler, DeliveryDeferredError, HeartbeatRunner, filterHeartbeatAnswer, isVerifiedAutomationOutcome, isWithinActiveHours } from "@beemax/core";
+import { AutomationDeliveryWorker, AutomationScheduler, DeliveryDeferredError, HeartbeatRunner, filterHeartbeatAnswer, isVerifiedAutomationOutcome, isWithinActiveHours } from "@thruvera/core";
 
 function withStore(run) {
 	const root = mkdtempSync(join(tmpdir(), "beemax-automation-test-"));

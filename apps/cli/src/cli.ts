@@ -1,18 +1,18 @@
 #!/usr/bin/env node
 /**
- * beemax - BeeMax Agent CLI.
+ * thruvera - Thruvera Agent CLI.
  *
  * Usage:
- *   beemax gateway    Start the Profile messaging gateway (long-running)
- *   beemax chat       Local interactive chat on stdout
- *   beemax tui        Compatibility alias for beemax chat --full
- *   beemax model      Show / set the configured model
+ *   thruvera gateway    Start the Profile messaging gateway (long-running)
+ *   thruvera chat       Local interactive chat on stdout
+ *   thruvera tui        Compatibility alias for thruvera chat --full
+ *   thruvera model      Show / set the configured model
  */
 
 import { buildMainAgentSystemPrompt, buildSubagentSystemPrompt, createSkillCandidateVerifier, createTaskVerifier, createVerifiedObjectiveMemoryPublisher, executeObjectiveDelivery, executePlannedTask, executeSubagentTask, mainAgentTools, readOnlyAgentTools, runGateway, runProfileAutomation, subagentExecutionTools, verificationAgentToolsForTask } from "./gateway.ts";
-import { beemaxHome, beemaxRoot, consumeChannelCredential, loadConfig, profileEnvironmentSnapshot, profileTurnTimeoutMs } from "./config.ts";
+import { thruveraHome, thruveraRoot, consumeChannelCredential, loadConfig, profileEnvironmentSnapshot, profileTurnTimeoutMs } from "./config.ts";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
-import { backupSqliteDatabase, MemoryStore, memoryPersistencePorts, verifySqliteDatabase } from "@beemax/memory";
+import { backupSqliteDatabase, MemoryStore, memoryPersistencePorts, verifySqliteDatabase } from "@thruvera/memory";
 import { runDoctor } from "./doctor.ts";
 import {
 	configureFeishuChannel,
@@ -46,9 +46,9 @@ import { fullScreenEnter, fullScreenExit, resolveChatPresentationMode, type Chat
 import { FullWorkbench, startFullWorkbenchInput, type FullWorkbenchInput } from "./full-workbench.ts";
 import { inspectGateway, readGatewayLogs, recordGatewayEvent } from "./gateway-observability.ts";
 import { createTaskAwareConversationContext, ensureBuiltinTasks, installedVersion } from "./runtime-facts.ts";
-import { AUTONOMY_LEVELS, ActionGovernance, AgentRunError, AuthStorage, AutonomyRolloutController, DefaultMemoryLearningKernel, DeterministicLearningExtractor, FileCredentialVault, FileCredentialVaultAuditJournal, ObjectiveCompletionDeliveryService, PiLearningExtractor, ProactiveInvestigationRuntime, ProgressiveLearningExtractor, TaskPlanNoticeDeliveryService, ToolPolicyRegistry, buildActiveTaskPreservationEnvelope, buildTaskPreservationEnvelope, compileLongTermMemorySnapshot, conversationKey, createContractAdmissionReceiptIntegrity, createExecutionEnvelope, createSubagentTools, createTaskLedgerTools, createTaskOrchestrationTools, guardVerifiedObjectiveMemoryPublisher, interactionCommandHelp, isVerifiedAutomationOutcome, objectiveIdFromCompletionId, parseInteractionCommand, redactCredentialMaterial, responsibilityOwnerKey, responsibilityOwnerKeys, type AutonomyLevel, type AutonomyRolloutAuthority, type DeliveryPort, type LearningObjectiveAdmissionPort } from "@beemax/core";
-import type { SessionSource } from "@beemax/channel-runtime";
-import { PairingStore, assertProfileBindingConfiguration } from "@beemax/gateway";
+import { AUTONOMY_LEVELS, ActionGovernance, AgentRunError, AuthStorage, AutonomyRolloutController, DefaultMemoryLearningKernel, DeterministicLearningExtractor, FileCredentialVault, FileCredentialVaultAuditJournal, ObjectiveCompletionDeliveryService, PiLearningExtractor, ProactiveInvestigationRuntime, ProgressiveLearningExtractor, TaskPlanNoticeDeliveryService, ToolPolicyRegistry, buildActiveTaskPreservationEnvelope, buildTaskPreservationEnvelope, compileLongTermMemorySnapshot, conversationKey, createContractAdmissionReceiptIntegrity, createExecutionEnvelope, createSubagentTools, createTaskLedgerTools, createTaskOrchestrationTools, guardVerifiedObjectiveMemoryPublisher, interactionCommandHelp, isVerifiedAutomationOutcome, objectiveIdFromCompletionId, parseInteractionCommand, redactCredentialMaterial, responsibilityOwnerKey, responsibilityOwnerKeys, type AutonomyLevel, type AutonomyRolloutAuthority, type DeliveryPort, type LearningObjectiveAdmissionPort } from "@thruvera/core";
+import type { SessionSource } from "@thruvera/channel-runtime";
+import { PairingStore, assertProfileBindingConfiguration } from "@thruvera/gateway";
 import { executeFeishuSmoke } from "./feishu-smoke.ts";
 import { existsSync } from "node:fs";
 import { spawn, spawnSync } from "node:child_process";
@@ -56,8 +56,8 @@ import { createHash } from "node:crypto";
 import { access, copyFile, cp, mkdir, readFile, readdir, rm, stat } from "node:fs/promises";
 import { createInterface } from "node:readline/promises";
 import { Writable } from "node:stream";
-import { loadMcpConfig, McpManager } from "@beemax/mcp-capability";
-import { WeKnoraKnowledgeProvider, createKnowledgeTools } from "@beemax/knowledge";
+import { loadMcpConfig, McpManager } from "@thruvera/mcp-capability";
+import { WeKnoraKnowledgeProvider, createKnowledgeTools } from "@thruvera/knowledge";
 import { buildAgentFactory } from "./agent-factory.ts";
 import { inspectProfileExecutionTrace, renderExecutionTrace } from "./execution-trace-inspection.ts";
 import { inspectProfileEffects, reconcileProfileEffect } from "./effect-inspection.ts";
@@ -84,8 +84,8 @@ async function main(): Promise<void> {
 
 	switch (cmd) {
 		case "setup":
-			if (parsed.configPath) throw new Error("beemax setup does not support --config; select a Profile with --profile");
-			if (parsed.options["api-key"]) throw new Error("Do not pass model secrets in argv; set BEEMAX_API_KEY or use the interactive prompt");
+			if (parsed.configPath) throw new Error("thruvera setup does not support --config; select a Profile with --profile");
+			if (parsed.options["api-key"]) throw new Error("Do not pass model secrets in argv; set THRUVERA_API_KEY or use the interactive prompt");
 			if (!(await runSetup(setupOptions(parsed, false)))) process.exitCode = 1;
 			break;
 		case "init":
@@ -105,12 +105,12 @@ async function main(): Promise<void> {
 			break;
 		case "gateway":
 			if (parsed.positionals[1] === "setup") {
-				if (parsed.configPath) throw new Error("beemax gateway setup does not support --config; select a Profile with --profile");
-				if (parsed.options["api-key"]) throw new Error("Do not pass model secrets in argv; set BEEMAX_API_KEY or use the interactive prompt");
+				if (parsed.configPath) throw new Error("thruvera gateway setup does not support --config; select a Profile with --profile");
+				if (parsed.options["api-key"]) throw new Error("Do not pass model secrets in argv; set THRUVERA_API_KEY or use the interactive prompt");
 				if (!(await runSetup(setupOptions(parsed, true)))) process.exitCode = 1;
 			} else if (parsed.positionals[1] === "install") {
 				await installGatewayService(gatewayProfile(parsed), parsed.options.system === true ? "system" : "user");
-				console.log(`BeeMax Gateway service installed for Profile '${gatewayProfile(parsed)}'.`);
+				console.log(`Thruvera Gateway service installed for Profile '${gatewayProfile(parsed)}'.`);
 			} else if (parsed.positionals[1] === "list") {
 				console.log((await listProfiles()).map((name) => `${name}  ${serviceDisplayName(name)}`).join("\n") || "No Agent Profiles configured.");
 			} else if (["start", "stop", "restart", "status", "logs"].includes(parsed.positionals[1] ?? "")) {
@@ -186,7 +186,7 @@ async function main(): Promise<void> {
 			await runAutonomyCommand(parsed, getConfig());
 			break;
 		case "credentials":
-			if (parsed.configPath) throw new Error("beemax credentials does not support --config; select a Profile with --profile");
+			if (parsed.configPath) throw new Error("thruvera credentials does not support --config; select a Profile with --profile");
 			await ensureCredentialVaultKey(profile);
 			await runCredentialCommand(parsed, getConfig());
 			break;
@@ -194,7 +194,7 @@ async function main(): Promise<void> {
 			await runTaskCommand(parsed, getConfig());
 			break;
 		case "trace": {
-			if (parsed.positionals[1] !== "show" || !parsed.positionals[2]) throw new Error("Usage: beemax trace show <execution-id> [--access-scope <scope-id>] --profile <name>");
+			if (parsed.positionals[1] !== "show" || !parsed.positionals[2]) throw new Error("Usage: thruvera trace show <execution-id> [--access-scope <scope-id>] --profile <name>");
 			const trace = inspectProfileExecutionTrace(getConfig().paths.agentDir, parsed.positionals[2], optionString(parsed, "access-scope"));
 			if (!trace) throw new Error("Execution Trace not found or Access Scope did not match");
 			console.log(renderExecutionTrace(trace));
@@ -211,17 +211,17 @@ async function main(): Promise<void> {
 			}
 			if (action === "reconcile" && parsed.positionals[2]) {
 				const status = optionString(parsed, "status");
-				if (status !== "committed" && status !== "failed") throw new Error("Usage: beemax effect reconcile <id> --status <committed|failed> [--operation <observed-operation>] [--external-ref <reference>]");
+				if (status !== "committed" && status !== "failed") throw new Error("Usage: thruvera effect reconcile <id> --status <committed|failed> [--operation <observed-operation>] [--external-ref <reference>]");
 				const effect = reconcileProfileEffect(getConfig().paths.agentDir, parsed.positionals[2], { status, ...(optionString(parsed, "operation") ? { operation: optionString(parsed, "operation") } : {}), ...(optionString(parsed, "external-ref") ? { externalRef: optionString(parsed, "external-ref") } : {}) });
 				console.log(`Reconciled Effect ${effect.id} as ${effect.status}.`);
 				break;
 			}
-			throw new Error("Usage: beemax effect list [--status <status>] | beemax effect reconcile <id> --status <committed|failed>");
+			throw new Error("Usage: thruvera effect list [--status <status>] | thruvera effect reconcile <id> --status <committed|failed>");
 		}
 		case "service":
-			if (parsed.positionals[1] !== "install") throw new Error("Usage: beemax service install");
+			if (parsed.positionals[1] !== "install") throw new Error("Usage: thruvera service install");
 			await installGatewayService(serviceProfile(parsed), parsed.options.system === true ? "system" : "user");
-			console.log("BeeMax Gateway service installed. Start an agent with: beemax start <name>");
+			console.log("Thruvera Gateway service installed. Start an agent with: thruvera start <name>");
 			break;
 		case "start":
 		case "stop":
@@ -238,7 +238,7 @@ async function main(): Promise<void> {
 			break;
 		case "help":
 		default:
-			console.log(`beemax - persistent personal agent (Pi + Feishu)
+			console.log(`thruvera - persistent personal agent (Pi + Feishu)
 
 Commands:
   setup      Configure one Agent Profile, model, identity, Skills, and local chat
@@ -251,7 +251,7 @@ Commands:
   chat       Adaptive terminal Agent (Full / Compact / Plain)
   model      show | set <provider> <model>
   doctor     Check profile readiness
-  update     Update the installed BeeMax release, preserving all Profiles
+  update     Update the installed Thruvera release, preserving all Profiles
   profile    create | list | show | path | use | migrate | backup | delete
   migration  channel-instance | session plan | apply | rollback (explicit legacy ownership)
   skills     list | sync | inspect --from <path> | install pi-web-access | install --from <path> --sha256 <digest>
@@ -273,8 +273,8 @@ Commands:
 Options:
   --profile <name>         Select an isolated Profile (defaults to the active Profile)
   --config <path>          Use an explicit YAML config file
-  --home <path>            Override BEEMAX_HOME for this invocation
-  --root <path>            Override the BeeMax installation root for this invocation
+  --home <path>            Override THRUVERA_HOME for this invocation
+  --root <path>            Override the Thruvera installation root for this invocation
   --with-feishu            Include Feishu/Lark configuration in the initial setup wizard
   --full                   Force Full workbench presentation when interactive
   --compact                Force compact terminal presentation
@@ -285,20 +285,20 @@ Options:
   --yes                    Confirm destructive configuration changes
 
 Environment:
-  BEEMAX_HOME             Profile home root (default: ~/.beemax)
-  BEEMAX_PROFILE          Profile name (same as --profile; overrides active Profile)
+  THRUVERA_HOME             Profile home root (default: ~/.thruvera)
+  THRUVERA_PROFILE          Profile name (same as --profile; overrides active Profile)
   FEISHU_APP_ID           Feishu self-built app id
   FEISHU_APP_SECRET       Feishu self-built app secret
   FEISHU_ALLOWED_USERS    Authorized IDs, comma-separated (default: deny all)
-  BEEMAX_PROVIDER         Model provider
-  BEEMAX_MODEL            Model id
-  BEEMAX_API_KEY          Provider API key
-  BEEMAX_DB_PATH          Memory + automation SQLite path
-  BEEMAX_CREDENTIAL_VAULT_KEY  Optional external override for the protected Profile Vault key
-  BEEMAX_MCP_CONFIG       MCP JSON config path
-  BEEMAX_TIMEZONE         Schedule and heartbeat timezone
+  THRUVERA_PROVIDER         Model provider
+  THRUVERA_MODEL            Model id
+  THRUVERA_API_KEY          Provider API key
+  THRUVERA_DB_PATH          Memory + automation SQLite path
+  THRUVERA_CREDENTIAL_VAULT_KEY  Optional external override for the protected Profile Vault key
+  THRUVERA_MCP_CONFIG       MCP JSON config path
+  THRUVERA_TIMEZONE         Schedule and heartbeat timezone
 
-Profiles: ~/.beemax/profiles/<name>/ (legacy config/profiles/*.yaml remains readable)`);
+Profiles: ~/.thruvera/profiles/<name>/ (legacy config/profiles/*.yaml remains readable)`);
 			break;
 	}
 }
@@ -355,7 +355,7 @@ function runGatewayStatus(config: ReturnType<typeof loadConfig>, scope: "user" |
 	if (snapshot.pid) console.log(`PID: ${snapshot.pid}`);
 	if (snapshot.startedAt) console.log(`Started: ${snapshot.startedAt}`);
 	if (snapshot.lastError) console.log(`Last issue: ${snapshot.lastError}`);
-	if (snapshot.logs === "absent") console.log(`Next: beemax start ${config.profile}`);
+	if (snapshot.logs === "absent") console.log(`Next: thruvera start ${config.profile}`);
 }
 
 function readProfileLogs(profile: string, agentDir: string, tail: number, scope: "user" | "system"): string {
@@ -369,36 +369,36 @@ function readProfileLogs(profile: string, agentDir: string, tail: number, scope:
 async function runInit(parsed: ParsedArgs): Promise<void> {
 	const profile = parsed.profile ?? parsed.positionals[1] ?? "personal";
 	const paths = await createProfile(profile);
-	console.log(`Created BeeMax Agent '${profile}' at ${paths.configPath}`);
-	console.log(`Next: beemax model set anthropic claude-sonnet-4-5 --profile ${profile}`);
-	console.log(`Then: beemax channel add feishu --profile ${profile}`);
+	console.log(`Created Thruvera Agent '${profile}' at ${paths.configPath}`);
+	console.log(`Next: thruvera model set anthropic claude-sonnet-4-5 --profile ${profile}`);
+	console.log(`Then: thruvera channel add feishu --profile ${profile}`);
 }
 
 async function installGatewayService(profile: string, scope: "user" | "system"): Promise<void> {
 	if (process.platform === "darwin") {
 		if (scope === "system") throw new Error("macOS system-wide Gateway services are not supported; use the user LaunchAgent");
-		const plist = await installMacLaunchAgent(profile, beemaxRoot(), beemaxHome());
-		console.log(`BeeMax LaunchAgent installed: ${plist}`);
+		const plist = await installMacLaunchAgent(profile, thruveraRoot(), thruveraHome());
+		console.log(`Thruvera LaunchAgent installed: ${plist}`);
 		return;
 	}
-	await installSystemdService(beemaxRoot(), scope);
+	await installSystemdService(thruveraRoot(), scope);
 }
 
 async function runUpdate(parsed: ParsedArgs): Promise<void> {
-	const root = beemaxRoot();
-	const installDir = resolve(process.env.BEEMAX_INSTALL_DIR?.trim() || join(beemaxHome(), "app"));
+	const root = thruveraRoot();
+	const installDir = resolve(process.env.THRUVERA_INSTALL_DIR?.trim() || join(thruveraHome(), "app"));
 	if (resolve(root) !== installDir) {
-		throw new Error("beemax update is available for release installations only; update a source checkout with Git instead");
+		throw new Error("thruvera update is available for release installations only; update a source checkout with Git instead");
 	}
 	const installer = join(root, "scripts", "bootstrap-install.sh");
-	if (!existsSync(installer)) throw new Error("BeeMax installer is missing from this release; reinstall using the official installer");
+	if (!existsSync(installer)) throw new Error("Thruvera installer is missing from this release; reinstall using the official installer");
 	const version = optionString(parsed, "version") ?? "latest";
 	const result = spawnSync("bash", [installer, "--version", version], {
 		stdio: "inherit",
-		env: { ...process.env, BEEMAX_INSTALL_DIR: installDir },
+		env: { ...process.env, THRUVERA_INSTALL_DIR: installDir },
 	});
 	if (result.error) throw result.error;
-	if (result.status !== 0) throw new Error(`BeeMax update failed with exit code ${result.status ?? "unknown"}`);
+	if (result.status !== 0) throw new Error(`Thruvera update failed with exit code ${result.status ?? "unknown"}`);
 }
 
 async function runAgentCommand(parsed: ParsedArgs): Promise<void> {
@@ -439,12 +439,12 @@ async function runModelCommand(parsed: ParsedArgs): Promise<void> {
 		console.log(renderModelProviderChoices());
 		return;
 	}
-	if (action !== "set") throw new Error("Usage: beemax model [show | list | set <provider> <model>] --profile <name>");
-	if (parsed.options["api-key"] !== undefined) throw new Error("Do not pass model secrets in argv; set BEEMAX_API_KEY or use the interactive prompt");
+	if (action !== "set") throw new Error("Usage: thruvera model [show | list | set <provider> <model>] --profile <name>");
+	if (parsed.options["api-key"] !== undefined) throw new Error("Do not pass model secrets in argv; set THRUVERA_API_KEY or use the interactive prompt");
 	const provider = parsed.positionals[2] ? resolveProviderSelection(parsed.positionals[2]) : undefined;
 	const model = parsed.positionals[3];
 	if (!provider || !model) throw new Error("model set requires a provider and model ID");
-	let apiKey = process.env.BEEMAX_API_KEY;
+	let apiKey = process.env.THRUVERA_API_KEY;
 	if (!apiKey && parsed.options["non-interactive"] !== true && process.stdin.isTTY) {
 		apiKey = await askOne("Model API Key (leave empty to configure later): ", true);
 	}
@@ -492,7 +492,7 @@ async function runBindingCommand(parsed: ParsedArgs): Promise<void> {
 		console.log(`matched profile=${explanation.profileId} binding=${explanation.bindingId} precedence=${explanation.precedence}`);
 		return;
 	}
-	throw new Error("Usage: beemax binding validate | activate <id> | disable <id> | explain --channel-instance <id> --conversation <id> [--account <ref>] [--thread <id>]");
+	throw new Error("Usage: thruvera binding validate | activate <id> | disable <id> | explain --channel-instance <id> --conversation <id> [--account <ref>] [--thread <id>]");
 }
 
 async function runChannelCommand(parsed: ParsedArgs): Promise<void> {
@@ -501,7 +501,7 @@ async function runChannelCommand(parsed: ParsedArgs): Promise<void> {
 	if (action === "qr" || action === "create") {
 		const url = "https://open.feishu.cn/app";
 		console.log(`Open Feishu Developer Console to create/configure a self-built app:\n${url}`);
-		console.log("After scanning/signing in, copy App ID and App Secret, then run: beemax setup --profile " + profile);
+		console.log("After scanning/signing in, copy App ID and App Secret, then run: thruvera setup --profile " + profile);
 		if (parsed.options.open === true) {
 			const [command, args] = process.platform === "darwin" ? ["open", [url]] : ["xdg-open", [url]];
 			const child = spawn(command, args, { detached: true, stdio: "ignore" });
@@ -561,11 +561,11 @@ async function runChannelCommand(parsed: ParsedArgs): Promise<void> {
 			pollingTimeoutSeconds: current.gateway.telegram.pollingTimeoutSeconds,
 			retryBaseDelayMs: current.gateway.telegram.retryBaseDelayMs,
 		});
-		console.log(`Configured Telegram channel for Agent '${profile}'. Run: beemax channel test telegram --profile ${profile}`);
+		console.log(`Configured Telegram channel for Agent '${profile}'. Run: thruvera channel test telegram --profile ${profile}`);
 		return;
 	}
 	if (action !== "add" || parsed.positionals[2] !== "feishu") {
-		throw new Error("Usage: beemax channel add <feishu|telegram> | list | remove <adapter> | test <adapter>");
+		throw new Error("Usage: thruvera channel add <feishu|telegram> | list | remove <adapter> | test <adapter>");
 	}
 	const current = loadConfig(parsed.configPath, profile);
 	const currentFeishu = current.gateway.feishu;
@@ -601,7 +601,7 @@ async function runChannelCommand(parsed: ParsedArgs): Promise<void> {
 		webhookVerificationToken: process.env.FEISHU_WEBHOOK_VERIFICATION_TOKEN ?? currentFeishuCredential?.webhookVerificationToken,
 		webhookEncryptKey: process.env.FEISHU_WEBHOOK_ENCRYPT_KEY ?? currentFeishuCredential?.webhookEncryptKey,
 	});
-	console.log(`Configured Feishu channel for Agent '${profile}'. Run: beemax channel test --profile ${profile}`);
+	console.log(`Configured Feishu channel for Agent '${profile}'. Run: thruvera channel test --profile ${profile}`);
 }
 
 async function runPairingCommand(parsed: ParsedArgs): Promise<void> {
@@ -625,7 +625,7 @@ async function runPairingCommand(parsed: ParsedArgs): Promise<void> {
 	}
 	if (action === "approve") {
 		const code = parsed.positionals[3];
-		if (!code) throw new Error("Usage: beemax pairing approve <platform> <code> --profile <name>");
+		if (!code) throw new Error("Usage: thruvera pairing approve <platform> <code> --profile <name>");
 		const approved = store.approve(platform, code);
 		if (!approved) throw new Error("Pairing code was not found or has expired");
 		console.log(`Approved ${approved.userId} for ${platform} on Profile '${profile}'.`);
@@ -633,7 +633,7 @@ async function runPairingCommand(parsed: ParsedArgs): Promise<void> {
 	}
 	if (action === "revoke") {
 		const userId = parsed.positionals[3];
-		if (!userId) throw new Error("Usage: beemax pairing revoke <platform> <user_id> --profile <name>");
+		if (!userId) throw new Error("Usage: thruvera pairing revoke <platform> <user_id> --profile <name>");
 		if (!store.revoke(platform, userId)) throw new Error(`User ${userId} is not paired for ${platform}`);
 		console.log(`Revoked ${userId} for ${platform} on Profile '${profile}'.`);
 		return;
@@ -642,7 +642,7 @@ async function runPairingCommand(parsed: ParsedArgs): Promise<void> {
 		console.log(`Cleared ${store.clearPending(platform)} pending ${platform} pairing request(s).`);
 		return;
 	}
-	throw new Error("Usage: beemax pairing [list | approve <platform> <code> | revoke <platform> <user_id> | clear [platform]] --profile <name>");
+	throw new Error("Usage: thruvera pairing [list | approve <platform> <code> | revoke <platform> <user_id> | clear [platform]] --profile <name>");
 }
 
 function serviceProfile(parsed: ParsedArgs): string {
@@ -660,8 +660,8 @@ function selectedProfile(parsed: ParsedArgs): string {
 function applyRuntimePaths(parsed: ParsedArgs): void {
 	const home = optionString(parsed, "home");
 	const root = optionString(parsed, "root");
-	if (home) process.env.BEEMAX_HOME = home;
-	if (root) process.env.BEEMAX_ROOT = root;
+	if (home) process.env.THRUVERA_HOME = home;
+	if (root) process.env.THRUVERA_ROOT = root;
 }
 
 function setupOptions(parsed: ParsedArgs, gatewayOnly: boolean): SetupOptions {
@@ -670,12 +670,12 @@ function setupOptions(parsed: ParsedArgs, gatewayOnly: boolean): SetupOptions {
 		gatewayOnly,
 		configureGateway: parsed.options["with-feishu"] === true,
 		nonInteractive: parsed.options["non-interactive"] === true || !process.stdin.isTTY,
-		provider: optionString(parsed, "provider") ?? process.env.BEEMAX_PROVIDER,
-		model: optionString(parsed, "model") ?? process.env.BEEMAX_MODEL,
-		apiKey: process.env.BEEMAX_API_KEY,
+		provider: optionString(parsed, "provider") ?? process.env.THRUVERA_PROVIDER,
+		model: optionString(parsed, "model") ?? process.env.THRUVERA_MODEL,
+		apiKey: process.env.THRUVERA_API_KEY,
 		baseUrl: optionString(parsed, "base-url"),
 		customProtocol: customProtocolOption(parsed),
-		soul: optionString(parsed, "soul") ?? process.env.BEEMAX_SOUL,
+		soul: optionString(parsed, "soul") ?? process.env.THRUVERA_SOUL,
 		appId: optionString(parsed, "app-id") ?? process.env.FEISHU_APP_ID,
 		appSecret: process.env.FEISHU_APP_SECRET,
 		allowedUsers: splitList(optionString(parsed, "allowed-users") ?? process.env.FEISHU_ALLOWED_USERS),
@@ -769,7 +769,7 @@ async function runMigrationCommand(parsed: ParsedArgs): Promise<void> {
 	const kind = parsed.positionals[1];
 	const action = parsed.positionals[2];
 	if (!["channel-instance", "session"].includes(kind ?? "") || !["plan", "apply", "rollback"].includes(action ?? "")) {
-		throw new Error("Usage: beemax migration <channel-instance|session> <plan|apply|rollback> [manifest] --profile <name>");
+		throw new Error("Usage: thruvera migration <channel-instance|session> <plan|apply|rollback> [manifest] --profile <name>");
 	}
 	const profile = parsed.profile ?? activeProfile();
 	if (kind === "session") {
@@ -779,7 +779,7 @@ async function runMigrationCommand(parsed: ParsedArgs): Promise<void> {
 			const manifestPath = parsed.positionals[3];
 			if (!manifestPath) throw new Error("session rollback requires a manifest path");
 			if (parsed.options.yes !== true) throw new Error("Session ownership migration rollback requires --yes");
-			const result = await rollbackProfileSessionOwnershipMigration({ lockRoot: beemaxHome(), profileHome: location.homePath, agentDir: config.paths.agentDir, profile, manifestPath });
+			const result = await rollbackProfileSessionOwnershipMigration({ lockRoot: thruveraHome(), profileHome: location.homePath, agentDir: config.paths.agentDir, profile, manifestPath });
 			console.log(`Rolled back Session ownership migration '${result.migrationId}' for Profile '${profile}'.`);
 			return;
 		}
@@ -794,7 +794,7 @@ async function runMigrationCommand(parsed: ParsedArgs): Promise<void> {
 		const channel = config.gateway.channels.find((candidate) => candidate.id === channelInstanceId);
 		if (!channel || !channel.enabled || channel.adapter !== platform) throw new Error(`Configured enabled Channel Instance '${channelInstanceId}' does not belong to platform '${platform}' in Profile '${profile}'`);
 		const source = { platform, channelInstanceId, chatId, chatType: chatType as "group" | "thread", userId: legacyUser, ...(optionString(parsed, "thread") ? { threadId: optionString(parsed, "thread") } : {}) };
-		const target = { lockRoot: beemaxHome(), profileHome: location.homePath, agentDir: config.paths.agentDir, profile, source };
+		const target = { lockRoot: thruveraHome(), profileHome: location.homePath, agentDir: config.paths.agentDir, profile, source };
 		const legacySessionId = optionString(parsed, "legacy-session-id");
 		if (action === "plan") {
 			const plan = await planProfileSessionOwnershipMigration(target, legacySessionId);
@@ -817,7 +817,7 @@ async function runMigrationCommand(parsed: ParsedArgs): Promise<void> {
 		const config = loadConfig(parsed.configPath, profile);
 		const location = resolveProfileLocation(profile, parsed.configPath);
 		const result = await rollbackProfileChannelInstanceMigration({
-			lockRoot: beemaxHome(),
+			lockRoot: thruveraHome(),
 			profileHome: location.homePath,
 			profile,
 			dbPath: config.memory.dbPath,
@@ -836,7 +836,7 @@ async function runMigrationCommand(parsed: ParsedArgs): Promise<void> {
 		throw new Error(`Configured enabled Channel Instance '${channelInstanceId}' does not belong to platform '${platform}' in Profile '${profile}'`);
 	}
 	const target = {
-		lockRoot: beemaxHome(),
+		lockRoot: thruveraHome(),
 		profile,
 		dbPath: config.memory.dbPath,
 		platform,
@@ -878,7 +878,7 @@ async function runProfileCommand(parsed: ParsedArgs): Promise<void> {
 	}
 	if (action === "use") {
 		await setActiveProfile(name);
-		console.log(`BeeMax active Profile is now '${name}'.`);
+		console.log(`Thruvera active Profile is now '${name}'.`);
 		return;
 	}
 	if (action === "migrate") {
@@ -983,7 +983,7 @@ async function runSkillsCommand(parsed: ParsedArgs): Promise<void> {
 	const config = loadConfig(parsed.configPath, profile);
 	if (action === "inspect") {
 		const source = typeof parsed.options.from === "string" ? parsed.options.from : parsed.positionals[2];
-		if (!source) throw new Error("Usage: beemax skills inspect --from /absolute/path/to/skill [--json]");
+		if (!source) throw new Error("Usage: thruvera skills inspect --from /absolute/path/to/skill [--json]");
 		const result = await inspectLocalSkill(source);
 		if (parsed.options.json === true) console.log(JSON.stringify(result));
 		else console.log(`${result.name}  sha256=${result.sha256}  files=${result.fileCount}  bytes=${result.totalBytes}`);
@@ -1005,7 +1005,7 @@ async function runSkillsCommand(parsed: ParsedArgs): Promise<void> {
 			console.log(`Installed digest-pinned local Skill '${result.name}' for Profile '${profile}'.\nSHA-256: ${result.sha256}\nPath: ${result.destination}`);
 			return;
 		}
-		if (name !== "pi-web-access") throw new Error("Usage: beemax skills install pi-web-access | --from /absolute/path/to/skill --sha256 <digest> --profile <name>");
+		if (name !== "pi-web-access") throw new Error("Usage: thruvera skills install pi-web-access | --from /absolute/path/to/skill --sha256 <digest> --profile <name>");
 		await syncBuiltinSkills(profile, {}, config.paths.agentDir);
 		await assertStandardWebProfileBoundary({ profileHome: config.paths.profileHome, agentDir: config.paths.agentDir });
 		await requirePackagedStandardWebSkill(config.paths.agentDir, "pi-web-access");
@@ -1013,7 +1013,7 @@ async function runSkillsCommand(parsed: ParsedArgs): Promise<void> {
 		console.log(`${result.installed ? "Installed" : "Verified"} pinned Pi Web Access revision ${result.revision.slice(0, 12)} for Profile '${profile}'.\nRuntime: ${result.path}\nBrowser state is isolated to this Profile; no personal Chrome profile or Cookie values are copied.`);
 		return;
 	}
-	if (action !== "list") throw new Error("Usage: beemax skills [list | sync | inspect --from <path> | install pi-web-access | install --from <path> --sha256 <digest>] --profile <name>");
+	if (action !== "list") throw new Error("Usage: thruvera skills [list | sync | inspect --from <path> | install pi-web-access | install --from <path> --sha256 <digest>] --profile <name>");
 	await assertStandardWebProfileBoundary({ profileHome: config.paths.profileHome, agentDir: config.paths.agentDir });
 	const skills: Array<{ name: string; description: string; sha256: string }> = [];
 	const visit = async (directory: string, prefix = ""): Promise<void> => {
@@ -1031,11 +1031,11 @@ async function runSkillsCommand(parsed: ParsedArgs): Promise<void> {
 		await visit(join(config.paths.agentDir, "skills"));
 	} catch { /* no Skills directory yet */ }
 	if (parsed.options.json === true) { console.log(JSON.stringify({ profile, skills: skills.sort((a, b) => a.name.localeCompare(b.name)) })); return; }
-	console.log(skills.sort((a, b) => a.name.localeCompare(b.name)).map((skill) => `${skill.name}  sha256=${skill.sha256.slice(0, 12)}  ${skill.description}`).join("\n") || "No Profile Skills installed. Run: beemax skills sync --profile " + profile);
+	console.log(skills.sort((a, b) => a.name.localeCompare(b.name)).map((skill) => `${skill.name}  sha256=${skill.sha256.slice(0, 12)}  ${skill.description}`).join("\n") || "No Profile Skills installed. Run: thruvera skills sync --profile " + profile);
 }
 
 async function runCapabilitiesCommand(parsed: ParsedArgs): Promise<void> {
-	if (parsed.configPath) throw new Error("beemax capabilities does not support --config; select a Profile with --profile");
+	if (parsed.configPath) throw new Error("thruvera capabilities does not support --config; select a Profile with --profile");
 	const action = parsed.positionals[1] ?? "status";
 	const target = parsed.positionals[2];
 	const profile = selectedProfile(parsed);
@@ -1053,7 +1053,7 @@ async function runCapabilitiesCommand(parsed: ParsedArgs): Promise<void> {
 		environment: capabilityEnvironment,
 	};
 	if (action === "status") {
-		if (target) throw new Error("Usage: beemax capabilities status --profile <name> [--json]");
+		if (target) throw new Error("Usage: thruvera capabilities status --profile <name> [--json]");
 		await assertStandardWebProfileBoundary({ profileHome: paths.homePath, agentDir: config.paths.agentDir });
 		const status = await inspectStandardWebPack(packInput);
 		if (parsed.options.json === true) console.log(JSON.stringify(status));
@@ -1061,21 +1061,21 @@ async function runCapabilitiesCommand(parsed: ParsedArgs): Promise<void> {
 		return;
 	}
 	if (action === "start") {
-		if (target !== "pi-web-access") throw new Error("Usage: beemax capabilities start pi-web-access --profile <name>");
+		if (target !== "pi-web-access") throw new Error("Usage: thruvera capabilities start pi-web-access --profile <name>");
 		await assertStandardWebProfileBoundary({ profileHome: paths.homePath, agentDir: config.paths.agentDir });
 		const browser = await startProfileBrowser(config.paths.agentDir);
 		console.log(`Started Profile-isolated Pi Web Access browser for '${profile}' at ${browser.cdpUrl}. State: ${browser.dataDir}`);
 		return;
 	}
 	if (action === "stop") {
-		if (target !== "pi-web-access") throw new Error("Usage: beemax capabilities stop pi-web-access --profile <name>");
+		if (target !== "pi-web-access") throw new Error("Usage: thruvera capabilities stop pi-web-access --profile <name>");
 		await assertStandardWebProfileBoundary({ profileHome: paths.homePath, agentDir: config.paths.agentDir });
 		const browser = await stopProfileBrowser(config.paths.agentDir);
 		console.log(`Stopped Profile-isolated Pi Web Access browser for '${profile}'. State remains isolated at ${browser.dataDir}.`);
 		return;
 	}
-	if (action !== "install") throw new Error("Usage: beemax capabilities status | install <standard-web|exa-web-search|agent-reach|pi-web-access> | start | stop pi-web-access --profile <name>");
-	if (!target || !["standard-web", "exa-web-search", "agent-reach", "pi-web-access"].includes(target)) throw new Error("Usage: beemax capabilities install <standard-web|exa-web-search|agent-reach|pi-web-access> --profile <name>");
+	if (action !== "install") throw new Error("Usage: thruvera capabilities status | install <standard-web|exa-web-search|agent-reach|pi-web-access> | start | stop pi-web-access --profile <name>");
+	if (!target || !["standard-web", "exa-web-search", "agent-reach", "pi-web-access"].includes(target)) throw new Error("Usage: thruvera capabilities install <standard-web|exa-web-search|agent-reach|pi-web-access> --profile <name>");
 	await syncBuiltinSkills(profile, {}, config.paths.agentDir);
 	await assertStandardWebProfileBoundary({ profileHome: paths.homePath, agentDir: config.paths.agentDir });
 	if (target === "standard-web" || target === "agent-reach") await requirePackagedStandardWebSkill(config.paths.agentDir, "agent-reach");
@@ -1093,12 +1093,12 @@ async function runCapabilitiesCommand(parsed: ParsedArgs): Promise<void> {
 		};
 	}
 	if (target === "agent-reach") {
-		console.log(`Installed BeeMax-native Agent Reach routing Skill for Profile '${profile}'. Login-backed channels remain explicit customer opt-ins.`);
+		console.log(`Installed Thruvera-native Agent Reach routing Skill for Profile '${profile}'. Login-backed channels remain explicit customer opt-ins.`);
 		return;
 	}
 	if (target === "pi-web-access") {
 		const result = await installPiWebAccess();
-		console.log(`Verified native Pi Web Access ${result.revision} for Profile '${profile}' at ${result.path}. Start its isolated browser with: beemax capabilities start pi-web-access --profile ${profile}`);
+		console.log(`Verified native Pi Web Access ${result.revision} for Profile '${profile}' at ${result.path}. Start its isolated browser with: thruvera capabilities start pi-web-access --profile ${profile}`);
 		return;
 	}
 	if (target === "exa-web-search") {
@@ -1120,15 +1120,15 @@ function renderStandardWebStatus(status: StandardWebPackStatus): string {
 	return [
 		`Standard Web pack v${status.version} · Profile ${status.profile}`,
 		...status.components.map((component) => `${component.id}  [${component.state}]  ${component.detail}`),
-		"Install all runtime payloads now: beemax capabilities install standard-web --profile " + status.profile,
+		"Install all runtime payloads now: thruvera capabilities install standard-web --profile " + status.profile,
 	].join("\n");
 }
 
 async function requirePackagedStandardWebSkill(agentDir: string, skill: StandardWebSkillId): Promise<void> {
 	const state = await inspectStandardWebSkill(agentDir, skill);
 	if (state !== "installed") throw new Error(state === "customized"
-		? `Profile-local Skill '${skill}' differs from BeeMax's packaged revision and was preserved. Review or remove it explicitly before installing the BeeMax-native Skill.`
-		: `BeeMax-native Skill '${skill}' could not be verified after synchronization (state=${state}).`);
+		? `Profile-local Skill '${skill}' differs from Thruvera's packaged revision and was preserved. Review or remove it explicitly before installing the Thruvera-native Skill.`
+		: `Thruvera-native Skill '${skill}' could not be verified after synchronization (state=${state}).`);
 }
 
 async function runMcpCommand(parsed: ParsedArgs, config: ReturnType<typeof loadConfig>): Promise<void> {
@@ -1136,21 +1136,21 @@ async function runMcpCommand(parsed: ParsedArgs, config: ReturnType<typeof loadC
 	if (action === "add") {
 		const name = parsed.positionals[2];
 		const descriptorPath = typeof parsed.options.from === "string" ? parsed.options.from : undefined;
-		if (!name || !descriptorPath) throw new Error("Usage: beemax mcp add <name> --from /absolute/path/server.json --profile <name>");
+		if (!name || !descriptorPath) throw new Error("Usage: thruvera mcp add <name> --from /absolute/path/server.json --profile <name>");
 		if (!config.mcp.profileHome) throw new Error("MCP self-service installation requires a Profile-local MCP config");
 		const result = await addProfileMcpServer({ profileHome: config.mcp.profileHome, configPath: config.mcp.configPath, name, descriptorPath });
-		console.log(`Installed MCP server '${name}' for Profile '${config.profile}' without exposing descriptor secrets.\nConfig: ${result.configPath}\nRun: beemax mcp status --profile ${config.profile}`);
+		console.log(`Installed MCP server '${name}' for Profile '${config.profile}' without exposing descriptor secrets.\nConfig: ${result.configPath}\nRun: thruvera mcp status --profile ${config.profile}`);
 		return;
 	}
 	if (action === "remove") {
 		const name = parsed.positionals[2];
-		if (!name) throw new Error("Usage: beemax mcp remove <name> --profile <name>");
+		if (!name) throw new Error("Usage: thruvera mcp remove <name> --profile <name>");
 		if (!config.mcp.profileHome) throw new Error("MCP self-service removal requires a Profile-local MCP config");
 		const result = await removeProfileMcpServer({ profileHome: config.mcp.profileHome, configPath: config.mcp.configPath, name });
 		console.log(`Removed MCP server '${name}' from Profile '${config.profile}'.\nConfig: ${result.configPath}`);
 		return;
 	}
-	if (action !== "status") throw new Error("Usage: beemax mcp [status | add <name> --from <descriptor.json> | remove <name>] --profile <name>");
+	if (action !== "status") throw new Error("Usage: thruvera mcp [status | add <name> --from <descriptor.json> | remove <name>] --profile <name>");
 	const mcp = new McpManager({ environment: profileEnvironmentSnapshot(config) });
 	try {
 		const statuses = await mcp.connectAll(loadMcpConfig(config.mcp.configPath, config.mcp.profileHome ? { profileHome: config.mcp.profileHome } : {}));
@@ -1189,7 +1189,7 @@ async function runMemoryCommand(parsed: ParsedArgs, config: ReturnType<typeof lo
 		}
 		if (action === "explain") {
 			const id = parsed.positionals[2];
-			if (!id) throw new Error("Usage: beemax memory explain <id> --profile <name>");
+			if (!id) throw new Error("Usage: thruvera memory explain <id> --profile <name>");
 			const explanation = store.explainClaim(id, localMemoryScope);
 			if (!explanation) throw new Error(`Memory understanding ${id} was not found`);
 			console.log(`${explanation.claim.statement}\n${explanation.evidence.map((item) => `- [${item.eventId ?? item.kind}] ${new Date(item.event?.occurredAt ?? item.createdAt).toISOString()}: ${item.event?.content ?? item.excerpt}`).join("\n")}`);
@@ -1206,7 +1206,7 @@ async function runMemoryCommand(parsed: ParsedArgs, config: ReturnType<typeof lo
 		if (action === "correct") {
 			const id = parsed.positionals[2];
 			const statement = optionString(parsed, "statement");
-			if (!id || !statement) throw new Error("Usage: beemax memory correct <id> --statement <text> --yes --profile <name>");
+			if (!id || !statement) throw new Error("Usage: thruvera memory correct <id> --statement <text> --yes --profile <name>");
 			if (parsed.options.yes !== true) throw new Error("memory correct requires --yes");
 			const eventId = store.recordEvent({ ...localMemoryScope, kind: "feedback", content: statement });
 			const claim = store.correctClaim(id, { statement, evidence: { kind: "correction", eventId, excerpt: statement } }, localMemoryScope);
@@ -1220,7 +1220,7 @@ async function runMemoryCommand(parsed: ParsedArgs, config: ReturnType<typeof lo
 			return;
 		}
 		const id = parsed.positionals[2];
-		if ((action !== "promote" && action !== "reject" && action !== "forget") || !id) throw new Error("Usage: beemax memory [status | list | candidates | claims | explain <id> | compile | correct <id> --statement <text> | promote <id> | reject <id> | forget <id>] --profile <name>");
+		if ((action !== "promote" && action !== "reject" && action !== "forget") || !id) throw new Error("Usage: thruvera memory [status | list | candidates | claims | explain <id> | compile | correct <id> --statement <text> | promote <id> | reject <id> | forget <id>] --profile <name>");
 		if (parsed.options.yes !== true) throw new Error(`memory ${action} requires --yes`);
 		const changed = action === "promote" ? store.promoteCandidate(id, localMemoryScope) : action === "reject" ? store.rejectCandidate(id, localMemoryScope) : store.forget(id, localMemoryScope) || store.forgetClaim(id, localMemoryScope);
 		if (!changed) throw new Error(`${action === "forget" ? "Memory" : "Pending memory candidate"} ${id} was not found`);
@@ -1241,7 +1241,7 @@ async function runAutonomyCommand(parsed: ParsedArgs, config: ReturnType<typeof 
 		}
 		const levelInput = parsed.positionals[2];
 		if (!levelInput || !(AUTONOMY_LEVELS as readonly string[]).includes(levelInput)) {
-			throw new Error(`Usage: beemax autonomy [status | promote <${AUTONOMY_LEVELS.join("|")}> | stop <level> | rollback <level> | resume <level>] --profile <name>`);
+			throw new Error(`Usage: thruvera autonomy [status | promote <${AUTONOMY_LEVELS.join("|")}> | stop <level> | rollback <level> | resume <level>] --profile <name>`);
 		}
 		const level = levelInput as AutonomyLevel;
 		if (parsed.options.yes !== true) throw new Error(`autonomy ${action} requires --yes`);
@@ -1267,7 +1267,7 @@ async function runAutonomyCommand(parsed: ParsedArgs, config: ReturnType<typeof 
 }
 
 async function runCredentialCommand(parsed: ParsedArgs, config: ReturnType<typeof loadConfig>): Promise<void> {
-	if (parsed.options.secret !== undefined) throw new Error("Do not pass Credential Secrets in argv; use the interactive prompt or BEEMAX_CREDENTIAL_SECRET");
+	if (parsed.options.secret !== undefined) throw new Error("Do not pass Credential Secrets in argv; use the interactive prompt or THRUVERA_CREDENTIAL_SECRET");
 	if (!config.credentials.key) throw new Error(`Credential Vault key is missing for Profile '${config.profile}'; recreate or migrate the Profile before storing credentials`);
 	const audit = new FileCredentialVaultAuditJournal(join(config.paths.agentDir, "credential-audit.jsonl"));
 	const vault = new FileCredentialVault(config.credentials.vaultPath, Buffer.from(config.credentials.key, "base64"), (event) => audit.append(event));
@@ -1280,28 +1280,28 @@ async function runCredentialCommand(parsed: ParsedArgs, config: ReturnType<typeo
 	}
 	if (action === "remove") {
 		const ref = parsed.positionals[2];
-		if (!ref || parsed.options.yes !== true) throw new Error("Usage: beemax credentials remove <credential_ref> --yes --profile <name>");
+		if (!ref || parsed.options.yes !== true) throw new Error("Usage: thruvera credentials remove <credential_ref> --yes --profile <name>");
 		if (!vault.remove(ownerKey, ref)) throw new Error(`Credential Ref not found: ${ref}`);
 		console.log(`Removed Credential Ref ${ref}.`);
 		return;
 	}
 	if (action === "rotate") {
 		const ref = parsed.positionals[2];
-		if (!ref) throw new Error("Usage: beemax credentials rotate <credential_ref> --profile <name>");
-		let secret = process.env.BEEMAX_CREDENTIAL_SECRET;
+		if (!ref) throw new Error("Usage: thruvera credentials rotate <credential_ref> --profile <name>");
+		let secret = process.env.THRUVERA_CREDENTIAL_SECRET;
 		if (!secret && parsed.options["non-interactive"] !== true && process.stdin.isTTY) secret = await askOne("New Credential Secret: ", true);
-		if (!secret) throw new Error("New Credential Secret is required through the interactive prompt or BEEMAX_CREDENTIAL_SECRET");
+		if (!secret) throw new Error("New Credential Secret is required through the interactive prompt or THRUVERA_CREDENTIAL_SECRET");
 		if (!vault.rotate(ownerKey, ref, secret)) throw new Error(`Credential Ref not found: ${ref}`);
 		console.log(`Rotated Credential Ref ${ref}.`);
 		return;
 	}
-	if (action !== "add") throw new Error("Usage: beemax credentials [add | list | rotate | remove] --profile <name>");
+	if (action !== "add") throw new Error("Usage: thruvera credentials [add | list | rotate | remove] --profile <name>");
 	const label = optionString(parsed, "label");
 	const purpose = optionString(parsed, "purpose");
 	if (!label || !purpose) throw new Error("credentials add requires --label <label> and --purpose <purpose>");
-	let secret = process.env.BEEMAX_CREDENTIAL_SECRET;
+	let secret = process.env.THRUVERA_CREDENTIAL_SECRET;
 	if (!secret && parsed.options["non-interactive"] !== true && process.stdin.isTTY) secret = await askOne("Credential Secret: ", true);
-	if (!secret) throw new Error("Credential Secret is required through the interactive prompt or BEEMAX_CREDENTIAL_SECRET");
+	if (!secret) throw new Error("Credential Secret is required through the interactive prompt or THRUVERA_CREDENTIAL_SECRET");
 	const credential = vault.put({ ownerKey, label, purpose, secret });
 	console.log(`Stored Credential Ref ${credential.ref} for ${credential.label}.`);
 }
@@ -1317,9 +1317,9 @@ async function runTaskCommand(parsed: ParsedArgs, config: ReturnType<typeof load
 			return;
 		}
 		const [id, status] = [parsed.positionals[2], parsed.positionals[3]];
-		if (action !== "set" || !id || !isTaskStatus(status)) throw new Error("Usage: beemax task set <id> <open|in_progress|done|cancelled> --title <title> [--evidence <ref>] --profile <name>");
+		if (action !== "set" || !id || !isTaskStatus(status)) throw new Error("Usage: thruvera task set <id> <open|in_progress|done|cancelled> --title <title> [--evidence <ref>] --profile <name>");
 		const title = optionString(parsed, "title");
-		if (!title) throw new Error("beemax task set requires --title <title>");
+		if (!title) throw new Error("thruvera task set requires --title <title>");
 		store.upsertTask({ id, title, status, evidence: optionString(parsed, "evidence") });
 		console.log(`Updated task '${id}' to ${status}.`);
 	} finally {
@@ -1595,7 +1595,7 @@ async function runChat(config: ReturnType<typeof loadConfig>, requestedMode: { f
 	try {
 		let reasoningDisplay = config.agent.reasoningDisplay;
 		let detailsDisplay: DetailsDisplay = "expanded";
-		const reasoningDisplayOverridden = Boolean(process.env.BEEMAX_REASONING_DISPLAY?.trim());
+		const reasoningDisplayOverridden = Boolean(process.env.THRUVERA_REASONING_DISPLAY?.trim());
 		const applySessionPreferences = async () => {
 			const preferences = await runtime.sessionPreferences(source);
 			reasoningDisplay = reasoningDisplayOverridden ? config.agent.reasoningDisplay : preferences.reasoningDisplay ?? config.agent.reasoningDisplay;
@@ -1611,7 +1611,7 @@ async function runChat(config: ReturnType<typeof loadConfig>, requestedMode: { f
 		let lastDurationMs: number | undefined;
 		let closed = false;
 		let workbench: FullWorkbench | undefined;
-		const prompt = () => presentationMode === "plain" ? "beemax> " : presentationMode === "compact" ? `beemax [${config.model.model}]> ` : `beemax [${config.profile} · ${config.model.provider}/${config.model.model} · ${source.threadId ?? "default"}]> `;
+		const prompt = () => presentationMode === "plain" ? "thruvera> " : presentationMode === "compact" ? `thruvera [${config.model.model}]> ` : `thruvera [${config.profile} · ${config.model.provider}/${config.model.model} · ${source.threadId ?? "default"}]> `;
 		const writePrompt = () => { if (!closed && !workbench) process.stdout.write(prompt()); };
 		const localDelivery: DeliveryPort = { sendText: async (target, text, options) => {
 			if (target.platform !== "cli") throw new Error(`Cannot deliver ${target.platform} Task Plan notice through local Chat`);

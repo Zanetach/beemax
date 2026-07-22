@@ -105,20 +105,20 @@ function importedModules(parsed) {
 }
 
 function resolvesToMemoryImplementation(file, module) {
-	if (module === "@beemax/memory" || module.startsWith("@beemax/memory/")) return true;
+	if (module === "@thruvera/memory" || module.startsWith("@thruvera/memory/")) return true;
 	if (!module.startsWith(".")) return false;
 	const target = relative(root, resolve(root, dirname(file), module)).replaceAll("\\", "/");
 	return target === "packages/memory" || target.startsWith("packages/memory/");
 }
 
-const protectedAuthorities = new Set(["BeeMaxAgentRuntime", "ObjectiveRuntime", "TaskPlanRuntime", "ProfileTaskScheduler"]);
+const protectedAuthorities = new Set(["ThruveraAgentRuntime", "ObjectiveRuntime", "TaskPlanRuntime", "ProfileTaskScheduler"]);
 function protectedConstructionKeys(parsed) {
 	const constructions = [];
 	visitAll(parsed, (item, node) => {
 		if (!ts.isNewExpression(node)) return;
 		const imported = resolvedExport(item, node.expression);
 		const localCoreName = item.file.startsWith("packages/core/src/") && ts.isIdentifier(node.expression) ? node.expression.text : undefined;
-		const name = imported?.module === "@beemax/core" ? imported.exported : localCoreName;
+		const name = imported?.module === "@thruvera/core" ? imported.exported : localCoreName;
 		if (name && protectedAuthorities.has(name)) constructions.push(`${item.file}|${name}`);
 	});
 	return constructions;
@@ -126,8 +126,8 @@ function protectedConstructionKeys(parsed) {
 
 function parserFixtureViolations() {
 	const fixture = [parseText("packages/gateway/src/duplicate.ts", [
-		'import { ObjectiveRuntime as DuplicateRuntime } from "@beemax/core";',
-		'import * as Core from "@beemax/core";',
+		'import { ObjectiveRuntime as DuplicateRuntime } from "@thruvera/core";',
+		'import * as Core from "@thruvera/core";',
 		'import { createProfileRuntime as compose } from "../../../apps/cli/src/runtime-composition.ts";',
 		"function createProfileRuntime() {}",
 		"new DuplicateRuntime(); new Core.TaskPlanRuntime(); compose(); createProfileRuntime();",
@@ -171,8 +171,8 @@ const channelProfileRuntimeCoverageViolations = [...expectedChannelCalls].filter
 
 const constructions = protectedConstructionKeys(production);
 const expectedConstructions = new Map([
-	["apps/cli/src/runtime-composition.ts|BeeMaxAgentRuntime", 1],
-	["apps/cli/src/gateway.ts|BeeMaxAgentRuntime", 1],
+	["apps/cli/src/runtime-composition.ts|ThruveraAgentRuntime", 1],
+	["apps/cli/src/gateway.ts|ThruveraAgentRuntime", 1],
 	["apps/cli/src/profile-work-runtime.ts|ObjectiveRuntime", 1],
 	["apps/cli/src/profile-work-runtime.ts|TaskPlanRuntime", 1],
 	["apps/cli/src/profile-work-runtime.ts|ProfileTaskScheduler", 1],
@@ -194,8 +194,8 @@ const invariants = {
 	parserFixtureViolations: parserFixtureViolations(),
 	protectedAuthorityConstructionViolations,
 	memoryImplementationImportsOutsideComposition: importedModules(boundary).filter(({ file, module }) => resolvesToMemoryImplementation(file, module)).length,
-	channelRuntimePlatformImplementationImports: importedModules(channelRuntime).filter(({ module }) => /@beemax\/(?:gateway|channel-feishu|channel-telegram)|@larksuiteoapi\/node-sdk/u.test(module)).length,
-	gatewayPlatformImplementationImports: importedModules(gateway).filter(({ module }) => /@beemax\/channel-(?:feishu|telegram)|@larksuiteoapi\/node-sdk/u.test(module)).length,
+	channelRuntimePlatformImplementationImports: importedModules(channelRuntime).filter(({ module }) => /@thruvera\/(?:gateway|channel-feishu|channel-telegram)|@larksuiteoapi\/node-sdk/u.test(module)).length,
+	gatewayPlatformImplementationImports: importedModules(gateway).filter(({ module }) => /@thruvera\/channel-(?:feishu|telegram)|@larksuiteoapi\/node-sdk/u.test(module)).length,
 	gatewayProviderPresentationFiles: gateway.filter(({ file }) => file.includes("/card/")).length,
 	gatewayProviderPresentationIdentifiers: countIdentifiers(gateway, new Set(["CardSession", "renderCard", "FlushController"])),
 	feishuPresentationOwnerFiles: production.filter(({ file }) => file === "packages/channel-feishu/src/presentation/presenter.ts").length,

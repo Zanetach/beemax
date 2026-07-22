@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { AdapterRegistry, ChannelHost } from "@beemax/channel-runtime";
-import { Dispatcher, GatewayDeliveryPort, GatewayIngressController, ProfileBindingResolver } from "@beemax/gateway";
+import { AdapterRegistry, ChannelHost } from "@thruvera/channel-runtime";
+import { Dispatcher, GatewayDeliveryPort, GatewayIngressController, ProfileBindingResolver } from "@thruvera/gateway";
 
 test("Channel Runtime routes normalized inbound turns and outbound delivery through the concrete Channel Instance", async () => {
 	const created = new Map();

@@ -10,7 +10,7 @@ test("CLI promotes and stops Profile autonomy levels with auditable evidence", (
 	const home = mkdtempSync(join(tmpdir(), "beemax-autonomy-cli-"));
 	const root = mkdtempSync(join(tmpdir(), "beemax-autonomy-forged-root-"));
 	const run = (args) => execFileSync(process.execPath, [cli, ...args], {
-		encoding: "utf8", env: { ...process.env, BEEMAX_HOME: home, BEEMAX_ROOT: root },
+		encoding: "utf8", env: { ...process.env, THRUVERA_HOME: home, THRUVERA_ROOT: root },
 	});
 	try {
 		run(["init", "--profile", "organization"]);
@@ -22,7 +22,7 @@ test("CLI promotes and stops Profile autonomy levels with auditable evidence", (
 		assert.match(run(["autonomy", "stop", "read_only_investigation", "--evidence-ref", "incident:pause", "--yes", "--profile", "organization"]), /Stopped read_only_investigation/);
 		assert.match(run(["autonomy", "status", "--profile", "organization"]), /read_only_investigation  \[stopped\].*revision=2/);
 		assert.match(run(["autonomy", "status", "--profile", "organization"]), /runtime-evaluation:beemax-unknown-business-v1:sha256:[a-f0-9]{64}/);
-		assert.throws(() => run(["autonomy", "promote", "high_risk_action", "--yes", "--profile", "organization"]), /Usage: beemax autonomy/);
+		assert.throws(() => run(["autonomy", "promote", "high_risk_action", "--yes", "--profile", "organization"]), /Usage: thruvera autonomy/);
 	} finally {
 		rmSync(home, { recursive: true, force: true });
 		rmSync(root, { recursive: true, force: true });

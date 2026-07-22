@@ -1,6 +1,6 @@
-# BeeMax Runtime 性能与成本门禁
+# Thruvera Runtime 性能与成本门禁
 
-BeeMax 将性能分成两层：
+Thruvera 将性能分成两层：
 
 1. 可重复的本地 Runtime 开销：理解、Situation、Capability、Memory、Context、Planning、Initiative 与 durable state 操作。
 2. 外部开销：模型和 Tool 的网络延迟、真实 token、cache token 与美元成本，由 Execution Trace 逐次记录，不能混入离线 Runtime benchmark。

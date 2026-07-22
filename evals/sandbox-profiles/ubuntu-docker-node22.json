@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "id": "ubuntu-docker-node22",
-  "description": "BeeMax one-shot Docker Execution Sandbox on Ubuntu 24.04 x64",
+  "description": "Thruvera one-shot Docker Execution Sandbox on Ubuntu 24.04 x64",
   "hostPlatform": "linux",
   "hostOsId": "ubuntu",
   "hostOsVersionPattern": "^24\\.04",

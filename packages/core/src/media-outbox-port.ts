@@ -1,4 +1,4 @@
-import type { BeeMaxRuntimeSource } from "./runtime.ts";
+import type { ThruveraRuntimeSource } from "./runtime.ts";
 
 /**
  * Core-owned port for durable outbound media work. Capability adapters may
@@ -6,5 +6,5 @@ import type { BeeMaxRuntimeSource } from "./runtime.ts";
  * upload and acknowledgement separately.
  */
 export interface MediaOutboxPort {
-	enqueueMedia(owner: BeeMaxRuntimeSource, media: { path: string; mimeType?: string }): Promise<void>;
+	enqueueMedia(owner: ThruveraRuntimeSource, media: { path: string; mimeType?: string }): Promise<void>;
 }

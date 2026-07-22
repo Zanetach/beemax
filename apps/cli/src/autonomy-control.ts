@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { readFileSync, statSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import type { AutonomyRolloutEvidence, AutonomyRolloutRecord } from "@beemax/core";
+import type { AutonomyRolloutEvidence, AutonomyRolloutRecord } from "@thruvera/core";
 
 const MAX_EVIDENCE_BYTES = 1_000_000;
 const TRUSTED_RUNTIME_EVALUATION_SHA256 = "615dee666b264caabdea0fe53e80d533ef2a3536dea8a3a846a34bad84220b59";
@@ -24,7 +24,7 @@ interface RuntimeEvaluationReport {
 
 /** Loads only the release-verified runtime baseline shipped with this installation. */
 export function loadInstalledAutonomyRolloutEvidence(): { evidence: AutonomyRolloutEvidence; evidenceRef: string } {
-	// Resolve beside the installed code, never through BEEMAX_ROOT/--root.
+	// Resolve beside the installed code, never through THRUVERA_ROOT/--root.
 	const path = fileURLToPath(new URL("../../../evals/baselines/current.json", import.meta.url));
 	const stat = statSync(path);
 	if (!stat.isFile() || stat.size > MAX_EVIDENCE_BYTES) throw new Error("Installed runtime evaluation artifact is unavailable or exceeds 1 MB");

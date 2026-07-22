@@ -2,7 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { constants, type Stats } from "node:fs";
 import { link, lstat, mkdir, open, opendir, realpath, rename, rm, type FileHandle } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
-import type { BeeMaxRuntimeSource } from "./runtime.ts";
+import type { ThruveraRuntimeSource } from "./runtime.ts";
 import { legacySessionIdsForSource, sessionIdForSource } from "./session-coordinator.ts";
 import { SessionCatalog, type SessionCatalogOwnershipReceipt } from "./session-catalog.ts";
 
@@ -22,14 +22,14 @@ export interface SessionOwnershipMigrationPlan {
 	blockers: string[];
 }
 
-export interface ApplySessionOwnershipMigrationInput<Source extends BeeMaxRuntimeSource = BeeMaxRuntimeSource> {
+export interface ApplySessionOwnershipMigrationInput<Source extends ThruveraRuntimeSource = ThruveraRuntimeSource> {
 	id: string;
 	source: Source;
 	legacySessionId: string;
 	appliedAt?: number;
 }
 
-export interface AppliedSessionOwnershipMigration<Source extends BeeMaxRuntimeSource = BeeMaxRuntimeSource> {
+export interface AppliedSessionOwnershipMigration<Source extends ThruveraRuntimeSource = ThruveraRuntimeSource> {
 	id: string;
 	source: Source;
 	legacySessionId: string;
@@ -42,7 +42,7 @@ export interface AppliedSessionOwnershipMigration<Source extends BeeMaxRuntimeSo
 	appliedAt: number;
 }
 
-export interface PreparedSessionOwnershipMigration<Source extends BeeMaxRuntimeSource = BeeMaxRuntimeSource> {
+export interface PreparedSessionOwnershipMigration<Source extends ThruveraRuntimeSource = ThruveraRuntimeSource> {
 	result: AppliedSessionOwnershipMigration<Source>;
 }
 
@@ -54,7 +54,7 @@ export interface RollbackSessionOwnershipMigrationOptions {
 const MAX_HEADER_BYTES = 64 * 1024;
 
 /** Explicitly assigns one legacy Actor-scoped Pi transcript to one canonical shared Conversation. */
-export class ProfileSessionOwnershipMigration<Source extends BeeMaxRuntimeSource = BeeMaxRuntimeSource> {
+export class ProfileSessionOwnershipMigration<Source extends ThruveraRuntimeSource = ThruveraRuntimeSource> {
 	private readonly agentDir: string;
 	private readonly sessionDir: string;
 	private readonly catalog: SessionCatalog<Source>;
@@ -403,7 +403,7 @@ async function fsyncDirectory(path: string): Promise<void> {
 	try { await directory.sync(); } finally { await directory.close(); }
 }
 
-function validateSource(source: BeeMaxRuntimeSource): void {
+function validateSource(source: ThruveraRuntimeSource): void {
 	if (source.chatType !== "group" && source.chatType !== "thread") throw new Error("Session Ownership Migration supports group Conversations only");
 	for (const [name, value] of [["platform", source.platform], ["channelInstanceId", source.channelInstanceId], ["chatId", source.chatId], ["userId", source.userId]] as const) {
 		if (typeof value !== "string" || !value.trim() || value.length > 500 || /[\u0000-\u001f\u007f]/u.test(value)) throw new Error(`${name} is required and must not contain control characters`);

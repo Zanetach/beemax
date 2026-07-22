@@ -1,4 +1,4 @@
-# BeeMax Agent Architecture: Core and Gateway Boundaries
+# Thruvera Agent Architecture: Core and Gateway Boundaries
 
 ## Status
 
@@ -7,9 +7,9 @@ for all new code and for the remaining migration away from transitional code.
 
 ## Decision
 
-BeeMax is one Agent product. `@beemax/core` owns Agent semantics; Gateway owns
+Thruvera is one Agent product. `@thruvera/core` owns Agent semantics; Gateway owns
 transport semantics. The current Pi code is an implementation dependency of
-BeeMax Core, not a product-level architectural layer.
+Thruvera Core, not a product-level architectural layer.
 
 Running in the same operating-system process does not transfer ownership. A
 Gateway may call Core, but it must not decide whether an Agent delegates work,
@@ -22,7 +22,7 @@ generates media, recalls memory, or mutates state.
 │ Product / Profile                                             │
 │ SOUL · policy · model selection · skills · capability grants  │
 ├──────────────────────────────────────────────────────────────┤
-│ BeeMax Core                                                   │
+│ Thruvera Core                                                   │
 │ Agent runs · sessions · context · tools · tasks · media jobs  │
 │ memory · automation · cancellation · policy enforcement       │
 ├──────────────────────────────────────────────────────────────┤
@@ -73,7 +73,7 @@ interface DeliveryPort {
 }
 
 interface MediaOutboxPort {
-  enqueueMedia(owner: BeeMaxRuntimeSource, media: MediaArtifact): Promise<void>;
+  enqueueMedia(owner: ThruveraRuntimeSource, media: MediaArtifact): Promise<void>;
 }
 
 interface CapabilityPort {
@@ -99,7 +99,7 @@ Hermes places model selection, prompt construction, tools, retries,
 compression, persistence and `delegate_task` in its platform-agnostic
 `AIAgent`; its messaging gateway is an entry and callback adapter. OpenClaw's
 Gateway is a long-running channel/control-plane process, while subagents are
-child Agent runs and channel media is transport plus capability work. BeeMax
+child Agent runs and channel media is transport plus capability work. Thruvera
 adopts the same ownership distinction without copying either project verbatim.
 
 ## Dependency rules
@@ -116,29 +116,29 @@ adopts the same ownership distinction without copying either project verbatim.
    typed artifact through Core's neutral `MediaOutboxPort`; only Gateway workers
    upload it through `DeliveryPort`.
 5. Operations may inspect runtime health but may not execute Agent tools.
-6. Pi is the execution substrate behind `@beemax/core`. Capability packages,
+6. Pi is the execution substrate behind `@thruvera/core`. Capability packages,
    Gateway and non-TUI application code consume Pi Agent/AI/Tool types only
    through Core. The CLI presenter may depend directly on `pi-tui`, but it may
    not own Agent execution.
 7. Before adding an Agent primitive, perform a Pi Capability Check: inspect Pi's
    Agent, session, Tool, Skill, Provider, Images and event registries; reuse an
    existing extension point when present, extend Pi for a generally reusable
-   primitive, and add BeeMax code only for product governance or durable state.
+   primitive, and add Thruvera code only for product governance or durable state.
 
 ## Migration plan
 
-1. **Completed:** establish `@beemax/core` as the runtime seam; move session
+1. **Completed:** establish `@thruvera/core` as the runtime seam; move session
    creation, model/auth, resource loading, skill filtering, security hooks and
    session identity/locking/lifecycle.
 2. **Completed:** move `SubagentManager` and task tools to Core. Child runs
-   use the same `BeeMaxAgentRuntime` path as interactive turns; concrete image
+   use the same `ThruveraAgentRuntime` path as interactive turns; concrete image
    provider OAuth/HTTP code lives in a separate capability package.
 3. **Completed:** move curated-memory context and candidate capture to Core;
    migrate scheduler orchestration, Pi execution and heartbeat policy to Core.
    Automation retains time calculation plus the atomic SQLite state machine for
    configured Schedule, Occurrence, lease, retry and Delivery transitions; it
    never decides Agent capability, Verification or business policy.
-4. **Completed:** introduce `BeeMaxAgentRuntime` as the one run entry point.
+4. **Completed:** introduce `ThruveraAgentRuntime` as the one run entry point.
    It owns turn timeout, streaming subscription, context capture and resource
    reload; CLI, sub-agents and Gateway all use this path. Dispatcher accepts
    the `AgentRuntimePort` rather than composing sessions itself.

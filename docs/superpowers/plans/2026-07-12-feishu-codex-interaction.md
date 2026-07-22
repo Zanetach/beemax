@@ -27,7 +27,7 @@
 - Produces: `FlushController.schedule(renderUpdate, terminal?, urgent?)`.
 
 - [ ] Add a failing public test proving urgent work bypasses the normal cadence but respects a 250 ms patch floor.
-- [ ] Run `npm run build --workspace @beemax/gateway && node --test packages/gateway/test/card-flush.test.mjs` and confirm failure.
+- [ ] Run `npm run build --workspace @thruvera/gateway && node --test packages/gateway/test/card-flush.test.mjs` and confirm failure.
 - [ ] Add bounded urgent scheduling to `FlushController`.
 - [ ] Re-run the focused test and confirm it passes.
 

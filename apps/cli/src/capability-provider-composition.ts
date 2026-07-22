@@ -3,10 +3,10 @@ import { execFile } from "node:child_process";
 import { chmod, copyFile, link, lstat, mkdir, open, readFile, readdir, realpath, rename, rm, unlink, writeFile } from "node:fs/promises";
 import { basename, delimiter, dirname, join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
-import { CapabilityProviderRuntime, providerArtifactSha256, providerFileSha256, providerManifestEvidenceRef, providerManifestIntegrityTag, verifyProviderArtifact, type CapabilityProviderDescriptor, type CapabilityProviderInstallReceipt, type ProviderArtifactManifest } from "@beemax/core";
+import { CapabilityProviderRuntime, providerArtifactSha256, providerFileSha256, providerManifestEvidenceRef, providerManifestIntegrityTag, verifyProviderArtifact, type CapabilityProviderDescriptor, type CapabilityProviderInstallReceipt, type ProviderArtifactManifest } from "@thruvera/core";
 
 export const EXA_MCPORTER_VERSION = "0.9.0";
-export const EXA_MCPORTER_LOCK_SHA256 = "7c8ca25b89c4a23618c4385a373660cbf23512d7f461e82f2197c19027a183ec";
+export const EXA_MCPORTER_LOCK_SHA256 = "428c1aaf7f10ddaad3ed172bac926ef46b0c8e713a874b8574780fdaba705a58";
 export const EXA_MCPORTER_PROVIDER_VERSION = `mcporter:${EXA_MCPORTER_VERSION}:lock:${EXA_MCPORTER_LOCK_SHA256}`;
 const EXA_MCPORTER_SOURCE = "beemax-provider-lock";
 const EXA_MCPORTER_INSTALL_TIMEOUT_MS = 4 * 60_000;
@@ -68,12 +68,12 @@ export function createProfileCapabilityProviderBundle(input: {
 		...(baseEnvironment.TAVILY_API_KEY ? { TAVILY_API_KEY: baseEnvironment.TAVILY_API_KEY } : {}),
 		...(baseEnvironment.BRAVE_SEARCH_API_KEY ? { BRAVE_SEARCH_API_KEY: baseEnvironment.BRAVE_SEARCH_API_KEY } : {}),
 		...(baseEnvironment.SEARXNG_URL ? { SEARXNG_URL: baseEnvironment.SEARXNG_URL } : {}),
-		BEEMAX_AGENT_REACH_ROOT: currentRoot,
-		BEEMAX_AGENT_REACH_MCPORTER: mcporterBinary,
-		BEEMAX_AGENT_REACH_CONFIG: mcporterConfig,
-		BEEMAX_AGENT_REACH_MANIFEST: installManifest,
-		BEEMAX_AGENT_REACH_HOME: providerHome,
-		BEEMAX_AGENT_REACH_PATH: [executableRoot, trustedHostEnvironment.PATH ?? ""].filter(Boolean).join(delimiter),
+		THRUVERA_AGENT_REACH_ROOT: currentRoot,
+		THRUVERA_AGENT_REACH_MCPORTER: mcporterBinary,
+		THRUVERA_AGENT_REACH_CONFIG: mcporterConfig,
+		THRUVERA_AGENT_REACH_MANIFEST: installManifest,
+		THRUVERA_AGENT_REACH_HOME: providerHome,
+		THRUVERA_AGENT_REACH_PATH: [executableRoot, trustedHostEnvironment.PATH ?? ""].filter(Boolean).join(delimiter),
 		...(baseEnvironment.LANG ? { LANG: baseEnvironment.LANG } : {}),
 		...(baseEnvironment.LC_ALL ? { LC_ALL: baseEnvironment.LC_ALL } : {}),
 	};
@@ -112,7 +112,7 @@ export function createProfileCapabilityProviderBundle(input: {
 						await copyFile(join(lockSource, "package.json"), join(stagingRoot, "package.json"));
 						await copyFile(join(lockSource, "package-lock.json"), join(stagingRoot, "package-lock.json"));
 						const commandEnvironment = installationEnvironment(trustedHostEnvironment, join(stagingRoot, "home"), join(stagingRoot, "node_modules", ".bin"));
-						const npm = trustedHostEnvironment.BEEMAX_NPM?.trim() || "npm";
+						const npm = trustedHostEnvironment.THRUVERA_NPM?.trim() || "npm";
 						await runCommand(npm, ["ci", "--ignore-scripts", "--no-audit", "--no-fund", "--omit=dev"], { cwd: stagingRoot, env: commandEnvironment, signal });
 						const stagingHome = join(stagingRoot, "home");
 						const stagingAgentReach = join(stagingHome, ".agent-reach");

@@ -1,10 +1,10 @@
-# BeeMax L4 Memory Learning Architecture
+# Thruvera L4 Memory Learning Architecture
 
 Status: implementation-ready design
 
-Owner: BeeMax Runtime
+Owner: Thruvera Runtime
 
-Related product specification: [BeeMax L4 Outcome-Driven Memory and Learning System](../superpowers/specs/2026-07-18-beemax-l4-memory-learning-system.md)
+Related product specification: [Thruvera L4 Outcome-Driven Memory and Learning System](../superpowers/specs/2026-07-18-thruvera-l4-memory-learning-system.md)
 
 Release certification: [L4 Memory Learning Rollout and Certification](../operations/l4-memory-learning-rollout-and-certification.md)
 
@@ -12,7 +12,7 @@ Decisions: [single authority](../adr/0008-use-one-profile-semantic-memory-author
 
 ## 1. Purpose
 
-This document is the implementation contract for BeeMax L4 Memory. It turns the
+This document is the implementation contract for Thruvera L4 Memory. It turns the
 product specification into concrete Module boundaries, Interfaces, storage
 records, algorithms, state machines, transaction rules, recovery behavior, and
 delivery slices.
@@ -68,7 +68,7 @@ The design deliberately deepens existing Modules instead of replacing them.
 
 | Existing Module or seam | Current responsibility | L4 use |
 | --- | --- | --- |
-| `MemoryStore` in `@beemax/memory` | Profile-bound SQLite, Claims, Episodes, Candidates, evidence, Task persistence | Implements the L4 authority Adapter and additive tables |
+| `MemoryStore` in `@thruvera/memory` | Profile-bound SQLite, Claims, Episodes, Candidates, evidence, Task persistence | Implements the L4 authority Adapter and additive tables |
 | `memoryPersistencePorts()` | Projects one store into narrow persistence ports | Exposes the new authority port without constructing another store |
 | `ConversationContext` | Records a Turn and builds ranked context | Delegates optional Memory preparation to `MemoryLearningKernel.prepare` |
 | `ExecutionEnvelope` | Trusted execution and scope identity | Supplies the immutable identity for every Context Pack and settlement |
@@ -79,8 +79,8 @@ The design deliberately deepens existing Modules instead of replacing them.
 | Profile task scheduler | Fair in-process Profile work scheduling | Runs bounded `maintain` work; no new scheduler is introduced |
 | Profile autonomy rollout | Feature-specific authority and emergency stop | Adds the `adaptive_learning` level and preserves existing governance |
 
-`@beemax/core` must not import `@beemax/memory`. Core owns the public Interface and
-the storage-independent Implementation; `@beemax/memory` implements the SQLite
+`@thruvera/core` must not import `@thruvera/memory`. Core owns the public Interface and
+the storage-independent Implementation; `@thruvera/memory` implements the SQLite
 Adapter; the application composition root wires both. This keeps dependency
 direction unchanged.
 
@@ -275,7 +275,7 @@ Only seams with real variability receive Adapters.
 ### 5.1 `MemoryLearningAuthorityPort`
 
 This is the narrow Core Interface implemented by the SQLite Adapter in
-`@beemax/memory`. It groups transactional use cases, not individual SQL tables:
+`@thruvera/memory`. It groups transactional use cases, not individual SQL tables:
 
 - append and deduplicate Evidence and observations;
 - retrieve an already authorized candidate set;
@@ -345,8 +345,8 @@ fixed:
 
 | Package | Planned responsibility |
 | --- | --- |
-| `@beemax/core` | public contracts, default storage-independent Kernel Implementation, Situation fingerprint, retrieval composition, attribution validator, assessment policy, projection validator, trace Adapter, managed Skill selection policy |
-| `@beemax/memory` | numbered migrations, `SqliteMemoryLearningAuthority` Adapter, scoped queries, atomic use cases, leases/fences, reconciliation scans, backup/restore verification |
+| `@thruvera/core` | public contracts, default storage-independent Kernel Implementation, Situation fingerprint, retrieval composition, attribution validator, assessment policy, projection validator, trace Adapter, managed Skill selection policy |
+| `@thruvera/memory` | numbered migrations, `SqliteMemoryLearningAuthority` Adapter, scoped queries, atomic use cases, leases/fences, reconciliation scans, backup/restore verification |
 | `apps/cli` | composition root, real extractor/ranker/attributor/Skill Implementations, scheduler registration, rollout wiring, verified Objective publisher replacement |
 | existing Skill Runtime | exact selected-version loading and signed lifecycle receipts |
 | existing Objective/Task Runtime | terminal outcomes, independent Verification references, normal Learning Objective execution |

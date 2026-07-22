@@ -3,15 +3,15 @@ import { constants } from "node:fs";
 import { execFile } from "node:child_process";
 import { join } from "node:path";
 import { promisify } from "node:util";
-import { AutomationStore, parseDuration } from "@beemax/automation";
-import { validateFeishuWebhookSettings } from "@beemax/channel-feishu";
-import { loadMcpConfig, McpManager } from "@beemax/mcp-capability";
-import { MemoryStore } from "@beemax/memory";
-import { FileCredentialVault } from "@beemax/core";
-import { consumeChannelCredential, profileEnvironmentSnapshot, type BeeMaxConfig } from "./config.ts";
+import { AutomationStore, parseDuration } from "@thruvera/automation";
+import { validateFeishuWebhookSettings } from "@thruvera/channel-feishu";
+import { loadMcpConfig, McpManager } from "@thruvera/mcp-capability";
+import { MemoryStore } from "@thruvera/memory";
+import { FileCredentialVault } from "@thruvera/core";
+import { consumeChannelCredential, profileEnvironmentSnapshot, type ThruveraConfig } from "./config.ts";
 import { providerApiKeyEnv } from "./provider-resolver.ts";
 import { inspectOperationalMetrics, operationalMetricsPath } from "./operational-metrics.ts";
-import { WeKnoraKnowledgeProvider } from "@beemax/knowledge";
+import { WeKnoraKnowledgeProvider } from "@thruvera/knowledge";
 import { ProfileModelCatalog } from "./model-catalog.ts";
 import { createLocalMediaUnderstandingAdapters } from "./local-media-understanding.ts";
 import { caddyHostEnvironment, caddyRuntimeEnvironment, prepareCaddyRuntimeDirectories, resolveCaddyHostCommand } from "./artifact-site.ts";
@@ -23,17 +23,17 @@ const execFileAsync = promisify(execFile);
 
 export interface DoctorOptions { requireGateway?: boolean; json?: boolean }
 
-export async function runDoctor(config: BeeMaxConfig, options: DoctorOptions = {}): Promise<boolean> {
+export async function runDoctor(config: ThruveraConfig, options: DoctorOptions = {}): Promise<boolean> {
 	const result = await inspectDoctor(config, options);
 	if (options.json) console.log(JSON.stringify(result));
 	else {
 		for (const check of result.checks) console.log(`${check.status.padEnd(4)}  ${check.name.padEnd(22)} ${check.detail}`);
-		console.log(result.ok ? "\nBeeMax configuration is ready to start." : "\nBeeMax is not ready; fix FAIL items before starting.");
+		console.log(result.ok ? "\nThruvera configuration is ready to start." : "\nThruvera is not ready; fix FAIL items before starting.");
 	}
 	return result.ok;
 }
 
-export async function inspectDoctor(config: BeeMaxConfig, options: DoctorOptions = {}): Promise<DoctorResult> {
+export async function inspectDoctor(config: ThruveraConfig, options: DoctorOptions = {}): Promise<DoctorResult> {
 	const checks: DoctorCheck[] = [];
 	const node = process.versions.node.split(".").map(Number);
 	checks.push({ name: "Node.js", status: node[0] > 22 || (node[0] === 22 && node[1] >= 19) ? "PASS" : "FAIL", detail: process.versions.node });
@@ -46,7 +46,7 @@ export async function inspectDoctor(config: BeeMaxConfig, options: DoctorOptions
 	}
 
 	const apiKey = config.model.apiKey;
-	checks.push({ name: "Model", status: apiKey ? "PASS" : "FAIL", detail: apiKey ? `${config.model.provider}/${config.model.model}` : `missing ${providerApiKeyEnv(config.model.provider)} or BEEMAX_API_KEY` });
+	checks.push({ name: "Model", status: apiKey ? "PASS" : "FAIL", detail: apiKey ? `${config.model.provider}/${config.model.model}` : `missing ${providerApiKeyEnv(config.model.provider)} or THRUVERA_API_KEY` });
 	const modelCatalog = new ProfileModelCatalog(config);
 	const currentModel = modelCatalog.resolve(`${config.model.provider}/${config.model.model}`);
 	const nativeVision = currentModel?.capabilities?.input.includes("image") ?? false;
@@ -153,7 +153,7 @@ export async function inspectDoctor(config: BeeMaxConfig, options: DoctorOptions
 		checks.push({
 			name: "Knowledge Kernel",
 			status: "FAIL",
-			detail: !config.knowledge.apiKey ? "missing BEEMAX_WEKNORA_API_KEY" : "no knowledge spaces configured",
+			detail: !config.knowledge.apiKey ? "missing THRUVERA_WEKNORA_API_KEY" : "no knowledge spaces configured",
 		});
 	} else {
 		const provider = new WeKnoraKnowledgeProvider({ baseUrl: config.knowledge.baseUrl, apiKey: config.knowledge.apiKey });
@@ -220,7 +220,7 @@ export async function inspectDoctor(config: BeeMaxConfig, options: DoctorOptions
 	return { ok, checks };
 }
 
-async function checkCaddyArtifactSite(config: BeeMaxConfig, checks: DoctorCheck[]): Promise<void> {
+async function checkCaddyArtifactSite(config: ThruveraConfig, checks: DoctorCheck[]): Promise<void> {
 	if (!config.gateway.artifactSite.enabled) {
 		checks.push({ name: "Caddy Artifact Site", status: "WARN", detail: "disabled by Profile configuration" });
 		return;
@@ -248,15 +248,15 @@ async function checkCaddyArtifactSite(config: BeeMaxConfig, checks: DoctorCheck[
 	}
 }
 
-function resolveCaddyCommandForDoctorDetail(config: BeeMaxConfig): string {
+function resolveCaddyCommandForDoctorDetail(config: ThruveraConfig): string {
 	try { return resolveCaddyHostCommand(process.env); }
 	catch { return config.gateway.artifactSite.command; }
 }
 
-async function checkExecutionBackend(config: BeeMaxConfig, checks: DoctorCheck[]): Promise<void> {
+async function checkExecutionBackend(config: ThruveraConfig, checks: DoctorCheck[]): Promise<void> {
 	const detail = `${config.execution.backend}; mode=${config.execution.mode}; workspace=${config.execution.workspaceAccess}`;
 	if (config.execution.mode === "off") {
-		checks.push({ name: "Execution Sandbox", status: "WARN", detail: `disabled; Host Execution Adapter has the BeeMax process user's authority (${detail})` });
+		checks.push({ name: "Execution Sandbox", status: "WARN", detail: `disabled; Host Execution Adapter has the Thruvera process user's authority (${detail})` });
 		return;
 	}
 	if (config.execution.backend !== "docker") {

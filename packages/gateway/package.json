@@ -1,5 +1,5 @@
 {
-  "name": "@beemax/gateway",
+  "name": "@thruvera/gateway",
   "version": "1.5.1",
   "private": true,
   "type": "module",
@@ -16,8 +16,8 @@
     "typecheck": "tsgo --noEmit -p tsconfig.build.json"
   },
   "dependencies": {
-    "@beemax/channel-runtime": "1.5.1",
-    "@beemax/core": "1.5.1",
+    "@thruvera/channel-runtime": "1.5.1",
+    "@thruvera/core": "1.5.1",
     "typebox": "1.1.38"
   }
 }

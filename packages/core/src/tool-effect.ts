@@ -1,4 +1,4 @@
-import type { BeeMaxRuntimeSource } from "./runtime.ts";
+import type { ThruveraRuntimeSource } from "./runtime.ts";
 import { BoundedJsonlJournal } from "./bounded-jsonl-journal.ts";
 import { sessionKeyForSource } from "./session-coordinator.ts";
 import type { ToolPolicy } from "./tool-runtime.ts";
@@ -32,7 +32,7 @@ export interface ToolEffectRecord {
 }
 
 export interface ToolEffectStart {
-	source: BeeMaxRuntimeSource;
+	source: ThruveraRuntimeSource;
 	executionEnvelope?: Readonly<ExecutionEnvelope>;
 	taskId?: string;
 	toolCallId: string;
@@ -374,9 +374,9 @@ class ToolEffectAuthority {
 	}
 }
 
-function callKey(source: BeeMaxRuntimeSource, toolCallId: string): string { return `${sessionKeyForSource(source)}:${toolCallId}`; }
+function callKey(source: ThruveraRuntimeSource, toolCallId: string): string { return `${sessionKeyForSource(source)}:${toolCallId}`; }
 
-function scopeOf(source: BeeMaxRuntimeSource): ToolEffectRecord["scope"] {
+function scopeOf(source: ThruveraRuntimeSource): ToolEffectRecord["scope"] {
 	const ownerKey = source.delegatedTask?.ownerKey ?? responsibilityOwnerKey(source);
 	return { ownerKey, platform: source.platform, chatId: source.chatId, userId: source.userIdAlt ?? source.userId, threadId: source.threadId };
 }

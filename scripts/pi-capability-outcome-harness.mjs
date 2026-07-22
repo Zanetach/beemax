@@ -4,9 +4,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Type } from "typebox";
 import {
-	BeeMaxAgentRuntime,
+	ThruveraAgentRuntime,
 	FileExecutionTraceStore,
-	buildBeeMaxRuntimeFactory,
+	buildThruveraRuntimeFactory,
 	createAccessScopeRef,
 	createExecutionEnvelope,
 	defineTool,
@@ -83,7 +83,7 @@ async function executeLivePiCapabilityTaskInRoot({ scenario, ranking, threshold,
 	const source = { platform: "cli", chatId: `live-pi-${scenario.id}`, chatType: "dm", userId: "evaluator" };
 	const required = scenario.required?.length ? scenario.required : scenario.expected ? [scenario.expected] : [];
 	const tools = createLivePiEvaluationTools({ candidates, descriptors, sourceByCapability, readSkills, completed, cognitionId: ranking.cognitionId, requiredCapabilities: required });
-	const factory = createAgent ?? buildBeeMaxRuntimeFactory({
+	const factory = createAgent ?? buildThruveraRuntimeFactory({
 		provider: "custom",
 		model: primary.model.id,
 		baseUrl: primary.model.baseUrl,
@@ -96,7 +96,7 @@ async function executeLivePiCapabilityTaskInRoot({ scenario, ranking, threshold,
 			return candidate.apiKey ?? await candidate.getApiKey?.();
 		},
 		additionalModelProviders: models.map((candidate) => candidate.model.provider),
-		systemPrompt: "You are a capability execution evaluator. Read the user's request and the current BeeMax Tool Spec. Call every and only the tools needed to satisfy it. Never claim completion without the tool result. If no tool is needed, answer directly without calling capability_discover. capability_discover is only for an unresolved explicit capability requirement. For a selected Skill, execute its progressive lifecycle exactly once and in this order with the exact selected name: skill_read, skill_activate, skill_route, skill_resource_read, skill_complete. Do not skip or repeat a phase; use route 'default' and resource path 'references/checklist.md'. After skill_complete, answer immediately and never call another Skill lifecycle Tool.",
+		systemPrompt: "You are a capability execution evaluator. Read the user's request and the current Thruvera Tool Spec. Call every and only the tools needed to satisfy it. Never claim completion without the tool result. If no tool is needed, answer directly without calling capability_discover. capability_discover is only for an unresolved explicit capability requirement. For a selected Skill, execute its progressive lifecycle exactly once and in this order with the exact selected name: skill_read, skill_activate, skill_route, skill_resource_read, skill_complete. Do not skip or repeat a phase; use route 'default' and resource path 'references/checklist.md'. After skill_complete, answer immediately and never call another Skill lifecycle Tool.",
 		skillToolset: "safe",
 		tools: tools.map((tool) => tool.name),
 		createTools: () => tools,
@@ -110,7 +110,7 @@ async function executeLivePiCapabilityTaskInRoot({ scenario, ranking, threshold,
 			throw new Error("Model-first interactive admission unexpectedly requested a Work Contract");
 		},
 	};
-	const runtime = new BeeMaxAgentRuntime({
+	const runtime = new ThruveraAgentRuntime({
 		profileId: "profile:live-pi-eval",
 		interactiveAdmission: "model_first",
 		fallbackModels: models.slice(1).map((candidate) => candidate.model),

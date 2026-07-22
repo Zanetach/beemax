@@ -3,8 +3,8 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { DeterministicWorkContractBuilder, MUTATING_TOOL_POLICY, TaskGraph, responsibilityOwnerKey, responsibilityOwnerKeys } from "@beemax/core";
-import { MemoryStore } from "@beemax/memory";
+import { DeterministicWorkContractBuilder, MUTATING_TOOL_POLICY, TaskGraph, responsibilityOwnerKey, responsibilityOwnerKeys } from "@thruvera/core";
+import { MemoryStore } from "@thruvera/memory";
 import { attestAgentFactorySecurity } from "../dist/agent-factory.js";
 import { createProfileRuntime } from "../dist/runtime-composition.js";
 

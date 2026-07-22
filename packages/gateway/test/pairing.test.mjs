@@ -4,7 +4,7 @@ import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import test from "node:test";
-import { FeishuAdapter } from "@beemax/channel-feishu";
+import { FeishuAdapter } from "@thruvera/channel-feishu";
 import { PairingStore } from "../dist/index.js";
 
 test("PairingStore creates, approves, reloads, revokes, expires, and rate-limits profile grants", () => {
