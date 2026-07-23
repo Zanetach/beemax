@@ -400,12 +400,16 @@ test("profile creation refuses accidental overwrite", async () => {
 test("new and migrated Profiles receive bundled skills without overwriting existing skills", async () => {
 	const root = await mkdtemp(join(tmpdir(), "beemax-bundled-skills-"));
 	const home = await mkdtemp(join(tmpdir(), "beemax-home-"));
-	await mkdir(join(root, "skills", "builtin", "business-copywriting"), { recursive: true });
-	await writeFile(join(root, "skills", "builtin", "business-copywriting", "SKILL.md"), "---\nname: business-copywriting\ndescription: Write business copy.\n---\n");
+	await mkdir(join(root, "skills", "builtin", "research-and-brief"), { recursive: true });
+	await writeFile(join(root, "skills", "builtin", "research-and-brief", "SKILL.md"), "---\nname: research-and-brief\ndescription: Research a topic.\n---\n");
 	const created = await createProfile("personal", { root, home });
-	assert.match(await readFile(join(created.homePath, "skills", "business-copywriting", "SKILL.md"), "utf8"), /Write business copy/);
+	const existingSkill = join(created.homePath, "skills", "research-and-brief", "SKILL.md");
+	await writeFile(existingSkill, "---\nname: research-and-brief\ndescription: User-customized research guidance.\n---\n");
+	await mkdir(join(root, "skills", "builtin", "historical-market-research"), { recursive: true });
+	await writeFile(join(root, "skills", "builtin", "historical-market-research", "SKILL.md"), "---\nname: historical-market-research\ndescription: Research sourced historical markets.\n---\n");
 	await syncBuiltinSkills("personal", { root, home });
-	assert.match(await readFile(join(created.homePath, "skills", "business-copywriting", "SKILL.md"), "utf8"), /Write business copy/);
+	assert.match(await readFile(existingSkill, "utf8"), /User-customized research guidance/);
+	assert.match(await readFile(join(created.homePath, "skills", "historical-market-research", "SKILL.md"), "utf8"), /sourced historical markets/);
 });
 
 test("legacy profiles migrate into an isolated home without deleting their source", async () => {

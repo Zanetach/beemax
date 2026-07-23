@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+## 1.6.0
+
+- Added a software-engineering digital-employee flow: interactive quickstart now offers bounded software delivery and Feishu/Lark after model setup, then starts the configured Gateway instead of leaving the bot offline.
+- Added the progressively loaded `software-delivery` Skill and a parent-Agent implementation contract that requires workspace inspection, explicit acceptance criteria, iterative build/test diagnosis and repair, broad final verification, and an evidence-backed handoff rather than stopping at a plan or first failure.
+- Added a Profile software mode that authorizes unattended writes and native edits only inside the Profile workspace; arbitrary shell commands, deployment, external publication, secrets, and high-risk effects remain approval-gated.
+- Added a release-stage regression that runs a real failing code test in an isolated workspace, repairs the implementation, reruns it successfully, and verifies the software Skill route and authority boundary.
+- Added one-command `--quickstart` installation and `beemax quickstart`, which configure or verify a Profile, sync missing bundled Skills, run readiness checks, and enter the ordinary local Agent without introducing a second runtime path.
+- Added a release-stage user-journey gate covering natural-language gold research, progressive Skill/Tool activation, structured XAU/USD evidence with an independent cross-check, verified-outcome memory publication, bounded recall, model-first task admission, read-only recovery, and context compaction.
+- Improved low-risk knowledge-work autonomy so the Agent states reasonable reversible assumptions and continues, while retryable read-only failures must avoid identical retries and discover an equivalent healthy capability without weakening the Work Contract.
+- Added the bundled `historical-market-research` Skill with a visible 30-day default for unspecified trend windows, bounded long-period execution, read-only recovery, independent source checks, and fail-closed instrument/proxy labeling; its distinct identity lets existing Profiles receive it through non-overwriting Skill sync.
+- Removed the production dependency audit finding by pinning the compatible Hono Node server release and enforcing a moderate-severity audit threshold in the release workflow.
+
 ## 1.5.2
 
 - Reworked the primary README into a visual, Chinese-first product guide with clearer runtime, sales-assistant, capability, architecture, and operational boundaries.

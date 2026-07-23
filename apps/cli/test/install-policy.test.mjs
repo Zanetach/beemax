@@ -141,6 +141,9 @@ test("bootstrap installer downloads a verified single release archive and preser
 	assert.match(installer, /command -v shasum[\s\S]*command -v sha256sum/);
 	assert.match(installer, /Profiles and data under/);
 	assert.match(installer, /BEEMAX_BIN_DIR/);
+	assert.match(installer, /--quickstart/);
+	assert.match(installer, /beemax.*quickstart/);
+	assert.match(installer, /\/dev\/tty/);
 });
 
 test("source installer requires the vendored Pi source without submodule initialization", async () => {
@@ -185,7 +188,7 @@ test("tag releases pass build, test, and isolated archive installation gates bef
 	const verifier = await readFile("scripts/verify-release-archive.sh", "utf8");
 	assert.match(workflow, /actions\/setup-node@v4/);
 	assert.match(workflow, /node-version: 22\.19\.0/);
-	for (const command of ["npm ci", "npm audit --omit=dev --audit-level=high", "npm run verify:release", "create-release-archive\.sh", "verify-release-archive\.sh"]) assert.match(workflow, new RegExp(command));
+	for (const command of ["npm ci", "npm audit --omit=dev --audit-level=moderate", "npm run verify:release", "create-release-archive\.sh", "verify-release-archive\.sh"]) assert.match(workflow, new RegExp(command));
 	assert.match(ci, /npm run verify:release/);
 	assert.match(workflow, /install-media-dependencies\.sh/);
 	assert.match(ci, /install-media-dependencies\.sh/);
@@ -203,12 +206,14 @@ test("tag releases pass build, test, and isolated archive installation gates bef
 	assert.match(verifier, /BEEMAX_INSTALL_MEDIA_DEPS=0/);
 	assert.match(verifier, /scripts\/install\.sh/);
 	assert.match(verifier, /run_beemax --help/);
+	assert.match(verifier, /quickstart/);
 	assert.match(verifier, /env -i/);
 	assert.match(verifier, /SMOKE_HOME="\$\{STAGING\}\/home\/\.beemax"/);
 	assert.match(verifier, /BEEMAX_HOME="\$\{SMOKE_HOME\}"/);
 	assert.match(verifier, /run_beemax profile create release-smoke/);
 	assert.match(verifier, /run_beemax profile show release-smoke/);
 	assert.match(verifier, /run_beemax skills list --profile release-smoke/);
+	assert.match(verifier, /historical-market-research/);
 	assert.doesNotMatch(workflow, /uses:\s+actions\/checkout@v4\s*\n\s+with:\s*$/m);
 	assert.doesNotMatch(ci, /uses:\s+actions\/checkout@v4\s*\n\s+with:\s*$/m);
 	assert.match(workflow, /--latest/);

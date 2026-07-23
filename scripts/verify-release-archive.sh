@@ -59,12 +59,14 @@ run_beemax() {
 }
 HELP_OUTPUT="$(run_beemax --help)"
 grep -Fq "BeeMax" <<<"${HELP_OUTPUT}" || fail "installed beemax --help did not start correctly"
+grep -Fq "quickstart" <<<"${HELP_OUTPUT}" || fail "installed release does not expose the quickstart entry point"
 PROFILE_CREATE_OUTPUT="$(run_beemax profile create release-smoke)"
 grep -Fq "Created Agent 'release-smoke'" <<<"${PROFILE_CREATE_OUTPUT}" || fail "installed beemax could not create a Profile"
 PROFILE_SHOW_OUTPUT="$(run_beemax profile show release-smoke)"
 grep -Fq '"profile": "release-smoke"' <<<"${PROFILE_SHOW_OUTPUT}" || fail "installed beemax could not reload the created Profile"
 SKILLS_OUTPUT="$(run_beemax skills list --profile release-smoke)"
 grep -Fq "business-report" <<<"${SKILLS_OUTPUT}" || fail "installed Profile does not contain packaged Skills"
+grep -Fq "historical-market-research" <<<"${SKILLS_OUTPUT}" || fail "installed Profile does not contain the stage-release historical market research Skill"
 [[ "$(tr -d '\r\n' < "${SOURCE}/RELEASE_VERSION")" == "${VERSION}" ]] || fail "installed release identity changed"
 
 echo "Verified ${ARCHIVE}: checksum, layout, isolated install, build, Profile reload, and packaged Skills passed"
