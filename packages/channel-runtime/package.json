@@ -1,6 +1,6 @@
 {
   "name": "@beemax/channel-runtime",
-  "version": "1.5.1",
+  "version": "1.5.2",
   "private": true,
   "type": "module",
   "main": "./dist/index.js",
@@ -16,6 +16,6 @@
     "typecheck": "tsgo --noEmit -p tsconfig.build.json"
   },
   "dependencies": {
-    "@beemax/core": "1.5.1"
+    "@beemax/core": "1.5.2"
   }
 }
