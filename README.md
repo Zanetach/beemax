@@ -1,123 +1,119 @@
 # BeeMax Agent
 
-> A self-hosted AI Agent runtime for building personal and team assistants with durable Memory, real Tool execution, and scheduled or long-running work.
+> 可私有化部署的企业 Agent 运行平台：把业务目标转化为可恢复、可审批、可验证的长期任务，安全连接企业知识与系统，并持续交付结果。
 
 [![Release](https://img.shields.io/github/v/release/Zanetach/beemax?display_name=tag)](https://github.com/Zanetach/beemax/releases/latest)
 [![CI](https://github.com/Zanetach/beemax/actions/workflows/ci.yml/badge.svg)](https://github.com/Zanetach/beemax/actions/workflows/ci.yml)
 ![Node.js](https://img.shields.io/badge/Node.js-%3E%3D22.19-339933?logo=node.js&logoColor=white)
 ![Platform](https://img.shields.io/badge/platform-Ubuntu%20%7C%20macOS-4c566a)
 
-**Current release:** [v1.5.1](https://github.com/Zanetach/beemax/releases/tag/v1.5.1), distributed as a checksum-verified source archive for Ubuntu and macOS.
-
-[简体中文](README.zh-CN.md)
-
 ![BeeMax Agent turns scoped context and durable memory into governed, verified execution](docs/assets/beemax-agent-runtime.png)
 
-BeeMax is more than a chat interface. It gives one Agent a durable identity, private workspace, long-term Memory, Skills, Tools, schedules, and a recoverable work ledger. The same assistant can work in a terminal, Feishu/Lark, or Telegram and continue an accepted responsibility after the process restarts.
+## 一句话定位
 
-Here, **Pi is the Agent execution framework**. It is not the Raspberry Pi computer and it is not a second Agent product hidden inside BeeMax.
+BeeMax 让 AI 从“会回答问题的聊天助手”升级为“能在权限边界内持续推进工作、调用工具、验证结果并承担长期责任的 Agent”。
 
-## What it can do
+它目前重点支持终端、飞书/Lark 和 Telegram。BeeMax Core 以 Pi 作为唯一 Agent 执行内核，在其外围提供长期记忆、任务账本、审批治理、安全恢复、结果验证和多渠道交付。
 
-```text
-Terminal · Feishu/Lark · Telegram
-                 ↓
-         BeeMax Agent Runtime
-                 ↓
-       Model + Memory + Skills + Tools
-                 ↓
-Files · Shell · Web · MCP · Knowledge · Meetings · Images · Schedules
-                 ↓
-Policy · Approvals · Effects · Checkpoints · Verification · Delivery
-```
+从产品层看：
 
-- **Long-term Memory:** SQLite/FTS5-backed recall for Profile-scoped preferences, facts, corrections, evidence, Tasks, and verified outcomes—not just the current chat window.
-- **Recoverable work:** Objectives can be split into durable Tasks with checkpoints, leases, verification, and restart-safe recovery.
-- **Real Tool execution:** Work with files and Shell, search the Web, call MCP services, retrieve enterprise knowledge, inspect meetings, and understand images through native vision or OCR.
-- **Progressive Skills:** Load task-specific operating instructions and professional capability only when the current objective needs them.
-- **Automation:** Run reminders, recurring schedules, Heartbeat checks, and bounded proactive investigations while keeping delivery separate from execution.
-- **Model choice:** Use configured OpenAI, Anthropic, OpenRouter, or compatible OpenAI/Anthropic protocol endpoints, and switch models by Profile or conversation.
-- **Governed actions:** Mutations pass Profile scope, Sandbox, Tool and approval policy, Effect idempotency, receipts, and verification.
-- **Profile isolation:** Each Profile has separate identity, credentials, Memory, workspace, channels, policy, and durable task state.
+- **BeeMax Agent** 是企业智能体协作平台。
+- **BeeMax Runtime** 是持久任务与受治理执行底座。
+- 销售、运营、研究、知识客服等是基于 Runtime 配置的解决方案模板，不是硬编码在 Core 中的业务对象。
 
-BeeMax does not hard-code customer objects such as orders, tickets, or contracts. Business vocabulary enters through Work Context, evidence, configured capabilities, and enterprise policy rather than a fixed ontology.
-
-## Example: a Feishu operations assistant
-
-Tell the assistant:
-
-> Every day at 09:00, read yesterday's sales data and send me a report. If sales are down by more than 20%, identify the likely causes and alert me.
-
-BeeMax can turn that request into a durable workflow:
-
-1. Create a recurring 09:00 schedule in the Profile's timezone.
-2. Read sales data from permitted files, databases exposed through MCP, or enterprise knowledge services.
-3. Calculate revenue, order volume, conversion rate, and other requested metrics.
-4. Compare the result with historical evidence.
-5. Investigate whether a material decline came from a region, product, or channel.
-6. Generate the report and persist the verified result.
-7. Deliver it through Feishu/Lark.
-8. Remember confirmed preferences such as format, recipients, and comparison window.
-9. Resume unfinished Tasks after a restart without replaying a committed external mutation.
-
-The workflow still obeys the active Toolset and enterprise policy. If a report update or external send requires approval, BeeMax asks before executing it and records the result instead of claiming success prematurely.
-
-The same runtime can also serve as:
-
-- a **research assistant** that searches sources, reads pages and PDFs, organizes evidence, and produces a report;
-- a **knowledge assistant** that answers from enterprise knowledge and replies in Feishu/Lark;
-- a **project assistant** that retains project context, tracks long-running work, flags overdue items, and prepares weekly reports;
-- a **personal assistant** that remembers preferences, organizes files, schedules reminders, and prepares meeting material;
-- an **operations assistant** that checks service health and logs on a schedule, investigates anomalies, and reports bounded evidence; or
-- a **meeting assistant** that discovers or schedules Feishu meetings and assembles relevant context and documents.
-
-## The execution flow
+## 它如何工作
 
 ```text
-Natural-language Turn
-        ↓
-One Pi model understands the requested outcome
-        ├─ simple → answer directly
-        └─ complex → adapt the plan while executing
-                         ↓
-              progressively load Tools / Skills
-                         ↓
-              model ↔ Tool loop with recovery
-                         ↓
-              model completion + system guards
-                         ↓
-                    text and files
-
-Durable Trigger or explicit Objective lifecycle
-        ↓
-admitted Work Contract → Objective / Task Ledger
-        ↓
-the same Pi loop → checkpoint → independent Verification → delivery
-
-Verified outcome while `adaptive_learning` is enabled
-        ↓
-fenced proposal → low-risk Learning Objective → independent Verification
-        ↓
-atomic settlement → scoped projection / immutable managed-Skill trial
+用户目标 / 定时任务 / 自定义企业事件 Adapter
+                ↓
+Situation / Work Context + 作用域记忆
+                ↓
+Objective + 持久化 Task Ledger
+                ↓
+Pi Agent Runtime 规划并选择 Skill / Tool / MCP
+                ↓
+权限判断 / 风险治理 / 必要时人工审批
+                ↓
+Tool Effect 执行 + Provider Receipt
+                ↓
+Checkpoint + 独立 Verification
+                ↓
+Delivery Outbox 交付 + 证据化 Memory 更新
 ```
 
-Pi owns task understanding, adaptive execution, model interaction, tools, session events, and live compaction. BeeMax Core adds product semantics around Pi: progressive capability disclosure, scope, sandbox and approval policy, durable responsibility where requested, Effect authority, recovery, verification, and delivery. Work Contracts govern durable/background responsibility; they are not a mandatory pre-model classification pass for ordinary interactive work.
+Pi 负责模型交互、工具调用、会话事件和实时上下文压缩；BeeMax Core 负责 Profile 作用域、持久责任、任务恢复、Effect 幂等、审批、验证和交付。
 
-## Quick start
+## 核心能力
 
-### 1. Install BeeMax
+| 能力 | 当前实现 |
+| --- | --- |
+| 长期记忆 | 使用 SQLite/FTS5 保存经审核的偏好、事实、目标、证据、纠正、冲突、惯例和已验证工作 Episode |
+| 持久任务 | Objective、DAG Task Plan、Task Run、Lease、Checkpoint、Candidate Result、Verification、纠错、取消与安全恢复 |
+| 工具执行 | 文件、Shell、Web、MCP、WeKnora、飞书会议、图片理解、Tesseract OCR 与可选图片生成 |
+| 渐进 Skills | 先发现元数据，任务命中后再激活 Skill 并按需读取资源，避免把所有说明一次性塞进上下文 |
+| 自动化 | 提醒、一次性任务、间隔任务、Cron、Heartbeat、misfire 策略、重试和有边界的主动只读调查 |
+| 受治理动作 | 变更型工具按风险、范围、企业策略和执行授权决定是否审批；外部副作用使用持久 Effect 和幂等键 |
+| 多模型 | OpenAI、Anthropic、OpenRouter、Gemini、DeepSeek，以及兼容 OpenAI/Anthropic 协议的自定义端点；Ollama 可经兼容端点接入 |
+| 多渠道 | 本地终端、飞书/Lark 流式卡片、Telegram 文本与媒体，共享同一个 Profile Runtime |
+| Profile 隔离 | 每个 Profile 拥有独立模型、密钥、Memory、工作区、Skills、渠道和任务状态 |
+| 运维 | Doctor、备份、日志、Trace、Effect 对账、显式迁移、Linux systemd、macOS LaunchAgent 和 Docker 执行沙箱 |
 
-Linux and macOS require Node.js 22.19 or newer, `curl`, `tar`, `npm`, and either `sha256sum` or `shasum`.
+## 示例：配置一个“飞书销售运营助理”
 
-Install the latest published BeeMax release:
+你可以在飞书里提出：
+
+> 每天上午 9 点读取昨天的销售数据，生成日报。如果销售额相对既定基线下降超过 20%，按地区、产品和渠道定位主要贡献维度，并提醒我。
+
+在数据源、指标口径和权限配置完成后，BeeMax 可以：
+
+1. 创建带时区、重试和 misfire 策略的每日任务。
+2. 从文件、已授权知识空间、MCP 服务或受控命令读取销售数据。
+3. 调用配置好的 SQL、分析工具或销售分析 Skill 计算销售额、订单量和转化率。
+4. 按明确的比较基线检查波动阈值。
+5. 对地区、产品、渠道等维度做贡献分析，并把推测与已验证事实分开。
+6. 生成带数据来源、统计口径和异常说明的日报。
+7. 将通过 Verification 的结果经 Delivery Outbox 投递到原飞书会话。
+8. 把稳定的格式偏好保存为可审核 Memory，供后续任务复用。
+9. 进程中断后，仅在恢复策略、幂等身份、执行范围和 Effect 状态都安全时继续任务。
+
+这个示例展示的是通用能力的组合，不是内置销售数据模型。企业需要明确：
+
+- 数据源与访问授权；
+- 销售额、订单量、转化率等指标口径；
+- 比较周期、时区、退款和异常订单处理方式；
+- 日报接收范围及外部写入权限；
+- 验收标准和允许自动执行的动作。
+
+如果任务还需要修改文件、回写 CRM、发送给新的外部联系人或操作其他业务系统，BeeMax 会按工具策略和企业授权要求审批。已经验证且配置了交付路径的任务结果可以自动投递，不要求每次重复确认。
+
+## 可配置的 Agent 场景
+
+以下场景由 Skills、工具、知识空间、任务规则和企业策略组合而成：
+
+| 场景 | 可组合能力 | 需要补充的企业配置 |
+| --- | --- | --- |
+| 研究助理 | Web 搜索、网页读取、文件整理、证据引用、研究简报 | 可信来源、报告模板；PDF 深度解析需配置相应工具或 MCP |
+| 知识客服 | WeKnora 检索、作用域过滤、来源回溯、飞书回复 | 授权知识空间、升级人工规则、回答验收标准 |
+| 项目助理 | Objective、Task Plan、Checkpoint、提醒、周报 | 项目数据源、责任人、延期和升级规则 |
+| 销售运营助理 | 定时任务、MCP/文件数据、分析 Skill、日报交付 | CRM/数据库连接、指标口径、接收人和审批策略 |
+| 运维助理 | 定时检查、日志分析、异常通知、受治理命令 | 监控来源、运行手册、允许的只读/变更操作 |
+| 会议助理 | 飞书会议查询与预约、知识检索、资料整理 | 应用权限、会议资料来源；当前未内置飞书 User OAuth，私有用户资源需外部适配 |
+
+## 快速开始
+
+### 1. 安装
+
+Linux 和 macOS 需要 Node.js 22.19 或更高版本，以及 `curl`、`tar`、`npm` 和 `sha256sum` 或 `shasum`。
+
+安装最新稳定 Release：
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/Zanetach/beemax/main/scripts/bootstrap-install.sh | bash
 ```
 
-The bootstrap installer resolves GitHub's latest stable Release, then downloads its checksum-verified archive containing BeeMax and the vendored Pi source. Application files go to `~/.beemax/app`; the command is installed to `~/.local/bin`.
+Bootstrap 会解析 GitHub 最新稳定 Release，校验归档校验和，并将应用安装到 `~/.beemax/app`、命令安装到 `~/.local/bin`。
 
-To validate unreleased source or contribute to BeeMax, install from a checkout instead:
+从源码安装：
 
 ```bash
 git clone https://github.com/Zanetach/beemax.git
@@ -125,34 +121,42 @@ cd beemax
 ./scripts/install.sh
 ```
 
-On Ubuntu and macOS, installation also discovers or installs Tesseract OCR. Ubuntu installation additionally provisions Noto CJK fonts so Chinese HTML/PDF reports retain visible, extractable text. Set `BEEMAX_INSTALL_MEDIA_DEPS=0` only when the host image manages these dependencies separately.
+安装程序会检查本地媒体依赖，并在受支持的 Ubuntu/macOS 环境中发现或安装 Tesseract OCR。若宿主环境自行管理 OCR，可设置 `BEEMAX_INSTALL_MEDIA_DEPS=0`。
 
-### 2. Create a Profile
+### 2. 创建 Profile
 
 ```bash
 beemax setup --profile personal
 ```
 
-The wizard configures the Profile identity, model, credentials, workspace, Skills, and local readiness. Secrets are prompted securely and stored outside YAML.
+向导会配置 Profile 身份、模型、凭据、工作区、Skills 和本地运行状态。密钥通过安全提示输入并保存在 YAML 之外。
 
-### 3. Start chatting
+### 3. 在终端开始使用
 
 ```bash
 beemax chat --profile personal
 ```
 
-Local chat uses the same Profile, Memory, Skills, Pi runtime, governance, and durable work graph as a channel Gateway.
+本地聊天与渠道 Gateway 使用相同的 Profile、Memory、Skills、治理策略和持久任务图。
 
-### 4. Connect messaging channels when needed
+### 4. 接入飞书/Lark
 
 ```bash
 beemax gateway setup --profile personal
 beemax gateway run --profile personal
 ```
 
-The setup flow configures the channel allowlist, probes credentials and bot identity, and prints the Feishu publishing checklist. WebSocket long connection is the default; webhook mode is available for public HTTPS deployments.
+配置流程会设置访问白名单、探测凭据和机器人身份，并输出飞书应用发布清单。默认使用 WebSocket 长连接，也支持加密 Webhook。
 
-Telegram can run beside Feishu in the same Profile Gateway:
+飞书自建应用至少需要启用 Bot，并配置私聊消息读取、群聊 `@mention` 读取和机器人发信权限；事件订阅需要包含 `im.message.receive_v1`，完成后发布应用版本。未知私聊用户不会直接进入 Agent，可以由管理员通过配对码授权：
+
+```bash
+beemax pairing list --profile personal
+beemax pairing approve feishu <pairing-code> --profile personal
+beemax pairing revoke feishu <user-id> --profile personal
+```
+
+### 5. 接入 Telegram
 
 ```bash
 beemax channel add telegram --profile personal
@@ -160,94 +164,26 @@ beemax channel test telegram --profile personal
 beemax channel list --profile personal
 ```
 
-## What ships in v1.5.1
+先通过 BotFather 创建机器人。Token 应由安全提示输入或保存在 Profile `.env` 的 `TELEGRAM_BOT_TOKEN` 中；使用 `TELEGRAM_ALLOWED_USERS` 配置允许访问的数字用户 ID。飞书和 Telegram 可以在同一个 Profile Gateway 中同时运行；渠道只负责连接与呈现，不会创建第二套 Agent Loop。
 
-| Area | Implemented surface |
+## Profile、模型与密钥
+
+每个 Profile 位于 `~/.beemax/profiles/<name>/`：
+
+| 路径 | 用途 |
 | --- | --- |
-| Agent runtime | One Core-owned model-first Pi runtime for CLI and Gateway, with adaptive planning for complex turns and a Contract-governed lane for durable Tasks, recovery, automation, and proactive execution |
-| Work Context | Situation model for facts, goals, constraints, uncertainty, conflicts, possible actions, and provenance |
-| Memory | One Profile-bound SQLite/FTS5 authority for scoped recall, Claims, verified Episodes, candidates, evidence lineage, correction, conflict, contribution receipts, assessments, and immutable projections |
-| Durable work | Objectives, DAG Task Plans, Task Runs, leases, Checkpoints, Candidate Results, Verification, correction, cancellation, and recovery |
-| Effects | One authority for mutating Tool Effects, idempotency, provider receipts, unknown outcomes, reconciliation, and compensation |
-| Initiative | Evidence-gated observation and read-only investigation with duplicate and interruption controls |
-| Context | Model-aware budgets, bounded Tool results, Pi compaction, Task Preservation Envelopes, and restart-safe recovery context |
-| Channels | Independent Channel Runtime and Adapter packages, deterministic multi-instance Bindings, shared group Conversations, bounded contextual activation, Feishu/Lark streaming cards, Telegram text/media, governed delivery, and Profile lifecycle isolation |
-| Images | Native model vision, auxiliary configured vision models, local Tesseract OCR, and optional GPT Image generation |
-| Capabilities | Progressive Skills, Web research, MCP, WeKnora retrieval, Feishu meetings, files, schedules, reminders, bounded Sub-Agents, and an `adaptive_learning`-gated managed-Skill stable/canary lane |
-| Operations | Doctor, Profile backup, explicit Channel/Session ownership migration, hardened Docker execution, Ubuntu resource gates, Linux systemd, macOS LaunchAgent, logs, traces, Effect inspection, and verified updates |
+| `config.yaml` | 模型、运行时、渠道、上下文和能力配置 |
+| `.env` | 模型与渠道密钥，使用仅所有者可读权限 |
+| `SOUL.md` | 长期身份、风格和默认行为边界 |
+| `USER.md` | 稳定的用户偏好与工作上下文 |
+| `MEMORY.md` | 已审核的长期记忆快照 |
+| `workspace/` | 隔离的默认工作区及项目说明 |
+| `skills/` | Profile 作用域内的渐进 Skills |
+| `data/` | SQLite authority、Pi 会话、Trace、缓存和交付状态 |
 
-## Architecture
+可以通过 `BEEMAX_HOME` 重定位所有 Profile Home。旧版仓库内 Profile 仍可读取，并可使用 `beemax profile migrate <name>` 非破坏地迁移到隔离目录。
 
-```mermaid
-flowchart TB
-    CLI["CLI"]
-    Channels["飞书/Lark · Telegram · 未来渠道"]
-    Triggers["Schedules · durable Triggers"]
-
-    subgraph Profile["apps/cli · createProfileRuntime · 每个 Profile 唯一装配根"]
-        IA["InteractionEventAdapter"]
-        CH["AdapterRegistry + ChannelHost"]
-        Dispatcher["Gateway Dispatcher"]
-        Scheduler["AutomationScheduler / Initiative Runtime"]
-
-        Core["@beemax/core<br/>BeeMaxAgentRuntime<br/>唯一 Agent Runtime"]
-        Pi["Core-private Pi execution substrate<br/>model turns · Tool loop · Skills · compaction"]
-        Cap["Capability adapters<br/>Web · MCP · WeKnora · meetings<br/>files · execution · images"]
-        Work["ProfileWorkRuntime<br/>Objective · Task Plan · leases<br/>Checkpoint · Verification · recovery · Sub-Agent"]
-        Delivery["DeliveryPort + durable outboxes<br/>text · media · cards · receipts · retry"]
-        Learning["MemoryLearningKernel<br/>adaptive_learning rollout gate"]
-
-        Memory["@beemax/memory · Profile SQLite<br/>Claims · Episodes · Task Ledger · Verification<br/>learning lineage · assessments · projections"]
-        Automation["@beemax/automation<br/>Schedule · Occurrence · leases · delivery state"]
-        Journals["Core durable journals<br/>Effects · execution Trace · reconciliation"]
-
-        IA --> Core
-        CH --> Dispatcher --> Core
-        Scheduler --> Core
-        Core --> Pi
-        Core <-->|"progressive Tool / Skill calls"| Cap
-        Core --> Work
-        Core --> Delivery
-        Work <--> Memory
-        Scheduler <--> Automation
-        Core --> Journals
-        Work --> Journals
-        Memory -->|"scoped recall"| Core
-        Core -->|"observations"| Learning
-        Work -->|"independently verified outcomes"| Learning
-        Learning <-->|"receipts · assessments · projections"| Memory
-        Learning -->|"Context Packs / immutable Skill pointer"| Core
-    end
-
-    CLI --> IA
-    Channels --> CH
-    Triggers --> Scheduler
-    Delivery --> CLI
-    Delivery --> CH
-```
-
-[`apps/cli/src/runtime-composition.ts`](apps/cli/src/runtime-composition.ts) is the application composition seam, not a second Agent runtime. It creates one shared Profile Runtime for CLI or Gateway use. [`apps/cli/src/profile-work-runtime.ts`](apps/cli/src/profile-work-runtime.ts) binds the same Task Ledger, Effect authority, execution Trace, recovery service, Verification, approvals, and Memory Learning Kernel.
-
-`@beemax/core` is the only Agent Runtime boundary, and Pi is its private execution substrate. Gateway owns authenticated channel transport, routing, lifecycle, presentation, and delivery, but does not select models, assemble prompts, recall Memory, authorize Tools, or decide Agent work. Capability packages enter through Core-owned Tool contracts and cannot bypass current Profile scope, Sandbox, approval, or Effect governance.
-
-Capability packages consume Pi primitives through Core. The CLI presentation layer may use `pi-tui`, but it does not own Agent execution. See the [Core/Gateway ownership contract](docs/architecture/core-gateway-boundaries.md).
-
-## Profiles and configuration
-
-Each Profile is an isolated Agent Home under `~/.beemax/profiles/<name>/`.
-
-| Path | Purpose |
-| --- | --- |
-| `config.yaml` | Profile model, runtime, channel, context, and capability settings |
-| `.env` | Provider and channel secrets, stored with owner-only permissions |
-| `SOUL.md` | Long-lived identity, style, and default behavioral boundaries |
-| `USER.md` | Stable user preferences and working context |
-| `MEMORY.md` | Reviewed durable-memory snapshot |
-| `workspace/` | Isolated default workspace and project instructions |
-| `skills/` | Profile-scoped progressive Skills |
-| `data/` | SQLite authority, Pi sessions, traces, caches, and delivery state |
-
-Common Profile operations:
+常用命令：
 
 ```bash
 beemax profile create work
@@ -258,13 +194,7 @@ beemax profile backup work ./backups
 beemax doctor --profile work
 ```
 
-Set `BEEMAX_HOME` to relocate all Profile Homes. Legacy repository-local Profiles remain readable and can be copied non-destructively with `beemax profile migrate <name>`.
-
-### Models
-
-Setup reads providers and model capabilities from Pi's built-in registry. A Profile can hold multiple configured models and switch per conversation.
-
-Custom endpoints support OpenAI Chat Completions, OpenAI Responses, and Anthropic Messages protocols. Declare the real context window and maximum output when capability metadata is unavailable.
+Profile 可以配置多个模型并按会话切换。自定义端点支持 OpenAI Chat Completions、OpenAI Responses 和 Anthropic Messages 协议：
 
 ```yaml
 model:
@@ -276,71 +206,17 @@ model:
   maxTokens: 8192
 ```
 
-Keep API keys in the Profile `.env`, or enter them through `beemax setup`. BeeMax rejects model and credential secrets passed in command-line arguments.
+API Key 应保存在 Profile `.env` 中，或通过 `beemax setup` 的安全提示输入。BeeMax 拒绝从命令行参数接收模型和凭据密钥。
 
-### Toolsets
+## Memory 与长期任务
 
-Profiles use the `standard` Toolset by default. Set `agent.toolset: safe` for a lower-trust channel.
+BeeMax 将聊天记录、候选记忆和长期组织证据分开：
 
-The safe Toolset keeps read/search, Memory inspection, task status, schedules, Skill inspection, and read-only MCP tools. It excludes shell, file writes, Memory mutation, image generation, scheduling mutation, and mutating MCP tools.
-
-Capability selection is progressive. An admitted exact Tool/MCP/Skill name, alias, or trigger phrase uses a deterministic metadata fast path; description-word overlap is recall only and never grants execution authority. Configured Profile text models resolve the remaining requirements with bounded semantic cognition. BeeMax may fail over between configured semantic models. Only Provider unavailability or the auxiliary preflight deadline may repair through the same exact local metadata; malformed, empty, incomplete, or below-threshold semantic output fails closed and is never replaced by weaker lexical routing. When no Profile text model is configured, lexical recall remains available but still passes Policy and Tool-Spec admission. A valid semantic “no match” remains empty and never forces an unrelated Skill. Optional Profile preferences optimize equivalent candidates but do not grant execution authority:
-
-```yaml
-agent:
-  capabilityPreferences:
-    web_search: 0.4
-    skill:source-review: 0.8
-  capabilityCognition:
-    maxModelAttempts: 3
-    maxTokens: 2048
-    timeoutMs: 12000
-```
-
-Preference values range from `-1` to `1`. Capability cognition retries distinct Provider models without a cumulative token or cost ceiling; a timed-out model is not retried inside a smaller slice of the same deadline, while a fast structural response may receive one bounded repair. `maxModelAttempts` accepts `1`–`5`. The compact `maxTokens` value is only the output size requested for one bounded JSON decision, not an Agent Turn or Objective budget. `timeoutMs` bounds only this optional preflight lane; it never times out or abandons the Objective. Individual stalled network requests still fail visibly so another Provider or exact deterministic discovery route can continue the unchanged Objective. Neither setting authorizes description-overlap fallback or lexical degradation after malformed or empty semantic responses. Policy, Profile scope, Provider health, Effects, and the turn-scoped Tool Spec still decide whether a selected capability can execute.
-
-Missing Provider acquisition is disabled by default. Operators may pre-authorize exact Provider adapters per Profile; the mutating `capability_acquire` Tool still requires runtime approval, installation uses a pinned adapter in the Profile's private directory, and BeeMax resumes the unchanged Objective only after a health probe returns evidence:
-
-```yaml
-capabilityProviders:
-  installation:
-    enabled: true
-    allowedProviders: [exa-mcporter]
-```
-
-The equivalent environment settings are `BEEMAX_PROVIDER_INSTALLATION_ENABLED=true` and `BEEMAX_PROVIDER_INSTALLATION_ALLOW=exa-mcporter`. BeeMax currently ships a pinned Exa/mcporter adapter for restoring `web_search`; arbitrary package names or model-authored shell commands are never accepted. The adapter installs a fixed mcporter dependency closure from BeeMax's SHA-256-verified `package-lock`, disables package lifecycle scripts, runs with a minimal Profile-scoped environment, and publishes through an atomic cross-process lock plus rename. Its manifest content-addresses the executable, configuration, and complete dependency tree; integrity is rechecked before health probes and searches. Interrupted or ambiguous installs leave a durable quarantine; the next acquisition first reconciles the isolated staging state, then retries without overlapping the previous installer. Missing configuration, denied authority, unhealthy installation, and unknown outcomes fail closed instead of producing an evergreen substitute.
-
-Every Capability decision receives a content-free cognition ID that correlates model usage, fallback telemetry, the execution trace, and the eventual verified, rejected, failed, cancelled, or unverified task outcome. Calibration reports keep lexical, frozen-semantic, and live-Provider results separate and measure Top-1, Top-K, required-capability recall, unnecessary activation, no-match precision, completion, latency, tokens, and cost. Versioned threshold trials cannot be promoted when authorization, false-positive, recall, or completion metrics regress.
-
-Before a release, refresh the credentialed semantic-routing and outcome evidence with `npm run eval:capability-ranking:live -- --profile <profile> --write evals/baselines/capability-ranking-live.json`. This includes a separate live-Pi lane: the configured model receives the turn-scoped Tool Spec, chooses Tools itself, and must satisfy independent Acceptance Criteria. Every Pi-originated Tool call is bound to the exact internal assistant Turn, Provider response, Tool name, and canonical argument identity that produced it. Provider response IDs and Tool arguments never enter the durable Trace as raw content: only SHA-256 identity projections are retained. A Tool-bearing Turn without a reported Provider response identity is blocked before execution; a Tool-free Turn may honestly record the identity as `unavailable`. The deterministic routing harness remains infrastructure evidence, not proof that a model completed the task. Live-Pi token, latency, and model-Turn usage are measured and reported; missing required Provider or usage evidence fails closed, but these diagnostics do not impose a cumulative Agent Turn or Objective termination ceiling. Provider cost remains explicitly `unpriced` when the configured catalog supplies no price rather than being presented as free. The release verifier independently recomputes rankings, correlated task outcomes, model-driven Tool receipts, usage, costs, and threshold promotion decisions; it rejects missing, failed, expired, fallback-backed, implementation-mismatched, incorrectly ordered, causally detached, or gate-violating evidence.
-
-## Memory and durable work
-
-BeeMax separates chat history from durable organizational evidence.
-
-- One Profile-bound SQLite database is the semantic Memory authority; Task, Effect, Verification, approval, and delivery ledgers remain separate execution authorities.
-- Conversation candidates stay pending until reviewed or promoted.
-- Explicit, low-risk personal preferences may additionally be admitted by the governed L4 extractor when `adaptive_learning` is enabled; broader organizational knowledge still requires type-specific authority.
-- Claims retain source evidence, validity, visibility, scope, correction, and conflict lineage.
-- Verified Objective outcomes may publish idempotent Situation-backed Episodes.
-- Recall is constrained by Profile, owner, conversation, thread, access scope, and business-object evidence when available.
-- Unknown customer vocabulary remains open semantics; it is not mapped into a fixed order, ticket, or contract schema.
-
-### Governed L4 Memory Learning foundation
-
-v1.5.1 ships the governed implementation foundation behind Profile rollout authority. Production conversation evidence may become a fenced extraction proposal and a low-risk Learning Objective. Only a correlated, independently verified outcome can settle contribution receipts and assessments or publish a project/organization projection. A procedural candidate remains quarantined until independent trials authorize an immutable canary or stable pointer; rollback changes the pointer without rewriting history.
-
-The safety model is intentionally strict:
-
-- Raw model output, repeated behavior, and unverified candidates are evidence, not authority or active policy.
-- Trusted access scope and visibility are filtered before ranking, so relevance cannot widen access.
-- Verification unavailable, cancellation, authorization denial, and ambiguous attribution settle as `unknown`, not as invented success or failure.
-- Corrections and forgetting invalidate dependent receipts and projections instead of silently rewriting provenance.
-- Managed Skills remain subject to current Tool, Sandbox, approval, and Effect governance; learning cannot create new execution authority.
-
-This is not an L4 certification claim. That label requires the production-path, multi-provider, paired Memory-On/Memory-Off, fault, privacy, migration, and soak evidence defined by the [L4 rollout and certification gate](docs/operations/l4-memory-learning-rollout-and-certification.md).
-
-Useful Memory commands:
+- 普通对话内容不会自动成为永久事实；
+- 候选内容需要审核、晋升或可靠证据；
+- Claim 保留来源、有效期、可见性、纠正和冲突链；
+- 已验证 Objective 可以发布幂等、可回溯的 Memory Episode；
+- Recall 受 Profile、用户、会话、Thread 和可信 Access Scope 约束。
 
 ```bash
 beemax memory status --profile personal
@@ -351,9 +227,7 @@ beemax memory promote <candidate-id> --profile personal --yes
 beemax memory reject <candidate-id> --profile personal --yes
 ```
 
-Responsible work becomes an Objective with durable Tasks. Safe work may resume after a crash only when recovery policy, idempotency identity, execution scope, and unresolved Effect state all permit it.
-
-In chat, inspect work without asking the model to reconstruct it:
+在聊天中可以直接查看持久任务，而不要求模型根据对话历史猜测：
 
 ```text
 /status
@@ -364,21 +238,23 @@ In chat, inspect work without asking the model to reconstruct it:
 /tasks cancel <plan-id>
 ```
 
-Verification unavailable retries Verification against the retained Candidate Result; it does not replay Task execution. Explicit rejection may start one bounded Corrective Attempt only when safe-retry authority is complete.
+恢复不是无条件重放。只有明确允许安全重试、具备幂等身份和执行范围、且不存在未决外部 Effect 的任务才会恢复。Verification 暂时不可用时，BeeMax 会保留 Candidate Result 并重试验证，而不是直接重复执行任务。
 
-## Governed actions and Effects
+## 审批、Effect 与结果验证
 
-Every action is evaluated independently from its target, risk, reversibility, enterprise policy, current Effect state, approval, and execution grant.
+每个变更动作都会根据目标、风险、可逆性、企业策略、执行授权和当前 Effect 状态独立判断。
 
-Mutating tools require approval unless a trusted, scoped policy permits the specific action. High-risk or irreversible work cannot become autonomous merely because a broad policy says “allow.”
+默认情况下，变更型工具需要审批；可信且作用域明确的策略可以授权特定低风险动作，但高风险或不可逆操作不会因为一个宽泛的“允许自动化”设置而获得无限权限。
 
-External mutation follows a durable lifecycle:
+外部副作用使用持久状态机：
 
 ```text
 planned → executing → committed | failed | unknown
 ```
 
-A committed mutation is never replayed. An `unknown` outcome blocks retry until an operator observes the external system and reconciles it.
+- `committed` 不会被重复执行。
+- `failed` 可以按策略进入安全重试或人工处理。
+- `unknown` 会阻止重放，直到操作员检查外部系统并完成对账。
 
 ```bash
 beemax effect list --status unknown --profile personal
@@ -388,94 +264,41 @@ beemax effect reconcile <effect-id> --status committed \
 beemax effect reconcile <effect-id> --status failed --profile personal
 ```
 
-Runtime recovery procedures are documented in the [fault recovery runbook](docs/operations/fault-recovery.md).
+## 自动化与主动工作
 
-## Context management
+BeeMax 支持 `at`、`every` 和 `cron` 三类计划，具备时区、重试、Occurrence 身份、Lease、misfire 策略和持久 Delivery Outbox。
 
-BeeMax has one context pipeline and one compactor.
+Heartbeat 是触发器，不是另一套 Agent。它会检查到期提醒、持久任务和近期失败，在 Agent 忙碌时延后，并遵守活跃时间段。
 
-Core assembles bounded Situation, scoped Memory evidence, capability context, and durable Task state. Pi owns the live session, threshold/overflow detection, summaries, and manual compaction.
+主动能力分级开放：
 
-```yaml
-context:
-  maxTurnChars: 12000
-  maxToolResultTokens: 12000
-  compaction:
-    enabled: true
-    # reserveTokens: 19200
-    # keepRecentTokens: 20480
-```
-
-Defaults scale from the active model's context window. `/usage` shows effective budgets, and `/compact` requests compaction while the session is idle.
-
-After compaction, BeeMax checks durable responsibility identities. Missing Tasks are restored from the authoritative Task Ledger and persisted into Pi's session transcript rather than guessed from the summary.
-
-## Initiative and automation
-
-BeeMax can observe durable Triggers and propose or execute bounded proactive work. Autonomy is separated into evidence-gated levels instead of one global switch.
+1. 构建 Situation Context；
+2. 记录 Initiative Observation；
+3. 执行有证据、有预算的只读调查；
+4. 仅在企业策略和发布门禁允许时执行可逆、低风险动作。
 
 ```bash
 beemax autonomy status --profile personal
 beemax autonomy promote situation_context --profile personal --yes
 beemax autonomy stop read_only_investigation \
   --evidence-ref incident:2026-07-14 --profile personal --yes
-beemax autonomy rollback initiative_observation \
-  --evidence-ref review:2026-07-14 --profile personal --yes
 ```
 
-Promotion requires measured quality, safety, expected value, duplication, and interruption evidence. Enterprise deny always wins; enterprise allow cannot bypass failed evidence.
+Pi 执行和渠道交付独立结算。飞书或 Telegram 暂时离线时，系统只重试结果交付，不会重新运行已经完成的 Agent 或 Tool 工作。
 
-Schedules, reminders, and Heartbeat are durable and Profile-scoped. Heartbeat is single-flight, defers while the Agent is busy, respects active hours, and suppresses `HEARTBEAT_OK`.
+## Tools、Skills、MCP 与知识库
 
-```text
-schedule_create   schedule_get      schedule_list
-schedule_update   schedule_pause    schedule_resume
-schedule_run_now  schedule_delete   schedule_runs
-schedule_status
-```
-
-Unattended scheduled Agent runs use bounded, isolated execution. Each due time materializes one durable Schedule Occurrence linked to the Pi-created Objective and Task Run. Renewable fenced claims prevent stale instances from settling the same occurrence; finite retry and explicit misfire policy prevent unbounded catch-up.
-
-Pi execution and channel delivery settle independently. A verified result is persisted before entering the Delivery Outbox, so a Feishu or Telegram outage retries only delivery and never replays completed Agent or Tool work. ChannelHost keeps supervising offline adapters while the Profile Runtime, scheduler, and durable work remain available.
-
-## Images and OCR
-
-Inbound images pass through one Profile-scoped media-understanding seam.
-
-1. The active model receives the original image when it supports image input.
-2. Other configured image-capable models can act as auxiliary vision adapters.
-3. Tesseract provides local OCR fallback on Ubuntu and macOS.
-4. If no adapter can inspect the image, BeeMax fails explicitly.
-
-```yaml
-mediaUnderstanding:
-  auxiliaryVisionEnabled: true
-  localOcr:
-    enabled: true
-    # command: /usr/bin/tesseract
-    # languages: eng+chi_sim
-    timeoutMs: 30000
-```
-
-Media output enters Pi as untrusted evidence with digest, provenance, confidence, warnings, and timing. Raw image bytes are not copied into receipts, telemetry, Task Ledger, or Memory.
-
-## Skills, MCP, Web, and knowledge
-
-BeeMax installs bundled Profile Skills and discovers eligible Pi Skills progressively. Only Skill metadata enters the initial prompt; the full body loads after a task matches it.
+Profile 默认使用 `standard` Toolset。低信任渠道可以设置 `agent.toolset: safe`：保留读取、搜索、Memory/Task/Schedule/Skill 检查和只读 MCP，排除 Shell、文件写入、Memory 变更、图片生成、Schedule 变更和写入型 MCP。
 
 ```bash
 beemax skills list --profile personal
 beemax skills sync --profile personal
-beemax skills install pi-web-access --profile personal
-```
-
-MCP supports stdio and Streamable HTTP servers. Use `${ENV_VAR}` references for secrets. Tools without an explicit read-only annotation are governed as mutations.
-
-```bash
 beemax mcp status --profile personal
 ```
 
-Web research supports provider-backed search plus SSRF-guarded extraction. WeKnora integration exposes only explicitly configured knowledge spaces through the read-only `knowledge_retrieve` tool.
+MCP 支持 stdio 和 Streamable HTTP。没有明确只读声明的 MCP Tool 会被保守地视为变更操作。
+
+WeKnora 只检索 Profile 显式授权的知识空间：
 
 ```yaml
 knowledge:
@@ -488,78 +311,40 @@ knowledge:
       knowledgeBaseId: kb-xxxxxxxx
 ```
 
-Store `BEEMAX_WEKNORA_API_KEY` in the Profile `.env`.
+将 `BEEMAX_WEKNORA_API_KEY` 保存在 Profile `.env` 中。
 
-## Messaging Gateway
+BeeMax 当前没有内置通用业务数据库连接器；数据库、CRM、OA、ERP 和内部 API 通常通过 MCP、专用 Tool 或受控执行适配。
 
-One Profile Gateway hosts all enabled channel adapters while using exactly one shared Profile Runtime. `AdapterRegistry` creates transports, `ChannelHost` isolates lifecycle failures, and `GatewayDeliveryPort` routes outbound artifacts by platform. Channel adapters normalize identity, messages and media; they do not own Tasks, Memory, Policy, Effects, Verification, recovery, or a second Pi loop.
+## 图片与 OCR
 
-Non-secret declarations live under `gateway.channels[]`; each entry has an adapter ID, instance ID, enabled state, `credentialRef`, and adapter settings. Built-in channel Secrets remain in the owner-only Profile `.env` and are resolved at the trusted Adapter/diagnostic boundary by `profile-env:<adapter>`. They do not enter YAML, ordinary `BeeMaxConfig`, logs, Memory, or model context; rotating the Profile Secret source does not require rebuilding the ordinary configuration object.
+入站图片通过统一的 Profile 媒体理解接口处理：
+
+1. 主模型支持视觉时接收原图；
+2. 可使用其他已配置的视觉模型；
+3. Ubuntu 和 macOS 可使用本地 Tesseract OCR；
+4. 没有可用适配器时明确失败，不伪装成已读取图片。
 
 ```yaml
-gateway:
-  channels:
-    - id: feishu-main
-      adapter: feishu
-      enabled: true
-      credentialRef: profile-env:feishu
-      settings: {}
-    - id: telegram-main
-      adapter: telegram
-      enabled: true
-      credentialRef: profile-env:telegram
-      settings:
-        allowedUsers: ["123456789"]
-        allowedChats: []
-        allowAllUsers: false
-        activation:
-          mode: explicit
-          respondTo: [mention, reply, command]
+mediaUnderstanding:
+  auxiliaryVisionEnabled: true
+  localOcr:
+    enabled: true
+    # command: /usr/bin/tesseract
+    # languages: eng+chi_sim
+    timeoutMs: 30000
 ```
 
-Run `beemax channel list --profile personal` to inspect declarations, `beemax doctor --profile personal` to validate enabled adapters, and the standard Gateway lifecycle commands to run them together.
+普通文件可以通过文件工具或配置的能力处理；深度 PDF 解析不是当前内置的一等能力，需要配置对应 Tool、Skill 或 MCP。
 
-## Feishu and Lark
+## 部署与运维
 
-BeeMax supports self-built Feishu/Lark applications through WebSocket long connection or encrypted webhook delivery.
-
-Required Feishu capabilities include Bot, direct-message receive, group `@mention` receive, and send-as-bot. Subscribe to `im.message.receive_v1` and publish the app before testing.
-
-Access is deny-by-default. Configure authorized user IDs with `FEISHU_ALLOWED_USERS`; optionally restrict chats with `FEISHU_ALLOWED_CHATS`.
-
-Unknown private-message users receive a bounded pairing code instead of reaching the Agent:
-
-```bash
-beemax pairing list --profile personal
-beemax pairing approve feishu ABCD2345 --profile personal
-beemax pairing revoke feishu ou_xxx --profile personal
-```
-
-Each turn renders one streaming interactive card with answer, progress, governed approval actions, bounded tool activity, and usage metadata. Only one Gateway process may own a Profile at a time.
-
-Feishu meeting tools cover meeting queries, reservations, participants, host control, and recording lifecycle. Private user resources still require a future Feishu User OAuth layer.
-
-## Telegram
-
-BeeMax uses the Telegram Bot API with bounded long polling, deny-by-default user/chat allowlists, text reply and edit support, typing indicators, native image/file delivery, and bounded temporary downloads for inbound photos, documents, audio, and voice messages. Group activation uses the same transport-neutral contract as Feishu: verified mention/reply/command signals, bounded contextual follow-ups inside the same Telegram Thread, and an optional observe-only path that never becomes an Agent turn. Channels without interactive cards automatically degrade to final text while retaining the same governed Core execution.
-
-Create a bot with BotFather, then run `beemax channel add telegram --profile personal`. The token is prompted securely or read from `TELEGRAM_BOT_TOKEN`; authorized numeric user IDs may be supplied through the prompt or `TELEGRAM_ALLOWED_USERS`.
-
-## Deployment and operations
-
-### Ubuntu
-
-The first measured production resource class is Ubuntu 24.04 x64 with Node.js 22, at least 2 logical CPUs, and 6 GiB host RAM. Its systemd limits, operational high-water marks, and reproducible queue/concurrency/SQLite/RSS gate are documented in [Ubuntu resource high-water](docs/operations/ubuntu-resource-high-water.md).
-
-Docker is BeeMax's first production Execution Sandbox for built-in command and workspace tools. Trusted local execution is not a sandbox. Configuration, enforced limits, cancellation cleanup, capability scope, and the real-Docker release gate are documented in [Docker Execution Sandbox](docs/operations/docker-execution-sandbox.md).
-
-Run the Gateway in the foreground for the first end-to-end test:
+首次端到端验证建议以前台方式运行：
 
 ```bash
 beemax gateway run --profile personal
 ```
 
-Then install a user-level systemd service:
+安装并管理后台服务：
 
 ```bash
 beemax gateway install --profile personal
@@ -568,19 +353,9 @@ beemax gateway status --profile personal
 beemax gateway logs --profile personal
 ```
 
-For a headless user service that must start before login, enable lingering once:
+Linux 使用每个 Profile 独立的 systemd 服务，macOS 使用 LaunchAgent。WSL 或没有服务管理器的容器应保持前台运行，或使用宿主环境的进程管理器。
 
-```bash
-sudo loginctl enable-linger "$USER"
-```
-
-A machine-wide service is available through `beemax service install --system`; run the Agent as a dedicated non-root account and set `BEEMAX_SERVICE_USER`.
-
-### macOS
-
-The same lifecycle commands install and control one LaunchAgent per Profile. On WSL or containers without a supervisor, keep the Gateway in the foreground or use the host's process manager.
-
-### Health and diagnostics
+常用诊断：
 
 ```bash
 beemax doctor --profile personal
@@ -590,66 +365,56 @@ beemax gateway logs --profile personal --tail 200
 beemax trace show <execution-id> --profile personal
 ```
 
-## Security model
+生产环境中的内置命令和工作区工具建议使用 Docker Execution Sandbox；可信宿主执行本身不等于沙箱。
 
-- Feishu/Lark and Telegram access default to deny.
-- Profile secrets are isolated from YAML and protected with owner-only permissions.
-- The Credential Vault stores encrypted external credentials behind scoped references.
-- Shell and file tools remain inside the configured workspace and block known destructive commands and credential paths.
-- Mutation receipts exclude credential material.
-- MCP and external tools cannot self-certify a mutation with proof-shaped model output.
-- Task, Effect, delivery, Trigger, and compensation claims use leases and stale-holder fencing.
-- Queues, traces, cards, Tool output, context, and background concurrency are bounded.
-- High-risk autonomy remains unavailable without explicit human authority.
+## 安全模型
 
-See [autonomy rollout](docs/operations/autonomy-rollout.md), [performance and cost](docs/operations/performance-and-cost.md), and the [P0–P10 acceptance record](docs/operations/p0-p10-acceptance.md).
+- 飞书/Lark 和 Telegram 默认拒绝未授权访问。
+- Profile 密钥与 YAML 分离，并使用仅所有者可读权限。
+- Credential Vault 通过作用域引用保存加密的外部凭据。
+- Shell 和文件工具受工作区、凭据路径、危险命令和执行策略约束。
+- Tool、MCP 或模型输出不能自行伪造审批、Effect Receipt 或验证证据。
+- Task、Effect、Delivery、Trigger 和 Compensation 使用 Lease 与过期持有者隔离。
+- Queue、Trace、卡片、Tool 输出、Context 和后台并发都有上限。
+- 高风险或不可逆自治操作始终需要明确的人类授权。
 
-Legacy Actor-scoped group transcripts are never guessed or merged. Administrators can explicitly assign one transcript to the canonical shared Conversation with `beemax migration session plan/apply`, retain every legacy file, and use digest-guarded rollback. See [Session Ownership Migration](docs/operations/session-ownership-migration.md).
+详见 [自治发布流程](docs/operations/autonomy-rollout.md)、[故障恢复手册](docs/operations/fault-recovery.md)、[性能与成本](docs/operations/performance-and-cost.md) 和 [P0–P10 验收记录](docs/operations/p0-p10-acceptance.md)。
 
-## CLI reference
+## 当前能力边界
 
-| Command | Purpose |
+BeeMax 1.2 当前不把以下内容包装成已完成能力：
+
+- 不内置客户、订单、工单、项目、合同等固定业务本体；
+- 不把销售日报、知识客服等示例描述为无需配置的一键产品；
+- 不保证任意中断任务都能自动恢复；
+- 不内置通用业务数据库连接器或一等 PDF 深度解析器；
+- 不提供第二套 Agent Loop 或无边界的大型多 Agent 组织；
+- 不允许模型自动发布正式企业策略或高风险生产变更；
+- Profile 隔离不等同于已经提供完整的 SaaS 租户、SSO 和企业 IAM 产品。
+
+这些边界让 Core 保持行业无关，也让业务能力可以通过企业数据、Skills、MCP、策略和验证标准逐步接入。
+
+## CLI 速查
+
+| 命令 | 用途 |
 | --- | --- |
-| `beemax setup` | Configure a Profile, model, identity, Skills, and optional channel |
-| `beemax chat` | Start the adaptive local terminal Agent |
-| `beemax gateway` | Configure, run, install, inspect, and control channel Gateways |
-| `beemax binding` | Validate, explain, atomically activate, or disable deterministic Channel-to-Profile routes |
-| `beemax profile` | Create, select, migrate, back up, inspect, and delete Profiles |
-| `beemax migration channel-instance` | Plan, apply, audit, and safely roll back explicit legacy route ownership |
-| `beemax model` | Show or change the Profile model |
-| `beemax memory` | Inspect, explain, compile, promote, reject, or forget Memory evidence |
-| `beemax autonomy` | Inspect and control evidence-gated autonomy levels |
-| `beemax credentials` | Manage the encrypted Profile Credential Vault |
-| `beemax effect` | Inspect and reconcile unresolved Tool Effects |
-| `beemax trace` | Inspect a content-free execution trace |
-| `beemax doctor` | Validate runtime and integration readiness |
-| `beemax update` | Install the latest verified release while preserving Profiles |
+| `beemax setup` | 配置 Profile、模型、身份、Skills 和可选渠道 |
+| `beemax chat` | 启动本地终端 Agent |
+| `beemax gateway` | 配置、运行、安装和诊断渠道 Gateway |
+| `beemax channel` | 添加、测试和管理 Channel Instance |
+| `beemax profile` | 创建、选择、迁移、备份、检查和删除 Profile |
+| `beemax model` | 查看或切换 Profile 模型 |
+| `beemax memory` | 检查、解释、晋升、拒绝或删除 Memory 证据 |
+| `beemax autonomy` | 查看和控制分级自治 |
+| `beemax credentials` | 管理加密的 Profile Credential Vault |
+| `beemax effect` | 检查并对账未决 Tool Effect |
+| `beemax trace` | 检查不含业务内容的执行 Trace |
+| `beemax doctor` | 验证运行时与集成就绪状态 |
+| `beemax update` | 在保留 Profile 数据的前提下安装已验证 Release |
 
-Run `beemax --help` for the complete command surface. Inside chat, use `/help` for session, model, compaction, Task, retry, cancellation, and display controls.
+运行 `beemax --help` 查看完整命令；在聊天中使用 `/help` 查看会话、模型、压缩、任务、重试和取消控制。
 
-## Troubleshooting
-
-### The bot receives no messages
-
-Run `beemax gateway health --profile <name>`. Confirm the app is published, WebSocket long connection is enabled, `im.message.receive_v1` is subscribed, and the sender is allowed or paired.
-
-### A Task did not resume after restart
-
-Inspect `/tasks show <plan-id>`, `beemax effect list --status unknown`, and the execution trace. Unsafe or non-idempotent Tasks intentionally fail closed instead of replaying.
-
-### A text-only model cannot read an image
-
-Run `beemax doctor`. Configure an image-capable model, enable auxiliary vision, or ensure Tesseract and the required language data are installed.
-
-### Context is near its limit
-
-Use `/usage` to inspect effective budgets and `/compact` while idle. Active durable Tasks survive compaction through the Task Preservation Envelope.
-
-### MCP is unavailable
-
-Run `beemax mcp status --profile <name>`. Verify the server command or URL, required environment variables, startup deadline, and Profile Toolset.
-
-## Development and verification
+## 开发与验证
 
 ```bash
 npm ci
@@ -658,78 +423,42 @@ npm run typecheck
 npm test
 ```
 
-The full release gate adds unknown-business evaluation, committed performance profiles, heap/RSS bounds, fault evidence, architecture boundaries, and migration rehearsal:
+完整发布门禁还包括能力路由、真实 Agent 执行、性能、内存、故障恢复、安全、架构和迁移验收：
 
 ```bash
 npm run verify:release
 npm run test:reliability
 ```
 
-Create and verify the archive for the exact package version:
-
-```bash
-VERSION="v$(node -p "require('./package.json').version")"
-bash scripts/create-release-archive.sh "$VERSION"
-bash scripts/verify-release-archive.sh "$VERSION"
-```
-
-Tag, root package, every BeeMax workspace, internal dependency, and Changelog release section must match. The archive verifier checks checksum portability, source layout, isolated installation, rebuild, Profile reload, and packaged Skills.
-
-### v1.5.1 release evidence
-
-The committed live baselines were generated on 2026-07-19 with configured Provider models and independently rechecked by the release verifier:
-
-| Gate | Result | Measured evidence |
-| --- | --- | --- |
-| Adaptive turn admission | 6/6 correct (100%) | Five direct model-first cases, one durable Contract case, 8,422 total Provider tokens |
-| Progressive Capability ranking | 16/16 cases passed | Top-1 accuracy 100%, Top-K recall 100%, no-match precision 100%, forbidden activation 0% |
-| Live Pi model-first outcome | 16/16 accepted | 32/32 Provider turns reported, 36,051 measured tokens, exact Tool/Skill receipts and terminal answers |
-| Published release | [v1.5.1](https://github.com/Zanetach/beemax/releases/tag/v1.5.1) | [Release workflow](https://github.com/Zanetach/beemax/actions/runs/29677218897) passed; archive SHA-256 `ba62e6514dcced45c45f1e4dc7021247119c440bee235cc083c171d28ae1d6cf` |
-
-The source evidence is committed in [adaptive turn admission](evals/baselines/adaptive-turn-admission-live.json) and [Capability ranking / live Pi outcome](evals/baselines/capability-ranking-live.json). These are real-model Runtime gates over a frozen evaluation corpus and isolated evaluation Tool implementations. They prove the tested admission, selection, execution-receipt, and completion-guard paths; they are not a claim that every open-ended business task has a 100% end-to-end success rate.
-
-## Repository layout
+## 仓库结构
 
 ```text
-apps/cli/                         CLI, Profile composition, setup, services
-packages/core/                    Agent semantics and the sole Pi runtime seam
-packages/memory/                  SQLite/FTS5 Memory and durable authorities
-packages/channel-runtime/         Platform-neutral channel contracts and lifecycle
-packages/channel-feishu/          Feishu transport and rich presentation Adapter
-packages/channel-telegram/        Telegram transport Adapter
-packages/gateway/                 Channel-neutral interaction orchestration and governance
-packages/automation/              Schedule persistence and time calculation
-packages/knowledge/               WeKnora capability adapter
-packages/mcp-capability/          MCP client capability
-packages/feishu-capability/       Feishu meeting capability
-pi/                               Vendored Pi source and workspace packages
-config/                           Configuration examples
-evals/                            Runtime and performance evaluation corpus
-scripts/                          Install, release, evaluation, and migration tools
-docs/                             Architecture, ADRs, operations, PRD, and research
+apps/cli/                         CLI、Profile 组合、安装向导和服务管理
+packages/core/                    Agent 语义与唯一 Pi Runtime 边界
+packages/memory/                  SQLite/FTS5 Memory 与持久 authority
+packages/channel-runtime/         平台无关的渠道契约和生命周期
+packages/channel-feishu/          飞书/Lark Adapter 与流式卡片
+packages/channel-telegram/        Telegram Adapter
+packages/gateway/                 渠道无关的交互编排与治理
+packages/automation/              Schedule 持久化与时间计算
+packages/knowledge/               WeKnora 能力适配
+packages/mcp-capability/          MCP 客户端能力
+packages/feishu-capability/       飞书会议能力
+packages/codex-image-capability/  可选图片生成能力
+pi/                               Vendored Pi 源码及 workspace packages
+config/                           配置示例
+evals/                            Runtime、能力和性能评测
+scripts/                          安装、发布、评测和迁移工具
+docs/                             架构、ADR、运维、PRD 与研究记录
 ```
 
-## Documentation
+## 文档
 
-- [Unified Agent Runtime PRD](docs/prd/beemax-pi-unified-agent-runtime.md)
-- [Core and Gateway boundaries](docs/architecture/core-gateway-boundaries.md)
-- [Channel-neutral runtime contract](docs/architecture/channel-runtime-contract.md)
-- [L4 Memory Learning architecture](docs/architecture/l4-memory-learning-architecture.md)
-- [L4 Memory Learning rollout and certification](docs/operations/l4-memory-learning-rollout-and-certification.md)
-- [Fault recovery runbook](docs/operations/fault-recovery.md)
-- [Autonomy rollout](docs/operations/autonomy-rollout.md)
-- [Performance and cost](docs/operations/performance-and-cost.md)
-- [P0–P10 acceptance](docs/operations/p0-p10-acceptance.md)
+- [统一 Agent Runtime PRD](docs/prd/beemax-pi-unified-agent-runtime.md)
+- [Core 与 Gateway 边界](docs/architecture/core-gateway-boundaries.md)
+- [渠道无关 Runtime 契约](docs/architecture/channel-runtime-contract.md)
+- [故障恢复手册](docs/operations/fault-recovery.md)
+- [自治发布流程](docs/operations/autonomy-rollout.md)
+- [性能与成本](docs/operations/performance-and-cost.md)
+- [P0–P10 验收记录](docs/operations/p0-p10-acceptance.md)
 - [Changelog](CHANGELOG.md)
-
-## Current boundaries
-
-BeeMax v1.5.1 intentionally does not include a fixed customer business ontology, a second Agent Loop, high-risk fully autonomous execution, large multi-Agent organizations, or arbitrary model-authored production Skill mutation. It does include an `adaptive_learning`-gated managed-Skill lane: only immutable, integrity-sealed versions with accepted trial identities and promotion authority can enter a bounded canary, and verified operational evidence may promote or roll that pointer back without rewriting historical versions.
-
-Planned extension points include additional registry adapters such as Slack, Discord, DingTalk, and WeCom; Feishu User OAuth for private resources; externally backed work queues for larger horizontal deployments; and deeper enterprise policy integrations.
-
-## License
-
-Except for components that identify a separate license, BeeMax-authored software is source-available under the [PolyForm Strict License 1.0.0](LICENSE). The license permits use for noncommercial purposes only; it does not grant permission to modify or redistribute the software. Commercial use, modification, or redistribution requires separate written permission from the relevant copyright holder. Licensing enquiries may be directed to the [repository owner](https://github.com/Zanetach).
-
-Vendored Pi remains available under its [MIT License](pi/LICENSE), and other third-party components remain subject to the licenses provided by their respective copyright holders. Because BeeMax-authored software restricts commercial use, it is **not Open Source under the OSI definition**.
