@@ -4,6 +4,8 @@ import type { SessionSource } from "./types.ts";
 export interface InteractionPresentationPreferences {
 	title?: string;
 	reasoningDisplay?: "off" | "summary" | "raw";
+	/** Do not create a progress message for Turns that finish before this delay. */
+	progressDelayMs?: number;
 	updateIntervalMs?: number;
 	ioTimeoutMs?: number;
 }
