@@ -1,6 +1,6 @@
 # BeeMax Agent
 
-> A durable personal and organizational Agent runtime built on Pi, with scoped Memory, governed execution, recoverable Tasks, progressive Skills, and multi-channel delivery.
+> A self-hosted AI Agent runtime for building personal and team assistants with durable Memory, real Tool execution, and scheduled or long-running work.
 
 [![Release](https://img.shields.io/github/v/release/Zanetach/beemax?display_name=tag)](https://github.com/Zanetach/beemax/releases/latest)
 [![CI](https://github.com/Zanetach/beemax/actions/workflows/ci.yml/badge.svg)](https://github.com/Zanetach/beemax/actions/workflows/ci.yml)
@@ -13,11 +13,63 @@
 
 ![BeeMax Agent turns scoped context and durable memory into governed, verified execution](docs/assets/beemax-agent-runtime.png)
 
-BeeMax is one Agent product with one Core-owned Pi execution loop. It can chat locally, connect to Feishu/Lark and Telegram through one Profile Gateway, preserve long-running responsibility across restarts, and understand images through native vision or OCR.
+BeeMax is more than a chat interface. It gives one Agent a durable identity, private workspace, long-term Memory, Skills, Tools, schedules, and a recoverable work ledger. The same assistant can work in a terminal, Feishu/Lark, or Telegram and continue an accepted responsibility after the process restarts.
 
-Every surface operates under Profile-scoped policy.
+Here, **Pi is the Agent execution framework**. It is not the Raspberry Pi computer and it is not a second Agent product hidden inside BeeMax.
 
-It does not encode customer-specific objects such as orders, tickets, or contracts. Unknown business vocabulary enters through Work Context, evidence, configured capabilities, and enterprise policy instead of a fixed business ontology.
+## What it can do
+
+```text
+Terminal · Feishu/Lark · Telegram
+                 ↓
+         BeeMax Agent Runtime
+                 ↓
+       Model + Memory + Skills + Tools
+                 ↓
+Files · Shell · Web · MCP · Knowledge · Meetings · Images · Schedules
+                 ↓
+Policy · Approvals · Effects · Checkpoints · Verification · Delivery
+```
+
+- **Long-term Memory:** SQLite/FTS5-backed recall for Profile-scoped preferences, facts, corrections, evidence, Tasks, and verified outcomes—not just the current chat window.
+- **Recoverable work:** Objectives can be split into durable Tasks with checkpoints, leases, verification, and restart-safe recovery.
+- **Real Tool execution:** Work with files and Shell, search the Web, call MCP services, retrieve enterprise knowledge, inspect meetings, and understand images through native vision or OCR.
+- **Progressive Skills:** Load task-specific operating instructions and professional capability only when the current objective needs them.
+- **Automation:** Run reminders, recurring schedules, Heartbeat checks, and bounded proactive investigations while keeping delivery separate from execution.
+- **Model choice:** Use configured OpenAI, Anthropic, OpenRouter, or compatible OpenAI/Anthropic protocol endpoints, and switch models by Profile or conversation.
+- **Governed actions:** Mutations pass Profile scope, Sandbox, Tool and approval policy, Effect idempotency, receipts, and verification.
+- **Profile isolation:** Each Profile has separate identity, credentials, Memory, workspace, channels, policy, and durable task state.
+
+BeeMax does not hard-code customer objects such as orders, tickets, or contracts. Business vocabulary enters through Work Context, evidence, configured capabilities, and enterprise policy rather than a fixed ontology.
+
+## Example: a Feishu operations assistant
+
+Tell the assistant:
+
+> Every day at 09:00, read yesterday's sales data and send me a report. If sales are down by more than 20%, identify the likely causes and alert me.
+
+BeeMax can turn that request into a durable workflow:
+
+1. Create a recurring 09:00 schedule in the Profile's timezone.
+2. Read sales data from permitted files, databases exposed through MCP, or enterprise knowledge services.
+3. Calculate revenue, order volume, conversion rate, and other requested metrics.
+4. Compare the result with historical evidence.
+5. Investigate whether a material decline came from a region, product, or channel.
+6. Generate the report and persist the verified result.
+7. Deliver it through Feishu/Lark.
+8. Remember confirmed preferences such as format, recipients, and comparison window.
+9. Resume unfinished Tasks after a restart without replaying a committed external mutation.
+
+The workflow still obeys the active Toolset and enterprise policy. If a report update or external send requires approval, BeeMax asks before executing it and records the result instead of claiming success prematurely.
+
+The same runtime can also serve as:
+
+- a **research assistant** that searches sources, reads pages and PDFs, organizes evidence, and produces a report;
+- a **knowledge assistant** that answers from enterprise knowledge and replies in Feishu/Lark;
+- a **project assistant** that retains project context, tracks long-running work, flags overdue items, and prepares weekly reports;
+- a **personal assistant** that remembers preferences, organizes files, schedules reminders, and prepares meeting material;
+- an **operations assistant** that checks service health and logs on a schedule, investigates anomalies, and reports bounded evidence; or
+- a **meeting assistant** that discovers or schedules Feishu meetings and assembles relevant context and documents.
 
 ## The execution flow
 
@@ -675,3 +727,9 @@ docs/                             Architecture, ADRs, operations, PRD, and resea
 BeeMax v1.5.1 intentionally does not include a fixed customer business ontology, a second Agent Loop, high-risk fully autonomous execution, large multi-Agent organizations, or arbitrary model-authored production Skill mutation. It does include an `adaptive_learning`-gated managed-Skill lane: only immutable, integrity-sealed versions with accepted trial identities and promotion authority can enter a bounded canary, and verified operational evidence may promote or roll that pointer back without rewriting historical versions.
 
 Planned extension points include additional registry adapters such as Slack, Discord, DingTalk, and WeCom; Feishu User OAuth for private resources; externally backed work queues for larger horizontal deployments; and deeper enterprise policy integrations.
+
+## License
+
+Except for components that identify a separate license, BeeMax-authored software is source-available under the [PolyForm Strict License 1.0.0](LICENSE). The license permits use for noncommercial purposes only; it does not grant permission to modify or redistribute the software. Commercial use, modification, or redistribution requires separate written permission from the relevant copyright holder. Licensing enquiries may be directed to the [repository owner](https://github.com/Zanetach).
+
+Vendored Pi remains available under its [MIT License](pi/LICENSE), and other third-party components remain subject to the licenses provided by their respective copyright holders. Because BeeMax-authored software restricts commercial use, it is **not Open Source under the OSI definition**.
