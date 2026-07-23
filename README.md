@@ -1,6 +1,6 @@
 <div align="center">
   <h1>BeeMax Agent</h1>
-  <h3>可私有化部署的企业 Agent 运行平台</h3>
+  <h3>可私有化部署的企业 AI 数字员工</h3>
   <p><strong>让 AI 从“会回答问题”，升级为“能在权限边界内持续把事情做完”。</strong></p>
   <p>
     <a href="https://github.com/Zanetach/beemax/releases/latest"><img alt="Release" src="https://img.shields.io/github/v/release/Zanetach/beemax?display_name=tag&style=flat-square"></a>
@@ -18,7 +18,7 @@
 </div>
 
 <p align="center">
-  <img src="docs/assets/beemax-agent-runtime-v3.png" width="100%" alt="拟人化的 BeeMax AI 同事与团队协作，在长期记忆、定时任务、工具执行和人工审批之间形成可信工作闭环">
+  <img src="docs/assets/beemax-agent-runtime-v6.png" width="100%" alt="BeeMax Agent 以数字人 Agent 形态作为可私有化部署的企业 AI 数字员工，在长期记忆、定时任务、工具集成和人工审批之间形成可信工作闭环">
 </p>
 
 > [!NOTE]
