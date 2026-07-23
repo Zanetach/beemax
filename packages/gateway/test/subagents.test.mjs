@@ -125,22 +125,22 @@ test("Dispatcher starts the Agent Turn when initial card delivery hangs", async 
 });
 
 test("Dispatcher adopts a late initial card result instead of creating duplicate cards", async () => {
-	let inbound; let sends = 0; let updates = 0;
+	let inbound; let sends = 0; const updates = [];
 	const platform = {
 		name: "feishu", isConnected: true, onMessage: (handler) => { inbound = handler; }, connect: async () => true, disconnect: async () => undefined,
 		send: async () => ({ success: true }), editMessage: async () => ({ success: true }), sendTyping: async () => undefined, stopTyping: async () => undefined,
 		sendCard: async () => { sends++; await new Promise((resolve) => setTimeout(resolve, 60)); return { success: true, messageId: "late-card" }; },
-		updateCard: async (id) => { assert.equal(id, "late-card"); updates++; return { success: true }; },
+		updateCard: async (id, card) => { assert.equal(id, "late-card"); updates.push(JSON.stringify(card)); return { success: true }; },
 	};
 	enableFeishuPresentation(platform);
 	const runtime = { run: async () => { await new Promise((resolve) => setTimeout(resolve, 90)); return { answer: "done", model: "test", durationMs: 90, usage: {} }; }, cancel: async () => false, handleControl: async () => undefined, isBusy: () => false, dispose: () => undefined };
 	const dispatcher = new Dispatcher({ runtime, flushIntervalMs: 0, presentationTimeoutMs: 20, presentationOptions: { progressDelayMs: 0 } }, platform);
 	await inbound({ text: "request", messageType: "text", source: { ...source, messageId: "late-card-request" }, mediaPaths: [], mediaTypes: [], raw: {}, timestamp: Date.now() });
 	await new Promise((resolve) => setTimeout(resolve, 180));
-	assert.equal(sends, 1); assert.ok(updates >= 1); dispatcher.dispose();
+	assert.equal(sends, 1); assert.ok(updates.length >= 1); assert.match(updates.at(-1), /done/); dispatcher.dispose();
 });
 
-test("Dispatcher keeps late terminal card updates separate from the single final result", async () => {
+test("Dispatcher writes one late terminal card update with the latest result", async () => {
 	let inbound; const updates = []; const texts = [];
 	const platform = {
 		name: "feishu", isConnected: true, onMessage: (handler) => { inbound = handler; }, connect: async () => true, disconnect: async () => undefined,
@@ -153,15 +153,15 @@ test("Dispatcher keeps late terminal card updates separate from the single final
 	const dispatcher = new Dispatcher({ runtime, flushIntervalMs: 0, presentationTimeoutMs: 20, presentationOptions: { progressDelayMs: 0 } }, platform);
 	await inbound({ text: "request", messageType: "text", source: { ...source, messageId: "late-update" }, mediaPaths: [], mediaTypes: [], raw: {}, timestamp: Date.now() });
 	await new Promise((resolve) => setTimeout(resolve, 160));
-	assert.equal(updates.length, 1); assert.doesNotMatch(updates[0], /latest final answer/); assert.deepEqual(texts, ["latest final answer"]); dispatcher.dispose();
+	assert.equal(updates.length, 1); assert.match(updates[0], /latest final answer/); assert.deepEqual(texts, []); dispatcher.dispose();
 });
 
-test("Dispatcher falls back to final text when card updates remain unavailable", async () => {
+test("Dispatcher falls back to final text when a card update fails definitively", async () => {
 	let inbound; const texts = [];
 	const platform = {
 		name: "feishu", isConnected: true, onMessage: (handler) => { inbound = handler; }, connect: async () => true, disconnect: async () => undefined,
 		send: async (_chatId, text) => { texts.push(text); return { success: true }; }, editMessage: async () => ({ success: true }), sendTyping: async () => undefined, stopTyping: async () => undefined,
-		sendCard: async () => ({ success: true, messageId: "card" }), updateCard: async () => new Promise(() => undefined),
+		sendCard: async () => ({ success: true, messageId: "card" }), updateCard: async () => ({ success: false, error: "card update unavailable" }),
 	};
 	enableFeishuPresentation(platform);
 	const runtime = { run: async () => ({ answer: "recoverable final answer", model: "test", durationMs: 1, usage: {} }), cancel: async () => false, handleControl: async () => undefined, isBusy: () => false, dispose: () => undefined };
@@ -213,12 +213,12 @@ test("Dispatcher presents approval instructions immediately on a channel without
 	await dispatcher.dispose();
 });
 
-test("Dispatcher falls back to error text when a failed Turn cannot update its card", async () => {
+test("Dispatcher falls back to error text when a failed Turn card update fails definitively", async () => {
 	let inbound; const texts = [];
 	const platform = {
 		name: "feishu", isConnected: true, onMessage: (handler) => { inbound = handler; }, connect: async () => true, disconnect: async () => undefined,
 		send: async (_chatId, text) => { texts.push(text); return { success: true }; }, editMessage: async () => ({ success: true }), sendTyping: async () => undefined, stopTyping: async () => undefined,
-		sendCard: async () => ({ success: true, messageId: "card" }), updateCard: async () => new Promise(() => undefined),
+		sendCard: async () => ({ success: true, messageId: "card" }), updateCard: async () => ({ success: false, error: "card update unavailable" }),
 	};
 	enableFeishuPresentation(platform);
 	const runtime = { run: async () => { throw new Error("model unavailable"); }, cancel: async () => false, handleControl: async () => undefined, isBusy: () => false, dispose: () => undefined };
@@ -827,8 +827,9 @@ test("Dispatcher replays and acknowledges crash-surviving queued inputs on Gatew
 	assert.equal(await dispatcher.recoverQueuedInputs(), 1);
 	assert.deepEqual(runs, ["resume this"]);
 	assert.deepEqual(acknowledged, ["queued-1"]);
-	assert.deepEqual(cards, []);
-	assert.deepEqual(texts, ["done"]);
+	assert.match(JSON.stringify(cards), /异步任务计划/);
+	assert.match(JSON.stringify(cards), /plan-42/);
+	assert.deepEqual(texts, []);
 	dispatcher.dispose();
 });
 

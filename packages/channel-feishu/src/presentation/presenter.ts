@@ -45,6 +45,7 @@ class FeishuTurnPresentation implements TurnPresentation {
 	private readonly renderOptions: CardRenderOptions;
 	private cardMessageId?: string;
 	private cardCreation?: Promise<SendResult>;
+	private cardCreationPending = false;
 	private cardUpdate?: Promise<boolean>;
 	private pendingCardRender?: Record<string, unknown>;
 	private progressTimer?: ReturnType<typeof setTimeout>;
@@ -144,16 +145,31 @@ class FeishuTurnPresentation implements TurnPresentation {
 	async finish(answer: string, options?: DeliveryOptions): Promise<DeliveryReceipt> {
 		this.stopProgress();
 		const progressCardStarted = Boolean(this.cardMessageId || this.cardCreation);
-		if (!this.terminalPresented && progressCardStarted) {
-			this.applyCompletion("处理结束，最终结果见下方消息。", this.pendingCompletion);
+		if (!this.terminalPresented && (!options?.idempotencyKey || progressCardStarted)) {
+			this.applyCompletion(options?.idempotencyKey ? "处理结束，最终结果见下方消息。" : answer, this.pendingCompletion);
 			await this.presentTerminal();
 		}
-		await this.flush.drain(5_000);
-		// Cards are transient status only. Keeping the canonical answer on one
-		// idempotent text lane prevents a late CardKit success from duplicating it.
-		const deliveryKey = options?.idempotencyKey ?? this.resultIdempotencyKey;
-		const result = await this.sendFallback(answer, deliveryKey);
-		return { idempotencyKey: deliveryKey, deliveredAt: Date.now(), ...(result.messageId ? { providerMessageId: result.messageId } : {}) };
+		const drained = await this.flush.drain(5_000);
+		if (options?.idempotencyKey) {
+			// Durable Completions use the replayable text lane. The transient
+			// progress card contains status only, so the answer still appears once.
+			const result = await this.sendFallback(answer, options.idempotencyKey);
+			return { idempotencyKey: options.idempotencyKey, deliveredAt: Date.now(), ...(result.messageId ? { providerMessageId: result.messageId } : {}) };
+		}
+		const pendingDelivery = this.pendingCardDelivery();
+		if (pendingDelivery) {
+			void pendingDelivery.then(async (success) => {
+				if (!success) await this.sendFallback(answer, this.resultIdempotencyKey);
+			}).catch(async () => {
+				await this.sendFallback(answer, this.resultIdempotencyKey).catch((error) => console.error(`[beemax] Feishu late result fallback failed: ${safeError(error)}`));
+			});
+			return { idempotencyKey: this.progressIdempotencyKey, deliveredAt: Date.now(), ...(this.cardMessageId ? { providerMessageId: this.cardMessageId } : {}) };
+		}
+		if (this.cardMessageId && drained && !this.degraded) {
+			return { idempotencyKey: this.progressIdempotencyKey, deliveredAt: Date.now(), providerMessageId: this.cardMessageId };
+		}
+		const result = await this.sendFallback(answer, this.resultIdempotencyKey);
+		return { idempotencyKey: this.resultIdempotencyKey, deliveredAt: Date.now(), ...(result.messageId ? { providerMessageId: result.messageId } : {}) };
 	}
 
 	async fail(error: string): Promise<void> {
@@ -212,31 +228,52 @@ class FeishuTurnPresentation implements TurnPresentation {
 		const rendered = renderCard(this.card, this.renderOptions);
 		if (!this.cardMessageId) {
 			if (!this.cardCreation) {
-				this.cardCreation = this.transport.sendCard(this.input.source.chatId, rendered, this.input.source.replyToMessageId ?? this.input.source.messageId, Boolean(this.input.source.threadId), this.progressIdempotencyKey).then((result) => {
+				this.cardCreationPending = true;
+				this.cardCreation = this.transport.sendCard(this.input.source.chatId, rendered, this.input.source.replyToMessageId ?? this.input.source.messageId, Boolean(this.input.source.threadId), this.progressIdempotencyKey).catch((error): SendResult => ({
+					success: false,
+					error: safeError(error),
+				})).then(async (result) => {
 					if (result.success && result.messageId) { this.cardMessageId = result.messageId; this.input.onBinding?.(result.messageId, this.card.pendingApprovalId); }
+					this.degraded = !result.success;
+					if (result.success && this.pendingCardRender) {
+						const updated = await this.ensureCardUpdate();
+						if (!updated) return { success: false, messageId: result.messageId, error: "Feishu card update failed" };
+					}
 					return result;
-				});
+				}).finally(() => { this.cardCreationPending = false; });
+			} else {
+				this.pendingCardRender = rendered;
 			}
 			const result = await settleWithin(this.cardCreation, this.ioTimeout());
-			if (!result) { this.degraded = true; return false; }
+			if (!result) return false;
 			this.degraded = !result.success; return result.success;
 		}
 		this.pendingCardRender = rendered;
+		const success = await settleWithin(this.ensureCardUpdate(), this.ioTimeout());
+		if (success === undefined) return false;
+		this.degraded = !success; return success;
+	}
+
+	private ensureCardUpdate(): Promise<boolean> {
 		if (!this.cardUpdate) {
 			this.cardUpdate = (async () => {
 				let success = true;
 				while (this.pendingCardRender) {
 					const next = this.pendingCardRender; this.pendingCardRender = undefined;
-					const result = await this.transport.updateCard(this.cardMessageId!, next);
-					success = success && result.success;
+					const result = await this.transport.updateCard(this.cardMessageId!, next).catch((error) => ({ success: false, error: safeError(error) }));
+					success = result.success;
+					this.degraded = !result.success;
 					if (result.success) this.input.onBinding?.(this.cardMessageId!, this.card.pendingApprovalId);
 				}
 				return success;
 			})().finally(() => { this.cardUpdate = undefined; });
 		}
-		const success = await settleWithin(this.cardUpdate, this.ioTimeout());
-		if (success === undefined) { this.degraded = true; return false; }
-		this.degraded = !success; return success;
+		return this.cardUpdate;
+	}
+
+	private pendingCardDelivery(): Promise<boolean> | undefined {
+		if (this.cardCreationPending && this.cardCreation) return this.cardCreation.then((result) => result.success);
+		return this.cardUpdate;
 	}
 
 	private ioTimeout(): number { return this.input.preferences?.ioTimeoutMs ?? 2_000; }

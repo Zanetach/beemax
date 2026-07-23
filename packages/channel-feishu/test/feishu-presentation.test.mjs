@@ -12,7 +12,7 @@ function mainContent(card) {
 		.join("\n");
 }
 
-test("a short Feishu Turn sends one final result without exposing streamed model narration", async () => {
+test("a short Feishu Turn sends one final card without exposing streamed model narration", async () => {
 	const cards = [];
 	const texts = [];
 	const adapter = new FeishuAdapter({
@@ -37,9 +37,10 @@ test("a short Feishu Turn sends one final result without exposing streamed model
 	await turn.finish(result.answer);
 	await turn.close(false);
 
-	assert.equal(cards.length, 0);
-	assert.deepEqual(texts, ["这是最终结果。"]);
+	assert.equal(cards.length, 1);
+	assert.deepEqual(texts, []);
 	const visible = JSON.stringify([...cards, ...texts]);
+	assert.match(visible, /这是最终结果/);
 	assert.doesNotMatch(visible, /我先发现工具|再拉取数据|继续分析/);
 });
 
@@ -116,8 +117,8 @@ test("a long Feishu Turn reuses one card and shows at most two human-readable pr
 		assert.match(mainContent(card), /正在/);
 		assert.doesNotMatch(mainContent(card), /market_series|provider|1,000|内部数据|direct|并发/);
 	}
-	assert.match(mainContent(updates.at(-1).card), /处理结束/);
-	assert.deepEqual(texts, ["黄金走势报告已完成。"]);
+	assert.match(mainContent(updates.at(-1).card), /黄金走势报告已完成/);
+	assert.deepEqual(texts, []);
 });
 
 test("Feishu Adapter owns rich Turn presentation and exposes only the Channel Runtime presenter interface", async () => {
@@ -185,10 +186,11 @@ test("Feishu replaces a streamed Candidate Outcome with the canonical Verificati
 	await turn.close(false);
 
 	const finalCard = JSON.stringify(cards.at(-1));
+	assert.match(finalCard, /任务尚未完成/);
 	assert.match(finalCard, /尚未完成/);
 	assert.doesNotMatch(finalCard, /"template":"green"/);
 	assert.doesNotMatch(finalCard, /UNVERIFIED CANDIDATE/);
-	assert.deepEqual(texts, [result.answer]);
+	assert.deepEqual(texts, []);
 });
 
 test("Feishu fails closed when a legacy Runtime omits the Host outcome", async () => {
@@ -239,8 +241,9 @@ test("Feishu renders a Host-rejected Candidate as a distinct red Verification st
 	const finalCard = JSON.stringify(cards.at(-1));
 	assert.match(finalCard, /验证未通过/);
 	assert.match(finalCard, /"template":"red"/);
+	assert.match(finalCard, /缺少来源证据/);
 	assert.doesNotMatch(finalCard, /尚未完成|UNVERIFIED CANDIDATE/);
-	assert.deepEqual(texts, [result.answer]);
+	assert.deepEqual(texts, []);
 });
 
 test("Feishu work progress degrades to mandatory text delivery when CardKit is unavailable", async () => {
