@@ -169,11 +169,37 @@ sequenceDiagram
 
 ## 快速开始
 
-### 1. 安装
+### 一条命令安装并开始使用
 
 Linux 和 macOS 需要 Node.js 22.19 或更高版本，以及 `curl`、`tar`、`npm` 和 `sha256sum` 或 `shasum`。
 
-安装最新稳定 Release：
+安装最新稳定 Release，完成 Profile 设置和健康检查后直接打开 BeeMax：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Zanetach/beemax/main/scripts/bootstrap-install.sh | bash -s -- --quickstart
+```
+
+向导只要求选择模型并通过安全提示输入 API Key。密钥不会进入命令行、YAML 或模型上下文。
+
+已经安装 BeeMax 时，可以随时执行：
+
+```bash
+beemax quickstart --profile personal
+```
+
+然后直接告诉它想要的结果，例如：
+
+> 调研过去的黄金走势报告。给我结论、关键数据、影响因素、风险和来源。
+
+如果没有指定时间范围，`historical-market-research` Skill 会明确采用最近 30 个日历日作为可撤销假设并继续。BeeMax 会先按任务渐进激活该 Skill 和结构化行情 Tool，交叉验证独立来源；只有确实需要正式文件时才继续发现报告 Skill。只读来源失败时会避免重复同一个失败调用，寻找等价能力并保留限制说明。通过独立验证的结果才能进入长期记忆。
+
+运行一个任务后退出：
+
+```bash
+beemax quickstart --profile personal --once "调研过去的黄金走势报告，并给出可核验来源"
+```
+
+### 仅安装
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/Zanetach/beemax/main/scripts/bootstrap-install.sh | bash
@@ -191,7 +217,7 @@ cd beemax
 
 安装程序会检查本地媒体依赖，并在受支持的 Ubuntu/macOS 环境中发现或安装 Tesseract OCR。若宿主环境自行管理 OCR，可设置 `BEEMAX_INSTALL_MEDIA_DEPS=0`。
 
-### 2. 创建 Profile
+### 分步创建 Profile
 
 ```bash
 beemax setup --profile personal
@@ -199,7 +225,7 @@ beemax setup --profile personal
 
 向导会配置 Profile 身份、模型、凭据、工作区、Skills 和本地运行状态。密钥通过安全提示输入并保存在 YAML 之外。
 
-### 3. 在终端开始使用
+### 在终端开始使用
 
 ```bash
 beemax chat --profile personal
@@ -207,7 +233,7 @@ beemax chat --profile personal
 
 本地聊天与渠道 Gateway 使用相同的 Profile、Memory、Skills、治理策略和持久任务图。
 
-### 4. 接入飞书/Lark
+### 接入飞书/Lark
 
 ```bash
 beemax gateway setup --profile personal
@@ -224,7 +250,7 @@ beemax pairing approve feishu <pairing-code> --profile personal
 beemax pairing revoke feishu <user-id> --profile personal
 ```
 
-### 5. 接入 Telegram
+### 接入 Telegram
 
 ```bash
 beemax channel add telegram --profile personal
@@ -452,7 +478,7 @@ beemax trace show <execution-id> --profile personal
 
 ## 当前能力边界
 
-BeeMax 1.5.2 当前不把以下内容包装成已完成能力：
+BeeMax 1.6.0 当前不把以下内容包装成已完成能力：
 
 - 不内置客户、订单、工单、项目、合同等固定业务本体；
 - 不把销售日报、知识客服等示例描述为无需配置的一键产品；

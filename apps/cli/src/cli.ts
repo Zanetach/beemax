@@ -34,6 +34,7 @@ import { activeProfile, resolveProfileLocation } from "./profile-home.ts";
 import { installMacLaunchAgent, installSystemdService, runServiceAction, type ServiceAction } from "./service-manager.ts";
 import { resolveServiceLogCommand, serviceDisplayName } from "./service-platform.ts";
 import { runSetup, type SetupOptions } from "./setup.ts";
+import { prepareQuickstart } from "./quickstart.ts";
 import { configuredAuxiliaryTextModels, configuredCapabilityRanker, configuredMediaUnderstanding, configuredRuntimeModels, ProfileModelCatalog, renderModelProviderChoices, resolveProfileCognitionModels, resolveProviderSelection } from "./model-catalog.ts";
 import { executionPortFor, executionSafeTools } from "./execution-composition.ts";
 import { createProfileRuntime } from "./runtime-composition.ts";
@@ -79,6 +80,23 @@ async function main(): Promise<void> {
 	const getConfig = () => loadConfig(parsed.configPath, profile);
 
 	switch (cmd) {
+		case "quickstart": {
+			if (parsed.configPath) throw new Error("beemax quickstart does not support --config; select a Profile with --profile");
+			if (parsed.options["api-key"]) throw new Error("Do not pass model secrets in argv; set BEEMAX_API_KEY or use the interactive prompt");
+			const quickstartProfile = selectedProfile(parsed);
+			const prepared = await prepareQuickstart({ profile: quickstartProfile, setup: setupOptions(parsed, false) });
+			if (!prepared.ready) { process.exitCode = 1; break; }
+			console.log(`${prepared.setupPerformed ? "BeeMax is ready" : "BeeMax Profile is healthy"}. Starting Agent '${quickstartProfile}'…`);
+			await runChat(loadConfig(undefined, quickstartProfile), {
+				full: parsed.options.full === true,
+				compact: parsed.options.compact === true,
+				plain: parsed.options.plain === true,
+				noAltScreen: parsed.options["no-alt-screen"] === true,
+				once: optionString(parsed, "once"),
+				thread: optionString(parsed, "thread"),
+			});
+			break;
+		}
 		case "setup":
 			if (parsed.configPath) throw new Error("beemax setup does not support --config; select a Profile with --profile");
 			if (parsed.options["api-key"]) throw new Error("Do not pass model secrets in argv; set BEEMAX_API_KEY or use the interactive prompt");
@@ -234,6 +252,7 @@ async function main(): Promise<void> {
 			console.log(`beemax - persistent personal agent (Pi + Feishu)
 
 Commands:
+  quickstart Configure or verify one Profile, then start chatting
   setup      Configure one Agent Profile, model, identity, Skills, and local chat
   init       Create the first Agent profile
   agent      create | list | delete

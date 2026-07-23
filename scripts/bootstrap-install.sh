@@ -7,22 +7,27 @@ RELEASE_BASE="${BEEMAX_RELEASE_BASE:-https://github.com/Zanetach/beemax/releases
 RELEASE_API="${BEEMAX_RELEASE_API:-https://api.github.com/repos/Zanetach/beemax/releases?per_page=1}"
 INSTALL_DIR="${BEEMAX_INSTALL_DIR:-${HOME}/.beemax/app}"
 BIN_DIR="${BEEMAX_BIN_DIR:-${HOME}/.local/bin}"
+QUICKSTART=0
+PROFILE="${BEEMAX_PROFILE:-personal}"
 
 usage() {
 	cat <<'EOF'
 BeeMax installer
 
 Usage:
-  curl -fsSL https://raw.githubusercontent.com/Zanetach/beemax/v1.0.0/scripts/bootstrap-install.sh | bash
+  curl -fsSL https://raw.githubusercontent.com/Zanetach/beemax/main/scripts/bootstrap-install.sh | bash
+  curl -fsSL https://raw.githubusercontent.com/Zanetach/beemax/main/scripts/bootstrap-install.sh | bash -s -- --quickstart
 
 Options:
   --version <tag>  Install a specific release tag
   --dir <path>     Install application files at this path
+  --quickstart     Configure or verify a Profile, then open BeeMax chat
+  --profile <name> Profile used by --quickstart (default: personal)
   --uninstall      Remove application files and command, keeping Profiles and data
   --help           Show this help
 
 Environment:
-  BEEMAX_VERSION, BEEMAX_RELEASE_BASE, BEEMAX_RELEASE_API, BEEMAX_INSTALL_DIR, BEEMAX_BIN_DIR
+  BEEMAX_VERSION, BEEMAX_RELEASE_BASE, BEEMAX_RELEASE_API, BEEMAX_INSTALL_DIR, BEEMAX_BIN_DIR, BEEMAX_PROFILE
 EOF
 }
 
@@ -35,6 +40,8 @@ while [[ $# -gt 0 ]]; do
 	case "$1" in
 		--version) VERSION="${2:?--version requires a value}"; shift 2 ;;
 		--dir) INSTALL_DIR="${2:?--dir requires a value}"; shift 2 ;;
+		--quickstart) QUICKSTART=1; shift ;;
+		--profile) PROFILE="${2:?--profile requires a value}"; shift 2 ;;
 		--uninstall)
 			if [[ -f "${BIN_DIR}/beemax" ]] && grep -Fq "BEEMAX_ROOT=${INSTALL_DIR}" "${BIN_DIR}/beemax"; then rm "${BIN_DIR}/beemax"; fi
 			if [[ -f "${INSTALL_DIR}/package.json" ]] && grep -Fq '"name": "beemax-agent"' "${INSTALL_DIR}/package.json"; then rm -rf "${INSTALL_DIR}"; fi
@@ -92,4 +99,10 @@ if ! BEEMAX_BIN_DIR="${BIN_DIR}" "${INSTALL_DIR}/scripts/install.sh"; then
 	fail "application setup failed; previous installation was restored"
 fi
 rm -rf "${BACKUP}"
-echo "BeeMax ${VERSION} installed from one verified release archive. Next: beemax setup --profile personal"
+echo "BeeMax ${VERSION} installed from one verified release archive."
+if [[ "${QUICKSTART}" == "1" ]]; then
+	[[ -r /dev/tty ]] || fail "--quickstart requires an interactive terminal; rerun beemax quickstart --profile ${PROFILE}"
+	"${BIN_DIR}/beemax" quickstart --profile "${PROFILE}" < /dev/tty
+else
+	echo "Next: beemax quickstart --profile ${PROFILE}"
+fi

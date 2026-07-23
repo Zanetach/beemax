@@ -81,6 +81,15 @@ test("main Agent preserves a minimal material citation set for independent verif
 	assert.match(prompt, /all key facts need source URLs.*does not.*justify exceeding/i);
 });
 
+test("main Agent continues low-risk knowledge work through explicit assumptions and safe capability recovery", () => {
+	const prompt = buildMainAgentSystemPrompt("Profile prompt");
+	assert.match(prompt, /low-risk.*reasonable assumption.*state it.*continue/i);
+	assert.match(prompt, /retryable read-only failure/i);
+	assert.match(prompt, /do not repeat the identical failed call/i);
+	assert.match(prompt, /discover.*equivalent.*read-only capability/i);
+	assert.match(prompt, /ask the user only when.*materially change/i);
+});
+
 test("verification agents receive a minimal semantic Tool Spec instead of every read-only capability", () => {
 	const tools = verificationAgentTools([
 		{ name: "fixture_status", description: "Read the fixture system status", aliases: ["status Tool"] },

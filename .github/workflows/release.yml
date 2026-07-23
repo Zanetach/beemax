@@ -18,7 +18,7 @@ jobs:
           cache: npm
       - run: bash scripts/install-media-dependencies.sh
       - run: npm ci
-      - run: npm audit --omit=dev --audit-level=high
+      - run: npm audit --omit=dev --audit-level=moderate
       - run: npm run verify:release
       - run: mkdir -p artifacts && npm run eval:deployment -- --require-ubuntu --write artifacts/agent-deployment-ubuntu.json
       - run: mkdir -p artifacts && npm run eval:resources:ubuntu -- --write artifacts/resource-high-water-ubuntu.json
