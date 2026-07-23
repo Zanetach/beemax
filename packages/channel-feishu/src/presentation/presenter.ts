@@ -1,4 +1,4 @@
-import { AdaptiveTextBuffer, TurnStatusPulse, interactionCompletionDeliveryKey, interactionPhaseForOutcome, type DeliveryOptions, type DeliveryReceipt, type InteractionEvent } from "@beemax/core";
+import { interactionCompletionDeliveryKey, interactionPhaseForOutcome, type DeliveryOptions, type DeliveryReceipt, type InteractionEvent } from "@beemax/core";
 import { formatApprovalRequest, formatWorkProgress, type InteractionPresentationOpen, type InteractionPresenter, type SendOptions, type SendResult, type TurnPresentation, type WorkProgressPresentation } from "@beemax/channel-runtime";
 import { FlushController } from "./flush.ts";
 import { renderCard, type CardRenderOptions } from "./render.ts";
@@ -11,6 +11,8 @@ interface FeishuPresentationTransport {
 	sendTyping(chatId: string, messageId?: string): Promise<void>;
 	stopTyping(chatId: string, messageId?: string, failed?: boolean): Promise<void>;
 }
+
+type FinishedResult = Extract<InteractionEvent, { type: "turn.finished" }>["result"];
 
 /** Feishu owns CardKit state, rendering, throttling, delivery, and degradation. */
 export class FeishuInteractionPresenter implements InteractionPresenter {
@@ -39,13 +41,17 @@ class FeishuTurnPresentation implements TurnPresentation {
 	private readonly input: InteractionPresentationOpen;
 	private readonly card = new CardSession();
 	private readonly flush: FlushController;
-	private readonly answerBuffer: AdaptiveTextBuffer;
-	private readonly statusPulse: TurnStatusPulse;
 	private readonly renderOptions: CardRenderOptions;
 	private cardMessageId?: string;
 	private cardCreation?: Promise<SendResult>;
 	private cardUpdate?: Promise<boolean>;
 	private pendingCardRender?: Record<string, unknown>;
+	private progressTimer?: ReturnType<typeof setTimeout>;
+	private progressReady = false;
+	private progressUpdateCount = 0;
+	private progressStage = "understanding";
+	private pendingCompletion?: FinishedResult;
+	private terminalPresented = false;
 	private degraded = false;
 	private readonly interactionIdempotencyKey: string;
 
@@ -57,55 +63,64 @@ class FeishuTurnPresentation implements TurnPresentation {
 			: `${input.profileId}:turn`;
 		this.flush = new FlushController(input.preferences?.updateIntervalMs ?? 350);
 		this.renderOptions = { title: input.preferences?.title, reasoningDisplay: input.preferences?.reasoningDisplay };
-		this.answerBuffer = new AdaptiveTextBuffer(async (chunk) => {
-			try { this.card.apply("answer.delta", { text: chunk }); await this.flush.schedule(() => this.renderUpdate(), false, true); }
-			catch (error) { console.error(`[beemax] Feishu answer presenter failed: ${safeError(error)}`); }
-		}, { minChunkChars: 6, preferredChunkChars: 28, maxChunkChars: 80, maxWaitMs: 50, flushSmallOnMaxWait: true });
-		this.statusPulse = new TurnStatusPulse(async (message) => {
-			this.card.apply("notice.updated", { id: "turn:status", label: "当前状态", status: "running", message });
-			await this.flush.schedule(() => this.renderUpdate(), false, true);
-		});
 	}
 
 	async start(): Promise<void> {
-		await settleWithin(this.statusPulse.start(), this.ioTimeout());
+		this.card.apply("notice.updated", { id: "turn:status", label: "当前状态", status: "running", message: "正在理解任务" });
+		const delayMs = Math.max(0, this.input.preferences?.progressDelayMs ?? 5_000);
+		if (delayMs === 0) {
+			this.progressReady = true;
+			await this.publishProgress();
+		} else {
+			this.progressTimer = setTimeout(() => {
+				this.progressTimer = undefined;
+				if (this.terminalPresented) return;
+				this.progressReady = true;
+				void this.publishProgress().catch((error) => console.error(`[beemax] Feishu progress presenter failed: ${safeError(error)}`));
+			}, delayMs);
+		}
 		await this.transport.sendTyping(this.input.source.chatId, this.input.source.messageId).catch((error) => console.warn(`[beemax] Feishu typing indicator failed: ${safeError(error)}`));
 	}
 
 	async onEvent(event: InteractionEvent): Promise<void> {
 		switch (event.type) {
-			case "tool.changed":
-				this.card.apply("notice.updated", { id: "turn:status", label: "当前状态", status: "running", message: event.state === "running" ? `正在执行 ${event.name}` : event.state === "failed" ? "操作未成功 · 正在处理" : "操作完成 · 正在整理结果" });
+			case "tool.changed": {
 				this.card.apply("tool.updated", { tool_id: event.callId, name: event.name, status: event.state === "failed" ? "error" : event.state, detail: event.summary });
-				await this.flush.schedule(() => this.renderUpdate(), false, true); break;
-			case "answer.delta": this.statusPulse.contentStarted(); this.answerBuffer.push(event.text); break;
+				await this.setProgress(
+					event.state === "running" ? "working" : event.state === "failed" ? "recovering" : "composing",
+					event.state === "running" ? "正在获取并处理所需信息" : event.state === "failed" ? "操作未成功，正在切换方案" : "资料已取得，正在生成结果",
+				);
+				break;
+			}
+			case "answer.delta":
+				await this.setProgress("composing", "正在生成最终结果");
+				break;
 			case "reasoning.delta": this.card.apply("thinking.delta", { text: event.text }); break;
-			case "model.fallback":
-				this.card.apply("notice.updated", { id: `model:${event.turnId}:${event.attempt}`, label: "模型回退", status: "running", message: `${event.from} 暂时不可用，已切换到 ${event.to}` });
-				await this.flush.schedule(() => this.renderUpdate(), false, true); break;
+			case "model.fallback": break;
 			case "planning.selected":
-				this.card.apply("notice.updated", { id: `planning:${event.turnId}`, label: "执行规划", status: "running", message: `${event.mode} · 并发 ${event.concurrency} · 子代理上限 ${event.maxSubagents}${event.requiredTools.length ? ` · ${event.requiredTools.join(" → ")}` : ""}` });
-				await this.flush.schedule(() => this.renderUpdate(), false, true); break;
+				this.card.apply("notice.updated", { id: `planning:${event.turnId}`, label: "执行规划", status: "running", message: "执行方案已就绪" });
+				await this.setProgress("planning", "正在制定执行方案"); break;
 			case "planning.completed":
-				this.card.apply("notice.updated", { id: `planning:${event.turnId}`, label: "执行规划", status: event.compliant ? "completed" : "error", message: `${event.mode}${event.corrected ? " · 已自动纠正" : ""}` });
-				await this.flush.schedule(() => this.renderUpdate(), false, true); break;
-			case "work.changed":
+				this.card.apply("notice.updated", { id: `planning:${event.turnId}`, label: "执行规划", status: event.compliant ? "completed" : "error", message: event.corrected ? "已自动调整方案" : "执行方案完成" });
+				break;
+			case "work.changed": {
 				this.card.apply("notice.updated", { id: `work:${event.workId}`, label: event.kind === "subagent" ? "并行子任务" : "异步任务计划", status: event.state === "failed" ? "error" : event.state, message: event.summary ?? (event.state === "queued" ? "已排队" : event.state === "running" ? "运行中" : event.state === "completed" ? "已完成" : event.state === "cancelled" ? "已取消" : "执行失败") });
-				await this.flush.schedule(() => this.renderUpdate(), false, true); break;
+				await this.setProgress(
+					event.state === "completed" ? "composing" : event.state === "failed" ? "recovering" : "working",
+					event.state === "completed" ? "并行处理完成，正在整理结果" : event.state === "failed" ? "部分处理未成功，正在调整方案" : "正在处理任务",
+				);
+				break;
+			}
 			case "turn.failed":
-				await this.stopPulse(); await this.answerBuffer.flush(); this.card.apply("message.failed", { error: event.error });
-				await this.flush.schedule(() => this.renderUpdate(), true); break;
+				this.stopProgress(); this.card.apply("message.failed", { error: event.error });
+				await this.presentTerminal(); break;
 			case "turn.cancelled":
-				await this.stopPulse(); await this.answerBuffer.flush(); this.card.apply("message.cancelled", { message: "运行已取消" });
-				await this.flush.schedule(() => this.renderUpdate(), true); break;
+				this.stopProgress(); this.card.apply("message.cancelled", { message: "运行已取消" });
+				await this.presentTerminal(); break;
 			case "turn.finished": {
-				await this.stopPulse(); await this.answerBuffer.flush();
-				const outcomePhase = interactionPhaseForOutcome(event.result.outcome);
-				const presentationEvent = outcomePhase === "completed" ? "message.completed"
-					: outcomePhase === "cancelled" ? "message.cancelled"
-						: outcomePhase === "rejected" ? "message.rejected" : "message.incomplete";
-				this.card.apply(presentationEvent, { answer: event.result.answer, message: event.result.answer, model: event.result.model, duration: event.result.durationMs / 1000, tokens: event.result.usage });
-				await this.flush.schedule(() => this.renderUpdate(), true); break;
+				this.stopProgress();
+				this.pendingCompletion = event.result;
+				break;
 			}
 			case "approval.requested": {
 				const message = formatApprovalRequest(event);
@@ -123,9 +138,15 @@ class FeishuTurnPresentation implements TurnPresentation {
 	}
 
 	async finish(answer: string, options?: DeliveryOptions): Promise<DeliveryReceipt> {
-		await this.answerBuffer.flush();
-		if (!this.card.answerText && answer) this.card.apply("answer.delta", { text: answer });
-		await this.flush.schedule(() => this.renderUpdate(), true);
+		this.stopProgress();
+		const hasProgressCard = Boolean(this.cardMessageId || this.cardCreation);
+		if (!this.terminalPresented && (!options?.idempotencyKey || hasProgressCard)) {
+			this.applyCompletion(
+				options?.idempotencyKey ? "任务处理结束，最终结果见下方消息。" : answer,
+				this.pendingCompletion,
+			);
+			await this.presentTerminal();
+		}
 		const drained = await this.flush.drain(5_000);
 		if (options?.idempotencyKey) {
 			// The rich card is transient progress. A canonical text delivery uses the
@@ -143,17 +164,55 @@ class FeishuTurnPresentation implements TurnPresentation {
 	}
 
 	async fail(error: string): Promise<void> {
+		this.stopProgress();
 		if (this.card.status !== "cancelled" && this.card.status !== "failed") this.card.apply("message.failed", { error });
-		await this.flush.schedule(() => this.renderUpdate(), true);
+		if (!this.terminalPresented) await this.presentTerminal();
 		await this.flush.drain(3_000);
 		if (!this.cardMessageId || this.degraded) await this.sendFallback(`❌ ${error}`);
 	}
 
 	async close(failed: boolean): Promise<void> {
-		await this.stopPulse();
-		await this.answerBuffer.close();
+		this.stopProgress();
 		await this.transport.stopTyping(this.input.source.chatId, this.input.source.messageId, failed).catch(() => undefined);
 		this.flush.close();
+	}
+
+	private async setProgress(stage: string, message: string): Promise<void> {
+		if (this.terminalPresented || this.pendingCompletion) return;
+		const changed = this.progressStage !== stage;
+		this.progressStage = stage;
+		this.card.apply("notice.updated", { id: "turn:status", label: "当前状态", status: "running", message });
+		if (!changed || !this.progressReady || this.progressUpdateCount >= 2) return;
+		await this.publishProgress();
+	}
+
+	private async publishProgress(): Promise<void> {
+		if (this.terminalPresented || this.pendingCompletion || this.progressUpdateCount >= 2) return;
+		this.progressUpdateCount++;
+		await this.flush.schedule(() => this.renderUpdate(), false, true);
+	}
+
+	private applyCompletion(answer: string, result?: FinishedResult): void {
+		const outcomePhase = result ? interactionPhaseForOutcome(result.outcome) : "completed";
+		const presentationEvent = outcomePhase === "completed" ? "message.completed"
+			: outcomePhase === "cancelled" ? "message.cancelled"
+				: outcomePhase === "rejected" ? "message.rejected" : "message.incomplete";
+		this.card.apply(presentationEvent, {
+			answer,
+			message: answer,
+			...(result ? { model: result.model, duration: result.durationMs / 1000, tokens: result.usage } : {}),
+		});
+	}
+
+	private async presentTerminal(): Promise<void> {
+		if (this.terminalPresented) return;
+		this.terminalPresented = true;
+		await this.flush.schedule(() => this.renderUpdate(), true);
+	}
+
+	private stopProgress(): void {
+		if (this.progressTimer) clearTimeout(this.progressTimer);
+		this.progressTimer = undefined;
 	}
 
 	private async renderUpdate(): Promise<boolean> {
@@ -188,7 +247,6 @@ class FeishuTurnPresentation implements TurnPresentation {
 	}
 
 	private ioTimeout(): number { return this.input.preferences?.ioTimeoutMs ?? 2_000; }
-	private async stopPulse(): Promise<void> { await this.statusPulse.stop().catch((error) => console.error(`[beemax] Feishu status presenter failed: ${safeError(error)}`)); }
 	private async sendFallback(text: string, idempotencyKey?: string): Promise<SendResult> {
 		const result = await this.transport.send(this.input.source.chatId, text, {
 			...(idempotencyKey ? { idempotencyKey } : {}),

@@ -3,6 +3,8 @@
 ## Unreleased
 
 - Added `beemax uninstall` with interactive confirmation, non-interactive `--yes`, optional guarded `--purge`, matching macOS LaunchAgent and Linux systemd cleanup, release-install detection, and Profile data preservation by default.
+- Simplified Feishu/Lark task presentation: short Turns now go straight to one final result, longer Turns reuse one card with at most two human-readable progress states, internal model narration stays out of the main view, and durable results are delivered only once.
+- Fixed Feishu CardKit element identifiers so native card updates remain available instead of degrading when execution details are present.
 
 ## 1.6.0
 

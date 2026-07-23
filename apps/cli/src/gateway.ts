@@ -533,6 +533,7 @@ export async function runGateway(config: BeeMaxConfig): Promise<void> {
 			presentationOptions: {
 				title: config.profile === "default" ? "BeeMax Agent" : `BeeMax · ${config.profile}`,
 				reasoningDisplay: config.agent.reasoningDisplay,
+				progressDelayMs: 5_000,
 				updateIntervalMs: 350,
 			},
 			approvalBroker,
