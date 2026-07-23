@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 1.5.2
+
+- Reworked the primary README into a visual, Chinese-first product guide with clearer runtime, sales-assistant, capability, architecture, and operational boundaries.
+- Added a photorealistic, personified AI coworker hero that communicates durable tasks, tool execution, verification, and human approval without implying a separate robot runtime.
+
 ## 1.5.1
 
 - Fixed release-archive construction on GNU tar so nested vendored `.github` workflow metadata is excluded consistently with macOS bsdtar, keeping prohibited external Agent tooling outside the published BeeMax archive.

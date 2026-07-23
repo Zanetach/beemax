@@ -7,7 +7,7 @@
 ![Node.js](https://img.shields.io/badge/Node.js-%3E%3D22.19-339933?logo=node.js&logoColor=white)
 ![Platform](https://img.shields.io/badge/platform-Ubuntu%20%7C%20macOS-4c566a)
 
-**当前版本：** [v1.5.1](https://github.com/Zanetach/beemax/releases/tag/v1.5.1)，以经过校验和验证的源码归档发布，支持 Ubuntu 和 macOS。
+**当前版本：** [v1.5.2](https://github.com/Zanetach/beemax/releases/tag/v1.5.2)，以经过校验和验证的源码归档发布，支持 Ubuntu 和 macOS。
 
 [English](README.md) | 简体中文
 
