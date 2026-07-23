@@ -1,44 +1,78 @@
-# BeeMax Agent
+<div align="center">
+  <h1>BeeMax Agent</h1>
+  <h3>可私有化部署的企业 Agent 运行平台</h3>
+  <p><strong>让 AI 从“会回答问题”，升级为“能在权限边界内持续把事情做完”。</strong></p>
+  <p>
+    <a href="https://github.com/Zanetach/beemax/releases/latest"><img alt="Release" src="https://img.shields.io/github/v/release/Zanetach/beemax?display_name=tag&style=flat-square"></a>
+    <a href="https://github.com/Zanetach/beemax/actions/workflows/ci.yml"><img alt="CI" src="https://img.shields.io/github/actions/workflow/status/Zanetach/beemax/ci.yml?branch=main&label=CI&style=flat-square"></a>
+    <img alt="Node.js 22.19 or newer" src="https://img.shields.io/badge/Node.js-%E2%89%A522.19-339933?logo=node.js&logoColor=white&style=flat-square">
+    <img alt="Ubuntu and macOS" src="https://img.shields.io/badge/Platform-Ubuntu%20%7C%20macOS-4c566a?style=flat-square">
+  </p>
+  <p>
+  <a href="#quick-start">快速开始</a> ·
+  <a href="#runtime-flow">运行闭环</a> ·
+  <a href="#sales-example">场景示例</a> ·
+  <a href="#capability-boundaries">能力边界</a> ·
+  <a href="#development">开发验证</a>
+  </p>
+</div>
 
-> 可私有化部署的企业 Agent 运行平台：把业务目标转化为可恢复、可审批、可验证的长期任务，安全连接企业知识与系统，并持续交付结果。
+<p align="center">
+  <img src="docs/assets/beemax-agent-runtime-v3.png" width="100%" alt="拟人化的 BeeMax AI 同事与团队协作，在长期记忆、定时任务、工具执行和人工审批之间形成可信工作闭环">
+</p>
 
-[![Release](https://img.shields.io/github/v/release/Zanetach/beemax?display_name=tag)](https://github.com/Zanetach/beemax/releases/latest)
-[![CI](https://github.com/Zanetach/beemax/actions/workflows/ci.yml/badge.svg)](https://github.com/Zanetach/beemax/actions/workflows/ci.yml)
-![Node.js](https://img.shields.io/badge/Node.js-%3E%3D22.19-339933?logo=node.js&logoColor=white)
-![Platform](https://img.shields.io/badge/platform-Ubuntu%20%7C%20macOS-4c566a)
+> [!NOTE]
+> BeeMax 不是把聊天界面套在大模型外面。它使用一个 Core-owned Pi Agent Runtime，把目标、Memory、Task、Effect、Approval、Verification 和 Delivery 组织成可恢复的长期工作。
 
-![BeeMax Agent turns scoped context and durable memory into governed, verified execution](docs/assets/beemax-agent-runtime.png)
+| **1 个执行内核** | **3 个主要入口** | **持久化责任** | **默认受治理** |
+| :---: | :---: | :---: | :---: |
+| Pi Agent Runtime | CLI · 飞书/Lark · Telegram | SQLite/FTS5 · Task Ledger · Checkpoint | Policy · Approval · Effect · Verification |
 
-## 一句话定位
+## 为什么是 BeeMax
 
-BeeMax 让 AI 从“会回答问题的聊天助手”升级为“能在权限边界内持续推进工作、调用工具、验证结果并承担长期责任的 Agent”。
-
-它目前重点支持终端、飞书/Lark 和 Telegram。BeeMax Core 以 Pi 作为唯一 Agent 执行内核，在其外围提供长期记忆、任务账本、审批治理、安全恢复、结果验证和多渠道交付。
+| 普通聊天助手 | BeeMax Agent |
+| --- | --- |
+| 一次提问、一次回答 | Objective 与 Task 独立于聊天长期存在 |
+| 主要依赖当前聊天上下文 | 作用域 Memory、证据和 Task Ledger 跨会话保留 |
+| 工具调用结束即认为完成 | Effect Receipt、Checkpoint 与独立 Verification 共同确认结果 |
+| 进程中断后通常重新开始 | 仅在幂等、权限与 Effect 状态安全时恢复 |
+| 渠道各自维护一套逻辑 | CLI、飞书/Lark、Telegram 共享同一个 Profile Runtime |
 
 从产品层看：
 
-- **BeeMax Agent** 是企业智能体协作平台。
-- **BeeMax Runtime** 是持久任务与受治理执行底座。
-- 销售、运营、研究、知识客服等是基于 Runtime 配置的解决方案模板，不是硬编码在 Core 中的业务对象。
+| 🧭 **BeeMax Agent** | ⚙️ **BeeMax Runtime** | 🧩 **解决方案模板** |
+| --- | --- | --- |
+| 面向企业的智能体协作平台 | 持久任务与受治理执行底座 | 销售、运营、研究、知识客服等可配置场景 |
+
+销售、订单、工单、项目等业务对象不会被硬编码进 Core；它们通过 Work Context、企业数据、Skills、MCP、策略和验收标准进入运行时。
+
+<a id="runtime-flow"></a>
 
 ## 它如何工作
 
-```text
-用户目标 / 定时任务 / 自定义企业事件 Adapter
-                ↓
-Situation / Work Context + 作用域记忆
-                ↓
-Objective + 持久化 Task Ledger
-                ↓
-Pi Agent Runtime 规划并选择 Skill / Tool / MCP
-                ↓
-权限判断 / 风险治理 / 必要时人工审批
-                ↓
-Tool Effect 执行 + Provider Receipt
-                ↓
-Checkpoint + 独立 Verification
-                ↓
-Delivery Outbox 交付 + 证据化 Memory 更新
+```mermaid
+flowchart LR
+    A["用户目标<br/>定时任务<br/>自定义企业事件 Adapter"]
+    B["Situation / Work Context<br/>作用域 Memory"]
+    C["Objective<br/>持久化 Task Ledger"]
+    D["Pi Agent Runtime<br/>规划与能力选择"]
+    E{"Policy / Risk<br/>是否需要 Approval"}
+    F["Skill / Tool / MCP"]
+    G["Tool Effect<br/>Provider Receipt"]
+    H["Checkpoint<br/>Independent Verification"]
+    I["Delivery Outbox<br/>CLI / 飞书 / Telegram"]
+    J["Evidence-backed<br/>Memory Update"]
+    K["Human Approval<br/>allow once / task / deny"]
+    L["Blocked<br/>Objective 保持未完成"]
+
+    A --> B --> C --> D --> E
+    E -->|"允许"| F --> G --> H
+    E -->|"需要审批"| K
+    K -->|"allowed"| F
+    K -->|"denied"| L
+    H -->|"accepted"| I
+    H -->|"verified episode"| J
+    H -->|"rejected / unavailable"| C
 ```
 
 Pi 负责模型交互、工具调用、会话事件和实时上下文压缩；BeeMax Core 负责 Profile 作用域、持久责任、任务恢复、Effect 幂等、审批、验证和交付。
@@ -47,22 +81,54 @@ Pi 负责模型交互、工具调用、会话事件和实时上下文压缩；Be
 
 | 能力 | 当前实现 |
 | --- | --- |
-| 长期记忆 | 使用 SQLite/FTS5 保存经审核的偏好、事实、目标、证据、纠正、冲突、惯例和已验证工作 Episode |
-| 持久任务 | Objective、DAG Task Plan、Task Run、Lease、Checkpoint、Candidate Result、Verification、纠错、取消与安全恢复 |
-| 工具执行 | 文件、Shell、Web、MCP、WeKnora、飞书会议、图片理解、Tesseract OCR 与可选图片生成 |
-| 渐进 Skills | 先发现元数据，任务命中后再激活 Skill 并按需读取资源，避免把所有说明一次性塞进上下文 |
-| 自动化 | 提醒、一次性任务、间隔任务、Cron、Heartbeat、misfire 策略、重试和有边界的主动只读调查 |
-| 受治理动作 | 变更型工具按风险、范围、企业策略和执行授权决定是否审批；外部副作用使用持久 Effect 和幂等键 |
-| 多模型 | OpenAI、Anthropic、OpenRouter、Gemini、DeepSeek，以及兼容 OpenAI/Anthropic 协议的自定义端点；Ollama 可经兼容端点接入 |
-| 多渠道 | 本地终端、飞书/Lark 流式卡片、Telegram 文本与媒体，共享同一个 Profile Runtime |
-| Profile 隔离 | 每个 Profile 拥有独立模型、密钥、Memory、工作区、Skills、渠道和任务状态 |
-| 运维 | Doctor、备份、日志、Trace、Effect 对账、显式迁移、Linux systemd、macOS LaunchAgent 和 Docker 执行沙箱 |
+| 🧠 **长期记忆** | 使用 SQLite/FTS5 保存经审核的偏好、事实、目标、证据、纠正、冲突、惯例和已验证工作 Episode |
+| 🗂️ **持久任务** | Objective、DAG Task Plan、Task Run、Lease、Checkpoint、Candidate Result、Verification、纠错、取消与安全恢复 |
+| 🧰 **工具执行** | 文件、Shell、Web、MCP、WeKnora、飞书会议、图片理解、Tesseract OCR 与可选图片生成 |
+| 🧩 **渐进 Skills** | 先发现元数据，任务命中后再激活 Skill 并按需读取资源，避免把所有说明一次性塞进上下文 |
+| ⏱️ **自动化** | 提醒、一次性任务、间隔任务、Cron、Heartbeat、misfire 策略、重试和有边界的主动只读调查 |
+| 🛡️ **受治理动作** | 变更型工具按风险、范围、企业策略和执行授权决定是否审批；外部副作用使用持久 Effect 和幂等键 |
+| 🔀 **多模型** | OpenAI、Anthropic、OpenRouter、Gemini、DeepSeek，以及兼容 OpenAI/Anthropic 协议的自定义端点；Ollama 可经兼容端点接入 |
+| 💬 **多渠道** | 本地终端、飞书/Lark 流式卡片、Telegram 文本与媒体，共享同一个 Profile Runtime |
+| 🧱 **Profile 隔离** | 每个 Profile 拥有独立模型、密钥、Memory、工作区、Skills、渠道和任务状态 |
+| 🩺 **运维** | Doctor、备份、日志、Trace、Effect 对账、显式迁移、Linux systemd、macOS LaunchAgent 和 Docker 执行沙箱 |
+
+<p align="center">
+  <img alt="OpenAI" src="https://img.shields.io/badge/OpenAI-Model-111827?style=flat-square">
+  <img alt="Anthropic" src="https://img.shields.io/badge/Anthropic-Model-D97757?style=flat-square">
+  <img alt="OpenRouter" src="https://img.shields.io/badge/OpenRouter-Model-6366F1?style=flat-square">
+  <img alt="MCP" src="https://img.shields.io/badge/MCP-Tools-7C3AED?style=flat-square">
+  <img alt="Feishu Lark" src="https://img.shields.io/badge/Feishu%20%2F%20Lark-Channel-00D6B9?style=flat-square">
+  <img alt="Telegram" src="https://img.shields.io/badge/Telegram-Channel-229ED9?logo=telegram&logoColor=white&style=flat-square">
+  <img alt="SQLite FTS5" src="https://img.shields.io/badge/SQLite%20%2F%20FTS5-Memory-0F80CC?logo=sqlite&logoColor=white&style=flat-square">
+</p>
+
+<a id="sales-example"></a>
 
 ## 示例：配置一个“飞书销售运营助理”
 
 你可以在飞书里提出：
 
 > 每天上午 9 点读取昨天的销售数据，生成日报。如果销售额相对既定基线下降超过 20%，按地区、产品和渠道定位主要贡献维度，并提醒我。
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant S as Scheduler
+    participant R as BeeMax Runtime
+    participant D as 企业数据 / MCP
+    participant V as Verification
+    participant O as Delivery Outbox
+    participant F as 飞书
+
+    S->>R: 09:00 触发持久 Schedule Occurrence
+    R->>D: 在授权范围内读取销售数据
+    D-->>R: 数据、来源与执行回执
+    R->>R: 计算指标并分析贡献维度
+    R->>V: 提交日报、证据与验收标准
+    V-->>R: accepted / rejected / unavailable
+    R->>O: accepted 结果进入持久交付队列
+    O->>F: 使用幂等身份投递日报
+```
 
 在数据源、指标口径和权限配置完成后，BeeMax 可以：
 
@@ -98,6 +164,8 @@ Pi 负责模型交互、工具调用、会话事件和实时上下文压缩；Be
 | 销售运营助理 | 定时任务、MCP/文件数据、分析 Skill、日报交付 | CRM/数据库连接、指标口径、接收人和审批策略 |
 | 运维助理 | 定时检查、日志分析、异常通知、受治理命令 | 监控来源、运行手册、允许的只读/变更操作 |
 | 会议助理 | 飞书会议查询与预约、知识检索、资料整理 | 应用权限、会议资料来源；当前未内置飞书 User OAuth，私有用户资源需外部适配 |
+
+<a id="quick-start"></a>
 
 ## 快速开始
 
@@ -380,6 +448,8 @@ beemax trace show <execution-id> --profile personal
 
 详见 [自治发布流程](docs/operations/autonomy-rollout.md)、[故障恢复手册](docs/operations/fault-recovery.md)、[性能与成本](docs/operations/performance-and-cost.md) 和 [P0–P10 验收记录](docs/operations/p0-p10-acceptance.md)。
 
+<a id="capability-boundaries"></a>
+
 ## 当前能力边界
 
 BeeMax 1.2 当前不把以下内容包装成已完成能力：
@@ -393,6 +463,36 @@ BeeMax 1.2 当前不把以下内容包装成已完成能力：
 - Profile 隔离不等同于已经提供完整的 SaaS 租户、SSO 和企业 IAM 产品。
 
 这些边界让 Core 保持行业无关，也让业务能力可以通过企业数据、Skills、MCP、策略和验证标准逐步接入。
+
+## 常见问题
+
+<details>
+<summary><strong>机器人已经启动，为什么收不到消息？</strong></summary>
+
+运行 `beemax gateway health --profile <name>`。检查飞书应用是否已发布、是否启用 WebSocket 长连接并订阅 `im.message.receive_v1`，同时确认发送者已在白名单中或完成配对。
+
+</details>
+
+<details>
+<summary><strong>为什么某个任务重启后没有自动继续？</strong></summary>
+
+查看 `/tasks show <plan-id>`、`beemax effect list --status unknown` 和对应 Trace。非幂等任务、缺少执行范围或存在未决 Effect 时，BeeMax 会主动阻止重放。
+
+</details>
+
+<details>
+<summary><strong>文字模型为什么无法读取图片？</strong></summary>
+
+运行 `beemax doctor --profile <name>`，配置支持图片输入的模型、启用辅助视觉模型，或安装 Tesseract 及对应语言包。
+
+</details>
+
+<details>
+<summary><strong>MCP Server 为什么没有出现在可用能力里？</strong></summary>
+
+运行 `beemax mcp status --profile <name>`，检查 Server 命令或 URL、环境变量、启动超时和当前 Profile Toolset。未明确声明只读的 MCP Tool 会按变更操作治理。
+
+</details>
 
 ## CLI 速查
 
@@ -414,6 +514,8 @@ BeeMax 1.2 当前不把以下内容包装成已完成能力：
 
 运行 `beemax --help` 查看完整命令；在聊天中使用 `/help` 查看会话、模型、压缩、任务、重试和取消控制。
 
+<a id="development"></a>
+
 ## 开发与验证
 
 ```bash
@@ -428,6 +530,34 @@ npm test
 ```bash
 npm run verify:release
 npm run test:reliability
+```
+
+## 代码架构
+
+```mermaid
+flowchart TB
+    CLI["apps/cli<br/>Profile 组合与本地入口"]
+    GW["packages/gateway<br/>渠道交互编排"]
+    CR["packages/channel-runtime<br/>平台无关契约"]
+    CF["channel-feishu"]
+    CT["channel-telegram"]
+    CORE["@beemax/core<br/>唯一 Agent Runtime 边界"]
+    PI["Vendored Pi<br/>模型、Session、Tools"]
+    MEM["packages/memory<br/>SQLite / FTS5"]
+    AUTO["packages/automation<br/>Schedule Store"]
+    CAP["Capability Packages<br/>MCP · WeKnora · Feishu VC · Image"]
+
+    CLI --> CORE
+    CLI --> GW
+    GW --> CORE
+    GW --> CR
+    CR --> CF
+    CR --> CT
+    CORE --> PI
+    CORE <--> MEM
+    CORE --> AUTO
+    CLI --> CAP
+    CAP --> CORE
 ```
 
 ## 仓库结构
