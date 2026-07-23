@@ -54,6 +54,7 @@ const MAX_PROCESSING_REACTIONS = 1024;
 const MAX_MEDIA_BATCH_MESSAGES = 8;
 const MAX_MEDIA_BATCH_BYTES = 30 * 1024 * 1024;
 const MAX_PENDING_INBOUND = 1_000;
+const FEISHU_HTTP_TIMEOUT_MS = 15_000;
 const OBSERVE_ONLY = Symbol("observe_only");
 
 export interface FeishuAdapterDependencies {
@@ -185,6 +186,7 @@ export class FeishuAdapter implements PlatformAdapter {
 			appType: lark.AppType.SelfBuild,
 			domain,
 			disableTokenCache: false,
+			httpInstance: lark.defaultHttpInstance.create({ timeout: FEISHU_HTTP_TIMEOUT_MS }),
 			loggerLevel: lark.LoggerLevel.warn,
 		}));
 		if (!client) throw new Error("Feishu credentials are unavailable");

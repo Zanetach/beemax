@@ -108,12 +108,12 @@ test("Dispatcher starts the Agent Turn immediately and delays the progress card"
 	finish({ answer: "done", model: "test", durationMs: 1, usage: {} }); await turn; dispatcher.dispose();
 });
 
-test("Dispatcher starts the Agent Turn when initial card delivery hangs", async () => {
-	let inbound; let runtimeStarted = false;
+test("Dispatcher starts the Agent Turn while bounded initial card delivery settles late", async () => {
+	let inbound; let runtimeStarted = false; const texts = [];
 	const platform = {
 		name: "feishu", isConnected: true, onMessage: (handler) => { inbound = handler; }, connect: async () => true, disconnect: async () => undefined,
-		send: async () => ({ success: true }), editMessage: async () => ({ success: true }), sendTyping: async () => undefined, stopTyping: async () => undefined,
-		sendCard: async () => new Promise(() => undefined), updateCard: async () => ({ success: true }),
+		send: async (_chatId, text) => { texts.push(text); return { success: true }; }, editMessage: async () => ({ success: true }), sendTyping: async () => undefined, stopTyping: async () => undefined,
+		sendCard: async () => { await new Promise((resolve) => setTimeout(resolve, 60)); return { success: false, error: "bounded provider timeout" }; }, updateCard: async () => ({ success: true }),
 	};
 	enableFeishuPresentation(platform);
 	const runtime = { run: async () => { runtimeStarted = true; return { answer: "done", model: "test", durationMs: 1, usage: {} }; }, cancel: async () => false, handleControl: async () => undefined, isBusy: () => false, dispose: () => undefined };
@@ -121,6 +121,8 @@ test("Dispatcher starts the Agent Turn when initial card delivery hangs", async 
 	const turn = inbound({ text: "request", messageType: "text", source: { ...source, messageId: "hung-card" }, mediaPaths: [], mediaTypes: [], raw: {}, timestamp: Date.now() });
 	await new Promise((resolve) => setTimeout(resolve, 60)); assert.equal(runtimeStarted, true);
 	await Promise.race([turn, new Promise((_resolve, reject) => setTimeout(() => reject(new Error("Turn remained blocked behind hung card delivery")), 500))]);
+	for (let attempt = 0; !texts.includes("done") && attempt < 100; attempt++) await new Promise((resolve) => setTimeout(resolve, 5));
+	assert.ok(texts.includes("done"));
 	dispatcher.dispose();
 });
 
@@ -226,6 +228,24 @@ test("Dispatcher falls back to error text when a failed Turn card update fails d
 	await inbound({ text: "request", messageType: "text", source: { ...source, messageId: "hung-error-update" }, mediaPaths: [], mediaTypes: [], raw: {}, timestamp: Date.now() });
 	await new Promise((resolve) => setTimeout(resolve, 100));
 	assert.ok(texts.includes("❌ model unavailable")); dispatcher.dispose();
+});
+
+test("Dispatcher reconciles a failed Turn into a late card without duplicate error text", async () => {
+	let inbound; const cards = []; const texts = [];
+	const platform = {
+		name: "feishu", isConnected: true, onMessage: (handler) => { inbound = handler; }, connect: async () => true, disconnect: async () => undefined,
+		send: async (_chatId, text) => { texts.push(text); return { success: true }; }, editMessage: async () => ({ success: true }), sendTyping: async () => undefined, stopTyping: async () => undefined,
+		sendCard: async (_chatId, card) => { await new Promise((resolve) => setTimeout(resolve, 60)); cards.push(JSON.stringify(card)); return { success: true, messageId: "late-error-card" }; },
+		updateCard: async (_id, card) => { cards.push(JSON.stringify(card)); return { success: true, messageId: "late-error-card" }; },
+	};
+	enableFeishuPresentation(platform);
+	const runtime = { run: async () => { throw new Error("late model unavailable"); }, cancel: async () => false, handleControl: async () => undefined, isBusy: () => false, dispose: () => undefined };
+	const dispatcher = new Dispatcher({ runtime, flushIntervalMs: 0, presentationTimeoutMs: 20, presentationOptions: { progressDelayMs: 0 } }, platform);
+	await inbound({ text: "request", messageType: "text", source: { ...source, messageId: "late-error-card" }, mediaPaths: [], mediaTypes: [], raw: {}, timestamp: Date.now() });
+	for (let attempt = 0; !cards.some((card) => /late model unavailable/.test(card)) && attempt < 100; attempt++) await new Promise((resolve) => setTimeout(resolve, 5));
+	assert.match(cards.at(-1), /late model unavailable/);
+	assert.deepEqual(texts, []);
+	dispatcher.dispose();
 });
 
 test("Gateway idempotency is profile-scoped, bounded, and expires", () => {

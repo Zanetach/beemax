@@ -158,11 +158,7 @@ class FeishuTurnPresentation implements TurnPresentation {
 		}
 		const pendingDelivery = this.pendingCardDelivery();
 		if (pendingDelivery) {
-			void pendingDelivery.then(async (success) => {
-				if (!success) await this.sendFallback(answer, this.resultIdempotencyKey);
-			}).catch(async () => {
-				await this.sendFallback(answer, this.resultIdempotencyKey).catch((error) => console.error(`[beemax] Feishu late result fallback failed: ${safeError(error)}`));
-			});
+			this.deferFallback(pendingDelivery, answer, this.resultIdempotencyKey);
 			return { idempotencyKey: this.progressIdempotencyKey, deliveredAt: Date.now(), ...(this.cardMessageId ? { providerMessageId: this.cardMessageId } : {}) };
 		}
 		if (this.cardMessageId && drained && !this.degraded) {
@@ -177,6 +173,11 @@ class FeishuTurnPresentation implements TurnPresentation {
 		if (this.card.status !== "cancelled" && this.card.status !== "failed") this.card.apply("message.failed", { error });
 		if (!this.terminalPresented) await this.presentTerminal();
 		await this.flush.drain(3_000);
+		const pendingDelivery = this.pendingCardDelivery();
+		if (pendingDelivery) {
+			this.deferFallback(pendingDelivery, `❌ ${error}`, `${this.resultIdempotencyKey}:error`);
+			return;
+		}
 		if (!this.cardMessageId || this.degraded) await this.sendFallback(`❌ ${error}`);
 	}
 
@@ -274,6 +275,12 @@ class FeishuTurnPresentation implements TurnPresentation {
 	private pendingCardDelivery(): Promise<boolean> | undefined {
 		if (this.cardCreationPending && this.cardCreation) return this.cardCreation.then((result) => result.success);
 		return this.cardUpdate;
+	}
+
+	private deferFallback(delivery: Promise<boolean>, text: string, idempotencyKey: string): void {
+		void delivery.then(async (success) => {
+			if (!success) await this.sendFallback(text, idempotencyKey);
+		}).catch((error) => console.error(`[beemax] Feishu late fallback failed: ${safeError(error)}`));
 	}
 
 	private ioTimeout(): number { return this.input.preferences?.ioTimeoutMs ?? 2_000; }
