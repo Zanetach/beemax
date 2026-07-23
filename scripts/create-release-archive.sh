@@ -63,7 +63,7 @@ tar -C "${ROOT}" \
 rm -f "${STAGING}/beemax/core" "${STAGING}/beemax"/core.*
 
 mkdir -p "${STAGING}/beemax/scripts"
-for RELEASE_SCRIPT in clean-build-output.mjs install-media-dependencies.sh install.sh verify-release-version.mjs; do
+for RELEASE_SCRIPT in bootstrap-install.sh clean-build-output.mjs install-media-dependencies.sh install.sh verify-release-version.mjs; do
 	cp "${ROOT}/scripts/${RELEASE_SCRIPT}" "${STAGING}/beemax/scripts/${RELEASE_SCRIPT}"
 done
 node --input-type=module -e '
@@ -76,6 +76,7 @@ node --input-type=module -e '
 
 # Release archives omit Git metadata, so retain the exact release identity for runtime status checks.
 printf '%s\n' "${VERSION}" > "${STAGING}/beemax/RELEASE_VERSION"
+printf 'BeeMax verified release payload\nversion=%s\n' "${VERSION}" > "${STAGING}/beemax/.beemax-release-payload"
 
 tar -C "${STAGING}" -czf "${OUTPUT_DIR}/${ARCHIVE_NAME}" beemax
 if command -v sha256sum >/dev/null 2>&1; then

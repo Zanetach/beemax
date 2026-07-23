@@ -28,7 +28,9 @@ STAGING="$(mktemp -d)"
 trap 'rm -rf "${STAGING}"' EXIT
 tar -xzf "${ARCHIVE}" -C "${STAGING}"
 SOURCE="${STAGING}/beemax"
-[[ -f "${SOURCE}/package.json" && -f "${SOURCE}/pi/package.json" ]] || fail "archive source layout is incomplete"
+[[ -f "${SOURCE}/package.json" && -f "${SOURCE}/pi/package.json" && -f "${SOURCE}/scripts/bootstrap-install.sh" ]] \
+	|| fail "archive source layout or delegated uninstaller is incomplete"
+[[ -f "${SOURCE}/.beemax-release-payload" ]] || fail "archive release provenance payload is missing"
 [[ "$(tr -d '\r\n' < "${SOURCE}/RELEASE_VERSION")" == "${VERSION}" ]] || fail "RELEASE_VERSION does not match ${VERSION}"
 node "${SOURCE}/scripts/verify-release-version.mjs" "${SOURCE}" "${VERSION}" || fail "release version metadata is inconsistent"
 node "${ROOT}/scripts/verify-release-agent-boundary.mjs" "${SOURCE}" --whole-tree || fail "release archive external-Agent boundary failed"
@@ -54,6 +56,8 @@ fi
 mkdir -p "${STAGING}/home" "${STAGING}/bin"
 SMOKE_HOME="${STAGING}/home/.beemax"
 HOME="${STAGING}/home" BEEMAX_HOME="${SMOKE_HOME}" BEEMAX_BIN_DIR="${STAGING}/bin" BEEMAX_INSTALL_MEDIA_DEPS=0 bash "${SOURCE}/scripts/install.sh"
+[[ -f "${SOURCE}/.beemax-release-install" && -f "${SMOKE_HOME}/.beemax-home" ]] \
+	|| fail "installed release provenance markers are missing"
 run_beemax() {
 	env -i HOME="${STAGING}/home" BEEMAX_HOME="${SMOKE_HOME}" PATH="${PATH}" "${STAGING}/bin/beemax" "$@"
 }
@@ -68,5 +72,8 @@ SKILLS_OUTPUT="$(run_beemax skills list --profile release-smoke)"
 grep -Fq "business-report" <<<"${SKILLS_OUTPUT}" || fail "installed Profile does not contain packaged Skills"
 grep -Fq "historical-market-research" <<<"${SKILLS_OUTPUT}" || fail "installed Profile does not contain the stage-release historical market research Skill"
 [[ "$(tr -d '\r\n' < "${SOURCE}/RELEASE_VERSION")" == "${VERSION}" ]] || fail "installed release identity changed"
+run_beemax uninstall --yes
+[[ ! -e "${STAGING}/bin/beemax" && ! -e "${SOURCE}" ]] || fail "installed release did not remove its command and application"
+[[ -f "${SMOKE_HOME}/profiles/release-smoke/config.yaml" ]] || fail "default uninstall did not preserve Profile data"
 
-echo "Verified ${ARCHIVE}: checksum, layout, isolated install, build, Profile reload, and packaged Skills passed"
+echo "Verified ${ARCHIVE}: checksum, layout, isolated install, build, Profile reload, packaged Skills, and uninstall passed"

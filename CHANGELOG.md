@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Added `beemax uninstall` with interactive confirmation, non-interactive `--yes`, optional guarded `--purge`, matching macOS LaunchAgent and Linux systemd cleanup, release-install detection, and Profile data preservation by default.
+
 ## 1.6.0
 
 - Added a software-engineering digital-employee flow: interactive quickstart now offers bounded software delivery and Feishu/Lark after model setup, then starts the configured Gateway instead of leaving the bot offline.

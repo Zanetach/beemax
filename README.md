@@ -263,6 +263,34 @@ cd beemax
 
 安装程序会检查本地媒体依赖，并在受支持的 Ubuntu/macOS 环境中发现或安装 Tesseract OCR。若宿主环境自行管理 OCR，可设置 `BEEMAX_INSTALL_MEDIA_DEPS=0`。
 
+### 卸载
+
+Release 安装支持直接从 CLI 卸载。默认会停止并移除与当前安装匹配的 macOS LaunchAgent 或 Linux systemd 用户服务，删除 BeeMax 应用目录和命令，但保留 Profile、记忆、凭据、任务和工作区：
+
+```bash
+beemax uninstall
+```
+
+脚本或无人值守环境需要显式确认：
+
+```bash
+beemax uninstall --yes
+```
+
+只有确定不再需要任何 BeeMax 数据时，才使用永久清理。`--purge` 必须与 `--yes` 一起使用，且卸载器会拒绝根目录、用户主目录和无法识别的自定义 `BEEMAX_HOME`：
+
+```bash
+beemax uninstall --purge --yes
+```
+
+若命令已经损坏或不在 `PATH`，可以调用 Bootstrap 兜底；默认同样保留 Profile 数据：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Zanetach/beemax/main/scripts/bootstrap-install.sh | bash -s -- --uninstall
+```
+
+通过 `beemax gateway install --system` 安装了 Linux 系统服务时，使用具备 root 权限并保留原安装路径环境的 `beemax uninstall --system --yes`。源码检出不是 Release 安装，卸载命令会拒绝删除，应使用 Git 或文件系统工具自行管理。
+
 ### 分步创建 Profile
 
 ```bash
@@ -589,6 +617,7 @@ BeeMax 1.6.0 当前不把以下内容包装成已完成能力：
 | `beemax trace` | 检查不含业务内容的执行 Trace |
 | `beemax doctor` | 验证运行时与集成就绪状态 |
 | `beemax update` | 在保留 Profile 数据的前提下安装已验证 Release |
+| `beemax uninstall` | 删除应用与服务；默认保留数据，`--purge --yes` 才永久清理 |
 
 运行 `beemax --help` 查看完整命令；在聊天中使用 `/help` 查看会话、模型、压缩、任务、重试和取消控制。
 

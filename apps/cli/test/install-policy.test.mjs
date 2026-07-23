@@ -18,6 +18,11 @@ test("source installer keeps native dependency scripts and pins CLI commands to 
 	assert.doesNotMatch(installer, /npm ci --ignore-scripts/);
 	assert.match(installer, /install-media-dependencies\.sh/);
 	assert.match(installer, /export BEEMAX_ROOT/);
+	assert.match(installer, /export BEEMAX_INSTALL_DIR=%q/);
+	assert.match(installer, /export BEEMAX_BIN_DIR=%q/);
+	assert.match(installer, /export BEEMAX_HOME=%q/);
+	assert.match(installer, /BeeMax command/);
+	assert.match(installer, /\.beemax-release-payload/);
 	assert.match(installer, /apps\/cli\/dist\/cli\.js/);
 });
 
@@ -141,6 +146,12 @@ test("bootstrap installer downloads a verified single release archive and preser
 	assert.match(installer, /command -v shasum[\s\S]*command -v sha256sum/);
 	assert.match(installer, /Profiles and data under/);
 	assert.match(installer, /BEEMAX_BIN_DIR/);
+	assert.match(installer, /--purge/);
+	assert.match(installer, /requires --yes/);
+	assert.match(installer, /BEEMAX_LAUNCH_AGENTS_DIR/);
+	assert.match(installer, /BEEMAX_SYSTEMD_USER_DIR/);
+	assert.match(installer, /\.beemax-release-install/);
+	assert.match(installer, /\.beemax-home/);
 	assert.match(installer, /--quickstart/);
 	assert.match(installer, /beemax.*quickstart/);
 	assert.match(installer, /\/dev\/tty/);
@@ -171,7 +182,9 @@ test("release archive includes Pi and excludes git metadata and dependencies", a
 	assert.match(packager, /--exclude='\*\/test'/);
 	assert.match(packager, /--exclude='\.\/scripts'/);
 	assert.match(packager, /clean-build-output\.mjs/);
+	assert.match(packager, /bootstrap-install\.sh/);
 	assert.match(packager, /install-media-dependencies\.sh/);
+	assert.match(packager, /\.beemax-release-payload/);
 	assert.doesNotMatch(packager, /capability-outcome-harness/);
 	assert.match(packager, /--exclude='\.\/data'/);
 	assert.match(packager, /RELEASE_VERSION/);
@@ -206,6 +219,7 @@ test("tag releases pass build, test, and isolated archive installation gates bef
 	assert.match(verifier, /BEEMAX_INSTALL_MEDIA_DEPS=0/);
 	assert.match(verifier, /scripts\/install\.sh/);
 	assert.match(verifier, /run_beemax --help/);
+	assert.match(verifier, /run_beemax uninstall --yes/);
 	assert.match(verifier, /quickstart/);
 	assert.match(verifier, /env -i/);
 	assert.match(verifier, /SMOKE_HOME="\$\{STAGING\}\/home\/\.beemax"/);

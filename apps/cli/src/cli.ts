@@ -188,6 +188,9 @@ async function main(): Promise<void> {
 		case "update":
 			await runUpdate(parsed);
 			break;
+		case "uninstall":
+			await runUninstall(parsed);
+			break;
 		case "profile":
 			await runProfileCommand(parsed);
 			break;
@@ -274,6 +277,7 @@ Commands:
   model      show | set <provider> <model>
   doctor     Check profile readiness
   update     Update the installed BeeMax release, preserving all Profiles
+  uninstall  Remove BeeMax; Profiles are kept unless --purge is explicitly confirmed
   profile    create | list | show | path | use | migrate | backup | delete
   migration  channel-instance | session plan | apply | rollback (explicit legacy ownership)
   skills     list | sync (prepackaged Profile Skills)
@@ -304,6 +308,7 @@ Options:
   --once <prompt>          Run one non-interactive Turn and exit after settlement
   --thread <id>            Use an isolated named local session (recommended for repeatable --once runs)
   --no-alt-screen          Disable full-screen terminal behavior
+  --purge                  With uninstall, permanently remove Profiles and all BeeMax data
   --yes                    Confirm destructive configuration changes
 
 Environment:
@@ -360,7 +365,7 @@ function parseArgs(args: string[]): ParsedArgs {
 	return parsed;
 }
 
-const BOOLEAN_OPTIONS = new Set(["yes", "require-mention", "no-require-mention", "non-interactive", "system", "all", "open", "help", "deep", "follow", "full", "compact", "plain", "no-alt-screen"]);
+const BOOLEAN_OPTIONS = new Set(["yes", "purge", "require-mention", "no-require-mention", "non-interactive", "system", "all", "open", "help", "deep", "follow", "full", "compact", "plain", "no-alt-screen"]);
 
 function runGatewayStatus(config: ReturnType<typeof loadConfig>, scope: "user" | "system"): void {
 	const snapshot = inspectGateway(config.profile, config.paths.agentDir, scope, installedVersion());
@@ -409,7 +414,7 @@ async function installGatewayService(profile: string, scope: "user" | "system"):
 async function runUpdate(parsed: ParsedArgs): Promise<void> {
 	const root = beemaxRoot();
 	const installDir = resolve(process.env.BEEMAX_INSTALL_DIR?.trim() || join(beemaxHome(), "app"));
-	if (resolve(root) !== installDir) {
+	if (resolve(root) !== installDir || !existsSync(join(root, ".beemax-release-install"))) {
 		throw new Error("beemax update is available for release installations only; update a source checkout with Git instead");
 	}
 	const installer = join(root, "scripts", "bootstrap-install.sh");
@@ -421,6 +426,34 @@ async function runUpdate(parsed: ParsedArgs): Promise<void> {
 	});
 	if (result.error) throw result.error;
 	if (result.status !== 0) throw new Error(`BeeMax update failed with exit code ${result.status ?? "unknown"}`);
+}
+
+async function runUninstall(parsed: ParsedArgs): Promise<void> {
+	const root = beemaxRoot();
+	const installDir = resolve(process.env.BEEMAX_INSTALL_DIR?.trim() || join(beemaxHome(), "app"));
+	if (resolve(root) !== installDir || !existsSync(join(root, ".beemax-release-install"))) {
+		throw new Error("beemax uninstall is available for release installations only; remove a source checkout with Git or your filesystem tools");
+	}
+	const installer = join(root, "scripts", "bootstrap-install.sh");
+	if (!existsSync(installer)) throw new Error("BeeMax installer is missing from this release; use the official bootstrap installer with --uninstall");
+	if (parsed.options.purge === true && parsed.options.yes !== true) {
+		throw new Error("BeeMax uninstall --purge permanently removes all Profile data and requires --yes explicitly");
+	}
+	if (parsed.options.yes !== true) {
+		if (!process.stdin.isTTY) throw new Error("BeeMax uninstall requires --yes in a non-interactive terminal");
+		const confirmed = await askOne("Remove BeeMax application files and services while keeping all Profile data? [y/N]: ");
+		if (!/^(y|yes)$/i.test(confirmed.trim())) throw new Error("BeeMax uninstall cancelled");
+	}
+	const args = ["--uninstall"];
+	if (parsed.options.system === true) args.push("--system");
+	if (parsed.options.purge === true) args.push("--purge");
+	args.push("--yes");
+	const result = spawnSync("bash", [installer, ...args], {
+		stdio: "inherit",
+		env: { ...process.env, BEEMAX_INSTALL_DIR: installDir },
+	});
+	if (result.error) throw result.error;
+	if (result.status !== 0) throw new Error(`BeeMax uninstall failed with exit code ${result.status ?? "unknown"}`);
 }
 
 async function runAgentCommand(parsed: ParsedArgs): Promise<void> {
