@@ -1,12 +1,12 @@
 {
   "schemaVersion": 1,
-  "generatedAt": "2026-07-23T04:50:09.536Z",
+  "generatedAt": "2026-07-23T05:06:47.800Z",
   "profile": "personal",
   "models": [
     "anthropic/glm-5.2/anthropic-messages",
     "anthropic/glm-latest/anthropic-messages"
   ],
-  "implementationDigest": "sha256:4f8dda13ce41637f6bbf674d5aa959271d774d373f8e48e076a3144a13367ea3",
+  "implementationDigest": "sha256:94f2b9ff44424e93a6ba4379bdc4e8aefd6f3ad005e31eea87015aaf6cbc50e8",
   "cases": [
     {
       "id": "model-first-explain-zh",
@@ -27,18 +27,18 @@
         {
           "modelIdentity": "anthropic/glm-5.2/anthropic-messages",
           "providerResponseStatus": "reported",
-          "providerResponseIdentitySha256": "sha256:92f2128a080f6b3391528cbdadf016efbb1cb1dfdb590a682294c6fd4f056324",
+          "providerResponseIdentitySha256": "sha256:7b370fbf1599a9473eef96563558eb1eca742bb72a308559e6a9bbdd58d58b6c",
           "inputTokens": 704,
-          "outputTokens": 686,
+          "outputTokens": 908,
           "traceCorrelated": true
         }
       ],
-      "answerChars": 806,
+      "answerChars": 909,
       "outcomeStatus": "answered",
       "inputTokens": 704,
-      "outputTokens": 686,
-      "totalTokens": 1390,
-      "durationMs": 15734
+      "outputTokens": 908,
+      "totalTokens": 1612,
+      "durationMs": 18660
     },
     {
       "id": "model-first-unknown-en",
@@ -59,18 +59,18 @@
         {
           "modelIdentity": "anthropic/glm-5.2/anthropic-messages",
           "providerResponseStatus": "reported",
-          "providerResponseIdentitySha256": "sha256:006dfdf0b01f001689f7c9d94a138dc73f9e881169724871e795ba0954a053dd",
+          "providerResponseIdentitySha256": "sha256:018456593f204fe88554f14693c476fc1f81756f4d1f65ef2d20e677dc4f4c95",
           "inputTokens": 711,
-          "outputTokens": 369,
+          "outputTokens": 649,
           "traceCorrelated": true
         }
       ],
-      "answerChars": 1370,
+      "answerChars": 1801,
       "outcomeStatus": "answered",
       "inputTokens": 711,
-      "outputTokens": 369,
-      "totalTokens": 1080,
-      "durationMs": 10337
+      "outputTokens": 649,
+      "totalTokens": 1360,
+      "durationMs": 14159
     },
     {
       "id": "model-first-comparison",
@@ -91,18 +91,18 @@
         {
           "modelIdentity": "anthropic/glm-5.2/anthropic-messages",
           "providerResponseStatus": "reported",
-          "providerResponseIdentitySha256": "sha256:ec7de7547ad93e255e47f8e24ab6446b3fe8d8d5d826ddf5fa78b7d54280cc76",
+          "providerResponseIdentitySha256": "sha256:5728020b53841e14bfceb15d36d1ff0066c596b47321348d463fec4358448edf",
           "inputTokens": 713,
-          "outputTokens": 596,
+          "outputTokens": 1104,
           "traceCorrelated": true
         }
       ],
-      "answerChars": 2354,
+      "answerChars": 1825,
       "outcomeStatus": "answered",
       "inputTokens": 713,
-      "outputTokens": 596,
-      "totalTokens": 1309,
-      "durationMs": 14361
+      "outputTokens": 1104,
+      "totalTokens": 1817,
+      "durationMs": 23384
     },
     {
       "id": "model-first-current-query",
@@ -123,18 +123,18 @@
         {
           "modelIdentity": "anthropic/glm-5.2/anthropic-messages",
           "providerResponseStatus": "reported",
-          "providerResponseIdentitySha256": "sha256:0fe6d1acae9475c68a707d3874e7d19b7aca036f818b151ba53c1ecefb3d4b74",
+          "providerResponseIdentitySha256": "sha256:4c145508119a1713844ae2e6abdd8dd0df65d6979b3d0cc332a08cf1b3707b3e",
           "inputTokens": 712,
-          "outputTokens": 327,
+          "outputTokens": 192,
           "traceCorrelated": true
         }
       ],
-      "answerChars": 723,
+      "answerChars": 345,
       "outcomeStatus": "answered",
       "inputTokens": 712,
-      "outputTokens": 327,
-      "totalTokens": 1039,
-      "durationMs": 7302
+      "outputTokens": 192,
+      "totalTokens": 904,
+      "durationMs": 6018
     },
     {
       "id": "model-first-artifact-intent",
@@ -155,18 +155,18 @@
         {
           "modelIdentity": "anthropic/glm-5.2/anthropic-messages",
           "providerResponseStatus": "reported",
-          "providerResponseIdentitySha256": "sha256:93bfa31e4646c7e87b6833e4a13f155dd48876d4b6a6b5458de67d9e4a387206",
+          "providerResponseIdentitySha256": "sha256:2e19cf41f69514c3a11e851b283447871e90c7469329bddc774b25afc20327de",
           "inputTokens": 725,
-          "outputTokens": 798,
+          "outputTokens": 730,
           "traceCorrelated": true
         }
       ],
-      "answerChars": 974,
+      "answerChars": 863,
       "outcomeStatus": "answered",
       "inputTokens": 725,
-      "outputTokens": 798,
-      "totalTokens": 1523,
-      "durationMs": 17573
+      "outputTokens": 730,
+      "totalTokens": 1455,
+      "durationMs": 17012
     },
     {
       "id": "durable-automation",
@@ -180,25 +180,25 @@
       "workContractCalls": 1,
       "workContractAdmitted": true,
       "workContractProviderTurns": 2,
-      "workContractTokens": 2436,
+      "workContractTokens": 324,
       "workContractProviderEvidence": [
         {
-          "model": "anthropic/glm-5.2/anthropic-messages",
-          "durationMs": 2190,
-          "inputTokens": 1089,
-          "outputTokens": 106,
-          "providerResponseStatus": "reported",
-          "providerResponseIdentitySha256": "sha256:80f640bbef93a29b89cd8910f44a6db549da5ce27898368b92f620fc85e5360f",
-          "contentSha256": "sha256:0e3caed2b14fd8c05859923145e0b30fbc97d98a5f0190f16c6720d172467d35"
-        },
-        {
           "model": "anthropic/glm-latest/anthropic-messages",
-          "durationMs": 2480,
-          "inputTokens": 1152,
+          "durationMs": 2235,
+          "inputTokens": 64,
           "outputTokens": 89,
           "providerResponseStatus": "reported",
-          "providerResponseIdentitySha256": "sha256:a46d4f86650e3316bc8052ba4e6c5ac10971ac7b33e639dbbab6575618babdee",
-          "contentSha256": "sha256:313150fea1767831897bdb50f068676921de671d5401fa9c92a1d262c004a948"
+          "providerResponseIdentitySha256": "sha256:1310a05614bc3b9ff2b7f95225625338f7c032737571c9fc6574dc9f970e4f8f",
+          "contentSha256": "sha256:4d4a096faeb6f96bac21ce8e2459fdf06d3807a6084914758b99ac5f145465c2"
+        },
+        {
+          "model": "anthropic/glm-5.2/anthropic-messages",
+          "durationMs": 2447,
+          "inputTokens": 65,
+          "outputTokens": 106,
+          "providerResponseStatus": "reported",
+          "providerResponseIdentitySha256": "sha256:091801104f3a31509c6c20db0d0b27540e7e25f289fb516a528831edfaffe35e",
+          "contentSha256": "sha256:0e3caed2b14fd8c05859923145e0b30fbc97d98a5f0190f16c6720d172467d35"
         }
       ],
       "model": "glm-5.2",
@@ -206,18 +206,18 @@
         {
           "modelIdentity": "anthropic/glm-5.2/anthropic-messages",
           "providerResponseStatus": "reported",
-          "providerResponseIdentitySha256": "sha256:91aa61274afee46a5aac4a935f2f684207392ed27245d642c033ee23862715a8",
+          "providerResponseIdentitySha256": "sha256:508686a04830dc31df8cc401391d13c81ad77fd959a989be9fd09d8f56629208",
           "inputTokens": 839,
-          "outputTokens": 541,
+          "outputTokens": 589,
           "traceCorrelated": true
         }
       ],
-      "answerChars": 793,
+      "answerChars": 959,
       "outcomeStatus": "answered",
-      "inputTokens": 3080,
-      "outputTokens": 736,
-      "totalTokens": 3816,
-      "durationMs": 16817
+      "inputTokens": 968,
+      "outputTokens": 784,
+      "totalTokens": 1752,
+      "durationMs": 14943
     }
   ],
   "metrics": {
@@ -226,11 +226,11 @@
     "accuracy": 1,
     "directCases": 5,
     "contractCases": 1,
-    "averageDirectDurationMs": 13061.4,
-    "averageContractDurationMs": 16817,
-    "totalRunTokens": 10157,
-    "totalMainPiProviderTokens": 7721,
-    "totalWorkContractTokens": 2436,
+    "averageDirectDurationMs": 15846.6,
+    "averageContractDurationMs": 14943,
+    "totalRunTokens": 8900,
+    "totalMainPiProviderTokens": 8576,
+    "totalWorkContractTokens": 324,
     "totalWorkContractProviderTurns": 2
   },
   "gate": {
