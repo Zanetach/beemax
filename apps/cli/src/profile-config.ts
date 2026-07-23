@@ -276,6 +276,35 @@ export async function configureModel(profile: string, input: ModelInput, options
 	return paths;
 }
 
+/**
+ * Prepare a Profile for software delivery while preserving the approval
+ * boundary around arbitrary shell commands and every external side effect.
+ *
+ * Workspace file replacement and bounded native edits are authorized for each
+ * fresh Turn. Shell execution still requires one explicit approval, where the
+ * user can choose "本任务允许" to let the diagnose/repair/retest loop continue.
+ */
+export async function configureSoftwareAgentMode(
+	profile: string,
+	options: ProfileStorageOptions = {},
+): Promise<ProfilePaths> {
+	const paths = await writableProfilePaths(profile, options);
+	await mutateProfileConfig(paths.configPath, (config) => {
+		const agent = asRecord(config.agent);
+		const execution = asRecord(config.execution);
+		const configuredCapabilities = Array.isArray(execution.taskGrantCapabilities)
+			? execution.taskGrantCapabilities.filter((value): value is string => typeof value === "string")
+			: [];
+		config.agent = { ...agent, toolset: "standard" };
+		config.execution = {
+			...execution,
+			workspaceWritePolicy: "allow-within-workspace",
+			taskGrantCapabilities: [...new Set([...configuredCapabilities, "edit"])],
+		};
+	});
+	return paths;
+}
+
 export async function configureSoul(profile: string, identity: string, options: ProfileStorageOptions = {}): Promise<ProfilePaths> {
 	const value = validateCustomSoul(identity);
 	const paths = await writableProfilePaths(profile, options);

@@ -4,6 +4,10 @@
 
 ## 1.6.0
 
+- Added a software-engineering digital-employee flow: interactive quickstart now offers bounded software delivery and Feishu/Lark after model setup, then starts the configured Gateway instead of leaving the bot offline.
+- Added the progressively loaded `software-delivery` Skill and a parent-Agent implementation contract that requires workspace inspection, explicit acceptance criteria, iterative build/test diagnosis and repair, broad final verification, and an evidence-backed handoff rather than stopping at a plan or first failure.
+- Added a Profile software mode that authorizes unattended writes and native edits only inside the Profile workspace; arbitrary shell commands, deployment, external publication, secrets, and high-risk effects remain approval-gated.
+- Added a release-stage regression that runs a real failing code test in an isolated workspace, repairs the implementation, reruns it successfully, and verifies the software Skill route and authority boundary.
 - Added one-command `--quickstart` installation and `beemax quickstart`, which configure or verify a Profile, sync missing bundled Skills, run readiness checks, and enter the ordinary local Agent without introducing a second runtime path.
 - Added a release-stage user-journey gate covering natural-language gold research, progressive Skill/Tool activation, structured XAU/USD evidence with an independent cross-check, verified-outcome memory publication, bounded recall, model-first task admission, read-only recovery, and context compaction.
 - Improved low-risk knowledge-work autonomy so the Agent states reasonable reversible assumptions and continues, while retryable read-only failures must avoid identical retries and discover an equivalent healthy capability without weakening the Work Contract.

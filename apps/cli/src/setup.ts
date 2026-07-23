@@ -6,6 +6,7 @@ import { runDoctor } from "./doctor.ts";
 import {
 	configureFeishuChannel,
 	configureModel,
+	configureSoftwareAgentMode,
 	configureSoul,
 	createProfile,
 	listProfiles,
@@ -18,6 +19,12 @@ export interface SetupOptions {
 	gatewayOnly?: boolean;
 	/** Configure Feishu during the initial setup; otherwise use `gateway setup` later. */
 	configureGateway?: boolean;
+	/** Offer Feishu/Lark as the next interactive step after model setup. */
+	offerGateway?: boolean;
+	/** Authorize autonomous file delivery inside the Profile workspace. */
+	softwareAgent?: boolean;
+	/** Offer the bounded software Agent mode during interactive quickstart. */
+	offerSoftwareAgent?: boolean;
 	nonInteractive?: boolean;
 	provider?: string;
 	model?: string;
@@ -94,8 +101,15 @@ export async function runSetup(options: SetupOptions, dependencies: SetupDepende
 		if (!apiKey && !current.model.apiKey) throw new Error("Setup requires a model API key");
 	}
 
+	let softwareAgent = options.softwareAgent === true;
+	if (!options.gatewayOnly && options.offerSoftwareAgent && options.softwareAgent === undefined && !options.nonInteractive) {
+		softwareAgent = parseYesNo(await ask("Enable autonomous software delivery inside this Profile workspace (yes or no)", "yes"));
+	}
 	let configureGateway = options.gatewayOnly || options.configureGateway === true
 		|| Boolean(options.appId || options.appSecret || options.allowedUsers);
+	if (!options.gatewayOnly && options.offerGateway && !configureGateway && !options.nonInteractive) {
+		configureGateway = parseYesNo(await ask("Connect Feishu/Lark now (yes or no)", "yes"));
+	}
 	const requireGateway = configureGateway;
 	let replacingExistingGateway = false;
 	let appId = "";
@@ -174,6 +188,10 @@ export async function runSetup(options: SetupOptions, dependencies: SetupDepende
 			baseUrl,
 			customProtocol,
 		});
+		if (softwareAgent) {
+			await configureSoftwareAgentMode(options.profile);
+			console.log("Enabled software delivery: workspace writes and edits may continue autonomously; shell and external actions remain approval-gated.");
+		}
 	}
 	if (configureGateway) {
 		await configureFeishuChannel(options.profile, {
@@ -239,6 +257,13 @@ function parseConnectionMode(value: string): "websocket" | "webhook" {
 function parseSetupGroupPolicy(value: string): "open" | "allowlist" | "disabled" {
 	if (value === "open" || value === "allowlist" || value === "disabled") return value;
 	throw new Error("Group policy must be open, allowlist, or disabled");
+}
+
+function parseYesNo(value: string): boolean {
+	const normalized = value.trim().toLowerCase();
+	if (["yes", "y", "1", "true", "是", "启用", "连接"].includes(normalized)) return true;
+	if (["no", "n", "0", "false", "否", "跳过"].includes(normalized)) return false;
+	throw new Error("Answer must be yes or no");
 }
 
 async function askOne(prompt: string, secret = false): Promise<string> {

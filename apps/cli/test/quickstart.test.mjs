@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { prepareQuickstart } from "../dist/quickstart.js";
+import { prepareQuickstart, quickstartLaunchTarget } from "../dist/quickstart.js";
 
 test("quickstart configures a new Profile and returns a ready local chat launch", async () => {
 	const calls = [];
@@ -60,4 +60,24 @@ test("quickstart does not launch when setup or readiness fails", async () => {
 		syncSkills: async () => undefined,
 	});
 	assert.deepEqual(result, { profile: "personal", ready: false, setupPerformed: true });
+});
+
+test("quickstart launches the configured Feishu/Lark Gateway unless an explicit one-shot local Turn was requested", () => {
+	const gateway = {
+		gateway: {
+			channels: [
+				{ id: "feishu-main", adapter: "feishu", enabled: true, credentialRef: "profile-env:feishu", settings: {} },
+			],
+		},
+	};
+	assert.equal(quickstartLaunchTarget(gateway), "gateway");
+	assert.equal(quickstartLaunchTarget(gateway, "build a CRM"), "chat");
+	assert.equal(quickstartLaunchTarget({ gateway: { channels: [] } }), "chat");
+	assert.equal(quickstartLaunchTarget({
+		gateway: {
+			channels: [
+				{ id: "feishu-main", adapter: "feishu", enabled: false, credentialRef: "profile-env:feishu", settings: {} },
+			],
+		},
+	}), "chat");
 });

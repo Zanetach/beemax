@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import test from "node:test";
@@ -207,6 +207,57 @@ test("unified setup configures an isolated Profile and Feishu gateway non-intera
 	assert.equal(readCredential(configured, configured.gateway.channels.find((channel) => channel.adapter === "feishu")).appId, "cli_gateway");
 	assert.equal(configured.model.baseUrl, undefined);
 	assert.equal((await readFile(join(home, "active-profile"), "utf8")).trim(), "assistant");
+});
+
+test("quickstart-style setup creates one software Agent Profile, configures the model, then offers Feishu", async () => {
+	const root = await mkdtemp(join(tmpdir(), "beemax-software-setup-root-"));
+	const home = await mkdtemp(join(tmpdir(), "beemax-software-setup-home-"));
+	const previousRoot = process.env.BEEMAX_ROOT;
+	const previousHome = process.env.BEEMAX_HOME;
+	process.env.BEEMAX_ROOT = root;
+	process.env.BEEMAX_HOME = home;
+	const prompts = [];
+	try {
+		assert.equal(await runSetup({
+			profile: "builder",
+			provider: "openrouter",
+			model: "openai/gpt-5.2",
+			apiKey: "model-secret",
+			offerSoftwareAgent: true,
+			offerGateway: true,
+		}, {
+			ask: async ({ label }) => {
+				prompts.push(label);
+				if (label.startsWith("Custom Agent identity")) return "";
+				if (label.startsWith("Enable autonomous software delivery")) return "";
+				if (label.startsWith("Connect Feishu/Lark")) return "";
+				if (label.startsWith("[1/5] Setup method")) return "manual";
+				if (label.startsWith("[2/5] Platform")) return "lark";
+				if (label === "Feishu App ID") return "cli_builder";
+				if (label === "Feishu App Secret") return "feishu-secret";
+				if (label.startsWith("[4/5] Connection mode")) return "websocket";
+				if (label.startsWith("Allowed Feishu user IDs")) return "ou_builder";
+				if (label.startsWith("[6/6] Group chats")) return "disabled";
+				assert.fail(`unexpected prompt: ${label}`);
+			},
+			probe: async () => ({ botName: "BeeMax Builder" }),
+			doctor: async () => true,
+		}), true);
+
+		assert.ok(prompts.indexOf("Enable autonomous software delivery inside this Profile workspace (yes or no)")
+			< prompts.indexOf("Connect Feishu/Lark now (yes or no)"));
+		const config = loadConfig(join(home, "profiles", "builder", "config.yaml"), "builder");
+		assert.equal(config.model.model, "openai/gpt-5.2");
+		assert.equal(config.execution.workspaceWritePolicy, "allow-within-workspace");
+		assert.deepEqual(config.execution.taskGrantCapabilities, ["edit"]);
+		assert.equal(config.gateway.feishu.domain, "lark");
+		assert.equal(config.gateway.channels.some((channel) => channel.adapter === "feishu" && channel.enabled), true);
+	} finally {
+		if (previousRoot === undefined) delete process.env.BEEMAX_ROOT; else process.env.BEEMAX_ROOT = previousRoot;
+		if (previousHome === undefined) delete process.env.BEEMAX_HOME; else process.env.BEEMAX_HOME = previousHome;
+		await rm(root, { recursive: true, force: true });
+		await rm(home, { recursive: true, force: true });
+	}
 });
 
 test("setup keeps the generated SOUL unless the user explicitly supplies a custom identity", async () => {

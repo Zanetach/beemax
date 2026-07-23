@@ -1,0 +1,10 @@
+{
+  "version": 1,
+  "routes": {
+    "implement": {
+      "description": "Inspect, implement, test, diagnose, repair, retest, and hand off verified software",
+      "module": "modules/implement.md",
+      "tools": ["read", "grep", "find", "ls", "write", "edit"]
+    }
+  }
+}

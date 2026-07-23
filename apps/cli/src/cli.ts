@@ -34,7 +34,7 @@ import { activeProfile, resolveProfileLocation } from "./profile-home.ts";
 import { installMacLaunchAgent, installSystemdService, runServiceAction, type ServiceAction } from "./service-manager.ts";
 import { resolveServiceLogCommand, serviceDisplayName } from "./service-platform.ts";
 import { runSetup, type SetupOptions } from "./setup.ts";
-import { prepareQuickstart } from "./quickstart.ts";
+import { prepareQuickstart, quickstartLaunchTarget } from "./quickstart.ts";
 import { configuredAuxiliaryTextModels, configuredCapabilityRanker, configuredMediaUnderstanding, configuredRuntimeModels, ProfileModelCatalog, renderModelProviderChoices, resolveProfileCognitionModels, resolveProviderSelection } from "./model-catalog.ts";
 import { executionPortFor, executionSafeTools } from "./execution-composition.ts";
 import { createProfileRuntime } from "./runtime-composition.ts";
@@ -84,15 +84,25 @@ async function main(): Promise<void> {
 			if (parsed.configPath) throw new Error("beemax quickstart does not support --config; select a Profile with --profile");
 			if (parsed.options["api-key"]) throw new Error("Do not pass model secrets in argv; set BEEMAX_API_KEY or use the interactive prompt");
 			const quickstartProfile = selectedProfile(parsed);
-			const prepared = await prepareQuickstart({ profile: quickstartProfile, setup: setupOptions(parsed, false) });
+			const quickstartSetup = setupOptions(parsed, false);
+			quickstartSetup.offerSoftwareAgent = quickstartSetup.softwareAgent === undefined;
+			quickstartSetup.offerGateway = quickstartSetup.configureGateway !== true;
+			const prepared = await prepareQuickstart({ profile: quickstartProfile, setup: quickstartSetup });
 			if (!prepared.ready) { process.exitCode = 1; break; }
-			console.log(`${prepared.setupPerformed ? "BeeMax is ready" : "BeeMax Profile is healthy"}. Starting Agent '${quickstartProfile}'…`);
-			await runChat(loadConfig(undefined, quickstartProfile), {
+			const quickstartConfig = loadConfig(undefined, quickstartProfile);
+			const once = optionString(parsed, "once");
+			const launchTarget = quickstartLaunchTarget(quickstartConfig, once);
+			console.log(`${prepared.setupPerformed ? "BeeMax is ready" : "BeeMax Profile is healthy"}. Starting Agent '${quickstartProfile}' ${launchTarget === "gateway" ? "on its configured Gateway" : "in local chat"}…`);
+			if (launchTarget === "gateway") {
+				await runGateway(quickstartConfig);
+				break;
+			}
+			await runChat(quickstartConfig, {
 				full: parsed.options.full === true,
 				compact: parsed.options.compact === true,
 				plain: parsed.options.plain === true,
 				noAltScreen: parsed.options["no-alt-screen"] === true,
-				once: optionString(parsed, "once"),
+				once,
 				thread: optionString(parsed, "thread"),
 			});
 			break;
@@ -287,6 +297,7 @@ Options:
   --home <path>            Override BEEMAX_HOME for this invocation
   --root <path>            Override the BeeMax installation root for this invocation
   --with-feishu            Include Feishu/Lark configuration in the initial setup wizard
+  --software-agent         Enable autonomous file delivery inside the Profile workspace
   --full                   Force Full workbench presentation when interactive
   --compact                Force compact terminal presentation
   --plain                  Force pipe/log-friendly text presentation
@@ -677,6 +688,7 @@ function setupOptions(parsed: ParsedArgs, gatewayOnly: boolean): SetupOptions {
 		profile: selectedProfile(parsed),
 		gatewayOnly,
 		configureGateway: parsed.options["with-feishu"] === true,
+		softwareAgent: parsed.options["software-agent"] === true ? true : undefined,
 		nonInteractive: parsed.options["non-interactive"] === true || !process.stdin.isTTY,
 		provider: optionString(parsed, "provider") ?? process.env.BEEMAX_PROVIDER,
 		model: optionString(parsed, "model") ?? process.env.BEEMAX_MODEL,
