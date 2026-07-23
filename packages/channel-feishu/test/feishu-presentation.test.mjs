@@ -12,8 +12,9 @@ function mainContent(card) {
 		.join("\n");
 }
 
-test("a short Feishu Turn sends one final card without exposing streamed model narration", async () => {
+test("a short Feishu Turn sends one final result without exposing streamed model narration", async () => {
 	const cards = [];
+	const texts = [];
 	const adapter = new FeishuAdapter({
 		appId: "app", appSecret: "secret", domain: "feishu", connectionMode: "websocket",
 		requireMention: true, allowedUsers: ["user"], allowedChats: [], allowAllUsers: false,
@@ -22,7 +23,7 @@ test("a short Feishu Turn sends one final card without exposing streamed model n
 	adapter.updateCard = async (_messageId, card) => { cards.push(card); return { success: true, messageId: "card-short" }; };
 	adapter.sendTyping = async () => undefined;
 	adapter.stopTyping = async () => undefined;
-	adapter.send = async () => ({ success: true, messageId: "fallback" });
+	adapter.send = async (_chatId, text) => { texts.push(text); return { success: true, messageId: "result-short" }; };
 
 	const turn = adapter.presentation.open({
 		source,
@@ -36,15 +37,50 @@ test("a short Feishu Turn sends one final card without exposing streamed model n
 	await turn.finish(result.answer);
 	await turn.close(false);
 
-	assert.equal(cards.length, 1);
-	const visible = JSON.stringify(cards);
-	assert.match(visible, /这是最终结果/);
+	assert.equal(cards.length, 0);
+	assert.deepEqual(texts, ["这是最终结果。"]);
+	const visible = JSON.stringify([...cards, ...texts]);
 	assert.doesNotMatch(visible, /我先发现工具|再拉取数据|继续分析/);
+});
+
+test("a late Feishu card creation cannot duplicate the final answer after local timeout", async () => {
+	const cards = [];
+	const texts = [];
+	const adapter = new FeishuAdapter({
+		appId: "app", appSecret: "secret", domain: "feishu", connectionMode: "websocket",
+		requireMention: true, allowedUsers: ["user"], allowedChats: [], allowAllUsers: false,
+	});
+	adapter.sendCard = async (_chatId, card) => {
+		await new Promise((resolve) => setTimeout(resolve, 30));
+		cards.push(card);
+		return { success: true, messageId: "late-card" };
+	};
+	adapter.updateCard = async (_messageId, card) => { cards.push(card); return { success: true, messageId: "late-card" }; };
+	adapter.sendTyping = async () => undefined;
+	adapter.stopTyping = async () => undefined;
+	adapter.send = async (_chatId, text) => { texts.push(text); return { success: true, messageId: "fallback" }; };
+
+	const turn = adapter.presentation.open({
+		source,
+		profileId: "profile",
+		preferences: { title: "BeeMax · profile", progressDelayMs: 50, updateIntervalMs: 0, ioTimeoutMs: 10 },
+	});
+	await turn.start();
+	const answer = "唯一的最终答案";
+	const result = { answer, model: "test", durationMs: 1, usage: {}, outcome: { status: "answered" } };
+	await turn.onEvent({ type: "turn.finished", sessionId: "session", scope: source, turnId: "turn", at: 1, sequence: 1, result });
+	await turn.finish(answer);
+	await new Promise((resolve) => setTimeout(resolve, 40));
+	await turn.close(false);
+
+	const deliveries = [...cards.map((card) => JSON.stringify(card)), ...texts];
+	assert.equal(deliveries.filter((delivery) => delivery.includes(answer)).length, 1);
 });
 
 test("a long Feishu Turn reuses one card and shows at most two human-readable progress states", async () => {
 	const sends = [];
 	const updates = [];
+	const texts = [];
 	const adapter = new FeishuAdapter({
 		appId: "app", appSecret: "secret", domain: "feishu", connectionMode: "websocket",
 		requireMention: true, allowedUsers: ["user"], allowedChats: [], allowAllUsers: false,
@@ -53,7 +89,7 @@ test("a long Feishu Turn reuses one card and shows at most two human-readable pr
 	adapter.updateCard = async (messageId, card) => { updates.push({ messageId, card }); return { success: true, messageId }; };
 	adapter.sendTyping = async () => undefined;
 	adapter.stopTyping = async () => undefined;
-	adapter.send = async () => ({ success: true, messageId: "fallback" });
+	adapter.send = async (_chatId, text) => { texts.push(text); return { success: true, messageId: "result-long" }; };
 
 	const turn = adapter.presentation.open({
 		source,
@@ -80,7 +116,8 @@ test("a long Feishu Turn reuses one card and shows at most two human-readable pr
 		assert.match(mainContent(card), /正在/);
 		assert.doesNotMatch(mainContent(card), /market_series|provider|1,000|内部数据|direct|并发/);
 	}
-	assert.match(mainContent(updates.at(-1).card), /黄金走势报告已完成/);
+	assert.match(mainContent(updates.at(-1).card), /处理结束/);
+	assert.deepEqual(texts, ["黄金走势报告已完成。"]);
 });
 
 test("Feishu Adapter owns rich Turn presentation and exposes only the Channel Runtime presenter interface", async () => {
@@ -138,7 +175,7 @@ test("Feishu replaces a streamed Candidate Outcome with the canonical Verificati
 	const turn = adapter.presentation.open({
 		source,
 		profileId: "profile",
-		preferences: { title: "BeeMax · profile", updateIntervalMs: 0, ioTimeoutMs: 100 },
+		preferences: { title: "BeeMax · profile", progressDelayMs: 0, updateIntervalMs: 0, ioTimeoutMs: 100 },
 	});
 	await turn.start();
 	await turn.onEvent({ type: "answer.delta", sessionId: "session", scope: source, turnId: "turn", at: 1, sequence: 1, text: "UNVERIFIED CANDIDATE" });
@@ -148,11 +185,10 @@ test("Feishu replaces a streamed Candidate Outcome with the canonical Verificati
 	await turn.close(false);
 
 	const finalCard = JSON.stringify(cards.at(-1));
-	assert.match(finalCard, /任务尚未完成/);
 	assert.match(finalCard, /尚未完成/);
 	assert.doesNotMatch(finalCard, /"template":"green"/);
 	assert.doesNotMatch(finalCard, /UNVERIFIED CANDIDATE/);
-	assert.deepEqual(texts, []);
+	assert.deepEqual(texts, [result.answer]);
 });
 
 test("Feishu fails closed when a legacy Runtime omits the Host outcome", async () => {
@@ -167,7 +203,7 @@ test("Feishu fails closed when a legacy Runtime omits the Host outcome", async (
 	adapter.stopTyping = async () => undefined;
 	adapter.send = async () => ({ success: true, messageId: "text-legacy" });
 
-	const turn = adapter.presentation.open({ source, profileId: "profile", preferences: { title: "BeeMax · profile", updateIntervalMs: 0, ioTimeoutMs: 100 } });
+	const turn = adapter.presentation.open({ source, profileId: "profile", preferences: { title: "BeeMax · profile", progressDelayMs: 0, updateIntervalMs: 0, ioTimeoutMs: 100 } });
 	await turn.start();
 	const result = { answer: "legacy result without Host state", model: "test", durationMs: 1, usage: {} };
 	await turn.onEvent({ type: "turn.finished", sessionId: "session", scope: source, turnId: "turn", at: 1, sequence: 1, result });
@@ -181,6 +217,7 @@ test("Feishu fails closed when a legacy Runtime omits the Host outcome", async (
 
 test("Feishu renders a Host-rejected Candidate as a distinct red Verification state", async () => {
 	const cards = [];
+	const texts = [];
 	const adapter = new FeishuAdapter({
 		appId: "app", appSecret: "secret", domain: "feishu", connectionMode: "websocket",
 		requireMention: true, allowedUsers: ["user"], allowedChats: [], allowAllUsers: false,
@@ -189,9 +226,9 @@ test("Feishu renders a Host-rejected Candidate as a distinct red Verification st
 	adapter.updateCard = async (_messageId, card) => { cards.push(card); return { success: true, messageId: "card-rejected" }; };
 	adapter.sendTyping = async () => undefined;
 	adapter.stopTyping = async () => undefined;
-	adapter.send = async () => ({ success: true, messageId: "text-rejected" });
+	adapter.send = async (_chatId, text) => { texts.push(text); return { success: true, messageId: "text-rejected" }; };
 
-	const turn = adapter.presentation.open({ source, profileId: "profile", preferences: { title: "BeeMax · profile", updateIntervalMs: 0, ioTimeoutMs: 100 } });
+	const turn = adapter.presentation.open({ source, profileId: "profile", preferences: { title: "BeeMax · profile", progressDelayMs: 0, updateIntervalMs: 0, ioTimeoutMs: 100 } });
 	await turn.start();
 	await turn.onEvent({ type: "answer.delta", sessionId: "session", scope: source, turnId: "turn", at: 1, sequence: 1, text: "UNVERIFIED CANDIDATE" });
 	const result = { answer: "任务未通过独立 Verification：缺少来源证据。", model: "test", durationMs: 1, usage: {}, outcome: { status: "rejected", objectiveId: "objective:1" } };
@@ -202,8 +239,8 @@ test("Feishu renders a Host-rejected Candidate as a distinct red Verification st
 	const finalCard = JSON.stringify(cards.at(-1));
 	assert.match(finalCard, /验证未通过/);
 	assert.match(finalCard, /"template":"red"/);
-	assert.match(finalCard, /缺少来源证据/);
 	assert.doesNotMatch(finalCard, /尚未完成|UNVERIFIED CANDIDATE/);
+	assert.deepEqual(texts, [result.answer]);
 });
 
 test("Feishu work progress degrades to mandatory text delivery when CardKit is unavailable", async () => {

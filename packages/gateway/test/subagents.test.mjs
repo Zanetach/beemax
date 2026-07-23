@@ -103,7 +103,7 @@ test("Dispatcher starts the Agent Turn immediately and delays the progress card"
 	const turn = inbound({ text: "slow request", messageType: "text", source: { ...source, messageId: "slow-request" }, mediaPaths: [], mediaTypes: [], raw: {}, timestamp: Date.now() });
 	await new Promise((resolve) => setTimeout(resolve, 10));
 	assert.deepEqual(order, ["runtime"]);
-	await new Promise((resolve) => setTimeout(resolve, 40));
+	for (let attempt = 0; !order.includes("card") && attempt < 100; attempt++) await new Promise((resolve) => setTimeout(resolve, 5));
 	assert.deepEqual(order.slice(0, 2), ["runtime", "card"]);
 	finish({ answer: "done", model: "test", durationMs: 1, usage: {} }); await turn; dispatcher.dispose();
 });
@@ -140,11 +140,11 @@ test("Dispatcher adopts a late initial card result instead of creating duplicate
 	assert.equal(sends, 1); assert.ok(updates >= 1); dispatcher.dispose();
 });
 
-test("Dispatcher writes one late terminal card update with the latest result", async () => {
-	let inbound; const updates = [];
+test("Dispatcher keeps late terminal card updates separate from the single final result", async () => {
+	let inbound; const updates = []; const texts = [];
 	const platform = {
 		name: "feishu", isConnected: true, onMessage: (handler) => { inbound = handler; }, connect: async () => true, disconnect: async () => undefined,
-		send: async () => ({ success: true }), editMessage: async () => ({ success: true }), sendTyping: async () => undefined, stopTyping: async () => undefined,
+		send: async (_chatId, text) => { texts.push(text); return { success: true }; }, editMessage: async () => ({ success: true }), sendTyping: async () => undefined, stopTyping: async () => undefined,
 		sendCard: async () => ({ success: true, messageId: "card" }),
 		updateCard: async (_id, card) => { if (!updates.length) await new Promise((resolve) => setTimeout(resolve, 60)); updates.push(JSON.stringify(card)); return { success: true }; },
 	};
@@ -153,7 +153,7 @@ test("Dispatcher writes one late terminal card update with the latest result", a
 	const dispatcher = new Dispatcher({ runtime, flushIntervalMs: 0, presentationTimeoutMs: 20, presentationOptions: { progressDelayMs: 0 } }, platform);
 	await inbound({ text: "request", messageType: "text", source: { ...source, messageId: "late-update" }, mediaPaths: [], mediaTypes: [], raw: {}, timestamp: Date.now() });
 	await new Promise((resolve) => setTimeout(resolve, 160));
-	assert.equal(updates.length, 1); assert.match(updates[0], /latest final answer/); dispatcher.dispose();
+	assert.equal(updates.length, 1); assert.doesNotMatch(updates[0], /latest final answer/); assert.deepEqual(texts, ["latest final answer"]); dispatcher.dispose();
 });
 
 test("Dispatcher falls back to final text when card updates remain unavailable", async () => {
@@ -796,11 +796,12 @@ test("Dispatcher replays and acknowledges crash-surviving queued inputs on Gatew
 	const acknowledged = [];
 	const runs = [];
 	const cards = [];
+	const texts = [];
 	let recoveredClaimed = false;
 	const recoveredSource = { ...source, messageId: undefined };
 	const platform = {
 		name: "feishu", isConnected: true, onMessage: (handler) => { inbound = handler; }, connect: async () => true, disconnect: async () => undefined,
-		send: async () => ({ success: true }), editMessage: async () => ({ success: true }), sendTyping: async () => undefined, stopTyping: async () => undefined,
+		send: async (_chatId, text) => { texts.push(text); return { success: true }; }, editMessage: async () => ({ success: true }), sendTyping: async () => undefined, stopTyping: async () => undefined,
 		sendCard: async (_chatId, card) => { cards.push(card); return { success: true, messageId: "recovered-card" }; }, updateCard: async (_id, card) => { cards.push(card); return { success: true }; },
 	};
 	enableFeishuPresentation(platform);
@@ -826,8 +827,8 @@ test("Dispatcher replays and acknowledges crash-surviving queued inputs on Gatew
 	assert.equal(await dispatcher.recoverQueuedInputs(), 1);
 	assert.deepEqual(runs, ["resume this"]);
 	assert.deepEqual(acknowledged, ["queued-1"]);
-	assert.match(JSON.stringify(cards), /异步任务计划/);
-	assert.match(JSON.stringify(cards), /plan-42/);
+	assert.deepEqual(cards, []);
+	assert.deepEqual(texts, ["done"]);
 	dispatcher.dispose();
 });
 

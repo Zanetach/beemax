@@ -13,6 +13,7 @@ interface FeishuPresentationTransport {
 }
 
 type FinishedResult = Extract<InteractionEvent, { type: "turn.finished" }>["result"];
+type ProgressStage = "understanding" | "planning" | "working" | "recovering" | "composing";
 
 /** Feishu owns CardKit state, rendering, throttling, delivery, and degradation. */
 export class FeishuInteractionPresenter implements InteractionPresenter {
@@ -49,24 +50,27 @@ class FeishuTurnPresentation implements TurnPresentation {
 	private progressTimer?: ReturnType<typeof setTimeout>;
 	private progressReady = false;
 	private progressUpdateCount = 0;
-	private progressStage = "understanding";
+	private progressStage: ProgressStage = "understanding";
 	private pendingCompletion?: FinishedResult;
 	private terminalPresented = false;
 	private degraded = false;
-	private readonly interactionIdempotencyKey: string;
+	private readonly progressIdempotencyKey: string;
+	private readonly resultIdempotencyKey: string;
 
 	constructor(transport: FeishuPresentationTransport, input: InteractionPresentationOpen) {
 		this.transport = transport;
 		this.input = input;
-		this.interactionIdempotencyKey = input.source.messageId
-			? `${interactionCompletionDeliveryKey(input.profileId, input.source, input.source.messageId)}:progress`
+		const interactionKey = input.source.messageId
+			? interactionCompletionDeliveryKey(input.profileId, input.source, input.source.messageId)
 			: `${input.profileId}:turn`;
+		this.progressIdempotencyKey = `${interactionKey}:progress`;
+		this.resultIdempotencyKey = `${interactionKey}:result`;
 		this.flush = new FlushController(input.preferences?.updateIntervalMs ?? 350);
 		this.renderOptions = { title: input.preferences?.title, reasoningDisplay: input.preferences?.reasoningDisplay };
 	}
 
 	async start(): Promise<void> {
-		this.card.apply("notice.updated", { id: "turn:status", label: "当前状态", status: "running", message: "正在理解任务" });
+		this.card.apply("notice.updated", { id: "turn:status", label: "当前状态", status: "running", message: "正在理解你的需求" });
 		const delayMs = Math.max(0, this.input.preferences?.progressDelayMs ?? 5_000);
 		if (delayMs === 0) {
 			this.progressReady = true;
@@ -139,28 +143,17 @@ class FeishuTurnPresentation implements TurnPresentation {
 
 	async finish(answer: string, options?: DeliveryOptions): Promise<DeliveryReceipt> {
 		this.stopProgress();
-		const hasProgressCard = Boolean(this.cardMessageId || this.cardCreation);
-		if (!this.terminalPresented && (!options?.idempotencyKey || hasProgressCard)) {
-			this.applyCompletion(
-				options?.idempotencyKey ? "任务处理结束，最终结果见下方消息。" : answer,
-				this.pendingCompletion,
-			);
+		const progressCardStarted = Boolean(this.cardMessageId || this.cardCreation);
+		if (!this.terminalPresented && progressCardStarted) {
+			this.applyCompletion("处理结束，最终结果见下方消息。", this.pendingCompletion);
 			await this.presentTerminal();
 		}
-		const drained = await this.flush.drain(5_000);
-		if (options?.idempotencyKey) {
-			// The rich card is transient progress. A canonical text delivery uses the
-			// durable Completion key so Outbox recovery can replay the exact same
-			// provider operations, including every chunk of a long result.
-			const result = await this.sendFallback(answer, options.idempotencyKey);
-			return { idempotencyKey: options.idempotencyKey, deliveredAt: Date.now(), ...(result.messageId ? { providerMessageId: result.messageId } : {}) };
-		}
-		if (this.cardMessageId && drained && !this.degraded) {
-			return { idempotencyKey: this.interactionIdempotencyKey, deliveredAt: Date.now(), providerMessageId: this.cardMessageId };
-		}
-		const fallbackKey = `${this.interactionIdempotencyKey}:fallback`;
-		const result = await this.sendFallback(this.card.answerText || answer, fallbackKey);
-		return { idempotencyKey: fallbackKey, deliveredAt: Date.now(), ...(result.messageId ? { providerMessageId: result.messageId } : {}) };
+		await this.flush.drain(5_000);
+		// Cards are transient status only. Keeping the canonical answer on one
+		// idempotent text lane prevents a late CardKit success from duplicating it.
+		const deliveryKey = options?.idempotencyKey ?? this.resultIdempotencyKey;
+		const result = await this.sendFallback(answer, deliveryKey);
+		return { idempotencyKey: deliveryKey, deliveredAt: Date.now(), ...(result.messageId ? { providerMessageId: result.messageId } : {}) };
 	}
 
 	async fail(error: string): Promise<void> {
@@ -177,7 +170,7 @@ class FeishuTurnPresentation implements TurnPresentation {
 		this.flush.close();
 	}
 
-	private async setProgress(stage: string, message: string): Promise<void> {
+	private async setProgress(stage: ProgressStage, message: string): Promise<void> {
 		if (this.terminalPresented || this.pendingCompletion) return;
 		const changed = this.progressStage !== stage;
 		this.progressStage = stage;
@@ -219,7 +212,7 @@ class FeishuTurnPresentation implements TurnPresentation {
 		const rendered = renderCard(this.card, this.renderOptions);
 		if (!this.cardMessageId) {
 			if (!this.cardCreation) {
-				this.cardCreation = this.transport.sendCard(this.input.source.chatId, rendered, this.input.source.replyToMessageId ?? this.input.source.messageId, Boolean(this.input.source.threadId), this.interactionIdempotencyKey).then((result) => {
+				this.cardCreation = this.transport.sendCard(this.input.source.chatId, rendered, this.input.source.replyToMessageId ?? this.input.source.messageId, Boolean(this.input.source.threadId), this.progressIdempotencyKey).then((result) => {
 					if (result.success && result.messageId) { this.cardMessageId = result.messageId; this.input.onBinding?.(result.messageId, this.card.pendingApprovalId); }
 					return result;
 				});
