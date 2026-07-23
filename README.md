@@ -574,7 +574,6 @@ packages/automation/              Schedule 持久化与时间计算
 packages/knowledge/               WeKnora 能力适配
 packages/mcp-capability/          MCP 客户端能力
 packages/feishu-capability/       飞书会议能力
-packages/codex-image-capability/  可选图片生成能力
 pi/                               Vendored Pi 源码及 workspace packages
 config/                           配置示例
 evals/                            Runtime、能力和性能评测
